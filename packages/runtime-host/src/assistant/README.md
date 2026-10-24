@@ -131,7 +131,7 @@ The discovery exploration prompt and Inbox/Sleep loop are unchanged.
 
 ## Quick proactive help
 
-`QuickDiscoveryControl` enables a separate ordinary discovery Session. It defaults to off; enabling it does not enable or change the broad discovery schedule. `intervalMinutes` defaults to 15 and `idleMinutes` to 60. The native API exposes `assistant.quick-discovery` and `assistant.quick-discovery-status` (compatibility epoch 228). `check` requests one run; `pause` stops future admission without cancelling an in-flight run. The assistant master switch still owns shutdown and disables all background work.
+`QuickDiscoveryControl` enables a separate ordinary discovery Session. It defaults to off; enabling it does not enable or change the broad discovery schedule. `intervalMinutes` defaults to 15 and `idleMinutes` to 60. The native API exposes `assistant.quick-discovery` and `assistant.quick-discovery-status` (compatibility epoch 229). `check` requests one run; `pause` stops future admission without cancelling an in-flight run. The assistant master switch still owns shutdown and disables all background work.
 
 The scheduler checks permitted Session revision metadata and optional source `activityToken` observations, batching changes at the activity cadence. This is **not source synchronization**: the Feishu CLI source observes published local-cache versions, so discovery cannot see remote messages before Feishu synchronization publishes them. Adapters without a lightweight observation retain the idle fallback; status exposes unsupported/failed observations. No enumeration, index maintenance or model call is performed just to check activity. Index reads retain their existing refresh semantics.
 

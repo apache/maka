@@ -16,10 +16,10 @@ Locations intentionally omit line numbers so unrelated edits do not invalidate t
 | Classification | Count |
 |---|---:|
 | windows-backend-gap | 27 |
-| portable-candidate | 59 |
+| portable-candidate | 60 |
 | platform-contract | 49 |
 
-Total Windows-excluded declarations: **135**
+Total Windows-excluded declarations: **136**
 
 ## Inventory
 
@@ -45,6 +45,7 @@ Total Windows-excluded declarations: **135**
 | platform-contract | `apps/desktop/src/main/__tests__/shell-env.test.ts` kills login-shell descendants when capture times out | `process.platform === 'win32'` |
 | platform-contract | `apps/desktop/src/main/__tests__/shell-env.test.ts` bounds shell output instead of buffering until the global timeout | `process.platform === 'win32'` |
 | platform-contract | `apps/desktop/src/main/__tests__/skill-locations.test.ts` reports an unreadable Skill directory instead of an available empty location | `process.platform === 'win32' ? 'POSIX permissions are required to make the Skill directory unreadable' : process.getuid?.() === 0` |
+| portable-candidate | `packages/acp-executor-plugin/src/__tests__/acp-process.test.ts` real catalog ${retry} retries cleanup and terminates the retained process and helper | `process.platform === 'win32'` |
 | portable-candidate | `packages/acp-executor-plugin/src/__tests__/acp-process.test.ts` disposing a real retained process also terminates its helper | `process.platform === 'win32'` |
 | portable-candidate | `packages/acp-executor-plugin/src/__tests__/acp-process.test.ts` retiring one conversation cleans its helper after the parent has crashed | `process.platform === 'win32'` |
 | platform-contract | `packages/cli/src/__tests__/acp-prompt-content.test.ts` rejects a FIFO without blocking the process | `process.platform === 'win32'` |

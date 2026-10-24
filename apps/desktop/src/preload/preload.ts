@@ -1965,8 +1965,11 @@ const makaBridge = {
     },
   },
   newTasks: {
-    async getExecutors(target, cwd, refresh) {
-      return ipcRenderer.invoke('sessions:executorCatalog', await runtimeHostScope(target), cwd, refresh);
+    async getExecutors(target, cwd, refresh, executorId) {
+      return ipcRenderer.invoke('sessions:executorCatalog', await runtimeHostScope(target), cwd, refresh, executorId);
+    },
+    async listExecutors(target, cwd) {
+      return ipcRenderer.invoke('sessions:executorCatalog', await runtimeHostScope(target), cwd, false, undefined, true);
     },
     getCatalog(): Promise<DesktopNewTaskCatalog> {
       return loadNewTaskCatalog();

@@ -109,7 +109,9 @@ export interface ConversationServices extends Pick<
     ): Promise<ConversationFileSearchResult>;
   };
   readonly newTasks: {
-    getExecutors?(target: ConversationNewTaskTarget, cwd: string, refresh?: boolean): Promise<readonly import('@maka/core/executor-catalog').ExecutorCatalogEntry[]>;
+    getExecutors?(target: ConversationNewTaskTarget, cwd: string, refresh?: boolean, executorId?: string): Promise<readonly import('@maka/core/executor-catalog').ExecutorCatalogEntry[]>;
+    /** Registration inventory without starting agent processes. */
+    listExecutors?(target: ConversationNewTaskTarget, cwd: string): Promise<readonly import('@maka/core/executor-catalog').ExecutorCatalogEntry[]>;
     subscribeChanges(handler: () => void): () => void;
     listInvocableSkills(
       target: ConversationNewTaskTarget,
