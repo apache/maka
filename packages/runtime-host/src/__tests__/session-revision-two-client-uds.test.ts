@@ -585,6 +585,25 @@ async function verifyConcurrentRevisionAuthority(
         preview: { ok: true, text: 'retained bytes' },
       },
     );
+    // A retried request whose target already committed resolves through the
+    // committed-probe path: it must answer with the same staged attachments
+    // the first attempt returned, not a bare committed response (#6246
+    // review).
+    const uploadedTurnRevisionRetry = await desktop.request('session.revision.create', {
+      sourceSessionId,
+      targetSessionId: 'staged-upload-revision-target',
+      sourceTurnId: 'turn-1',
+      expectedSourceRevision: sourceAfterRevision.revision,
+    });
+    assert.equal(uploadedTurnRevisionRetry.kind, 'committed');
+    if (uploadedTurnRevisionRetry.kind !== 'committed') assert.fail('Retry must stay committed');
+    assert.equal(uploadedTurnRevisionRetry.stagedAttachments?.length, 1);
+    const retriedStaged = uploadedTurnRevisionRetry.stagedAttachments?.[0];
+    assert.equal(retriedStaged?.name, 'source.txt');
+    assert.equal(retriedStaged?.ref.kind, 'session_file');
+    if (retriedStaged?.ref.kind !== 'session_file')
+      assert.fail('Retried staged ref must stay session-backed');
+    assert.equal(retriedStaged.ref.sessionId, 'staged-upload-revision-target');
     assert.deepEqual(
       await desktop.request('session.revision.abandon', {
         targetSessionId: 'staged-upload-revision-target',

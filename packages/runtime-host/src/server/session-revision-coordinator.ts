@@ -43,6 +43,8 @@ import {
 } from '@maka/runtime/conversation-copy';
 import { type SessionManager } from '@maka/runtime/session-manager';
 import { RuntimeReadModelError } from '@maka/runtime/runtime-read-model';
+import type { AttachmentRef } from '@maka/core/events';
+import type { StoredMessage } from '@maka/core/session';
 import {
   authenticateInteractiveArtifactStoreWriter,
   type InteractiveArtifactStoreWriter,
@@ -430,18 +432,10 @@ export class HostSessionRevisionCoordinator {
     // the replacement submit.
     const editedTurnAttachments =
       kind === 'revision' && input.sourceTurnId !== undefined
-        ? source.messages.flatMap((message) =>
-            message.turnId === input.sourceTurnId && message.type === 'user'
-              ? (message.attachments ?? [])
-              : [],
-          )
+        ? editedTurnAttachmentsOf(source.messages, input.sourceTurnId)
         : [];
     const editedTurnArtifactIds = new Set(
-      editedTurnAttachments.flatMap((attachment) =>
-        attachment.ref.kind === 'session_file' && attachment.ref.sessionId === input.sourceSessionId
-          ? [attachment.ref.relativePath]
-          : [],
-      ),
+      editedTurnArtifactIdsOf(editedTurnAttachments, input.sourceSessionId),
     );
     const missingGraphChildSessionIds = linkedChildCopyAdmissionSessionIds({
       sourceSessionId: input.sourceSessionId,
@@ -617,33 +611,12 @@ export class HostSessionRevisionCoordinator {
       // Only refs that actually landed in the target are staged; a missed
       // rewrite stays off the list and the client keeps its fail-closed gate
       // for that attachment instead of submitting a dangling reference.
-      const stagedAttachments = editedTurnAttachments.flatMap((attachment) => {
-        if (
-          attachment.ref.kind !== 'session_file' ||
-          attachment.ref.sessionId !== input.sourceSessionId
-        ) {
-          return [];
-        }
-        // A user upload's ref names the upload's Artifact record id, which the
-        // copy reports under `artifactIds`; only path-named Artifacts land in
-        // `relativePaths`. Look the id up first, matching the transcript
-        // rewriter's order, so an uploaded attachment is staged too (#6246
-        // review) instead of being copied and then dropped off the response.
-        const sourceId = attachment.ref.relativePath;
-        const relativePath =
-          artifactCopy.artifactIds.get(sourceId) ?? artifactCopy.relativePaths.get(sourceId);
-        if (!relativePath) return [];
-        return [
-          {
-            ...attachment,
-            ref: {
-              kind: 'session_file' as const,
-              sessionId: input.targetSessionId,
-              relativePath,
-            },
-          },
-        ];
-      });
+      const stagedAttachments = stagedRefsFor(
+        editedTurnAttachments,
+        input.sourceSessionId,
+        input.targetSessionId,
+        artifactCopy,
+      );
       return copySuccess({
         kind: 'committed',
         session: projectSessionCatalogRecord(
@@ -774,11 +747,40 @@ export class HostSessionRevisionCoordinator {
     }
     if (copy.state === 'committed') {
       try {
+        // A retried request must answer with the same staged attachments the
+        // first attempt returned (#5246/#5109): the artifacts are already in
+        // the target, so the maps come back idempotently under
+        // `reuse_verified` without re-copying anything.
+        let stagedAttachments: readonly AttachmentRef[] | undefined;
+        if (kind === 'revision' && input.sourceTurnId !== undefined) {
+          const source = await this.options.manager.readConversationCopySnapshot(
+            input.sourceSessionId,
+          );
+          const edited = editedTurnAttachmentsOf(source.messages, input.sourceTurnId);
+          const includeIds = editedTurnArtifactIdsOf(edited, input.sourceSessionId);
+          if (edited.length > 0 && includeIds.length > 0) {
+            const retryCopy = await this.#artifacts.copyConversationArtifacts({
+              sourceSessionId: input.sourceSessionId,
+              targetSessionId: input.targetSessionId,
+              turnIds: [],
+              includeArtifactIds: includeIds,
+              existingTarget: 'reuse_verified',
+            });
+            const refs = stagedRefsFor(
+              edited,
+              input.sourceSessionId,
+              input.targetSessionId,
+              retryCopy,
+            );
+            if (refs.length > 0) stagedAttachments = refs;
+          }
+        }
         return copySuccess({
           kind: 'committed',
           session: projectSessionCatalogRecord(
             await this.#stores.sessionStore.readCatalogRecord(input.targetSessionId),
           ),
+          ...(stagedAttachments ? { stagedAttachments } : {}),
         });
       } catch {
         return copyFailure(
@@ -948,6 +950,63 @@ function isEmptySideConversation(
 
 function persistedConversationCopyKind(kind: ConversationCopySemanticKind): ConversationCopyKind {
   return kind === 'revision' ? 'revision' : 'branch';
+}
+
+/** The selected turn's own attachments: they sit outside the copied slice, so
+ *  the transcript copy never carries them and a revision must stage them
+ *  separately (#5109). */
+function editedTurnAttachmentsOf(
+  messages: readonly StoredMessage[],
+  sourceTurnId: string,
+): readonly AttachmentRef[] {
+  return messages.flatMap((message) =>
+    message.turnId === sourceTurnId && message.type === 'user' ? (message.attachments ?? []) : [],
+  );
+}
+
+function editedTurnArtifactIdsOf(
+  attachments: readonly AttachmentRef[],
+  sourceSessionId: string,
+): string[] {
+  return attachments.flatMap((attachment) =>
+    attachment.ref.kind === 'session_file' && attachment.ref.sessionId === sourceSessionId
+      ? [attachment.ref.relativePath]
+      : [],
+  );
+}
+
+/**
+ * The staged form of the edited turn's attachments: source-owned refs rewired
+ * to the target Session through the copy's result maps. A user upload's ref
+ * names the upload's Artifact record id, which the copy reports under
+ * `artifactIds`; only path-named Artifacts land in `relativePaths`. Look the
+ * id up first, matching the transcript rewriter's order, so an uploaded
+ * attachment is staged too (#6246 review) instead of being copied and then
+ * dropped off the response. Refs whose rewrite is missing stay off the list —
+ * the client keeps its fail-closed gate for those rather than submitting a
+ * dangling reference.
+ */
+function stagedRefsFor(
+  attachments: readonly AttachmentRef[],
+  sourceSessionId: string,
+  targetSessionId: string,
+  copy: Awaited<ReturnType<InteractiveArtifactStoreWriter['copyConversationArtifacts']>>,
+): AttachmentRef[] {
+  return attachments.flatMap((attachment) => {
+    if (attachment.ref.kind !== 'session_file' || attachment.ref.sessionId !== sourceSessionId) {
+      return [];
+    }
+    const relativePath =
+      copy.artifactIds.get(attachment.ref.relativePath) ??
+      copy.relativePaths.get(attachment.ref.relativePath);
+    if (!relativePath) return [];
+    return [
+      {
+        ...attachment,
+        ref: { kind: 'session_file' as const, sessionId: targetSessionId, relativePath },
+      },
+    ];
+  });
 }
 
 const LOGGED_COPY_FAILURE_DIAGNOSTICS = 5;
