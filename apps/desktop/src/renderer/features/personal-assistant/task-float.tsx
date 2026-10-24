@@ -51,9 +51,24 @@ export function PersonalAssistantTaskFloat({ sessionId }: { sessionId: string })
   if (!tasks.length && !offline) return null;
   const time = (task: FloatTask) => task.updatedAt ? new Intl.DateTimeFormat(locale, { hour: '2-digit', minute: '2-digit' }).format(task.updatedAt) : '—';
   return <aside className={`assistant-task-float${expanded ? '' : ' is-collapsed'}`} aria-label={copy.tasks}>
-    {!expanded ? <Button variant="ghost" className="assistant-task-pill" onClick={() => setExpanded(true)} aria-label={`${copy.expand}: ${countText}`} label={countText} icon={<span className="assistant-task-brand">m</span>} endContent={<ChevronDown size={14} />} /> : <>
-      <header><span className="assistant-task-brand">m</span><strong>Maka</strong><Button variant="ghost" size="sm" isIconOnly label={copy.collapse} onClick={() => setExpanded(false)} tooltip={copy.collapse} icon={<Minus size={15} />} /></header>
-      <div className="assistant-task-counts" role="status">{countText}</div>
+    <header>
+      <span className="assistant-task-brand" aria-hidden="true">m</span>
+      <div className="assistant-task-identity">
+        <strong>{copy.tasks}</strong>
+        <div className="assistant-task-counts" role="status" aria-label={countText}>
+          {offline ? copy.offline : <>
+            <span>{running} {copy.phase.running}</span>
+            <span>{waiting} {copy.phase.waiting}</span>
+            {other.length > 0 && <span>{other.length} {copy.phase.attention}</span>}
+          </>}
+        </div>
+      </div>
+      <Button variant="ghost" size="sm" isIconOnly
+        label={expanded ? copy.collapse : copy.expand} aria-expanded={expanded}
+        onClick={() => setExpanded(!expanded)} tooltip={expanded ? copy.collapse : copy.expand}
+        icon={expanded ? <Minus size={14} /> : <ChevronDown size={14} />} />
+    </header>
+    {expanded && <>
       <div className="assistant-task-list">
         {offline ? <p className="assistant-task-empty">{copy.offline}</p> : selected ? <div className="assistant-task-detail"><Button variant="ghost" size="sm" className="assistant-task-back" onClick={() => setSelectedId(null)} label={copy.back} icon={<ArrowLeft size={12} />} /><strong>{selected.title}</strong><small>{copy.phase[selected.phase]} · {time(selected)}</small><p>{selected.progress}</p></div> : !visibleTasks.length ? <p className="assistant-task-empty">{copy.empty}</p> : visibleTasks.slice(currentPage * 3, currentPage * 3 + 3).map(task => <Button variant="ghost" label={`${task.title} · ${copy.phase[task.phase]}`} key={task.id} className="assistant-task-row" onClick={() => setSelectedId(task.id)}>
           <span className="assistant-task-heading"><strong title={task.title}>{task.title}</strong><time dateTime={task.updatedAt ? new Date(task.updatedAt).toISOString() : undefined} title={task.updatedAt ? `${copy.updated}: ${new Date(task.updatedAt).toLocaleString(locale)}` : copy.unknown}>{time(task)}</time></span>
