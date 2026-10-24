@@ -57,3 +57,19 @@ export const BOT_DELEGATION_TOOLS = new Set(
       name.startsWith('Matter') || name.startsWith('Initiative') || name.startsWith('Memory'),
   ),
 );
+/** Assistant tools visible to the exploration session: read-only Memory and Matters plus DiscoveryContext; reports go through notebook files. */
+export const DISCOVERY_TOOLS = new Set([
+  'DiscoveryContext',
+  'MemoryStatus',
+  'MemorySources',
+  'MemoryRange',
+  'MemoryHistory',
+  'MemoryExtract',
+  'MemorySourceQuery',
+  'MemoryOriginal',
+  'MemoryIndexList',
+  'MemoryIndexRead',
+  'MemoryIndexContent',
+  'MemoryIndexLinks',
+  'MatterOverview',
+]);

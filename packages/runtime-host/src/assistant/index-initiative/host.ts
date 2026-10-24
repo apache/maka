@@ -25,6 +25,8 @@ import { InitiativeController } from './controller.js';
 import { initializeBot } from '../bot/host.js';
 import { registerAssistant } from './assistant.js';
 import { DISCOVERY_EXCLUDED_TOOLS } from './discovery-capabilities.js';
+import { DISCOVERY_TOOLS } from '../bot/capabilities.js';
+import { classifyToolUse } from '@maka/core/permission';
 export async function initializeInitiative(
   ctx: AssistantModuleServices,
   directory: string,
@@ -55,11 +57,20 @@ export async function initializeInitiative(
   // Discovery investigates and reports; it must not hold conversation-mutating tools.
   if (!ctx.tools.filter)
     throw Error('Assistant tool filtering is required to bound discovery Sessions');
-  ctx.tools.filter((sessionId, tools) =>
-    store.get()?.discoverySession === sessionId
-      ? tools.filter((tool) => !DISCOVERY_EXCLUDED_TOOLS.has(tool.name))
-      : tools,
-  );
+  ctx.tools.filter((sessionId, tools) => {
+    if (store.get()?.discoverySession !== sessionId) return tools;
+    const native = new Set(ctx.tools.resolve().tools.map((tool) => tool.name));
+    // Same read-only rule as Plan mode: Bash, Edit, Write, subagents and untyped tools stay out.
+    return tools.filter(
+      (tool) =>
+        !DISCOVERY_EXCLUDED_TOOLS.has(tool.name) &&
+        (native.has(tool.name)
+          ? DISCOVERY_TOOLS.has(tool.name)
+          : ['read', 'web_read'].includes(
+              classifyToolUse({ toolName: tool.name, args: {}, categoryHint: tool.categoryHint }),
+            )),
+    );
+  });
   ctx.tools.register({
     name: 'DiscoveryContext',
     description:
