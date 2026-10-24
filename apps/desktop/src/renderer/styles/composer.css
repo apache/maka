@@ -150,6 +150,9 @@
 }
 
 .maka-composer-queue-edit {
+  /* Block, not inline: the inline baseline gap would push a capped editor
+     past the list's max-height and add a second scrollbar. */
+  display: block;
   width: 100%;
   min-width: 0;
   border: 0;
@@ -160,6 +163,10 @@
   font: inherit;
   line-height: inherit;
   resize: vertical;
+  /* Opens at the height of the queued text instead of one row; caps at the
+     queue list's own height so a long message scrolls inside the editor. */
+  field-sizing: content;
+  max-height: 132px;
 }
 
 @media (max-width: 640px) {
