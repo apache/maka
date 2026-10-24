@@ -1,0 +1,24 @@
+# Apache Maka (Incubating)
+
+Apache Maka (Incubating) is a high-performance agent workspace that keeps a complete record of everything it did.
+
+## Website
+
+- [English homepage](https://maka.apache.org/en/)
+- [简体中文首页](https://maka.apache.org/zh-CN/)
+- [English downloads](https://maka.apache.org/en/downloads/)
+- [简体中文下载页](https://maka.apache.org/zh-CN/downloads/)
+
+## Authoritative repository documents
+
+- [Documentation index](https://raw.githubusercontent.com/apache/maka/main/docs/README.md)
+- [Architecture](https://raw.githubusercontent.com/apache/maka/main/ARCHITECTURE.md)
+- [Runtime Host architecture](https://raw.githubusercontent.com/apache/maka/main/docs/architecture/runtime-host-architecture.md)
+- [Terminal Bench: edit contracts](https://raw.githubusercontent.com/apache/maka/main/docs/eval/terminal-bench-2.1-deepseek-v4-flash-edit-contracts.md)
+- [Terminal Bench: four-arm comparison](https://raw.githubusercontent.com/apache/maka/main/docs/eval/terminal-bench-2.1-deepseek-v4-flash-four-arm.md)
+- [Terminal Bench: Maka vs. OpenCode](https://raw.githubusercontent.com/apache/maka/main/docs/eval/terminal-bench-2.1-deepseek-v4-flash-maka-vs-opencode.md)
+- [Terminal Bench: nine-arm comparison](https://raw.githubusercontent.com/apache/maka/main/docs/eval/terminal-bench-2.1-deepseek-v4-flash-nine-arm.md)
+- [Terminal Bench: Maka vs. Kimi Code](https://raw.githubusercontent.com/apache/maka/main/docs/eval/terminal-bench-2.1-maka-vs-kimi-code-v11.md)
+- [Terminal Bench: Ollama Maka vs. OpenCode](https://raw.githubusercontent.com/apache/maka/main/docs/eval/terminal-bench-2.1-ollama-deepseek-v4-flash-0731-maka-vs-opencode.md)
+- [Security policy](https://raw.githubusercontent.com/apache/maka/main/SECURITY.md)
+- [Contributor guide](https://raw.githubusercontent.com/apache/maka/main/CONTRIBUTING.md)

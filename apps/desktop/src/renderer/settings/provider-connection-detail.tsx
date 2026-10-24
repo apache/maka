@@ -30,9 +30,10 @@ import {
   Token,
   VStack,
 } from '@astryxdesign/core';
-import { isRelayProviderType, PROVIDER_REGISTRY } from '@maka/core/llm-connections';
+import { PROVIDER_REGISTRY } from '@maka/core/llm-connections';
 import {
-  supportsRelayFastServiceTier,
+  declaredModelApiProtocol,
+  supportsCustomFastServiceTier,
   modelLimitsConflict,
   type ModelOverride,
 } from '@maka/core/model-thinking';
@@ -55,11 +56,13 @@ import {
 } from './runtime-host-settings-target.js';
 import { useOAuthLoginFlow } from './use-oauth-login-flow';
 import {
+  ProviderEndpointField,
   getProviderSettingsCopy,
   parseContextWindowInput,
   providerPanelActionErrorMessage,
   type CredentialPresenceStatus,
 } from '../features/connection-settings';
+import { SettingsLeaveCheck } from '../application/contracts/settings-presentation/index.js';
 import {
   useConnectionDetail,
   type ConnectionDetailProps,
@@ -190,6 +193,10 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
     savedBaseUrl,
     save,
     updateEnabledModels,
+    saveEnabledModels,
+    cancelEnabledModels,
+    hasEnabledModelChanges,
+    savingEnabledModels,
     addDeclaredModel,
     modelParameters,
     hasModelChanges,
@@ -201,7 +208,6 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
     remove,
     refreshAfterRelogin,
   } = useConnectionDetail(props);
-  const isRelay = isRelayProviderType(connection.providerType);
   const entryById = new Map(modelChoices.map((entry) => [entry.id, entry]));
   // One row is a form at a time, the way the settings-sidebar template does it.
   // Opening a row discards the other's draft: leaving an abandoned draft in
@@ -411,7 +417,7 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
     <HStack gap={1.5} vAlign="center" wrap="wrap">
       {issue ? <Token size="sm" color="red" label={statusLabel} /> : <span>{statusLabel}</span>}
       {statusDetail && <span>· {statusDetail}</span>}
-      {Number.isFinite(lastTestAtMs) && <span>· <RelativeTime ts={lastTestAtMs} /></span>}
+      {Number.isFinite(lastTestAtMs) && <span>· <RelativeTime ts={lastTestAtMs} className="settingsInlineTime" /></span>}
     </HStack>
   );
 
@@ -424,17 +430,27 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
         size="sm"
         value={enabled}
         isDisabled={allActionsBusy}
-        changeAction={() =>
-          updateEnabledModels(
-            enabled ? enabledModelIds.filter((existing) => existing !== id) : [...enabledModelIds, id],
-          )
-        }
+        onChange={() => updateEnabledModels(id)}
       />
     );
   }
 
   return (
     <VStack gap={8}>
+      <SettingsLeaveCheck onLeave={async () => {
+        if (savingEnabledModels) return false;
+        if (!hasEnabledModelChanges) return true;
+        const discard = await toast.confirm({
+          title: copy.discardModels,
+          description: copy.discardModelsHelp,
+          confirmLabel: copy.discardModelsConfirm,
+          cancelLabel: copy.cancel,
+          destructive: true,
+        });
+        if (!mounted.current || !discard) return false;
+        cancelEnabledModels();
+        return true;
+      }} />
       {retired && (
         <Banner status="error" role="alert" title={copy.providerRetired} description={copy.providerRetiredDetail} />
       )}
@@ -561,26 +577,38 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
             onCancel={() => { setBaseUrl(savedBaseUrl); setEditingRow(null); }}
             onSave={async () => { if (await save('endpoint')) setEditingRow(null); }}
           >
-            {endpointHasCredentials ? (
-              <PasswordInput
-                value={baseUrl}
-                onChange={setBaseUrl}
-                placeholder={defaults.baseUrl}
-                label={copy.endpoint}
-                isLabelHidden
-                description={copy.endpointCredentialsMasked}
-                isDisabled={allActionsBusy}
-              />
-            ) : (
-              <TextInput
-                label={copy.endpoint}
-                isLabelHidden
-                value={baseUrl}
-                onChange={setBaseUrl}
-                placeholder={defaults.baseUrl}
-                isDisabled={allActionsBusy}
-              />
-            )}
+            <ProviderEndpointField
+              providerType={connection.providerType}
+              baseUrl={baseUrl}
+              apiProtocol={declaredModelApiProtocol(connection, connection.defaultModel)}
+            >
+              {(requestDescription) => (
+                endpointHasCredentials ? (
+                  <PasswordInput
+                    value={baseUrl}
+                    onChange={setBaseUrl}
+                    placeholder={defaults.baseUrl}
+                    label={copy.endpoint}
+                    isLabelHidden
+                    description={<>
+                      {copy.endpointCredentialsMasked}
+                      {requestDescription && <span className="maka-visually-hidden"> {requestDescription}</span>}
+                    </>}
+                    isDisabled={allActionsBusy}
+                  />
+                ) : (
+                  <TextInput
+                    aria-description={requestDescription}
+                    label={copy.endpoint}
+                    isLabelHidden
+                    value={baseUrl}
+                    onChange={setBaseUrl}
+                    placeholder={defaults.baseUrl}
+                    isDisabled={allActionsBusy}
+                  />
+                )
+              )}
+            </ProviderEndpointField>
           </SettingsExpandableRow>
         ) : (
           <SettingsRow label={copy.endpoint} description={endpointDisplay} align="start" />
@@ -700,7 +728,8 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
         {editingModelId !== null && <CapabilityEditor
           copy={copy}
           modelId={editingModelId}
-          isRelay={isRelay}
+          customDefaultApiProtocol={connection.defaultApiProtocol}
+          providerType={connection.providerType}
           numericInputs={numericInputs}
           onNumericInput={(field, input) => {
             setEditingRow((current) => ({ ...(typeof current === 'object' && current ? current : {}), model: editingModelId, numericInputs: { ...numericInputs, [field]: input } }));
@@ -716,7 +745,10 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
           contextWindowInput={contextWindowInput ?? String(declared?.contextWindow ?? '')}
           contextWindowInputInvalid={contextWindowInputInvalid}
           disabled={allActionsBusy}
-          showsFastMode={supportsRelayFastServiceTier(connection.providerType, editingModelId)}
+          showsFastMode={supportsCustomFastServiceTier(
+            { ...connection, modelOverrides: { [editingModelId]: declared ?? {} } },
+            editingModelId,
+          )}
           defaultVision={connection.catalogEntries.find((model) => model.id === editingModelId)?.defaultSupportsVision}
           onContextWindowInput={(input) => changeContextWindow(editingModelId, input)}
         />}
@@ -724,6 +756,7 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
       <AddModelDialog
         isOpen={editingRow === 'add-model'}
         providerType={connection.providerType}
+        defaultApiProtocol={connection.defaultApiProtocol}
         /* The catalog, not just the selection: the resolved entries are usually
            a proper superset of what the user enabled. Checking only the
            selection lets a listed-but-unchecked id through, and the dialog
@@ -818,6 +851,17 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
           <Button variant="destructive" isDisabled={allActionsBusy} isLoading={deleting} onClick={() => void remove()} label={copy.delete} />
         </SettingsActions>
       </SettingsSection>
+      {!retired && (
+        <div className="providerModelsSaveBar" role="group" aria-label={copy.modelSelection}>
+          <span role="status">{hasEnabledModelChanges ? copy.modelsUnsaved : copy.modelsSaved}</span>
+          <HStack gap={2}>
+            <Button variant="secondary" label={copy.cancel} isDisabled={!hasEnabledModelChanges || allActionsBusy}
+              onClick={cancelEnabledModels} />
+            <Button variant="primary" label={copy.save} isLoading={savingEnabledModels}
+              isDisabled={!hasEnabledModelChanges || allActionsBusy} onClick={() => void saveEnabledModels()} />
+          </HStack>
+        </div>
+      )}
     </VStack>
   );
 }

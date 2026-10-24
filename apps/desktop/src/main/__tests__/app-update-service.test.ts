@@ -121,6 +121,7 @@ function updateInfo(version: string) {
 function createHarness(input: {
   isPackaged?: boolean;
   updater?: FakeUpdater;
+  nativeUpdater?: EventEmitter;
   clock?: FakeClock;
   onStatusChange?: (status: AppUpdateStatus) => void;
   activeTasks?: boolean;
@@ -137,12 +138,14 @@ function createHarness(input: {
   verifyDownloadedUpdate?: DownloadedUpdateAttestationVerifier;
 } = {}) {
   const updater = input.updater ?? new FakeUpdater();
+  const nativeUpdater = input.nativeUpdater ?? new EventEmitter();
   const clock = input.clock ?? new FakeClock();
   const service = createAppUpdateService({
     currentVersion: '1.0.0',
     isPackaged: input.isPackaged ?? true,
     updateChannel: input.updateChannel ?? 'release',
     updater: updater as unknown as AppUpdater,
+    nativeUpdater,
     clock,
     onStatusChange: input.onStatusChange,
     prepareInstall: input.prepareInstall ?? (async (request) =>
@@ -154,7 +157,7 @@ function createHarness(input: {
     testFeedUrl: input.testFeedUrl,
     verifyDownloadedUpdate: input.verifyDownloadedUpdate ?? (async () => {}),
   });
-  return { clock, service, updater };
+  return { clock, service, updater, nativeUpdater };
 }
 
 async function settleUpdateVerification(): Promise<void> {
@@ -636,6 +639,8 @@ describe('AppUpdateService', () => {
       { ok: true },
     );
     assert.equal(asynchronous.service.getStatus().state, 'installing');
+    asynchronous.nativeUpdater.emit('before-quit-for-update');
+    assert.equal(asynchronous.clock.pending().length, 1);
     asynchronous.updater.emit('error', new Error('signature rejected'));
     assert.deepEqual(asynchronous.service.getStatus(), {
       state: 'error',
@@ -645,5 +650,114 @@ describe('AppUpdateService', () => {
       message: 'signature rejected',
     });
     assert.equal(asynchronousRollbacks, 1);
+    // The installer error released the handoff; the quit watchdog must not
+    // overwrite that error with its own later, nor re-arm on a late announcement.
+    assert.equal(asynchronous.clock.pending().length, 0);
+    asynchronous.nativeUpdater.emit('before-quit-for-update');
+    assert.equal(asynchronous.clock.pending().length, 0);
+  });
+
+  test('rolls back the Runtime Host handoff when the announced install quit never happens', async () => {
+    let rollbacks = 0;
+    const h = createHarness({
+      prepareInstall: async () => ({
+        kind: 'prepared',
+        rollback: () => {
+          rollbacks += 1;
+        },
+      }),
+    });
+    h.updater.emit('update-downloaded', {
+      ...updateInfo('1.1.0'),
+      downloadedFile: '/tmp/maka-update.zip',
+    });
+    await settleUpdateVerification();
+    assert.deepEqual(await h.service.installUpdate({ allowInterruptActiveTasks: false }), {
+      ok: true,
+    });
+    assert.equal(h.service.getStatus().state, 'installing');
+    // Squirrel may still be fetching, verifying and unpacking: nothing is timed
+    // until the updater announces the quit, so a slow install is never undone.
+    assert.equal(h.clock.pending().length, 0);
+
+    h.nativeUpdater.emit('before-quit-for-update');
+    assert.equal(h.clock.pending().length, 1);
+    h.nativeUpdater.emit('before-quit-for-update');
+    assert.equal(h.clock.pending().length, 1, 'a repeated announcement does not stack timers');
+    assert.equal(rollbacks, 0);
+
+    await h.clock.runNext();
+    assert.equal(rollbacks, 1);
+    assert.deepEqual(h.service.getStatus(), {
+      state: 'error',
+      currentVersion: '1.0.0',
+      latestVersion: '1.1.0',
+      operation: 'install',
+      message: 'The app did not restart to install the update',
+    });
+    assert.equal(h.nativeUpdater.listenerCount('before-quit-for-update'), 0, 'rollback stops watching the announcement');
+    h.nativeUpdater.emit('before-quit-for-update');
+    assert.equal(h.clock.pending().length, 0);
+  });
+
+  test('catches a quit announced synchronously inside quitAndInstall', async () => {
+    let rollbacks = 0;
+    const armed = createHarness({
+      prepareInstall: async () => ({
+        kind: 'prepared',
+        rollback: () => {
+          rollbacks += 1;
+        },
+      }),
+    });
+    // Squirrel already holds the update: electron-updater hands off to the
+    // native updater at once, and Electron announces the quit before returning.
+    armed.updater.onQuitAndInstall = () => armed.nativeUpdater.emit('before-quit-for-update');
+    armed.updater.emit('update-downloaded', {
+      ...updateInfo('1.1.0'),
+      downloadedFile: '/tmp/maka-update.zip',
+    });
+    await settleUpdateVerification();
+    assert.deepEqual(await armed.service.installUpdate({ allowInterruptActiveTasks: false }), {
+      ok: true,
+    });
+    assert.equal(armed.clock.pending().length, 1);
+    await armed.clock.runNext();
+    assert.equal(rollbacks, 1);
+    assert.equal(armed.service.getStatus().state, 'error');
+
+    // The same announcement followed by a synchronous dispatch failure leaves
+    // nothing armed and nothing subscribed.
+    const failed = createHarness();
+    failed.updater.onQuitAndInstall = () => failed.nativeUpdater.emit('before-quit-for-update');
+    failed.updater.quitAndInstallThrows = true;
+    failed.updater.emit('update-downloaded', {
+      ...updateInfo('1.1.0'),
+      downloadedFile: '/tmp/maka-update.zip',
+    });
+    await settleUpdateVerification();
+    assert.deepEqual(await failed.service.installUpdate({ allowInterruptActiveTasks: false }), {
+      ok: false,
+      reason: 'install_failed',
+    });
+    assert.equal(failed.clock.pending().length, 0);
+    assert.equal(failed.nativeUpdater.listenerCount('before-quit-for-update'), 0);
+  });
+
+  test('disarms the install quit watchdog on dispose', async () => {
+    const { clock, nativeUpdater, service, updater } = createHarness();
+    updater.emit('update-downloaded', {
+      ...updateInfo('1.1.0'),
+      downloadedFile: '/tmp/maka-update.zip',
+    });
+    await settleUpdateVerification();
+    await service.installUpdate({ allowInterruptActiveTasks: false });
+    nativeUpdater.emit('before-quit-for-update');
+    assert.equal(clock.pending().length, 1);
+    service.dispose();
+    assert.equal(clock.pending().length, 0);
+    assert.equal(nativeUpdater.listenerCount('before-quit-for-update'), 0);
+    nativeUpdater.emit('before-quit-for-update');
+    assert.equal(clock.pending().length, 0);
   });
 });

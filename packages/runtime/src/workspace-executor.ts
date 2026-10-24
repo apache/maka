@@ -43,8 +43,8 @@ import {
 import { runProcessWithBoundedTail, runShellWithBoundedTail } from './shell-exec.js';
 import type { ChildFdInput } from './child-fd-input.js';
 import type { ShellPlan } from './shell-detect.js';
-import { isSupportedImagePath, readWorkspaceImage } from './image-file.js';
-import type { ImageMimeType } from './image-file.js';
+import { isSupportedImagePath, readWorkspaceFile } from './image-file.js';
+import type { ImageMimeType, WorkspaceFileReadOptions } from './image-file.js';
 import { readTextLineWindow } from './text-line-window.js';
 import { searchFiles, type GrepResult } from './grep-search.js';
 import { defaultRipgrepCandidates, resolveRipgrepExecutable } from './ripgrep-executable.js';
@@ -85,7 +85,7 @@ export interface WorkspaceExecResult {
   aborted: boolean;
 }
 
-export interface WorkspaceReadFileInput {
+export interface WorkspaceReadFileInput extends WorkspaceFileReadOptions {
   cwd: string;
   path: string;
   offset?: number;
@@ -201,10 +201,13 @@ export interface WorkspaceGlobInput {
   cwd: string;
   pattern: string;
   limit?: number;
+  abortSignal?: AbortSignal;
 }
 
 export interface WorkspaceGlobResult {
   files: string[];
+  /** True when the walk stopped at `limit` with at least one further match unseen. */
+  truncated: boolean;
 }
 
 export interface WorkspaceGrepInput {
@@ -334,11 +337,9 @@ export class LocalWorkspaceExecutor implements WorkspaceExecutor {
   }
 
   async readFile(input: WorkspaceReadFileInput): Promise<WorkspaceReadFileResult> {
-    if (isSupportedImagePath(input.path)) {
-      return await readWorkspaceImage(input.path);
-    }
-    const content = await fs.readFile(input.path, 'utf8');
-    return { content: readTextLineWindow(content, input.offset, input.limit) };
+    const file = await readWorkspaceFile(input.path, input);
+    if ('bytes' in file) return file;
+    return { content: readTextLineWindow(file.content, input.offset, input.limit) };
   }
 
   async writeFile(input: WorkspaceWriteFileInput): Promise<WorkspaceWriteFileResult> {
@@ -560,9 +561,12 @@ function assertInsideCwd(
   label: string,
 ): string {
   if (!isPathInside(root, candidate)) {
-    throw new Error(
-      `${label} path must stay inside session cwd ${JSON.stringify(root)}; ` +
-        `received ${JSON.stringify(inputPath)}, which resolves to ${JSON.stringify(candidate)}.`,
+    throw Object.assign(
+      new Error(
+        `${label} path must stay inside session cwd ${JSON.stringify(root)}; ` +
+          `received ${JSON.stringify(inputPath)}, which resolves to ${JSON.stringify(candidate)}.`,
+      ),
+      { code: 'EACCES' },
     );
   }
   return candidate;

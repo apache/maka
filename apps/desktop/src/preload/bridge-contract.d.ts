@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import type { McpIpcResult } from '../shared/mcp-ipc.js';
 import type {
   WorkHubAnswerInput,
   WorkHubAnswerResult,
@@ -115,6 +116,7 @@ import type {
   DesktopTranscriptBatch,
   DesktopTranscriptHandle,
   DesktopTranscriptOpenMode,
+  DesktopTranscriptPosition,
 } from './transcript-contract.js';
 import type { PetPackManifestV1 } from '@maka/core/pet';
 import type {
@@ -153,7 +155,15 @@ import type {
 import type { SessionTrace } from '@maka/core/session-trace';
 import type { UsageSummaryV2 } from '@maka/core/usage-stats/types';
 import type { UsageProvenance } from '@maka/core/usage-ledger-merge';
-import type { ContextDiagnosticsResult } from '@maka/runtime-host/protocol';
+import type {
+  ContextDiagnosticsResult,
+  SessionRemovePreviewResult,
+  SessionStorageUsage,
+  StorageRetentionQueryResult,
+  StorageRetentionSetInput,
+  StorageRetentionSetResult,
+  StorageUsageQueryResult,
+} from '@maka/runtime-host/protocol';
 import type { TestProxyInput } from '@maka/core/settings/network-settings';
 import type { ExternalSessionImportIpcResult } from './external-session-import-result.js';
 /**
@@ -246,11 +256,13 @@ import type { Result } from '@maka/core/result';
 import type { CreateSessionRequestInput } from '@maka/core/runtime-inputs';
 import type {
   McpConfigAddResult,
+  McpConfigUpdateResult,
   McpConfigImportResult,
   McpConfigFile,
   McpServerConfig,
   McpServerStatus,
   McpTestResult,
+  OpencliChromeStatus,
 } from '@maka/core/mcp';
 import type {
   AgentGraphClientSnapshot,
@@ -316,15 +328,9 @@ export interface RecallSearchResult {
   readonly searchedEverySession: boolean;
 }
 
-export interface OnboardingSnapshot {
-  state: OnboardingState;
-  milestones: OnboardingMilestone[];
-  sessions: DesktopSessionSummary[];
-  connections: import('@maka/core/llm-connections').ProjectedLlmConnection[];
-  defaultSlug: string | null;
-  chatModelChoices: import('@maka/core/chat-model-choice').ChatModelChoice[];
-  sessionSendOutcomes: Record<string, import('@maka/core/session-send-projection').SessionSendProjection>;
-}
+// Shared with the renderer's application onboarding authority, which may not import preload.
+import type { OnboardingSnapshot, DesktopOnboardingSessionUpdate } from '../shared/onboarding-snapshot.js';
+export type { OnboardingSnapshot, DesktopOnboardingSessionUpdate } from '../shared/onboarding-snapshot.js';
 
 export interface DesktopTaskSubmissionReadinessRequest {
   connectionSlug?: string;
@@ -349,6 +355,18 @@ export type DesktopSessionStopResult =
   | { kind: 'retracted'; messageId: string }
   | { kind: 'interrupted'; retractedMessageIds: string[] }
   | undefined;
+
+/**
+ * How a projectless Session's bound directory relates to the Client's
+ * dedicated task-directory root:
+ * - `managed`: inside the dedicated root — the policy's steady state.
+ * - `suspicious`: a binding that cannot be a deliberate user choice — the
+ *   filesystem root, or inside a reserved location (application state,
+ *   install files) — and warrants a repair offer.
+ * - `other`: a real path outside the root — possibly intentional, possibly
+ *   inherited; correctable but not flagged.
+ */
+export type TaskDirectoryBinding = 'managed' | 'suspicious' | 'other';
 
 /** Cancellation proof aggregated across every Runtime Host query batch. */
 export interface DesktopMessageCancellationQueryResult {
@@ -526,14 +544,6 @@ export interface DesktopRuntimeHostProfileChangedEvent {
   readonly hostId?: string;
   readonly isDefault: boolean;
   readonly removed?: boolean;
-}
-
-export interface DesktopRuntimeHostIdentity extends DesktopRuntimeHostRef {
-  readonly targetEpoch: string;
-  readonly profileName: string;
-  readonly profileKind: RuntimeHostProfileKind;
-  readonly profileAccess: RuntimeHostProfileAccess;
-  readonly readiness: 'ready' | 'reconnecting';
 }
 
 export type DesktopLocalRuntimeHostRemoteAccessSnapshot =
@@ -812,6 +822,14 @@ export interface DesktopSessionTracePage {
 
 export interface DesktopSessionUsageSummary extends UsageSummaryV2 {
   readonly provenance: UsageProvenance;
+  /**
+   * The same Session scoped to the agent loop's own calls (`callKinds:
+   * ['main']`), when the narrower read succeeded. The overview's cache rate
+   * reads this: auxiliary prompts have their own cache prefix (#5691).
+   */
+  readonly mainSummary?: DesktopSessionUsageSummary;
+  /** The narrower read failed; the blended rate must not stand in for it. */
+  readonly mainSummaryUnavailable?: boolean;
 }
 
 export interface MakaBridge {
@@ -893,6 +911,7 @@ export interface MakaBridge {
     command<K extends RendererRuntimeHostCommandOperation>(
       operation: K,
       input: OperationInput<K>,
+      host?: DesktopRuntimeHostRef,
     ): Promise<OperationOutput<K>>;
   };
 
@@ -1012,10 +1031,16 @@ export interface MakaBridge {
   };
 
   newTasks: {
-    getExecutors(target: DesktopNewTaskTarget, cwd: string): Promise<readonly import('@maka/core/executor-catalog').ExecutorCatalogEntry[]>;
+    getExecutors(target: DesktopNewTaskTarget, cwd: string, refresh?: boolean, executorId?: string): Promise<readonly import('@maka/core/executor-catalog').ExecutorCatalogEntry[]>;
+    listExecutors(target: DesktopNewTaskTarget, cwd: string): Promise<readonly import('@maka/core/executor-catalog').ExecutorCatalogEntry[]>;
     getCatalog(): Promise<DesktopNewTaskCatalog>;
     subscribeChanges(handler: () => void): () => void;
     addProject(host: DesktopNewTaskHostRef, name?: string): Promise<
+      | { ok: true; project: ProjectRecord }
+      | { ok: false; reason: 'cancelled' }
+      | { ok: false; reason: 'archived'; projectId: string }
+    >;
+    restoreProject(host: DesktopNewTaskHostRef, projectId: string): Promise<
       { ok: true; project: ProjectRecord } | { ok: false; reason: 'cancelled' }
     >;
     relinkProject(host: DesktopNewTaskHostRef, projectId: string): Promise<
@@ -1143,8 +1168,6 @@ export interface MakaBridge {
     prepareAttachments(coordinationSessionId: string, items: RendererIngestInput[]): Promise<WorkHubPrepareAttachmentsResult>;
     answer(coordinationSessionId: string, input: WorkHubAnswerInput): Promise<WorkHubAnswerResult>;
     configureModel(coordinationSessionId: string, input: OperationInput<'workhub.coordination.configureModel'>): Promise<OperationOutput<'workhub.coordination.configureModel'>>;
-    getNewWorkDefaults(coordinationSessionId: string): Promise<Omit<import('@maka/core/session').WorkHubCreateDefaults, 'permissionMode'>>;
-    setNewWorkDefaults(coordinationSessionId: string, defaults: Omit<import('@maka/core/session').WorkHubCreateDefaults, 'permissionMode'>): Promise<void>;
     /** Resolve the active Runtime Host's stable coordination conversation. */
     resolveCoordinationSession(): Promise<string | { readonly kind: 'model_required' }>;
 
@@ -1158,7 +1181,14 @@ export interface MakaBridge {
       sessions: DesktopSessionSummary[];
       completeHostIds: string[];
     }>;
-    create(input?: CreateSessionRequestInput): Promise<DesktopSessionSummary>;
+    /**
+     * Creates on the active Runtime Host, or with `besideSessionId` on that
+     * Session's Host, failing when it is no longer available.
+     */
+    create(
+      input?: CreateSessionRequestInput,
+      options?: { readonly besideSessionId?: string },
+    ): Promise<DesktopSessionSummary>;
     send(
       sessionId: string,
       command: {
@@ -1241,6 +1271,9 @@ export interface MakaBridge {
       command: {
         messageId: string;
         text: string;
+        /** Local presentation before the Host assigns a Turn or queue entry. */
+        localDisplayPlacement?: 'current_turn' | 'next_turn';
+        replacesLocalMessageId?: string;
         displayText?: string;
         skillIds?: string[];
         turnOrchestration?: TurnOrchestration;
@@ -1257,7 +1290,7 @@ export interface MakaBridge {
     ): Promise<
       | {
           ok: true;
-          disposition: 'turn_started' | 'steering' | 'followup' | 'locally_saved';
+          disposition: 'turn_started' | 'steering' | 'followup' | 'locally_saved' | 'inbox';
           turnId?: string;
           attachments: import('@maka/core/events').AttachmentRef[];
           inlineReferences: import('@maka/core/events').InlineReference[];
@@ -1275,6 +1308,12 @@ export interface MakaBridge {
         }
       | { ok: false; reason: 'outcome_unknown' }
     >;
+    updateQueueEntry(
+      sessionId: string,
+      entryId: string,
+      expectedQueueRevision: number,
+      text: string,
+    ): Promise<void>;
     queryCancelledMessages(
       sessionId: string,
       messageIds: readonly string[],
@@ -1285,13 +1324,7 @@ export interface MakaBridge {
     ): Promise<import('@maka/runtime-host/protocol').TurnMessageExecutionQueryResult>;
     retractQueueEntry(sessionId: string, entryId: string): Promise<void>;
     promoteQueueEntry(sessionId: string, entryId: string): Promise<void>;
-    updateQueueEntry(
-      sessionId: string,
-      entryId: string,
-      expectedQueueRevision: number,
-      text: string,
-    ): Promise<void>;
-    reorderQueueEntries(sessionId: string, entryIds: readonly string[]): Promise<void>;
+    reorderQueueEntries(sessionId: string, entryIds: readonly string[], expectedQueueRevision: number): Promise<void>;
     readExecutionBoundary(sessionId: string): Promise<ExecutionBoundaryReadModel>;
     listActiveInteractions(sessionId: string): Promise<ActiveInteractionRequestEvent[]>;
     subscribeActiveInteractions(
@@ -1301,6 +1334,16 @@ export interface MakaBridge {
       }) => void,
     ): () => void;
     listTurns(sessionId: string): Promise<TurnRecord[]>;
+    /** Request a bounded next-prompt prediction for this Session. */
+    generatePromptSuggestion(sessionId: string): Promise<import('@maka/runtime-host/protocol').PromptSuggestionResult>;
+    /**
+     * Ask the default Runtime Host for check-in cards. Card Session ids come back
+     * as Desktop Session keys on that Host.
+     */
+    generateCheckin(input: {
+      effectId: string;
+      since: number | null;
+    }): Promise<import('@maka/runtime-host/protocol').SessionCheckinGenerateResult>;
     /** Read a bounded, redacted tail from another same-Host Session. */
     readSnapshot(sessionId: string, options?: { maxChars?: number }): Promise<SessionSnapshot>;
     /** Sampled prompt-rail landmarks, or where the one Turn `turnId` sits. */
@@ -1313,6 +1356,10 @@ export interface MakaBridge {
       | { disposition: 'started'; runId: string; turnId: string }
       | { disposition: 'park'; rejectionReasons: string[]; diagnostics: unknown[] }
     >;
+    /** Read-only resume plan preview; the authority behind the composer's Resume offer. */
+    queryResumeLatest(
+      sessionId: string,
+    ): Promise<import('@maka/runtime-host/protocol').TurnResumePlan>;
     branchFromTurn(
       sessionId: string,
       input: DesktopBranchFromTurnInput & { sideConversation: true },
@@ -1338,7 +1385,7 @@ export interface MakaBridge {
     subscribeEvents(
       sessionId: string,
       handler: (event: SessionEvent) => void,
-      onObservationSeed?: (phase: 'pending' | 'ready') => void,
+      onObservationPhase?: (phase: 'pending' | 'ready') => void,
       onSeedError?: (error: unknown) => void,
       onExecution?: (projection: import('../shared/session-execution-projection.js').SessionExecutionProjection | undefined) => void,
     ): () => void;
@@ -1356,6 +1403,14 @@ export interface MakaBridge {
      * archived Session.
      */
     moveToProject(sessionId: string, projectId: string | null): Promise<DesktopSessionUpdateResult<DesktopSessionSummary>>;
+    /**
+     * Explicit per-task correction: rebinds this Session's workspace to a
+     * fresh dedicated task directory. Preserves every relocation safeguard of
+     * `moveToProject` (busy/archived/CAS); refuses on Hosts that cannot
+     * provision Client directories. The landed directory is the returned
+     * Session's `cwd`.
+     */
+    moveToDedicatedDirectory(sessionId: string): Promise<DesktopSessionUpdateResult<DesktopSessionSummary>>;
     setPermissionMode(sessionId: string, mode: PermissionMode): Promise<DesktopSessionUpdateResult<DesktopSessionSummary>>;
     /**
      * Enter or leave Plan — a temporary collaboration excursion Runtime ends
@@ -1397,20 +1452,33 @@ export interface MakaBridge {
     setThinkingLevel(sessionId: string, level: ThinkingLevel | undefined | null): Promise<DesktopSessionUpdateResult<DesktopSessionSummary>>;
     /**
      * `requireArchived` holds the caller's premise through the deletion: a task
-     * restored meanwhile answers `restored` and is kept. `archivedSubtaskCount`
-     * is the Host's executed count of ordinary linked subtasks moved to the
-     * archive — 0 when restored or when nothing was archived.
+     * restored meanwhile answers `restored` and is kept. `requireArchivedForMs`
+     * adds an age the Host checks on its own clock: a task archived more
+     * recently answers `too_recent` and is kept. `archivedSubtaskCount` is the
+     * Host's executed count of ordinary linked subtasks moved to the archive —
+     * 0 when the task was kept or when nothing was archived.
      */
     remove(
       sessionId: string,
-      options?: { revisionFamily?: boolean; requireArchived?: boolean },
-    ): Promise<{ disposition: 'removed' | 'restored'; archivedSubtaskCount: number }>;
+      options?: { revisionFamily?: boolean; requireArchived?: boolean; requireArchivedForMs?: number },
+    ): Promise<{ disposition: 'removed' | 'restored' | 'too_recent'; archivedSubtaskCount: number }>;
     /**
      * How many linked subtasks a delete of this parent would move to the
      * archive, per the Host's removal plan. The confirm warns off this instead
      * of estimating from the catalog projection.
      */
     previewRemoval(sessionId: string): Promise<number>;
+    /**
+     * What deleting these tasks, one `remove` each, would take with them, per
+     * each Host's removal plans: linked subtasks archived, Agent Graph subtasks
+     * and worktrees deleted, and with `measureBytes` an estimate of the bytes
+     * stored. Paged per Host; rejects when any task's Host cannot answer
+     * rather than under-reporting.
+     */
+    previewRemovals(
+      sessionIds: readonly string[],
+      options?: { measureBytes?: boolean; requireArchived?: boolean },
+    ): Promise<SessionRemovePreviewResult>;
     cleanupSessionCopy(sessionId: string): Promise<void>;
     abandonSessionCopy(sourceSessionId: string, copyId: string): Promise<void>;
   };
@@ -1425,6 +1493,7 @@ export interface MakaBridge {
       mode?: DesktopTranscriptOpenMode,
       /** The oldest sequence the reader already holds; the first answer reads back down to it. */
       resumeFrom?: number,
+      position?: DesktopTranscriptPosition,
     ): Promise<DesktopTranscriptHandle>;
   };
   externalSessions: {
@@ -1474,7 +1543,9 @@ export interface MakaBridge {
      * the caller never sees the folder-derived placeholder.
      */
     add(host?: DesktopRuntimeHostRef, options?: { readonly name?: string }): Promise<
-      { ok: true; project: ProjectRecord; path: string } | { ok: false; reason: 'cancelled' }
+      | { ok: true; project: ProjectRecord; path: string }
+      | { ok: false; reason: 'cancelled' }
+      | { ok: false; reason: 'archived'; projectId: string }
     >;
     getDirectoryRoots(host: DesktopRuntimeHostRef): Promise<readonly DesktopProjectDirectoryRoot[]>;
     listDirectory(
@@ -1532,7 +1603,8 @@ export interface MakaBridge {
   };
   goal: {
     /** The session's current goal (null when none is set). */
-    get(sessionId: string): Promise<import('@maka/runtime/goal-state').GoalState | null>;
+    get(sessionId: string): Promise<import('../shared/goal-arm').DesktopGoal | null>;
+    cancelEventWait(input: import('@maka/runtime-host/protocol').GoalEventWaitCancelInput): Promise<import('@maka/runtime-host/protocol').GoalEventWaitCancelResult>;
     /**
      * Arm a goal for this session. It drives the session from the next turn
      * on; arming alone starts nothing. Rejects when the session already has an
@@ -1551,7 +1623,7 @@ export interface MakaBridge {
   };
   connections: {
     getSnapshot(sessionId?: string, host?: DesktopRuntimeHostRef): Promise<DesktopConnectionSnapshot>;
-    setDefault(connection: import('../shared/desktop-connection-snapshot').DesktopConnectionIdentity | string | null, host?: DesktopRuntimeHostRef): Promise<void>;
+    setDefault(connection: import('../shared/desktop-connection-snapshot').DesktopConnectionIdentity | string | null, host?: DesktopRuntimeHostRef, modelId?: string): Promise<void>;
     setDefaultModel(input: { slug: string; model: string } | null, host?: DesktopRuntimeHostRef): Promise<void>;
     create(input: CreateConnectionInput, host?: DesktopRuntimeHostRef): Promise<import('@maka/core/llm-connections').IdentifiedLlmConnection>;
     verifyOnboarding(
@@ -1565,7 +1637,7 @@ export interface MakaBridge {
     update(connection: import('../shared/desktop-connection-snapshot').DesktopConnectionIdentity, patch: UpdateConnectionInput, host?: DesktopRuntimeHostRef): Promise<LlmConnection>;
     delete(connection: import('../shared/desktop-connection-snapshot').DesktopConnectionIdentity, host?: DesktopRuntimeHostRef): Promise<void>;
     test(connection: import('../shared/desktop-connection-snapshot').DesktopConnectionIdentity | string, opts?: { model?: string }, host?: DesktopRuntimeHostRef): Promise<ConnectionTestResult>;
-    fetchModels(connection: import('../shared/desktop-connection-snapshot').DesktopConnectionIdentity, host?: DesktopRuntimeHostRef): Promise<Pick<ModelDiscoveryResult, 'models' | 'source'>>;
+    fetchModels(connection: import('../shared/desktop-connection-snapshot').DesktopConnectionIdentity, host?: DesktopRuntimeHostRef, options?: { preserveSelection?: boolean }): Promise<Pick<ModelDiscoveryResult, 'models' | 'source'>>;
     hasSecret(connection: import('../shared/desktop-connection-snapshot').DesktopConnectionIdentity, host?: DesktopRuntimeHostRef): Promise<boolean>;
     getRequestHeaders(connection: import('../shared/desktop-connection-snapshot').DesktopConnectionIdentity, host?: DesktopRuntimeHostRef): Promise<import('@maka/core/llm-connections').SavedRequestHeaders>;
     setRequestHeaders(
@@ -1576,21 +1648,24 @@ export interface MakaBridge {
     subscribeEvents(handler: (event: ConnectionEvent) => void, host?: DesktopRuntimeHostRef): () => void;
   };
   mcp: {
-    getConfig(host?: DesktopRuntimeHostRef): Promise<McpConfigFile>;
-    listStatuses(host?: DesktopRuntimeHostRef): Promise<McpServerStatus[]>;
-    importConfig(source: string, host?: DesktopRuntimeHostRef): Promise<McpConfigImportResult>;
+    getConfig(host?: DesktopRuntimeHostRef): Promise<McpIpcResult<McpConfigFile>>;
+    listStatuses(host?: DesktopRuntimeHostRef): Promise<McpIpcResult<McpServerStatus[]>>;
+    importConfig(source: string, host?: DesktopRuntimeHostRef): Promise<McpIpcResult<McpConfigImportResult>>;
     /** Adds a new server; a taken id comes back as `{ status: 'exists' }`
      * instead of an error, so the dialog can put it on the id field. */
-    add(serverId: string, config: McpServerConfig, host?: DesktopRuntimeHostRef): Promise<McpConfigAddResult>;
-    upsert(serverId: string, config: McpServerConfig, host?: DesktopRuntimeHostRef): Promise<McpConfigFile>;
-    install(serverId: string, config: McpServerConfig, host?: DesktopRuntimeHostRef): Promise<McpConfigFile>;
-    remove(serverId: string, host?: DesktopRuntimeHostRef): Promise<McpConfigFile>;
-    cancelInstall(serverId: string, host?: DesktopRuntimeHostRef): Promise<McpConfigFile>;
-    test(serverId: string, host?: DesktopRuntimeHostRef): Promise<McpTestResult>;
-    login(serverId: string, host?: DesktopRuntimeHostRef): Promise<McpServerStatus>;
+    add(serverId: string, config: McpServerConfig, host?: DesktopRuntimeHostRef): Promise<McpIpcResult<McpConfigAddResult>>;
+    /** Saves an edit made against `basis`, the server as last shown; one
+     * changed or removed elsewhere since comes back `stale`. */
+    update(serverId: string, config: McpServerConfig, basis: McpServerConfig, host?: DesktopRuntimeHostRef): Promise<McpIpcResult<McpConfigUpdateResult>>;
+    setEnabled(serverId: string, enabled: boolean, host?: DesktopRuntimeHostRef): Promise<McpIpcResult<McpConfigUpdateResult>>;
+    remove(serverId: string, host?: DesktopRuntimeHostRef): Promise<McpIpcResult<McpConfigFile>>;
+    test(serverId: string, host?: DesktopRuntimeHostRef): Promise<McpIpcResult<McpTestResult>>;
+    login(serverId: string, host?: DesktopRuntimeHostRef): Promise<McpIpcResult<McpServerStatus>>;
     /** Ends an in-flight login round; resolves false when none is active. */
-    cancelLogin(serverId: string, host?: DesktopRuntimeHostRef): Promise<boolean>;
-    logout(serverId: string, host?: DesktopRuntimeHostRef): Promise<McpServerStatus>;
+    cancelLogin(serverId: string, host?: DesktopRuntimeHostRef): Promise<McpIpcResult<boolean>>;
+    logout(serverId: string, host?: DesktopRuntimeHostRef): Promise<McpIpcResult<McpServerStatus>>;
+    chromeStatus(host?: DesktopRuntimeHostRef): Promise<OpencliChromeStatus>;
+    connectChrome(host?: DesktopRuntimeHostRef): Promise<void>;
     subscribeChanges(handler: (statuses: McpServerStatus[]) => void): () => void;
   };
   externalAgents: {
@@ -1626,20 +1701,9 @@ export interface MakaBridge {
       };
     };
   };
-  notifications: {
-    /** Fire-and-forget: report that an agent turn reached a terminal
-     * state. `title` is the session name, `body` the start of the
-     * reply (or error message); main sanitizes + falls back to
-     * generic copy. Main gates on the product toggle + window focus
-     * before raising a native OS notification. */
-    runEnded(payload: {
-      kind: 'completed' | 'errored';
-      title?: string;
-      body?: string;
-    }): Promise<void>;
-  };
   onboarding: {
     getSnapshot(): Promise<OnboardingSnapshot>;
+    getSessionUpdate(sessionId: string): Promise<DesktopOnboardingSessionUpdate | null>;
     setMilestone(
       id: OnboardingMilestoneId,
       status: 'completed' | 'skipped',
@@ -1684,6 +1748,7 @@ export interface MakaBridge {
   };
   attachments: {
     pickDirectory(): Promise<{ ok: true; reference: import('@maka/core/events').DirectoryReference } | { ok: false; reason: 'cancelled' }>;
+    detectDirectories(files: readonly File[]): Promise<boolean[]>;
     pickFiles(): Promise<
       | {
           ok: true;
@@ -1700,6 +1765,7 @@ export interface MakaBridge {
       | { ok: true; base64: string; mimeType: string }
       | { ok: false; reason: string }
     >;
+    resolveImageDelivery: import('@maka/core/image-delivery').ResolveImageDelivery;
     readBytes(sessionId: string, artifactId: string): Promise<ArtifactBinaryReadResult>;
   };
   search: {
@@ -1830,6 +1896,22 @@ export interface MakaBridge {
     }, host?: DesktopRuntimeHostRef): Promise<WebSearchResponse>;
     test(input: { provider?: WebSearchProvider; apiKey?: string }, host?: DesktopRuntimeHostRef): Promise<WebSearchResponse>;
   };
+  storage: {
+    /** One Runtime Host's State Root footprint. Read-only; nothing is reclaimed. */
+    usage(host?: DesktopRuntimeHostRef): Promise<StorageUsageQueryResult>;
+    /**
+     * Per-task storage keyed by Desktop session id. A task is absent when its
+     * Runtime Host is unavailable or fails, or when that Host no longer holds it.
+     */
+    sessionUsage(sessionIds: readonly string[]): Promise<Record<string, SessionStorageUsage>>;
+    /** One Runtime Host's archived-task retention setting, its preview and its latest results. */
+    retention(host?: DesktopRuntimeHostRef): Promise<StorageRetentionQueryResult>;
+    /** Changes that setting, fenced by the revision the caller read. The Host stamps the time. */
+    setRetention(
+      input: StorageRetentionSetInput,
+      host?: DesktopRuntimeHostRef,
+    ): Promise<StorageRetentionSetResult>;
+  };
   dailyReview: {
     day(offsetDays: number, daySpan?: number, host?: DesktopRuntimeHostRef): Promise<Result<DailyReviewSummary>>;
     getConfig?(host?: DesktopRuntimeHostRef): Promise<DailyReviewConfig>;
@@ -1920,6 +2002,7 @@ export interface MakaBridge {
     sessionProjectInfo(sessionId: string): Promise<{
       projectPath: string;
       projectGit: { isGitRepo: boolean; branch?: string };
+      taskDirectory?: TaskDirectoryBinding;
     }>;
     openPath(
       key: 'workspace' | 'memory' | 'project',

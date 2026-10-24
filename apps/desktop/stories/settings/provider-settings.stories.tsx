@@ -64,6 +64,7 @@ type AutoOpenTarget =
   | 'detail-large'
   | 'detail-retired'
   | 'add'
+  | 'add-custom'
   | 'catalog'
   | 'oauth'
   | 'xai-device';
@@ -154,7 +155,7 @@ const largeConnection = makeConnection({
 const alibabaTokenPlanConnections = [
   makeConnection({
     slug: 'alibaba-token-plan-cn',
-    name: 'Alibaba Token Plan（团队版）',
+    name: 'Alibaba Token Plan 中国站',
     providerType: 'alibaba-token-plan-cn',
     defaultModel: 'qwen3.8-max',
     lastTestStatus: 'verified',
@@ -191,20 +192,25 @@ const relayConnections = [
     ...makeConnection({
       slug: 'relay-house',
       name: 'House Relay',
-      providerType: 'openai-compatible',
+      providerType: 'custom',
       baseUrl: 'https://relay.example.com/v1',
       defaultModel: 'gpt-5.6-luna',
       lastTestStatus: 'verified',
       models: [
         { id: 'gpt-5.6-luna' },
+        { id: 'claude-opus-4-8' },
         { id: 'deepseek-v4-flash-0731' },
         { id: 'glm-5.3-flash' },
         { id: 'gemini-3.8-flash' },
       ],
       modelSource: 'fetched',
     }),
-    enabledModelIds: ['gpt-5.6-luna', 'deepseek-v4-flash-0731', 'glm-5.3-flash'],
-    modelOverrides: { 'gpt-5.6-luna': { thinkingLevels: ['low', 'high'] as const } },
+    defaultApiProtocol: 'openai-responses' as const,
+    enabledModelIds: ['gpt-5.6-luna', 'claude-opus-4-8', 'deepseek-v4-flash-0731', 'glm-5.3-flash'],
+    modelOverrides: {
+      'gpt-5.6-luna': { thinkingLevels: ['low', 'high'] as const },
+      'claude-opus-4-8': { apiProtocol: 'anthropic-messages' as const, thinkingLevels: ['high', 'max'] as const },
+    },
   },
 ];
 
@@ -650,7 +656,7 @@ function ProviderStoryFrame(props: {
           <Layout
             height="auto"
             padding={0}
-            contentWidth={920}
+            contentWidth="calc(var(--maka-reading-measure) + 2 * var(--space-6))"
             header={(
               <LayoutHeader padding={6}>
                 <div className="settingsPageHeader">
@@ -745,7 +751,8 @@ function clickAutoOpenTarget(root: HTMLElement, target: AutoOpenTarget): boolean
   // 'add': walk to the catalog, then into one provider's form.
   const catalog = reachCatalog(root);
   if (!catalog) return false;
-  const providerRow = catalog.querySelector<HTMLElement>('[data-provider="deepseek"]')?.querySelector('button') ?? null;
+  const provider = target === 'add-custom' ? 'custom' : 'deepseek';
+  const providerRow = catalog.querySelector<HTMLElement>(`[data-provider="${provider}"]`)?.querySelector('button') ?? null;
   providerRow?.click();
   return Boolean(providerRow);
 }
@@ -843,6 +850,29 @@ export const LargeConnectionDetail: Story = {
     await waitFor(() => {
       expect(canvasElement.querySelectorAll('button[aria-label*="Fixture model"]').length).toBe(444);
     }, { timeout: 20_000 });
+    const canvas = within(canvasElement);
+    const second = canvas.getByRole('switch', { name: /Fixture model 002$/ });
+    const third = canvas.getByRole('switch', { name: /Fixture model 003$/ });
+    await userEvent.click(second);
+    await userEvent.click(third);
+    expect(second).toBeChecked();
+    expect(third).toBeChecked();
+    const bar = canvasElement.querySelector<HTMLElement>('.providerModelsSaveBar')!;
+    const save = within(bar).getByRole('button', { name: /^(保存|儲存|Save)$/ });
+    expect(save).toBeEnabled();
+    const pane = canvasElement.querySelector<HTMLElement>('.settingsMainPane')!;
+    // The production pane is the sole scroll owner. Save stays on screen at
+    // the top, middle and end of a hundreds-of-models catalog.
+    for (const top of [0, pane.scrollHeight / 2, pane.scrollHeight]) {
+      pane.scrollTop = top;
+      await waitFor(() => {
+        const rect = bar.getBoundingClientRect();
+        const viewport = pane.getBoundingClientRect();
+        expect(rect.top).toBeGreaterThanOrEqual(viewport.top);
+        expect(rect.bottom).toBeLessThanOrEqual(viewport.bottom + 1);
+        expect(rect.height).toBeGreaterThan(0);
+      });
+    }
   },
 };
 
@@ -965,7 +995,7 @@ export const ModelParameterSave: Story = {
     expect(patch()).toHaveTextContent(/^(自动|自動|Automatic)/);
     await userEvent.click(patch());
     await userEvent.click(await body.findByRole('option', { name: /^(启用|啟用|Enabled)$/ }));
-    const save = body.getByRole('button', { name: /^(保存|儲存|Save)$/i });
+    const save = within(body.getByRole('dialog')).getByRole('button', { name: /^(保存|儲存|Save)$/i });
     await userEvent.clear(field);
     await userEvent.type(field, '1MB');
     expect(save).toBeDisabled();
@@ -990,7 +1020,7 @@ export const ModelParameterSave: Story = {
     await userEvent.click(await body.findByRole('option', { name: /^(自动|自動|Automatic)/ }));
     await userEvent.click(vision());
     await userEvent.click(await body.findByRole('option', { name: /^(自动|自動|Model information)/i }));
-    await userEvent.click(body.getByRole('button', { name: /^(保存|儲存|Save)$/i }));
+    await userEvent.click(within(body.getByRole('dialog')).getByRole('button', { name: /^(保存|儲存|Save)$/i }));
     await waitFor(() => expect(configure).toHaveFocus());
     await userEvent.click(configure);
     expect(vision()).toHaveTextContent(/^(自动|自動|Model information)/i);
@@ -1000,7 +1030,7 @@ export const ModelParameterSave: Story = {
     const editable = body.getByRole('textbox', { name: /^(上下文窗口|上下文視窗|Context window)$/i });
     await userEvent.clear(editable);
     await userEvent.type(editable, '256K');
-    await userEvent.click(body.getByRole('button', { name: /^(取消|Cancel)$/i }));
+    await userEvent.click(within(body.getByRole('dialog')).getByRole('button', { name: /^(取消|Cancel)$/i }));
     await waitFor(() => expect(configure).toHaveFocus());
     await userEvent.click(configure);
     expect(await body.findByRole('textbox', { name: /^(上下文窗口|上下文視窗|Context window)$/i })).toHaveValue('128000');
@@ -1021,10 +1051,10 @@ export const RefreshModelCatalog: Story = {
     for (let attempt = 0; attempt < 2; attempt += 1) {
       refresh.click();
       await canvas.findByRole('button', { name: /(?:参数|參數|parameters).*glm-5\.3$/i });
-      await waitFor(() => expect(canvas.getAllByRole('switch')).toHaveLength(5));
+      await waitFor(() => expect(canvas.getAllByRole('switch')).toHaveLength(6));
       await waitFor(() => expect(refresh).not.toBeDisabled());
     }
-    expect(canvas.getAllByRole('switch').filter((control) => (control as HTMLInputElement).checked)).toHaveLength(3);
+    expect(canvas.getAllByRole('switch').filter((control) => (control as HTMLInputElement).checked)).toHaveLength(4);
   },
 };
 
@@ -1126,6 +1156,43 @@ export const AddProvider: Story = {
       autoOpen="add"
     />
   ),
+};
+
+// Real path: 设置 → 模型 → 添加连接 → 自定义连接.
+export const AddCustomConnection: Story = {
+  render: () => (
+    <ProviderStory
+      bridge={createBridge({ connections: configuredConnections, defaultSlug: 'zai-live' })}
+      autoOpen="add-custom"
+    />
+  ),
+  play: async () => {
+    const body = within(document.body);
+    const protocol = await body.findByRole('combobox', { name: /^默认请求协议/ });
+    expect(protocol).toHaveTextContent('OpenAI Chat Completions');
+    await userEvent.click(protocol);
+    expect(body.getAllByRole('option').map((option) => option.textContent)).toEqual([
+      'OpenAI Chat Completions',
+      'OpenAI Responses',
+      'Anthropic Messages',
+    ]);
+    await userEvent.keyboard('{Escape}');
+  },
+};
+
+// Real path: 设置 → 模型 → relay → configure a model that overrides the connection's protocol.
+export const CustomModelProtocol: Story = {
+  render: ModelCapabilities.render,
+  play: async ({ canvasElement }) => {
+    const body = within(document.body);
+    const configure = await within(canvasElement).findByRole('button', { name: /参数.*claude-opus-4-8/ });
+    await userEvent.click(configure);
+    const protocol = await body.findByRole('combobox', { name: /^请求协议/ });
+    expect(protocol).toHaveTextContent('Anthropic Messages');
+    await userEvent.click(protocol);
+    expect(await body.findByRole('option', { name: '跟随连接 · OpenAI Responses' })).toBeTruthy();
+    await userEvent.keyboard('{Escape}');
+  },
 };
 
 // Real path: 设置 → 模型 → 添加连接 → DeepSeek. The common fixed-endpoint

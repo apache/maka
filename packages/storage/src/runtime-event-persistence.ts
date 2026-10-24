@@ -19,7 +19,10 @@
 
 import { join } from 'node:path';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
-import type { RuntimeInvocationRecoveryInventoryEntry } from '@maka/core/runtime-event-store';
+import type {
+  RuntimeInvocationRecoveryInventoryEntry,
+  RuntimeSessionEventSnapshot,
+} from '@maka/core/runtime-event-store';
 import type {
   RuntimeInvocationPageInput,
   RuntimeInvocationPageResult,
@@ -47,6 +50,7 @@ export type RuntimeEventReadPersistence = {
 };
 
 export interface RuntimeEventReadStore {
+  readSessionRuntimeSnapshot?(sessionId: string): Promise<RuntimeSessionEventSnapshot>;
   listSessionInvocations(sessionId: string): Promise<RuntimeInvocationRecord[]>;
   listInvocationRecoveryInventory(
     sessionIds: readonly string[],
@@ -62,6 +66,13 @@ export interface RuntimeEventReadStore {
   ): Promise<RuntimeInvocationPageResult>;
   readInvocation(sessionId: string, invocationId: string): Promise<RuntimeInvocationRecord>;
   readRuntimeEvents(sessionId: string, runId: string): Promise<RuntimeEvent[]>;
+  /** Immutable facts for one tool call, bounded independently of unrelated Run history. */
+  readToolProvenanceEvents(
+    sessionId: string,
+    runId: string,
+    toolCallId: string,
+    budget: EvidenceReadBudget,
+  ): Promise<BoundedEvidenceReadResult<RuntimeEvent>>;
   readRuntimeEventsBounded(
     sessionId: string,
     runId: string,
@@ -69,6 +80,7 @@ export interface RuntimeEventReadStore {
   ): Promise<BoundedEvidenceReadResult<RuntimeEvent>>;
   readImmutableRuntimeEvents(sessionId: string, runId: string): Promise<RuntimeEvent[]>;
   readSessionRuntimeEvents(sessionId: string): Promise<RuntimeEvent[]>;
+  readSessionHistoryRevision(sessionId: string): Promise<string>;
   /** Session-wide events with the ordinal that fixes their transcript order. */
   readSessionRuntimeEventEntries(
     sessionId: string,
@@ -110,6 +122,8 @@ export async function openRuntimeEventReadPersistence(input: {
   return {
     kind: 'sqlite',
     runtimeEventStore: Object.freeze({
+      readSessionRuntimeSnapshot: (sessionId: string) =>
+        store.readSessionRuntimeSnapshot(sessionId),
       listSessionInvocations: (sessionId: string) => store.listSessionInvocations(sessionId),
       listInvocationRecoveryInventory: (sessionIds: readonly string[]) =>
         store.listInvocationRecoveryInventory(sessionIds),
@@ -123,11 +137,19 @@ export async function openRuntimeEventReadPersistence(input: {
         store.readInvocation(sessionId, invocationId),
       readRuntimeEvents: (sessionId: string, runId: string) =>
         store.readRuntimeEvents(sessionId, runId),
+      readToolProvenanceEvents: (
+        sessionId: string,
+        runId: string,
+        toolCallId: string,
+        budget: EvidenceReadBudget,
+      ) => store.readToolProvenanceEvents(sessionId, runId, toolCallId, budget),
       readRuntimeEventsBounded: (sessionId: string, runId: string, budget: EvidenceReadBudget) =>
         store.readRuntimeEventsBounded(sessionId, runId, budget),
       readImmutableRuntimeEvents: (sessionId: string, runId: string) =>
         store.readImmutableRuntimeEvents(sessionId, runId),
       readSessionRuntimeEvents: (sessionId: string) => store.readSessionRuntimeEvents(sessionId),
+      readSessionHistoryRevision: (sessionId: string) =>
+        store.readSessionHistoryRevision(sessionId),
       readSessionRuntimeEventEntries: (sessionId: string) =>
         store.readSessionRuntimeEventEntries(sessionId),
       listSessionsWithRuntimeEventText: (sessionIds: readonly string[], terms: readonly string[]) =>

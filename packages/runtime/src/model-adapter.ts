@@ -25,6 +25,7 @@ import {
   type RuntimeExecutionConnection,
 } from '@maka/core/llm-connections';
 import { lookupModelMetadata } from '@maka/core/model-metadata';
+import { providerAcceptsOutputTokenLimit } from '@maka/core/provider-registry';
 import type { CacheMissInputSource } from '@maka/core/usage-stats/types';
 import { rawFinishReasonString } from './model-protocol.js';
 import type {
@@ -34,6 +35,7 @@ import type {
   ModelStreamEvent,
   ModelStreamResult,
   ModelStepOutcome,
+  ModelFinishDisposition,
   ModelFinishReason,
   ModelFailure,
   ModelFailureKind,
@@ -47,6 +49,7 @@ export type {
   ModelStreamEvent,
   ModelStreamResult,
   ModelStepOutcome,
+  ModelFinishDisposition,
   ModelFinishReason,
   ModelFailure,
   ModelToolSet,
@@ -121,6 +124,11 @@ export interface ModelAdapterInput {
 export interface ModelAdapterStreamInput {
   model: unknown;
   messages: ModelMessage[];
+  /**
+   * Leading messages that later requests replay unchanged; the rest is
+   * request-only context and never owns a prompt-cache breakpoint.
+   */
+  historyMessageCount?: number;
   tools: ModelToolSet;
   activeTools: string[];
   /** Observe each successfully pulled SDK stream part before semantic translation. */
@@ -167,11 +175,9 @@ export class ModelAdapter {
     return {
       toolCalls: true,
       toolResults: true,
-      // Verified against @ai-sdk/open-responses@2.0.34: replay preserves
-      // item order and IDs, but a provider-executed result embedded in the
-      // assistant message (Maka's provider-tool chronology) is still dropped,
-      // leaving a dangling function_call on the wire. Fail closed until the
-      // upstream extension seam (vercel/ai#18899) can round-trip the pair.
+      // General Open Responses provider tool replay remains unsupported.
+      // AiSdkMessageProjection admits only DeepSeek calls with a paired,
+      // original web_search_call item through its narrower per-item check.
       providerExecutedTools:
         this.runtime.reasoningReplay.kind !== 'responses' ||
         this.runtime.reasoningReplay.contract.adapter !== 'open-responses',
@@ -198,6 +204,15 @@ export class ModelAdapter {
     };
   }
 
+  supportsDeepSeekWebSearchReplay(): boolean {
+    return (
+      this.input.connection.providerType === 'deepseek' &&
+      this.runtime.wire === 'openai-responses' &&
+      this.runtime.reasoningReplay.kind === 'responses' &&
+      this.runtime.reasoningReplay.contract.adapter === 'open-responses'
+    );
+  }
+
   resolveModel(): unknown {
     if (providerAuthRequiresSecret(this.input.connection.providerType) && !this.input.apiKey) {
       throw new Error(`No API key stored for connection "${this.input.connection.slug}"`);
@@ -217,7 +232,17 @@ export class ModelAdapter {
     });
   }
 
+  /**
+   * Whether a request to this connection may carry an output-token limit at
+   * all. When it may not, no limit is sent: neither a configured per-model
+   * limit nor the context-recovery cap.
+   */
+  acceptsOutputTokenLimit(): boolean {
+    return providerAcceptsOutputTokenLimit(this.input.connection.providerType);
+  }
+
   maxOutputTokens(): number | undefined {
+    if (!this.acceptsOutputTokenLimit()) return undefined;
     return selectedModelMaxOutputTokens(
       this.input.connection,
       this.input.modelId,
@@ -274,14 +299,18 @@ export class ModelAdapter {
       wrapLanguageModel: (input: Record<string, unknown>) => unknown;
     };
 
-    const maxOutputTokens =
-      input.maxOutputTokens ??
-      selectedModelMaxOutputTokens(
-        this.input.connection,
-        this.input.modelId,
-        this.input.providerOptions,
-        this.runtime,
-      );
+    // The one place a main-turn output limit reaches the wire. A provider that
+    // rejects any limit gets none, whether it came from the caller (overflow
+    // recovery, a resumed request) or from the configured model limit.
+    const maxOutputTokens = this.acceptsOutputTokenLimit()
+      ? (input.maxOutputTokens ??
+        selectedModelMaxOutputTokens(
+          this.input.connection,
+          this.input.modelId,
+          this.input.providerOptions,
+          this.runtime,
+        ))
+      : undefined;
     let settleAccounting: ((outcome: ModelStepOutcome) => Promise<void>) | undefined;
     const terminalModel = withProviderFinishBoundary(input.model, wrapLanguageModel);
     const trackedModel = input.providerRequestTracker
@@ -304,12 +333,24 @@ export class ModelAdapter {
     const runtimeToolName = (name: string): string =>
       usesOpenAiResponsesAdapter && name === TOOL_SEARCH_PROVIDER_NAME ? TOOL_SEARCH_NAME : name;
     const sdkTools = lowerModelTools(input.tools);
-    if (usesOpenAiResponsesAdapter && sdkTools[TOOL_SEARCH_NAME] !== undefined) {
+    // Prose names the alias only when the provider can call it. In Code Mode
+    // tool_search is nested inside exec under its runtime name, so the
+    // catalog prompt must keep that name.
+    const providerExposesToolSearch =
+      usesOpenAiResponsesAdapter && sdkTools[TOOL_SEARCH_NAME] !== undefined;
+    const providerTextToolName = (name: string): string =>
+      providerExposesToolSearch ? providerToolName(name) : name;
+    if (providerExposesToolSearch) {
       sdkTools[TOOL_SEARCH_PROVIDER_NAME] = sdkTools[TOOL_SEARCH_NAME];
       delete sdkTools[TOOL_SEARCH_NAME];
     }
+    const messages = withAnthropicHistoryCacheBreakpoint(
+      input.messages,
+      input.historyMessageCount,
+      this.input.providerOptions,
+    );
     const fullMessages =
-      this.runtime.wire === 'openai-chat' ? lowerChatToolImages(input.messages) : input.messages;
+      this.runtime.wire === 'openai-chat' ? lowerChatToolImages(messages) : messages;
     const responsesLane =
       input.continuationKey && usesNativeOpenAiResponses(this.input.connection, this.runtime)
         ? input.continuationKey
@@ -320,9 +361,13 @@ export class ModelAdapter {
           this.openAiResponsesTransportState.semanticBaseline(responsesLane),
         )
       : { messages: fullMessages };
-    const providerMessages = remapModelMessageToolNames(continuation.messages, providerToolName);
+    const providerMessages = remapModelMessageToolNames(
+      continuation.messages,
+      providerToolName,
+      providerTextToolName,
+    );
     const providerSystem = input.system
-      ? remapProviderToolNamesInText(input.system, providerToolName)
+      ? remapProviderToolNamesInText(input.system, providerTextToolName)
       : undefined;
     const providerOptions = usesNativeOpenAiResponses(this.input.connection, this.runtime)
       ? mergeOpenAiResponsesProviderOptions(
@@ -412,12 +457,23 @@ export class ModelAdapter {
       async *[Symbol.asyncIterator]() {
         let failure: ModelFailure | undefined;
         let sawFinish = false;
+        let requestHasResponseEvidence = false;
+        let stepHasResponseEvidence = false;
+        let latestStepFinishHadUsableUsage: boolean | undefined;
         let streamedFinishReason: string | undefined;
         let streamedRawFinishReason: string | undefined;
+        let streamedFinishDisposition: ModelFinishDisposition | undefined;
         let sawUnfinalizedPlaintextSummary = false;
         try {
           for await (const chunk of sdk.stream as AsyncIterable<AiSdkStreamChunk>) {
             onStreamActivity();
+            // AI SDK emits start-step before each provider step. Keep the
+            // request-level fact monotonic for retry safety, but do not let a
+            // previous step's evidence or usage authorize a later empty stop.
+            if (chunk.type === 'start-step') {
+              stepHasResponseEvidence = false;
+              latestStepFinishHadUsableUsage = undefined;
+            }
             if (
               chunk.type === 'finish' ||
               chunk.type === 'finish-step' ||
@@ -426,6 +482,17 @@ export class ModelAdapter {
               streamedRawFinishReason =
                 rawFinishReasonString(chunk.rawFinishReason) ?? streamedRawFinishReason;
               streamedFinishReason = chunkFinishReason(chunk) ?? streamedFinishReason;
+              if (chunk.type !== 'finish') {
+                latestStepFinishHadUsableUsage =
+                  normalizeAiSdkUsage(chunk.usage as AiSdkUsageLike | undefined, {
+                    rawFinishReason: chunk.rawFinishReason,
+                  }) !== undefined;
+              }
+              streamedFinishDisposition = classifyModelFinishBoundary({
+                finishReason: streamedFinishReason,
+                hasResponseEvidence: stepHasResponseEvidence,
+                hasUsableStepUsage: latestStepFinishHadUsableUsage === true,
+              });
               if (chunk.type === 'finish') sawFinish = true;
               continue;
             }
@@ -438,14 +505,18 @@ export class ModelAdapter {
               sawUnfinalizedPlaintextSummary = true;
               continue;
             }
-            for (const event of translateChunk(
+            for (const translated of translateChunk(
               chunk,
               openAiChatReasoningTransportState,
               resolvedRuntime,
               continuation.runtimeToolName,
             )) {
-              if (event.kind === 'error') failure = event.failure;
-              yield event;
+              if (isModelResponseEvidence(translated)) {
+                requestHasResponseEvidence = true;
+                stepHasResponseEvidence = true;
+              }
+              if (translated.kind === 'error') failure = translated.failure;
+              yield translated;
             }
           }
         } catch (error) {
@@ -481,8 +552,10 @@ export class ModelAdapter {
             failure,
             sawFinish,
             finishReason,
+            finishDisposition: streamedFinishDisposition ?? 'incomplete',
             rawFinishReason,
             usage,
+            hasResponseEvidence: requestHasResponseEvidence,
           });
           let deferredFailure: ModelFailure | undefined;
 
@@ -496,8 +569,10 @@ export class ModelAdapter {
               failure,
               sawFinish,
               finishReason,
+              finishDisposition: streamedFinishDisposition ?? 'incomplete',
               rawFinishReason,
               usage,
+              hasResponseEvidence: requestHasResponseEvidence,
             });
           }
 
@@ -558,10 +633,9 @@ export class ModelAdapter {
 
   /**
    * Translate one raw AI SDK stream chunk into zero or more Maka-owned
-   * `ModelStreamEvent`s. This is the sole place that parses SDK chunk names
-   * (`text-delta` / `reasoning-delta` / `finish-step` / `finish` / `error` / …);
-   * the backend never sees them. Pure and side-effect-free so it is directly
-   * testable through the Maka-owned event contract.
+   * event candidates. Finish-boundary disposition depends on stream-level
+   * evidence and is stamped by `toModelStreamResult`; this pure hook only
+   * exposes raw-chunk lowering for focused adapter tests.
    */
   translateChunk(chunk: AiSdkStreamChunk): ModelStreamEvent[] {
     return translateChunk(
@@ -620,29 +694,99 @@ interface ModelStepSettlementEvidence {
   failure?: ModelFailure;
   sawFinish: boolean;
   finishReason: ModelFinishReason;
+  finishDisposition: ModelFinishDisposition;
   rawFinishReason?: string;
   usage?: NormalizedUsage;
+  hasResponseEvidence: boolean;
+}
+
+function isModelResponseEvidence(event: ModelStreamEvent): boolean {
+  switch (event.kind) {
+    case 'text':
+      return event.text.length > 0;
+    case 'text-end':
+      return event.providerOptions !== undefined;
+    case 'thinking-start':
+      return event.providerOptions !== undefined;
+    case 'thinking-signature':
+    case 'tool-input':
+    case 'tool-call':
+    case 'provider-tool-result':
+      return true;
+    case 'thinking':
+      return (
+        event.text.length > 0 ||
+        (event.providerOptions !== undefined && event.providerOptionsOrigin !== 'maka_transport')
+      );
+    default:
+      return false;
+  }
+}
+
+function classifyModelFinishBoundary(input: {
+  finishReason: ModelFinishReason | undefined;
+  hasResponseEvidence: boolean;
+  hasUsableStepUsage: boolean;
+}): 'authoritative' | 'incomplete' | 'retryable-network-failure' {
+  if (input.finishReason === NETWORK_ERROR_FINISH_REASON) return 'retryable-network-failure';
+  if (
+    input.finishReason === undefined ||
+    input.finishReason === 'other' ||
+    input.finishReason === 'unknown'
+  ) {
+    return 'incomplete';
+  }
+  if (input.finishReason === 'stop' && !input.hasResponseEvidence && !input.hasUsableStepUsage) {
+    return 'incomplete';
+  }
+  return 'authoritative';
 }
 
 export function settleModelStepOutcome(evidence: ModelStepSettlementEvidence): ModelStepOutcome {
-  const { aborted, failure, sawFinish, finishReason, rawFinishReason, usage } = evidence;
+  const {
+    aborted,
+    failure,
+    sawFinish,
+    finishReason,
+    finishDisposition,
+    rawFinishReason,
+    usage,
+    hasResponseEvidence,
+  } = evidence;
   if (aborted || failure?.kind === 'abort') {
     return failedStepOutcome(
       failure ??
         normalizeProviderFailure(Object.assign(new Error('aborted'), { name: 'AbortError' })),
       usage,
+      hasResponseEvidence,
     );
   }
   if (failure) {
-    return failedStepOutcome(failure, usage);
+    return failedStepOutcome(failure, usage, hasResponseEvidence);
   }
-  if (!sawFinish || finishReason === 'other' || finishReason === 'unknown') {
+  if (finishDisposition === 'retryable-network-failure') {
+    return failedStepOutcome(
+      {
+        type: 'model_failure',
+        kind: 'network',
+        code: 'network_error',
+        message: 'Network error',
+        retryable: true,
+      },
+      usage,
+      hasResponseEvidence,
+    );
+  }
+  if (!sawFinish || finishDisposition === 'incomplete') {
     return failedStepOutcome(
       modelStepFailure(
         'stream_truncated',
-        `Provider stream ended without finishing (${finishReason})`,
+        sawFinish && finishReason === 'stop'
+          ? 'Provider returned an empty stop without output or usable usage'
+          : `Provider stream ended without finishing (${finishReason})`,
       ),
       usage,
+      hasResponseEvidence,
     );
   }
   if (finishReason === 'content-filter' || finishReason === 'error') {
@@ -650,13 +794,14 @@ export function settleModelStepOutcome(evidence: ModelStepSettlementEvidence): M
       finishReason === 'error'
         ? providerFinishFailure(rawFinishReason)
         : modelStepFailure('unknown', 'Provider stopped the stream on a content filter');
-    return failedStepOutcome(terminalFailure, usage);
+    return failedStepOutcome(terminalFailure, usage, hasResponseEvidence);
   }
   return {
     kind: 'completed',
     finishReason,
     ...(usage ? { usage } : {}),
     continuation: 'none',
+    hasResponseEvidence,
   };
 }
 
@@ -684,13 +829,15 @@ function providerFinishFailure(rawFinishReason: string | undefined): ModelFailur
 
 function failedStepOutcome(
   failure: ModelFailure,
-  usage?: NormalizedUsage,
+  usage: NormalizedUsage | undefined,
+  hasResponseEvidence: boolean,
 ): Exclude<ModelStepOutcome, { kind: 'completed' }> {
   return {
     kind: 'failed',
     failure,
     ...(usage ? { usage } : {}),
     continuation: 'none',
+    hasResponseEvidence,
   };
 }
 
@@ -881,15 +1028,23 @@ function withProviderFinishBoundary(
  * own spelling. Unified is the right thing to forward — `RuntimeKernel` and
  * the backend compare against `'tool-calls'`, which is a name only the SDK
  * uses. Except when unified is `other`, which is not a reason but the SDK
- * declining to name one; there it hides the only distinction that matters
- * downstream. `other` with a provider spelling is a model that stopped for a
- * reason we have no case for — an ordinary finished turn. `other` with nothing
- * behind it is a stream that died without anyone saying so.
+ * declining to name one. Known provider spellings with established semantics
+ * are mapped to Maka's canonical vocabulary here; unknown raw spellings still
+ * pass through for tolerant forward compatibility. `other` with nothing
+ * behind it remains an unnamed, incomplete stream.
  */
+const NETWORK_ERROR_FINISH_REASON = 'network-error';
+const RAW_FINISH_REASON_ALIASES = new Map<string, ModelFinishReason>([
+  ['network_error', NETWORK_ERROR_FINISH_REASON],
+]);
+
 function chunkFinishReason(chunk: AiSdkStreamChunk): string | undefined {
   const unified = rawFinishReasonString(chunk.finishReason);
-  if (unified !== 'other' && unified !== 'unknown') return unified;
-  return rawFinishReasonString(chunk.rawFinishReason) ?? unified;
+  if (unified !== 'other' && unified !== 'unknown') {
+    return unified === undefined ? undefined : (RAW_FINISH_REASON_ALIASES.get(unified) ?? unified);
+  }
+  const raw = rawFinishReasonString(chunk.rawFinishReason);
+  return raw === undefined ? unified : (RAW_FINISH_REASON_ALIASES.get(raw) ?? raw);
 }
 
 /**
@@ -1224,6 +1379,33 @@ function translateChunk(
   }
 }
 
+function withAnthropicHistoryCacheBreakpoint(
+  messages: ModelMessage[],
+  historyMessageCount: number | undefined,
+  providerOptions: Record<string, unknown> | undefined,
+): ModelMessage[] {
+  const cacheControl = (providerOptions?.anthropic as { cacheControl?: unknown } | undefined)
+    ?.cacheControl;
+  if (
+    cacheControl === undefined ||
+    historyMessageCount === undefined ||
+    historyMessageCount >= messages.length
+  ) {
+    return messages;
+  }
+  return messages.map((message, index) =>
+    index === historyMessageCount - 1
+      ? ({
+          ...message,
+          providerOptions: {
+            ...message.providerOptions,
+            anthropic: { ...message.providerOptions?.anthropic, cacheControl },
+          },
+        } as ModelMessage)
+      : message,
+  );
+}
+
 function lowerChatToolImages(messages: readonly ModelMessage[]): ModelMessage[] {
   const result: ModelMessage[] = [];
   let images: Exclude<UserContent, string> = [];
@@ -1273,6 +1455,7 @@ function lowerChatToolImages(messages: readonly ModelMessage[]): ModelMessage[] 
 function remapModelMessageToolNames(
   messages: readonly ModelMessage[],
   providerToolName: (name: string) => string,
+  providerTextToolName: (name: string) => string,
 ): ModelMessage[] {
   const remapContent = <T extends { type: string }>(content: readonly T[]): T[] =>
     content.map((part) => {
@@ -1291,7 +1474,7 @@ function remapModelMessageToolNames(
           ) {
             remapped.output = {
               ...remapped.output,
-              value: remapProviderToolNamesInText(remapped.output.value, providerToolName),
+              value: remapProviderToolNamesInText(remapped.output.value, providerTextToolName),
             };
           }
         }
@@ -1338,6 +1521,9 @@ export function lowerModelTools(tools: ModelToolSet): Record<string, unknown> {
               ? { description: definition.description }
               : {}),
             inputSchema: definition.inputSchema,
+            // Responses otherwise promotes optional properties to required filters.
+            // Maka validates the original tool schema at dispatch.
+            strict: false,
           },
     ]),
   );

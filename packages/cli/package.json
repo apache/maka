@@ -1,6 +1,6 @@
 {
   "name": "maka-agent",
-  "version": "0.2.0",
+  "version": "0.2.2",
   "license": "Apache-2.0",
   "private": true,
   "type": "module",
@@ -19,8 +19,8 @@
     "test:dist": "node --test \"dist/**/*.test.js\""
   },
   "dependencies": {
-    "@agentclientprotocol/sdk": "1.4.0",
-    "@earendil-works/pi-tui": "0.85.1",
+    "@agentclientprotocol/sdk": "1.5.0",
+    "@earendil-works/pi-tui": "0.87.1",
     "@maka/core": "0.1.0",
     "@maka/eval": "0.1.0",
     "@maka/mcp": "0.1.0",

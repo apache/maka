@@ -462,7 +462,7 @@ test('automatic replacement attempts are bounded even if every successor conflic
   assert.equal(epoch, 3);
 });
 
-test('an admission refusal does not repeatedly retry the same idle observation', async () => {
+test('an idle Host that refuses safe retirement asks for interruption instead of a futile retry', async () => {
   let replacements = 0;
   await assert.rejects(
     runHostHandoff({
@@ -481,7 +481,13 @@ test('an admission refusal does not repeatedly retry the same idle observation',
           },
         }),
     }),
-    HostHandoffRequiredError,
+    (error: unknown) => {
+      assert.ok(error instanceof HostHandoffRequiredError);
+      assert.equal(error.view.reason, 'busy');
+      assert.deepEqual(error.view.actions, ['cancel', 'retry', 'interrupt']);
+      assert.match(formatHostHandoff(error.view, 'en').description, /refused safe retirement/u);
+      return true;
+    },
   );
   assert.equal(replacements, 1);
 });

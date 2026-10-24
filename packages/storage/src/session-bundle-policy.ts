@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { decodeGoalAuthorityRecord } from '@maka/core/goal';
 import {
   copyFile,
   link,
@@ -76,6 +77,7 @@ import {
 import {
   CONTEXT_OFFLOAD_DATABASE_NAME,
   CONTEXT_OFFLOAD_VALUES_DIRECTORY_NAME,
+  SqliteContextOffloadStore,
 } from './sqlite-context-offload-store.js';
 import {
   acquireOperationalStateDatabase,
@@ -86,6 +88,7 @@ import {
 } from './operational-state-store.js';
 import { TERMINAL_RUNTIME_EVENT_SQL } from './runtime-transcript-query.js';
 import { isSafeStorageId } from './storage-id.js';
+import { createSqliteRuntimeStore } from './sqlite-runtime-store.js';
 
 export const SESSION_BUNDLE_STATE_ENTRIES = [
   'artifacts',
@@ -194,6 +197,12 @@ export interface SessionBundleExportInput extends SessionBundleRootLayoutInput {
    * asks a backup for.
    */
   omitDiagnostics?: boolean;
+  /**
+   * Omit event-wait authority when transferring Sessions to another State Root.
+   * A snapshot keeps these records, but a portable copy must not duplicate an
+   * active subscription or a resolved result still awaiting delivery.
+   */
+  omitEventWaits?: boolean;
   /**
    * Authority the caller already holds, instead of electing it here.
    *
@@ -335,45 +344,51 @@ export async function exportSessionBundleState(
   return withOfflineContextSnapshot(
     input.stateRoot,
     (contextLocked) =>
-      withBundleArtifactWriterLock(input.stateRoot, input.lease, async (stateRoot) => {
-        const destinationRoot = resolve(input.destinationRoot);
-        await assertDestinationMissing(destinationRoot);
-        const stagingRoot = `${destinationRoot}.${process.pid}.${randomUUID()}.tmp`;
-        try {
-          await mkdir(stagingRoot, { recursive: true, mode: 0o700 });
-          // Take the private copy BEFORE anything is read. `lease.backup()` is
-          // what freezes the content; every decision after this -- schema, the
-          // subtree, the artifact list, quiescence, the manifest -- is made
-          // against this one file, so the bundle cannot describe two moments.
-          const databasePath = resolveInside(stagingRoot, OPERATIONAL_STATE_DATABASE_NAME);
-          await backupOperationalState(stateRoot, databasePath);
-          const plan = await planSessionBundleExport({ ...input, stateRoot, databasePath });
-          for (const entry of plan.entries) {
-            if (entry.source === 'context_snapshot' || entry.source === 'filtered_runtime_sqlite') {
-              continue;
+      withBundleArtifactWriterLock(input.stateRoot, input.lease, async (stateRoot) =>
+        runWithContextValueMutation(stateRoot, async () => {
+          const destinationRoot = resolve(input.destinationRoot);
+          await assertDestinationMissing(destinationRoot);
+          const stagingRoot = `${destinationRoot}.${process.pid}.${randomUUID()}.tmp`;
+          try {
+            await mkdir(stagingRoot, { recursive: true, mode: 0o700 });
+            // Take the private copy BEFORE anything is read. `lease.backup()` is
+            // what freezes the content; every decision after this -- schema, the
+            // subtree, the artifact list, quiescence, the manifest -- is made
+            // against this one file, so the bundle cannot describe two moments.
+            const databasePath = resolveInside(stagingRoot, OPERATIONAL_STATE_DATABASE_NAME);
+            await backupOperationalState(stateRoot, databasePath);
+            const plan = await planSessionBundleExport({ ...input, stateRoot, databasePath });
+            for (const entry of plan.entries) {
+              if (
+                entry.source === 'context_snapshot' ||
+                entry.source === 'filtered_runtime_sqlite'
+              ) {
+                continue;
+              }
+              const destination = resolveInside(stagingRoot, entry.relativePath);
+              if (entry.kind === 'directory') {
+                await mkdir(destination, { recursive: true });
+                continue;
+              }
+              await mkdir(dirname(destination), { recursive: true });
+              await copyArtifactFile(plan.stateRoot, entry.relativePath, destination);
             }
-            const destination = resolveInside(stagingRoot, entry.relativePath);
-            if (entry.kind === 'directory') {
-              await mkdir(destination, { recursive: true });
-              continue;
-            }
-            await mkdir(dirname(destination), { recursive: true });
-            await copyArtifactFile(plan.stateRoot, entry.relativePath, destination);
+            await filterBackedUpDatabase(databasePath, plan.sessionIds, {
+              omitDiagnostics: input.omitDiagnostics === true,
+              requireQuiescent: input.requireQuiescent === true,
+              omitEventWaits: input.omitEventWaits === true,
+            });
+            await copyContextSnapshot(stateRoot, stagingRoot, contextLocked, plan.sessionIds);
+            await validateContextSnapshot(stagingRoot);
+            await mkdir(dirname(plan.destinationRoot), { recursive: true });
+            await rename(stagingRoot, plan.destinationRoot);
+            return plan;
+          } catch (error) {
+            await rm(stagingRoot, { recursive: true, force: true }).catch(() => {});
+            throw error;
           }
-          await filterBackedUpDatabase(databasePath, plan.sessionIds, {
-            omitDiagnostics: input.omitDiagnostics === true,
-            requireQuiescent: input.requireQuiescent === true,
-          });
-          await copyContextSnapshot(stateRoot, stagingRoot, contextLocked, plan.sessionIds);
-          await validateContextSnapshot(stagingRoot);
-          await mkdir(dirname(plan.destinationRoot), { recursive: true });
-          await rename(stagingRoot, plan.destinationRoot);
-          return plan;
-        } catch (error) {
-          await rm(stagingRoot, { recursive: true, force: true }).catch(() => {});
-          throw error;
-        }
-      }),
+        }),
+      ),
     input.lease ? { lease: input.lease } : {},
   );
 }
@@ -476,8 +491,18 @@ async function backupOperationalState(stateRoot: string, destinationPath: string
 async function filterBackedUpDatabase(
   destinationPath: string,
   sessionIds: readonly string[],
-  options: { omitDiagnostics: boolean; requireQuiescent: boolean },
+  options: { omitDiagnostics: boolean; requireQuiescent: boolean; omitEventWaits: boolean },
 ): Promise<void> {
+  const runtimeStore = createSqliteRuntimeStore(destinationPath);
+  try {
+    // Repair only terminal facts for currently unsettled tools. A full
+    // projection rebuild decodes every RuntimeEvent in the Session, including
+    // legacy payloads that this build must preserve opaquely in the bundle.
+    await runtimeStore.rebuildTerminalToolProjectionsForSessions(sessionIds);
+  } finally {
+    runtimeStore.close();
+  }
+
   const database = new DatabaseSync(destinationPath);
   try {
     // Quiescence is asserted here, on the copy, not on the live database.
@@ -495,6 +520,25 @@ async function filterBackedUpDatabase(
       .all() as Array<{ name?: unknown }>;
     for (const row of tables) {
       if (typeof row.name !== 'string' || PORTABLE_GLOBAL_TABLES.has(row.name)) continue;
+      if (row.name === EVENT_WAIT_SOURCE_TABLE && !options.omitEventWaits) {
+        // A checkpoint must retain the source throttle/reservation constraining
+        // its waits, not merely their cursors. Select by Session explicitly so
+        // this is independent of SQLite's table iteration order. Unrelated
+        // sources are not part of this checkpoint's closure.
+        database
+          .prepare(`DELETE FROM ${EVENT_WAIT_SOURCE_TABLE} WHERE source_key NOT IN (
+          SELECT json_array(json_extract(record_json, '$.resource.providerId'),
+            json_extract(record_json, '$.resource.connectionId'))
+          FROM ${EVENT_WAIT_TABLE} WHERE session_id IN (${sessionIds.map(() => '?').join(', ')})
+        )`)
+          .run(...sessionIds);
+        continue;
+      }
+      if (options.omitEventWaits && row.name === EVENT_WAIT_TABLE) {
+        // Keep the schema while leaving root-owned wait authority behind.
+        database.exec(`DELETE FROM ${quoteIdentifier(row.name)}`);
+        continue;
+      }
       const columns = database
         .prepare(`PRAGMA table_info(${quoteIdentifier(row.name)})`)
         .all() as Array<{ name?: unknown }>;
@@ -532,6 +576,7 @@ async function filterBackedUpDatabase(
         database.exec(`DELETE FROM ${quoteIdentifier(row.name)}`);
       }
     }
+    if (options.omitEventWaits) stripPortableGoalWaits(database);
     // Operational rows that describe a REQUEST rather than the conversation.
     // None of them reach the model, and in a real Session they are the large
     // majority of this table. The two record kinds that do decide what the
@@ -668,6 +713,19 @@ const SESSION_LINK_COLUMNS = [
  * derivation changes.
  */
 const TRIGGER_MAINTAINED_TABLES = new Set(['session_catalog_projection']);
+
+// These are database-local ordering keys, not portable identities or references.
+// Keep this semantic policy explicit: other sequence columns belong to Sessions,
+// invocations or streams and must retain their values. A schema-derived test in
+// session-bundle-policy.test.ts fails when a copied table keyed by a single
+// INTEGER column is neither listed here nor allow-listed there.
+const LOCAL_SEQUENCE_COLUMNS = new Map([
+  ['tool_journal_events', 'journal_seq'],
+  ['message_admissions', 'sequence'],
+]);
+
+const EVENT_WAIT_TABLE = 'workflow_event_waits';
+const EVENT_WAIT_SOURCE_TABLE = 'workflow_event_wait_source_cooldowns';
 
 const PORTABLE_GLOBAL_TABLES = new Set([
   'operational_schema_migrations',
@@ -937,10 +995,9 @@ export interface SessionBundleImportResult {
  * The mirror of the export, and the asymmetry is the whole design: the export
  * owns a private copy and can DELETE what is not the subtree, while the import
  * writes into a live workspace holding other people's Sessions and can only
- * ADD. What keeps that from needing a table list is that the bundle's database
- * already contains nothing else -- so this copies every table it has, and a
- * table added to the schema later travels in both directions without anyone
- * updating a list.
+ * ADD. Session-owned tables are discovered by their Session columns. Workspace
+ * tables and event-wait authority are excluded independently of export filtering:
+ * the receiving State Root must not acquire another Root's subscriptions.
  *
  * Write order is the safety argument. Artifact bytes land first and the
  * database transaction commits last, so a failure between them leaves files
@@ -999,8 +1056,9 @@ export async function importSessionBundleState(
           // a Session already visible whose bytes never arrived -- and which a
           // retry could not fix, because the ids are now taken.
           const artifacts = await copyBundleArtifacts(bundleStateRoot, stateRoot);
+          let contextRefs: number | undefined;
           try {
-            const contextRefs = await mergeBundleContext(
+            contextRefs = await mergeBundleContext(
               bundleStateRoot,
               stateRoot,
               contextLocked,
@@ -1009,10 +1067,25 @@ export async function importSessionBundleState(
             const inserted = mergeBundleDatabase(lease, bundleDatabasePath);
             return { sessionIds: inserted, artifactFiles: artifacts.copied, contextRefs };
           } catch (error) {
-            // Take back only what this attempt created. Anything already there
-            // belongs to someone else, or to an earlier attempt that the next
-            // one will recognise.
-            for (const path of artifacts.created) await rm(path, { force: true }).catch(() => {});
+            // A failure after COMMIT (for example while detaching the bundle)
+            // must not remove bytes the published Session now references.
+            try {
+              const present = lease.database.prepare(
+                'SELECT 1 FROM session_metadata WHERE session_id = ?',
+              );
+              const unpublished = sessionIds.filter((id) => present.get(id) === undefined);
+              if (contextRefs !== undefined && contextRefs > 0) {
+                await releaseUnpublishedBundleContext(stateRoot, unpublished);
+              }
+              for (const path of artifacts.created) {
+                const artifactPath = relative(resolveInside(stateRoot, 'artifacts'), path);
+                if (unpublished.some((id) => isArtifactPathForSession(artifactPath, id))) {
+                  await rm(path, { force: true }).catch(() => {});
+                }
+              }
+            } catch {
+              // Preserve the import error if storage also refuses cleanup.
+            }
             throw error;
           }
         } finally {
@@ -1224,12 +1297,11 @@ async function sameFileContent(left: string, right: string): Promise<boolean> {
 class NotTheSamePayloadError extends Error {}
 
 /**
- * Copy every table the bundle has, in one transaction.
+ * Copy transferable Session tables in one transaction.
  *
- * No allow-list: the bundle's database was already filtered down to its own
- * Sessions, so "everything it has" is exactly what belongs. Only the tables
- * describing the WORKSPACE rather than a Session are skipped -- the target has
- * its own, and they are not the bundle's to bring.
+ * Session columns classify ordinary tables. Workspace records, trigger-maintained
+ * projections, and event-wait authority stay under the receiving Root's control,
+ * even when the bundle was produced by an exporter that retained them.
  */
 function mergeBundleDatabase(
   lease: OperationalStateDatabaseLease,
@@ -1263,33 +1335,88 @@ function mergeBundleDatabase(
   }
 }
 
+/**
+ * A table the import copies, and the column SQLite allocates afresh in the
+ * target instead of copying, when the table has one.
+ */
+export interface SessionBundleMergeTable {
+  readonly name: string;
+  readonly localSequenceColumn?: string;
+}
+
+/**
+ * The tables an import copies from the database attached as `bundle`, in the
+ * order it copies them.
+ *
+ * The merge writes exactly these, and a schema-derived test reads the same
+ * list, so the two cannot disagree about which tables are copied.
+ */
+export function listSessionBundleMergeTables(target: DatabaseSync): SessionBundleMergeTable[] {
+  const tables = target
+    .prepare(
+      "SELECT name FROM bundle.sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+    )
+    .all() as Array<{ name?: unknown }>;
+  const merged: SessionBundleMergeTable[] = [];
+  for (const row of tables) {
+    const name = row.name;
+    if (
+      typeof name !== 'string' ||
+      PORTABLE_GLOBAL_TABLES.has(name) ||
+      TRIGGER_MAINTAINED_TABLES.has(name) ||
+      // Older bundles and snapshots can contain wait rows. Import is a
+      // Session transfer, so it must independently refuse to copy them.
+      name === EVENT_WAIT_TABLE ||
+      name === EVENT_WAIT_SOURCE_TABLE
+    ) {
+      continue;
+    }
+    // Mirror the export's own classification instead of trusting that it
+    // ran: a table with no Session column and no referential rule describes
+    // the WORKSPACE, and the target has its own. The export empties those,
+    // so in practice this inserts nothing -- but an import that depends on
+    // the other side having tidied up is one bundle away from writing a
+    // workspace singleton into somebody else's workspace.
+    if (!describesASession(target, name)) continue;
+    const localSequenceColumn = LOCAL_SEQUENCE_COLUMNS.get(name);
+    merged.push(localSequenceColumn === undefined ? { name } : { name, localSequenceColumn });
+  }
+  return merged;
+}
+
 function mergeAttachedBundle(target: DatabaseSync): string[] {
   {
     {
-      const tables = target
-        .prepare(
-          "SELECT name FROM bundle.sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
-        )
-        .all() as Array<{ name?: unknown }>;
-      for (const row of tables) {
-        const name = row.name;
-        if (
-          typeof name !== 'string' ||
-          PORTABLE_GLOBAL_TABLES.has(name) ||
-          TRIGGER_MAINTAINED_TABLES.has(name)
-        ) {
-          continue;
+      for (const table of listSessionBundleMergeTables(target)) {
+        const quoted = quoteIdentifier(table.name);
+        const localSequence = table.localSequenceColumn;
+        if (localSequence) {
+          const columns = (
+            target.prepare(`PRAGMA bundle.table_info(${quoted})`).all() as Array<{ name: string }>
+          )
+            .filter((column) => column.name !== localSequence)
+            .map((column) => quoteIdentifier(column.name))
+            .join(', ');
+          // Let SQLite allocate target-local values while retaining source order.
+          target.exec(
+            `INSERT INTO main.${quoted} (${columns}) SELECT ${columns} FROM bundle.${quoted} ORDER BY ${quoteIdentifier(localSequence)}`,
+          );
+        } else {
+          target.exec(`INSERT INTO main.${quoted} SELECT * FROM bundle.${quoted}`);
         }
-        // Mirror the export's own classification instead of trusting that it
-        // ran: a table with no Session column and no referential rule describes
-        // the WORKSPACE, and the target has its own. The export empties those,
-        // so in practice this inserts nothing -- but an import that depends on
-        // the other side having tidied up is one bundle away from writing a
-        // workspace singleton into somebody else's workspace.
-        if (!describesASession(target, name)) continue;
-        const quoted = quoteIdentifier(name);
-        target.exec(`INSERT INTO main.${quoted} SELECT * FROM bundle.${quoted}`);
       }
+      // An archived Session arrives with the archive time (or no time) of the
+      // machine it left. Archive retention counts from that time, so an import
+      // could be deleted at once; its clock starts at the import instead.
+      target
+        .prepare(
+          `UPDATE main.session_metadata
+           SET archived_at = ?
+           WHERE is_archived = 1
+             AND session_id IN (SELECT session_id FROM bundle.session_metadata)`,
+        )
+        .run(Date.now());
+      stripPortableGoalWaits(target, true);
       const violation = target.prepare('PRAGMA foreign_key_check').get();
       if (violation) {
         throw new SessionBundleImportError(
@@ -1413,20 +1540,37 @@ async function mergeBundleContextDatabase(
         database.exec(
           'INSERT OR IGNORE INTO main.context_blobs SELECT * FROM bundle.context_blobs',
         );
+        // The payload files are already published. Adopt their representation
+        // when the target still holds the same bytes inline after a v2 upgrade,
+        // so retiring the last reference also collects the imported file.
+        database.exec(`
+          UPDATE main.context_blobs AS target
+          SET storage_kind = 'managed_file', payload = source.payload
+          FROM bundle.context_blobs AS source
+          WHERE target.blob_id = source.blob_id
+            AND target.storage_kind = 'inline'
+            AND source.storage_kind = 'managed_file'
+        `);
         // A retry re-inserts the same rows. Skipping an identical one is what
         // makes the second attempt work; skipping a DIFFERENT row that happens
         // to share an id would hide a real collision, so the two are separated.
         const colliding = database
           .prepare(`
             SELECT b.ref_id FROM bundle.context_refs b
-            JOIN main.context_refs m USING(ref_id)
-            WHERE m.session_id <> b.session_id OR m.blob_id <> b.blob_id
+            JOIN main.context_refs m ON m.ref_id = b.ref_id OR (
+              m.session_id = b.session_id AND m.owner_kind = b.owner_kind AND m.owner_id = b.owner_id
+            )
+            WHERE m.ref_id <> b.ref_id OR m.session_id <> b.session_id
+              OR m.owner_kind <> b.owner_kind OR m.owner_id <> b.owner_id
+              OR m.blob_id <> b.blob_id OR m.media_type <> b.media_type
+              OR m.created_at <> b.created_at
+            LIMIT 1
           `)
-          .all() as Array<{ ref_id?: unknown }>;
-        if (colliding.length > 0) {
+          .get() as { ref_id: string } | undefined;
+        if (colliding) {
           throw new SessionBundleImportError(
             'conflict',
-            `Context reference already names different content: ${String(colliding[0]?.ref_id)}`,
+            `Context reference already names different content: ${colliding.ref_id}`,
           );
         }
         database.exec('INSERT OR IGNORE INTO main.context_refs SELECT * FROM bundle.context_refs');
@@ -1476,6 +1620,32 @@ async function mergeBundleContextDatabase(
     database.close();
   }
   return countContextRefs(targetContext, sessionIds);
+}
+
+async function releaseUnpublishedBundleContext(
+  stateRoot: string,
+  sessionIds: readonly string[],
+): Promise<void> {
+  if (sessionIds.length === 0) return;
+  await runWithContextValueMutation(stateRoot, async () => {
+    // Reuse retirement's accounting and GC candidate updates. Retirement does
+    // not add payloads, so it needs no write quota.
+    const store = new SqliteContextOffloadStore(
+      resolveInside(stateRoot, CONTEXT_OFFLOAD_DATABASE_NAME),
+      {
+        limits: {
+          ownerMaxBytes: { read_image_snapshot: 0, tool_result_archive: 0 },
+          sessionLogicalBytes: 0,
+          workspacePhysicalBytes: 0,
+        },
+      },
+    );
+    try {
+      for (const sessionId of sessionIds) await store.retireSession(sessionId);
+    } finally {
+      store.close();
+    }
+  });
 }
 
 /**
@@ -1647,5 +1817,36 @@ function countContextRefs(databasePath: string, sessionIds: readonly string[]): 
     return Number(row.count ?? 0);
   } finally {
     database.close();
+  }
+}
+
+function stripPortableGoalWaits(database: DatabaseSync, importedOnly = false): void {
+  const scope = importedOnly
+    ? 'AND session_id IN (SELECT session_id FROM bundle.session_metadata)'
+    : '';
+  for (const row of database
+    .prepare(
+      `SELECT session_id, record_json FROM workflow_goal_authority WHERE (json_type(record_json, '$.activeEventWait') IS NOT NULL OR json_type(record_json, '$.pendingContinuation.eventWait') IS NOT NULL) ${scope}`,
+    )
+    .all()) {
+    const old = decodeGoalAuthorityRecord(JSON.parse(String(row.record_json)));
+    const { activeEventWait: _gate, ...base } = old;
+    const record = decodeGoalAuthorityRecord({
+      ...base,
+      currentExecution: null,
+      pendingContinuation: null,
+      controlLease: { ...base.controlLease, generation: base.controlLease.generation + 1 },
+      goal: {
+        ...base.goal,
+        revision: base.goal.revision + 1,
+        status: 'paused',
+        lastReason: 'Event waits do not transfer between State Roots.',
+      },
+    });
+    database
+      .prepare(
+        'UPDATE workflow_goal_authority SET authority_revision = authority_revision + 1, goal_revision = ?, status = ?, record_json = ? WHERE session_id = ?',
+      )
+      .run(record.goal.revision, record.goal.status, JSON.stringify(record), row.session_id);
   }
 }

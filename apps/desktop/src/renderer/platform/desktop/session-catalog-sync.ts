@@ -17,15 +17,17 @@
  * under the License.
  */
 
-import type { DesktopSessionSummary } from '../../../preload/bridge-contract.js';
+import type { DesktopSessionSummary, MakaBridge } from '../../../preload/bridge-contract.js';
+import type { SessionCatalogSource } from '../../application/contracts/session-catalog/session-catalog-state.js';
 
-export type SessionCatalogSource = {
-  sessions: Pick<typeof window.maka.sessions, 'get'>;
-};
-
-export interface SessionPatchDrain {
-  /** Resolves with the committed row, or null when it left the catalog. */
-  request(sessionId: string): Promise<DesktopSessionSummary | null>;
+/** The session catalog's Desktop source: full lists and change events. */
+export function createDesktopSessionCatalogSource(
+  bridge: { sessions: Pick<MakaBridge['sessions'], 'list' | 'subscribeChanges'> } = window.maka,
+): SessionCatalogSource {
+  return {
+    list: () => bridge.sessions.list(),
+    subscribeChanges: (handler) => bridge.sessions.subscribeChanges(handler),
+  };
 }
 
 /**
@@ -40,9 +42,9 @@ export function createSessionPatchDrain(
     /** A failed row read must not evict the row; the caller falls back to a full refresh. */
     onReadFailure(): void;
   },
-  source: SessionCatalogSource = window.maka,
-): SessionPatchDrain {
-  const pending = new Map<string, { resolve: (s: DesktopSessionSummary | null) => void }[]>();
+  source: { sessions: Pick<typeof window.maka.sessions, 'get'> } = window.maka,
+) {
+  const pending = new Map<string, (() => void)[]>();
   let draining = false;
 
   async function drain(): Promise<void> {
@@ -55,10 +57,10 @@ export function createSessionPatchDrain(
             const summary = await source.sessions.get(sessionId);
             const normalized = summary === null ? null : options.normalize(summary);
             options.commitPatch(sessionId, normalized);
-            waiters.forEach(({ resolve }) => resolve(normalized));
           } catch {
-            waiters.forEach(({ resolve }) => resolve(null));
             options.onReadFailure();
+          } finally {
+            waiters.forEach((resolve) => resolve());
           }
         }));
       }
@@ -68,17 +70,20 @@ export function createSessionPatchDrain(
   }
 
   return {
-    request(sessionId) {
-      const promise = new Promise<DesktopSessionSummary | null>((resolve) => {
+    request(sessionId: string) {
+      const promise = new Promise<void>((resolve) => {
         const waiters = pending.get(sessionId);
-        if (waiters) waiters.push({ resolve });
-        else pending.set(sessionId, [{ resolve }]);
+        if (waiters) waiters.push(resolve);
+        else pending.set(sessionId, [resolve]);
       });
       if (!draining) {
         draining = true;
         void drain();
       }
       return promise;
+    },
+    commit(session: DesktopSessionSummary) {
+      options.commitPatch(session.id, options.normalize(session));
     },
   };
 }

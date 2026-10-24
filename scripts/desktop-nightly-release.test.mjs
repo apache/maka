@@ -19,7 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import test from 'node:test';
@@ -34,6 +34,10 @@ import {
 } from './desktop-nightly.mjs';
 import { writeDesktopReleaseInput } from './desktop-nightly-fixture.mjs';
 import { productReleaseArtifactRecords } from './product-release-artifacts.mjs';
+
+const { version: productVersion } = JSON.parse(
+  await readFile(new URL('../package.json', import.meta.url), 'utf8'),
+);
 
 async function stageRelease(root, version) {
   const input = join(root, 'input');
@@ -54,7 +58,7 @@ async function stageRelease(root, version) {
 test('Nightly publication verifies the exact draft before one Prerelease/non-Latest mutation', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'maka-nightly-release-'));
   t.after(() => rm(root, { recursive: true, force: true }));
-  const version = '0.2.0-dev.42.20260829';
+  const version = `${productVersion}-dev.42.20260829`;
   const tag = `v${version}`;
   const sourceCommit = 'a'.repeat(40);
   const directory = await stageRelease(root, version);
@@ -150,12 +154,14 @@ test('Nightly publication verifies the exact draft before one Prerelease/non-Lat
   assert.match(edit[1].at(-1), /not an Apache Release/u);
   assert.match(edit[1].at(-1), /DISCLAIMER-WIP/u);
   assert.match(edit[1].at(-1), /Apache License 2\.0/u);
+  const disclaimer = await readFile(new URL('../DISCLAIMER-WIP', import.meta.url), 'utf8');
+  assert.ok(edit[1].at(-1).endsWith(disclaimer.trimEnd()));
 });
 
 test('a missing Nightly release is created only as a draft prerelease with Latest disabled', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'maka-nightly-create-'));
   t.after(() => rm(root, { recursive: true, force: true }));
-  const version = '0.2.0-dev.42.20260829';
+  const version = `${productVersion}-dev.42.20260829`;
   const tag = `v${version}`;
   const sourceCommit = 'a'.repeat(40);
   const directory = await stageRelease(root, version);

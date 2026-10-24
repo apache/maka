@@ -18,6 +18,7 @@
  */
 
 import { TOOL_ACTIVITY_KINDS, type ToolActivityKind } from '@maka/core/events';
+import { isToolCallOutcome, type ToolCallOutcome } from '@maka/core/tool-result-status';
 import {
   decodeInteractionAnswer,
   projectInteractionFormRequest,
@@ -74,6 +75,7 @@ export type ClientCapabilityContentBlock =
   | { readonly type: 'unknown'; readonly value: unknown };
 
 export interface ClientCapabilityCallResult {
+  readonly outcome: ToolCallOutcome;
   readonly content: ClientCapabilityContentBlock[];
   readonly structuredContent?: unknown;
 }
@@ -103,6 +105,8 @@ const CLIENT_CAPABILITY_ERRORS = [
   'host_draining',
   'operation_unavailable',
   'invalid_request',
+  'session_busy',
+  'session_binding_conflict',
   'internal_failure',
 ] as const;
 
@@ -127,6 +131,10 @@ export interface ClientCapabilityReplaceInput {
   readonly registrationId: string;
   /** Restrict publication to this Session; omission keeps the connection-wide slot. */
   readonly sessionId?: string;
+  /** Require the target Session to have no active or admitting root Turn at replacement. */
+  readonly requireIdleSession?: boolean;
+  /** Opaque identity of a complete Session configuration; conflicting providers cannot coexist. */
+  readonly sessionConfigurationId?: string;
   readonly offers: readonly ClientCapabilityOffer[];
   readonly services?: readonly ClientCapabilityServiceOffer[];
 }
@@ -305,7 +313,7 @@ export function decodeClientCapabilityReplaceInput(value: unknown): ClientCapabi
     record,
     'Client Capability replacement',
     ['registrationId', 'offers'],
-    ['services', 'sessionId'],
+    ['services', 'sessionId', 'requireIdleSession', 'sessionConfigurationId'],
   );
   if (!Array.isArray(record.offers) || record.offers.length > CLIENT_CAPABILITY_MAX_OFFERS) {
     throw invalidProtocolFrame('Invalid Client Capability offers');
@@ -324,6 +332,20 @@ export function decodeClientCapabilityReplaceInput(value: unknown): ClientCapabi
   const services = serviceValues.map((service) => decodeClientCapabilityServiceOffer(service));
   const sessionId =
     record.sessionId === undefined ? undefined : requireEntityId(record.sessionId, 'sessionId');
+  if (record.requireIdleSession !== undefined && typeof record.requireIdleSession !== 'boolean') {
+    throw invalidProtocolFrame('Invalid Client Capability idle requirement');
+  }
+  if (record.requireIdleSession === true && sessionId === undefined) {
+    throw invalidProtocolFrame('Client Capability idle requirement needs a target Session');
+  }
+  if (
+    record.sessionConfigurationId !== undefined &&
+    (sessionId === undefined ||
+      typeof record.sessionConfigurationId !== 'string' ||
+      !/^sha256:[a-f0-9]{64}$/.test(record.sessionConfigurationId))
+  ) {
+    throw invalidProtocolFrame('Invalid Client Capability Session configuration identity');
+  }
   if (
     sessionId !== undefined &&
     (services.length > 0 ||
@@ -365,6 +387,10 @@ export function decodeClientCapabilityReplaceInput(value: unknown): ClientCapabi
   const decoded = {
     registrationId: requireEntityId(record.registrationId, 'registrationId'),
     ...(sessionId === undefined ? {} : { sessionId }),
+    ...(record.requireIdleSession === true ? { requireIdleSession: true } : {}),
+    ...(record.sessionConfigurationId === undefined
+      ? {}
+      : { sessionConfigurationId: record.sessionConfigurationId }),
     offers,
     ...(record.services === undefined ? {} : { services }),
   };
@@ -669,12 +695,21 @@ export function decodeClientCapabilityHostFrame(value: unknown): ClientCapabilit
 
 export function decodeClientCapabilityResult(value: unknown): ClientCapabilityCallResult {
   const record = requireRecord(value, 'Client Capability result');
-  assertOptionalExactKeys(record, 'Client Capability result', ['content'], ['structuredContent']);
+  assertOptionalExactKeys(
+    record,
+    'Client Capability result',
+    ['outcome', 'content'],
+    ['structuredContent'],
+  );
+  if (!isToolCallOutcome(record.outcome)) {
+    throw invalidProtocolFrame('Invalid Client Capability result outcome');
+  }
   if (!Array.isArray(record.content) || record.content.length > 256) {
     throw invalidProtocolFrame('Invalid Client Capability result content');
   }
   const content = record.content.map(decodeContentBlock);
   return {
+    outcome: record.outcome,
     content,
     ...(Object.hasOwn(record, 'structuredContent')
       ? {

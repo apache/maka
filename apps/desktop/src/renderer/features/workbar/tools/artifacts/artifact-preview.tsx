@@ -75,6 +75,7 @@ export function ArtifactPreview(props: { record: ArtifactDescriptor; onShowInFol
   const copy = getArtifactCopy(useUiLocale());
   switch (record.kind) {
     case 'file':
+      if (isUnsupportedOfficeFile(record)) return <OfficeFileFallback copy={copy} onShowInFolder={onShowInFolder} />;
       return <FilePreview record={record} copy={copy} />;
     case 'diff':
       return <DiffPreview record={record} copy={copy} />;
@@ -91,6 +92,19 @@ export function ArtifactPreview(props: { record: ArtifactDescriptor; onShowInFol
     case 'pdf':
       return <PdfPreview record={record} copy={copy} />;
   }
+}
+
+export function isUnsupportedOfficeFile(record: Pick<ArtifactDescriptor, 'kind' | 'name'>): boolean {
+  return record.kind === 'file' && /\.(?:docx|xlsx|pptx)$/i.test(record.name);
+}
+
+function OfficeFileFallback(props: { copy: ArtifactCopy; onShowInFolder?: () => void }) {
+  return <div className="maka-artifact-preview-failure">
+    <Banner status="info" role="status" title={props.copy.preview.officeUnsupported.title}
+      description={props.copy.preview.officeUnsupported.description} />
+    {props.onShowInFolder && <Button variant="secondary" size="sm"
+      label={props.copy.pane.openInFinder} onClick={props.onShowInFolder} />}
+  </div>;
 }
 
 // ---- text-backed previews --------------------------------------------------

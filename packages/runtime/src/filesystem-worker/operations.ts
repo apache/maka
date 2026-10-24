@@ -38,6 +38,7 @@ import {
 
 import { computeEditedSource } from '../edit-replace.js';
 import { readPage } from '../read-page.js';
+import { formatJsonText } from '../format-json.js';
 import { createEditUnifiedDiff, createUnifiedDiff } from '../unified-diff.js';
 import {
   compareAndDeleteEntry,
@@ -47,7 +48,7 @@ import {
   StableWriteFailure,
   writeThroughHandle,
 } from '../file-stable-write.js';
-import { isSupportedImagePath, readWorkspaceImage } from '../image-file.js';
+import { ImageFileError, readWorkspaceFile } from '../image-file.js';
 import {
   FILESYSTEM_WORKER_PROTOCOL_VERSION,
   operationAccess,
@@ -136,24 +137,26 @@ export async function executeFilesystemOperation(
         'read',
         operationBoundary,
       );
-      if (isSupportedImagePath(path)) {
-        try {
-          const image = await readWorkspaceImage(path);
-          return {
-            kind: 'read_image',
-            base64: Buffer.from(image.bytes).toString('base64'),
-            mimeType: image.mimeType,
-          };
-        } catch (error) {
-          throw operationError(
-            'filesystem_error',
-            error instanceof Error ? error.message : 'Image could not be read.',
-          );
-        }
+      const file = await readWorkspaceFile(path, {
+        ...(operation.imagePurpose ? { imagePurpose: operation.imagePurpose } : {}),
+      }).catch((error: unknown) => {
+        throw operationError(
+          normalizeOperationError(error).code,
+          error instanceof Error ? error.message : 'File could not be read.',
+        );
+      });
+      if ('bytes' in file) {
+        return {
+          kind: 'read_image',
+          base64: Buffer.from(file.bytes).toString('base64'),
+          mimeType: file.mimeType,
+        };
       }
-      const content = await fs.readFile(path, 'utf8');
       try {
-        return { kind: 'read', ...readPage(content, operation, undefined, operation.continuation) };
+        return {
+          kind: 'read',
+          ...readPage(file.content, operation, undefined, operation.continuation),
+        };
       } catch (error) {
         throw operationError(
           'invalid_request',
@@ -329,9 +332,9 @@ export async function executeFilesystemOperation(
       try {
         const original = await handle.readFile('utf8');
         const bytesBefore = Buffer.byteLength(original, 'utf8');
-        let parsed: unknown;
+        let formatted: string;
         try {
-          parsed = JSON.parse(original);
+          formatted = formatJsonText(original, operation.sortKeys ?? false);
         } catch (error) {
           // Invalid JSON: return the structured failure without writing.
           return {
@@ -345,11 +348,6 @@ export async function executeFilesystemOperation(
             changed: false,
           };
         }
-        const formatted = JSON.stringify(
-          operation.sortKeys ? sortKeysDeep(parsed) : parsed,
-          null,
-          2,
-        );
         if (formatted !== original) {
           await writeThroughHandle(handle, formatted);
         }
@@ -386,12 +384,12 @@ export async function executeFilesystemOperation(
       if (dependencies.windowsSandboxed) {
         return {
           kind: 'glob',
-          files: await windowsNonFollowingGlob(
+          ...(await windowsNonFollowingGlob(
             path,
             operation.pattern,
             limit,
             dependencies.windowsGlobReadDirectory,
-          ),
+          )),
         };
       }
       return { kind: 'glob', ...(await globFiles({ ...operation, cwd: path })) };
@@ -478,20 +476,13 @@ function operationError(
   return new FilesystemOperationError(code, message);
 }
 
-function sortKeysDeep(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(sortKeysDeep);
-  if (value !== null && typeof value === 'object' && !(value instanceof Date)) {
-    return Object.fromEntries(
-      Object.keys(value)
-        .sort()
-        .map((key) => [key, sortKeysDeep((value as Record<string, unknown>)[key])]),
-    );
-  }
-  return value;
-}
-
 function normalizeOperationError(error: unknown): FilesystemOperationError {
   if (error instanceof FilesystemOperationError) return error;
+  if (error instanceof ImageFileError)
+    return operationError(
+      error.code === 'ERR_IMAGE_TOO_LARGE' ? 'image_too_large' : 'invalid_image',
+      error.message,
+    );
   if (error instanceof StableWriteFailure) {
     return operationError(error.code, error.message);
   }
@@ -688,7 +679,7 @@ async function windowsNonFollowingGlob(
   pattern: string,
   limit: number,
   readDirectory?: (path: string) => Promise<Dirent[]>,
-): Promise<string[]> {
+): Promise<{ files: string[]; truncated: boolean }> {
   const matcher = new Minimatch(pattern, WINDOWS_GLOB_MATCH_OPTIONS);
   const initialBranches = matcher.set.map((compiled, id) => ({
     id,
@@ -696,12 +687,19 @@ async function windowsNonFollowingGlob(
     indexes: [0],
   }));
   const files: string[] = [];
+  const result = { files, truncated: false };
   const emitted = new Set<string>();
   const emit = (relativePath: string): boolean => {
     if (emitted.has(relativePath)) return false;
     emitted.add(relativePath);
+    // Reaching the cap is not proof of truncation: find one additional,
+    // distinct match before stopping, just like the production Glob path.
+    if (files.length >= limit) {
+      result.truncated = true;
+      return true;
+    }
     files.push(relativePath);
-    return files.length >= limit;
+    return false;
   };
 
   const pending: WindowsGlobPathState[] = [
@@ -713,15 +711,25 @@ async function windowsNonFollowingGlob(
     let entries: Dirent[] | undefined;
     const readEntries = async (): Promise<Dirent[]> => {
       if (entries) return entries;
-      entries =
-        (await readWindowsNonFollowingDirectory(root, currentPath.absolutePath, readDirectory)) ??
-        [];
+      try {
+        entries = await (readDirectory
+          ? readDirectory(currentPath.absolutePath)
+          : fs.readdir(currentPath.absolutePath, { withFileTypes: true }));
+      } catch (error) {
+        // Reparse entries are excluded before descent. Any failure reading
+        // an admitted physical directory makes this search incomplete, not
+        // an empty subtree. Past the cap retain the bounded result and report
+        // that the overflow probe could not establish completeness.
+        if (files.length < limit) throw error;
+        result.truncated = true;
+        entries = [];
+      }
       return entries;
     };
     const childPaths = new Map<string, WindowsGlobPathState>();
 
-    // Keep Node Glob's branch and LIFO traversal order so a bounded result is
-    // the same prefix users receive outside the Windows sandbox.
+    // Emit the encounter order without sorting or collecting all matches:
+    // a bounded result stays a prefix of this non-following traversal.
     for (const branch of currentPath.branches) {
       const last = branch.pattern.length - 1;
       const isLast = windowsGlobPatternIsLast(branch, currentPath.isDirectory);
@@ -738,7 +746,7 @@ async function windowsNonFollowingGlob(
       const finalPart = branch.pattern[last];
       if (isLast && typeof finalPart === 'string') {
         if (finalPart === '' || finalPart === '.') {
-          if (currentPath.isDirectory && emit(currentPath.relativePath)) return files;
+          if (currentPath.isDirectory && emit(currentPath.relativePath)) return result;
         } else if (currentPath.isDirectory) {
           const entry = (await readEntries()).find(
             (candidate) =>
@@ -747,7 +755,7 @@ async function windowsNonFollowingGlob(
           );
           if (entry) {
             const relativePath = join(currentPath.relativePath, entry.name);
-            if (emit(relativePath)) return files;
+            if (emit(relativePath)) return result;
           }
         }
         if (branch.indexes.length === 1 && branch.indexes[0] === last) continue;
@@ -759,7 +767,7 @@ async function windowsNonFollowingGlob(
           (last === 0 && currentPath.isDirectory)) &&
         emit(currentPath.relativePath)
       ) {
-        return files;
+        return result;
       }
 
       if (!currentPath.isDirectory) continue;
@@ -789,11 +797,11 @@ async function windowsNonFollowingGlob(
             if (entry.isDirectory()) {
               subIndexes.add(index);
             } else if (index === last && emit(relativePath)) {
-              return files;
+              return result;
             }
 
             if (nextMatches && nextIndex === last && !isLast) {
-              if (emit(relativePath)) return files;
+              if (emit(relativePath)) return result;
             } else if (nextMatches && entry.isDirectory()) {
               subIndexes.add(index + 2);
             }
@@ -810,7 +818,7 @@ async function windowsNonFollowingGlob(
               windowsGlobPartMatches(branch.pattern, nextIndex, entry.name)
             ) {
               if (nextIndex === last) {
-                if (emit(relativePath)) return files;
+                if (emit(relativePath)) return result;
               } else {
                 subIndexes.add(nextIndex + 1);
               }
@@ -819,7 +827,7 @@ async function windowsNonFollowingGlob(
 
           if (part instanceof RegExp && windowsGlobPartMatches(branch.pattern, index, entry.name)) {
             if (index === last) {
-              if (emit(relativePath)) return files;
+              if (emit(relativePath)) return result;
             } else if (entry.isDirectory()) {
               subIndexes.add(nextIndex);
             }
@@ -842,7 +850,7 @@ async function windowsNonFollowingGlob(
     }
     for (const child of childPaths.values()) pending.push(child);
   }
-  return files;
+  return result;
 }
 
 function windowsGlobPatternIsLast(branch: WindowsGlobBranchState, isDirectory: boolean): boolean {
@@ -897,23 +905,6 @@ function addWindowsGlobSubpattern(
     indexes: [...new Set([...previous.indexes, ...branch.indexes])],
   };
   paths.set(path.relativePath, { ...existing, branches });
-}
-
-async function readWindowsNonFollowingDirectory(
-  root: string,
-  path: string,
-  readDirectory?: (path: string) => Promise<Dirent[]>,
-): Promise<Dirent[] | undefined> {
-  try {
-    return await (readDirectory ? readDirectory(path) : fs.readdir(path, { withFileTypes: true }));
-  } catch (error) {
-    if (path !== root && isNonFollowingPrunableError(error)) return undefined;
-    throw error;
-  }
-}
-
-function isNonFollowingPrunableError(error: unknown): boolean {
-  return ['EACCES', 'ELOOP', 'ENOENT', 'ENOTDIR', 'EPERM'].includes(nodeErrorCode(error) ?? '');
 }
 
 async function targetTypeOf(path: string): Promise<FilesystemWorkerTarget['targetType']> {

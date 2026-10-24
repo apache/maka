@@ -17,8 +17,8 @@
  * under the License.
  */
 
-import { Cpu, ICON_SIZE } from '@maka/ui/icons';
+import { Cpu } from '@maka/ui/icons';
 
 export function GenericProviderMark() {
-  return <Cpu size={ICON_SIZE.plate} aria-hidden="true" />;
+  return <Cpu aria-hidden="true" />;
 }

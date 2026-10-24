@@ -26,13 +26,14 @@ import { createManagedExecutionBoundary } from '@maka/core/sandbox-boundary';
 import { createWorkspaceWritePermissionProfile } from '@maka/core/permission-profile';
 import { createReadOnlyPermissionProfile } from '@maka/core/permission-profile';
 
+import { createImageFileReader } from '../image-file-reader.js';
 import { buildBuiltinTools } from '../builtin-tools.js';
 import { createBoundaryFilesystemExecutor } from '../filesystem-executor.js';
 import { createLocalWorkspaceExecutor } from '../workspace-executor.js';
 import type { FilesystemWorkerExecuteInput } from '../filesystem-worker/client.js';
 import { executeFilesystemWorkerRequest } from '../filesystem-worker/operations.js';
 import { FILESYSTEM_WORKER_PROTOCOL_VERSION } from '../filesystem-worker/protocol.js';
-import { READ_PAGE_MAX_CHARS, type ReadInput, type ReadPage } from '../read-page.js';
+import { READ_PAGE_MAX_BYTES, type ReadInput, type ReadPage } from '../read-page.js';
 
 const cleanup: string[] = [];
 
@@ -111,7 +112,7 @@ describe('builtin file tools use the sandboxed worker', () => {
     });
     const read = async (input: ReadInput) => {
       const page = (await runTool(tools, 'Read', input, cwd)) as ReadPage;
-      assert.ok(JSON.stringify(page).length <= READ_PAGE_MAX_CHARS);
+      assert.ok(Buffer.byteLength(JSON.stringify(page)) <= READ_PAGE_MAX_BYTES);
       return page;
     };
     const first = await read({ path });
@@ -220,7 +221,7 @@ describe('builtin file tools use the sandboxed worker', () => {
                 changed: true,
               };
             case 'glob':
-              return { kind: 'glob', files: ['worker.ts'] };
+              return { kind: 'glob', files: ['worker.ts'], truncated: false };
             case 'grep':
               return {
                 kind: 'grep',
@@ -613,3 +614,32 @@ async function temporaryDirectory(prefix: string): Promise<string> {
   cleanup.push(path);
   return await realpath(path);
 }
+
+test('chat image reader uses the managed Read boundary and never falls back to host filesystem', async () => {
+  const cwd = await temporaryDirectory('maka-delivery-reader-');
+  const executionBoundary = createManagedExecutionBoundary(createReadOnlyPermissionProfile(), 0);
+  await assert.rejects(
+    createImageFileReader()({ path: 'private.png', cwd, executionBoundary }),
+    /worker|sandbox/i,
+  );
+  let calls = 0;
+  const reader = createImageFileReader({
+    filesystemWorker: {
+      execute: async (input) => {
+        calls++;
+        assert.deepEqual(input.executionBoundary, executionBoundary);
+        assert.deepEqual(input.operation, {
+          kind: 'read',
+          path: 'private.png',
+          imagePurpose: 'chat',
+        });
+        throw new Error('sandbox permission refused');
+      },
+    },
+  });
+  await assert.rejects(
+    reader({ path: 'private.png', cwd, executionBoundary }),
+    /permission refused/,
+  );
+  assert.equal(calls, 1);
+});

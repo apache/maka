@@ -22,7 +22,6 @@
 import { isConnectionReady, isRealConnection } from './connection-readiness.js';
 import { normalizeOpenAiCodexConnection } from './model-catalog.js';
 import { connectionEnabledModelIds, type LlmConnection } from './llm-connections.js';
-import type { SessionSummary } from './session.js';
 export { hasSettledInitialOnboarding } from './onboarding-milestone.js';
 
 /** Derived UI state; every non-ready variant identifies one actionable repair path. */
@@ -39,12 +38,8 @@ export interface DeriveOnboardingStateInput {
   connections: ReadonlyArray<LlmConnection>;
   /** Legacy preference used only to order otherwise-valid candidates. */
   defaultSlug?: string | null;
-  /**
-   * All sessions known to storage. `ready_with_history` counts ANY
-   * non-deleted session, including archived and aborted ones — those
-   * are still user history.
-   */
-  sessions: ReadonlyArray<SessionSummary>;
+  /** Any non-deleted session counts as history, including archived and aborted ones. */
+  hasHistory: boolean;
   /**
    * Map of `slug → hasSecret` for every real connection in
    * `connections`. Caller resolves this asynchronously (credential
@@ -76,7 +71,7 @@ export function deriveOnboardingState(input: DeriveOnboardingStateInput): Onboar
         requestedModel: model,
       });
       if (verdict.ready) {
-        return hasHistory(input.sessions)
+        return input.hasHistory
           ? { kind: 'ready_with_history', connectionSlug: connection.slug, model: verdict.model }
           : { kind: 'ready_empty', connectionSlug: connection.slug, model: verdict.model };
       }
@@ -120,10 +115,6 @@ export function deriveOnboardingState(input: DeriveOnboardingStateInput): Onboar
   return everyConnectionRetired
     ? { kind: 'blocked', reason: 'all_connections_retired' }
     : { kind: 'blocked', reason: 'all_connections_unhealthy' };
-}
-
-function hasHistory(sessions: ReadonlyArray<SessionSummary>): boolean {
-  return sessions.length > 0;
 }
 
 /** Closed milestone ids persisted in settings. */

@@ -20,7 +20,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { WorkHubDelegationAssignedMessage } from '@maka/core/session';
+import { deferred } from '@maka/core/test-only/async-primitives';
 import type { SessionAdmissionLease } from '../server/session-admission-gate.js';
+import { HostResidencyRegistry } from '../server/host-residency-registry.js';
 import {
   HostWorkHubResultCoordinator,
   workHubResultOrigin,
@@ -294,6 +296,102 @@ test('a new target event wakes reconciliation ahead of the delivered-event backs
     await new Promise<void>((resolve) => setImmediate(resolve));
     assert.ok(inspections > afterDelivery);
   } finally {
+    await coordinator.close();
+  }
+});
+
+test('handoff holds pending result polls and cancellation resumes notifications exactly once', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const schedule = t.mock.method(globalThis, 'setTimeout');
+  const f = fixture();
+  let polls = 0;
+  const listAssignments = f.ports.listAssignments;
+  f.ports.listAssignments = () => {
+    polls += 1;
+    return listAssignments();
+  };
+  const residencies = new HostResidencyRegistry();
+  f.ports.acquireResidency = () => residencies.acquire('workhub-result');
+  const coordinator = new HostWorkHubResultCoordinator(f.ports);
+  try {
+    coordinator.start();
+    const queuedPoll = schedule.mock.calls[0]!.arguments[0];
+    const hold = coordinator.holdForHandoff();
+    assert.ok(hold);
+    assert.equal(coordinator.holdForHandoff(), undefined);
+    coordinator.notify();
+    queuedPoll();
+    t.mock.timers.tick(60_000);
+    await hold.settled();
+    assert.equal(polls, 0);
+    assert.equal(residencies.activeCount, 0);
+
+    hold.release();
+    hold.release();
+    queuedPoll();
+    t.mock.timers.tick(100);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(polls, 1);
+    assert.equal(f.contents.length, 1);
+    assert.equal(residencies.activeCount, 0);
+
+    const next = coordinator.holdForHandoff();
+    assert.ok(next);
+    coordinator.beginDrain();
+    next.release();
+    coordinator.notify();
+    t.mock.timers.tick(60_000);
+    assert.equal(polls, 1);
+    assert.equal(coordinator.holdForHandoff(), undefined);
+  } finally {
+    await coordinator.close();
+  }
+});
+
+test('handoff waits for admitted result delivery without dropping or repeating it', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const f = fixture();
+  const entered = deferred<void>();
+  const finish = deferred<void>();
+  const deliver = f.ports.deliver;
+  f.ports.deliver = async (...args) => {
+    entered.resolve();
+    await finish.promise;
+    return deliver(...args);
+  };
+  const residencies = new HostResidencyRegistry();
+  f.ports.acquireResidency = () => residencies.acquire('workhub-result');
+  const coordinator = new HostWorkHubResultCoordinator(f.ports);
+  try {
+    coordinator.start();
+    t.mock.timers.tick(100);
+    await entered.promise;
+    const hold = coordinator.holdForHandoff();
+    assert.ok(hold);
+    let settled = false;
+    const settling = hold.settled().then(() => {
+      settled = true;
+    });
+    coordinator.notify(assignment.targetSessionId);
+    t.mock.timers.tick(60_000);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(settled, false);
+    assert.equal(residencies.drainCount, 1);
+    assert.equal(f.contents.length, 0);
+
+    finish.resolve();
+    await settling;
+    assert.equal(residencies.drainCount, 0);
+    assert.equal(f.contents.length, 1);
+    t.mock.timers.tick(60_000);
+    assert.equal(residencies.activeCount, 0);
+    hold.release();
+    t.mock.timers.tick(100);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(f.contents.length, 1);
+    assert.equal(residencies.activeCount, 0);
+  } finally {
+    finish.resolve();
     await coordinator.close();
   }
 });

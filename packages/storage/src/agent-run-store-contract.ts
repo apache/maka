@@ -68,6 +68,7 @@ import {
   isTurnOrchestrationSource,
   type TurnOrchestration,
 } from '@maka/core/orchestration';
+import { decodeEventWaitProvenance } from '@maka/core/event-wait-delivery';
 import { validateGenericToolLedgerAppend } from '@maka/core/tool-ledger-scanner';
 
 export const SAFE_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
@@ -283,6 +284,13 @@ export interface DurableRuntimeEventStore extends RuntimeEventStore {
     budget: RuntimeEventScanBudget,
     visit: (events: readonly RuntimeEvent[]) => void,
   ): Promise<RuntimeEventScanResult>;
+  /** Immutable facts for one tool call, bounded independently of unrelated Run history. */
+  readToolProvenanceEvents(
+    sessionId: string,
+    runId: string,
+    toolCallId: string,
+    budget: EvidenceReadBudget,
+  ): Promise<BoundedEvidenceReadResult<RuntimeEvent>>;
   readRuntimeEventsBounded(
     sessionId: string,
     runId: string,
@@ -503,7 +511,7 @@ export function assertNoReservedToolLedgerFact(event: RuntimeEvent): void {
   const validation = validateGenericToolLedgerAppend(event);
   if (validation.ok) return;
   if (validation.code === 'reserved_recovery_fact') {
-    throw new Error('Tool recovery facts require the atomic recovery bundle writer');
+    throw new Error('Historical tool recovery facts are read-only');
   }
   if (validation.code === 'reserved_tool_boundary_fact') {
     throw new Error('Durable tool facts require the atomic tool boundary writer');
@@ -1127,8 +1135,16 @@ export function normalizeRootExecutionDescriptor(value: unknown): RootExecutionD
     throw new Error('Invalid root execution descriptor');
   }
   if (value.kind === 'external_message') {
-    const allowedKeys = ['kind', 'inputDigest', 'maxSteps'];
+    const decodedOrigin = decodeTurnOrigin(value.origin);
+    const origin =
+      decodedOrigin?.kind === 'cloud_activation' || decodedOrigin?.kind === 'external_connector'
+        ? decodedOrigin
+        : undefined;
+    const allowedKeys = ['kind', 'inputDigest', 'maxSteps', 'origin'];
     if (!Object.keys(value).every((key) => allowedKeys.includes(key))) {
+      throw new Error('Invalid root execution descriptor');
+    }
+    if (value.origin !== undefined && origin === undefined) {
       throw new Error('Invalid root execution descriptor');
     }
     if (value.inputDigest !== undefined && !isSha256Digest(value.inputDigest)) {
@@ -1146,6 +1162,7 @@ export function normalizeRootExecutionDescriptor(value: unknown): RootExecutionD
       kind: 'external_message',
       ...(value.inputDigest !== undefined ? { inputDigest: value.inputDigest } : {}),
       ...(value.maxSteps !== undefined ? { maxSteps: value.maxSteps } : {}),
+      ...(origin !== undefined ? { origin } : {}),
     });
   }
   if (value.kind === 'workhub_coordination') {
@@ -1234,13 +1251,23 @@ export function normalizeRootExecutionDescriptor(value: unknown): RootExecutionD
   }
   if (value.kind === 'goal') {
     if (
-      !hasExactKeys(value, ['kind', 'goalId']) ||
+      !hasExactKeys(value, [
+        'kind',
+        'goalId',
+        ...(value.eventWait === undefined ? [] : ['eventWait']),
+      ]) ||
       typeof value.goalId !== 'string' ||
       !isSafeId(value.goalId)
     ) {
       throw new Error('Invalid root execution descriptor');
     }
-    return Object.freeze({ kind: 'goal', goalId: value.goalId });
+    return Object.freeze({
+      kind: 'goal',
+      goalId: value.goalId,
+      ...(value.eventWait === undefined
+        ? {}
+        : { eventWait: decodeEventWaitProvenance(value.eventWait) }),
+    });
   }
   if (value.kind === 'agent_graph_supervisor_wake') {
     if (
@@ -1441,8 +1468,4 @@ export function hasExactKeys(
 ): boolean {
   const keys = Object.keys(record);
   return keys.length === expected.length && expected.every((key) => Object.hasOwn(record, key));
-}
-
-export function sanitizeJson(_key: string, value: unknown): unknown {
-  return value === undefined ? undefined : value;
 }

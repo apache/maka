@@ -19,7 +19,6 @@
 
 import { strict as assert } from 'node:assert';
 import {
-  glob as nodeGlob,
   lstat,
   mkdtemp,
   mkdir,
@@ -36,6 +35,7 @@ import { join, parse, sep } from 'node:path';
 import { afterEach, describe, test } from 'node:test';
 
 import { executeFilesystemWorkerRequest } from '../filesystem-worker/operations.js';
+import { globFiles } from '../glob-search.js';
 import type { GrepRunInput } from '../grep-search.js';
 import {
   FILESYSTEM_WORKER_PROTOCOL_VERSION,
@@ -357,7 +357,7 @@ describe('filesystem worker operations', () => {
     }
   });
 
-  test('preserves Node Glob ordering and bounded prefixes without directory links', async () => {
+  test('matches production Glob membership and preserves traversal prefixes without links', async () => {
     const root = await temporaryDirectory('maka-worker-glob-node-parity-');
     await mkdir(join(root, 'src', 'nested'), { recursive: true });
     await mkdir(join(root, 'foo', 'bar', 'end'), { recursive: true });
@@ -409,15 +409,18 @@ describe('filesystem worker operations', () => {
       '**/*',
     ];
     for (const pattern of patterns) {
-      const expected: string[] = [];
-      for await (const file of nodeGlob(pattern, { cwd: root, followSymlinks: false })) {
-        expected.push(file.replaceAll('\\', '/'));
-      }
-      assert.deepEqual(await runWindowsGlob(pattern), expected, pattern);
+      const expected = (await globFiles({ cwd: root, pattern })).files.map((file) =>
+        file.replaceAll('\\', '/'),
+      );
+      const encountered = await runWindowsGlob(pattern);
+      // Glob promises unsorted traversal order, not identical I/O completion
+      // order across engines. Match the production membership and retain this
+      // walker's actual prefix instead of sorting the operation's output.
+      assert.deepEqual([...encountered].sort(), [...expected].sort(), pattern);
       for (const limit of [1, 2, 5]) {
         assert.deepEqual(
           await runWindowsGlob(pattern, limit),
-          expected.slice(0, limit),
+          encountered.slice(0, limit),
           `${pattern} limit=${limit}`,
         );
       }
@@ -887,6 +890,42 @@ describe('filesystem worker operations', () => {
     if (response.result.kind !== 'edit') return;
     assert.equal(response.result.diff, undefined);
     assert.equal(await readFile(target, 'utf8'), `${replacement}\n`);
+  });
+
+  test('FormatJson preserves numeric literals and refuses invalid JSON before writing', async () => {
+    const root = await temporaryDirectory('maka-worker-format-numbers-');
+    const path = join(root, 'data.json');
+    for (const sortKeys of [false, true]) {
+      for (const source of [
+        '9223372036854775807',
+        '1e400',
+        '-0',
+        '[0.123456789012345678901]',
+        '{"id":9223372036854775807}',
+      ]) {
+        await writeFile(path, source);
+        const response = await executeFilesystemWorkerRequest(
+          await requestFor(
+            { kind: 'format_json', cwd: root, path, sortKeys },
+            { enforcementPath: path, access: 'write', scope: 'exact', targetType: 'file' },
+          ),
+        );
+        assert.ok(response.ok);
+        assert.equal((await readFile(path, 'utf8')).replace(/\s/g, ''), source);
+      }
+    }
+    const invalid = '{"id":9223372036854775807,}';
+    await writeFile(path, invalid);
+    const response = await executeFilesystemWorkerRequest(
+      await requestFor(
+        { kind: 'format_json', cwd: root, path, sortKeys: true },
+        { enforcementPath: path, access: 'write', scope: 'exact', targetType: 'file' },
+      ),
+    );
+    assert.ok(response.ok);
+    assert.equal(response.result.kind, 'format_json');
+    if (response.result.kind === 'format_json') assert.equal(response.result.valid, false);
+    assert.equal(await readFile(path, 'utf8'), invalid);
   });
 
   test('omits the diff when FormatJson leaves the file unchanged', async () => {

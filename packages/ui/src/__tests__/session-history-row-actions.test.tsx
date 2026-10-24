@@ -22,7 +22,7 @@ import test from 'node:test';
 import { parseHTML } from 'linkedom';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { ProjectRecord } from '@maka/core/project';
-import type { SessionSummary } from '@maka/core/session';
+import type { SessionCatalogSummary, SessionSummary } from '@maka/core/session';
 import { LocaleProvider } from '../locale-context.js';
 import {
   SessionHistoryList,
@@ -66,7 +66,6 @@ const session: SessionSummary = {
 const rowActions: SessionRowActions = {
   onToggleFlag: () => undefined,
   onArchive: () => undefined,
-  onUnarchive: () => undefined,
   onRename: () => undefined,
 };
 
@@ -181,6 +180,61 @@ test('renders a scan-friendly compact timestamp in the session rail', () => {
   }
 });
 
+for (const lastMessageAt of [undefined, Date.UTC(2026, 6, 24)]) {
+  test(`shows a new branch's activity time without newer messages (${lastMessageAt})`, () => {
+    const now = Date.UTC(2026, 7, 24, 12);
+    const originalDateNow = Date.now;
+    Date.now = () => now;
+    try {
+      const branch: SessionCatalogSummary = {
+        ...session,
+        id: 'branch',
+        parentSessionId: session.id,
+        branchOfTurnId: 'turn-1',
+        activityAt: now,
+        lastMessageAt,
+      };
+      const { document } = parseHTML(renderToStaticMarkup(
+        <LocaleProvider locale="en">
+          <Rail sessions={[branch]} />
+        </LocaleProvider>,
+      ));
+
+      assert.equal(document.querySelector('.maka-session-row-time-label')?.textContent, 'just now');
+    } finally {
+      Date.now = originalDateNow;
+    }
+  });
+}
+
+test('sorts a newly created branch ahead of older conversations by catalog activity', () => {
+  const now = Date.UTC(2026, 7, 24, 12);
+  const source: SessionCatalogSummary = {
+    ...session,
+    activityAt: now - 60_000,
+    lastMessageAt: now - 60_000,
+  };
+  const branch: SessionCatalogSummary = {
+    ...session,
+    id: 'branch',
+    parentSessionId: source.id,
+    branchOfTurnId: 'turn-1',
+    activityAt: now,
+  };
+  const { document } = parseHTML(renderToStaticMarkup(
+    <LocaleProvider locale="en">
+      <Rail sessions={[source, branch]} />
+    </LocaleProvider>,
+  ));
+
+  assert.deepEqual(
+    [...document.querySelectorAll('.maka-session-row')].map((row) =>
+      row.getAttribute('data-session-id'),
+    ),
+    [branch.id, source.id],
+  );
+});
+
 test('identifies an external executor in the session rail', () => {
   const markup = renderToStaticMarkup(
     <LocaleProvider locale="en">
@@ -246,6 +300,44 @@ test('a responding row spins where an unread row shows a dot', () => {
   assert.equal(signal(responding.id).querySelector('.astryx-status-dot'), null);
   assert.ok(signal(unread.id).querySelector('.astryx-status-dot'));
   assert.equal(signal(unread.id).querySelector('.astryx-spinner'), null);
+});
+
+test('a row shows its state in place of the timestamp and still names it when covered', () => {
+  const now = Date.UTC(2026, 7, 24, 12, 0, 0);
+  const waiting = {
+    ...session,
+    status: 'waiting_for_user' as const,
+    lastMessageAt: now - 46 * 60_000,
+  };
+  const idle = { ...session, id: 'session-idle', lastMessageAt: now - 46 * 60_000 };
+  const originalDateNow = Date.now;
+  Date.now = () => now;
+  try {
+    const markup = renderToStaticMarkup(
+      <LocaleProvider locale="en">
+        <Rail
+          sessions={[waiting, idle]}
+          onSelectSession={() => undefined}
+          rowActions={rowActions}
+        />
+      </LocaleProvider>,
+    );
+    const { document } = parseHTML(markup);
+    const row = (id: string) => document.querySelector(`[data-session-id="${id}"]`)!;
+    const slot = (id: string) => row(id).querySelector('.maka-session-row-signal')!;
+
+    assert.ok(slot(waiting.id).querySelector('.astryx-status-dot'));
+    assert.equal(slot(waiting.id).querySelector('.maka-session-row-time-label'), null);
+    assert.equal(slot(idle.id).querySelector('.astryx-status-dot'), null);
+    assert.equal(slot(idle.id).querySelector('.maka-session-row-time-label')?.textContent, '46min');
+    assert.match(
+      row(waiting.id).querySelector('.astryx-side-nav-item .maka-visually-hidden')?.textContent ??
+        '',
+      /Waiting for you/,
+    );
+  } finally {
+    Date.now = originalDateNow;
+  }
 });
 
 test('renders Runtime Host live runs without requiring renderer-local streaming', () => {
@@ -330,9 +422,11 @@ test('renders collapsible project navigation and row actions as sibling controls
   const action = document.querySelector<HTMLButtonElement>(
     'button[aria-label="Maka project actions"]',
   );
+  const newTask = projectRow?.querySelector<HTMLButtonElement>('button[aria-label="Maka New task"]');
 
   assert.ok(projectRow);
   assert.ok(action);
+  assert.ok(newTask);
   const navigation = projectRow.querySelector<HTMLButtonElement>(
     ':scope > div > button[aria-controls]',
   );
@@ -347,6 +441,8 @@ test('renders collapsible project navigation and row actions as sibling controls
   assert.ok(controlledGroup);
   assert.equal(navigation.contains(metadata), true);
   assert.equal(navigation.contains(action), false);
+  assert.equal(navigation.contains(newTask), false);
+  assert.equal(action.closest('.maka-project-row-actions'), newTask.closest('.maka-project-row-actions'));
   assert.equal(metadata.textContent, '');
   assert.equal(navigation.textContent, 'Maka', 'project navigation omits the task-count badge');
   assert.equal(controlledGroup.getAttribute('aria-hidden'), 'false');
@@ -357,10 +453,40 @@ test('renders collapsible project navigation and row actions as sibling controls
     'project navigation precedes its auxiliary action',
   );
   assert.equal(projectButtons.indexOf(action), 1, 'project action precedes nested tasks');
+  assert.equal(projectButtons.indexOf(newTask), 2, 'new task follows the menu and precedes nested tasks');
   assert.ok(navigation.getAttribute('aria-describedby'));
   assertDescriptionReferencesResolve(markup);
   assertNoNestedButtons(markup);
 });
+
+for (const scenario of [
+  { name: 'empty', project, sessions: [], hasNewTask: true },
+  { name: 'unavailable', project: { ...project, available: false }, sessions: [session], hasNewTask: false },
+  { name: 'archived', project: { ...project, archivedAt: 1 }, sessions: [session], hasNewTask: false },
+  { name: 'ungrouped', project: undefined, sessions: [session], hasNewTask: false },
+]) {
+  test(`an ${scenario.name} project group offers the correct new-task shortcut`, () => {
+    const markup = renderToStaticMarkup(
+      <LocaleProvider locale="en">
+        <Rail
+          sessions={scenario.sessions}
+          groups={[{ id: 'group', label: 'Maka', project: scenario.project, sessions: scenario.sessions }]}
+          groupVariant="project"
+          projectActions={projectActions}
+        />
+      </LocaleProvider>,
+    );
+    const { document } = parseHTML(markup);
+    const projectRow = document.querySelector('[data-project-id="group"]');
+    assert.ok(projectRow);
+    assert.equal(projectRow.querySelector('button[aria-label="Maka New task"]') !== null, scenario.hasNewTask);
+    assert.equal(
+      projectRow.querySelector('button[aria-label="Maka project actions"]') !== null,
+      scenario.project !== undefined,
+    );
+    assertNoNestedButtons(markup);
+  });
+}
 
 test('renders pinned tasks once above project groups', () => {
   const pinnedSession: SessionSummary = {
@@ -565,4 +691,42 @@ test('keeps project running totals aligned with renderer-local task streaming', 
   assert.match(markup, /maka-visually-hidden">Responding</);
   assert.ok(description);
   assert.match(description.getAttribute('aria-label') ?? '', /1 running/);
+});
+
+test('names the session location in the hover description only when one is provided', () => {
+  const describe = (markup: string): string => {
+    const { document } = parseHTML(markup);
+    const navigation = document.querySelector<HTMLButtonElement>(
+      '.maka-session-row .astryx-side-nav-item',
+    );
+    const describedBy = navigation?.getAttribute('aria-describedby');
+    return (describedBy ? document.getElementById(describedBy) : null)?.getAttribute(
+      'aria-label',
+    ) ?? '';
+  };
+  const located = renderToStaticMarkup(
+    <LocaleProvider locale="en">
+      <Rail
+        sessions={[session]}
+        sessionLocation={() => '/workspace/maka-agent/.worktree/sidebar'}
+        onSelectSession={() => undefined}
+      />
+    </LocaleProvider>,
+  );
+  const plain = renderToStaticMarkup(
+    <LocaleProvider locale="en">
+      <Rail sessions={[session]} onSelectSession={() => undefined} />
+    </LocaleProvider>,
+  );
+
+  assert.match(
+    describe(located),
+    /\/workspace\/maka-agent\/\.worktree\/sidebar/,
+    'a multi-location project names the session location',
+  );
+  assert.doesNotMatch(
+    describe(plain),
+    /maka-agent\/\.worktree\/sidebar/,
+    'a single-location project stays quiet about its location',
+  );
 });

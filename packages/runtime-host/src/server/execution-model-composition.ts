@@ -18,6 +18,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import { ASSISTANT_BACKGROUND_SESSION_LABEL } from '@maka/core/session';
 import { createRunCompositionSnapshot } from '@maka/core/run-composition';
 import { resolveModelVisionSupport } from '@maka/core/model-metadata';
 import { modelOverride } from '@maka/core/model-thinking';
@@ -45,6 +46,10 @@ import {
 import { stableHash, toolCatalogHash } from '@maka/runtime/request-shape';
 import { toolAvailabilityHash } from '@maka/runtime/tool-availability';
 import type { MakaTool } from '@maka/runtime/tool-runtime';
+import type {
+  TurnFinishContext,
+  TurnFinishDecision,
+} from '@maka/runtime/plugin-turn-finish-service';
 import {
   type BackendFactoryContext,
   type BackendPreparationContext,
@@ -80,6 +85,7 @@ export interface HostAiSdkBackendInput {
   readonly runtimePolicy: HostExecutionRuntimePolicyAuthority;
   readonly oauthCredentials: HostOAuthExecutionAuthority;
   readonly createRunComposer: HostRunComposerFactory;
+  readonly beforeTurnFinish?: (context: TurnFinishContext) => Promise<TurnFinishDecision>;
   readonly memoryExtraction?: HostMemoryExtractionCoordinator;
   readonly artifacts: HostExecutionArtifactAuthority;
   readonly contextOffload?: InteractiveContextOffloadReader;
@@ -402,6 +408,16 @@ async function buildHostAiSdkBackend(
         contextBudget: buildDefaultContextBudgetPolicy({
           name: 'runtime-host-default-history-budget',
           modelId: target.model,
+          // The persistent Bot cannot depend on a provider rejecting its ever-growing
+          // history. Ordinary sessions retain their existing opt-in policy. The
+          // runtime gives an explicit user threshold precedence over this fallback.
+          ...(input.context.header.labels?.includes(ASSISTANT_BACKGROUND_SESSION_LABEL) &&
+          input.context.header.labels.some((label) => label.startsWith('assistant-bot:')) &&
+          contextWindow !== undefined
+            ? {
+                fallbackCompactionThresholdTokens: Math.floor(contextWindow * 0.8),
+              }
+            : {}),
         }),
         supportsVision: resolveModelVisionSupport(
           target.connection.providerType,
@@ -475,8 +491,26 @@ async function buildHostAiSdkBackend(
               ? { emitSkillCatalogTrace: context.emitSkillCatalogTrace }
               : {}),
           });
-          return { text: resolved.text, sourceRevisions: resolved.sourceRevisions };
+          return {
+            ...resolved,
+            contexts: [
+              ...(resolved.contexts ?? []),
+              {
+                name: 'runtime.environment',
+                text: [
+                  'Runtime Host environment for this turn:',
+                  JSON.stringify({
+                    cwd: context.cwd,
+                    platform: process.platform,
+                    sampledAt: new Date(context.turnStartedAt ?? Date.now()).toISOString(),
+                    timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+                  }),
+                ].join('\n'),
+              },
+            ],
+          };
         },
+        ...(input.beforeTurnFinish ? { beforeTurnFinish: input.beforeTurnFinish } : {}),
         lookupPricing: pricing,
         recordModelCallAttempt,
         assertModelCallAccountingReady,

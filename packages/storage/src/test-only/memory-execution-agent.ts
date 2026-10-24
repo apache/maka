@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { admitMemoryGoalWait } from './memory-event-wait-bridge.js';
 import {
   normalizeAdmitRootTurnInput,
   normalizeRootTurnStartRejection,
@@ -27,7 +28,6 @@ import {
   shouldPreserveProjectionDuringRepair,
   isProjectedAgentRunEvent,
   latestContextOrder,
-  sanitizeJson,
   type DurableAgentRunStore,
   type RootTurnAdmission,
   type RootTurnStartRejection,
@@ -102,7 +102,7 @@ export function createMemoryAgentRunStore(a: MemoryExecutionAuthority): DurableA
         const opening = openingEvent && runtimeEventInvocationOpening(openingEvent);
         if (!opening)
           throw Object.assign(new Error('Agent run does not exist: ' + runId), { code: 'ENOENT' });
-        const event = decodeAgentRunEvent(JSON.parse(JSON.stringify(input, sanitizeJson)), {
+        const event = decodeAgentRunEvent(JSON.parse(JSON.stringify(input)), {
           sessionId,
           runId,
           turnId: openingEvent!.turnId,
@@ -225,6 +225,7 @@ export function createMemoryAgentRunStore(a: MemoryExecutionAuthority): DurableA
               'Root source message identity already belongs to ' + owner.admission.turnId,
             );
         }
+        admitMemoryGoalWait(s, admission);
         roots(s).set(id, admission);
         return { kind: 'admitted', admission };
       }),

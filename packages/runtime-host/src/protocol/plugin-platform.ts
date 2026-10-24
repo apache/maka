@@ -102,7 +102,13 @@ export interface PluginPackageProjection {
 }
 
 export type PluginExecutorQueryInput =
-  | { readonly kind: 'catalog'; readonly cwd: string }
+  | {
+      readonly kind: 'catalog';
+      readonly cwd: string;
+      readonly refresh?: boolean;
+      readonly executorId?: string;
+      readonly listOnly?: boolean;
+    }
   | { readonly kind: 'conversation'; readonly sessionId: string };
 export interface PluginExecutorQueryResult {
   readonly items: readonly ExecutorCatalogEntry[];
@@ -342,8 +348,25 @@ export const PLUGIN_PLATFORM_OPERATION_SPECS = {
     decodeInput: (value) => {
       const record = requireRecord(value, 'Executor query');
       if (record.kind === 'catalog') {
-        const input = requireExactRecord(record, 'Executor catalog', ['kind', 'cwd']);
-        return { kind: 'catalog', cwd: requireString(input.cwd, 'cwd', 4096) };
+        const input = requireShapedRecord(
+          record,
+          'Executor catalog',
+          ['kind', 'cwd'],
+          ['refresh', 'executorId', 'listOnly'],
+        );
+        if (input.refresh !== undefined && typeof input.refresh !== 'boolean')
+          throw invalidProtocolFrame('Invalid executor refresh flag');
+        if (input.listOnly !== undefined && typeof input.listOnly !== 'boolean')
+          throw invalidProtocolFrame('Invalid executor inventory flag');
+        return {
+          kind: 'catalog',
+          cwd: requireString(input.cwd, 'cwd', 4096),
+          ...(input.refresh ? { refresh: true } : {}),
+          ...(input.executorId !== undefined
+            ? { executorId: requireId(input.executorId, 'executorId') }
+            : {}),
+          ...(input.listOnly ? { listOnly: true } : {}),
+        };
       }
       const input = requireExactRecord(record, 'Executor conversation', ['kind', 'sessionId']);
       if (input.kind !== 'conversation') throw invalidProtocolFrame('Invalid executor query');

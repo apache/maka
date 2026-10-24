@@ -36,15 +36,7 @@ import type {
 } from './workspace-version-authority.js';
 import { WORKSPACE_VERSION_AUTHORITY_CAPABILITY_V1 } from './workspace-version-authority.js';
 
-export const TOOL_RECOVERY_BUNDLE_CAPABILITY_V1 = 'tool_recovery_bundle_v1' as const;
 export const RUNTIME_CONTINUATION_AUTHORITY_V1 = 'runtime_continuation_authority_v1' as const;
-
-export interface RuntimeRecoveryBundleCommit {
-  operationId: string;
-  reconcileRuntimeEvent: RuntimeEvent;
-  outcomeRuntimeEvent?: RuntimeEvent;
-  decisionRuntimeEvent: RuntimeEvent;
-}
 
 export interface RuntimeInvocationRecoveryInventoryEntry {
   readonly sessionId: string;
@@ -114,6 +106,14 @@ export class DurableStoreWriteError extends Error {
   ) {
     super(message);
   }
+}
+
+/** One consistent read of the inputs needed to project a complete Session. */
+export interface RuntimeSessionEventSnapshot {
+  readonly invocations: RuntimeInvocationRecord[];
+  /** Per-run event order, including merged mutable partial presentation. */
+  readonly eventsByRun: ReadonlyMap<string, RuntimeEvent[]>;
+  readonly durableEventOrdinalById: ReadonlyMap<string, number>;
 }
 
 export interface RuntimeEventStore {
@@ -198,7 +198,24 @@ export interface RuntimeEventStore {
     runId: string,
     event: RuntimeEvent,
   ): Promise<void>;
+  /**
+   * Recovery-only terminal barrier for a T1-without-T2 run. The writer must
+   * commit the terminal fact and settle exactly these dispatched operations in
+   * one transaction; an ordinary terminal append still rejects them.
+   */
+  ensureRecoveredTerminalRuntimeEventDurable?(
+    sessionId: string,
+    runId: string,
+    event: RuntimeEvent,
+    unsettledOperationIds: readonly string[],
+  ): Promise<void>;
   readRuntimeEvents(sessionId: string, runId: string): Promise<RuntimeEvent[]>;
+  /**
+   * Batch full-view reads in one snapshot, sharing decoded events between the
+   * invocation inventory and run histories. Optional for stores without batch
+   * support; consumers retain the individual-reader path in that case.
+   */
+  readSessionRuntimeSnapshot?(sessionId: string): Promise<RuntimeSessionEventSnapshot>;
   /** Session-wide immutable append order. */
   readSessionRuntimeEventEntries(
     sessionId: string,
@@ -250,11 +267,6 @@ export async function readRunInvocation(
   return (await store.listSessionInvocations(sessionId)).find(
     (invocation) => invocation.runId === runId,
   );
-}
-
-export interface RuntimeRecoveryBundleStore extends RuntimeEventStore {
-  readonly recoveryBundleCapability: typeof TOOL_RECOVERY_BUNDLE_CAPABILITY_V1;
-  commitToolRecoveryBundle(input: RuntimeRecoveryBundleCommit): Promise<void>;
 }
 
 export type ContinuationClaimResult =

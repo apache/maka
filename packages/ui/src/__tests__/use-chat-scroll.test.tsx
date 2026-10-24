@@ -120,6 +120,7 @@ function setup(turnIds: string[]) {
   });
   const calls: ScrollCall[] = [];
   const handle = {
+    viewportSize: CLIENT_HEIGHT,
     findItemIndex: (offset: number) => Math.max(0, Math.floor(offset / TURN_HEIGHT)),
     getItemOffset: (index: number) => index * TURN_HEIGHT,
     scrollToIndex: (index: number, options: { align?: string; smooth?: boolean } = {}) => {
@@ -181,6 +182,7 @@ function mountHook(env: Env) {
     highlighted: string | null;
     revealTurnAtStart?: (turnId: string, arrival: PromiseLike<unknown>) => void;
     measurement?: { shift: boolean; generation: number };
+    placed?: boolean;
     anchors: Map<string, string | undefined>;
   } = { highlighted: null, anchors: new Map() };
   const viewportNavigation = createTranscriptViewportNavigation();
@@ -207,6 +209,7 @@ function mountHook(env: Env) {
     state.highlighted = result.highlightedTurnId;
     state.revealTurnAtStart = result.revealTurnAtStart;
     state.measurement = result.measurement;
+    state.placed = result.placed;
     return null;
   }
   mountedRoot = createRoot(env.document.querySelector('#mount')!);
@@ -376,4 +379,26 @@ test('a reader who moves while earlier history is on its way stays where they we
   await hook.render({ sessionId: 's' });
   await env.flushFrames(4);
   assert.equal(env.scroller.scrollTop, 5 * TURN_HEIGHT + 100, 'the arriving history carried the reader back to the top');
+});
+
+test('a conversation that opens with its list is held back until it is in place, one without a list is not', async () => {
+  const env = setup(turns(6));
+  const hook = mountHook(env);
+  await hook.render({ sessionId: 's' });
+  assert.equal(hook.state.placed, false, 'the list has not been put at its tail yet');
+  await env.flushFrames(1);
+  assert.equal(hook.state.placed, true);
+
+  // Still loading or empty: whatever arrives later is not the switch.
+  env.transcript.turnIds = [];
+  await hook.render({ sessionId: 'loading' });
+  assert.equal(hook.state.placed, true);
+  env.transcript.turnIds = turns(4);
+  await hook.render({ sessionId: 'loading' });
+  assert.equal(hook.state.placed, true);
+
+  await hook.render({ sessionId: 't' });
+  assert.equal(hook.state.placed, false);
+  await env.flushFrames(1);
+  assert.equal(hook.state.placed, true);
 });

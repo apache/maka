@@ -20,6 +20,7 @@
 import { unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
+  decodeDefaultApiProtocol,
   decodeProviderType,
   decodeCanonicalConnectionCatalogEntry,
   decodeCredentialVersionBasis,
@@ -27,7 +28,7 @@ import {
   decodeConnectionSlug,
   decodeRuntimePolicyEntityId,
   normalizeCatalogConnectionBaseUrl,
-  normalizeConnectionCatalogEntryUpdateForProvider,
+  normalizeConnectionCatalogEntryUpdate,
   normalizeConnectionModelDiscoveryResult,
   normalizeCredentialSecret,
   type ConnectionModelDiscoveryResult,
@@ -38,10 +39,12 @@ import {
   deriveConnectionSlug,
   PROVIDER_REGISTRY,
   providerAuthSupportsApiKey,
+  type ModelApiProtocol,
   type ProviderType,
 } from '@maka/core/llm-connections';
 import { syncDirectory } from '../stable-storage.js';
 import { record } from './codec.js';
+import { upgradeLegacyCustomProvider } from './legacy-custom-connection.js';
 import {
   codecError,
   commitOutcomeUnknown,
@@ -61,6 +64,7 @@ export interface ConnectionOnboardingTransactionInput {
   readonly connectionId: unknown;
   readonly slug: unknown;
   readonly providerType: unknown;
+  readonly defaultApiProtocol?: unknown;
   /** Optional caller-chosen display name; absent/null keeps the provider default. */
   readonly name?: unknown;
   readonly suppliedSecret: unknown;
@@ -76,6 +80,7 @@ export interface ConnectionOnboardingIntent {
   /** Absent only while replaying a schema-v1 identity-first intent. */
   readonly slug: string | null;
   readonly providerType: ProviderType;
+  readonly defaultApiProtocol?: ModelApiProtocol;
   /**
    * Caller-chosen display name pinned into the durable intent; null falls
    * back to the provider label at upsert. Absent in intents journaled before
@@ -117,6 +122,9 @@ export function prepareConnectionOnboardingIntent(
 ): CurrentConnectionOnboardingIntent {
   const decode = source === 'persisted' ? decodePersistedDomain : decodeConnectionInput;
   const providerType = decode(() => decodeProviderType(input.providerType));
+  const defaultApiProtocol = decode(() =>
+    decodeDefaultApiProtocol(input.defaultApiProtocol, providerType),
+  );
   const definition = PROVIDER_REGISTRY[providerType];
   if (!providerAuthSupportsApiKey(providerType) && definition.authKind !== 'oauth_token') {
     throw codecError(
@@ -142,15 +150,11 @@ export function prepareConnectionOnboardingIntent(
       ? null
       : (decode(() => normalizeCatalogConnectionBaseUrl(input.baseUrl, providerType)) ?? null);
   const normalized = decode(() =>
-    normalizeConnectionCatalogEntryUpdateForProvider(
-      {
-        name: definition.label,
-        ...((baseUrl ?? definition.baseUrl) ? { baseUrl: baseUrl ?? definition.baseUrl } : {}),
-        enabled: true,
-        enabledModelIds: input.enabledModelIds,
-      },
-      providerType,
-    ),
+    normalizeConnectionCatalogEntryUpdate({
+      name: definition.label,
+      enabled: true,
+      enabledModelIds: input.enabledModelIds,
+    }),
   );
   const available = new Set(discovery.models.map(({ id }) => id));
   if (
@@ -179,6 +183,7 @@ export function prepareConnectionOnboardingIntent(
     connectionId: decode(() => decodeRuntimePolicyEntityId(input.connectionId)),
     slug: decode(() => decodeConnectionSlug(input.slug)),
     providerType,
+    ...(defaultApiProtocol === undefined ? {} : { defaultApiProtocol }),
     name:
       input.name === undefined || input.name === null
         ? null
@@ -212,6 +217,7 @@ export async function readConnectionOnboardingIntent(
       'connectionId',
       'slug',
       'providerType',
+      'defaultApiProtocol',
       'name',
       'suppliedSecret',
       'baseUrl',
@@ -226,7 +232,7 @@ export async function readConnectionOnboardingIntent(
   }
   // `baseUrl` is allowed but not required for the oldest v1 journal shape.
   const raw = record(
-    value,
+    upgradeLegacyCustomProvider(value),
     FILE,
     'invalid_document',
     [
@@ -234,6 +240,7 @@ export async function readConnectionOnboardingIntent(
       'connectionId',
       'slug',
       'providerType',
+      'defaultApiProtocol',
       'name',
       'suppliedSecret',
       'baseUrl',
@@ -257,6 +264,7 @@ export async function readConnectionOnboardingIntent(
   const prepared = prepareConnectionOnboardingIntent(
     {
       providerType: raw.providerType,
+      defaultApiProtocol: raw.defaultApiProtocol,
       connectionId: raw.connectionId,
       slug:
         raw.schemaVersion === 1 ? deriveLegacyIntentPlaceholderSlug(raw.providerType) : raw.slug,

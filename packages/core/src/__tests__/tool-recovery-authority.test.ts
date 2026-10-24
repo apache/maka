@@ -22,10 +22,8 @@ import { describe, it } from 'node:test';
 import { decodeRuntimeEvent, type RuntimeEvent } from '../runtime-event.js';
 import { canonicalToolArgsHash, stableJsonStringify } from '../tool-args-identity.js';
 import {
-  ToolLedgerReducer,
   scanToolLedger,
   validateGenericToolLedgerAppend,
-  validateIncrementalToolLedgerTransition,
   validateToolLedgerTransition,
   validateToolLedgerEventLane,
 } from '../tool-ledger-scanner.js';
@@ -412,6 +410,7 @@ describe('recovery persistence authority', () => {
       }),
       {
         ok: false,
+        source: 'candidate',
         code: 'duplicate_call',
         eventId: 'call-event-duplicate',
         toolCallId: 'provider-call-1',
@@ -428,6 +427,7 @@ describe('recovery persistence authority', () => {
       }),
       {
         ok: false,
+        source: 'candidate',
         code: 'identity_conflict',
         eventId: 'outcome-event-1',
         operationId: 'operation-1',
@@ -436,7 +436,7 @@ describe('recovery persistence authority', () => {
     );
   });
 
-  it('keeps whole, single-event, and batched incremental reductions equivalent', () => {
+  it('interprets a complete tool recovery ledger with the shared rules', () => {
     const ledger = [
       callEvent(),
       dispatchEvent(),
@@ -463,29 +463,16 @@ describe('recovery persistence authority', () => {
     };
 
     assert.deepEqual(scanToolLedger(ledger), expected);
-    for (const batches of [
-      ledger.map((event) => [event]),
-      [ledger.slice(0, 2), ledger.slice(2)],
-      [ledger],
-    ]) {
-      const reducer = new ToolLedgerReducer();
-      for (const batch of batches) {
-        const checkpoint = reducer.checkpoint();
-        reducer.append(batch);
-        reducer.commit(checkpoint);
-      }
-      assert.deepEqual(reducer.scan(), expected);
-    }
   });
 
-  it('rolls prospective state back and distinguishes existing corruption', () => {
-    const reducer = new ToolLedgerReducer([callEvent()]);
-    const before = structuredClone(reducer.scan());
+  it('distinguishes candidate rejection from existing corruption without changing inputs', () => {
+    const existingEvents = [callEvent()];
+    const before = structuredClone(existingEvents);
     const invalid = callEvent({ id: 'duplicate-call' });
 
     assert.deepEqual(
-      validateIncrementalToolLedgerTransition({
-        reducer,
+      validateToolLedgerTransition({
+        existingEvents,
         candidateEvents: [invalid],
         expectedTransition: 'generic_append',
       }),
@@ -497,12 +484,11 @@ describe('recovery persistence authority', () => {
         toolCallId: 'provider-call-1',
       },
     );
-    assert.deepEqual(reducer.scan(), before);
+    assert.deepEqual(existingEvents, before);
 
-    const corrupt = new ToolLedgerReducer([callEvent(), invalid]);
     assert.deepEqual(
-      validateIncrementalToolLedgerTransition({
-        reducer: corrupt,
+      validateToolLedgerTransition({
+        existingEvents: [callEvent(), invalid],
         candidateEvents: [dispatchEvent()],
         expectedTransition: 't1_prepare',
       }),
@@ -516,28 +502,22 @@ describe('recovery persistence authority', () => {
     );
   });
 
-  it('can roll back or commit an accepted candidate delta', () => {
-    const reducer = new ToolLedgerReducer([callEvent()]);
-    const before = structuredClone(reducer.scan());
-    const first = validateIncrementalToolLedgerTransition({
-      reducer,
-      candidateEvents: [dispatchEvent()],
-      expectedTransition: 't1_prepare',
-    });
-    assert.equal(first.ok, true);
-    if (!first.ok) throw new Error('expected accepted tool ledger transition');
-    reducer.rollback(first.checkpoint);
-    assert.deepEqual(reducer.scan(), before);
-
-    const second = validateIncrementalToolLedgerTransition({
-      reducer,
-      candidateEvents: [dispatchEvent()],
-      expectedTransition: 't1_prepare',
-    });
-    assert.equal(second.ok, true);
-    if (!second.ok) throw new Error('expected accepted tool ledger transition');
-    reducer.commit(second.checkpoint);
-    assert.equal(reducer.scan().operations[0]?.dispatchEvent?.id, 'dispatch-event-1');
+  it('validates retries from the supplied durable facts without retaining candidates', () => {
+    const existingEvents = [callEvent()];
+    const before = structuredClone(existingEvents);
+    const dispatch = dispatchEvent();
+    const input = {
+      existingEvents,
+      candidateEvents: [dispatch],
+      expectedTransition: 't1_prepare' as const,
+    };
+    assert.deepEqual(validateToolLedgerTransition(input), { ok: true });
+    assert.deepEqual(validateToolLedgerTransition(input), { ok: true });
+    assert.deepEqual(existingEvents, before);
+    assert.deepEqual(
+      validateToolLedgerTransition({ ...input, existingEvents: [...existingEvents, dispatch] }),
+      { ok: true },
+    );
   });
 
   it('rejects a recovery bundle whose T1 hash authenticates itself instead of the call args', () => {

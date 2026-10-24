@@ -20,7 +20,17 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Buffer } from 'node:buffer';
-import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  realpath,
+  rm,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ExecutionBoundary } from '@maka/core/sandbox-boundary';
@@ -87,6 +97,37 @@ function runTool(
 }
 
 describe('file tools follow the execution boundary', () => {
+  test('the model-facing Glob result marks a capped permission-limited walk incomplete', {
+    skip: process.platform === 'win32' || process.getuid?.() === 0,
+  }, async () => {
+    const { cwd, cleanup } = await makeDirs();
+    try {
+      for (let index = 0; index < 200; index++) {
+        await writeFile(join(cwd, `match-${String(index).padStart(3, '0')}.txt`), 'match');
+      }
+      const blocked = join(cwd, 'zblocked');
+      await mkdir(blocked);
+      await writeFile(join(blocked, 'hidden.txt'), 'hidden');
+      await chmod(blocked, 0);
+      await assert.rejects(readdir(blocked), (error: unknown) =>
+        ['EACCES', 'EPERM'].includes((error as NodeJS.ErrnoException).code ?? ''),
+      );
+
+      const result = (await runTool(
+        toolNamed(toolsFor(), 'Glob'),
+        { pattern: '**/*.txt', cwd },
+        cwd,
+        BYPASS,
+      )) as { files: string[]; truncated: boolean };
+
+      assert.equal(result.files.length, 200);
+      assert.equal(result.truncated, true);
+    } finally {
+      await chmod(join(cwd, 'zblocked'), 0o700).catch(() => {});
+      await cleanup();
+    }
+  });
+
   test('a bypass boundary reaches outside the session cwd, as Bash already does', async () => {
     const { cwd, outside, cleanup } = await makeDirs();
     try {

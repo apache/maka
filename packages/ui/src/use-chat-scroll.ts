@@ -73,6 +73,10 @@ export function useChatScroll(input: {
   restoreTarget?: { turnId: string; unavailable?: boolean };
   viewportNavigation?: TranscriptViewportNavigation;
   onReadingAnchorChange?(turnId?: string): void;
+  onReadEarlier?(): boolean;
+  hasLaterHistory?: boolean;
+  onReadLater?(): boolean;
+  onReadLatest?(): void;
   behavior: ScrollBehavior;
   /** `useTranscriptStartMargin`'s live measurement, for reads within a commit. */
   measureStartMargin(): number;
@@ -81,6 +85,10 @@ export function useChatScroll(input: {
   const authority = useTranscriptScrollAuthority();
   const turnIdsRef = useRef(input.turnIds);
   turnIdsRef.current = input.turnIds;
+  const readEarlierRef = useRef(input.onReadEarlier);
+  readEarlierRef.current = input.onReadEarlier;
+  const laterRef = useRef(input);
+  laterRef.current = input;
 
   /**
    * `virtua` caches measured heights by position. Growth at the tail leaves
@@ -145,6 +153,10 @@ export function useChatScroll(input: {
   const measureStartMarginRef = useRef(input.measureStartMargin);
   measureStartMarginRef.current = input.measureStartMargin;
   const [layout] = useState((): TranscriptLayout => ({
+    readEarlier: () => readEarlierRef.current?.() ?? false,
+    hasNewer: () => laterRef.current.hasLaterHistory === true,
+    readNewer: () => laterRef.current.onReadLater?.() ?? false,
+    readLatest: () => laterRef.current.onReadLatest?.(),
     turnAt(scrollTop) {
       const handle = input.virtualizerRef.current;
       const turnIds = turnIdsRef.current;
@@ -160,6 +172,9 @@ export function useChatScroll(input: {
     reveal(turnId, options) {
       const index = turnIdsRef.current.indexOf(turnId);
       if (index !== -1) input.virtualizerRef.current?.scrollToIndex(index, options);
+    },
+    measured() {
+      return Boolean(input.virtualizerRef.current?.viewportSize);
     },
   }));
 
@@ -181,9 +196,22 @@ export function useChatScroll(input: {
     else authority.pinToTail();
   }, [input.sessionId]);
 
+  // A conversation that opens with its list is measured and moved over its
+  // first frames; it is shown on the frame it reaches its place, not the frame
+  // it mounts. One that opens without a list (still loading, or empty) has
+  // nothing to hold back.
+  const [placedSessionId, setPlacedSessionId] = useState<string>();
+  useEffect(() => {
+    if (turnIdsRef.current.length === 0) {
+      setPlacedSessionId(input.sessionId);
+      return;
+    }
+    return authority.whenInPlace(() => setPlacedSessionId(input.sessionId));
+  }, [authority, input.sessionId]);
+
   useLayoutEffect(() => {
     authority.turnsChanged(list.current.change);
-  }, [authority, input.turnIds]);
+  }, [authority, input.turnIds, input.hasLaterHistory]);
 
   useEffect(() => input.viewportNavigation?.subscribe((sessionId) => {
     if (activation.current?.sessionId !== sessionId) return;
@@ -297,6 +325,7 @@ export function useChatScroll(input: {
 
   return {
     highlightedTurnId,
+    placed: placedSessionId === input.sessionId,
     /** The Turn a pending or landing command is about; its row must stay mounted. */
     commandTurnId: input.target?.turnId ?? activation.current?.restoreTurnId,
     revealTurnAtStart,

@@ -20,6 +20,7 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
 import { chmod, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import { withPluginScratchDirectory } from './plugin-scratch-directory.js';
 import type {
   PluginDataMutation,
   PluginDataNamespace,
@@ -57,6 +58,21 @@ export class HostPluginDataRuntime implements PluginDataRuntime {
 
   constructor(controlDirectory: string) {
     this.#root = join(controlDirectory, 'plugin-data');
+  }
+
+  withScratchDirectory<T>(
+    namespace: PluginDataNamespace,
+    key: string,
+    signal: AbortSignal,
+    use: (directory: string) => Promise<T>,
+  ): Promise<T> {
+    validateNamespace(namespace);
+    const identity = createHash('sha256').update(key).digest('hex');
+    return withPluginScratchDirectory(
+      join(this.#root, digest(namespace), 'scratch', identity),
+      signal,
+      use,
+    );
   }
 
   async read(

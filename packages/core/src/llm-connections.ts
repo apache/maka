@@ -37,12 +37,16 @@ import type {
 import { CODEX_SUBSCRIPTION_UNSUPPORTED_CHATGPT_MODELS } from './codex-model-compatibility.js';
 import {
   CATALOG_PROVIDER_TYPES,
+  isModelApiProtocol,
+  MODEL_API_PROTOCOL_LABELS,
+  MODEL_API_PROTOCOLS,
   PROVIDER_REGISTRY,
   RECOMMENDED_PROVIDER_TYPES,
   providerDefaultsOf,
   providerFallbackModelIds,
   providerMenuLabel,
   type ApplyPatchProtocol,
+  type ModelApiProtocol,
   type OpenResponsesCompatibilityProfile,
   type ProviderCatalogGroup,
   type ProviderCategory,
@@ -55,6 +59,9 @@ import {
 export { CODEX_SUBSCRIPTION_UNSUPPORTED_CHATGPT_MODELS };
 export {
   CATALOG_PROVIDER_TYPES,
+  isModelApiProtocol,
+  MODEL_API_PROTOCOL_LABELS,
+  MODEL_API_PROTOCOLS,
   PROVIDER_REGISTRY,
   RECOMMENDED_PROVIDER_TYPES,
   providerDefaultsOf,
@@ -63,6 +70,7 @@ export {
 };
 export type {
   ApplyPatchProtocol,
+  ModelApiProtocol,
   OpenResponsesCompatibilityProfile,
   ProviderCatalogGroup,
   ProviderCategory,
@@ -71,12 +79,6 @@ export type {
   ProviderResponsesContract,
   ProviderType,
 };
-
-export function isRelayProviderType(
-  providerType: ProviderType,
-): providerType is 'openai-compatible' | 'openai-responses-compatible' {
-  return providerType === 'openai-compatible' || providerType === 'openai-responses-compatible';
-}
 
 export type ConnectionAuth =
   | { kind: 'api_key'; apiKey: string }
@@ -104,7 +106,7 @@ export interface ModelInfo {
   /** Short upstream description, when the provider advertises one. */
   description?: string;
   /** Account-advertised request wire when one provider exposes multiple model protocols. */
-  apiProtocol?: 'openai-chat' | 'openai-responses' | 'anthropic-messages';
+  apiProtocol?: ModelApiProtocol;
   contextWindow?: number;
   /** Maximum provider-visible input tokens, when narrower than contextWindow. */
   inputLimit?: number;
@@ -158,6 +160,8 @@ export interface RuntimeExecutionConnection {
   slug: string;
   providerType: ProviderType;
   baseUrl?: string;
+  /** Wire for models on a custom connection that do not declare their own; set only on `custom`. */
+  defaultApiProtocol?: ModelApiProtocol;
   defaultModel: string;
   models?: ModelInfo[];
   /** User model parameters, retained independently of the enabled selection. */
@@ -637,8 +641,14 @@ export function deriveInteractiveOAuthConnectionSlug(
  *   - Any other scheme (`file:`, `javascript:`, `data:`, `vbscript:`,
  *     `chrome-extension:`, `app:`, `maka:`, custom).
  *   - Malformed URL strings the `URL` constructor throws on.
+ *   - Embedded credentials (`https://user:pw@host`), query strings and
+ *     fragments — the Runtime Host codec refuses these, so accepting
+ *     them here only turns the eventual rejection into the generic
+ *     "service unavailable" copy.
  *   - Pathological lengths (> 2048 chars — defense against
- *     adversarial inputs; real-world baseUrls are < 100 chars).
+ *     adversarial inputs; real-world baseUrls are < 100 chars) and
+ *     canonical forms longer than 2048 bytes, which is the unit the
+ *     Host measures.
  *
  * Returns `null` on accept, an error string on reject. Mirrors
  * `validateSlug`'s shape.
@@ -663,6 +673,18 @@ export function validateConnectionBaseUrl(baseUrl: string | undefined | null): s
   // schemes.
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
     return `baseUrl scheme '${parsed.protocol}' is not allowed (use http: or https:)`;
+  }
+  // The Runtime Host rejects these too (`normalizeCatalogConnectionBaseUrl`),
+  // so gating here is what turns a downstream, unclassified failure into a
+  // message that names the endpoint field.
+  if (parsed.username || parsed.password) {
+    return 'baseUrl must not contain credentials';
+  }
+  if (trimmed.includes('?') || trimmed.includes('#')) {
+    return 'baseUrl must not contain a query or fragment';
+  }
+  if (new TextEncoder().encode(parsed.toString()).byteLength > 2048) {
+    return 'baseUrl must be 2048 bytes or fewer';
   }
   return null;
 }
@@ -742,6 +764,7 @@ export interface CreateConnectionInput {
   name: string;
   providerType: ProviderType;
   baseUrl?: string;
+  defaultApiProtocol?: ModelApiProtocol;
   defaultModel?: string;
   /** When omitted, falls back to the default model alone. */
   enabledModelIds?: string[];

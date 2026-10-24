@@ -175,18 +175,35 @@ export function normalizeNetworkProxyCredentialTarget(
 }
 
 function normalizeRuntimePolicy(value: unknown): RuntimePolicy {
-  const policy = exactRecord(value, 'runtime policy', [
-    'networkProxy',
-    'personalization',
-    'memory',
-    'workspaceInstructions',
-    'privacy',
-    'chatDefaults',
-    'webSearch',
-    'subagents',
-    'shell',
-    'externalAgents',
-  ]);
+  const policy = exactRecord(
+    value,
+    'runtime policy',
+    [
+      'networkProxy',
+      'personalization',
+      'memory',
+      'workspaceInstructions',
+      'privacy',
+      'chatDefaults',
+      'webSearch',
+      'subagents',
+      'shell',
+      'externalAgents',
+      'jev',
+    ],
+    [
+      'networkProxy',
+      'personalization',
+      'memory',
+      'workspaceInstructions',
+      'privacy',
+      'chatDefaults',
+      'webSearch',
+      'subagents',
+      'shell',
+      'externalAgents',
+    ],
+  );
   return normalizeRuntimePolicyFields(
     policy,
     normalizeSubagentSettings(policy.subagents),
@@ -212,6 +229,7 @@ function normalizeRuntimePolicyFields(
     subagents,
     shell,
     externalAgents,
+    ...(policy.jev === undefined ? {} : { jev: normalizeJev(policy.jev) }),
   };
 }
 
@@ -222,6 +240,8 @@ function withoutShell(policy: RuntimePolicy): Omit<RuntimePolicy, 'shell'> {
 
 function normalizeMutationOperation(operation: Record<string, unknown>): RuntimePolicyMutation {
   switch (operation.kind) {
+    case 'set_jev':
+      return { kind: operation.kind, value: normalizeJev(operation.value) };
     case 'set_network_proxy':
       return { kind: operation.kind, value: normalizeNetworkProxy(operation.value) };
     case 'set_personalization':
@@ -472,4 +492,10 @@ function normalizeExternalAgents(value: unknown): RuntimePolicy['externalAgents'
     throw domainError('Antigravity executable must be an absolute macOS path');
   }
   return { antigravity: { executable } };
+}
+
+function normalizeJev(value: unknown): { enabled: boolean } {
+  const item = exactRecord(value, 'Jev settings', ['enabled']);
+  if (typeof item.enabled !== 'boolean') throw domainError('Jev enabled must be boolean');
+  return { enabled: item.enabled };
 }

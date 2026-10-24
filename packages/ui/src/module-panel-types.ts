@@ -121,7 +121,7 @@ export interface ManagedSkillUpdatePreview {
 }
 
 /**
- * Marketplace taxonomy buckets surfaced by the 市场 tab category filter.
+ * Marketplace taxonomy buckets that group the Skills page's 发现 list.
  * Mirrors MANAGED_SKILL_CATEGORIES in apps/desktop's managed-skill-sources;
  * the main-process reader always resolves an entry to one of these, so the
  * renderer can treat `category` as required (unknown → 效率工具 upstream).
@@ -147,7 +147,7 @@ export interface ManagedSkillSourceEntry {
  * One entry in the built-in (内置) skill catalog shipped with the app. Mirrors
  * listBundledSkillCatalog in apps/desktop's skills module. `installed` reflects
  * whether the current workspace already has skills/<id>; nothing here is
- * auto-installed — the 内置 tab offers a per-entry install action.
+ * auto-installed — 发现 offers a per-entry install action.
  */
 export interface BundledSkillCatalogEntry {
   id: string;

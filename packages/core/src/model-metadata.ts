@@ -19,6 +19,7 @@
 
 import type { ModelInfo, ProviderType, ProviderRuntimeAdapter } from './llm-connections.js';
 import type { ThinkingOptions } from './model-thinking.js';
+import { withMiniMaxTextCatalog } from './models-dev-projection.js';
 import {
   GENERATED_MODELS_DEV_METADATA,
   GENERATED_MODELS_DEV_MODEL_PROVIDER_OVERRIDES,
@@ -64,7 +65,7 @@ let refreshedMetadata: ModelsDevMetadata | undefined;
  */
 export function installRefreshedModelMetadata(metadata: ModelsDevMetadata | undefined): void {
   if (metadata !== undefined) assertWireTokenLimits(metadata);
-  refreshedMetadata = metadata;
+  refreshedMetadata = metadata === undefined ? undefined : withMiniMaxTextCatalog(metadata);
 }
 
 /**
@@ -186,10 +187,11 @@ export function openAiAdapterApiProtocol(
 ): 'openai-responses' | 'openai-chat' {
   const id = modelId.trim();
   return (providerType === 'deepseek' && deepSeekModelSupportsResponses(id)) ||
-    (providerType === 'opencode-go' && id === 'muse-spark-1.2-contributor') ||
+    (providerType === 'opencode-go' &&
+      (id === 'muse-spark-1.2-contributor' || id === 'muse-spark-1.3-contributor')) ||
     ((providerType === 'alibaba-token-plan-cn' || providerType === 'alibaba-token-plan') &&
       id === 'qwen3.8-max') ||
-    /^gpt-5/i.test(id) ||
+    /^gpt-[56]/i.test(id) ||
     ((providerType === 'xai' || providerType === 'xai-oauth') && id === 'grok-4.5')
     ? 'openai-responses'
     : 'openai-chat';
@@ -267,6 +269,26 @@ const GOOGLE_MODEL_OVERRIDES: Record<string, ModelMetadata> = {
   },
 };
 
+// These models are in the live models.dev OpenAI catalog but not yet in the
+// bundled snapshot. The OpenAI Responses SDK accepts only these five GPT-6
+// efforts on both API and Codex OAuth paths. It discards `none` and the Codex
+// model list's `ultra` for Sol, so do not offer them until the request path
+// can send and handle them.
+const OPENAI_GPT6_THINKING_OPTIONS: ThinkingOptions = {
+  efforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+};
+
+const OPENAI_GPT6_MODEL_OVERRIDES: Record<string, ModelMetadata> = {
+  'gpt-6-sol': {
+    displayName: 'GPT-6 Sol',
+    thinkingOptions: OPENAI_GPT6_THINKING_OPTIONS,
+  },
+  'gpt-6-luna': {
+    displayName: 'GPT-6 Luna',
+    thinkingOptions: OPENAI_GPT6_THINKING_OPTIONS,
+  },
+};
+
 // The OAuth path pins its own context windows over whatever the public
 // catalog says. Base facts come from the active table, falling back to the
 // shipped snapshot so a model upstream stops listing keeps a display name.
@@ -284,6 +306,14 @@ function withoutInputLimit(metadata: ModelMetadata | undefined): ModelMetadata |
 
 function openAiOAuthModelMetadata(active: ModelsDevMetadata): Record<string, ModelMetadata> {
   return {
+    'gpt-6-sol': {
+      ...openAiOAuthBase(active, 'gpt-6-sol'),
+      ...OPENAI_GPT6_MODEL_OVERRIDES['gpt-6-sol'],
+    },
+    'gpt-6-luna': {
+      ...openAiOAuthBase(active, 'gpt-6-luna'),
+      ...OPENAI_GPT6_MODEL_OVERRIDES['gpt-6-luna'],
+    },
     'gpt-5.6-sol': {
       ...openAiOAuthBase(active, 'gpt-5.6-sol'),
       contextWindow: 372_000,
@@ -480,6 +510,12 @@ const COMMAND_CODE_MODEL_METADATA: Record<string, ModelMetadata> = {
   'MiniMaxAI/MiniMax-M3': { thinkingOptions: { efforts: ['low', 'medium', 'high'] } },
 };
 
+const MINIMAX_MODEL_OVERRIDES: Record<string, ModelMetadata> = {
+  'MiniMax-M3': {
+    thinkingOptions: { toggle: true, offBehavior: 'anthropic-thinking-disabled' },
+  },
+};
+
 // Facts that models.dev cannot express: provider wire controls and
 // access-path-specific aliases/limits. Standard model facts stay generated.
 //
@@ -487,7 +523,51 @@ const COMMAND_CODE_MODEL_METADATA: Record<string, ModelMetadata> = {
 // derived from a provider's catalog cover models a refresh introduced.
 function buildStaticModelMetadata(active: ModelsDevMetadata): ModelsDevMetadata {
   return {
+    MiniMax: MINIMAX_MODEL_OVERRIDES,
+    'MiniMax-cn': MINIMAX_MODEL_OVERRIDES,
     anthropic: ANTHROPIC_MODEL_OVERRIDES,
+    opencode: {
+      'claude-sonnet-4-5': {
+        thinkingOptions: ANTHROPIC_MODEL_OVERRIDES['claude-sonnet-4-5'].thinkingOptions,
+      },
+      'claude-haiku-4-5': {
+        thinkingOptions: ANTHROPIC_MODEL_OVERRIDES['claude-haiku-4-5'].thinkingOptions,
+      },
+    },
+    openai: OPENAI_GPT6_MODEL_OVERRIDES,
+    // Inception is absent from the models.dev snapshot. Bootstrap chat facts
+    // from https://docs.inceptionlabs.ai/get-started/models and
+    // https://docs.inceptionlabs.ai/capabilities/reasoning-efforts.
+    // `instant` has no Maka thinking level; expose only the shared effort tiers.
+    inception: {
+      'mercury-3': {
+        displayName: 'Mercury 3',
+        contextWindow: 1_000_000,
+        maxOutputTokens: 131_072,
+        structuredOutput: true,
+        modalities: { input: ['text'], output: ['text'] },
+        capabilities: { vision: false, reasoning: true, functionCalling: true },
+        thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      },
+      'mercury-2.5': {
+        displayName: 'Mercury 2.5',
+        contextWindow: 260_000,
+        maxOutputTokens: 65_536,
+        structuredOutput: true,
+        modalities: { input: ['text'], output: ['text'] },
+        capabilities: { vision: false, reasoning: true, functionCalling: true },
+        thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      },
+      'mercury-2': {
+        displayName: 'Mercury 2',
+        contextWindow: 128_000,
+        maxOutputTokens: 50_000,
+        structuredOutput: true,
+        modalities: { input: ['text'], output: ['text'] },
+        capabilities: { vision: false, reasoning: true, functionCalling: true },
+        thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      },
+    },
     'claude-subscription': claudeSubscriptionModelMetadata(active),
     // The Command Code Provider-API plan rides the same effort table.
     commandcode: COMMAND_CODE_MODEL_METADATA,

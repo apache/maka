@@ -33,11 +33,11 @@ release commit 中的 [DISCLAIMER-WIP](https://github.com/apache/maka/blob/main/
 [Maka podling 状态页](https://incubator.apache.org/projects/maka.html)。本段仅为中文说明，
 英文免责声明以随包发布的 `DISCLAIMER-WIP` 为准。
 
-> **Beta：**CLI 仍在积极开发中，稳定版发布前，命令和本地数据格式可能发生变化。
+> **Beta**：CLI 仍在积极开发中，稳定版发布前，命令和本地数据格式可能发生变化。
 
 ## 环境要求
 
-- Node.js 22.19.0 或更高版本；
+- Node.js 22.19.0 或更高的 22.x 版本，或 24.0.0 及以上版本（不支持 Node 23）；
 - 使用 TUI 时需要支持交互输入的终端；
 - 执行 Agent Turn 时需要已经配置的模型连接；首次设置目前支持使用 API Key 的供应商。
 
@@ -105,6 +105,162 @@ maka run --help
 
 Maka 默认会在执行高权限工具操作前询问。`maka run --yolo` 会授予该任务完整的文件和网络
 权限，只应在你允许任务修改的环境中使用。
+
+
+主代理跨多次调用协调任务时，推荐使用 `--no-wait`，把返回的 `sessionId` 保存为 `$session`，
+准备处理交互或接收结果时再等待：
+
+```sh
+maka run "检查这个项目" --no-wait
+maka run --session "$session" --wait --json
+```
+
+`--no-wait` 本身就返回 JSON，无需再加 `--json`。普通 `maka run` 仍默认等待并输出最终答案，
+适合单次 shell 调用；需要结构化的阻塞结果时使用 `maka run "检查这个项目" --json`。
+
+根据目的选择下一次会话调用：
+
+```sh
+maka run --session "$session" --status
+maka run --session "$session" --recap --json
+maka run --session "$session" --answer '["是",null]' --json
+maka run --session "$session" "接下来检查测试" --no-wait
+maka run --session "$session" "重点检查参数解析" --steer --no-wait
+maka run --session "$session" --result --json
+maka run --session "$session" --resume --json
+```
+
+追加 prompt 默认排队，无需重复 `--queue`。重复相同参数或相同值可以接受；值冲突或无法
+同时执行的动作组合仍返回用法错误。执行命令默认等待，指定 `--no-wait` 才提交后返回；
+`--session <id> --wait` 则是不提交新工作，只观察当前 Turn。
+
+| 调用 | 默认 stdout | 退出码 0 的含义 |
+| --- | --- | --- |
+| 普通 run 或会话 wait/result | 最终答案文本；待处理交互返回 JSON | 仍须检查结果，待处理交互需要调用方决定 |
+| `--no-wait` | JSON 接收回执 | 提交被接收，不代表任务完成 |
+| `--status` / `--stop` | JSON | 状态查询或停止请求成功 |
+| 模型设置且无动作 | 带 `configuration` 的 JSON | 设置已保存，执行状态不变 |
+| `--recap` | 摘要文本 | 独立摘要生成成功 |
+
+在 wait、result、recap 上加 `--json` 可统一为结构化结果。`status` 表示生命周期，
+`finalOutput` 是任务答案，`recap` 是进展，`submission` 是接收回执。
+远程 Host 的每次调用都应携带相同的 `--host <profile-id>`。
+
+拒绝审批会将决定反馈给模型，同一个 Turn 可以在现有权限内继续或说明阻碍。工具失败本身不会
+覆盖 Runtime 的终态。wait 等到 Turn 结束或下一次交互时返回；`--deny --no-wait` 只提交决定。
+错误默认以简短文本输出到 stderr；显式 `--json` 才向 stdout 输出结构化错误，保留原始信息和
+Host 已提供的 `code`。操作失败不代表 Session 已失败。
+
+`--session` 继承已保存的设置，并允许持久更新模型、连接和 thinking。工作目录、timeout 和
+Graph 覆盖仍需使用旧选择器 `--resume <id>`；与 `--session` 组合时会在连接前拒绝。
+
+会话模型切换会持久保存，再由显式参数决定续跑或发送新消息：
+
+```sh
+maka run --session "$session" --model "other-model"
+maka run --session "$session" --model "other-model" --resume --json
+maka run --session "$session" --model "other-model" "继续审查" --no-wait
+```
+
+这三条是不同用法。第一条只保存设置，返回带有 `connection`、`model`、`thinking` 的 JSON
+`configuration` 回执，不会启动或恢复执行。加 `--connection <slug>` 可以选择另一个已保存的
+账号。原生模型或连接实际改变时会将 thinking 重置为模型默认值，除非显式指定 `--thinking`；选择相同目标会保留已保存的级别。
+与 Desktop 切换模型一样，新设置对后续调用持续生效；全局默认值和权限不变。
+
+设置先保存，再执行显式动作；即使后续动作失败，已保存的设置仍然保留。CLI 不判断会话因何
+停止，也不自动选择模型。Host 返回忙碌等错误时会直接返回，不隐式停止 Turn 或重发旧 prompt。
+resume 使用 Host 已有的安全续跑操作；提供新 prompt 则是新输入。
+
+`--recap` 复用 TUI `/recap` 的独立模型调用，用一句话总结会话已记录的进展。
+它可以在 Turn 运行中使用，不会 steering、排队、停止当前 Turn，也不等 Turn 完成。
+不加 `--json` 时直接输出摘要；加上后返回 `sessionId`、当前 `status` 和独立的 `recap` 字段，例如：
+
+```json
+{"sessionId":"…","status":"running","queued":0,"recap":"你要求审查代码；参数解析已检查，测试验证尚未完成。"}
+```
+
+摘要基于生成开始时读取的历史快照，无法看到尚未记录的工作或尚未返回的工具结果；
+生成期间任务可能继续推进。每次调用都会重新请求模型并产生模型用量；只查状态继续用
+`--status`。摘要不是最终答案（`--result`），也不是正在运行的代理直接回复的消息。
+`--status --recap` 可组合返回包含状态、执行边界和进展的 JSON；recap 不能与其他会话动作、
+prompt 或等待参数组合使用。
+摘要生成成功返回退出码 0，即使会话最近的 Turn 失败；生成失败返回退出码 1。
+Ctrl+C 取消 CLI 观察，不会停止 Host 中的执行。
+
+会话控制（`--session`）与继承模型、工作目录一样，继承 Host 已保存的权限。续跑、queue、
+steer 和回答问题不需要重复 `--yolo`，也不会改变执行边界；只有要显式授予完整权限时才加
+`--yolo`。`--status` 会报告 `executionBoundary`：受管 `read_only`/`writable`、bypass 或 external。
+只读任务描述不等于强制只读沙箱，继承 bypass 的会话依然是完整权限。旧阻塞选择器
+`--resume <id>` 对 bypass 会话仍保留显式 `--yolo` 要求。
+
+内置 AskUser 是普通阻塞运行的例外：它会输出问题 JSON 而不是最终答案。脚本应使用 `--json`
+并检查 `status`，不能仅凭退出码 0 判断任务完成。普通内置 AskUser 会以退出码 0 返回
+`needs_input`、问题及选项，Host 保留等待中的 Turn。
+`--answer` 使用 JSON 数组，为每个问题提供一个字符串或 `null`，回答后原工具调用和原 Turn
+继续执行，无需 `--resume`。答案提交失败或结果不确定时不会自动重发；先重新读取当前问题，
+再决定下一步。存在多批待回答问题时会如实报告，无法唯一选择当前批次时拒绝提交答案。
+
+对于 Host 持有的会话执行，`--wait` 和 `--status` 遇到沙箱扩展请求会返回 `needs_approval`，
+并在 `approvalRequests` 中列出 `kind`、扩展范围 `expansion` 和理由 `justification`；内部请求
+ID 不暴露。查看范围后，选择批准或拒绝：
+
+```sh
+maka run --session "$session" --approve --json
+maka run --session "$session" --deny --json
+```
+
+上面两条命令是二选一，不能顺序执行。它们都继续原 Turn，要求会话中恰好有一个待处理沙箱
+请求；没有请求或存在多个请求时拒绝提交决定。它们无需 `--yolo`，也不能与之混用。批准通过
+Host 扩展受管沙箱边界，并保存供该会话后续执行使用，不会将会话切换为 bypass。命令针对
+本次连接时待处理的请求；结果
+不确定时不要自动重试，应先读取当前请求，再决定下一步。普通阻塞运行仍保留原有的沙箱
+边界自动拒绝行为。
+
+协调线程推荐先后台入队，再处理会话交互：
+
+```sh
+maka run --session "$session" "接下来检查测试" --no-wait
+maka run --session "$session" --wait --json
+```
+
+工作会话提交回执中的 `submission` 为 `started`、`queued` 或 `steering`，只表示接收方式；`status`
+描述当前观察到的会话，不表示刚提交的消息已完成。排队回执可同时带有 `needs_input` 和当前
+Turn 的问题，或 `needs_approval` 和沙箱请求；先回答交互，后续消息才能执行。`queued` 是观察到
+的后续消息与 steer 总数，不是精确排队位置；回执快照未追上接收结果时省略该计数，
+可用 status 读取新状态。Host 发布重试状态时，status 还会带上
+`providerRetry`，不会根据静默时间猜测活动。
+
+助手 Inbox 会话返回 `submission: "inbox"`，不包含工作 Turn 的结果或队列计数，即使指定 `--wait` 也立即返回接收回执。这仅确认消息已进入 Inbox；委派工作的结果需通过对应工作会话查询。
+
+默认使用 queue，每条显式排队消息对应一个独立后续 Turn。steer 沿用 Host 当前 Turn 的追加
+机制，错过最后处理边界时可能进入后续 Turn。提交排队消息且未指定 `--no-wait` 时，调用跟踪该消息对应的执行（可显式加 `--wait`），不会返回前一 Turn 阻塞队列的问题；
+这类问题要通过独立的会话 wait/answer 处理，或采用上面的协调流程。steer 配合 `--wait` 观察连接时选定的
+Turn，不保证追加消息一定在该 Turn 结束前消费。
+单独 `--wait` 在连接时固定目标，空闲时读取最近结果。`--result` 不等待仍在执行的 Turn。
+状态和结果查询不准备模型、不启动 MCP。用 Ctrl+C 退出会话观察会让 Host 继续执行；旧阻塞
+run 的取消行为保持原样。显式停止 Host 执行可用 `maka run --session "$session" --stop --json`。
+停止操作针对连接时观察到的当前 Turn，不需要 `--yolo`，请求成功退出 0。显式或隐式的 status
+查询成功时也退出 0，即使它报告的 Turn 已失败或取消；result/wait 仍以任务失败返回非零退出码。
+停止或查询成功不代表分配的任务已完成。
+
+权限请求、MCP 表单等会话 CLI 无法回答的交互会留在 Host 中等待。wait 会报告实际交互类型和恢复
+命令：使用同一 Host 的交互式客户端处理，或显式停止该 Turn。后台提交成功不保证后续执行
+不会请求交互。
+
+`--session <id> --resume` 则表示
+安全恢复已停止的执行。空闲会话的新 prompt 可以使用 `--max-steps`，排队或 steer 消息不能
+给已有 Turn 附加步数上限。
+
+当前不支持客户端 MCP 交互返回后由另一个 CLI 进程续接。阻塞 MCP 运行保留现有行为；
+`--no-wait` 会拒绝脱离本次调用持有的 MCP servers。Graph 交互交接也暂缓。执行本地会话控制
+及后台提交时使用持久 CLI 安装；临时 npx 调用可能持有 Host 生命周期，继续使用旧阻塞路径。
+
+仓库的 `maka-cli` skill 提供主/子代理 CLI 协作指引；待其进入所选分支后可安装。
+skill 本身不安装 Maka CLI：
+
+```sh
+npx skills add apache/maka --skill maka-cli
+```
 
 ## 升级
 

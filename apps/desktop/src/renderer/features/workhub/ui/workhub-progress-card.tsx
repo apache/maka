@@ -18,8 +18,7 @@
  */
 
 import { useEffect, type Ref } from 'react';
-import { IconButton } from '@astryxdesign/core';
-import { MakaWordmark, useUiLocale, type LiveTurnProjection } from '@maka/ui';
+import { ProgressCard, progressStatusCopy, useUiLocale, type LiveTurnProjection } from '@maka/ui';
 import { ArrowRight, X } from '@maka/ui/icons';
 import type { StoredMessage } from '@maka/core/session';
 import type { WorkHubControlSnapshot } from '../../../../shared/workhub-control.js';
@@ -49,8 +48,9 @@ export function WorkHubProgressCard({ ref, request, control, liveTurn, messages,
 }) {
   const { presentation } = useWorkHubServices();
   const t = workHubLiveCopy[useUiLocale()];
-  const status = control?.phase === 'paused' ? t.progressPaused : control?.phase === 'error' ? t.progressError
-    : control?.status ?? (busy || control?.phase === 'acting' ? t.progressWorking : t.progressDone);
+  const progress = progressStatusCopy[useUiLocale()];
+  const status = control?.phase === 'paused' ? progress.paused : control?.phase === 'error' ? progress.attention
+    : control?.status ?? (busy || control?.phase === 'acting' ? progress.working : progress.finished);
   const spoken = latestText(liveTurn, messages)?.trim().split(/(?<=[。！？!?])\s*|(?<=\.)\s+|\n+/u).filter(Boolean).at(-1);
   useEffect(() => {
     let second = 0;
@@ -59,13 +59,8 @@ export function WorkHubProgressCard({ ref, request, control, liveTurn, messages,
     });
     return () => { cancelAnimationFrame(first); cancelAnimationFrame(second); };
   }, [presentation, request]);
-  return <aside ref={ref} className="workHubProgressCard" aria-label={t.progressTitle}>
-    <div className="workHubProgressHeader">
-      <span className="workHubProgressBrand"><MakaWordmark width={42} /></span>
-      <span className="workHubProgressStatus" role="status"><i data-active={busy || control?.phase === 'acting'} />{status}</span>
-      <IconButton className="workHubProgressOpen" size="sm" variant="ghost" label={t.progressOpen} tooltip={t.progressOpen} icon={<ArrowRight size={12} />} onClick={onOpen} />
-      <IconButton className="workHubProgressClose" size="sm" variant="ghost" icon={<X size={12} />} label={t.progressClose} onClick={() => { void presentation.hide().catch(console.error); }} />
-    </div>
-    <p className="workHubProgressText">{spoken?.replace(/\s+/g, ' ').trim() || t.progressHint}</p>
-  </aside>;
+  return <ProgressCard ref={ref} className="workHubProgressCard" label={t.progressTitle}
+    status={status} active={busy || control?.phase === 'acting'} summary={spoken || t.progressHint}
+    primaryAction={{ label: progress.openConversation, icon: <ArrowRight size={12} />, onClick: onOpen }}
+    secondaryAction={{ label: t.progressClose, icon: <X size={12} />, onClick: () => { void presentation.hide().catch(console.error); } }} />;
 }

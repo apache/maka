@@ -23,7 +23,7 @@ import type { UiLocale } from './ui-locale.js';
 
 /** Scenarios that are consumed by a current E2E, audit, or smoke entry point. */
 export type E2eFixtureScenario =
-  | 'settings-models'
+  | 'settings-connections'
   | 'turn-narrative'
   | 'turn-narrative-browser'
   | 'chat-prompt-rail'
@@ -38,7 +38,8 @@ export type E2eFixtureScenario =
   | 'module-mcp'
   | 'module-daily-review'
   | 'scheduled-tasks'
-  | 'sidebar-search-modal-open';
+  | 'sidebar-search-modal-open'
+  | 'checkin';
 
 export interface E2eFixtureState {
   enabled: true;

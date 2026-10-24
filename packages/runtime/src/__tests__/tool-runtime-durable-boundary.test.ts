@@ -33,6 +33,132 @@ import type {
 import { ToolRuntime, type MakaTool } from '../tool-runtime.js';
 
 describe('ToolRuntime durable boundary', () => {
+  it('commits declared outcomes once and leaves ordinary business status alone', async () => {
+    const outcomes: ToolOutcomeCommit[] = [];
+    const telemetry: string[] = [];
+    const harness = () =>
+      makeHarness(
+        {
+          commitToolPrepared: async () => ({
+            created: true,
+            runtimeEventSeq: 1,
+          }),
+          commitToolOutcome: async (input) => {
+            outcomes.push(input);
+            return { created: true, runtimeEventSeq: 2 };
+          },
+        },
+        undefined,
+        'run-1',
+        {
+          recordToolInvocation: (record) => telemetry.push(record.status),
+        },
+      );
+    for (const outcome of ['error', 'aborted', 'success'] as const) {
+      const attempt = harness();
+      const target = tool(() => ({
+        outcome,
+        content: [{ type: 'text', text: 'report' }],
+      }));
+      target.resultOutcome = (output) => (output as { outcome: typeof outcome }).outcome;
+      await attempt.execute(target);
+      const response = outcomes.at(-1)?.runtimeEvent.content;
+      assert.equal(response?.kind === 'function_response' && response.outcome, outcome);
+      assert.equal(
+        response?.kind === 'function_response' && response.isError === true,
+        outcome !== 'success',
+      );
+      assert.deepEqual(response?.kind === 'function_response' ? response.result : undefined, {
+        kind: 'json',
+        value: { content: [{ type: 'text', text: 'report' }] },
+      });
+      const live = attempt.events.at(-1);
+      assert.equal(live?.type === 'tool_result' && live.outcome, outcome);
+      assert.equal(live?.type === 'tool_result' && live.isError, outcome !== 'success');
+    }
+    assert.deepEqual(telemetry, ['error', 'aborted', 'success']);
+    const ordinary = tool(() => ({ outcome: 'error', status: 'failed' }));
+    const ordinaryAttempt = harness();
+    await ordinaryAttempt.execute(ordinary);
+    const ordinaryEvent = ordinaryAttempt.events.at(-1);
+    assert.equal(ordinaryEvent?.type === 'tool_result' && ordinaryEvent.isError, false);
+  });
+
+  it('commits a thrown stop as aborted without changing ordinary thrown failures', async () => {
+    const outcomes: ToolOutcomeCommit[] = [];
+    const telemetry: string[] = [];
+    const harness = makeHarness(
+      {
+        commitToolPrepared: async () => ({ created: true, runtimeEventSeq: 1 }),
+        commitToolOutcome: async (input) => {
+          outcomes.push(input);
+          return { created: true, runtimeEventSeq: 2 };
+        },
+      },
+      undefined,
+      'run-1',
+      { recordToolInvocation: (record) => telemetry.push(record.status) },
+    );
+    const controller = new AbortController();
+    await harness.execute(
+      tool(() => {
+        controller.abort(new Error('user stopped'));
+        throw controller.signal.reason;
+      }),
+      controller.signal,
+    );
+    const aborted = outcomes[0]?.runtimeEvent.content;
+    assert.equal(aborted?.kind === 'function_response' && aborted.outcome, 'aborted');
+    const live = harness.events.at(-1);
+    assert.equal(live?.type === 'tool_result' && live.outcome, 'aborted');
+    await harness.execute(
+      tool(() => {
+        throw new Error('ordinary failure');
+      }),
+    );
+    const failed = outcomes[1]?.runtimeEvent.content;
+    assert.equal(failed?.kind === 'function_response' && failed.outcome, 'error');
+    assert.deepEqual(telemetry, ['aborted', 'error']);
+  });
+
+  it('records only unknown-reporting policies even for historical tool declarations', async () => {
+    for (const mode of [
+      undefined,
+      'never_auto_retry',
+      'outcome_unknown',
+      'replay_safe',
+      'idempotent',
+      'reconcile',
+      'reattach',
+    ]) {
+      const prepared: ToolPreparedCommit[] = [];
+      let executions = 0;
+      const harness = makeHarness({
+        commitToolPrepared: async (input) => {
+          prepared.push(input);
+          return { created: true, runtimeEventSeq: 1 };
+        },
+        commitToolOutcome: async () => ({ created: true, runtimeEventSeq: 2 }),
+      });
+      const target = {
+        ...tool(() => {
+          executions += 1;
+          return 'ok';
+        }),
+        recoveryMode: mode,
+      } as unknown as MakaTool;
+      await harness.execute(target);
+      const expected = mode === 'outcome_unknown' ? 'outcome_unknown' : 'never_auto_retry';
+      assert.equal(prepared[0]?.recoveryMode, expected, String(mode));
+      assert.equal(
+        prepared[0]?.dispatchRuntimeEvent.actions?.toolDispatch?.recoveryMode,
+        expected,
+        String(mode),
+      );
+      assert.equal(executions, 1);
+    }
+  });
+
   it('does not invoke the tool or publish a result when T1 fails', async () => {
     let implementationCalls = 0;
     const harness = makeHarness({
@@ -794,7 +920,7 @@ function tool(impl: MakaTool['impl']): MakaTool {
     name: 'Read',
     description: 'read',
     parameters: {},
-    recoveryMode: 'replay_safe',
+    recoveryMode: 'never_auto_retry',
     impl,
   };
 }

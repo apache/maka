@@ -84,7 +84,7 @@ describe('open path guard', () => {
   test('rejects symlink escapes from inside an allowed directory', async () => {
     await withWorkspace(async (workspaceRoot, outsideRoot) => {
       await mkdir(outsideRoot, { recursive: true });
-      await symlink(outsideRoot, join(workspaceRoot, 'memory'));
+      await symlink(outsideRoot, join(workspaceRoot, 'memory'), process.platform === 'win32' ? 'junction' : 'dir');
 
       assert.deepEqual(await resolveOpenPath({ key: 'memory', workspaceRoot }), { ok: false, reason: 'not-allowed' });
     });
@@ -96,7 +96,7 @@ describe('open path guard', () => {
     const workspaceLink = join(linkRoot, 'workspace-link');
     try {
       await mkdir(join(realRoot, 'memory'), { recursive: true });
-      await symlink(realRoot, workspaceLink);
+      await symlink(realRoot, workspaceLink, process.platform === 'win32' ? 'junction' : 'dir');
 
       const result = await resolveOpenPath({ key: 'memory', workspaceRoot: workspaceLink });
 

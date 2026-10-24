@@ -62,15 +62,25 @@ function SkillDraftHarness(): React.ReactElement {
     };
   }, []);
   return (
-    <div style={{ display: 'flex', alignItems: 'flex-end', height: 460, padding: 24 }}>
-      <Composer
-        draftKey={draftKey}
-        mentionSkills={skills}
-        onSend={(text) => {
-          sent(text);
-        }}
-        onStop={() => {}}
-      />
+    <div
+      style={{
+        display: 'flex',
+        alignItems: 'flex-end',
+        height: 460,
+        padding: 24,
+        width: '100%',
+      }}
+    >
+      <div style={{ width: '100%' }}>
+        <Composer
+          draftKey={draftKey}
+          mentionSkills={skills}
+          onSend={(text) => {
+            sent(text);
+          }}
+          onStop={() => {}}
+        />
+      </div>
     </div>
   );
 }

@@ -47,6 +47,7 @@ import {
   syncFile,
 } from './stable-storage.js';
 import { runWithContextValueMutation } from './context-value-mutation-gate.js';
+import { SqliteReclamationCheckpoint } from './sqlite-reclamation-checkpoint.js';
 
 const MAX_MEDIA_TYPE_CODE_POINTS = 256;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
@@ -131,6 +132,7 @@ export class SqliteContextOffloadStore implements ContextOffloadStore {
   readonly #storageRoot: string | undefined;
   readonly #valueRoot: string | undefined;
   readonly #mutationGateKey: string;
+  readonly #reclamationCheckpoint = new SqliteReclamationCheckpoint();
   #closed = false;
 
   constructor(path: string, options: SqliteContextOffloadStoreOptions) {
@@ -505,6 +507,45 @@ export class SqliteContextOffloadStore implements ContextOffloadStore {
         hasMore: collected.hasMore || this.#hasPendingFileDeletions(),
       };
     });
+  }
+
+  /**
+   * Returns up to `maxPages` free pages to the filesystem with one bounded
+   * `incremental_vacuum`. The schema guarantees `auto_vacuum = INCREMENTAL`.
+   */
+  async reclaimFreePages(input: {
+    readonly maxPages: number;
+  }): Promise<{ readonly reclaimedPages: number; readonly hasMore: boolean }> {
+    assertPositiveSafeInteger(input.maxPages, 'Context page reclamation limit');
+    this.#assertOpen();
+    // Probe under a read transaction so an idle tick never takes the write lock.
+    if (this.#readTransaction(() => this.#freelistPages()) === 0) {
+      this.#reclamationCheckpoint.run(this.#database, 0);
+      return { reclaimedPages: 0, hasMore: false };
+    }
+    const result = this.#writeTransaction(() => {
+      const before = this.#freelistPages();
+      // incremental_vacuum(0) would free every page, so an emptied list stops here.
+      if (before === 0) return { reclaimedPages: 0, hasMore: false };
+      this.#database.exec(`PRAGMA incremental_vacuum(${Math.min(input.maxPages, before)})`);
+      const after = this.#freelistPages();
+      // A batch that frees nothing reports no more work instead of spinning the lane.
+      return { reclaimedPages: before - after, hasMore: after > 0 && after < before };
+    });
+    // PASSIVE never waits on readers; it moves the shrink into the main file.
+    this.#reclamationCheckpoint.run(this.#database, result.reclaimedPages);
+    return result;
+  }
+
+  #freelistPages(): number {
+    const row = this.#database.prepare('PRAGMA freelist_count').get() as
+      | { freelist_count?: unknown }
+      | undefined;
+    const pages = row?.freelist_count;
+    if (typeof pages !== 'number' || !Number.isSafeInteger(pages) || pages < 0) {
+      throw new Error('Invalid SQLite freelist_count');
+    }
+    return pages;
   }
 
   async usage(sessionId?: string): Promise<ContextOffloadUsage> {

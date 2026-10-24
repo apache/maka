@@ -553,6 +553,15 @@ export class AgentRun {
     // method exists to prevent.
     const runStore = this.input.runStore;
     if (!this.input.runtimeEventStore || !runStore) return;
+    // A stream may have attempted finalization after an earlier stop failed.
+    // Join that write, but let this explicit retry reuse its reserved fact if
+    // the write failed; a rejected promise is not durable terminal evidence.
+    const previousWrite = this.terminalClaim.write;
+    try {
+      await previousWrite;
+    } catch {
+      if (this.terminalClaim.write === previousWrite) this.terminalClaim.write = undefined;
+    }
     await this.flushRuntimePartialBuffer(true);
     // The claim only fences writers inside this Run. Another owner — a Host
     // recovery, a resumed continuation — may have sealed the ledger already,
@@ -1484,7 +1493,12 @@ export class AgentRun {
     if (origin?.kind === 'scheduled_task') {
       return { kind: 'scheduled_task', scheduledTaskId: origin.scheduledTaskId };
     }
-    if (origin?.kind === 'goal') return { kind: 'goal', goalId: origin.goalId };
+    if (origin?.kind === 'goal')
+      return {
+        kind: 'goal',
+        goalId: origin.goalId,
+        ...(origin.eventWait ? { eventWait: origin.eventWait } : {}),
+      };
     if (origin?.kind === 'agent_graph') {
       return {
         kind: 'agent_graph_supervisor_wake',

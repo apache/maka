@@ -205,7 +205,7 @@ class SqliteProjectCatalog implements ProjectCatalog {
   }
 
   async register(path: string, options?: ProjectRegistrationOptions): Promise<ProjectRecord> {
-    const resolved = await resolveUserSelectedProjectLocation(path);
+    const resolved = await resolveProjectLocation({ path, intent: 'selected' });
     if (options?.withinRoot && !isPathWithin(options.withinRoot, resolved.canonicalPath)) {
       throw new ProjectPathBoundaryError(resolved.canonicalPath);
     }
@@ -316,24 +316,13 @@ class SqliteProjectCatalog implements ProjectCatalog {
   }
 
   async touch(projectId: string, path?: string): Promise<ProjectRecord> {
-    let canonicalPath: string | undefined;
-    if (path) {
-      try {
-        canonicalPath = normalize(await realpath(resolve(path)));
-      } catch {
-        throw new ProjectUnavailableError(projectId);
-      }
-    }
+    const requestedPath = path ? await canonicalTouchPath(projectId, path) : undefined;
     const touched = await this.mutate((file) => {
       const project = findProjectById(file.projects, projectId);
       if (!project) throw new ProjectNotFoundError(projectId);
-      const location = canonicalPath
-        ? project.locations.find((item) => item.path === canonicalPath)
-        : [...project.locations].sort(
-            (a, b) => b.lastUsedAt - a.lastUsedAt || a.path.localeCompare(b.path),
-          )[0];
-      if (canonicalPath && !location) {
-        throw new ProjectPathMismatchError(projectId, canonicalPath);
+      const location = locationForTouch(project, requestedPath);
+      if (requestedPath && !location) {
+        throw new ProjectPathMismatchError(projectId, requestedPath);
       }
       const timestamp = this.now();
       if (location) location.lastUsedAt = timestamp;
@@ -344,7 +333,7 @@ class SqliteProjectCatalog implements ProjectCatalog {
   }
 
   async relink(projectId: string, path: string): Promise<ProjectRecord> {
-    const resolved = await resolveUserSelectedProjectLocation(path);
+    const resolved = await resolveProjectLocation({ path, intent: 'selected' });
     const timestamp = this.now();
     const locationPath =
       resolved.kind === 'git' ? resolved.git!.worktreeRoot : resolved.canonicalPath;
@@ -364,7 +353,7 @@ class SqliteProjectCatalog implements ProjectCatalog {
     projectId: string,
     path: string,
   ): Promise<{ project: ProjectRecord; updatedSessionIds: readonly string[] }> {
-    const resolved = await resolveUserSelectedProjectLocation(path);
+    const resolved = await resolveProjectLocation({ path, intent: 'selected' });
     const timestamp = this.now();
     const locationPath =
       resolved.kind === 'git' ? resolved.git!.worktreeRoot : resolved.canonicalPath;
@@ -834,8 +823,7 @@ async function canonicalizeMissingPath(path: string): Promise<string> {
  * the same thing to a historical working directory: keep walking up.
  */
 function isUnreachablePathError(error: unknown): boolean {
-  const code = (error as NodeJS.ErrnoException).code;
-  return code === 'ENOENT' || code === 'ENOTDIR';
+  return ['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '');
 }
 
 async function isDirectory(path: string): Promise<boolean> {
@@ -844,6 +832,30 @@ async function isDirectory(path: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+async function canonicalTouchPath(projectId: string, path: string): Promise<string> {
+  try {
+    return normalize(await realpath(resolve(path)));
+  } catch {
+    throw new ProjectUnavailableError(projectId);
+  }
+}
+
+function locationForTouch(project: PersistedProject, requestedPath?: string) {
+  if (requestedPath) {
+    return project.locations.find((location) => location.path === requestedPath);
+  }
+  return project.locations.reduce<(typeof project.locations)[number] | undefined>(
+    (preferred, location) => {
+      if (!preferred) return location;
+      if (location.lastUsedAt !== preferred.lastUsedAt) {
+        return location.lastUsedAt > preferred.lastUsedAt ? location : preferred;
+      }
+      return location.path.localeCompare(preferred.path) < 0 ? location : preferred;
+    },
+    undefined,
+  );
 }
 
 export interface ResolvedProjectLocation {
@@ -859,52 +871,35 @@ export interface ResolvedProjectLocation {
 
 export async function resolveProjectLocation(input: {
   path: string;
+  intent?: 'selected';
 }): Promise<ResolvedProjectLocation> {
   const canonicalPath = normalize(await realpath(resolve(input.path)));
-  // Regular files are not valid projects. Without this check, a file inside a
-  // Git worktree reaches `git -C <file> rev-parse ...`, whose numeric failure
-  // is not treated as an invalid path by the Host coordinator and drains it.
-  if (!(await stat(canonicalPath)).isDirectory()) {
+  const location = await stat(canonicalPath);
+  // Reject files before Git discovery: `git -C <file>` reports a generic
+  // process failure that callers cannot classify as an invalid project path.
+  if (!location.isDirectory()) {
     throw new TypeError(`Project path is not a directory: ${canonicalPath}`);
   }
-  if (!(await hasEnclosingGitEntry(canonicalPath))) {
-    return {
-      canonicalPath,
-      identity: `folder:${canonicalPath}`,
-      kind: 'folder',
-    };
-  }
-  const git = await resolveGitLocation(canonicalPath);
-  return {
+  const folder = (): ResolvedProjectLocation => ({
     canonicalPath,
-    identity: `git:${git.commonDir}`,
-    kind: 'git',
-    git,
-  };
+    identity: `folder:${canonicalPath}`,
+    kind: 'folder',
+  });
+  if (!(await hasEnclosingGitEntry(canonicalPath))) return folder();
+  const git = await resolveGitLocation(canonicalPath);
+  // A chooser selection names this directory exactly. Historical working
+  // directories may resolve upward to their enclosing worktree instead.
+  if (input.intent === 'selected' && canonicalPath !== git.worktreeRoot) {
+    return folder();
+  }
+  return gitLocation(canonicalPath, git);
 }
 
-/**
- * A directory the user picked in the add/relink chooser.
- *
- * `resolveProjectLocation` still walks to the enclosing Git worktree so a
- * historical session cwd inside a repository stays on that repository.
- * The chooser must not do that: selecting `repo/child` would otherwise
- * silently become `repo` and reopen the parent project.
- */
-async function resolveUserSelectedProjectLocation(path: string): Promise<ResolvedProjectLocation> {
-  const resolved = await resolveProjectLocation({ path });
-  if (
-    resolved.kind !== 'git' ||
-    !resolved.git ||
-    resolved.canonicalPath === resolved.git.worktreeRoot
-  ) {
-    return resolved;
-  }
-  return {
-    canonicalPath: resolved.canonicalPath,
-    identity: `folder:${resolved.canonicalPath}`,
-    kind: 'folder',
-  };
+function gitLocation(
+  canonicalPath: string,
+  git: NonNullable<ResolvedProjectLocation['git']>,
+): ResolvedProjectLocation {
+  return { canonicalPath, identity: `git:${git.commonDir}`, kind: 'git', git };
 }
 
 function isPathWithin(root: string, candidate: string): boolean {

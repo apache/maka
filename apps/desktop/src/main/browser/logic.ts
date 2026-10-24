@@ -95,15 +95,14 @@ export function viewportBoundsAtScale(
 export type BrowserActionKind = 'observe' | 'mutate' | 'navigate';
 
 /**
- * The ordinary-session visible-lease policy. The agent runs in a conversation's runtime, which may
- * NOT be the conversation on screen; without this gate it could drive a hidden,
- * zero-bounds view after the user switches away. EVERY action — including a
- * read (observe) — must happen in the conversation the user is looking at:
- * observing a logged-in page off screen would let a backgrounded conversation
- * exfiltrate its content the user can't see. `mutate` (click/type) additionally
- * needs real on-screen bounds, because opencli's native CDP click hit-tests a
- * composited frame a hidden view lacks; observe/navigate need only that the
- * session is shown (reading and goto don't require a painted frame).
+ * Fallback visible-lease policy for callers without background authorization.
+ * The desktop can separately authorize a selected Session on an active Host to
+ * operate with its browser panel collapsed or its window hidden/minimized.
+ * That authorization is fenced by selection generation, Host identity/epoch and
+ * live renderer ownership. Switching Sessions must revoke the old selection
+ * immediately, before resolving the new owner. Unselected Sessions get no
+ * background lease. Callers without that lease need visibility, and mutations
+ * additionally need a viewport.
  */
 export function browserActionAllowed(
   kind: BrowserActionKind,
@@ -119,6 +118,7 @@ export interface BrowserStateSnapshot {
   canGoBack: boolean;
   canGoForward: boolean;
   loading: boolean;
+  loadError?: BrowserState['loadError'];
 }
 
 /**
@@ -135,5 +135,6 @@ export function deriveBrowserState(snapshot: BrowserStateSnapshot): BrowserState
     loading: snapshot.loading,
     secure: /^https:\/\//i.test(snapshot.url),
     hasPage: snapshot.url !== '' && !snapshot.url.startsWith('about:'),
+    loadError: snapshot.loadError ?? null,
   };
 }

@@ -325,6 +325,15 @@ describe('MCP secret redaction', () => {
     assert.throws(() => restoreMcpConfigSecrets(incoming, previous), McpSecretRestoreError);
   });
 
+  it('rejects a sentinel when the OAuth issuer changed', () => {
+    const previous = withSecret('real-secret');
+    const incoming = redactMcpConfigSecrets(previous);
+    const server = incoming.mcpServers.notion;
+    assert.ok(server && 'url' in server && server.oauth);
+    server.oauth.issuer = 'https://other.example';
+    assert.throws(() => restoreMcpConfigSecrets(incoming, previous), McpSecretRestoreError);
+  });
+
   it('rejects a sentinel that has no previous value instead of persisting or dropping it', () => {
     const incoming = withSecret(mcpSecretMarker('oauth'));
     assert.throws(

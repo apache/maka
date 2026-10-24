@@ -69,7 +69,7 @@ function ChromeColumnToggle(props: {
         label={label}
         icon={<ChromeIcon icon={props.collapsed ? props.expandIcon : props.collapseIcon} />}
         variant="ghost"
-        size="md"
+        size="sm"
         className={
           props.className
             ? `maka-titlebar-action ${props.className}`
@@ -96,7 +96,7 @@ function AppShellTopbarActions(props: {
           label={copy.searchConversations}
           icon={<ChromeIcon icon={Search} />}
           variant="ghost"
-          size="md"
+          size="sm"
           className="maka-titlebar-action"
           data-maka-search-trigger="true"
           onClick={props.onOpenSearchModal}

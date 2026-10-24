@@ -44,6 +44,7 @@ export class McpCapabilityPublication {
   #closed = false;
   #state: McpCapabilityPublicationState = 'unavailable';
   #published: { identity: string; revision: number; registered: boolean } | undefined;
+  #lastError: unknown;
 
   constructor(options: McpCapabilityPublicationOptions) {
     this.#options = options;
@@ -65,8 +66,24 @@ export class McpCapabilityPublication {
 
   async settle(): Promise<McpCapabilityPublicationState> {
     this.request();
+    return this.waitForPending();
+  }
+
+  /** Waits for an already requested publication without starting another attempt. */
+  async waitForPending(): Promise<McpCapabilityPublicationState> {
     while (this.#task) await this.#task;
     return this.#closed ? 'unavailable' : this.#state;
+  }
+
+  get lastError(): unknown {
+    return this.#lastError;
+  }
+
+  get publishedRevision(): number | undefined {
+    const published = this.#published;
+    return published?.identity === this.#options.connectionIdentity()
+      ? published?.revision
+      : undefined;
   }
 
   close(): Promise<void> {
@@ -123,7 +140,8 @@ export class McpCapabilityPublication {
       else if (this.#published?.identity === identity && this.#published.registered) {
         await this.#options.unregister();
       }
-    } catch {
+    } catch (error) {
+      this.#lastError = error;
       try {
         await provider?.close?.();
       } catch {
@@ -133,6 +151,7 @@ export class McpCapabilityPublication {
       else if (!this.#closed) this.#requested = true;
       return;
     }
+    this.#lastError = undefined;
     // Even an obsolete snapshot may have committed on the current connection.
     // Retain that fact so an empty replacement or close can unregister it.
     if (this.#options.connectionIdentity() === identity) {

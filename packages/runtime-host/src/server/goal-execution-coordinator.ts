@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import type { GoalEventWaitContinuation } from '@maka/core/goal';
 import { randomUUID } from 'node:crypto';
 import type { GoalCheckpoint, GoalControlLease } from '@maka/runtime/goal-state';
 import type { GoalTurnAdmission, GoalTurnOutcome } from '@maka/runtime/goal-continuation';
@@ -39,6 +40,10 @@ export interface HostGoalExecutionCoordinatorOptions {
     controlLease: GoalControlLease,
   ) => boolean;
   readonly newId?: () => string;
+  readonly authorizeEventWait?: (
+    sessionId: string,
+    eventWait: GoalEventWaitContinuation,
+  ) => Promise<boolean | 'defer'>;
 }
 
 /** Owns the Goal Domain's mapping onto Hosted Execution admission and terminal facts. */
@@ -51,9 +56,11 @@ export class HostGoalExecutionCoordinator {
     Extract<ReturnType<GoalExecutionAuthority['prepare']>, { kind: 'prepared' }>['admission']
   >();
   #draining = false;
+  readonly #authorizeEventWait: HostGoalExecutionCoordinatorOptions['authorizeEventWait'];
 
   constructor(options: HostGoalExecutionCoordinatorOptions) {
     this.#executions = options.executions;
+    this.#authorizeEventWait = options.authorizeEventWait;
     this.#runtime = options.runtime;
     this.#matchesActive = options.matchesActive;
     this.#newId = options.newId ?? randomUUID;
@@ -64,6 +71,7 @@ export class HostGoalExecutionCoordinator {
     text: string,
     checkpoint: GoalCheckpoint,
     controlLease: GoalControlLease,
+    eventWait?: GoalEventWaitContinuation,
   ): GoalTurnAdmission {
     if (this.#draining) {
       return {
@@ -75,14 +83,20 @@ export class HostGoalExecutionCoordinator {
     if (preparation.kind === 'busy') return preparation;
     if (preparation.kind === 'unavailable') return preparation;
 
-    const execution = {
+    const execution = eventWait?.execution ?? {
       sessionId,
       turnId: this.#newId(),
       runId: this.#newId(),
     };
-    const userMessageId = this.#newId();
+    const userMessageId = eventWait?.userMessageId ?? this.#newId();
+    const origin = {
+      kind: 'goal' as const,
+      goalId: checkpoint.goalId,
+      ...(eventWait ? { eventWait: eventWait.provenance } : {}),
+    };
     let started = false;
     let gateCancelled = false;
+    let gateDeferred = false;
     const prepared = preparation.admission;
     this.#prepared.add(prepared);
 
@@ -112,11 +126,18 @@ export class HostGoalExecutionCoordinator {
           const initial = await prepared.admit({
             ...execution,
             userMessageId,
-            execution: { kind: 'goal', goalId: checkpoint.goalId },
+            execution: origin,
             content: { text },
             admitExecution: async () => {
+              const authorization = eventWait
+                ? await this.#authorizeEventWait?.(sessionId, eventWait)
+                : true;
+              gateDeferred = authorization === 'defer';
+              const authorized = authorization === true;
               gateCancelled =
-                this.#draining || !this.#matchesActive(sessionId, checkpoint, controlLease);
+                !authorized ||
+                this.#draining ||
+                !this.#matchesActive(sessionId, checkpoint, controlLease);
               return gateCancelled ? 'cancelled' : 'executing';
             },
             start: ({ runId, userMessageId: admittedMessageId, onRunStarted }) => {
@@ -128,7 +149,7 @@ export class HostGoalExecutionCoordinator {
                 {
                   turnId: execution.turnId,
                   text,
-                  origin: { kind: 'goal', goalId: checkpoint.goalId },
+                  origin,
                 },
                 {
                   runId,
@@ -153,6 +174,7 @@ export class HostGoalExecutionCoordinator {
           await initial.settled;
           return goalTurnOutcomeFromHostedExecution(terminal);
         } catch (error) {
+          if (gateDeferred) return { kind: 'deferred' };
           return {
             kind: 'errored',
             turnId: execution.turnId,

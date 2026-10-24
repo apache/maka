@@ -70,7 +70,6 @@ export function buildClientSettingsTools(
       'Runtime behavior, credentials, model configuration, network settings, and Bot settings are excluded.',
     parameters: z.object({}).strict(),
     categoryHint: 'read',
-    recoveryMode: 'replay_safe',
     impl: async () => project(await authority.read()),
   };
   const updateTool: MakaTool<ClientSettingsPatch, ClientSettingsUpdateResult> = {
@@ -185,7 +184,7 @@ function describeChange(change: ClientSettingsChange): string {
     theme: 'Theme',
     palette: 'Palette',
     uiLocale: 'UI language',
-    runComplete: 'Run-complete notifications',
+    runComplete: 'System notifications',
     keepSystemAwake: 'Keep system awake',
   };
   return `${labels[change.key]}: ${String(change.current)} → ${String(change.next)}`;

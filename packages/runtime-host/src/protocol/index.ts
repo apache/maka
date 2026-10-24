@@ -41,6 +41,7 @@ import {
   decodeConfigurationChangedFrame,
   type ConfigurationChangedFrame,
 } from './configuration-change.js';
+import { decodeArtifactChangedFrame, type ArtifactChangedFrame } from './artifact-change.js';
 import {
   decodeSessionCatalogChangedFrame,
   type SessionCatalogChangedFrame,
@@ -68,6 +69,7 @@ import { isCanonicalRuntimeHostWebSocketPath } from './websocket-path.js';
 import { INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID } from '../composition-identity.js';
 
 export * from './access-authority.js';
+export * from './artifact-change.js';
 export * from './agent-graph.js';
 export * from './interaction.js';
 export * from './daily-review.js';
@@ -78,12 +80,14 @@ export * from './goal.js';
 export * from './hosted-execution.js';
 export * from './host-resources.js';
 export * from './plan.js';
+export * from './personal-assistant.js';
 export * from './peer-mesh.js';
 export * from './project-catalog.js';
 export * from './project-catalog-change.js';
 export * from './execution-inspect.js';
 export * from './external-session.js';
 export * from './message.js';
+export * from './queue-mutation.js';
 export * from './operations.js';
 export * from './runtime-resource.js';
 export * from './session-continuity.js';
@@ -103,7 +107,86 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 182 as const;
+// Re-check against main before merging; sibling PRs may use the same next epoch.
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 229 as const;
+// 229: Session check-in proposes cards for unfinished work across Sessions.
+// 228: Executor catalog queries support per-agent filtering and process-free inventory.
+// Older peers reject the executorId and listOnly fields in the strict query decoder.
+// 227: Goal projections carry eventWait and support goal.event-wait.cancel.
+// Older peers cannot decode the wait summary or cancel a specific wait.
+// 226: assistant.allocate-workspace allocates a Host-owned fallback for projectless assistants.
+// 225: Goal successor transcript origins carry typed event-wait provenance.
+// Older peers reject the additional field in the strict stored-message decoder.
+// 224: Assistant conversation admission supports Inbox receipts without a model Turn,
+// inbox execution-query resolutions, external connector provenance and message summaries.
+// Existing bot turn.start producers also carry strict external_connector provenance.
+// Also adds assistant.avatar/assistant.avatar-image and the bot block on assistant.binding.
+// 222: Built-in personal assistant operations and the Host-owned default-off
+// master switch require matching Client and Host support.
+// 221: Epoch-220 peers do not support `artifact.image.resolve` or its image
+// delivery result shapes. Older Hosts reject the unknown operation and close
+// the connection, so mixed peers must fail admission.
+// 220: Client Capability results require a tri-state outcome; session tool
+// continuity and trace steps carry interrupted results. Older peers cannot
+// decode the changed strict shapes.
+// 219: Host change feed includes Artifact deletion and Session purge invalidation frames;
+// the Artifact invalidation feed and guest routing require matching peers.
+// 217: token_usage.lastRequestAnchor may carry completedAt, the provider
+// request settlement time; transcripts may carry context_compaction_applied
+// system notes; and session subscriptions forward the same boundary during
+// running turns. Older peers reject all three in their closed shapes.
+// 215: WorkHub coordination uses canonical configuration and scoped delegated permissions.
+// 212: Session catalogs carry `backgroundActivity` and `backgroundActivityVersion`
+// for Host-owned activity and generation-scoped ordering independent of Session
+// revisions and Turn epochs. Older closed decoders reject these fields.
+// 208: Usage queries filter by model call kind. Epoch-207 peers reject the
+// filter or ignore it.
+// 206: `storage.retention.query` and `storage.retention.set` read and change the
+// opt-in retention for archived tasks. An epoch-205 Client could not show or
+// turn off a Host that deletes archived tasks on its own, and an epoch-205 Host
+// rejects the unknown operations, so the pair must fail admission.
+// 205: Default-model selection can enable atomically; discovery can preserve the model selection.
+// 204: Executor catalogs and Session configuration carry opaque mode IDs;
+// catalog queries may request a provider refresh. Older peers reject these fields.
+// 202: `session.remove.preview` takes a bounded list of Sessions and reports the
+// child tasks, worktrees and optionally the bytes their removal would delete;
+// `session.remove` takes `requireArchivedForMs` and may answer `too_recent`.
+// Epoch-201 peers reject the new input and result shapes, so the pair must
+// fail admission.
+// 201: Session catalog projections may carry `archivedAt`, the time the
+// Session last entered the archive. Epoch-200 peers reject the unknown key, so
+// a newer Desktop against an older Host would lose session catalog reads.
+// 200: Agent Graph operator snapshots carry bounded output previews and metrics.
+// Older peers reject the additional `output` field on strict operator shapes.
+// 199: `storage.usage.query` and `storage.usage.sessions.query` report storage
+// usage. An epoch-198 Host rejects the unknown operation and drops the
+// connection, so the pair must fail admission instead.
+// 198: Executor readiness exposes explicit restore, restore-failed and history-gap states.
+// 197: Queue reorder requests carry the expected queue revision. Epoch-196
+// peers reject the required field or send an unfenced reorder request.
+// 196: `turn.start` carries an optional durable external-message origin; older
+// peers would drop activation provenance and misclassify automated turns.
+// 195: Session catalog live run state may carry the host generation that
+// produced it, so clients can tell same-revision reads of a restarted Host
+// apart from its predecessor's instead of ordering them by a per-process
+// epoch. Epoch-194 peers reject the unknown key.
+// 194: Session catalog live run state may carry the runtime's run epoch, which
+// lets clients order same-revision reads. Epoch-193 peers reject the unknown
+// key, so a newer Desktop against an older Host loses session catalog reads.
+// 193: Queue reorder requests require at least one entry identity. Epoch-192
+// peers can send an empty reorder request that the current Host rejects.
+// 192: Message quotes carry an optional annotation written by the user, which
+// the model reads beside the excerpt. An epoch-191 peer rejects the field.
+// 191: Session catalog change frames can carry attention events.
+// 190: ScheduledTask execution templates preserve toolMode; older peers reject it.
+// 189: Remove form_interaction transcript messages and the transcript_changed close reason.
+// 188: Session capability replacement can require an atomic idle root check;
+// complete MCP configuration identities fence conflicting providers across ACP clients.
+// 187: transcript_changed closes a subscription for automatic bounded-tail reseeding.
+// 186: Settled form/question history adds form_interaction transcript messages.
+// 185: Add the bounded next-prompt suggestion operation.
+// 184: the unified `custom` provider type and its defaultApiProtocol require matching peers.
+// 183: Jev policy snapshots, set_jev mutation and credential locator require matching peers.
 // 182: Executor catalogs expose structured model families and thinking variant IDs.
 // 181: Canonical executor models and retained provider stop reasons after cancellation.
 // 180: Reject contradictory executor configuration and legacy model targets.
@@ -430,8 +513,8 @@ export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 182 as const;
 // 41: Context compaction returns a typed terminal outcome on both Turn
 // snapshots and context.compact results. Epoch-40 peers reject these closed
 // shapes after admission, so mixed peers must fail during the handshake.
-// 40: The message queue gains per-entry mutation operations
-// (queue.entry.promote, queue.entry.retract, queue.entries.reorder).
+// 40: Queue entries become independently addressable for promotion,
+// retraction, and ordering. Epoch-39 peers do not recognize those commands.
 // 39: Client Capability tool descriptors carry trusted activity semantics and
 // invocations can stream bounded progress frames.
 // 38: `execute` is no longer a permission mode. Frame decoders reject it, so a
@@ -532,6 +615,7 @@ export type HostFrame =
   | SubscriptionFrame
   | ClientCapabilityHostFrame
   | ConfigurationChangedFrame
+  | ArtifactChangedFrame
   | ConnectionCatalogChangedFrame
   | ProjectCatalogChangedFrame
   | SessionCatalogChangedFrame
@@ -666,6 +750,7 @@ export function decodeHostFrame(value: unknown): HostFrame {
     return decodeClientCapabilityHostFrame(frame);
   }
   if (frame.kind === 'configuration.changed') return decodeConfigurationChangedFrame(frame);
+  if (frame.kind === 'artifact.changed') return decodeArtifactChangedFrame(frame);
   if (frame.kind === 'connection.catalog.changed') {
     return decodeConnectionCatalogChangedFrame(frame);
   }
@@ -836,3 +921,9 @@ function requireReplacement(value: unknown): HostIncompatible['replacement'] {
   if (value === 'blocked_by_residency' || value === 'wait_for_idle_exit') return value;
   throw invalidProtocolFrame('Invalid replacement disposition');
 }
+
+export type {
+  GoalEventWaitProjection,
+  GoalEventWaitCancelInput,
+  GoalEventWaitCancelResult,
+} from './goal.js';

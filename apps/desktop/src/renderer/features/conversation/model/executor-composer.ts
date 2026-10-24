@@ -17,34 +17,43 @@
  * under the License.
  */
 
+import { canSubmitToExecutor } from './executor-submission.js';
 import type { ComposerProps } from '@maka/ui';
 import type { useExecutorSelection } from '../controller/use-executor-selection.js';
 
 export function executorComposerProps(
-  executor: ReturnType<typeof useExecutorSelection>,
+  executor: Pick<ReturnType<typeof useExecutorSelection>,
+    'catalog' | 'selection' | 'entry' | 'changing' | 'loading' | 'error' | 'select' | 'restore' | 'refresh'> &
+    Partial<Pick<ReturnType<typeof useExecutorSelection>, 'loadingIds'>>,
   input: {
     activeId: string | undefined;
     turnActive: boolean;
+    sendPending?: boolean;
     taskSubmissionHardBlocked: boolean;
     connectionCount: number;
-    onSetup(): void;
+    renderExecutorMark?: NonNullable<ComposerProps['executorPicker']>['renderExecutorMark'];
+    onSetup(executorId?: string): void;
     onNewTask(): void;
   },
 ): Pick<ComposerProps, 'executorPicker' | 'sendBlocked' | 'noModelConnection'> {
   const fixed = !!input.activeId;
+  const canSend = canSubmitToExecutor(executor.entry?.readiness, fixed);
   return {
     executorPicker:
       !fixed || executor.selection
         ? {
             catalog: executor.catalog,
+            renderExecutorMark: input.renderExecutorMark,
             selection: executor.selection,
             fixed,
-            disabled: executor.changing || (fixed && input.turnActive),
+            disabled: executor.changing || !!input.sendPending || (fixed && input.turnActive),
             loading: executor.loading,
+            loadingIds: executor.loadingIds,
             error: executor.error,
             onSelect: (selection) => executor.select(selection),
-            onRetry: () => {
-              void executor.refresh();
+            onRestore: () => executor.restore(),
+            onRetry: (executorId) => {
+              void executor.refresh(true, executorId);
             },
             onSetup: input.onSetup,
             onNewTask: input.onNewTask,
@@ -53,9 +62,11 @@ export function executorComposerProps(
     noModelConnection: !executor.selection && !fixed && input.connectionCount === 0,
     sendBlocked:
       input.taskSubmissionHardBlocked ||
+      !!input.sendPending ||
+      executor.changing ||
       !!(
         executor.selection &&
-        (executor.entry?.readiness !== 'ready' || (fixed && input.turnActive))
+        (!canSend || (fixed && input.turnActive))
       ),
   };
 }

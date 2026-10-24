@@ -6,7 +6,7 @@ source_language: en
 implementation_status: current
 document_status: current
 translation_status: synced
-last_verified: 2026-09-04
+last_verified: 2026-10-10
 owners:
   - maka-backend
 ---
@@ -244,15 +244,16 @@ Lexical prefix checks are never authorization evidence.
   §6.5.)_
 - Missing setup, identity drift, ACL-state corruption, ineffective network policy, unsupported
   filesystem, helper mismatch, or a failed probe returns a stable typed unavailable reason. _(Later
-  gate: the readiness probe today collapses every failure to a single fail-closed boolean surfaced as
-  `backend_not_available`; the structured typed reasons are deferred — see §6.5.)_
+  gate: the readiness probe today collapses every probe failure to a single fail-closed boolean surfaced as
+  `backend_not_available`; richer probe-level typed reasons are deferred — the transform layer already
+  distinguishes `unsupported_platform`, `backend_not_available`, and `invalid_request`. See §6.5.)_
 - `auto` and `require` never fall back to host execution for a restricted managed profile.
 - Diagnostics expose the backend, setup version, and failure stage without paths, SIDs, credentials,
   environment values, or firewall details. _(Later gate: the probe runs with `stdio: 'ignore'` and
   retains only the exit result, so setup version and failure stage are not yet propagated — deferred
   with the structured unavailable reasons, see §6.5.)_
 
-### 6.5 Preview implementation status (2026-08-24)
+### 6.5 Preview implementation status (2026-08-25)
 
 The first product slice — the packaged Windows 11 x64 AppContainer backend in
 [#2961](https://github.com/apache/maka/pull/2961), merged 2026-08-17 — enforces a subset
@@ -341,8 +342,10 @@ Designed but deferred as later gates (not enforced in the preview slice):
   recomputed and enforced in-broker on every launch; verifying the launcher binary's Authenticode
   signature and version against packaged metadata is deferred together with Phase 3 signing.
 - Structured unavailable reasons and diagnostics (§6.4). The readiness probe fails closed as a single
-  boolean surfaced as `backend_not_available`; the stable typed unavailable reasons and the
-  setup-version/failure-stage diagnostics are designed but not yet implemented or propagated.
+  boolean surfaced as `backend_not_available`; richer probe-level typed reasons and the
+  setup-version/failure-stage diagnostics are designed but not yet implemented or propagated. (The
+  transform layer already distinguishes `unsupported_platform`, `backend_not_available`, and
+  `invalid_request`.)
 - Concurrent real-machine readiness race coverage (§6.4). The readiness profile lifecycle is
   serialized by a named mutex and covered by unit tests over the mutex-name, namespace, and
   validation primitives; a multi-process race test that spawns real concurrent probes on a live
@@ -407,13 +410,20 @@ for the current launch. Before mutation it recursively rejects `FILE_ATTRIBUTE_R
 default. A manifest produced specifically for the read-only W1 Glob operation may mark its single
 recursive root as non-following: the broker then records an exact grant for directories containing a
 nested reparse entry, recursive grants for clean child directories, and no grant for the reparse
-entry or its target. The marked root itself and every multi-hard-link file still fail closed. The
-decomposition fails closed above 4,096 physical grants, 100,000 inspected filesystem entries, or 256
-nested directory levels below the root. The broker persists a versioned ledger with `create_new` and `sync_all`, and
-reconciles every stale ledger before accepting a new request. A global kernel mutex covers only
+entry or its target. The marked root must itself be a physical directory, and every multi-hard-link
+file still fails closed. The decomposition fails closed above 4,096 physical grants, 100,000 inspected
+filesystem entries, or 256 nested directory levels below the root. The broker persists a versioned
+ledger with `create_new` and `sync_all`, and reconciles every stale ledger before accepting a new
+request. A global kernel mutex covers only
 ledger/ACL mutation; each launch holds a separate
 request-specific kernel lease through child settlement, so recovery skips live ledgers while disjoint
 launches execute concurrently. Normal settlement removes the SID ACE and then deletes the ledger.
+
+The non-following Glob returns the existing `files` / `truncated` result contract. It probes one
+distinct match beyond the limit instead of treating an exactly full result as truncated. Ordinary
+directory traversal failures are errors before the cap; an unsuccessful overflow probe retains the
+capped result with `truncated: true`. Match membership is checked against production `globFiles`,
+excluding reparse entries; returned paths retain the walker's unsorted encounter order.
 
 The ledger filename is a SHA-256 of the request identity, so request-controlled path characters
 cannot escape its directory. `icacls.exe` is resolved from absolute `%SystemRoot%\System32`, invoked

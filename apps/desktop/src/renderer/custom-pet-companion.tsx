@@ -30,6 +30,7 @@ import {
   samplePetAnimation,
   shouldReducePetMotion,
   syncPetPlaybackState,
+  petActivityForSession,
   type SelectedPetCompanion,
 } from './custom-pet-companion-model.js';
 
@@ -235,5 +236,22 @@ export function CustomPetCompanion(props: {
         onAnimationComplete={handleAnimationComplete}
       />
     </div>
+  );
+}
+
+/**
+ * The companion for the displayed Session. Its Turn and interaction come from
+ * the Conversation activity reader, so a running Turn repaints only this.
+ */
+export function CustomPetCompanionForSession(props: Parameters<typeof petActivityForSession>[0] & {
+  completionNonce: number;
+  contextKey: string | undefined;
+}) {
+  return (
+    <CustomPetCompanion
+      activityState={petActivityForSession(props)}
+      completionNonce={props.completionNonce}
+      contextKey={props.contextKey}
+    />
   );
 }

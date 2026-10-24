@@ -123,7 +123,7 @@ export function createRuntimeHostBotSessionAdapter(
       return 'ready';
     },
 
-    async runTurn({ sessionId, turnId, text, onReplySnapshot }) {
+    async runTurn({ sessionId, turnId, text, origin, onReplySnapshot }) {
       let session;
       try {
         session = await deps.client.openSession(sessionId);
@@ -147,6 +147,7 @@ export function createRuntimeHostBotSessionAdapter(
             sessionId,
             turnId,
             content: { text },
+            ...(origin !== undefined ? { origin } : {}),
           });
           if (started.kind === 'blocked') {
             return {

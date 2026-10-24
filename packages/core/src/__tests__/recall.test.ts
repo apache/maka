@@ -363,10 +363,18 @@ test('a candidate source without a corpus count is not used', async () => {
   assert.equal(missing.scannedFully, true);
   assert.equal(asked, 0, 'the candidate source must not even be asked');
 
+  const reads: string[] = [];
   const declining = await runRecall(
     { terms: ['上下文'] },
-    candidateDeps(data, { countSearchableMessages: async () => null }),
+    candidateDeps(data, {
+      countSearchableMessages: async () => null,
+      readMessages: async (sessionId) => {
+        reads.push(sessionId);
+        return data.messages.get(sessionId) ?? null;
+      },
+    }),
   );
+  assert.equal(reads.length, new Set(reads).size, 'count fallback must not reread a Session');
   assert.ok(declining.ok);
   assert.equal(declining.scannedFully, true);
   const scanned = await runRecall({ terms: ['上下文'] }, scanDeps(data));
@@ -395,6 +403,50 @@ test('a term the stored form escapes bypasses the candidate source', async () =>
   assert.ok(newline.ok);
   assert.equal(newline.scannedFully, true, 'a multi-line term must not use the candidate source');
   assert.equal(asked, 0);
+});
+
+test('a term with an unpaired surrogate bypasses the candidate source', async () => {
+  // `JSON.stringify` writes a lone surrogate as a `\ud800` escape, and SQLite
+  // binds one as U+FFFD, so the candidate source cannot vouch for a term
+  // containing one. The parsed text still matches it.
+  const data = corpus([
+    {
+      session: session('s-lone', 'lone surrogate'),
+      messages: [userMessage('m-lone', 't-lone', 'abc\uD800def')],
+    },
+    {
+      session: session('s-emoji', 'emoji'),
+      messages: [userMessage('m-emoji', 't-emoji', 'ship it 🚀 today')],
+    },
+  ]);
+  for (const [term, anchor] of [
+    ['\uD800', 'm-lone'],
+    ['c\uD800d', 'm-lone'],
+    // Either half of the pair in the stored emoji: this double finds it, SQLite
+    // does not.
+    ['\uD83D', 'm-emoji'],
+    ['\uDE80', 'm-emoji'],
+  ] as const) {
+    const result = await runRecall({ terms: [term] }, candidateDeps(data));
+    assert.ok(result.ok);
+    assert.equal(
+      result.scannedFully,
+      true,
+      `${JSON.stringify(term)} must not use the candidate source`,
+    );
+    assert.deepEqual(
+      anchorIds(result.passages),
+      [anchor],
+      `${JSON.stringify(term)} must return its passage`,
+    );
+  }
+
+  // A surrogate pair is one character, stored literally, so the candidate
+  // source can still vouch for it.
+  const paired = await runRecall({ terms: ['🚀'] }, candidateDeps(data));
+  assert.ok(paired.ok);
+  assert.equal(paired.scannedFully, false);
+  assert.deepEqual(anchorIds(paired.passages), ['m-emoji']);
 });
 
 test('a dense tool result does not outrank the answer that explains it', async () => {

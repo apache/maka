@@ -26,6 +26,10 @@ import { MockLanguageModelV4, convertArrayToReadableStream } from 'ai/test';
 import { z } from 'zod';
 
 import { AiSdkBackend } from '../ai-sdk-backend.js';
+import {
+  REQUEST_SANDBOX_BOUNDARY_TOOL_NAME,
+  buildRequestSandboxBoundaryTool,
+} from '../sandbox-boundary-tool.js';
 import { TOOL_SEARCH_NAME, type ToolAvailabilityConfig } from '../tool-availability.js';
 import type { RunTraceEvent } from '../run-trace.js';
 import type { MakaTool } from '../tool-runtime.js';
@@ -81,6 +85,8 @@ function backend(input: {
   toolAvailability?: ToolAvailabilityConfig;
   fullSurface?: boolean;
   resolveTools?: () => readonly MakaTool[];
+  extraTools?: readonly MakaTool[];
+  loadTurnRuntimeEvents?: ReturnType<typeof createDurableTurnHarness>['loadTurnRuntimeEvents'];
 }): AiSdkBackend {
   let id = 0;
   return createTestAiSdkBackend({
@@ -90,10 +96,14 @@ function backend(input: {
     apiKey: 'sk-test',
     modelId: 'mock-model-id',
     modelFactory: () => input.model,
-    tools: boundTools(input.calls),
+    tools: [...boundTools(input.calls), ...(input.extraTools ?? [])],
     ...(input.resolveTools ? { resolveTools: input.resolveTools } : {}),
     ...(input.fullSurface ? {} : { toolAvailability: input.toolAvailability ?? availability }),
-    ...(input.durable ? { loadTurnRuntimeEvents: input.durable.loadTurnRuntimeEvents } : {}),
+    ...(input.loadTurnRuntimeEvents
+      ? { loadTurnRuntimeEvents: input.loadTurnRuntimeEvents }
+      : input.durable
+        ? { loadTurnRuntimeEvents: input.durable.loadTurnRuntimeEvents }
+        : {}),
     ...(input.traces ? { recordRunTrace: (event) => input.traces!.push(event) } : {}),
     newId: () => `id-${++id}`,
     now: () => 1,
@@ -190,6 +200,53 @@ describe('AiSdkBackend tool_search activation', () => {
     assert.ok(captured[1]?.includes('docs_read'));
   });
 
+  test('search activation remains visible on a later Turn of the same backend', async () => {
+    const captured: string[][] = [];
+    const first = createDurableTurnHarness({ turnId: 'turn-1', text: 'search the click tool' });
+    const second = createDurableTurnHarness({ turnId: 'turn-2', text: 'continue' });
+    const instance = backend({
+      model: searchThenStopModel(captured),
+      calls: [],
+      loadTurnRuntimeEvents: async (turnId) =>
+        turnId === 'turn-1'
+          ? first.loadTurnRuntimeEvents(turnId)
+          : second.loadTurnRuntimeEvents(turnId),
+    });
+    await drainWithDurableTurn(instance.send(first.sendInput()), first);
+
+    assert.ok(!captured[0]?.includes('browser_click'));
+    assert.ok(captured[1]?.includes('browser_click'));
+
+    await drainWithDurableTurn(instance.send(second.sendInput()), second);
+    assert.ok(captured[2]?.includes('browser_click'));
+    assert.ok(captured[2]?.includes(TOOL_SEARCH_NAME));
+  });
+
+  test('a rebuilt backend starts with an empty activation map', async () => {
+    const captured: string[][] = [];
+    const first = createDurableTurnHarness({ turnId: 'turn-1', text: 'search the click tool' });
+    await drainWithDurableTurn(
+      backend({
+        model: searchThenStopModel(captured),
+        calls: [],
+        durable: first,
+      }).send(first.sendInput()),
+      first,
+    );
+    assert.ok(captured[1]?.includes('browser_click'));
+
+    const later: string[][] = [];
+    await drain(
+      backend({ model: capturingModel(later), calls: [] }).send({
+        turnId: 'turn-2',
+        text: 'fresh backend',
+        context: [],
+      }),
+    );
+    assert.ok(!later[0]?.includes('browser_click'));
+    assert.ok(later[0]?.includes(TOOL_SEARCH_NAME));
+  });
+
   test('historical load_tools events never seed a new turn', async () => {
     const captured: string[][] = [];
     await drain(
@@ -234,12 +291,52 @@ describe('AiSdkBackend tool_search activation', () => {
     assert.ok(captured[0]?.includes('docs_read'));
     assert.ok(!captured[0]?.includes(TOOL_SEARCH_NAME));
   });
+
+  test('a bound request_sandbox_boundary stays visible without tool_search', async () => {
+    const captured: string[][] = [];
+    const instance = backend({
+      model: capturingModel(captured),
+      calls: [],
+      extraTools: [buildRequestSandboxBoundaryTool()],
+    });
+    await drain(
+      instance.send({
+        turnId: 'turn-1',
+        text: 'hi',
+        context: [],
+      }),
+    );
+    assert.ok(captured[0]?.includes(REQUEST_SANDBOX_BOUNDARY_TOOL_NAME));
+    assert.ok(captured[0]?.includes(TOOL_SEARCH_NAME));
+    assert.ok(!captured[0]?.includes('browser_click'));
+
+    await drain(
+      instance.send({
+        turnId: 'turn-2',
+        text: 'continue',
+        context: [],
+      }),
+    );
+    assert.ok(captured[1]?.includes(REQUEST_SANDBOX_BOUNDARY_TOOL_NAME));
+  });
 });
 
 function capturingModel(captured: string[][]): MockLanguageModelV4 {
   return new MockLanguageModelV4({
     doStream: async ({ tools }) => {
       captured.push((tools ?? []).map((tool) => tool.name));
+      return { stream: convertArrayToReadableStream(doneChunks()) };
+    },
+  });
+}
+
+function searchThenStopModel(captured: string[][]): MockLanguageModelV4 {
+  return new MockLanguageModelV4({
+    doStream: async ({ tools }) => {
+      captured.push((tools ?? []).map((tool) => tool.name));
+      if (captured.length === 1) {
+        return { stream: convertArrayToReadableStream(searchChunks('search-1', 'browser click')) };
+      }
       return { stream: convertArrayToReadableStream(doneChunks()) };
     },
   });

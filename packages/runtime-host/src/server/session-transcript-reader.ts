@@ -27,6 +27,7 @@ import {
   isHardRuntimeEventReadModelDiagnostic,
   projectRuntimeEventUserMessage,
 } from '@maka/runtime/runtime-event-read-model';
+import { RuntimeReadModelError } from '@maka/runtime/runtime-read-model';
 import {
   type CanonicalPermissionOutcomeReader,
   type CanonicalPermissionOutcomeRecord,
@@ -172,8 +173,26 @@ function createDurableLedgerTranscriptReader(input: {
     turn: PendingTranscriptRun,
   ): Promise<{ sequence: number; message: StoredMessage }[]> => {
     const projected = await turn.projection.finish(input.canonicalPermissionOutcomes);
-    if (projected.diagnostics.some(isHardRuntimeEventReadModelDiagnostic)) {
-      throw new Error('Durable RuntimeEvent transcript projection is incomplete');
+    const hardDiagnostics = projected.diagnostics.filter(isHardRuntimeEventReadModelDiagnostic);
+    if (hardDiagnostics.length > 0) {
+      // Host diagnostics format the Error stack, so keep the failure's location
+      // and reasons in its message without serializing raw diagnostic detail.
+      throw new RuntimeReadModelError(
+        `Durable RuntimeEvent transcript projection is incomplete: ${JSON.stringify({
+          sessionId: turn.invocation.sessionId,
+          invocationId: turn.invocation.invocationId,
+          runId: turn.invocation.runId,
+          turnId: turn.invocation.turnId,
+          diagnostics: hardDiagnostics.map(({ code, eventId, runId, turnId, message }) => ({
+            code,
+            eventId,
+            runId,
+            turnId,
+            message,
+          })),
+        })}`,
+        hardDiagnostics,
+      );
     }
     const admission =
       turn.invocation.sessionId === WORKHUB_COORDINATION_SESSION_ID
@@ -629,5 +648,65 @@ function createTranscriptProjection(invocations: readonly RuntimeInvocationRecor
       assertTurnPresentationBounded(projected.messages);
       return projected;
     },
+  };
+}
+
+/** Resolves only settled canonical assistant text; presentation cannot grant a file read. */
+export function createAssistantMessageReader(input: {
+  events: Pick<
+    ExecutionStoresWriter<'interactive'>['runtimeEventStore'],
+    'readTranscriptTurns' | 'readTranscriptRun'
+  >;
+  ensureTranscriptLedger(sessionId: string): Promise<void>;
+}) {
+  return async (identity: {
+    sessionId: string;
+    turnId: string;
+    messageId: string;
+  }): Promise<string | undefined> => {
+    await input.ensureTranscriptLedger(identity.sessionId);
+    const [turn] = await input.events.readTranscriptTurns(identity.sessionId, {
+      turnId: identity.turnId,
+    });
+    if (!turn) return undefined;
+    for (
+      let position = turn.firstOrdinal, runs = 0;
+      position <= turn.lastOrdinal && runs < 16;
+      runs++
+    ) {
+      const found = await input.events.readTranscriptRun(
+        identity.sessionId,
+        {
+          direction: 'newer',
+          throughOrdinal: turn.lastOrdinal,
+          position,
+          maxEvents: 4096,
+          maxBytes: 16 * 1024 * 1024,
+          maxRecordBytes: 8 * 1024 * 1024,
+        },
+        (run, events) => {
+          let text: string | undefined;
+          for (const { event } of events) {
+            if (
+              event.partial ||
+              event.turnId !== identity.turnId ||
+              event.role !== 'model' ||
+              event.content?.kind !== 'text'
+            )
+              continue;
+            if (
+              (event.refs?.storedMessageId ?? event.refs?.providerEventId ?? event.id) ===
+              identity.messageId
+            )
+              text = event.content.text;
+          }
+          return { text, next: run.lastOrdinal + 1 };
+        },
+      );
+      if (!found) break;
+      if (found.text !== undefined) return found.text;
+      position = found.next;
+    }
+    return undefined;
   };
 }

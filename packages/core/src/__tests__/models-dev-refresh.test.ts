@@ -22,6 +22,24 @@ import { test } from 'node:test';
 import { MODELS_DEV_PROVIDERS } from '../models-dev-projection.js';
 import { MODELS_DEV_RESPONSE_MAX_BYTES, fetchModelsDevProjection } from '../models-dev-refresh.js';
 
+test('a stale MiniMax refresh keeps the current direct text catalog and unrelated providers', async () => {
+  const upstream = catalog();
+  const metadata = await fetchModelsDevProjection({
+    fetch: respondWith(JSON.stringify(upstream)),
+    previous: {},
+    onRemovals: () => {},
+  });
+  for (const providerType of ['MiniMax', 'MiniMax-cn'] as const) {
+    assert.deepEqual(Object.keys(metadata[providerType] ?? {}), [
+      'MiniMax-M3.1-Flash',
+      'MiniMax-M3',
+    ]);
+    assert.equal(metadata[providerType]?.['MiniMax-M3.1-Flash']?.maxOutputTokens, 524_288);
+  }
+  assert.equal(metadata['minimax-coding-plan']?.['MiniMax-M3.1-Flash'], undefined);
+  assert.ok(metadata.anthropic?.['claude-kept']);
+});
+
 test('a refresh reports every committed path upstream stopped carrying', async () => {
   const removals: string[][] = [];
   const metadata = await fetchModelsDevProjection({

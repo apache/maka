@@ -46,10 +46,13 @@ export interface CreateGitWorktreeChildExecutorInput {
  * host-owned lease identity. Worktrees intentionally survive terminal child
  * runs so Session resume/follow-up keeps the exact workspace.
  */
+/** State Root directory that holds every leased Subagent worktree. */
+export const SUBAGENT_WORKTREE_DIRECTORY = 'subagent-worktrees';
+
 export function createGitWorktreeChildExecutor(
   input: CreateGitWorktreeChildExecutorInput,
 ): SubagentWorktreeExecutor {
-  return new GitWorktreeChildExecutor(join(input.storageRoot, 'subagent-worktrees'));
+  return new GitWorktreeChildExecutor(join(input.storageRoot, SUBAGENT_WORKTREE_DIRECTORY));
 }
 
 class GitWorktreeChildExecutor implements SubagentWorktreeExecutor {

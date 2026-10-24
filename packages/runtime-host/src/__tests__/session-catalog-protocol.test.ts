@@ -25,6 +25,7 @@ import {
   decodeHostFrame,
   decodeSessionCatalogItem,
   decodeSessionCatalogQueryResult,
+  decodeSharedSessionCatalogProjection,
   HOST_OPERATION_SPECS,
   SESSION_CATALOG_PAGE_MAX_ITEMS,
   SESSION_CATALOG_RUNNING_TURN_MAX_ITEMS,
@@ -32,10 +33,91 @@ import {
 } from '../protocol/index.js';
 
 describe('Session catalog protocol', () => {
+  test('preserves unknown and authoritative background activity for Owner and Guest catalogs', () => {
+    const shared = {
+      kind: 'shared_session',
+      id: 'shared',
+      revision: 1,
+      createdAt: 1,
+      activityAt: 1,
+      name: 'Shared',
+      status: 'active',
+    };
+    assert.equal(
+      Object.hasOwn(decodeSessionCatalogItem(projection()), 'backgroundActivity'),
+      false,
+    );
+    assert.equal(
+      Object.hasOwn(decodeSharedSessionCatalogProjection(shared), 'backgroundActivity'),
+      false,
+    );
+    for (const backgroundActivity of ['idle', 'running', 'waiting_for_user', 'blocked'] as const) {
+      const owner = projection({ backgroundActivity });
+      assert.deepEqual(decodeSessionCatalogItem(owner), owner);
+      assert.deepEqual(decodeSharedSessionCatalogProjection({ ...shared, backgroundActivity }), {
+        ...shared,
+        backgroundActivity,
+      });
+    }
+    for (const backgroundActivity of [null, false, [], {}, 'completed', 'unknown']) {
+      assert.throws(
+        () => decodeSessionCatalogItem({ ...projection(), backgroundActivity }),
+        isProtocolError,
+      );
+      assert.throws(
+        () => decodeSharedSessionCatalogProjection({ ...shared, backgroundActivity }),
+        isProtocolError,
+      );
+    }
+  });
+
   test('publishes canonical catalog activity without the redundant last-used timestamp', () => {
     const catalog = projection();
 
     assert.deepEqual(decodeSessionCatalogItem(catalog), catalog);
+  });
+
+  test('validates activity observation versions in Owner and Guest catalogs', () => {
+    const shared = {
+      kind: 'shared_session',
+      id: 'shared',
+      revision: 1,
+      createdAt: 1,
+      activityAt: 1,
+      name: 'Shared',
+      status: 'active',
+    };
+    for (const [decode, row] of [
+      [decodeSessionCatalogItem, projection()],
+      [decodeSharedSessionCatalogProjection, shared],
+    ] as const) {
+      const versioned = {
+        ...row,
+        backgroundActivity: 'idle',
+        backgroundActivityVersion: { hostGeneration: 'host-1', revision: 0 },
+      };
+      assert.deepEqual(decode(versioned), versioned);
+      assert.throws(
+        () => decode({ ...row, backgroundActivityVersion: versioned.backgroundActivityVersion }),
+        isProtocolError,
+      );
+      for (const version of [
+        null,
+        {},
+        { revision: 1 },
+        { hostGeneration: 'host-1' },
+        { hostGeneration: '', revision: 1 },
+        { hostGeneration: 'host-1', revision: -1 },
+        { hostGeneration: 'host-1', revision: 1.5 },
+        { hostGeneration: 'host-1', revision: Number.MAX_SAFE_INTEGER + 1 },
+        { hostGeneration: 'host-1', revision: 1, extra: true },
+      ]) {
+        assert.throws(
+          () => decode({ ...versioned, backgroundActivityVersion: version }),
+          isProtocolError,
+        );
+      }
+    }
   });
 
   test('decodes versioned live run state without collapsing absent and known-empty', () => {
@@ -87,6 +169,119 @@ describe('Session catalog protocol', () => {
           ...projection(),
           liveRunState: { ...liveRunState, runningTurnIds: 'turn-1' },
         }),
+      isProtocolError,
+    );
+  });
+
+  test('decodes a Session attention payload on a catalog change', () => {
+    assert.deepEqual(
+      decodeHostFrame({
+        kind: 'session.catalog.changed',
+        revision: 4,
+        sessionId: 'session-1',
+        attention: {
+          kind: 'errored',
+          eventId: 'terminal-1',
+          body: 'Provider request failed',
+        },
+      }),
+      {
+        kind: 'session.catalog.changed',
+        revision: 4,
+        sessionId: 'session-1',
+        attention: {
+          kind: 'errored',
+          eventId: 'terminal-1',
+          body: 'Provider request failed',
+        },
+      },
+    );
+  });
+
+  test('accepts an optional run epoch in the live run state and rejects a bad one', () => {
+    const withEpoch = {
+      ...projection(),
+      liveRunState: { schemaVersion: 1, runningTurnIds: ['turn-1'], runEpoch: 7 },
+    };
+    assert.deepEqual(decodeSessionCatalogItem(withEpoch), withEpoch);
+
+    // A two-field live run state from a host that does not track the epoch
+    // still decodes, and stays two fields.
+    const withoutEpoch = {
+      ...projection(),
+      liveRunState: { schemaVersion: 1, runningTurnIds: ['turn-1'] },
+    };
+    assert.deepEqual(decodeSessionCatalogItem(withoutEpoch), withoutEpoch);
+
+    assert.throws(
+      () =>
+        decodeSessionCatalogItem({
+          ...projection(),
+          liveRunState: { schemaVersion: 1, runningTurnIds: ['turn-1'], runEpoch: -1 },
+        }),
+      isProtocolError,
+    );
+    assert.throws(
+      () =>
+        decodeSessionCatalogItem({
+          ...projection(),
+          liveRunState: { schemaVersion: 1, runningTurnIds: ['turn-1'], runEpoch: 1.5 },
+        }),
+      isProtocolError,
+    );
+  });
+
+  test('accepts an optional host generation in the live run state and rejects a bad one', () => {
+    const withGeneration = {
+      ...projection(),
+      liveRunState: {
+        schemaVersion: 1,
+        runningTurnIds: ['turn-1'],
+        runEpoch: 3,
+        hostGeneration: 'host-gen-1',
+      },
+    };
+    assert.deepEqual(decodeSessionCatalogItem(withGeneration), withGeneration);
+
+    // Hosts that do not track the generation keep decoding.
+    const withoutGeneration = {
+      ...projection(),
+      liveRunState: { schemaVersion: 1, runningTurnIds: ['turn-1'] },
+    };
+    assert.deepEqual(decodeSessionCatalogItem(withoutGeneration), withoutGeneration);
+
+    for (const hostGeneration of [42, '', `x`.repeat(129), 'gen\u0000-1']) {
+      assert.throws(
+        () =>
+          decodeSessionCatalogItem({
+            ...projection(),
+            liveRunState: { schemaVersion: 1, runningTurnIds: ['turn-1'], hostGeneration },
+          }),
+        isProtocolError,
+        `hostGeneration ${JSON.stringify(hostGeneration)} must be rejected`,
+      );
+    }
+  });
+
+  test('carries an optional archive time only on an archived Session', () => {
+    const archived = { ...projection(), isArchived: true, archivedAt: 1_700_000_000_000 };
+    assert.deepEqual(decodeSessionCatalogItem(archived), archived);
+
+    // Absent means the Host does not know when the Session was archived.
+    const unknown = { ...projection(), isArchived: true };
+    const decoded = decodeSessionCatalogItem(unknown);
+    assert.deepEqual(decoded, unknown);
+    assert.equal(Object.hasOwn(decoded, 'archivedAt'), false);
+
+    for (const archivedAt of ['1700000000000', -1, 1.5, null, Number.MAX_SAFE_INTEGER + 1]) {
+      assert.throws(
+        () => decodeSessionCatalogItem({ ...projection(), isArchived: true, archivedAt }),
+        isProtocolError,
+        `archivedAt ${String(archivedAt)} must be rejected`,
+      );
+    }
+    assert.throws(
+      () => decodeSessionCatalogItem({ ...projection(), isArchived: false, archivedAt: 1 }),
       isProtocolError,
     );
   });
@@ -724,7 +919,9 @@ test('executor configuration rejects ambiguous routes and malformed values', () 
     null,
     { model: '' },
     { model: 'bad\nvalue' },
-    { mode: 'yolo' },
+    { mode: '' },
+    { mode: 'bad\nvalue' },
+    { mode: 4 },
     { model: 4 },
   ]) {
     assert.throws(

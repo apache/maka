@@ -19,6 +19,7 @@
 
 import { Service, type Context, type Disposable } from './plugin-kernel.js';
 import { pluginIdentity, registerPluginContribution } from './plugin-runtime.js';
+import { PluginRuntimeBinding } from './plugin-internals.js';
 
 declare module './plugin-kernel.js' {
   interface Context {
@@ -64,6 +65,13 @@ export interface PluginDataRuntime {
     domain: 'settings' | 'storage',
     listener: (keys: readonly string[]) => void,
   ): () => void;
+  /** Stable, namespaced scratch cwd, leased through callback completion and cleanup. */
+  withScratchDirectory?<T>(
+    namespace: PluginDataNamespace,
+    key: string,
+    signal: AbortSignal,
+    use: (directory: string) => Promise<T>,
+  ): Promise<T>;
   hasCredential(namespace: PluginDataNamespace, slot: string): Promise<boolean>;
   useCredential<T>(
     namespace: PluginDataNamespace,
@@ -89,28 +97,20 @@ export interface PluginSettingDefinition<T = unknown> {
 }
 
 class PluginNamespacedDataService extends Service {
-  private dataRuntime?: PluginDataRuntime;
+  private readonly runtimeBinding: PluginRuntimeBinding<PluginDataRuntime>;
   protected constructor(
     ctx: Context,
     name: string,
     private readonly domain: 'settings' | 'storage',
   ) {
     super(ctx, name);
+    this.runtimeBinding = new PluginRuntimeBinding(name, domain, `Plugin ${domain}`);
   }
   bindRuntime(runtime: PluginDataRuntime): Disposable<Promise<void>> {
-    if (this.ctx.maka) throw new Error(`Only the Host may bind the Plugin ${this.domain} Runtime`);
-    if (this.dataRuntime) throw new Error(`Plugin ${this.domain} Runtime is already bound`);
-    this.dataRuntime = runtime;
-    return this.ctx.effect(
-      () => () => {
-        if (this.dataRuntime === runtime) this.dataRuntime = undefined;
-      },
-      `${this.domain}.bindRuntime()`,
-    );
+    return this.runtimeBinding.bind(this.ctx, runtime);
   }
   protected runtime(): PluginDataRuntime {
-    if (!this.dataRuntime) throw new Error(`Plugin ${this.domain} Runtime is unavailable`);
-    return this.dataRuntime;
+    return this.runtimeBinding.get();
   }
   protected namespace(): PluginDataNamespace {
     const { extensionId, scopeId } = pluginIdentity(this.ctx);
@@ -242,6 +242,17 @@ export class PluginStorageService extends PluginNamespacedDataService {
     const result = await this.mutateValues([{ key, value, ...options }]);
     return result[key] as PluginDataSnapshot<T>;
   }
+  /** The callback must drain any process using the directory before settling. */
+  withScratchDirectory<T>(
+    key: string,
+    signal: AbortSignal,
+    use: (directory: string) => Promise<T>,
+  ): Promise<T> {
+    const runtime = this.runtime();
+    if (!runtime.withScratchDirectory)
+      throw new Error('Plugin scratch directories are unavailable');
+    return runtime.withScratchDirectory(this.namespace(), validKey(key), signal, use);
+  }
   async delete(
     key: string,
     options: { readonly expectedRevision?: number } = {},
@@ -274,21 +285,14 @@ const authorizationCommit = Symbol('authorizationCommit');
 
 /** Declared Secret Slots. Values stay in Host custody and are never enumerable. */
 export class PluginCredentialService extends Service {
-  private dataRuntime?: PluginDataRuntime;
+  private readonly runtimeBinding: PluginRuntimeBinding<PluginDataRuntime>;
   private readonly slots = new Map<string, RegisteredCredentialSlot>();
   constructor(ctx: Context) {
     super(ctx, 'credentials');
+    this.runtimeBinding = new PluginRuntimeBinding('credentials', 'Credential');
   }
   bindRuntime(runtime: PluginDataRuntime): Disposable<Promise<void>> {
-    if (this.ctx.maka) throw new Error('Only the Host may bind the Credential Runtime');
-    if (this.dataRuntime) throw new Error('Plugin Credential Runtime is already bound');
-    this.dataRuntime = runtime;
-    return this.ctx.effect(
-      () => () => {
-        if (this.dataRuntime === runtime) this.dataRuntime = undefined;
-      },
-      'credentials.bindRuntime()',
-    );
+    return this.runtimeBinding.bind(this.ctx, runtime);
   }
   declare(slot: PluginCredentialSlot): () => Promise<void> {
     validateSlot(slot);
@@ -336,8 +340,7 @@ export class PluginCredentialService extends Service {
     return slot;
   }
   private runtime(): PluginDataRuntime {
-    if (!this.dataRuntime) throw new Error('Plugin Credential Runtime is unavailable');
-    return this.dataRuntime;
+    return this.runtimeBinding.get();
   }
 }
 

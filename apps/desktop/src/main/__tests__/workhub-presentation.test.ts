@@ -64,7 +64,10 @@ async function harness(animate = false, displayFrequency = 60, revealMode: Windo
   let releasedViews = 0;
   let pointerDisplay = { x: 0, y: 0, width: 1200, height: 900 };
   class Contents extends EventEmitter {
-    mainFrame = {};
+    mainFrame = {
+      isDestroyed: () => this.destroyed,
+      send: (channel: string, ...args: unknown[]) => { this.sent.push([channel, ...args]); },
+    };
     destroyed = false;
     sent: [string, ...unknown[]][] = [];
     session = { setPermissionCheckHandler() {}, setPermissionRequestHandler() {} };
@@ -104,7 +107,10 @@ async function harness(animate = false, displayFrequency = 60, revealMode: Windo
       windows.push(this);
     }
     isDestroyed() { return this.destroyed; }
-    isVisible() { return this.visible; }
+    isVisible() {
+      if (this.destroyed) throw new TypeError('Object has been destroyed');
+      return this.visible;
+    }
     isFocused() { return this.visible; }
     isMinimized() { return false; }
     getContentBounds() { return this.bounds; }
@@ -161,7 +167,7 @@ async function harness(animate = false, displayFrequency = 60, revealMode: Windo
       screen: { getCursorScreenPoint: () => ({ x: pointerDisplay.x, y: pointerDisplay.y }), getDisplayNearestPoint: () => ({ workArea: pointerDisplay }), getDisplayMatching: () => ({ displayFrequency, workArea: { x: 0, y: 0, width: 1200, height: 900 } }) },
     } : nodeRequire(name),
   });
-  const main = new FakeWindow();
+  let main = new FakeWindow();
   const controller = module.exports.createWorkHubPresentation({
     mainWindow: () => mainAvailable ? main as unknown as Electron.BrowserWindow : undefined,
     isEnabled: () => enabled,
@@ -175,7 +181,7 @@ async function harness(animate = false, displayFrequency = 60, revealMode: Windo
   controller.attachMainWindow(main as unknown as Electron.BrowserWindow);
   controller.registerIpc();
   const command = (sender: Contents, name: string, payload?: unknown) => handler!({ sender, senderFrame: sender.mainFrame }, name, payload);
-  return { onVisibilityChanged: (listener: () => void) => { visibilityChanged = listener; }, setMainAvailable: (value: boolean) => { mainAvailable = value; }, shortcut: () => shortcut!(), get mainRequests() { return mainRequests; }, controller, main, windows, views, containers, get container() { return containers.at(-1)!; }, errors, externalUrls, command, advance, setEnabled: (value: boolean) => { enabled = value; }, deferOpening: (value: Promise<void>) => { opening = value; return openingStarted.promise; }, movePointer: (display: typeof pointerDisplay) => { pointerDisplay = display; }, registrations: () => [registeredViews, releasedViews], handler: () => handler, unregistered: () => unregistered };
+  return { replaceMain: () => { main = new FakeWindow(); return main; }, onVisibilityChanged: (listener: () => void) => { visibilityChanged = listener; }, setMainAvailable: (value: boolean) => { mainAvailable = value; }, shortcut: () => shortcut!(), get mainRequests() { return mainRequests; }, controller, main, windows, views, containers, get container() { return containers.at(-1)!; }, errors, externalUrls, command, advance, setEnabled: (value: boolean) => { enabled = value; }, deferOpening: (value: Promise<void>) => { opening = value; return openingStarted.promise; }, movePointer: (display: typeof pointerDisplay) => { pointerDisplay = display; }, registrations: () => [registeredViews, releasedViews], handler: () => handler, unregistered: () => unregistered };
 }
 
 test('hands safe WorkHub links to the OS while keeping the view local', async () => {
@@ -236,6 +242,10 @@ test('moves a shared native container while keeping renderer and browser coordin
   assert.ok(container.children.has(renderer));
   assert.deepEqual({ ...container.boundsUpdates.at(-1) }, host.rect);
   assert.deepEqual({ ...renderer.boundsUpdates.at(-1) }, { x: 0, y: 0, width: 800, height: 760 });
+  h.main.setBounds({ x: 0, y: 0, width: 650, height: 800 });
+  assert.deepEqual({ ...container.boundsUpdates.at(-1) }, { x: 200, y: 40, width: 450, height: 760 });
+  assert.deepEqual({ ...renderer.boundsUpdates.at(-1) }, { x: 0, y: 0, width: 450, height: 760 },
+    'the native viewport clips to Desktop while CSS preserves the inner layout');
   await h.command(renderer.webContents, 'detach');
   assert.equal(h.container, container);
   assert.ok(h.windows[1]!.children.has(container));
@@ -272,6 +282,33 @@ test('yields the docked native view to main-window overlays without replacing th
   assert.equal(h.container.visible, true);
   assert.equal(view.webContents.captures, 1);
   await assert.rejects(h.command(h.main.webContents, 'host', { ...host, occluded: 'yes' }), /Invalid WorkHub host/);
+  h.controller.dispose();
+});
+
+test('prepares a backdrop without yielding input or blocking later presentation commands', async () => {
+  const h = await harness();
+  const host = { visible: true, rect: { x: 200, y: 40, width: 800, height: 760 } };
+  assert.equal(await h.command(h.main.webContents, 'capture-backdrop'), undefined);
+  assert.equal(h.views.length, 0, 'preparation does not create a renderer');
+  await h.command(h.main.webContents, 'host', host);
+  h.main.show();
+  const view = h.views[0]!;
+  assert.equal(await h.command(h.main.webContents, 'capture-backdrop'), undefined);
+  await h.command(view.webContents, 'ready');
+  await assert.rejects(h.command(view.webContents, 'capture-backdrop'), /Only the main window/);
+  const started = deferred<void>();
+  const capture = deferred<{ toDataURL(): string }>();
+  view.webContents.capturePage = () => { started.resolve(); return capture.promise; };
+  const preparation = h.command(h.main.webContents, 'capture-backdrop');
+  await started.promise;
+  assert.equal(h.container.visible, true);
+  await h.command(h.main.webContents, 'host', { ...host, visible: false });
+  assert.equal(h.container.visible, false, 'a pending capture does not hold the command queue');
+  capture.resolve({ toDataURL: () => 'data:image/png;base64,frame' });
+  assert.equal(await preparation, 'data:image/png;base64,frame');
+  assert.equal(h.container.visible, false, 'a late capture cannot restore or replace the renderer');
+  assert.equal(await h.command(h.main.webContents, 'capture-backdrop'), undefined);
+  assert.equal(h.views.length, 1);
   h.controller.dispose();
 });
 
@@ -322,6 +359,9 @@ test('opens an empty floating conversation at its composer height', async () => 
   await h.command(view.webContents, 'conversation-layout', { expanded: false, compactHeight: 160 });
   assert.equal(h.windows[1]!.resizable, false);
   assert.equal(h.windows[1]!.bounds.height, 160, 'compact input still grows programmatically');
+  h.windows[1]!.setBounds({ ...h.windows[1]!.bounds, width: 320 });
+  await h.command(view.webContents, 'conversation-layout', { expanded: false, compactHeight: 160 });
+  assert.equal(h.windows[1]!.bounds.width, 360, 'programmatic compact layout keeps the native minimum width');
   await h.command(view.webContents, 'dock');
   await h.command(view.webContents, 'conversation-layout', { expanded: false, compactHeight: 110 });
   h.movePointer({ x: 1600, y: -900, width: 1000, height: 800 });
@@ -404,6 +444,92 @@ test('animates from the current height, keeps the bottom anchored and survives r
   h.advance(500);
   assert.equal(floating.bounds, hiddenBounds);
   assert.equal(view.webContents.sent.filter(([channel]) => channel.endsWith('viewport-inset')).at(-1)![1], 0, 'hiding clears transient clipping');
+  h.controller.dispose();
+});
+
+test('released for an update quit, a docked conversation goes down with Desktop and comes back on a new window', async () => {
+  const h = await harness();
+  h.main.show();
+  await h.command(h.main.webContents, 'host', { visible: true, rect: { x: 100, y: 40, width: 900, height: 760 } });
+  const view = h.views[0]!;
+  await h.command(view.webContents, 'ready');
+  await h.command(view.webContents, 'detach');
+  const floating = h.windows[1]!;
+  await h.command(view.webContents, 'dock');
+  assert.ok(h.main.children.has(h.container));
+
+  let prevented = 0;
+  const closePanel = (panel: typeof floating) => panel.emit('close', { preventDefault: () => { prevented++; } });
+  closePanel(floating);
+  assert.equal(prevented, 1, 'a live panel vetoes its own close');
+
+  h.controller.releaseForQuit();
+  closePanel(floating);
+  assert.equal(prevented, 1, 'a released panel lets Electron close it');
+  assert.equal(view.webContents.destroyed, false, 'a panel that does not carry the conversation leaves it alone');
+  assert.ok(h.main.children.has(h.container));
+  // Electron's sweep closes Desktop first, then the panel.
+  h.main.emit('close');
+  assert.equal(h.windows.length, 2, 'no replacement panel is created');
+  assert.ok(!floating.children.has(h.container), 'the conversation is not re-parented into the panel');
+  assert.equal(view.webContents.destroyed, true, 'the conversation goes down with its window');
+  assert.equal(h.controller.getSnapshot().placement, 'docked');
+  closePanel(floating);
+  assert.equal(prevented, 1);
+  h.main.destroy();
+  floating.destroy();
+
+  // The quit did not go through: a new Desktop window starts a fresh
+  // conversation, and closing Desktop keeps it alive in a panel again.
+  const next = h.replaceMain();
+  next.show();
+  await h.command(next.webContents, 'host', { visible: true, rect: { x: 100, y: 40, width: 900, height: 760 } });
+  const fresh = h.views.at(-1)!;
+  assert.notEqual(fresh, view);
+  assert.ok(next.children.has(h.container));
+  await h.command(fresh.webContents, 'ready');
+  next.emit('close');
+  const panel = h.windows.at(-1)!;
+  assert.notEqual(panel, next, 'closing the new Desktop re-parents into a fresh panel');
+  assert.ok(panel.children.has(h.container));
+  assert.equal(fresh.webContents.destroyed, false);
+  closePanel(panel);
+  assert.equal(prevented, 2, 'the veto is back once the app carries on');
+  h.controller.dispose();
+});
+
+test('released for an update quit, a floating conversation resets and the shortcut still works afterwards', async () => {
+  const h = await harness();
+  h.main.show();
+  await h.command(h.main.webContents, 'host', { visible: true, rect: { x: 100, y: 40, width: 900, height: 760 } });
+  const view = h.views[0]!;
+  await h.command(view.webContents, 'ready');
+  await h.command(view.webContents, 'detach');
+  const floating = h.windows[1]!;
+  assert.equal(h.controller.getSnapshot().placement, 'floating');
+  assert.equal(floating.visible, true);
+
+  h.controller.releaseForQuit();
+  h.main.emit('close');
+  assert.equal(view.webContents.destroyed, false, 'Desktop closing does not touch a conversation the panel carries');
+  let prevented = 0;
+  floating.emit('close', { preventDefault: () => { prevented++; } });
+  assert.equal(prevented, 0);
+  h.main.destroy();
+  floating.destroy();
+  assert.equal(h.controller.getSnapshot().placement, 'docked', 'a released close leaves the docked resting state');
+  assert.equal(view.webContents.destroyed, true);
+
+  // The quit did not go through and no Desktop dock is shown: the shortcut
+  // alone must bring WorkHub back rather than touch the destroyed panel.
+  h.replaceMain();
+  await h.controller.toggle();
+  const panel = h.windows.at(-1)!;
+  assert.notEqual(panel, floating);
+  assert.equal(h.controller.getSnapshot().placement, 'floating');
+  assert.notEqual(h.views.at(-1), view);
+  panel.emit('close', { preventDefault: () => { prevented++; } });
+  assert.equal(prevented, 1, 'a summoned panel vetoes its close again');
   h.controller.dispose();
 });
 
@@ -502,13 +628,20 @@ test('rejects unowned/subframe IPC and buffers navigation until main subscribes'
   h.controller.dispose();
 });
 
-test('application broadcasts reach registered auxiliaries once and stop after release or destruction', async () => {
+test('application broadcasts include registered auxiliary renderers', async () => {
   const entry = fileURLToPath(new URL('../../../src/main/main-window.ts', import.meta.url));
   const output = await build({ entryPoints: [entry], bundle: false, write: false, format: 'cjs', platform: 'node', define: { 'import.meta.dirname': JSON.stringify('/app/dist/main') } });
-  const module = { exports: {} as { createMainWindowController: typeof createMainWindowController } };
+  const module = { exports: {} as { createMainWindowController: typeof createMainWindowController; safeSendToRenderer: typeof import('../main-window.js').safeSendToRenderer } };
+  const auxiliaries = new Set<Electron.WebContents>();
   runInNewContext(output.outputFiles[0]!.text, {
     module, exports: module.exports, process,
-    require: () => ({ createWindowRevealGate: () => ({}) }),
+    require: (specifier: string) => specifier.endsWith('/auxiliary-window-registry.js')
+      ? {
+        auxiliaryWindowRegistry: {
+          renderers: () => [...auxiliaries],
+        },
+      }
+      : { createWindowRevealGate: () => ({}) },
   });
   const controller = module.exports.createMainWindowController({
     workspaceRoot: '/workspace', e2eFixture: null, revealMode: 'hidden',
@@ -516,24 +649,63 @@ test('application broadcasts reach registered auxiliaries once and stop after re
     onRendererProcessGone: () => undefined,
   });
   const messages: string[] = [];
-  const renderer = Object.assign(new EventEmitter(), {
+  const destroyedFrame = {
+    isDestroyed: () => true,
+    send: (channel: string) => { messages.push(channel); },
+  } as unknown as Electron.WebFrameMain;
+  const liveFrame = {
     isDestroyed: () => false,
     send: (channel: string) => { messages.push(channel); },
+  } as unknown as Electron.WebFrameMain;
+  let mainFrame: Electron.WebFrameMain = destroyedFrame;
+  let mainFrameUnavailable = false;
+  let contentsDestroyed = false;
+  const renderer = Object.assign(new EventEmitter(), {
+    isDestroyed: () => contentsDestroyed,
   }) as unknown as Electron.WebContents;
-  const parent = {} as Electron.View;
-  const release = controller.registerAuxiliaryRenderer(renderer, parent);
-  assert.equal(controller.ownsRenderer(renderer), true);
-  assert.equal(controller.browserParentForRenderer(renderer), parent);
-  controller.send('settings:changed');
+  Object.defineProperty(renderer, 'mainFrame', {
+    get: () => {
+      if (mainFrameUnavailable) throw new Error('Renderer frame is being replaced');
+      return mainFrame;
+    },
+  });
+  const { safeSendToRenderer } = module.exports;
+  assert.equal(safeSendToRenderer('settings:changed'), false);
+  auxiliaries.add(renderer);
+  assert.equal(safeSendToRenderer('settings:changed'), false);
+  assert.deepEqual(messages, []);
+  const otherMessages: string[] = [];
+  const otherRenderer = Object.assign(new EventEmitter(), {
+    isDestroyed: () => false,
+    mainFrame: {
+      isDestroyed: () => false,
+      send: (channel: string) => { otherMessages.push(channel); },
+    },
+  }) as unknown as Electron.WebContents;
+  auxiliaries.add(otherRenderer);
+  assert.doesNotThrow(() => controller.send('settings:changed'));
+  assert.deepEqual(messages, []);
+  assert.deepEqual(otherMessages, ['settings:changed']);
+  mainFrameUnavailable = true;
+  assert.equal(safeSendToRenderer('settings:changed'), true);
+  assert.deepEqual(messages, []);
+  assert.deepEqual(otherMessages, ['settings:changed', 'settings:changed']);
+  auxiliaries.delete(otherRenderer);
+  assert.equal(safeSendToRenderer('settings:changed'), false);
+  auxiliaries.add(otherRenderer);
+  mainFrameUnavailable = false;
+  mainFrame = liveFrame;
+  assert.equal(safeSendToRenderer('settings:changed'), true);
   assert.deepEqual(messages, ['settings:changed']);
-  release();
-  controller.send('settings:changed');
+  assert.equal(otherMessages.length, 3);
+  contentsDestroyed = true;
+  assert.equal(safeSendToRenderer('settings:changed'), true);
   assert.deepEqual(messages, ['settings:changed']);
-  assert.equal(controller.ownsRenderer(renderer), false);
-  assert.equal(controller.browserParentForRenderer(renderer), undefined);
-  controller.registerAuxiliaryRenderer(renderer);
-  renderer.emit('destroyed');
-  assert.equal(controller.ownsRenderer(renderer), false);
+  assert.equal(otherMessages.length, 4);
+  auxiliaries.delete(otherRenderer);
+  assert.equal(safeSendToRenderer('settings:changed'), false);
+  contentsDestroyed = false;
+  auxiliaries.delete(renderer);
   controller.send('settings:changed');
   assert.deepEqual(messages, ['settings:changed']);
 });
@@ -991,6 +1163,30 @@ test('editing progress grows at its existing bottom and opening interpolates bot
   assert.equal(floating.focused, 0);
   assert.equal(h.main.focused, 0);
   assert.equal(view.webContents.sent.some(([channel]) => channel.endsWith('focus-composer')), false);
+  h.controller.dispose();
+});
+
+test('external floating bounds changes are not overwritten by an in-flight layout animation', async () => {
+  const h = await harness(true);
+  await h.controller.toggle(true);
+  const view = h.views[0]!;
+  const floating = h.windows[1]!;
+  floating.setBounds({ ...floating.bounds, width: 360 });
+  await h.command(view.webContents, 'conversation-layout', { expanded: true, compactHeight: 160 });
+  const nativeSetBounds = floating.setBounds.bind(floating);
+  let deferredBounds: Electron.Rectangle | undefined;
+  floating.setBounds = (bounds) => {
+    if (bounds.width === 520 && !deferredBounds) {
+      deferredBounds = bounds;
+      return;
+    }
+    nativeSetBounds(bounds);
+  };
+  floating.setBounds({ ...floating.bounds, width: 520 });
+  h.advance(100);
+  nativeSetBounds(deferredBounds!);
+  h.advance(500);
+  assert.equal(floating.bounds.width, 520);
   h.controller.dispose();
 });
 

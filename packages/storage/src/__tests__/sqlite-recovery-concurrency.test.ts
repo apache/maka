@@ -29,7 +29,6 @@ import { fileURLToPath } from 'node:url';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { WorkspaceBaselineAuthorityInput } from '@maka/core/workspace-version-authority';
 import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
-import { scanToolLedger } from '@maka/core/tool-ledger-scanner';
 import {
   SQLITE_RUNTIME_SCHEMA_VERSION,
   createSqliteRuntimeStore,
@@ -69,72 +68,6 @@ interface WorkerHandle {
 const RUN_RACE_AMPLIFICATION = process.env.MAKA_STORAGE_STRESS === '1';
 
 describe('SQLite recovery authority multi-process races', () => {
-  it('makes an exact concurrent recovery bundle idempotent', async () => {
-    await withPreparedDatabase(async ({ dbPath, startPath }) => {
-      const results = await runWorkers(dbPath, startPath, ['completed', 'completed']);
-      assert.deepEqual(
-        results.map(({ code }) => code),
-        [0, 0],
-      );
-
-      const store = createSqliteRuntimeStore(dbPath);
-      try {
-        assert.equal(
-          (await store.readToolOperation('operation-1'))?.currentState,
-          'recovery_completed',
-        );
-        assert.equal((await store.readImmutableRuntimeEvents('session-1', 'run-1')).length, 5);
-      } finally {
-        store.close();
-      }
-    });
-  });
-
-  it('serializes conflicting completed and parked bundles to one terminal decision', async () => {
-    await withPreparedDatabase(async ({ dbPath, startPath }) => {
-      const results = await runWorkers(dbPath, startPath, ['completed', 'parked']);
-      assert.deepEqual(results.map(({ code }) => code).sort(), [0, 2]);
-
-      const store = createSqliteRuntimeStore(dbPath);
-      try {
-        const operation = await store.readToolOperation('operation-1');
-        assert.ok(
-          operation?.currentState === 'recovery_completed' ||
-            operation?.currentState === 'recovery_parked',
-        );
-        const events = await store.readImmutableRuntimeEvents('session-1', 'run-1');
-        assert.equal(scanToolLedger(events).hasCorruption, false);
-      } finally {
-        store.close();
-      }
-    });
-  });
-
-  it('serializes projection rebuild against recovery commit', async () => {
-    await withPreparedDatabase(async ({ dbPath, startPath }) => {
-      const results = await runWorkers(dbPath, startPath, ['completed', 'rebuild']);
-      assert.deepEqual(
-        results.map(({ code }) => code),
-        [0, 0],
-      );
-
-      const store = createSqliteRuntimeStore(dbPath);
-      try {
-        assert.equal(
-          (await store.readToolOperation('operation-1'))?.currentState,
-          'recovery_completed',
-        );
-        assert.equal(
-          scanToolLedger(await store.readImmutableRuntimeEvents('session-1', 'run-1'))
-            .hasCorruption,
-          false,
-        );
-      } finally {
-        store.close();
-      }
-    });
-  });
-
   it('grants provider authority to exactly one process for one continuation boundary', async () => {
     await withPreparedDatabase(async ({ dbPath, startPath }) => {
       const results = await runWorkers(dbPath, startPath, ['claim', 'claim']);
@@ -150,20 +83,25 @@ describe('SQLite recovery authority multi-process races', () => {
   });
 
   it('never claims an active source while its terminal append races in another process', async () => {
-    await withPreparedDatabase(async ({ dbPath, startPath }) => {
-      const results = await runWorkers(dbPath, startPath, ['claim_nonterminal', 'append_source']);
-      assert.deepEqual(results.map(({ code }) => code).sort(), [0, 2]);
+    // Keep the source open but settle its tool so this race exercises the
+    // continuation/terminal serialization rather than the unsettled-tool guard.
+    await withPreparedDatabase(
+      async ({ dbPath, startPath }) => {
+        const results = await runWorkers(dbPath, startPath, ['claim_nonterminal', 'append_source']);
+        assert.deepEqual(results.map(({ code }) => code).sort(), [0, 2]);
 
-      const store = createSqliteRuntimeStore(dbPath);
-      try {
-        const sourceEvents = await store.readImmutableRuntimeEvents('session-1', 'run-1');
-        const claims = await store.listContinuationClaimsForRecovery('session-1');
-        assert.equal(sourceEvents.length, 3);
-        assert.equal(claims.length, 0);
-      } finally {
-        store.close();
-      }
-    });
+        const store = createSqliteRuntimeStore(dbPath);
+        try {
+          const sourceEvents = await store.readImmutableRuntimeEvents('session-1', 'run-1');
+          const claims = await store.listContinuationClaimsForRecovery('session-1');
+          assert.equal(sourceEvents.length, 4);
+          assert.equal(claims.length, 0);
+        } finally {
+          store.close();
+        }
+      },
+      { settlePreparedToolOperation: true },
+    );
   });
 
   it('serializes a continuation claim against an ordinary first target event', async () => {
@@ -231,6 +169,7 @@ describe('SQLite recovery authority multi-process races', () => {
               .user_version,
             SQLITE_RUNTIME_SCHEMA_VERSION,
           );
+          assert.equal(database.prepare('PRAGMA auto_vacuum').get()?.auto_vacuum, 2);
         } finally {
           database.close();
         }
@@ -392,6 +331,7 @@ describe('SQLite recovery authority multi-process races', () => {
 
 async function withPreparedDatabase(
   run: (input: { dbPath: string; startPath: string }) => Promise<void>,
+  options: { settlePreparedToolOperation?: boolean } = {},
 ): Promise<void> {
   const root = await mkdtemp(join(tmpdir(), 'maka-recovery-race-'));
   const dbPath = join(root, 'runtime.sqlite');
@@ -400,6 +340,25 @@ async function withPreparedDatabase(
   try {
     bindWorkspaceBaselineAuthorityStoreRootInternal(store, 'a'.repeat(64));
     await store.commitToolPrepared(preparedCommit());
+    if (options.settlePreparedToolOperation) {
+      await store.commitToolOutcome({
+        operationId: 'operation-1',
+        journalEventId: 'operation-1_outcome',
+        runtimeEvent: {
+          ...baseEvent('operation-1_response', 3),
+          role: 'tool',
+          author: 'tool',
+          content: {
+            kind: 'function_response',
+            id: 'provider-call-1',
+            name: 'Write',
+            result: 'write completed',
+          },
+          refs: { operationId: 'operation-1', toolCallId: 'provider-call-1' },
+        },
+        committedAt: 3,
+      });
+    }
     await store.appendRuntimeEvent('session-1', 'continuation-source-run', {
       id: 'continuation-source-user',
       sessionId: 'session-1',

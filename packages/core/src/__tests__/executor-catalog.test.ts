@@ -19,7 +19,11 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { normalizeCatalogEntry, type ExecutorCatalogEntry } from '../executor-catalog.js';
+import {
+  isExecutorConfiguration,
+  normalizeCatalogEntry,
+  type ExecutorCatalogEntry,
+} from '../executor-catalog.js';
 
 const catalog: ExecutorCatalogEntry = {
   id: 'external',
@@ -48,6 +52,47 @@ test('structured capabilities survive wire normalization with immutable exact re
   assert.ok(Object.isFrozen(output.modelGroups![0]!.variants[0]));
   assert.notEqual(output.modelGroups, catalog.modelGroups);
 });
+test('opaque modes round-trip through generic configuration and catalog validation', () => {
+  assert.equal(isExecutorConfiguration({ model: 'opaque-high', mode: 'ask' }), true);
+  assert.equal(isExecutorConfiguration({ mode: 'ask', unknown: true }), false);
+  assert.equal(isExecutorConfiguration({ mode: 'bad\nvalue' }), false);
+  const entry = normalizeCatalogEntry(
+    {
+      ...catalog,
+      modes: [
+        { id: 'ask', name: 'Ask' },
+        { id: 'auto', name: 'Automatic' },
+      ],
+      currentMode: 'ask',
+      supportsModeChange: true,
+    },
+    'external',
+  );
+  assert.deepEqual(
+    entry.modes?.map((mode) => mode.id),
+    ['ask', 'auto'],
+  );
+  assert.ok(Object.isFrozen(entry.modes?.[0]));
+  assert.throws(() =>
+    normalizeCatalogEntry({ ...entry, modes: [entry.modes![0]!, entry.modes![0]!] }, 'external'),
+  );
+  assert.throws(() =>
+    normalizeCatalogEntry(
+      { ...entry, modes: [{ name: 'Missing id' }] } as unknown as ExecutorCatalogEntry,
+      'external',
+    ),
+  );
+});
+for (const readiness of ['restorable', 'restoring', 'restore_failed', 'history_gap'] as const)
+  test(`restoration readiness survives executor catalog normalization: ${readiness}`, () => {
+    assert.equal(
+      normalizeCatalogEntry(
+        { ...catalog, readiness, models: [], modelGroups: undefined },
+        'external',
+      ).readiness,
+      readiness,
+    );
+  });
 for (const variants of [
   [
     { modelId: 'invented', level: 'high' },

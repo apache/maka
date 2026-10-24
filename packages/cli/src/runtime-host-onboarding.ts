@@ -38,7 +38,7 @@ import type {
   OAuthLoginTarget,
   OperationInput,
 } from '@maka/runtime-host/protocol';
-import { listApiKeyOnboardableProviders } from './onboarding-catalog.js';
+import { listApiKeyOnboardableProviders, onboardingCreateTarget } from './onboarding-catalog.js';
 import type {
   ConnectionIdentity,
   MakaOnboardingSurface,
@@ -536,7 +536,12 @@ export function projectProviders(
   const existingSlugs = catalog.connections.map((connection) => connection.slug);
   for (const provider of listApiKeyOnboardableProviders()) {
     for (const connection of catalog.connections) {
-      if (connection.providerType !== provider.providerType) continue;
+      if (
+        connection.providerType !== provider.providerType ||
+        connection.defaultApiProtocol !== provider.defaultApiProtocol
+      ) {
+        continue;
+      }
       entries.push({
         ...provider,
         target: { kind: 'existing', connectionId: connection.connectionId },
@@ -547,7 +552,7 @@ export function projectProviders(
     }
     entries.push({
       ...provider,
-      target: { kind: 'create', providerType: provider.providerType },
+      target: onboardingCreateTarget(provider),
       label: provider.label,
       suggestedSlug: deriveConnectionSlug(provider.providerType, existingSlugs),
       enabledModelIds: [],

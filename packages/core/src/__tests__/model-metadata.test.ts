@@ -31,6 +31,23 @@ import { PROVIDER_REGISTRY, providerFallbackModelIds } from '../provider-registr
 import { isThinkingLevel, type ThinkingLevel } from '../model-thinking.js';
 import type { ModelInfo, ProviderType } from '../llm-connections.js';
 
+describe('Inception chat metadata', () => {
+  it('ships documented capacities and tool support without inventing an off switch', () => {
+    for (const [id, contextWindow, maxOutputTokens] of [
+      ['mercury-3', 1_000_000, 131_072],
+      ['mercury-2.5', 260_000, 65_536],
+      ['mercury-2', 128_000, 50_000],
+    ] as const) {
+      const metadata = lookupModelMetadata('inception', id);
+      assert.equal(metadata.contextWindow, contextWindow);
+      assert.equal(metadata.maxOutputTokens, maxOutputTokens);
+      assert.equal(metadata.capabilities?.functionCalling, true);
+      assert.equal(metadata.capabilities?.vision, false);
+      assert.deepEqual(metadata.thinkingOptions?.efforts, ['low', 'medium', 'high']);
+    }
+  });
+});
+
 describe('provider model-catalog completeness', () => {
   it('treats only GitHub Copilot discovery as a complete account catalog', () => {
     assert.equal(providerReportsCompleteModelCatalog('github-copilot'), true);
@@ -122,7 +139,7 @@ describe('model-metadata vision capability', () => {
   });
 
   it('confines the default to the providers that serve Anthropic their own models', () => {
-    const providerType = 'anthropic-compatible' satisfies ProviderType;
+    const providerType = 'custom' satisfies ProviderType;
     assert.equal(resolveModelVisionSupport(providerType, undefined, 'claude-opus-6'), false);
   });
 
@@ -135,32 +152,25 @@ describe('model-metadata vision capability', () => {
 
   it('lets a user declaration outrank every other signal, in both directions', () => {
     const stored: ModelInfo[] = [{ id: 'my-reasoner', capabilities: { vision: true } }];
-    assert.equal(
-      resolveModelVisionSupport('openai-compatible', stored, 'my-reasoner', false),
-      false,
-    );
-    assert.equal(
-      resolveModelVisionSupport('openai-compatible', undefined, 'some-unlisted-model', true),
-      true,
-    );
+    assert.equal(resolveModelVisionSupport('custom', stored, 'my-reasoner', false), false);
+    assert.equal(resolveModelVisionSupport('custom', undefined, 'some-unlisted-model', true), true);
     assert.equal(resolveModelVisionSupport('anthropic', undefined, 'claude-opus-6', false), false);
+    assert.equal(resolveModelVisionSupport('custom', stored, 'my-reasoner', undefined), true);
     assert.equal(
-      resolveModelVisionSupport('openai-compatible', stored, 'my-reasoner', undefined),
-      true,
-    );
-    assert.equal(
-      resolveModelVisionSupport('openai-compatible', undefined, 'some-unlisted-model', undefined),
+      resolveModelVisionSupport('custom', undefined, 'some-unlisted-model', undefined),
       false,
     );
   });
 });
 
 describe('openAiAdapterApiProtocol', () => {
-  it('routes a normalized gpt-5 family to the Responses wire', () => {
+  it('routes normalized GPT-5 and GPT-6 families to the Responses wire', () => {
     assert.equal(openAiAdapterApiProtocol(' GPT-5.6-sol '), 'openai-responses');
+    assert.equal(openAiAdapterApiProtocol('gpt-6-sol'), 'openai-responses');
+    assert.equal(openAiAdapterApiProtocol('gpt-6-luna'), 'openai-responses');
   });
 
-  it('keeps a non-gpt-5 OpenAI model on the Chat Completions wire', () => {
+  it('keeps an older OpenAI model on the Chat Completions wire', () => {
     assert.equal(openAiAdapterApiProtocol('gpt-4o'), 'openai-chat');
   });
 
@@ -182,7 +192,12 @@ describe('openAiAdapterApiProtocol', () => {
       openAiAdapterApiProtocol('muse-spark-1.2-contributor', 'opencode-go'),
       'openai-responses',
     );
+    assert.equal(
+      openAiAdapterApiProtocol('muse-spark-1.3-contributor', 'opencode-go'),
+      'openai-responses',
+    );
     assert.equal(openAiAdapterApiProtocol('muse-spark-1.2-contributor', 'opencode'), 'openai-chat');
+    assert.equal(openAiAdapterApiProtocol('muse-spark-1.3-contributor', 'opencode'), 'openai-chat');
     assert.equal(openAiAdapterApiProtocol('minimax-m3', 'opencode-go'), 'openai-chat');
   });
 
@@ -203,10 +218,8 @@ describe('deepseek v4 flash vision exp metadata regression', () => {
     );
   });
 
-  it('keeps the model present in the deepseek shipped baseline', () => {
-    assert.ok(
-      providerFallbackModelIds(PROVIDER_REGISTRY.deepseek).includes('deepseek-v4-flash-vision-exp'),
-    );
+  it('keeps the vision-capable baseline model in the deepseek shipped baseline', () => {
+    assert.ok(providerFallbackModelIds(PROVIDER_REGISTRY.deepseek).includes('deepseek-flash'));
   });
 
   it('returns expected metadata from lookupModelMetadata', () => {

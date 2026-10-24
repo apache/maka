@@ -18,7 +18,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { PROVIDER_REGISTRY } from '@maka/core/llm-connections';
+import { isModelApiProtocol, PROVIDER_REGISTRY } from '@maka/core/llm-connections';
 import { isThinkingLevel } from '@maka/core/model-thinking';
 import { isSessionToolProfile, type SessionToolProfile } from '@maka/core/session';
 import { decodeHostedExecutionProjection } from '@maka/runtime-host/protocol';
@@ -76,6 +76,9 @@ export function createMakaSubjectAdapter(): SubjectAdapter {
             ? {
                 connection: {
                   providerType: config.providerType,
+                  ...(config.defaultApiProtocol === undefined
+                    ? {}
+                    : { defaultApiProtocol: config.defaultApiProtocol }),
                   apiKeyEnvironment: config.apiKeyEnvironment,
                 },
               }
@@ -279,6 +282,9 @@ function makaArtifacts(
 
 interface MakaConfig {
   readonly providerType?: NonNullable<RunHostedExecutionInput['connection']>['providerType'];
+  readonly defaultApiProtocol?: NonNullable<
+    RunHostedExecutionInput['connection']
+  >['defaultApiProtocol'];
   readonly apiKeyEnvironment?: string;
   readonly nodePath: string;
   readonly shimPath: string;
@@ -303,6 +309,7 @@ function decodeConfig(value: JsonObject): MakaConfig {
     'connectionSlug',
     'model',
     ...(Object.hasOwn(value, 'providerType') ? ['providerType', 'apiKeyEnvironment'] : []),
+    ...(value.providerType === 'custom' ? ['defaultApiProtocol'] : []),
     ...(Object.hasOwn(value, 'thinkingLevel') ? ['thinkingLevel'] : []),
     'permissionMode',
     'collaborationMode',
@@ -316,6 +323,9 @@ function decodeConfig(value: JsonObject): MakaConfig {
     !Object.hasOwn(PROVIDER_REGISTRY, String(config.providerType))
   ) {
     throw new Error('Maka config.providerType is invalid');
+  }
+  if (config.providerType === 'custom' && !isModelApiProtocol(config.defaultApiProtocol)) {
+    throw new Error('Maka config.defaultApiProtocol is invalid');
   }
   if (config.thinkingLevel !== undefined && !isThinkingLevel(config.thinkingLevel)) {
     throw new Error('Maka config.thinkingLevel is invalid');

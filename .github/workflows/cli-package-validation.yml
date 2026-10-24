@@ -27,6 +27,7 @@ on:
       - 'native/runtime-host-peer/**'
       - 'native/runtime-host-windows-task-launcher/**'
       - 'package-lock.json'
+      - 'patches/node-pty+1.2.0-beta.15.patch'
       - 'packages/cli/RUNTIME_HOST_PEER_*'
       - 'packages/cli/src/cli-core.ts'
       - 'packages/cli/src/runtime-host-cli.ts'
@@ -131,7 +132,7 @@ jobs:
             echo "RUSTC_WRAPPER=kache"
           } >> "$GITHUB_ENV"
       - name: Install Kache
-        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2
+        uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2
         with:
           tool: kache@0.16.0
       - id: kache-cache
@@ -149,7 +150,7 @@ jobs:
           version: 0.16.0
       - name: Install cargo-zigbuild
         if: startsWith(matrix.target, 'linux-')
-        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2
+        uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2
         with:
           tool: cargo-zigbuild@0.23.2
       - name: Build the release addon
@@ -216,12 +217,12 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '22.19.0'
+          node-version: '22.23.4'
           cache: npm
       - name: Select the release npm toolchain
         run: npm install --global --no-audit --no-fund "$(node -p 'require("./package.json").packageManager')"
       - name: Install cargo-deny
-        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2
+        uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2
         with:
           tool: cargo-deny@0.20.2
       - name: Download Runtime Host native artifacts
@@ -258,27 +259,27 @@ jobs:
         include:
           # The two supported Node versions share a machine and a tarball, so
           # they are two runs of the same smoke rather than two runners.
-          - name: Linux x64 / Node 22.19 and 24
+          - name: Linux x64 / Node 22.23.4 and 24.22.1
             runner: ubuntu-24.04
-            node: '22.19.0'
-            second_node: '24'
+            node: '22.23.4'
+            second_node: '24.22.1'
             platform: linux
             arch: x64
           - name: Linux arm64 / Node 24
             runner: ubuntu-24.04-arm
-            node: '24'
+            node: '24.22.1'
             second_node: ''
             platform: linux
             arch: arm64
           - name: macOS arm64 / Node 24
             runner: macos-15
-            node: '24'
+            node: '24.22.1'
             second_node: ''
             platform: darwin
             arch: arm64
           - name: Windows x64 / Node 24
             runner: windows-2025
-            node: '24'
+            node: '24.22.1'
             second_node: ''
             platform: win32
             arch: x64
@@ -346,7 +347,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '24'
+          node-version: '24.22.1'
       - name: Select the release npm toolchain
         run: npm install --global --no-audit --no-fund "$(node -p 'require("./package.json").packageManager')"
       - name: Require the account-isolation sandbox
@@ -477,7 +478,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '24'
+          node-version: '24.22.1'
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.12'

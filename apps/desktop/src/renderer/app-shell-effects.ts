@@ -17,47 +17,20 @@
  * under the License.
  */
 
-import { useEffect, useEffectEvent, useLayoutEffect } from 'react';
+import { useEffect, useEffectEvent } from 'react';
 import { useHotkeys } from '@astryxdesign/core/hooks';
 import type { ConnectionEvent } from '@maka/core/connections';
-import type { SessionChangedEvent, SessionSummary } from '@maka/core/session';
-import type { SessionEvent } from '@maka/core/events';
-import type { SessionEventStreamSnapshot } from '@maka/core/session-event-health';
+import type { SessionSummary } from '@maka/core/session';
 import type { ThemePalette, ThemePreference } from '@maka/core/settings';
 import type { UiLocale } from '@maka/core/ui-locale';
-import { sessionExpectsEventStream } from '@maka/core/session-event-health';
-import { type ShellRunUpdate } from '@maka/core/events';
-import type { LiveTurnProjection, NavSelection } from '@maka/ui';
-import type { TranscriptPublisher } from './features/conversation/index.js';
-import { messageReadErrorMessage } from './app-shell-copy';
-import { getDesktopConversationCopy } from './locales/conversation-copy.js';
+import type { NavSelection } from '@maka/ui';
 import { applyTheme, applyThemePalette } from './theme';
 import { startTitlebarModalSync } from './titlebar-modal-sync';
 import { safeLocalStorageSet } from './browser-storage';
 import type { NavigationState } from './nav-selection.js';
-import {
-  createSessionEventStreamSubscription,
-  evaluateSessionEventStreamSnapshot,
-  recordSessionEventStreamEvent,
-} from './application/contracts/session-catalog/session-event-health.js';
-import { handleSessionChangedEvent } from './application/contracts/session-catalog/session-change-effects.js';
-import type {
-  DesktopRuntimeHostProfileChangedEvent,
-  WindowCommand,
-} from '../preload/bridge-contract.js';
-import {
-  mergeShellRunNotification,
-  mergeShellRunUpdates,
-  ShellRunHydration,
-  type ShellRunUpdatesBySession,
-} from './shell-run-update-state.js';
-import * as desktopTranscript from './platform/desktop/desktop-transcript-range-store.js';
+import { createShellLifecycleHandlers } from './application/contracts/shell-lifecycle.js';
 
 type RefBox<T> = { current: T };
-
-type SessionEventHealthUpdater = (
-  updater: (current: Record<string, SessionEventStreamSnapshot>) => Record<string, SessionEventStreamSnapshot>,
-) => void;
 
 type ToastApi = {
   error(
@@ -83,27 +56,7 @@ export function useAppShellNavRefSync(options: { navSelection: NavSelection; nav
 }
 
 export function useAppShellHostEffects() {
-  // Tag the document with the host OS so glass-material CSS rules
-  // (sidebar vibrancy passthrough)
-  // can light up only on macOS, where `BrowserWindow({ vibrancy: 'sidebar' })`
-  // paints the native blur material behind the renderer. Other platforms
-  // keep their opaque chrome since vibrancy is a no-op there.
-  useEffect(() => {
-    let cancelled = false;
-    void window.maka.app
-      .info()
-      .then((info) => {
-      if (cancelled) return;
-      document.documentElement.setAttribute('data-os', info.platform);
-      })
-      .catch(() => {
-      /* swallow — leaves data-os unset, CSS falls back to opaque chrome */
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
+  // The host-OS tag on the document is applied by ShellLifecycleSubscriptions.
   // Modal-open titlebar dimming/hiding is driven by observing the top layer
   // (`dialog:modal`) rather than the shell's own modal state, so dialogs
   // mounted deep in module pages — the scheduled-task form above all — are
@@ -143,7 +96,7 @@ export function useAppShellPersistenceEffects(options: {
 
 export function useAppShellBootstrapSubscriptions(options: {
   uiLocale: UiLocale;
-  activeIdRef: RefBox<string | undefined>;
+  activeIdRef: Readonly<RefBox<string | undefined>>;
   applyE2eFixture: () => Promise<void>;
   bootstrapSessions: () => Promise<void>;
   clearPendingTurnActionsForSession: (sessionId: string) => void;
@@ -152,16 +105,13 @@ export function useAppShellBootstrapSubscriptions(options: {
   handleConnectionEvent: (event: ConnectionEvent) => void;
   openHelp: () => void;
   openSettings: () => void;
-  clearPendingTurnActions: () => void;
-  projectPickerPendingRef: RefBox<boolean>;
-  projectPickerRequestRef: RefBox<number>;
   refreshConnections: () => Promise<void>;
   refreshMemoryActive: (failureContext?: 'load') => Promise<void>;
   refreshMessages: (sessionId: string) => Promise<boolean>;
   refreshProjects: () => Promise<unknown>;
   refreshShellSettings: () => Promise<void>;
   refreshSessions: () => Promise<SessionSummary[]>;
-  refreshChangedSession: (sessionId: string) => Promise<SessionSummary | null>;
+  refreshChangedSession: (sessionId: string) => Promise<void>;
   rendererMountedRef: RefBox<boolean>;
   retireSession: (sessionId: string) => void;
   retiredSessionIds(sessions: readonly { id: string }[]): string[];
@@ -169,48 +119,13 @@ export function useAppShellBootstrapSubscriptions(options: {
   isSessionRemoved(sessionId: string): boolean;
   /** Mirrors the committed catalog; refresh promises resolve after commit. */
   sessionsRef: RefBox<readonly SessionSummary[]>;
-  setSessionEventHealthBySession: SessionEventHealthUpdater;
+  recordSessionChange(sessionId: string, ts: number): void;
   toastApi: ToastApi;
 }) {
   const runDeferredStartupRefreshes = useEffectEvent(() => {
     void options.bootstrapSessions();
     void options.applyE2eFixture();
   });
-  const handleConnectionSubscriptionEvent = useEffectEvent((event: ConnectionEvent) => {
-    options.handleConnectionEvent(event);
-  });
-  const handleRuntimeHostChange = useEffectEvent((event: DesktopRuntimeHostProfileChangedEvent) => {
-    void options.refreshSessions().then(() => {
-      options.retiredSessionIds(options.sessionsRef.current).forEach(options.retireSession);
-    });
-    if (event.readiness !== 'ready') return;
-    if (!event.isDefault) return;
-    void options.refreshProjects();
-    void options.refreshConnections();
-    void options.refreshMemoryActive('load');
-  });
-  // PR-2088: the macOS application menu routes New Task / Settings / Keyboard
-  // Shortcuts here through one channel. The renderer already owns these
-  // implementations; the menu is only a second entry surface. The keydown
-  // path (useHotkeys below) stays active on every platform: on macOS AppKit
-  // resolves the menu accelerator before the web contents sees the keydown,
-  // so a real keypress dispatches exactly once, while CDP-injected test keys
-  // still reach this handler for the renderer path.
-  const handleWindowCommand = useEffectEvent((command: WindowCommand) => {
-    if (command.id === 'newTask') void options.createSession();
-    else if (command.id === 'openSettings') options.openSettings();
-    else if (command.id === 'openHelp') options.openHelp();
-  });
-  const handleSessionChange = useEffectEvent(
-    (event: SessionChangedEvent) =>
-      handleSessionChangedEvent(event, {
-        ...options,
-        notifyModelRebound: (modelId) => {
-          const copy = getDesktopConversationCopy(options.uiLocale).actions;
-          options.toastApi.info(copy.modelReboundTitle, copy.modelReboundDescription(modelId));
-        },
-      }),
-  );
   // Both shortcuts fire while the composer has focus — they always did, and
   // that is the point of a global new-task / settings key — so both opt out of
   // the hook's default "stay silent while typing" rule.
@@ -241,9 +156,6 @@ export function useAppShellBootstrapSubscriptions(options: {
   });
   const cleanupPendingRefs = useEffectEvent(() => {
     options.rendererMountedRef.current = false;
-    options.projectPickerRequestRef.current += 1;
-    options.projectPickerPendingRef.current = false;
-    options.clearPendingTurnActions();
   });
 
   useEffect(() => {
@@ -252,356 +164,16 @@ export function useAppShellBootstrapSubscriptions(options: {
     // `refreshShellSettings` is
     // waited because it drives theme + locale before first paint settles.
     // Everything else is fire-and-forget on a rAF to keep the critical
-    // render path as short as possible.
+    // render path as short as possible. ShellLifecycleSubscriptions holds the
+    // event subscriptions for the same lifetime.
     void options.refreshShellSettings();
     // Non-critical: defer to next frame so the first paint isn't blocked.
     const startupFrame = requestAnimationFrame(runDeferredStartupRefreshes);
-    const unsubscribeConnections = window.maka.connections.subscribeEvents(handleConnectionSubscriptionEvent);
-    const unsubscribeRuntimeHostChanges =
-      window.maka.runtimeHostProfiles.subscribeChanges(handleRuntimeHostChange);
-    const refreshRuntimeHostSettingsMirrors = () => {
-      void options.refreshShellSettings();
-      void options.refreshConnections();
-    };
-    const unsubscribeSettingsExternal = window.maka.settings.subscribeExternalChanged(
-      refreshRuntimeHostSettingsMirrors,
-    );
-    const unsubscribeClientSettings = window.maka.settings.subscribeClientChanged(
-      () => void options.refreshShellSettings(),
-    );
-    const unsubscribeSessionChanges = window.maka.sessions.subscribeChanges(handleSessionChange);
-    const unsubscribeWindowCommand = window.maka.appWindow.subscribeCommand(handleWindowCommand);
     markRendererMounted();
     return () => {
       cancelAnimationFrame(startupFrame);
       cleanupPendingRefs();
-      unsubscribeConnections();
-      unsubscribeRuntimeHostChanges();
-      unsubscribeSettingsExternal();
-      unsubscribeClientSettings();
-      unsubscribeSessionChanges();
-      unsubscribeWindowCommand();
     };
   }, []);
-}
-
-export function useActiveSessionEvents(options: {
-  uiLocale: UiLocale;
-  activeId: string | undefined;
-  observationAuthorityRevision: number;
-  activeIdRef: RefBox<string | undefined>;
-  handleEvent: (sessionId: string, event: SessionEvent) => void;
-  setExecution: import('./features/conversation/index.js').AppShellSessionUiStateController['setExecution'];
-  beginObservationSeed: (sessionId: string) => void;
-  completeObservationSeed: (sessionId: string) => void;
-  setMessageLoadErrorBySession: (updater: (current: Record<string, string>) => Record<string, string>) => void;
-  clearMessageLoadError(sessionId: string): void;
-  setMessageLoadPending: (pending: boolean) => void;
-  commitTranscript: import('./session-workspace-actions.js').SessionWorkspaceActions['commitTranscript'];
-  publishTranscript: TranscriptPublisher<
-    desktopTranscript.DesktopTranscriptRangeController
-  >;
-  transcriptRangeRef: RefBox<desktopTranscript.DesktopTranscriptRangeController | undefined>;
-  setSessionEventHealthBySession: SessionEventHealthUpdater;
-  toastApi: Pick<ToastApi, 'error'>;
-}) {
-  const activeId = options.activeId;
-  const clearMessageLoadError = useEffectEvent(options.clearMessageLoadError);
-  // Publication rechecks both the requested Session and the effect instance
-  // after any reader input wait before handing over the displayed transcript.
-  const applyTranscript = useEffectEvent((
-    sessionId: string,
-    controller: desktopTranscript.DesktopTranscriptRangeController,
-    effectIsCurrent: () => boolean,
-  ) => {
-    options.publishTranscript(sessionId, controller, effectIsCurrent, () => {
-      clearMessageLoadError(sessionId);
-      options.setMessageLoadPending(false);
-    });
-  });
-  const applyReadError = useEffectEvent((sessionId: string, error: unknown) => {
-    if (options.activeId === sessionId) {
-      if (options.activeIdRef.current !== sessionId) options.commitTranscript(sessionId, []);
-      const message = messageReadErrorMessage(error, options.uiLocale);
-      options.setMessageLoadErrorBySession((current) => ({
-        ...current,
-        [sessionId]: message,
-      }));
-      options.setMessageLoadPending(false);
-      options.toastApi.error(
-        getDesktopConversationCopy(options.uiLocale).actions.messageReadFailedTitle,
-        message,
-        undefined,
-        { sessionId },
-      );
-    }
-  });
-  const handleSessionEvent = useEffectEvent((sessionId: string, event: SessionEvent) => {
-    options.setSessionEventHealthBySession((current) => {
-      const previous = current[sessionId];
-      if (!previous) return current;
-      return {
-        ...current,
-        [sessionId]: recordSessionEventStreamEvent(previous, Date.now()),
-      };
-    });
-    options.handleEvent(sessionId, event);
-  });
-  const beginObservationSeed = useEffectEvent(options.beginObservationSeed);
-  const completeObservationSeed = useEffectEvent(options.completeObservationSeed);
-  const markSessionEventStreamClosed = useEffectEvent((sessionId: string) => {
-    options.setSessionEventHealthBySession((current) => {
-      const previous = current[sessionId];
-      if (!previous) return current;
-      return {
-        ...current,
-        [sessionId]: {
-          ...previous,
-          status: 'closed',
-          checkedAt: Date.now(),
-          staleSince: undefined,
-        },
-      };
-    });
-  });
-
-  useLayoutEffect(() => {
-    if (!activeId) return;
-    let disposed = false;
-    let observationAttempt = 0;
-    let observationFailures = 0;
-    let observationRetryTimer: ReturnType<typeof globalThis.setTimeout> | undefined;
-    let unsubscribeSessionEvents = () => {};
-    const transcript = new desktopTranscript.DesktopTranscriptRangeStore(activeId);
-    clearMessageLoadError(activeId);
-    options.setSessionEventHealthBySession((current) => ({
-      ...current,
-      [activeId]: createSessionEventStreamSubscription({
-        sessionId: activeId,
-        now: Date.now(),
-      }),
-    }));
-    const controller = desktopTranscript.createDesktopTranscriptRangeController(
-      transcript,
-      desktopTranscript.openDesktopTranscriptHistory(window.maka.transcripts.open, activeId, (batch) => {
-        if (disposed) return;
-        try {
-          transcript.accept(batch);
-        } catch (error) {
-          applyReadError(activeId, error);
-        }
-      }),
-      {
-        onError: (error) => { if (!disposed) applyReadError(activeId, error); },
-      },
-    );
-    const unsubscribeTranscript = transcript.subscribe(() =>
-      applyTranscript(activeId, controller, () => !disposed));
-    const subscribeSessionEvents = () => {
-      const attempt = ++observationAttempt;
-      beginObservationSeed(activeId);
-      let unsubscribeRequested = false;
-      let unsubscribeCurrent = () => {
-        unsubscribeRequested = true;
-      };
-      const unsubscribe = window.maka.sessions.subscribeEvents(
-        activeId,
-        (event) => {
-          if (attempt !== observationAttempt) return;
-          handleSessionEvent(activeId, event);
-        },
-        (phase) => {
-          if (attempt !== observationAttempt) return;
-          controller.observationChanged(phase);
-          if (phase === 'pending') beginObservationSeed(activeId);
-          else {
-            observationFailures = 0;
-            completeObservationSeed(activeId);
-          }
-        },
-        () => {
-          if (attempt !== observationAttempt) return;
-          controller.observationChanged('pending');
-          options.setExecution(activeId, undefined);
-          unsubscribeCurrent();
-          observationFailures += 1;
-          const retryDelayMs = Math.min(100 * (2 ** (observationFailures - 1)), 2_000);
-          observationRetryTimer = globalThis.setTimeout(() => {
-            observationRetryTimer = undefined;
-            if (!disposed && attempt === observationAttempt) subscribeSessionEvents();
-          }, retryDelayMs);
-        },
-        (projection) => {
-          if (attempt === observationAttempt) options.setExecution(activeId, projection);
-        },
-      );
-      unsubscribeCurrent = unsubscribe;
-      unsubscribeSessionEvents = unsubscribe;
-      if (unsubscribeRequested) unsubscribe();
-    };
-    subscribeSessionEvents();
-    return () => {
-      disposed = true;
-      observationAttempt += 1;
-      if (observationRetryTimer !== undefined) {
-        globalThis.clearTimeout(observationRetryTimer);
-      }
-      if (options.transcriptRangeRef.current?.store === transcript) {
-        options.transcriptRangeRef.current = undefined;
-      }
-      void controller.close();
-      unsubscribeTranscript();
-      unsubscribeSessionEvents();
-      options.setExecution(activeId, undefined);
-      markSessionEventStreamClosed(activeId);
-    };
-  }, [activeId, options.observationAuthorityRevision]);
-}
-
-export function useShellRunUpdates(options: {
-  activeId: string | undefined;
-  hydrate?: boolean;
-  setShellRunUpdatesBySession: (updater: (current: ShellRunUpdatesBySession) => ShellRunUpdatesBySession) => void;
-}) {
-  const applyUpdates = useEffectEvent(
-    (sessionId: string, updates: Awaited<ReturnType<typeof window.maka.shellRuns.list>>) => {
-    options.setShellRunUpdatesBySession((current) => {
-      const active = current[sessionId];
-      const retained = active ? { [sessionId]: active } : {};
-      return mergeShellRunUpdates(
-        retained,
-        updates.filter((update) => update.sessionId === sessionId),
-      );
-    });
-    },
-  );
-
-  useEffect(() => {
-    const sessionId = options.activeId;
-    options.setShellRunUpdatesBySession((current) => {
-      if (!sessionId) return {};
-      const active = current[sessionId];
-      return active ? { [sessionId]: active } : {};
-    });
-    if (!sessionId) return;
-
-    let disposed = false;
-    let retryTimer: ReturnType<typeof globalThis.setTimeout> | undefined;
-    let retryDelayMs = 250;
-    const hydration = new ShellRunHydration();
-    if (options.hydrate === false) hydration.commit(0);
-    const unsubscribe = window.maka.shellRuns.subscribeUpdates((update) => {
-      if (disposed) return;
-      const live = hydration.accept(update);
-      if (live) {
-        options.setShellRunUpdatesBySession((current) =>
-          mergeShellRunNotification(current, sessionId, live),
-        );
-      }
-    });
-    const hydrate = (epoch: number) => {
-      if (options.hydrate === false) return;
-      void window.maka.shellRuns
-        .list(sessionId)
-        .then((updates) => {
-          if (disposed) return;
-          const buffered = hydration.commit(epoch);
-          if (!buffered) return;
-          applyUpdates(sessionId, updates);
-          retryDelayMs = 250;
-          for (const update of buffered.updates) {
-            options.setShellRunUpdatesBySession((current) => mergeShellRunNotification(current, sessionId, update));
-          }
-          if (buffered.overflowed) hydrate(epoch);
-        })
-        .catch(() => {
-          if (disposed || !hydration.isCurrent(epoch)) return;
-          retryTimer = globalThis.setTimeout(() => {
-            retryTimer = undefined;
-            hydrate(epoch);
-          }, retryDelayMs);
-          retryDelayMs = Math.min(retryDelayMs * 2, 5_000);
-        });
-    };
-    const unsubscribeResync = window.maka.shellRuns.subscribeResync((event) => {
-      if (disposed || options.hydrate === false || event.sessionId !== sessionId) return;
-      const epoch = hydration.begin();
-      retryDelayMs = 250;
-      if (retryTimer !== undefined) {
-        globalThis.clearTimeout(retryTimer);
-        retryTimer = undefined;
-      }
-      hydrate(epoch);
-    });
-    if (options.hydrate !== false) hydrate(hydration.begin());
-    return () => {
-      disposed = true;
-      if (retryTimer !== undefined) globalThis.clearTimeout(retryTimer);
-      unsubscribe();
-      unsubscribeResync();
-    };
-  }, [options.activeId, options.hydrate]);
-}
-
-export function useSessionEventHealthPolling(options: {
-  activeId: string | undefined;
-  activeInteraction: { requestId: string } | undefined;
-  activeSession: SessionSummary | undefined;
-  activeStreamingLive: boolean;
-  hasInFlightLiveTools: boolean;
-  refreshMessages: (sessionId: string) => Promise<boolean>;
-  refreshSessions: () => Promise<SessionSummary[]>;
-  sessionEventHealthBySessionRef: RefBox<Record<string, SessionEventStreamSnapshot>>;
-  setSessionEventHealthBySession: SessionEventHealthUpdater;
-}) {
-  const {
-    activeId,
-    activeInteraction,
-    activeSession,
-    activeStreamingLive,
-    hasInFlightLiveTools,
-    refreshMessages,
-    refreshSessions,
-    sessionEventHealthBySessionRef,
-    setSessionEventHealthBySession,
-  } = options;
-
-  useEffect(() => {
-    if (!activeId) return;
-    const hasLiveActivity = activeStreamingLive || hasInFlightLiveTools || Boolean(activeInteraction);
-    const evaluate = () => {
-      const result = evaluateSessionEventStreamSnapshot({
-        previous: sessionEventHealthBySessionRef.current[activeId],
-        now: Date.now(),
-        sessionStatus: activeSession?.status,
-        hasLiveActivity,
-      });
-      if (!result.snapshot) return;
-      setSessionEventHealthBySession((current) => ({
-        ...current,
-        [activeId]: result.snapshot!,
-      }));
-      if (result.shouldRefresh) {
-        void refreshSessions();
-        void refreshMessages(activeId);
-      }
-    };
-    // #1979: a stream nobody expects has nothing to observe — `evaluate` can only
-    // derive `closed` and can never ask for a refresh, and no one renders either
-    // field. So an idle session gets no probe at all, not merely a cheaper one.
-    // Both inputs to `expected` are deps of this effect, so a session that starts
-    // running re-arms on its own; `markSessionEventStreamClosed` still records the
-    // closed stream when the subscription itself goes away.
-    if (!sessionExpectsEventStream(activeSession?.status, hasLiveActivity)) return;
-    evaluate();
-    const interval = window.setInterval(evaluate, 5_000);
-    const onVisibilityChange = () => {
-      if (document.visibilityState === 'visible') evaluate();
-    };
-    document.addEventListener('visibilitychange', onVisibilityChange);
-    return () => {
-      window.clearInterval(interval);
-      document.removeEventListener('visibilitychange', onVisibilityChange);
-    };
-  }, [activeId, activeSession?.status, activeStreamingLive, hasInFlightLiveTools, activeInteraction?.requestId]);
+  return createShellLifecycleHandlers(options);
 }

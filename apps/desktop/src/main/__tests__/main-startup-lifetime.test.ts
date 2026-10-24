@@ -30,6 +30,18 @@ const bootSource = readFileSync(
   fileURLToPath(new URL('../../../src/main/runtime-host-boot.ts', import.meta.url)),
   'utf8',
 );
+
+test('Owner catalog sees every connection transition before the renderer can refresh', () => {
+  const stateChanged = bootSource.indexOf('onTargetStateChanged: (state) => {');
+  const notification = bootSource.indexOf('mainWindowController.send("runtime-host-profiles:changed"', stateChanged);
+  assert.ok(stateChanged >= 0 && notification > stateChanged);
+  assert.match(
+    bootSource.slice(stateChanged, notification),
+    /if \(localTarget\) \{\s*sessionLocal\.connectionChanged\(localTarget\);/u,
+    'Owner outages must invalidate catalog authority even without an offline catalog read',
+  );
+});
+
 const earlyWindowSource = readFileSync(
   fileURLToPath(new URL('../../../src/main/early-window.ts', import.meta.url)),
   'utf8',
@@ -122,6 +134,21 @@ test('does not release renderer IPC before persistent handlers are registered', 
   assert.match(readyBody, /registerDesktopWorkBoard\(\)/u);
   assert.match(bootSource, /if \(!registerDesktopWorkBoard\(\)\) \{/u);
   assert.doesNotMatch(readyBody, /runtimeHostManager\?\.start\(\)/u);
+});
+
+test('wires Artifact deletion and purge events to preview invalidation for the active scope', () => {
+  const subscribe = bootSource.indexOf('client.subscribeArtifactChanges(');
+  const unsubscribe = bootSource.indexOf('unsubscribeArtifactChanges();', subscribe);
+  assert.ok(subscribe >= 0 && unsubscribe > subscribe);
+  const handler = bootSource.slice(subscribe, unsubscribe);
+  assert.match(handler, /managedArtifactPreview\.revoke\(scope\.targetEpoch,\s*frame\.sessionId,\s*frame\.artifactId\)/u);
+  assert.match(handler, /managedArtifactPreview\.releaseSession\(scope\.targetEpoch,\s*frame\.sessionId\)/u);
+  assert.match(bootSource, /managedArtifactPreview\.openScope\(scope\.targetEpoch\)/u);
+  assert.match(bootSource, /await managedArtifactPreview\.closeScope\(scope\.targetEpoch\)/u);
+  assert.ok(
+    bootSource.indexOf('await managedArtifactPreview.closeScope(scope.targetEpoch)') <
+      bootSource.indexOf('unsubscribeArtifactChanges();'),
+  );
 });
 
 test('resolves persisted locale before first post-settings recovery prompt', () => {

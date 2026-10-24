@@ -51,9 +51,10 @@ import {
   createRuntimeHostMakaSessionDriver,
   type RuntimeHostMakaSessionDriverInput,
 } from '../runtime-host-session-driver.js';
-import type {
-  MakaAttachedSessionTurn,
-  MakaSideConversationParentStatus,
+import {
+  MakaSessionCatalogIncompleteError,
+  type MakaAttachedSessionTurn,
+  type MakaSideConversationParentStatus,
 } from '../session-driver.js';
 import { WAIT_BUDGET_MS } from './tui-terminal-mock.js';
 import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
@@ -64,6 +65,248 @@ describe('Runtime Host Maka Session driver', () => {
       projectSessionCatalogSummary(sessionProjection({ activityAt: 42 })).activityAt,
       42,
     );
+  });
+
+  test('fills a current-workspace session limit across global catalog pages', async () => {
+    const connection = new FakeConnection([]);
+    const catalogSessions = Array.from({ length: 201 }, (_, index) => {
+      const cwd = index === 200 ? '/repo' : `/other-${index}`;
+      return sessionProjection({
+        id: `session-${index}`,
+        workspace: { target: { kind: 'host_path', path: cwd }, hostCwd: cwd },
+      });
+    });
+    const revision = `sha256:${'a'.repeat(64)}` as const;
+    for (let offset = 0; offset < catalogSessions.length; offset += 32) {
+      const end = Math.min(offset + 32, catalogSessions.length);
+      connection.sessionCatalogPages.push({
+        kind: 'page',
+        revision,
+        sessions: catalogSessions.slice(offset, end),
+        nextCursor: end < catalogSessions.length ? `cursor-${end}` : null,
+      });
+    }
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/repo',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+    });
+
+    const sessions = await driver.listSessions({ limit: 200, cwd: '/repo' });
+
+    assert.deepEqual(
+      sessions.map(({ id }) => id),
+      ['session-200'],
+    );
+    assert.equal(
+      connection.requests.filter(({ operation }) => operation === 'session.catalog.query').length,
+      7,
+    );
+  });
+
+  test('retries bounded catalog reads through a burst of revision changes', async () => {
+    const connection = new FakeConnection([]);
+    const expectedRevision = `sha256:${'a'.repeat(64)}` as const;
+    const actualRevision = `sha256:${'b'.repeat(64)}` as const;
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      connection.sessionCatalogPages.push({
+        kind: 'revision_changed',
+        expectedRevision,
+        actualRevision,
+      });
+    }
+    connection.sessionCatalogPages.push({
+      kind: 'page',
+      revision: actualRevision,
+      sessions: [],
+      nextCursor: null,
+    });
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/repo',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+    });
+
+    assert.deepEqual(await driver.listSessions({ limit: 1, cwd: '/repo' }), []);
+    assert.equal(
+      connection.requests.filter(({ operation }) => operation === 'session.catalog.query').length,
+      5,
+    );
+  });
+
+  test('returns a complete empty result when the catalog ends at the scan bound', async () => {
+    const connection = new FakeConnection([]);
+    const catalogSessions = Array.from({ length: 8 * 32 }, (_, index) => {
+      const cwd = `/other-${index}`;
+      return sessionProjection({
+        id: `session-${index}`,
+        workspace: { target: { kind: 'host_path', path: cwd }, hostCwd: cwd },
+      });
+    });
+    const revision = `sha256:${'a'.repeat(64)}` as const;
+    for (let offset = 0; offset < catalogSessions.length; offset += 32) {
+      const end = offset + 32;
+      connection.sessionCatalogPages.push({
+        kind: 'page',
+        revision,
+        sessions: catalogSessions.slice(offset, end),
+        nextCursor: end < catalogSessions.length ? `cursor-${end}` : null,
+      });
+    }
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/repo',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+    });
+
+    assert.deepEqual(await driver.listSessions({ limit: 200, cwd: '/repo' }), []);
+    assert.equal(
+      connection.requests.filter(({ operation }) => operation === 'session.catalog.query').length,
+      8,
+    );
+  });
+
+  test('reports incomplete results when a current-workspace candidate is beyond the scan bound', async () => {
+    const connection = new FakeConnection([]);
+    const catalogSessions = Array.from({ length: 9 * 32 }, (_, index) => {
+      const cwd = index === 0 || index === 8 * 32 ? '/repo' : `/other-${index}`;
+      return sessionProjection({
+        id: `session-${index}`,
+        workspace: { target: { kind: 'host_path', path: cwd }, hostCwd: cwd },
+      });
+    });
+    const revision = `sha256:${'a'.repeat(64)}` as const;
+    for (let offset = 0; offset < catalogSessions.length; offset += 32) {
+      const end = Math.min(offset + 32, catalogSessions.length);
+      connection.sessionCatalogPages.push({
+        kind: 'page',
+        revision,
+        sessions: catalogSessions.slice(offset, end),
+        nextCursor: end < catalogSessions.length ? `cursor-${end}` : null,
+      });
+    }
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/repo',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+    });
+
+    await assert.rejects(driver.listSessions({ limit: 200, cwd: '/repo' }), (error: unknown) => {
+      assert.ok(error instanceof MakaSessionCatalogIncompleteError);
+      assert.equal(error.scannedPages, 8);
+      assert.deepEqual(
+        error.sessions.map(({ id }) => id),
+        ['session-0'],
+      );
+      return true;
+    });
+    assert.equal(
+      connection.requests.filter(({ operation }) => operation === 'session.catalog.query').length,
+      8,
+    );
+  });
+
+  test('reports incomplete results when the requested session limit truncates the catalog', async () => {
+    const connection = new FakeConnection([]);
+    const catalogSessions = Array.from({ length: 257 }, (_, index) =>
+      sessionProjection({
+        id: `session-${index}`,
+        workspace: { target: { kind: 'host_path', path: '/repo' }, hostCwd: '/repo' },
+      }),
+    );
+    const revision = `sha256:${'a'.repeat(64)}` as const;
+    for (let offset = 0; offset < catalogSessions.length; offset += 32) {
+      const end = Math.min(offset + 32, catalogSessions.length);
+      connection.sessionCatalogPages.push({
+        kind: 'page',
+        revision,
+        sessions: catalogSessions.slice(offset, end),
+        nextCursor: end < catalogSessions.length ? `cursor-${end}` : null,
+      });
+    }
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/repo',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+    });
+
+    await assert.rejects(driver.listSessions({ limit: 256, cwd: '/repo' }), (error: unknown) => {
+      assert.ok(error instanceof MakaSessionCatalogIncompleteError);
+      assert.equal(error.scannedPages, 8);
+      assert.equal(error.sessions.length, 256);
+      assert.equal(error.sessions[255]?.id, 'session-255');
+      return true;
+    });
+    assert.equal(
+      connection.requests.filter(({ operation }) => operation === 'session.catalog.query').length,
+      8,
+    );
+  });
+
+  test('counts the limit after hiding side conversations', async () => {
+    const connection = new FakeConnection([]);
+    const catalogSessions = Array.from({ length: 201 }, (_, index) =>
+      sessionProjection({
+        id: `session-${index}`,
+        labels: index < 200 ? ['mode:side_conversation'] : [],
+        workspace: { target: { kind: 'host_path', path: '/repo' }, hostCwd: '/repo' },
+      }),
+    );
+    const revision = `sha256:${'a'.repeat(64)}` as const;
+    for (let offset = 0; offset < catalogSessions.length; offset += 32) {
+      const end = Math.min(offset + 32, catalogSessions.length);
+      connection.sessionCatalogPages.push({
+        kind: 'page',
+        revision,
+        sessions: catalogSessions.slice(offset, end),
+        nextCursor: end < catalogSessions.length ? `cursor-${end}` : null,
+      });
+    }
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/repo',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+    });
+
+    const sessions = await driver.listSessions({ limit: 200, cwd: '/repo' });
+
+    assert.deepEqual(
+      sessions.map(({ id }) => id),
+      ['session-200'],
+    );
+    assert.equal(
+      connection.requests.filter(({ operation }) => operation === 'session.catalog.query').length,
+      7,
+    );
+  });
+
+  test('looks up an attached Session summary by ID', async () => {
+    const connection = new FakeConnection([]);
+    const attached = sessionProjection({ id: 'attached-session' });
+    connection.sessionQueries.push(attached);
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/repo',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+    });
+
+    assert.deepEqual(
+      await driver.getSessionSummary('attached-session'),
+      projectSessionCatalogSummary(attached),
+    );
+    assert.deepEqual(connection.requests, [
+      {
+        operation: 'session.catalog.query',
+        input: { kind: 'get', sessionId: 'attached-session' },
+      },
+    ]);
   });
 
   test('maps authoritative live Turn ids into Session summaries', () => {
@@ -220,6 +463,82 @@ describe('Runtime Host Maka Session driver', () => {
       }),
       /requires an explicit Project/,
     );
+  });
+
+  test('checks the Client cwd before offering a Session as a resume candidate', async () => {
+    const tempCwd = await mkdtemp(join(tmpdir(), 'maka-resume-cwd-'));
+    try {
+      const connection = new FakeConnection([]);
+      const driver = createRuntimeHostMakaSessionDriver({
+        connection: connection.value,
+        cwd: tempCwd,
+        llmConnectionSlug: 'openai-main',
+        model: 'gpt-5',
+        executionLocation: { kind: 'client_path' },
+      });
+      const missingCwd = join(tempCwd, 'deleted');
+      const missingSession = projectSessionCatalogSummary(
+        sessionProjection({
+          workspace: {
+            target: { kind: 'host_path', path: missingCwd },
+            hostCwd: missingCwd,
+          },
+        }),
+      );
+
+      assert.deepEqual(await driver.getSessionResumeCandidateAvailability!(missingSession), {
+        available: false,
+        reason: 'Working directory no longer exists',
+      });
+      assert.equal(
+        connection.requests.filter(({ operation }) => operation === 'turn.resume.query').length,
+        0,
+      );
+
+      const currentSession = projectSessionCatalogSummary(
+        sessionProjection({
+          workspace: {
+            target: { kind: 'host_path', path: tempCwd },
+            hostCwd: tempCwd,
+          },
+        }),
+      );
+      assert.deepEqual(await driver.getSessionResumeCandidateAvailability!(currentSession), {
+        available: true,
+      });
+      assert.equal(
+        connection.requests.filter(({ operation }) => operation === 'turn.resume.query').length,
+        1,
+      );
+
+      const remoteConnection = new FakeConnection([]);
+      const remoteDriver = createRuntimeHostMakaSessionDriver({
+        connection: remoteConnection.value,
+        cwd: tempCwd,
+        llmConnectionSlug: 'openai-main',
+        model: 'gpt-5',
+        executionLocation: { kind: 'host' },
+      });
+      const remoteSession = projectSessionCatalogSummary(
+        sessionProjection({
+          workspace: {
+            target: { kind: 'host_path', path: '/srv/remote-only' },
+            hostCwd: '/srv/remote-only',
+          },
+        }),
+      );
+
+      assert.deepEqual(await remoteDriver.getSessionResumeCandidateAvailability!(remoteSession), {
+        available: true,
+      });
+      assert.equal(
+        remoteConnection.requests.filter(({ operation }) => operation === 'turn.resume.query')
+          .length,
+        1,
+      );
+    } finally {
+      await rm(tempCwd, { recursive: true, force: true });
+    }
   });
 
   test('exposes the session goal from the pushed continuity snapshot', async () => {
@@ -2493,6 +2812,45 @@ describe('Runtime Host Maka Session driver', () => {
     assert.equal((await nextEvent(turn.events)).text, 'Recovered');
   });
 
+  test('returns the admitted Turn identity when starting a safe-boundary resume', async () => {
+    const subscription = new FakeSubscription(
+      continuitySnapshot({ rootTurn: null }),
+      Promise.resolve([]),
+    );
+    const connection = new FakeConnection([subscription]);
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/tmp',
+      llmConnectionId: 'connection-1',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+      newId: () => 'turn-resume',
+    });
+    await driver.switchSession('session-1');
+
+    const turn = await driver.resumeLatestTurn({
+      sessionId: 'session-1',
+      disposition: 'ready',
+      sourceRunId: 'run-source',
+      sourceTurnId: 'turn-source',
+      sourceRuntimeEventHighWater: 3,
+    });
+
+    assert.deepEqual(
+      { sessionId: turn.sessionId, turnId: turn.turnId, runId: turn.runId },
+      { sessionId: 'session-1', turnId: 'turn-resume', runId: 'run-resumed' },
+    );
+    assert.deepEqual(connection.requests.at(-1), {
+      operation: 'turn.resume.start',
+      input: {
+        sessionId: 'session-1',
+        turnId: 'turn-resume',
+        sourceRunId: 'run-source',
+        sourceRuntimeEventHighWater: 3,
+      },
+    });
+  });
+
   test('starts explicit Skills through the Host command and preserves its typed feedback', async () => {
     const subscription = new FakeSubscription(
       continuitySnapshot({ rootTurn: null }),
@@ -2519,6 +2877,69 @@ describe('Runtime Host Maka Session driver', () => {
     await assert.rejects(driver.preparePrompt('/skill:missing', { turnId: 'turn-blocked' }), {
       message: /Could not resolve the Skill this Turn asked for: \/skill:missing \(not found\)/,
     });
+  });
+
+  test('carries a cloud activation origin across the turn.start protocol', async () => {
+    const subscription = new FakeSubscription(
+      continuitySnapshot({ rootTurn: null }),
+      Promise.resolve([]),
+    );
+    const connection = new FakeConnection([subscription]);
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/tmp',
+      llmConnectionId: 'connection-1',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+      newId: () => 'turn-activation',
+    });
+    await driver.switchSession('session-1');
+
+    await driver.preparePrompt('Inspect the workspace', {
+      origin: { kind: 'cloud_activation', activationId: 'activation-1' },
+    });
+
+    assert.deepEqual(connection.requests.at(-1), {
+      operation: 'turn.start',
+      input: {
+        sessionId: 'session-1',
+        turnId: 'turn-activation',
+        content: { text: 'Inspect the workspace' },
+        origin: { kind: 'cloud_activation', activationId: 'activation-1' },
+      },
+    });
+  });
+
+  test('does not let client turn.start mint Host-owned trigger origins', async () => {
+    const subscription = new FakeSubscription(
+      continuitySnapshot({ rootTurn: null }),
+      Promise.resolve([]),
+    );
+    const connection = new FakeConnection([subscription]);
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/tmp',
+      llmConnectionId: 'connection-1',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+      newId: () => 'turn-forged-origin',
+    });
+    await driver.switchSession('session-1');
+    const startsBefore = connection.requests.filter(
+      (request) => request.operation === 'turn.start',
+    );
+
+    await assert.rejects(
+      driver.preparePrompt('Inspect the workspace', {
+        origin: { kind: 'goal', goalId: 'goal-1' },
+      }),
+      /only supports cloud activation origins/u,
+    );
+
+    assert.equal(
+      connection.requests.filter((request) => request.operation === 'turn.start').length,
+      startsBefore.length,
+    );
   });
 
   test('retires a pending question when another client answers it', async () => {
@@ -2833,6 +3254,7 @@ describe('Runtime Host Maka Session driver', () => {
 class FakeConnection {
   readonly requests: Array<{ operation: string; input: unknown }> = [];
   readonly sessionQueries: Array<SessionCatalogProjection | Promise<SessionCatalogProjection>> = [];
+  readonly sessionCatalogPages: Array<OperationOutput<'session.catalog.query'>> = [];
   openedSubscriptions = 0;
   interactionQuery: unknown;
   runtimeResourceQuery: unknown;
@@ -2901,6 +3323,13 @@ class FakeConnection {
     this.requests.push({ operation, input });
     const held = this.heldOperations.get(operation);
     if (held) await held;
+    if (
+      operation === 'session.catalog.query' &&
+      (input as OperationInput<'session.catalog.query'>).kind !== 'get' &&
+      this.sessionCatalogPages.length > 0
+    ) {
+      return this.sessionCatalogPages.shift() as OperationOutput<K>;
+    }
     if (operation === 'session.workspace.relocate') {
       const workspace = (input as OperationInput<'session.workspace.relocate'>).workspace;
       if (workspace.kind !== 'host_path') throw new Error('Expected Host-path workspace');
@@ -2940,6 +3369,13 @@ class FakeConnection {
         sessionId: (input as OperationInput<'session.remove'>).sessionId,
       } as OperationOutput<K>;
     }
+    if (operation === 'goal.event-wait.cancel') {
+      return {
+        sessionId: (input as OperationInput<'goal.event-wait.cancel'>).sessionId,
+        outcome: 'already_admitted',
+        goal: null,
+      } as OperationOutput<K>;
+    }
     if (operation === 'goal.control') {
       const outcome = this.goalControlOutcomes.shift();
       if (outcome === undefined) throw new Error('Unexpected goal.control request');
@@ -2953,6 +3389,15 @@ class FakeConnection {
       return {
         sessionId: (input as OperationInput<'goal.query'>).sessionId,
         goal: this.goalQueryResults.shift() ?? null,
+      } as OperationOutput<K>;
+    }
+    if (operation === 'turn.resume.query') {
+      return {
+        sessionId: (input as OperationInput<'turn.resume.query'>).sessionId,
+        disposition: 'ready',
+        sourceRunId: 'source-run-1',
+        sourceTurnId: 'source-turn-1',
+        sourceRuntimeEventHighWater: 1,
       } as OperationOutput<K>;
     }
     if (operation === 'session.configuration.update') {
@@ -2987,6 +3432,18 @@ class FakeConnection {
     }
     if (operation === 'turn.stop') {
       return {} as OperationOutput<K>;
+    }
+    if (operation === 'turn.resume.start') {
+      const resumeInput = input as OperationInput<'turn.resume.start'>;
+      return {
+        kind: 'started',
+        turn: {
+          sessionId: resumeInput.sessionId,
+          turnId: resumeInput.turnId,
+          runId: 'run-resumed',
+          status: 'running',
+        },
+      } as OperationOutput<K>;
     }
     const turnInput = input as {
       sessionId?: string;
@@ -3221,6 +3678,7 @@ function goalProjection(overrides: Partial<GoalProjection> = {}): GoalProjection
     lastReason: null,
     achievedAt: null,
     pausedAt: null,
+    eventWait: null,
     ...overrides,
   };
 }
@@ -4170,3 +4628,82 @@ function toolResultFrame(sequence: number, subscriptionId = 'subscription-1'): S
     },
   };
 }
+
+test('CLI receives wait-only changes and sends cancellation to the original target once', async () => {
+  const wait = {
+    waitId: 'wait',
+    controlGeneration: 1,
+    waitRevision: 1,
+    resource: {
+      providerId: 'shell_run',
+      resourceType: 'background_task',
+      resourceId: 'maka://runtime/background-tasks/task',
+    },
+    reason: 'Inspect tests',
+    deadlineAt: 100,
+    phase: 'observing' as const,
+    observation: { state: 'pending' as const, lastObservedAt: 10, reasonCode: null },
+    outcome: null,
+  };
+  const goal = goalProjection({ eventWait: wait });
+  const subscription = new FakeSubscription(continuitySnapshot({ goal }), Promise.resolve([]));
+  const connection = new FakeConnection([subscription]);
+  const driver = createRuntimeHostMakaSessionDriver({
+    connection: connection.value,
+    cwd: '/repo',
+    llmConnectionId: 'connection-1',
+    llmConnectionSlug: 'openai-main',
+    model: 'gpt-5',
+    newId: () => 'session-id',
+  });
+  const changes: Array<string | undefined> = [];
+  const unsubscribe = driver.subscribeGoalChanges!((g) => changes.push(g?.eventWait?.phase));
+  try {
+    await driver.createSession({
+      cwd: '/repo',
+      llmConnectionId: 'connection-1',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+      permissionMode: 'ask',
+    });
+    const target = {
+      sessionId: driver.getSessionId()!,
+      goalId: goal.goalId,
+      controlGeneration: 1,
+      waitId: 'wait',
+      expectedGoalRevision: goal.revision,
+    };
+    subscription.push({
+      kind: 'subscription.session_projection',
+      hostEpoch: 'host-1',
+      subscriptionId: 'subscription-1',
+      sequence: 1,
+      snapshot: continuitySnapshot({
+        goal: {
+          ...goal,
+          eventWait: {
+            ...wait,
+            waitRevision: 2,
+            phase: 'awaiting_admission',
+            observation: null,
+            outcome: 'satisfied',
+          },
+        },
+        projectionRevision: 2,
+      }),
+    });
+    await waitFor(() => changes.includes('awaiting_admission'));
+    const result = await driver.cancelGoalEventWait!(target);
+    assert.equal(result.outcome, 'already_admitted');
+    assert.deepEqual(
+      connection.requests
+        .filter((r) => r.operation === 'goal.event-wait.cancel')
+        .map((r) => r.input),
+      [target],
+    );
+    assert.deepEqual(changes, ['observing', 'awaiting_admission']);
+  } finally {
+    unsubscribe();
+    await driver.startNewSession();
+  }
+});

@@ -27,3 +27,6 @@ export {
 } from './transcript-scroll-authority.js';
 
 export { foldTimeline } from './timeline-fold.js';
+export { useSessionRailChrome, useSessionRailSelection } from './session-rail-context.js';
+/** Exercise the production rail after Desktop has projected its linked Session tree. */
+export { SessionHistoryList } from './session-history-list.js';

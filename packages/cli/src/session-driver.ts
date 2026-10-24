@@ -25,7 +25,12 @@ import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { SessionSummary, StoredMessage } from '@maka/core/session';
 import type { SessionTodoItem } from '@maka/core/session-todo';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
-import type { CreateSessionInput, TurnOrchestration } from '@maka/core/runtime-inputs';
+import type {
+  CreateSessionInput,
+  CreateSessionRequestInput,
+  TurnOrchestration,
+} from '@maka/core/runtime-inputs';
+import type { TurnOrigin } from '@maka/core/turn-origin';
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import type { InteractionFormResponse } from '@maka/core/interaction';
 import type { ContextDiagnostics } from '@maka/runtime/context-diagnostics';
@@ -104,6 +109,7 @@ export interface MakaPreparePromptOptions {
   modelText?: string;
   turnOrchestration?: TurnOrchestration;
   maxSteps?: number;
+  origin?: TurnOrigin;
 }
 
 export interface MakaSubmitMessageOptions {
@@ -144,12 +150,16 @@ export interface MakaUserCommand {
 }
 
 export interface MakaSessionDriver {
-  listSessions(): Promise<SessionSummary[]>;
+  listSessions(options?: MakaSessionListOptions): Promise<SessionSummary[]>;
+  getSessionSummary?(sessionId: string): Promise<SessionSummary | undefined>;
   /** The Host workspace currently attached to this shell, when one exists. */
   getWorkspaceTarget(): WorkspaceTarget | undefined;
   /** Reads the current committed Todo projection for the attached Session. */
   queryTodo?(sessionId: string): Promise<{ sessionId: string; items: SessionTodoItem[] }>;
   getSessionResumeAvailability?(session: SessionSummary): Promise<SessionResumeAvailability>;
+  getSessionResumeCandidateAvailability?(
+    session: SessionSummary,
+  ): Promise<SessionResumeAvailability>;
   preparePrompt(
     prompt: string,
     options?: MakaPreparePromptOptions,
@@ -229,6 +239,10 @@ export interface MakaSessionDriver {
   subscribeGoalChanges?(listener: (goal: GoalProjection | null) => void): () => void;
   /** Fires when the attached Session's committed Todo projection is invalidated. */
   subscribeTodoChanges?(listener: (sessionId: string) => void): () => void;
+  /** Cancels the specified wait and pauses its Goal without stopping the background task. */
+  cancelGoalEventWait?(
+    input: import('@maka/runtime-host/protocol').GoalEventWaitCancelInput,
+  ): Promise<import('@maka/runtime-host/protocol').GoalEventWaitCancelResult>;
   /**
    * Applies a goal control action (pause/resume/clear) with optimistic
    * revision retry, mirroring the desktop client. Resolves with the resulting
@@ -249,6 +263,23 @@ export interface MakaSessionDriver {
   getPermissionMode?(): PermissionMode | undefined;
 }
 
+export interface MakaSessionListOptions {
+  /** Maximum number returned; truncation before the catalog ends is reported as incomplete. */
+  readonly limit?: number;
+  /** Restrict the catalog read to sessions in this working directory. */
+  readonly cwd?: string;
+}
+
+export class MakaSessionCatalogIncompleteError extends Error {
+  constructor(
+    readonly scannedPages: number,
+    readonly sessions: readonly SessionSummary[] = [],
+  ) {
+    super(`Session catalog results may be incomplete after scanning ${scannedPages} pages.`);
+    this.name = 'MakaSessionCatalogIncompleteError';
+  }
+}
+
 /**
  * A create request whose permission mode may be left to the owning runtime.
  *
@@ -259,9 +290,10 @@ export interface MakaSessionDriver {
  * choice", and it is the only way the configured default can apply — sending
  * a literal would silently override it.
  */
-export type CreateSessionRequest = Omit<CreateSessionInput, 'permissionMode'> & {
-  permissionMode?: PermissionMode;
-};
+export type CreateSessionRequest = Omit<CreateSessionInput, 'permissionMode' | 'thinkingLevel'> &
+  Pick<CreateSessionRequestInput, 'thinkingLevel'> & {
+    permissionMode?: PermissionMode;
+  };
 
 export type MakaTranscriptReplacementReason = 'reconcile' | 'reconnect';
 

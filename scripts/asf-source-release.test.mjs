@@ -191,6 +191,21 @@ describe('ASF source release verification', () => {
     }
   });
 
+  test('rejects WASM encoded inside a textual dependency patch', async () => {
+    const wasm = Buffer.from([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]);
+    const fixture = createFixtureCandidate({
+      'patches/worker.patch': `+const wasm = "${wasm.toString('base64')}";\n`,
+    });
+    try {
+      await assert.rejects(
+        () => verifySourceCandidate({ archivePath: fixture.archivePath }),
+        /Compiled artifact.*worker\.patch.*Base64 WASM/,
+      );
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
   test('rejects compiled artifacts regardless of their file extension', async () => {
     const formats = new Map([
       ['ELF', Buffer.from([0x7f, 0x45, 0x4c, 0x46])],
@@ -277,6 +292,17 @@ describe('ASF source release verification', () => {
       'docs/code-origin-audit.md':
         '### Source archive non-text inventory\n\n- `fixtures/control.ts`: a raw control-character fixture.\n',
       'fixtures/control.ts': Buffer.from([0x63, 0x6f, 0x6e, 0x73, 0x74, 0x20, 0x78, 0x00]),
+    });
+    try {
+      await assert.doesNotReject(() => verifySourceCandidate({ archivePath: fixture.archivePath }));
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  test('accepts XML text source inputs', async () => {
+    const fixture = createFixtureCandidate({
+      'website/public/sitemap.xml': '<?xml version="1.0" encoding="UTF-8"?>\n<urlset></urlset>\n',
     });
     try {
       await assert.doesNotReject(() => verifySourceCandidate({ archivePath: fixture.archivePath }));
@@ -487,6 +513,24 @@ describe('ASF source release verification', () => {
         join(repositoryRoot, 'scripts/plugins/codex-app-server-executor/index.mjs'),
         'export {};\n',
       );
+      const memoryTests = 'packages/runtime-host/test/assistant/memory-network/test';
+      mkdirSync(join(repositoryRoot, memoryTests), { recursive: true });
+      for (const name of ['feishu-source.test.ts', 'sources.test.ts']) {
+        writeFileSync(join(repositoryRoot, memoryTests, name), 'export {};\n');
+      }
+      const sourceLoopTest =
+        'packages/runtime-host/test/assistant/proactive-matters/test/source-assistant-loop.test.ts';
+      mkdirSync(dirname(join(repositoryRoot, sourceLoopTest)), { recursive: true });
+      writeFileSync(join(repositoryRoot, sourceLoopTest), 'export {};\n');
+      const pickerTests = 'packages/ui/src/__tests__';
+      mkdirSync(join(repositoryRoot, pickerTests), { recursive: true });
+      for (const name of [
+        'codex-composer-integration.test.tsx',
+        'composer-model-picker-recovery.test.tsx',
+        'composer-model-picker-fixture.ts',
+      ]) {
+        writeFileSync(join(repositoryRoot, pickerTests, name), 'export {};\n');
+      }
       mkdirSync(join(repositoryRoot, 'packages/eval/harbor/deepseek-harness-toolchain'), {
         recursive: true,
       });
@@ -527,6 +571,10 @@ describe('ASF source release verification', () => {
         '.claude/launch.json',
         '.maka-shots/review.png',
         'maka-proposal-zh-review.txt',
+        'scripts/plugins/codex-app-server-executor/index.mjs',
+        'packages/ui/src/__tests__',
+        'packages/runtime-host/test/assistant/memory-network/test',
+        'packages/runtime-host/test/assistant/proactive-matters/test',
         'packages/eval/harbor/deepseek-harness-toolchain/package-lock.json',
         'packages/eval/harbor/deepseek-harness-toolchain/package.json',
         'packages/eval/harbor/deepseek-harness-toolchain/patch-subprocess-local.mjs',
@@ -604,6 +652,12 @@ describe('ASF source release verification', () => {
       assert.doesNotMatch(entries, /untracked\.txt/);
       assert.doesNotMatch(entries, /\.claude|\.maka-shots|maka-proposal-zh-review/);
       assert.doesNotMatch(entries, /scripts\/plugins\/codex-app-server-executor/);
+      assert.doesNotMatch(entries, /memory-network\/test\/feishu-source\.test\.ts/);
+      assert.doesNotMatch(entries, /proactive-matters\/test\/source-assistant-loop\.test\.ts/);
+      assert.match(entries, /memory-network\/test\/sources\.test\.ts/);
+      assert.doesNotMatch(entries, /__tests__\/codex-composer-integration\.test\.tsx/);
+      assert.match(entries, /__tests__\/composer-model-picker-recovery\.test\.tsx/);
+      assert.match(entries, /__tests__\/composer-model-picker-fixture\.ts/);
       assert.doesNotMatch(entries, /deepseek-harness-toolchain\/package(?:-lock)?\.json/);
       assert.match(entries, /deepseek-harness-toolchain\/patch-subprocess-local\.mjs/);
       assert.match(entries, /deepseek-harness-profile\/cordis\.yml/);

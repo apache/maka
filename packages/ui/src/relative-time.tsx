@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useReducer } from 'react';
 import {
   formatAbsoluteTimestamp,
   formatRelativeTimestamp,
@@ -42,16 +42,13 @@ export function RelativeTime(props: {
   variant?: 'relative' | 'sidebar';
 }) {
   const locale = useUiLocale();
-  const [, setTick] = useState(0);
+  const [, refresh] = useReducer((revision) => revision + 1, 0);
   useEffect(() => {
-    const delay =
-      props.variant === 'sidebar'
-        ? nextSidebarRefreshDelay(props.ts)
-        : nextRelativeRefreshDelay(props.ts);
+    const delay = refreshDelayFor(props.variant, props.ts);
     if (delay === null) return;
-    const id = setTimeout(() => setTick((n) => n + 1), delay);
+    const id = setTimeout(refresh, delay);
     return () => clearTimeout(id);
-  });
+  }, [props.ts, props.variant]);
   const format = props.variant === 'sidebar' ? formatSidebarTimestamp : formatRelativeTimestamp;
   return (
     <small
@@ -62,4 +59,8 @@ export function RelativeTime(props: {
       {format(props.ts, Date.now(), locale)}
     </small>
   );
+}
+
+function refreshDelayFor(variant: 'relative' | 'sidebar' | undefined, ts: number): number | null {
+  return variant === 'sidebar' ? nextSidebarRefreshDelay(ts) : nextRelativeRefreshDelay(ts);
 }

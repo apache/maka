@@ -108,7 +108,8 @@ describe('declared relay context window', () => {
     const relay: LlmConnection = {
       slug: 'my-relay',
       name: 'My Relay',
-      providerType: 'openai-compatible',
+      providerType: 'custom',
+      defaultApiProtocol: 'openai-chat',
       baseUrl: 'https://relay.example/v1',
       defaultModel: 'reasoner-32k',
       enabled: true,

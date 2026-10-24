@@ -32,6 +32,7 @@ import {
   type ApplyPatchProfile,
 } from './apply-patch-profile.js';
 import { durableProjectionToToolResultOutput } from './durable-tool-result-projection.js';
+import { runtimeContextMessage } from './runtime-context.js';
 import {
   historyCompactCheckpointToModelMessage,
   isProviderHistoryCompactCheckpoint,
@@ -42,6 +43,7 @@ import {
   buildRuntimeEventReplayTimeline,
   formatTextWithInlineRefs,
   steeringProviderOptions,
+  runtimeContextProviderOptions,
   type RuntimeEventModelReplayItem,
   type RuntimeEventModelReplayPlan,
   type RuntimeEventReplayToolExchange,
@@ -61,6 +63,10 @@ import {
   replayPlaintextResponsesProviderOptions,
 } from './responses-reasoning-state.js';
 import { toolResultOutput } from './tool-result-output.js';
+import {
+  deepSeekWebSearchReplayItem,
+  deepSeekWebSearchReplayOptions,
+} from './deepseek-web-search-codec.js';
 
 export interface AiSdkMessageProjectionInput {
   modelAdapter: ModelAdapter;
@@ -185,13 +191,15 @@ export class AiSdkMessageProjection {
 
   canReplayProviderNative(plan: RuntimeEventModelReplayPlan): boolean {
     const support = this.input.modelAdapter.runtimeEventReplaySupport();
+    const replayableDeepSeekPairs = this.replayableDeepSeekPairIds(plan);
     for (const item of plan.items) {
       if (item.kind === 'tool_call' && !support.toolCalls) return false;
       if (item.kind === 'tool_result' && !support.toolResults) return false;
       if (
         (item.kind === 'tool_call' || item.kind === 'tool_result') &&
         item.providerExecuted === true &&
-        !support.providerExecutedTools
+        !support.providerExecutedTools &&
+        !replayableDeepSeekPairs.has(item.eventId)
       ) {
         return false;
       }
@@ -209,16 +217,36 @@ export class AiSdkMessageProjection {
    */
   dropUnsupportedReplayItems(plan: RuntimeEventModelReplayPlan): RuntimeEventModelReplayPlan {
     const support = this.input.modelAdapter.runtimeEventReplaySupport();
+    const replayableDeepSeekPairs = this.replayableDeepSeekPairIds(plan);
     return {
       ...plan,
       items: plan.items.filter((item) => {
         if (item.kind === 'tool_call' || item.kind === 'tool_result') {
           if (!support.toolCalls || !support.toolResults) return false;
-          if (item.providerExecuted === true && !support.providerExecutedTools) return false;
+          if (
+            item.providerExecuted === true &&
+            !support.providerExecutedTools &&
+            !replayableDeepSeekPairs.has(item.eventId)
+          )
+            return false;
         }
         return true;
       }),
     };
+  }
+
+  private replayableDeepSeekPairIds(plan: RuntimeEventModelReplayPlan): ReadonlySet<string> {
+    const ids = new Set<string>();
+    if (!this.input.modelAdapter.supportsDeepSeekWebSearchReplay()) return ids;
+    for (const entry of buildRuntimeEventReplayTimeline(plan.items)) {
+      if (entry.kind !== 'assistant_step') continue;
+      for (const { call, result } of entry.calls) {
+        if (result?.providerExecuted !== true || !deepSeekWebSearchReplayItem(call)) continue;
+        ids.add(call.eventId);
+        ids.add(result.eventId);
+      }
+    }
+    return ids;
   }
 
   /**
@@ -403,12 +431,20 @@ export class AiSdkMessageProjection {
       // stay after text because their execution begins only after this step.
       for (const { call, result } of exchanges) {
         if (call.providerExecuted !== true) continue;
+        const deepSeekItem =
+          result?.providerExecuted === true &&
+          this.input.modelAdapter.supportsDeepSeekWebSearchReplay()
+            ? deepSeekWebSearchReplayItem(call)
+            : undefined;
+        const replayOptions = deepSeekItem
+          ? deepSeekWebSearchReplayOptions(deepSeekItem)
+          : call.providerOptions;
         content.push({
           type: 'tool-call',
           toolCallId: call.toolCallId,
           toolName: call.toolName,
           input: call.input,
-          ...(call.providerOptions !== undefined ? { providerOptions: call.providerOptions } : {}),
+          ...(replayOptions !== undefined ? { providerOptions: replayOptions } : {}),
           providerExecuted: true,
         });
         if (!result || result.providerExecuted !== true) continue;
@@ -418,6 +454,7 @@ export class AiSdkMessageProjection {
           toolCallId: result.toolCallId,
           toolName: result.toolName,
           output: await materializeReplayToolResult(result, call.toolName),
+          ...(deepSeekItem ? { providerOptions: replayOptions } : {}),
         });
       }
       if (text && text.content.length > 0) {
@@ -558,6 +595,15 @@ export class AiSdkMessageProjection {
     this.memoryReplayMessageEvents.set(message, [...new Set(eventIds)]);
   }
 
+  materializeRuntimeContext(
+    context: { name: string; text: string },
+    eventId: string,
+  ): ModelMessage {
+    const message = runtimeContextMessage(context);
+    this.memoryReplayMessageEvents.set(message, [eventId]);
+    return message;
+  }
+
   memoryEventMessagePositions(
     messages: readonly ModelMessage[],
   ): Readonly<Record<string, readonly number[]>> | undefined {
@@ -597,6 +643,9 @@ export class AiSdkMessageProjection {
       return {
         role: 'user',
         content,
+        ...(item.runtimeContextName !== undefined
+          ? { providerOptions: runtimeContextProviderOptions(item.runtimeContextName) }
+          : {}),
       } as ModelMessage;
     }
     return {

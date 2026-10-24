@@ -217,6 +217,7 @@ describe('Windows filesystem worker smoke', { skip: !enabled }, () => {
 
     assert.equal(result.kind, 'glob');
     if (result.kind === 'glob') {
+      assert.equal(result.truncated, false);
       assert.deepEqual(result.files.map((file) => file.replaceAll('\\', '/')).sort(), [
         'root.ts',
         'src/main.ts',
@@ -233,7 +234,7 @@ describe('Windows filesystem worker smoke', { skip: !enabled }, () => {
       mode: 'ask',
       expectedIdentity: 'unchecked',
     });
-    assert.deepEqual(explicit, { kind: 'glob', files: [] });
+    assert.deepEqual(explicit, { kind: 'glob', files: [], truncated: false });
 
     const broad = await client.execute({
       operation: { kind: 'glob', path: project, pattern: '**/*' },
@@ -243,6 +244,7 @@ describe('Windows filesystem worker smoke', { skip: !enabled }, () => {
     });
     assert.equal(broad.kind, 'glob');
     if (broad.kind === 'glob') {
+      assert.equal(broad.truncated, false);
       const files = broad.files.map((file) => file.replaceAll('\\', '/'));
       assert.ok(files.includes('root.ts'));
       assert.ok(files.includes('src/main.ts'));
@@ -259,6 +261,32 @@ describe('Windows filesystem worker smoke', { skip: !enabled }, () => {
       await readFile(join(outside, 'secret.ts'), 'utf8'),
       'export const secret = true;\n',
     );
+  });
+
+  test('reports exact and overflowing Glob caps through the Windows broker', async () => {
+    const project = join(workspace, 'glob-completeness');
+    await mkdir(project);
+    for (const name of ['a.txt', 'b.txt']) await writeFile(join(project, name), 'fixture');
+    const search = () =>
+      client.execute({
+        operation: { kind: 'glob', path: project, pattern: '*.txt', limit: 2 },
+        cwd: workspace,
+        mode: 'ask',
+        expectedIdentity: 'unchecked',
+      });
+
+    const exact = await search();
+    assert.equal(exact.kind, 'glob');
+    if (exact.kind !== 'glob') return;
+    assert.equal(exact.files.length, 2);
+    assert.equal(exact.truncated, false);
+
+    await writeFile(join(project, 'c.txt'), 'fixture');
+    const overflowing = await search();
+    assert.equal(overflowing.kind, 'glob');
+    if (overflowing.kind !== 'glob') return;
+    assert.equal(overflowing.files.length, 2);
+    assert.equal(overflowing.truncated, true);
   });
 
   test('fails closed for unapproved outside paths', async () => {

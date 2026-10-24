@@ -27,8 +27,11 @@ import {
   type ExternalSessionAdapterRegistry,
 } from '@maka/core/external-session';
 import type { SessionAuthorityStore } from './session-store.js';
+import type { ArtifactAuthorityStore } from './artifact-store.js';
+import { prepareExternalSessionImages } from './external-session-images.js';
 
 export type ExternalSessionImportTarget = Omit<CreateSessionInput, 'cwd' | 'name'> & {
+  /** Host-resolved destination; preserve its exact filesystem identity. */
   cwd?: string;
   name?: string;
 };
@@ -47,6 +50,7 @@ export class ExternalSessionImporter {
   constructor(
     private readonly adapters: ExternalSessionAdapterRegistry,
     private readonly sessions: Pick<SessionAuthorityStore, 'createImportedSession'>,
+    private readonly artifacts?: Pick<ArtifactAuthorityStore, 'create' | 'purgeSessionArtifacts'>,
   ) {}
 
   async import(request: ExternalSessionImportRequest): Promise<SessionHeader> {
@@ -74,7 +78,7 @@ export class ExternalSessionImporter {
       sanitizeExternalSessionTitle(request.target.name ?? external.metadata.name) ||
       sanitizeExternalSessionTitle(request.sourceSessionId);
     if (name.length === 0) throw new Error('External Session title is empty after sanitization');
-    const cwd = sanitizeExternalSessionCwd(request.target.cwd ?? external.metadata.cwd);
+    const cwd = request.target.cwd ?? sanitizeExternalSessionCwd(external.metadata.cwd);
 
     return this.sessions.createImportedSession(
       {
@@ -87,6 +91,20 @@ export class ExternalSessionImporter {
         adapterId: request.adapterId,
         sourceSessionId: request.sourceSessionId,
       },
+      external.sourceImages?.length
+        ? {
+            discardPreparedMessages: async (sessionId) => {
+              await this.artifacts?.purgeSessionArtifacts(sessionId);
+            },
+            prepareMessages: (sessionId, sourceMessages) =>
+              prepareExternalSessionImages(
+                sessionId,
+                sourceMessages,
+                external.sourceImages!,
+                this.artifacts,
+              ),
+          }
+        : undefined,
     );
   }
 }

@@ -18,6 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
+import { worstCaseGoalProjection } from '../server/goal-projection.js';
 import { test } from 'node:test';
 import {
   decodeGoalProjection,
@@ -45,6 +46,7 @@ const goal = {
   lastReason: 'Waiting for an exact resume',
   achievedAt: null,
   pausedAt: 2,
+  eventWait: null,
 };
 
 test('Goal query and exact-revision control frames round-trip', () => {
@@ -214,4 +216,78 @@ test('a remote owner may arm a Goal, because it can already cause one', () => {
   // stop, so the grant sits at the same tier as goal.control.
   assert.equal(REMOTE_OWNER_OPERATION_GRANTS.includes('goal.arm'), true);
   assert.equal(REMOTE_OWNER_OPERATION_GRANTS.includes('goal.control'), true);
+});
+
+test('event wait projection and cancellation retain exact target identity', () => {
+  const eventWait = {
+    waitId: 'wait',
+    controlGeneration: 3,
+    waitRevision: 5,
+    resource: {
+      providerId: 'shell_run',
+      resourceType: 'background_task',
+      resourceId: 'maka://runtime/background-tasks/task',
+    },
+    reason: 'Inspect tests',
+    deadlineAt: 100,
+    phase: 'observing',
+    observation: { state: 'unknown', lastObservedAt: 10, reasonCode: 'source_read_failed' },
+    outcome: null,
+  };
+  const projected = { ...goal, status: 'active', eventWait };
+  assert.deepEqual(decodeGoalProjection(projected), projected);
+  assert.deepEqual(
+    decodeGoalProjection({
+      ...projected,
+      eventWait: {
+        ...eventWait,
+        phase: 'awaiting_admission',
+        observation: null,
+        outcome: 'satisfied',
+      },
+    }).eventWait?.outcome,
+    'satisfied',
+  );
+  assert.throws(() =>
+    decodeGoalProjection({
+      ...projected,
+      eventWait: { ...eventWait, phase: 'awaiting_admission' },
+    }),
+  );
+  assert.throws(() =>
+    decodeGoalProjection({
+      ...projected,
+      eventWait: {
+        ...eventWait,
+        resource: { ...eventWait.resource, resourceId: 'x'.repeat(2049) },
+      },
+    }),
+  );
+  const input = {
+    sessionId: 'session-1',
+    goalId: 'goal-1',
+    controlGeneration: 3,
+    waitId: 'wait',
+    expectedGoalRevision: 3,
+  };
+  const spec = HOST_OPERATION_SPECS['goal.event-wait.cancel'];
+  assert.deepEqual(spec.decodeInput(input), input);
+  assert.throws(() => spec.decodeInput({ ...input, waitId: undefined }));
+  assert.throws(() => spec.decodeInput({ ...input, retarget: true }));
+  for (const outcome of ['cancelled', 'already_cancelled', 'already_admitted', 'conflict']) {
+    const result = { sessionId: 'session-1', outcome, goal: projected };
+    assert.deepEqual(spec.decodeOutput(result), result);
+  }
+  assert.ok(REMOTE_OWNER_OPERATION_GRANTS.includes('goal.event-wait.cancel'));
+});
+
+test('maximum escaped Goal and wait summaries fit query and cancellation envelopes', () => {
+  const maximum = worstCaseGoalProjection('session');
+  const query = { sessionId: 'session', goal: maximum };
+  assert.deepEqual(HOST_OPERATION_SPECS['goal.query'].decodeOutput(query), query);
+  const cancelled = { ...query, outcome: 'conflict' };
+  assert.deepEqual(
+    HOST_OPERATION_SPECS['goal.event-wait.cancel'].decodeOutput(cancelled),
+    cancelled,
+  );
 });

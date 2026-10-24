@@ -19,8 +19,7 @@
 
 import { useEffect, useReducer, type ReactElement, type ReactNode } from 'react';
 import {
-  BreadcrumbItem,
-  Breadcrumbs,
+  Button,
   ButtonGroup,
   Icon,
   IconButton,
@@ -39,12 +38,6 @@ import { useUiLocale } from './locale-context.js';
 import { dotForStatus } from './status-vocabulary.js';
 import { RunningIndicator } from './running-indicator.js';
 
-export interface SessionContextBranch {
-  parentSessionId: string;
-  parentSessionName: string;
-  fromAbortedTurn?: boolean;
-}
-
 export interface SessionContextRevision {
   current: number;
   total: number;
@@ -54,6 +47,8 @@ export interface SessionContextRevision {
 
 interface SessionContextGoalBase {
   condition: string;
+  pauseReason?: string;
+  eventWait?: { label: string; detail: string; cancelLabel: string; cancelDescription: string; onCancel(): void };
   iterations: number;
   maxIterations: number;
   /** Epoch ms when the goal was armed; the chip derives wall-clock elapsed. */
@@ -88,9 +83,6 @@ interface ContextItem {
 }
 
 export function SessionContextLayer(props: {
-  sessionName: string;
-  branch?: SessionContextBranch;
-  onBranchNavigate?(sessionId: string): void;
   revision?: SessionContextRevision;
   onRevisionNavigate?(sessionId: string): void;
   memoryActive?: boolean;
@@ -117,7 +109,7 @@ export function SessionContextLayer(props: {
     // currently executing. Both must be visually still; only paused needs an
     // attention tone.
     const paused = goal.status === 'paused';
-    const waiting = goal.status === 'waiting';
+    const waiting = goal.status === 'waiting' || goal.eventWait !== undefined;
     const elapsedMs = paused
       ? Math.max(0, goal.pausedAt - goal.setAt)
       : Math.max(0, Date.now() - goal.setAt);
@@ -295,27 +287,7 @@ export function SessionContextLayer(props: {
     });
   }
 
-  if (props.branch?.fromAbortedTurn) {
-    contextItems.push({
-      key: 'interrupt-origin',
-      element: (
-        <Token
-          size="sm"
-          color="yellow"
-          label={copy.branchBeforeInterrupt}
-          icon={<Icon icon="warning" size="xsm" />}
-        />
-      ),
-      overflowItems: [{
-        label: copy.branchBeforeInterrupt,
-        icon: <Icon icon="warning" size="xsm" />,
-        isDisabled: true,
-      }],
-    });
-  }
-
-  if (!props.branch && contextItems.length === 0 && !props.actions) return null;
-  const parentSessionId = props.branch?.parentSessionId;
+  if (contextItems.length === 0 && !props.actions) return null;
 
   return (
     <LayoutHeader
@@ -328,12 +300,9 @@ export function SessionContextLayer(props: {
       data-has-goal={props.goal ? 'true' : undefined}
     >
       <div className="maka-session-context__inner">
-        {/* Lineage only. The session's own name moved to the window titlebar
-            (TitlebarSessionIdentity), which shows it in every view and survives
-            a collapsed sidebar; repeating it one row below was the same string
-            twice. What stays is what the titlebar cannot answer: which session
-            this one branched FROM. */}
-        <div className="maka-session-context__lineage">
+        {/* The session's name and parent live in the window titlebar
+            (TitlebarSessionIdentity); this band never repeats them. */}
+        <div className="maka-session-context__lead">
           {props.goal ? (
             <Tooltip content={props.goal.condition}>
               <div className="maka-session-context__goal-description">
@@ -342,61 +311,46 @@ export function SessionContextLayer(props: {
                 </Text>
               </div>
             </Tooltip>
-          ) : props.branch ? (
-            <Breadcrumbs
-              label={copy.sessionLineageAriaLabel}
-              variant="supporting"
-              className="maka-session-context__breadcrumbs"
-              separator={<Icon icon="chevronRight" size="xsm" />}
-            >
-              <BreadcrumbItem
-                onClick={props.onBranchNavigate
-                  ? () => {
-                    if (parentSessionId) props.onBranchNavigate?.(parentSessionId);
-                  }
-                  : undefined}
-              >
-                <span className="maka-session-context__breadcrumb-label">
-                  {props.branch.parentSessionName}
-                </span>
-              </BreadcrumbItem>
-              <BreadcrumbItem isCurrent>
-                <span className="maka-session-context__breadcrumb-label">
-                  {props.sessionName}
-                </span>
-              </BreadcrumbItem>
-            </Breadcrumbs>
           ) : null}
         </div>
-        {(contextItems.length > 0 || props.actions) && (
-          <div className="maka-session-context__cluster">
-            {contextItems.length > 0 ? (
-              <OverflowList
-                gap={1}
-                minVisibleItems={1}
-                collapseFrom="end"
-                overflowRenderer={(overflowItems) => {
-                  const items = overflowItems.flatMap(({ index }) => contextItems[index]?.overflowItems ?? []);
-                  return (
-                    <MoreMenu
-                      label={copy.sessionContextMore(items.length)}
-                      size="sm"
-                      items={items}
-                    />
-                  );
-                }}
-              >
-                {contextItems.map((item) => (
-                  <div key={item.key} className="maka-session-context__item">
-                    {item.element}
-                  </div>
-                ))}
-              </OverflowList>
-            ) : null}
-            {props.actions}
-          </div>
-        )}
+        <div className="maka-session-context__cluster">
+          {contextItems.length > 0 ? (
+            <OverflowList
+              gap={1}
+              minVisibleItems={1}
+              collapseFrom="end"
+              overflowRenderer={(overflowItems) => {
+                const items = overflowItems.flatMap(({ index }) => contextItems[index]?.overflowItems ?? []);
+                return (
+                  <MoreMenu
+                    label={copy.sessionContextMore(items.length)}
+                    size="sm"
+                    items={items}
+                  />
+                );
+              }}
+            >
+              {contextItems.map((item) => (
+                <div key={item.key} className="maka-session-context__item">
+                  {item.element}
+                </div>
+              ))}
+            </OverflowList>
+          ) : null}
+          {props.actions}
+        </div>
       </div>
+      {props.goal?.eventWait ? (
+        <div className="maka-session-context__inner maka-session-context__wait" role="status">
+          <div className="maka-session-context__lead">
+            <Text type="supporting">{props.goal.eventWait.label}</Text>
+            <Text type="supporting" color="secondary">{props.goal.eventWait.detail}</Text>
+          </div>
+          <Tooltip content={props.goal.eventWait.cancelDescription}>
+            <Button size="sm" label={props.goal.eventWait.cancelLabel} onClick={props.goal.eventWait.onCancel} />
+          </Tooltip>
+        </div>
+      ) : props.goal?.pauseReason ? <div className="maka-session-context__inner maka-session-context__wait"><Text type="supporting" color="secondary">{props.goal.pauseReason}</Text></div> : null}
     </LayoutHeader>
   );
 }

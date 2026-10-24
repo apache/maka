@@ -21,8 +21,14 @@ import { useId, type ReactNode } from 'react';
 import { parseContextWindowInput } from './context-window-input.js';
 import { DropdownMenu, DropdownMenuCheckboxItem, Field, FormLayout } from '@astryxdesign/core';
 import {
+  MODEL_API_PROTOCOL_LABELS,
+  MODEL_API_PROTOCOLS,
+  type ModelApiProtocol,
+  type ProviderType,
+} from '@maka/core/llm-connections';
+import { providerAcceptsOutputTokenLimit } from '@maka/core/provider-registry';
+import {
   DECLARABLE_RELAY_THINKING_LEVELS,
-  THINKING_LEVELS,
   modelApplyPatchEnabled,
   type ModelOverride,
   type ThinkingLevel,
@@ -34,8 +40,11 @@ export function CapabilityEditor(props: {
   children?: ReactNode;
   copy: ReturnType<typeof getProviderSettingsCopy>['detail'];
   modelId: string;
-  isRelay: boolean;
+  /** Set only on a custom connection, which alone takes wire and thinking declarations. */
+  customDefaultApiProtocol?: ModelApiProtocol;
   declared: ModelOverride | undefined;
+  /** The connection's provider; one that rejects any output-token limit gets a read-only field. */
+  providerType: ProviderType;
   contextWindowInput: string;
   contextWindowInputInvalid: boolean;
   numericInputs?: Partial<Record<'inputLimit' | 'compactionThreshold' | 'maxOutputTokens', string>>;
@@ -62,16 +71,8 @@ export function CapabilityEditor(props: {
         ? 'disabled'
         : 'auto';
   const draftLevels = declared?.thinkingLevels ?? [];
-  // The menu offers the five declarable levels PLUS anything the stored table
-  // already claims — a level saved while it was still declarable (or
-  // hand-written into the document) must stay visible and un-checkable, never
-  // an invisible selection the trigger counts but the menu cannot show.
-  const menuLevels: readonly ThinkingLevel[] = THINKING_LEVELS.filter(
-    (level) =>
-      (DECLARABLE_RELAY_THINKING_LEVELS as readonly ThinkingLevel[]).includes(level) ||
-      draftLevels.includes(level),
-  );
-  const defaultThinkingLevels = props.isRelay && declared?.thinkingLevels !== undefined
+  const isCustom = props.customDefaultApiProtocol !== undefined;
+  const defaultThinkingLevels = isCustom && declared?.thinkingLevels !== undefined
     ? declared.thinkingLevels
     : props.thinkingLevels;
   const defaultThinkingLevel = declared?.defaultThinkingLevel !== undefined &&
@@ -81,6 +82,31 @@ export function CapabilityEditor(props: {
   return (
     <FormLayout direction="vertical" defaultOptionality="optional">
       {props.children}
+      {props.customDefaultApiProtocol !== undefined && (
+        <Selector
+          label={copy.apiProtocol}
+          labelTooltip={copy.apiProtocolHelp}
+          size="sm"
+          width="100%"
+          options={[
+            {
+              value: '',
+              label: copy.apiProtocolDefaultOption(
+                MODEL_API_PROTOCOL_LABELS[props.customDefaultApiProtocol],
+              ),
+            },
+            ...MODEL_API_PROTOCOLS.map((protocol) => ({
+              value: protocol,
+              label: MODEL_API_PROTOCOL_LABELS[protocol],
+            })),
+          ]}
+          value={declared?.apiProtocol ?? ''}
+          onChange={(value) =>
+            props.onChange({ apiProtocol: value === '' ? undefined : (value as ModelApiProtocol) })
+          }
+          isDisabled={props.disabled}
+        />
+      )}
       <TextInput
         size="sm"
         width="100%"
@@ -150,6 +176,8 @@ export function CapabilityEditor(props: {
       {(['inputLimit', 'compactionThreshold', 'maxOutputTokens'] as const).map((field) => {
         const input = props.numericInputs?.[field] ?? String(declared?.[field] ?? '');
         const invalid = input.trim() !== '' && parseContextWindowInput(input) === null;
+        const unsupported =
+          field === 'maxOutputTokens' && !providerAcceptsOutputTokenLimit(props.providerType);
         return (
           <TextInput
             size="sm"
@@ -159,17 +187,19 @@ export function CapabilityEditor(props: {
             labelTooltip={copy[`${field}Help`]}
             value={input}
             onChange={(value) => props.onNumericInput(field, value)}
-            isDisabled={props.disabled}
+            isDisabled={props.disabled || unsupported}
+            {...(unsupported ? { disabledMessage: copy.maxOutputTokensUnsupported } : {})}
             hasClear
             placeholder={field === 'inputLimit' && props.defaultInputLimit !== undefined ? String(props.defaultInputLimit) : field === 'maxOutputTokens' ? '8192 / 8K' : '128000 / 128K / 1M'}
             status={
-              invalid ? { type: 'error', message: copy.contextWindowInputInvalid } : field === 'inputLimit' && props.limitsConflict ? { type: 'error', message: copy.modelLimitsConflict } : undefined
+              unsupported && input.trim() !== ''
+                ? { type: 'warning', message: copy.maxOutputTokensUnsupported }
+                : invalid ? { type: 'error', message: copy.contextWindowInputInvalid } : field === 'inputLimit' && props.limitsConflict ? { type: 'error', message: copy.modelLimitsConflict } : undefined
             }
           />
         );
       })}
-      {/* Only relays accept a reasoning_effort declaration. */}
-      {props.isRelay && (
+      {isCustom && (
         <Field
           label={copy.thinkingEffort}
           inputID={thinkingId}
@@ -194,7 +224,7 @@ export function CapabilityEditor(props: {
             hasChevron
             menuWidth={224}
           >
-            {menuLevels.map((level) => (
+            {DECLARABLE_RELAY_THINKING_LEVELS.map((level) => (
               <DropdownMenuCheckboxItem
                 key={level}
                 label={level}

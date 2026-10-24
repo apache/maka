@@ -33,6 +33,7 @@ const payload = JSON.parse(Buffer.from(process.argv[2] ?? '', 'base64url').toStr
   execution: RunHostedExecutionInput['execution'];
   connection?: {
     providerType: NonNullable<RunHostedExecutionInput['connection']>['providerType'];
+    defaultApiProtocol?: NonNullable<RunHostedExecutionInput['connection']>['defaultApiProtocol'];
     apiKeyEnvironment: string;
   };
 };
@@ -74,6 +75,9 @@ try {
       ? {
           connection: {
             providerType: payload.connection.providerType,
+            ...(payload.connection.defaultApiProtocol === undefined
+              ? {}
+              : { defaultApiProtocol: payload.connection.defaultApiProtocol }),
             apiKey: process.env[payload.connection.apiKeyEnvironment] ?? '',
           },
         }

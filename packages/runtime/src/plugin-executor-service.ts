@@ -44,7 +44,7 @@ import {
 } from './plugin-runtime.js';
 import { PluginScopeRegistry } from './plugin-scope-registry.js';
 
-const MAX_EXECUTOR_COMPLETION_TEXT_BYTES = 256 * 1024;
+export const MAX_EXECUTOR_COMPLETION_TEXT_BYTES = 256 * 1024;
 
 declare module './plugin-kernel.js' {
   interface Context {
@@ -157,6 +157,7 @@ export interface PluginExecutorContext {
 export interface PluginExecutorDiscoveryInput {
   readonly cwd: string;
   readonly signal: AbortSignal;
+  readonly refresh?: boolean;
 }
 export interface PluginExecutorConversationInput {
   readonly conversationKey: string;
@@ -170,11 +171,18 @@ export interface PluginExecutorProvider {
   readonly capabilities?: PluginExecutorCapabilities;
   disposeConversation?(conversationKey: string): Promise<void>;
   discover?(input: PluginExecutorDiscoveryInput): Promise<ExecutorCatalogEntry>;
+  /** Clear provider-owned discovery data after an observable account or setup change. */
+  invalidateCatalog?(): void;
+  /** Return the complete confirmed configuration snapshot; omit the result when unchanged. */
   configureConversation?(
     input: PluginExecutorConversationInput,
     signal: AbortSignal,
-  ): Promise<void>;
+  ): Promise<ExecutorConfiguration | void>;
   inspectConversation?(input: PluginExecutorConversationInput): Promise<ExecutorCatalogEntry>;
+  /** Confirm terminal consumption for any result; the provider decides whether it can checkpoint. */
+  acknowledgeExecution?(conversationKey: string, turnId: string): Promise<void>;
+  /** Mark a settled result uncertain when its terminal event was not durably consumed. */
+  abandonExecution?(conversationKey: string, turnId: string): Promise<void>;
   execute(
     request: Readonly<PluginExecutorRequest>,
     context: PluginExecutorContext,
@@ -183,6 +191,8 @@ export interface PluginExecutorProvider {
 
 export interface PluginExecutorExecutionOptions {
   readonly signal?: AbortSignal;
+  /** Called when the provider returns a terminal result, before the Runtime validates it. */
+  readonly onSettled?: () => void;
   readonly onEvent?: (event: PluginExecutorOutputEvent) => void;
   readonly onPermissionRequest?: (
     request: PluginExecutorPermissionRequest,
@@ -203,6 +213,8 @@ export interface PluginExecutorBinding {
     request: PluginExecutorRequest,
     options?: PluginExecutorExecutionOptions,
   ): Promise<PluginExecutorResult>;
+  acknowledgeExecution?(conversationKey: string, turnId: string): Promise<void>;
+  abandonExecution?(conversationKey: string, turnId: string): Promise<void>;
 }
 
 export interface PluginExecutorServiceOptions {
@@ -270,8 +282,17 @@ export class PluginExecutorService extends Service {
           ? { configureConversation: provider.configureConversation.bind(provider) }
           : {}),
         ...(provider.discover ? { discover: provider.discover.bind(provider) } : {}),
+        ...(provider.invalidateCatalog
+          ? { invalidateCatalog: provider.invalidateCatalog.bind(provider) }
+          : {}),
         ...(provider.inspectConversation
           ? { inspectConversation: provider.inspectConversation.bind(provider) }
+          : {}),
+        ...(provider.acknowledgeExecution
+          ? { acknowledgeExecution: provider.acknowledgeExecution.bind(provider) }
+          : {}),
+        ...(provider.abandonExecution
+          ? { abandonExecution: provider.abandonExecution.bind(provider) }
           : {}),
       });
       const entry: RegisteredExecutor = {
@@ -330,10 +351,13 @@ export class PluginExecutorService extends Service {
   async catalog(
     input: {
       cwd: string;
+      refresh?: boolean;
       sessionId?: string;
       /** Discover within this Session's scope without inspecting a retained conversation. */
       discoverySessionId?: string;
       executorId?: string;
+      /** Registration inventory only; never starts provider discovery. */
+      listOnly?: boolean;
       configuration?: ExecutorConfiguration;
     },
     signal = AbortSignal.timeout(35_000),
@@ -345,6 +369,15 @@ export class PluginExecutorService extends Service {
     const selected = entries.filter(
       (entry) => !entry.retired && (!input.executorId || entry.provider.id === input.executorId),
     );
+    if (input.listOnly)
+      return selected.map(({ provider }) => ({
+        id: provider.id,
+        displayName: provider.displayName?.trim() || provider.id,
+        readiness: 'unavailable' as const,
+        models: [],
+        supportsAttachments: false,
+        supportsModelChange: false,
+      }));
     if (input.executorId && !selected.length)
       return [
         {
@@ -375,7 +408,11 @@ export class PluginExecutorService extends Service {
                   cwd: input.cwd,
                   ...(input.configuration ? { configuration: input.configuration } : {}),
                 })
-              : await entry.provider.discover?.({ cwd: input.cwd, signal: combined });
+              : await entry.provider.discover?.({
+                  cwd: input.cwd,
+                  signal: combined,
+                  ...(input.refresh ? { refresh: true } : {}),
+                });
             combined.throwIfAborted();
             if (!result) return fallback;
             return normalizeCatalogEntry(result, entry.provider.id);
@@ -387,11 +424,18 @@ export class PluginExecutorService extends Service {
     );
   }
 
+  invalidateCatalog(executorId?: string): void {
+    for (const entry of this.registry.entries('profile')) {
+      if (!entry.retired && (!executorId || entry.provider.id === executorId))
+        entry.provider.invalidateCatalog?.();
+    }
+  }
+
   async configureConversation(
     sessionId: string,
     executorId: string,
     input: PluginExecutorConversationInput,
-  ): Promise<void> {
+  ): Promise<ExecutorConfiguration | void> {
     const entry = this.entry(sessionId, executorId);
     const configure = entry.provider.configureConversation;
     if (
@@ -401,11 +445,17 @@ export class PluginExecutorService extends Service {
       throw new Error('Executor configuration is unavailable or busy');
     if (!isExecutorConfiguration(input.configuration))
       throw new TypeError('Invalid executor configuration');
-    await this.withActiveOperation(
+    return await this.withActiveOperation(
       entry,
       { conversationKey: input.conversationKey },
       async (signal) => {
-        await configure(input, AbortSignal.any([signal, AbortSignal.timeout(30_000)]));
+        const confirmed = await configure(
+          input,
+          AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
+        );
+        if (confirmed !== undefined && !isExecutorConfiguration(confirmed))
+          throw new TypeError('Invalid confirmed executor configuration');
+        return confirmed;
       },
     );
   }
@@ -443,6 +493,29 @@ export class PluginExecutorService extends Service {
         }
         return this.executeEntry(entry, request, options);
       },
+      ...(entry.provider.acknowledgeExecution
+        ? {
+            acknowledgeExecution: (conversationKey: string, turnId: string) =>
+              conversationKey !== sessionId
+                ? Promise.reject(new Error('Executor binding cannot cross Session scope'))
+                : this.withActiveOperation(entry, { conversationKey }, async (signal) => {
+                    signal.throwIfAborted();
+                    if (entry.retired) throw new ExecutorRetiredAbort(entry.provider.id);
+                    await entry.provider.acknowledgeExecution!(conversationKey, turnId);
+                  }),
+          }
+        : {}),
+      ...(entry.provider.abandonExecution
+        ? {
+            abandonExecution: (conversationKey: string, turnId: string) =>
+              conversationKey !== sessionId
+                ? Promise.reject(new Error('Executor binding cannot cross Session scope'))
+                : this.withActiveOperation(entry, { conversationKey }, async () => {
+                    if (entry.retired) throw new ExecutorRetiredAbort(entry.provider.id);
+                    await entry.provider.abandonExecution!(conversationKey, turnId);
+                  }),
+          }
+        : {}),
     });
   }
 
@@ -492,6 +565,11 @@ export class PluginExecutorService extends Service {
               return normalizePermissionResult(result, normalized);
             },
           });
+          try {
+            options.onSettled?.();
+          } catch {
+            // A settlement observer must not change external execution.
+          }
           if (signal.aborted) {
             const cancelled = cancelledResult(signal.reason);
             const normalized = normalizeResult(result);
@@ -563,6 +641,15 @@ function validateProvider(provider: PluginExecutorProvider): void {
   if (!isExecutorId(provider.id)) throw new TypeError('Executor id is invalid');
   if (typeof provider.execute !== 'function') {
     throw new TypeError(`Executor implementation is invalid: ${provider.id}`);
+  }
+  if (
+    provider.acknowledgeExecution !== undefined &&
+    typeof provider.acknowledgeExecution !== 'function'
+  ) {
+    throw new TypeError(`Executor acknowledgement is invalid: ${provider.id}`);
+  }
+  if (provider.abandonExecution !== undefined && typeof provider.abandonExecution !== 'function') {
+    throw new TypeError(`Executor abandonment is invalid: ${provider.id}`);
   }
   if (
     provider.displayName !== undefined &&

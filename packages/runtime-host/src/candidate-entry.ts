@@ -103,6 +103,25 @@ export async function runExecutionCandidateEntry(
     process.exit(candidateStartupFailureExitCode(failure));
   }
   if (result.kind === 'loser') {
+    // Losing the launch election is a normal outcome the replacement loop
+    // relies on, but a silent exit left no trace on disk — during replacement
+    // storms every loss was invisible (issue #5843). Leave the same startup
+    // diagnostic the failure paths write before exiting.
+    if (rootId && startupAttemptId) {
+      await import('./control/startup-diagnostic.js')
+        .then(({ writeCandidateStartupDiagnostic }) =>
+          writeCandidateStartupDiagnostic({
+            rootId,
+            startupAttemptId,
+            failure: { reason: 'launch_election_lost' },
+            error: new Error(
+              'Lost the Runtime Host launch election: another candidate owns this workspace',
+            ),
+            logs: runtimeHostLogBuffer.snapshot(),
+          }),
+        )
+        .catch(() => undefined);
+    }
     await launchOwnerGuard?.dispose();
     process.exit(2);
   }

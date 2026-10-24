@@ -32,6 +32,9 @@ export interface ParsedInteractiveRuntimeHostCandidateArguments
 export function parseInteractiveRuntimeHostCandidateArguments(
   args: readonly string[],
 ): ParsedInteractiveRuntimeHostCandidateArguments {
+  if (args.length % 2 !== 0) {
+    throw new Error('Invalid Runtime Host candidate arguments');
+  }
   const allowedKeys = new Set([
     'root',
     'expected-root-id',
@@ -43,19 +46,19 @@ export function parseInteractiveRuntimeHostCandidateArguments(
     'managed-deployment-id',
     'managed-config-revision',
   ]);
-  const values = new Map<string, string>();
-  for (let index = 0; index < args.length; index += 2) {
-    const key = args[index];
-    const value = args[index + 1];
+  const values = Array.from(
+    { length: args.length / 2 },
+    (_, index) => [args[index * 2], args[index * 2 + 1]] as const,
+  ).reduce<Map<string, string>>((current, [key, value]) => {
     if (!key?.startsWith('--') || value === undefined) {
       throw new Error('Invalid Runtime Host candidate arguments');
     }
     const name = key.slice(2);
-    if (!allowedKeys.has(name) || values.has(name)) {
+    if (!allowedKeys.has(name) || current.has(name)) {
       throw new Error(`Invalid Runtime Host candidate argument: ${key}`);
     }
-    values.set(name, value);
-  }
+    return new Map(current).set(name, value);
+  }, new Map());
   const rootPath = values.get('root');
   if (!rootPath) throw new Error('Runtime Host candidate requires --root');
   const expectedRootId = values.get('expected-root-id');

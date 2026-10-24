@@ -48,6 +48,7 @@ import {
   isWorkHubCoordinationSessionId,
   isWorkHubCoordinationSessionTarget,
   type SessionHeader,
+  type SessionBackgroundActivitySnapshot,
   type SessionHeaderPatch,
   type StoredMessage,
 } from '@maka/core/session';
@@ -138,7 +139,11 @@ type SessionRuntimePolicyStores = {
 
 type SessionConfigurationAuthority = Pick<
   SessionManager,
-  'transitionSessionConfiguration' | 'relocateSessionWorkspace' | 'runningTurnIds'
+  | 'transitionSessionConfiguration'
+  | 'relocateSessionWorkspace'
+  | 'runningTurnIds'
+  | 'sessionRunEpoch'
+  | 'sessionHostGeneration'
 >;
 type SessionContinuity = Pick<SessionContinuityCoordinator, 'refreshCanonical'>;
 
@@ -199,14 +204,16 @@ export interface HostSessionCatalogCoordinatorOptions {
   readonly turnIndex: SessionTurnIndexReader;
   readonly runtimePolicy: SessionRuntimePolicyStores;
   readonly manager: SessionConfigurationAuthority;
+  readonly readBackgroundActivity?: (sessionId: string) => SessionBackgroundActivitySnapshot;
   readonly admission: SessionAdmissionGate;
   readonly continuity: SessionContinuity;
   readonly workspaceResolver: HostWorkspaceResolver;
   readonly requestDrain: () => void;
+  readonly isTurnBusy?: (sessionId: string) => boolean;
   readonly configureExecutor?: (
     header: SessionHeader,
     config: import('@maka/core/executor-catalog').ExecutorConfiguration,
-  ) => Promise<void>;
+  ) => Promise<import('@maka/core/executor-catalog').ExecutorConfiguration | void>;
   readonly retireExecutor?: (sessionId: string) => Promise<void>;
   readonly assertExecutorAvailable?: (
     sessionId: string,
@@ -325,6 +332,10 @@ export class HostSessionCatalogCoordinator {
   readonly #turnIndex: SessionTurnIndexReader;
   readonly #runtimePolicy: SessionRuntimePolicyStores;
   readonly #manager: SessionConfigurationAuthority;
+  readonly #isTurnBusy?: (sessionId: string) => boolean;
+  readonly #readBackgroundActivity:
+    | ((sessionId: string) => SessionBackgroundActivitySnapshot)
+    | undefined;
   readonly #admission: SessionAdmissionGate;
   readonly #continuity: SessionContinuity;
   readonly #workspaceResolver: HostWorkspaceResolver;
@@ -341,6 +352,8 @@ export class HostSessionCatalogCoordinator {
     this.#turnIndex = options.turnIndex;
     this.#runtimePolicy = options.runtimePolicy;
     this.#manager = options.manager;
+    this.#isTurnBusy = options.isTurnBusy;
+    this.#readBackgroundActivity = options.readBackgroundActivity;
     this.#admission = options.admission;
     this.#continuity = options.continuity;
     this.#workspaceResolver = options.workspaceResolver;
@@ -405,6 +418,95 @@ export class HostSessionCatalogCoordinator {
   async createForHost(input: SessionCreateInput, toolMode: ToolMode): Promise<void> {
     const outcome = await this.#create(input, toolMode);
     if (!outcome.ok) throw new Error(outcome.error.message);
+  }
+
+  /** Keep the hidden Bot on its owner's selected model without replacing its history. */
+  async synchronizeAssistantBotModel(
+    ownerId: string,
+    workerId: string,
+  ): Promise<'ready' | 'deferred'> {
+    return this.#admission.runMany([ownerId, workerId], async (lease) => {
+      const [owner, worker] = await Promise.all([
+        this.#stores.readHeaderRecordSnapshot(ownerId),
+        this.#stores.readHeaderRecordSnapshot(workerId),
+      ]);
+      // A wake may observe a still-running worker. Leave that execution and its
+      // pending interactions intact and require preparation again before admission.
+      if (
+        this.#manager.runningTurnIds(workerId).length ||
+        this.#isTurnBusy?.(workerId) ||
+        worker.header.status === 'running' ||
+        worker.header.status === 'waiting_for_user'
+      )
+        return 'deferred';
+      if (
+        !owner.header.executorId &&
+        !worker.header.executorId &&
+        owner.header.llmConnectionId === worker.header.llmConnectionId &&
+        owner.header.llmConnectionSlug === worker.header.llmConnectionSlug &&
+        owner.header.model === worker.header.model &&
+        owner.header.thinkingLevel === worker.header.thinkingLevel
+      )
+        return 'ready';
+      if (owner.header.executorId) {
+        if (
+          owner.header.executorId === worker.header.executorId &&
+          owner.header.model === worker.header.model &&
+          owner.header.executorConfig?.model === worker.header.executorConfig?.model &&
+          owner.header.executorConfig?.mode === worker.header.executorConfig?.mode &&
+          owner.header.thinkingLevel === worker.header.thinkingLevel
+        )
+          return 'ready';
+        throw new SessionOperationFailure(
+          'operation_unavailable',
+          'Assistant Bot cannot synchronize the selected external agent',
+        );
+      }
+      let connectionId = owner.header.llmConnectionId;
+      if (connectionId === undefined) {
+        // Older headers identify their selected connection by slug alone. Do
+        // not substitute the Host default for that explicit user selection.
+        const selected = await this.#runtimePolicy.operations.resolveExecutionConnection({
+          kind: 'catalog_slug',
+          connectionSlug: owner.header.llmConnectionSlug,
+        });
+        if (selected.kind !== 'ready')
+          throw new SessionOperationFailure(
+            'operation_unavailable',
+            'Assistant model connection is unavailable',
+          );
+        connectionId = selected.connection.connectionId;
+      }
+      const outcome = await this.#updateConfiguration(
+        {
+          sessionId: workerId,
+          expectedRevision: worker.revision,
+          patch: {
+            modelTarget: {
+              kind: 'explicit',
+              connectionId,
+              connectionSlug: owner.header.llmConnectionSlug,
+              model: owner.header.model,
+            },
+            thinkingLevel: owner.header.thinkingLevel ?? null,
+          },
+        },
+        'ordinary',
+        lease,
+      );
+      if (!outcome.ok) {
+        // Execution claims can race the idle observation. The transition
+        // authority refuses them without disposing a live backend.
+        if (outcome.error.code === 'session_busy') return 'deferred';
+        throw new Error(outcome.error.message);
+      }
+      if (outcome.result.kind !== 'committed')
+        throw new SessionOperationFailure(
+          'operation_conflict',
+          'Assistant Bot configuration changed during model synchronization',
+        );
+      return 'ready';
+    });
   }
 
   /** WorkHub Action Gate path; callers cannot bypass the typed operation outcome. */
@@ -516,7 +618,12 @@ export class HostSessionCatalogCoordinator {
           session: record
             ? projectSharedSessionCatalogRecord(
                 record,
-                projectCatalogLiveRunState(this.#manager.runningTurnIds(record.header.id)),
+                projectCatalogLiveRunState(
+                  this.#manager.runningTurnIds(record.header.id),
+                  this.#manager.sessionRunEpoch(record.header.id),
+                  this.#manager.sessionHostGeneration(),
+                ),
+                this.#readBackgroundActivity?.(record.header.id),
               )
             : null,
         },
@@ -532,7 +639,12 @@ export class HostSessionCatalogCoordinator {
   #projectCatalogQueryRecord(record: SessionCatalogRecord): SessionCatalogItem {
     return projectSessionCatalogRecord(
       record,
-      projectCatalogLiveRunState(this.#manager.runningTurnIds(record.header.id)),
+      projectCatalogLiveRunState(
+        this.#manager.runningTurnIds(record.header.id),
+        this.#manager.sessionRunEpoch(record.header.id),
+        this.#manager.sessionHostGeneration(),
+      ),
+      this.#readBackgroundActivity?.(record.header.id),
     );
   }
 
@@ -778,6 +890,7 @@ export class HostSessionCatalogCoordinator {
   async #updateConfiguration(
     input: SessionConfigurationUpdateInput,
     authority: 'ordinary' | 'workhub' = 'ordinary',
+    admittedLease?: SessionAdmissionLease,
   ): Promise<OperationOutcome<'session.configuration.update'>> {
     if (authority === 'ordinary' && isWorkHubCoordinationSessionId(input.sessionId)) {
       return configurationFailure(
@@ -785,7 +898,9 @@ export class HostSessionCatalogCoordinator {
         'WorkHub Coordination Session configuration requires WorkHub authority',
       );
     }
-    return this.#admission.run(input.sessionId, async (lease) => {
+    const update = async (
+      lease: SessionAdmissionLease,
+    ): Promise<OperationOutcome<'session.configuration.update'>> => {
       let commitAttempted = false;
       let confirmedExecutor: SessionHeader | undefined;
       try {
@@ -816,7 +931,7 @@ export class HostSessionCatalogCoordinator {
           );
         }
 
-        const configuration = await this.#mergeConfigurationPatch(current.header, input.patch);
+        let configuration = await this.#mergeConfigurationPatch(current.header, input.patch);
         const clearsConnectionBlock =
           input.patch.modelTarget !== undefined &&
           current.header.blockedReason === 'NO_REAL_CONNECTION';
@@ -838,6 +953,8 @@ export class HostSessionCatalogCoordinator {
         if (input.patch.executorConfig) {
           if (
             this.#manager.runningTurnIds(input.sessionId).length ||
+            this.#isTurnBusy?.(input.sessionId) ||
+            current.header.status === 'running' ||
             current.header.status === 'waiting_for_user'
           )
             throw new SessionOperationFailure(
@@ -850,7 +967,31 @@ export class HostSessionCatalogCoordinator {
               'Executor configuration is unavailable',
             );
           try {
-            await this.#configureExecutor(current.header, input.patch.executorConfig);
+            const confirmed = await this.#configureExecutor(
+              current.header,
+              // A model-only edit lets the Agent confirm mode side effects.
+              // Do not turn the previous mode into an explicit requirement.
+              input.patch.executorConfig.model && input.patch.executorConfig.mode === undefined
+                ? { model: input.patch.executorConfig.model }
+                : configuration.executorConfig!,
+            );
+            if (confirmed) {
+              if (
+                (input.patch.executorConfig.model &&
+                  confirmed.model !== input.patch.executorConfig.model) ||
+                (input.patch.executorConfig.mode &&
+                  confirmed.mode !== input.patch.executorConfig.mode)
+              )
+                throw new Error('Executor confirmation differs from the requested configuration');
+              configuration = {
+                ...configuration,
+                // A provider confirmation is the complete current snapshot. In
+                // particular, omission clears an option the provider removed as
+                // a side effect of changing another option.
+                executorConfig: confirmed,
+                model: confirmed.model ?? current.header.executorId ?? configuration.model,
+              };
+            }
             confirmedExecutor = current.header;
           } catch {
             throw new SessionOperationFailure(
@@ -896,7 +1037,10 @@ export class HostSessionCatalogCoordinator {
           'Session configuration update outcome is unknown',
         );
       }
-    });
+    };
+    return admittedLease
+      ? this.#admission.runAdmitted(input.sessionId, admittedLease, () => update(admittedLease))
+      : this.#admission.run(input.sessionId, update);
   }
 
   async #reconcileExecutorAfterFailedCommit(previous: SessionHeader): Promise<void> {
@@ -904,7 +1048,7 @@ export class HostSessionCatalogCoordinator {
       const actual = (await this.#stores.readHeaderRecordSnapshot(previous.id)).header;
       if (
         actual.executorId !== previous.executorId ||
-        !actual.executorConfig?.model ||
+        !actual.executorConfig ||
         !this.#configureExecutor
       )
         throw new Error('Confirmed executor model is unavailable');
@@ -1431,7 +1575,9 @@ export class HostSessionCatalogCoordinator {
     return {
       backend: patch.modelTarget || current.backend === 'ai-sdk' ? 'ai-sdk' : 'plugin-executor',
       executorId: patch.modelTarget ? undefined : current.executorId,
-      executorConfig: patch.executorConfig ?? current.executorConfig,
+      executorConfig: patch.executorConfig
+        ? { ...current.executorConfig, ...patch.executorConfig }
+        : current.executorConfig,
       llmConnectionId: model.connectionId,
       llmConnectionSlug: model.connectionSlug,
       model: patch.executorConfig?.model ?? model.model,
@@ -1461,7 +1607,9 @@ export class HostSessionCatalogCoordinator {
         executorConfig = await this.#assertExecutorAvailable?.(
           input.sessionId,
           input.executorId,
-          requestedModel ? { model: requestedModel } : input.executorConfig,
+          requestedModel
+            ? { ...input.executorConfig, model: requestedModel }
+            : input.executorConfig,
           cwd,
         );
       } catch {
@@ -1512,6 +1660,7 @@ function sessionConfigurationMatches(
     header.backend === configuration.backend &&
     header.executorId === configuration.executorId &&
     header.executorConfig?.model === configuration.executorConfig?.model &&
+    header.executorConfig?.mode === configuration.executorConfig?.mode &&
     header.llmConnectionId === configuration.llmConnectionId &&
     header.llmConnectionSlug === configuration.llmConnectionSlug &&
     header.model === configuration.model &&
@@ -1602,7 +1751,12 @@ function createRequestFingerprint(
     prepared.name,
     prepared.labels,
     input.executorId
-      ? ['executor', input.executorId, input.executorConfig?.model ?? input.executorModel ?? null]
+      ? [
+          'executor',
+          input.executorId,
+          input.executorConfig?.model ?? input.executorModel ?? null,
+          input.executorConfig?.mode ?? null,
+        ]
       : input.modelTarget?.kind === 'default'
         ? ['default']
         : [
@@ -1623,6 +1777,7 @@ function createRequestFingerprint(
 export function projectSessionCatalogRecord(
   record: SessionCatalogRecord,
   liveRunState?: SessionCatalogLiveRunState,
+  backgroundActivity?: SessionBackgroundActivitySnapshot,
 ): SessionCatalogItem {
   const { header, summary } = record;
   const projectedLabels = projectCatalogLabels(header.labels);
@@ -1641,6 +1796,12 @@ export function projectSessionCatalogRecord(
     name: header.name,
     isFlagged: header.isFlagged,
     isArchived: header.isArchived,
+    // The archive state is `isArchived` alone. A stray time on an active row
+    // is dropped here rather than failing this Host's own decoder and hiding
+    // the task behind an unsupported-record placeholder.
+    ...(header.isArchived && summary.archivedAt !== undefined
+      ? { archivedAt: summary.archivedAt }
+      : {}),
     labels: projectedLabels.labels,
     labelsTruncated: projectedLabels.truncated,
     hasUnread: header.hasUnread,
@@ -1653,6 +1814,7 @@ export function projectSessionCatalogRecord(
       : { lastMessagePreview: summary.lastMessagePreview }),
     status: header.status,
     ...(liveRunState === undefined ? {} : { liveRunState }),
+    ...(backgroundActivity === undefined ? {} : backgroundActivity),
     ...(header.blockedReason === undefined ? {} : { blockedReason: header.blockedReason }),
     ...(header.statusUpdatedAt === undefined ? {} : { statusUpdatedAt: header.statusUpdatedAt }),
     ...(header.parentSessionId === undefined ? {} : { parentSessionId: header.parentSessionId }),
@@ -1714,6 +1876,7 @@ export function projectSessionCatalogRecord(
 function projectSharedSessionCatalogRecord(
   record: SessionCatalogRecord,
   liveRunState?: SessionCatalogLiveRunState,
+  backgroundActivity?: SessionBackgroundActivitySnapshot,
 ): SharedSessionCatalogProjection {
   const { header, summary } = record;
   const shared: SharedSessionCatalogProjection = {
@@ -1729,6 +1892,7 @@ function projectSharedSessionCatalogRecord(
       : { lastMessagePreview: summary.lastMessagePreview }),
     status: header.status,
     ...(liveRunState === undefined ? {} : { liveRunState }),
+    ...(backgroundActivity === undefined ? {} : backgroundActivity),
     ...(header.blockedReason === undefined ? {} : { blockedReason: header.blockedReason }),
     ...(header.statusUpdatedAt === undefined ? {} : { statusUpdatedAt: header.statusUpdatedAt }),
   };
@@ -1737,12 +1901,16 @@ function projectSharedSessionCatalogRecord(
 
 function projectCatalogLiveRunState(
   runningTurnIds: readonly string[],
+  runEpoch?: number,
+  hostGeneration?: string,
 ): SessionCatalogLiveRunState | undefined {
   const uniqueRunningTurnIds = [...new Set(runningTurnIds)];
   if (uniqueRunningTurnIds.length > SESSION_CATALOG_RUNNING_TURN_MAX_ITEMS) return undefined;
   return {
     schemaVersion: SESSION_CATALOG_LIVE_RUN_STATE_SCHEMA_VERSION,
     runningTurnIds: uniqueRunningTurnIds,
+    runEpoch,
+    ...(hostGeneration === undefined ? {} : { hostGeneration }),
   };
 }
 

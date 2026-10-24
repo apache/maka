@@ -17,9 +17,9 @@
  * under the License.
  */
 
-import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
+import { type UiLocale, defineShippedUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 
-const TITLE = { 'zh-CN': '添加项目', 'zh-TW': '新增專案', en: 'Add project' } satisfies UiCatalog<string>;
+const TITLE = resolveUiMessageCatalog(defineShippedUiMessageCatalog<string>()({ 'zh-CN': '添加项目', 'zh-TW': '新增專案', en: 'Add project' }));
 
 export function projectPickerTitle(locale: UiLocale): string {
   return TITLE[locale];

@@ -149,6 +149,42 @@ export type ProbeSessionRemovalResult =
   | { readonly kind: 'removed' }
   | { readonly kind: 'absent' };
 
+/**
+ * A task row archive retention may delete: what Settings › Archived tasks lists
+ * — an archived root, or an archived subtask whose parent is gone — that no
+ * member of its revision family pins.
+ */
+export interface ArchiveRetentionCandidate extends SessionHeaderSnapshot {
+  /** Absent for a Session archived before the Host recorded the time. */
+  readonly archivedAt?: number;
+}
+
+/** A candidate row whose metadata no longer decodes: counted as failed and passed over. */
+export interface ArchiveRetentionUndecodableRow {
+  readonly undecodable: true;
+  readonly sessionId: string;
+  readonly archivedAt?: number;
+}
+
+export type ArchiveRetentionCandidateRow =
+  | ArchiveRetentionCandidate
+  | ArchiveRetentionUndecodableRow;
+
+/** Candidate families and the earliest clock start among them under one `enabledAt`. */
+export interface ArchiveRetentionCandidateCount {
+  readonly families: number;
+  readonly firstStart?: number;
+}
+
+/** Candidates come oldest archive first; an unknown time sorts before every known one. */
+export interface ArchiveRetentionCandidateQuery {
+  /** Only rows archived before this instant, plus every row whose time is unknown. */
+  readonly archivedBefore?: number;
+  /** Resume strictly after this row of the same order. */
+  readonly after?: { readonly archivedAt?: number; readonly sessionId: string };
+  readonly limit: number;
+}
+
 export interface SessionCatalogRecord extends SessionHeaderSnapshot {
   readonly activityAt: number;
   readonly summary: SessionSummary;
@@ -203,6 +239,7 @@ export interface WorkHubMessageAssignmentResult {
 }
 
 export type StableSessionCreateInput = CreateSessionInput & {
+  readonly branchNameOrigin?: SessionHeader['branchNameOrigin'];
   readonly conversationCopy?: SessionConversationCopy;
   readonly role?: SessionRole;
 };
@@ -426,7 +463,16 @@ export interface SessionAuthorityStore extends SessionStore, MessageAdmissionSto
     input: CreateSessionInput,
     messages: readonly StoredMessage[],
     externalOrigin: SessionExternalOrigin,
-    options?: { readonly onCommitStarted?: () => void },
+    options?: {
+      readonly onCommitStarted?: () => void;
+      /** Discard prepared bytes only when no Session was committed. */
+      readonly discardPreparedMessages?: (sessionId: string) => Promise<void>;
+      /** Prepare Session-owned attachment references before any transcript publication. */
+      readonly prepareMessages?: (
+        sessionId: string,
+        messages: readonly StoredMessage[],
+      ) => Promise<readonly StoredMessage[]>;
+    },
   ): Promise<SessionHeader>;
   /** Look up live published imports for a bounded page of source Sessions. */
   lookupExternalSessionImports(
@@ -487,10 +533,11 @@ export interface SessionAuthorityStore extends SessionStore, MessageAdmissionSto
     request: WorkHubMessageAssignmentRequest,
   ): Promise<WorkHubMessageAssignmentResult>;
   readWorkHubAssignment(actionId: string): Promise<WorkHubDelegationAssignedMessage | undefined>;
-  /** Newest active assignment first, across every requested target. */
+  /** Newest assignment first. includeStopped retains stopped links for lineage-aware controls; superseded links remain excluded. */
   readActiveWorkHubAssignmentsByTarget(
     targetSessionIds: readonly string[],
     maxAssignmentsPerTarget?: number,
+    includeStopped?: boolean,
   ): Promise<readonly WorkHubDelegationAssignedMessage[]>;
   readWorkHubReplacement(
     delegationId: string,
@@ -503,9 +550,11 @@ export interface SessionAuthorityStore extends SessionStore, MessageAdmissionSto
   ): Promise<WorkHubDelegationSupersededMessage | undefined>;
   readWorkHubStopRequest(
     delegationId: string,
+    actionId?: string,
   ): Promise<WorkHubDelegationStopRequestedMessage | undefined>;
   readWorkHubStopResolution(
     delegationId: string,
+    actionId?: string,
   ): Promise<WorkHubDelegationStopResolvedMessage | undefined>;
   /**
    * Durably binds one action identity to one exact WorkHub operation before its
@@ -547,4 +596,10 @@ export interface SessionAuthorityStore extends SessionStore, MessageAdmissionSto
   reconcileOrphanedAgentGraphRetirements(): Promise<string[]>;
   listPendingSessionRetirementCleanupIds(sessionId?: string): Promise<string[]>;
   completeSessionRetirementCleanup(sessionId: string): Promise<void>;
+  listArchiveRetentionCandidates(
+    query: ArchiveRetentionCandidateQuery,
+  ): Promise<ArchiveRetentionCandidateRow[]>;
+  countArchiveRetentionCandidates(enabledAt: number): Promise<ArchiveRetentionCandidateCount>;
+  /** The newest time any Session metadata write or archive recorded; undefined with no Sessions. */
+  readLatestSessionMetadataTime(): Promise<number | undefined>;
 }

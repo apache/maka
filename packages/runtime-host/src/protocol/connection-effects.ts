@@ -23,6 +23,7 @@ import {
   decodeConnectionModel,
   decodeConnectionName,
   decodeConnectionSlug,
+  decodeDefaultApiProtocol,
   decodeProviderType,
   decodeConnectionTestSummary,
   decodeConnectionVersionBasis,
@@ -81,6 +82,8 @@ export type ConnectionEffectFailureClass = (typeof CONNECTION_EFFECT_FAILURE_CLA
 
 export interface ConnectionModelFetchInput {
   readonly connectionId: string;
+  /** Discover choices without opting the user into the first model. */
+  readonly preserveSelection?: boolean;
 }
 
 export interface ConnectionTestRunInput {
@@ -370,11 +373,16 @@ function decodeConnectionOnboardingTarget(value: unknown): ConnectionOnboardingT
       target,
       'create connection onboarding target',
       ['kind', 'providerType'],
-      ['slug', 'name'],
+      ['slug', 'name', 'defaultApiProtocol'],
+    );
+    const providerType = decodeDomain(() => decodeProviderType(exact.providerType));
+    const defaultApiProtocol = decodeDomain(() =>
+      decodeDefaultApiProtocol(exact.defaultApiProtocol, providerType),
     );
     return {
       kind: 'create',
-      providerType: decodeDomain(() => decodeProviderType(exact.providerType)),
+      providerType,
+      ...(defaultApiProtocol === undefined ? {} : { defaultApiProtocol }),
       ...(exact.slug === undefined
         ? {}
         : { slug: decodeDomain(() => decodeConnectionSlug(exact.slug)) }),
@@ -439,8 +447,17 @@ export function decodeConnectionOnboardingVerifyResult(
 }
 
 export function decodeConnectionModelFetchInput(value: unknown): ConnectionModelFetchInput {
-  const input = requireExactRecord(value, 'connection model fetch input', ['connectionId']);
-  return { connectionId: requireEntityId(input.connectionId, 'connectionId') };
+  const record = requireRecord(value, 'connection model fetch input');
+  const input = requireExactRecord(value, 'connection model fetch input', [
+    'connectionId',
+    ...(Object.hasOwn(record, 'preserveSelection') ? ['preserveSelection'] : []),
+  ]);
+  return {
+    connectionId: requireEntityId(input.connectionId, 'connectionId'),
+    ...(Object.hasOwn(input, 'preserveSelection')
+      ? { preserveSelection: requireBoolean(input.preserveSelection, 'preserve model selection') }
+      : {}),
+  };
 }
 
 export function decodeConnectionTestRunInput(value: unknown): ConnectionTestRunInput {

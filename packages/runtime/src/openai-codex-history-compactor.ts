@@ -22,10 +22,12 @@ import type {
   HistoryCompactSummaryInput,
 } from './ai-sdk-compaction-contract.js';
 import { HistoryCompactSummarizerError } from './history-compact-error.js';
+import { nonEmpty } from './context-budget-helpers.js';
 import {
   canContinueHistoryCompactCheckpointForModel,
   historyCompactCheckpointToModelMessage,
   isProviderHistoryCompactCheckpoint,
+  projectHistoryCompactCheckpointReplay,
   type HistoryCompactProviderState,
 } from './history-compact-checkpoint.js';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
@@ -69,7 +71,6 @@ export function buildOpenAiCodexHistoryCompactor(options: BuildOpenAiCodexHistor
       const previous = input.previousCheckpoint;
       const canContinuePrevious =
         previous &&
-        isProviderHistoryCompactCheckpoint(previous) &&
         canContinueHistoryCompactCheckpointForModel(
           previous,
           { providerType: 'openai-codex' },
@@ -79,6 +80,19 @@ export function buildOpenAiCodexHistoryCompactor(options: BuildOpenAiCodexHistor
       const events = canContinuePrevious
         ? (input.newlyFoldedRuntimeEvents ?? [])
         : input.source.foldedRuntimeEvents;
+      // Match ordinary replay after a text-compacted session switches to
+      // Codex: summarize the portable checkpoint plus its tail, without
+      // resurrecting the already-folded source history (#6154).
+      const replayEvents =
+        canContinuePrevious && !isProviderHistoryCompactCheckpoint(previous)
+          ? projectHistoryCompactCheckpointReplay(
+              previous,
+              // The projection finds a mid-turn head anchor by identity. A
+              // historical event count can cut it off after reasoning admission.
+              input.source.foldedRuntimeEvents,
+              events,
+            )
+          : events;
       const providerReasoningReplayEventIds = compatibleProviderReasoningReplayEventIds(
         events,
         input.source.invocations,
@@ -87,10 +101,10 @@ export function buildOpenAiCodexHistoryCompactor(options: BuildOpenAiCodexHistor
         input.runId,
       );
       const projectedMessages = openAiCodexCompactionMessages(
-        events,
+        replayEvents,
         providerReasoningReplayEventIds,
       );
-      if (canContinuePrevious) {
+      if (canContinuePrevious && isProviderHistoryCompactCheckpoint(previous)) {
         projectedMessages.unshift(historyCompactCheckpointToModelMessage(previous));
       }
       // Whether this input fits the compaction endpoint is its own answer;
@@ -168,7 +182,9 @@ export function shouldFallbackFromOpenAiCodexHistoryCompaction(
 ): boolean {
   if (abortSignal?.aborted || hasAbortCause(error)) return false;
   if (!(error instanceof HistoryCompactSummarizerError)) return false;
-  if (error.reason === 'input_too_large' || error.reason === 'invalid_provider_state') return true;
+  // Capacity errors must reach the planner's same-route accepted-prefix
+  // retry, which preserves native compaction and the uncovered tail.
+  if (error.reason === 'invalid_provider_state') return true;
   if (error.reason !== 'provider_error') return false;
   return providerFailureDiagnostic(error).errorClass === 'request_rejected';
 }
@@ -339,10 +355,6 @@ function isStreamErrorPart(value: unknown): value is { type: 'error'; error: unk
   return Boolean(
     value && typeof value === 'object' && (value as Record<string, unknown>).type === 'error',
   );
-}
-
-function nonEmpty(value: unknown): value is string {
-  return typeof value === 'string' && value.length > 0;
 }
 
 interface AiSdkModule {

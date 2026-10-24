@@ -375,6 +375,8 @@ export function requireHostedExecutionMessageContent(admission: RootTurnAdmissio
 
 export function hostedExecutionMessageOrigin(execution: RootExecutionDescriptor) {
   switch (execution.kind) {
+    case 'external_message':
+      return execution.origin;
     case 'workhub_coordination':
       return execution.feedback;
     case 'scheduled_task':
@@ -388,7 +390,11 @@ export function hostedExecutionMessageOrigin(execution: RootExecutionDescriptor)
         automationId: execution.automationId,
       };
     case 'goal':
-      return { kind: 'goal' as const, goalId: execution.goalId };
+      return {
+        kind: 'goal' as const,
+        goalId: execution.goalId,
+        ...(execution.eventWait ? { eventWait: execution.eventWait } : {}),
+      };
     case 'agent_graph_supervisor_wake':
       return {
         kind: 'agent_graph' as const,

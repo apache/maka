@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import { HostGoalEventWaitBridge, type HostGoalEventWaitSources } from './goal-event-waits.js';
+import type { GoalWaitSnapshot } from '@maka/storage/event-wait-bridge';
 import { randomUUID } from 'node:crypto';
 import {
   sameGoalControlLease,
@@ -26,7 +28,7 @@ import {
   type GoalPendingContinuation,
   type GoalState as DurableGoalState,
 } from '@maka/core/goal';
-import { userFacingText, type StoredMessage } from '@maka/core/session';
+import { type StoredMessage } from '@maka/core/session';
 import {
   GoalContinuationCoordinator,
   type GoalSessionCloseOperation,
@@ -36,9 +38,7 @@ import {
 } from '@maka/runtime/goal-continuation';
 import {
   GoalManager,
-  GOAL_REASON_TEXT_LIMIT,
   TERMINAL_GOAL_STATUSES,
-  truncateGoalText,
   type GoalCheckpoint,
   type GoalControlLease,
   type GoalState,
@@ -63,6 +63,12 @@ import type { HostResidencyKind } from './host-residency-registry.js';
 import type { GoalOperationHandlerMap } from './operation-dispatcher.js';
 import { projectGoalState } from './goal-projection.js';
 import {
+  GOAL_EVENT_WAIT_SUMMARY_LIMITS,
+  type GoalEventWaitCancelInput,
+  type GoalEventWaitCancelResult,
+} from '../protocol/goal.js';
+import { truncateUtf8 } from '@maka/core/diagnostic-log';
+import {
   type HostedExecutionAuthority,
   type HostedExecutionCompletion,
   type HostedExecutionCompletionObserver,
@@ -71,14 +77,21 @@ import {
 import { waitForHostedExecutionTerminal } from './hosted-execution-wait.js';
 import { SessionAdmissionGate } from './session-admission-gate.js';
 import { goalTurnOutcomeFromHostedExecution } from './goal-execution-coordinator.js';
+import { buildGoalEvaluationContext } from './goal-evaluation-context.js';
+import type { GoalFormAnswer, GoalFormToolReference } from './goal-form-evidence.js';
 
-type GoalStores = Pick<ExecutionStoresWriter<'interactive'>, 'sessionStore' | 'agentRunStore'>;
+type GoalStores = Pick<ExecutionStoresWriter<'interactive'>, 'sessionStore' | 'agentRunStore'> &
+  Partial<Pick<ExecutionStoresWriter<'interactive'>, 'eventWaitStore' | 'runtimeEventStore'>>;
 
 export interface HostGoalCoordinatorOptions {
   readonly store: InteractiveGoalAuthorityWriter;
   readonly stores: GoalStores;
-  /** The Session transcript as its ledger projects it; the Goal reads its tail. */
-  readonly readSessionMessages: (sessionId: string) => Promise<readonly StoredMessage[]>;
+  /** Evidence from one canonical Session transcript snapshot. */
+  readonly readSessionContext: (sessionId: string) => Promise<{
+    readonly messages: readonly StoredMessage[];
+    readonly formAnswers?: readonly GoalFormAnswer[];
+    readonly unreadFormTools?: readonly GoalFormToolReference[];
+  }>;
   readonly sessionAdmission: SessionAdmissionGate;
   readonly evaluator: GoalEvaluatorResource;
   readonly executions: Pick<HostedExecutionAuthority, 'reconcile' | 'subscribe'>;
@@ -87,12 +100,14 @@ export interface HostGoalCoordinatorOptions {
     text: string,
     checkpoint: GoalCheckpoint,
     controlLease: GoalControlLease,
+    eventWait?: GoalPendingContinuation['eventWait'],
   ) => GoalTurnAdmission;
   readonly acquireResidency: (kind?: HostResidencyKind) => RuntimeHostResidency;
   readonly onProjectionChanged: (sessionId: string) => void;
   readonly requestDrain: () => void;
   readonly now?: () => number;
   readonly newId?: () => string;
+  readonly eventWaitSources?: HostGoalEventWaitSources;
 }
 
 export interface HostGoalSessionRetirement {
@@ -106,6 +121,7 @@ export class HostGoalCoordinator {
     'goal.query': (input) => this.#query(input.sessionId),
     'goal.arm': (input) => this.#arm(input),
     'goal.control': (input) => this.#control(input),
+    'goal.event-wait.cancel': (input) => this.#cancelEventWait(input),
   };
 
   readonly manager: GoalManager;
@@ -124,7 +140,7 @@ export class HostGoalCoordinator {
   /**
    * Token count per Session as of the last continuation read, which is what a
    * settling Turn reports so the Goal can measure its budget. It is not a
-   * baseline for a new Goal: only an evaluation writes here, so a Session that
+   * baseline for a new Goal: only evaluation context reads refresh it. A Session that
    * has never run one has no entry, and `tokensBaselinePending` on the Goal is
    * what carries that until the first Turn carrying it settles.
    */
@@ -142,6 +158,10 @@ export class HostGoalCoordinator {
   >();
   #persistenceLane: Promise<void> = Promise.resolve();
   #persistenceFailure: unknown;
+  readonly eventWaitBridge?: HostGoalEventWaitBridge;
+  #jointLane: Promise<unknown> = Promise.resolve();
+  #jointBusy = false;
+  readonly #deferredGoalChanges: Array<[DurableGoalState, DurableGoalControlLease]> = [];
   #prepared = false;
   #draining = false;
 
@@ -167,15 +187,43 @@ export class HostGoalCoordinator {
     const tokenCache = this.#tokenCache;
     this.continuation = new GoalContinuationCoordinator({
       goalManager: this.manager,
+      eventWait: {
+        isGated: (sessionId) => !!this.#authorityBySession.get(sessionId)?.record.activeEventWait,
+        ownsSource: (sessionId, turnId, controlLease) => {
+          const record = this.#authorityBySession.get(sessionId)?.record;
+          const gate = record?.activeEventWait;
+          return (
+            record?.goal.status === 'active' &&
+            !!gate &&
+            !gate.settled &&
+            gate.sourceExecution.sessionId === sessionId &&
+            gate.sourceExecution.turnId === turnId &&
+            sameGoalControlLease(gate.controlLease, controlLease) &&
+            sameGoalControlLease(record.controlLease, controlLease)
+          );
+        },
+        settleCompleted: async (sessionId, turnId, controlLease) => {
+          if (!this.eventWaitBridge) throw new Error('Event wait persistence is unavailable');
+          await this.eventWaitBridge.settleCompleted(sessionId, turnId, controlLease);
+        },
+      },
+      mutateGoal: (operation) =>
+        this.#mutateGoal(() =>
+          operation({
+            recordPendingContinuation: (pending) =>
+              this.#recordPendingContinuation(pending, () => this.#flushGoalPersistence()),
+          }),
+        ),
       acquireActivity: () => this.#acquireResidency(),
       evaluator: options.evaluator,
       getRecentContext: async (sessionId) => {
         const controlLease = this.manager.getControlLease(sessionId);
-        const messages = await options.readSessionMessages(sessionId);
+        const { messages, formAnswers, unreadFormTools } =
+          await options.readSessionContext(sessionId);
         if (controlLease && this.manager.matchesControlLease(sessionId, controlLease)) {
           tokenCache.set(sessionId, tokenCount(messages));
         }
-        return recentContext(messages);
+        return buildGoalEvaluationContext(messages, formAnswers, unreadFormTools);
       },
       getTokenCount: (sessionId) => tokenCache.get(sessionId) ?? 0,
       admitTurn: options.admitTurn,
@@ -189,15 +237,75 @@ export class HostGoalCoordinator {
           this.#settleCurrentExecution(sessionId, turnId),
       },
     });
-    this.tools = Object.freeze(
-      buildGoalTools({
+    if (options.stores.eventWaitStore && options.stores.runtimeEventStore) {
+      this.eventWaitBridge = new HostGoalEventWaitBridge(
+        {
+          stores: {
+            eventWaitStore: options.stores.eventWaitStore,
+            runtimeEventStore: options.stores.runtimeEventStore,
+            agentRunStore: options.stores.agentRunStore,
+          },
+          authority: (sessionId) => this.#authorityBySession.get(sessionId),
+          changed: this.#onProjectionChanged,
+          mutate: (sessionId, operation) => this.#mutateWait(sessionId, operation),
+          settleAdditional: (sessionId, tokensNow, controlLease) =>
+            this.#mutateGoal(async () => {
+              const goal = this.manager.get(sessionId);
+              if (
+                goal?.status === 'active' &&
+                this.manager.matchesControlLease(sessionId, controlLease)
+              )
+                this.manager.settleTurn(sessionId, {
+                  checkpoint: { goalId: goal.id, revision: goal.revision },
+                  verdict: 'continue',
+                  tokensNow,
+                  reason: goal.lastReason ?? 'Explicit event wait remains outstanding.',
+                });
+            }),
+          getTokens: async (sessionId, throughTurnId) => {
+            const { messages } = await options.readSessionContext(sessionId);
+            return tokenCount(messages, throughTurnId);
+          },
+          gate: (sessionId) => this.continuation.gateEventWait(sessionId),
+          canRegister: (sessionId, turnId) =>
+            this.continuation.mutationStanding(sessionId, turnId).kind === 'held',
+          deliver: (pending) => this.continuation.recoverPendingContinuation(pending),
+          pause: (sessionId, reason, controlLease, waitId) =>
+            this.#mutateGoal(async () => {
+              if (
+                !this.manager.matchesControlLease(sessionId, controlLease) ||
+                this.#authorityBySession.get(sessionId)?.record.activeEventWait?.waitId !== waitId
+              )
+                return;
+              this.manager.pause(sessionId, { reason });
+              this.continuation.invalidateSession(sessionId);
+            }),
+          onError: (error) => {
+            this.#persistenceFailure ??= error;
+            this.#requestDrain();
+          },
+          now,
+          newId: this.#newId,
+        },
+        options.eventWaitSources,
+      );
+    }
+    this.tools = Object.freeze([
+      ...buildGoalTools({
         goalManager: this.manager,
         goalContinuation: this.continuation,
         isAvailable: () => !this.#draining,
-        flush: (sessionId) => this.#flushGoalState(sessionId),
+        // These tool implementations execute inside the same lane as joint writes.
+        flush: () => this.#flushGoalPersistence(),
         now,
-      }),
-    );
+      }).map(
+        (tool): MakaTool => ({
+          ...tool,
+          impl: (input, context) => this.#mutateGoal(() => tool.impl(input, context)),
+        }),
+      ),
+      ...(this.eventWaitBridge?.tools ?? []),
+    ]);
   }
 
   async prepareRecovery(): Promise<void> {
@@ -250,11 +358,151 @@ export class HostGoalCoordinator {
         this.continuation.recoverActiveGoal(snapshot.record.goal.sessionId);
       }
     }
+    await this.eventWaitBridge?.start();
   }
 
-  readProjection(sessionId: string): GoalProjection | null {
+  readProjection(sessionId: string): Promise<GoalProjection | null> {
+    // Canonical/query callers hold the Session lane. Do not wait for the
+    // mutation lane here: a committed wait write can have a delayed receipt
+    // while Root admission must still publish and start. #project rechecks the
+    // adopted binding after I/O and excludes durably admitted/suppressed waits.
+    return this.#project(sessionId);
+  }
+
+  async #project(sessionId: string): Promise<GoalProjection | null> {
+    const authority = this.#authorityBySession.get(sessionId);
+    const gate = authority?.record.activeEventWait;
+    const wait =
+      gate && this.#stores.eventWaitStore
+        ? await this.#stores.eventWaitStore.read({ sessionId, waitId: gate.waitId })
+        : undefined;
     const goal = this.manager.get(sessionId);
-    return goal ? projectGoalState(goal) : null;
+    if (!goal) return null;
+    const projection = projectGoalState(goal);
+    const current = this.#authorityBySession.get(sessionId);
+    if (
+      !wait ||
+      !gate ||
+      !current ||
+      current.record.activeEventWait?.waitId !== gate.waitId ||
+      !sameGoalControlLease(current.record.controlLease, wait.record.goalControlLease) ||
+      !this.manager.matchesControlLease(sessionId, wait.record.goalControlLease) ||
+      wait.record.delivery ||
+      wait.record.status === 'cancelled' ||
+      !['active', 'waiting'].includes(goal.status)
+    )
+      return projection;
+    const r = wait.record,
+      observation = r.observation;
+    // Checking is an attempt reservation, not a new source fact. Its retained
+    // checkpoint describes the last completed observation until this read settles.
+    const observationOutcome =
+      observation?.outcome === 'checking' && observation.lastObservedAt !== null
+        ? observation.consecutiveErrors > 0
+          ? 'unknown'
+          : 'pending'
+        : observation?.outcome;
+    return {
+      ...projection,
+      eventWait: {
+        waitId: r.waitId,
+        controlGeneration: r.goalControlLease.generation,
+        waitRevision: wait.authorityRevision,
+        resource: {
+          providerId: r.resource.providerId,
+          resourceType: r.resource.resourceType,
+          resourceId: truncateUtf8(
+            r.resource.resourceId,
+            GOAL_EVENT_WAIT_SUMMARY_LIMITS.resourceIdBytes,
+            '…',
+          ),
+        },
+        reason: gate.reason,
+        deadlineAt: r.deadlineAt,
+        phase: r.status === 'waiting' ? 'observing' : 'awaiting_admission',
+        observation:
+          r.status !== 'waiting'
+            ? null
+            : {
+                state:
+                  observationOutcome === 'unknown'
+                    ? 'unknown'
+                    : observationOutcome === 'pending'
+                      ? 'pending'
+                      : 'checking',
+                lastObservedAt: observation?.lastObservedAt ?? null,
+                reasonCode: observation?.reason
+                  ? truncateUtf8(
+                      observation.reason,
+                      GOAL_EVENT_WAIT_SUMMARY_LIMITS.reasonCodeBytes,
+                      '…',
+                    )
+                  : null,
+              },
+        outcome:
+          r.status === 'resolved'
+            ? r.resolution.outcome
+            : r.status === 'expired'
+              ? 'expired'
+              : null,
+      },
+    };
+  }
+
+  #cancelEventWait(
+    input: GoalEventWaitCancelInput,
+  ): Promise<OperationOutcome<'goal.event-wait.cancel'>> {
+    return this.#sessionAdmission.run(input.sessionId, () =>
+      this.#mutateGoal(async () => {
+        if (this.#draining) return hostDraining();
+        let header;
+        try {
+          header = await this.#stores.sessionStore.readHeaderSnapshot(input.sessionId);
+        } catch (error) {
+          if (isSessionNotFoundError(error)) return notFound('Session does not exist');
+          throw error;
+        }
+        if (header.isArchived) return sessionArchived('Archived Session cannot cancel a wait');
+        const wait = await this.#stores.eventWaitStore?.read({
+          sessionId: input.sessionId,
+          waitId: input.waitId,
+        });
+        const current = this.#authorityBySession.get(input.sessionId)?.record;
+        let outcome: GoalEventWaitCancelResult['outcome'] = 'conflict';
+        if (
+          wait?.record.goalControlLease.goalId === input.goalId &&
+          wait.record.goalControlLease.generation === input.controlGeneration
+        ) {
+          if (wait.record.delivery?.kind === 'admitted') outcome = 'already_admitted';
+          else if (
+            wait.record.status === 'cancelled' ||
+            wait.record.delivery?.kind === 'suppressed'
+          )
+            outcome = 'already_cancelled';
+          else if (
+            current?.activeEventWait?.waitId === input.waitId &&
+            current.goal.id === input.goalId &&
+            current.controlLease.generation === input.controlGeneration &&
+            current.goal.revision === input.expectedGoalRevision
+          ) {
+            this.manager.pause(input.sessionId, {
+              reason: 'Event wait cancelled. The background task keeps running.',
+            });
+            this.continuation.invalidateSession(input.sessionId);
+            await this.#flushGoalPersistence();
+            outcome = 'cancelled';
+          }
+        }
+        return {
+          ok: true,
+          result: {
+            sessionId: input.sessionId,
+            outcome,
+            goal: await this.#project(input.sessionId),
+          },
+        };
+      }),
+    );
   }
 
   beginObservedTurn(sessionId: string, turnId: string): GoalObservedTurnStart {
@@ -383,6 +631,7 @@ export class HostGoalCoordinator {
     if (this.#draining) return;
     this.#draining = true;
     this.#recoveryAbort.abort();
+    this.eventWaitBridge?.beginDrain();
     this.continuation.dispose();
     this.manager.dispose();
     this.#tokenCache.clear();
@@ -394,6 +643,8 @@ export class HostGoalCoordinator {
     this.beginDrain();
     return Promise.all([
       this.continuation.close(),
+      this.eventWaitBridge?.close(),
+      this.#jointLane,
       this.#flushGoalState(),
       ...this.#recoveryWaits,
     ]).then(() => undefined);
@@ -410,7 +661,7 @@ export class HostGoalCoordinator {
       }
       return {
         ok: true,
-        result: { sessionId, goal: this.readProjection(sessionId) },
+        result: { sessionId, goal: await this.readProjection(sessionId) },
       };
     });
   }
@@ -429,101 +680,122 @@ export class HostGoalCoordinator {
    * after it is the first the Goal drives.
    */
   #arm(input: GoalArmInput): Promise<OperationOutcome<'goal.arm'>> {
-    return this.#sessionAdmission.run(input.sessionId, async () => {
-      // Admission is a queue, and the composition begins to drain without
-      // waiting for it to empty. An arm let through before that can still be
-      // waiting behind another operation when the Goal manager is disposed,
-      // and it is the one operation here that would answer by creating state:
-      // the others read a manager that no longer holds anything and say so.
-      if (this.#draining) return hostDraining();
-      let header;
-      try {
-        header = await this.#stores.sessionStore.readHeaderSnapshot(input.sessionId);
-      } catch (error) {
-        if (isSessionNotFoundError(error)) return notFound('Session does not exist');
-        throw error;
-      }
-      if (header.isArchived) {
-        return sessionArchived('Archived Session cannot be given a Goal');
-      }
-      const created = this.manager.create(input.sessionId, input.condition, {
-        armed: true,
-        ...(input.maxIterations === null ? {} : { maxIterations: input.maxIterations }),
-        ...(input.tokenBudget === null ? {} : { tokenBudget: input.tokenBudget }),
-      });
-      if (created.kind === 'unfinished') {
-        return operationConflict(
-          `Session already has an unfinished Goal in status ${created.goal.status}`,
-        );
-      }
-      await this.#flushGoalState(input.sessionId);
-      return {
-        ok: true,
-        result: { sessionId: input.sessionId, goal: projectGoalState(created.goal) },
-      };
-    });
+    return this.#sessionAdmission.run(input.sessionId, () =>
+      this.#mutateGoal(async () => {
+        // Admission is a queue, and the composition begins to drain without
+        // waiting for it to empty. An arm let through before that can still be
+        // waiting behind another operation when the Goal manager is disposed,
+        // and it is the one operation here that would answer by creating state:
+        // the others read a manager that no longer holds anything and say so.
+        if (this.#draining) return hostDraining();
+        let header;
+        try {
+          header = await this.#stores.sessionStore.readHeaderSnapshot(input.sessionId);
+        } catch (error) {
+          if (isSessionNotFoundError(error)) return notFound('Session does not exist');
+          throw error;
+        }
+        if (header.isArchived) {
+          return sessionArchived('Archived Session cannot be given a Goal');
+        }
+        const created = this.manager.create(input.sessionId, input.condition, {
+          armed: true,
+          ...(input.maxIterations === null ? {} : { maxIterations: input.maxIterations }),
+          ...(input.tokenBudget === null ? {} : { tokenBudget: input.tokenBudget }),
+        });
+        if (created.kind === 'unfinished') {
+          return operationConflict(
+            `Session already has an unfinished Goal in status ${created.goal.status}`,
+          );
+        }
+        return {
+          ok: true,
+          result: { sessionId: input.sessionId, goal: projectGoalState(created.goal) },
+        };
+      }),
+    );
   }
 
   #control(input: GoalControlInput): Promise<OperationOutcome<'goal.control'>> {
-    return this.#sessionAdmission.run(input.sessionId, async () => {
-      let header;
-      try {
-        header = await this.#stores.sessionStore.readHeaderSnapshot(input.sessionId);
-      } catch (error) {
-        if (isSessionNotFoundError(error)) return notFound('Session does not exist');
-        throw error;
-      }
-      if (header.isArchived) {
-        return sessionArchived('Archived Session Goal state cannot be controlled');
-      }
-      const current = this.manager.get(input.sessionId);
-      if (!current) return notFound('Session has no Goal in this Host Epoch');
-      if (current.id !== input.goalId || current.revision !== input.expectedRevision) {
-        return operationConflict('Goal generation or revision no longer matches');
-      }
+    return this.#sessionAdmission.run(input.sessionId, () =>
+      this.#mutateGoal(async () => {
+        let header;
+        try {
+          header = await this.#stores.sessionStore.readHeaderSnapshot(input.sessionId);
+        } catch (error) {
+          if (isSessionNotFoundError(error)) return notFound('Session does not exist');
+          throw error;
+        }
+        if (header.isArchived) {
+          return sessionArchived('Archived Session Goal state cannot be controlled');
+        }
+        const current = this.manager.get(input.sessionId);
+        if (!current) return notFound('Session has no Goal in this Host Epoch');
+        if (current.id !== input.goalId || current.revision !== input.expectedRevision) {
+          return operationConflict('Goal generation or revision no longer matches');
+        }
 
-      let changed: GoalState | undefined;
-      if (input.action === 'pause') {
-        changed = this.manager.pause(input.sessionId);
-        if (changed) this.continuation.invalidateSession(input.sessionId);
-      } else if (input.action === 'resume') {
-        changed = this.continuation.resumeFromControl(input.sessionId, {
-          goalId: current.id,
-          revision: current.revision,
-        });
-      } else {
-        changed = this.manager.clear(input.sessionId);
-        if (changed) this.continuation.invalidateSession(input.sessionId);
-      }
-      if (!changed) {
-        return operationConflict(`Goal cannot ${input.action} from status ${current.status}`);
-      }
-      await this.#flushGoalState(input.sessionId);
-      return {
-        ok: true,
-        result: { sessionId: input.sessionId, goal: projectGoalState(changed) },
-      };
-    });
+        let changed: GoalState | undefined;
+        if (input.action === 'pause') {
+          changed = this.manager.pause(input.sessionId);
+          if (changed) this.continuation.invalidateSession(input.sessionId);
+        } else if (input.action === 'resume') {
+          changed = this.continuation.resumeFromControl(input.sessionId, {
+            goalId: current.id,
+            revision: current.revision,
+          });
+        } else {
+          changed = this.manager.clear(input.sessionId);
+          if (changed) this.continuation.invalidateSession(input.sessionId);
+        }
+        if (!changed) {
+          return operationConflict(`Goal cannot ${input.action} from status ${current.status}`);
+        }
+        return {
+          ok: true,
+          result: { sessionId: input.sessionId, goal: projectGoalState(changed) },
+        };
+      }),
+    );
   }
 
   #enqueueGoalState(goal: DurableGoalState, controlLease: DurableGoalControlLease): void {
+    if (this.#jointBusy) {
+      this.#deferredGoalChanges.push([goal, controlLease]);
+      return;
+    }
     const current = this.#authorityBySession.get(goal.sessionId);
     this.#enqueueAuthorityCommit(goal.sessionId, {
       schemaVersion: 1,
       goal,
       controlLease,
+      ...(current?.record.activeEventWait &&
+      sameGoalControlLease(current.record.controlLease, controlLease) &&
+      ['active', 'waiting'].includes(goal.status)
+        ? { activeEventWait: current.record.activeEventWait }
+        : {}),
       currentExecution:
         current?.record.goal.id === goal.id && goal.revision >= current.record.goal.revision
           ? current.record.currentExecution
           : null,
       pendingContinuation:
-        current?.record.goal.id === goal.id && goal.revision === current.record.goal.revision
-          ? current.record.pendingContinuation
+        current?.record.goal.id === goal.id &&
+        sameGoalControlLease(current.record.controlLease, controlLease) &&
+        ['active', 'waiting'].includes(goal.status) &&
+        current.record.pendingContinuation &&
+        (goal.revision === current.record.goal.revision || current.record.activeEventWait)
+          ? {
+              ...current.record.pendingContinuation,
+              checkpoint: { goalId: goal.id, revision: goal.revision },
+            }
           : null,
     });
   }
 
-  async #recordPendingContinuation(pending: GoalPendingContinuation): Promise<void> {
+  async #recordPendingContinuation(
+    pending: GoalPendingContinuation,
+    flush: () => Promise<void> = () => this.#flushGoalState(),
+  ): Promise<void> {
     const sessionId = this.manager.getSessionIdByGoalId(pending.checkpoint.goalId);
     const authority = sessionId ? this.#authorityBySession.get(sessionId) : undefined;
     if (
@@ -539,43 +811,42 @@ export class HostGoalCoordinator {
       currentExecution: null,
       pendingContinuation: pending,
     });
-    await this.#flushGoalState(sessionId!);
+    await flush();
   }
 
-  async #clearPendingContinuation(
-    sessionId: string,
-    controlLease: GoalControlLease,
-  ): Promise<void> {
-    const authority = this.#authorityBySession.get(sessionId);
-    if (
-      !authority ||
-      !sameGoalControlLease(authority.record.controlLease, controlLease) ||
-      !authority.record.pendingContinuation
-    ) {
-      return;
-    }
-    this.#enqueueAuthorityCommit(sessionId, {
-      ...authority.record,
-      pendingContinuation: null,
+  #clearPendingContinuation(sessionId: string, controlLease: GoalControlLease): Promise<void> {
+    return this.#mutateGoal(() => {
+      const authority = this.#authorityBySession.get(sessionId);
+      if (
+        !authority ||
+        !sameGoalControlLease(authority.record.controlLease, controlLease) ||
+        !authority.record.pendingContinuation
+      ) {
+        return;
+      }
+      this.#enqueueAuthorityCommit(sessionId, {
+        ...authority.record,
+        pendingContinuation: null,
+      });
     });
-    await this.#flushGoalState(sessionId);
   }
 
-  async #recordCurrentExecution(current: GoalCurrentExecution): Promise<void> {
-    const authority = this.#authorityBySession.get(current.execution.sessionId);
-    if (
-      !authority ||
-      authority.record.goal.id !== current.checkpoint.goalId ||
-      !sameGoalControlLease(authority.record.controlLease, current.controlLease)
-    ) {
-      throw new Error('Goal execution no longer matches its durable authority');
-    }
-    this.#enqueueAuthorityCommit(current.execution.sessionId, {
-      ...authority.record,
-      currentExecution: current,
-      pendingContinuation: null,
+  #recordCurrentExecution(current: GoalCurrentExecution): Promise<void> {
+    return this.#mutateGoal(() => {
+      const authority = this.#authorityBySession.get(current.execution.sessionId);
+      if (
+        !authority ||
+        authority.record.goal.id !== current.checkpoint.goalId ||
+        !sameGoalControlLease(authority.record.controlLease, current.controlLease)
+      ) {
+        throw new Error('Goal execution no longer matches its durable authority');
+      }
+      this.#enqueueAuthorityCommit(current.execution.sessionId, {
+        ...authority.record,
+        currentExecution: current,
+        pendingContinuation: null,
+      });
     });
-    await this.#flushGoalState(current.execution.sessionId);
   }
 
   async #recoverCurrentExecution(current: GoalCurrentExecution): Promise<void> {
@@ -622,14 +893,17 @@ export class HostGoalCoordinator {
     this.#recoveryWaits.add(tracked);
   }
 
-  async #settleCurrentExecution(sessionId: string, turnId: string): Promise<void> {
-    const authority = this.#authorityBySession.get(sessionId);
-    if (!authority || authority.record.currentExecution?.execution.turnId !== turnId) return;
-    this.#enqueueAuthorityCommit(sessionId, {
-      ...authority.record,
-      currentExecution: null,
+  #settleCurrentExecution(sessionId: string, turnId: string): Promise<void> {
+    return this.#mutateGoal(() => {
+      // A revoked registration can finish while a new wait commit is awaiting acknowledgement.
+      // Read the adopted authority inside the lane before clearing this Turn's ownership.
+      const authority = this.#authorityBySession.get(sessionId);
+      if (!authority || authority.record.currentExecution?.execution.turnId !== turnId) return;
+      this.#enqueueAuthorityCommit(sessionId, {
+        ...authority.record,
+        currentExecution: null,
+      });
     });
-    await this.#flushGoalState(sessionId);
   }
 
   #enqueueAuthorityCommit(sessionId: string, record: GoalAuthorityRecord | null): void {
@@ -718,6 +992,57 @@ export class HostGoalCoordinator {
       .finally(() => residency.release());
   }
 
+  #mutateGoal<T>(operation: () => T | Promise<T>): Promise<T> {
+    const task = this.#jointLane.then(async () => {
+      await this.#flushGoalPersistence();
+      const result = await operation();
+      await this.#flushGoalPersistence();
+      return result;
+    });
+    this.#jointLane = task.catch(() => undefined);
+    return task;
+  }
+
+  #mutateWait(
+    sessionId: string,
+    operation: () => Promise<GoalWaitSnapshot>,
+  ): Promise<GoalWaitSnapshot> {
+    const task = this.#jointLane.then(async () => {
+      this.#jointBusy = true;
+      try {
+        // This task owns the joint lane; only prior ordinary writes can be awaited here.
+        await this.#flushGoalPersistence();
+        const result = await operation();
+        this.#adoptWaitAuthority(result.goal);
+        return result;
+      } finally {
+        this.#jointBusy = false;
+        for (const [goal, lease] of this.#deferredGoalChanges.splice(0))
+          this.#enqueueGoalState(goal, lease);
+      }
+    });
+    this.#jointLane = task.catch(() => undefined);
+    return task;
+  }
+  #adoptWaitAuthority(snapshot: GoalAuthoritySnapshot): void {
+    const current = this.#authorityBySession.get(snapshot.record.goal.sessionId);
+    // Root admission may commit while an idempotent queue operation is returning.
+    if (current && current.authorityRevision > snapshot.authorityRevision) return;
+    this.#authorityBySession.set(snapshot.record.goal.sessionId, snapshot);
+    // A control operation may have changed the live manager while I/O was pending.
+    if (!this.#deferredGoalChanges.some(([g]) => g.sessionId === snapshot.record.goal.sessionId)) {
+      this.manager.adoptAuthority(snapshot.record.goal, snapshot.record.controlLease);
+      this.#syncResidency(snapshot.record.goal, this.#acquireResidency);
+    }
+    this.#onProjectionChanged(snapshot.record.goal.sessionId);
+  }
+  async admitted(input: HostedExecutionObservation): Promise<void> {
+    if (input.descriptor.kind !== 'goal' || !input.descriptor.eventWait) return;
+    const snapshot = await this.#store.read(input.sessionId);
+    if (!snapshot) throw new Error('Admitted event wait lost Goal authority');
+    this.#adoptWaitAuthority(snapshot);
+  }
+
   async #deleteOrphanedAuthority(snapshot: GoalAuthoritySnapshot): Promise<void> {
     const result = await this.#store.commit({
       sessionId: snapshot.record.goal.sessionId,
@@ -732,6 +1057,13 @@ export class HostGoalCoordinator {
   }
 
   async #flushGoalState(_sessionId?: string): Promise<void> {
+    // A control change made during a joint operation is enqueued in its finally block.
+    // Acknowledge it only after that operation and the resulting ordinary write finish.
+    await this.#jointLane;
+    await this.#flushGoalPersistence();
+  }
+
+  async #flushGoalPersistence(): Promise<void> {
     await this.#persistenceLane;
     if (this.#persistenceFailure !== undefined) throw this.#persistenceFailure;
   }
@@ -747,22 +1079,21 @@ export class HostGoalCoordinator {
   }
 }
 
-function recentContext(messages: readonly StoredMessage[]): string {
-  return messages
-    .filter(
-      (message): message is Extract<StoredMessage, { type: 'user' | 'assistant' }> =>
-        message.type === 'user' || message.type === 'assistant',
-    )
-    .slice(-6)
-    .map((message) => {
-      const text = message.type === 'user' ? userFacingText(message) : message.text;
-      return `[${message.type}]: ${truncateGoalText(text, GOAL_REASON_TEXT_LIMIT)}`;
-    })
-    .join('\n');
-}
-
-function tokenCount(messages: readonly StoredMessage[]): number {
-  return messages.reduce((total, message) => {
+function tokenCount(messages: readonly StoredMessage[], throughTurnId?: string): number {
+  // Root admission can release the Session before Goal settlement reads its facts.
+  // Keep later user Turns out of this Turn's baseline, including when the wait
+  // source spans multiple physical Runs through handoff.
+  let end = messages.length;
+  if (throughTurnId !== undefined) {
+    while (end > 0) {
+      const message = messages[end - 1]!;
+      if ('turnId' in message && message.turnId === throughTurnId) break;
+      end--;
+    }
+  }
+  if (throughTurnId !== undefined && end === 0)
+    throw new Error('Completed Goal Turn is missing from token accounting facts');
+  return messages.slice(0, end).reduce((total, message) => {
     if (message.type !== 'token_usage') return total;
     return total + (message.total ?? message.input + message.output);
   }, 0);

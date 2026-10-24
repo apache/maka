@@ -18,17 +18,21 @@
  */
 
 import { useCallback, useLayoutEffect, useMemo, useRef } from 'react';
+import type { ProjectRecord } from '@maka/core/project';
 import type { SessionSummary } from '@maka/core/session';
 import { runtimeHostProfileUsesHostWorkspace } from '@maka/runtime-host/profile-kind';
 import {
   deriveTitlebarProjectName,
   useUiLocale,
   type SessionHistoryGroup,
-  type SessionRailSelection,
 } from '@maka/ui';
+import { runtimeHostProjectKey } from '../../../application/contracts/runtime-host-project-key.js';
 import { useExternalStoreSelector } from '../../../application/contracts/session-catalog/use-external-store-selector.js';
 import { deriveSessionNavigationGroups } from '../model/session-navigation-groups.js';
-import { deriveWorktreeSessionIds } from '../model/session-project-grouping.js';
+import {
+  deriveSessionLocation,
+  deriveWorktreeSessionIds,
+} from '../model/session-project-grouping.js';
 import type { SessionRailProjection } from '../model/session-rail.js';
 import {
   selectRailLayout,
@@ -45,7 +49,6 @@ import {
   createSessionNavigationRowActions,
   type SessionNavigationRowActions,
 } from './session-row-actions.js';
-import { useSessionSelection } from './use-session-selection.js';
 
 export interface UseSessionNavigationControllerInput {
   /**
@@ -62,6 +65,7 @@ export interface SessionNavigationSelectors {
   groups: SessionHistoryGroup[];
   worktreeSessionIds: ReadonlySet<string>;
   sessionProjectName(session: SessionSummary): string | undefined;
+  sessionLocation(session: SessionSummary): string | undefined;
   sessionMeta(session: SessionSummary): string | undefined;
 }
 
@@ -69,7 +73,6 @@ export interface SessionNavigationController {
   layout: SessionRailLayoutState;
   selectors: SessionNavigationSelectors;
   commands: SessionNavigationRowActions;
-  selection: SessionRailSelection;
 }
 
 /**
@@ -101,6 +104,7 @@ export function useSessionNavigationController(
   // be upstream of the rail, where a single ordinary `function` declaration
   // anywhere in the chain silently undoes the whole thing (#4109).
   const portsRef = useRef(ports);
+  const pendingSessionRowActionsRef = useRef(new Set<string>());
   useLayoutEffect(() => {
     portsRef.current = ports;
   });
@@ -109,9 +113,11 @@ export function useSessionNavigationController(
     () =>
       createSessionNavigationRowActions({
         uiLocale: locale,
+        acquireAutomaticQueryBlock: (sessionIds) =>
+          portsRef.current.acquireAutomaticQueryBlock(sessionIds),
         clearSessionRendererState: (sessionId) =>
           portsRef.current.clearSessionRendererState(sessionId),
-        pendingSessionRowActionsRef: portsRef.current.pendingSessionRowActionsRef,
+        pendingSessionRowActionsRef,
         refreshSessions: () => portsRef.current.refreshSessions(),
         service,
         sessionsRef: portsRef.current.sessionsRef,
@@ -146,28 +152,44 @@ export function useSessionNavigationController(
     () => new Map(rail.sessions.map((session) => [session.id, session])),
     [rail.sessions],
   );
-  const projectNameByIdentity = useMemo(() => {
-    const names = new Map<string, string>();
+  const projectByIdentity = useMemo(() => {
+    const projects = new Map<string, ProjectRecord>();
     for (const scope of input.projectScopes) {
-      names.set(`${scope.hostId}\0${scope.project.id}`, scope.project.name);
+      projects.set(runtimeHostProjectKey(scope.hostId, scope.project.id), scope.project);
       for (const alias of scope.project.aliases ?? []) {
-        names.set(`${scope.hostId}\0${alias}`, scope.project.name);
+        projects.set(runtimeHostProjectKey(scope.hostId, alias), scope.project);
       }
     }
-    return names;
+    return projects;
   }, [input.projectScopes]);
   const sessionProjectName = useCallback(
-    (session: SessionSummary): string | undefined =>
-      deriveTitlebarProjectName({
-        projectName:
-          session.projectId && 'runtimeHostId' in session
-            ? projectNameByIdentity.get(
-                `${session.runtimeHostId}\0${session.projectId}`,
-              )
-            : undefined,
+    (session: SessionSummary): string | undefined => {
+      const projected = sessionById.get(session.id);
+      return deriveTitlebarProjectName({
+        projectName: projected?.projectId
+          ? projectByIdentity.get(
+              runtimeHostProjectKey(projected.runtimeHostId, projected.projectId),
+            )?.name
+          : undefined,
         projectPath: session.cwd,
-      }),
-    [projectNameByIdentity],
+      });
+    },
+    [projectByIdentity, sessionById],
+  );
+  const sessionLocation = useCallback(
+    (session: SessionSummary): string | undefined => {
+      const projected = sessionById.get(session.id);
+      if (!projected || runtimeHostProfileUsesHostWorkspace(projected.profileKind)) {
+        return undefined;
+      }
+      const project = projected.projectId
+        ? projectByIdentity.get(
+            runtimeHostProjectKey(projected.runtimeHostId, projected.projectId),
+          )
+        : undefined;
+      return deriveSessionLocation(projected, project);
+    },
+    [projectByIdentity, sessionById],
   );
   const sessionMeta = useCallback(
     (session: SessionSummary): string | undefined => {
@@ -180,18 +202,9 @@ export function useSessionNavigationController(
   );
 
   const selectors = useMemo<SessionNavigationSelectors>(
-    () => ({ groups, worktreeSessionIds, sessionProjectName, sessionMeta }),
-    [groups, sessionMeta, sessionProjectName, worktreeSessionIds],
+    () => ({ groups, worktreeSessionIds, sessionProjectName, sessionLocation, sessionMeta }),
+    [groups, sessionLocation, sessionMeta, sessionProjectName, worktreeSessionIds],
   );
 
-  const selection = useSessionSelection({
-    sessions: rail.sessions,
-    commands,
-    activeId: rail.activeRowId,
-  });
-
-  return useMemo(
-    () => ({ layout, selectors, commands, selection }),
-    [commands, layout, selection, selectors],
-  );
+  return useMemo(() => ({ layout, selectors, commands }), [commands, layout, selectors]);
 }

@@ -18,12 +18,13 @@
  */
 
 import type { WorkbarTogglePosition } from '@maka/core/settings';
-import type { WorkbarHostModel } from './workbar-host';
 import { Icon } from '@astryxdesign/core/Icon';
 import { Tooltip } from '@astryxdesign/core/Tooltip';
 import { IconButton, useUiLocale } from '@maka/ui';
 import { PanelRightClose, PanelRightOpen } from '@maka/ui/icons';
 import { getShellCopy } from '../../../locales/shell-copy';
+import type { WorkbarHostModel } from './workbar-host';
+import { useWorkbarHostModel } from './workbar-provider.js';
 
 /** The same control in the titlebar when collapsed and the panel when open. */
 export function WorkbarToggle(props: {
@@ -54,12 +55,17 @@ export function WorkbarToggle(props: {
 }
 
 /** Titlebar restore affordance shown only while the Workbar is collapsed. */
-export function WorkbarTitlebarActions(props: {
+export function WorkbarTitlebarActions(props: { togglePosition: WorkbarTogglePosition }) {
+  return <WorkbarTitlebarActionsView {...props} model={useWorkbarHostModel()} />;
+}
+
+/** Environment-free view seam for Storybook, which supplies its own model. */
+export function WorkbarTitlebarActionsView({ model, ...props }: {
   model: Pick<WorkbarHostModel, 'activeId' | 'hidden' | 'rightCollapsed' | 'onToggleRightPanel'>;
   togglePosition: WorkbarTogglePosition;
 }) {
   const copy = getShellCopy(useUiLocale()).chrome;
-  if (props.togglePosition !== 'titlebar' || props.model.hidden || !props.model.activeId || !props.model.rightCollapsed) return null;
+  if (props.togglePosition !== 'titlebar' || model.hidden || !model.activeId || !model.rightCollapsed) return null;
 
   return (
     <div
@@ -67,7 +73,7 @@ export function WorkbarTitlebarActions(props: {
       role="toolbar"
       aria-label={copy.workspaceActions}
     >
-      <WorkbarToggle collapsed onToggle={props.model.onToggleRightPanel} />
+      <WorkbarToggle collapsed onToggle={model.onToggleRightPanel} />
     </div>
   );
 }

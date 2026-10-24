@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
+import { type UiCatalog, type UiLocale, defineShippedUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 import type { ExternalSessionLimit } from '@maka/core/external-session';
 
 /**
@@ -30,6 +30,7 @@ import type { ExternalSessionLimit } from '@maka/core/external-session';
  */
 type ExternalSessionImportCopy = {
   sourceLabel: string;
+  conversationsLabel: string;
   /** Display names by adapter id. An id with no entry falls back to the id
    *  itself, which is legible enough to ship and obvious enough to fix. */
   sourceNames: Readonly<Record<string, string>>;
@@ -117,9 +118,7 @@ type ExternalSessionImportCopy = {
   bundleUnreadable: string;
   bundleFailed: string;
 };
-
-const COPY = {
-  'zh-CN': {
+const copyZhCn: ExternalSessionImportCopy = {
     modeLabel: '导入或导出',
     modeImport: '导入任务',
     modeExport: '导出任务',
@@ -144,6 +143,7 @@ const COPY = {
     bundleUnreadable: '文件无法读取，或它来自这个版本不认识的 Maka。',
     bundleFailed: '操作失败。',
     sourceLabel: '来源',
+    conversationsLabel: '对话',
     sourceNames: { codex: 'Codex', 'claude-code': 'Claude Code', opencode: 'OpenCode', 'maka-bundle': 'Maka 会话文件' },
     includeArchived: '包含已归档的对话',
     searchLabel: '搜索',
@@ -200,8 +200,8 @@ const COPY = {
     batchNothingImported: '没有对话被导入。',
     importOutcomeUnknownDescription: (names) =>
       `以下对话的导入结果无法确认：${names.map((name) => `「${name}」`).join('、')}。可以先在任务列表中查找，也可以再次导入；再次导入会创建独立任务。`,
-  },
-  'zh-TW': {
+  };
+const copyZhTw: ExternalSessionImportCopy = {
     modeLabel: '匯入或匯出',
     modeImport: '匯入任務',
     modeExport: '匯出任務',
@@ -226,6 +226,7 @@ const COPY = {
     bundleUnreadable: '檔案無法讀取，或它來自這個版本不認識的 Maka。',
     bundleFailed: '操作失敗。',
     sourceLabel: '來源',
+    conversationsLabel: '對話',
     sourceNames: { codex: 'Codex', 'claude-code': 'Claude Code', opencode: 'OpenCode', 'maka-bundle': 'Maka 工作階段檔案' },
     includeArchived: '包含已歸檔的對話',
     searchLabel: '搜尋',
@@ -282,8 +283,8 @@ const COPY = {
     batchNothingImported: '沒有匯入任何對話。',
     importOutcomeUnknownDescription: (names) =>
       `以下對話的匯入結果無法確認：${names.map((name) => `「${name}」`).join('、')}。可以先在任務列表中查詢，也可以再次匯入；再次匯入會建立獨立任務。`,
-  },
-  en: {
+  };
+const copyEn: ExternalSessionImportCopy = {
     modeLabel: 'Import or export',
     modeImport: 'Import tasks',
     modeExport: 'Export tasks',
@@ -310,6 +311,7 @@ const COPY = {
     bundleUnreadable: 'The file could not be read, or it came from a Maka this build does not know.',
     bundleFailed: 'That did not work.',
     sourceLabel: 'Source',
+    conversationsLabel: 'Conversations',
     sourceNames: { codex: 'Codex', 'claude-code': 'Claude Code', opencode: 'OpenCode', 'maka-bundle': 'Maka session file' },
     includeArchived: 'Include archived conversations',
     searchLabel: 'Search',
@@ -368,8 +370,9 @@ const COPY = {
     batchNothingImported: 'No conversation was imported.',
     importOutcomeUnknownDescription: (names) =>
       `Maka could not confirm the outcome of these imports: ${names.map((name) => `“${name}”`).join(', ')}. Check the task list or import again; importing again creates an independent task.`,
-  },
-} satisfies UiCatalog<ExternalSessionImportCopy>;
+  };
+
+const COPY = resolveUiMessageCatalog(defineShippedUiMessageCatalog<ExternalSessionImportCopy>()({ 'zh-CN': copyZhCn, 'zh-TW': copyZhTw, en: copyEn })) satisfies UiCatalog<ExternalSessionImportCopy>;
 
 export function getExternalSessionImportCopy(locale: UiLocale): ExternalSessionImportCopy {
   return COPY[locale];

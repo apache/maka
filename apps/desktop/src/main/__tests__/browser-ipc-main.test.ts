@@ -18,6 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
+import { createBrowserSelectionCoordinator } from '../../preload/browser-selection.js';
 import { EventEmitter } from 'node:events';
 import { registerHooks } from 'node:module';
 import test from 'node:test';
@@ -88,12 +89,18 @@ test('browser IPC isolates owned renderer documents and their native parents', a
   class FakeWindow extends EventEmitter {
     visible = true;
     minimized = false;
+    contentView: Electron.View | undefined;
     isVisible(): boolean { return this.visible; }
     isMinimized(): boolean { return this.minimized; }
     isDestroyed(): boolean { return false; }
   }
   const windows = new Map<unknown, FakeWindow>();
-  const BrowserWindow = { fromWebContents: (contents: unknown) => windows.get(contents) ?? null };
+  const BrowserWindow = {
+    fromWebContents: (contents: FakeRenderer) => {
+      if (contents.isDestroyed()) throw new TypeError('Object has been destroyed');
+      return windows.get(contents) ?? null;
+    },
+  };
   const testGlobal = globalThis as typeof globalThis & {
     __makaBrowserIpcMain?: typeof ipcMain;
     __makaBrowserWindow?: typeof BrowserWindow;
@@ -115,13 +122,13 @@ test('browser IPC isolates owned renderer documents and their native parents', a
     const workHub = new FakeRenderer('workhub-document-frame', 1.25);
     const mainWindow = new FakeWindow();
     const floatingWindow = new FakeWindow();
+    const mainParent = { getVisible: () => true } as unknown as Electron.View;
+    mainWindow.contentView = mainParent;
     windows.set(main, mainWindow);
     windows.set(workHub, mainWindow);
     let workHubVisible = true;
-    const mainParent = { getVisible: () => true } as unknown as Electron.View;
     const workHubParent = { getVisible: () => workHubVisible } as unknown as Electron.View;
     const owned = new Map<Electron.WebContents, Electron.View>([
-      [main as unknown as Electron.WebContents, mainParent],
       [workHub as unknown as Electron.WebContents, workHubParent],
     ]);
     let hostActive = true;
@@ -152,14 +159,18 @@ test('browser IPC isolates owned renderer documents and their native parents', a
       },
     };
     const mainWindowController = {
-      getBrowserViews: () => manager,
+      getBrowserViews: (resolve: typeof parentResolver) => {
+        parentResolver = resolve;
+        return manager;
+      },
       isMainRenderer: (contents: Electron.WebContents) => contents === main as unknown as Electron.WebContents,
-      ownsRenderer: (contents: Electron.WebContents) => !contents.isDestroyed() && owned.has(contents),
-      browserParentForRenderer: (contents: Electron.WebContents) => owned.get(contents),
-      setBrowserViewParentResolver: (resolve: typeof parentResolver) => { parentResolver = resolve; },
     };
     const browserIpc = registerBrowserIpc({
       mainWindowController: mainWindowController as never,
+      auxiliaryWindowRegistry: {
+        rendererParent: (contents: Electron.WebContents) =>
+          !contents.isDestroyed() ? owned.get(contents) : undefined,
+      },
       isHostActive: (candidate) => hostActive && candidate.hostId === scope.hostId && candidate.targetEpoch === scope.targetEpoch,
     });
 
@@ -210,27 +221,28 @@ test('browser IPC isolates owned renderer documents and their native parents', a
     assert.deepEqual(mainController.navigations, ['https://main.example/']);
     assert.deepEqual(workHubController.navigations, ['https://workhub.example/']);
 
-    // An ordinary session remains foreground-only even in an auxiliary renderer.
-    // Hiding also revokes a read already waiting on the page.
+    // An ordinary selected Session can operate with its browser hidden.
+    // Hiding does not revoke a read already waiting on the page.
     setBridgeFactoryForTest(() => ({
       connect: async () => ({ getCurrentUrl: async () => 'https://workhub.example/' }) as never,
       close: async () => undefined,
       send: async () => undefined,
       waitForEvent: async () => undefined,
     }));
+    let finishReadOrdinary!: () => void;
     let reading!: () => void;
     const started = new Promise<void>((resolve) => { reading = resolve; });
     const pendingRead = withBrowserPage(workHubKey, 'snapshot', async () => {
       reading();
-      return new Promise<never>(() => {});
+      return new Promise<void>((resolve) => { finishReadOrdinary = resolve; });
     });
-    const revoked = assert.rejects(pendingRead, BrowserActionRevokedError);
     await started;
     workHubVisible = false;
     browserIpc.refreshVisibility();
-    await revoked;
+    finishReadOrdinary();
+    await pendingRead;
     for (const kind of ['observe', 'navigate', 'mutate'] as const) {
-      assert.equal(await browserViewHost().canDrive(workHubKey, kind), false);
+      assert.equal(await browserViewHost().canDrive(workHubKey, kind), true);
     }
     assert.equal(await browserViewHost().canDrive(mainKey, 'observe'), true);
     workHubVisible = true;
@@ -238,14 +250,14 @@ test('browser IPC isolates owned renderer documents and their native parents', a
     // Reparenting follows the current native window, not the initial dock.
     windows.set(workHub, floatingWindow);
     floatingWindow.visible = false;
-    assert.equal(await browserViewHost().canDrive(workHubKey, 'navigate'), false);
+    assert.equal(await browserViewHost().canDrive(workHubKey, 'navigate'), true);
     floatingWindow.visible = true;
     floatingWindow.minimized = true;
-    assert.equal(await browserViewHost().canDrive(workHubKey, 'observe'), false);
+    assert.equal(await browserViewHost().canDrive(workHubKey, 'observe'), true);
     floatingWindow.minimized = false;
     assert.equal(await browserViewHost().canDrive(workHubKey, 'navigate'), true);
 
-    // The reserved coordination identity alone gets background access, still
+    // Background access still requires a selected Session and is
     // fenced by Host epoch, live selection, and renderer lifetime.
     const coordinationKey = desktopSessionResourceKey({ ...scope, sessionId: WORKHUB_COORDINATION_SESSION_ID });
     workHubVisible = false;
@@ -345,6 +357,43 @@ test('browser IPC isolates owned renderer documents and their native parents', a
     assert.equal(coordinationController.disposed, true, 'destroying the owner releases its page even while Main presents it');
     assert.equal(controllers.get(mainKey), mainController, 'destroying WorkHub preserves the main browser session');
     assert.equal(mainController.disposed, false);
+
+    // Closing Main destroys its WebContents before selection cleanup runs.
+    // Electron rejects fromWebContents on that destroyed native object.
+    emit('browser:active-session', main, scope, 'main-session', 'main-document', 6);
+    emit('browser:setViewport', main, scope, { sessionId: 'main-session', rect: mainRect }, 'main-document', 6);
+    emit('browser:setViewport', main, scope, { sessionId: 'main-session', rect: null }, 'main-document', 6);
+    assert.equal(mainController.viewports.at(-1), null);
+    assert.equal(await browserViewHost().canDrive(mainKey, 'mutate'), true);
+    const hiddenLease = browserViewHost().beginAction(mainKey);
+    assert.ok(hiddenLease, 'collapsed ordinary browser gets a background rendering lease');
+    await hiddenLease.ready;
+    await hiddenLease.release();
+    assert.equal(mainController.viewports.at(-1), null, 'automation does not open the panel');
+    // Exercise preload + IPC together: an unresolved replacement must not
+    // leave the old hidden Session authorized.
+    let resolveNext!: (value: { scope: typeof scope; sessionId: string }) => void;
+    const next = new Promise<{ scope: typeof scope; sessionId: string }>((resolve) => { resolveNext = resolve; });
+    const selection = createBrowserSelectionCoordinator(() => next, {
+      show: (doc, generation, session) => emit('browser:active-session', main, session.scope, session.sessionId, doc, generation + 10),
+      hide: (doc, generation) => emit('browser:hide-active-session', main, doc, generation + 10),
+      capturePage: async () => undefined,
+      setViewport: () => {},
+    }, 'main-document');
+    selection.setActiveSession('replacement');
+    for (const kind of ['observe', 'navigate', 'mutate'] as const)
+      assert.equal(await browserViewHost().canDrive(mainKey, kind), false);
+    let clicked = false;
+    await assert.rejects(withBrowserPage(mainKey, 'click', async () => { clicked = true; }));
+    assert.equal(clicked, false);
+    resolveNext({ scope, sessionId: 'replacement' });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(await browserViewHost().canDrive(mainKey, 'observe'), false);
+    assert.doesNotThrow(() => main.destroy());
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(mainController.disposed, true, 'closing Main still releases its owned browser page');
+    assert.equal(await browserViewHost().canDrive(mainKey, 'observe'), false);
+    assert.equal(mainWindow.listenerCount('close'), 0, 'renderer teardown removes window listeners');
   } finally {
     hooks.deregister();
     setBridgeFactoryForTest(null);

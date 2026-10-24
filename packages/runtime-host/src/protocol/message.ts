@@ -17,16 +17,17 @@
  * under the License.
  */
 
+import { decodeTurnOrigin, type TurnOrigin } from '@maka/core/turn-origin';
 import { invalidProtocolFrame } from './errors.js';
 import {
   assertExactKeys,
   requireCount,
+  requireEncodedByteLimit,
   requireEntityId,
   requireExactRecord,
   requireId,
   requireRecord,
   requireShapedRecord,
-  requireUtf8String,
 } from './codec.js';
 import { defineOperation } from './operation-spec.js';
 import {
@@ -36,16 +37,30 @@ import {
   decodeTurnOrchestration,
   decodeTurnSnapshot,
   type MessageContent,
-  TURN_MESSAGE_TEXT_MAX_BYTES,
   type TurnSnapshot,
 } from './turn.js';
 import { decodeSkillInvocationResult } from '@maka/core/skill-invocation';
 import type { SkillInvocationResult } from '@maka/core/skill-invocation';
 import type { TurnOrchestration } from '@maka/core/runtime-inputs';
+import {
+  MESSAGE_OPERATION_RESULT_MAX_BYTES,
+  MESSAGE_QUEUE_MAX_ENTRIES,
+  MESSAGE_QUEUE_PROJECTION_MAX_BYTES,
+} from './message-queue-limits.js';
+import { QUEUE_MUTATION_OPERATION_SPECS } from './queue-mutation.js';
 
-export const MESSAGE_QUEUE_MAX_ENTRIES = 64;
-export const MESSAGE_QUEUE_PROJECTION_MAX_BYTES = 52 * 1024;
-export const MESSAGE_OPERATION_RESULT_MAX_BYTES = 56 * 1024;
+export {
+  MESSAGE_OPERATION_RESULT_MAX_BYTES,
+  MESSAGE_QUEUE_MAX_ENTRIES,
+  MESSAGE_QUEUE_PROJECTION_MAX_BYTES,
+} from './message-queue-limits.js';
+export type {
+  QueueEntriesReorderInput,
+  QueueEntryPromoteInput,
+  QueueEntryRetractInput,
+  QueueEntryUpdateInput,
+  QueueMutationResult,
+} from './queue-mutation.js';
 
 export type MessagePlacement = 'current_turn' | 'next_turn';
 
@@ -91,6 +106,8 @@ export interface SessionMessageQueueProjection {
  * decides that such a Message can only open its own Turn.
  */
 export interface TurnMessageSubmitInput {
+  /** Connector transport provenance, never evidence that the sender is the human owner. */
+  readonly externalSource?: Extract<TurnOrigin, { kind: 'external_connector' }>;
   readonly originHostEpoch: string;
   readonly sessionId: string;
   readonly messageId: string;
@@ -110,6 +127,7 @@ export type TurnMessageSubmitResult = {
     }
   | { readonly disposition: 'turn_started'; readonly turnId: string }
   | { readonly disposition: 'blocked' }
+  | { readonly disposition: 'inbox' }
 );
 
 export interface TurnMessageQueryInput {
@@ -137,6 +155,7 @@ export interface TurnMessageExecutionQueryResult {
 
 export type TurnMessageExecutionResolution =
   | { readonly messageId: string; readonly state: 'pending' }
+  | { readonly messageId: string; readonly state: 'inbox' }
   | { readonly messageId: string; readonly state: 'cancelled' }
   | { readonly messageId: string; readonly state: 'not_admitted' }
   | {
@@ -155,40 +174,6 @@ export interface QueueRetractInput {
 export interface QueueRetractResult {
   readonly queueRevision: number;
   readonly retracted: readonly RetractedMessageSnapshot[];
-}
-
-export interface QueueEntryRetractInput {
-  readonly originHostEpoch: string;
-  readonly sessionId: string;
-  readonly entryId: string;
-  readonly retractId: string;
-}
-
-export interface QueueMutationResult {
-  readonly queueRevision: number;
-}
-
-export interface QueueEntryPromoteInput {
-  readonly originHostEpoch: string;
-  readonly sessionId: string;
-  readonly entryId: string;
-  readonly promoteId: string;
-}
-
-export interface QueueEntryUpdateInput {
-  readonly originHostEpoch: string;
-  readonly sessionId: string;
-  readonly entryId: string;
-  readonly updateId: string;
-  readonly expectedQueueRevision: number;
-  readonly text: string;
-}
-
-export interface QueueEntriesReorderInput {
-  readonly originHostEpoch: string;
-  readonly sessionId: string;
-  readonly reorderId: string;
-  readonly entryIds: readonly string[];
 }
 
 export interface TurnInterruptInput {
@@ -246,34 +231,7 @@ export const MESSAGE_OPERATION_SPECS = {
     decodeInput: decodeQueueRetractInput,
     decodeOutput: decodeQueueRetractResult,
   }),
-  'queue.entry.retract': defineOperation({
-    mode: 'command',
-    availability: 'ready',
-    errors: MESSAGE_OPERATION_ERRORS,
-    decodeInput: decodeQueueEntryRetractInput,
-    decodeOutput: decodeQueueMutationResult,
-  }),
-  'queue.entry.promote': defineOperation({
-    mode: 'command',
-    availability: 'ready',
-    errors: MESSAGE_OPERATION_ERRORS,
-    decodeInput: decodeQueueEntryPromoteInput,
-    decodeOutput: decodeQueueMutationResult,
-  }),
-  'queue.entry.update': defineOperation({
-    mode: 'command',
-    availability: 'ready',
-    errors: MESSAGE_OPERATION_ERRORS,
-    decodeInput: decodeQueueEntryUpdateInput,
-    decodeOutput: decodeQueueMutationResult,
-  }),
-  'queue.entries.reorder': defineOperation({
-    mode: 'command',
-    availability: 'ready',
-    errors: MESSAGE_OPERATION_ERRORS,
-    decodeInput: decodeQueueEntriesReorderInput,
-    decodeOutput: decodeQueueMutationResult,
-  }),
+  ...QUEUE_MUTATION_OPERATION_SPECS,
   'turn.interrupt': defineOperation({
     mode: 'control',
     availability: 'ready',
@@ -315,8 +273,12 @@ function decodeTurnMessageSubmitInput(value: unknown): TurnMessageSubmitInput {
     value,
     'turn.message.submit input',
     ['originHostEpoch', 'sessionId', 'messageId', 'content', 'placement'],
-    ['skillIds', 'turnOrchestration'],
+    ['skillIds', 'turnOrchestration', 'externalSource'],
   );
+  const externalSource =
+    record.externalSource === undefined ? undefined : decodeTurnOrigin(record.externalSource);
+  if (record.externalSource !== undefined && externalSource?.kind !== 'external_connector')
+    throw invalidProtocolFrame('Invalid external connector source');
   const skillIds = decodeSkillIds(record.skillIds);
   const placement = requireMessagePlacement(record.placement);
   const turnOrchestration =
@@ -333,6 +295,7 @@ function decodeTurnMessageSubmitInput(value: unknown): TurnMessageSubmitInput {
     sessionId: requireEntityId(record.sessionId, 'sessionId'),
     messageId: requireEntityId(record.messageId, 'messageId'),
     content: decodeMessageAdmissionContent(record.content, skillIds.length > 0),
+    ...(externalSource?.kind === 'external_connector' ? { externalSource } : {}),
     placement,
     ...(skillIds.length > 0 ? { skillIds } : {}),
     ...(turnOrchestration !== undefined ? { turnOrchestration } : {}),
@@ -382,6 +345,13 @@ function decodeTurnMessageExecutionQueryResult(value: unknown): TurnMessageExecu
   }
   const resolutions = record.resolutions.map((value): TurnMessageExecutionResolution => {
     const resolution = requireRecord(value, 'turn.message.execution.query resolution');
+    if (resolution.state === 'inbox') {
+      assertExactKeys(resolution, 'turn.message.execution.query inbox resolution', [
+        'messageId',
+        'state',
+      ]);
+      return { messageId: requireEntityId(resolution.messageId, 'messageId'), state: 'inbox' };
+    }
     if (resolution.state === 'pending') {
       assertExactKeys(resolution, 'turn.message.execution.query pending resolution', [
         'messageId',
@@ -436,6 +406,13 @@ function decodeTurnMessageExecutionQueryResult(value: unknown): TurnMessageExecu
 
 function decodeTurnMessageSubmitResult(value: unknown): TurnMessageSubmitResult {
   const record = requireRecord(value, 'turn.message.submit result');
+  if (record.disposition === 'inbox') {
+    assertExactKeys(record, 'turn.message.submit inbox result', ['disposition', 'skillInvocation']);
+    return {
+      disposition: 'inbox',
+      skillInvocation: decodeSubmitSkillInvocation(record.skillInvocation),
+    };
+  }
   if (record.disposition === 'turn_started') {
     assertExactKeys(record, 'turn.message.submit turn_started result', [
       'disposition',
@@ -506,83 +483,6 @@ function decodeQueueRetractResult(value: unknown): QueueRetractResult {
   };
   requireEncodedByteLimit(result, 'queue.retract result', MESSAGE_OPERATION_RESULT_MAX_BYTES);
   return result;
-}
-
-function decodeQueueEntryRetractInput(value: unknown): QueueEntryRetractInput {
-  const record = requireExactRecord(value, 'queue.entry.retract input', [
-    'originHostEpoch',
-    'sessionId',
-    'entryId',
-    'retractId',
-  ]);
-  return {
-    originHostEpoch: requireId(record.originHostEpoch, 'originHostEpoch'),
-    sessionId: requireEntityId(record.sessionId, 'sessionId'),
-    entryId: requireEntityId(record.entryId, 'entryId'),
-    retractId: requireEntityId(record.retractId, 'retractId'),
-  };
-}
-
-function decodeQueueMutationResult(value: unknown): QueueMutationResult {
-  const record = requireExactRecord(value, 'queue mutation result', ['queueRevision']);
-  return { queueRevision: requireCount(record.queueRevision, 'queueRevision') };
-}
-
-function decodeQueueEntryPromoteInput(value: unknown): QueueEntryPromoteInput {
-  const record = requireExactRecord(value, 'queue.entry.promote input', [
-    'originHostEpoch',
-    'sessionId',
-    'entryId',
-    'promoteId',
-  ]);
-  return {
-    originHostEpoch: requireId(record.originHostEpoch, 'originHostEpoch'),
-    sessionId: requireEntityId(record.sessionId, 'sessionId'),
-    entryId: requireEntityId(record.entryId, 'entryId'),
-    promoteId: requireEntityId(record.promoteId, 'promoteId'),
-  };
-}
-
-function decodeQueueEntryUpdateInput(value: unknown): QueueEntryUpdateInput {
-  const record = requireExactRecord(value, 'queue.entry.update input', [
-    'originHostEpoch',
-    'sessionId',
-    'entryId',
-    'updateId',
-    'expectedQueueRevision',
-    'text',
-  ]);
-  const text = requireUtf8String(record.text, 'Message text', TURN_MESSAGE_TEXT_MAX_BYTES);
-  if (text.trim().length === 0) throw invalidProtocolFrame('Invalid Message text');
-  return {
-    originHostEpoch: requireId(record.originHostEpoch, 'originHostEpoch'),
-    sessionId: requireEntityId(record.sessionId, 'sessionId'),
-    entryId: requireEntityId(record.entryId, 'entryId'),
-    updateId: requireEntityId(record.updateId, 'updateId'),
-    expectedQueueRevision: requireCount(record.expectedQueueRevision, 'expectedQueueRevision'),
-    text,
-  };
-}
-
-function decodeQueueEntriesReorderInput(value: unknown): QueueEntriesReorderInput {
-  const record = requireExactRecord(value, 'queue.entries.reorder input', [
-    'originHostEpoch',
-    'sessionId',
-    'reorderId',
-    'entryIds',
-  ]);
-  const entryIds = requireBoundedArray(record.entryIds, 'reorder entry identities').map((entryId) =>
-    requireEntityId(entryId, 'entryId'),
-  );
-  if (new Set(entryIds).size !== entryIds.length) {
-    throw invalidProtocolFrame('Invalid reorder entry identities');
-  }
-  return {
-    originHostEpoch: requireId(record.originHostEpoch, 'originHostEpoch'),
-    sessionId: requireEntityId(record.sessionId, 'sessionId'),
-    reorderId: requireEntityId(record.reorderId, 'reorderId'),
-    entryIds,
-  };
 }
 
 function decodeTurnInterruptInput(value: unknown): TurnInterruptInput {
@@ -698,17 +598,5 @@ function assertUniqueQueueEntries(
     }
     entryIds.add(entry.entryId);
     messageIds.add(entry.messageId);
-  }
-}
-
-function requireEncodedByteLimit(value: unknown, label: string, maxBytes: number): void {
-  let encoded: string | undefined;
-  try {
-    encoded = JSON.stringify(value);
-  } catch {
-    throw invalidProtocolFrame(`Invalid ${label}`);
-  }
-  if (encoded === undefined || Buffer.byteLength(encoded, 'utf8') > maxBytes) {
-    throw invalidProtocolFrame(`Invalid ${label}`);
   }
 }

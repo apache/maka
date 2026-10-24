@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import type { EventWaitAuthorityRepository } from './event-wait-authority.js';
 import type { AgentGraphScheduleControlStore } from '@maka/core/agent-graph-schedule';
 import type { AgentGraphEpochStore } from '@maka/core/agent-graph-epoch';
 import type { AgentGraphSupervisorWakeStore } from '@maka/core/agent-graph-supervisor-wake';
@@ -29,6 +30,8 @@ import type {
 } from './execution-stores.js';
 import type { InteractionStoreWriter } from './interaction-store.js';
 import type { GoalAuthorityRepository } from './goal-authority.js';
+import type { SessionSnapshotStatePreparer } from './quiescent-session-snapshot.js';
+import type { StorageRootLease } from './root-authority.js';
 
 /** Graph and Session creation/retirement share one transaction authority. */
 export interface ExecutionGraphStore
@@ -51,11 +54,16 @@ export interface ExecutionGraphStore
  * in authenticated, lease-scoped capabilities.
  */
 export interface ExecutionPersistence {
+  /** Optional selected-backend capability. Absence never falls back to Local. */
+  createSnapshotStatePreparer?(
+    lease: StorageRootLease<'interactive', 'write'>,
+  ): SessionSnapshotStatePreparer;
   readonly sessionStore: ExecutionSessionWriter;
   readonly agentRunStore: ExecutionAgentRunWriter;
   readonly runtimeEventStore: ExecutionRuntimeEventWriter;
   readonly interactionStore: InteractionStoreWriter & { close(): void };
   readonly graphControlStore: ExecutionGraphStore;
+  readonly eventWaitStore: EventWaitAuthorityRepository;
   readonly goalStore: GoalAuthorityRepository;
   purgeConversationOperationalState(sessionId: string): Promise<void>;
   /** Closes every owned handle; idempotent, including after a partial open. */
@@ -89,6 +97,7 @@ export const EXECUTION_GRAPH_METHODS = [
   'claimAgentGraphSupervisorWake',
   'beginAgentGraphSupervisorWakeAttempt',
   'completeAgentGraphSupervisorWakeAttempt',
+  'exhaustAgentGraphSupervisorWake',
   'supersedeAgentGraphSupervisorWakes',
   'readAgentGraphSupervisorWake',
   'listAgentGraphSupervisorWakeAttempts',

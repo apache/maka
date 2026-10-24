@@ -21,7 +21,88 @@
 
 ## Unreleased
 
-## 0.2.0 - Unreleased
+## 0.2.2 - Unreleased
+
+### Added
+
+- A personal assistant with indexed memory, durable tasks and an inbox bot for coordinating work (#6004, #6124), and durable observation of event waits (#6113).
+- Import Cursor sessions through their SQLite history adapter (#6039).
+- Let Goals resume from durable event waits, including background ShellRun completion, and add condition waits plus web and IM access for the personal assistant (#6147, #6156, #6193, #6206).
+- Interact with running CLI Sessions, inspect their recaps and retain the selected model across commands (#6133, #6169, #6170).
+- Configured external agents in the model picker, alongside unified model and effort options (#6103, #5789).
+- Automatic rendering and archiving of chat images, and clearer project, task and execution-location controls (#5969, #6088).
+
+### Fixed
+
+- Preserve cached replies, new Side Chat sessions and question forms across session switches (#6129, #6111, #5854).
+- Recover failed message delivery and workspace Skill deletion, retain client tool outcomes, and release settled external executions whose results were rejected (#5058, #6009, #5458, #5823).
+- Render imported Codex user context without raw envelopes, scope WorkHub tool lookups to the owning turn, and include tool and human evidence in Goal context (#6117, #6096, #6087).
+- Keep fullscreen editing usable on short terminals, mask fine-grained GitHub tokens, and align connection URL validation with the Host (#6085, #6062, #6098).
+- Restore image attachments in Codex imports and preserve running tool state when reconnecting (#6118, #6145).
+- Invalidate deleted Artifact previews, allow new projects without a custom name, and keep conversations centered with classic scrollbars (#5394, #6073, #6102).
+- Resolve linked-worktree read boundaries through the common Git directory, and initialize vacuum mode when databases are created concurrently (#6105, #6136).
+- Preserve Windows browser launcher paths and SSH operator arguments, and validate project roots for the target platform (#6121, #6123, #6122).
+- Source patches no longer include the unchanged QuickJS WebAssembly binary; installation reuses it from the pinned npm dependency. Source verification also rejects Base64-encoded WASM.
+- Correct stale source-license component and dependency references, preserve the cursor files' upstream MIT scope, and identify the historical 0.2.0 RC1 in DISCLAIMER-WIP.
+- Update the standalone CLI's bundled Node runtime and refresh shipped dependencies for published security advisories (#6229, #6236).
+
+### Changed
+
+- Use one Composer model selector for native models and external agents, with shared search and thinking controls (#6158).
+- Bound transcript work on session switches and Read line-index memory; allow providers to own reasoning defaults (#5712, #5461, #6092).
+- Use dedicated directories for projectless tasks and preserve distinct titles for branched sessions (#5966, #4994).
+- Improve Computer Use cursor positioning and visibility; recover interrupted macOS notarization and validation requests and native Windows PTY exit codes (#5051, #5052, #6125, #6101, #6097, #6094).
+- Guard packaged dependency contents with a reviewed ledger and document the Linux support baseline (#5455, #6099).
+
+### Upgrade notes
+
+- CLI scripts that parse structured errors must pass `--json`: errors then appear only on stdout, without a duplicate on stderr. Without `--json`, failed `maka run` results print a brief error only on stderr. Use the exit code to detect failure (#6171).
+- Update Desktop, CLI and remote Runtime Hosts together. The Runtime Host compatibility epoch is 228 (217 in 0.2.1); mismatched peers cannot connect.
+- MCP and OAuth endpoints that redirect to a different origin must be configured with their final URL. The updated MCP SDK restricts cross-origin redirects (#6229).
+- Back up configuration and workspace data before upgrading if rollback is needed. This release adds durable assistant and event-wait state; older releases must not reuse data written by a newer Host without a verified downgrade path.
+- This release continues the TypeScript Runtime Host and Electron desktop. The Rust Host and GPUI desktop remain on the separate `rust-preview` development branch.
+
+## 0.2.1 - Unreleased
+
+### Added
+
+- WorkHub can inspect existing conversations, receive delegated task results automatically, and route remote channel conversations through the shared coordinator (#5886, #5595, #6051). Jev-assisted routing is opt-in (#5562).
+- Host storage usage and per-task sizes, archived-task cleanup by age and project, and opt-in archived-task retention (#5832, #5896, #5902, #5961).
+- Agent Graph output previews, session visit navigation with horizontal swipes, clickable terminal links, and a selectable Git comparison branch that persists per Session (#4751, #5688, #5033, #5120).
+- Resume interrupted or manually stopped turns from the Desktop composer, and opt-in next-prompt suggestions (#5206, #5904, #5629).
+- Connect the user's signed-in Chrome through opencli-mcp, and check local preview prerequisites before starting a preview (#5638, #5254).
+- Antigravity ACP plugin execution and restored sessions after restart; ACP operations for Goal, Plan, Artifact and Memory (#5224, #5670, #5734, #5685).
+- Filter usage by model call kind, replay DeepSeek hosted web-search responses, and include selected text in Computer Use snapshot observations (#5709, #5824, #5050).
+
+### Fixed
+
+- Enforce configured sender lists consistently across messaging platforms and preserve stored credentials when settings round-trip masked values (#6074).
+- Keep the composer context gauge from showing stale pre-compaction usage. The gauge returns to its localized Usage label until the provider measures a request after the compaction boundary (#5548).
+- Preserve interrupted tool settlement, session recovery and provider context handling across retries and restarts (#5610, #5621, #5587).
+- Report browser toolbar action failures and distinguish empty Git comparisons from review errors (#5955, #5967).
+- Desktop Edit & resend now keeps a selected message's quotes. Messages that carry attachments still cannot be edited (#5274).
+- Record aborted or usage-less auxiliary model calls as usage-unknown rather than zero (#5890).
+- Stop pipe-mode shell commands when their Runtime Host dies, instead of leaving them running without an owner (#5986).
+- Keep native Anthropic prompt caching effective across steps and turns by placing the cache breakpoint on replayed history (#6041).
+- Update shipped dependencies to clear published advisories in brace-expansion, fast-uri and axios (#5906).
+
+### Changed
+
+- Custom connections now use one provider type with a default API protocol and per-model overrides. Legacy connections migrate while retaining identifiers, credentials and model overrides (#5684).
+- TUI queue and retract shortcuts use Tab and Shift+Left in place of Alt chords (#5910).
+- Manual archiving now refuses a task while a WorkHub delegation or a live linked child task still points at it, instead of hiding it from WorkHub (#5957).
+- Reduced idle and streaming renderer work, paused transcript reads while the shell is covered, and bounded Host framing and storage queries (#5608, #6014, #5356, #5514).
+- Reclaim unused context-offload SQLite pages during Host maintenance; new runtime databases support incremental vacuum (#5855, #6044).
+- Removed the provider-dropping context note because differing upstream token counts could trigger it without evidence of dropped history. Historical sessions containing it still open (#5672).
+
+### Upgrade notes
+
+- Update Desktop, CLI and remote Runtime Hosts together. The Runtime Host compatibility epoch is 217 (176 in the 0.2.0 source release); mismatched peers cannot connect.
+- Back up configuration and workspace data before upgrading if rollback is needed. Custom connection catalogs migrate to schema v3, and new session records include fields older builds cannot decode; 0.2.0 cannot safely reuse data written by 0.2.1.
+- Review every messaging platform's sender list before enabling its channel. A nonempty list now admits only its listed platform user IDs, including WorkHub routing; an empty list retains unrestricted sender access (#6074).
+- Archived-task retention remains opt-in. Enabling it allows permanent deletion of eligible archived tasks; leave it disabled to retain them.
+
+## 0.2.0 - 2026-10-08
 
 ### Added
 

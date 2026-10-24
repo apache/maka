@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { ModelInfo, ProviderType } from '@maka/core/llm-connections';
+import type { ModelApiProtocol, ModelInfo, ProviderType } from '@maka/core/llm-connections';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { ConnectionOnboardingTarget } from '@maka/core/runtime-policy';
 import type {
@@ -63,6 +63,7 @@ export type ConnectionIdentity = {
 
 export interface OnboardableProvider {
   providerType: ProviderType;
+  defaultApiProtocol?: ModelApiProtocol;
   label: string;
   requiresBaseUrl: boolean;
   setupMethod: 'api_key' | 'oauth';

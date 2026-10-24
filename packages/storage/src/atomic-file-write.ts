@@ -47,6 +47,10 @@ export interface AtomicFileWriteOptions {
   /** Effective mode to apply to the temporary file before it is synchronized
    * and published. */
   fileMode: number;
+  /** Validate a caller-owned precondition after preparing the temp file, just
+   * before publication. This is not an atomic compare-and-swap against other
+   * processes; a rejection leaves the target untouched and removes the temp. */
+  beforePublish?: () => Promise<void>;
 }
 
 /** The fs surface `writeAtomicFile` needs; injectable for fault-injection
@@ -107,6 +111,7 @@ export async function writeAtomicFile(
       await handle.close().catch(() => {});
       throw error;
     }
+    await options.beforePublish?.();
     await rename(tempPath, path);
     published = true;
     tempCreated = false;

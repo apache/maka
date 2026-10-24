@@ -18,18 +18,19 @@
  */
 
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
+import { test, type TestContext } from 'node:test';
 import { MCP_CONFIG_VERSION, type McpConfigFile, type McpServerStatus } from '@maka/core/mcp';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createMcpConfigStore, McpServerExistsError } from '@maka/storage/mcp-config-store';
-import { createMcpExclusiveLane, registerMcpIpcMain } from '../mcp-ipc-main.js';
+import { createMcpConfigStore, McpServerExistsError, type McpConfigStore } from '@maka/storage/mcp-config-store';
+import { createMcpExclusiveLane, registerMcpIpcMain, type McpIpcMainDeps } from '../mcp-ipc-main.js';
 
 test('MCP IPC commits config before publishing capabilities and emitting status', async () => {
   const handlers = new Map<string, (...args: any[]) => Promise<any>>();
   let config: McpConfigFile = { version: MCP_CONFIG_VERSION, mcpServers: {} };
   const calls: string[] = [];
+  let activeLogin = false;
   const connected: McpServerStatus = {
     serverId: 'fixture', state: 'connected', transport: 'stdio', toolCount: 1,
     tools: [{ serverId: 'fixture', name: 'echo', inputSchema: { type: 'object' } }], updatedAt: 1,
@@ -53,16 +54,16 @@ test('MCP IPC commits config before publishing capabilities and emitting status'
         config = { version: MCP_CONFIG_VERSION, mcpServers };
         return config;
       },
+      subscribeChanges: () => () => {},
     },
     manager: {
-      cancelConnect: () => { calls.push('cancel'); return true; },
       forgetServerCredentials: async () => { calls.push('forget'); },
       sync: async () => { calls.push('sync'); },
       statuses: () => [connected],
       test: async () => ({ ok: true, status: connected, latencyMs: 1 }),
     },
     oauth: {
-      isActive: () => false,
+      isActive: () => activeLogin,
       cancelLogin: () => false,
       login: async () => connected,
       logout: async () => connected,
@@ -74,10 +75,10 @@ test('MCP IPC commits config before publishing capabilities and emitting status'
     emitChanged: () => { calls.push('emit'); },
   });
 
-  const upsert = handlers.get('mcp:upsert');
-  assert.ok(upsert);
-  const result = await upsert({}, 'fixture', { command: 'node' });
-  assert.deepEqual(result.mcpServers.fixture, { command: 'node' });
+  const add = handlers.get('mcp:add');
+  assert.ok(add);
+  const result = await add({}, 'fixture', { command: 'node' });
+  assert.deepEqual(result.config.mcpServers.fixture, { command: 'node', enabled: true });
   assert.deepEqual(calls, ['store', 'sync', 'emit', 'publish']);
 
   calls.length = 0;
@@ -89,7 +90,7 @@ test('MCP IPC commits config before publishing capabilities and emitting status'
   );
   assert.equal(imported.status, 'imported');
   assert.deepEqual(imported.config.mcpServers, {
-    fixture: { command: 'node' },
+    fixture: { command: 'node', enabled: true },
     remote: { url: 'https://example.com/mcp', enabled: false, transport: 'auto' },
   });
   assert.deepEqual(calls, ['store', 'sync', 'emit', 'publish']);
@@ -105,11 +106,9 @@ test('MCP IPC commits config before publishing capabilities and emitting status'
   assert.deepEqual(calls, []);
 
   calls.length = 0;
-  const add = handlers.get('mcp:add');
-  assert.ok(add);
   const added = await add({}, 'brave', { command: 'npx' });
   assert.equal(added.status, 'added');
-  assert.deepEqual(added.config.mcpServers.brave, { command: 'npx' });
+  assert.deepEqual(added.config.mcpServers.brave, { command: 'npx', enabled: true });
   assert.deepEqual(calls, ['store', 'sync', 'emit', 'publish']);
   // A taken id comes back as data, not an IPC error. The check runs against
   // the locked transaction snapshot, but reaches neither credential cleanup
@@ -124,13 +123,13 @@ test('MCP IPC commits config before publishing capabilities and emitting status'
   assert.equal((await testHandler({}, 'fixture')).ok, true);
   assert.deepEqual(calls, ['ready', 'emit']);
 
-  calls.length = 0;
-  config = { version: MCP_CONFIG_VERSION, mcpServers: { fixture: { command: 'node' } } };
-  const cancelInstall = handlers.get('mcp:cancelInstall');
-  assert.ok(cancelInstall);
-  const cancelled = await cancelInstall({}, 'fixture');
-  assert.equal(cancelled.mcpServers.fixture, undefined);
-  assert.deepEqual(calls, ['cancel', 'store', 'forget', 'sync', 'emit', 'publish']);
+  activeLogin = true;
+  assert.equal((await handlers.get('mcp:listStatuses')!({}))[0].authorizationPending, true);
+  assert.equal(connected.authorizationPending, undefined);
+  activeLogin = false;
+  assert.equal((await handlers.get('mcp:listStatuses')!({}))[0].authorizationPending, undefined);
+
+
 });
 
 test('MCP remove aborts before touching the config when credential deletion fails', async () => {
@@ -155,9 +154,9 @@ test('MCP remove aborts before touching the config when credential deletion fail
         config = { version: MCP_CONFIG_VERSION, mcpServers };
         return config;
       },
+      subscribeChanges: () => () => {},
     },
     manager: {
-      cancelConnect: () => false,
       forgetServerCredentials: async () => { throw new Error('credential store unavailable'); },
       sync: async () => {},
       statuses: () => [],
@@ -221,9 +220,9 @@ test('MCP IPC redacts clientSecret toward the renderer and restores the sentinel
         config = { version: MCP_CONFIG_VERSION, mcpServers };
         return config;
       },
+      subscribeChanges: () => () => {},
     },
     manager: {
-      cancelConnect: () => false,
       forgetServerCredentials: async () => {},
       sync: async (next) => { synced.push(next); },
       statuses: () => [],
@@ -255,18 +254,17 @@ test('MCP IPC redacts clientSecret toward the renderer and restores the sentinel
 
   // The renderer round-trips the masked arg unchanged; the store gets the
   // real token back from disk.
-  const upsertScratch = handlers.get('mcp:upsert');
-  assert.ok(upsertScratch);
-  await upsertScratch({}, 'scratch', { ...seenScratch, enabled: false });
+  const update = handlers.get('mcp:update');
+  assert.ok(update);
+  assert.equal((await update({}, 'scratch', { ...seenScratch, enabled: false }, seenScratch)).status, 'updated');
   const storedScratch = config.mcpServers.scratch;
   assert.ok(storedScratch && 'command' in storedScratch);
   assert.deepEqual(storedScratch.args, ['server', '--custom=sk-ant-api03-abcdef123456']);
 
   // The renderer edits the redacted config and sends the sentinel back:
   // the store must get the real secret, the renderer only the sentinel.
-  const upsert = handlers.get('mcp:upsert');
-  assert.ok(upsert);
-  const returned = await upsert({}, 'notion', { ...notion, transport: 'sse' });
+  const editing = (await getConfig({})).mcpServers.notion;
+  const { config: returned } = await update({}, 'notion', { ...editing, transport: 'sse' }, editing);
   const stored = config.mcpServers.notion;
   assert.ok(stored && 'url' in stored);
   assert.equal(stored.oauth?.clientSecret, 'real-secret');
@@ -277,7 +275,7 @@ test('MCP IPC redacts clientSecret toward the renderer and restores the sentinel
   assert.ok(echoed && 'url' in echoed);
   assert.notEqual(echoed.oauth?.clientSecret, 'real-secret');
 
-  // Removing or cancelling an unrelated server also returns a full config
+  // Removing an unrelated server also returns a full config
   // crossing toward the renderer — the survivors' secrets stay sentinels.
   const remove = handlers.get('mcp:remove');
   assert.ok(remove);
@@ -287,97 +285,7 @@ test('MCP IPC redacts clientSecret toward the renderer and restores the sentinel
   assert.ok(survivorAfterRemove.oauth?.clientSecret);
   assert.notEqual(survivorAfterRemove.oauth?.clientSecret, 'real-secret');
 
-  config = {
-    version: MCP_CONFIG_VERSION,
-    mcpServers: { ...config.mcpServers, doomed: { command: 'npx' } },
-  };
-  const cancelInstall = handlers.get('mcp:cancelInstall');
-  assert.ok(cancelInstall);
-  const afterCancel = await cancelInstall({}, 'doomed');
-  assert.equal(afterCancel.mcpServers.doomed, undefined);
-  const survivorAfterCancel = afterCancel.mcpServers.notion;
-  assert.ok(survivorAfterCancel && 'url' in survivorAfterCancel);
-  assert.ok(survivorAfterCancel.oauth?.clientSecret);
-  assert.notEqual(survivorAfterCancel.oauth?.clientSecret, 'real-secret');
-});
 
-test('MCP market cancellation waits for an in-flight config write before rolling it back', async () => {
-  const handlers = new Map<string, (...args: any[]) => Promise<any>>();
-  let config: McpConfigFile = { version: MCP_CONFIG_VERSION, mcpServers: {} };
-  let releaseWrite!: () => void;
-  let markWriteStarted!: () => void;
-  const writeGate = new Promise<void>((resolve) => { releaseWrite = resolve; });
-  const writeStarted = new Promise<void>((resolve) => { markWriteStarted = resolve; });
-  const calls: string[] = [];
-
-  registerMcpIpcMain({
-    ipcMain: { handle(channel, handler) { handlers.set(channel, handler as (...args: any[]) => Promise<any>); } },
-    store: {
-      get: async () => config,
-      transform: async (apply) => {
-        calls.push('transaction:start');
-        markWriteStarted();
-        await writeGate;
-        const next = await apply(config);
-        calls.push('write');
-        config = next;
-        calls.push('transaction:end');
-        return config;
-      },
-      upsert: async (serverId, server) => {
-        config = { version: MCP_CONFIG_VERSION, mcpServers: { ...config.mcpServers, [serverId]: server } };
-        return config;
-      },
-      remove: async (serverId) => {
-        calls.push('remove');
-        const { [serverId]: _removed, ...mcpServers } = config.mcpServers;
-        config = { version: MCP_CONFIG_VERSION, mcpServers };
-        return config;
-      },
-    },
-    manager: {
-      cancelConnect: () => { calls.push('cancel'); return true; },
-      forgetServerCredentials: async () => { calls.push('forget'); },
-      sync: async () => { calls.push('sync'); },
-      statuses: () => [],
-      test: async () => { throw new Error('not used'); },
-    },
-    oauth: {
-      isActive: () => false,
-      cancelLogin: () => false,
-      login: async () => { throw new Error('not used'); },
-      logout: async () => { throw new Error('not used'); },
-      resumeLogin: async () => undefined,
-    },
-    ensureReady: async () => {},
-    publishCapabilities: async () => { calls.push('publish'); },
-    onPublicationError: () => { calls.push('publication:error'); },
-    emitChanged: () => { calls.push('emit'); },
-  });
-
-  const install = handlers.get('mcp:install');
-  const cancelInstall = handlers.get('mcp:cancelInstall');
-  assert.ok(install);
-  assert.ok(cancelInstall);
-
-  // The fake store skips normalizeMcpConfig, so the install config is given
-  // in its normal form — the real-store variant below covers the
-  // normalization mismatch.
-  const installing = install({}, 'fixture', { enabled: true, command: 'node' });
-  await writeStarted;
-  const cancelling = cancelInstall({}, 'fixture');
-  releaseWrite();
-
-  const [, cancelled] = await Promise.all([installing, cancelling]);
-  assert.equal(cancelled.mcpServers.fixture, undefined);
-  assert.equal(config.mcpServers.fixture, undefined);
-  // The cancellation's own removal is a full transaction on the same lane:
-  // credentials retire first, then the conditional write.
-  assert.deepEqual(calls, [
-    'transaction:start', 'cancel', 'write', 'transaction:end',
-    'transaction:start', 'forget', 'write', 'transaction:end',
-    'sync', 'emit', 'publish',
-  ]);
 });
 
 test('an active login on a secret-bearing server does not veto edits to another server', async () => {
@@ -399,9 +307,9 @@ test('an active login on a secret-bearing server does not veto edits to another 
       transform: async (apply) => { config = await apply(config); return config; },
       upsert: async (_serverId, _server) => config,
       remove: async () => config,
+      subscribeChanges: () => () => {},
     },
     manager: {
-      cancelConnect: () => false,
       forgetServerCredentials: async () => {},
       sync: async () => {},
       statuses: () => [],
@@ -463,9 +371,9 @@ test('a URL change retires the old endpoint credentials before the write, and an
       },
       upsert: async (_serverId, _server) => config,
       remove: async () => config,
+      subscribeChanges: () => () => {},
     },
     manager: {
-      cancelConnect: () => false,
       forgetServerCredentials: async () => {
         calls.push('forget');
         if (eraseFails) throw new Error('credential store unavailable');
@@ -487,12 +395,13 @@ test('a URL change retires the old endpoint credentials before the write, and an
     emitChanged: () => {},
   });
 
-  const upsert = handlers.get('mcp:upsert');
-  assert.ok(upsert);
+  const update = handlers.get('mcp:update');
+  assert.ok(update);
+  const basis = (await handlers.get('mcp:getConfig')!({})).mcpServers.remote;
   // Erase fails → nothing persists: the old endpoint's credentials cannot
   // outlive a committed repoint across a restart.
   await assert.rejects(
-    upsert({}, 'remote', { url: 'https://new.example.com/mcp' }),
+    update({}, 'remote', { url: 'https://new.example.com/mcp' }, basis),
     /credential store unavailable/u,
   );
   assert.deepEqual(calls, ['transaction:start', 'forget']);
@@ -504,84 +413,20 @@ test('a URL change retires the old endpoint credentials before the write, and an
   // invalid replacement must not log the user out when it cannot be saved.
   calls.length = 0;
   await assert.rejects(
-    upsert({}, 'remote', { url: 'http://public.example.com/mcp' }),
+    update({}, 'remote', { url: 'http://public.example.com/mcp' }, basis),
     /must use https/u,
   );
   assert.deepEqual(calls, ['transaction:start']);
 
   // Same repoint with a healthy credential store: erase strictly precedes
-  // the write. An unchanged-URL upsert afterwards does not erase at all.
+  // the write. An unchanged-URL update afterwards does not erase at all.
   eraseFails = false;
   calls.length = 0;
-  await upsert({}, 'remote', { url: 'https://new.example.com/mcp' });
+  const repointed = await update({}, 'remote', { url: 'https://new.example.com/mcp' }, basis);
   assert.deepEqual(calls, ['transaction:start', 'forget', 'write', 'sync']);
   calls.length = 0;
-  await upsert({}, 'remote', { url: 'https://new.example.com/mcp', enabled: false });
+  await update({}, 'remote', { url: 'https://new.example.com/mcp', enabled: false }, repointed.config.mcpServers.remote);
   assert.deepEqual(calls, ['transaction:start', 'write', 'sync']);
-});
-
-test('cancelling an install rolls back only its own write, never a newer same-id config', async () => {
-  const handlers = new Map<string, (...args: any[]) => Promise<any>>();
-  let config: McpConfigFile = { version: MCP_CONFIG_VERSION, mcpServers: {} };
-  let releaseInstallSync!: () => void;
-  const installSyncGate = new Promise<void>((resolve) => { releaseInstallSync = resolve; });
-  let syncs = 0;
-  registerMcpIpcMain({
-    ipcMain: { handle(channel, handler) { handlers.set(channel, handler as (...args: any[]) => Promise<any>); } },
-    store: {
-      get: async () => config,
-      transform: async (apply) => { config = await apply(config); return config; },
-      upsert: async (_serverId, _server) => config,
-      remove: async () => config,
-    },
-    manager: {
-      cancelConnect: () => { releaseInstallSync(); return true; },
-      forgetServerCredentials: async () => {},
-      sync: async () => {
-        syncs += 1;
-        // Only the install's connect parks; later syncs pass through.
-        if (syncs === 1) await installSyncGate;
-      },
-      statuses: () => [],
-      test: async () => { throw new Error('not used'); },
-    },
-    oauth: {
-      isActive: () => false,
-      cancelLogin: () => false,
-      login: async () => { throw new Error('not used'); },
-      logout: async () => { throw new Error('not used'); },
-      resumeLogin: async () => undefined,
-    },
-    ensureReady: async () => {},
-    publishCapabilities: async () => {},
-    onPublicationError: () => {},
-    emitChanged: () => {},
-  });
-
-  const install = handlers.get('mcp:install');
-  const upsert = handlers.get('mcp:upsert');
-  const cancelInstall = handlers.get('mcp:cancelInstall');
-  assert.ok(install);
-  assert.ok(upsert);
-  assert.ok(cancelInstall);
-
-  // The install commits A and parks in its connect; a newer same-id config
-  // B lands through upsert while it waits.
-  const installing = install({}, 'x', { command: 'installed-a' });
-  await new Promise((resolve) => setImmediate(resolve));
-  await upsert({}, 'x', { command: 'newer-b' });
-
-  const cancelled = await cancelInstall({}, 'x');
-  await installing;
-
-  // The cancellation found B where it committed A: it must decline the
-  // rollback instead of deleting the newer server (and its credentials).
-  const survivor = config.mcpServers.x;
-  assert.ok(survivor && 'command' in survivor);
-  assert.equal(survivor.command, 'newer-b');
-  const echoed = cancelled.mcpServers.x;
-  assert.ok(echoed && 'command' in echoed);
-  assert.equal(echoed.command, 'newer-b');
 });
 
 test('a login claim travels the shared lane and cannot land inside an open transaction', async () => {
@@ -608,9 +453,9 @@ test('a login claim travels the shared lane and cannot land inside an open trans
       },
       upsert: async (_serverId, _server) => config,
       remove: async () => config,
+      subscribeChanges: () => () => {},
     },
     manager: {
-      cancelConnect: () => false,
       forgetServerCredentials: async () => {},
       sync: async () => {},
       statuses: () => [],
@@ -630,10 +475,11 @@ test('a login claim travels the shared lane and cannot land inside an open trans
     emitChanged: () => {},
   });
 
-  const upsert = handlers.get('mcp:upsert');
-  assert.ok(upsert);
+  const update = handlers.get('mcp:update');
+  assert.ok(update);
+  const basis = config.mcpServers.x;
   // A config transaction is mid-flight (its write is parked)…
-  const updating = upsert({}, 'x', { url: 'https://new.example.com/mcp' });
+  const updating = update({}, 'x', { url: 'https://new.example.com/mcp' }, basis);
   await writeStarted;
   // …when a login claim arrives through the SAME lane, the way the OAuth
   // controller claims. It must queue behind the transaction, not interleave
@@ -653,66 +499,9 @@ test('a login claim travels the shared lane and cannot land inside an open trans
 
   // With the claim landed, the next transaction's in-lane gate refuses.
   await assert.rejects(
-    upsert({}, 'x', { url: 'https://third.example.com/mcp' }),
+    update({}, 'x', { url: 'https://third.example.com/mcp' }, basis),
     /login in progress/u,
   );
-});
-
-test('cancelling an install through the REAL store rolls the entry back despite normalization', async () => {
-  // The fake stores in this file skip normalizeMcpConfig; the real store
-  // rebuilds each server (key order, defaulted enabled/transport, WHATWG
-  // URL) on write. The cancellation's identity check must compare in that
-  // normal form, or it mismatches its own persisted entry and silently
-  // keeps the cancelled server installed.
-  const root = await mkdtemp(join(tmpdir(), 'mcp-ipc-real-'));
-  try {
-    const store = createMcpConfigStore(root);
-    const handlers = new Map<string, (...args: any[]) => Promise<any>>();
-    let releaseInstallSync!: () => void;
-    const installSyncGate = new Promise<void>((resolve) => { releaseInstallSync = resolve; });
-    let syncs = 0;
-    registerMcpIpcMain({
-      ipcMain: { handle(channel, handler) { handlers.set(channel, handler as (...args: any[]) => Promise<any>); } },
-      store,
-      manager: {
-        cancelConnect: () => { releaseInstallSync(); return true; },
-        forgetServerCredentials: async () => {},
-        sync: async () => {
-          syncs += 1;
-          if (syncs === 1) await installSyncGate;
-        },
-        statuses: () => [],
-        test: async () => { throw new Error('not used'); },
-      },
-      oauth: {
-        isActive: () => false,
-        cancelLogin: () => false,
-        login: async () => { throw new Error('not used'); },
-        logout: async () => { throw new Error('not used'); },
-        resumeLogin: async () => undefined,
-      },
-      ensureReady: async () => {},
-      publishCapabilities: async () => {},
-      onPublicationError: () => {},
-      emitChanged: () => {},
-    });
-
-    const install = handlers.get('mcp:install');
-    const cancelInstall = handlers.get('mcp:cancelInstall');
-    assert.ok(install);
-    assert.ok(cancelInstall);
-
-    // No `enabled`, no `transport`: the store materializes both on write.
-    const installing = install({}, 'market', { url: 'https://mcp.vercel.com' });
-    await new Promise((resolve) => setImmediate(resolve));
-    const cancelled = await cancelInstall({}, 'market');
-    await installing;
-
-    assert.equal(cancelled.mcpServers.market, undefined);
-    assert.equal((await store.get()).mcpServers.market, undefined);
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
 });
 
 test('the config commit applies its mutation to the transaction snapshot', async () => {
@@ -736,9 +525,9 @@ test('the config commit applies its mutation to the transaction snapshot', async
       },
       upsert: async (_serverId, _server) => config,
       remove: async () => config,
+      subscribeChanges: () => () => {},
     },
     manager: {
-      cancelConnect: () => false,
       forgetServerCredentials: async () => {},
       sync: async () => {},
       statuses: () => [],
@@ -757,9 +546,9 @@ test('the config commit applies its mutation to the transaction snapshot', async
     emitChanged: () => {},
   });
 
-  const upsert = handlers.get('mcp:upsert');
-  assert.ok(upsert);
-  const next = await upsert({}, 'fixture', { command: 'node' });
+  const add = handlers.get('mcp:add');
+  assert.ok(add);
+  const { config: next } = await add({}, 'fixture', { command: 'node' });
   assert.equal(wrote, true);
   assert.ok(next.mcpServers.intruder);
   assert.ok(next.mcpServers.fixture);
@@ -786,9 +575,9 @@ test('MCP config commit is not rolled back by a capability publication failure',
         return config;
       },
       remove: async () => config,
+      subscribeChanges: () => () => {},
     },
     manager: {
-      cancelConnect: () => false,
       forgetServerCredentials: async () => {},
       sync: async () => {},
       statuses: () => [],
@@ -809,12 +598,151 @@ test('MCP config commit is not rolled back by a capability publication failure',
     emitChanged() {},
   });
 
-  const upsert = handlers.get('mcp:upsert');
-  assert.ok(upsert);
-  const committed = await upsert({}, 'fixture', { command: 'node' });
-  assert.deepEqual(committed.mcpServers.fixture, { command: 'node' });
+  const add = handlers.get('mcp:add');
+  assert.ok(add);
+  const { config: committed } = await add({}, 'fixture', { command: 'node' });
+  assert.deepEqual(committed.mcpServers.fixture, { command: 'node', enabled: true });
   await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(publicationErrors.map((error) => (error as Error).message), [
     'Host disconnected',
   ]);
 });
+
+test('an edit from an older copy writes nothing, and a toggle keeps a change made elsewhere', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'mcp-ipc-stale-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const store = createMcpConfigStore(root);
+  const tui = createMcpConfigStore(root);
+  await store.upsert('remote', { url: 'https://a.example.com/mcp' });
+  const { handlers } = registerWithStore(t, store);
+  const basis = (await handlers.get('mcp:getConfig')!({})).mcpServers.remote;
+
+  await tui.upsert('remote', { url: 'https://b.example.com/mcp' });
+  assert.deepEqual(
+    await handlers.get('mcp:update')!({}, 'remote', { url: 'https://c.example.com/mcp' }, basis),
+    { status: 'stale' },
+  );
+  assert.equal(((await store.get()).mcpServers.remote as { url: string }).url, 'https://b.example.com/mcp');
+
+  const toggled = await handlers.get('mcp:setEnabled')!({}, 'remote', false);
+  assert.equal(toggled.status, 'updated');
+  assert.deepEqual((await store.get()).mcpServers.remote, { url: 'https://b.example.com/mcp', enabled: false, transport: 'auto' });
+
+  await tui.remove('remote');
+  assert.deepEqual(await handlers.get('mcp:setEnabled')!({}, 'remote', true), { status: 'stale' });
+  assert.deepEqual(await handlers.get('mcp:update')!({}, 'remote', { url: 'https://c.example.com/mcp' }, basis), { status: 'stale' });
+  assert.deepEqual((await store.get()).mcpServers, {});
+});
+
+test('a change another process makes to mcp.json reaches the manager until unregistered', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'mcp-ipc-follow-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const store = createMcpConfigStore(root);
+  await store.get();
+  // Written after this process last read the file but before it follows it.
+  await createMcpConfigStore(root).upsert('before', { command: 'node' });
+  const desktop = registerWithStore(t, store);
+  await waitUntil(() => desktop.synced.some((config) => 'before' in config.mcpServers));
+
+  await createMcpConfigStore(root).upsert('tui-added', { command: 'node' });
+  await waitUntil(() => desktop.synced.some((config) => 'tui-added' in config.mcpServers));
+  await waitUntil(() => desktop.emitted > 0);
+
+  desktop.stop();
+  const seen = desktop.synced.length;
+  await createMcpConfigStore(root).remove('tui-added');
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  assert.equal(desktop.synced.length, seen);
+});
+
+test('following never leaves the manager on a copy older than the last one read', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'mcp-ipc-follow-order-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const store = createMcpConfigStore(root);
+  let notify!: (error?: Error) => void;
+  t.mock.method(store, 'subscribeChanges', (listener: (error?: Error) => void) => {
+    notify = listener;
+    return () => {};
+  });
+  let finishSlowRead!: () => void;
+  const reads = [
+    new Promise<McpConfigFile>((resolve) => {
+      finishSlowRead = () => resolve({ version: MCP_CONFIG_VERSION, mcpServers: { older: { command: 'node' } } });
+    }),
+    Promise.resolve<McpConfigFile>({ version: MCP_CONFIG_VERSION, mcpServers: { newer: { command: 'node' } } }),
+  ];
+  t.mock.method(store, 'get', () => reads.shift()!);
+  const desktop = registerWithStore(t, store);
+
+  notify();
+  notify();
+  await new Promise((resolve) => setImmediate(resolve));
+  finishSlowRead();
+  await waitUntil(() => desktop.synced.length === 2);
+  assert.deepEqual(desktop.synced.map((config) => Object.keys(config.mcpServers)), [['older'], ['newer']]);
+});
+
+test('following another process never holds a login claim behind a slow connect', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'mcp-ipc-follow-lane-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const store = createMcpConfigStore(root);
+  await store.get();
+  const lane = createMcpExclusiveLane();
+  let connecting!: () => void;
+  let syncing = false;
+  registerWithStore(t, store, {
+    exclusiveLane: lane,
+    manager: {
+      forgetServerCredentials: async () => {},
+      sync: () => {
+        syncing = true;
+        return new Promise<void>((resolve) => { connecting = resolve; });
+      },
+      statuses: () => [],
+      test: async () => { throw new Error('not used'); },
+    },
+  });
+  await waitUntil(() => syncing);
+  const claim = lane(async () => 'claimed');
+  const outcome = await Promise.race([claim, new Promise((resolve) => setTimeout(resolve, 500, 'blocked'))]);
+  connecting();
+  assert.equal(outcome, 'claimed');
+});
+
+function registerWithStore(t: TestContext, store: McpConfigStore, overrides: Partial<McpIpcMainDeps> = {}) {
+  const handlers = new Map<string, (...args: any[]) => Promise<any>>();
+  const synced: McpConfigFile[] = [];
+  let emitted = 0;
+  const stop = registerMcpIpcMain({
+    ipcMain: { handle(channel, handler) { handlers.set(channel, handler as (...args: any[]) => Promise<any>); } },
+    store,
+    manager: {
+      forgetServerCredentials: async () => {},
+      sync: async (next) => { synced.push(structuredClone(next)); },
+      statuses: () => [],
+      test: async () => { throw new Error('not used'); },
+    },
+    oauth: {
+      isActive: () => false,
+      cancelLogin: () => false,
+      login: async () => { throw new Error('not used'); },
+      logout: async () => { throw new Error('not used'); },
+      resumeLogin: async () => undefined,
+    },
+    ensureReady: async () => {},
+    publishCapabilities: async () => {},
+    onPublicationError: () => {},
+    emitChanged: () => { emitted += 1; },
+    ...overrides,
+  });
+  t.after(stop);
+  return { handlers, synced, get emitted() { return emitted; }, stop };
+}
+
+async function waitUntil(condition: () => boolean, timeoutMs = 3_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!condition()) {
+    if (Date.now() > deadline) throw new Error('timed out waiting for condition');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}

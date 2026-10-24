@@ -21,6 +21,8 @@ import type { ExecutionBoundaryReadModel } from '@maka/core/sandbox-boundary';
 import type { SessionSnapshot } from '@maka/core/session-reference';
 import type { ChatDefaultPermissionMode } from '@maka/core/settings';
 import type { InvocableSkillEntry } from '@maka/runtime/skill-invocation';
+import type { CheckinCard } from '@maka/core/session-checkin';
+import type { ContextCompactResult, SessionCheckinGenerateResult } from '@maka/runtime-host/protocol';
 import type { DesktopSessionSummary } from '../../../shared/desktop-session-projection.js';
 import type { DesktopSessionLocalBridge } from '../../../shared/session-local-contract.js';
 
@@ -53,16 +55,54 @@ export type ConversationFileSearchResult =
 
 export interface ConversationServices extends Pick<
   DesktopSessionLocalBridge,
-  'listMessages' | 'cancelMessage' | 'reconcileMessage' | 'subscribeChanges'
+  'listMessages' | 'readFailedMessage' | 'releaseRecoveryAttachments' | 'cancelMessage' | 'resumeMessage' | 'reconcileMessage' | 'subscribeChanges'
 > {
+  readonly observation: import('./transcript-ports.js').ConversationObservationServices;
+  readonly promptSuggestions?: {
+    generate(sessionId: string): Promise<string | undefined>;
+    readEnabled(): boolean;
+    subscribeEnabled?(handler: () => void): () => void;
+    writeEnabled(enabled: boolean): void;
+  };
+  /** Check-in cards on the new-task screen; absent where the platform cannot run them. */
+  readonly checkin?: ConversationCheckinPort;
   readonly sessions: {
+    /** Last inspected snapshot, scoped to the full Host-qualified Session ID. */
+    readCachedExecutorState?(sessionId: string): readonly import('@maka/core/executor-catalog').ExecutorCatalogEntry[] | undefined;
     getExecutorState?(sessionId: string): Promise<readonly import('@maka/core/executor-catalog').ExecutorCatalogEntry[]>;
     setExecutorModelConfiguration?(sessionId: string, config: import('@maka/core/executor-catalog').ExecutorConfiguration): Promise<import('../../../shared/desktop-session-projection.js').DesktopSessionUpdateResult<DesktopSessionSummary>>;
     readSnapshot(sessionId: string, options?: { readonly maxChars?: number }): Promise<SessionSnapshot>;
     readExecutionBoundary(sessionId: string): Promise<ExecutionBoundaryReadModel>;
+    promoteQueueEntry(sessionId: string, entryId: string): Promise<void>;
+    retractQueueEntry(sessionId: string, entryId: string): Promise<void>;
+    updateQueueEntry?(sessionId: string, entryId: string, expectedQueueRevision: number, text: string): Promise<void>;
+    reorderQueueEntries(
+      sessionId: string,
+      entryIds: readonly string[],
+      expectedQueueRevision: number,
+    ): Promise<void>;
+    compact(sessionId: string): Promise<ContextCompactResult>;
+    /** Sampled prompt-rail landmarks, or where the one Turn `turnId` sits. */
+    listTurnLandmarks(
+      sessionId: string,
+      turnId: string | null,
+    ): Promise<{ readonly landmarks: readonly import('./controller/transcript-reading-position-controller.js').TranscriptTurnLandmark[] }>;
   };
   readonly runtimeHosts: {
     subscribeChanges(handler: (event: ConversationHostChange) => void): () => void;
+  };
+  /**
+   * Safe-boundary resume (#1223, #5903): the read-only plan preview behind the
+   * composer's Resume offer, the admission behind every resume click, and the
+   * catalog changes that move the answer.
+   */
+  readonly resume: {
+    queryPlan(sessionId: string): Promise<import('@maka/runtime-host/protocol').TurnResumePlan>;
+    start(sessionId: string): Promise<
+      | { readonly disposition: 'started'; readonly runId: string; readonly turnId: string }
+      | { readonly disposition: 'park'; readonly rejectionReasons: readonly string[]; readonly diagnostics: readonly unknown[] }
+    >;
+    subscribeChanges(handler: (event: import('@maka/core/session').SessionChangedEvent) => void): () => void;
   };
   readonly skills: {
     listInvocable(sessionId?: string): Promise<InvocableSkillEntry[]>;
@@ -74,7 +114,9 @@ export interface ConversationServices extends Pick<
     ): Promise<ConversationFileSearchResult>;
   };
   readonly newTasks: {
-    getExecutors?(target: ConversationNewTaskTarget, cwd: string): Promise<readonly import('@maka/core/executor-catalog').ExecutorCatalogEntry[]>;
+    getExecutors?(target: ConversationNewTaskTarget, cwd: string, refresh?: boolean, executorId?: string): Promise<readonly import('@maka/core/executor-catalog').ExecutorCatalogEntry[]>;
+    /** Registration inventory without starting agent processes. */
+    listExecutors?(target: ConversationNewTaskTarget, cwd: string): Promise<readonly import('@maka/core/executor-catalog').ExecutorCatalogEntry[]>;
     subscribeChanges(handler: () => void): () => void;
     listInvocableSkills(
       target: ConversationNewTaskTarget,
@@ -94,4 +136,33 @@ export interface ConversationServices extends Pick<
   readonly mcp: {
     subscribeChanges(handler: () => void): () => void;
   };
+}
+
+/** What a client remembers between check-ins; the Host keeps none of it. */
+export interface ConversationCheckinMemory {
+  readonly lastAttemptAt: number;
+  /** When the last answered check-in started: the Host's `since` for the next one. */
+  readonly lastCheckinAt: number | null;
+  readonly cards: readonly CheckinCard[];
+  /** Cards the user dismissed or acted on, by `checkinCardKey`. */
+  readonly settled: readonly string[];
+}
+
+export interface ConversationCheckinPort {
+  generate(input: {
+    readonly effectId: string;
+    readonly since: number | null;
+  }): Promise<SessionCheckinGenerateResult>;
+  readEnabled(): boolean;
+  writeEnabled(enabled: boolean): void;
+  readMemory(): unknown;
+  writeMemory(memory: ConversationCheckinMemory): void;
+  /** The Session's current revision, or undefined when it is gone. */
+  readRevision(sessionId: string): Promise<number | undefined>;
+  /** True when the Host started a safe continuation of the last run. */
+  resume(sessionId: string): Promise<boolean>;
+  /** True when the Host accepted the message. */
+  send(sessionId: string, text: string): Promise<boolean>;
+  /** Opens a new Session beside the source one, quoting it; returns its id. */
+  startSession(sourceSessionId: string, text: string): Promise<string | undefined>;
 }

@@ -783,7 +783,6 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
             );
             if (frame.kind === 'error') {
               if (frame.error.code === 'active_tasks') return 'active_tasks';
-              if (frame.error.code === 'target_mismatch') return 'replaced';
               throw conflictReplacementError(registration.pid, frame.error.message);
             }
             if (frame.kind === 'progress' || frame.action !== 'update') {
@@ -897,7 +896,6 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
         );
         if (frame.kind === 'error') {
           if (frame.error.code === 'active_tasks') return { kind: 'active_tasks' };
-          if (frame.error.code === 'target_mismatch') return { kind: 'unavailable' };
           throw new Error(`Runtime Host repair failed: ${frame.error.message}`);
         }
         if (frame.kind === 'progress' || frame.action !== 'update') {
@@ -922,7 +920,6 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
           });
           if (restarted.kind === 'error') {
             if (restarted.error.code === 'active_tasks') return { kind: 'active_tasks' };
-            if (restarted.error.code === 'target_mismatch') return { kind: 'unavailable' };
             throw new Error(`Runtime Host restart failed: ${restarted.error.message}`);
           }
           if (restarted.kind === 'progress' || restarted.action !== 'restart') {

@@ -96,7 +96,7 @@ function assertCondition(condition, message) {
  * PACKAGED Windows app: the packaged broker executable enforces the
  * AppContainer boundary, the packaged Electron executable is the worker
  * runtime (ELECTRON_RUN_AS_NODE, exactly as production launches it) and the
- * packaged `resources\workers\filesystem-worker.js` is the worker bundle.
+ * packaged `resources\workers\filesystem-worker.mjs` is the worker bundle.
  * Only the driver (client + launch-spec code) comes from the repository
  * build, because the packaged copy lives inside app.asar which plain node
  * cannot import; every executed artifact is the shipped one.
@@ -106,7 +106,7 @@ export async function verifyWindowsSandboxWorkerE2E(appDirectoryPath) {
   const appExecutable = join(appDirectory, 'Maka.exe');
   const resourcesPath = join(appDirectory, 'resources');
   const sandboxExecutable = join(resourcesPath, 'windows-sandbox', 'maka-windows-sandbox.exe');
-  const workerBundle = join(resourcesPath, 'workers', 'filesystem-worker.js');
+  const workerBundle = join(resourcesPath, 'workers', 'filesystem-worker.mjs');
   for (const [path, label] of [
     [appExecutable, 'packaged Electron executable'],
     [sandboxExecutable, 'packaged sandbox broker'],
@@ -274,6 +274,7 @@ export async function verifyWindowsSandboxWorkerE2E(appDirectoryPath) {
     });
     assertCondition(
       globResult.kind === 'glob' &&
+        globResult.truncated === false &&
         JSON.stringify(globResult.files.map((file) => file.replaceAll('\\', '/')).sort()) ===
           JSON.stringify(['root.ts', 'src/health.ts']),
       'Sandboxed glob did not return exactly the safe project files beside a nested junction.',
@@ -284,7 +285,9 @@ export async function verifyWindowsSandboxWorkerE2E(appDirectoryPath) {
       pattern: 'node_modules/@sunrioa/rin-sdk/**/*',
     });
     assertCondition(
-      explicitJunctionGlob.kind === 'glob' && explicitJunctionGlob.files.length === 0,
+      explicitJunctionGlob.kind === 'glob' &&
+        explicitJunctionGlob.files.length === 0 &&
+        explicitJunctionGlob.truncated === false,
       'Sandboxed glob traversed an explicitly named nested junction.',
     );
     const broadJunctionGlob = await execute({
@@ -298,6 +301,7 @@ export async function verifyWindowsSandboxWorkerE2E(appDirectoryPath) {
         : [];
     assertCondition(
       broadJunctionGlob.kind === 'glob' &&
+        broadJunctionGlob.truncated === false &&
         broadFiles.includes('root.ts') &&
         broadFiles.includes('src/health.ts') &&
         !broadFiles.some(
@@ -306,6 +310,33 @@ export async function verifyWindowsSandboxWorkerE2E(appDirectoryPath) {
             file.startsWith('node_modules/@sunrioa/rin-sdk/'),
         ),
       'Sandboxed broad glob returned a nested junction or one of its descendants.',
+    );
+    const completenessDirectory = join(workspace, 'glob-completeness');
+    await mkdir(completenessDirectory);
+    await writeFile(join(completenessDirectory, 'a.txt'), 'a');
+    await writeFile(join(completenessDirectory, 'b.txt'), 'b');
+    const exactGlob = await execute({
+      kind: 'glob',
+      path: completenessDirectory,
+      pattern: '*.txt',
+      limit: 2,
+    });
+    assertCondition(
+      exactGlob.kind === 'glob' && exactGlob.files.length === 2 && exactGlob.truncated === false,
+      'Sandboxed glob misreported an exactly full result as truncated.',
+    );
+    await writeFile(join(completenessDirectory, 'c.txt'), 'c');
+    const overflowingGlob = await execute({
+      kind: 'glob',
+      path: completenessDirectory,
+      pattern: '*.txt',
+      limit: 2,
+    });
+    assertCondition(
+      overflowingGlob.kind === 'glob' &&
+        overflowingGlob.files.length === 2 &&
+        overflowingGlob.truncated === true,
+      'Sandboxed glob did not report matches omitted beyond its cap.',
     );
     // The sandbox preview does not expose Grep (no in-process substitute
     // preserves the ripgrep contract); the worker must fail closed.
@@ -358,10 +389,11 @@ async function verifyPackagedRuntimeHostParentDeath({
 }) {
   const requestId = `runtime-host-parent-death-${process.pid}-${randomBytes(4).toString('hex')}`;
   const launchRequestId = `${requestId}-launch`;
-  assertCondition(
-    (await listCancellationProcesses(sandboxExecutable)).length === 0,
-    'Runtime Host parent-death evidence started with an existing sandbox process.',
-  );
+  await waitForObservation({
+    description: 'clean Runtime Host parent-death process baseline',
+    probe: (remainingMs) => listCancellationProcesses(sandboxExecutable, remainingMs),
+    accept: (processes) => processes.length === 0,
+  });
 
   const child = spawn(
     appExecutable,
@@ -563,10 +595,11 @@ async function verifyPackagedClientCancellation({
   const requestId = `packaged-client-cancel-${process.pid}-${randomBytes(4).toString('hex')}`;
   const launchRequestId = `${requestId}-launch`;
   const sleepSeconds = 47;
-  assertCondition(
-    (await listCancellationProcesses(sandboxExecutable)).length === 0,
-    'Client-cancel evidence started with an existing sandbox process.',
-  );
+  await waitForObservation({
+    description: 'clean client-cancel process baseline',
+    probe: (remainingMs) => listCancellationProcesses(sandboxExecutable, remainingMs),
+    accept: (processes) => processes.length === 0,
+  });
   const controller = new AbortController();
   const cancelClient = new FilesystemWorkerClient({
     sandboxManager: new SandboxManager([

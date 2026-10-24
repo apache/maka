@@ -246,7 +246,6 @@ export function SubagentSettingsPage(props: {
           <Button
             ref={addButtonRef}
             variant="primary"
-            size="sm"
             label={copy.section.add}
             isDisabled={saving || atLimit}
             onClick={openCreate}

@@ -1,3 +1,22 @@
+<!--
+  Licensed to the Apache Software Foundation (ASF) under one
+  or more contributor license agreements.  See the NOTICE file
+  distributed with this work for additional information
+  regarding copyright ownership.  The ASF licenses this file
+  to you under the Apache License, Version 2.0 (the
+  "License"); you may not use this file except in compliance
+  with the License.  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing,
+  software distributed under the License is distributed on an
+  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+  KIND, either express or implied.  See the License for the
+  specific language governing permissions and limitations
+  under the License.
+-->
+
 # Maka Executor for Codex (experimental)
 
 This Maka Host plugin registers `codex.app-server` against the `ctx.executors` API introduced on
@@ -19,6 +38,8 @@ Install this directory through Maka's Plugin Platform. Its profile entry registe
 Server` with id `codex.app-server`, and its desktop entry adds model and reasoning controls to the
 Session and WorkHub composers. Selecting a Codex model switches that Session or the next new Session
 to the plugin executor; selecting a native Maka model switches it back.
+
+The desktop entry requires the Composer-owned `renderPicker` slot contract. It supplies the Codex model catalog; Maka renders the shared searchable selector and reasoning control alongside ACP choices and recovery actions. When upgrading from the previous full-control slot contract, reinstall this example from the same checkout as Maka. The previous `ModelWheelPicker` client export has been removed; client integrations should use `renderPicker` instead of maintaining their own model controls.
 
 This is a repository-only example. Maka release packaging intentionally excludes `scripts/plugins`;
 install it from a complete Git checkout instead of expecting it in an ASF source or desktop release.

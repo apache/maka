@@ -631,6 +631,23 @@ describe('filesystem worker Linux path context', () => {
 });
 
 describe('filesystem worker Windows Glob path context', () => {
+  test('keeps the caller cancellation signal on a non-following Glob launch', async () => {
+    const workspace = await temporaryDirectory('maka-windows-worker-glob-cancel-');
+    const { client, processInputs, transforms } = fakeClient({ platform: 'win32' });
+    const abort = new AbortController();
+
+    await client.execute({
+      operation: { kind: 'glob', path: workspace, pattern: '**/*.ts' },
+      cwd: workspace,
+      mode: 'ask',
+      expectedIdentity: 'unchecked',
+      abortSignal: abort.signal,
+    });
+
+    assert.equal(processInputs[0]?.abortSignal, abort.signal);
+    assert.equal(transforms[0]?.command.pathContext.windowsNonFollowingReadRoot, workspace);
+  });
+
   test('marks only the approved Glob subtree for non-following broker admission', async () => {
     const workspace = await temporaryDirectory('maka-windows-worker-glob-');
     const { client, transforms } = fakeClient({ platform: 'win32' });
@@ -721,9 +738,9 @@ function fakeClient(
         ok: true,
         spec: {
           program: '/usr/bin/node',
-          args: ['/runtime/filesystem-worker.js', '--grep-executable', '/usr/bin/rg'],
+          args: ['/runtime/filesystem-worker.mjs', '--grep-executable', '/usr/bin/rg'],
           env: {},
-          runtimeReadableRoots: ['/runtime/filesystem-worker.js'],
+          runtimeReadableRoots: ['/runtime/filesystem-worker.mjs'],
           executableRoots: ['/usr/bin/node', '/usr/bin/rg'],
         },
       };
@@ -816,7 +833,7 @@ function fakeResult(request: FilesystemWorkerRequest): FilesystemWorkerResult {
         truncated: false,
       };
     case 'glob':
-      return { kind: 'glob', files: [] };
+      return { kind: 'glob', files: [], truncated: false };
     default:
       throw new Error(`Unexpected fake worker operation: ${request.operation.kind}`);
   }
@@ -860,9 +877,9 @@ describe('filesystem worker client dispatch classification', () => {
         ok: true,
         spec: {
           program: '/usr/bin/node',
-          args: ['/runtime/filesystem-worker.js', '--grep-executable', '/usr/bin/rg'],
+          args: ['/runtime/filesystem-worker.mjs', '--grep-executable', '/usr/bin/rg'],
           env: {},
-          runtimeReadableRoots: ['/runtime/filesystem-worker.js'],
+          runtimeReadableRoots: ['/runtime/filesystem-worker.mjs'],
           executableRoots: ['/usr/bin/node', '/usr/bin/rg'],
         },
       }),
@@ -955,9 +972,9 @@ describe('filesystem worker client dispatch classification', () => {
         ok: true,
         spec: {
           program: '/usr/bin/node',
-          args: ['/runtime/filesystem-worker.js', '--grep-executable', '/usr/bin/rg'],
+          args: ['/runtime/filesystem-worker.mjs', '--grep-executable', '/usr/bin/rg'],
           env: {},
-          runtimeReadableRoots: ['/runtime/filesystem-worker.js'],
+          runtimeReadableRoots: ['/runtime/filesystem-worker.mjs'],
           executableRoots: ['/usr/bin/node', '/usr/bin/rg'],
         },
       }),
@@ -1013,9 +1030,9 @@ describe('filesystem worker client dispatch classification', () => {
         ok: true,
         spec: {
           program: '/usr/bin/node',
-          args: ['/runtime/filesystem-worker.js', '--grep-executable', '/usr/bin/rg'],
+          args: ['/runtime/filesystem-worker.mjs', '--grep-executable', '/usr/bin/rg'],
           env: {},
-          runtimeReadableRoots: ['/runtime/filesystem-worker.js'],
+          runtimeReadableRoots: ['/runtime/filesystem-worker.mjs'],
           executableRoots: ['/usr/bin/node', '/usr/bin/rg'],
         },
       }),

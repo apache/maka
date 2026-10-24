@@ -253,6 +253,35 @@ interface SessionCloseLease {
 export class ShellRunProcessManager
   implements RuntimeResourceReader, BackgroundTaskStopper, PtyControlWriter
 {
+  private readonly changeListeners = new Map<string, Set<() => void>>();
+
+  /** Observation hints only; listeners never own processes or completion cleanup. */
+  subscribeChanges(
+    sessionId: string,
+    ref: string,
+    signal: AbortSignal,
+    changed: () => void,
+  ): { close(): void } {
+    const target = parseShellRunResourceRef(ref);
+    if (!target) throw new Error('Invalid background task reference');
+    if (signal.aborted) return { close() {} };
+    const key = JSON.stringify([sessionId, target.shellRunId]);
+    const listeners = this.changeListeners.get(key) ?? new Set<() => void>();
+    const listener = () => changed();
+    let closed = false;
+    const close = () => {
+      if (closed) return;
+      closed = true;
+      signal.removeEventListener('abort', close);
+      listeners.delete(listener);
+      if (listeners.size === 0) this.changeListeners.delete(key);
+    };
+    this.changeListeners.set(key, listeners);
+    listeners.add(listener);
+    signal.addEventListener('abort', close, { once: true });
+    return { close };
+  }
+
   private readonly live = new Map<string, LiveShellRun>();
   private readonly sessionCloseLeases = new Map<string, Set<symbol>>();
   private readonly sessionTerminationEpochs = new Map<string, number>();
@@ -510,14 +539,19 @@ export class ShellRunProcessManager
         }),
       );
     }
-    // A real PTY can exit while that persist is still in flight, leaving a
-    // running snapshot here even though finalizeOnce has already started.
-    if (live.driverExit || live.finalizeOnce) {
-      record = await this.markObserved(await live.finished.join());
-      return shellRunContent(record, operation);
-    }
-    if (isTerminalShellRunStatus(record.status)) record = await this.markObserved(record);
+    // The snapshot was captured before persistence. Exit can begin during that
+    // await, so every control response goes through the same final-record
+    // reconciliation rather than returning a stale running snapshot.
+    record = await this.reconcilePtyControlRecord(live, record);
     return clientControl ? compactShellRunContent(record) : shellRunContent(record, operation);
+  }
+
+  private async reconcilePtyControlRecord(
+    live: LiveShellRun,
+    snapshot: ShellRunRecord,
+  ): Promise<ShellRunRecord> {
+    const record = live.driverExit || live.finalizeOnce ? await live.finished.join() : snapshot;
+    return isTerminalShellRunStatus(record.status) ? this.markObserved(record) : record;
   }
 
   async readRuntimeResource(
@@ -1010,7 +1044,8 @@ export class ShellRunProcessManager
   }
 
   private processPidPatch(live: LiveShellRun): Pick<ShellRunPatch, 'pid'> {
-    const pid = live.driver.pid;
+    // A pipe command runs under an owning supervisor; report the command itself.
+    const pid = live.mode === 'pipes' ? live.driver.commandPid : live.driver.pid;
     return pid !== undefined && Number.isSafeInteger(pid) && pid > 0 ? { pid } : {};
   }
 
@@ -1824,6 +1859,15 @@ export class ShellRunProcessManager
   }
 
   private notifyShellRunUpdate(record: ShellRunRecord): void {
+    for (const changed of this.changeListeners.get(
+      JSON.stringify([record.sessionId, record.shellRunId]),
+    ) ?? []) {
+      try {
+        changed();
+      } catch {
+        /* A hint consumer cannot interrupt other owners. */
+      }
+    }
     try {
       this.input.onShellRunUpdate?.(shellRunUpdate(record));
     } catch {

@@ -32,6 +32,8 @@ name: Windows recovery
 # regression this lane has caught that no other lane could have. That second
 # group is generated rather than curated, because a hand-picked list cannot be
 # shown to be complete and this one has to be.
+# The CLI project-root parser is also included: node:path.isAbsolute has native
+# Windows behavior without a win32 literal in the caller.
 #
 # What is deliberately absent is the portable rest of those workspaces. Every
 # source directory in the closure used to be here, which put this lane on 118 of
@@ -61,11 +63,24 @@ on:
       - 'scripts/clean-build.mjs'
       - 'scripts/clean-paths.mjs'
       - 'scripts/windows-runtime-host-local-ipc-trust.ps1'
+      # The desktop launcher executes cmd.exe with native console code pages.
+      - 'apps/desktop/src/main/opencli-chrome.ts'
+      - 'apps/desktop/src/main/__tests__/opencli-chrome.test.ts'
       # Every file in the import closure of the suites below that branches on
       # `process.platform === 'win32'`. Generated, not curated:
       # `scripts/windows-package-source-closure.test.mjs` recomputes this set
       # from the dist tests the steps run and fails on any difference in either
-      # direction.
+      # direction, including the CLI's native path parser described above.
+      - 'packages/cli/src/__tests__/runtime-host-service-manager.test.ts'
+      - 'packages/cli/src/runtime-host-cli-installation.ts'
+      - 'packages/cli/src/runtime-host-cli.ts'
+      - 'packages/cli/src/runtime-host-lifecycle-transaction.ts'
+      - 'packages/cli/src/runtime-host-managed-deployment.ts'
+      - 'packages/cli/src/runtime-host-package-deployment.ts'
+      - 'packages/cli/src/runtime-host-peer-artifact.ts'
+      - 'packages/cli/src/runtime-host-service-management-command.ts'
+      - 'packages/cli/src/runtime-host-update-command.ts'
+      - 'packages/cli/src/runtime-host-windows-task-launcher-artifact.ts'
       - 'packages/core/src/diagnostic-log.ts'
       - 'packages/runtime-host/src/__tests__/control-endpoint.test.ts'
       - 'packages/runtime-host/src/__tests__/fixtures/endpoint-hygiene.ts'
@@ -73,6 +88,8 @@ on:
       - 'packages/runtime-host/src/__tests__/skill-catalog-repository.test.ts'
       - 'packages/runtime-host/src/__tests__/skill-catalog-transaction.test.ts'
       - 'packages/runtime-host/src/__tests__/skill-catalog-two-client-uds.test.ts'
+      - 'packages/runtime-host/src/__tests__/ssh-operator-activation.test.ts'
+      - 'packages/runtime-host/src/assistant/proactive-matters/files.ts'
       - 'packages/runtime-host/src/client/client-instance-identity.ts'
       - 'packages/runtime-host/src/client/host-profile.ts'
       - 'packages/runtime-host/src/client/ssh-operator-activation.ts'
@@ -92,16 +109,20 @@ on:
       - 'packages/runtime-host/src/protocol/skill-catalog.ts'
       - 'packages/runtime-host/src/server/access-credential-store.ts'
       - 'packages/runtime-host/src/server/host-resource-probe.ts'
+      - 'packages/runtime-host/src/server/session-checkpoint-publication.ts'
       - 'packages/runtime-host/src/server/skill-catalog-repository.ts'
       - 'packages/runtime-host/src/server/skill-catalog-transaction.ts'
+      - 'packages/runtime/src/__tests__/owned-child-process.test.ts'
+      - 'packages/runtime/src/__tests__/pipe-process-driver.test.ts'
       - 'packages/runtime/src/__tests__/runtime-continuation-crash.test.ts'
       - 'packages/runtime/src/__tests__/runtime-resume-crash.test.ts'
+      - 'packages/runtime/src/__tests__/shell-owner-death.test.ts'
       - 'packages/runtime/src/builtin-tools.ts'
       - 'packages/runtime/src/file-stable-write.ts'
       - 'packages/runtime/src/filesystem-worker/client.ts'
       - 'packages/runtime/src/filesystem-worker/launch-spec.ts'
       - 'packages/runtime/src/filesystem-worker/process-runner.ts'
-      - 'packages/runtime/src/pipe-process-driver.ts'
+      - 'packages/runtime/src/owned-child-process.ts'
       - 'packages/runtime/src/process-tree-terminator.ts'
       - 'packages/runtime/src/pty-process-driver.ts'
       - 'packages/runtime/src/ripgrep-guidance.ts'
@@ -112,7 +133,6 @@ on:
       - 'packages/runtime/src/sandbox/windows-profile.ts'
       - 'packages/runtime/src/sandbox/windows-sandbox.ts'
       - 'packages/runtime/src/shell-detect.ts'
-      - 'packages/runtime/src/shell-exec.ts'
       - 'packages/storage/src/__tests__/managed-dependency-environment.test.ts'
       - 'packages/storage/src/__tests__/root-authority.test.ts'
       - 'packages/storage/src/artifact-store.ts'
@@ -124,11 +144,15 @@ on:
       - 'packages/storage/src/marker-file.ts'
       - 'packages/storage/src/memory-bundle-io.ts'
       - 'packages/storage/src/native-file-lock.ts'
+      - 'packages/storage/src/process-lifetime-owner.ts'
+      - 'packages/storage/src/production-session-snapshot.ts'
+      - 'packages/storage/src/quiescent-session-snapshot.ts'
       - 'packages/storage/src/root-authority.ts'
       - 'packages/storage/src/runtime-policy/document-io.ts'
       - 'packages/storage/src/session-bundle-file-service.ts'
       - 'packages/storage/src/sqlite-long-term-memory-store.ts'
       - 'packages/storage/src/stable-storage.ts'
+      - 'packages/storage/src/workspace-root.ts'
       - '.github/workflows/windows-recovery.yml'
   # Unfiltered on purpose: required_status_checks is `strict: false`, so a pull
   # request goes green against a stale base and only the merged result proves
@@ -162,6 +186,7 @@ permissions:
 jobs:
   windows_recovery:
     name: windows_recovery
+    if: github.event_name != 'schedule' || github.repository == 'apache/maka'
     runs-on: windows-latest
     timeout-minutes: 45
     steps:
@@ -171,7 +196,7 @@ jobs:
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: "24"
+          node-version: "24.22.1"
           cache: npm
 
       - name: Install dependencies
@@ -179,6 +204,10 @@ jobs:
 
       - name: Build test artifacts
         run: npm.cmd run build:test
+
+      - name: Verify Windows opencli launchers
+        shell: pwsh
+        run: node.exe --test apps/desktop/dist/main/__tests__/opencli-chrome.test.js
 
       - name: Verify managed dependency alternate streams
         shell: pwsh
@@ -194,6 +223,14 @@ jobs:
             Write-Error 'Managed dependency ADS gate did not run exactly three passing Windows tests'
             exit 1
           }
+
+      # The remaining service-manager tests exercise POSIX service backends.
+      - name: Verify native Runtime Host project-root parsing
+        shell: pwsh
+        run: >-
+          node.exe --test
+          --test-name-pattern="uses native Host paths consistently|parses the bounded managed service"
+          packages/cli/dist/__tests__/runtime-host-service-manager.test.js
 
       - name: Verify root initialization replacement race
         shell: pwsh
@@ -216,6 +253,13 @@ jobs:
           node.exe --test packages/runtime-host/dist/__tests__/control-endpoint.test.js
           ./scripts/windows-runtime-host-local-ipc-trust.ps1
 
+      # The POSIX command execution case in this suite requires a POSIX host.
+      - name: Verify Windows SSH operator arguments and activation
+        shell: pwsh
+        run: >-
+          node.exe --test --test-name-pattern="Windows SSH operator|SSH activation"
+          packages/runtime-host/dist/__tests__/ssh-operator-activation.test.js
+
       - name: Verify Skill catalog on Windows
         shell: pwsh
         run: |
@@ -229,8 +273,8 @@ jobs:
           $exitCode = $LASTEXITCODE
           if ($exitCode -ne 0) { exit $exitCode }
           $output = Get-Content "$env:RUNNER_TEMP/skill-catalog.tap"
-          if ($output -notcontains '# tests 93' -or $output -notcontains '# pass 93' -or $output -notcontains '# skipped 0') {
-            Write-Error 'Skill catalog gate did not run exactly 93 passing Windows tests'
+          if ($output -notcontains '# tests 95' -or $output -notcontains '# pass 95' -or $output -notcontains '# skipped 0') {
+            Write-Error 'Skill catalog gate did not run exactly 95 passing Windows tests'
             exit 1
           }
 
@@ -247,6 +291,27 @@ jobs:
           node.exe --test --test-concurrency=1 `
             packages/runtime/dist/__tests__/runtime-resume-crash.test.js `
             packages/runtime/dist/__tests__/runtime-continuation-crash.test.js
+
+      # Every Windows Bash command runs under the owning supervisor. Run its
+      # owner-death and lifecycle suites on a real Windows host. shell-exec's
+      # suite is written in POSIX shell syntax and is not portable yet.
+      - name: Verify shell command ownership
+        shell: pwsh
+        run: |
+          node.exe --test --test-reporter=tap --test-concurrency=1 `
+            packages/runtime/dist/__tests__/owned-child-process.test.js `
+            packages/runtime/dist/__tests__/shell-owner-death.test.js `
+            packages/runtime/dist/__tests__/pipe-process-driver.test.js `
+            2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP/shell-command-ownership.tap"
+          $exitCode = $LASTEXITCODE
+          if ($exitCode -ne 0) { exit $exitCode }
+          $output = Get-Content "$env:RUNNER_TEMP/shell-command-ownership.tap"
+          # Most of these suites carry POSIX-only skips; pin how many still run
+          # here so a widened skip cannot leave the lane green while testing less.
+          if ($output -notcontains '# tests 20' -or $output -notcontains '# pass 12' -or $output -notcontains '# skipped 8') {
+            Write-Error 'Shell command ownership gate did not run exactly 12 passing Windows tests'
+            exit 1
+          }
 
       - name: Verify Runtime Host owner-death recovery
         shell: pwsh

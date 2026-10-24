@@ -188,8 +188,6 @@ export const exclusionRules = [
       'apps/desktop/resources/licenses/cargo/THIRD_PARTY_NOTICES.txt',
       'apps/desktop/resources/licenses/npm/THIRD_PARTY_NOTICES.txt',
       'apps/desktop/resources/licenses/renderer/ALLOGO_LICENSE.txt',
-      'apps/desktop/resources/licenses/renderer/ANT_DESIGN_ICONS_LICENSE.txt',
-      'apps/desktop/resources/licenses/renderer/SEMI_ICONS_LICENSE.txt',
       'apps/desktop/resources/licenses/renderer/SIMPLE_ICONS_LICENSE.md',
       'apps/desktop/resources/licenses/renderer/TDESIGN_ICONS_LICENSE.txt',
       'apps/desktop/src/renderer/public/THIRD_PARTY_LICENSES.txt',
@@ -214,6 +212,8 @@ export const exclusionRules = [
         'packages/runtime/src/model-protocol.ts',
         'packages/eval/harbor/deepseek-harness-profile/cordis.patch.yml',
         'packages/ui/src/astryx-chat-reasoning.tsx',
+        'apps/desktop/src/renderer/computer-use-overlay/engine/palette.ts',
+        'apps/desktop/src/renderer/computer-use-overlay/engine/cursor-engine.ts',
       )(path) ||
       isUnder('apps/desktop/src/renderer/assets/provider-brands', '.svg')(path) ||
       isUnder('patches', '.patch')(path),
@@ -283,6 +283,16 @@ export const exclusionRules = [
         'apps/desktop/build/entitlements.mac.plist',
       )(path),
   },
+  {
+    id: 'website-machine-readable-entry-points',
+    justification:
+      'Published robots, sitemap, and llms entry points are protocol payloads kept intentionally minimal for crawlers and automated readers; adding an in-band source header would add non-index content to those public files.',
+    matches: isOneOf(
+      'website/public/llms.txt',
+      'website/public/robots.txt',
+      'website/public/sitemap.xml',
+    ),
+  },
 ];
 
 /**
@@ -345,6 +355,10 @@ const reviewedProvenance = new Map([
   [
     'scripts/generate-runtime-host-peer-notices.mjs',
     'Maka-authored generator that emits upstream copyright lines into the Runtime Host peer notices. The copyright it names is its output, not its own.',
+  ],
+  [
+    'scripts/source-legal-inventory.test.mjs',
+    'Legal inventory tests quote upstream copyright and license notices to check their preservation.',
   ],
   [
     'scripts/sync-model-metadata.mjs',

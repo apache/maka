@@ -18,6 +18,7 @@
  */
 
 import { createContext, useContext, useRef } from 'react';
+import type { SessionChangedEvent } from '@maka/core/session';
 import { valuesEqual } from '@maka/ui';
 import {
   compareDesktopSessionCatalogSummaries,
@@ -43,7 +44,13 @@ import { createObservableState } from './observable-state.js';
 export interface SessionCatalogState {
   readonly sessions: readonly DesktopSessionSummary[];
   readonly revision: number;
+  /**
+   * A list read has committed. A row patch also moves `revision`, but it can
+   * only vouch for its own row, so membership readers wait for a list.
+   */
+  readonly listed: boolean;
   readonly activeSessionId: string | undefined;
+  readonly automaticQueryBlockedSessionIds: ReadonlySet<string>;
   /**
    * Ids a targeted row read reported as gone (`sessions.get` → null). A list
    * omission never lands here: a snapshot taken before a session existed
@@ -53,20 +60,80 @@ export interface SessionCatalogState {
   readonly removedIds: ReadonlySet<string>;
 }
 
-export function createSessionCatalogController() {
+/**
+ * Where the catalog's full lists and change events come from. Desktop
+ * supplies it at composition, so the shell's catalog refresh and change
+ * subscription do not reach the Session bridge themselves.
+ */
+export interface SessionCatalogSource {
+  list(): Promise<DesktopSessionSummary[]>;
+  subscribeChanges(handler: (event: SessionChangedEvent) => void): () => void;
+}
+
+const NO_SOURCE = 'This session catalog was created without a source';
+/** A catalog that is only ever committed to, as in tests and stories; reading through it fails. */
+const DETACHED_SOURCE: SessionCatalogSource = {
+  list: () => Promise.reject(new Error(NO_SOURCE)),
+  subscribeChanges: () => { throw new Error(NO_SOURCE); },
+};
+
+export function createSessionCatalogController(source: SessionCatalogSource = DETACHED_SOURCE) {
   const state = createObservableState<SessionCatalogState>({
     sessions: [],
     revision: 0,
+    listed: false,
     activeSessionId: undefined,
+    automaticQueryBlockedSessionIds: new Set(),
     removedIds: new Set(),
   });
   // Catalog revision at which each row's existence was last confirmed by a
   // patch — the fence a stale list commit is measured against.
   const existenceConfirmedAt = new Map<string, number>();
+  const automaticQueryBlockCounts = new Map<string, number>();
+  const publishAutomaticQueryBlocks = () => {
+    const current = state.getState();
+    const next = new Set(automaticQueryBlockCounts.keys());
+    if (
+      current.automaticQueryBlockedSessionIds.size === next.size
+      && [...next].every((id) => current.automaticQueryBlockedSessionIds.has(id))
+    ) {
+      return;
+    }
+    state.replaceState({ ...current, automaticQueryBlockedSessionIds: next });
+  };
 
   return {
+    source,
     getState: state.getState,
     subscribe: state.subscribe,
+    isAutomaticQueryBlocked(sessionId: string): boolean {
+      const current = state.getState();
+      return (
+        current.automaticQueryBlockedSessionIds.has(sessionId)
+        || current.sessions.some((session) => session.id === sessionId && session.isArchived)
+      );
+    },
+    acquireAutomaticQueryBlock(sessionIds: readonly string[]): { release(): void } {
+      const ids = [...new Set(sessionIds)];
+      for (const id of ids) {
+        automaticQueryBlockCounts.set(id, (automaticQueryBlockCounts.get(id) ?? 0) + 1);
+      }
+      publishAutomaticQueryBlocks();
+
+      let released = false;
+      return {
+        release(): void {
+          if (released) return;
+          released = true;
+          for (const id of ids) {
+            const count = automaticQueryBlockCounts.get(id) ?? 0;
+            if (count <= 1) automaticQueryBlockCounts.delete(id);
+            else automaticQueryBlockCounts.set(id, count - 1);
+          }
+          publishAutomaticQueryBlocks();
+        },
+      };
+    },
     commitSessions(
       next: readonly DesktopSessionSummary[],
       options?: { observedAtRevision?: number },
@@ -79,9 +146,9 @@ export function createSessionCatalogController() {
       const previousById = new Map(current.sessions.map((s) => [s.id, s]));
       const reconciled = next.map((s) => {
         const prior = previousById.get(s.id);
-        return prior !== undefined && (isStaleSummary(prior, s) || valuesEqual(prior, s))
-          ? prior
-          : s;
+        if (prior === undefined) return s;
+        const row = reconcileSummary(prior, s);
+        return valuesEqual(prior, row) ? prior : row;
       });
       // A row whose existence a patch confirmed after this list was observed
       // is newer than anything the list can claim about it — keep it. This is
@@ -108,14 +175,15 @@ export function createSessionCatalogController() {
       const sameRows = sessions.length === current.sessions.length
         && sessions.every((s, i) => s === current.sessions[i]);
       // A commit that changed nothing publishes nothing — except the first
-      // one: revision 0 means "no authoritative observation yet", and even an
-      // empty list is one.
-      if (sameRows && removedIds === current.removedIds && current.revision > 0) return;
+      // list: until one lands there is no authoritative observation, and even
+      // an empty list, or one matching the rows patches admitted, is one.
+      if (sameRows && removedIds === current.removedIds && current.listed) return;
       state.replaceState({
         ...current,
         sessions: sameRows ? current.sessions : sessions,
         removedIds,
         revision: current.revision + 1,
+        listed: true,
       });
     },
     commitPatch(sessionId: string, summary: DesktopSessionSummary | null): void {
@@ -141,8 +209,9 @@ export function createSessionCatalogController() {
         });
         return;
       }
-      if (prior !== undefined && isStaleSummary(prior, summary)) return;
-      const row = prior !== undefined && valuesEqual(prior, summary) ? prior : summary;
+      const reconciled = prior === undefined ? summary : reconcileSummary(prior, summary);
+      if (prior !== undefined && reconciled === prior && isStaleSummary(prior, summary)) return;
+      const row = prior !== undefined && valuesEqual(prior, reconciled) ? prior : reconciled;
       const sessions = [...current.sessions];
       if (index < 0) sessions.push(row); else sessions[index] = row;
       sessions.sort(compareDesktopSessionCatalogSummaries);
@@ -188,9 +257,56 @@ export function waitForCatalogSession(
   });
 }
 
-/** A committed row at a newer revision is authoritative over an older snapshot of it. */
+/**
+ * A committed row at a newer revision is authoritative over an older snapshot
+ * of it. Equal revisions tie on the live run state's own order: a turn
+ * starting or ending does not move `revision`, so two same-revision reads can
+ * disagree about `runningTurnIds` — the run epoch says which observation is
+ * older, and the stale one must not overwrite the fresher (#5713).
+ *
+ * The epoch counter only orders observations of one Host generation.
+ * Generations themselves are not ordered, so a read from a different
+ * generation is never stale: a restarted Host must take the row over from its
+ * predecessor whatever the two counters read (#5713 review). A successful
+ * cross-generation response cannot exist on the wire, either: closing a
+ * connection rejects every in-flight request with `connection_lost`
+ * (client/connection.ts), so a lagging predecessor read never delivers after
+ * the successor's row has landed.
+ */
+function reconcileSummary(prior: DesktopSessionSummary, next: DesktopSessionSummary): DesktopSessionSummary {
+  const row = isStaleSummary(prior, next) ? prior : next;
+  const previousVersion = prior.backgroundActivityVersion;
+  const nextVersion = next.backgroundActivityVersion;
+  if (prior.localState === 'cached' || next.localState === 'cached' ||
+    previousVersion === undefined || nextVersion === undefined ||
+    previousVersion.hostGeneration !== nextVersion.hostGeneration) return row;
+  // Activity and durable/run state advance independently. Keep the newer
+  // activity without dropping a rename or a Turn update from the other read.
+  const activity = previousVersion.revision > nextVersion.revision ? prior : next;
+  return activity === row ? row : {
+    ...row,
+    backgroundActivity: activity.backgroundActivity,
+    backgroundActivityVersion: activity.backgroundActivityVersion,
+  };
+}
+
 function isStaleSummary(prior: DesktopSessionSummary, next: DesktopSessionSummary): boolean {
-  return prior.revision > next.revision;
+  if (prior.revision !== next.revision) return prior.revision > next.revision;
+  const priorGeneration = prior.runHostGeneration;
+  const nextGeneration = next.runHostGeneration;
+  if (
+    priorGeneration !== undefined &&
+    nextGeneration !== undefined &&
+    priorGeneration !== nextGeneration
+  ) {
+    return false;
+  }
+  const priorEpoch = prior.runEpoch;
+  const nextEpoch = next.runEpoch;
+  if (priorEpoch === undefined || nextEpoch === undefined || priorEpoch === nextEpoch) {
+    return false;
+  }
+  return priorEpoch > nextEpoch;
 }
 
 export const selectSessions = (state: SessionCatalogState): readonly DesktopSessionSummary[] =>
@@ -212,8 +328,9 @@ export const selectActiveSessionId = (state: SessionCatalogState): string | unde
 export const selectAuthoritativeSessionIds = (
   state: SessionCatalogState,
 ): ReadonlySet<string> | undefined =>
-  // The initial empty catalog cannot prove that persisted Sessions were deleted.
-  state.revision > 0 ? new Set(state.sessions.map(({ id }) => id)) : undefined;
+  // Neither the initial empty catalog nor rows admitted by targeted patches
+  // before the first list can prove that persisted Sessions were deleted.
+  state.listed ? new Set(state.sessions.map(({ id }) => id)) : undefined;
 
 /**
  * The shell's catalog instance, mounted once above the feature services.

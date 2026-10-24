@@ -39,13 +39,13 @@
  *
  * Credential adapters project ordinary read failures to `false` and
  * propagate connection failures before they reach this service.
+ * After a complete read, named Session changes use a targeted Host lookup
+ * against the retained, per-Host readiness inputs and history membership.
  *
  * Milestone input validation lives here too: setMilestone arguments
  * are checked against the closed enum + status union before reaching
  * the SettingsStore.
  */
-
-import { collapseSessionRevisions } from '@maka/core/session-revisions';
 
 import {
   deriveOnboardingState,
@@ -66,10 +66,7 @@ import type { LlmConnection } from '@maka/core/llm-connections';
 export interface OnboardingSnapshot {
   state: OnboardingState;
   milestones: OnboardingMilestone[];
-  /**
-   * Session list, included so the renderer can populate the sidebar
-   * without a separate `sessions:list` IPC.
-   */
+  /** Complete authenticated Owner seed for preload's sidebar catalog. */
   sessions: SessionSummary[];
   /** Default Host connection projection used to seed the shell. */
   connections: ProjectedLlmConnection[];
@@ -82,6 +79,7 @@ export interface OnboardingServiceDeps {
   listConnections(): Promise<ProjectedLlmConnection[]>;
   getDefaultSlug(): Promise<string | null>;
   listSessions(): Promise<SessionSummary[]>;
+  getSession(sessionId: string): Promise<SessionSummary | null>;
   getMilestones(): Promise<OnboardingMilestone[]>;
   upsertMilestone(
     id: OnboardingMilestoneId,
@@ -98,10 +96,28 @@ export interface OnboardingServiceDeps {
 
 export interface OnboardingService {
   getSnapshot(): Promise<OnboardingSnapshot>;
+  getSessionUpdate(sessionId: string): Promise<OnboardingSessionUpdate>;
   setMilestone(
     id: unknown,
     status: unknown,
   ): Promise<OnboardingSnapshot>;
+}
+
+export type OnboardingSessionUpdate =
+  | { kind: 'resync' }
+  | {
+      kind: 'delta';
+      outcome: SessionSendProjection | null;
+      state: OnboardingState;
+      milestones: OnboardingMilestone[];
+    };
+
+interface OnboardingBaseline {
+  readonly sessionIds: Set<string>;
+  readonly connections: ProjectedLlmConnection[];
+  readonly defaultSlug: string | null;
+  readonly secrets: Readonly<Record<string, boolean>>;
+  milestones: OnboardingMilestone[];
 }
 
 /**
@@ -111,44 +127,93 @@ export interface OnboardingService {
  * real stores in tests.
  */
 export function createOnboardingService(deps: OnboardingServiceDeps): OnboardingService {
+  let baseline: OnboardingBaseline | null = null;
+  let updateTail: Promise<void> = Promise.resolve();
+
+  function enqueue<T>(read: () => Promise<T>): Promise<T> {
+    const pending = updateTail.then(read);
+    updateTail = pending.then(() => undefined, () => undefined);
+    return pending;
+  }
+
+  async function loadSnapshot(credentialFailureFallback = false): Promise<OnboardingSnapshot> {
+    const [connections, defaultSlug, sessions, milestones] = await Promise.all([
+      deps.listConnections(),
+      deps.getDefaultSlug(),
+      deps.listSessions(),
+      deps.getMilestones(),
+    ]);
+
+    // Credential reads stay parallel and read-only. A global connection
+    // invalidation is allowed to rebuild every Session's projection.
+    const secretEntries = await Promise.all(
+      connections.map(async (connection) => {
+        try {
+          return [connection.slug, await deps.hasCredential(connection)] as const;
+        } catch (error) {
+          if (!credentialFailureFallback) throw error;
+          return [connection.slug, false] as const;
+        }
+      }),
+    );
+    const secrets: Record<string, boolean> = Object.fromEntries(secretEntries);
+    // Revision collapse always retains one member of every nonempty family.
+    // Onboarding only needs presence, so a second all-Session fold is unnecessary.
+    const hasHistory = sessions.length > 0;
+    const state = deriveOnboardingState({
+      connections,
+      defaultSlug: defaultSlug ?? undefined,
+      hasHistory,
+      secrets,
+    });
+    const settledMilestones = hasHistory && !hasSettledInitialOnboarding(milestones)
+      ? await deps.upsertMilestone('initial_onboarding', 'completed')
+      : milestones;
+    baseline = {
+      sessionIds: new Set(sessions.map(({ id }) => id)),
+      connections,
+      defaultSlug,
+      secrets,
+      milestones: settledMilestones,
+    };
+    return buildSnapshot(state, settledMilestones, sessions, connections, defaultSlug, secrets);
+  }
+
+  async function readSessionUpdate(sessionId: string): Promise<OnboardingSessionUpdate> {
+    const observed = baseline;
+    if (!observed) return { kind: 'resync' };
+    const session = await deps.getSession(sessionId);
+    const hasHistory = session !== null ||
+      observed.sessionIds.size > (observed.sessionIds.has(sessionId) ? 1 : 0);
+    const milestones = hasHistory && !hasSettledInitialOnboarding(observed.milestones)
+      ? await deps.upsertMilestone('initial_onboarding', 'completed')
+      : observed.milestones;
+    if (session === null) observed.sessionIds.delete(sessionId);
+    else observed.sessionIds.add(sessionId);
+    if (milestones !== observed.milestones) {
+      observed.milestones = milestones;
+    }
+    return {
+      kind: 'delta',
+      outcome: session === null ? null : projectSessionSendOutcome({
+        session,
+        connections: observed.connections,
+        hasSecret: (slug) => observed.secrets[slug] ?? false,
+      }),
+      state: deriveOnboardingState({
+        connections: observed.connections,
+        defaultSlug: observed.defaultSlug ?? undefined,
+        hasHistory,
+        secrets: observed.secrets,
+      }),
+      milestones: observed.milestones,
+    };
+  }
+
   return {
-    async getSnapshot(): Promise<OnboardingSnapshot> {
-      const [connections, defaultSlug, sessions, milestones] = await Promise.all([
-        deps.listConnections(),
-        deps.getDefaultSlug(),
-        deps.listSessions(),
-        deps.getMilestones(),
-      ]);
-
-      // @kenji PR110b perf gate: per-connection credential lookup must
-      // run in parallel, NOT serialized. Even with 4-5 connections,
-      // async credential-store reads can add up to noticeable startup
-      // latency on cold open.
-      const secretEntries = await Promise.all(
-        connections.map(async (connection) => {
-          const hasSecret = await deps.hasCredential(connection);
-          return [connection.slug, hasSecret] as const;
-        }),
-      );
-      const secrets: Record<string, boolean> = Object.fromEntries(secretEntries);
-
-      const logicalSessions = collapseSessionRevisions(sessions);
-      const state = deriveOnboardingState({
-        connections,
-        defaultSlug: defaultSlug ?? undefined,
-        sessions: logicalSessions,
-        secrets,
-      });
-
-      // Backfill: existing users who already have sessions but no
-      // initial_onboarding milestone (upgraded from before this PR)
-      // get auto-marked as completed so the hero never appears.
-      if (logicalSessions.length > 0 && !hasSettledInitialOnboarding(milestones)) {
-        const updated = await deps.upsertMilestone('initial_onboarding', 'completed');
-        return buildSnapshot(state, updated, sessions, connections, defaultSlug, secrets);
-      }
-
-      return buildSnapshot(state, milestones, sessions, connections, defaultSlug, secrets);
+    getSnapshot: () => enqueue(() => loadSnapshot()),
+    getSessionUpdate(sessionId: string): Promise<OnboardingSessionUpdate> {
+      return enqueue(() => readSessionUpdate(sessionId));
     },
 
     async setMilestone(id: unknown, status: unknown): Promise<OnboardingSnapshot> {
@@ -161,34 +226,13 @@ export function createOnboardingService(deps: OnboardingServiceDeps): Onboarding
       }
       // Timestamp is stamped inside the store (Date.now()); renderer
       // never controls it.
-      const milestones = await deps.upsertMilestone(id, status);
-      // After the write, re-derive snapshot. State could change (e.g.
-      // the user finished `first_chat_sent` while in `ready_empty`
-      // → next derive should reflect new history). Re-using the
-      // already-fetched milestones avoids a settings round-trip.
-      const [connections, defaultSlug, sessions] = await Promise.all([
-        deps.listConnections(),
-        deps.getDefaultSlug(),
-        deps.listSessions(),
-      ]);
-      const secretEntries = await Promise.all(
-        connections.map(async (connection) => {
-          try {
-            return [connection.slug, await deps.hasCredential(connection)] as const;
-          } catch {
-            return [connection.slug, false] as const;
-          }
-        }),
-      );
-      const secrets: Record<string, boolean> = Object.fromEntries(secretEntries);
-      const logicalSessions = collapseSessionRevisions(sessions);
-      const state = deriveOnboardingState({
-        connections,
-        defaultSlug: defaultSlug ?? undefined,
-        sessions: logicalSessions,
-        secrets,
+      return enqueue(async () => {
+        await deps.upsertMilestone(id, status);
+        baseline = null;
+        // The global milestone write may alter which guide is shown; rebuild
+        // from the same authoritative sources as an explicit full refresh.
+        return loadSnapshot(true);
       });
-      return buildSnapshot(state, milestones, sessions, connections, defaultSlug, secrets);
     },
   };
 }

@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { PersonalAssistantSettings } from '../features/personal-assistant/index.js';
 import type { UsageScreenQuery, UsageScreenRequest } from '@maka/core/settings';
 
 import {
@@ -97,12 +98,14 @@ import {
 } from './settings-nav';
 import { getSettingsNavigationCopy } from '../locales/settings-navigation-copy.js';
 import { SettingRow } from './settings-rows';
+import { SettingsNavigationGuard, type SettingsNavigate } from '../application/contracts/settings-presentation/index.js';
 import { SettingsPage, SettingsSection as SettingsSectionBlock } from './settings-section';
 import { settingsActionErrorMessage } from './settings-error-copy';
 import { SessionBundleTasks } from '../features/session-bundle';
 import { CatalogSessions } from '../application/contracts/session-catalog/catalog-sessions.js';
 import { ImportTasksSettingsPage } from './import-tasks-settings-page';
 import { TasksSettingsPage, type ArchivedTasksBridge } from './tasks-settings-page';
+import { ArchivedTaskScope } from '../features/session-navigation';
 import { UsageScopeMount, UsageSettingsPage, type UsageScopeHandle } from './usage-settings-page';
 import { WebSearchSettingsPage } from './web-search-settings-page';
 import type { UiLocaleUpdateGate } from './ui-locale-update-gate';
@@ -137,8 +140,8 @@ import {
 } from './settings-snapshot-cache.js';
 import { RuntimeHostInteractionBoundary } from './runtime-host-interaction-boundary.js';
 import { createSettingsRequestAuthority } from './settings-request-authority.js';
+import { SHELL_SETTINGS_NARROW_QUERY } from '../application/contracts/shell-layout-contract.js';
 
-const NARROW_SETTINGS_QUERY = '(max-width: 760px)';
 const RUNTIME_HOST_CATALOG_KEY = 'runtime-host-catalog';
 
 function isBuiltInSettingsSection(value: string): value is SettingsSection {
@@ -176,7 +179,7 @@ type SettingsSurfaceProps = {
   uiLocaleUpdateGate: UiLocaleUpdateGate;
   onUserLabelChange?(label: string): void;
   onDefaultPermissionModeChange(mode: ChatDefaultPermissionMode): void;
-  request?: { readonly section?: SettingsSection; readonly profileId?: string };
+  request?: { readonly section?: SettingsSection; readonly profileId?: string; readonly externalAgentId?: string };
   openProviderCatalog?: boolean;
   initialConnectionSlug?: string;
   initialCreateProviderType?: ProviderType;
@@ -193,26 +196,31 @@ type SettingsSurfaceProps = {
 
 export function SettingsSurface(props: SettingsSurfaceProps) {
   return (
-    <ConnectionSettingsServicesConsumer>
-      {(connectionSettingsServices) => (
-        <SettingsSurfaceContent
-          {...props}
-          connectionSettingsServices={connectionSettingsServices}
-        />
-      )}
-    </ConnectionSettingsServicesConsumer>
+    <SettingsNavigationGuard>{(navigate) => (
+      <ConnectionSettingsServicesConsumer>
+        {(connectionSettingsServices) => (
+          <SettingsSurfaceContent
+            {...props}
+            navigate={navigate}
+            connectionSettingsServices={connectionSettingsServices}
+          />
+        )}
+      </ConnectionSettingsServicesConsumer>
+    )}</SettingsNavigationGuard>
   );
 }
 
 function SettingsSurfaceContent(
   props: SettingsSurfaceProps & {
     readonly connectionSettingsServices: ConnectionSettingsServices;
+    readonly navigate: SettingsNavigate;
   },
 ) {
+  const { navigate } = props;
   const locale = useUiLocale();
   const copy = getSettingsSharedCopy(locale);
   const localizedNav = groupedNav(locale);
-  const isNarrowSettings = useMediaQuery(NARROW_SETTINGS_QUERY);
+  const isNarrowSettings = useMediaQuery(SHELL_SETTINGS_NARROW_QUERY);
   const [section, setSection] = useState<string>(
     () => props.request?.section ?? readLastSettingsSection(),
   );
@@ -238,7 +246,8 @@ function SettingsSurfaceContent(
   // its section into the local state.
   useEffect(() => {
     if (props.request?.section && props.request.section !== section) {
-      setSection(props.request.section);
+      const next = props.request.section;
+      void navigate(() => setSection(next));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [props.request?.section]);
@@ -272,7 +281,8 @@ function SettingsSurfaceContent(
         detail?.section &&
         SETTINGS_NAV.some((item) => item.id === detail.section)
       ) {
-        setSection(detail.section);
+        const next = detail.section;
+        void navigate(() => setSection(next));
       }
     };
     window.addEventListener('maka:jumpToSettingsSection', handler);
@@ -892,7 +902,7 @@ function SettingsSurfaceContent(
                       label={copy.backToApp}
                       tooltip={copy.backToApp}
                       icon={<ArrowLeft size={ICON_SIZE.chrome} aria-hidden="true" />}
-                      onClick={props.onClose}
+                      onClick={() => void navigate(props.onClose)}
                     />
                   : <Button
                       data-maka-assistant-target="settings.close"
@@ -901,7 +911,7 @@ function SettingsSurfaceContent(
                       width="100%"
                       label={copy.backToApp}
                       icon={<ArrowLeft size={ICON_SIZE.chrome} aria-hidden="true" />}
-                      onClick={props.onClose}
+                      onClick={() => void navigate(props.onClose)}
                     />
               )}
             >
@@ -923,17 +933,18 @@ function SettingsSurfaceContent(
                           }
                         : undefined}
                       endContent={item.badge ? <Badge variant="neutral" label={item.badge} /> : undefined}
-                      onClick={() => setSection(item.id)}
+                      onClick={() => void navigate(() => setSection(item.id))}
                     />
                   ))}
                 </SideNavSection>
               ))}
+              <SideNavItem label="个人助手" isSelected={section === "personal-assistant"} onClick={() => void navigate(() => setSection("personal-assistant"))} />
               <MakaClientSlotOutlet
                 name="settings.navigation"
                 owner={{
                   activePage: section,
                   compact: isNarrowSettings,
-                  selectPage: setSection,
+                  selectPage: (page) => void navigate(() => setSection(page)),
                 }}
               />
             </SideNav>
@@ -949,7 +960,7 @@ function SettingsSurfaceContent(
             <Layout
               /* The rounded main pane owns page scrolling. Keeping scroll on
                  the centered LayoutContent made the wide gutters inert and
-                 parked the scrollbar beside the 920px content column. */
+                 parked the scrollbar beside the centered content column. */
               height="auto"
               padding={0}
               /* One column width for EVERY section. Usage used to get 920
@@ -957,8 +968,12 @@ function SettingsSurfaceContent(
                  visibly shifted the left edge — the title jumped ~120px
                  between 使用统计 and any other page. A settings surface is
                  one place; its margins must not depend on which page is
-                 open. */
-              contentWidth={920}
+                 open. The column is the app's one reading measure
+                 (DESIGN.md §7, One Measure Rule), plus LayoutContent's 24px
+                 inline padding on each side. It is wrapped in calc() because
+                 Astryx aligns a bare var() differently from an arithmetic
+                 width. */
+              contentWidth="calc(var(--maka-reading-measure) + 2 * var(--space-6))"
               header={headerCopy ? (
                 <LayoutHeader padding={6}>
                   <div className="settingsPageHeader">
@@ -978,8 +993,10 @@ function SettingsSurfaceContent(
                           isDisabled={!runtimeHosts}
                           width={220}
                           onChange={(profileId) => {
-                            selectedProfileChangedByUserRef.current = true;
-                            commitSelectedRuntimeHostProfile(profileId);
+                            void navigate(() => {
+                              selectedProfileChangedByUserRef.current = true;
+                              commitSelectedRuntimeHostProfile(profileId);
+                            });
                           }}
                         />
                       </div>
@@ -1038,6 +1055,7 @@ function SettingsSurfaceContent(
                           ? `${selectedRuntimeHost.profileId}:${selectedRuntimeHost.hostId}`
                           : 'client'}
                         host={selectedRuntimeHost}
+                        label={selectedRuntimeHostEntry?.profile.name}
                         generation={selectedProfileId
                           ? runtimeHostLifecycleByProfile.get(selectedProfileId)?.epoch
                           : undefined}
@@ -1082,6 +1100,7 @@ function SettingsSurfaceContent(
                             onRemoteHostAdded={props.onRemoteHostAdded}
                             openProviderCatalog={providerCatalogRequested}
                             initialConnectionSlug={props.initialConnectionSlug}
+                            initialExternalAgentId={props.request?.externalAgentId}
                             initialCreateProviderType={createProviderRequest}
                             onInitialCreateProviderConsumed={() => {
                               setCreateProviderRequest(undefined);
@@ -1146,6 +1165,7 @@ function SettingsPageBody(props: {
   initialConnectionSlug?: string;
   initialCreateProviderType?: ProviderType;
   onInitialCreateProviderConsumed?(): void;
+  initialExternalAgentId?: string;
   onInitialProviderCatalogConsumed?(): void;
 }) {
   const locale = useUiLocale();
@@ -1173,7 +1193,7 @@ function SettingsPageBody(props: {
         </SettingsPage>
       );
     case 'external-agents':
-      return <ExternalAgentsSettingsPage settings={props.settings} onUpdate={props.onUpdateSettings} />;
+      return <ExternalAgentsSettingsPage settings={props.settings} onUpdate={props.onUpdateSettings} initialExecutorId={props.initialExternalAgentId} />;
     case 'subagents':
       return (
         <SubagentSettingsPage
@@ -1244,7 +1264,13 @@ function SettingsPageBody(props: {
     case 'archived-tasks':
       return (
         <CatalogSessions catalog={props.archivedTasks.catalog}>
-          {(sessions) => <TasksSettingsPage {...props.archivedTasks} sessions={sessions} />}
+          {(sessions) => (
+            <ArchivedTaskScope {...props.archivedTasks} sessions={sessions}>
+              {(scope) => (
+                <TasksSettingsPage {...props.archivedTasks} sessions={sessions} scope={scope} />
+              )}
+            </ArchivedTaskScope>
+          )}
         </CatalogSessions>
       );
     case 'import-tasks':
@@ -1288,6 +1314,8 @@ function SettingsPageBody(props: {
           onReloadSettings={props.onReloadSettings}
         />
       );
+    case 'personal-assistant':
+      return <PersonalAssistantSettings key={`${props.runtimeHost?.profileId}:${props.runtimeHost?.hostId}`} host={props.runtimeHost} onOpenSession={props.onOpenSession} />;
     case 'daily-review':
       return <DailyReviewSettingsPage connections={props.connections} />;
     case 'search':

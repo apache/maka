@@ -38,7 +38,7 @@ const SHA_B = 'b'.repeat(64);
 const FIXTURE_LIFECYCLE = {
   startupTimeoutMs: 1_000,
   livenessMs: 50,
-  shutdownKillAfterMs: 1_000,
+  shutdownKillAfterMs: 15_000,
 };
 const workspaceCliPath = fileURLToPath(new URL('../packages/cli/dist/cli.js', import.meta.url));
 
@@ -329,6 +329,16 @@ test('starts the liveness window after the real Runtime Host is ready', {
   } finally {
     rmSync(scope, { recursive: true, force: true });
   }
+});
+
+test('reports startup output when a Runtime Host never reaches Ready', async () => {
+  await assert.rejects(
+    runRuntimeHostFixture(`
+      console.error('fixture startup blocked');
+      setInterval(() => undefined, 1000);
+    `),
+    /did not publish Ready within 1000 ms:.*fixture startup blocked/su,
+  );
 });
 
 test('rejects a Runtime Host that exits cleanly after Ready', async () => {

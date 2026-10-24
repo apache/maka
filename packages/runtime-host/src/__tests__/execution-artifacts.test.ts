@@ -32,7 +32,7 @@ import {
   readToolResultArchiveResource,
 } from '@maka/runtime/tool-result-archive-resource';
 import { shapeTerminalResult } from '@maka/runtime/shell-tools';
-import { readPageSchema, READ_PAGE_MAX_CHARS } from '@maka/runtime/read-page';
+import { readPageSchema, READ_PAGE_MAX_BYTES } from '@maka/runtime/read-page';
 import { TOOL_RESULT_ARCHIVE_EVIDENCE_MAX_BYTES } from '@maka/core/tool-result-archive-evidence';
 import { mkdir, mkdtemp, rm, stat, truncate, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -282,7 +282,7 @@ for (const scenario of ['text', 'large raw MCP image', 'executor-sized Bash'] as
               limit: 1,
             }),
           );
-          assert.ok(JSON.stringify(page).length <= READ_PAGE_MAX_CHARS);
+          assert.ok(Buffer.byteLength(JSON.stringify(page)) <= READ_PAGE_MAX_BYTES);
           assert.equal(page.metadata?.exitCode, 7);
           assert.equal(page.metadata?.status, 'failed');
           assert.equal(page.metadata?.stdoutTruncated, true);

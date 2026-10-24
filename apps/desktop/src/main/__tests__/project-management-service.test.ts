@@ -18,14 +18,11 @@
  */
 
 import assert from 'node:assert/strict';
-import { execFile } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { mkdir, mkdtemp, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { test } from 'node:test';
-import { promisify } from 'node:util';
-
-const execFileAsync = promisify(execFile);
+import { test, type TestContext } from 'node:test';
 import { createProjectCatalog, type ProjectCatalog } from '@maka/storage/project-catalog';
 import {
   createProjectManagementService,
@@ -88,47 +85,90 @@ test('owns Project selection and reversible lifecycle actions in Desktop', async
     assert.equal(relinked.ok, true);
     assert.equal(selectedPaths.at(-1), await realpath(relocatedPath));
   } finally {
+    catalog.close();
     await rm(base, { recursive: true, force: true });
   }
 });
 
-test('adding a nested folder selects that folder instead of the parent project', async () => {
-  const base = await mkdtemp(join(tmpdir(), 'maka-project-nested-add-'));
-  const parentPath = join(base, 'parent-project');
-  const childPath = join(parentPath, 'child-project');
-  await mkdir(childPath, { recursive: true });
-  await execFileAsync('git', ['init', '--quiet'], { cwd: parentPath });
+const verifyExactRepositorySelection = async (t: TestContext) => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-project-exact-selection-'));
+  const repository = join(base, 'repository');
+  const nestedDirectory = join(repository, 'nested');
+  await mkdir(nestedDirectory, { recursive: true });
+  execFileSync('git', ['init', '--quiet', repository]);
+  const choices = [repository, nestedDirectory].values();
+  const ids = ['project-repository', 'project-nested'].values();
+  const selections: Array<{ id: string; path: string }> = [];
+  const catalogDeps = {
+    createId: () => ids.next().value ?? assert.fail('unexpected Project allocation'),
+    now: () => 1_000,
+  };
+  const catalog = createProjectCatalog(join(base, 'storage'), catalogDeps);
+  // One hook, close before remove: `after` hooks run in registration order, and
+  // Windows cannot unlink runtime.sqlite while the catalog still holds it.
+  t.after(async () => {
+    catalog.close();
+    await rm(base, { recursive: true, force: true });
+  });
+  const selection = {
+    currentSelection: async () => ({ path: repository, projectId: undefined }),
+    setSelection(id: string | null, path: string) {
+      assert.ok(id);
+      selections.push({ id, path });
+    },
+  };
+  const serviceOptions = {
+    capabilities: LOCAL_CAPABILITIES,
+    catalog: managementCatalog(catalog),
+    chooseDirectory: async () => choices.next().value,
+    selection,
+  } satisfies Parameters<typeof createProjectManagementService>[0];
+  const service = createProjectManagementService(serviceOptions);
+  // Sequential on purpose: concurrent adds settle in completion order, so the
+  // selection order this test pins would depend on which add finishes first.
+  const results = [await service.add(), await service.add()];
+  assert.ok(results.every((result) => result.ok));
+  const [repositoryResult, nestedResult] = results;
+  if (!repositoryResult?.ok || !nestedResult?.ok) assert.fail('Expected both Projects to be added');
+  const canonicalPaths = await Promise.all(
+    [repository, nestedDirectory].map((path) => realpath(path)),
+  );
+  assert.notEqual(repositoryResult.project.id, nestedResult.project.id);
+  assert.deepEqual(selections.map(({ path }) => path), canonicalPaths);
+  assert.deepEqual(
+    results.map((result) => result.ok && result.path),
+    canonicalPaths,
+  );
+};
+test('add preserves the exact selected directory inside an existing repository', verifyExactRepositorySelection);
 
-  const selected: string[] = [];
-  let nextDirectory = parentPath;
-  let nextId = 0;
+test('re-adding an archived project reports the archived project instead of failing', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-project-archived-add-'));
+  const projectPath = join(base, 'archived-project');
+  await mkdir(projectPath);
+  const selectedPaths: string[] = [];
   const catalog = createProjectCatalog(join(base, 'storage'), {
     now: () => 1_000,
-    createId: () => `project-${++nextId}`,
+    createId: () => 'project-1',
   });
   const service = createProjectManagementService({
     capabilities: LOCAL_CAPABILITIES,
     catalog: managementCatalog(catalog),
-    chooseDirectory: async () => nextDirectory,
+    chooseDirectory: async () => projectPath,
     selection: {
-      currentSelection: async () => ({ projectId: undefined, path: parentPath }),
-      setSelection: (_projectId, path) => selected.push(path),
+      currentSelection: async () => ({ projectId: undefined, path: base }),
+      setSelection: (_projectId, path) => selectedPaths.push(path),
     },
   });
 
   try {
-    const parent = await service.add();
-    assert.equal(parent.ok, true);
-    if (!parent.ok) return;
-    assert.equal(parent.path, await realpath(parentPath));
+    const first = await service.add();
+    assert.equal(first.ok, true);
+    await service.archive('project-1');
 
-    nextDirectory = childPath;
-    const child = await service.add();
-    assert.equal(child.ok, true);
-    if (!child.ok) return;
-    assert.notEqual(child.project.id, parent.project.id);
-    assert.equal(child.path, await realpath(childPath));
-    assert.equal(selected.at(-1), await realpath(childPath));
+    const second = await service.add();
+    assert.deepEqual(second, { ok: false, reason: 'archived', projectId: 'project-1' });
+    assert.equal(selectedPaths.length, 1);
   } finally {
     catalog.close();
     await rm(base, { recursive: true, force: true });
@@ -283,7 +323,7 @@ test('does not silently replace a stale Project preference with another Project'
   const service = createProjectManagementService({
     capabilities: LOCAL_CAPABILITIES,
     catalog: {
-      list: async () => [{ id: 'other', name: 'Other', locations: [], available: true }],
+      list: async () => [Object.freeze({ id: 'other', name: 'Other', locations: [], available: true })],
       register: unexpected,
       relink: unexpected,
       rename: unexpected,

@@ -32,10 +32,12 @@ import {
   CATALOG_PROVIDER_TYPES,
   PROVIDER_REGISTRY,
   isRetiredProvider,
+  providerAcceptsOutputTokenLimit,
   providerFallbackModelIds,
 } from '../provider-registry.js';
 import { buildConnectionModelCatalogEntries } from '../model-catalog.js';
 import { PROVIDER_AUTH_ACTIONS, deriveProviderAuthContract } from '../provider-auth.js';
+import { RETIRED_PROVIDER_TYPES } from '../provider-retirement.js';
 import type { ProviderType } from '../llm-connections.js';
 
 describe('provider connection slug derivation contract', () => {
@@ -47,6 +49,31 @@ describe('provider connection slug derivation contract', () => {
     assert.equal(derived, 'openai-100');
     assert.ok(!existing.includes(derived));
     assert.equal(validateSlug(derived), null);
+  });
+});
+
+describe('Inception provider', () => {
+  it('offers API-key chat access and discovers only chat models', () => {
+    assert.ok(CATALOG_PROVIDER_TYPES.includes('inception'));
+    const provider = PROVIDER_REGISTRY.inception;
+    assert.equal(provider.baseUrl, 'https://api.inceptionlabs.ai/v1');
+    assert.equal(provider.authKind, 'api_key');
+    assert.deepEqual(provider.runtimeAdapter, { kind: 'openai-compatible' });
+    assert.deepEqual(provider.modelDiscovery, {
+      kind: 'protocol',
+      path: 'chat/completions/models',
+    });
+    assert.deepEqual(providerFallbackModelIds(provider), ['mercury-3', 'mercury-2.5', 'mercury-2']);
+    const entries = buildConnectionModelCatalogEntries({
+      connection: {
+        slug: 'inception',
+        providerType: 'inception',
+        defaultModel: 'mercury-3',
+        enabledModelIds: ['mercury-3'],
+      },
+    });
+    assert.equal(entries.length, 3);
+    assert.equal(entries.find((entry) => entry.id === 'mercury-3')?.canUseAsChatDefault, true);
   });
 });
 
@@ -174,8 +201,8 @@ describe('provider catalog contract — structural invariants over CATALOG_PROVI
         },
       },
       {
-        providerType: 'openai-responses-compatible',
-        via: 'runtimeAdapter',
+        providerType: 'custom',
+        via: 'protocolAdapters.openai-responses',
         contract: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
       },
       {
@@ -227,8 +254,20 @@ describe('retired provider contract', () => {
     isRetiredProvider(type),
   );
 
-  it('pins the entries this catalog retires', () => {
-    assert.deepEqual(retired, ['opencode-free', 'commandcode-go', 'claude-subscription']);
+  it('owns the list this catalog retires', () => {
+    // `RETIRED_PROVIDER_TYPES` is the one source of truth; the registry must
+    // agree so a name that is retired but not registered (or vice versa) fails
+    // here rather than at a send time.
+    assert.deepEqual(RETIRED_PROVIDER_TYPES, [
+      'opencode-free',
+      'commandcode-go',
+      'claude-subscription',
+    ]);
+    assert.deepEqual(
+      retired,
+      RETIRED_PROVIDER_TYPES,
+      'isRetiredProvider must match RETIRED_PROVIDER_TYPES',
+    );
   });
 
   it('keeps a retired provider registered but unwired', () => {
@@ -329,5 +368,17 @@ describe('provider catalog contract — fallback lifecycle', () => {
       }
     }
     assert.deepEqual(regressed, []);
+  });
+});
+
+describe('providerAcceptsOutputTokenLimit', () => {
+  it('refuses an output limit only where the backend rejects max_output_tokens', () => {
+    // The ChatGPT Codex backend answers max_output_tokens with HTTP 400.
+    assert.equal(providerAcceptsOutputTokenLimit('openai-codex'), false);
+    for (const providerType of ['openai', 'anthropic', 'google', 'kimi-coding-plan'] as const) {
+      assert.equal(providerAcceptsOutputTokenLimit(providerType), true, providerType);
+    }
+    // An unknown provider keeps today's behaviour.
+    assert.equal(providerAcceptsOutputTokenLimit('not-a-provider'), true);
   });
 });

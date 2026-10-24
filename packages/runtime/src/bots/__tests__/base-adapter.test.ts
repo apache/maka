@@ -19,7 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { createDefaultBotChannel } from '@maka/core/settings';
+import { BOT_PROVIDERS, createDefaultBotChannel } from '@maka/core/settings';
 import {
   BaseBotAdapter,
   botReadinessFromSettings,
@@ -77,15 +77,43 @@ describe('BaseBotAdapter', () => {
     assert.equal(adapter.getStatus().readiness, 'configured');
   });
 
-  test('does NOT restart when only allowedUserIds changes (runtime filter, not connection parameter)', () => {
-    const base = createDefaultBotChannel('telegram');
-    assert.equal(
-      botSettingsRequireRestart(
-        { ...base, allowedUserIds: ['123'] },
-        { ...base, allowedUserIds: undefined },
-      ),
-      false,
-    );
+  test('admits only listed senders in every channel and applies policy updates without restarting', () => {
+    for (const platform of BOT_PROVIDERS) {
+      const settings = { ...createDefaultBotChannel(platform), allowedUserIds: ['owner'] };
+      const adapter = new TestAdapter(platform, settings);
+      const messages: BotIncomingMessage[] = [];
+      adapter.on('message', (message) => messages.push(message));
+      const incoming = (userId: string, receivedAt: number): BotIncomingMessage => ({
+        platform,
+        userId,
+        userName: 'owner',
+        chatId: 'owner',
+        isGroup: true,
+        text: 'hello',
+        sourceMessageId: String(receivedAt),
+        receivedAt,
+      });
+      const owner = incoming('owner', 1);
+      adapter.publish(owner);
+      for (const userId of ['outsider', 'owner-extra', '']) adapter.publish(incoming(userId, 2));
+      assert.deepEqual(messages, [owner], platform);
+      assert.equal(adapter.getStatus().lastEventAt, 1, platform);
+
+      assert.deepEqual(adapter.updateSettings({ ...settings, allowedUserIds: ['outsider'] }), {
+        needsRestart: false,
+      });
+      adapter.publish(incoming('owner', 3));
+      const nextOwner = incoming('outsider', 4);
+      adapter.publish(nextOwner);
+      assert.deepEqual(messages, [owner, nextOwner], platform);
+
+      for (const allowedUserIds of [[], undefined]) {
+        adapter.updateSettings({ ...settings, allowedUserIds });
+        const unrestricted = incoming('any-user', messages.length + 5);
+        adapter.publish(unrestricted);
+        assert.equal(messages.at(-1), unrestricted, platform);
+      }
+    }
   });
 
   test('derives readiness only from current credential facts', () => {

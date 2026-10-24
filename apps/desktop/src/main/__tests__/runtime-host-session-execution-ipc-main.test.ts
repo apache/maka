@@ -81,14 +81,14 @@ for (const phase of ['connecting', 'seeding'] as const) {
       const observing = ipc.invoke('sessions:observe', 'session-1', 'observer-1');
       void observing.catch(() => undefined);
       await new Promise<void>((resolve) => setImmediate(resolve));
-      assert.deepEqual(observations.observedSessionIds(), ['session-1']);
+      assert.deepEqual(observations.observationSessionIds(), ['session-1']);
 
       if (cancellation === 'unobserve') await observations.unobserve('observer-1');
       else ipc.rendererDestroyed();
       finishSeed();
 
       assert.deepEqual(await observing, { kind: 'cancelled' });
-      assert.deepEqual(observations.observedSessionIds(), []);
+      assert.deepEqual(observations.observationSessionIds(), []);
       assert.deepEqual(await observations.attach(source), []);
       assert.equal(seeds, phase === 'seeding' ? 1 : 0);
       assert.deepEqual(errors, []);
@@ -97,16 +97,19 @@ for (const phase of ['connecting', 'seeding'] as const) {
   }
 }
 
-test('transcript history IPC forwards open mode, load-earlier, and read-turn to the registry', async () => {
+test('transcript history IPC forwards window intent and both page directions to the registry', async () => {
   const ipc = ipcHarness();
   const observations = new RuntimeHostSessionObservationRegistry();
   const calls: unknown[] = [];
-  observations.openTranscript = async (sessionId, consumerId, target, mode) => {
-    calls.push({ command: 'open', sessionId, consumerId, targetId: target.id, mode });
+  observations.openTranscript = async (sessionId, consumerId, target, mode, _resumeFrom, position) => {
+    calls.push({ command: 'open', sessionId, consumerId, targetId: target.id, mode, position });
     return { sessionId, generation: 'generation-1', hostEpoch: 'host-1', readThroughMessageId: null };
   };
   observations.loadEarlierTranscript = async (consumerId, targetId) => {
     calls.push({ command: 'earlier', consumerId, targetId });
+  };
+  observations.loadNewerTranscript = async (consumerId, targetId) => {
+    calls.push({ command: 'newer', consumerId, targetId });
   };
   const turn = [{ type: 'user', id: 'message-1', turnId: 'turn-1', ts: 1, text: 'hello' }];
   observations.readTranscriptTurn = async (sessionId, turnId) => {
@@ -115,13 +118,15 @@ test('transcript history IPC forwards open mode, load-earlier, and read-turn to 
   };
   registerRuntimeHostSessionObservationIpc({ observations, resolveSideConversation: async () => false }, ipc);
 
-  await ipc.invoke('sessions:transcript:open', 'shared-session', 'guest-consumer', 'history');
+  await ipc.invoke('sessions:transcript:open', 'shared-session', 'guest-consumer', 'history', undefined, { turnId: 'turn-1' });
   await ipc.invoke('sessions:transcript:load-earlier', 'guest-consumer');
+  await ipc.invoke('sessions:transcript:load-newer', 'guest-consumer');
   assert.deepEqual(await ipc.invoke('sessions:transcript:read-turn', 'shared-session', 'turn-1'), turn);
   assert.equal(ipc.reconnectableChannels.has('sessions:transcript:read-turn'), true);
   assert.deepEqual(calls, [
-    { command: 'open', sessionId: 'shared-session', consumerId: 'guest-consumer', targetId: 9, mode: 'history' },
+    { command: 'open', sessionId: 'shared-session', consumerId: 'guest-consumer', targetId: 9, mode: 'history', position: { turnId: 'turn-1' } },
     { command: 'earlier', consumerId: 'guest-consumer', targetId: 9 },
+    { command: 'newer', consumerId: 'guest-consumer', targetId: 9 },
     { command: 'read-turn', sessionId: 'shared-session', turnId: 'turn-1' },
   ]);
   await assert.rejects(
@@ -129,7 +134,11 @@ test('transcript history IPC forwards open mode, load-earlier, and read-turn to 
     /Invalid Desktop transcript open mode/,
   );
   await assert.rejects(ipc.invoke('sessions:transcript:load-earlier', ''), /Transcript consumer/);
-  assert.equal(calls.length, 3);
+  await assert.rejects(ipc.invoke('sessions:transcript:load-newer', ''), /Transcript consumer/);
+  for (const position of [{ turnId: '' }, { sequence: -1 }, { sequence: 20, throughSequence: 10 }]) {
+    await assert.rejects(ipc.invoke('sessions:transcript:open', 'shared-session', 'bad', 'history', undefined, position), /Invalid/);
+  }
+  assert.equal(calls.length, 4);
 });
 
 test('treats pending Session observation teardown as IPC cancellation', async () => {
@@ -1040,6 +1049,7 @@ test("submits an ordinary composer message once under its stable message identit
 test('returns Host-owned cancellation proof to the renderer', async () => {
   const ipc = ipcHarness();
   const queriedMessageIds: string[][] = [];
+  const retired: unknown[] = [];
   registerExecutionIpc(
     {
       client: executionClient({
@@ -1052,6 +1062,7 @@ test('returns Host-owned cancellation proof to the renderer', async () => {
           };
         },
       }),
+      retireCancelledMessages(sessionId, messageIds) { retired.push({ sessionId, messageIds }); },
     },
     ipc,
   );
@@ -1064,6 +1075,7 @@ test('returns Host-owned cancellation proof to the renderer', async () => {
     { cancelledMessageIds: ['message-cancelled'] },
   );
   assert.deepEqual(queriedMessageIds, [['message-accepted', 'message-cancelled']]);
+  assert.deepEqual(retired, [{ sessionId: 'session-1', messageIds: ['message-cancelled'] }]);
 });
 
 test('batches cancellation proof queries at the Runtime Host protocol boundary', async () => {
@@ -1751,7 +1763,7 @@ test("reports a Host-blocked Skill send as a Skill failure", async () => {
   );
 });
 
-test("queues explicit Desktop follow-ups", async () => {
+const verifyExplicitDesktopFollowup = async () => {
   const submits: unknown[] = [];
   let sequence = 0;
   const skillInvocation = {
@@ -1844,8 +1856,8 @@ test("queues explicit Desktop follow-ups", async () => {
       placement: "next_turn",
     },
   ]);
-});
-
+};
+test('queues explicit Desktop follow-ups', verifyExplicitDesktopFollowup);
 test('keeps an unknown Desktop follow-up admission available for reconciliation', async () => {
   const ipc = ipcHarness();
   registerExecutionIpc(
@@ -1879,101 +1891,25 @@ test('keeps an unknown Desktop follow-up admission available for reconciliation'
   );
 });
 
-test("routes per-entry queue mutations to the Runtime Host", async () => {
-  const calls: unknown[] = [];
-  let sequence = 0;
-  const ipc = ipcHarness();
-  registerExecutionIpc(
-    {
-      client: executionClient({
-        retractQueueEntry: async (input) => {
-          calls.push({ operation: "retract", ...input });
-          return { queueRevision: 3 };
-        },
-        promoteQueueEntry: async (input) => {
-          calls.push({ operation: "promote", ...input });
-          return { queueRevision: 4 };
-        },
-        updateQueueEntry: async (input) => {
-          calls.push({ operation: "update", ...input });
-          return { queueRevision: 5 };
-        },
-        reorderQueueEntries: async (input) => {
-          calls.push({ operation: "reorder", ...input });
-          return { queueRevision: 6 };
-        },
-      }),
-      observer: unusedObserver(),
-      attachmentApprovals: createAttachmentApprovalRegistry(),
-      emitSessionsChanged() {},
-      stat: async () => ({ size: 0 }),
-      resizeImage: async (bytes) => bytes,
-      beforeStop() {},
-      newId: () => `id-${++sequence}`,
-    },
-    ipc,
-  );
-
-  assert.equal(await ipc.invoke("sessions:retractQueueEntry", "session-1", "entry-1"), undefined);
-  await ipc.invoke("sessions:promoteQueueEntry", "session-1", "entry-2");
-  await ipc.invoke(
-    "sessions:updateQueueEntry",
-    "session-1",
-    "entry-2",
-    4,
-    " revised ",
-  );
-  await ipc.invoke("sessions:reorderQueueEntries", "session-1", ["entry-3", "entry-2"]);
-
-  assert.deepEqual(calls, [
-    {
-      operation: "retract",
-      sessionId: "session-1",
-      entryId: "entry-1",
-      retractId: "id-1",
-    },
-    {
-      operation: "promote",
-      sessionId: "session-1",
-      entryId: "entry-2",
-      promoteId: "id-2",
-    },
-    {
-      operation: "update",
-      sessionId: "session-1",
-      entryId: "entry-2",
-      updateId: "id-3",
-      expectedQueueRevision: 4,
-      text: "revised",
-    },
-    {
-      operation: "reorder",
-      sessionId: "session-1",
-      reorderId: "id-4",
-      entryIds: ["entry-3", "entry-2"],
-    },
-  ]);
-
-  await assert.rejects(
-    () => ipc.invoke("sessions:updateQueueEntry", "session-1", "entry-1", 4, " "),
-    /Invalid Queued message text/,
-  );
-  await assert.rejects(
-    () => ipc.invoke("sessions:promoteQueueEntry", "session-1", 42),
-    /Invalid queue entry identity/,
-  );
-  await assert.rejects(
-    () => ipc.invoke("sessions:reorderQueueEntries", "session-1", ["entry-1", 42]),
-    /Invalid queue entry order/,
-  );
-});
-
 test("binds steer and stop to Host-owned queue and active Turn identities", async () => {
+  const retired: unknown[] = [];
   const submits: unknown[] = [];
   const interrupts: unknown[] = [];
   const retractions: unknown[] = [];
   const stopLifecycle: string[] = [];
   let sequence = 0;
+  const retractQueueEntry: ExecutionClient['retractQueueEntry'] = async (input) => {
+    retractions.push(input);
+    if (retractions.length === 1) {
+      throw new RuntimeHostRequestInterruptedError(
+        'queue.retract',
+        'command',
+        'dispatched',
+        'connection_lost',
+      );
+    }
+    return Object.freeze({ queueRevision: 1 + 2 });
+  };
   const client = executionClient({
     getSession: async () => sideConversationSession(),
     submitMessage: async (input) => {
@@ -2013,18 +1949,7 @@ test("binds steer and stop to Host-owned queue and active Turn identities", asyn
         },
       };
     },
-    retractQueueEntry: async (input) => {
-      retractions.push(input);
-      if (retractions.length === 1) {
-        throw new RuntimeHostRequestInterruptedError(
-          'queue.retract',
-          'command',
-          'dispatched',
-          'connection_lost',
-        );
-      }
-      return { queueRevision: 3 };
-    },
+    retractQueueEntry,
   });
   const observer = observerWithSnapshot({
     queue: {
@@ -2057,6 +1982,7 @@ test("binds steer and stop to Host-owned queue and active Turn identities", asyn
       beforeStop() {
         stopLifecycle.push("teardown");
       },
+      retireCancelledMessages(sessionId, messageIds) { retired.push({ sessionId, messageIds }); },
       newId: () => `id-${++sequence}`,
     },
     ipc,
@@ -2123,6 +2049,10 @@ test("binds steer and stop to Host-owned queue and active Turn identities", asyn
   assert.deepEqual(stopLifecycle, [
     'teardown',
     'interrupt',
+  ]);
+  assert.deepEqual(retired, [
+    { sessionId: 'session-1', messageIds: ['steer-ticket-1'] },
+    { sessionId: 'session-1', messageIds: ['message-followup'] },
   ]);
 
   assert.deepEqual(submits, [
@@ -2295,17 +2225,72 @@ test('Session snapshot IPC rejects invalid budgets and unavailable sources befor
   await assert.rejects(ipc.invoke('sessions:readSnapshot', 'session-1'), /archived/);
 });
 
+test("sessions:queryResumeLatest previews the plan without starting a resume", async () => {
+  const queries: unknown[] = [];
+  const readyPlan = {
+    sessionId: "session-1",
+    disposition: "ready" as const,
+    sourceRunId: "run-1",
+    sourceTurnId: "turn-1",
+    sourceRuntimeEventHighWater: 42,
+  };
+  const ipc = ipcHarness();
+  registerExecutionIpc(
+    {
+      client: executionClient({
+        queryTurnResume: async (input) => {
+          queries.push(input);
+          return readyPlan;
+        },
+      }),
+    },
+    ipc,
+  );
+
+  assert.deepEqual(await ipc.invoke("sessions:queryResumeLatest", "session-1"), readyPlan);
+  assert.deepEqual(queries, [{ sessionId: "session-1" }]);
+});
+
+test("sessions:queryResumeLatest passes a parked plan through untouched", async () => {
+  const parkedPlan = {
+    sessionId: "session-1",
+    disposition: "parked" as const,
+    reason: "session_busy" as const,
+  };
+  const ipc = ipcHarness();
+  registerExecutionIpc(
+    {
+      client: executionClient({
+        queryTurnResume: async () => parkedPlan,
+      }),
+    },
+    ipc,
+  );
+
+  assert.deepEqual(await ipc.invoke("sessions:queryResumeLatest", "session-1"), parkedPlan);
+});
+
 type ExecutionClient = RuntimeHostSessionExecutionIpcDeps["client"];
 
 function executionClient(overrides: Partial<ExecutionClient>): ExecutionClient {
   const unavailable = async (): Promise<never> => {
     throw new Error("Unexpected Runtime Host Session execution operation");
   };
+  const queueOperations = Object.fromEntries(
+    ['retractQueueEntry', 'promoteQueueEntry', 'updateQueueEntry', 'reorderQueueEntries'].map(
+      (name) => [name, unavailable],
+    ),
+  ) as unknown as Pick<
+    ExecutionClient,
+    'retractQueueEntry' | 'promoteQueueEntry' | 'updateQueueEntry' | 'reorderQueueEntries'
+  >;
   return {
     answerInteraction: unavailable,
     compactContext: unavailable,
     copySession: unavailable,
     getSession: unavailable,
+    generatePromptSuggestion: unavailable,
+    generateCheckin: unavailable,
     ingestAttachment: unavailable,
     interruptTurn: unavailable,
     listSessionTurns: unavailable,
@@ -2315,10 +2300,7 @@ function executionClient(overrides: Partial<ExecutionClient>): ExecutionClient {
     queryTurnResume: unavailable,
     readExecutionBoundary: unavailable,
     openSession: unavailable,
-    retractQueueEntry: unavailable,
-    promoteQueueEntry: unavailable,
-    updateQueueEntry: unavailable,
-    reorderQueueEntries: unavailable,
+    ...queueOperations,
     setSessionReadMarker: unavailable,
     startTurnResume: unavailable,
     submitMessage: unavailable,
@@ -2539,9 +2521,9 @@ test('renderer reload releases old observations without accumulating destroyed l
     assert.equal(ipc.rendererListenerCount(), 2);
     ipc.rendererNavigate(true); // Same-document navigation keeps live subscriptions.
     ipc.rendererNavigate(false, false); // So do child-frame navigations.
-    assert.deepEqual(registry.observedSessionIds(), ['session-1']);
+    assert.deepEqual(registry.observationSessionIds(), ['session-1']);
     ipc.rendererNavigate();
-    assert.deepEqual(registry.observedSessionIds(), []);
+    assert.deepEqual(registry.observationSessionIds(), []);
     assert.equal(ipc.rendererListenerCount(), 1);
   }
   assert.equal(removed.length, 20);
@@ -2558,7 +2540,7 @@ test('an observation admitted across document replacement is cancelled before re
   ipc.rendererNavigate();
   resolving.resolve();
   assert.deepEqual(await observing, { kind: 'cancelled' });
-  assert.deepEqual(registry.observedSessionIds(), []);
+  assert.deepEqual(registry.observationSessionIds(), []);
   await registry.close();
 });
 
@@ -2570,4 +2552,33 @@ test('late transcript acknowledgement after renderer teardown is a no-op', async
     consumerId: 'released-consumer', sessionId: 'session-1', hostEpoch: 'epoch-1', through: 4,
   });
   await registry.close();
+});
+
+
+test('prompt suggestion IPC forwards only a validated Session and does not reconnect/retry paid effects', async () => {
+  const ipc = ipcHarness();
+  const calls: string[] = [];
+  registerExecutionIpc({ client: executionClient({ generatePromptSuggestion: async (id) => {
+    calls.push(id); return { kind: 'generated', turnId: 'turn-1', terminalEventId: 'terminal-1', text: '补上测试' };
+  } }) }, ipc);
+  assert.deepEqual(await ipc.invoke('sessions:generatePromptSuggestion', 'session-1'), {
+    kind: 'generated', turnId: 'turn-1', terminalEventId: 'terminal-1', text: '补上测试',
+  });
+  await assert.rejects(ipc.invoke('sessions:generatePromptSuggestion', ''), /Invalid/);
+  assert.deepEqual(calls, ['session-1']);
+  assert.equal(ipc.reconnectableChannels.has('sessions:generatePromptSuggestion'), false);
+});
+
+test('check-in IPC forwards a decoded request once and never reconnects a paid effect', async () => {
+  const ipc = ipcHarness();
+  const calls: unknown[] = [];
+  registerExecutionIpc({ client: executionClient({ generateCheckin: async (input) => {
+    calls.push(input); return { kind: 'empty', effectId: input.effectId };
+  } }) }, ipc);
+  assert.deepEqual(await ipc.invoke('sessions:generateCheckin', { effectId: 'effect-1', since: null }), {
+    kind: 'empty', effectId: 'effect-1',
+  });
+  await assert.rejects(ipc.invoke('sessions:generateCheckin', { effectId: 'effect-2' }), /Invalid/);
+  assert.deepEqual(calls, [{ effectId: 'effect-1', since: null }]);
+  assert.equal(ipc.reconnectableChannels.has('sessions:generateCheckin'), false);
 });

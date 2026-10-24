@@ -170,6 +170,16 @@ test('the Astryx inventory can run without selecting the code suite', () => {
 
   assert.equal(plan.code, false);
   assert.equal(plan.astryxSurface, true);
+  assert.equal(
+    planTests(['scripts/check-astryx-surface-inventory.test.mjs'], { graph }).astryxSurface,
+    true,
+  );
+  // Generator tests use the normal code lane, which always invokes both
+  // inventory scripts even though this path is not an Astryx product surface.
+  assert.equal(
+    planTests(['scripts/generate-astryx-surface-inventory.test.mjs'], { graph }).code,
+    true,
+  );
 });
 
 test('desktop renderer changes retain Electron and Storybook coverage', () => {

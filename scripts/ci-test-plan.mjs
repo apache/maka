@@ -59,6 +59,8 @@ const RELEASE_CONTRACT_FILES = new Set([
   'scripts/audit-shipped-dependencies.mjs',
   'scripts/audit-shipped-dependencies.test.mjs',
   'scripts/package-macos.mjs',
+  'scripts/staple-macos-artifact.mjs',
+  'scripts/staple-macos-artifact.test.mjs',
   'scripts/package-macos-autoupdate-next.mjs',
   'scripts/package-macos-arm64-cli.mjs',
   'scripts/package-linux.mjs',
@@ -84,6 +86,7 @@ const RELEASE_CONTRACT_FILES = new Set([
   'scripts/product-nightly.test.mjs',
   'scripts/verify-packaged-app.mjs',
   'scripts/verify-packaged-app.test.mjs',
+  'scripts/macos-update-archive.test.mjs',
   'scripts/verify-windows-autoupdate.mjs',
   'scripts/verify-windows-installer-lifecycle.mjs',
   'scripts/verify-windows-x64.mjs',
@@ -156,6 +159,8 @@ const ASF_SOURCE_FILES = new Set([
   'docs/code-origin-audit.md',
   'package.json',
   'packages/eval/harbor/deepseek-harness-profile/cordis.patch.yml',
+  'scripts/apply-dependency-patches.mjs',
+  'scripts/apply-dependency-patches.test.mjs',
   'scripts/asf-license-headers.mjs',
   'scripts/asf-license-headers.test.mjs',
   'scripts/asf-source-release.mjs',
@@ -239,6 +244,14 @@ const STORYBOOK_DRIVING_SCRIPTS = new Set([
 // than "any packages/core change".
 const STORYBOOK_CORE_SETTINGS = 'packages/core/src/settings.ts';
 
+const ASTRYX_INVENTORY_CONTRACT_FILES = new Set([
+  'docs/astryx-surface-file-inventory.md',
+  'docs/astryx-surface-file-inventory.paths',
+  'scripts/check-astryx-surface-inventory.mjs',
+  'scripts/check-astryx-surface-inventory.test.mjs',
+  'scripts/generate-astryx-surface-inventory.mjs',
+]);
+
 function isStorybookCatalogPath(path) {
   if (path === 'apps/desktop/.storybook' || path.startsWith('apps/desktop/.storybook/'))
     return true;
@@ -283,20 +296,12 @@ function isStorybookPath(path) {
  * Electron e2e should pay cold install/boot only when the real window surface
  * or e2e driver changed — not when only packages/ui unit tests changed.
  */
-function isAstryxSurfaceInventoryPath(path) {
-  if (
-    path === 'docs/astryx-surface-file-inventory.md' ||
-    path === 'docs/astryx-surface-file-inventory.paths' ||
-    path === 'scripts/generate-astryx-surface-inventory.mjs' ||
-    path === 'scripts/check-astryx-surface-inventory.mjs'
-  ) {
-    return true;
-  }
+function shouldRunAstryxSurfaceInventory(path) {
+  if (ASTRYX_INVENTORY_CONTRACT_FILES.has(path)) return true;
   if (isDocumentation(path)) return false;
-  if (path === 'apps/desktop/src/renderer' || path.startsWith('apps/desktop/src/renderer/')) {
-    return !isPackageTestPath(path);
-  }
-  return isUiProductSourcePath(path);
+  const desktopRenderer =
+    path === 'apps/desktop/src/renderer' || path.startsWith('apps/desktop/src/renderer/');
+  return desktopRenderer ? !isPackageTestPath(path) : isUiProductSourcePath(path);
 }
 
 /**
@@ -535,7 +540,7 @@ export function planTests(changedFiles, options = {}) {
   return {
     appIcons: files.some((path) => isAppIconPath(path)),
     asfSource: files.some((path) => isAsfSourcePath(path)),
-    astryxSurface: files.some((path) => isAstryxSurfaceInventoryPath(path)),
+    astryxSurface: files.some((path) => shouldRunAstryxSurfaceInventory(path)),
     cliPackage,
     code,
     deepseekHarnessToolchain: files.some((path) => DEEPSEEK_HARNESS_TOOLCHAIN_FILES.has(path)),
@@ -572,7 +577,7 @@ export function formatGitHubOutputs(plan) {
   return [
     `app_icons=${plan.appIcons}`,
     `asf_source=${plan.asfSource}`,
-    `astryx_surface=${plan.astryxSurface}`,
+    `astryx_surface=${Boolean(plan.astryxSurface)}`,
     `cli_package=${plan.cliPackage}`,
     `code=${plan.code}`,
     `deepseek_harness_toolchain=${plan.deepseekHarnessToolchain}`,

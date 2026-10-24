@@ -57,6 +57,8 @@ export function SandboxBoundaryPrompt({
     setResponsePending(true);
     try {
       await onRespond({ requestId, decision });
+    } catch {
+      // The shell surfaces a toast when this session is still active.
     } finally {
       if (activeRequestIdRef.current === requestId) {
         responsePendingRef.current = false;

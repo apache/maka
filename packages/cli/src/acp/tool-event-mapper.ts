@@ -33,6 +33,9 @@ import {
 import type { StoredMessage } from '@maka/core/session';
 import { projectToolArgsPreview } from '@maka/core/tool-quiet-preview';
 import { toolResultActivityStatus } from '@maka/core/tool-result-status';
+import type { ToolCallOutcome } from '@maka/core/tool-result-status';
+import { isCanonicalArtifactEntityId } from '@maka/core/artifacts';
+import { formatAttachmentResourceRef } from '@maka/core/attachments';
 import type { InteractionPendingSnapshot, InteractionSnapshot } from '@maka/runtime-host/protocol';
 import { BoundedChunkBuffer } from '../bounded-chunk-buffer.js';
 import { formatToolResultContent } from '../pi-transcript-format.js';
@@ -95,7 +98,10 @@ interface ToolCallProjection {
 export class AcpToolEventMapper {
   readonly #tools = new Map<string, ToolState>();
   #retainedChars = 0;
-  constructor(readonly notify: (update: SessionUpdate) => Promise<void>) {}
+  constructor(
+    readonly notify: (update: SessionUpdate) => Promise<void>,
+    readonly sessionId?: string,
+  ) {}
 
   async accept(event: ToolEvent): Promise<void> {
     const tool = this.#ensure(event.turnId, event.toolUseId);
@@ -142,6 +148,7 @@ export class AcpToolEventMapper {
           event.content,
           event.durationMs,
           event.contentOmitted === true,
+          event.outcome,
         );
         return;
     }
@@ -159,6 +166,7 @@ export class AcpToolEventMapper {
         message.content,
         message.durationMs,
         false,
+        message.outcome,
       );
     }
   }
@@ -283,9 +291,11 @@ export class AcpToolEventMapper {
     result: ToolResultContent,
     durationMs: number | undefined,
     omitted: boolean,
+    outcome?: ToolCallOutcome,
   ): Promise<void> {
     const resultDigest = digestValue({
       isError,
+      outcome,
       result: omitted ? null : result,
       durationMs,
       omitted,
@@ -293,7 +303,7 @@ export class AcpToolEventMapper {
     if (tool.resultDigest === resultDigest) return;
     if (omitted) tool.resultAnnounced = true;
     tool.terminal = true;
-    const hostStatus = toolResultActivityStatus(isError, omitted ? undefined : result);
+    const hostStatus = toolResultActivityStatus(isError, omitted ? undefined : result, outcome);
     tool.status = hostStatus === 'completed' ? 'completed' : 'failed';
     tool.meta.hostStatus = hostStatus;
     if (durationMs !== undefined) tool.meta.durationMs = durationMs;
@@ -303,16 +313,23 @@ export class AcpToolEventMapper {
       await this.#publish(tool);
     } else {
       tool.authoritative = true;
+      const artifacts = artifactReferences(result, this.sessionId);
+      if (artifacts.length > 0) tool.meta.artifacts = artifacts;
+      else delete tool.meta.artifacts;
+      const artifactHints = artifacts.map(
+        ({ artifactId, resourceRef }) =>
+          `Artifact ${artifactId}: ${resourceRef} (read with _maka/artifact/query)`,
+      );
       const presentation = bounded(
         formatToolResultContent(result),
-        TOOL_CHARS,
+        TOOL_CHARS - artifactHints.join('\n').length - (artifactHints.length > 0 ? 1 : 0),
         '\n[Result truncated]',
       );
       const raw = JSON.stringify(result);
       tool.meta.resultTruncated = presentation.dropped > 0;
       tool.meta.resultDroppedChars = presentation.dropped;
       await this.#publish(tool, {
-        content: textContent(presentation.text),
+        content: textContent([...artifactHints, presentation.text].join('\n')),
         ...(raw.length <= TOOL_CHARS && presentation.dropped === 0 ? { rawOutput: result } : {}),
       });
     }
@@ -362,7 +379,11 @@ export class AcpToolEventMapper {
 
   async #publish(
     tool: ToolState,
-    extra: { content?: ToolCallContent[]; rawInput?: unknown; rawOutput?: unknown } = {},
+    extra: {
+      content?: ToolCallContent[];
+      rawInput?: unknown;
+      rawOutput?: unknown;
+    } = {},
   ): Promise<void> {
     const fixedChars = fixedStateChars(tool);
     // Keep recent progress and use the remaining per-tool budget for output.
@@ -402,7 +423,11 @@ export class AcpToolEventMapper {
           type: 'text',
           text: `[${output.stream}]${output.redacted ? ' [redacted]' : ''} ${output.chunk}`,
           _meta: {
-            maka: { sequence: output.seq, stream: output.stream, redacted: output.redacted },
+            maka: {
+              sequence: output.seq,
+              stream: output.stream,
+              redacted: output.redacted,
+            },
           },
         },
       });
@@ -451,6 +476,33 @@ export class AcpToolEventMapper {
   }
 }
 
+function artifactReferences(
+  result: ToolResultContent,
+  sessionId: string | undefined,
+): { artifactId: string; resourceRef: string }[] {
+  if (!sessionId) return [];
+  let artifactId: string | undefined;
+  if (
+    result.kind === 'image' &&
+    result.ref.kind === 'session_file' &&
+    result.ref.sessionId === sessionId
+  )
+    artifactId = result.ref.relativePath;
+  else if (result.kind === 'archived_tool_result' && result.status === 'not_loaded')
+    artifactId = result.artifactId;
+  if (!isCanonicalArtifactEntityId(artifactId)) return [];
+  return [
+    {
+      artifactId,
+      resourceRef: formatAttachmentResourceRef({
+        kind: 'session_file',
+        sessionId,
+        relativePath: artifactId,
+      })!,
+    },
+  ];
+}
+
 function fixedStateChars(tool: ToolState): number {
   return (
     tool.inputPreview.length +
@@ -482,7 +534,10 @@ function bounded(text: string, max: number, suffix = '…'): { text: string; dro
   let length = max - suffix.length;
   const before = text.charCodeAt(length - 1);
   if (before >= 0xd800 && before <= 0xdbff) length -= 1;
-  return { text: `${text.slice(0, length)}${suffix}`, dropped: text.length - length };
+  return {
+    text: `${text.slice(0, length)}${suffix}`,
+    dropped: text.length - length,
+  };
 }
 
 function textContent(text: string): ToolCallContent[] {

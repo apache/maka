@@ -109,6 +109,18 @@ describe('Runtime Host profiles', () => {
         }),
       /must target POSIX/u,
     );
+    const profile = decodeEnvironmentRuntimeHostProfile((await catalog.resolve('ubuntu')).profile);
+    const operator = { ...OPERATOR, nodePath: '/new/node' };
+    assert.equal(await catalog.updateEnvironmentOperatorIfCurrent(profile, operator), true);
+    assert.deepEqual((await catalog.resolve('ubuntu')).profile, { ...profile, operator });
+    assert.equal(await catalog.updateEnvironmentOperatorIfCurrent(profile, OPERATOR), false);
+    assert.deepEqual((await catalog.resolve('ubuntu')).profile, { ...profile, operator });
+    await catalog.remove('ubuntu');
+    assert.equal(
+      await catalog.updateEnvironmentOperatorIfCurrent({ ...profile, operator }, OPERATOR),
+      false,
+    );
+    assert.deepEqual(await catalog.read(), { schemaVersion: 5, profiles: [] });
   });
 
   test('migrates a released WSL operator path without losing its environment', async () => {

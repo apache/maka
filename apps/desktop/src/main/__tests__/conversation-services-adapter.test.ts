@@ -20,13 +20,39 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { MakaBridge } from '../../preload/bridge-contract.js';
+import type { ExecutorCatalogEntry } from '@maka/core/executor-catalog';
 import { createDesktopConversationServices } from '../../renderer/platform/desktop/create-conversation-services.js';
+
+test('executor snapshots retain per-Session presentation across reads without masking errors or crossing Hosts', async () => {
+  const reads: Array<{ id: string; resolve(value: readonly ExecutorCatalogEntry[]): void; reject(error: Error): void }> = [];
+  const bridge = { sessions: { getExecutorState: (id: string) => new Promise((resolve, reject) => reads.push({ id, resolve, reject })) } } as unknown as MakaBridge;
+  const { sessions } = createDesktopConversationServices(bridge);
+  const catalog: readonly ExecutorCatalogEntry[] = [{ id: 'agent', displayName: 'Agent', readiness: 'restorable', models: [{ id: 'saved', name: 'Saved model' }], supportsAttachments: false, supportsModelChange: false }];
+  assert.equal(sessions.readCachedExecutorState!('host-a/session'), undefined);
+  const first = sessions.getExecutorState!('host-a/session');
+  assert.equal(sessions.getExecutorState!('host-a/session'), first, 'concurrent readers share inspection');
+  reads[0]!.resolve(catalog);
+  await first;
+  const refresh = sessions.getExecutorState!('host-a/session');
+  assert.equal(sessions.readCachedExecutorState!('host-a/session'), catalog, 'refresh never empties presentation');
+  assert.equal(sessions.readCachedExecutorState!('host-b/session'), undefined);
+  assert.equal(sessions.readCachedExecutorState!('host-a/other-session'), undefined);
+  reads[1]!.reject(new Error('Disconnected'));
+  await assert.rejects(refresh, /Disconnected/);
+  assert.equal(sessions.readCachedExecutorState!('host-a/session'), catalog);
+  const retry = sessions.getExecutorState!('host-a/session');
+  reads[2]!.resolve([]);
+  await retry;
+  assert.deepEqual(sessions.readCachedExecutorState!('host-a/session'), [], 'authoritative removals replace stale snapshots');
+  assert.equal(createDesktopConversationServices(bridge).sessions.readCachedExecutorState!('host-a/session'), undefined, 'a different service owner cannot inherit snapshots');
+});
 
 test('Desktop conversation adapter keeps snapshot reads and catalog access on the bridge', async () => {
   const calls: string[] = [];
   const bridge = {
     sessionLocal: {
       listMessages: async () => [],
+      releaseRecoveryAttachments: async (ids: readonly string[]) => { calls.push(`release:${ids.join(',')}`); },
       cancelMessage: async () => undefined,
       reconcileMessage: async () => undefined,
       subscribeChanges: () => () => undefined,
@@ -58,5 +84,38 @@ test('Desktop conversation adapter keeps snapshot reads and catalog access on th
 
   await services.sessions.readSnapshot('source');
   services.runtimeHosts.subscribeChanges(() => undefined);
-  assert.deepEqual(calls, ['snapshot:source', 'host-changes']);
+  await services.releaseRecoveryAttachments(['local-recovery:source']);
+  assert.deepEqual(calls, ['snapshot:source', 'host-changes', 'release:local-recovery:source']);
+});
+
+
+test('prompt suggestion preferences observe cross-renderer changes and unsubscribe', () => {
+  const events = new EventTarget();
+  const savedWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  const savedStorage = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+  const values = new Map<string, string>();
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: events });
+  Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: {
+    getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => values.set(key, value),
+  } });
+  try {
+    const port = createDesktopConversationServices({} as MakaBridge).promptSuggestions!;
+    let observed = false;
+    let updates = 0;
+    const unsubscribe = port.subscribeEnabled!(() => { observed = port.readEnabled(); updates++; });
+    const notify = (key: string | null) => {
+      const event = new Event('storage'); Object.defineProperty(event, 'key', { value: key }); events.dispatchEvent(event);
+    };
+    port.writeEnabled(true); notify('maka.promptSuggestions.enabled');
+    assert.equal(observed, true);
+    port.writeEnabled(false); notify('maka.promptSuggestions.enabled');
+    assert.equal(observed, false);
+    notify('unrelated'); assert.equal(updates, 2);
+    notify(null); assert.equal(updates, 3);
+    unsubscribe(); notify(null); assert.equal(updates, 3);
+  } finally {
+    if (savedWindow) Object.defineProperty(globalThis, 'window', savedWindow); else Reflect.deleteProperty(globalThis, 'window');
+    if (savedStorage) Object.defineProperty(globalThis, 'localStorage', savedStorage); else Reflect.deleteProperty(globalThis, 'localStorage');
+  }
 });

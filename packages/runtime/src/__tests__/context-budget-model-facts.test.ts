@@ -53,7 +53,8 @@ test('invalid zero input limits do not disable the context-window fallback', () 
 test('overriding total capacity preserves the independent input limit', () => {
   const connection = {
     slug: 'relay',
-    providerType: 'openai-compatible' as const,
+    providerType: 'custom' as const,
+    defaultApiProtocol: 'openai-chat' as const,
     defaultModel: 'relay-model',
     models: [{ id: 'relay-model', contextWindow: 64_000, inputLimit: 32_000 }],
     modelOverrides: { 'relay-model': { contextWindow: 200_000 } },
@@ -93,7 +94,8 @@ test('overriding total capacity preserves the independent input limit', () => {
 test('capacity and compaction remain independent in the execution projection', () => {
   const connection = applyConnectionModelOverrides({
     slug: 'relay',
-    providerType: 'openai-compatible' as const,
+    providerType: 'custom' as const,
+    defaultApiProtocol: 'openai-chat' as const,
     defaultModel: 'custom',
     models: [{ id: 'custom', contextWindow: 8192 }],
     modelOverrides: { custom: { contextWindow: 200000, compactionThreshold: 160000 } },

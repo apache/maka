@@ -61,7 +61,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 24.18.1
+          node-version: 24.22.1
       - name: Update stable Rust
         run: rustup update stable --no-self-update
       - id: rustc
@@ -76,7 +76,7 @@ jobs:
             echo "RUSTC_WRAPPER=kache"
           } >> "$GITHUB_ENV"
       - name: Install Kache
-        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2
+        uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2
         with:
           tool: kache@0.16.0
       - id: kache-cache
@@ -94,7 +94,7 @@ jobs:
         working-directory: native/runtime-host-peer
         run: cargo clippy --locked --all-targets -- -D warnings
       - name: Install cargo-deny
-        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2
+        uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2
         with:
           tool: cargo-deny@0.20.2
       - name: Check Cargo dependency inventory

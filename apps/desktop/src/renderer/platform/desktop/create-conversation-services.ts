@@ -18,25 +18,137 @@
  */
 
 import type { MakaBridge } from '../../../preload/bridge-contract.js';
-import type { ConversationServices } from '../../features/conversation/index.js';
+import type { ExecutorCatalogEntry } from '@maka/core/executor-catalog';
+import type { ConversationCheckinPort, ConversationServices } from '../../features/conversation/index.js';
+import { sessionSnapshotToQuote } from '@maka/core/session-reference';
+
+
+import { createDesktopConversationObservationServices } from './create-conversation-observation-services.js';
+
+const PROMPT_SUGGESTIONS_KEY = 'maka.promptSuggestions.enabled';
+const CHECKIN_ENABLED_KEY = 'maka.checkin.enabled';
+const CHECKIN_MEMORY_KEY = 'maka.checkin.memory';
 
 export function createDesktopConversationServices(
   bridge: Pick<
     MakaBridge,
-    'sessionLocal' | 'sessions' | 'runtimeHostProfiles' | 'skills' | 'workspace' | 'newTasks' | 'mcp'
+    'shellRuns' | 'transcripts' | 'sessionLocal' | 'sessions' | 'runtimeHostProfiles' | 'skills' | 'workspace' | 'newTasks' | 'mcp'
   > = window.maka,
 ): ConversationServices {
+  // Like the native connection snapshots, serve the last read while revalidating.
+  // ACP catalogs are Session-specific, so never share them by Agent or model ID.
+  const executorSnapshots = new Map<string, readonly ExecutorCatalogEntry[]>();
+  const executorReads = new Map<string, Promise<readonly ExecutorCatalogEntry[]>>();
   return {
     ...bridge.sessionLocal,
-    sessions: bridge.sessions,
+    observation: createDesktopConversationObservationServices(bridge),
+    promptSuggestions: {
+      generate: async (sessionId) => {
+        const result = await bridge.sessions.generatePromptSuggestion(sessionId);
+        return result.kind === 'generated' ? result.text : undefined;
+      },
+      // Browser storage belongs to this adapter; legacy renderer helpers cannot
+      // be imported across the platform boundary.
+      readEnabled: () => {
+        try { return localStorage.getItem(PROMPT_SUGGESTIONS_KEY) === 'true'; }
+        catch { return false; }
+      },
+      writeEnabled: (enabled) => {
+        try { localStorage.setItem(PROMPT_SUGGESTIONS_KEY, String(enabled)); }
+        catch { /* Storage can be unavailable in restricted renderers. */ }
+      },
+      subscribeEnabled: (handler) => {
+        const onStorage = (event: StorageEvent) => {
+          if (event.key === null || event.key === PROMPT_SUGGESTIONS_KEY) handler();
+        };
+        window.addEventListener('storage', onStorage);
+        return () => window.removeEventListener('storage', onStorage);
+      },
+    },
+    checkin: createDesktopCheckinPort(bridge),
+    sessions: {
+      ...bridge.sessions,
+      readCachedExecutorState: sessionId => executorSnapshots.get(sessionId),
+      getExecutorState: sessionId => {
+        const pending = executorReads.get(sessionId);
+        if (pending) return pending;
+        const read = bridge.sessions.getExecutorState(sessionId).then(catalog => {
+          executorSnapshots.delete(sessionId);
+          executorSnapshots.set(sessionId, catalog);
+          // Bound memory across long navigation histories; evicted Sessions read again before display.
+          if (executorSnapshots.size > 64) executorSnapshots.delete(executorSnapshots.keys().next().value!);
+          return catalog;
+        }).finally(() => { executorReads.delete(sessionId); });
+        executorReads.set(sessionId, read);
+        return read;
+      },
+      updateQueueEntry: (sessionId: string, entryId: string, expectedQueueRevision: number, text: string) =>
+        bridge.sessions.updateQueueEntry(sessionId, entryId, expectedQueueRevision, text),
+      reorderQueueEntries: (sessionId: string, entryIds: readonly string[], expectedQueueRevision: number) =>
+        bridge.sessions.reorderQueueEntries(sessionId, entryIds, expectedQueueRevision),
+    },
     runtimeHosts: {
       subscribeChanges: (handler) => bridge.runtimeHostProfiles.subscribeChanges(handler),
+    },
+    resume: {
+      queryPlan: (sessionId) => bridge.sessions.queryResumeLatest(sessionId),
+      start: (sessionId) => bridge.sessions.resumeLatest(sessionId),
+      subscribeChanges: (handler) => bridge.sessions.subscribeChanges(handler),
     },
     skills: bridge.skills,
     workspace: bridge.workspace,
     newTasks: bridge.newTasks,
     mcp: {
       subscribeChanges: (handler) => bridge.mcp.subscribeChanges(handler),
+    },
+  };
+}
+
+function createDesktopCheckinPort(bridge: Pick<MakaBridge, 'sessions'>): ConversationCheckinPort {
+  return {
+    generate: (input) => bridge.sessions.generateCheckin({ effectId: input.effectId, since: input.since }),
+    readEnabled: () => {
+      try { return localStorage.getItem(CHECKIN_ENABLED_KEY) === 'true'; }
+      catch { return false; }
+    },
+    writeEnabled: (enabled) => {
+      try { localStorage.setItem(CHECKIN_ENABLED_KEY, String(enabled)); }
+      catch { /* Storage can be unavailable in restricted renderers. */ }
+    },
+    readMemory: () => {
+      try { return JSON.parse(localStorage.getItem(CHECKIN_MEMORY_KEY) ?? 'null'); }
+      catch { return null; }
+    },
+    writeMemory: (memory) => {
+      try { localStorage.setItem(CHECKIN_MEMORY_KEY, JSON.stringify(memory)); }
+      catch { /* Storage can be unavailable in restricted renderers. */ }
+    },
+    readRevision: async (sessionId) => (await bridge.sessions.get(sessionId))?.revision,
+    resume: async (sessionId) => (await bridge.sessions.resumeLatest(sessionId)).disposition === 'started',
+    send: async (sessionId, text) =>
+      (await bridge.sessions.send(sessionId, { type: 'send', turnId: crypto.randomUUID(), text })).ok,
+    startSession: async (sourceSessionId, text) => {
+      const source = await bridge.sessions.get(sourceSessionId);
+      if (!source) return undefined;
+      // A card can outlive a Host switch: the new task belongs on its source's Host.
+      const created = await bridge.sessions.create(
+        {
+          ...(source.cwd ? { cwd: source.cwd } : {}),
+          ...(source.projectId !== undefined ? { projectId: source.projectId } : {}),
+          ...(source.llmConnectionId ? { llmConnectionId: source.llmConnectionId } : {}),
+          llmConnectionSlug: source.llmConnectionSlug,
+          model: source.model,
+        },
+        { besideSessionId: sourceSessionId },
+      );
+      const snapshot = await bridge.sessions.readSnapshot(sourceSessionId).catch(() => undefined);
+      const sent = await bridge.sessions.send(created.id, {
+        type: 'send',
+        turnId: crypto.randomUUID(),
+        text,
+        ...(snapshot ? { quotes: [sessionSnapshotToQuote(snapshot)] } : {}),
+      });
+      return sent.ok ? created.id : undefined;
     },
   };
 }

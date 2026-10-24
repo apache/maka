@@ -58,6 +58,8 @@ export interface SessionMoveTarget {
 export interface SessionRailData {
   sessions: readonly SessionSummary[];
   activeId?: string;
+  /** Native conversation selection before ordinary-list filtering. */
+  navigationSessionId?: string;
   streamingSessionIds?: ReadonlySet<string>;
   staleSessionIds?: ReadonlySet<string>;
   worktreeSessionIds?: ReadonlySet<string>;
@@ -66,6 +68,8 @@ export interface SessionRailData {
   groupVariant: SessionViewMode;
   /** Human-readable project identity for a session hover card. */
   sessionProjectName?(session: SessionSummary): string | undefined;
+  /** Session's location path, shown only when its project has multiple locations. */
+  sessionLocation?(session: SessionSummary): string | undefined;
   sessionMeta?(session: SessionSummary): string | undefined;
   sessionBadge?(session: SessionSummary): ReactNode;
   onSelectSession(sessionId: string): void;
@@ -89,6 +93,9 @@ export interface SessionRailData {
    * the scoped key the rows carry for their own actions, because the Host whose
    * project it is has never seen that key. The shell answers this per Session so
    * a task is never offered a project from a Host that does not hold it.
+   * The provider excludes the current project (including aliases) and includes
+   * the null exit only for known membership, even if that project is archived
+   * or unavailable. Consumers use these targets without re-deriving membership.
    */
   moveTargets?(sessionId: string): readonly SessionMoveTarget[];
   /**
@@ -128,6 +135,7 @@ export interface SessionRailChrome {
   onSelect(selection: NavSelection): void;
   onNew(): void;
   onOpenSettings(): void;
+  personalAssistantNavigation?: ReactNode;
   workHubEntry?: {
     active: boolean;
     label: string;
@@ -138,9 +146,8 @@ export interface SessionRailChrome {
 /** What a click on a session row means, decided by the modifier held with it. */
 export type SessionRowPick =
   /**
-   * Plain click, and the adoption a menu makes when it opens on an unpicked
-   * row: the set becomes exactly this row. Opening the task is the row's own
-   * business — this names what happens to the SET.
+   * Plain click: the set becomes exactly this row. Opening the task is the
+   * row's own business — this names what happens to the SET.
    */
   | 'replace'
   /** ⌘/Ctrl: add or remove this one row, leaving the rest of the set alone. */

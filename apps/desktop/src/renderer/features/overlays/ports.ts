@@ -17,7 +17,8 @@
  * under the License.
  */
 
-import type { SettingsSection } from '@maka/core/settings';
+import type { ConnectionTestResult } from '@maka/core/llm-connections';
+import type { SettingsSection, SettingsTestResult } from '@maka/core/settings';
 import type { SearchModal } from '@maka/ui';
 
 /** The recall search the Search modal runs; the type is the modal's own. */
@@ -44,8 +45,40 @@ export interface OverlayFocusService {
   blurActiveElement(): void;
 }
 
+/** The Runtime Host a palette row runs on; the row builder resolves the default one. */
+export interface OverlayPaletteHost {
+  readonly profileId: string;
+  readonly hostId: string;
+}
+
+export type OverlayConversationSaveResult =
+  | { readonly ok: true; readonly path: string }
+  | { readonly ok: false; readonly reason: 'canceled' | 'write_failed' | 'invalid_input' };
+
+/**
+ * The Desktop operations behind the command palette's own rows. The rows keep
+ * their toasts and default-Host resolution; these only reach Desktop, with
+ * the arguments the rows always sent.
+ */
+export interface OverlayPaletteActions {
+  /** Tests a connection named by its slug, as the palette row lists it. */
+  testConnection(slug: string, host: OverlayPaletteHost): Promise<ConnectionTestResult>;
+  setDefaultConnection(slug: string, host: OverlayPaletteHost): Promise<void>;
+  /** Tests the persisted network proxy settings. */
+  testNetworkProxy(host: OverlayPaletteHost): Promise<SettingsTestResult>;
+  openLocalMemoryFile(
+    host: OverlayPaletteHost,
+  ): Promise<{ readonly ok: true } | { readonly ok: false; readonly code: string }>;
+  /** Asks where to save, then writes the rendered conversation. */
+  saveConversationToFile(input: {
+    readonly markdown: string;
+    readonly defaultName: string;
+  }): Promise<OverlayConversationSaveResult>;
+}
+
 export interface OverlaysServices {
   search: OverlaySearchService;
   settingsSection: OverlaySettingsSectionStore;
   focus: OverlayFocusService;
+  palette: OverlayPaletteActions;
 }

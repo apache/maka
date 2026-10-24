@@ -29,7 +29,8 @@ import {
   type ConnectionTestResult,
   type LlmConnection,
 } from '@maka/core/llm-connections';
-import { openResponsesUrl } from './provider-urls.js';
+import { isRetiredProvider } from '@maka/core/provider-retirement';
+import { openAiChatUrl, openResponsesUrl } from './provider-urls.js';
 import { resolveModelRuntime } from './model-runtime.js';
 import { fetchGitHubCopilotModels } from './model-fetcher.js';
 import {
@@ -161,7 +162,9 @@ async function testConnectionStrict(
   if (!defaults) {
     return { ok: false, errorMessage: `Unknown provider type "${connection.providerType}"` };
   }
-  if (defaults.retired) return retiredProviderTestResult(connection.providerType);
+  if (isRetiredProvider(connection.providerType)) {
+    return retiredProviderTestResult(connection.providerType);
+  }
   const sessionId = connection.providerType === 'opencode-go' ? randomUUID() : undefined;
   const auth = defaults.authKind;
   const secret = auth === 'none' ? '' : apiKey;
@@ -384,7 +387,7 @@ async function probeOpenAI(
     // chat with the provider error class.
     return { ok: true, latencyMs: Date.now() - t0, modelTested: model };
   }
-  const r = await fetchForConnectionEffect(fetchFn, `${stripTrailing(baseUrl)}/chat/completions`, {
+  const r = await fetchForConnectionEffect(fetchFn, openAiChatUrl(baseUrl), {
     method: 'POST',
     headers: {
       ...requestHeaders,

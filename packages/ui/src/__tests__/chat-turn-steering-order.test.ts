@@ -19,7 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { createElement } from 'react';
+import { act, createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { parseHTML } from 'linkedom';
 import { TurnView } from '../chat-turn.js';
@@ -29,26 +29,27 @@ import { materializeTurns, overlayLiveTurn, type TurnTimelineItem, type TurnView
 import { createTranscriptProjection } from '../transcript-projection.js';
 import { ChatView } from '../chat-view.js';
 import { Composer } from '../composer.js';
-import { renderTranscriptMarkup } from './transcript-test-dom.js';
+import { installTranscriptDom, renderTranscriptMarkup } from './transcript-test-dom.js';
 import { ChatSurfaceLayout } from '../chat-surface-layout.js';
 import { armLiveTurn, type LiveTurnProjection } from '../live-turn-projection.js';
 import { applyLiveTurnEvent } from './live-turn-zh.js';
 import type { SessionSummary, StoredMessage } from '@maka/core/session';
 
-test('renders a thinking-only interruption as a divider without an empty answer bubble', () => {
+test('renders a thinking-only interruption as a divider without an empty answer bubble', async () => {
   const messages: StoredMessage[] = [
     { type: 'user', id: 'user', turnId: 'turn', ts: 1, text: 'request' },
     { type: 'assistant', id: 'partial', turnId: 'turn', ts: 2, modelId: 'mock', text: '', interrupted: true, thinking: { text: 'partial thought' } },
   ];
   const [turn] = materializeTurns(messages, 'en');
   assert.ok(turn);
-  const markup = renderToStaticMarkup(createElement(LocaleProvider, {
-    locale: 'en', children: createElement(TurnView, { turn }),
-  }));
-  const { document } = parseHTML(`<html><body>${markup}</body></html>`);
-  assert.equal(document.querySelectorAll('.maka-chat-message-bubble-assistant').length, 0);
-  assert.match(document.body.textContent, /partial thought/);
-  assert.match(document.body.textContent, /Response stream ended before completion/);
+  const dom = installTranscriptDom();
+  try {
+    await dom.render(createElement(LocaleProvider, { locale: 'en', children: createElement(TurnView, { turn }) }));
+    assert.equal(dom.document.querySelectorAll('.maka-chat-message-bubble-assistant').length, 0);
+    assert.match(dom.container.textContent, /Response stream ended before completion/);
+    await act(() => { dom.document.querySelector('.maka-processing-summary')!.dispatchEvent(new dom.window.Event('click', { bubbles: true, cancelable: true })); });
+    assert.match(dom.container.textContent, /partial thought/);
+  } finally { await dom.cleanup(); }
 });
 
 test('renders steering where it arrived in the assistant timeline', () => {
@@ -96,9 +97,46 @@ test('renders steering where it arrived in the assistant timeline', () => {
   }
 });
 
-test('holds steering above the composer while old output continues, then renders its real reply boundary', async () => {
+test('keeps the first steering message in a resumed Turn at its timeline position', () => {
+  const messages: StoredMessage[] = [
+    { type: 'user', id: 'original-user', turnId: 'original-turn', ts: 1, text: 'original request' },
+    { type: 'assistant', id: 'before-steer', turnId: 'resumed-turn', ts: 10, modelId: 'mock', text: 'work before the steer' },
+    { type: 'user', id: 'first-steer', turnId: 'resumed-turn', ts: 11, text: 'remember to commit after each point', steeringEventId: 'steer-event' },
+    { type: 'assistant', id: 'after-steer', turnId: 'resumed-turn', ts: 12, modelId: 'mock', text: 'work after the steer' },
+  ];
+  const turn = materializeTurns(messages, 'en').find((candidate) => candidate.turnId === 'resumed-turn');
+  assert.ok(turn);
+  assert.equal(turn.user, undefined, 'a resumed Turn does not get a synthetic opening prompt');
+  assert.deepEqual(
+    turn.timeline.map((item) => item.kind === 'user' ? `user:${item.message.text}` : `${item.kind}:${'text' in item ? item.text : ''}`),
+    [
+      'text:work before the steer',
+      'user:remember to commit after each point',
+      'text:work after the steer',
+    ],
+  );
+
+  const markup = renderToStaticMarkup(
+    createElement(LocaleProvider, {
+      locale: 'en',
+      children: createElement(TurnView, { turn }),
+    }),
+  );
+  const visibleText = parseHTML(`<html><body>${markup}</body></html>`).document.body.textContent ?? '';
+  const positions = [
+    'work before the steer',
+    'remember to commit after each point',
+    'work after the steer',
+  ].map((text) => visibleText.indexOf(text));
+  assert.ok(
+    positions[0]! < positions[1]! && positions[1]! < positions[2]!,
+    `expected before < steer < after; positions=${positions.join(',')}; visible=${visibleText}`,
+  );
+});
+
+test('holds queued steering in the transcript while old output continues, then renders its real reply boundary', async () => {
   const messages: StoredMessage[] = [{ type: 'user', id: 'original', turnId: 'turn-1', ts: 1, text: 'request' }];
-  const pending = { id: 'steer', hostTurnId: 'turn-1', ts: 2, text: 'inserted instruction', pendingSteering: true, transientPlacement: 'current_turn' as const };
+  const pending = { id: 'steer', ts: 2, text: 'inserted instruction', transientPlacement: 'transcript' as const };
   let live: import('../live-turn-projection.js').LiveTurnProjection | undefined = applyLiveTurnEvent(armLiveTurn('turn-1'), {
     type: 'text_delta', id: 'first', turnId: 'turn-1', messageId: 'before', ts: 2, text: 'old answer continues',
   });
@@ -113,7 +151,13 @@ test('holds steering above the composer while old output continues, then renders
     }) }),
   )}</body></html>`).document;
   const waiting = await render();
-  assert.equal(waiting.querySelector('.maka-composer-queue-text')?.textContent, pending.text);
+  // Steering waits as a transcript bubble, not a plate row: the composer queue
+  // is the follow-up staging area, and this message is bound for the live Turn.
+  assert.equal(waiting.querySelector('.maka-composer-queue'), null);
+  assert.equal(
+    waiting.querySelector('[data-transient-message-id="steer"]')?.textContent?.includes(pending.text),
+    true,
+  );
   assert.equal(waiting.querySelectorAll('.maka-steering-message').length, 0);
   const timeline = () => createTranscriptProjection().project({ messages, liveTurns: live ? [live] : undefined, locale: 'en' })[0]!.timeline.map((item) => item.kind === 'user' ? item.message.text : item.kind === 'text' ? item.text : item.kind);
   assert.deepEqual(timeline(), ['old answer continues']);
@@ -136,7 +180,7 @@ const timelineOrder = (timeline: readonly TurnTimelineItem[]): string[] =>
         : `${item.kind}:${item.text}`,
   );
 
-test('keeps post-steering work below the steering row even when it continues the same step', () => {
+test('keeps a step whole above a steering row that its later output arrives after', () => {
   let live: LiveTurnProjection | undefined = applyLiveTurnEvent(armLiveTurn('turn-1'), {
     type: 'thinking_delta', id: 'e1', turnId: 'turn-1', messageId: 'm1', ts: 1, text: 'pre-steer reasoning',
   });
@@ -146,34 +190,26 @@ test('keeps post-steering work below the steering row even when it continues the
   live = applyLiveTurnEvent(live, {
     type: 'steering_message', id: 'steer-event', turnId: 'turn-1', messageId: 'steer-1', ts: 3, content: { text: 'steer' },
   });
-  // A late result for a row that already exists updates that row in place; it
-  // does not claim the steering because its position was fixed at tool_start.
   live = applyLiveTurnEvent(live, {
-    type: 'tool_result', id: 'e3', turnId: 'turn-1', toolUseId: 'tool-1', isError: false, ts: 4,
-    content: { kind: 'text', text: 'done' },
-  });
-  // While the steering awaits its boundary it must already render as one.
-  assert.deepEqual(timelineOrder(overlayLiveTurn([], live, 'en')[0]!.timeline), [
-    'thinking:pre-steer reasoning', 'tools:tool-1', 'user:steer',
-  ]);
-  live = applyLiveTurnEvent(live, {
-    type: 'thinking_delta', id: 'e4', turnId: 'turn-1', messageId: 'm1', ts: 5, text: 'post-steer reasoning',
+    type: 'thinking_delta', id: 'e4', turnId: 'turn-1', messageId: 'm1', ts: 5, text: ' continues',
   });
   live = applyLiveTurnEvent(live, {
     type: 'tool_start', id: 'e5', turnId: 'turn-1', stepId: 'm1', toolUseId: 'tool-2', toolName: 'Bash', args: {}, ts: 6,
   });
   live = applyLiveTurnEvent(live, {
-    type: 'text_delta', id: 'e6', turnId: 'turn-1', messageId: 'm1', ts: 7, text: 'answer continues',
+    type: 'text_delta', id: 'e6', turnId: 'turn-1', messageId: 'm1', ts: 7, text: 'answer',
+  });
+  live = applyLiveTurnEvent(live, {
+    type: 'text_delta', id: 'e7', turnId: 'turn-1', messageId: 'm2', ts: 8, text: 'reply to steer',
   });
 
   const timeline = overlayLiveTurn([], live, 'en')[0]!.timeline;
   assert.deepEqual(timelineOrder(timeline), [
-    'thinking:pre-steer reasoning',
-    'tools:tool-1',
+    'thinking:pre-steer reasoning continues',
+    'tools:tool-1+tool-2',
+    'text:answer',
     'user:steer',
-    'thinking:post-steer reasoning',
-    'tools:tool-2',
-    'text:answer continues',
+    'text:reply to steer',
   ]);
   const folded = foldTimeline(timeline).entries.map((entry) =>
     entry.kind === 'processing'
@@ -184,9 +220,9 @@ test('keeps post-steering work below the steering row even when it continues the
   );
   assert.deepEqual(folded, [
     'fold:thinking+tools',
+    'text:answer',
     'user:steer',
-    'fold:thinking+tools',
-    'text:answer continues',
+    'text:reply to steer',
   ]);
 });
 
@@ -223,51 +259,7 @@ test('keeps pre-steering content in place when its completion lands after the bo
   ]);
 });
 
-test('splits a completion across the boundary instead of duplicating the sealed portion', () => {
-  let live: LiveTurnProjection | undefined = applyLiveTurnEvent(armLiveTurn('turn-1'), {
-    type: 'thinking_delta', id: 'e1', turnId: 'turn-1', messageId: 'm1', ts: 1, text: 'pre-',
-  });
-  live = applyLiveTurnEvent(live, {
-    type: 'steering_message', id: 'steer-event', turnId: 'turn-1', messageId: 'steer-1', ts: 2, content: { text: 'steer' },
-  });
-  live = applyLiveTurnEvent(live, {
-    type: 'thinking_delta', id: 'e2', turnId: 'turn-1', messageId: 'm1', ts: 3, text: 'post',
-  });
-  live = applyLiveTurnEvent(live, {
-    type: 'thinking_complete', id: 'e3', turnId: 'turn-1', messageId: 'm1', ts: 4, text: 'pre-post',
-  });
-
-  assert.deepEqual(timelineOrder(overlayLiveTurn([], live, 'en')[0]!.timeline), [
-    'thinking:pre-',
-    'user:steer',
-    'thinking:post',
-  ]);
-});
-
-test('lands a divergent completion whole instead of slicing at the delta offset', () => {
-  // thinking_complete may carry a provider summary that replaces the streamed
-  // deltas outright — the accumulated delta length is not a safe cut point.
-  let live: LiveTurnProjection | undefined = applyLiveTurnEvent(armLiveTurn('turn-1'), {
-    type: 'thinking_delta', id: 'e1', turnId: 'turn-1', messageId: 'm1', ts: 1, text: 'AAAA',
-  });
-  live = applyLiveTurnEvent(live, {
-    type: 'steering_message', id: 's1', turnId: 'turn-1', messageId: 'steer-1', ts: 2, content: { text: 'steer' },
-  });
-  live = applyLiveTurnEvent(live, {
-    type: 'thinking_delta', id: 'e2', turnId: 'turn-1', messageId: 'm1', ts: 3, text: 'BBBB',
-  });
-  live = applyLiveTurnEvent(live, {
-    type: 'thinking_complete', id: 'e3', turnId: 'turn-1', messageId: 'm1', ts: 4, text: 'Short summary.',
-  });
-
-  assert.deepEqual(timelineOrder(overlayLiveTurn([], live, 'en')[0]!.timeline), [
-    'thinking:AAAA',
-    'user:steer',
-    'thinking:Short summary.',
-  ]);
-});
-
-test('lands a completion shorter than the delta offset whole', () => {
+test('lands a completion after a steering row whole on its step', () => {
   let live: LiveTurnProjection | undefined = applyLiveTurnEvent(armLiveTurn('turn-1'), {
     type: 'thinking_delta', id: 'e1', turnId: 'turn-1', messageId: 'm1', ts: 1, text: 'AAAA',
   });
@@ -282,9 +274,8 @@ test('lands a completion shorter than the delta offset whole', () => {
   });
 
   assert.deepEqual(timelineOrder(overlayLiveTurn([], live, 'en')[0]!.timeline), [
-    'thinking:AAAA',
-    'user:steer',
     'thinking:ABC',
+    'user:steer',
   ]);
 });
 

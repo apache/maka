@@ -18,8 +18,6 @@
  */
 
 import type { ModuleHubServices } from "./ports.js";
-import type { NavSelection } from "@maka/ui";
-import type { ModuleHubHostModel } from "./controller/use-module-hub-controller.js";
 
 export { ModuleHubServicesProvider } from "./services-context.js";
 export type { ModuleHubServices } from "./ports.js";
@@ -32,10 +30,19 @@ export {
 } from "./ui/module-hub-provider.js";
 export { startModuleHubLifecycle } from "./controller/module-hub-lifecycle.js";
 export { resolveModuleHubHostRoute } from "./controller/module-hub-route.js";
+export { useMcpController } from "./controller/use-mcp-controller.js";
+export { McpPage } from "./ui/mcp-page.js";
+export { formatCommandLine, parseCommandLine } from "./model/mcp-command-line.js";
+export { validateMcpEditorDraft } from "./model/mcp-editor-validation.js";
 export {
-  useModuleHubController,
-  type ModuleHubHostModel,
-} from "./controller/use-module-hub-controller.js";
+  createEmptyMcpDraft,
+  mcpConfigFromDraft,
+  mcpDraftProtocolPreference,
+  mcpDraftFromConfig,
+  mcpConfigFailureMessage,
+  unwrapMcpIpcResult,
+} from "./model/mcp-page-model.js";
+export { useModuleHubController } from "./controller/use-module-hub-controller.js";
 export {
   createDailyReviewBridge,
   useDailyReviewController,
@@ -65,73 +72,28 @@ const notConfigured = (operation: string): never => {
   throw new Error(`Fake ${operation} is not configured`);
 };
 
-/** Environment-free Host model for route composition tests and Storybook. */
-export function createFakeModuleHubHostModel(
-  selection: NavSelection,
-  overrides: Partial<ModuleHubHostModel> = {},
-): ModuleHubHostModel {
-  return {
-    selection,
-    selectModule: () => undefined,
-    skills: {
-      skills: [],
-      skillLocations: [],
-      managedSkillSources: [],
-      bundledSkillCatalog: [],
-      onRefreshSkills: async () => undefined,
-      onUseSkill: () => undefined,
-      onRefreshManagedSkillSources: async () => undefined,
-      onImportManagedSkillSource: async () => undefined,
-      onInstallManagedSkill: async () => undefined,
-      onRefreshBundledSkillCatalog: async () => undefined,
-      onInstallBundledSkill: async () => undefined,
-      onPreviewManagedSkillUpdate: async () => null,
-      onUpdateManagedSkill: async () => false,
-      onSetSkillEnabled: async () => undefined,
-      onSetSkillPinned: async () => undefined,
-      onDeleteSkill: async () => undefined,
-    },
-    scheduledTasks: {
-      scheduledTasks: [],
-      createRequestNonce: 0,
-      openCreate: () => undefined,
-      handleCreateRequest: () => undefined,
-      refresh: async () => undefined,
-      refreshSurface: async () => undefined,
-      create: async () => false,
-      update: async () => false,
-      toggle: async () => undefined,
-      triggerNow: async () => undefined,
-      snooze: async () => undefined,
-      clearRunHistory: async () => undefined,
-      delete: async () => undefined,
-    },
-    keepSystemAwake: {
-      supported: false,
-      keepSystemAwake: undefined,
-      setKeepSystemAwake: async () => undefined,
-    },
-    dailyReview: {
-      bridge: {
-        fetchDay: async () => notConfigured("dailyReview.fetchDay"),
-      },
-      copyMarkdown: async () => undefined,
-      appendMarkdown: () => undefined,
-      saveMarkdown: async () => undefined,
-      copyToday: async () => undefined,
-      pasteToday: async () => undefined,
-      saveToday: async () => undefined,
-    },
-    openSession: () => undefined,
-    ...overrides,
-  };
-}
-
 /** Environment-free Module Hub defaults for focused tests and Storybook. */
 export function createFakeModuleHubServices(
   overrides: Partial<ModuleHubServices> = {},
 ): ModuleHubServices {
   return {
+    mcp: {
+      getConfig: async () => ({ version: 3, mcpServers: {} }),
+      listStatuses: async () => [],
+      add: async () => notConfigured("mcp.add"),
+      update: async () => notConfigured("mcp.update"),
+      setEnabled: async () => notConfigured("mcp.setEnabled"),
+      importConfig: async () => notConfigured("mcp.importConfig"),
+      remove: async () => notConfigured("mcp.remove"),
+      test: async () => notConfigured("mcp.test"),
+      login: async () => notConfigured("mcp.login"),
+      logout: async () => notConfigured("mcp.logout"),
+      cancelLogin: async () => false,
+      chromeStatus: async () => ({ command: "/opencli-mcp", connected: false }),
+      connectChrome: async () => notConfigured("mcp.connectChrome"),
+      subscribeChanges: noopSubscription,
+    },
+
     runtimeHosts: {
       getDefault: async () => ({ profileId: "local", hostId: "local" }),
       subscribeChanges: noopSubscription,

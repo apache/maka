@@ -48,7 +48,7 @@
  * Kept free of any `electron` import so the start/stop bookkeeping can be
  * unit-tested under plain `node --test` (the caller injects electron's
  * `powerSaveBlocker`), mirroring how `notifications-policy.ts` keeps its
- * decision logic Electron-free while `notifications-ipc-main.ts` owns the
+ * decision logic Electron-free while `notifications-main.ts` owns the
  * Electron surface.
  */
 

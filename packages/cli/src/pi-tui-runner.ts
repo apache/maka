@@ -22,7 +22,9 @@ import {
   Key,
   ProcessTerminal,
   SelectList,
+  TuiAltScreen,
   TuiMainScreen,
+  VStack,
   isKeyRelease,
   isKeyRepeat,
   matchesKey,
@@ -65,7 +67,7 @@ import type { ContextDiagnostics } from '@maka/runtime/context-diagnostics';
 import type { GoalTurnOutcome } from '@maka/runtime/goal-continuation';
 import type { TurnOrchestration } from '@maka/core/runtime-inputs';
 import type { SessionActivityLease } from '@maka/runtime/goal-turn-lifecycle';
-import { listApiKeyOnboardableProviders } from './onboarding-catalog.js';
+import { listApiKeyOnboardableProviders, onboardingCreateTarget } from './onboarding-catalog.js';
 import type {
   ConnectionIdentity,
   MakaExternalSessionSurface,
@@ -91,12 +93,16 @@ import { parseGraphCommand, type ParsedGraphCommand } from '@maka/core/graph-com
 import { parseSwarmCommand, type ParsedSwarmCommand } from '@maka/core/swarm-command';
 import {
   inspectSessionResumeAvailability,
+  MakaSessionCatalogIncompleteError,
   type MakaAttachedSessionTurn,
   type MakaPreparedSessionTurn,
   type MakaSessionDriver,
+  type MakaSessionListOptions,
   type MakaSideConversationParentStatus,
   type MakaSessionSwitchResult,
+  type SessionResumeAvailability,
 } from './session-driver.js';
+import { SESSION_CATALOG_MAX_SCAN_SESSIONS } from './session-catalog-limits.js';
 import { SafeBoundaryResumeParkedError } from './runtime-host-session-driver.js';
 import {
   appendExpansionCollapseConfirmation,
@@ -128,7 +134,7 @@ import {
 import { FormInteractionOverlay, type TuiFormDraft } from './pi-tui-form-interaction.js';
 import type { InteractionFormResponse } from '@maka/core/interaction';
 import { runMakaPiTuiTurn, type MakaPiTuiTurnRequest } from './pi-tui-turn.js';
-import { editorTheme, selectListTheme } from './tui-ansi.js';
+import { ansi, editorTheme, selectListTheme } from './tui-ansi.js';
 import { MakaAutocompleteAboveEditorComponent } from './tui-autocomplete-layout.js';
 import { TranscriptViewerOverlay } from './pi-tui-transcript-viewer.js';
 import { copyToClipboard } from './tui-clipboard.js';
@@ -153,11 +159,15 @@ import {
 } from './tui-attention.js';
 import {
   MakaActivityStripComponent,
+  MakaFullscreenChromeComponent,
   MakaPendingQueueComponent,
   MakaPiLayoutComponent,
   MakaStatusLineComponent,
   MakaTranscriptComponent,
+  MakaTranscriptDocumentComponent,
+  MakaTranscriptScrollView,
 } from './pi-tui-layout.js';
+import { openExternalUrl, resolveTuiFullscreen, TUI_FULLSCREEN_ENV } from './fullscreen-mode.js';
 import {
   MakaAutocompleteProvider,
   DirectoryPickerOverlay,
@@ -215,6 +225,19 @@ export interface MakaPiTuiInput {
   /** Maximum context tokens for the active model, for the statusline ctx segment. */
   modelContextWindow?: number;
   terminal?: Terminal;
+  /**
+   * Explicit fullscreen-TUI decision for embeddings and tests. When omitted,
+   * the nightly trial switch decides: `MAKA_TUI_FULLSCREEN` overrides, else
+   * the mode follows the build channel (`buildVersion`). See fullscreen-mode.ts
+   * and issue #4136.
+   */
+  tuiFullscreen?: boolean;
+  /**
+   * CLI package version, used to resolve the nightly-channel default of the
+   * fullscreen TUI trial. Embeddings that omit it (and `tuiFullscreen`) can
+   * only enable the mode through `MAKA_TUI_FULLSCREEN`.
+   */
+  buildVersion?: string;
   /**
    * Whether turns and control actions publish terminal taskbar progress.
    * Defaults off on native Windows and Windows Terminal sessions because its
@@ -387,7 +410,7 @@ export function safeBoundaryResumeParkedCopy(reason: TurnResumeParkReason): {
     case 'resume_feature_disabled':
       return {
         level: 'info',
-        text: 'Safe-boundary resume is not enabled on this runtime (set MAKA_RUNTIME_SAFE_BOUNDARY_RESUME=1 to enable).',
+        text: 'Safe-boundary resume is disabled by this runtime policy.',
       };
     case 'resume_candidate_missing':
       return {
@@ -534,6 +557,8 @@ function sessionConnectionIdentityNotice(
   return undefined;
 }
 
+const SESSION_RESUME_AVAILABILITY_CONCURRENCY = 8;
+
 export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   const locale = input.locale ?? 'en';
   const pickerCopy = getTuiPickerCopy(locale);
@@ -544,7 +569,23 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   const setTaskbarProgress = (active: boolean): void => {
     if (taskbarProgress) terminal.setProgress(active);
   };
-  const tui = new TuiMainScreen(terminal);
+  // Nightly trial (issue #4136): fullscreen swaps the terminal-scrollback
+  // renderer for an alternate-screen viewport whose transcript scrolls
+  // independently under an anchored composer. Opt out with
+  // MAKA_TUI_FULLSCREEN=0, opt in on release builds with =1.
+  const tuiFullscreen = resolveTuiFullscreen({
+    ...(input.tuiFullscreen !== undefined ? { setting: input.tuiFullscreen } : {}),
+    override: process.env[TUI_FULLSCREEN_ENV],
+    packageVersion: input.buildVersion,
+  });
+  const tui = tuiFullscreen
+    ? new TuiAltScreen(terminal, undefined, undefined, {
+        // App-owned mouse: wheel scrolls the transcript, drag selects, click
+        // opens OSC 8 links. Copy keeps pi-tui's OSC 52 write.
+        mouse: true,
+        openUrl: openExternalUrl,
+      })
+    : new TuiMainScreen(terminal);
   const state = createMakaPiTranscriptState();
   // A pending confirmation is meaningful only for the exact transcript whose
   // geometry produced it; reconnect/session replacement starts fresh.
@@ -816,6 +857,57 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   });
   let refreshEditorCwd: ((cwd: string) => void) | undefined;
   const editorSurface = new MakaAutocompleteAboveEditorComponent(editor);
+  // Fullscreen trial (#4136): the transcript document lives inside a primary
+  // ScrollView (follow-end, app-owned wheel/keyboard scrolling, chaining
+  // overscroll), the chrome is an intrinsic-height VStack entry below it, so
+  // the composer and status line stay anchored while history scrolls. The
+  // main-screen layout below is still constructed and mounted in both modes;
+  // with a layout root set, TuiAltScreen renders and routes only the root
+  // (getMountedRoots), so the main layout stays inert in fullscreen.
+  const transcriptDocument = new MakaTranscriptDocumentComponent(transcript);
+  let transcriptScroll: MakaTranscriptScrollView | undefined;
+  let fullscreenChrome: MakaFullscreenChromeComponent | undefined;
+  // Constructed above exactly when the fullscreen trial is on, so this both
+  // narrows the TUI type for setLayoutRoot and reads correctly in both arms.
+  if (tui instanceof TuiAltScreen) {
+    transcriptScroll = new MakaTranscriptScrollView(transcriptDocument, {
+      follow: 'end',
+      primary: true,
+      overscroll: 'chain',
+      scrollbar: 'auto',
+    });
+    fullscreenChrome = new MakaFullscreenChromeComponent(
+      state,
+      activityStrip,
+      pendingQueue,
+      editorSurface,
+      statusLine,
+      terminal,
+      {
+        current: () => transcriptScroll!.computedUnread,
+        present: (unreadLines) => {
+          transcriptScroll!.presentedUnread = unreadLines;
+        },
+      },
+      ansi.accent,
+      locale,
+      todoIndicator,
+    );
+    tui.setLayoutRoot(
+      new VStack([
+        { component: transcriptScroll, basis: 0, grow: 1, minSize: 1 },
+        { component: fullscreenChrome, basis: 'auto', shrink: 1, minSize: 1 },
+      ]),
+    );
+    // Typing while reading older content re-anchors to the newest output: the
+    // composer and its autocomplete live at the bottom, so composing from the
+    // middle of history would be blind. One of the trial's explicit evaluation
+    // questions (#4136) — revisit with nightly evidence.
+    editor.onUserTextChanged = () => {
+      transcriptScroll!.scrollToEnd();
+      tui.requestRender();
+    };
+  }
   const layout = new MakaPiLayoutComponent(
     state,
     transcript,
@@ -1222,7 +1314,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   };
 
   // Refill the editor from a retract result, prepended to any current draft.
-  // Shared by the interrupt path and the alt+↑ path. The text always comes
+  // Shared by the interrupt path and the Shift+← path. The text always comes
   // from `driver.retractQueued()` — an authoritative queue mutation — never
   // from the render mirror, which can
   // lag a step-boundary consumption and would resurrect an already-consumed
@@ -1248,6 +1340,36 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       await Promise.allSettled([...pendingEnqueueTasks]);
     }
   };
+  // An in-flight retraction serializes navigation: a session switch waits
+  // for it, so the retracted text lands in the session it was asked for
+  // instead of being discarded after the driver re-keyed (#5109 review).
+  const pendingRetractionTasks = new Set<Promise<void>>();
+  const trackRetraction = (task: Promise<void>): void => {
+    pendingRetractionTasks.add(task);
+    void task.finally(() => pendingRetractionTasks.delete(task));
+  };
+  const settleRetractions = async (): Promise<void> => {
+    while (pendingRetractionTasks.size > 0) {
+      await Promise.allSettled([...pendingRetractionTasks]);
+    }
+  };
+  // A session switch re-keys the driver only partway through its work: the
+  // driver stops user commands and opens the target Session's channel before
+  // adopting the new id, and Shift+← stays live through that whole window. A
+  // retraction asked for there starts after the switch's `settleRetractions`
+  // drain yet still addresses the old Session — the Host removes the queued
+  // entries while the driver re-keys, and the switched-session fence then
+  // discards the returned text. New retractions are blocked for
+  // the entire switch instead (#5265 review).
+  let sessionSwitchesInFlight = 0;
+  const holdSwitchWindow = async <T>(body: () => Promise<T>): Promise<T> => {
+    sessionSwitchesInFlight += 1;
+    try {
+      return await body();
+    } finally {
+      sessionSwitchesInFlight -= 1;
+    }
+  };
 
   const requestTurnInterrupt = () => {
     // A detach in flight is not the running Turn's owner acting on it — the
@@ -1265,9 +1387,22 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     // for re-editing, while anything already consumed stays in the transcript.
     // Serializing these operations also preserves that ordering over a Host
     // connection where both calls are asynchronous.
-    void (async () => {
+    const retractionTask = (async () => {
+      // Fence the retraction and the stop to the session they were asked for:
+      // a mid-turn `/session` landing while enqueues or the Host call are in
+      // flight re-keys the driver, and the abandoned retraction must neither
+      // retract the new session's queue nor stop its running turn, nor land
+      // its text there (#5109 review).
+      const retractionSessionId = input.driver.getSessionId();
       await settlePendingEnqueues();
-      const retracted = (await input.driver.retractQueued?.()) ?? { text: '', messageIds: [] };
+      if (input.driver.getSessionId() !== retractionSessionId) return;
+      const retracted = (await input.driver.retractQueued?.()) ?? {
+        text: '',
+        messageIds: [],
+      };
+      if (input.driver.getSessionId() !== retractionSessionId) {
+        return;
+      }
       acceptRetraction(retracted);
       requestRender();
       await input.driver.stop();
@@ -1276,6 +1411,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       editor.disableSubmit = false;
       reportError(error);
     });
+    trackRetraction(retractionTask);
   };
 
   // Open a fresh turn from a submitted prompt (idle path). Control actions hold
@@ -1315,7 +1451,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       return;
     }
     // First-run has no connection, so the wizard is the only surface. This is
-    // the single choke point for idle submits (Enter, Alt+Enter, steer
+    // the single choke point for idle submits (Enter, steer
     // fallback): reopen the wizard instead of opening a turn against a
     // connection-less driver. Slash commands above already routed to the
     // command layer (/exit still exits, /help still shows help).
@@ -1403,35 +1539,42 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     submitMessage(text, 'current_turn');
   };
 
-  // Alt+Enter: during a turn, queue the text to open the next turn; when idle,
-  // it submits like Enter.
-  const handleAltEnter = () => {
-    // Mirror Enter's control-busy guard BEFORE touching the editor: during a
-    // control action (busy without a running turn) submitPrompt would drop the
-    // prompt, so keep the draft in place instead of clearing it into the void.
-    if (busy && !turnRunning) return;
-    // Interrupt convergence window: the turn is being stopped, so nothing may
-    // be queued onto it and no fresh turn may open — keep the draft.
-    if (interruptRequested) return;
+  // Tab: during a turn, queue the draft to open the next turn. Idle Tab never
+  // reaches this — it stays the editor's completion trigger (key handler gate).
+  const queueDraftForNextTurn = () => {
     const text = editor.getExpandedText().trim();
     if (!text) return;
     editor.setText('');
-    if (!turnRunning) {
-      submitPrompt(text);
-      return;
-    }
     submitMessage(text, 'next_turn');
   };
 
-  // Alt+↑: take back every queued message from the Runtime Host, joined and
+  // Shift+←: take back every queued message from the Runtime Host, joined and
   // prepended to the current draft for re-editing.
   const retractQueuedMessages = () => {
-    void (async () => {
+    // A session switch blocks new retractions for its entire window: the
+    // switch's own settle drain only covers retractions asked for before it,
+    // and past that drain a retraction would still address the old Session
+    // while the driver is busy re-keying (#5265 review). Swallowing the
+    // keypress loses nothing: the entries stay queued and Shift+← works once
+    // the switch lands.
+    if (sessionSwitchesInFlight > 0) return;
+    const retractionTask = (async () => {
+      // Same session fence as the interrupt path: a mid-turn `/session` that
+      // lands while enqueues or the retraction are in flight must neither
+      // retract the new session's queue nor inherit the text of the session
+      // we left (#5109 review).
+      const retractionSessionId = input.driver.getSessionId();
       await settlePendingEnqueues();
-      const retracted = (await input.driver.retractQueued?.()) ?? { text: '', messageIds: [] };
+      if (input.driver.getSessionId() !== retractionSessionId) return;
+      const retracted = (await input.driver.retractQueued?.()) ?? {
+        text: '',
+        messageIds: [],
+      };
+      if (input.driver.getSessionId() !== retractionSessionId) return;
       acceptRetraction(retracted);
       requestRender();
     })().catch(reportError);
+    trackRetraction(retractionTask);
   };
 
   // Onboarding wizard (#1098 UX redesign): one overlay spans provider search,
@@ -1891,7 +2034,11 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // The driver validates the durable cwd before adopting the resumed session.
   // A failure leaves the active session untouched and the next prompt still
   // lands on the old one.
-  const switchSession = async (sessionId: string, relocateCwd?: string) => {
+  const runSessionSwitch = async (sessionId: string, relocateCwd?: string) => {
+    // A session switch waits for an in-flight retraction: the retracted text
+    // must land in the session it was asked for before the driver re-keys
+    // (#5109 review).
+    await settleRetractions();
     resolvedInteractionIds.clear();
     const result = await input.driver.switchSession(
       sessionId,
@@ -1935,6 +2082,11 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     }
     requestRender();
   };
+  // The whole switch — its settle drain, the driver's asynchronous re-key,
+  // and the adoption — runs inside the switch window so Shift+← cannot send a
+  // retraction for the session being left (#5265 review).
+  const switchSession = (sessionId: string, relocateCwd?: string): Promise<void> =>
+    holdSwitchWindow(() => runSessionSwitch(sessionId, relocateCwd));
 
   // Mid-turn `/session` switch-away (#3380): adopt another Session while a
   // Turn is still running on the current one. In Runtime Host mode the Turn is
@@ -1944,10 +2096,18 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // tail unwinds through the superseded branch and releases busy/activity,
   // then either that tail or the startPendingAttachedTurn below starts the
   // freshly attached Turn, whichever observes an idle runner first.
-  const switchAwayMidTurn = async (sessionId: string) => {
-    resolvedInteractionIds.clear();
+  const runMidTurnSwitch = async (sessionId: string) => {
+    // Reserve the detach before the retraction drain: every other navigation
+    // path (`/session`, the side toggle, a mid-turn side open) checks
+    // `detaching`, so the latch must be set before this await — two
+    // navigations could otherwise both pass their guard while the same drain
+    // is pending and then re-key the driver concurrently (#5265 review).
     detaching = true;
     try {
+      // Same serialization as the idle switch: the in-flight retraction lands
+      // its payload in the session it was asked for first (#5109 review).
+      await settleRetractions();
+      resolvedInteractionIds.clear();
       // Fence only after the driver confirms the switch: a failed switch must
       // leave the in-flight drain fully live. Events the abandoned queue
       // yields between the channel closing inside switchSession and
@@ -1988,6 +2148,10 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       startPendingAttachedTurn();
     }
   };
+  // Same window as the idle switch: the mid-turn detach also re-keys the
+  // driver through asynchronous work, so Shift+← waits it out (#5265 review).
+  const switchAwayMidTurn = (sessionId: string): Promise<void> =>
+    holdSwitchWindow(() => runMidTurnSwitch(sessionId));
 
   const stopSideParentObserver = async (
     pair: NonNullable<typeof sideConversation>,
@@ -2043,11 +2207,16 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     if (!pair || detaching || (busy && !turnRunning)) return;
     const fromSide = input.driver.getSessionId() === pair.sideSessionId;
     const targetSessionId = fromSide ? pair.parentSessionId : pair.sideSessionId;
-    const currentDraft = editor.getText();
     const switchView = async () => {
       if (turnRunning) await switchAwayMidTurn(targetSessionId);
       else await switchSession(targetSessionId);
       if (sideConversation !== pair) return;
+      // Capture after the switch: both switch paths drain a pending
+      // retraction first, and the drain may have restored text into the
+      // editor. Capturing before the wait would write that stale draft back
+      // over the recovery — side editor, parent editor, and Host queue all
+      // empty with no notice (#5265 review).
+      const currentDraft = editor.getText();
       if (fromSide) {
         pair.sideDraft = currentDraft;
         editor.setText(pair.parentDraft);
@@ -2067,7 +2236,14 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // serial lock like any control action; mid-turn that lock is held by the
   // running Turn, so the switch goes through the detach path instead of
   // silently no-oping on the busy gate.
-  const goToSession = async (sessionId: string): Promise<void> => {
+  const goToSession = async (sessionId: string): Promise<boolean> => {
+    // One detach at a time (#3380, #5265 review): a second switch while the
+    // first is still handing the view over — including the retraction drain
+    // it waits in before re-keying — would clear `detaching` early, reopen
+    // the interrupt window, and double-apply the adoption. The idle branch
+    // is reachable mid-drain too (the running Turn can end while the detach
+    // waits), so the guard covers the whole command.
+    if (detaching) return false;
     const pair = sideConversation;
     if (
       pair &&
@@ -2075,27 +2251,36 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       (sessionId === pair.parentSessionId || sessionId === pair.sideSessionId)
     ) {
       await toggleSideConversation();
-      return;
+      return true;
     }
     const leavesPair =
       pair !== undefined && sessionId !== pair.parentSessionId && sessionId !== pair.sideSessionId;
     if (!turnRunning) {
+      let switched = false;
       await runControl(async () => {
         await switchSession(sessionId);
+        switched = true;
         if (leavesPair) await discardCurrentSidePair();
       });
-      return;
+      return switched;
     }
-    // One detach at a time (#3380): a second mid-turn switch while the first
-    // is still handing the view over would clear `detaching` early, reopen
-    // the interrupt window, and double-apply the adoption.
-    if (detaching) return;
-    await switchAwayMidTurn(sessionId)
-      .then(() => (leavesPair ? discardCurrentSidePair() : undefined))
-      .catch(reportError);
+    try {
+      await switchAwayMidTurn(sessionId);
+      if (leavesPair) await discardCurrentSidePair();
+      return true;
+    } catch (error) {
+      reportError(error);
+      return false;
+    }
   };
 
   const openSideConversation = async (prompt: string): Promise<void> => {
+    // One detach at a time (#5265 review): the running Turn can end while a
+    // mid-turn detach is still inside its retraction drain, making this
+    // command's idle branch reachable mid-drain — the open's re-key must not
+    // race the in-flight switch's, the same concurrent-re-key class
+    // `/session`'s guard closes.
+    if (detaching) return;
     if (sideConversation) {
       state.entries.push({
         kind: 'notice',
@@ -2117,6 +2302,13 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     const previousActivity = currentActivityCompletion;
     let opened = false;
     const adopt = async () => {
+      // The window blocks only retractions asked inside it: one already in
+      // flight when the open started must drain here, while the driver still
+      // points at the parent — the Host removes the parent's queued entries as
+      // the retraction resolves, and a response landing after the re-key onto
+      // the side Session would be discarded by the side-session fence (#5265
+      // review).
+      await settleRetractions();
       const result = await input.driver.openSideConversation!();
       if (turnRunning) turnEpoch += 1;
       await applySwitchResult(result);
@@ -2124,8 +2316,14 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         parentSessionId: result.parentSessionId,
         sideSessionId: result.sideSessionId,
         parentDraft: editor.getText(),
+        // The drain may have restored the parent's recovered text into the
+        // editor before the re-key; it is captured here, and the editor
+        // switches to the side view's own (empty) draft — pressing Enter here
+        // must not resubmit the parent's message inside the side conversation
+        // (#5265 review).
         sideDraft: '',
       };
+      editor.setText(sideConversation.sideDraft);
       await startSideParentObserver(sideConversation);
       opened = true;
       state.entries.push({
@@ -2135,11 +2333,17 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       });
       requestRender();
     };
+    // Opening re-keys the driver onto the side Session through asynchronous
+    // work (the Host forks the parent and switches onto the fork), the same
+    // switchSession re-key path as `/session`, so both entry paths hold the
+    // switch window: a retraction asked inside it would address the parent
+    // while the Host removes its queued entries, and the side-session fence
+    // would then discard what the Host removed (#5265 review).
     if (turnRunning) {
       if (detaching) return;
       detaching = true;
       try {
-        await adopt();
+        await holdSwitchWindow(adopt);
       } catch (error) {
         reportError(error);
       } finally {
@@ -2147,22 +2351,51 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         startPendingAttachedTurn();
       }
     } else {
-      await runControl(adopt);
+      await runControl(() => holdSwitchWindow(adopt));
     }
     if (!opened || !prompt) return;
     await previousActivity?.catch(() => undefined);
     submitPrompt(prompt);
   };
 
-  const closeSideConversation = async (): Promise<void> => {
+  const runCloseSideConversation = async (): Promise<void> => {
     const pair = sideConversation;
     if (!pair || !input.driver.closeSideConversation) return;
+    // Same drain as the open: a retraction asked while the side Session was
+    // active must land while the driver still points at it — past the re-key
+    // onto the parent, the close's session fence discards the text the Host
+    // already removed from the side queue (#5265 review).
+    await settleRetractions();
+    // The close is only admitted from an empty editor: recovered text in the
+    // editor is the only copy left, and closing here would overwrite it with
+    // the parent draft below or clear it on the switch. Aborting keeps it
+    // visible; a later Ctrl+C clears it like any draft (#5265 review).
+    if (editor.getText().length > 0) {
+      state.entries.push({
+        kind: 'notice',
+        level: 'info',
+        text: 'Side conversation kept open — the editor draft was kept.',
+      });
+      requestRender();
+      return;
+    }
     const result = await input.driver.closeSideConversation(
       pair.sideSessionId,
       pair.parentSessionId,
     );
     await applySwitchResult(result);
-    editor.setText(pair.parentDraft);
+    // The switch window only disabled submit: anything typed while the close
+    // was in flight is live user input and outranks the parked parent draft.
+    // Keep it — appending the parent draft below when both exist — instead of
+    // letting the restore silently drop it (#5265 review).
+    const liveDraft = editor.getText();
+    editor.setText(
+      liveDraft.length > 0
+        ? pair.parentDraft.length > 0
+          ? `${liveDraft}\n\n${pair.parentDraft}`
+          : liveDraft
+        : pair.parentDraft,
+    );
     await stopSideParentObserver(pair);
     sideConversation = undefined;
     if (result.cleanup === 'pending') {
@@ -2174,6 +2407,10 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     }
     requestRender();
   };
+  // Same window as the open: closing re-keys the driver back onto the parent
+  // Session through its own asynchronous switch, so Shift+← waits it out
+  // (#5265 review).
+  const closeSideConversation = (): Promise<void> => holdSwitchWindow(runCloseSideConversation);
   const interruptAndCloseSideConversation = (): void => {
     if (interruptRequested) return;
     const completion = currentActivityCompletion;
@@ -2205,28 +2442,38 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     state.entries.push(pendingNotice);
     requestRender();
     try {
-      const result = await input.driver.rewindToTurn(turnId).catch((error: unknown) => {
-        // The driver refuses rewind with a machine code when the selected
-        // turn carries structured context the TUI cannot restore (#5109).
-        // Render the localized catalog copy for that code instead of the
-        // driver's English fallback.
-        const code = (error as { code?: unknown })?.code;
-        if (
-          code === 'rewind_unsupported_quotes' ||
-          code === 'rewind_unsupported_attachments' ||
-          code === 'rewind_unsupported_directory_references'
-        ) {
-          const localized =
-            code === 'rewind_unsupported_quotes'
-              ? TUI_REWIND_COPY[locale].unsupportedQuotes
-              : code === 'rewind_unsupported_attachments'
-                ? TUI_REWIND_COPY[locale].unsupportedAttachments
-                : TUI_REWIND_COPY[locale].unsupportedDirectoryReferences;
-          throw new Error(localized);
-        }
-        throw error;
+      const result = await holdSwitchWindow(async () => {
+        // Same switch window as /session: rewind re-keys the driver through
+        // its own asynchronous branch-and-switch, and a retraction crossing
+        // that window would address the session being left (#5265 review).
+        // That window blocks only retractions asked inside it — one already in
+        // flight drains here, before the branch re-keys onto a fresh Session
+        // whose fence would otherwise discard the response (#5265 review).
+        await settleRetractions();
+        const rewind = await input.driver.rewindToTurn(turnId).catch((error: unknown) => {
+          // The driver refuses rewind with a machine code when the selected
+          // turn carries structured context the TUI cannot restore (#5109).
+          // Render the localized catalog copy for that code instead of the
+          // driver's English fallback.
+          const code = (error as { code?: unknown })?.code;
+          if (
+            code === 'rewind_unsupported_quotes' ||
+            code === 'rewind_unsupported_attachments' ||
+            code === 'rewind_unsupported_directory_references'
+          ) {
+            const localized =
+              code === 'rewind_unsupported_quotes'
+                ? TUI_REWIND_COPY[locale].unsupportedQuotes
+                : code === 'rewind_unsupported_attachments'
+                  ? TUI_REWIND_COPY[locale].unsupportedAttachments
+                  : TUI_REWIND_COPY[locale].unsupportedDirectoryReferences;
+            throw new Error(localized);
+          }
+          throw error;
+        });
+        await applySwitchResult(rewind);
+        return rewind;
       });
-      await applySwitchResult(result);
       await discardCurrentSidePair();
       // Record the discarded turn's prompt in the editor history before
       // deciding on the refill: prompts submitted in this TUI process are
@@ -2270,6 +2517,10 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     const prompt = userQuestionPrompt;
     if (!prompt) return;
     layout.setBlockingInteraction(undefined);
+    // In fullscreen the main-screen layout stays inert (the mounted layout
+    // root draws and budgets rows), so the chrome has to detach the question
+    // from the tree that actually renders it.
+    fullscreenChrome?.setBlockingInteraction(undefined);
     userQuestionPrompt = undefined;
     if (tui.getFocusedComponent() === prompt) tui.setFocus(editorSurface);
   };
@@ -2327,6 +2578,10 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       onSkip: () => advance(null),
     });
     layout.setBlockingInteraction(userQuestionPrompt);
+    // The fullscreen question must live inside the mounted layout root, or
+    // the focused overlay is never drawn and the turn waits on a blind answer
+    // (#4136 review P1).
+    fullscreenChrome?.setBlockingInteraction(userQuestionPrompt);
     tui.setFocus(userQuestionPrompt);
   };
 
@@ -2770,7 +3025,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       // wizard can report unavailability in-frame at submit instead of throwing.
       providers = listApiKeyOnboardableProviders().map((provider) => ({
         ...provider,
-        target: { kind: 'create' as const, providerType: provider.providerType },
+        target: onboardingCreateTarget(provider),
         label: provider.label,
         suggestedSlug: deriveConnectionSlug(provider.providerType),
         enabledModelIds: [],
@@ -2802,8 +3057,10 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       onSubmitIdentity: (identity) => {
         if (wizardTarget?.kind === 'create') {
           wizardTarget = {
-            kind: 'create',
-            providerType: wizardTarget.providerType,
+            ...onboardingCreateTarget({
+              providerType: wizardTarget.providerType,
+              defaultApiProtocol: wizardTarget.defaultApiProtocol,
+            }),
             ...(identity.slug === null ? {} : { slug: identity.slug }),
             ...(identity.name === null ? {} : { name: identity.name }),
           };
@@ -2986,14 +3243,58 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     });
   };
 
+  let sessionListPromise:
+    | {
+        readonly limit: number | undefined;
+        readonly cwd: string | undefined;
+        readonly promise: Promise<SessionSummary[]>;
+      }
+    | undefined;
+  let activeResumeAvailabilityChecks = 0;
+  const queuedResumeAvailabilityChecks: Array<() => void> = [];
+  const runResumeAvailabilityCheck = async <T>(task: () => Promise<T>): Promise<T> => {
+    if (activeResumeAvailabilityChecks >= SESSION_RESUME_AVAILABILITY_CONCURRENCY) {
+      await new Promise<void>((resolve) => queuedResumeAvailabilityChecks.push(resolve));
+    }
+    activeResumeAvailabilityChecks += 1;
+    try {
+      return await task();
+    } finally {
+      activeResumeAvailabilityChecks -= 1;
+      queuedResumeAvailabilityChecks.shift()?.();
+    }
+  };
+  const listSessions = (options: MakaSessionListOptions = {}): Promise<SessionSummary[]> => {
+    if (sessionListPromise) {
+      if (sessionListPromise.limit === options.limit && sessionListPromise.cwd === options.cwd) {
+        return sessionListPromise.promise;
+      }
+      return sessionListPromise.promise.then(
+        () => listSessions(options),
+        () => listSessions(options),
+      );
+    }
+    {
+      const promise = input.driver.listSessions(options).finally(() => {
+        if (sessionListPromise?.promise === promise) sessionListPromise = undefined;
+      });
+      sessionListPromise = { limit: options.limit, cwd: options.cwd, promise };
+    }
+    return sessionListPromise.promise;
+  };
+
   const resumeSession = async () => {
+    if (!input.driver.getSessionId()) {
+      await showSessionList({ onlyResumable: true });
+      return;
+    }
     if (!input.driver.resumeLatest) {
-      throw new Error('Safe-boundary resume is unavailable on this runtime.');
+      throw new Error(pickerCopy.resumeUnavailableNotice);
     }
     state.entries.push({
       kind: 'notice',
       level: 'info',
-      text: 'Resuming from the latest safe boundary…',
+      text: pickerCopy.resumeStartingNotice,
     });
     requestRender();
     try {
@@ -3363,30 +3664,98 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     );
   };
 
-  const showSessionList = async () => {
-    const sessions = await input.driver.listSessions();
-    const sessionTree = projectRevisionLinkedSessionTree(
+  const showSessionCatalogIncompleteNotice = (): void => {
+    const text = pickerCopy.resumeCatalogIncompleteNotice;
+    state.entries.push({ kind: 'notice', level: 'info', text });
+    requestRender();
+  };
+  const readSessionCatalog = async (
+    sessionOptions: MakaSessionListOptions = {},
+    onIncomplete?: () => void,
+  ): Promise<SessionSummary[]> => {
+    try {
+      return await listSessions(sessionOptions);
+    } catch (error) {
+      if (error instanceof MakaSessionCatalogIncompleteError) {
+        onIncomplete?.();
+        return [...error.sessions];
+      }
+      throw error;
+    }
+  };
+
+  const showSessionList = async (options: { onlyResumable?: boolean } = {}) => {
+    let catalogIncompleteNoticeShown = false;
+    const readPickerSessionCatalog = (sessionOptions: MakaSessionListOptions) =>
+      readSessionCatalog(sessionOptions, () => {
+        if (catalogIncompleteNoticeShown) return;
+        catalogIncompleteNoticeShown = true;
+        showSessionCatalogIncompleteNotice();
+      });
+    let sessions = await readPickerSessionCatalog(
+      options.onlyResumable ? { limit: SESSION_CATALOG_MAX_SCAN_SESSIONS, cwd } : {},
+    );
+    let sessionTree = projectRevisionLinkedSessionTree(
       sessions,
       input.driver.getSessionId() ?? undefined,
     );
-    const projectedSessions = flattenLinkedSessionTree(
+    let projectedSessions = flattenLinkedSessionTree(
       sessionTree.roots,
       sessionTree.childrenByParentId,
     );
+    const resumeCandidateCheckFailures = new Set<string>();
+    const checkSessionAvailability = async (
+      session: SessionSummary,
+    ): Promise<readonly [string, SessionResumeAvailability]> => {
+      try {
+        const result = await runResumeAvailabilityCheck(async () => {
+          if (!session.cwd) {
+            return [session.id, { available: false, reason: 'Missing working directory' }] as const;
+          }
+          if (options.onlyResumable) {
+            if (!input.driver.getSessionResumeCandidateAvailability) {
+              resumeCandidateCheckFailures.add(session.id);
+              return [
+                session.id,
+                {
+                  available: false,
+                  reason: pickerCopy.resumeUnavailableNotice,
+                },
+              ] as const;
+            }
+            return [
+              session.id,
+              await input.driver.getSessionResumeCandidateAvailability(session),
+            ] as const;
+          }
+          const availability =
+            (await input.driver.getSessionResumeAvailability?.(session)) ??
+            (await inspectSessionResumeAvailability(session));
+          return [session.id, availability] as const;
+        });
+        if (options.onlyResumable && input.driver.getSessionResumeCandidateAvailability) {
+          resumeCandidateCheckFailures.delete(session.id);
+        }
+        return result;
+      } catch (error) {
+        if (options.onlyResumable) resumeCandidateCheckFailures.add(session.id);
+        const detail = error instanceof Error ? error.message : String(error);
+        return [session.id, { available: false, reason: detail }] as const;
+      }
+    };
+    // Recovery starts in the current workspace even for Host profiles whose
+    // normal /session picker starts in All. The user can still opt into the
+    // full catalog with the scope toggle after the current rows are ready.
+    let pickerScope: 'current' | 'all' = options.onlyResumable ? 'current' : sessionListScope;
+    const sessionsToCheck = (
+      pickerScope === 'current' ? sessions.filter((session) => session.cwd === cwd) : sessions
+    ).slice(0, SESSION_CATALOG_MAX_SCAN_SESSIONS);
     // Maka-session availability and Host source discovery are independent I/O; run
     // them concurrently so the picker's open latency is the slower of the two,
     // not their sum.
     const [availabilityEntries, externalSourceQuery] = await Promise.all([
-      Promise.all(
-        sessions.map(async (session) => {
-          return [
-            session.id,
-            (await input.driver.getSessionResumeAvailability?.(session)) ??
-              (await inspectSessionResumeAvailability(session)),
-          ] as const;
-        }),
-      ),
-      input.externalSessions && !turnRunning
+      Promise.all(sessionsToCheck.map(checkSessionAvailability)),
+      !options.onlyResumable && input.externalSessions && !turnRunning
         ? input.externalSessions.listSources().then(
             (adapterIds) => ({ adapterIds }),
             () => ({ error: true as const }),
@@ -3394,6 +3763,18 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         : Promise.resolve({ adapterIds: [] as readonly string[] }),
     ]);
     const availability = new Map(availabilityEntries);
+    const ensureAvailabilityForScope = async (scope: 'current' | 'all'): Promise<void> => {
+      const scopeSessions = (
+        scope === 'current' ? sessions.filter((session) => session.cwd === cwd) : sessions
+      ).slice(0, SESSION_CATALOG_MAX_SCAN_SESSIONS);
+      const missingSessions = scopeSessions.filter((session) => !availability.has(session.id));
+      if (missingSessions.length === 0) return;
+      for (const [sessionId, sessionAvailability] of await Promise.all(
+        missingSessions.map(checkSessionAvailability),
+      )) {
+        availability.set(sessionId, sessionAvailability);
+      }
+    };
     if ('error' in externalSourceQuery) {
       state.entries.push({
         kind: 'notice',
@@ -3405,14 +3786,23 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     let sessionSearch: SessionSearchOverlay | undefined;
     const renderScope = (): void => {
       const visibleSessions =
-        sessionListScope === 'current'
+        pickerScope === 'current'
           ? projectedSessions.filter(({ session }) => session.cwd === cwd)
           : projectedSessions;
-      const choices: SessionSearchChoice[] = visibleSessions.map(({ session, depth }) => {
+      const selectableSessions = options.onlyResumable
+        ? visibleSessions.filter(({ session }) => availability.get(session.id)?.available === true)
+        : visibleSessions;
+      const emptyText =
+        options.onlyResumable &&
+        visibleSessions.length > 0 &&
+        visibleSessions.every(({ session }) => resumeCandidateCheckFailures.has(session.id))
+          ? pickerCopy.resumeCandidateCheckFailed
+          : undefined;
+      const choices: SessionSearchChoice[] = selectableSessions.map(({ session, depth }) => {
         const state = availability.get(session.id);
         const statusBadge = sessionStatusBadge(session, locale);
         const statusDetail = statusBadge ? ` · ${statusBadge}` : '';
-        const location = sessionListScope === 'all' && session.cwd ? ` ${session.cwd}` : '';
+        const location = pickerScope === 'all' && session.cwd ? ` ${session.cwd}` : '';
         const childDetail = session.subagentRuntime
           ? ` subagent:${session.subagentRuntime.profile}`
           : '';
@@ -3438,7 +3828,11 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
             .toLocaleLowerCase(),
         };
       });
-      if ('adapterIds' in externalSourceQuery && externalSourceQuery.adapterIds.length > 0) {
+      if (
+        !options.onlyResumable &&
+        'adapterIds' in externalSourceQuery &&
+        externalSourceQuery.adapterIds.length > 0
+      ) {
         choices.push({
           item: {
             value: 'external:import',
@@ -3458,16 +3852,20 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
           showExternalSourcePicker(externalSourceQuery.adapterIds);
           return;
         }
-        if (availability.get(item.value)?.available === false) return;
+        const selectedSession = sessions.find((session) => session.id === item.value);
+        if (selectedSession && !selectedSession.cwd) {
+          return;
+        }
         closeOverlay();
-        void goToSession(item.value);
+        void (async () => {
+          const switched = await goToSession(item.value);
+          if (switched && options.onlyResumable) await runControl(resumeSession);
+        })().catch(reportError);
       };
       const scopeLabel =
-        sessionListScope === 'current'
-          ? pickerCopy.sessionScopeCurrent
-          : pickerCopy.sessionScopeAll;
+        pickerScope === 'current' ? pickerCopy.sessionScopeCurrent : pickerCopy.sessionScopeAll;
       if (sessionSearch) {
-        sessionSearch.updateChoices(choices, scopeLabel);
+        sessionSearch.updateChoices(choices, scopeLabel, undefined, emptyText);
         sessionSearch.invalidate();
         return;
       }
@@ -3475,17 +3873,69 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         locale,
         choices,
         scopeLabel,
+        emptyText,
         onSelect,
         onCancel: closeOverlay,
         onToggleScope: () => {
-          sessionListScope = sessionListScope === 'current' ? 'all' : 'current';
-          renderScope();
+          const nextScope = pickerScope === 'current' ? 'all' : 'current';
+          void (async () => {
+            if (options.onlyResumable) {
+              sessions = await readPickerSessionCatalog(
+                nextScope === 'current'
+                  ? { limit: SESSION_CATALOG_MAX_SCAN_SESSIONS, cwd }
+                  : { limit: SESSION_CATALOG_MAX_SCAN_SESSIONS },
+              );
+              sessionTree = projectRevisionLinkedSessionTree(
+                sessions,
+                input.driver.getSessionId() ?? undefined,
+              );
+              projectedSessions = flattenLinkedSessionTree(
+                sessionTree.roots,
+                sessionTree.childrenByParentId,
+              );
+            }
+            await ensureAvailabilityForScope(nextScope);
+          })()
+            .then(() => {
+              pickerScope = nextScope;
+              if (!options.onlyResumable) sessionListScope = nextScope;
+              renderScope();
+            })
+            .catch(reportError);
         },
       });
       sessionPickerOverlayOpen = true;
       overlay = showBottomPicker(sessionSearch);
     };
     renderScope();
+  };
+
+  const announceResumeAvailability = async (): Promise<void> => {
+    const sessionId = input.driver.getSessionId();
+    try {
+      if (!input.driver.getSessionResumeCandidateAvailability) return;
+      const sessions = sessionId
+        ? undefined
+        : await readSessionCatalog({ limit: SESSION_CATALOG_MAX_SCAN_SESSIONS, cwd });
+      const session = sessionId
+        ? ((await input.driver.getSessionSummary?.(sessionId)) ??
+          (await readSessionCatalog()).find((candidate) => candidate.id === sessionId))
+        : sessions?.find((candidate) => candidate.cwd === cwd);
+      if (!session) return;
+      const availability = await runResumeAvailabilityCheck(() =>
+        input.driver.getSessionResumeCandidateAvailability!(session),
+      );
+      if (availability.available) {
+        state.entries.push({
+          kind: 'notice',
+          level: 'info',
+          text: pickerCopy.resumeAvailabilityNotice,
+        });
+        requestRender();
+      }
+    } catch {
+      // Resume discovery is advisory and must never prevent the TUI from starting.
+    }
   };
 
   const showRewindPicker = async () => {
@@ -3532,7 +3982,13 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     );
   };
 
-  const newSession = async (): Promise<boolean> => {
+  const runNewSession = async (): Promise<boolean> => {
+    // A retraction already in flight when /new landed must drain here, while
+    // the driver still points at the session it was asked for: the Host has
+    // already removed the queued entries, so a response arriving after
+    // startNewSession's re-key would be discarded by the fresh-session fence
+    // (#5265 review).
+    await settleRetractions();
     try {
       await input.driver.startNewSession();
     } catch {
@@ -3570,6 +4026,19 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     await discardCurrentSidePair();
     requestRender();
     return true;
+  };
+  const newSession = async (): Promise<boolean> => {
+    // `/new` must stay reachable while a Turn runs (#3210 review), so the busy
+    // lock never gates it — the end of the Turn does not either. A mid-turn
+    // detach's retraction-drain window leaves `detaching` as the only guard:
+    // startNewSession's re-key must not race the in-flight switch's (#5265
+    // review).
+    if (detaching) return false;
+    // Same switch window as `/session`: startNewSession re-keys the driver
+    // through asynchronous Host work, and a Shift+Left asked inside that
+    // window would address the session being replaced, whose entries the Host
+    // removes as the fresh Session is created (#5265 review).
+    return holdSwitchWindow(() => runNewSession());
   };
 
   const showHelp = () => {
@@ -4320,6 +4789,50 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
           return;
         }
         const action = parts[1];
+        if (parts.length === 2 && action === 'cancel-wait') {
+          if (busy) {
+            state.entries.push({
+              kind: 'notice',
+              level: 'info',
+              text: TUI_COPY_RESOURCES.goal[locale].cancelWaitBusy,
+            });
+            requestRender();
+            return;
+          }
+          const goal = input.driver.getGoal?.();
+          const wait = goal?.eventWait;
+          if (!goal || !wait || !input.driver.cancelGoalEventWait) {
+            state.entries.push({
+              kind: 'notice',
+              level: 'info',
+              text: TUI_COPY_RESOURCES.goal[locale].noCancellableWait,
+            });
+            requestRender();
+            return;
+          }
+          // Capture the displayed identity before any await; never retarget retries.
+          const target = {
+            sessionId: goal.sessionId,
+            goalId: goal.goalId,
+            controlGeneration: wait.controlGeneration,
+            waitId: wait.waitId,
+            expectedGoalRevision: goal.revision,
+          };
+          void runControl(async () => {
+            const result = await input.driver.cancelGoalEventWait!(target);
+            currentGoal = result.goal;
+            state.entries.push({
+              kind: 'notice',
+              level: 'info',
+              text:
+                result.outcome === 'cancelled' || result.outcome === 'already_cancelled'
+                  ? TUI_COPY_RESOURCES.goal[locale].waitCancelled
+                  : TUI_COPY_RESOURCES.goal[locale].waitChanged,
+            });
+            requestRender();
+          });
+          return;
+        }
         if (
           parts.length !== 2 ||
           (action !== 'pause' && action !== 'resume' && action !== 'clear')
@@ -4327,7 +4840,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
           state.entries.push({
             kind: 'notice',
             level: 'error',
-            text: 'Usage: /goal [pause|resume|clear]',
+            text: TUI_COPY_RESOURCES.goal[locale].usage,
           });
           requestRender();
           return;
@@ -4796,20 +5309,32 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       }
       return { consume: true };
     }
-    // Alt+Enter: queue a followup (during a turn) or submit (when idle). Alt+↑:
-    // take back the queued messages to re-edit. Neither is an editor binding
-    // (newline is shift+enter/ctrl+j; history is plain up), so intercepting
-    // here does not collide with the editor's own keys.
-    if (matchesKey(data, Key.alt('enter')) && !isKeyRepeat(data)) {
-      handleAltEnter();
+    // Tab: queue a followup during a turn — the route terminals deliver
+    // reliably, unlike the Alt chords they claim for themselves (#3538;
+    // Codex's default). The editor owns Tab everywhere else: it
+    // triggers/accepts completion, so a turn-running Tab only queues a
+    // non-empty draft while no completion popup is open. Idle Tab stays
+    // with the editor rather than submitting.
+    if (
+      turnRunning &&
+      !interruptRequested &&
+      !editorPastePending &&
+      editor.getText().trim().length > 0 &&
+      !editor.isShowingAutocomplete() &&
+      matchesKey(data, Key.tab) &&
+      !isKeyRepeat(data)
+    ) {
+      queueDraftForNextTurn();
       return { consume: true };
     }
-    if (matchesKey(data, Key.alt('up')) && !isKeyRepeat(data)) {
+    // Shift+←: retract queued messages (Codex's edit_queued_message
+    // default). Not an editor binding, and an empty retract refill is a
+    // no-op, so consuming unconditionally loses nothing — same rationale
+    // the old Alt+↑ binding used.
+    if (matchesKey(data, Key.shift('left')) && !isKeyRepeat(data)) {
       // Always retract from the authority: the render mirror lags the
-      // queue_update event, so an enqueue followed by Alt+Up in the same
+      // queue_update event, so an enqueue followed by Shift+← in the same
       // tick would see an empty mirror while the runtime holds the message.
-      // Alt+Up is not an editor binding, and an empty retract refill is a
-      // no-op, so consuming unconditionally loses nothing.
       retractQueuedMessages();
       return { consume: true };
     }
@@ -4954,6 +5479,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     // line discipline and leaks onto the screen as a stray `^[[I` on launch.
     terminal.write(ENABLE_FOCUS_REPORTING);
     if (input.firstRun) void showSetupWizard();
+    setTimeout(() => void announceResumeAvailability(), 0);
   } catch (error) {
     beginClose(error instanceof Error ? error : new Error(String(error)));
   }

@@ -15,15 +15,15 @@
  * The wrapper DOM, header, and keyboard behavior remain the official
  * component; the props interface is trimmed to what Maka passes.
  *
- * Product dialect lives in chat-message.css (cursor default, hover wash,
- * chevron size). In addition to the first-open body rendering change, the
- * chevron is Astryx `Icon` rather than the lab's own 12-viewBox SVG: at
- * the 10x10 chat-message.css forces, that glyph drew 1.25px of stroke beside
- * the tool rows' 0.73px. One registry, one chevron.
+ * Product dialect lives in chat-message.css (cursor default, hover wash). In
+ * addition to the first-open body rendering change, the chevron is Astryx
+ * `Icon` rather than the lab's own 12-viewBox SVG, whose stroke drew heavier
+ * than the tool rows' chevron beside it. One registry, one chevron.
  */
 import { useState, type HTMLAttributes, type ReactNode } from 'react';
 import { Icon } from '@astryxdesign/core/Icon';
 import { mergeProps, themeProps } from '@astryxdesign/core/utils';
+import { ICON_SIZE } from './icons.js';
 
 export interface ChatReasoningProps extends HTMLAttributes<HTMLDivElement> {
   children: ReactNode;
@@ -34,7 +34,7 @@ export interface ChatReasoningProps extends HTMLAttributes<HTMLDivElement> {
 
 function ThinkingIcon() {
   return (
-    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+    <svg width={ICON_SIZE.meta} height={ICON_SIZE.meta} viewBox="0 0 14 14" fill="none" aria-hidden="true">
       <circle cx="7" cy="7" r="5.5" stroke="currentColor" strokeWidth="1.5" strokeDasharray="3 2" />
       <circle cx="5.5" cy="7" r="0.75" fill="currentColor" />
       <circle cx="8.5" cy="7" r="0.75" fill="currentColor" />

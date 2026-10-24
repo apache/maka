@@ -19,14 +19,18 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
+import type { RuntimeEvent } from '@maka/core/runtime-event';
+import {
+  runtimeInvocationOutcome,
+  type RuntimeInvocationRecord,
+} from '@maka/core/runtime-invocation';
 import { testInvocationRecord } from '@maka/runtime/test-only/invocation-fixture';
 import type { SessionHeader, StoredMessage } from '@maka/core/session';
 import { agentGraphIdForRootSession } from '@maka/runtime/stream-graph-coordinator';
 import { collectConversationCopyLinkedChildReferences } from '@maka/runtime/conversation-copy';
 import {
-  agentGraphRevisionAdmissionSessionIds,
-  prepareAgentGraphRevisionReferences,
+  linkedChildCopyAdmissionSessionIds,
+  prepareLinkedChildCopyReferences,
 } from '../server/session-revision-graph-references.js';
 
 const ROOT_SESSION_ID = 'root-session';
@@ -35,6 +39,232 @@ const ROOT_TURN_ID = 'root-turn';
 const CHILD_TURN_ID = 'child-turn';
 const CHILD_RUN_ID = 'child-run';
 const CHILD_ARTIFACT_ID = 'child-artifact';
+
+function agentOutputValue(run = agentRun(), artifactIds = [CHILD_ARTIFACT_ID]) {
+  return {
+    execution: { kind: 'child_session', sessionId: CHILD_SESSION_ID, currentRunId: run.runId },
+    invocation: run,
+    result: {
+      schemaVersion: 1,
+      status: runtimeInvocationOutcome(run) ?? 'running',
+      text: 'Review complete',
+      textTruncated: false,
+      artifactIds,
+      omittedArtifactIds: 0,
+      graph: childHeader().subagentParent!.graph,
+      ...(run.terminalEvent ? { terminalRuntimeEventId: run.terminalEvent.id } : {}),
+    },
+    budget: { view: 'result' },
+    events: [],
+    runtimeEvents: [],
+    diagnostics: [],
+    artifacts: [],
+  };
+}
+
+test('revision validates historical JSON agent_output against the retained child authority', async () => {
+  const run = agentRun();
+  const value = agentOutputValue(run);
+  const message: StoredMessage = { ...linkedResult(), content: { kind: 'json', value } };
+  const accepted = await prepare({ messages: [message, message] });
+  assert.ok(accepted.ok);
+  assert.equal(accepted.shared.size, 1);
+  assert.deepEqual([...accepted.shared.get(CHILD_SESSION_ID)!.runIds], [CHILD_RUN_ID]);
+  const archived = await prepare({
+    messages: [],
+    runtimeEvents: [outputEvent(message.content)],
+  });
+  assert.ok(archived.ok);
+
+  for (const input of [
+    { childActive: true },
+    { graphState: 'live' as const },
+    { runs: [agentRun({ status: 'running' })] },
+    { runs: [agentRun({ status: 'failed' })] },
+    { runs: [{ ...run, terminalEvent: { ...run.terminalEvent!, id: 'different-terminal' } }] },
+    { artifactTurnId: 'another-turn' },
+    {
+      sessionHeaders: [
+        sessionHeader(ROOT_SESSION_ID),
+        childHeader({ parentSessionId: 'another-family' }),
+      ],
+    },
+    {
+      sessionHeaders: [
+        sessionHeader(ROOT_SESSION_ID),
+        childHeader({ parentTurnId: 'excluded-turn' }),
+      ],
+    },
+  ]) {
+    const rejected = await prepare({ messages: [message], ...input });
+    assert.equal(rejected.ok, false, JSON.stringify(input));
+  }
+  for (const key of ['graphId', 'workId', 'operatorId'] as const) {
+    const rejected = await prepare({
+      messages: [
+        {
+          ...message,
+          content: {
+            kind: 'json',
+            value: {
+              ...value,
+              result: { ...value.result, graph: { ...value.result.graph, [key]: 'unrelated' } },
+            },
+          },
+        },
+      ],
+    });
+    assert.equal(rejected.ok, false, key);
+  }
+});
+
+test('external tool JSON cannot invent a linked child and deny conversation copies', async () => {
+  const value = agentOutputValue();
+  const message: StoredMessage = { ...linkedResult(), content: { kind: 'json', value } };
+  for (const kind of ['revision', 'branch', 'side_conversation'] as const) {
+    const input = {
+      kind,
+      sessionHeaders: [sessionHeader(ROOT_SESSION_ID)],
+      messages: [message],
+    };
+    const genuine = await prepare(input);
+    assert.equal(genuine.ok, false);
+    if (!genuine.ok) assert.equal(genuine.code, 'operation_unavailable');
+    const external = await prepare({ ...input, toolName: 'mcp__external__lookup' });
+    assert.ok(external.ok);
+    assert.equal(external.shared.size, 0);
+    assert.equal(external.snapshots.size, 0);
+  }
+});
+
+test('mixed agent_output views validate and retain diagnostic-only Artifacts', async () => {
+  const result = agentOutputValue();
+  const { result: _result, ...envelope } = result;
+  for (const view of ['events', 'runtime_events', 'all'] as const) {
+    const diagnostic = {
+      ...envelope,
+      budget: { view },
+      artifacts: [
+        { id: 'diagnostic-artifact', sessionId: CHILD_SESSION_ID, turnId: CHILD_TURN_ID },
+      ],
+    };
+    for (const kind of ['branch', 'revision', 'side_conversation'] as const) {
+      for (const archived of [false, true]) {
+        const messages: StoredMessage[] = [
+          { ...linkedResult(), content: { kind: 'json', value: result } },
+          ...(!archived
+            ? [{ ...linkedResult(), content: { kind: 'json' as const, value: diagnostic } }]
+            : []),
+        ];
+        const input = {
+          kind,
+          messages,
+          runtimeEvents: archived ? [outputEvent(diagnostic)] : [],
+        };
+        const accepted = await prepare(input);
+        assert.ok(accepted.ok);
+        assert.deepEqual(
+          [
+            ...(kind === 'revision' ? accepted.shared : accepted.snapshots).get(CHILD_SESSION_ID)!
+              .artifactIds,
+          ].sort(),
+          [CHILD_ARTIFACT_ID, 'diagnostic-artifact'].sort(),
+        );
+        const rejected = await prepare({
+          ...input,
+          artifactTurns: new Map([['diagnostic-artifact', 'unrelated-turn']]),
+        });
+        assert.equal(rejected.ok, false);
+      }
+    }
+    const { terminalEvent: _terminal, ...runningInvocation } = diagnostic.invocation;
+    const running = { ...diagnostic, invocation: runningInvocation };
+    const poll = { ...linkedResult(), content: { kind: 'json' as const, value: running } };
+    assert.equal((await prepare({ messages: [poll] })).ok, false);
+    assert.equal(
+      (
+        await prepare({
+          messages: [poll, { ...linkedResult(), content: { kind: 'json', value: result } }],
+        })
+      ).ok,
+      true,
+    );
+  }
+});
+
+test('historical polls require a retained terminal result for the same child run and turn', async () => {
+  const message = (
+    value: ReturnType<typeof agentOutputValue>,
+  ): Extract<StoredMessage, { type: 'tool_result' }> => ({
+    ...linkedResult(),
+    content: { kind: 'json', value },
+  });
+  const poll = agentOutputValue(agentRun({ status: 'running' }), ['poll-artifact']);
+  const done = agentOutputValue();
+  for (const kind of ['branch', 'revision', 'side_conversation'] as const) {
+    for (const messages of [
+      [message(poll), message(done)],
+      [message(done), message(poll)],
+    ]) {
+      const accepted = await prepare({ kind, messages });
+      assert.ok(accepted.ok, JSON.stringify(accepted));
+      assert.deepEqual(
+        [
+          ...(kind === 'revision' ? accepted.shared : accepted.snapshots).get(CHILD_SESSION_ID)!
+            .artifactIds,
+        ].sort(),
+        [CHILD_ARTIFACT_ID, 'poll-artifact'].sort(),
+      );
+    }
+    const archived = await prepare({
+      kind,
+      messages: [message(poll)],
+      runtimeEvents: [outputEvent(message(done).content)],
+    });
+    assert.ok(archived.ok);
+    for (const overrides of [
+      { messages: [message(poll)] }, // The ledger's completion is outside the retained history.
+      { childActive: true },
+      { graphState: 'live' as const },
+      { runs: [agentRun({ status: 'running' })] },
+      {
+        messages: [
+          message(agentOutputValue(agentRun({ status: 'running', runId: 'other-run' }))),
+          message(done),
+        ],
+      },
+      {
+        messages: [
+          message(agentOutputValue(agentRun({ status: 'running', turnId: 'other-turn' }))),
+          message(done),
+        ],
+      },
+      {
+        messages: [
+          message({
+            ...poll,
+            result: { ...poll.result, graph: { ...poll.result.graph!, workId: 'wrong-work' } },
+          }),
+          message(done),
+        ],
+      },
+      {
+        messages: [
+          message(poll),
+          message({ ...done, result: { ...done.result, status: 'failed' as const } }),
+        ],
+      },
+      { artifactTurns: new Map([['poll-artifact', 'unrelated-turn']]) },
+    ] satisfies PrepareOverrides[]) {
+      const rejected = await prepare({
+        kind,
+        messages: [message(poll), message(done)],
+        ...overrides,
+      });
+      assert.equal(rejected.ok, false, JSON.stringify(overrides));
+    }
+  }
+});
 
 test('Agent Graph revision references accept absent and reject live control state', async () => {
   const noGraph = await prepare({
@@ -60,35 +290,41 @@ test('Agent Graph revision references preserve only exact terminal provenance', 
   const accepted = await prepare();
   assert.equal(accepted.ok, true);
   if (!accepted.ok) assert.fail('Expected accepted Graph references');
-  assert.deepEqual([...accepted.references.get(CHILD_SESSION_ID)!.runIds], [CHILD_RUN_ID]);
-  assert.deepEqual(
-    [...accepted.references.get(CHILD_SESSION_ID)!.artifactIds],
-    [CHILD_ARTIFACT_ID],
-  );
-
-  const archived = await prepare({
-    messages: [],
-    archivedResults: [JSON.stringify(linkedResult().content)],
-  });
-  assert.equal(archived.ok, true);
+  assert.deepEqual([...accepted.shared.get(CHILD_SESSION_ID)!.runIds], [CHILD_RUN_ID]);
+  assert.deepEqual([...accepted.shared.get(CHILD_SESSION_ID)!.artifactIds], [CHILD_ARTIFACT_ID]);
+  assert.equal(accepted.snapshots.size, 0);
 });
 
-test('Side Conversation references accept terminal linked children as snapshots', async () => {
-  const accepted = await prepare({ kind: 'side_conversation' });
-  assert.equal(accepted.ok, true);
-  if (!accepted.ok) assert.fail('Expected accepted Side Conversation references');
-  assert.deepEqual([...accepted.references.keys()], [CHILD_SESSION_ID]);
-});
-
-test('Side Conversation references accept terminal non-Graph child Sessions as snapshots', async () => {
-  const accepted = await prepare({
-    kind: 'side_conversation',
-    messages: [linkedSubagentResult('completed')],
-    sessionHeaders: [sessionHeader(ROOT_SESSION_ID), childHeader({ graph: false })],
-  });
-  assert.equal(accepted.ok, true);
-  if (!accepted.ok) assert.fail('Expected accepted linked-child snapshot');
-  assert.deepEqual([...accepted.references.keys()], [CHILD_SESSION_ID]);
+test('only a revision shares Graph children; every other retained child is a snapshot', async () => {
+  for (const kind of ['branch', 'side_conversation', 'revision'] as const) {
+    for (const graph of [true, false]) {
+      const raw = agentOutputValue();
+      const { graph: _graph, ...plainResult } = raw.result;
+      for (const message of [
+        linkedSubagentResult('completed'),
+        {
+          ...linkedResult(),
+          content: {
+            kind: 'json' as const,
+            value: {
+              ...raw,
+              result: graph ? raw.result : plainResult,
+            },
+          },
+        },
+      ]) {
+        const accepted = await prepare({
+          kind,
+          messages: [message],
+          sessionHeaders: [sessionHeader(ROOT_SESSION_ID), childHeader({ graph })],
+        });
+        if (!accepted.ok) assert.fail(`Expected accepted ${kind} references`);
+        const shares = kind === 'revision' && graph;
+        assert.deepEqual([...accepted.shared.keys()], shares ? [CHILD_SESSION_ID] : []);
+        assert.deepEqual([...accepted.snapshots.keys()], shares ? [] : [CHILD_SESSION_ID]);
+      }
+    }
+  }
 });
 
 test('Side Conversation references wait for live Graph and child state', async () => {
@@ -131,7 +367,7 @@ test('Side Conversation rejects a retained child without a terminal result snaps
   assert.deepEqual(outcome, {
     ok: false,
     code: 'operation_unavailable',
-    message: 'Side Conversation requires a terminal result for every retained linked child',
+    message: 'Conversation copy requires a terminal result for every retained linked child',
   });
 });
 
@@ -234,11 +470,6 @@ test('Agent Graph revision references outlive the Artifacts they name', async ()
 });
 
 test('Agent Graph revision references reject invalid ownership boundaries', async () => {
-  const genericChild = childHeader({ graph: false });
-  const generic = await prepare({ sessionHeaders: [sessionHeader(ROOT_SESSION_ID), genericChild] });
-  assert.equal(generic.ok, false);
-  if (!generic.ok) assert.equal(generic.code, 'operation_unavailable');
-
   const otherParent = childHeader({ parentSessionId: 'other-root' });
   const crossFamily = await prepare({
     sessionHeaders: [sessionHeader(ROOT_SESSION_ID), sessionHeader('other-root'), otherParent],
@@ -251,10 +482,6 @@ test('Agent Graph revision references reject invalid ownership boundaries', asyn
   });
   assert.equal(wrongGraph.ok, false);
   if (!wrongGraph.ok) assert.equal(wrongGraph.code, 'operation_unavailable');
-
-  const branch = await prepare({ kind: 'branch' });
-  assert.equal(branch.ok, false);
-  if (!branch.ok) assert.equal(branch.code, 'operation_unavailable');
 });
 
 test('Agent Graph revision references verify resumed Run lineage', async () => {
@@ -305,29 +532,37 @@ test('Agent Graph revision admission includes only retained direct and reference
   const laterChild = childHeader({ id: 'later-child', parentTurnId: 'later-turn' });
   const siblingChild = childHeader({ id: 'sibling-child', parentSessionId: 'sibling-session' });
   assert.deepEqual(
-    agentGraphRevisionAdmissionSessionIds({
+    linkedChildCopyAdmissionSessionIds({
       sourceSessionId: ROOT_SESSION_ID,
       sessionHeaders: [sessionHeader(ROOT_SESSION_ID), childHeader(), laterChild, siblingChild],
       copyTurnIds: [ROOT_TURN_ID],
       requests: collectConversationCopyLinkedChildReferences({
         messages: [linkedResult()],
         runtimeEvents: [],
-        archivedResults: [],
       }),
     }),
     [CHILD_SESSION_ID],
   );
 });
 
+function outputEvent(result: unknown): RuntimeEvent {
+  return {
+    turnId: ROOT_TURN_ID,
+    content: { kind: 'function_response', id: 'graph-call', name: 'agent_output', result },
+  } as RuntimeEvent;
+}
+
 interface PrepareOverrides {
+  readonly toolName?: string;
   readonly kind?: 'branch' | 'revision' | 'side_conversation';
   readonly messages?: readonly StoredMessage[];
-  readonly archivedResults?: readonly string[];
+  readonly runtimeEvents?: readonly RuntimeEvent[];
   readonly sessionHeaders?: readonly SessionHeader[];
   readonly runs?: readonly RuntimeInvocationRecord[];
   readonly sessionGraphState?: 'absent' | 'live' | 'terminal';
   readonly graphState?: 'absent' | 'live' | 'terminal';
   readonly artifactTurnId?: string;
+  readonly artifactTurns?: ReadonlyMap<string, string>;
   readonly artifactMissing?: boolean;
   readonly childActive?: boolean;
 }
@@ -335,7 +570,7 @@ interface PrepareOverrides {
 async function prepare(overrides: PrepareOverrides = {}) {
   const sourceHeader = sessionHeader(ROOT_SESSION_ID);
   const messages = overrides.messages ?? [linkedResult()];
-  return prepareAgentGraphRevisionReferences(
+  return prepareLinkedChildCopyReferences(
     {
       kind: overrides.kind ?? 'revision',
       sourceSessionId: ROOT_SESSION_ID,
@@ -343,9 +578,18 @@ async function prepare(overrides: PrepareOverrides = {}) {
       sessionHeaders: overrides.sessionHeaders ?? [sourceHeader, childHeader()],
       copyTurnIds: [ROOT_TURN_ID],
       requests: collectConversationCopyLinkedChildReferences({
-        messages,
-        runtimeEvents: [],
-        archivedResults: overrides.archivedResults ?? [],
+        messages: [
+          {
+            type: 'tool_call',
+            id: 'graph-call',
+            turnId: ROOT_TURN_ID,
+            ts: 1,
+            toolName: overrides.toolName ?? 'agent_output',
+            args: {},
+          },
+          ...messages,
+        ],
+        runtimeEvents: overrides.runtimeEvents ?? [],
       }),
     },
     {
@@ -360,7 +604,10 @@ async function prepare(overrides: PrepareOverrides = {}) {
             : {
                 id: artifactId,
                 sessionId,
-                turnId: overrides.artifactTurnId ?? CHILD_TURN_ID,
+                turnId:
+                  overrides.artifactTurns?.get(artifactId) ??
+                  overrides.artifactTurnId ??
+                  CHILD_TURN_ID,
                 createdAt: 1,
                 name: 'result.txt',
                 kind: 'file',
