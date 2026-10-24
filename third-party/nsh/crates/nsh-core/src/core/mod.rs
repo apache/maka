@@ -6094,10 +6094,12 @@ impl<M: TextEngine> Core<M> {
             .expect("list")
             .loads_at_start = events.contains(EventKind::LoadMoreAtStart);
         let mut anchor = 0.0;
+        let mut extents_changed = false;
         for &(index, cell) in &ready {
             if let Some(cell_layout) = self.nodes.get(cell as usize).and_then(|c| c.layout) {
                 let size = main_of(self.rounded_layout(cell_layout).size);
                 let list = self.nodes[key as usize].list.as_mut().expect("list");
+                extents_changed |= !list.source_row_matches_layout(index, size);
                 anchor += list.measured(index, size);
             }
         }
@@ -6108,6 +6110,7 @@ impl<M: TextEngine> Core<M> {
             if let Some(cell_layout) = self.nodes.get(extra.cell as usize).and_then(|c| c.layout) {
                 let size = main_of(self.rounded_layout(cell_layout).size);
                 let list = self.nodes[key as usize].list.as_mut().expect("list");
+                extents_changed |= list.extras[kind as usize].size != size;
                 anchor += list.measured_extra(kind, size);
             }
         }
@@ -6503,6 +6506,14 @@ impl<M: TextEngine> Core<M> {
         }
 
         if let Some(o) = &outer {
+            // The owner was indexed before these rows were measured. Opposite
+            // extent changes can move its source lines without resizing the
+            // spacer; reconcile that geometry in the same settling round.
+            if extents_changed && let Some(owner) = self.nodes[o.view as usize].list.as_mut() {
+                owner.source_dirty = true;
+                owner.dirty = true;
+                self.extent_changed = true;
+            }
             // The view around the list scrolls (the commit sends it at
             // its end; a scroll to an offset after the anchoring, which
             // it supersedes), and the list takes its new length in layout.
