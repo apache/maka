@@ -66,23 +66,6 @@ fn generated_product_version_matches_canonical_unicode_and_binary_vectors() {
 }
 
 #[test]
-fn generated_version_rejects_invalid_metadata() {
-    let version = super::fingerprint("author", []);
-    assert_eq!(
-        super::parse_bundle_fingerprint(&format!("{version}\n")).unwrap(),
-        version
-    );
-    for invalid in [
-        String::new(),
-        "sha256-wrong".to_owned(),
-        version.to_uppercase(),
-        format!("{version}\nextra"),
-    ] {
-        assert!(super::parse_bundle_fingerprint(&invalid).is_err());
-    }
-}
-
-#[test]
 fn stale_generated_version_cannot_admit_changed_candidates() {
     let manifest = json!({"schemaVersion":1,"id":"example.notes","application":{"entries":{"host":{"implementation":{"kind":"javascript","module":"entry.js","realm":"shared"},"configuration":{"type":"object"}}}}});
     let package = Package::new(BTreeMap::from([

@@ -114,19 +114,7 @@ fn fingerprint(source: &str, packages: impl IntoIterator<Item = (String, String)
 // This generated identifier is a no-op hint, never package execution admission.
 // Actual installation/update candidates must pass verified_fingerprint below.
 fn bundle_fingerprint() -> Result<String, HostError> {
-    parse_bundle_fingerprint(PRODUCT_VERSION)
-}
-fn parse_bundle_fingerprint(version: &str) -> Result<String, HostError> {
-    let version = version.strip_suffix('\n').unwrap_or(version);
-    if version.len() != 71
-        || !version.starts_with("sha256-")
-        || !version.as_bytes()[7..]
-            .iter()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(byte))
-    {
-        return Err("invalid product version; rebuild the product bundle".into());
-    }
-    Ok(version.to_owned())
+    Ok(PRODUCT_VERSION.into())
 }
 fn verified_fingerprint(
     source: &str,
