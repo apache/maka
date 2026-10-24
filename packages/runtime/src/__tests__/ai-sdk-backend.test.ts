@@ -5377,7 +5377,7 @@ describe('AiSdkBackend model history', () => {
     });
   }
 
-  test('manual compactHistory reuses a checkpoint that already covers the full fold', async () => {
+  async function assertManualCompactionReuse(blockedSuccessors: boolean) {
     const oldEvents = [
       runtimeTextEvent({
         id: 'manual-v2-reuse-old-1',
@@ -5432,7 +5432,33 @@ describe('AiSdkBackend model history', () => {
     const result = await backend.compactHistory({
       turnId: 'turn-compact',
       runId: 'run-1',
-      runtimeContext: [...oldEvents, recentEvent],
+      runtimeContext: [
+        ...oldEvents,
+        recentEvent,
+        ...(blockedSuccessors
+          ? [
+              runtimeEvent({
+                id: 'manual-reuse-unsettled-call',
+                turnId: 'turn-interrupted',
+                role: 'model',
+                author: 'agent',
+                content: {
+                  kind: 'function_call',
+                  id: 'unsettled',
+                  name: 'AskUserQuestion',
+                  args: {},
+                },
+              }),
+              runtimeTextEvent({
+                id: 'manual-reuse-later-user',
+                turnId: 'turn-later',
+                role: 'user',
+                author: 'user',
+                text: 'New explicit conversation after the interrupted call.',
+              }),
+            ]
+          : []),
+      ],
     });
 
     assert.equal(summarizeCalls, 0);
@@ -5440,9 +5466,15 @@ describe('AiSdkBackend model history', () => {
     assert.deepEqual(result.outcome, { kind: 'unchanged', reason: 'already_compacted' });
     assert.equal(result.contextBudget?.compactionDecisions?.[0]?.decision, 'unchanged');
     assert.equal(result.contextBudget?.compactionDecisions?.[0]?.reason, 'already_compacted');
-  });
+  }
 
-  test('manual compactHistory re-folds when a transition drifted the covered effective history (#5929)', async () => {
+  test('manual compactHistory reuses a checkpoint that already covers the full fold', () =>
+    assertManualCompactionReuse(false));
+
+  test('manual compactHistory does not repeat a checkpoint blocked by an unsettled tool call', () =>
+    assertManualCompactionReuse(true));
+
+  async function assertManualCompactionDrift(blockedSuccessors: boolean) {
     // The reuse fast path matches the RAW prefix; a projection transition
     // committed after the fold rewrites a covered event's effective view
     // without touching the raw ledger. Reuse must also require the pinned
@@ -5519,7 +5551,32 @@ describe('AiSdkBackend model history', () => {
       backend.compactHistory({
         turnId: 'turn-compact',
         runId,
-        runtimeContext: structuredClone(priorEvents),
+        runtimeContext: structuredClone([
+          ...priorEvents,
+          ...(blockedSuccessors
+            ? [
+                runtimeEvent({
+                  id: 'manual-drift-unsettled-call',
+                  turnId: 'turn-interrupted',
+                  role: 'model',
+                  author: 'agent',
+                  content: {
+                    kind: 'function_call',
+                    id: 'unsettled-drift',
+                    name: 'Read',
+                    args: {},
+                  },
+                }),
+                runtimeTextEvent({
+                  id: 'manual-drift-later-user',
+                  turnId: 'turn-later',
+                  role: 'user',
+                  author: 'user',
+                  text: 'Later conversation remains beyond the safe boundary.',
+                }),
+              ]
+            : []),
+        ]),
       });
 
     // A projection transition committed after the fold rewrites the covered
@@ -5557,7 +5614,13 @@ describe('AiSdkBackend model history', () => {
     assert.deepEqual(second.outcome, { kind: 'unchanged', reason: 'already_compacted' });
     assert.equal(summarizerInputs.length, 1);
     assert.equal(recorded.length, 1);
-  });
+  }
+
+  test('manual compactHistory re-folds when a transition drifted the covered effective history (#5929)', () =>
+    assertManualCompactionDrift(false));
+
+  test('manual compactHistory re-folds drifted safe coverage before an unsettled tool call', () =>
+    assertManualCompactionDrift(true));
 
   test('manual compactHistory survives its own tool-result archive projection (#6048)', async () => {
     // /compact summarizes an oversized tool result no transition has archived
