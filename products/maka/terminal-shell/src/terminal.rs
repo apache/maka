@@ -142,6 +142,7 @@ pub(crate) fn run(
             tracing,
         ));
         setup.extend(state.pixel_probe.query()?);
+        setup.extend(pixels::text_input::query());
         setup
     };
     output.submit([setup])?;
@@ -171,6 +172,12 @@ pub(crate) fn run(
         // blocked owner, including startup errors after terminal mutation.
         drive(&mut output, &presentation, &commands, &frames, &pending)
     })();
+    let text_input_cleanup = close_text_input(&mut output, &presentation, input.as_ref());
+    let result = match (result, text_input_cleanup) {
+        (Ok(()), cleanup) => cleanup,
+        (Err(error), Ok(())) => Err(error),
+        (Err(error), Err(cleanup)) => Err(format!("{error}; {cleanup}")),
+    };
     presentation.shutdown();
     // The platform guard must outlive the sole reader: restoring console modes
     // or code pages while it can still decode input races shutdown on Windows.
@@ -316,14 +323,75 @@ fn drive(
     }
 }
 
+/// An opted-in sender finishes its native composition before acknowledging
+/// focus0. Keep decoding that FIFO before returning stdin to the parent shell.
+fn close_text_input(
+    output: &mut Output,
+    presentation: &Presentation,
+    reader: Option<&Reader>,
+) -> Result<(), String> {
+    let bytes = presentation
+        .state
+        .lock()
+        .unwrap()
+        .pixels
+        .as_mut()
+        .and_then(pixels::Inbox::close_text_input);
+    let Some(bytes) = bytes else { return Ok(()) };
+    while !output.poll()? {
+        thread::park();
+    }
+    output.take_flushed();
+    presentation
+        .state
+        .lock()
+        .unwrap()
+        .pixels
+        .as_mut()
+        .unwrap()
+        .text_input
+        .release_submitted();
+    output.submit([bytes])?;
+    while !output.poll()? {
+        thread::park();
+    }
+    output.take_flushed();
+    loop {
+        let state = presentation.state.lock().unwrap();
+        if state
+            .pixels
+            .as_ref()
+            .is_some_and(|inbox| inbox.text_input.closed())
+        {
+            return Ok(());
+        }
+        if reader.is_none_or(|reader| {
+            reader.stop.load(Ordering::Acquire)
+                || reader
+                    .handle
+                    .as_ref()
+                    .is_none_or(thread::JoinHandle::is_finished)
+        }) {
+            return Err(state.error.clone().unwrap_or_else(|| {
+                "terminal input ended before text-input focus release was acknowledged".into()
+            }));
+        }
+        drop(state);
+        thread::park();
+    }
+}
+
 fn start_reader(presentation: Presentation, reader: EventReader) -> Result<Reader, String> {
-    let stop = presentation.stop.clone();
+    // Reader lifetime extends through the negotiated focus0 handshake even
+    // after external cancellation has stopped the UI and output driver.
+    let stop = Arc::new(AtomicBool::new(false));
+    let reading = stop.clone();
     let waker = reader.waker();
     let handle = thread::Builder::new()
         .name("maka-nsh-input".into())
         .spawn(move || {
-            let Presentation { state, stop, .. } = &presentation;
-            while !stop.load(Ordering::Acquire) {
+            let Presentation { state, .. } = &presentation;
+            while !reading.load(Ordering::Acquire) {
                 {
                     let mut inbox = state.lock().unwrap();
                     // Keep polling and decoding in FIFO order, without
@@ -343,6 +411,7 @@ fn start_reader(presentation: Presentation, reader: EventReader) -> Result<Reade
                             Ok(None) => break,
                             Err(error) => {
                                 inbox.error = Some(error.to_string());
+                                reading.store(true, Ordering::Release);
                                 presentation.wake_driver();
                                 return;
                             }
@@ -391,17 +460,18 @@ fn start_reader(presentation: Presentation, reader: EventReader) -> Result<Reade
                             }
                         }
                         inbox.push_terminal(event);
-                        if inbox.quit || inbox.error.is_some() || stop.load(Ordering::Acquire) {
+                        if inbox.quit || inbox.error.is_some() || reading.load(Ordering::Acquire) {
                             break;
                         }
                     }
                 }
-                if !stop.load(Ordering::Acquire) {
+                if !reading.load(Ordering::Acquire) {
                     match reader.wait_ready() {
                         Ok(()) => {}
                         Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
                         Err(error) => {
                             state.lock().unwrap().error = Some(error.to_string());
+                            reading.store(true, Ordering::Release);
                             presentation.wake_driver();
                             return;
                         }

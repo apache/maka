@@ -25,6 +25,7 @@ mod probe;
 mod session;
 #[cfg(test)]
 mod tests;
+pub(super) mod text_input;
 
 use super::{Presentation, output::Output};
 pub(super) use input::Inbox;
@@ -281,7 +282,11 @@ pub(super) fn run(
                 continue;
             }
             let inbox = state.pixels.as_mut().unwrap();
-            if let Some(bytes) = inbox.effects.take() {
+            if let Some(bytes) = inbox.text_input.take_control() {
+                drop(state);
+                output.submit([bytes])?;
+                phase = Phase::Effect;
+            } else if let Some(bytes) = inbox.effects.take() {
                 drop(state);
                 output.submit([bytes])?;
                 phase = Phase::Effect;

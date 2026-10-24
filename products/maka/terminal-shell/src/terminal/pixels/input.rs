@@ -117,6 +117,7 @@ pub(crate) struct Inbox {
     pub cancel_pointer: bool,
     pub wake: Option<std::thread::Thread>,
     pub effects: Option<Vec<u8>>,
+    pub(in crate::terminal) text_input: super::text_input::Wire,
     pub(super) cursor: super::cursor::Cursor,
     pub restore_sixel_mode: bool,
 }
@@ -147,6 +148,7 @@ impl Inbox {
             cancel_pointer: false,
             wake: None,
             effects: None,
+            text_input: super::text_input::Wire::default(),
             cursor: super::cursor::Cursor::default(),
             restore_sixel_mode: false,
         }
@@ -371,6 +373,9 @@ impl Inbox {
     }
 
     pub fn push(&mut self, event: Event) -> Result<bool, String> {
+        if self.text_input.consume(&event) {
+            return Ok(false);
+        }
         if let Event::Key(key) = &event
             && key.kind != KeyEventKind::Release
             && key.modifiers.contains(Modifiers::CONTROL)
@@ -383,7 +388,10 @@ impl Inbox {
             self.invalidate_geometry()?;
             return Ok(false);
         }
-        if matches!(
+        if !matches!(
+            &event,
+            Event::Osc(termina::escape::osc::Osc::NshTextInput(_))
+        ) && matches!(
             event,
             Event::Csi(_)
                 | Event::Osc(_)
@@ -490,6 +498,12 @@ impl Inbox {
 
     pub(super) fn queue_len(&self) -> usize {
         self.events.len()
+    }
+
+    pub(in crate::terminal) fn close_text_input(&mut self) -> Option<Vec<u8>> {
+        let bytes = self.text_input.begin_close()?;
+        self.events.clear();
+        Some(bytes)
     }
 
     pub fn into_startup(self) -> (Vec<Event>, Option<WindowSize>) {
