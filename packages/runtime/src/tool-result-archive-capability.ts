@@ -20,11 +20,13 @@
 import type { ArchivedToolResultReason } from './tool-result-archive.js';
 import {
   readToolResultArchiveResource,
+  searchToolResultArchiveResource,
   type ToolResultArchiveResourceReader,
 } from './tool-result-archive-resource.js';
 import type { MakaTool } from './tool-runtime.js';
 import type { ModelProjectionTransition } from '@maka/core/model-projection-transition';
-import { READ_DESCRIPTION, readParameters, resolveReadInput } from './read-page.js';
+import { readParameters, resolveReadInput } from './read-page.js';
+import { grepParameters } from './grep-search.js';
 
 export interface ToolResultArchiveRecorderInput {
   sessionId: string;
@@ -103,5 +105,45 @@ export function bindToolResultArchiveDecoder(
       );
     },
   };
-  return [...tools.filter((tool) => tool.name !== 'Read'), read];
+  const existingGrep = tools.find((tool) => tool.name === 'Grep');
+  const grep: MakaTool = {
+    ...existingGrep,
+    name: 'Grep',
+    activityKind: 'search',
+    description: [
+      existingGrep?.description ?? 'Search a Maka tool-result address returned in this session.',
+      'For Maka tool-result paths, searches the same retained text as Read using a ripgrep regex.',
+      'Returns path:line:content matches and exact completed-search line counts within a 7,500-byte response, keeping at most 50 matching lines.',
+      'Use Read with offset line-1 to expand a match; readHints provide Read parameters for clipped long lines.',
+      'Totals cover retained content; execution metadata reports known upstream truncation. Narrow the pattern for omitted matches. glob is filesystem-only.',
+      ...(existingGrep ? [] : ['File access is not available; path is required.']),
+    ].join(' '),
+    parameters: grepParameters.extend({
+      path: existingGrep
+        ? grepParameters.shape.path.describe(
+            'File, directory, or Maka tool-result address; defaults to the session working directory.',
+          )
+        : grepParameters.shape.path
+            .unwrap()
+            .describe('Maka tool-result address returned in this session.'),
+    }),
+    impl: async (input, ctx) => {
+      const { path, pattern, glob } = input;
+      if (!path?.startsWith('maka://runtime/tool-results/')) {
+        if (path?.startsWith('maka:'))
+          throw new Error('Unsupported Maka search address. Copy the original tool-result path.');
+        if (existingGrep) return existingGrep.impl(input, ctx);
+        throw new Error(
+          'This Grep tool only searches Maka tool-result addresses returned in this session. File access is not available.',
+        );
+      }
+      return searchToolResultArchiveResource(
+        capability.services,
+        ctx.sessionId,
+        { path, pattern, ...(glob === undefined ? {} : { glob }) },
+        ctx.abortSignal,
+      );
+    },
+  };
+  return [...tools.filter((tool) => tool.name !== 'Read' && tool.name !== 'Grep'), read, grep];
 }
