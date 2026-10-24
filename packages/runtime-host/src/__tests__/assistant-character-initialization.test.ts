@@ -54,6 +54,7 @@ function fixture(t: any) {
     invocation: () => ({ sessionId: owner }),
   };
   const ctx = {
+    sessionQuery: { read: async () => ({ id: owner }) },
     petPacks: { status: async () => ({ configured: false }) },
     agents: { withInvocation: (_: any, fn: any) => fn() },
     tools: {
@@ -85,6 +86,7 @@ function fixture(t: any) {
   });
   return {
     bot,
+    ctx,
     store,
     pack,
     posts,
@@ -286,4 +288,18 @@ test('matching pet receives the existing persona as reference without changing t
   await f.init.setup({ kind: 'pet', action: 'create', preferences: '和助手一样' });
   assert.match(f.store.get<any>('petInitialization').request, /月球茶摊老板/);
   assert.equal(f.pack.readDocument('persona').content, persona);
+});
+
+test('onboarding waits for the owner query boundary before posting an offer', async (t) => {
+  const f = fixture(t);
+  f.ctx.sessionQuery.read = async () => {
+    throw Error('Session Query is not active yet');
+  };
+  await f.init.tick();
+  assert.equal(f.init.state(), undefined);
+  assert.deepEqual(f.posts, []);
+  f.ctx.sessionQuery.read = async () => ({ id: 'owner' });
+  await f.init.tick();
+  assert.equal(f.init.state()?.phase, 'offered');
+  assert.equal(f.posts.length, 1);
 });

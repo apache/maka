@@ -211,7 +211,12 @@ export class CharacterInitialization {
       });
     return this.pending;
   }
-  private offer(kind: 'assistant' | 'pet', owner: string) {
+  private async offer(kind: 'assistant' | 'pet', owner: string) {
+    // A recovered binding can precede Session Query activation. Do not wake the
+    // Bot (or persist an offer) until its owner conversation is available.
+    if (!(await this.ctx.sessionQuery.read(owner))) return;
+    this.bot.ready();
+    if (owner !== this.bot.owner()) return;
     const key = kind === 'assistant' ? KEY : PET_KEY;
     // Inbox IDs make the post idempotent across a crash before recording offered.
     this.bot.post({
@@ -238,7 +243,7 @@ export class CharacterInitialization {
         state = { phase: 'completed', owner, adopted: true } as Initialization;
         this.store.set(KEY, state);
       } else {
-        this.offer('assistant', owner);
+        await this.offer('assistant', owner);
         return;
       }
     }
@@ -258,7 +263,7 @@ export class CharacterInitialization {
       const current = await this.ctx.petPacks.status();
       this.bot.ready();
       if (current.configured) this.store.set(PET_KEY, { phase: 'completed', owner, adopted: true });
-      else this.offer('pet', owner);
+      else await this.offer('pet', owner);
     }
   }
   private async launch(key: string, state: Initialization, title: string) {
