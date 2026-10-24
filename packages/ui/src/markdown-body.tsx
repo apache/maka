@@ -51,6 +51,7 @@ import { MermaidDiagram } from './mermaid-diagram.js';
 import {
   createMarkdownMathCache,
   MarkdownMath,
+  MARKDOWN_MATH_PLUGINS,
   prepareMarkdownMath,
 } from './markdown-math.js';
 
@@ -151,8 +152,10 @@ export function MarkdownBody(props: {
 }) {
   const mathCache = useRef(createMarkdownMathCache());
   const transformMathSource = useCallback(
-    (source: string) => prepareMarkdownMath(source, mathCache.current),
-    [],
+    (source: string) => prepareMarkdownMath(source, mathCache.current, {
+      isComplete: !props.streaming,
+    }),
+    [props.streaming],
   );
   const plugins = useMemo(() => [
     markdownCodeLanguagePlugin,
@@ -201,6 +204,7 @@ export function MarkdownBody(props: {
         density={density}
         components={components}
         plugins={plugins}
+        inlinePlugins={MARKDOWN_MATH_PLUGINS}
         isStreaming={props.streaming}
         settledText={props.settledText}
         transformSource={transformMathSource}
@@ -279,6 +283,7 @@ function MarkdownCode(props: {
     </div>
   );
 }
+
 
 /**
  * Route internal Markdown navigation through Maka's typed allowlist. Invalid

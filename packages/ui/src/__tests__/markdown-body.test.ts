@@ -18,6 +18,7 @@
  */
 
 import { strict as assert } from 'node:assert';
+import { performance } from 'node:perf_hooks';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { it } from 'node:test';
@@ -31,6 +32,7 @@ import {
 import { AstryxLocaleProvider } from '../astryx-i18n.js';
 import { MakaUriContext, Markdown } from '../markdown.js';
 import { LocaleProvider } from '../locale-context.js';
+import { createMarkdownMathCache, prepareMarkdownMath } from '../markdown-math.js';
 import {
   createMermaidConfig,
   MAX_MERMAID_EDGES,
@@ -314,6 +316,655 @@ it('does not let multiline display math cross a fenced code block', () => {
   assert.doesNotMatch(markup, /class="maka-math/);
   assert.match(markup, /\$\$/);
   assert.match(markup, /inside/);
+});
+
+it('keeps escaped brackets in link labels out of display math', () => {
+  const markup = renderToStaticMarkup(createElement(LocaleProvider, {
+    locale: 'zh-CN',
+    children: createElement(MarkdownBody, {
+      text: '[\\[DISCUSS\\] Clarify Maka sandbox contracts and runtime dependency access](https://github.com/apache/maka/discussions/5304)',
+    }),
+  }));
+
+  assert.match(markup, /<a\b[^>]*href="https:\/\/github\.com\/apache\/maka\/discussions\/5304"/);
+  assert.doesNotMatch(markup, /maka-math-display/);
+  assert.doesNotMatch(markup, /katex-display/);
+  assert.match(markup, /\[DISCUSS\] Clarify Maka sandbox contracts and runtime dependency access/);
+});
+
+it('still renders inline math inside link labels', () => {
+  const markup = renderToStaticMarkup(createElement(LocaleProvider, {
+    locale: 'en',
+    children: createElement(MarkdownBody, {
+      text: '[see \\(x+1\\) here](https://example.com)',
+    }),
+  }));
+
+  assert.match(markup, /<a\b[^>]*href="https:\/\/example\.com"/);
+  assert.match(markup, /class="maka-math maka-math-inline"/);
+  assert.doesNotMatch(markup, /maka-math-display/);
+});
+
+it('keeps dollar display math in link labels as literal text', () => {
+  const markup = renderToStaticMarkup(createElement(LocaleProvider, {
+    locale: 'en',
+    children: createElement(MarkdownBody, {
+      text: '[a $$x^2$$ b](https://example.com)',
+    }),
+  }));
+
+  assert.match(markup, /<a\b[^>]*href="https:\/\/example\.com"/);
+  assert.doesNotMatch(markup, /maka-math-display/);
+  assert.match(markup, /\$\$x\^2\$\$/);
+});
+
+it('still renders display math outside link labels', () => {
+  const markup = renderToStaticMarkup(createElement(LocaleProvider, {
+    locale: 'en',
+    children: createElement(MarkdownBody, {
+      text: '[plain](https://example.com)\n\n\\[ y^2 \\]',
+    }),
+  }));
+
+  assert.match(markup, /<a\b[^>]*href="https:\/\/example\.com"/);
+  assert.match(markup, /class="maka-math maka-math-display"/);
+  assert.match(markup, /class="katex-display"/);
+});
+
+it('preserves escaped brackets across reference link forms', () => {
+  const cases = [
+    {
+      use: '[\\[DISCUSS\\] Clarify][topic]',
+      definition: '[topic]: https://example.com/topic',
+    },
+    {
+      use: '[\\[DISCUSS\\] Clarify][]',
+      definition: '[\\[DISCUSS\\] Clarify]: https://example.com/collapsed',
+    },
+    {
+      use: '[\\[DISCUSS\\] Clarify]',
+      definition: '[\\[DISCUSS\\] Clarify]: https://example.com/shortcut',
+    },
+  ];
+
+  for (const { use, definition } of cases) {
+    const markup = renderToStaticMarkup(createElement(LocaleProvider, {
+      locale: 'en',
+      children: createElement(MarkdownBody, {
+        text: `${use}\n\n${definition}`,
+      }),
+    }));
+
+    assert.match(markup, /<a\b[^>]*href="https:\/\/example\.com\//);
+    assert.match(markup, /\[DISCUSS\] Clarify/);
+    assert.doesNotMatch(markup, /maka-math-display|katex-display/);
+  }
+});
+
+it('matches escaped reference identifiers between use and definition', () => {
+  const markup = renderToStaticMarkup(createElement(LocaleProvider, {
+    locale: 'en',
+    children: createElement(MarkdownBody, {
+      text: '[visible][\\[topic\\]]\n\n[\\[topic\\]]: https://example.com/ref',
+    }),
+  }));
+
+  assert.match(markup, /<a\b[^>]*href="https:\/\/example\.com\/ref"/);
+  assert.match(markup, />visible</);
+  assert.doesNotMatch(markup, /maka-math-display|katex-display/);
+});
+
+it('keeps link targets identical between one-shot and incremental scans', () => {
+  const full = '[label](https://example.com/$$value$$)';
+  const cache = createMarkdownMathCache();
+  let incremental = '';
+  for (let end = 1; end <= full.length; end++) {
+    incremental = prepareMarkdownMath(full.slice(0, end), cache);
+  }
+
+  assert.equal(incremental, prepareMarkdownMath(full, createMarkdownMathCache()));
+  assert.doesNotMatch(incremental, /MAKA_MATH/);
+
+  const markup = renderToStaticMarkup(createElement(LocaleProvider, {
+    locale: 'en',
+    children: createElement(MarkdownBody, { text: full }),
+  }));
+
+  assert.match(markup, /href="https:\/\/example\.com\/\$\$value\$\$"/);
+});
+
+it('preserves escape parity when an incremental scan resumes inside a backslash run', () => {
+  const cases = [
+    '\\\\[\\] x]',
+    '\\\\\\\\[\\] x]',
+    '\\\\[```\\[(\\]',
+  ];
+
+  for (const full of cases) {
+    const cache = createMarkdownMathCache();
+    let incremental = '';
+    for (let end = 1; end <= full.length; end++) {
+      incremental = prepareMarkdownMath(full.slice(0, end), cache);
+    }
+
+    assert.equal(incremental, prepareMarkdownMath(full, createMarkdownMathCache()), full);
+  }
+});
+
+it('matches escaped image reference identifiers between use and definition', () => {
+  const markup = renderToStaticMarkup(createElement(LocaleProvider, {
+    locale: 'en',
+    children: createElement(MarkdownBody, {
+      text: '![visible][\\[topic\\]]\n\n[\\[topic\\]]: https://example.com/image.png',
+    }),
+  }));
+
+  assert.match(markup, /href="https:\/\/example\.com\/image\.png"/);
+  assert.match(markup, />visible</);
+  assert.doesNotMatch(markup, /maka-math-display|katex-display/);
+});
+
+it('keeps image alt escapes out of math without leaking transport tokens', () => {
+  const markup = renderToStaticMarkup(createElement(LocaleProvider, {
+    locale: 'en',
+    children: createElement(MarkdownBody, {
+      text: '![\\[alt\\] preview](https://example.com/x.png)',
+    }),
+  }));
+
+  assert.doesNotMatch(markup, /maka-math/);
+  assert.doesNotMatch(markup, /MAKA_MATH/);
+});
+
+it('keeps a split image opener identical between incremental and one-shot scans', () => {
+  const full = '!![alt \\[x\\]](https://example.com/a.png)';
+  const cache = createMarkdownMathCache();
+  let incremental = '';
+  for (let end = 1; end <= full.length; end++) {
+    incremental = prepareMarkdownMath(full.slice(0, end), cache);
+  }
+
+  assert.equal(incremental, prepareMarkdownMath(full, createMarkdownMathCache()));
+
+  const markup = renderToStaticMarkup(createElement(LocaleProvider, {
+    locale: 'en',
+    children: createElement(MarkdownBody, { text: full }),
+  }));
+
+  assert.match(markup, /href="https:\/\/example\.com\/a\.png"/);
+  assert.doesNotMatch(markup, /maka-math/);
+  assert.doesNotMatch(markup, /MAKA_MATH/);
+});
+
+it('settles bounded labels ending in $ instead of rescanning the stream', () => {
+  const head = '[price$](https://example.com)';
+  const filler = `\n\n${'lorem ipsum dolor sit amet. '.repeat(16_384)}`;
+  const full = head + filler;
+  const cache = createMarkdownMathCache();
+  const updates = 64;
+  const started = performance.now();
+  let incremental = '';
+  for (let step = 1; step <= updates; step++) {
+    incremental = prepareMarkdownMath(full.slice(0, Math.ceil((full.length * step) / updates)), cache);
+  }
+  const elapsed = performance.now() - started;
+
+  assert.equal(incremental, prepareMarkdownMath(full, createMarkdownMathCache()));
+  assert.equal(cache.safeSourceEnd, full.length);
+  assert.ok(elapsed < 5_000, `label-$ streaming scan took ${elapsed.toFixed(1)}ms`);
+});
+
+it('renders images whose alt contains escaped brackets', () => {
+  const cases = [
+    {
+      text: '![\\[alt\\] preview](https://example.com/x.png)',
+      alt: '[alt] preview',
+    },
+    {
+      text: '![\\[alt\\] preview][pic]\n\n[pic]: https://example.com/x.png',
+      alt: '[alt] preview',
+    },
+    {
+      text: '![visible][\\[topic\\]]\n\n[\\[topic\\]]: https://example.com/image.png',
+      alt: 'visible',
+    },
+    {
+      text: '![\\[topic\\]][]\n\n[\\[topic\\]]: https://example.com/image.png',
+      alt: '[topic]',
+    },
+    {
+      text: '![\\[topic\\]]\n\n[\\[topic\\]]: https://example.com/image.png',
+      alt: '[topic]',
+    },
+  ];
+
+  for (const { text, alt } of cases) {
+    const markup = renderToStaticMarkup(createElement(LocaleProvider, {
+      locale: 'en',
+      children: createElement(MarkdownBody, { text }),
+    }));
+
+    assert.match(markup, /href="https:\/\/example\.com\//, text);
+    assert.match(markup, new RegExp(`>${alt.replace(/[[\]]/g, '\\$&')}<`), text);
+    assert.doesNotMatch(markup, /maka-math/, text);
+    assert.doesNotMatch(markup, /MAKA_MATH/, text);
+  }
+});
+
+it('keeps escaped image alt text identical between incremental and one-shot scans', () => {
+  const full = '![\\[alt\\] preview](https://example.com/a.png)';
+  const cache = createMarkdownMathCache();
+  let incremental = '';
+  for (let end = 1; end <= full.length; end++) {
+    incremental = prepareMarkdownMath(full.slice(0, end), cache);
+  }
+
+  assert.equal(incremental, prepareMarkdownMath(full, createMarkdownMathCache()));
+
+  const markup = renderToStaticMarkup(createElement(LocaleProvider, {
+    locale: 'en',
+    children: createElement(MarkdownBody, { text: full }),
+  }));
+
+  assert.match(markup, /href="https:\/\/example\.com\/a\.png"/);
+  assert.match(markup, />\[alt\] preview</);
+  assert.doesNotMatch(markup, /maka-math/);
+  assert.doesNotMatch(markup, /MAKA_MATH/);
+});
+
+it('preserves links and images with labels past the defensive scan bound', () => {
+  const longLink = `[\\[DISCUSS\\] ${'a'.repeat(4096)}](https://example.com/long)`;
+  const linkMarkup = renderToStaticMarkup(createElement(LocaleProvider, {
+    locale: 'en',
+    children: createElement(MarkdownBody, { text: longLink }),
+  }));
+
+  assert.match(linkMarkup, /<a\b[^>]*href="https:\/\/example\.com\/long"/);
+  assert.match(linkMarkup, /\[DISCUSS\]/);
+  assert.doesNotMatch(linkMarkup, /maka-math-display|katex-display/);
+
+  const longImg = `![\\[alt\\] ${'b'.repeat(4096)}](https://example.com/y.png)`;
+  const imgMarkup = renderToStaticMarkup(createElement(LocaleProvider, {
+    locale: 'en',
+    children: createElement(MarkdownBody, { text: longImg }),
+  }));
+
+  assert.match(imgMarkup, /href="https:\/\/example\.com\/y\.png"/);
+  assert.match(imgMarkup, />\[alt\] b/);
+  assert.doesNotMatch(imgMarkup, /maka-math/);
+  assert.doesNotMatch(imgMarkup, /MAKA_MATH/);
+});
+
+it('resolves labels far beyond any scan bound without a length cliff', () => {
+  const bigLink = `[\\[DISCUSS\\] ${'a'.repeat(100_000)}](https://example.com/huge)`;
+  const cache = createMarkdownMathCache();
+  const prepared = prepareMarkdownMath(bigLink, cache);
+
+  assert.equal(cache.safeSourceEnd, bigLink.length);
+
+  const markup = renderToStaticMarkup(createElement(LocaleProvider, {
+    locale: 'en',
+    children: createElement(MarkdownBody, { text: bigLink }),
+  }));
+
+  assert.match(markup, /<a\b[^>]*href="https:\/\/example\.com\/huge"/);
+  assert.match(markup, /\[DISCUSS\]/);
+  assert.doesNotMatch(markup, /maka-math-display|katex-display/);
+});
+
+it('streams an unfinished label without rescanning from its opener', () => {
+  const full = `[${'a'.repeat(128_000 - 1)}`;
+  const cache = createMarkdownMathCache();
+  const started = performance.now();
+  let incremental = '';
+  for (let end = 1024; end <= full.length; end += 1024) {
+    incremental = prepareMarkdownMath(full.slice(0, end), cache);
+  }
+  const elapsed = performance.now() - started;
+
+  assert.equal(incremental, full);
+  assert.equal(cache.safeSourceEnd, 0);
+  assert.ok(elapsed < 5_000, `unfinished label streaming took ${elapsed.toFixed(1)}ms`);
+});
+
+it('resolves a streamed label once its closer arrives', () => {
+  const head = `[${'b'.repeat(64_000)}`;
+  const cache = createMarkdownMathCache();
+  for (let end = 1024; end <= head.length; end += 1024) {
+    prepareMarkdownMath(head.slice(0, end), cache);
+  }
+  const full = `${head}](https://example.com/closed)`;
+  const incremental = prepareMarkdownMath(full, cache);
+
+  assert.equal(incremental, prepareMarkdownMath(full, createMarkdownMathCache()));
+  assert.equal(cache.safeSourceEnd, full.length);
+
+  const markup = renderToStaticMarkup(createElement(LocaleProvider, {
+    locale: 'en',
+    children: createElement(MarkdownBody, { text: full }),
+  }));
+
+  assert.match(markup, /<a\b[^>]*href="https:\/\/example\.com\/closed"/);
+});
+
+it('streams an unfinished reference identifier without rescanning from its opener', () => {
+  const head = `[visible][${'c'.repeat(64_000)}`;
+  const cache = createMarkdownMathCache();
+  const started = performance.now();
+  let incremental = '';
+  for (let end = 1024; end <= head.length; end += 1024) {
+    incremental = prepareMarkdownMath(head.slice(0, end), cache);
+  }
+  if (head.length % 1024 !== 0) {
+    incremental = prepareMarkdownMath(head, cache);
+  }
+  const elapsed = performance.now() - started;
+
+  assert.equal(incremental, head);
+  assert.equal(cache.safeSourceEnd, 0);
+  assert.ok(elapsed < 5_000, `unfinished identifier streaming took ${elapsed.toFixed(1)}ms`);
+
+  const id = 'c'.repeat(64_000);
+  const full = `[visible][${id}]\n\n[${id}]: https://example.com/ref`;
+  incremental = prepareMarkdownMath(full, cache);
+
+  assert.equal(incremental, prepareMarkdownMath(full, createMarkdownMathCache()));
+  assert.equal(cache.safeSourceEnd, full.length);
+
+  const markup = renderToStaticMarkup(createElement(LocaleProvider, {
+    locale: 'en',
+    children: createElement(MarkdownBody, { text: full }),
+  }));
+
+  assert.match(markup, /<a\b[^>]*href="https:\/\/example\.com\/ref"/);
+  assert.match(markup, />visible</);
+});
+
+it('streams unfinished labels, identifiers, and tails in small chunks without quadratic slowdown', () => {
+  const cases = [
+    { name: 'unfinished label', head: `[${'a'.repeat(32_000 - 1)}` },
+    { name: 'unfinished reference identifier', head: `[visible][${'c'.repeat(32_000)}` },
+    { name: 'unfinished inline tail', head: `[visible](${'d'.repeat(32_000)}` },
+  ];
+
+  for (const { name, head } of cases) {
+    const cache = createMarkdownMathCache();
+    const started = performance.now();
+    let incremental = '';
+    const chunkSize = 16;
+    for (let end = chunkSize; end <= head.length; end += chunkSize) {
+      incremental = prepareMarkdownMath(head.slice(0, end), cache);
+    }
+    if (head.length % chunkSize !== 0) {
+      incremental = prepareMarkdownMath(head, cache);
+    }
+    const elapsed = performance.now() - started;
+
+    assert.equal(incremental, head, `Incremental content mismatch for ${name}`);
+    assert.equal(cache.safeSourceEnd, 0, `safeSourceEnd should stay 0 while ${name} is open`);
+    assert.ok(elapsed < 2_000, `Small chunk streaming for ${name} took ${elapsed.toFixed(1)}ms (expected < 2000ms)`);
+  }
+});
+
+it('reparses an earlier delimiter that closes after a pending label', () => {
+  const cases = [
+    // Unclosed code span, then its closer plus display math.
+    { head: '`[', full: '`[` $$x$$' },
+    // Unclosed inline math, then its closer plus display math.
+    { head: '\\([x', full: '\\([x\\) $$y$$' },
+    // Unclosed display math, then its closer plus display math.
+    { head: '$$[', full: '$$[$$ $$y$$' },
+  ];
+
+  for (const { head, full } of cases) {
+    const cache = createMarkdownMathCache();
+    prepareMarkdownMath(head, cache);
+    const incremental = prepareMarkdownMath(full, cache);
+
+    assert.equal(incremental, prepareMarkdownMath(full, createMarkdownMathCache()), head);
+  }
+});
+
+it('does not rescan malformed link tails quadratically', () => {
+  const input = '[x]('.repeat(32_000);
+  const cache = createMarkdownMathCache();
+  const started = performance.now();
+  const prepared = prepareMarkdownMath(input, cache);
+  const elapsed = performance.now() - started;
+
+  assert.equal(prepared, input);
+  assert.ok(elapsed < 1_000, `malformed link scan took ${elapsed.toFixed(1)}ms`);
+
+  const streamedInput = '[x]('.repeat(16_000);
+  const streamedCache = createMarkdownMathCache();
+  const streamedStarted = performance.now();
+  const chunkSize = streamedInput.length / 16;
+  for (let end = chunkSize; end <= streamedInput.length; end += chunkSize) {
+    assert.equal(prepareMarkdownMath(streamedInput.slice(0, end), streamedCache), streamedInput.slice(0, end));
+  }
+  const streamedElapsed = performance.now() - streamedStarted;
+
+  assert.ok(streamedElapsed < 1_000, `streaming malformed link scan took ${streamedElapsed.toFixed(1)}ms`);
+});
+
+it('does not escape bare dollar signs when a chunk boundary splits before or inside link destinations', () => {
+  const full = 'prefix ](https://example.com/search?query=$100&cost=$200)';
+  const splitPoints = [
+    'prefix ]',
+    'prefix ](',
+    'prefix ](https://example.com/search?query=',
+  ];
+
+  for (const head of splitPoints) {
+    const cache = createMarkdownMathCache();
+    prepareMarkdownMath(head, cache);
+    const incremental = prepareMarkdownMath(full, cache);
+    const oneshot = prepareMarkdownMath(full, createMarkdownMathCache());
+
+    assert.equal(incremental, oneshot, `Failed at split point: "${head}"`);
+    assert.doesNotMatch(incremental, /\\\$/, `Dollar should not be escaped in destination for head: "${head}"`);
+  }
+
+  const linkFull = '[search](https://example.com/search?query=$100&cost=$200)';
+  const linkSplitPoints = [
+    '[search]',
+    '[search](',
+    '[search](https://example.com/search?query=',
+  ];
+
+  for (const head of linkSplitPoints) {
+    const cache = createMarkdownMathCache();
+    prepareMarkdownMath(head, cache);
+    const incremental = prepareMarkdownMath(linkFull, cache);
+    const oneshot = prepareMarkdownMath(linkFull, createMarkdownMathCache());
+
+    assert.equal(incremental, oneshot, `Failed at link split point: "${head}"`);
+    assert.doesNotMatch(incremental, /\\\$/, `Dollar should not be escaped in link destination for head: "${head}"`);
+  }
+
+  // Incremental 1-byte streaming across entire string
+  const cache = createMarkdownMathCache();
+  let byteIncremental = '';
+  for (let end = 1; end <= linkFull.length; end++) {
+    byteIncremental = prepareMarkdownMath(linkFull.slice(0, end), cache);
+  }
+  assert.equal(byteIncremental, prepareMarkdownMath(linkFull, createMarkdownMathCache()));
+
+  // Render via MarkdownBody to verify href is preserved without backslash escapes
+  const markup = renderToStaticMarkup(createElement(LocaleProvider, {
+    locale: 'en',
+    children: createElement(MarkdownBody, { text: linkFull }),
+  }));
+  assert.match(markup, /href="https:\/\/example\.com\/search\?query=\$100&amp;cost=\$200"/);
+});
+
+it('preserves normal prose processing and math when an unfinished label or inline tail remains incomplete', () => {
+  const cases = [
+    {
+      source: 'prefix ](literal $x$ text',
+      hasMath: false,
+      expectedPattern: /\$x\$/,
+    },
+    {
+      source: 'prefix ](literal \\(x+1\\) text',
+      hasMath: true,
+    },
+    {
+      source: 'prefix [literal $x$ text',
+      hasMath: false,
+      expectedPattern: /\$x\$/,
+    },
+    {
+      source: 'prefix [literal \\(x+1\\) text',
+      hasMath: true,
+    },
+    {
+      source: 'prefix [label](literal $x$ text',
+      hasMath: false,
+      expectedPattern: /\$x\$/,
+    },
+    {
+      source: 'prefix [label](literal \\(x+1\\) text',
+      hasMath: true,
+    },
+  ];
+
+  for (const { source, hasMath, expectedPattern } of cases) {
+    const oneshot = prepareMarkdownMath(source, createMarkdownMathCache());
+    const cache = createMarkdownMathCache();
+    let streamed = '';
+    for (let end = 1; end <= source.length; end++) {
+      streamed = prepareMarkdownMath(source.slice(0, end), cache);
+    }
+    assert.equal(streamed, oneshot, `Incremental mismatch for "${source}"`);
+
+    const markup = renderToStaticMarkup(createElement(LocaleProvider, {
+      locale: 'en',
+      children: createElement(MarkdownBody, { text: source, streaming: false }),
+    }));
+
+    if (hasMath) {
+      assert.match(markup, /class="maka-math maka-math-inline"/, `Missing KaTeX for "${source}"`);
+      assert.match(markup, /class="katex"/, `Missing KaTeX for "${source}"`);
+    } else {
+      assert.doesNotMatch(markup, /class="maka-math/, `Unexpected KaTeX for "${source}"`);
+      assert.doesNotMatch(markup, /class="katex/, `Unexpected KaTeX for "${source}"`);
+      if (expectedPattern) {
+        assert.match(markup, expectedPattern, `Expected pattern not found for "${source}"`);
+      }
+    }
+  }
+
+  // Multi-chunk streaming where an incomplete destination later closes
+  const chunk1 = 'prefix [label](https://example.com/search?query=$100';
+  const chunk2 = 'prefix [label](https://example.com/search?query=$100&cost=$200)';
+  const cacheChunks = createMarkdownMathCache();
+  prepareMarkdownMath(chunk1, cacheChunks);
+  assert.equal(cacheChunks.safeSourceEnd, 'prefix '.length);
+
+  const res2 = prepareMarkdownMath(chunk2, cacheChunks);
+  assert.equal(res2, prepareMarkdownMath(chunk2, createMarkdownMathCache()));
+  assert.doesNotMatch(res2, /\\\$/, 'Destination bare dollars must not be escaped after closing');
+
+  const markupClosed = renderToStaticMarkup(createElement(LocaleProvider, {
+    locale: 'en',
+    children: createElement(MarkdownBody, { text: chunk2 }),
+  }));
+  assert.match(markupClosed, /href="https:\/\/example\.com\/search\?query=\$100&amp;cost=\$200"/);
+});
+
+it('preserves reference link tails across chunk boundaries and incremental streaming', () => {
+  const full = 'prefix ][ref_$target]';
+  const splitPoints = [
+    'prefix ]',
+    'prefix ][',
+    'prefix ][ref_',
+    'prefix ][ref_$target]',
+  ];
+
+  for (const head of splitPoints) {
+    const cache = createMarkdownMathCache();
+    prepareMarkdownMath(head, cache);
+    const incremental = prepareMarkdownMath(full, cache);
+    const oneshot = prepareMarkdownMath(full, createMarkdownMathCache());
+
+    assert.equal(incremental, oneshot, `Failed at split point: "${head}"`);
+  }
+
+  // 1-byte streaming across unassociated reference tail
+  const cache = createMarkdownMathCache();
+  let incremental = '';
+  for (let end = 1; end <= full.length; end++) {
+    incremental = prepareMarkdownMath(full.slice(0, end), cache);
+  }
+  assert.equal(incremental, prepareMarkdownMath(full, createMarkdownMathCache()));
+
+  // Reference link with target identifier containing $
+  const linkText = '[label][ref_$target]\n\n[ref_$target]: https://example.com/path';
+  const linkSplitPoints = [
+    '[label]',
+    '[label][',
+    '[label][ref_',
+  ];
+
+  for (const head of linkSplitPoints) {
+    const linkCache = createMarkdownMathCache();
+    prepareMarkdownMath(head, linkCache);
+    const inc = prepareMarkdownMath(linkText, linkCache);
+    const oneshot = prepareMarkdownMath(linkText, createMarkdownMathCache());
+
+    assert.equal(inc, oneshot, `Failed at link split point: "${head}"`);
+  }
+
+  // Incremental 1-byte streaming across complete reference link and definition
+  const fullLinkCache = createMarkdownMathCache();
+  let fullIncremental = '';
+  for (let end = 1; end <= linkText.length; end++) {
+    fullIncremental = prepareMarkdownMath(linkText.slice(0, end), fullLinkCache);
+  }
+  assert.equal(fullIncremental, prepareMarkdownMath(linkText, createMarkdownMathCache()));
+
+  // Check valid reference link render in MarkdownBody
+  const markup = renderToStaticMarkup(createElement(LocaleProvider, {
+    locale: 'en',
+    children: createElement(MarkdownBody, { text: linkText }),
+  }));
+  assert.match(markup, /href="https:\/\/example\.com\/path"/);
+  assert.match(markup, />label</);
+  assert.doesNotMatch(markup, /maka-math/);
+});
+
+it('round-trips literal transport tokens across modes 0, 1, and 2 without KaTeX decoding', () => {
+  const tokens = [
+    { mode: '0 (inline)', token: '\uE000MAKA_MATH:0:78\uE001' },
+    { mode: '1 (display)', token: '\uE000MAKA_MATH:1:78\uE001' },
+    { mode: '2 (literal)', token: '\uE000MAKA_MATH:2:78\uE001' },
+  ];
+
+  for (const { mode, token } of tokens) {
+    const full = `Prose before ${token} prose after`;
+
+    // One-shot prepare
+    const oneshot = prepareMarkdownMath(full, createMarkdownMathCache());
+
+    // Incremental byte-by-byte streaming
+    const cache = createMarkdownMathCache();
+    let incremental = '';
+    for (let end = 1; end <= full.length; end++) {
+      incremental = prepareMarkdownMath(full.slice(0, end), cache);
+    }
+
+    assert.equal(incremental, oneshot, `Incremental mismatch for mode ${mode}`);
+
+    // Render through MarkdownBody: ensure it does not decode into KaTeX math
+    const markup = renderToStaticMarkup(createElement(LocaleProvider, {
+      locale: 'en',
+      children: createElement(MarkdownBody, { text: full }),
+    }));
+
+    assert.doesNotMatch(markup, /class="maka-math/, `KaTeX maka-math rendered for literal token mode ${mode}`);
+    assert.doesNotMatch(markup, /class="katex/, `KaTeX class rendered for literal token mode ${mode}`);
+  }
 });
 
 it('keeps the copy control in a toolbar above a one-line code scroll viewport', () => {
@@ -641,4 +1292,135 @@ it('memory citations route internally and never navigate as external URLs', () =
   }));
   assert.equal((markup.match(/data-maka-uri-kind="memory-original"/g) ?? []).length, 2);
   assert.doesNotMatch(markup, /unsafe-scheme|href="memory-original/);
+});
+
+it('treats orphan link destinations spanning a single newline as prose and translates math', () => {
+  const dollarInput = 'prefix ](literal\n$x$)';
+  const dollarOneShot = prepareMarkdownMath(dollarInput, createMarkdownMathCache());
+  assert.equal(dollarOneShot, 'prefix ](literal\n\\$x\\$)');
+
+  const dollarCache = createMarkdownMathCache();
+  let dollarStream = '';
+  for (let i = 1; i <= dollarInput.length; i++) {
+    dollarStream = prepareMarkdownMath(dollarInput.slice(0, i), dollarCache);
+  }
+  assert.equal(dollarStream, 'prefix ](literal\n\\$x\\$)');
+
+  const mathInput = 'prefix ](literal\n\\(x+1\\))';
+  const mathOneShot = prepareMarkdownMath(mathInput, createMarkdownMathCache());
+  assert.equal(mathOneShot, 'prefix ](literal\n$x+1$)');
+
+  const mathCache = createMarkdownMathCache();
+  let mathStream = '';
+  for (let i = 1; i <= mathInput.length; i++) {
+    mathStream = prepareMarkdownMath(mathInput.slice(0, i), mathCache);
+  }
+  assert.equal(mathStream, 'prefix ](literal\n$x+1$)');
+
+  const escapedDollarInput = 'prefix ](literal\\\n$x$)';
+  assert.equal(prepareMarkdownMath(escapedDollarInput, createMarkdownMathCache()), 'prefix ](literal\\\n\\$x\\$)');
+  const escapedDollarCache = createMarkdownMathCache();
+  let escapedDollarStream = '';
+  for (let i = 1; i <= escapedDollarInput.length; i++) {
+    escapedDollarStream = prepareMarkdownMath(escapedDollarInput.slice(0, i), escapedDollarCache);
+  }
+  assert.equal(escapedDollarStream, 'prefix ](literal\\\n\\$x\\$)');
+
+  const escapedMathInput = 'prefix ](literal\\\n\\(x+1\\))';
+  assert.equal(prepareMarkdownMath(escapedMathInput, createMarkdownMathCache()), 'prefix ](literal\\\n$x+1$)');
+  const escapedMathCache = createMarkdownMathCache();
+  let escapedMathStream = '';
+  for (let i = 1; i <= escapedMathInput.length; i++) {
+    escapedMathStream = prepareMarkdownMath(escapedMathInput.slice(0, i), escapedMathCache);
+  }
+  assert.equal(escapedMathStream, 'prefix ](literal\\\n$x+1$)');
+
+  const markup = renderToStaticMarkup(createElement(LocaleProvider, {
+    locale: 'en',
+    children: createElement(MarkdownBody, { text: mathInput }),
+  }));
+  assert.match(markup, /class="maka-math maka-math-inline"/);
+  assert.match(markup, /class="katex"/);
+});
+
+it('preserves reference-identifier context during speculative streaming without leaking display math', () => {
+  const openInput = 'prefix [label][\\[display\\]';
+  const openOneShot = prepareMarkdownMath(openInput, createMarkdownMathCache());
+  assert.equal(openOneShot, 'prefix [label][\\[display\\]');
+
+  const openCache = createMarkdownMathCache();
+  let openStream = '';
+  for (let i = 1; i <= openInput.length; i++) {
+    openStream = prepareMarkdownMath(openInput.slice(0, i), openCache);
+    assert.doesNotMatch(openStream, /\$\$/, `chunk ${i} leaked into display math`);
+  }
+  assert.equal(openStream, openOneShot);
+
+  const multiInput = 'prefix [label][\\[display\\] and \\[more\\]';
+  const multiOneShot = prepareMarkdownMath(multiInput, createMarkdownMathCache());
+  assert.equal(multiOneShot, 'prefix [label][\\[display\\] and \\[more\\]');
+  const multiCache = createMarkdownMathCache();
+  let multiStream = '';
+  for (let i = 1; i <= multiInput.length; i++) {
+    multiStream = prepareMarkdownMath(multiInput.slice(0, i), multiCache);
+    assert.doesNotMatch(multiStream, /\$\$/, `multi chunk ${i} leaked into display math`);
+  }
+  assert.equal(multiStream, multiOneShot);
+
+  const closedInput = 'prefix [label][\\[display\\]]';
+  const closedOneShot = prepareMarkdownMath(closedInput, createMarkdownMathCache());
+  const closedCache = createMarkdownMathCache();
+  let closedStream = '';
+  for (let i = 1; i <= closedInput.length; i++) {
+    closedStream = prepareMarkdownMath(closedInput.slice(0, i), closedCache);
+  }
+  assert.equal(closedStream, closedOneShot);
+  assert.doesNotMatch(closedStream, /\$\$/);
+
+  const markup = renderToStaticMarkup(createElement(LocaleProvider, {
+    locale: 'en',
+    children: createElement(MarkdownBody, { text: closedInput }),
+  }));
+  assert.doesNotMatch(markup, /maka-math-display|katex-display/);
+});
+
+it('renders display math after an unterminated reference identifier in completed messages', () => {
+  const sources = [
+    'para [a][unfinished\n\\[x^2\\]\n',
+    'para [l][r\n\\[x^2\\]\n\nnext',
+  ];
+
+  for (const source of sources) {
+    const markup = renderToStaticMarkup(createElement(LocaleProvider, {
+      locale: 'en',
+      children: createElement(MarkdownBody, { text: source, streaming: false }),
+    }));
+    assert.match(markup, /class="maka-math maka-math-display"/, source);
+    assert.match(markup, /class="katex-display"/, source);
+
+    const streamCache = createMarkdownMathCache();
+    for (let end = 1; end <= source.length; end++) {
+      prepareMarkdownMath(source.slice(0, end), streamCache);
+    }
+    const afterStreaming = prepareMarkdownMath(source, streamCache, { isComplete: true });
+    const fresh = prepareMarkdownMath(source, createMarkdownMathCache(), { isComplete: true });
+    assert.equal(afterStreaming, fresh, `Completed render diverged after streaming: ${source}`);
+    assert.match(afterStreaming, /\$\$/, `Completed render lost display math: ${source}`);
+  }
+});
+
+it('matches one-shot and incremental scans when an inline tail splits immediately after a newline', () => {
+  const source = 'prefix [label](unfinished\n\nnext $x$ and \\(y\\)';
+  const oneshot = prepareMarkdownMath(source, createMarkdownMathCache());
+
+  for (let split = 1; split < source.length; split++) {
+    if (source[split - 1] !== '\n') continue;
+    const cache = createMarkdownMathCache();
+    prepareMarkdownMath(source.slice(0, split), cache);
+    assert.equal(
+      prepareMarkdownMath(source, cache),
+      oneshot,
+      `Incremental mismatch after a newline split at ${split}`,
+    );
+  }
 });
