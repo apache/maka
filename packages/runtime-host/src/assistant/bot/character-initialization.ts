@@ -214,7 +214,13 @@ export class CharacterInitialization {
   private async offer(kind: 'assistant' | 'pet', owner: string) {
     // A recovered binding can precede Session Query activation. Do not wake the
     // Bot (or persist an offer) until its owner conversation is available.
-    if (!(await this.ctx.sessionQuery.read(owner))) return;
+    // Timer callbacks have no Agent invocation. Use the owner's scoped query;
+    // unscoped queries intentionally cannot see any sessions. Only metadata is
+    // needed here, not the owner's complete conversation history.
+    const sessions = await this.ctx.agents.withInvocation(this.bot.invocation(owner), () =>
+      this.ctx.sessionQuery.list(),
+    );
+    if (!sessions.some((session) => session.id === owner)) return;
     this.bot.ready();
     if (owner !== this.bot.owner()) return;
     const key = kind === 'assistant' ? KEY : PET_KEY;

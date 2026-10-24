@@ -23,6 +23,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { z } from 'zod';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { CharacterPack } from '../assistant/bot/character-pack.js';
 import {
   CharacterInitialization,
@@ -40,6 +41,7 @@ function fixture(t: any) {
     enabled = false;
   const visible: any[] = [];
   const posts: any[] = [];
+  const invocation = new AsyncLocalStorage<{ sessionId: string }>();
   const bot = {
     owner: () => owner,
     ready() {},
@@ -51,12 +53,14 @@ function fixture(t: any) {
     },
     abort: new AbortController(),
     post: (input: any) => posts.push(input),
-    invocation: () => ({ sessionId: owner }),
+    invocation: (sessionId = owner) => ({ sessionId }),
   };
   const ctx = {
-    sessionQuery: { read: async () => ({ id: owner }) },
+    sessionQuery: {
+      list: async () => (invocation.getStore()?.sessionId === owner ? [{ id: owner }] : []),
+    },
     petPacks: { status: async () => ({ configured: false }) },
-    agents: { withInvocation: (_: any, fn: any) => fn() },
+    agents: { withInvocation: (call: any, fn: any) => invocation.run(call, fn) },
     tools: {
       resolve: () => ({
         tools: [
@@ -292,14 +296,28 @@ test('matching pet receives the existing persona as reference without changing t
 
 test('onboarding waits for the owner query boundary before posting an offer', async (t) => {
   const f = fixture(t);
-  f.ctx.sessionQuery.read = async () => {
+  f.ctx.sessionQuery.list = async () => {
     throw Error('Session Query is not active yet');
   };
   await f.init.tick();
   assert.equal(f.init.state(), undefined);
   assert.deepEqual(f.posts, []);
-  f.ctx.sessionQuery.read = async () => ({ id: 'owner' });
+  f.ctx.sessionQuery.list = async () => [{ id: 'owner' }];
   await f.init.tick();
   assert.equal(f.init.state()?.phase, 'offered');
   assert.equal(f.posts.length, 1);
+});
+
+test('timer onboarding scopes both offers to the owner without reading conversation history', async (t) => {
+  const f = fixture(t);
+  assert.deepEqual(await f.ctx.sessionQuery.list(), [], 'unscoped timers cannot see sessions');
+  await f.init.tick();
+  assert.equal(f.init.state()?.phase, 'offered');
+  assert.equal(f.posts[0].content.kind, 'assistant');
+  await f.init.setup({ kind: 'assistant', action: 'skip' });
+  assert.equal(f.posts[1].content.kind, 'pet');
+  f.restart();
+  await f.init.tick();
+  assert.equal(f.posts.length, 2, 'restarting does not duplicate either offer');
+  assert.equal(f.calls(), 0, 'offers do not create appearance tasks without consent');
 });
