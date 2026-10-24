@@ -130,6 +130,8 @@ merge.
 
 ## 4. Ownership and data classes
 
+![Trust boundary: the Runtime Host owns every secret; only projections cross the Host protocol](../images/amazon-bedrock-sso/trust-boundary.png)
+
 | Data | Lives in | Persisted | Crosses the Host protocol |
 | --- | --- | --- | --- |
 | Device code, OIDC client secret, access and refresh tokens | Host | vault (`cloud_identity_session`), `0600`, atomic write | **Never** |
