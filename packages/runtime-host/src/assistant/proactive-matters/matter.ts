@@ -17,10 +17,28 @@
  * under the License.
  */
 
+import type { MatterConditions } from './condition-store.js';
+
 /** Durable follow-ups. The body is agent-maintained working state, not a plan schema. */
 export const MATTER_STATE_MAX_BYTES = 24 * 1024;
 export const MATTER_REQUEST_MAX_LENGTH = 8000;
 export const MATTER_SESSION_LABEL = 'matter';
+
+/**
+ * Background turns are admitted as Host turn ids, which must match
+ * `^[A-Za-z0-9_-]{1,128}$` (see `requireEntityId`). Colons are therefore not
+ * used as separators. Activations bound before that rule still carry the
+ * legacy `pending:` marker, so both prefixes are recognized.
+ */
+export const PENDING_ACTIVATION_TURN_PREFIX = 'pending-';
+const LEGACY_PENDING_ACTIVATION_TURN_PREFIX = 'pending:';
+export function isPendingActivationTurnId(turnId: string | null | undefined): boolean {
+  return (
+    turnId != null &&
+    (turnId.startsWith(PENDING_ACTIVATION_TURN_PREFIX) ||
+      turnId.startsWith(LEGACY_PENDING_ACTIVATION_TURN_PREFIX))
+  );
+}
 
 export type MatterStatus = 'active' | 'waiting' | 'paused' | 'completed' | 'cancelled';
 export type MatterWake = { kind: 'at'; at: number };
@@ -65,9 +83,12 @@ export interface Matter {
   title: string;
   request: string;
   stateText: string;
+  /** Agent-authored list preview; absent on tasks created before this field existed. */
+  progressSummary?: string;
   revision: number;
   status: MatterStatus;
   wakes: MatterWake[];
+  conditionWaitId?: string | null;
   waitingFor?: string | null;
   activation: MatterActivation | null;
   runCount: number;
@@ -97,10 +118,12 @@ export interface MatterSettleInput {
   stateText: string;
   disposition: 'continue' | 'wait' | 'complete';
   wakes?: MatterWake[];
+  condition?: { checkerId: string; intervalMs: number };
   waitingFor?: string;
   reason: string;
   /** Agent-authored account of this activation, appended to history by the host. */
   summary: string;
+  progressSummary?: string;
   next?: string;
   update?: string;
 }
@@ -136,19 +159,23 @@ export interface MatterReview {
   input: MatterSettleInput;
   snapshot: MatterSnapshot;
   userInputs: unknown[];
-  draftPath: string;
+  draftPath?: string;
   verdict?: MatterReviewVerdict;
   committed?: boolean;
 }
 
 /** A single transaction owns state, event acknowledgement, wakes and updates. */
 export interface MatterStore {
+  readonly conditions: MatterConditions;
+  adoptDeliveredInput(id: string, activationId: string, basis: string, eventCursor: number): Matter;
+  submittedInput(operationId: string): MatterSettleInput | undefined;
+  saveSubmission(operationId: string, input: MatterSettleInput): void;
   beginReview(
     id: string,
     activationId: string,
     input: MatterSettleInput,
     operationId: string,
-    draftPath: string,
+    draftPath?: string,
   ): MatterReview;
   recordReview(review: MatterReview, verdict: MatterReviewVerdict): void;
   authorizeSession(sessionId: string): void;
@@ -181,6 +208,7 @@ export interface MatterStore {
     revision: number,
     text: string,
     operationId: string,
+    progressSummary?: string,
   ): Matter;
   settle(
     id: string,

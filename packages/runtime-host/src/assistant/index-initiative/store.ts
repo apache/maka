@@ -26,7 +26,7 @@ import { randomUUID } from 'node:crypto';
 export class InitiativeStore {
   db: DatabaseSync;
   constructor(
-    directory: string,
+    readonly directory: string,
     readonly owner: string,
   ) {
     mkdirSync(directory, { recursive: true });
@@ -101,6 +101,11 @@ export class InitiativeStore {
         version: 2,
         ...binding,
         discoverySession: old?.discoverySession,
+        judgementSession: old?.judgementSession,
+        candidateReport: old?.candidateReport,
+        pendingJudgement: old?.pendingJudgement,
+        pendingDraft: old?.pendingDraft,
+        promptVersions: old?.promptVersions,
         intervalMs,
         enabled,
         revision: (old?.revision ?? 0) + 1,
@@ -172,7 +177,13 @@ export class InitiativeStore {
   claim() {
     return this.update((s) => {
       if ((!s?.enabled && !s?.checkRequested) || s.active || s.nextAt > Date.now()) return;
-      s.active = { id: randomUUID(), startedAt: Date.now() };
+      s.active = {
+        id: randomUUID(),
+        startedAt: Date.now(),
+        phase:
+          s.pendingDraft?.phase ??
+          (s.pendingJudgement || s.candidateReport ? 'judgement' : 'discovery'),
+      };
       s.revision++;
       this.log('heartbeat', { id: s.active.id });
     });
@@ -181,6 +192,11 @@ export class InitiativeStore {
     return this.update((s) => {
       if (s?.active?.id !== id) return;
       s.active = null;
+      if (!error) {
+        delete s.candidateReport;
+        delete s.pendingJudgement;
+        delete s.pendingDraft;
+      }
       s.revision++;
       s.lastError = error ?? null;
       s.nextAt = Date.now() + s.intervalMs; // host cadence; never model-selected

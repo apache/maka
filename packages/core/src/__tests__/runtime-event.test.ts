@@ -57,6 +57,16 @@ function baseEvent(overrides: Partial<RuntimeEvent> = {}): RuntimeEvent {
   };
 }
 
+test('interrupted assistant text survives recovery decoding without becoming model context', () => {
+  const event = baseEvent({
+    modelVisibility: 'hidden',
+    content: { kind: 'text', text: 'unfinished answer', interrupted: true },
+  });
+  const decoded = decodeRuntimeEvent(JSON.parse(JSON.stringify(event)));
+  assert.deepEqual(decoded, event);
+  assert.equal(runtimeEventHasModelVisibleContent(decoded), false);
+});
+
 test('Stored assistant reasoning parts survive recovery decoding', () => {
   const parts = [
     {

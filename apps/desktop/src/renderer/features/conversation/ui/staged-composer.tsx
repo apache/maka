@@ -17,8 +17,12 @@
  * under the License.
  */
 
-import type { ComponentProps } from 'react';
+import { useRef, type ComponentProps } from 'react';
 import { Composer, type ComposerSendMetadata } from '@maka/ui';
+import {
+  useSessionSettingsSettlement,
+  type SessionSendSettlement,
+} from '../../../application/contracts/session-settings-settlement.js';
 import type { ComposerStagingSubmission } from '../model/composer-staging-contract.js';
 import { captureComposerStaging } from '../controller/capture-composer-staging.js';
 import { useComposerStaging } from './composer-staging-context.js';
@@ -32,16 +36,35 @@ export type ComposerStagingProp =
 export function StagedComposer({
   stagingEnabled, canStageContext, contextPickEnabled, directoryPickerEnabled, ...props
 }: Omit<ComponentProps<typeof Composer>, ComposerStagingProp | 'onSend'> & {
-  readonly onSend: (text: string, metadata?: ComposerSendMetadata, staging?: ComposerStagingSubmission) => boolean | void | Promise<boolean | void>;
+  readonly onSend: (
+    text: string,
+    metadata?: ComposerSendMetadata,
+    staging?: ComposerStagingSubmission,
+    settlement?: SessionSendSettlement,
+  ) => boolean | void | Promise<boolean | void>;
   readonly stagingEnabled: boolean;
   readonly canStageContext: boolean;
   readonly contextPickEnabled: boolean;
   readonly directoryPickerEnabled: boolean;
 }) {
   const staging = useComposerStaging();
+  const sessionSettings = useSessionSettingsSettlement();
+  // #4695: the attempt starts at the user's submit, before the Composer waits
+  // on Session references or the send prepares a revision, so a setting write
+  // that fails in between still stops this send.
+  const settlementRef = useRef<SessionSendSettlement | undefined>(undefined);
   return <Composer {...props} onSend={(text, metadata) =>
-    props.onSend(text, metadata, captureComposerStaging(staging, staging.draftKey))} {...(stagingEnabled ? {
-    retainSendContext: () => staging.retainAttachments(staging.submittableAttachments),
+    props.onSend(text, metadata, captureComposerStaging(staging, staging.draftKey), settlementRef.current)} {...(stagingEnabled ? {
+    retainSendContext: () => {
+      const releaseAttachments = staging.retainAttachments(staging.submittableAttachments);
+      const settlement = props.draftKey ? sessionSettings?.beginSettlement(props.draftKey) : undefined;
+      settlementRef.current = settlement;
+      return () => {
+        releaseAttachments();
+        settlement?.release();
+        if (settlementRef.current === settlement) settlementRef.current = undefined;
+      };
+    },
     pendingAttachments: staging.pendingAttachments,
     onRemoveAttachment: staging.removeAttachment,
     onPickAttachments: contextPickEnabled ? staging.pickAttachments : undefined,

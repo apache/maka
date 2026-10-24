@@ -1031,7 +1031,8 @@ export interface MakaBridge {
   };
 
   newTasks: {
-    getExecutors(target: DesktopNewTaskTarget, cwd: string, refresh?: boolean): Promise<readonly import('@maka/core/executor-catalog').ExecutorCatalogEntry[]>;
+    getExecutors(target: DesktopNewTaskTarget, cwd: string, refresh?: boolean, executorId?: string): Promise<readonly import('@maka/core/executor-catalog').ExecutorCatalogEntry[]>;
+    listExecutors(target: DesktopNewTaskTarget, cwd: string): Promise<readonly import('@maka/core/executor-catalog').ExecutorCatalogEntry[]>;
     getCatalog(): Promise<DesktopNewTaskCatalog>;
     subscribeChanges(handler: () => void): () => void;
     addProject(host: DesktopNewTaskHostRef, name?: string): Promise<
@@ -1180,7 +1181,14 @@ export interface MakaBridge {
       sessions: DesktopSessionSummary[];
       completeHostIds: string[];
     }>;
-    create(input?: CreateSessionRequestInput): Promise<DesktopSessionSummary>;
+    /**
+     * Creates on the active Runtime Host, or with `besideSessionId` on that
+     * Session's Host, failing when it is no longer available.
+     */
+    create(
+      input?: CreateSessionRequestInput,
+      options?: { readonly besideSessionId?: string },
+    ): Promise<DesktopSessionSummary>;
     send(
       sessionId: string,
       command: {
@@ -1328,6 +1336,14 @@ export interface MakaBridge {
     listTurns(sessionId: string): Promise<TurnRecord[]>;
     /** Request a bounded next-prompt prediction for this Session. */
     generatePromptSuggestion(sessionId: string): Promise<import('@maka/runtime-host/protocol').PromptSuggestionResult>;
+    /**
+     * Ask the default Runtime Host for check-in cards. Card Session ids come back
+     * as Desktop Session keys on that Host.
+     */
+    generateCheckin(input: {
+      effectId: string;
+      since: number | null;
+    }): Promise<import('@maka/runtime-host/protocol').SessionCheckinGenerateResult>;
     /** Read a bounded, redacted tail from another same-Host Session. */
     readSnapshot(sessionId: string, options?: { maxChars?: number }): Promise<SessionSnapshot>;
     /** Sampled prompt-rail landmarks, or where the one Turn `turnId` sits. */
@@ -1587,7 +1603,8 @@ export interface MakaBridge {
   };
   goal: {
     /** The session's current goal (null when none is set). */
-    get(sessionId: string): Promise<import('@maka/runtime/goal-state').GoalState | null>;
+    get(sessionId: string): Promise<import('../shared/goal-arm').DesktopGoal | null>;
+    cancelEventWait(input: import('@maka/runtime-host/protocol').GoalEventWaitCancelInput): Promise<import('@maka/runtime-host/protocol').GoalEventWaitCancelResult>;
     /**
      * Arm a goal for this session. It drives the session from the next turn
      * on; arming alone starts nothing. Rejects when the session already has an

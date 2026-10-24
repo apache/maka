@@ -433,9 +433,8 @@ export function canContinueHistoryCompactCheckpointForModel(
   connectionId: string | undefined,
   modelId: string,
 ): boolean {
-  if (isTextHistoryCompactCheckpoint(checkpoint)) {
-    return connection.providerType !== 'openai-codex';
-  }
+  // Portable text is ordinary model context for both replay and compaction.
+  // Only opaque provider state needs a matching route.
   return canReplayHistoryCompactCheckpointForModel(checkpoint, connection, connectionId, modelId);
 }
 
@@ -572,6 +571,36 @@ export function canReplaceHistoryCompactCheckpoint(
 }
 
 export function matchHistoryCompactCheckpointPrefix(
+  checkpoint: HistoryCompactCheckpoint,
+  events: readonly RuntimeEvent[],
+): HistoryCompactCheckpointPrefixMatch {
+  const match = matchHistoryCompactCheckpointPrefixExactly(checkpoint, events);
+  if (
+    match.reason === undefined ||
+    match.reason === 'invalid_checkpoint' ||
+    checkpoint.source?.policyVersion !== 'maka.compactable_runtime_event_projection.v3'
+  )
+    return match;
+
+  // v3 checkpoints written before #6263 did not count encrypted-only thinking.
+  // Locate that sealed boundary by identity, then verify the historical source
+  // exactly. Never trim the successor tail using the historical event count.
+  const throughIndex = events.findIndex(
+    (event) => event.id === checkpoint.coverage.through.runtimeEventId,
+  );
+  if (throughIndex < 0) return match;
+  const prefix = events.slice(0, throughIndex + 1);
+  const historical = prefix.filter(
+    (event) => event.content?.kind !== 'thinking' || event.content.text.length > 0,
+  );
+  if (historical.length === prefix.length) return match;
+  const historicalMatch = matchHistoryCompactCheckpointPrefixExactly(checkpoint, historical);
+  return historicalMatch.reason === undefined
+    ? { ...historicalMatch, successorRuntimeEvents: events.slice(throughIndex + 1) }
+    : match;
+}
+
+function matchHistoryCompactCheckpointPrefixExactly(
   checkpoint: HistoryCompactCheckpoint,
   events: readonly RuntimeEvent[],
 ): HistoryCompactCheckpointPrefixMatch {
@@ -861,7 +890,17 @@ function effectiveDigestEvent(event: RuntimeEvent): unknown {
 
 /** True when the event carries model-visible content the compact projection counts. */
 export function isHistoryCompactContentEvent(event: RuntimeEvent): boolean {
-  return event.modelVisibility !== 'hidden' && estimateRuntimeEventChars(event) > 0;
+  if (event.modelVisibility === 'hidden') return false;
+  // A Responses reasoning item can carry only encrypted content. Text sizing
+  // does not decide whether that payload exists; route admission still runs
+  // when the compacted history is materialized for the selected model.
+  if (event.content?.kind === 'thinking') {
+    const openai = event.content.providerOptions?.openai as
+      | { itemId?: unknown; reasoningEncryptedContent?: unknown }
+      | undefined;
+    if (nonEmpty(openai?.itemId) && nonEmpty(openai?.reasoningEncryptedContent)) return true;
+  }
+  return estimateRuntimeEventChars(event) > 0;
 }
 
 function validHistoryCompactProviderState(value: unknown): value is HistoryCompactProviderState {

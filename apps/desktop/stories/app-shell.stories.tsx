@@ -741,6 +741,40 @@ export const RunningStatusDuringToolRun: Story = {
   },
 };
 
+function ReconnectedRunningToolScene() {
+  // Like QueuedMessageLifecycle, start this active scene at mount: the user
+  // attaches ten seconds after the command began, rather than months after a
+  // fixed catalog timestamp. The clock is real; no output is fabricated.
+  const [attachedAt] = useState(Date.now);
+  return (
+    <ComposedShell
+      session={{ status: 'running', streaming: true, lastMessageAt: attachedAt - 10_000 }}
+      chat={{
+        activeTurn: { turnId: 'turn-reconnect' },
+        messages: [
+          { ...user('reconnect-user', 'turn-reconnect', 2, '等待这个命令执行完毕。'), ts: attachedAt - 10_000 },
+          { type: 'tool_call', id: 'reconnect-tool', turnId: 'turn-reconnect', ts: attachedAt - 9_000,
+            toolName: 'Bash', activityKind: 'command', args: { command: 'sleep 10' } },
+        ],
+      }}
+    />
+  );
+}
+
+// Real path: open a conversation while its Host Turn is still running; a
+// reconnect seed supplies continuity but no live tool buffer for this legacy
+// transcript. This fixture supplies production ChatView props, not a native
+// Electron reproduction. Keep process details visible for before/after evidence.
+export const ReconnectedRunningTool: Story = {
+  render: () => <ReconnectedRunningToolScene />,
+  play: async ({ canvasElement }) => {
+    await waitFor(() => expect(canvasElement.querySelector('.maka-processing-sequence')).not.toBeNull());
+    const process = canvasElement.querySelector<HTMLDetailsElement>('.maka-processing-sequence')!;
+    if (!process.open) await userEvent.click(process.querySelector('summary')!);
+    await waitFor(() => expect(within(canvasElement).getByText('sleep 10')).toBeVisible());
+  },
+};
+
 // A real prefix of `npm test` stdout, copied verbatim from an actual run killed
 // mid-build (the full suite runs for minutes, so a cancel here is genuinely
 // reachable). Kept short by cutting inside the build phase — no test-runner
@@ -1806,7 +1840,7 @@ export const NewChatComposer: Story = {
     await expect(card.getBoundingClientRect().height).toBe(initialCardHeight);
 
     const projectPicker = canvasElement.querySelector<HTMLElement>('.maka-workspace-picker')!;
-    const modelPicker = canvasElement.querySelector<HTMLElement>('.maka-new-chat-model-selector')!;
+    const modelPicker = canvasElement.querySelector<HTMLElement>('.maka-model-switcher-trigger')!;
     await expect(getComputedStyle(projectPicker).borderRadius).toBe(getComputedStyle(modelPicker).borderRadius);
     await expect(projectPicker.querySelector('.maka-workspace-picker-chevron svg')).not.toBeNull();
 
@@ -1833,6 +1867,63 @@ export const NewChatComposer: Story = {
       });
     } finally {
       card.style.maxWidth = originalMaxWidth;
+    }
+  },
+};
+
+function DraftCatalogRefreshFailure() {
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshFailed, setRefreshFailed] = useState(false);
+  return <ToastProvider><ComposedShell session={null} chat={{ messages: [] }} composer={{
+    executorPicker: {
+      catalog: [{
+        id: 'antigravity', displayName: 'Antigravity', readiness: 'ready', refreshFailed,
+        models: [
+          { id: 'flash-low', name: 'Gemini 3.8 Flash (Low)', providerType: 'google' },
+          { id: 'flash-high', name: 'Gemini 3.8 Flash (High)', providerType: 'google' },
+        ],
+        modelGroups: [{ id: 'flash', name: 'Gemini 3.8 Flash', variants: [
+          { modelId: 'flash-low', level: 'low' }, { modelId: 'flash-high', level: 'high' },
+        ] }],
+        currentModel: 'flash-high', supportsModelChange: true, supportsAttachments: true,
+      }],
+      selection: { executorId: 'antigravity', configuration: { model: 'flash-high' } },
+      loadingIds: refreshing ? ['antigravity'] : [],
+      onSelect: noop, onSetup: noop, onNewTask: noop,
+      onRetry: () => {
+        setRefreshing(true);
+        window.setTimeout(() => { setRefreshFailed(true); setRefreshing(false); }, 300);
+      },
+    },
+  }} /></ToastProvider>;
+}
+
+// Real path: 新任务 → select an ACP model → Refresh models fails; the global toast appears outside the unchanged Composer.
+export const NewChatCatalogRefreshFailure: Story = {
+  render: () => <DraftCatalogRefreshFailure />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const page = within(canvasElement.ownerDocument.body);
+    const refresh = canvas.getByRole('button', { name: /Antigravity: (Refresh models|刷新模型|重新整理模型)/ });
+    const composer = canvasElement.querySelector<HTMLElement>('.maka-composer')!;
+    const model = canvasElement.querySelector<HTMLElement>('.maka-model-switcher-trigger')!;
+    const before = composer.getBoundingClientRect();
+    const controlsBefore = [refresh, model].map(control => ({ control, box: control.getBoundingClientRect() }));
+    await userEvent.click(refresh);
+    const notice = await page.findByText(/Could not refresh models|模型列表刷新失败|模型清單重新整理失敗/);
+    await waitFor(() => expect(notice).toBeVisible());
+    await expect(composer.contains(notice)).toBe(false);
+    await expect(refresh).toBeEnabled();
+    await expect(within(composer).queryByRole('button', { name: /^(Retry|重试|重試)$/ })).not.toBeInTheDocument();
+    await expect(composer.querySelector('.maka-executor-notice')).toBeNull();
+    await expect(model).toHaveTextContent('Gemini 3.8 Flash');
+    const after = composer.getBoundingClientRect();
+    await expect(after.height).toBe(before.height);
+    // Controls may already wrap on narrow screens; the toast must preserve their positions within the Composer.
+    for (const { control, box } of controlsBefore) {
+      const current = control.getBoundingClientRect();
+      await expect(Math.abs((current.x - after.x) - (box.x - before.x))).toBeLessThanOrEqual(2);
+      await expect(Math.abs((current.y - after.y) - (box.y - before.y))).toBeLessThanOrEqual(2);
     }
   },
 };
@@ -4627,7 +4718,7 @@ export const NarrowComposerFooter: Story = {
 
     const send = within(card).getByRole('button', { name: '发送' });
     const contextGauge = within(card).queryByRole('button', { name: '打开用量追踪' });
-    const modelMenu = card.querySelector<HTMLElement>('.maka-composer-options-trigger');
+    const modelMenu = card.querySelector<HTMLElement>('.maka-model-switcher-trigger');
     if (!modelMenu) throw new Error('composer model menu is missing');
     await waitFor(() => {
       const cardBox = card.getBoundingClientRect();
@@ -4959,4 +5050,44 @@ export const CompletedProcessExpanded: Story = {
     await waitFor(() => expect(process.open).toBe(true));
     selection.removeAllRanges();
   },
+};
+
+
+function EventWaitContextStory(props: { label: string }) {
+  return <GoalContextStory goal={{ condition: 'Run the background tests and inspect their result',
+    status: 'active', iterations: 1, maxIterations: 12, setAt: Date.now() - 60000, onPause: noop, onClear: noop,
+    eventWait: { label: props.label, detail: 'Inspect the finished tests · maka://runtime/background-tasks/95ff8bdc-23bb-43ea-aea9-5d82c8d939fe · Oct 20, 2026, 10:00',
+      cancelLabel: 'Cancel wait and pause', cancelDescription: 'Cancel the wait and pause the Goal. The background task keeps running.', onCancel: noop } }} />;
+}
+
+async function assertEventWaitLayout({ canvasElement }: { canvasElement: HTMLElement }) {
+  const canvas = within(canvasElement);
+  const button = await canvas.findByRole('button', { name: 'Cancel wait and pause' });
+  const row = button.closest('.maka-session-context__wait')!;
+  expect(row.scrollWidth).toBeLessThanOrEqual(row.clientWidth + 1);
+  expect(button.getBoundingClientRect().right).toBeLessThanOrEqual(canvasElement.getBoundingClientRect().right + 1);
+  await userEvent.hover(button);
+  await expect(within(document.body).findByRole('tooltip')).resolves.toHaveTextContent('background task keeps running');
+  await userEvent.unhover(button);
+}
+
+// Real path: a Goal Turn starts builtin background Bash, calls WaitForEvent and
+// yields. The existing ChatView context layer renders the Host wait projection.
+export const SessionContextEventWait: Story = {
+  render: () => <EventWaitContextStory label="Waiting for background task" />,
+  play: assertEventWaitLayout,
+};
+
+// Real path: the Host cannot currently read the task source, so the existing
+// outstanding wait is unknown. The narrow smoke viewport exercises wrapping.
+export const SessionContextEventWaitUnknownNarrow: Story = {
+  render: () => <EventWaitContextStory label="Background task state temporarily unverifiable" />,
+  play: assertEventWaitLayout,
+};
+
+// Real path: the terminal fact is durable while a user Turn owns Root admission.
+// The wait remains visible until its existing continuation can be admitted.
+export const SessionContextEventWaitReady: Story = {
+  render: () => <EventWaitContextStory label="Result available, waiting to continue" />,
+  play: assertEventWaitLayout,
 };

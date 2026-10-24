@@ -32,6 +32,7 @@ import {
   type ApplyPatchProfile,
 } from './apply-patch-profile.js';
 import { durableProjectionToToolResultOutput } from './durable-tool-result-projection.js';
+import { runtimeContextMessage } from './runtime-context.js';
 import {
   historyCompactCheckpointToModelMessage,
   isProviderHistoryCompactCheckpoint,
@@ -42,6 +43,7 @@ import {
   buildRuntimeEventReplayTimeline,
   formatTextWithInlineRefs,
   steeringProviderOptions,
+  runtimeContextProviderOptions,
   type RuntimeEventModelReplayItem,
   type RuntimeEventModelReplayPlan,
   type RuntimeEventReplayToolExchange,
@@ -593,6 +595,15 @@ export class AiSdkMessageProjection {
     this.memoryReplayMessageEvents.set(message, [...new Set(eventIds)]);
   }
 
+  materializeRuntimeContext(
+    context: { name: string; text: string },
+    eventId: string,
+  ): ModelMessage {
+    const message = runtimeContextMessage(context);
+    this.memoryReplayMessageEvents.set(message, [eventId]);
+    return message;
+  }
+
   memoryEventMessagePositions(
     messages: readonly ModelMessage[],
   ): Readonly<Record<string, readonly number[]>> | undefined {
@@ -632,6 +643,9 @@ export class AiSdkMessageProjection {
       return {
         role: 'user',
         content,
+        ...(item.runtimeContextName !== undefined
+          ? { providerOptions: runtimeContextProviderOptions(item.runtimeContextName) }
+          : {}),
       } as ModelMessage;
     }
     return {

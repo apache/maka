@@ -616,9 +616,6 @@
      away. Where a box IS an Astryx component the fix is still its `size` prop
      and not a height here — `.maka-sidebar-update-button` and the three
      composer selectors were moved that way rather than pinned.
-     `.maka-composer-model-chip` is NOT one of those: that class sits on
-     `ModelChipStatic`'s inert `<span>`, never on the Button it renders when
-     clickable, so it pins like any other chip.
 
      A consequence worth stating, because it limits what this convergence
      bought: a unitless leading still inherits as a ratio. An element that

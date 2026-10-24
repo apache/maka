@@ -79,7 +79,7 @@ export class MemoryController {
             error: worker.lastError ?? null,
             rangeId: work?.id ?? null,
             coveredCursor: this.store.boundary(id),
-            nextCheckAt: worker.nextCheckAt ?? null,
+            nextCheckAt: this.nextCheck(id),
           };
         });
       const id = `memory:${runId}:${owner}`;
@@ -757,24 +757,58 @@ export class MemoryController {
     if (result.status === 'rejected') throw result.reason;
     return result.value;
   }
-  interval(indexId: string) {
-    return this.store.worker(indexId)?.intervalMs ?? this.config.intervalMs ?? 43200000;
+  schedule(): any {
+    const row = this.store.db
+      .prepare("SELECT value FROM memory_meta WHERE key='maintenance-schedule'")
+      .get();
+    if (row) return JSON.parse(String(row.value));
+    // Adopt the earliest existing deadline once; future rounds use only this clock.
+    const due = this.store
+      .list()
+      .filter((x) => this.enabled(x.id))
+      .map((x) => this.store.worker(x.id)?.nextCheckAt)
+      .filter((x) => typeof x === 'number');
+    const schedule = {
+      intervalMs: this.config.intervalMs ?? 43200000,
+      nextCheckAt: due.length
+        ? Math.min(...due)
+        : Date.now() + (this.config.intervalMs ?? 43200000),
+    };
+    this.saveSchedule(schedule);
+    return schedule;
+  }
+  scheduleInfo() {
+    const { intervalMs, nextCheckAt, retryAt } = this.schedule();
+    return { scope: 'global', intervalMs, nextCheckAt, retryAt: retryAt ?? null };
+  }
+  private saveSchedule(value: any) {
+    this.store.db
+      .prepare(
+        "INSERT INTO memory_meta(key,value) VALUES('maintenance-schedule',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+      )
+      .run(JSON.stringify(value));
+  }
+  configureSchedule(intervalMs: number) {
+    this.assertOwner();
+    if (!Number.isSafeInteger(intervalMs) || intervalMs < 1 || intervalMs > 2147483647)
+      throw Error('Invalid intervalMs');
+    this.saveSchedule({ ...this.schedule(), intervalMs, nextCheckAt: Date.now() + intervalMs });
+  }
+  interval(_indexId?: string) {
+    return this.schedule().intervalMs;
   }
   enabled(indexId: string) {
     const w = this.store.worker(indexId);
     return w?.protocol === 'cursor-v1' && w.maintenanceEnabled !== false && !w.continuationStopped;
   }
   nextCheck(indexId: string) {
-    const w = this.store.worker(indexId);
-    return this.enabled(indexId)
-      ? (w.nextCheckAt ?? (w.lastCheckedAt || w.lastSuccess || Date.now()) + this.interval(indexId))
-      : null;
+    return this.enabled(indexId) ? this.schedule().nextCheckAt : null;
   }
   retryState(indexId: string) {
     const failures = (this.store.worker(indexId)?.failures ?? 0) + 1;
     return {
       failures,
-      nextCheckAt:
+      retryAt:
         Date.now() +
         Math.min(3600000, (this.config.retryMs ?? 60000) * 2 ** Math.min(failures - 1, 6)),
     };
@@ -815,6 +849,7 @@ export class MemoryController {
       startStatus: w?.startStatus ?? null,
       continuationStopReason: w?.continuationStopReason ?? null,
       retryFailures: w?.failures ?? 0,
+      scheduleScope: 'global',
       intervalMs: this.interval(indexId),
       nextCheckAt: this.nextCheck(indexId),
       notice:
@@ -835,7 +870,10 @@ export class MemoryController {
   ) {
     if (action === 'stop') {
       this.assertOwner();
-      const members: string[] = this.store.worker(indexId)?.groupIndexIds ?? [indexId];
+      const active = this.runs.get(indexId);
+      const members: string[] = active
+        ? [...this.runs].filter(([, run]) => run === active).map(([id]) => id)
+        : (this.store.worker(indexId)?.groupIndexIds ?? [indexId]);
       for (const id of members) await this.control(id, 'pause');
       const running = members.find((id) => this.runs.has(id));
       const run = running ? this.runs.get(running) : undefined;
@@ -851,15 +889,15 @@ export class MemoryController {
       (!Number.isSafeInteger(intervalMs) || intervalMs < 1 || intervalMs > 2147483647)
     )
       throw Error('Invalid intervalMs');
+    if (intervalMs !== undefined) this.configureSchedule(intervalMs);
     this.store.saveWorker(indexId, {
       ...w,
-      ...(intervalMs === undefined ? {} : { intervalMs }),
       ...(action === 'pause'
         ? {
             maintenanceEnabled: false,
             continuationStopped: true,
             continuationStopReason: 'Maintenance paused',
-            nextCheckAt: null,
+            retryAt: null,
           }
         : {}),
       ...(action === 'resume'
@@ -868,9 +906,6 @@ export class MemoryController {
             continuationStopped: false,
             continuationStopReason: undefined,
           }
-        : {}),
-      ...(action !== 'pause'
-        ? { nextCheckAt: Date.now() + (intervalMs ?? this.interval(indexId)) }
         : {}),
     });
   }
@@ -912,6 +947,7 @@ export class MemoryController {
               : null,
             protocol: worker.protocol ?? 'legacy-paused',
             enabled: this.enabled(indexId),
+            scheduleScope: 'global',
             intervalMs: this.interval(indexId),
             nextCheckAt: this.nextCheck(indexId),
             lastCheckedAt: worker.lastCheckedAt ?? null,
@@ -939,7 +975,6 @@ export class MemoryController {
       lastSuccess: 0,
       protocol: 'cursor-v1',
       maintenanceEnabled: true,
-      nextCheckAt: Date.now() + (this.config.intervalMs ?? 43200000),
       latestCursor: this.store.work(indexId)?.to,
       lastCheckedAt: this.store.checkedAt(this.store.work(indexId)?.to ?? null),
     });
@@ -951,7 +986,7 @@ export class MemoryController {
       {
         sessionId: w.ownerSessionId,
         cwd: w.cwd,
-        turnId: `memory:${this.owner}`,
+        turnId: `memory-${this.owner}`,
         toolCallId: randomUUID(),
         abortSignal: this.abort.signal,
       },
@@ -985,38 +1020,81 @@ export class MemoryController {
       return this.ticking ?? Promise.resolve();
     this.ticking = (async () => {
       this.flushNotifications();
-      for (const index of this.store.list()) {
-        if (
-          this.abort.signal.aborted ||
-          new Set(this.runs.values()).size >= (this.config.maxConcurrentJobs ?? 5)
-        )
-          break;
-        if (
-          !this.enabled(index.id) ||
-          this.runs.has(index.id) ||
-          this.store.worker(index.id)?.startStatus === 'capacity'
-        )
-          continue;
-        const binding = this.store.worker(index.id);
-        // Persist a due time for old workers without scheduling metadata; do not scan on each tick.
-        if (binding.nextCheckAt == null) {
-          this.store.saveWorker(index.id, {
-            ...binding,
-            nextCheckAt: this.nextCheck(index.id),
-          });
-          continue;
-        }
-        if (Date.now() < binding.nextCheckAt) continue;
-        this.launch(index.id, true);
+      const schedule = this.schedule();
+      if (this.runs.size) return;
+      if (!schedule.remainingIds?.length) {
+        if (Date.now() < schedule.nextCheckAt) return;
+        schedule.remainingIds = this.store
+          .list()
+          .filter(
+            (index) =>
+              this.enabled(index.id) && this.store.worker(index.id)?.startStatus !== 'capacity',
+          )
+          .map((index) => index.id);
+        schedule.ranges = {};
+        schedule.retryAt = null;
+        schedule.nextCheckAt = Date.now() + schedule.intervalMs;
+        this.saveSchedule(schedule);
       }
+      const eligible: string[] = schedule.remainingIds.filter((id: string) => this.enabled(id));
+      if (!eligible.length) {
+        this.saveSchedule({ ...schedule, remainingIds: [], ranges: {}, retryAt: null });
+        return;
+      }
+      // Permission/ownership boundaries remain separate; within one owner all
+      // participating indexes are handed to one Agent, not one Agent per index.
+      const owner = this.store.worker(eligible[0]).ownerSessionId;
+      const selected = eligible.filter((id) => this.store.worker(id).ownerSessionId === owner);
+      schedule.sessions ??= {};
+      if (!schedule.sessions[owner]) {
+        let agent: any;
+        try {
+          agent = await this.inOwner(selected[0], () =>
+            this.ctx.agents.create({
+              background: true,
+              name: 'Memory maintenance',
+              labels: [ASSISTANT_BACKGROUND_SESSION_LABEL],
+            }),
+          );
+        } catch (error) {
+          for (const id of selected)
+            this.store.saveWorker(id, {
+              ...this.store.worker(id),
+              lastError: String(error),
+              ...this.retryState(id),
+            });
+          this.finishScheduledMembers(selected);
+          this.reportRun(selected, randomUUID());
+          return;
+        }
+        schedule.sessions[owner] = agent.sessionId;
+        this.store.db
+          .prepare('INSERT OR IGNORE INTO memory_worker_sessions VALUES(?)')
+          .run(agent.sessionId);
+      }
+      this.saveSchedule({ ...this.schedule(), sessions: schedule.sessions });
+      this.launch(selected[0], true, selected, schedule.sessions[owner]);
     })().finally(() => {
       this.ticking = undefined;
     });
     return this.ticking;
   }
-  launch(indexId: string, scheduled = false) {
+  private finishScheduledMembers(ids: string[]) {
+    const schedule = this.schedule();
+    const attempted = new Set(ids);
+    // Failure ends this attempt, not the shared clock. Retain each index's work
+    // and checkpoint for the next round, without holding healthy indexes back.
+    this.saveSchedule({
+      ...schedule,
+      remainingIds: (schedule.remainingIds ?? []).filter((id: string) => !attempted.has(id)),
+      retryAt: null,
+    });
+    for (const id of ids) this.store.saveWorker(id, { ...this.store.worker(id), retryAt: null });
+  }
+  launch(indexId: string, scheduled = false, scheduledMembers?: string[], sessionId?: string) {
     this.assertOwner();
-    const members: string[] = this.store.worker(indexId)?.groupIndexIds ?? [indexId];
+    const members: string[] = scheduledMembers ??
+      this.store.worker(indexId)?.groupIndexIds ?? [indexId];
     // All members name the same job, even when a scheduled round excludes paused members.
     for (const id of members) if (this.runs.has(id)) return { status: 'reused', indexId: id };
     const selected = scheduled ? members.filter((id) => this.enabled(id)) : members;
@@ -1041,7 +1119,9 @@ export class MemoryController {
     const run = Promise.resolve()
       .then(() =>
         this.inOwner<any>(indexId, () =>
-          selected.length > 1 ? this.runGroup(selected, signal) : this.run(selected[0], signal),
+          selected.length > 1 || scheduled
+            ? this.runGroup(selected, signal, scheduled, sessionId)
+            : this.run(selected[0], signal),
         ),
       )
       .catch((error) => {
@@ -1061,11 +1141,12 @@ export class MemoryController {
           if (cancellation.signal.aborted)
             this.store.saveWorker(id, {
               ...this.store.worker(id),
-              nextCheckAt: null,
+              retryAt: null,
               lastError: null,
               startStatus: 'stopped',
             });
         }
+        if (scheduled) this.finishScheduledMembers(selected);
         this.reportRun(selected, runId, cancellation.signal.aborted);
       });
     for (const id of selected) {
@@ -1104,7 +1185,7 @@ export class MemoryController {
           ownerSessionId: call.sessionId,
           cwd: call.cwd,
           maintenanceEnabled: true,
-          nextCheckAt: Date.now() + (this.config.intervalMs ?? 43200000),
+
           ...this.store.worker(id),
           sessionId: agent.sessionId,
           groupIndexIds: ids,
@@ -1114,37 +1195,78 @@ export class MemoryController {
   private timeContext() {
     return `Current UTC: ${new Date().toISOString()}. Reevaluate the user's criterion against current time, including rolling windows, even when the source delta is empty. Read existing entries and revisit older originals as needed; remove or revise expired entries and links as required by the criterion. No full rescan or content rewrite is required when the index remains valid. Source cursor capture time is not the current time.`;
   }
-  private async runGroup(ids: string[], signal: AbortSignal) {
+  private async runGroup(
+    ids: string[],
+    signal: AbortSignal,
+    scheduled = false,
+    sessionId?: string,
+  ) {
     const resuming = ids.some((id) => {
       const w = this.store.work(id);
       return w && !w.completed;
     });
     const pending: { id: string; work: any; visible: string[] }[] = [];
+    const failed = new Set<string>();
     let agent: any;
     try {
-      for (const id of ids) {
-        if (resuming && this.store.work(id)?.completed) continue;
-        const index = this.store.index(id);
-        const existing = this.store.work(id);
-        const cursor =
-          existing && !existing.completed
-            ? this.store.cursor(existing.to)
-            : await this.capture(index.sources ?? ['maka'], index.sessions, id);
-        const visible = await this.indexVisible(id);
+      const needsRange = ids.filter((id) => {
         const work = this.store.work(id);
-        pending.push({
-          id,
-          work: work && !work.completed ? work : this.store.begin(id, cursor.id, visible),
-          visible,
-        });
-        this.store.saveWorker(id, {
-          ...this.store.worker(id),
-          lastAttempt: Date.now(),
-          lastError: null,
-        });
+        if (work && !work.completed) return false;
+        return !(
+          work?.completed && (scheduled ? this.schedule().ranges?.[id] === work.id : resuming)
+        );
+      });
+      const observations = new Map(needsRange.map((id, i) => [id, i]));
+      const observed = await this.observeMany(needsRange);
+      for (const id of ids) {
+        if (
+          this.store.work(id)?.completed &&
+          (scheduled ? this.schedule().ranges?.[id] === this.store.work(id)?.id : resuming)
+        )
+          continue;
+        try {
+          const existing = this.store.work(id);
+          const result = observations.has(id) ? observed[observations.get(id)!] : undefined;
+          if (result?.status === 'rejected') throw result.reason;
+          if (result && this.store.worker(id)?.lastCheckError)
+            throw Error(this.store.worker(id).lastCheckError);
+          const cursor = this.store.cursor(
+            existing && !existing.completed ? existing.to : this.store.worker(id).latestCursor,
+          );
+          const visible = await this.indexVisible(id);
+          const work = this.store.work(id);
+          pending.push({
+            id,
+            work: work && !work.completed ? work : this.store.begin(id, cursor.id, visible),
+            visible,
+          });
+          if (scheduled) {
+            const schedule = this.schedule();
+            this.saveSchedule({
+              ...schedule,
+              ranges: { ...schedule.ranges, [id]: pending.at(-1)!.work.id },
+            });
+          }
+          this.store.saveWorker(id, {
+            ...this.store.worker(id),
+            lastAttempt: Date.now(),
+            lastError: null,
+          });
+        } catch (error) {
+          if (signal.aborted) throw error;
+          failed.add(id);
+          this.store.saveWorker(id, {
+            ...this.store.worker(id),
+            lastAttempt: Date.now(),
+            lastError: String(error),
+            ...this.retryState(id),
+          });
+        }
       }
       if (pending.length) {
-        agent = await this.ctx.agents.resume({ sessionId: this.store.worker(ids[0]).sessionId });
+        agent = await this.ctx.agents.resume({
+          sessionId: sessionId ?? this.store.worker(ids[0]).sessionId,
+        });
         for (;;) {
           this.assertOwner();
           const remaining = pending.filter((x) => !this.store.work(x.id)?.completed);
@@ -1156,7 +1278,7 @@ export class MemoryController {
             (x) => this.store.latestCheckpoint(x.id, x.work.id, agent.sessionId)?.id ?? 0,
           );
           const result = await agent.followup(
-            `Organize these independent indexes in this one Session. Choose the order and reuse reads. Preserve completed members. Each criterion and exact range must be finished separately; save incomplete progress with complete=false and continue. ${this.timeContext()}\n${JSON.stringify(remaining.map((x) => ({ indexId: x.id, number: this.store.worker(x.id).groupNumber, criterion: this.store.index(x.id).instructions, range: this.store.describe(x.work.from, x.work.to, x.visible), rangeId: x.work.id, notes: this.store.notes(x.id) })))}`,
+            `${ids.length === 1 ? `Organize index ${ids[0]}. ` : ''}Organize these independent indexes in this one Session. Decide which indexes need changes and whether to organize several together; choose the order and reuse reads. Valid unchanged indexes need only a checkpoint explaining that judgment. Preserve completed members. Each criterion and exact range must be finished separately; save incomplete progress with complete=false and continue. ${this.timeContext()}\n${JSON.stringify(remaining.map((x) => ({ indexId: x.id, number: this.store.worker(x.id).groupNumber, criterion: this.store.index(x.id).instructions, range: this.store.describe(x.work.from, x.work.to, x.visible), rangeId: x.work.id, notes: this.store.notes(x.id) })))}`,
           );
           if (!['turn_started', 'followup'].includes(result?.disposition))
             throw Error('Host rejected group maintenance');
@@ -1182,7 +1304,7 @@ export class MemoryController {
             throw Error('Group stopped without checkpoint; retry retained work');
         }
       }
-      for (const id of ids)
+      for (const id of ids.filter((id) => !failed.has(id)))
         this.store.saveWorker(id, {
           ...this.store.worker(id),
           lastSuccess: pending.some((x) => x.id === id)
@@ -1190,23 +1312,37 @@ export class MemoryController {
             : this.store.worker(id).lastSuccess,
           lastError: null,
           failures: 0,
-          nextCheckAt: Date.now() + this.interval(id),
+          retryAt: null,
         });
     } catch (error) {
       if (signal.aborted) await agent?.cancel().catch(() => {});
-      for (const id of ids)
+      for (const id of ids) {
+        if (failed.has(id)) continue;
+        const work = this.store.work(id);
+        const completed =
+          work?.completed && pending.some((x) => x.id === id && x.work.id === work.id);
         this.store.saveWorker(id, {
           ...this.store.worker(id),
-          lastError: String(error),
-          ...this.retryState(id),
+          ...(completed
+            ? { lastError: null, failures: 0, retryAt: null, lastSuccess: Date.now() }
+            : { lastError: String(error), ...this.retryState(id) }),
         });
+      }
     }
-    return {
-      members: await Promise.all(
-        ids.map(async (id) => this.summary(id, await this.indexVisible(id), false)),
-      ),
-      backgroundFinished: true,
-    };
+    const members = await Promise.all(
+      ids.map(async (id) => {
+        try {
+          return this.summary(id, await this.indexVisible(id), false);
+        } catch (error) {
+          // A member's access failure must not overwrite the other members' results.
+          this.store.saveWorker(id, { ...this.store.worker(id), lastError: String(error) });
+          return { indexId: id, status: 'failed', error: String(error) };
+        }
+      }),
+    );
+    return scheduled && ids.length === 1
+      ? { ...members[0], backgroundFinished: true }
+      : { members, backgroundFinished: true };
   }
   async wait(indexId: string, callerSignal?: AbortSignal) {
     const run = this.maintain(indexId);
@@ -1293,7 +1429,7 @@ Range ID: ${work.id}. Update existing entries and links when new evidence change
         lastSuccess: Date.now(),
         lastError: undefined,
         failures: 0,
-        nextCheckAt: Date.now() + this.interval(indexId),
+        retryAt: null,
       });
     } catch (error) {
       this.store.saveWorker(indexId, {

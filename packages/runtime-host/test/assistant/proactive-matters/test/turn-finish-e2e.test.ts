@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import { readFileSync } from 'node:fs';
+
 import assert from 'node:assert/strict';
 import { rm } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
@@ -31,7 +33,9 @@ import { fixture, until } from './platform-helper.js';
 
 test('native finish hook and four review rejections keep the same Maka turn running until approval', async (t) => {
   let reviewCalls = 0;
+  const ledger: any[] = [];
   const f = await fixture({
+    dependencies: { readRuntimeEvents: async () => [...ledger] },
     review: async () => {
       await new Promise((resolve) => setTimeout(resolve, 20));
       return {
@@ -95,13 +99,13 @@ test('native finish hook and four review rejections keep the same Maka turn runn
                   toolCallId: 'settle-call-' + modelCalls,
                   toolName: 'MatterSettle',
                   input: JSON.stringify({
-                    expectedRevision: matter.revision,
-                    stateFile: matter.files.draft,
+                    note: readFileSync(matter.files.draft, 'utf8'),
                     disposition: 'wait',
                     waitingFor: '设计负责人完成验收',
                     wakes: [{ kind: 'at', at: Date.now() + 60_000 }],
                     reason: '等待负责人反馈',
                     summary: '记录了当前情况并保存下一步。',
+                    progressSummary: '记录了当前情况并保存下一步。',
                     next: '收到验收结果后重新判断',
                     update: '已检查当前情况，正在等待验收结果。',
                   }),
@@ -138,7 +142,6 @@ test('native finish hook and four review rejections keep the same Maka turn runn
       };
     },
   });
-  const ledger: any[] = [];
   const anchor: any = {
     id: 'user-e2e',
     invocationId: 'invocation-e2e',
@@ -184,7 +187,19 @@ test('native finish hook and four review rejections keep the same Maka turn runn
     newId: randomUUID,
     now: Date.now,
     maxSteps: 8,
+    systemPrompt: async () => ({
+      ...(await f.systemPrompt.assemble({ sessionId: 'session-1', turnId, cwd: f.root })),
+      sourceRevisions: [],
+    }),
     beforeTurnFinish: (context: any) => f.turns.evaluate(context),
+    // Match production's T1 fence: the call is durable before its implementation runs.
+    runtimeCommitSink: {
+      commitToolPrepared: async ({ runtimeEvent }: any) => {
+        ledger.push(runtimeEvent);
+        return { created: true, runtimeEventSeq: ledger.length };
+      },
+      commitToolOutcome: async () => ({ created: true, runtimeEventSeq: ledger.length + 1 }),
+    },
     loadTurnRuntimeEvents: async () => [...ledger],
   });
 
@@ -211,13 +226,26 @@ test('native finish hook and four review rejections keep the same Maka turn runn
       },
       memory,
     );
-    if (mapped.partial !== true && mapped.content?.kind !== 'error') ledger.push(mapped);
+    if (
+      mapped.partial !== true &&
+      mapped.content?.kind !== 'error' &&
+      !ledger.some((e) => e.id === mapped.id)
+    )
+      ledger.push(mapped);
   }
 
   f.driver.end();
   await until(async () => !(await f.remote('matters.list')).matters[0].activation);
   const result = await f.remote('matters.list');
-  assert.equal(modelCalls, 7);
+  assert.equal(
+    modelCalls,
+    7,
+    JSON.stringify(
+      events.filter(
+        (e: any) => e.type === 'error' || e.type === 'tool_result' || e.type === 'complete',
+      ),
+    ),
+  );
   assert.equal(reviewCalls, 5);
   assert.equal(events.filter((event: any) => event.type === 'complete').length, 1);
   assert.equal(result.matters[0].status, 'waiting');

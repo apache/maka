@@ -663,11 +663,24 @@ test('Local: two backend handles share CAS authority; corrupt JSON and indexed c
           const before = db.database
             .prepare(`SELECT ${column} AS value FROM workflow_event_waits WHERE wait_id = ?`)
             .get(r.waitId)!.value;
-          db.transaction('write', () =>
-            db.database
-              .prepare(`UPDATE workflow_event_waits SET ${column} = ? WHERE wait_id = ?`)
-              .run(value, r.waitId),
-          );
+          const corrupt = () =>
+            db.transaction('write', () =>
+              db.database
+                .prepare(`UPDATE workflow_event_waits SET ${column} = ? WHERE wait_id = ?`)
+                .run(value, r.waitId),
+            );
+          // Delivery expression indexes reject malformed JSON at the write boundary.
+          if (column === 'record_json') {
+            assert.throws(corrupt, /malformed JSON/);
+            assert.equal(
+              db.database
+                .prepare('SELECT record_json AS value FROM workflow_event_waits WHERE wait_id = ?')
+                .get(r.waitId)!.value,
+              before,
+            );
+            continue;
+          }
+          corrupt();
           assert.throws(() => a.read(identity(r)));
           db.transaction('write', () =>
             db.database
@@ -1499,7 +1512,7 @@ test('workflow-14 reopen retains source cooldown facts and dispatch reservations
   });
 });
 
-test('workflow-13 upgrade to 14 retains wait bytes and adds status access and source limits', async () => {
+test('workflow-13 upgrade to 15 retains wait bytes and adds status access and source limits', async () => {
   await withProvider(localExecutionPersistenceProvider, async (s, root, owner) => {
     const session = await s.sessionStore.create(input(root));
     const record = waiting(session.id);
@@ -1567,7 +1580,7 @@ test('workflow-13 upgrade to 14 retains wait bytes and adds status access and so
           db
             .prepare("SELECT version FROM operational_schema_migrations WHERE scope = 'workflow'")
             .get()?.version,
-          14,
+          15,
         );
       } finally {
         db.close();

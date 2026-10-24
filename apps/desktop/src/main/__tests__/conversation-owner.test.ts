@@ -20,7 +20,7 @@
 import assert from 'node:assert/strict';
 import { afterEach, describe, it } from 'node:test';
 import { act, createElement, Fragment, Profiler, useEffect, useState, type ComponentProps } from 'react';
-import { LocaleProvider, ToastProvider, type ChatView, type TransientUserMessageProjection } from '@maka/ui';
+import { LocaleProvider, ToastProvider, type ChatView, type TransientUserMessageProjection, type TurnViewModel } from '@maka/ui';
 import type { StoredMessage } from '@maka/core/session';
 import type { UiLocale } from '@maka/core/ui-locale';
 import type { DesktopSessionSummary } from '../../shared/desktop-session-projection.js';
@@ -98,7 +98,7 @@ function harness(options: {
   let owner!: ReturnType<typeof useConversationOwner>;
   let target!: ReturnType<typeof useAppShellSessionUiState>;
   let transcript: ({ activeSessionId: string | undefined; messages: StoredMessage[]; liveContentSeedGeneration: number }
-    & Pick<ComponentProps<typeof ChatView>, 'hasEarlierHistory' | 'hasLaterHistory' | 'onLoadEarlierHistory' | 'onLoadLaterHistory' | 'onLoadLatestHistory' | 'onLoadTranscriptTurn' | 'onReadingAnchorChange'>) | undefined;
+    & Pick<ComponentProps<typeof ChatView>, 'activeSession' | 'deriveTurnPresentation' | 'hasEarlierHistory' | 'hasLaterHistory' | 'onLoadEarlierHistory' | 'onLoadLaterHistory' | 'onLoadLatestHistory' | 'onLoadTranscriptTurn' | 'onReadingAnchorChange'>) | undefined;
   let shellRenders = 0;
   let transcriptRenders = 0;
   let composerRenders = 0;
@@ -127,7 +127,7 @@ function harness(options: {
         showModelSetupToast() {}, onTurnCompleted() {},
         searchTarget: options.searchTarget ?? null, clearSearchTarget() {},
       })),
-      visible ? createElement(ConversationTranscriptRegion<Parameters<typeof Transcript>[0]>, { surface: Transcript, localInteractionAvailable: true, visible: !covered }) : null,
+      visible ? createElement(ConversationTranscriptRegion<Parameters<typeof Transcript>[0]>, { surface: Transcript, activeSession: target.activeCatalogSession, localInteractionAvailable: true, visible: !covered }) : null,
       createElement(ConversationComposerRegion<Parameters<typeof Composer>[0]>, { surface: Composer, ...stubComposerGateInputs() }),
     );
   }
@@ -151,6 +151,27 @@ function harness(options: {
 
 describe('Conversation ownership', () => {
   afterEach(cleanupFakeDom);
+  it('hides Branch only for the Personal Assistant and keeps Copy across Session switches', async () => {
+    const h = harness();
+    h.catalog.commitSessions([
+      row('A'),
+      { ...row('B'), labels: ['personal-assistant'] },
+      { ...row('C'), name: '个人助手' },
+    ]);
+    const turns: TurnViewModel[] = [{
+      turnId: 'assistant-output-reply', status: 'completed', tools: [], notes: [], startedAt: 1,
+      timeline: [{ kind: 'text', text: 'Reply to copy', messageId: 'reply', complete: true }],
+    }];
+    for (const id of ['A', 'B', 'C', 'B', 'A']) {
+      await act(async () => h.target.setActiveId(id));
+      await act(async () => h.opened.at(-1)!.publish([message(id)]));
+      assert.equal(h.transcript?.activeSession?.id, id);
+      const actions = h.transcript?.deriveTurnPresentation?.(turns).footerActionsByTurn[turns[0]!.turnId];
+      assert.deepEqual(actions?.map((action) => action.id), id === 'B' ? ['copy'] : ['branch', 'copy']);
+      assert.equal(actions?.find((action) => action.id === 'copy')?.enabled, true);
+    }
+  });
+
   for (const [searchTarget, expected] of [
     [null, 'bookmark'],
     [{ sessionId: 'A', turnId: 'search' }, 'search'],

@@ -796,7 +796,8 @@ export class AiSdkCompaction {
       headAnchor,
       priorContentEvents,
       input.runtimeContextInvocations ?? [],
-      resolveDeclaredContextWindow(this.input.connection, this.input.modelId),
+      resolveDeclaredContextWindow(this.input.connection, this.input.modelId) ??
+        policy.historyCompact.midTurn.fallbackThresholdTokens,
     );
     // Seed the turn's FIRST request with the last request the provider
     // actually counted, so step 0 is judged by the same real number as every
@@ -819,12 +820,12 @@ export class AiSdkCompaction {
   /**
    * Request-projection stage for proactive compaction: before each request of
    * one turn, compare the baseline — the last provider-accepted request's real
-   * input plus real output tokens — against the context window the user
-   * declared, and over it fold a safe completed prefix into a durable
-   * checkpoint, continuing the turn on `[compact block, verbatim head anchor]`.
+   * input plus real output tokens — against the user's compaction target or
+   * explicit Host fallback. Crossing it folds a safe completed prefix into a
+   * durable checkpoint, continuing on `[compact block, verbatim head anchor]`.
    *
    * Nothing here estimates whether a request fits: the baseline is the
-   * provider's own count, the window is the user's own number, and the part of
+   * provider's own count, the target is a policy choice, and the part of
    * the next request neither describes (tool results, user text, images
    * appended since) is judged by the provider when the request goes out. This
    * hook never terminates the turn: every failure fails open with a diagnostic
@@ -900,7 +901,7 @@ export class AiSdkCompaction {
         return keepProjection();
       };
       // One trigger, one real signal: the baseline plus the room the next reply
-      // needs crossed the window the user declared. A cut reply is deliberately
+      // needs crossed the user target or Host fallback. A cut reply is deliberately
       // not a trigger — see the note on `finishReason: length` in the backend.
       // The next request is at least the baseline, and its reply needs room on
       // top of it. The room is measured from the last reply the model actually
@@ -1215,10 +1216,10 @@ export class AiSdkCompaction {
   /**
    * Reactive overflow recovery (issue #882 PR 2): the second line of defense.
    * When a provider rejects a request with a context-length error, fold the
-   * durable turn ledger and resend — once per step: a step that a fold or an
-   * image omission has already reshaped gets no second recovery, so the
-   * resend's own rejection is terminal, while a step the provider has since
-   * accepted earns a fresh attempt. Returns the compacted messages to resend,
+   * durable turn ledger and resend. Each step may omit historical images once,
+   * then fold once; a rejection after the fold is terminal. A step the
+   * provider has since accepted earns a fresh recovery sequence. Returns the
+   * compacted messages to resend,
    * or undefined when recovery is impossible or already spent, in which case
    * the caller surfaces the real provider error rather than a fabricated
    * success or a locally synthesized verdict (the provider — not the runtime —
@@ -1242,13 +1243,15 @@ export class AiSdkCompaction {
     abortSignal?: AbortSignal;
   }): Promise<{ messages: ModelMessage[] } | undefined> {
     const state = input.midTurnState;
-    if (!state || state.stepShaping.has('fold') || state.stepShaping.has('omit_images')) {
+    if (!state || state.stepShaping.has('fold')) {
       return undefined;
     }
 
     const eligibleImages = collectHistoricalImageToolResults(state.priorContentEvents);
-    const imageOmission = omitHistoricalImageToolResults(input.currentMessages, eligibleImages);
-    if (imageOmission.omittedParts > 0) {
+    const imageOmission = state.stepShaping.has('omit_images')
+      ? undefined
+      : omitHistoricalImageToolResults(input.currentMessages, eligibleImages);
+    if (imageOmission && imageOmission.omittedParts > 0) {
       state.stepShaping.add('omit_images');
       for (const toolCallId of imageOmission.omittedToolCallIds) {
         const image = eligibleImages.get(toolCallId);
@@ -1257,6 +1260,17 @@ export class AiSdkCompaction {
         // back into the very history the provider just rejected.
         if (image) state.omittedImageToolResults.set(toolCallId, image);
       }
+      input.onDiagnosticPatch(
+        compactionDecisionDiagnosticPatch({
+          stage: 'activeStep',
+          sourceKind: 'providerMessages',
+          decision: 'replaced',
+          phase: state.compactionPhase(input.stepNumber),
+          boundaryKind: 'imageOmission',
+          coverage: { toolCallIds: [...imageOmission.omittedToolCallIds] },
+          reason: 'overflow',
+        }),
+      );
       state.baselineTokens = undefined;
       return { messages: imageOmission.messages };
     }
@@ -1310,7 +1324,13 @@ export class AiSdkCompaction {
     // The fold replaced the request; the baseline described the rejected one.
     state.stepShaping.add('fold');
     state.baselineTokens = undefined;
-    return { messages: outcome.replacementMessages };
+    return {
+      messages:
+        projectHistoricalImageOmissions(
+          outcome.replacementMessages,
+          state.omittedImageToolResults,
+        ) ?? outcome.replacementMessages,
+    };
   }
 }
 
@@ -1404,7 +1424,7 @@ export class MidTurnCapacityCompactState {
   /**
    * What has reshaped the request since the last one a provider accepted. The
    * turn clears it at that acceptance; overflow recovery reads it so a request
-   * that was already folded or stripped of images is not reshaped again.
+   * is folded at most once, after an optional image omission.
    */
   readonly stepShaping = new Set<'fold' | 'omit_images'>();
   /**

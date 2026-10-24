@@ -30,6 +30,15 @@ import {
 } from '../openai-codex-history-compactor.js';
 import { HistoryCompactSummarizerError } from '../history-compact-error.js';
 import type { HistoryCompactSummaryInput } from '../ai-sdk-compaction-contract.js';
+import {
+  buildHistoryCompactCheckpoint,
+  renderHistoryCompactCheckpoint,
+  isProviderHistoryCompactCheckpoint,
+} from '../history-compact-checkpoint.js';
+import { planHistoryCompaction } from '../history-compaction.js';
+import { buildLlmHistorySummarizer } from '../history-compact-summarizer.js';
+import { testInvocationRecord } from './invocation-fixture.js';
+import { sectionedSummary } from './history-compact-test-fixtures.js';
 
 describe('OpenAI Codex compaction fallback', () => {
   const input: HistoryCompactSummaryInput = {
@@ -61,7 +70,7 @@ describe('OpenAI Codex compaction fallback', () => {
     assert.equal(fallbackCalls, 1);
   });
 
-  test('falls back when native state is unusable or its projection cannot fit', () => {
+  test('falls back on unusable native state but leaves capacity errors to the planner', () => {
     assert.equal(
       shouldFallbackFromOpenAiCodexHistoryCompaction(
         new HistoryCompactSummarizerError('invalid_provider_state'),
@@ -72,9 +81,102 @@ describe('OpenAI Codex compaction fallback', () => {
       shouldFallbackFromOpenAiCodexHistoryCompaction(
         new HistoryCompactSummarizerError('input_too_large'),
       ),
-      true,
+      false,
     );
   });
+
+  for (const alwaysOverflow of [false, true]) {
+    test(`native capacity ${alwaysOverflow ? 'failure terminates' : 'retry preserves the uncovered tail'} without text fallback`, async () => {
+      const events = [
+        runtimeEvent({
+          id: 'old-user',
+          role: 'user',
+          author: 'user',
+          content: { kind: 'text', text: 'OLD_USER '.repeat(100) },
+        }),
+        assistantTextEvent('old-model', 'old-step', 'OLD_MODEL '.repeat(100)),
+        runtimeEvent({
+          id: 'recent-user',
+          role: 'user',
+          author: 'user',
+          content: { kind: 'text', text: 'RECENT_USER' },
+        }),
+        assistantTextEvent('recent-model', 'recent-step', 'UNCOVERED_RECENT_REPLY'),
+      ];
+      let calls = 0;
+      let fallbackCalls = 0;
+      const model = new MockLanguageModelV4({
+        doStream: async (options) => {
+          if (++calls === 1 || alwaysOverflow)
+            throw Object.assign(new Error('prompt is too long: context length exceeded'), {
+              name: 'AI_APICallError',
+              statusCode: 400,
+            });
+          return await compactionModel().doStream(options);
+        },
+      });
+      const summarize = withOpenAiCodexHistoryCompactionFallback(
+        buildOpenAiCodexHistoryCompactor({
+          resolveModel: () => model,
+          connectionId: 'codex-subscription',
+          modelId: 'gpt-5.3-codex',
+        }),
+        async () => {
+          fallbackCalls += 1;
+          return sectionedSummary('TEXT_FALLBACK');
+        },
+      );
+      const invocation = testInvocationRecord({
+        sessionId: 'session-1',
+        runId: 'run-1',
+        turnId: 'turn-previous',
+        outcome: 'completed',
+        opening: {
+          route: {
+            provenance: 'runtime',
+            backendKind: 'ai-sdk',
+            llmConnectionId: 'codex-subscription',
+            llmConnectionSlug: 'codex-subscription',
+            modelId: 'gpt-5.3-codex',
+          },
+        },
+      });
+      const plan = await planHistoryCompaction({
+        sessionId: 'session-1',
+        phase: 'standalone',
+        orderedEvents: events,
+        invocations: [invocation],
+        acceptedRoute: { connectionId: 'codex-subscription', modelId: 'gpt-5.3-codex' },
+        summarize: ({ coveredRuntimeEvents }) =>
+          summarize({
+            sessionId: 'session-1',
+            turnId: 'turn-compact',
+            source: { foldedRuntimeEvents: [...coveredRuntimeEvents], invocations: [invocation] },
+          }),
+      });
+      assert.equal(model.doStreamCalls.length, 2);
+      assert.equal(fallbackCalls, 0);
+      assert.match(JSON.stringify(model.doStreamCalls[0]?.prompt), /UNCOVERED_RECENT_REPLY/);
+      assert.doesNotMatch(JSON.stringify(model.doStreamCalls[1]?.prompt), /UNCOVERED_RECENT_REPLY/);
+      if (alwaysOverflow) {
+        assert.deepEqual(plan, {
+          decision: 'fail_open',
+          reason: 'summarizer_failed',
+          diagnosticReason: 'input_too_large',
+        });
+      } else {
+        assert.equal(plan.decision, 'compacted');
+        if (plan.decision !== 'compacted') assert.fail('expected native checkpoint');
+        assert.equal(isProviderHistoryCompactCheckpoint(plan.checkpoint), true);
+        assert.deepEqual(
+          plan.tailRuntimeEvents.map((event) => event.id),
+          ['recent-model'],
+        );
+        assert.match(JSON.stringify(plan.replacementEvents), /UNCOVERED_RECENT_REPLY/);
+        assert.doesNotMatch(JSON.stringify(plan.checkpoint), /TEXT_FALLBACK/);
+      }
+    });
+  }
 
   test('does not fall back on cancellation, rate limits, or provider availability', () => {
     const rateLimit = new HistoryCompactSummarizerError('provider_error', {
@@ -135,6 +237,138 @@ describe('OpenAI Codex compaction output', () => {
 });
 
 describe('OpenAI Codex compaction input', () => {
+  test('preserves a historical text checkpoint head anchor after reasoning admission shifts its index (#6154)', async () => {
+    const anchor = runtimeEvent({
+      id: 'anchor',
+      role: 'user',
+      author: 'user',
+      content: { kind: 'text', text: 'EXACT_USER_DIRECTIVE' },
+    });
+    const old = assistantTextEvent('old', 'old-step', 'ALREADY_FOLDED');
+    const tail = assistantTextEvent('tail', 'tail-step', 'NEW_TAIL');
+    const previous = buildHistoryCompactCheckpoint({
+      sessionId: 'session-1',
+      coveredRuntimeEvents: [anchor, old],
+      summary: sectionedSummary('PORTABLE_SUMMARY'),
+      phase: 'mid_turn',
+      headAnchor: { runtimeEventId: anchor.id, turnId: anchor.turnId },
+    });
+    const model = compactionModel();
+    await buildOpenAiCodexHistoryCompactor({
+      resolveModel: () => model,
+      connectionId: 'codex-subscription',
+      modelId: 'gpt-5.3-codex',
+    })({
+      sessionId: 'session-1',
+      turnId: 'turn-current',
+      source: {
+        foldedRuntimeEvents: [
+          ...Array.from({ length: 3 }, (_, index) =>
+            runtimeEvent({
+              id: `old-reasoning-${index}`,
+              role: 'model',
+              author: 'agent',
+              content: {
+                kind: 'thinking',
+                text: '',
+                providerOptions: {
+                  openai: {
+                    itemId: `rs-${index}`,
+                    reasoningEncryptedContent: 'OLD_ENCRYPTED_REASONING',
+                  },
+                },
+              },
+            }),
+          ),
+          anchor,
+          old,
+          tail,
+        ],
+      },
+      previousCheckpoint: previous,
+      newlyFoldedRuntimeEvents: [tail],
+    });
+
+    const prompt = JSON.stringify(model.doStreamCalls[0]?.prompt);
+    assert.match(prompt, /PORTABLE_SUMMARY.*EXACT_USER_DIRECTIVE.*NEW_TAIL/);
+    assert.doesNotMatch(prompt, /ALREADY_FOLDED|OLD_ENCRYPTED_REASONING/);
+  });
+
+  for (const nativeState of [true, false]) {
+    test(`continues a rolled text checkpoint with ${nativeState ? 'native state' : 'text fallback'} (#6154)`, async () => {
+      const old = assistantTextEvent('old', 'old-step', 'RAW_ALREADY_SUMMARIZED '.repeat(1000));
+      const newer = assistantTextEvent('newer', 'newer-step', 'RAW_FOLDED_AGAIN');
+      const tail = assistantTextEvent('tail', 'tail-step', 'NEW_TAIL');
+      const first = buildHistoryCompactCheckpoint({
+        sessionId: 'session-1',
+        coveredRuntimeEvents: [old],
+        summary: sectionedSummary('FIRST_SUMMARY'),
+      });
+      const previous = buildHistoryCompactCheckpoint({
+        sessionId: 'session-1',
+        coveredRuntimeEvents: [old, newer],
+        summary: sectionedSummary('LATEST_SUMMARY'),
+        previousCheckpointId: first.checkpointId,
+      });
+      const model = compactionModel(nativeState);
+      const fallbackInputs: unknown[] = [];
+      const native = buildOpenAiCodexHistoryCompactor({
+        resolveModel: () => model,
+        connectionId: 'codex-subscription',
+        modelId: 'gpt-5.3-codex',
+      });
+      const fallback = buildLlmHistorySummarizer({
+        resolveModel: () => 'unused',
+        generateText: async (options) => {
+          fallbackInputs.push(options.messages);
+          return { text: sectionedSummary('FALLBACK_SUMMARY') };
+        },
+      });
+      const summarize = withOpenAiCodexHistoryCompactionFallback(native, fallback);
+      const plan = await planHistoryCompaction({
+        sessionId: 'session-1',
+        phase: 'standalone',
+        orderedEvents: [old, newer, tail],
+        previousCheckpoint: previous,
+        summarize: ({ coveredRuntimeEvents, newlyFoldedRuntimeEvents, previousCheckpoint }) =>
+          summarize({
+            sessionId: 'session-1',
+            turnId: 'turn-current',
+            source: { foldedRuntimeEvents: [...coveredRuntimeEvents] },
+            newlyFoldedRuntimeEvents: [...newlyFoldedRuntimeEvents],
+            previousCheckpoint,
+          }),
+      });
+
+      const prompt = model.doStreamCalls[0]?.prompt;
+      assert.equal(prompt?.[0]?.role, 'user');
+      const firstPart = prompt?.[0]?.content[0];
+      assert.equal(
+        firstPart?.type === 'text' ? firstPart.text : undefined,
+        renderHistoryCompactCheckpoint(previous),
+      );
+      assert.match(JSON.stringify(prompt), /NEW_TAIL/);
+      assert.doesNotMatch(
+        JSON.stringify(prompt),
+        /RAW_ALREADY_SUMMARIZED|RAW_FOLDED_AGAIN|FIRST_SUMMARY/,
+      );
+      if (!nativeState) {
+        assert.equal(fallbackInputs.length, 1);
+        assert.match(JSON.stringify(fallbackInputs), /LATEST_SUMMARY/);
+        assert.match(JSON.stringify(fallbackInputs), /NEW_TAIL/);
+        assert.doesNotMatch(
+          JSON.stringify(fallbackInputs),
+          /RAW_ALREADY_SUMMARIZED|RAW_FOLDED_AGAIN/,
+        );
+      }
+      assert.equal(plan.decision, 'compacted');
+      if (plan.decision !== 'compacted') assert.fail('expected compaction');
+      assert.equal(plan.checkpoint.version, nativeState ? 3 : 2);
+      assert.equal(plan.checkpoint.previousCheckpointId, previous.checkpointId);
+      assert.equal(plan.checkpoint.coverage.eventCount, 3);
+    });
+  }
+
   test('keeps an interrupted late tool step after the intervening assistant step', async () => {
     const model = compactionModel();
     const summarize = buildOpenAiCodexHistoryCompactor({
@@ -231,7 +465,7 @@ function runtimeEvent(
   };
 }
 
-function compactionModel(): MockLanguageModelV4 {
+function compactionModel(nativeState = true): MockLanguageModelV4 {
   const chunks: LanguageModelV4StreamPart[] = [
     { type: 'stream-start', warnings: [] },
     {
@@ -251,7 +485,7 @@ function compactionModel(): MockLanguageModelV4 {
   return new MockLanguageModelV4({
     doStream: {
       stream: simulateReadableStream({
-        chunks,
+        chunks: nativeState ? chunks : chunks.filter((part) => part.type !== 'custom'),
         initialDelayInMs: null,
         chunkDelayInMs: null,
       }),

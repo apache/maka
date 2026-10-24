@@ -193,6 +193,12 @@ export function registerAssistant(
       totalCharacters: text.length,
     };
   });
+  ctx.api.register('assistant.allocate-workspace', async (input: unknown) => {
+    z.object({}).strict().parse(input);
+    controller.ready();
+    if (!ctx.allocateWorkspace) throw Error('Assistant workspace allocation is unavailable');
+    return ctx.allocateWorkspace();
+  });
   ctx.api.register('assistant.binding', () => ({ state: store.get(), bot: ctx.bot.status() }));
   ctx.api.register('assistant.status', summary);
   ctx.api.register('assistant.bind', async (input: any) => {

@@ -20,11 +20,21 @@
 import {
   canonicalProjectDirectoryRootSpec,
   PROJECT_DIRECTORY_MAX_ROOTS,
-  projectDirectoryPosixRootSpecValid,
+  projectDirectoryRootSpecValid,
   type ProjectDirectoryRootSpec,
 } from '@maka/runtime-host/protocol';
 
 export type RuntimeHostProjectDirectoryRootInput = ProjectDirectoryRootSpec;
+
+// Undefined is only a preliminary check while SSH onboarding has not probed
+// the target yet. Main validates again with the discovered operator platform.
+type DirectoryPlatform = 'posix' | 'win32';
+
+function directoryRootValid(root: ProjectDirectoryRootSpec, platform?: DirectoryPlatform): boolean {
+  if (!projectDirectoryRootSpecValid(root)) return false;
+  if (root.path.startsWith('/')) return true;
+  return platform !== 'posix' && (/^[A-Za-z]:[\\/]/u.test(root.path) || root.path.startsWith('\\'));
+}
 
 export function canonicalProjectDirectoryRoots(
   roots: readonly RuntimeHostProjectDirectoryRootInput[],
@@ -34,17 +44,19 @@ export function canonicalProjectDirectoryRoots(
 
 export function projectDirectoryRootsValid(
   roots: readonly RuntimeHostProjectDirectoryRootInput[],
+  platform?: DirectoryPlatform,
 ): boolean {
   if (roots.length > PROJECT_DIRECTORY_MAX_ROOTS) return false;
   const canonical = canonicalProjectDirectoryRoots(roots);
   return (
-    canonical.every(projectDirectoryPosixRootSpecValid) &&
+    canonical.every((root) => directoryRootValid(root, platform)) &&
     new Set(canonical.map(({ label }) => label)).size === canonical.length
   );
 }
 
 export function requireProjectDirectoryRoots(
   value: unknown,
+  platform?: DirectoryPlatform,
 ): readonly RuntimeHostProjectDirectoryRootInput[] {
   if (!Array.isArray(value) || value.length > PROJECT_DIRECTORY_MAX_ROOTS) {
     throw new Error('Runtime Host Project directory policy is invalid');
@@ -62,7 +74,7 @@ export function requireProjectDirectoryRoots(
       throw new Error('Runtime Host Project directory is invalid');
     }
     const canonical = canonicalProjectDirectoryRootSpec({ label: root.label, path: root.path });
-    if (!projectDirectoryPosixRootSpecValid(canonical)) {
+    if (!directoryRootValid(canonical, platform)) {
       throw new Error('Runtime Host Project directory is invalid');
     }
     return canonical;

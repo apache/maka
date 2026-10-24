@@ -70,6 +70,16 @@ a new-task change does not replace the Session overlay it returns.
   Session, even if navigation changes meanwhile. The Runtime leaves Plan as
   part of abandoning; orchestration is preserved.
 - Failed writes retain the existing rollback and active-Session error behavior.
+- `beginSettlement(sessionId)` observes one submission attempt: the Session's
+  writes in flight when the user submits and every write requested before the
+  attempt is released, so a write that starts and fails mid-wait still counts.
+  `StagedComposer` begins it at submit, before Session references load. A
+  submit that starts a turn settles it before an edit-and-resend copies the
+  Session and again after the copy, and re-checks the surface and selection it
+  was submitted from, since navigation keeps the Session id. A failed write
+  keeps the draft; local slash commands do not wait. `settled(sessionId)` is the begin-await-release
+  shorthand the send path keeps as a fallback. The provider publishes both
+  through `application/contracts/session-settings-settlement.ts` (#4695).
 
 `index.ts` exports the owner and the shell read; `testing.ts` exposes the
 controller and Plan policy to tests. `controllerOwners` enforces the production

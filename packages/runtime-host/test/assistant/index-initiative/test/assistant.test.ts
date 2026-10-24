@@ -22,7 +22,8 @@ import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
 import { join } from 'node:path';
 import { fixture, until } from './fixture.js';
-import { PROACTIVE_TASK } from '../../../../src/assistant/index-initiative/prompt.js';
+import { output } from './notebook-output.js';
+import { DISCOVERY_TASK } from '../../../../src/assistant/index-initiative/prompt.js';
 
 test('first open binds one ordinary chat without import, indexing, model calls or heartbeat', async () => {
   const f = await fixture();
@@ -64,7 +65,7 @@ test('UI enable checks immediately, status exposes failure without disabling sch
   try {
     await f.remote('assistant.bind', { sessionId: 'owner' });
     f.setRunner(async ({ prompt }: any) => {
-      assert.ok(prompt.includes(PROACTIVE_TASK), 'new UI binding uses the new default');
+      assert.ok(prompt.includes(DISCOVERY_TASK), 'new UI binding uses the new default');
       checks++;
       throw Error('test provider unavailable');
     });
@@ -75,8 +76,13 @@ test('UI enable checks immediately, status exposes failure without disabling sch
     assert.equal(s.enabled, true);
     assert.equal(s.intervalMs, 3600000);
     assert.match(s.lastError, /provider unavailable/);
-    f.setRunner(async () => {
+    f.setRunner(async ({ prompt, invoke }: any) => {
+      if (prompt.includes('Phase: judgement')) {
+        await output(prompt);
+        return;
+      }
       checks++;
+      await output(prompt);
     });
     await f.remote('assistant.control', { action: 'enable', intervalMinutes: 30 });
     await until(async () => (await f.remote('assistant.status')).state.lastCheckedAt);
@@ -102,13 +108,18 @@ test('original reader uses an existing chat, pages original content, and does no
       recordId: 'project',
     });
     const ref = history.items[0].ref;
-    const first = await f.remote('assistant.original', { sessionId: 'owner', ref });
+    f.workers.set('ordinary-reader', { status: 'idle', transcript: [] });
+    await assert.rejects(
+      f.invokeAs('ordinary-reader', 'MemoryOriginal', { ref }),
+      /unavailable in this session/,
+    );
+    const first = await f.remote('assistant.original', { sessionId: 'ordinary-reader', ref });
     assert.equal(first.ref, ref);
     assert.equal(first.status, 'ok');
     assert.equal(first.text.length, 24000);
     assert.equal(first.nextOffset, 24000);
     const next = await f.remote('assistant.original', {
-      sessionId: 'owner',
+      sessionId: 'ordinary-reader',
       ref,
       offset: first.nextOffset,
     });
@@ -117,10 +128,10 @@ test('original reader uses an existing chat, pages original content, and does no
     assert.equal((await f.remote('assistant.binding')).state, null);
     await assert.rejects(f.remote('assistant.original', { sessionId: 'missing', ref }), /Host/);
     await assert.rejects(
-      f.remote('assistant.original', { sessionId: 'owner', ref: 'unknown' }),
+      f.remote('assistant.original', { sessionId: 'ordinary-reader', ref: 'unknown' }),
       /Unknown original/,
     );
-    assert.equal(f.workers.size, 1);
+    assert.equal(f.workers.size, 2);
   } finally {
     await f.close();
   }
@@ -218,7 +229,7 @@ test('actual heartbeat ignores obsolete saved instructions and the configuration
     }
     await f.invoke('InitiativeControl', { action: 'check' });
     await until(async () => prompts.length === 1 && !(await f.invoke('InitiativeStatus')).active);
-    assert.ok(prompts[0].includes(PROACTIVE_TASK));
+    assert.ok(prompts[0].includes(DISCOVERY_TASK));
     assert.ok(!prompts[0].includes(obsolete));
     // Enable no longer silently accepts a cadence or obsolete prompt override.
     await assert.rejects(
@@ -233,7 +244,11 @@ test('actual heartbeat ignores obsolete saved instructions and the configuration
     await f.invoke('InitiativeEnable', {});
     await f.remote('assistant.control', { action: 'enable', intervalMinutes: 60 });
     await until(async () => prompts.length === 2 && !(await f.invoke('InitiativeStatus')).active);
-    assert.ok(prompts[1].includes(PROACTIVE_TASK));
+    assert.ok(
+      !prompts[1].includes(DISCOVERY_TASK),
+      'unchanged instructions remain in the persistent Session',
+    );
+    assert.match(prompts[1], /记事本：/);
     assert.ok(!prompts[1].includes(obsolete));
   } finally {
     await f.close();

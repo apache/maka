@@ -246,7 +246,7 @@ export async function initializeMemory(
   );
   register(
     'MemoryIndexCreate',
-    'Create an index from the user’s organizing requirements and a source-range cursor from MemoryRange. Starts a background organizing job by default; returns its identity and admission/progress, not a guarantee of completion. The index Agent chooses how to read and organize. New indexes enable maintenance every 12 hours by default; MemoryIndexControl changes that index’s schedule. Completion/failure feedback goes to the owning assistant. background=false waits for the result.',
+    'Create an index from the user’s organizing requirements and a source-range cursor from MemoryRange. Starts a background organizing job by default; returns its identity and admission/progress, not a guarantee of completion. The index Agent chooses how to read and organize. New indexes join the shared maintenance schedule (12 hours by default). All participating indexes are maintained by one Agent per owner, which decides what needs changing; MemoryIndexControl configure changes the shared interval. Completion/failure feedback goes to the owning assistant. background=false waits for the result.',
     z.object({
       name: z.string().min(1).max(160),
       instructions: z.string().min(1).max(8000),
@@ -283,7 +283,7 @@ export async function initializeMemory(
   );
   register(
     'MemoryIndexCreateGroup',
-    'Create or continue several numbered indexes in one organizing job. Each index retains its own requirements, content and coverage; existing members use number/indexId. Returns member IDs and job admission; capacity rejection includes unstarted IDs for retry. Background by default. New indexes enable 12-hour maintenance. Completion/failure feedback goes to the owning assistant; one member completing does not complete the group.',
+    'Create or continue several numbered indexes in one organizing job. Each index retains its own requirements, content and coverage; existing members use number/indexId. Returns member IDs and job admission; capacity rejection includes unstarted IDs for retry. Background by default. New indexes join the shared maintenance schedule (12 hours by default). Completion/failure feedback goes to the owning assistant; one member completing does not complete the group.',
     z.object({
       cursor: id,
       indexes: z
@@ -402,20 +402,36 @@ export async function initializeMemory(
   );
   register(
     'MemoryIndexControl',
-    'Control maintenance of the specified index. configure changes its interval without enabling a paused index; pause stops future rounds but lets an active round finish; resume schedules the next round. stop cancels the shared organizing job and disables maintenance for ALL its member indexes. Contents and checkpoints are preserved. Returns affected state; it does not create a separate follow-up or user reminder. Use MemoryIndexMaintain for one immediate round.',
+    'Configure the GLOBAL index maintenance interval with action=configure and intervalMs (indexId optional); this affects all indexes and does not enable paused indexes. One shared timer hands participating indexes to one organizing Agent, which decides what needs updating or can be handled together. With indexId, pause excludes that index from future rounds but lets active work finish; resume rejoins the shared schedule without resetting its clock. stop requires indexId, cancels its active shared organizing job and disables maintenance for ALL indexes in that job (or its creation group if idle). Contents and checkpoints are preserved. Returns affected state; it does not create a separate follow-up or user reminder. Use MemoryIndexMaintain for one immediate round.',
     z.object({
-      indexId: id,
+      indexId: id.optional(),
       action: z.enum(['pause', 'resume', 'configure', 'stop']),
       intervalMs: z.number().int().min(1).max(2147483647).optional(),
     }),
     async (input: any, call: any) => {
+      if (!input.indexId) {
+        if (input.action !== 'configure' || input.intervalMs === undefined)
+          throw Error('Without indexId, use configure with intervalMs for the shared schedule');
+        for (const index of store.list())
+          store.assertIndexVisible(index.id, await visible(index.id));
+        controller.configureSchedule(input.intervalMs);
+        return {
+          schedule: controller.scheduleInfo(),
+          effect: { target: 'global_index_maintenance', action: 'configure' },
+        };
+      }
       const allowed = await visible(input.indexId);
       store.assertIndexVisible(input.indexId, allowed);
       await controller.attach(input.indexId, call);
       await controller.control(input.indexId, input.action, input.intervalMs);
       return {
         ...controller.summary(input.indexId, allowed),
-        effect: { target: 'index_maintenance', action: input.action, indexId: input.indexId },
+        schedule: controller.scheduleInfo(),
+        effect: {
+          target: input.intervalMs !== undefined ? 'global_index_maintenance' : 'index_maintenance',
+          action: input.action,
+          indexId: input.indexId,
+        },
       };
     },
     true,

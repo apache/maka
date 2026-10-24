@@ -331,6 +331,18 @@ export async function planHistoryCompaction(
           : boundary.ok && boundary.coveredCount > 0 && boundary.coveredCount <= headAnchorIndex;
     if (!boundary.ok || !hasSafeCoverage) return noSafeSpan();
     const coveredRuntimeEvents = input.orderedEvents.slice(0, boundary.coveredCount);
+    // The live context is reattached after a fold. Summarizing just that
+    // metadata and the pinned user anchor cannot free useful history.
+    if (
+      phase === 'mid_turn' &&
+      !coveredRuntimeEvents.some(
+        (event) =>
+          event.id !== input.headAnchor?.runtimeEventId &&
+          !(event.content?.kind === 'text' && event.content.runtimeContextName !== undefined),
+      )
+    ) {
+      return noSafeSpan();
+    }
     const tailRuntimeEvents = input.orderedEvents.slice(boundary.coveredCount);
 
     // One transition view per pass: the same loaded snapshot judges the
@@ -500,7 +512,11 @@ export interface HistoryCompactionPolicy {
   enabled: boolean;
   checkpoint?: HistoryCompactCheckpoint;
   highWaterName?: string;
-  midTurn?: { enabled: true };
+  midTurn?: {
+    enabled: true;
+    /** Host-selected target when the user has not configured a compaction threshold. */
+    fallbackThresholdTokens?: number;
+  };
 }
 
 export interface HistoryCompactionReplayResult {

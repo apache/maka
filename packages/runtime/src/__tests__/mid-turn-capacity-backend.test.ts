@@ -38,16 +38,20 @@ import {
 } from '../session-event-runtime-mapper.js';
 import type { RuntimeEventMapContext } from '../session-event-runtime-mapper.js';
 import { applyRuntimeEventContextBudget } from '../context-budget.js';
-import type {
-  HistoryCompactCheckpoint,
-  HistoryCompactProviderState,
+import {
+  buildHistoryCompactCheckpoint,
+  type HistoryCompactCheckpoint,
+  type HistoryCompactProviderState,
 } from '../history-compact-checkpoint.js';
 import {
   archiveTransitionFor,
   EMPTY_PROJECTION_SNAPSHOT,
+  sectionedSummary,
 } from './history-compact-test-fixtures.js';
 import type { LoadedModelProjectionTransitions } from '../model-projection-transition-ledger.js';
 import type { ContextBudgetDiagnostic } from '@maka/core/usage-stats/types';
+import { buildOpenAiCodexHistoryCompactor } from '../openai-codex-history-compactor.js';
+import { testInvocationRecord } from './invocation-fixture.js';
 import { HistoryCompactSummarizerError } from '../history-compact-error.js';
 import { buildLlmHistorySummarizer } from '../history-compact-summarizer.js';
 import type { HistoryCompactSummaryInput } from '../ai-sdk-compaction-contract.js';
@@ -122,6 +126,7 @@ interface MidTurnFixtureOptions {
    * instead of the hand-built one, so a test can exercise the shipped default.
    */
   useRuntimeDefaultPolicy?: boolean;
+  fallbackCompactionThresholdTokens?: number;
   summarize?: (
     input: HistoryCompactSummaryInput,
   ) =>
@@ -131,6 +136,7 @@ interface MidTurnFixtureOptions {
     | undefined;
   /** Return and replay a Codex subscription V2 provider checkpoint. */
   providerNative?: boolean;
+  loadCheckpoint?: () => HistoryCompactCheckpoint | undefined;
   branch?: string;
   /** Omit the prior turns so the compaction pool has no safe completed span. */
   withoutPriorTurns?: boolean;
@@ -598,6 +604,7 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
       ? buildDefaultContextBudgetPolicy({
           name: 'runtime-default-mid-turn',
           modelId: 'mock-model-id',
+          fallbackCompactionThresholdTokens: options.fallbackCompactionThresholdTokens,
         })
       : {
           name: 'mid-turn-test',
@@ -626,16 +633,16 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
       // The real summarizer is what carries the accounting the backend hands
       // it, so the metered case must go through it rather than a stub.
       if (options.meteredSummarizer) return await meteredSummarize(input);
-      const summary = options.providerNative
-        ? ({
-            kind: 'openai_codex_remote_v2',
-            connectionId: 'test-connection-id',
-            modelId: 'mock-model-id',
-            itemId: 'cmp_mid_turn',
-            encryptedContent: 'MID_TURN_ENCRYPTED_STATE',
-          } satisfies HistoryCompactProviderState)
-        : options.summarize
-          ? await options.summarize(input)
+      const summary = options.summarize
+        ? await options.summarize(input)
+        : options.providerNative
+          ? ({
+              kind: 'openai_codex_remote_v2',
+              connectionId: 'test-connection-id',
+              modelId: 'mock-model-id',
+              itemId: 'cmp_mid_turn',
+              encryptedContent: 'MID_TURN_ENCRYPTED_STATE',
+            } satisfies HistoryCompactProviderState)
           : `## Goal\nMID_TURN_SUMMARY_SENTINEL\n\n## Progress\n${
               // Padded proportionally so the write gate's size floor passes
               // for large folds while small folds keep a compact replacement.
@@ -657,6 +664,7 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
       if (options.record) return options.record(checkpoint);
       recorded.push(checkpoint);
     },
+    ...(options.loadCheckpoint ? { loadHistoryCompactCheckpoint: options.loadCheckpoint } : {}),
     ...(options.loadTransitions ? { loadModelProjectionTransitions: options.loadTransitions } : {}),
     loadTurnRuntimeEvents: async (turnId) => {
       fixture.ledgerReads += 1;
@@ -766,9 +774,9 @@ function assertRequestContextPreserved(fixture: MidTurnFixture): void {
         ? message.content.flatMap((part) => (part.type === 'text' ? [part.text] : []))
         : [],
     );
-    assert.equal(texts.filter((text) => text === 'ACTIVE_REQUEST_CONTEXT').length, 1);
+    assert.equal(texts.filter((text) => text.includes('ACTIVE_REQUEST_CONTEXT')).length, 1);
   }
-  assert.doesNotMatch(JSON.stringify(fixture.ledger), /ACTIVE_REQUEST_CONTEXT/u);
+  assert.match(JSON.stringify(fixture.ledger), /ACTIVE_REQUEST_CONTEXT/u);
 }
 
 function compactionDecisions(
@@ -880,9 +888,9 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
       runtimeEventId: 'anchor-1',
       turnId: 'turn-1',
     });
-    // Coverage: [prior-user, prior-model, anchor, call-1, result-1] — all of
+    // Coverage: [prior-user, prior-model, anchor, runtime-context, call-1, result-1] — all of
     // them durable in the ledger before the checkpoint was recorded.
-    assert.equal(checkpoint.coverage.eventCount, 5);
+    assert.equal(checkpoint.coverage.eventCount, 6);
 
     // The next step's prompt is [compact block, verbatim head anchor, preserved active span].
     const thirdPrompt = promptJson(fixture, 2);
@@ -906,6 +914,24 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
     assert.equal(midTurnDecision?.decision, 'replaced');
     assert.equal(midTurnDecision?.reason, 'context_limit');
     assert.deepEqual(midTurnDecision?.boundaryIds, [checkpoint.checkpointId]);
+  });
+
+  test('seeds Codex mid-turn compaction from the replayed text checkpoint (#6154)', async () => {
+    let previous: HistoryCompactCheckpoint | undefined;
+    const fixture = buildFixture({ providerNative: true, loadCheckpoint: () => previous });
+    previous = buildHistoryCompactCheckpoint({
+      sessionId: 'session-1',
+      coveredRuntimeEvents: fixture.priorEvents,
+      summary: sectionedSummary('PORTABLE_SEED'),
+    });
+    await runFixtureTurn(fixture, consumer);
+
+    assert.match(promptJson(fixture, 0), /PORTABLE_SEED/);
+    assert.doesNotMatch(promptJson(fixture, 0), /PRIOR_FACT/);
+    assert.equal(fixture.recorded.length, 1);
+    assert.equal(fixture.recorded[0]?.previousCheckpointId, previous.checkpointId);
+    assert.equal(fixture.recorded[0]?.version, 3);
+    assert.match(promptJson(fixture, 2), /MID_TURN_ENCRYPTED_STATE/);
   });
 
   test('replays a Codex V2 mid-turn checkpoint as native provider state', async () => {
@@ -1577,6 +1603,150 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
   });
 }
 
+describe('encrypted reasoning in native history compaction', () => {
+  for (const [mode, useLegacyCheckpoint] of [
+    ['manual', false],
+    ['automatic', false],
+    ['manual', true],
+    ['automatic', true],
+  ] as const) {
+    test(`${mode} ${useLegacyCheckpoint ? 'legacy-checkpoint' : 'fresh'} compaction preserves empty-plaintext reasoning and enforces route admission`, async () => {
+      const identity = `sha256:${'1'.repeat(64)}` as const;
+      const reasoning = (id: string, runId: string): RuntimeEvent => ({
+        ...runtimeTextEvent(id, 'turn-0', 'model', ''),
+        runId,
+        content: {
+          kind: 'thinking',
+          text: '',
+          providerOptions: {
+            openai: { itemId: id, reasoningEncryptedContent: `encrypted-${id}` },
+          },
+        },
+      });
+      const compatible = reasoning('rs-compatible', 'source-run');
+      const incompatible = reasoning('rs-incompatible', 'other-run');
+      const otherProvider = reasoning('rs-other-provider', 'provider-run');
+      const unknown = reasoning('rs-unknown', 'unknown-run');
+      const hidden = {
+        ...reasoning('rs-hidden', 'source-run'),
+        modelVisibility: 'hidden' as const,
+      };
+      const empty: RuntimeEvent = {
+        ...reasoning('rs-empty', 'source-run'),
+        content: { kind: 'thinking', text: '' },
+      };
+      const nativeModel = new MockLanguageModelV4({
+        doStream: async () => ({
+          stream: simulateReadableStream<LanguageModelV4StreamPart>({
+            chunks: [
+              { type: 'stream-start', warnings: [] },
+              {
+                type: 'custom',
+                kind: 'openai.compaction',
+                providerMetadata: {
+                  openai: {
+                    itemId: 'cmp-native',
+                    encryptedContent: 'NATIVE_CHECKPOINT_STATE',
+                  },
+                },
+              },
+              {
+                type: 'finish',
+                finishReason: { unified: 'stop', raw: 'stop' },
+                usage: {
+                  inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+                  outputTokens: { total: 1, text: 0, reasoning: 0 },
+                },
+              },
+            ],
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        }),
+      });
+      const native = buildOpenAiCodexHistoryCompactor({
+        resolveModel: () => nativeModel,
+        connectionId: 'test-connection-id',
+        modelId: 'mock-model-id',
+        providerStateIdentity: identity,
+      });
+      let legacyCheckpoint: HistoryCompactCheckpoint | undefined;
+      const fixture: MidTurnFixture = buildFixture({
+        providerNative: true,
+        summarize: native,
+        extraPriorEvents: [compatible, incompatible, otherProvider, unknown, hidden, empty],
+        priorInvocations: (
+          [
+            ['source-run', identity, 'mock-model-id'],
+            ['other-run', identity, 'other-model'],
+            ['provider-run', `sha256:${'2'.repeat(64)}`, 'mock-model-id'],
+          ] as const
+        ).map(([runId, providerStateIdentity, modelId]) =>
+          testInvocationRecord({
+            sessionId: 'session-1',
+            runId,
+            turnId: 'turn-0',
+            outcome: 'completed',
+            opening: {
+              route: {
+                provenance: 'runtime',
+                backendKind: 'ai-sdk',
+                llmConnectionId: 'test-connection-id',
+                llmConnectionSlug: 'codex-subscription',
+                modelId,
+                providerStateIdentity,
+              },
+            },
+          }),
+        ),
+        loadCheckpoint: () => fixture.recorded.at(-1) ?? legacyCheckpoint,
+      });
+      if (useLegacyCheckpoint) {
+        const covered = fixture.priorEvents.slice(0, 2);
+        fixture.priorEvents.splice(1, 0, reasoning('rs-old-covered', 'source-run'));
+        legacyCheckpoint = buildHistoryCompactCheckpoint({
+          sessionId: 'session-1',
+          coveredRuntimeEvents: covered,
+          providerState: {
+            kind: 'openai_codex_remote_v2',
+            connectionId: 'test-connection-id',
+            modelId: 'mock-model-id',
+            itemId: 'cmp-legacy',
+            encryptedContent: 'LEGACY_NATIVE_STATE',
+          },
+        });
+      }
+      if (mode === 'manual') {
+        const result = await fixture.backend.compactHistory({
+          turnId: 'turn-compact',
+          runId: 'compact-run',
+          runtimeContext: fixture.priorEvents,
+          runtimeContextInvocations: fixture.priorInvocations,
+        });
+        assert.equal(result.outcome.kind, 'compacted');
+      }
+      await runFixtureTurn(fixture, 'slow');
+      const compactPrompt = JSON.stringify(nativeModel.doStreamCalls[0]?.prompt);
+      assert.match(compactPrompt, /encrypted-rs-compatible/);
+      if (useLegacyCheckpoint) {
+        assert.match(compactPrompt, /LEGACY_NATIVE_STATE/);
+        assert.doesNotMatch(compactPrompt, /rs-old-covered|PRIOR_FACT/);
+      }
+      assert.doesNotMatch(
+        compactPrompt,
+        /rs-incompatible|rs-other-provider|rs-unknown|rs-hidden|rs-empty/,
+      );
+      assert.equal(nativeModel.doStreamCalls[0]?.providerOptions?.openai?.compactionTrigger, true);
+      assert.match(fixture.summarizedSources[0]!, /rs-compatible/);
+      assert.doesNotMatch(fixture.summarizedSources[0]!, /rs-hidden|rs-empty/);
+      const replayPrompt = promptJson(fixture, mode === 'manual' ? 0 : 2);
+      assert.match(replayPrompt, /NATIVE_CHECKPOINT_STATE/);
+      assert.doesNotMatch(replayPrompt, /encrypted-rs-compatible/);
+      assert.deepEqual(fixture.toolExecutions, ['one.md', 'two.md']);
+    });
+  }
+});
+
 describe('mid-turn capacity compaction in the streaming backend', () => {
   defineMidTurnSuite('immediate');
 
@@ -1774,6 +1944,35 @@ describe('mid-turn capacity default-on safety guards (issue #882 PR 3)', () => {
     assert.equal(fixture.summarizerCalls, 0);
     const complete = events.find((event) => event.type === 'complete');
     assert.equal(complete?.type === 'complete' ? complete.stopReason : undefined, 'end_turn');
+  });
+
+  test('a Host fallback compacts a long turn without a user threshold and keeps tool execution intact', async () => {
+    const fixture = buildFixture({
+      useRuntimeDefaultPolicy: true,
+      declareContextWindow: false,
+      fallbackCompactionThresholdTokens: 190,
+    });
+    await runFixtureTurn(fixture);
+    assert.equal(fixture.recorded.length, 1);
+    assert.equal(fixture.recorded[0]?.phase, 'mid_turn');
+    assert.match(promptJson(fixture, 2), /MID_TURN_SUMMARY_SENTINEL/);
+    assert.ok(promptJson(fixture, 2).includes(ANCHOR_TEXT));
+    assert.deepEqual(fixture.toolExecutions, ['one.md', 'two.md']);
+    assert.equal(
+      fixture.events.some((event) => event.type === 'error'),
+      false,
+    );
+  });
+
+  test('an explicit user threshold takes precedence over the Host fallback', async () => {
+    const fixture = buildFixture({
+      useRuntimeDefaultPolicy: true,
+      contextWindow: 100_000,
+      fallbackCompactionThresholdTokens: 190,
+    });
+    await runFixtureTurn(fixture);
+    assert.equal(fixture.summarizerCalls, 0);
+    assert.deepEqual(fixture.toolExecutions, ['one.md', 'two.md']);
   });
 
   test('treats a /models context window as metadata unless the user declares it', async () => {

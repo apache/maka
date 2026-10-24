@@ -357,7 +357,7 @@ test('due group rechecks rolling windows without source changes and preserves in
     );
     return turns === 3 && views.every((v) => !v.maintenance.running && v.range.completed);
   });
-  assert.equal(sessions.size, 1);
+  assert.equal(sessions.size, 2, 'creation worker plus one shared maintenance worker');
   for (const indexId of ranges.keys()) {
     const view = await f.invoke('MemoryIndexRead', { indexId });
     assert.equal(view.contents.total, 0);

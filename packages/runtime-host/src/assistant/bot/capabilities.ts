@@ -22,6 +22,7 @@ export const BOT_TOOLS = new Set([
   'InboxRead',
   'InboxCheck',
   'SendUser',
+  'DiscoveryFeedback',
   'AssistantSetAvatar',
   'Sleep',
   'AssistantConversation',

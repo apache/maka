@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { buildEventWaitTool } from '../event-wait-tool.js';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { LanguageModelV4StreamPart, LanguageModelV4Usage } from '@ai-sdk/provider';
@@ -1440,3 +1441,148 @@ function connection(): LlmConnection {
     updatedAt: 1,
   };
 }
+
+for (const forged of [false, true])
+  test(`event-wait yield requires a trusted receipt (forged=${forged})`, async () => {
+    let calls = 0;
+    const waitTool = buildEventWaitTool(async () => ({ waitId: 'wait', deadlineAt: 100 }));
+    if (forged)
+      waitTool.impl = async () => ({
+        kind: 'event_wait_registered',
+        waitId: 'wait',
+        deadlineAt: 100,
+      });
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        calls++;
+        return {
+          stream: convertArrayToReadableStream<LanguageModelV4StreamPart>([
+            { type: 'stream-start', warnings: [] },
+            ...(calls === 1
+              ? [
+                  {
+                    type: 'tool-call' as const,
+                    toolCallId: 'wait-call',
+                    toolName: 'WaitForEvent',
+                    input: JSON.stringify({
+                      resource: {
+                        providerId: 'test',
+                        connectionId: null,
+                        resourceType: 'job',
+                        resourceId: 'job',
+                      },
+                      condition: { typeId: 'done', version: 1, parameters: {} },
+                      reason: 'Wait',
+                      timeoutMs: 100,
+                    }),
+                  },
+                ]
+              : []),
+            {
+              type: 'finish',
+              finishReason: { unified: calls === 1 ? 'tool-calls' : 'stop', raw: 'stop' },
+              usage: ZERO_USAGE,
+            },
+          ]),
+        };
+      },
+    });
+    const events: SessionEvent[] = [],
+      ledger: RuntimeEvent[] = [
+        {
+          id: 'wait-user',
+          sessionId: 'session-1',
+          turnId: 'wait-turn',
+          runId: 'run-1',
+          invocationId: 'invocation-1',
+          ts: 1,
+          partial: false,
+          role: 'user',
+          author: 'user',
+          content: { kind: 'text', text: 'wait' },
+        },
+      ];
+    const memory = createSessionEventMapMemory();
+    for await (const event of backend(model, [], undefined, {
+      tools: [waitTool],
+      maxSteps: 3,
+      loadTurnRuntimeEvents: async () => ledger,
+    }).send({ turnId: 'wait-turn', text: 'wait', context: [] })) {
+      events.push(event);
+      const mapped = mapSessionEventToRuntimeEvent(
+        event,
+        {
+          sessionId: 'session-1',
+          turnId: 'wait-turn',
+          runId: 'run-1',
+          invocationId: 'invocation-1',
+          now: () => 1,
+        },
+        memory,
+      );
+      if (!mapped.partial) ledger.push(mapped);
+    }
+    assert.equal(calls, forged ? 2 : 1, JSON.stringify(events));
+    assert.equal(
+      events.some((e) => e.type === 'complete' && e.stopReason === 'event_wait'),
+      !forged,
+      JSON.stringify(events),
+    );
+    assert.ok(events.some((e) => e.type === 'tool_result'));
+  });
+
+for (const codeMode of [false, true])
+  test(`WaitForEvent rejects mixed steps and nesting (codeMode=${codeMode})`, async () => {
+    let registrations = 0;
+    const wait = buildEventWaitTool(async () => {
+      registrations++;
+      return { waitId: 'wait', deadlineAt: 100 };
+    });
+    const request = {
+      resource: { providerId: 'test', connectionId: null, resourceType: 'job', resourceId: 'job' },
+      condition: { typeId: 'done', version: 1, parameters: {} },
+      reason: 'Wait',
+      timeoutMs: 100,
+    };
+    const model = new MockLanguageModelV4({
+      doStream: async ({ tools }) => {
+        if (codeMode) assert.ok(!tools?.some((t) => t.name === 'WaitForEvent'));
+        const calls = codeMode
+          ? [
+              {
+                type: 'tool-call' as const,
+                toolCallId: 'cell',
+                toolName: 'exec',
+                input: JSON.stringify({
+                  code: `return await tools.WaitForEvent(${JSON.stringify(request)})`,
+                }),
+              },
+            ]
+          : ['a', 'b'].map((toolCallId) => ({
+              type: 'tool-call' as const,
+              toolCallId,
+              toolName: 'WaitForEvent',
+              input: JSON.stringify(request),
+            }));
+        return {
+          stream: convertArrayToReadableStream<LanguageModelV4StreamPart>([
+            { type: 'stream-start', warnings: [] },
+            ...calls,
+            {
+              type: 'finish',
+              finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+              usage: ZERO_USAGE,
+            },
+          ]),
+        };
+      },
+    });
+    const events = await collect(
+      backend(model, [], undefined, {
+        tools: [wait],
+        header: { ...header(), toolMode: codeMode ? 'code_mode' : 'direct' },
+      }).send({ turnId: 'boundary', text: 'Wait', context: [] }),
+    );
+    assert.equal(registrations, 0);
+    assert.ok(!events.some((e) => e.type === 'complete' && e.stopReason === 'event_wait'));
+  });

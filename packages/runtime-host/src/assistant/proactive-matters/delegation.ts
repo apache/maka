@@ -24,6 +24,7 @@ import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { z } from 'zod';
 import { taskDelivery } from './delivery.js';
+import { workerTools } from './settlement-context.js';
 import type { MatterStore } from './matter.js';
 import type { MatterController } from './controller.js';
 
@@ -40,6 +41,11 @@ export function registerDelegation(
       owner TEXT NOT NULL, task_key TEXT NOT NULL, session TEXT NOT NULL UNIQUE,
       title TEXT NOT NULL, request TEXT NOT NULL, PRIMARY KEY(owner,task_key));`);
   ctx.onClose(() => db.close());
+  ctx.tools.filter?.((sessionId: string, tools: any[]) =>
+    db.prepare('SELECT 1 FROM delegations WHERE session=?').get(sessionId)
+      ? workerTools(tools)
+      : tools,
+  );
   ctx.backgroundSessions?.register(() =>
     db
       .prepare('SELECT session FROM delegations')
@@ -58,11 +64,29 @@ export function registerDelegation(
     id: m.id,
     sessionId: m.sessionId,
     title: m.title,
+    createdAt: m.createdAt,
+    updatedAt: m.updatedAt,
     request: m.request,
     status: m.status,
     state: m.stateText,
     waitingFor: m.waitingFor,
     wakes: m.wakes,
+    condition: m.conditionWaitId
+      ? (() => {
+          const wait = store.conditions.read(m.conditionWaitId)?.record;
+          return wait
+            ? {
+                waitId: wait.waitId,
+                status: wait.status,
+                intervalMs: wait.condition.parameters.intervalMs,
+                attempts: wait.observation?.attempts ?? 0,
+                nextCheckAt: wait.observation?.nextPollAt ?? wait.createdAt,
+                lastObservedAt: wait.observation?.lastObservedAt ?? null,
+                diagnostic: wait.observation?.reason ?? null,
+              }
+            : null;
+        })()
+      : null,
     retryAt: m.retryAt,
     revision: m.revision,
     lastError: m.lastError,
@@ -72,6 +96,16 @@ export function registerDelegation(
       .updates(m.id)
       .slice(0, 10)
       .map(({ id, text, createdAt }) => ({ id, text, createdAt })),
+  });
+  // UI polling must not transport working notes, requests or report history.
+  const preview = (m: any) => ({
+    id: m.id,
+    sessionId: m.sessionId,
+    title: m.title,
+    status: m.status,
+    summary: m.progressSummary ?? '',
+    updatedAt: m.updatedAt,
+    retryAt: m.retryAt ?? null,
   });
   const creating = new Set<string>();
   const creationLabel = (row: any) => `matter-creation:${String(row.session).slice(9)}`;
@@ -111,9 +145,9 @@ export function registerDelegation(
         const snapshot = (await (await controller.agent(m.sessionId)).snapshot()) as
           | { agent?: { status?: string } }
           | undefined;
-        items.push({ ...describe(m), runtimeStatus: snapshot?.agent?.status });
-      } catch (error) {
-        items.push({ ...describe(m), runtimeError: String(error) });
+        items.push({ ...preview(m), runtimeStatus: snapshot?.agent?.status });
+      } catch {
+        items.push({ ...preview(m), runtimeError: true });
       }
     }
     return items;
@@ -141,7 +175,7 @@ export function registerDelegation(
     });
   register(
     'MatterOverview',
-    'Read this conversation tasks, feedback status and unassigned legacy tasks. Does not adopt or change anything.',
+    'Read this conversation tasks, feedback status and unassigned legacy tasks as a compact directory with AI-authored progress summaries (at most 30 characters). Full task content is available through MatterTasks with an ID. Does not adopt or change anything.',
     z.object({}),
     false,
     async (_: any, call: any) => {
@@ -153,7 +187,7 @@ export function registerDelegation(
         legacy: store
           .list()
           .filter((m) => !rows.some((r) => r.session === m.sessionId))
-          .map(describe),
+          .map(preview),
         notifications: delivery.status(owner),
       };
     },

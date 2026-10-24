@@ -33,7 +33,7 @@ import { HostPluginDataRuntime } from '../server/plugin-data-runtime.js';
 import { DatabaseSync } from 'node:sqlite';
 import { BotController } from '../assistant/bot/controller.js';
 import { BotStore } from '../assistant/bot/store.js';
-import { PROACTIVE_TASK } from '../assistant/index-initiative/prompt.js';
+import { DISCOVERY_TASK } from '../assistant/index-initiative/prompt.js';
 import { MESSAGE_OPERATION_SPECS } from '../protocol/message.js';
 
 async function until(fn: () => unknown | Promise<unknown>) {
@@ -64,11 +64,13 @@ async function fixture(readAvatarImage?: AssistantDependencies['readAvatarImage'
   let queryFailures = 0;
   let cancelQueued = false;
   let loseSubmitResponse = false;
+  let prepareBotWake: AssistantDependencies['prepareBotWake'] = async () => 'ready';
   const executions = new Map<string, string>();
   const submittedIds: string[] = [];
   let invocation: any;
   let service: PersonalAssistantService;
   const dependencies = {
+    prepareBotWake: (ownerId: string, workerId: string) => prepareBotWake(ownerId, workerId),
     readAvatarImage,
     agents,
     llm,
@@ -153,9 +155,15 @@ async function fixture(readAvatarImage?: AssistantDependencies['readAvatarImage'
           await runner(input);
           assert.equal((await input.finish()).allow, true, 'runtime accepts the final Sleep');
         })
-        .finally(() => {
-          worker.status = 'idle';
-        });
+        .then(
+          () => {
+            worker.status = 'idle';
+          },
+          (error) => {
+            worker.status = 'blocked';
+            throw error;
+          },
+        );
       void worker.task.catch(() => {});
       if (loseSubmitResponse) {
         loseSubmitResponse = false;
@@ -165,7 +173,10 @@ async function fixture(readAvatarImage?: AssistantDependencies['readAvatarImage'
     },
     steer: async () => {},
     inject: async () => {},
-    snapshot: async (id) => ({ agent: { status: sessions.get(id)?.status ?? 'idle' } }),
+    snapshot: async (id) => ({
+      agent: { status: sessions.get(id)?.status ?? 'idle' },
+      pendingInteractions: sessions.get(id)?.pendingInteractions ?? 0,
+    }),
     transcript: async (id) => sessions.get(id)?.messages ?? [],
     whenIdle: async (id, signal) => {
       if (signal?.aborted) throw signal.reason;
@@ -214,6 +225,9 @@ async function fixture(readAvatarImage?: AssistantDependencies['readAvatarImage'
     },
     runner: (fn: typeof runner) => {
       runner = fn;
+    },
+    prepare: (fn: AssistantDependencies['prepareBotWake']) => {
+      prepareBotWake = fn;
     },
     queueWake: () => {
       queueNext = true;
@@ -284,6 +298,11 @@ test('Bot receives bodies in batches, may consult history, sends multiple messag
     ['第一条', '第二条', '好，我来安排。', '有结果再告诉你。'],
   );
   const tools = f.service.toolCeiling(f.invocation.id)!.map((tool) => tool.name);
+  const available = f.service
+    .filterTools(f.invocation.id, f.service.tools)
+    .map((tool) => tool.name);
+  assert.ok(available.includes('MatterDelegate'));
+  assert.ok(available.includes('InboxCheck'));
   assert.ok(tools.includes('MatterDelegate'));
   assert.ok(tools.includes('SendUser'));
   assert.ok(tools.includes('InboxCheck'));
@@ -395,8 +414,29 @@ test('independent discovery retains the exact prompt and reports through Inbox, 
     processed = false;
   f.runner(async ({ prompt, invoke }) => {
     if (prompt.includes('Runtime heartbeat')) {
-      assert.ok(prompt.includes(PROACTIVE_TASK));
-      await invoke('DiscoveryReport', { text: '已核实：明天的两个日程冲突。' });
+      if (prompt.includes('Phase: discovery')) {
+        assert.ok(prompt.includes(DISCOVERY_TASK));
+        await writeFile(
+          /完成后把增量操作写入 (.+)，格式：/.exec(prompt)![1],
+          JSON.stringify({
+            notes: [
+              {
+                topicId: 'calendar',
+                title: '日程',
+                text: '日程冲突，需要判断。',
+                sources: ['日历'],
+              },
+            ],
+          }),
+        );
+        return;
+      }
+      await writeFile(
+        /完成后把增量操作写入 (.+)，格式：/.exec(prompt)![1],
+        JSON.stringify({
+          messages: [{ text: '已核实：明天的两个日程冲突。', topicIds: ['calendar'] }],
+        }),
+      );
       reported = true;
     } else {
       const rows = await invoke('InboxCheck');
@@ -416,7 +456,11 @@ test('independent discovery retains the exact prompt and reports through Inbox, 
   await until(() => reported && processed);
   assert.equal(f.visible.length, 1);
   assert.equal(f.visible[0].text, '明天两个安排冲突，要一起调整吗？');
-  assert.equal(f.sessions.size, 3, 'visible chat, Bot, and exploration have separate Sessions');
+  assert.equal(
+    f.sessions.size,
+    4,
+    'visible chat, Bot, discovery and judgement have separate Sessions',
+  );
 });
 
 test('Inbox persistence preserves all types and history; batches return bounded bodies without processing state', async (t) => {
@@ -546,7 +590,7 @@ test('same call retries replay the batch; uncommitted Sleep never loses mail aft
   const store = new BotStore(dir);
   t.after(() => store.close());
   const binding = { fence() {}, get: () => ({ sessionId: 'owner' }) } as any;
-  const bot = new BotController({} as any, binding, store);
+  const bot = new BotController({ prepareBotWake: async () => 'ready' } as any, binding, store);
   store.post({ id: 'one', type: 'user_message', source: 'user', content: 'hello' });
   const batch = bot.checkInbox('call-1', 50);
   store.post({ id: 'two', type: 'task_update', source: 'task', content: 'done' });
@@ -591,6 +635,149 @@ test('interrupted worker replays input on retry instead of losing a returned bat
   });
   await f.send('retry', '继续');
   await until(() => done);
+});
+
+test('mail arriving during a failed call resumes the blocked worker without another user nudge', async (t) => {
+  const f = await fixture();
+  t.after(f.close);
+  let fail!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    fail = resolve;
+  });
+  let entered = false;
+  let recovered = false;
+  f.runner(async ({ invoke }) => {
+    await invoke('InboxCheck');
+    entered = true;
+    await gate;
+    throw Error('ERR_HTTP2_STREAM_ERROR');
+  });
+  await f.send('first', '原消息');
+  await until(() => entered);
+  await f.send('during-failure', '新消息');
+  f.runner(async ({ invoke }) => {
+    assert.deepEqual(
+      (await invoke('InboxCheck')).items.map((x: any) => x.id),
+      ['first', 'during-failure'],
+    );
+    await invoke('SendUser', { messageId: 'recovered', messages: [{ text: '已恢复处理' }] });
+    await invoke('Sleep');
+    recovered = true;
+  });
+  fail();
+  await until(() => recovered);
+  await until(async () => ((await f.service.call('assistant.binding', {})) as any).bot.sleeping);
+  assert.equal(f.starts(), 2);
+  assert.equal(f.visible.filter((m) => m.text === '已恢复处理').length, 1);
+});
+
+for (const phase of ['preparation', 'execution'])
+  test(`persistent ${phase} failures reach the conversation without a polling retry storm; fresh mail can retry`, async (t) => {
+    const f = await fixture();
+    t.after(f.close);
+    let attempts = 0;
+    const fail = async () => {
+      attempts++;
+      throw Error('model unavailable: synthetic-api-key-marker /private/host/credentials');
+    };
+    if (phase === 'preparation') f.prepare(fail);
+    else f.runner(fail);
+    await f.send('first-failure', '你好');
+    await until(async () => ((await f.service.call('assistant.binding', {})) as any).bot.error);
+    await until(() => f.visible.some((message) => message.type === 'assistant'));
+    const first = f.visible.filter((message) => message.type === 'assistant');
+    assert.equal(first.length, 1);
+    assert.equal(
+      first[0].text,
+      '助手消息处理暂时停止。消息已保留；请检查当前模型和连接，发送新消息可重试。',
+    );
+    assert.match(first[0].text, /消息已保留.*发送新消息可重试/);
+    await new Promise((resolve) => setTimeout(resolve, 2200));
+    assert.equal(attempts, 1);
+    assert.equal(f.starts(), phase === 'execution' ? 1 : 0);
+    assert.equal(f.visible.filter((message) => message.type === 'assistant').length, 1);
+    await f.send('second-attempt', '再试一次');
+    await until(() => attempts === 2);
+    await until(async () => ((await f.service.call('assistant.binding', {})) as any).bot.error);
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+    assert.equal(attempts, 2);
+    assert.equal(f.starts(), phase === 'execution' ? 2 : 0);
+    const failures = f.visible.filter((message) => message.type === 'assistant');
+    assert.equal(failures.length, 2);
+    assert.notEqual(failures[0].id, failures[1].id);
+  });
+
+test('failure bubbles retain the execution error across restart and publication retries without blocking fresh mail', async (t) => {
+  const f = await fixture();
+  t.after(f.close);
+  f.runner(async () => {
+    f.failAppend();
+    throw Error('provider rejected the selected model');
+  });
+  await f.send('original', '第一条');
+  await until(() => f.visible.some((message) => message.type === 'assistant'));
+  const failure = f.visible.find((message) => message.type === 'assistant');
+  assert.equal(
+    failure.text,
+    '助手消息处理暂时停止。消息已保留；请检查当前模型和连接，发送新消息可重试。',
+  );
+  // The first publication after restart can lose its response too.
+  f.failAppend();
+  await f.restart();
+  await until(async () => {
+    const status: any = await f.service.call('assistant.binding', {});
+    return status.bot.wakeError?.includes('connection lost after commit');
+  });
+  const status: any = await f.service.call('assistant.binding', {});
+  assert.match(status.bot.error, /provider rejected the selected model/);
+  assert.doesNotMatch(status.bot.error, /connection lost after commit/);
+  assert.deepEqual(
+    f.visible.filter((message) => message.type === 'assistant'),
+    [failure],
+  );
+  assert.equal(f.starts(), 1);
+  let recovered = false;
+  f.runner(async ({ invoke }) => {
+    assert.deepEqual(
+      (await invoke('InboxCheck')).items.map((message: any) => message.id),
+      ['original', 'fresh'],
+    );
+    await invoke('SendUser', {
+      messageId: 'publication-recovered',
+      messages: [{ text: '已恢复处理' }],
+    });
+    await invoke('Sleep');
+    recovered = true;
+  });
+  // Fresh input is durably accepted even when receive cannot flush the old bubble.
+  f.failAppend();
+  await assert.rejects(f.send('fresh', '继续'), /connection lost after commit/);
+  // The scheduler must retry publication without latching this unattempted input.
+  f.failAppend();
+  const pending: any = await f.service.call('assistant.binding', {});
+  assert.equal(pending.bot.error, null);
+  assert.equal(f.starts(), 1);
+  assert.equal(f.visible.filter((message) => message.type === 'assistant').length, 1);
+  await until(() => recovered);
+  await until(async () => ((await f.service.call('assistant.binding', {})) as any).bot.sleeping);
+  assert.equal(f.starts(), 2);
+  assert.deepEqual(
+    f.visible.filter((message) => message.type === 'assistant').map((message) => message.text),
+    [failure.text, '已恢复处理'],
+  );
+});
+
+test('blocked worker with a genuine pending interaction is not restarted by new mail', async (t) => {
+  const f = await fixture();
+  t.after(f.close);
+  await f.send('initial', '你好');
+  await until(async () => ((await f.service.call('assistant.binding', {})) as any).bot.sleeping);
+  const worker = f.sessions.get(f.invocation.id);
+  worker.status = 'blocked';
+  worker.pendingInteractions = 1;
+  await f.send('approval-pending', '还有一件事');
+  await until(async () => ((await f.service.call('assistant.binding', {})) as any).bot.error);
+  assert.equal(f.starts(), 1, 'must not bypass pending authorization');
 });
 
 test('existing processed-column databases retain messages; large bodies have explicit continuation', async (t) => {
@@ -965,6 +1152,7 @@ test('restart reconciles a persisted queued wake without resubmitting or reading
     },
   };
   const ctx = {
+    prepareBotWake: async () => 'ready',
     agents: {
       withInvocation: async (_: unknown, fn: () => unknown) => fn(),
       resume: async () => agent,
@@ -1007,8 +1195,8 @@ test('a completed Sleep clears an ambiguous wake error without submitting again'
   assert.equal(f.starts(), 1);
 });
 
-for (const interruptedStatus of ['idle', 'active', 'aborted']) {
-  test(`restart resumes an owned wake with ${interruptedStatus} worker without losing mail`, async (t) => {
+for (const interruptedStatus of ['running', 'idle', 'active', 'aborted', 'blocked']) {
+  test(`restart resumes an owned wake with ${interruptedStatus} worker on the selected route without losing mail`, async (t) => {
     const dir = await mkdtemp(join(tmpdir(), 'bot-owned-recovery-'));
     let store = new BotStore(dir);
     store.set('worker', 'worker');
@@ -1018,15 +1206,22 @@ for (const interruptedStatus of ['idle', 'active', 'aborted']) {
     store = new BotStore(dir);
     let submissions = 0;
     let status = interruptedStatus;
+    let deferred = false;
+    let route = { connection: 'old-connection', model: 'old-model' };
+    if (status === 'blocked')
+      store.set('error', 'Error: Bot requires attention in its worker Session');
     let controller: BotController;
     const agent = {
-      snapshot: async () => ({ agent: { status } }),
-      messageExecution: async (id: string) => ({
-        state: id === 'old-wake' ? 'owned' : 'not_admitted',
-      }),
+      snapshot: async () => ({ agent: { status }, pendingInteractions: 0 }),
+      messageExecution: async (id: string) => {
+        // The previous execution can settle after resume's initial snapshot.
+        if (id === 'old-wake' && status === 'running') status = 'idle';
+        return { state: id === 'old-wake' ? 'owned' : 'not_admitted' };
+      },
       followup: async (_text: string, options: { messageId: string }) => {
         assert.notEqual(options.messageId, 'old-wake');
         assert.equal(options.messageId, store.get<any>('wake').messageId);
+        assert.deepEqual(route, { connection: 'new-connection', model: 'new-model' });
         submissions++;
         status = 'running';
         return { disposition: 'turn_started' };
@@ -1041,6 +1236,17 @@ for (const interruptedStatus of ['idle', 'active', 'aborted']) {
     };
     controller = new BotController(
       {
+        prepareBotWake: async (ownerId: string, workerId: string) => {
+          assert.equal(ownerId, 'owner');
+          assert.equal(workerId, 'worker');
+          assert.notEqual(status, 'running');
+          if (interruptedStatus === 'running' && !deferred) {
+            deferred = true;
+            return 'deferred';
+          }
+          route = { connection: 'new-connection', model: 'new-model' };
+          return 'ready';
+        },
         agents: {
           withInvocation: async (_: unknown, fn: () => unknown) => fn(),
           resume: async () => agent,
@@ -1057,6 +1263,8 @@ for (const interruptedStatus of ['idle', 'active', 'aborted']) {
     controller.start();
     await until(() => controller.isSleeping());
     assert.equal(submissions, 1);
+    assert.deepEqual(route, { connection: 'new-connection', model: 'new-model' });
+    assert.equal(deferred, interruptedStatus === 'running');
     assert.equal(store.get('error') ?? null, null);
     assert.equal(store.get('wake'), null);
   });
@@ -1088,6 +1296,7 @@ test('omitted wake resolution is retried without replacing its submission identi
   };
   controller = new BotController(
     {
+      prepareBotWake: async () => 'ready',
       agents: {
         withInvocation: async (_: unknown, fn: () => unknown) => fn(),
         resume: async () => agent,
@@ -1156,4 +1365,184 @@ test('connector input retains sender provenance through protocol, mailbox and vi
       }),
     /external connector source/,
   );
+});
+
+test('only explicitly linked replies to delivered discoveries reach the notebook, across restart', async (t) => {
+  const f = await fixture();
+  t.after(f.close);
+  let round = 0;
+  let deliveries = 0;
+  let handled = 0;
+  let visibleId = '';
+  let feedbackId = '';
+  const discoveryContext = () => {
+    const store = new BotStore(join(f.directory, 'native', 'index-initiative'));
+    try {
+      return {
+        deliveries: store.discoveryDeliveries(),
+        feedback: store.discoveryFeedback(),
+      };
+    } finally {
+      store.close();
+    }
+  };
+  const installRunner = () =>
+    f.runner(async ({ prompt, invoke }) => {
+      if (prompt.includes('Runtime heartbeat')) {
+        const notebook = await readFile(/记事本：([^\n]+)/.exec(prompt)![1], 'utf8');
+        assert.doesNotMatch(notebook, /普通聊天只问天气|普通聊天的回答/);
+        let draft: any = {};
+        if (prompt.includes('Phase: discovery')) {
+          round++;
+          if (round === 1) {
+            assert.match(notebook, /暂无用户反馈/);
+            draft = {
+              notes: [
+                {
+                  topicId: 'tea',
+                  title: '茶',
+                  text: '附近有茶展',
+                  sources: ['公告'],
+                },
+              ],
+            };
+          } else {
+            assert.match(notebook, /我不喝茶了/);
+            assert.match(notebook, /主题：tea/);
+            feedbackId = /｜(feedback:[^｜\n]+)｜待理解/.exec(notebook)![1];
+            // Leave the second discovery in flight so the wait cannot rely on round alone.
+            await new Promise((resolve) => setTimeout(resolve, 50));
+          }
+        } else if (round === 1) {
+          draft = {
+            messages: [{ text: '附近的茶展本周开放。', topicIds: ['tea'] }],
+          };
+        } else {
+          draft = {
+            feedbackDecisions: [
+              {
+                feedbackId,
+                understanding: '用户不喝茶了',
+                rules: [
+                  {
+                    quote: '我不喝茶了',
+                    status: 'closed',
+                    reason: '用户不喝茶了',
+                    topicIds: ['tea'],
+                    tags: [],
+                  },
+                ],
+              },
+            ],
+          };
+        }
+        await writeFile(
+          /完成后把增量操作写入 (.+)，格式：/.exec(prompt)![1],
+          JSON.stringify(draft),
+        );
+        return;
+      }
+      const batch = await invoke('InboxCheck');
+      for (const item of batch.items) {
+        if (item.type === 'discovery') {
+          const result = await invoke('SendUser', {
+            messageId: 'tea-delivery',
+            messages: [{ text: '附近的茶展本周开放。', discoveryIds: [item.id] }],
+          });
+          visibleId = result.messageIds[0];
+          deliveries++;
+        } else if (item.id === 'reply') {
+          const args = { userMessageId: 'reply', messageId: visibleId };
+          await invoke('DiscoveryFeedback', args);
+          await invoke('DiscoveryFeedback', args);
+        } else {
+          await invoke('SendUser', {
+            messageId: 'ordinary',
+            messages: [{ text: '普通聊天的回答' }],
+          });
+        }
+        handled++;
+      }
+      await invoke('Sleep');
+    });
+  installRunner();
+  await f.send('ordinary', '普通聊天只问天气');
+  await until(() => handled === 1);
+  assert.deepEqual(discoveryContext(), { deliveries: [], feedback: [] });
+  await f.service.call('assistant.control', { action: 'check' });
+  await until(() => deliveries === 1);
+  assert.equal(discoveryContext().feedback.length, 0);
+  await f.send('reply', '我不喝茶了');
+  await until(() => handled === 3);
+  assert.equal(discoveryContext().feedback.length, 1);
+  await f.restart();
+  installRunner();
+  assert.equal(discoveryContext().deliveries.length, 1);
+  assert.equal(discoveryContext().feedback.length, 1);
+  await f.service.call('assistant.control', { action: 'check' });
+  await until(async () => {
+    const status: any = await f.service.call('assistant.status', {});
+    if (status.state.lastError) throw Error(status.state.lastError);
+    return round === 2 && !status.state.active;
+  });
+  const book = new DatabaseSync(join(f.directory, 'native', 'index-initiative', 'notebook.sqlite'));
+  t.after(() => book.close());
+  const events = book.prepare('SELECT kind,payload FROM events').all();
+  assert.equal(events.filter((e) => e.kind === 'feedback').length, 1);
+  assert.equal(events.filter((e) => e.kind === 'delivery').length, 1);
+  assert.equal(events.filter((e) => e.kind === 'conversation').length, 0);
+  assert.equal(events.filter((e) => e.kind === 'feedback-resolution').length, 1);
+});
+
+test('discovery feedback rejects unsent, ordinary, fabricated and external messages; send retries preserve links', async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'bot-feedback-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const store = new BotStore(dir);
+  t.after(() => store.close());
+  store.post({ id: 'd', type: 'discovery', source: 'judge', content: '茶展' });
+  store.post({
+    id: 'other-d',
+    type: 'discovery',
+    source: 'judge',
+    content: '书展',
+  });
+  const messages = [{ text: '茶展消息', discoveryIds: ['d'] }];
+  const [id] = store.queueVisibleBatch('d-send', messages);
+  const user = (id: string, source = 'user') =>
+    store.post(
+      { id, type: 'user_message', source, content: { text: '反馈' } },
+      {
+        id,
+        type: 'user',
+        text: '反馈',
+        displayText: '真实用户反馈',
+        turnId: id,
+        ts: Date.now(),
+      },
+    );
+  user('u');
+  assert.throws(() => store.linkDiscoveryFeedback('u', id), /delivered discovery/);
+  assert.deepEqual(store.discoveryDeliveries(), []);
+  store.delivered(id);
+  user('after');
+  store.linkDiscoveryFeedback('after', id);
+  store.linkDiscoveryFeedback('after', id);
+  assert.equal(store.discoveryFeedback().length, 1);
+  assert.equal(store.discoveryFeedback()[0].text, '真实用户反馈');
+  assert.deepEqual(store.queueVisibleBatch('d-send', messages), [id]);
+  assert.throws(
+    () => store.queueVisibleBatch('d-send', [{ text: '茶展消息', discoveryIds: ['other-d'] }]),
+    /different batch/,
+  );
+  assert.throws(() => store.queueVisibleBatch('d-send', [{ text: '茶展消息' }]), /different batch/);
+  assert.throws(
+    () => store.queueVisibleBatch('invalid', [{ text: '无效关联', discoveryIds: ['missing'] }]),
+    /discoveryIds/,
+  );
+  assert.throws(() => store.linkDiscoveryFeedback('missing', id), /owner user message/);
+  user('external', 'external_connector');
+  assert.throws(() => store.linkDiscoveryFeedback('external', id), /owner user message/);
+  const [ordinary] = store.queueVisibleBatch('chat', [{ text: '普通聊天' }]);
+  store.delivered(ordinary);
+  assert.throws(() => store.linkDiscoveryFeedback('after', ordinary), /delivered discovery/);
 });

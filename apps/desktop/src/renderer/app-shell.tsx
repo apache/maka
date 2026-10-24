@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { PersonalAssistantChatLayout, MemoryOriginalHost, PersonalAssistantEntry, createInternalUriDispatcher } from './features/personal-assistant/index.js';
+import { PersonalAssistantTaskLayout, MemoryOriginalHost, PersonalAssistantEntry, createInternalUriDispatcher } from './features/personal-assistant/index.js';
 import { WorkHubControlOverlay, WorkHubDock, WorkHubMainNavigation } from './features/workhub';
 import { WorkHubEnablementWatch } from './application/contracts/workhub-workspace/workhub-enablement.js';
 import { RuntimeHostHandoffOverlay } from './features/runtime-host-management/index.js';
@@ -1304,7 +1304,7 @@ function AppShellContent({
                 onOpenUsage={() => commands.toggleTool('inspector')} onToggleWorkbar={commands.toggleRightPanel}
                 onOpenWorkHub={openWorkHub} onOpenSession={(sessionId) => { closeSettings(); openSession(sessionId); }} />
               <WorkHubDock workbar={selectors} workbarTogglePosition={workbarTogglePosition} visible={workHubActive && sessionsSelected && !shellObscured} />
-              <PersonalAssistantChatLayout
+              <PersonalAssistantTaskLayout
                 session={activeSessionForView}
                 // ChatView positions this transcript: switching conversations,
                 // following the tail and the moves the reader asks for are one
@@ -1474,7 +1474,7 @@ function AppShellContent({
                   />
 
                 ) : null}
-              </PersonalAssistantChatLayout>
+              </PersonalAssistantTaskLayout>
             </Conversation.ConversationHomeSurface>
             {/* Collapse hides the Workbar surface without unmounting its tools. */}
             <WorkbarHost togglePosition={workbarTogglePosition} />

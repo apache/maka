@@ -334,7 +334,7 @@ export class GatedSwarmProviderScenario {
 }
 
 function withoutRuntimeHostEnvironment(body: Record<string, unknown>): Record<string, unknown> {
-  // The scenario follows user requests, not the Host's ephemeral environment snapshot.
+  // The scenario follows user requests, not the Host's persisted environment snapshots.
   return {
     ...body,
     messages: (Array.isArray(body.messages) ? body.messages : []).filter(
@@ -342,7 +342,7 @@ function withoutRuntimeHostEnvironment(body: Record<string, unknown>): Record<st
         !(
           message.role === 'user' &&
           typeof message.content === 'string' &&
-          message.content.startsWith('Runtime Host environment for this turn')
+          message.content.startsWith('Runtime context (runtime.environment;')
         ),
     ),
   };

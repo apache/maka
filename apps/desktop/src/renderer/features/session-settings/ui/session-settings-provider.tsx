@@ -18,6 +18,7 @@
  */
 
 import { useLayoutEffect, type ReactNode } from 'react';
+import { SessionSettingsSettlementProvider } from '../../../application/contracts/session-settings-settlement.js';
 import { useSessionSettingsController } from '../controller/use-session-settings-controller.js';
 import type { SessionSettingsBridge } from '../controller/session-settings-bridge.js';
 import type { SessionSettingsInput } from '../model/session-settings-contract.js';
@@ -31,5 +32,10 @@ export function SessionSettingsProvider<Owner extends { sessionId?: string }>(pr
   const controller = useSessionSettingsController(props.input);
   useLayoutEffect(() => props.bridge.publish(controller), [props.bridge, controller]);
   useLayoutEffect(() => () => props.bridge.disconnect(), [props.bridge]);
-  return props.children;
+  // The bridge's commands are stable, so this value never re-renders consumers.
+  return (
+    <SessionSettingsSettlementProvider value={props.bridge.commands}>
+      {props.children}
+    </SessionSettingsSettlementProvider>
+  );
 }

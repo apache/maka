@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import { readFileSync } from 'node:fs';
+
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { fixture, until } from '../../index-initiative/test/fixture.js';
@@ -60,11 +62,11 @@ test('unified entry + background index + timed task + parent feedback run togeth
           content: turns === 1 ? '等待测试结果' : '验收结果通过',
         });
         await invoke('MatterSettle', {
-          expectedRevision: v.revision,
-          stateFile: v.files.draft,
+          note: readFileSync(v.files.draft, 'utf8'),
           disposition: turns === 1 ? 'wait' : 'complete',
           reason: turns === 1 ? '测试尚未结束' : '读取了通过记录',
           summary: '只读核对验收状态',
+          progressSummary: '只读核对验收状态',
           update: turns === 1 ? '测试仍在运行' : '验收通过',
           ...(turns === 1
             ? { waitingFor: '测试结果产生', wakes: [{ kind: 'at', at: Date.now() + 100 }] }
@@ -202,11 +204,11 @@ test('Bot delegates for the visible owner and delivers task completion through S
         const state = await invoke('MatterRead', { activationId: workspace.activationId });
         await invoke('MatterWriteFile', { path: state.files.draft, content: '验收通过' });
         await invoke('MatterSettle', {
-          expectedRevision: state.revision,
-          stateFile: state.files.draft,
+          note: readFileSync(state.files.draft, 'utf8'),
           disposition: 'complete',
           reason: '核对完成',
           summary: '验收通过',
+          progressSummary: '验收通过',
           update: '验收通过',
         });
       } catch (error) {

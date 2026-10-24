@@ -119,37 +119,42 @@ export async function fixture(config: any = {}) {
       worker.task = (async () => {
         await beforeWorker?.();
         if (workerRunner) return workerRunner(id, prompt);
-        const indexId = /Organize index ([^. ]+)/.exec(prompt)![1];
-        const summary = await invokeAs(id, 'MemoryIndexRead', { indexId });
-        const page = await invokeAs(id, 'MemoryHistory', {
-          from: summary.range.from,
-          to: summary.range.to,
-          mode: 'messages',
-          types: ['user', 'assistant'],
-          limit: 500,
-        });
-        const text = page.items.map((x: any) => x.message.text).join(' ');
-        const todo = summary.index.name === 'Candidate Todo';
-        const key = todo ? 'vendor' : 'events';
-        const old = await invokeAs(id, 'MemoryIndexContent', { indexId, key });
-        const result = await invokeAs(id, 'MemoryIndexWrite', {
-          indexId,
-          key,
-          expectedRevision: old.revision,
-          text:
-            todo && text.includes('contacted yesterday')
-              ? ''
-              : old.text +
-                '\n' +
-                page.items.map((x: any) => `${x.message.text} ${x.citation}`).join('\n'),
-        });
-        await invokeAs(id, 'MemoryIndexCheckpoint', {
-          indexId,
-          rangeId: summary.range.rangeId,
-          expectedRevision: result.revision,
-          notes: 'Organized the source range with citations.',
-          complete: true,
-        });
+        const single = /Organize index ([^. ]+)/.exec(prompt)?.[1];
+        const ids = single
+          ? [single]
+          : JSON.parse(prompt.slice(prompt.indexOf('\n') + 1)).map((x: any) => x.indexId);
+        for (const indexId of ids) {
+          const summary = await invokeAs(id, 'MemoryIndexRead', { indexId });
+          const page = await invokeAs(id, 'MemoryHistory', {
+            from: summary.range.from,
+            to: summary.range.to,
+            mode: 'messages',
+            types: ['user', 'assistant'],
+            limit: 500,
+          });
+          const text = page.items.map((x: any) => x.message.text).join(' ');
+          const todo = summary.index.name === 'Candidate Todo';
+          const key = todo ? 'vendor' : 'events';
+          const old = await invokeAs(id, 'MemoryIndexContent', { indexId, key });
+          const result = await invokeAs(id, 'MemoryIndexWrite', {
+            indexId,
+            key,
+            expectedRevision: old.revision,
+            text:
+              todo && text.includes('contacted yesterday')
+                ? ''
+                : old.text +
+                  '\n' +
+                  page.items.map((x: any) => `${x.message.text} ${x.citation}`).join('\n'),
+          });
+          await invokeAs(id, 'MemoryIndexCheckpoint', {
+            indexId,
+            rangeId: summary.range.rangeId,
+            expectedRevision: result.revision,
+            notes: 'Organized the source range with citations.',
+            complete: true,
+          });
+        }
       })();
       return { disposition: 'turn_started' };
     },
@@ -173,6 +178,8 @@ export async function fixture(config: any = {}) {
     { 'memory-network': config, 'proactive-matters': { tickMs: 60000 } },
     { 'memory-network': join(root, 'data') },
   );
+  // Business-flow fixtures explicitly admit their coordinator; ordinary callers remain denied.
+  await native.remote('matters.authorize-session', { sessionId: 'agent-chat' });
   const { tools, prompts: systemPrompt, platform } = native;
   const invokeAs = async (sessionId: string, name: string, input: any) => {
     const tool = tools.resolve(sessionId, []).tools.find((x: any) => x.name === name);

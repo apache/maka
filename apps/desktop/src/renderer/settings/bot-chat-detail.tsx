@@ -195,6 +195,21 @@ export function BotChatChannelDetail(props: {
         icon={<ArrowLeft size={ICON_SIZE.chrome} aria-hidden="true" />}
         label={detailCopy.back}
       />
+      {(
+        <SettingsSection title={getBotSettingsCopy(locale).overview.messageHandlingTitle}>
+          <Selector
+            label={getBotSettingsCopy(locale).overview.messageHandlingLabel}
+            value={channel.messageHandling ?? 'inherit'}
+            options={[
+              { value: 'inherit', label: getBotSettingsCopy(locale).overview.followDefault },
+              { value: 'assistant', label: getBotSettingsCopy(locale).overview.personalAssistant },
+              { value: 'task', label: getBotSettingsCopy(locale).overview.separateTask },
+              { value: 'workhub', label: 'WorkHub' },
+            ]}
+            onChange={(value) => { void props.onUpdateChannel({ messageHandling: value === 'inherit' ? undefined : value as NonNullable<BotChannelSettings['messageHandling']> }); }}
+          />
+        </SettingsSection>
+      )}
       <header className="settingsBotDetailHeader" data-support={support}>
           <BotBrandLogo provider={provider} size="large" />
           <div className="settingsBotDetailHeaderBody">
@@ -486,6 +501,7 @@ function botCredentialFields(copy: BotSettingsCopy['detail']): Partial<Record<Bo
     { kind: 'notice', text: copy.telegramNotice },
   ],
   feishu: [
+    { kind: 'allowed-user-ids' },
     { kind: 'text', key: 'appId', label: copy.feishuCredentialId, placeholder: 'cli_xxxx' },
     { kind: 'password', key: 'appSecret', label: copy.feishuSecret, placeholder: 'xxxx' },
     {
@@ -578,6 +594,7 @@ function BotCredentialFields(props: {
             return (
               <BotAllowedUserIdsField
                 key="allowed-user-ids"
+                provider={props.provider}
                 value={props.channel.allowedUserIds}
                 onChange={(next) => props.onUpdateChannel({ allowedUserIds: next })}
               />
@@ -602,6 +619,7 @@ function BotCredentialFields(props: {
  * parse function. We only emit the parsed array on commit (onBlur).
  */
 function BotAllowedUserIdsField(props: {
+  provider: BotProvider;
   value: ReadonlyArray<string> | undefined;
   onChange(next: ReadonlyArray<string> | undefined): void;
 }): ReactNode {
@@ -631,8 +649,8 @@ function BotAllowedUserIdsField(props: {
   // non-empty string) — the gate is informational so a power user
   // tracking a non-Telegram platform later is not blocked.
   const invalidEntries = useMemo(
-    () => parsed.filter((id) => !/^[0-9]+$/.test(id)),
-    [parsed],
+    () => props.provider === 'telegram' ? parsed.filter((id) => !/^[0-9]+$/.test(id)) : [],
+    [parsed, props.provider],
   );
 
   const commit = (): void => {
@@ -653,7 +671,7 @@ function BotAllowedUserIdsField(props: {
       onBlur={commit}
       rows={3}
       hasSpellCheck={false}
-      placeholder={copy.allowedUsersPlaceholder}
+      placeholder={props.provider === 'feishu' ? copy.feishuAllowedUsersPlaceholder : copy.allowedUsersPlaceholder}
       label={copy.allowedUsersLabel(parsed.length, MAX_ALLOWED_USER_IDS)}
       description={copy.allowedUsersHelp(atCap)}
       status={warning ? { type: 'warning', message: warning } : undefined}

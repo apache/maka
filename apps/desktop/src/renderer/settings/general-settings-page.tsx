@@ -18,6 +18,7 @@
  */
 
 import { PersonalAssistantEnableSwitch } from '../features/personal-assistant/index.js';
+import { CheckinDefaultModelHint, CheckinEnableSwitch } from '../features/conversation/index.js';
 import { JevSettingsSection } from '../features/jev-settings';
 import { useEffect, useMemo, useState } from "react";
 import { PersonalizationSettingsSection } from "./personalization-settings-section";
@@ -49,6 +50,7 @@ import {
   ModelPicker,
   PermissionModeSelect,
   Selector,
+  StatusDot,
   Switch,
   modelChoiceValue,
   modelMenuGroups,
@@ -307,6 +309,21 @@ export function GeneralSettingsPage(props: {
           ) : (
             <Switch label={copy.personalAssistant} isLabelHidden value={false} isDisabled />
           )}
+        />
+        <SettingsRow
+          label={copy.checkin}
+          description={copy.checkinHelp}
+          end={
+            <>
+              <CheckinDefaultModelHint hasDefaultModel={props.defaultSlug !== null}>
+                <span className="settingsStatus" role="status">
+                  <StatusDot variant="warning" label={copy.checkinNeedsDefaultModel} />
+                  <span>{copy.checkinNeedsDefaultModel}</span>
+                </span>
+              </CheckinDefaultModelHint>
+              <CheckinEnableSwitch label={copy.checkin} />
+            </>
+          }
         />
       </SettingsSection>
       {showRuntimeHostDefaults ? (

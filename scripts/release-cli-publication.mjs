@@ -21,7 +21,6 @@ import { appendFileSync, copyFileSync, mkdirSync, readFileSync, writeFileSync } 
 import { basename, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
-import { CLI_RELEASE_ARTIFACT_LIMITS } from './release-cli-artifact-policy.mjs';
 import {
   assertProductNightlyVersion,
   parseProductNightlyVersion,
@@ -33,6 +32,8 @@ const REGISTRY_ORIGIN = 'https://registry.npmjs.org';
 const REPOSITORY = 'apache/maka';
 const PUBLICATION_WORKFLOW_PATH = '.github/workflows/npm-publication.yml';
 const REGISTRY_REQUEST_TIMEOUT_MS = 30_000;
+// Bound the buffered network response independently of release artifact metrics.
+export const MAX_REGISTRY_TARBALL_BYTES = 64 * 1024 * 1024;
 const RELEASE_RECORD_KEYS = [
   'schemaVersion',
   'packageName',
@@ -195,8 +196,8 @@ export async function fetchRegistryRelease({
   }
   const bytes = await readBoundedBytes(
     response,
-    CLI_RELEASE_ARTIFACT_LIMITS.compressedBytes,
-    'Registry tarball exceeds the reviewed compressed size limit',
+    MAX_REGISTRY_TARBALL_BYTES,
+    'Registry tarball exceeds the download resource limit',
   );
   const sha256 = digest('sha256', bytes, 'hex');
   if (sha256 !== record.sha256) {
@@ -353,9 +354,6 @@ function loadReleaseRecord(releaseDirectory) {
 function validateCandidateFiles(releaseDirectory, identity) {
   const tarballPath = join(releaseDirectory, identity.tarball);
   const bytes = readFileSync(tarballPath);
-  if (bytes.length > CLI_RELEASE_ARTIFACT_LIMITS.compressedBytes) {
-    throw new Error('CLI release candidate exceeds the reviewed compressed size limit');
-  }
   const checksum = readFileSync(`${tarballPath}.sha256`, 'utf8');
   const match = /^([0-9a-f]{64}) {2}([^\r\n]+)\r?\n?$/u.exec(checksum);
   if (!match || match[2] !== identity.tarball) {

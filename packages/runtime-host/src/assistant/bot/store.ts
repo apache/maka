@@ -21,6 +21,20 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync, chmodSync } from 'node:fs';
 import { join } from 'node:path';
 import type { StoredMessage } from '@maka/core/session';
+import { assistantBatchOutputTurnId, assistantOutputTurnId } from './turn-ids.js';
+
+export interface DiscoveryFeedbackLink {
+  id: string;
+  messageId: string;
+  text: string;
+  at: string;
+}
+export interface DiscoveryDelivery {
+  messageId: string;
+  discoveryIds: string[];
+  text: string;
+  at: string;
+}
 
 export type InboxType = 'user_message' | 'discovery' | 'task_update' | 'system_event';
 export interface InboxInput {
@@ -44,6 +58,9 @@ export class BotStore {
         type TEXT NOT NULL, source TEXT NOT NULL, at INTEGER NOT NULL, task TEXT,
         content TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS metadata(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS discovery_messages(message_id TEXT PRIMARY KEY, discovery_ids TEXT NOT NULL, delivered_at INTEGER);
+      CREATE TABLE IF NOT EXISTS discovery_feedback(user_id TEXT NOT NULL, message_id TEXT NOT NULL,
+        PRIMARY KEY(user_id,message_id));
       CREATE TABLE IF NOT EXISTS outbox_batches(id TEXT PRIMARY KEY, payload TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS outbox(id TEXT PRIMARY KEY, payload TEXT NOT NULL, delivered INTEGER NOT NULL DEFAULT 0);`);
   }
@@ -186,7 +203,11 @@ export class BotStore {
   /** Register the whole batch before delivery. Retries cannot extend or reorder a committed batch. */
   queueVisibleBatch(
     batchId: string,
-    texts: readonly { summary?: string; text: string }[],
+    texts: readonly {
+      summary?: string;
+      text: string;
+      discoveryIds?: string[];
+    }[],
   ): string[] {
     return this.transaction(() => {
       const serialize = (items: typeof texts) =>
@@ -194,8 +215,15 @@ export class BotStore {
           items.map((entry) => ({
             text: entry.text,
             ...(entry.summary !== undefined ? { summary: entry.summary } : {}),
+            ...(entry.discoveryIds?.length
+              ? { discoveryIds: [...new Set(entry.discoveryIds)].sort() }
+              : {}),
           })),
         );
+      for (const entry of texts)
+        for (const id of entry.discoveryIds ?? [])
+          if (!this.db.prepare("SELECT 1 FROM inbox WHERE id=? AND type='discovery'").get(id))
+            throw Error('discoveryIds must reference discovery messages in Inbox');
       const payload = serialize(texts);
       const old = this.db.prepare('SELECT payload FROM outbox_batches WHERE id=?').get(batchId);
       if (old && serialize(JSON.parse(String(old.payload))) !== payload)
@@ -218,18 +246,77 @@ export class BotStore {
           type: 'assistant',
           id,
           turnId:
-            texts.length === 1 ? `assistant-output:${suffix}` : `assistant-output:batch:${suffix}`,
+            texts.length === 1
+              ? assistantOutputTurnId(batchId)
+              : assistantBatchOutputTurnId(batchId, index),
           ts: timestamp,
           text,
           ...(summary !== undefined ? { summary } : {}),
           modelId: 'assistant-bot',
         });
+        if (entry.discoveryIds?.length)
+          this.db
+            .prepare(
+              'INSERT OR IGNORE INTO discovery_messages(message_id,discovery_ids) VALUES(?,?)',
+            )
+            .run(id, JSON.stringify([...new Set(entry.discoveryIds)].sort()));
         return id;
       });
       if (!old)
         this.db.prepare('INSERT INTO outbox_batches(id,payload) VALUES(?,?)').run(batchId, payload);
       return ids;
     });
+  }
+  discoveryDeliveries(): DiscoveryDelivery[] {
+    return this.db
+      .prepare(
+        `SELECT o.id,o.payload,d.discovery_ids,d.delivered_at FROM outbox o
+      JOIN discovery_messages d ON d.message_id=o.id WHERE o.delivered=1 ORDER BY o.rowid`,
+      )
+      .all()
+      .map((row) => {
+        const m = JSON.parse(String(row.payload));
+        return {
+          messageId: String(row.id),
+          discoveryIds: JSON.parse(String(row.discovery_ids)),
+          text: m.text,
+          at: new Date(Number(row.delivered_at)).toISOString(),
+        };
+      });
+  }
+  linkDiscoveryFeedback(userMessageId: string, messageId: string) {
+    // Both sides must be real messages. The Bot supplies the semantic relationship,
+    // never replacement user text or an inferred reply based on adjacency.
+    const user = this.db
+      .prepare("SELECT * FROM inbox WHERE id=? AND type='user_message' AND source='user'")
+      .get(userMessageId);
+    const visible = this.db.prepare('SELECT payload FROM outbox WHERE id=?').get(userMessageId);
+    const delivery = this.discoveryDeliveries().find((d) => d.messageId === messageId);
+    if (!user || !visible || JSON.parse(String(visible.payload)).origin || !delivery)
+      throw Error('Feedback requires an owner user message and a delivered discovery message');
+    if (Number(user.at) < Date.parse(delivery.at))
+      throw Error('Feedback must follow the delivered discovery message');
+    this.db
+      .prepare('INSERT OR IGNORE INTO discovery_feedback VALUES(?,?)')
+      .run(userMessageId, messageId);
+    return { recorded: true, userMessageId, messageId };
+  }
+  discoveryFeedback(): DiscoveryFeedbackLink[] {
+    return this.db
+      .prepare(
+        `SELECT f.user_id,f.message_id,o.payload,i.at FROM discovery_feedback f
+      JOIN outbox o ON o.id=f.user_id JOIN inbox i ON i.id=f.user_id ORDER BY f.rowid`,
+      )
+      .all()
+      .map((row) => {
+        const m = JSON.parse(String(row.payload));
+        return {
+          id: String(row.user_id),
+          messageId: String(row.message_id),
+          text: m.displayText ?? m.text,
+          at: new Date(Number(row.at)).toISOString(),
+        };
+      });
   }
   pendingVisible() {
     return this.db
@@ -238,7 +325,14 @@ export class BotStore {
       .map((row) => JSON.parse(String(row.payload)) as StoredMessage);
   }
   delivered(id: string) {
-    this.db.prepare('UPDATE outbox SET delivered=1 WHERE id=?').run(id);
+    this.transaction(() => {
+      this.db.prepare('UPDATE outbox SET delivered=1 WHERE id=?').run(id);
+      this.db
+        .prepare(
+          'UPDATE discovery_messages SET delivered_at=COALESCE(delivered_at,?) WHERE message_id=?',
+        )
+        .run(Date.now(), id);
+    });
   }
   close() {
     this.db.close();

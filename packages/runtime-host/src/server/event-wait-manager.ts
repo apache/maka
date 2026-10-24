@@ -20,8 +20,10 @@
 import { randomUUID } from 'node:crypto';
 import {
   decodeEventWaitRecord,
+  decodeObservedEventWaitRecord,
   EVENT_WAIT_LIMITS,
-  type EventWaitRecord,
+  type ObservedEventWaitRecord as EventWaitRecord,
+  type EventWaitRecord as GoalEventWaitRecord,
   type EventWaitObservation,
 } from '@maka/core/event-wait';
 import {
@@ -31,9 +33,12 @@ import {
   eventWaitSourceKey,
   type ExtendEventWaitSourceCooldownInput,
   type InteractiveEventWaitAuthorityWriter,
-  type EventWaitSnapshot,
   type ReadEventWaitInput,
 } from '@maka/storage/event-wait-authority';
+import type {
+  EventWaitObservationStore,
+  ObservationWaitSnapshot as EventWaitSnapshot,
+} from './event-wait-observation-store.js';
 import { StorageRootAuthorityError } from '@maka/storage/root-authority';
 import {
   EventWaitAdapterRegistry,
@@ -100,8 +105,11 @@ export const DEFAULT_EVENT_WAIT_OBSERVATION_POLICY: EventWaitObservationPolicy =
   maxSourceCooldowns: 1024,
   jitterRatio: 0.2,
 });
-export interface HostEventWaitManagerOptions {
-  readonly store: InteractiveEventWaitAuthorityWriter;
+export interface HostEventWaitObserverOptions {
+  /** Semantic projection hint only; pending polling does not broadcast activity. */
+  readonly onChanged?: (wait: EventWaitRecord) => void;
+  readonly store: EventWaitObservationStore;
+  readonly decodeRecord?: (value: unknown) => EventWaitRecord;
   readonly adapters: EventWaitAdapterRegistry;
   /** Trusted composition must check current Session/Goal identity and source access. */
   readonly authorize: (
@@ -163,12 +171,14 @@ const addTime = (now: number, delay: number): number =>
  * Ready candidates normally use durable observation age. Failed preparations get a bounded
  * traversal by immutable ID, so neither failed writes nor cache capacity can pin selection.
  */
-export class HostEventWaitManager {
-  readonly #store: InteractiveEventWaitAuthorityWriter;
-  readonly #options: HostEventWaitManagerOptions;
+export class HostEventWaitObserver {
+  readonly #store: EventWaitObservationStore;
+  readonly #options: HostEventWaitObserverOptions;
   readonly #clock: EventWaitClock;
   readonly #policy: EventWaitObservationPolicy;
   readonly #flights = new Map<string, Flight>();
+  /** Registration/delivery authorization shares observation capacity and source facts. */
+  readonly #accessFlights = new Set<Flight>();
   readonly #subscriptions = new Map<string, Subscription>();
   readonly #cooldowns = new Map<string, number>();
   /** Dispatch preparation is serialized per source, independently of in-flight reads. */
@@ -189,8 +199,8 @@ export class HostEventWaitManager {
   #closed = false;
   #ready = false;
 
-  constructor(options: HostEventWaitManagerOptions) {
-    this.#store = authenticateInteractiveEventWaitAuthorityWriter(options.store);
+  constructor(options: HostEventWaitObserverOptions) {
+    this.#store = options.store;
     this.#options = options;
     this.#clock = options.clock ?? systemClock;
     this.#policy = { ...DEFAULT_EVENT_WAIT_OBSERVATION_POLICY, ...options.policy };
@@ -198,7 +208,11 @@ export class HostEventWaitManager {
       if (name === 'jitterRatio') {
         if (!Number.isFinite(value) || value < 0 || value > 1)
           throw new TypeError('Invalid wait jitter');
-      } else if (!Number.isSafeInteger(value) || value < 1 || value > 2_147_483_647)
+      } else if (
+        !Number.isSafeInteger(value) ||
+        value < 1 ||
+        (name !== 'maxLifetimeMs' && value > 2_147_483_647)
+      )
         throw new TypeError(`Invalid wait policy: ${name}`);
     }
     if (
@@ -215,12 +229,84 @@ export class HostEventWaitManager {
       throw new TypeError('Inconsistent event wait policy');
   }
 
+  #decode(value: unknown): EventWaitRecord {
+    return (this.#options.decodeRecord ?? decodeObservedEventWaitRecord)(value);
+  }
+
   /** Validates the supported template only; PR3 owns registration authorization and yield. */
   validate(wait: EventWaitRecord): void {
-    const record = decodeEventWaitRecord(wait);
+    const record = this.#decode(wait);
     if (record.deadlineAt - record.createdAt > this.#policy.maxLifetimeMs)
       throw new TypeError('Event wait exceeds maximum lifetime');
     this.#options.adapters.validate(record);
+  }
+
+  /** Bounded source access outside observation; no wait attempt or work Turn is charged. */
+  async checkSourceAccess(
+    wait: EventWaitRecord,
+    parent: AbortSignal,
+    authorize: HostEventWaitObserverOptions['authorize'],
+  ): Promise<EventWaitObservationAccess> {
+    const unknown = { kind: 'unknown' as const, reason: 'authorization_unavailable' };
+    const source = sourceKey(wait);
+    const occupied = this.#occupiedFlights();
+    if (
+      this.#closed ||
+      parent.aborted ||
+      this.#pendingCooldowns.size >= this.#policy.maxSourceCooldowns ||
+      this.#sourceCooldown(source) > this.#clock.now() ||
+      occupied.size >= this.#policy.maxConcurrent ||
+      [...occupied].filter((f) => f.source === source).length >= this.#policy.maxPerSource
+    )
+      return unknown;
+    const flight: Flight = {
+      controller: new AbortController(),
+      source,
+      sessionId: wait.sessionId,
+      waitId: wait.waitId,
+      claimed: false,
+      cooldownUntil: 0,
+      retryAfterUntil: 0,
+      task: Promise.resolve(),
+    };
+    this.#accessFlights.add(flight);
+    const abort = () => flight.controller.abort();
+    parent.addEventListener('abort', abort, { once: true });
+    const task = (async () => {
+      const cooldown = await this.#store.readSourceCooldown({
+        providerId: wait.resource.providerId,
+        connectionId: wait.resource.connectionId,
+      });
+      if (
+        this.#closed ||
+        flight.controller.signal.aborted ||
+        Math.max(cooldown ?? 0, this.#sourceCooldown(source)) > this.#clock.now()
+      )
+        return unknown;
+      try {
+        // Expired waits still need delivery authorization, so the source deadline
+        // does not bound this separate request. #call retains the request timeout.
+        return (
+          (await this.#tryAuthorize(wait, flight, Number.MAX_SAFE_INTEGER, authorize))?.access ??
+          unknown
+        );
+      } catch (error) {
+        if (error instanceof SourceCooldownWriteError || error instanceof StorageRootAuthorityError)
+          throw error;
+        return unknown;
+      }
+    })();
+    flight.task = task.then(
+      () => undefined,
+      () => undefined,
+    );
+    try {
+      return await task;
+    } finally {
+      parent.removeEventListener('abort', abort);
+      this.#accessFlights.delete(flight);
+      // #call retains interrupted requests in #lingering until late facts settle.
+    }
   }
 
   start(): Promise<void> {
@@ -264,7 +350,11 @@ export class HostEventWaitManager {
   #occupiedFlights(): Set<Flight> {
     // One observation owns one slot even while its interrupted request and checkpoint
     // persistence overlap. Keep that slot until both the flight and its late work retire.
-    return new Set([...this.#flights.values(), ...this.#lingering.values()]);
+    return new Set([
+      ...this.#flights.values(),
+      ...this.#accessFlights,
+      ...this.#lingering.values(),
+    ]);
   }
 
   async #scanPage(): Promise<void> {
@@ -434,7 +524,8 @@ export class HostEventWaitManager {
   }
 
   async #observe(snapshot: EventWaitSnapshot, flight: Flight): Promise<void> {
-    let r = snapshot.record;
+    const projectionBefore = snapshot.record;
+    let r = projectionBefore;
     if (r.status !== 'waiting' || this.#closed) return;
     const cooldown = await this.#store.readSourceCooldown({
       providerId: r.resource.providerId,
@@ -491,7 +582,9 @@ export class HostEventWaitManager {
       outcome: 'checking',
       cursor: previous?.cursor ?? null,
       eventKey: previous?.eventKey ?? null,
-      reason: null,
+      // Reconnecting projections still need the last completed observation's
+      // diagnostic while this reservation's source request is in flight.
+      reason: previous?.reason ?? null,
     };
     const claim = await this.#commit(snapshot, { ...r, updatedAt: now, observation: reserved });
     if (this.#closed || flight.controller.signal.aborted) return;
@@ -576,7 +669,10 @@ export class HostEventWaitManager {
       !this.#subscriptions.get(r.waitId)?.controller.signal.aborted
     )
       this.#detach(r.waitId);
-    await this.#finish(snapshot, result, { retryAfterUntil: flight.retryAfterUntil });
+    await this.#finish(snapshot, result, {
+      retryAfterUntil: flight.retryAfterUntil,
+      projectionBefore,
+    });
   }
 
   #validateAccess(access: EventWaitObservationAccess): void {
@@ -600,6 +696,8 @@ export class HostEventWaitManager {
   async #tryAuthorize(
     r: EventWaitRecord,
     flight: Flight,
+    deadline = r.deadlineAt,
+    authorize = this.#options.authorize,
   ): Promise<{ access: EventWaitObservationAccess } | null> {
     const recordCooldown = async (checked: { access: EventWaitObservationAccess } | null) => {
       if (!checked || this.#closed) return;
@@ -611,12 +709,12 @@ export class HostEventWaitManager {
     };
     const checked = await this.#call<{ access: EventWaitObservationAccess } | null>(
       flight,
-      r.deadlineAt,
+      deadline,
       (signal) => {
         // Recheck at actual dispatch; cooldown can change after the timer wakes or
         // before #call invokes this callback. Active flights retain it across cache eviction.
         if (flight.retryAfterUntil > this.#clock.now()) return Promise.resolve(null);
-        return this.#options.authorize(r, signal).then((access) => ({ access }));
+        return authorize(structuredClone(r), signal).then((access) => ({ access }));
       },
       recordCooldown,
     );
@@ -870,15 +968,30 @@ export class HostEventWaitManager {
     )
       throw new TypeError('Invalid retry delay');
     const now = Math.max(r.updatedAt, this.#clock.now());
-    decodeEventWaitRecord({
+    // Registration and delivery authorization may have no observation checkpoint.
+    // Validate the prospective fields without writing an attempt or changing the wait.
+    const observation = r.observation ?? {
+      schemaVersion: 1,
+      attempts: 1,
+      lastAttemptAt: now,
+      lastObservedAt: now,
+      nextObserveAt: now,
+      nextPollAt: now,
+      consecutiveErrors: 0,
+      outcome: 'checking',
+      cursor: null,
+      eventKey: null,
+      reason: null,
+    };
+    this.#decode({
       ...r,
       updatedAt: now,
       observation: {
-        ...r.observation!,
+        ...observation,
         outcome: result.kind,
         lastObservedAt: now,
-        cursor: result.cursor ?? r.observation!.cursor,
-        eventKey: result.eventKey ?? r.observation!.eventKey,
+        cursor: result.cursor ?? observation.cursor,
+        eventKey: result.eventKey ?? observation.eventKey,
         reason: result.kind === 'unknown' ? result.reason : null,
       },
       ...(result.kind === 'pending' || result.kind === 'unknown'
@@ -955,7 +1068,11 @@ export class HostEventWaitManager {
   async #finish(
     snapshot: EventWaitSnapshot,
     result: EventWaitObservationResult,
-    options: { reason?: string; retryAfterUntil?: number } = {},
+    options: {
+      reason?: string;
+      retryAfterUntil?: number;
+      projectionBefore?: EventWaitRecord;
+    } = {},
   ): Promise<EventWaitSnapshot | null> {
     const r = snapshot.record;
     if (this.#closed || r.status !== 'waiting') return null;
@@ -1021,7 +1138,7 @@ export class HostEventWaitManager {
         },
       };
     }
-    const committed = await this.#commit(snapshot, record);
+    const committed = await this.#commit(snapshot, record, options.projectionBefore);
     if (!committed || committed.record.status !== 'waiting') this.#detach(r.waitId);
     return committed;
   }
@@ -1172,6 +1289,7 @@ export class HostEventWaitManager {
   async #commit(
     snapshot: EventWaitSnapshot,
     record: EventWaitRecord,
+    projectionBefore: EventWaitRecord = snapshot.record,
   ): Promise<EventWaitSnapshot | null> {
     if (this.#closed) return null;
     const result = await this.#store.commit({
@@ -1179,7 +1297,23 @@ export class HostEventWaitManager {
       expectedAuthorityRevision: snapshot.authorityRevision,
       record,
     });
-    return result.kind === 'committed' ? result.snapshot : null;
+    if (result.kind !== 'committed') return null;
+    const after = result.snapshot.record;
+    // Compare durable semantics before the attempt, not its temporary checking
+    // reservation. Cache eviction must not turn unchanged polling into activity.
+    if (
+      (after.status !== 'waiting' || after.observation?.outcome !== 'checking') &&
+      (projectionBefore.status !== after.status ||
+        projectionBefore.observation?.outcome !== after.observation?.outcome ||
+        projectionBefore.observation?.reason !== after.observation?.reason)
+    ) {
+      try {
+        this.#options.onChanged?.(after);
+      } catch {
+        /* Projection hints are best effort. */
+      }
+    }
+    return result.snapshot;
   }
 
   async #expire(snapshot: EventWaitSnapshot): Promise<void> {
@@ -1268,7 +1402,7 @@ export class HostEventWaitManager {
 
   #cool(source: string, until: number, owner?: Flight): void {
     // Prepared reads retain new source facts even if their cache entry is evicted.
-    for (const flight of this.#flights.values()) {
+    for (const flight of this.#occupiedFlights()) {
       if (flight.source === source && flight !== owner) {
         flight.cooldownUntil = Math.max(flight.cooldownUntil, until);
         // An owner marks ordinary read spacing. Source-reported Retry-After has no
@@ -1316,6 +1450,7 @@ export class HostEventWaitManager {
     this.#timer?.();
     this.#timer = undefined;
     for (const flight of this.#flights.values()) flight.controller.abort();
+    for (const flight of this.#accessFlights) flight.controller.abort();
     for (const waitId of this.#subscriptions.keys()) this.#detach(waitId);
     this.#close = (async () => {
       let cancelTimer: (() => void) | undefined;
@@ -1325,6 +1460,7 @@ export class HostEventWaitManager {
             this.#start,
             this.#scan,
             ...[...this.#flights.values()].map((v) => v.task),
+            ...[...this.#accessFlights].map((v) => v.task),
             ...this.#lateResults,
           ]),
           new Promise<void>((resolve) => {
@@ -1336,5 +1472,46 @@ export class HostEventWaitManager {
       }
     })();
     return this.#close;
+  }
+}
+
+/** Existing Goal entry point retains authenticated storage and strict Goal record validation. */
+export interface HostEventWaitManagerOptions
+  extends Omit<HostEventWaitObserverOptions, 'store' | 'decodeRecord' | 'authorize' | 'onChanged'> {
+  readonly store: InteractiveEventWaitAuthorityWriter;
+  readonly onChanged?: (wait: GoalEventWaitRecord) => void;
+  readonly authorize: (
+    wait: GoalEventWaitRecord,
+    signal: AbortSignal,
+  ) => Promise<EventWaitObservationAccess>;
+}
+export class HostEventWaitManager extends HostEventWaitObserver {
+  override checkSourceAccess(
+    wait: GoalEventWaitRecord,
+    signal: AbortSignal,
+    authorize: HostEventWaitManagerOptions['authorize'],
+  ): Promise<EventWaitObservationAccess> {
+    return super.checkSourceAccess(wait, signal, (record, signal) =>
+      authorize(decodeEventWaitRecord(record), signal),
+    );
+  }
+  constructor(options: HostEventWaitManagerOptions) {
+    const store = authenticateInteractiveEventWaitAuthorityWriter(options.store);
+    super({
+      ...options,
+      decodeRecord: decodeEventWaitRecord,
+      authorize: (wait, signal) => options.authorize(decodeEventWaitRecord(wait), signal),
+      onChanged: (wait) => options.onChanged?.(decodeEventWaitRecord(wait)),
+      store: {
+        read: (input) => store.read(input),
+        listByStatus: (input) => store.listByStatus(input),
+        listForObservation: (input) => store.listForObservation(input),
+        readSourceCooldown: (input) => store.readSourceCooldown(input),
+        extendSourceCooldown: (input) => store.extendSourceCooldown(input),
+        reserveSourceDispatch: (input) => store.reserveSourceDispatch(input),
+        completeSourceDispatch: (input) => store.completeSourceDispatch(input),
+        commit: (input) => store.commit({ ...input, record: decodeEventWaitRecord(input.record) }),
+      },
+    });
   }
 }

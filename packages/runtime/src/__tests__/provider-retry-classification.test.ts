@@ -39,6 +39,19 @@ const assertRetryProjection = (error: unknown, kind: ModelFailureKind, retryable
 };
 
 describe('Provider retry classification', () => {
+  test('retries HTTP/2 stream interruptions, including nested transport causes', () => {
+    const interruption = Object.assign(
+      new Error('Stream closed with error code NGHTTP2_PROTOCOL_ERROR'),
+      { code: 'ERR_HTTP2_STREAM_ERROR' },
+    );
+    assertRetryProjection(interruption, 'network', true);
+    assertRetryProjection(new TypeError('fetch failed', { cause: interruption }), 'network', true);
+    assertRetryProjection(
+      providerError('Unauthorized', { statusCode: 401, cause: interruption }),
+      'auth',
+      false,
+    );
+  });
   test('derives retryability from the classified failure kind', () => {
     const cases: Array<[string, unknown, ModelFailureKind, boolean]> = [
       [
@@ -211,6 +224,7 @@ describe('Provider retry classification', () => {
   test('keeps retry metadata consistent for 2xx response interruptions', () => {
     for (const statusCode of [200, 201, 204, 206, 299]) {
       for (const code of [
+        'ERR_HTTP2_STREAM_ERROR',
         'ECONNRESET',
         'EPIPE',
         'ETIMEDOUT',

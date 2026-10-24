@@ -24,7 +24,9 @@ import { ASSISTANT_BACKGROUND_SESSION_LABEL } from '@maka/core/session';
 import type { MessageContent } from '@maka/core/events';
 import type { AssistantModuleServices } from '../service.js';
 import type { InitiativeStore } from '../index-initiative/store.js';
+import { executionFailure } from '../execution-outcome.js';
 import { BotStore, type InboxInput } from './store.js';
+import { assistantErrorOutputTurnId, assistantInputTurnId } from './turn-ids.js';
 
 const UNREAD_SLEEP_FEEDBACK =
   '本次未能休眠：你读取 Inbox 后又收到新消息，或上一批还有未投递消息。请调用 InboxCheck 接收正文，再自行决定如何处理；不要求回复或完成每件事，之后可再次调用 Sleep。';
@@ -109,7 +111,7 @@ export class BotController {
         type: 'user',
         ...(origin ? { origin } : {}),
         id,
-        turnId: `assistant-input:${id}`,
+        turnId: assistantInputTurnId(id),
         ts: Date.now(),
       },
     );
@@ -166,17 +168,51 @@ export class BotController {
     } catch {
       return;
     }
+    const attemptedThrough = this.store.head();
     this.running = this.run()
-      .catch((error) => {
-        if (!this.abort.signal.aborted) this.store.set('error', String(error));
+      .catch(async (error) => {
+        if (!this.abort.signal.aborted) {
+          this.store.transaction(() => {
+            this.store.set('error', String(error));
+            // Mail arriving during a failed execution must still trigger a new
+            // attempt. Do not latch the failure against that newer input.
+            this.store.set('errorThrough', attemptedThrough);
+            const id = randomUUID();
+            this.store.queueVisible({
+              type: 'assistant',
+              id: `bot-error:${id}`,
+              turnId: assistantErrorOutputTurnId(id),
+              ts: Date.now(),
+              text: '助手消息处理暂时停止。消息已保留；请检查当前模型和连接，发送新消息可重试。',
+              modelId: 'assistant-bot',
+            });
+          });
+          // A publication may have committed before its response was lost.
+          // Keep the outbox entry for the next tick without replacing the failure.
+          await this.flush().catch(() => {});
+        }
       })
       .finally(() => {
         this.running = undefined;
       });
   }
   private async run() {
-    await this.flush();
-    if (this.store.get('error')) return;
+    try {
+      await this.flush();
+    } catch (error) {
+      // Pending publication is retried independently of model execution. A
+      // delivery failure cannot consume the retry triggered by fresh Inbox mail.
+      if (!this.abort.signal.aborted) this.store.set('wakeError', String(error));
+      return;
+    }
+    this.store.set('wakeError', null);
+    if (this.store.get('error')) {
+      const errorThrough = this.store.get<number>('errorThrough');
+      if (errorThrough !== undefined && this.store.head() <= errorThrough) return;
+      // Older versions persisted an error without an input boundary. Reconcile
+      // once on recovery; subsequent failures wait for fresh input, not a timer storm.
+      this.store.set('error', null);
+    }
     if (this.store.head() <= (this.store.get<number>('deliveredThrough') ?? 0)) {
       this.store.set('wake', null);
       this.store.set('wakeError', null);
@@ -189,8 +225,13 @@ export class BotController {
     const agent = await this.agent();
     this.activeAgent = agent;
     try {
-      const status = ((await agent.snapshot()) as any)?.agent?.status;
-      if (['blocked', 'waiting_for_user'].includes(status))
+      const snapshot: any = await agent.snapshot();
+      const status = snapshot?.agent?.status;
+      if (
+        status === 'waiting_for_user' ||
+        snapshot?.pendingInteractions > 0 ||
+        (status === 'blocked' && snapshot?.pendingInteractions !== 0)
+      )
         throw Error('Bot requires attention in its worker Session');
       let wake = this.store.get<{ messageId: string; text: string }>('wake');
       if (wake || status !== 'running') {
@@ -208,7 +249,17 @@ export class BotController {
           let resolution: any;
           try {
             resolution = await agent.messageExecution(wake.messageId);
-            if (resolution?.state === 'not_admitted') {
+          } catch (error) {
+            this.store.set('wakeError', String(error));
+            return;
+          }
+          if (resolution?.state === 'not_admitted') {
+            // Only a new admission may change the execution model. Recovering
+            // an owned or pending wake must keep observing that execution.
+            const prepared = await this.ctx.prepareBotWake(this.owner()!, this.worker()!);
+            if (prepared === 'deferred') return;
+            this.ready();
+            try {
               const admitted: any = await agent.followup(wake.text, { messageId: wake.messageId });
               if (!['turn_started', 'followup'].includes(admitted?.disposition))
                 throw Error('Bot wake was not admitted');
@@ -216,18 +267,20 @@ export class BotController {
                 this.store.set('wakeError', null);
                 break;
               }
+            } catch (error) {
+              // Retry reconciliation on the next scheduler tick, keeping the submission identity.
+              this.store.set('wakeError', String(error));
+              return;
             }
-          } catch (error) {
-            // Retry reconciliation on the next scheduler tick, keeping the submission identity.
-            this.store.set('wakeError', String(error));
-            return;
           }
           this.store.set('wakeError', null);
           if (resolution?.state === 'owned') {
-            const currentStatus = ((await agent.snapshot()) as any)?.agent?.status;
+            const current: any = await agent.snapshot();
+            const currentStatus = current?.agent?.status;
             if (
               !this.store.get('sleepTurn') &&
-              ['idle', 'active', 'aborted'].includes(currentStatus)
+              (['idle', 'active', 'aborted'].includes(currentStatus) ||
+                (currentStatus === 'blocked' && current?.pendingInteractions === 0))
             ) {
               // An admitted wake can outlive its interrupted execution. Keep its
               // history, but persist a fresh identity before resuming unread mail.
@@ -256,17 +309,37 @@ export class BotController {
       } catch (error) {
         // A failed execution is terminal; a failed observation is not.
         if (!this.abort.signal.aborted) {
-          const stopped = ((await agent.snapshot()) as any)?.agent?.status;
-          if (['active', 'idle', 'aborted'].includes(stopped)) this.store.set('wake', null);
+          const stopped: any = await agent.snapshot();
+          if (
+            ['active', 'idle', 'aborted'].includes(stopped?.agent?.status) ||
+            (stopped?.agent?.status === 'blocked' && stopped?.pendingInteractions === 0)
+          )
+            this.store.set('wake', null);
         }
         throw error;
       }
       const finalStatus = ((await agent.snapshot()) as any)?.agent?.status;
       this.store.set('wake', null);
-      if (['aborted', 'blocked', 'waiting_for_user'].includes(finalStatus))
-        throw Error('Bot stopped: ' + finalStatus);
-      if (!this.store.get('sleepTurn'))
-        throw Error('Bot ended without Sleep; send a new message to retry');
+      if (
+        ['aborted', 'blocked', 'waiting_for_user'].includes(finalStatus) ||
+        !this.store.get('sleepTurn')
+      ) {
+        let message = ['aborted', 'blocked', 'waiting_for_user'].includes(finalStatus)
+          ? 'Bot stopped: ' + finalStatus
+          : 'Bot ended without Sleep; send a new message to retry';
+        // A contained provider failure can settle whenIdle normally. Resolve
+        // this wake's latest execution rather than reporting a stale turn error.
+        if (wake) {
+          const execution: any = await agent
+            .messageExecution(wake.messageId)
+            .catch(() => undefined);
+          if (execution?.state === 'owned' && execution.turnId) {
+            const failure = await executionFailure(agent, execution.turnId).catch(() => undefined);
+            if (failure) message = failure.message;
+          }
+        }
+        throw Error(message);
+      }
     } finally {
       this.activeAgent = undefined;
     }

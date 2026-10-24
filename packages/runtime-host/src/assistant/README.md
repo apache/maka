@@ -25,9 +25,17 @@ The Runtime Host owns three built-in services: memory indexes, durable Matters, 
 
 The feature defaults **off**, including installations with existing assistant data. Enable **通用 → 启用个人助手** in Settings, beside the WorkHub switch, to expose the sidebar entry and start the three services on that Host. The switch is shared by clients of the same Host, not a desktop-only visibility preference. Its labeled conversation is excluded from the ordinary Session rail and palette. WorkHub remains separate. Opening the assistant does not import history, create indexes, enable discovery or call a model.
 
+## Conversation workspace
+
+Personal Assistant keeps the existing Session creation rules: use the configured default Project when applicable, then the Host's current Project preference. A local Host with no Project still allocates its existing `~/Maka/tasks/task-*` directory (`~/Maka Dev/tasks/task-*` for development).
+
+Only when an implicit assistant creation on WSL or a remote Host has no resolvable Project, Desktop calls `assistant.allocate-workspace` on that Host. The Host allocates a fresh task directory in its own home and registers its Project identity for ordinary Session creation. It never adopts an arbitrary existing Project or accepts a Client directory. Standard Host development profiles use `~/Maka Dev/tasks/task-*`; other Host profiles use `~/Maka/tasks/task-*`. The connecting Desktop does not choose a remote Host's namespace. Allocation failure is reported without falling back to the Client filesystem. Client and Host must both support compatibility epoch 226.
+
+Existing assistant bindings retain their conversation, cwd, model and history. Opening them does not allocate another directory or migrate files. This change does not alter ordinary task creation or explicit remote workspace validation.
+
 ## Master switch
 
-`personal-assistant/enablement.json` stores the Host-owned opt-in. With it absent or disabled, the Host does not import the modules, open their databases, adopt old plugin data, register assistant tools/prompts/finish checks, or run any assistant schedulers. The two allowlisted desktop operations `assistant.enablement` and `assistant.set-enabled` remain available; feature operations reject while disabled.
+`personal-assistant/enablement.json` stores the Host-owned feature switch. When absent, the personal assistant is enabled by default. An explicit `enabled: false` is preserved across restarts; while disabled, the Host does not import the modules, open their databases, adopt old plugin data, register assistant tools/prompts/finish checks, or run any assistant schedulers. Initialization failures leave the assistant unavailable with an error exposed in Settings, preserve stored preferences/data, and do not fail Host recovery. After fixing the configuration, enabling in Settings retries initialization. The two allowlisted desktop operations `assistant.enablement` and `assistant.set-enabled` remain available; feature operations reject while disabled.
 
 Disabling fences new calls, aborts in-flight tools, stops assistant/worker Sessions and all three schedulers, then closes their stores. Captured tools from a retired runtime reject further calls. Transitions serialize so re-enabling cannot overlap the previous generation. Session admission also checks the switch so old queued messages cannot restart disabled assistant workers. Ordinary conversations and WorkHub are unaffected.
 
@@ -49,7 +57,11 @@ Index reads expose shared usage guidance. `MemoryIndexContent` defaults to direc
 
 ## Proactive instructions
 
-Heartbeats always use `PROACTIVE_TASK` from code. `InitiativeEnable` configures cadence only; there is no custom prompt setting. New bindings do not save instructions, and recovery removes the obsolete `state.instructions` field while preserving the conversation and scheduling state. After updating and restarting the Host, existing bindings use the current product prompt automatically. The discovery scheduler retains its cadence. Exploration runs in a separate background Session, reports findings through `DiscoveryReport`, and never writes directly to the user conversation.
+Heartbeats use the discovery and judgement instructions from code; configuration only changes cadence. Two persistent background Sessions share an append-only notebook, rather than handing off a fixed candidate list. Each worker reads the notebook from a private Markdown file and writes only its new observations (and, for judgement, feedback interpretations and proposed messages) to a per-wake JSON file. The Host persists those operations atomically; empty results are allowed. Only genuine user feedback may close, defer or reopen a topic, and newer feedback invalidates stale drafts. These are provenance and consistency checks, not a model/keyword review of recommendation quality. Judgement chooses directions from the entire notebook, considering occurrence time and current user value. Its messages go through the Bot inbox; acceptance is recorded as “reported”, never as confirmed delivery. Actual assistant conversation is shown separately. A failed judgement resumes from the notebook without repeating discovery. Both worker histories, the notebook and the configured cadence survive restart. New prompt versions reach existing Sessions once; obsolete saved custom instructions do not override them. Source history and indexes are unchanged. Existing pre-upgrade reports remain readable as historical context for the pending judgement.
+
+## Turn identities
+
+Background turns (heartbeats, Matter wakes, task notifications, bot-delivered messages) run under Host turn ids. The Host admits a turn id only when it matches `^[A-Za-z0-9_-]{1,128}$` (`requireEntityId`), and the desktop can branch from any turn it can read. Use dashes as separators, never colons, and hash caller-supplied text instead of embedding it (see `bot/turn-ids.ts`). The desktop disables Branch on turns whose id the Host would reject. Transcripts written before this rule keep colon-form ids, so readers must accept both forms (`isPendingActivationTurnId`, and the input-receipt check in `execution-composition.ts`).
 
 ## Verification
 
@@ -100,7 +112,7 @@ assistant-wide discovery schedule.
 - `InitiativeConfigure({intervalMinutes})` explicitly changes that schedule and
   preserves its enabled/paused state. `InitiativeControl` pauses/resumes it or requests
   one general exploration. These operations create no goal-specific task.
-- `MemoryIndexControl` configures a particular index's maintenance;
+- `MemoryIndexControl configure` configures one persisted maintenance clock (12 hours by default); per-index pause/resume only controls participation. At each deadline the scheduler gives all eligible indexes of the same owner to one organizing Agent, retaining independent ranges/checkpoints. It decides what needs changing and which reads/updates to share. Ownership boundaries remain isolated. Creating or manually maintaining an index does not reset the clock; interrupted shared rounds retain their exact ranges and completed members across restarts;
   `MemoryIndexMaintain` runs one organizing round. Shared-job stop semantics remain
   unchanged.
 - `MatterDelegate` creates concrete work; `MatterTasks` reads progress;

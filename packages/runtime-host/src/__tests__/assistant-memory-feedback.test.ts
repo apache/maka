@@ -24,6 +24,7 @@ import { MemoryController } from '../assistant/memory-network/controller.js';
 
 function setup() {
   const db = new DatabaseSync(':memory:');
+  db.exec('CREATE TABLE memory_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)');
   const workers = new Map(
     ['a', 'b'].map((id) => [
       id,
@@ -123,7 +124,11 @@ test('stopping a shared index job cancels once, waits, and disables all members'
     await Promise.resolve();
     await f.controller.control('b', 'stop');
     assert.equal(cancellations, 1);
-    assert.ok([...f.workers.values()].every((w) => w.nextCheckAt === null && w.lastError === null));
+    assert.ok(
+      [...f.workers.keys()].every(
+        (id) => f.controller.nextCheck(id) === null && f.workers.get(id)!.lastError === null,
+      ),
+    );
     assert.equal(f.controller.runs.size, 0);
     assert.ok(
       [...f.workers.values()].every((w) => w.maintenanceEnabled === false && w.continuationStopped),
@@ -138,7 +143,7 @@ test('stop from a paused member finds the running scheduled sibling', async () =
   try {
     let cancelled = false;
     f.controller.enabled = (id: string) => id === 'b';
-    f.controller.run = async (_: string, signal: AbortSignal) => {
+    f.controller.runGroup = async (_: string[], signal: AbortSignal) => {
       await new Promise<void>((resolve) =>
         signal.addEventListener(
           'abort',
@@ -155,6 +160,47 @@ test('stop from a paused member finds the running scheduled sibling', async () =
     await f.controller.control('a', 'stop');
     assert.equal(cancelled, true);
     assert.equal(f.controller.runs.size, 0);
+  } finally {
+    f.db.close();
+  }
+});
+
+test('worker creation failure ends only its owner batch and reports failure without delaying other owners', async () => {
+  const f = setup();
+  try {
+    f.enable();
+    for (const [id, worker] of f.workers) {
+      worker.protocol = 'cursor-v1';
+      worker.ownerSessionId = id;
+    }
+    let schedule: any = { intervalMs: 43200000, nextCheckAt: 0 };
+    f.controller.schedule = () => structuredClone(schedule);
+    f.controller.saveSchedule = (value: any) => {
+      schedule = value;
+    };
+    f.store.list = () => [{ id: 'a' }, { id: 'b' }];
+    f.db.exec('CREATE TABLE memory_worker_sessions(id TEXT PRIMARY KEY)');
+    let creates = 0;
+    f.ctx.agents.create = async () => {
+      if (++creates === 1) throw Error('Worker unavailable');
+      return { sessionId: 'healthy-worker' };
+    };
+    const batches: string[][] = [];
+    f.controller.runGroup = async (ids: string[]) => {
+      batches.push(ids);
+    };
+    await f.controller.tick();
+    assert.deepEqual(schedule.remainingIds, ['b']);
+    assert.equal(schedule.retryAt, null);
+    assert.equal(f.seen[0].input.content.indexes[0].status, 'failed');
+    assert.match(f.seen[0].input.content.indexes[0].error, /Worker unavailable/);
+    await f.controller.tick();
+    await Promise.all([...f.controller.runs.values()]);
+    assert.deepEqual(batches, [['b']]);
+    assert.deepEqual(schedule.remainingIds, []);
+    assert.equal(f.seen[1].input.content.indexes[0].status, 'completed');
+    await f.controller.tick();
+    assert.equal(creates, 2, 'wait for the next scheduled round');
   } finally {
     f.db.close();
   }

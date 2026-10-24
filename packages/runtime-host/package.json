@@ -28,6 +28,7 @@
     "benchmark:session-copy": "node scripts/session-copy-cost-benchmark.mjs",
     "benchmark:startup-profile": "node scripts/startup-profile.mjs",
     "benchmark:hydration-e2e": "node scripts/hydration-e2e-benchmark.mjs",
+    "benchmark:checkpoint": "node scripts/session-checkpoint-benchmark.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test:dist": "node --test \"dist/**/*.test.js\" && npm run test:assistant",
     "test:assistant": "node scripts/test-assistant.mjs"
@@ -46,6 +47,6 @@
   },
   "devDependencies": {
     "@types/ws": "^8.18.1",
-    "electron": "^43.4.1"
+    "electron": "^43.5.0"
   }
 }
