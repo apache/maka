@@ -2108,6 +2108,7 @@ describe('Runtime Host Maka Session driver', () => {
     assert.deepEqual(await driver.retractQueued!(), {
       text: 'Later',
       messageIds: ['message-1'],
+      quotes: [],
     });
     assert.deepEqual(
       connection.requests.filter(
@@ -2134,6 +2135,36 @@ describe('Runtime Host Maka Session driver', () => {
           },
         },
       ],
+    );
+  });
+
+  test('returns retracted quotes so the TUI can restage them', async () => {
+    const subscription = new FakeSubscription(continuitySnapshot(), Promise.resolve([]));
+    const connection = new FakeConnection([subscription]);
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/tmp',
+      llmConnectionId: 'connection-1',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+      newId: sequenceIds('retract-1'),
+    });
+    await driver.switchSession('session-1');
+
+    // A queued submit rode a QuoteRef: the Host stores the full
+    // MessageContent, so the retraction must hand the quotes back instead of
+    // letting them vanish with the queue row (#5109 review).
+    await driver.submitMessage!('Read this excerpt', {
+      messageId: 'message-1',
+      placement: 'next_turn',
+      quotes: [{ text: 'a large pasted excerpt', label: 'earlier turn', sourceTurnId: 'turn-9' }],
+    });
+    const retracted = await driver.retractQueued!();
+    assert.deepEqual(retracted.messageIds, ['message-1']);
+    assert.deepEqual(
+      retracted.quotes,
+      [{ text: 'a large pasted excerpt', label: 'earlier turn', sourceTurnId: 'turn-9' }],
+      'the quotes a queued submit rode in on come back with the retraction',
     );
   });
 
@@ -2443,11 +2474,11 @@ describe('Runtime Host Maka Session driver', () => {
     );
   });
 
-  test('fails rewind closed when the selected turn carries structured content', async () => {
-    // A rewind that refills only the human-facing text would silently drop
-    // the selected turn's quotes/attachments from the replacement submit —
-    // fail closed with a precise notice instead until the TUI can carry
-    // them (#5109).
+  test('hands rewound quotes back verbatim and still refuses attachments', async () => {
+    // Rewinding a quoted turn must return the turn's QuoteRefs so the TUI can
+    // stage them into the replacement submit (#5109): refilling only the
+    // human-facing text would silently drop them. Attachments and directory
+    // references stay fail-closed — the TUI cannot re-attach files.
     const attachment = {
       kind: 'image',
       name: 'chart.png',
@@ -2470,32 +2501,29 @@ describe('Runtime Host Maka Session driver', () => {
         directoryReferences: [{ hostId: 'host-1', path: tmpdir() }],
       },
     ];
-    const attached = new FakeSubscription(continuitySnapshot(), Promise.resolve(messages));
-    const current = new FakeSubscription(
-      continuitySnapshot(),
-      Promise.resolve(messages),
-      'subscription-2',
+    const subscriptions = Array.from(
+      { length: 7 },
+      (_, index) =>
+        new FakeSubscription(
+          continuitySnapshot(),
+          Promise.resolve(messages),
+          `subscription-${index + 1}`,
+        ),
     );
-    const direct = new FakeSubscription(
-      continuitySnapshot(),
-      Promise.resolve(messages),
-      'subscription-3',
-    );
-    const fourth = new FakeSubscription(
-      continuitySnapshot(),
-      Promise.resolve(messages),
-      'subscription-4',
-    );
-    const connection = new FakeConnection([attached, current, direct, fourth]);
+    const connection = new FakeConnection(subscriptions);
     // A directory that exists on every platform: the driver rejects a session
     // whose cwd has disappeared, and the catalog projection's default `/tmp`
-    // only exists on POSIX.
+    // only exists on POSIX. The committed rewind branches into a new session,
+    // so every catalog lookup on the way — setup, each attempt, and the
+    // post-commit switch — needs the existing directory.
     const existingCwd = tmpdir();
-    connection.sessionQueries.push(
-      sessionProjection({
-        workspace: { target: { kind: 'host_path', path: existingCwd }, hostCwd: existingCwd },
-      }),
-    );
+    for (let index = 0; index < 5; index += 1) {
+      connection.sessionQueries.push(
+        sessionProjection({
+          workspace: { target: { kind: 'host_path', path: existingCwd }, hostCwd: existingCwd },
+        }),
+      );
+    }
     const driver = createRuntimeHostMakaSessionDriver({
       connection: connection.value,
       cwd: existingCwd,
@@ -2506,15 +2534,11 @@ describe('Runtime Host Maka Session driver', () => {
     await driver.switchSession('session-1');
 
     await assert.rejects(
-      driver.rewindToTurn('turn-quoted'),
-      /carries structured context the TUI cannot restore/,
-    );
-    await assert.rejects(
-      driver.rewindToTurn('turn-attached'),
-      /carries structured context the TUI cannot restore/,
-    );
-    await assert.rejects(
-      driver.rewindToTurn('turn-directory'),
+      driver.rewindToTurn('turn-attached').catch((error: unknown) => {
+        const code = (error as { code?: unknown }).code;
+        assert.equal(code, 'rewind_unsupported_attachments');
+        throw error;
+      }),
       /carries structured context the TUI cannot restore/,
     );
     await assert.rejects(
@@ -2523,11 +2547,53 @@ describe('Runtime Host Maka Session driver', () => {
         assert.equal(code, 'rewind_unsupported_directory_references');
         throw error;
       }),
+      /carries structured context the TUI cannot restore/,
     );
     assert.equal(
       connection.requests.some(({ operation }) => operation === 'session.revision.create'),
       false,
       'no revision is created for content the TUI cannot carry',
+    );
+
+    const result = await driver.rewindToTurn('turn-quoted');
+    assert.deepEqual(result.quotes, [{ text: 'a large pasted excerpt' }]);
+    assert.equal(
+      connection.requests.some(({ operation }) => operation === 'session.revision.create'),
+      true,
+      'the quoted turn branches through a revision copy',
+    );
+  });
+
+  test('carries staged quotes on the replacement submit', async () => {
+    const subscription = new FakeSubscription(continuitySnapshot(), Promise.resolve([]));
+    const connection = new FakeConnection([subscription]);
+    // The catalog projection's default `/tmp` only exists on POSIX.
+    connection.sessionQueries.push(
+      sessionProjection({
+        workspace: { target: { kind: 'host_path', path: tmpdir() }, hostCwd: tmpdir() },
+      }),
+    );
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: tmpdir(),
+      llmConnectionId: 'connection-1',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+    });
+    await driver.switchSession('session-1');
+
+    await driver.submitMessage!('Read this excerpt', {
+      messageId: 'message-1',
+      placement: 'current_turn',
+      quotes: [{ text: 'a large pasted excerpt', label: 'earlier turn', sourceTurnId: 'turn-9' }],
+    });
+    const submit = connection.requests.find(({ operation }) => operation === 'turn.message.submit');
+    assert.ok(submit, 'the submit request was recorded');
+    const content = (submit.input as { content: { quotes?: unknown } }).content;
+    assert.deepEqual(
+      content.quotes,
+      [{ text: 'a large pasted excerpt', label: 'earlier turn', sourceTurnId: 'turn-9' }],
+      'the driver forwards the staged QuoteRefs verbatim',
     );
   });
 
@@ -3433,6 +3499,17 @@ class FakeConnection {
     if (operation === 'turn.stop') {
       return {} as OperationOutput<K>;
     }
+    if (operation === 'session.revision.create') {
+      const revision = input as OperationInput<'session.revision.create'>;
+      return {
+        kind: 'committed',
+        session: sessionProjection({
+          id: revision.targetSessionId,
+          branchOfTurnId: revision.sourceTurnId,
+          workspace: { target: { kind: 'host_path', path: tmpdir() }, hostCwd: tmpdir() },
+        }),
+      } as OperationOutput<K>;
+    }
     if (operation === 'turn.resume.start') {
       const resumeInput = input as OperationInput<'turn.resume.start'>;
       return {
@@ -3473,18 +3550,37 @@ class FakeConnection {
                 );
               })()
             : operation === 'queue.retract'
-              ? {
-                  hostEpoch: 'host-1',
-                  queueRevision: 3,
-                  retracted: [
-                    {
-                      entryId: 'entry-1',
-                      messageId: 'message-1',
-                      content: { text: 'Later' },
-                      placement: 'next_turn',
-                    },
-                  ],
-                }
+              ? (() => {
+                  // The Host returns the stored full MessageContent for every
+                  // retracted queue entry, quotes included: echo what the
+                  // recorded submit carried for this message.
+                  const submits = this.requests.filter(
+                    (request) => request.operation === 'turn.message.submit',
+                  );
+                  let submitted: { content: { text: string } } | undefined;
+                  for (let index = submits.length - 1; index >= 0; index -= 1) {
+                    const candidate = submits[index].input as {
+                      messageId?: string;
+                      content: { text: string };
+                    };
+                    if (candidate.messageId === 'message-1') {
+                      submitted = candidate;
+                      break;
+                    }
+                  }
+                  return {
+                    hostEpoch: 'host-1',
+                    queueRevision: 3,
+                    retracted: [
+                      {
+                        entryId: 'entry-1',
+                        messageId: 'message-1',
+                        content: submitted?.content ?? { text: 'Later' },
+                        placement: 'next_turn',
+                      },
+                    ],
+                  };
+                })()
               : operation === 'interaction.answer'
                 ? (input as OperationInput<'interaction.answer'>).answer.kind === 'form'
                   ? {
