@@ -26,6 +26,6 @@
     "@modelcontextprotocol/node": "2.1.0",
     "@modelcontextprotocol/sdk": "1.32.1",
     "@modelcontextprotocol/server": "2.3.1",
-    "@modelcontextprotocol/server-legacy": "2.0.0"
+    "@modelcontextprotocol/server-legacy": "2.3.1"
   }
 }
