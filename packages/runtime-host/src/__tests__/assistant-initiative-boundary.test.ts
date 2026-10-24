@@ -268,7 +268,7 @@ test('assistant.bind recovers from startup lookup failure without a Host restart
       bot: new AssistantBotBridge(),
       systemPrompt: { section() {}, context() {} },
       turns: { beforeFinish() {} },
-      tools: { register() {} },
+      tools: { register() {}, filter() {} },
       api: { register: (name: string, handler: any) => apis.set(name, handler) },
       onClose: (fn: any) => closers.push(fn),
       onStart: (fn: any) => starters.push(fn),

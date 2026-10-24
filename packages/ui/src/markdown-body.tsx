@@ -21,9 +21,9 @@
  * Heavy Markdown rendering pipeline, loaded on demand by `markdown.tsx`.
  *
  * Astryx owns parsing, GFM, typography, tables, task lists, code rendering,
- * highlighting, and copy feedback. Maka's Markdown layer keeps only the
- * product trust boundaries that a design-system component cannot know about:
- * eager display-layer redaction and the closed-world URL policy.
+ * default highlighting, and copy feedback. Maka adds missing code languages
+ * through the existing tokenizer interface and keeps its product trust
+ * boundaries: eager display-layer redaction and the closed-world URL policy.
  *
  * Astryx owns stream pacing and incremental parsing. Maka keeps only the
  * product-specific trust boundaries around that renderer.
@@ -38,6 +38,7 @@ import {
 import { Link as AstryxLink } from '@astryxdesign/core/Link';
 import { CodeBlock } from '@astryxdesign/core/CodeBlock';
 import { useTranslator } from '@astryxdesign/core/i18n';
+import { markdownCodeLanguagePlugin, useMarkdownCodeTokenizer } from './markdown-code-highlighting.js';
 import {
   isMakaUriCandidate,
   isSafeExternalScheme,
@@ -153,7 +154,10 @@ export function MarkdownBody(props: {
     (source: string) => prepareMarkdownMath(source, mathCache.current),
     [],
   );
-  const plugins = useMemo(() => createMarkdownImagePlugins(props.imageDisplay), [props.imageDisplay]);
+  const plugins = useMemo(() => [
+    markdownCodeLanguagePlugin,
+    ...createMarkdownImagePlugins(props.imageDisplay),
+  ], [props.imageDisplay]);
   const budgetedText = props.streaming ? props.text : applyMermaidRenderBudget(props.text);
   const density = props.density ?? 'default';
   const components = props.streaming
@@ -216,11 +220,11 @@ function MarkdownCodeCompact(props: { code: string; language?: string }) {
 }
 
 function MarkdownCodeStreamingDefault(props: { code: string; language?: string }) {
-  return <MarkdownCode {...props} density="default" renderMermaid={false} />;
+  return <MarkdownCode {...props} density="default" renderMermaid={false} streaming />;
 }
 
 function MarkdownCodeStreamingCompact(props: { code: string; language?: string }) {
-  return <MarkdownCode {...props} density="compact" renderMermaid={false} />;
+  return <MarkdownCode {...props} density="compact" renderMermaid={false} streaming />;
 }
 
 function MarkdownCode(props: {
@@ -228,8 +232,10 @@ function MarkdownCode(props: {
   language?: string;
   density: 'default' | 'compact';
   renderMermaid: boolean;
+  streaming?: boolean;
 }) {
   const t = useTranslator();
+  const tokenizer = useMarkdownCodeTokenizer(props.code, props.language, props.streaming === true);
   const language = props.language?.trim().toLowerCase();
   if (props.renderMermaid && (language === 'mermaid' || language === DEFERRED_MERMAID_LANGUAGE)) {
     return (
@@ -254,6 +260,7 @@ function MarkdownCode(props: {
       <CodeBlock
         code={props.code}
         language={props.language}
+        tokenizer={tokenizer}
         // Span highlighting avoids the higher CSS Highlight paint cost during
         // transcript scrolling, including when virtualized code blocks remount.
         highlightMode="spans"

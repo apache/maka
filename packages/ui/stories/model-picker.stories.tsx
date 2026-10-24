@@ -167,7 +167,7 @@ export const CodexAndAcp: Story = {
     await expect(codexOption.querySelector('svg')).not.toBeNull();
     await expect(canvasElement.querySelectorAll('.maka-model-switcher-trigger')).toHaveLength(1);
     await userEvent.click(codexOption);
-    await waitFor(() => expect(canvasElement.querySelector('.maka-model-switcher-trigger')).toHaveTextContent('Codex · GPT-6 Astra'));
+    await waitFor(() => expect(canvasElement.querySelector('.maka-model-switcher-trigger')).toHaveTextContent(/^GPT-6 Astra$/));
     await expect(canvasElement.querySelector('.maka-thinking-level-selector')).toHaveTextContent(/High|高/);
     await openModels(canvasElement);
   },
@@ -186,7 +186,7 @@ export const UnselectedUnavailableAgentNarrow: Story = {
     await waitFor(() => expect(label.scrollWidth).toBeLessThanOrEqual(label.clientWidth + 1));
     const page = await openModels(canvasElement);
     await userEvent.click(page.getByRole('option', { name: /Gemini 3.8 Flash/ }));
-    await waitFor(() => expect(canvasElement.querySelector('.maka-model-switcher-trigger')).toHaveTextContent('Antigravity · Gemini 3.8 Flash'));
+    await waitFor(() => expect(canvasElement.querySelector('.maka-model-switcher-trigger')).toHaveTextContent(/^Gemini 3\.8 Flash$/));
     await expect(canvas.getByRole('button', { name: /Go to sign in|前往登录/ })).toBeVisible();
     await expect(canvasElement.querySelector('.maka-executor-notice')).toHaveTextContent('Claude Agent');
     await openModels(canvasElement);
