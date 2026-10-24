@@ -95,10 +95,10 @@ canvas { width: 100%; height: 100%; object-fit: contain; pointer-events: none; }
 }
 /* Ambient motion makes even a sparse sprite pack legible at desktop size. */
 canvas { transform-origin: 50% 85%; animation: breathe 3.6s ease-in-out infinite; }
-body[data-activity="working"] canvas { animation: working 1.4s ease-in-out infinite; }
-body[data-activity="swarm"] canvas { animation: exploring 2.4s ease-in-out infinite; }
-body[data-activity="needs-input"] canvas { animation: attentive 2.8s ease-in-out infinite; }
-body[data-message="true"][data-activity="idle"] canvas { animation: greeting 1.6s ease-in-out infinite; }
+body[data-pet-animation="working"] canvas { animation: working 1.4s ease-in-out infinite; }
+body[data-pet-animation="swarm"] canvas { animation: exploring 2.4s ease-in-out infinite; }
+body[data-pet-animation="needs-input"] canvas { animation: attentive 2.8s ease-in-out infinite; }
+body[data-pet-animation="ready"] canvas { animation: greeting 1.6s ease-in-out infinite; }
 @keyframes breathe { 50% { transform: translateY(-3px) scaleY(1.025); } }
 @keyframes working { 25% { transform: translateY(-4px) rotate(-3deg); } 75% { transform: translateY(-4px) rotate(3deg); } }
 @keyframes exploring { 25% { transform: translateX(-7px) rotate(-5deg); } 75% { transform: translateX(7px) rotate(5deg); } }
@@ -117,3 +117,10 @@ body[data-below="true"] #bubble:after { top: -5px; bottom: auto; transform: rota
 #notification { position: absolute; top: 16px; right: 10px; width: 32px; height: 32px; display: grid; place-items: center; border: 1px solid var(--edge); border-radius: 50%; background: var(--panel); color: var(--ink); box-shadow: 0 2px 8px #24324b20; pointer-events: none; }
 #notification svg { width: 19px; height: 19px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 #unread-count { position: absolute; top: -7px; left: 19px; min-width: 20px; height: 20px; padding: 0 4px; display: grid; place-items: center; border: 2px solid var(--panel); border-radius: 12px; background: #ef4444; color: white; font-size: 10px; line-height: 16px; font-weight: 700; font-variant-numeric: tabular-nums; box-shadow: 0 1px 3px #7f1d1d20; }
+
+body[data-pet-animation="idle"][data-idle-motion="sway"] canvas { animation: idle-sway 5s ease-in-out infinite; }
+body[data-pet-animation="idle"][data-idle-motion="stretch"] canvas { animation: idle-stretch 6s ease-in-out infinite; }
+body[data-pet-animation="sleep"] canvas { animation: breathe 6s ease-in-out infinite; }
+body[data-pet-animation="poke"] canvas { animation: none; }
+@keyframes idle-sway { 25% { transform: rotate(-2deg) translateY(-2px); } 75% { transform: rotate(2deg) translateY(-2px); } }
+@keyframes idle-stretch { 35% { transform: scaleY(1.04) scaleX(.98) translateY(-2px); } 65% { transform: scaleY(.99) scaleX(1.015); } }

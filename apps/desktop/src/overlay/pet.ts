@@ -18,7 +18,7 @@
  */
 
 import { resolvePetAnimationState } from "@maka/core/pet";
-import { PetMessageQueue, PetBubbleView, petMessageText, petMessageDuration, PetBackgroundNotice, shouldClosePetComposer } from "../shared/pet-desktop.js";
+import { PetMessageQueue, PetBubbleView, PetAnimationBehavior, petMessageText, petMessageDuration, PetBackgroundNotice, shouldClosePetComposer } from "../shared/pet-desktop.js";
 import type {
   PetDesktopState,
   PetPublication,
@@ -57,6 +57,8 @@ const mode = document.querySelector<HTMLButtonElement>("#mode")!;
 const background = new PetBackgroundNotice();
 const queue = new PetMessageQueue();
 const view = new PetBubbleView(queue);
+const behavior = new PetAnimationBehavior();
+behavior.reset(performance.now());
 let current: PetDesktopState | undefined;
 let image: HTMLImageElement | undefined;
 let sprite = "";
@@ -118,7 +120,7 @@ function renderBubble(now: number) {
 }
 window.pet.state((state) => {
   const changed = current?.surface.sessionId !== state.surface.sessionId || current?.mode !== state.mode;
-  if (changed) { queue.clear(); view.reset(); background.reset(); lastPaint = ""; }
+  if (changed) { behavior.reset(performance.now()); queue.clear(); view.reset(); background.reset(); lastPaint = ""; }
   current = state;
   background.update(state.surface, performance.now());
   renderBubble(performance.now());
@@ -127,6 +129,7 @@ window.pet.state((state) => {
   mode.setAttribute('aria-label', mode.title);
   document.body.dataset.activity = state.surface.activity;
   if (sprite !== state.sprite) {
+    behavior.reset(performance.now());
     sprite = state.sprite;
     image = new Image();
     image.src = sprite;
@@ -139,7 +142,7 @@ window.pet.messages((batch) => {
   const wasEmpty = !queue.current();
   const priorLast = queue.history.at(-1)?.id;
   queue.push(batch.sessionId, batch.messages);
-  if (queue.history.at(-1)?.id !== priorLast) view.arrival();
+  if (queue.history.at(-1)?.id !== priorLast) { view.arrival(); behavior.interact(performance.now()); }
   if (wasEmpty) paintMessage();
 });
 mode.onclick = () => window.pet.action("toggle");
@@ -272,7 +275,10 @@ function toggleBubble() {
 }
 pet.addEventListener('click', event => {
   cancelClick();
-  if (suppressClick || event.detail > 1) return;
+  if (suppressClick) return;
+  const poke = current?.manifest.animations.poke;
+  behavior.interact(performance.now(), poke ? poke.frames.length / poke.fps * 1000 : 0);
+  if (event.detail > 1) return;
   // Wait for the second click before hiding/resizing the window under the pointer.
   if (event.detail === 0) toggleBubble();
   else clickTimer = setTimeout(toggleBubble, 500);
@@ -318,6 +324,8 @@ bubble.onmouseleave = () => {
 };
 bubble.addEventListener("focusin", () => { paused = true; });
 bubble.addEventListener("focusout", () => { paused = false; });
+document.addEventListener('pointerdown', () => behavior.interact(performance.now()), true);
+document.addEventListener('keydown', () => behavior.interact(performance.now()), true);
 const reduced = matchMedia("(prefers-reduced-motion: reduce)");
 function tick(now: number) {
   const dt = lastTick ? Math.min(now - lastTick, 1000) : 0;
@@ -334,11 +342,15 @@ function tick(now: number) {
     }
   }
   if (current && image?.complete && image.naturalWidth) {
-    const state = resolvePetAnimationState(
-      current.manifest,
-      !!view.message() && current.surface.activity === "idle" ? "ready" : current.surface.activity,
-    );
-    const key = current.manifest.id + ":" + state;
+    const motion = behavior.resolve(current.surface, {
+      pendingMessage: !!queue.current() || view.unread,
+      interacting: !composer.hidden || !!dragging,
+    }, now);
+    const state = resolvePetAnimationState(current.manifest,
+      motion.state === 'idle' && view.message() ? 'ready' : motion.state);
+    document.body.dataset.petAnimation = state;
+    document.body.dataset.idleMotion = motion.idleMotion;
+    const key = current.manifest.id + ":" + state + ":" + motion.key;
     if (key !== animationKey) {
       animationKey = key;
       started = now;

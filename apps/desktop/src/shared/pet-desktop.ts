@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import type { PetActivityState } from "@maka/core/pet";
 import type { PetMessage, PetSurface } from "../renderer/application/contracts/pet-desktop.js";
 
 /** Replay/reconnect is not a new notification. Never discard queued messages on status refresh. */
@@ -161,5 +162,32 @@ export class PetBackgroundNotice {
     if (surface.discoveryRun?.running) return { text: '正在后台探索新线索', title: '主动发现' };
     if (surface.maintenance?.some(m => m.running)) return { text: '正在后台整理记忆', title: '记忆维护' };
     return undefined;
+  }
+}
+
+
+/** Visual rest only: never sleeps or suspends the assistant/runtime. */
+export class PetAnimationBehavior {
+  private lastActive = 0;
+  private pokeUntil = 0;
+  private pokeSequence = 0;
+  reset(now: number) { this.lastActive = now; this.pokeUntil = 0; }
+  interact(now: number, pokeDuration = 0) {
+    this.lastActive = now;
+    if (pokeDuration > 0) { this.pokeUntil = now + pokeDuration; this.pokeSequence++; }
+  }
+  resolve(surface: PetSurface, input: { pendingMessage: boolean; interacting: boolean }, now: number) {
+    const activity: PetActivityState = surface.activity !== 'idle' ? surface.activity :
+      surface.discoveryRun?.running ? 'swarm' :
+      surface.tasks?.running || surface.maintenance?.some(item => item.running) ? 'working' :
+      surface.tasks?.attention ? 'needs-input' : 'idle';
+    if (activity !== 'idle' || input.pendingMessage || input.interacting) this.lastActive = now;
+    const state: PetActivityState = now < this.pokeUntil ? 'poke' :
+      activity === 'idle' && now - this.lastActive >= 10 * 60 * 1000 ? 'sleep' : activity;
+    return {
+      state,
+      key: state === 'poke' ? `poke:${this.pokeSequence}` : state,
+      idleMotion: ['breathe', 'sway', 'stretch'][Math.floor(Math.max(0, now - this.lastActive) / 18000) % 3],
+    };
   }
 }

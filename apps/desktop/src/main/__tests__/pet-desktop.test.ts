@@ -19,7 +19,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { PetMessageQueue, PetBubbleView, petMessageText, petMessageDuration, PetBackgroundNotice, shouldClosePetComposer } from "../../shared/pet-desktop.js";
+import { PetMessageQueue, PetBubbleView, PetAnimationBehavior, petMessageText, petMessageDuration, PetBackgroundNotice, shouldClosePetComposer } from "../../shared/pet-desktop.js";
 import { createSettingsStore } from "@maka/storage/settings-store";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -262,4 +262,60 @@ test('unread badge counts messages rather than deliveries, caps display at 99+, 
   q.push('owner', [{id: '101', text: 'new batch'}]); view.arrival();
   assert.equal(view.unreadCount, 1); assert.equal(view.unreadLabel, '1');
   view.reset(); assert.equal(view.unreadCount, 0);
+});
+
+
+test('click feedback plays once, can restart, and returns to the current task state', () => {
+  const behavior = new PetAnimationBehavior();
+  const idle = {activity: 'idle' as const, label: 'idle'};
+  const input = {pendingMessage: false, interacting: false};
+  behavior.interact(100, 2000);
+  const first = behavior.resolve(idle, input, 100);
+  assert.equal(first.state, 'poke');
+  behavior.interact(200, 2000);
+  assert.notEqual(behavior.resolve(idle, input, 200).key, first.key);
+  assert.equal(behavior.resolve(idle, input, 2199).state, 'poke');
+  assert.equal(behavior.resolve({...idle, activity: 'working'}, input, 2200).state, 'working');
+  assert.equal(behavior.resolve(idle, input, 2300).state, 'idle');
+});
+
+test('visual sleep starts after ten idle minutes and interaction wakes immediately', () => {
+  const behavior = new PetAnimationBehavior();
+  const idle = {activity: 'idle' as const, label: 'idle'};
+  const input = {pendingMessage: false, interacting: false};
+  behavior.reset(1000);
+  assert.equal(behavior.resolve(idle, input, 600999).state, 'idle');
+  assert.equal(behavior.resolve(idle, input, 601000).state, 'sleep');
+  behavior.interact(601001);
+  assert.equal(behavior.resolve(idle, input, 601001).state, 'idle');
+  assert.equal(behavior.resolve(idle, input, 1201001).state, 'sleep');
+  assert.equal(behavior.resolve(idle, {...input, pendingMessage:true}, 1201002).state, 'idle');
+});
+
+test('work, discovery, maintenance, attention and composing prevent visual sleep', () => {
+  const input = {pendingMessage:false, interacting:false};
+  const idle = {activity:'idle' as const, label:'idle'};
+  for (const surface of [
+    {...idle, activity:'working' as const},
+    {...idle, tasks:{running:1,waiting:0,attention:0}},
+    {...idle, discoveryRun:{id:'d',running:true}},
+    {...idle, maintenance:[{id:'m',running:true}]},
+    {...idle, tasks:{running:0,waiting:0,attention:1}},
+  ]) {
+    const behavior = new PetAnimationBehavior();
+    assert.notEqual(behavior.resolve(surface, input, 900000).state, 'sleep');
+    assert.equal(behavior.resolve(idle, input, 900001).state, 'idle');
+  }
+  const behavior = new PetAnimationBehavior();
+  assert.equal(behavior.resolve(idle, {...input, interacting:true}, 900000).state, 'idle');
+  assert.equal(behavior.resolve({...idle, tasks:{running:0,waiting:1,attention:0}}, input, 1500000).state, 'sleep', 'waiting on an external result does not mean the pet is working');
+});
+
+test('idle motion rotates through three poses without changing assistant status', () => {
+  const behavior = new PetAnimationBehavior();
+  behavior.reset(0);
+  const surface = {activity:'idle' as const, label:'idle'};
+  const input = {pendingMessage:false, interacting:false};
+  assert.deepEqual([0,18000,36000,54000].map(now => behavior.resolve(surface,input,now).idleMotion), ['breathe','sway','stretch','breathe']);
+  assert.equal(surface.activity, 'idle');
 });
