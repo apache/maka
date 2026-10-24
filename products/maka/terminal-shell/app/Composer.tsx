@@ -380,6 +380,7 @@ export function Composer(props: {
             style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}
           >
             <Button
+              ref={completion.addButton}
               onPress={inputAction(completion.toggleAdd, {
                 sessionId: props.session()?.sessionId ?? null,
               })}

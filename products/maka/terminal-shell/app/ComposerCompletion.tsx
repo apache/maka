@@ -116,6 +116,7 @@ export function createComposerCompletion(options: Options) {
   const loading = signal(false);
   const error = createText();
   let list: YNode | undefined;
+  let addAnchor: YNode | undefined;
   let serial = 0;
   let current: Read | null = null;
   let dismissed: Pick<Read, 'owner' | 'editor' | 'text' | 'selection'> | null = null;
@@ -544,13 +545,13 @@ export function createComposerCompletion(options: Options) {
       });
       return;
     }
-    read.editor.focus();
     if (item.kind === 'source') {
       dismissed = null;
       query.set('');
       explicit.set(item.source);
       return;
     }
+    read.editor.focus();
     if (item.kind === 'attachment') {
       close();
       read.owner.attachments.open({ owner: read.owner.sessionId, value: true });
@@ -678,7 +679,10 @@ export function createComposerCompletion(options: Options) {
     index,
     query,
     queryComposing,
-    anchor: () => caret() ?? editor()?.node,
+    anchor: () => (opened()?.explicit ? addAnchor : (caret() ?? editor()?.node)),
+    addButton(node: YNode) {
+      addAnchor = node;
+    },
     attach(sessionId: string | null, node: YNode) {
       directoryHint = null;
       editor.set({ sessionId, node });
@@ -738,6 +742,7 @@ export function createComposerCompletion(options: Options) {
     queryInput(node: YNode) {
       queryInput.set(node);
       querySelection.set({ start: 0, end: 0 });
+      node.focus();
     },
     querySelection(event: Selection) {
       querySelection.set({ ...event });
@@ -810,9 +815,8 @@ export function ComposerCompletion(props: { state: ComposerCompletionState }) {
         <If when={state.opened()?.explicit && state.opened()?.source !== 'add'}>
           <Input
             ref={state.queryInput}
-            autoFocus
             value={state.query()}
-            onChange={state.query.set}
+            onChange={(text) => state.query.set(text)}
             onSelectionChange={state.querySelection}
             onSubmit={inputAction(state.acceptSelected, { read: state.opened()!.serial })}
             onCompositionChange={state.queryComposition}
