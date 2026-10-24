@@ -34,6 +34,7 @@ import { crc32, inflateSync } from 'node:zlib';
 import { FILESYSTEM_WORKER_PROTOCOL_VERSION } from '../packages/runtime/dist/filesystem-worker/protocol.js';
 import { readProductManifestIdentity } from './product-release-identity.mjs';
 import { assertPackagedUpdateConfiguration } from './desktop-update-contract.mjs';
+import { stapleMacosArtifact } from './staple-macos-artifact.mjs';
 import {
   resolveDesktopBuildVersion,
   resolveDesktopReleaseTarget,
@@ -355,7 +356,10 @@ export async function verifyPackagedMacApp(
   assertSingleArchitecture(executableArchitectures.stdout, 'Maka executable', expectedArch);
   await run('codesign', ['--verify', '--deep', '--strict', '--verbose=2', appPath]);
   await run('spctl', ['--assess', '--type', 'execute', '--verbose=4', appPath]);
-  await run('xcrun', ['stapler', 'validate', appPath]);
+  await stapleMacosArtifact(appPath, {
+    validateOnly: true,
+    run: (command, args, options) => run(command, args, { timeoutMs: options.timeout }),
+  });
 
   const ptyProbe = makePtyProbe(
     '/bin/echo',
