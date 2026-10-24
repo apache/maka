@@ -3314,6 +3314,25 @@ test('ShellRun crash fixture', { skip: !process.env.MAKA_SHELL_WAIT_CRASH_ROOT }
       { timeoutMs: 5000 },
     );
   }
+  // Goal idle does not wait for the background command to record its start.
+  // The parent SIGKILLs this process as soon as ready.json is visible, so
+  // publish that marker only after `starts` and `process-id` are on disk.
+  await waitFor(
+    async () => {
+      try {
+        const started = await readFile(join(f.owner.capability.canonicalPath, 'starts'), 'utf8');
+        const processId = await readFile(
+          join(f.owner.capability.canonicalPath, 'process-id'),
+          'utf8',
+        );
+        return started === '1' && /^\d+$/.test(processId);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+        throw error;
+      }
+    },
+    { timeoutMs: 5000 },
+  );
   await writeFile(
     join(base, 'ready.json.tmp'),
     JSON.stringify({
@@ -3371,7 +3390,14 @@ for (const phase of ['running', 'terminal'] as const)
             marker = JSON.parse(await readFile(join(base, 'ready.json'), 'utf8'));
             return true;
           } catch (error) {
-            if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+            // ENOENT is the usual poll miss. A truncated marker throws SyntaxError
+            // and is the same "not ready" state; do not fail the test on it.
+            if (
+              (error as NodeJS.ErrnoException).code === 'ENOENT' ||
+              error instanceof SyntaxError
+            ) {
+              return false;
+            }
             throw error;
           }
         },
