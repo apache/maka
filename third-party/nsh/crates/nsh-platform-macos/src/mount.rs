@@ -231,6 +231,7 @@ impl Mounter {
                 crate::transition::style_changed(surface, view, &old);
                 view.moved();
                 crate::decor::style_changed(view, &old);
+                crate::access::style_changed(view, &old);
             }
             MountItem::Text {
                 id,

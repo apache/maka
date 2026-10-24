@@ -45,7 +45,7 @@ use objc2_app_kit::{
 };
 use objc2_core_foundation::{CGFloat, CGPoint, CGRect, CGSize};
 use objc2_core_graphics::CGContext;
-use objc2_foundation::{NSObject, NSObjectProtocol, NSPoint, NSRect};
+use objc2_foundation::{NSArray, NSObject, NSObjectProtocol, NSPoint, NSRect};
 use objc2_quartz_core::{CALayer, CALayerDelegate, CATransform3D};
 
 use crate::surface::{Surface, quiet};
@@ -687,6 +687,23 @@ define_class!(
             unsafe { msg_send![super(self), setFrameSize: size] }
             if let Some(surface) = self.surface() {
                 surface.resized(size.width as f32, size.height as f32);
+            }
+        }
+
+        // None while VoiceOver must not reach the children
+        // ([`crate::access::hides_children`]), else AppKit's.
+        #[unsafe(method_id(accessibilityChildren))]
+        fn accessibility_children(&self) -> Option<Retained<NSArray>> {
+            let hides = self
+                .ivars()
+                .state
+                .try_borrow()
+                .is_ok_and(|s| crate::access::hides_children(&s));
+            if hides {
+                Some(NSArray::new())
+            } else {
+                // SAFETY: NSView's own children.
+                unsafe { msg_send![super(self), accessibilityChildren] }
             }
         }
 

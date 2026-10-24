@@ -78,7 +78,7 @@ const copy = zh
       replay: '重播',
       nativeKicker: 'Native',
       nativeTitle: 'Native，有两层含义',
-      nativeLead: 'NSH 统一的是应用：组件、状态、业务逻辑和 API；像素交给每个平台。它的基础是平台自己的，它的交互方式也是平台自己的。',
+      nativeLead: 'NSH 统一组件、状态、业务逻辑和 API；视觉由应用设计，视图与交互建立在平台自己的基础之上。',
       layers: [
         { n: '01', title: '平台的基础设施', body: '每个后端都用平台已有的东西构建界面：UIKit 视图、Android 视图、AppKit 视图、GTK 4 控件、用 Direct2D 和 DirectWrite 绘制的 Win32 窗口，以及用 CSS 设置样式的 HTML 元素。文本输入、选区、输入法和无障碍都来自平台。' },
         { n: '02', title: '平台的交互方式', body: '同一个组件在每种设备上都按用户的习惯工作。Menu 在有指针的设备上是贴着触发点弹出的菜单，在手机上是从底部升起的面板；ContextMenu 用右键打开，在触屏上长按打开。应用只写一次菜单。' },
@@ -101,7 +101,7 @@ const copy = zh
       howTitle: '在服务器上生成，在设备上被信任',
       howLead: '模块以 Ed25519 签名的 .nshpkg 到达，发布密钥由离线根密钥认证，设备端检查吊销列表；每个视图一个 QuickJS 虚拟机，内存、调用时长和节点数都有上限，只能使用宿主授予的能力。',
       principleKicker: '原则',
-      principle: ['统一应用，', '像素交给每个平台'],
+      principle: ['原生视图与交互，', '视觉由应用设计'],
       principleBody: '同一个应用在每个平台上功能一致：一套组件、状态和逻辑。它在手指或指针下的手感、文本如何编辑、菜单如何打开——这些属于每个平台自己。',
       principleCta: '开始构建',
     }
@@ -134,7 +134,7 @@ const copy = zh
       replay: 'Replay',
       nativeKicker: 'Native',
       nativeTitle: 'Native, in two ways.',
-      nativeLead: 'NSH unifies the app — its components, state, logic and API — and leaves the pixels to each platform. Its foundations are the platform’s own, and so is the way it behaves.',
+      nativeLead: 'NSH unifies components, state, logic and API. The app owns its visual design; views and interaction build on each platform’s foundations.',
       layers: [
         { n: '01', title: 'The platform’s foundations', body: 'Each backend builds the UI from what its platform already has: UIKit views, Android views, AppKit views, GTK 4 widgets, Win32 windows drawn with Direct2D and DirectWrite, and HTML elements styled with CSS. Text input, selection, input methods and accessibility come from the platform.' },
         { n: '02', title: 'The platform’s interaction', body: 'One component behaves as each device’s users expect. A Menu opens as a popup at its trigger with a pointer and as a sheet from the bottom on a phone; a ContextMenu opens on a right click, or when a finger holds the trigger. The app writes the menu once.' },
@@ -157,7 +157,7 @@ const copy = zh
       howTitle: 'Generated on the server, trusted on the device.',
       howLead: 'Modules arrive as Ed25519-signed .nshpkg files, release keys are certified by an offline root and revocations are checked on the device; each view runs its module in a QuickJS VM with memory, call-time and node limits, reaching only the capabilities the host grants.',
       principleKicker: 'Principle',
-      principle: ['Unify the app,', 'leave the pixels to the platform.'],
+      principle: ['Native views and interaction,', 'your visual design.'],
       principleBody: 'The same app has the same features everywhere: one model of components, state and logic. How it feels under a finger or a pointer, how its text is edited, how its menus open — that belongs to each platform.',
       principleCta: 'Start building',
     };

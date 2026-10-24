@@ -82,6 +82,12 @@ returns an error with the texts on screen when it cannot be taken.
 crate's UI sets ([Building with Rust](./rust.md#testing)). `examples/gallery-rs` tests its Rust root this way, one
 module per demo; `examples/rust-exports` tests its TSX entry from Rust.
 
+`nsh test` runs these tests too: given the directory of an app with Rust crates (`nsh.json` `"rust"`), it runs
+`cargo test` for each crate in it before the test files, and shows and counts the Rust tests with the TypeScript ones
+(`✓ src/lib.rs › tests::adds`), in its summary and its `--junit` report. So `nsh test` is the one command for a Rust app,
+a TSX app with a crate and a TSX app alike, and `nsh check` likewise runs `cargo check --all-targets` on the crates
+before it type checks the TypeScript.
+
 ## Tests with nsh test
 
 A test file is a `*.test.tsx` or `*.test.ts` file next to your code. It imports `nsh/test`, as `App.test.tsx` above

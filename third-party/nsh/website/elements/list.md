@@ -89,6 +89,9 @@ virtual_list(move || messages.with(|m| m.len()), move |at| {
 So keep per-item state in your data (keyed by id), not in signals created inside the row function: such a signal stays
 with the cell and shows up on another item.
 
+Cells waiting for their next item are hidden once their row is gone or shown by another cell, so screen readers,
+touches and UI tests meet each row once.
+
 ## Props
 
 | Prop | Rust | Type | Default | Description |

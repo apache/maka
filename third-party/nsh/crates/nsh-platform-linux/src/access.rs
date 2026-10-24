@@ -13,7 +13,8 @@
 //!   text inside them), its description (`accessibilityHint`), its value
 //!   (`accessibilityValue`: a range for range roles, else read as part of
 //!   the description) and its states (`accessibilityState`,
-//!   `accessibilityElementsHidden`, which hides the subtree);
+//!   `accessibilityElementsHidden`, which hides the subtree, and
+//!   `visibility: hidden`, which does too, as in a browser);
 //! - its `testID` as the widget name (what GTK Inspector shows).
 //!
 //! What GTK cannot express: `accessible={true}` grouping (children stay
@@ -32,7 +33,7 @@ use std::{cell::RefCell, sync::Arc};
 use gtk4::{self as gtk, AccessibleRole as Gtk, accessible, prelude::*};
 use nsh_core::{
     Accessibility, AccessibilityRole as Role, AttributedText, Checked, EventKind, EventMask,
-    LiveRegion, MountBatch, MountItem, NodeId, ViewKind,
+    LiveRegion, MountBatch, MountItem, NodeId, ViewKind, ViewStyle,
 };
 use rustc_hash::FxHashMap;
 
@@ -156,6 +157,13 @@ pub(crate) fn events_changed(view: &NshView) {
     update(view);
 }
 
+/// The view's style changed: `visibility` hides or shows its subtree.
+pub(crate) fn style_changed(view: &NshView, old: &ViewStyle) {
+    if view.state().style.hidden != old.hidden {
+        update(view);
+    }
+}
+
 /// A text view's text changed.
 pub(crate) fn text_changed(view: &NshView) {
     let first = {
@@ -187,7 +195,7 @@ fn update(view: &NshView) -> bool {
         let a = &s.props.accessibility;
         let pressable = is_pressable(s.events);
         let text = s.text.as_ref().map(|t| t.text.text.as_str());
-        let spec = spec_for(a, s.kind, pressable, text);
+        let spec = spec_for(a, s.kind, pressable, text, s.style.hidden);
         if s.access.spec.as_deref() == Some(&spec) {
             return false;
         }
@@ -399,8 +407,16 @@ fn push_text<'a>(
     }
 }
 
-/// What to give GTK for a view of `kind` with accessibility `a`.
-fn spec_for(a: &Accessibility, kind: ViewKind, pressable: bool, text: Option<&str>) -> Spec {
+/// What to give GTK for a view of `kind` with accessibility `a`;
+/// `invisible` for `visibility: hidden`, which hides the subtree as
+/// `accessibilityElementsHidden` does: what is not drawn is not read either.
+fn spec_for(
+    a: &Accessibility,
+    kind: ViewKind,
+    pressable: bool,
+    text: Option<&str>,
+    invisible: bool,
+) -> Spec {
     let role = role_for(a, kind, pressable);
     let label = a.label.as_deref().or(text).map(str::to_owned);
     let ranged = is_range(role);
@@ -428,7 +444,7 @@ fn spec_for(a: &Accessibility, kind: ViewKind, pressable: bool, text: Option<&st
         checked: a.state.checked,
         expanded: a.state.expanded,
         busy: a.state.busy,
-        hidden: a.hidden,
+        hidden: a.hidden || invisible,
     }
 }
 
@@ -598,6 +614,7 @@ mod tests {
             ViewKind::Text,
             false,
             Some("Title"),
+            false,
         );
         assert_eq!(s.label.as_deref(), Some("Title"));
         let labelled = Accessibility {
@@ -605,7 +622,7 @@ mod tests {
             hint: Some("Opens it".into()),
             ..Default::default()
         };
-        let s = spec_for(&labelled, ViewKind::Text, false, Some("Title"));
+        let s = spec_for(&labelled, ViewKind::Text, false, Some("Title"), false);
         assert_eq!(s.label.as_deref(), Some("Label"));
         assert_eq!(s.description.as_deref(), Some("Opens it"));
 
@@ -620,7 +637,7 @@ mod tests {
             value: Some(value.clone()),
             ..Default::default()
         };
-        let s = spec_for(&slider, ViewKind::View, false, None);
+        let s = spec_for(&slider, ViewKind::View, false, None, false);
         assert_eq!(s.range.as_ref().and_then(|r| r.now), Some(3.0));
         assert_eq!(s.description, None);
         // Outside range roles the value is part of the description.
@@ -630,8 +647,30 @@ mod tests {
             value: Some(value),
             ..Default::default()
         };
-        let s = spec_for(&button, ViewKind::View, false, None);
+        let s = spec_for(&button, ViewKind::View, false, None, false);
         assert_eq!(s.range, None);
         assert_eq!(s.description.as_deref(), Some("3 of 10. Plays"));
+    }
+
+    /// `visibility: hidden` hides the view and its subtree as
+    /// `accessibilityElementsHidden` does, whatever the view is.
+    #[test]
+    fn a_hidden_style_hides_the_subtree() {
+        let labelled = Accessibility {
+            label: Some("Save".into()),
+            ..Default::default()
+        };
+        let none = Accessibility::default();
+        for (a, kind, pressable, text) in [
+            (&labelled, ViewKind::View, true, None),
+            (&none, ViewKind::Text, false, Some("Title")),
+            (&none, ViewKind::View, false, None),
+        ] {
+            let shown = spec_for(a, kind, pressable, text, false);
+            assert!(!shown.hidden, "{kind:?}");
+            let hidden = spec_for(a, kind, pressable, text, true);
+            assert!(hidden.hidden, "{kind:?}");
+            assert_eq!(hidden.role, shown.role, "only hidden changes");
+        }
     }
 }

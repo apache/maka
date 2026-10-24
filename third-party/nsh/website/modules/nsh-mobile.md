@@ -6,7 +6,7 @@ order: 12.2
 
 # nsh/mobile
 
-`nsh/mobile` holds the system UI that iOS and Android share: today the system's tab bar, `TabBar`. It works on iOS (with iPadOS and Mac Catalyst) and Android. Rust code uses `nsh_core::mobile`; TSX imports
+`nsh/mobile` holds capabilities specific to iOS and Android: today the system's tab bar, `TabBar`. It works on iOS (with iPadOS and Mac Catalyst) and Android. Rust code uses `nsh_core::mobile`; TSX imports
 `nsh/mobile`. The module can be imported on every platform, so one bundle runs everywhere: elsewhere its components
 take no room and show nothing, and `isAvailable` tells you whether you are on iOS or Android. What only one of them
 has is in [nsh/ios](./nsh-ios.md) or [nsh/android](./nsh-android.md), and what only desktops have in
@@ -20,6 +20,10 @@ use nsh_core::mobile::{TabBarItem, tab_bar};
 import { isAvailable, TabBar } from "nsh/mobile";
 import type { TabBarItem, TabBarProps } from "nsh/mobile";
 ```
+
+## Scope
+
+This module exposes capabilities specific to mobile platforms, such as the system tab bar for top-level app navigation. Common controls belong to [`nsh/base`](./nsh-base.md): its [Switch](../elements/switch.md), for example, shares behavior and API across phones, desktops and the web, with the track, thumb and state styles supplied by the app. `TabBar` serves mobile app navigation; `Tabs` serves tabbed content across platforms. Only capabilities with mobile-specific interaction semantics belong here. A system appearance, size or animation alone does not change a common control’s shared role. This distinction guides which capabilities belong here ([Goals and design principles](../docs/goals.md)).
 
 ## isAvailable
 

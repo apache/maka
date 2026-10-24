@@ -338,6 +338,12 @@ when changing text measurement, clipping, pointer input or scripts (`docs/dev/tu
   security closures in its `closed.txt`. No release is recorded yet, so nothing is frozen: what is on `main` may still
   change until 0.3.0, the first release recorded. A new API lands with its test, a case in
   `tests/compat/cases/<domain>/` whose script checks it (`cargo xtask compat`; `docs/dev/compatibility.md`).
+- **Native views and interaction, app-owned design.** Common controls have one cross-platform home in `nsh/base`.
+  A system-styled version of a common control does not justify another public component in a platform module.
+  Extend shared behavior and styling parts instead. `nsh/mobile`'s `TabBar` is a mobile navigation capability,
+  distinct in role from `Tabs`; platform modules expose platform-specific semantics, not parallel catalogs of
+  system-styled form controls. See `docs/dev/js-modules.md` "Component scope and project goals" and
+  `website/docs/goals.md` (with its Chinese counterpart).
 - **No styles in NSH.** Nothing NSH ships has a look of its own: no default colors, paddings, radii, fonts or variants
   in `nsh-base`'s components (its theme's default tokens, shadcn/ui's, are the app's to draw with; the one
   exception is `TextView`'s default reading typography, its colors the theme's shadcn tokens (alerts GitHub's alert
