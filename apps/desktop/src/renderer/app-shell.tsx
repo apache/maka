@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { PersonalAssistantTaskLayout, MemoryOriginalHost, PersonalAssistantEntry, createInternalUriDispatcher } from './features/personal-assistant/index.js';
+import { PetDesktopBridge, PersonalAssistantTaskLayout, MemoryOriginalHost, PersonalAssistantEntry, createInternalUriDispatcher } from './features/personal-assistant/index.js';
 import { WorkHubControlOverlay, WorkHubDock, WorkHubMainNavigation } from './features/workhub';
 import { WorkHubEnablementWatch } from './application/contracts/workhub-workspace/workhub-enablement.js';
 import { RuntimeHostHandoffOverlay } from './features/runtime-host-management/index.js';
@@ -108,7 +108,6 @@ import { AppShellDetailPanel } from './shell/detail-panel';
 import { appShellFrameStyle } from './shell/frame-style';
 import { AppShellOverlays } from './app-shell-overlays';
 import type { ArchivedTasksBridge } from './settings/tasks-settings-page';
-import { CustomPetCompanionForSession } from './custom-pet-companion';
 import { defaultRuntimeHostDiagnosticTarget } from './platform/desktop/default-runtime-host-operation.js';
 import { useAppShellProjectContext } from './use-project-context';
 import { createAppShellE2eFixtureActions } from './app-shell-e2e-fixture';
@@ -1482,8 +1481,9 @@ function AppShellContent({
           </MakaUriContext.Provider>
         </AppShellDetailPanel>
       </AstryxAppShell>
-      {!shellObscured && (
-        <Conversation.ConversationActivityConsumer surface={CustomPetCompanionForSession}
+      {(
+        <Conversation.ConversationActivityConsumer surface={PetDesktopBridge}
+            openSession={openSession}
           hasActiveSession={activeSession !== undefined}
           sessionStatus={activeSession?.status}
           completionNonce={petCompletionNonce}

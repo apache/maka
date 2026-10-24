@@ -160,3 +160,20 @@
 @media (prefers-reduced-motion: reduce) {
   .personal-assistant-typing-bubble > span { animation: none; opacity: .7; }
 }
+
+/* Keep the text bubble, but give stickers their own transparent area. */
+.personal-assistant-chat .maka-chat-message-bubble-assistant:has(.maka-message-stickers) {
+  padding: 0;
+  background: transparent;
+}
+.personal-assistant-chat .maka-chat-message-bubble-assistant:has(.maka-message-stickers)::before { display: none; }
+.personal-assistant-chat .maka-sticker-message-prose:not([hidden]) {
+  position: relative;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--muted);
+}
+.personal-assistant-chat .maka-sticker-message-prose:not([hidden])::before {
+  content: ""; position: absolute; left: -6px; top: 13px; width: 6px; height: 10px;
+  background: inherit; clip-path: polygon(100% 0, 100% 100%, 0 50%);
+}

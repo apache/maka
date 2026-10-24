@@ -21,6 +21,7 @@ import { strict as assert } from 'node:assert';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { it } from 'node:test';
+import { parseHTML } from 'linkedom';
 import {
   applyMermaidRenderBudget,
   MarkdownBody,
@@ -506,6 +507,16 @@ function renderImageMarkdown(props: { text: string }) {
   }));
 }
 
+it('preserves character pack attachment references through chat redaction', () => {
+  const markup = renderImageMarkdown({
+    text: '![sticker](maka://runtime/attachments/assistant_character_bf810d6e9d50f443d6e9aa0434b095d01eb978463c7096060ab5dae34d1cb530)',
+  });
+  // No reader here: reaching the attachment placeholder proves the reference
+  // survived redaction and was parsed, rather than treated as an unknown URL.
+  assert.match(markup, /This image attachment is unavailable here/);
+  assert.doesNotMatch(markup, /This image address cannot be displayed here/);
+});
+
 it('keeps remote URLs out of image elements until a Host archive is available', () => {
   const markup = renderImageMarkdown({ text: '![preview](https://example.com/image.png)' });
   assert.doesNotMatch(markup, /<img\b|rel="preload"/);
@@ -641,4 +652,48 @@ it('memory citations route internally and never navigate as external URLs', () =
   }));
   assert.equal((markup.match(/data-maka-uri-kind="memory-original"/g) ?? []).length, 2);
   assert.doesNotMatch(markup, /unsafe-scheme|href="memory-original/);
+});
+
+
+it('moves inline and standalone stickers outside prose without changing Markdown formatting', () => {
+  const sticker = 'maka://runtime/attachments/assistant_sticker_' + 'a'.repeat(64);
+  const markup = renderToStaticMarkup(createElement(LocaleProvider, { locale: 'en', children:
+    createElement(MarkdownBody, { text: `**Hello** ![Wave](${sticker}) again.\n\n- First\n- Second\n\n![Smile](${sticker})`, separateStickers: true }),
+  }));
+  const prose = markup.slice(markup.indexOf('maka-sticker-message-prose'), markup.indexOf('maka-message-stickers'));
+  assert.match(prose, /<strong[^>]*>Hello<\/strong>/);
+  assert.match(prose, /again\./);
+  assert.match(prose, /<ul/);
+  assert.doesNotMatch(prose, /maka-markdown-image-resource/);
+  assert.equal((markup.slice(markup.indexOf('maka-message-stickers')).match(/maka-markdown-image-resource/g) ?? []).length, 2);
+});
+
+it('sticker-only messages have no empty prose bubble; code examples and ordinary images stay intact', () => {
+  const sticker = 'maka://runtime/attachments/assistant_sticker_' + 'b'.repeat(64);
+  const render = (text: string, imageDisplay?: 'link') => renderToStaticMarkup(createElement(LocaleProvider, { locale: 'en', children:
+    createElement(MarkdownBody, { text, separateStickers: true, imageDisplay }),
+  }));
+  assert.match(render(`![Wave](${sticker})`), /class="maka-sticker-message-prose" hidden=""/);
+  assert.doesNotMatch(render('`![Wave](' + sticker + ')`'), /maka-message-stickers/);
+  assert.doesNotMatch(render('```md\n![Wave](' + sticker + ')\n```'), /maka-message-stickers/);
+  assert.doesNotMatch(render(`![Photo](maka://runtime/attachments/ordinary-photo)`), /maka-message-stickers/);
+  assert.doesNotMatch(render(`![Wave](${sticker})`, 'link'), /maka-message-stickers/);
+  assert.match(render(`![Wave][s]\n\n[s]: ${sticker}`), /maka-message-stickers/);
+});
+
+it('authored summaries fold only prose, leaving stickers visible outside the disclosure', () => {
+  const sticker = 'maka://runtime/attachments/assistant_sticker_' + 'c'.repeat(64);
+  const markup = renderToStaticMarkup(createElement(LocaleProvider, { locale: 'en', children:
+    createElement(MarkdownBody, { summary: 'Brief preview', text: `**Full answer**\n\n- First\n- Second\n\n![Reaction](${sticker})`, separateStickers: true }),
+  }));
+  const { document } = parseHTML(markup);
+  const body = document.querySelector('.maka-message-summary-body')!;
+  assert.equal(body.hasAttribute('hidden'), true);
+  assert.equal(body.querySelector('strong')?.textContent, 'Full answer');
+  assert.ok(body.querySelector('ul'));
+  assert.equal(body.querySelector('.maka-message-stickers'), null);
+  const tray = document.querySelector('.maka-message-stickers')!;
+  assert.ok(tray);
+  assert.equal(tray.closest('[hidden]'), null);
+  assert.equal(tray.closest('.maka-message-summary'), null);
 });

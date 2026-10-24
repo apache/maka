@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import type { createAssistantPetPacks } from '../server/assistant-pet-packs.js';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { TurnOrigin } from '@maka/core/turn-origin';
 import type { MessageContent } from '@maka/core/events';
@@ -54,8 +55,17 @@ type Dispose = () => void | Promise<void>;
 
 /** Shared Host capabilities retain invocation identity and source permissions. No plugin Fiber owns this service. */
 export interface AssistantDependencies {
+  petPacks?: ReturnType<typeof createAssistantPetPacks>;
   allocateWorkspace?(): Promise<{ projectId: string }>;
   readRuntimeEvents?(sessionId: string, runId?: string): Promise<readonly RuntimeEvent[]>;
+  /** Cheap durable checkpoint identity; used only to refresh the Bot's optional sticker shelf. */
+  readCompactionRevision?(sessionId: string): Promise<string | undefined>;
+  publishCharacterImage?(
+    sessionId: string,
+    assetId: string,
+    image: { bytes: Uint8Array; mimeType: string },
+    kind: 'image' | 'avatar' | 'sticker',
+  ): Promise<string>;
   agents: PluginAgentService;
   llm: PluginLlmService;
   sessionQuery: PluginSessionQueryService;

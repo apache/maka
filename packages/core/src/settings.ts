@@ -495,6 +495,8 @@ export interface PersonalizationSettings {
   uiLocale: UiLocalePreference;
   /** User-selected custom PetPack. `null` keeps the pet surface disabled. */
   selectedPetId: string | null;
+  /** Presentation only; switching never starts an assistant. */
+  petMode?: 'session' | 'assistant';
 }
 
 /** Persisted onboarding milestones; derived onboarding state is not stored. */

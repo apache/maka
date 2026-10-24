@@ -21,7 +21,15 @@ import { createContext, useContext } from 'react';
 import type { PersonalAssistantRequest } from '@maka/runtime-host/protocol';
 import { createAssistantNavigation, type AssistantHost } from './navigation.js';
 export type { AssistantHost } from './navigation.js';
+export interface PetPresentationPort {
+  configuration(): Promise<{ enabled: boolean; mode: 'session' | 'assistant' }>;
+  subscribeConfiguration(handler: (value: { enabled: boolean; mode: 'session' | 'assistant' }) => void): () => void;
+  publish(value: import('../../application/contracts/pet-desktop.js').PetPublication): void;
+  subscribeOpen(handler: (sessionId: string | undefined) => void): () => void;
+  observeMessages(sessionId: string, failed: () => void): () => void;
+}
 export interface PersonalAssistantPort {
+  pet?: PetPresentationPort;
   call(method: PersonalAssistantRequest['method'], input?: unknown, host?: AssistantHost): Promise<any>;
   defaultHost(): Promise<AssistantHost>;
   hostSnapshot(): Promise<{ entries: ReadonlyArray<{ profile: { id: string }; hostId?: string; enabled: boolean }> }>;

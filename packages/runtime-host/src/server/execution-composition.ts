@@ -18,6 +18,7 @@
  */
 
 import { canExecuteExistingConversation } from '@maka/core/executor-catalog';
+import { createAssistantPetPacks } from './assistant-pet-packs.js';
 import { readMatterRuntimeEvents } from '../assistant/proactive-matters/settlement-context.js';
 import { markAssistantBackgroundSessions } from '../assistant/background-sessions.js';
 import { PersonalAssistantService, ASSISTANT_LEGACY_PACKAGES } from '../assistant/service.js';
@@ -25,6 +26,7 @@ import { assistantInputTurnId, legacyAssistantInputTurnId } from '../assistant/b
 import { createAssistantMessageReader } from './session-transcript-reader.js';
 import { createImageFileReader } from '@maka/runtime/image-file-reader';
 import { ChatImageDeliveryService } from './chat-image-delivery.js';
+import { readyChatImageArtifact } from './chat-image-artifact.js';
 import { downloadChatImage, ImageSourceError } from './chat-image-source.js';
 import { readAvatarImageSource } from './avatar-image-source.js';
 import { createWorkHubResultRuntime } from './workhub-result-runtime.js';
@@ -32,7 +34,12 @@ import { createWorkHubInspectionTool } from './workhub-inspection-tool.js';
 import { copyWorkHubAttachmentsToTarget } from './workhub-message-attachments.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
-import { attachmentKindFromMimeType, MAX_READ_IMAGE_BYTES } from '@maka/core/attachments';
+import {
+  attachmentKindFromMimeType,
+  formatAttachmentResourceRef,
+  STICKER_ARTIFACT_PREFIX,
+  MAX_READ_IMAGE_BYTES,
+} from '@maka/core/attachments';
 import type { ContextOffloadLimits } from '@maka/core/context-offload';
 import { messageContentDigest, normalizeMessageContent } from '@maka/core/events';
 import type { AttachmentRef } from '@maka/core/events';
@@ -505,11 +512,43 @@ export async function createExecutionRuntimeHostComposition(
           if (failures.length)
             throw new AggregateError(failures, 'Failed to stop assistant sessions');
         },
+        petPacks: createAssistantPetPacks(
+          context.owner.capability.canonicalPath,
+          (sessionId, path, signal) => readLocalImage(sessionId, path, signal, 'pet'),
+        ),
         readAvatarImage: (sessionId, source, signal) =>
           readAvatarImageSource(source, signal, {
             workspace: async () => (await stores.sessionStore.readHeaderSnapshot(sessionId)).cwd,
             readLocal: (path, boundedSignal) => readLocalImage(sessionId, path, boundedSignal),
             download: downloadImage,
+          }),
+        publishCharacterImage: (sessionId, assetId, image, kind): Promise<string> =>
+          sessionAdmission.run(sessionId, async () => {
+            if (!personalAssistant.enabled || !personalAssistant.isConversation(sessionId))
+              throw Error('Assistant conversation is unavailable');
+            const id =
+              // Use the artifact-style prefix: a dash followed by a long hash
+              // can be mistaken for a credential by chat text redaction.
+              (kind === 'sticker' ? STICKER_ARTIFACT_PREFIX : 'assistant_character_') +
+              createHash('sha256')
+                .update(JSON.stringify([sessionId, assetId]))
+                .digest('hex');
+            const record = await openedArtifactStore.create(
+              readyChatImageArtifact({
+                id,
+                sessionId,
+                turnId: id,
+                name: 'character-image',
+                messageId: id,
+                source: `character-pack:${assetId}`,
+                image,
+              }),
+            );
+            return formatAttachmentResourceRef({
+              kind: 'session_file',
+              sessionId,
+              relativePath: record.id,
+            })!;
           }),
         appendConversation: async (sessionId, message) => {
           await sessionAdmission.run(sessionId, async (lease) => {
@@ -543,6 +582,13 @@ export async function createExecutionRuntimeHostComposition(
           });
         },
         markBackgroundSessions: (ids) => markAssistantBackgroundSessions(stores.sessionStore, ids),
+        readCompactionRevision: async (sessionId) =>
+          (
+            await stores.agentRunStore.readEventProjection?.(
+              sessionId,
+              'history_compact_checkpoint_recorded',
+            )
+          )?.id,
         readRuntimeEvents: async (sessionId, runId) =>
           runId
             ? readMatterRuntimeEvents(stores.runtimeEventStore, sessionId, runId)
@@ -724,13 +770,19 @@ export async function createExecutionRuntimeHostComposition(
         await transport.close();
       }
     };
-    const readLocalImage = async (sessionId: string, path: string, abortSignal: AbortSignal) => {
+    const readLocalImage = async (
+      sessionId: string,
+      path: string,
+      abortSignal: AbortSignal,
+      imagePurpose: 'chat' | 'pet' = 'chat',
+    ) => {
       const [header, boundary] = await Promise.all([
         stores.sessionStore.readHeaderSnapshot(sessionId),
         stores.sessionStore.readExecutionBoundary(sessionId),
       ]);
       const result = await localImageReader({
         path,
+        imagePurpose,
         cwd: header.cwd,
         permissionMode: header.permissionMode,
         executionBoundary: boundary,

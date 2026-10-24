@@ -650,6 +650,23 @@
 }
 .maka-markdown-image-inline .maka-markdown-image-placeholder { padding: 0; }
 
+/* Sticker attachments retain full bytes for preview; only their chat thumbnail is capped. */
+.maka-chat-sticker {
+  padding: 0;
+  width: auto;
+  height: auto;
+  min-width: 0;
+  max-width: 100%;
+  cursor: zoom-in;
+}
+.maka-chat-sticker .maka-markdown-attachment-image {
+  width: auto;
+  height: auto;
+  max-width: min(128px, 100%);
+  max-height: 128px;
+  object-fit: contain;
+}
+
 /* Markdown code renderers are custom components so Mermaid can be loaded only
    for settled Mermaid fences. Astryx skips its own spacing wrapper when
    `components.code` is set, so the custom block sits directly in the document
@@ -1225,7 +1242,8 @@
 .maka-choice-hint { margin: 8px 0; }
 
 /* Model-authored assistant message preview; never truncate the summary. */
-.maka-message-summary-preview { overflow-wrap: anywhere; }
+.maka-message-summary-header { display: flex; align-items: flex-start; gap: 8px; }
+.maka-message-summary-preview { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .maka-message-summary-body {
   --maka-summary-body-color: color-mix(in srgb, var(--foreground) 65%, var(--background) 35%);
   color: var(--maka-summary-body-color);
@@ -1238,7 +1256,19 @@
   --color-text-secondary: var(--maka-summary-body-color);
   color: var(--maka-summary-body-color);
 }
-.maka-message-summary-body:not([hidden]) { padding-top: 12px; }
+.maka-message-summary-body:not([hidden]) {
+  margin-top: 10px;
+  padding-left: 12px;
+  border-left: 2px solid color-mix(in srgb, var(--foreground) 14%, transparent);
+}
 .maka-message-summary-body[hidden] { display: none; }
-.maka-message-summary-toggle { margin-top: 8px; }
+.maka-message-summary-toggle {
+  flex: none; width: 24px; min-width: 24px; height: 24px; min-height: 24px;
+  padding: 3px; border-radius: 50%; color: var(--muted-foreground);
+}
 .maka-message-summary-toggle[aria-expanded='true'] svg { transform: rotate(180deg); }
+
+/* Stickers are attachments beside the prose, even when authored inline. */
+.maka-message-stickers { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end; margin-top: 8px; }
+.maka-sticker-message-prose[hidden] + .maka-message-stickers { margin-top: 0; }
+.maka-message-stickers .maka-chat-sticker { background: transparent; border: 0; box-shadow: none; }

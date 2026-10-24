@@ -2080,6 +2080,20 @@ const makaBridge = {
       return projectCreatedSessionSummary(scope, session);
     },
   },
+  petDesktop: {
+    configuration() { return invokeWhenReady('pet-desktop:configuration'); },
+    publish(value: import('../renderer/application/contracts/pet-desktop.js').PetPublication) { ipcRenderer.send('pet-desktop:publish', value); },
+    subscribeConfiguration(handler: (value: { enabled: boolean; mode: 'session' | 'assistant' }) => void) {
+      const listener = (_event: Electron.IpcRendererEvent, value: { enabled: boolean; mode: 'session' | 'assistant' }) => handler(value);
+      ipcRenderer.on('pet-desktop:configuration', listener);
+      return () => ipcRenderer.off('pet-desktop:configuration', listener);
+    },
+    subscribeOpen(handler: (sessionId: string | undefined) => void) {
+      const listener = (_event: Electron.IpcRendererEvent, sessionId: string | undefined) => handler(sessionId);
+      ipcRenderer.on('pet-desktop:open', listener);
+      return () => ipcRenderer.off('pet-desktop:open', listener);
+    },
+  },
   pets: {
     list() {
       return invokeWhenReady('pets:list');

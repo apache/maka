@@ -464,3 +464,5 @@ export { createInternalUriDispatcher } from './internal-uri.js';
 
 export { PersonalAssistantChatPresentation, PersonalAssistantComposer } from './chat-presentation.js';
 export { PersonalAssistantTaskLayout } from './task-layout.js';
+
+export { PetDesktopBridge } from './pet-bridge.js';

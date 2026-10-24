@@ -84,12 +84,17 @@ export function createImageFileReader(
     ...(options.filesystemWorker ? { worker: options.filesystemWorker } : {}),
     ...(options.permissionProfile ? { permissionProfile: options.permissionProfile } : {}),
   });
-  return async (input: Omit<FilesystemExecuteInput, 'operation'> & { path: string }) => {
-    const { path, ...context } = input;
+  return async (
+    input: Omit<FilesystemExecuteInput, 'operation'> & {
+      path: string;
+      imagePurpose?: 'chat' | 'pet';
+    },
+  ) => {
+    const { path, imagePurpose = 'chat', ...context } = input;
     const result = await filesystem
       .execute({
         ...context,
-        operation: { kind: 'read', path, imagePurpose: 'chat' },
+        operation: { kind: 'read', path, imagePurpose },
       })
       .catch((error: unknown) => {
         throw new ImageFileReadError(readFailure(error), error);

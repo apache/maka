@@ -79,6 +79,10 @@ export async function initializeMemory(
       // fields must be omitted at this boundary, not left for a JSON round-trip later.
       impl: async (input: any, call: any) => JSON.parse(JSON.stringify(await impl(input, call))),
     });
+  ctx.api.register('assistant.memory-activity', (input: unknown) => {
+    const { sessionId } = z.object({ sessionId: id }).strict().parse(input);
+    return controller.activity(sessionId);
+  });
   register(
     'MemoryStatus',
     'Read permitted source registrations and last known index maintenance status without importing, scanning sources or starting a model.',

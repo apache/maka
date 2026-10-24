@@ -89,6 +89,11 @@ export class BotStore {
   hasUserMessage(id: string): boolean {
     return !!this.db.prepare("SELECT 1 FROM inbox WHERE id=? AND type='user_message'").get(id);
   }
+  hasUserConversation(): boolean {
+    return !!this.db
+      .prepare("SELECT 1 FROM inbox WHERE type='user_message' AND source='user' LIMIT 1")
+      .get();
+  }
   head(): number {
     return Number(this.db.prepare('SELECT COALESCE(MAX(seq),0) n FROM inbox').get()!.n);
   }

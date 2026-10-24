@@ -283,6 +283,7 @@ export function registerDelegation(
       let m = store.forSession(sessionId);
       if (!m)
         m = store.create({ sessionId, cwd: call.cwd, title: input.title, request: input.request });
+      ctx.bot?.taskCreated?.(call.sessionId, input.taskKey, sessionId);
       void controller.tick();
       return { ...describe(m), effect: { target: 'task', action: 'delegate', id: m.id } };
     },

@@ -23,7 +23,7 @@ The Runtime Host owns three built-in services: memory indexes, durable Matters, 
 
 `service.ts` owns tools, prompt contributions, the Matter finish check, the fixed desktop API, scheduler startup and shutdown. `execution-composition.ts` recovers its state after source plugins, and starts schedulers after execution recovery. Shared Host agent, model, history and source adapters retain invocation identity and permissions; using these adapters does not install a plugin.
 
-The feature defaults **off**, including installations with existing assistant data. Enable **通用 → 启用个人助手** in Settings, beside the WorkHub switch, to expose the sidebar entry and start the three services on that Host. The switch is shared by clients of the same Host, not a desktop-only visibility preference. Its labeled conversation is excluded from the ordinary Session rail and palette. WorkHub remains separate. Opening the assistant does not import history, create indexes, enable discovery or call a model.
+The feature defaults **off**, including installations with existing assistant data. Enable **通用 → 启用个人助手** in Settings, beside the WorkHub switch, to expose the sidebar entry and start the three services on that Host. The switch is shared by clients of the same Host, not a desktop-only visibility preference. Its labeled conversation is excluded from the ordinary Session rail and palette. WorkHub remains separate. Opening the assistant does not import history, create indexes or enable discovery. Once its conversation is bound, missing appearance settings can trigger a one-time Bot question; asset creation waits for the user’s choice.
 
 ## Conversation workspace
 
@@ -82,14 +82,14 @@ Sleep/wake metadata, the worker Session identity, Inbox and outgoing messages su
 The message protocol has an explicit `inbox` admission receipt without a fabricated model Turn ID. Direct `turn.start` on a bound conversation is rejected. Attachment ownership is checked before admission. Explicit turn orchestration / skill selection belongs to a delegated execution, and is rejected at this conversation transport rather than silently discarded.
 
 
-The Bot can change its local identity with `AssistantSetAvatar({emoji, background?})`.
+The Bot can change its local identity with `AssistantCharacterPack({action: 'set_avatar', emoji, background?})`.
 The avatar can be one emoji or an image, plus an optional `#RRGGBB` background.
-`AssistantSetAvatar({image: "/path/to/avatar.png"})` also accepts HTTP(S) image URLs.
+`AssistantCharacterPack({action: 'set_avatar', image: "/path/to/avatar.png"})` also accepts HTTP(S) image URLs.
 Generated and found images use the same setter; generation/search uses existing tools or delegated tasks.
 PNG, JPEG, WebP and GIF are accepted up to 2 MiB, through the existing Session filesystem
 boundary or Host public-network image loader. Markup and arbitrary URI schemes are rejected.
 Validated bytes and metadata are saved atomically in the Bot database, independent of the
-original file or URL. Only the Bot worker can write it. Reads never wake a model.
+original file or URL. The Bot and its designated initialization Matter can write it. Reads never wake a model.
 `assistant.avatar` returns lightweight metadata; `assistant.avatar-image` transfers bounded
 chunks only when the image changes. Image bytes never appear in tool results/model context.
 The desktop entry and assistant messages share the avatar, displayed as a rounded square.
@@ -97,6 +97,37 @@ This tool changes appearance only and does not send a message.
 
 运行中的持续任务在每次模型请求前获得当前任务 Inbox 的动态上下文（用户追加要求和 Bot 澄清），同时刷新任务文件，不依赖 Recall。渲染上下文不会确认或消费输入；仍由 MatterRead 和提交检查维护观察边界，收尾时才消费已处理事件。已发出的模型请求或已执行的工具不会被追溯撤销；取消仍使用任务控制接口。
 
+
+### Local character pack
+
+The Host keeps one active `character-pack/` directory beside the Bot's component data:
+
+- `persona.md`: editable identity and expression, up to 200 lines / 24 KiB. Only this
+  document is loaded into the Bot's system instructions on each prompt assembly.
+- `GUIDE.md`: on-demand maintenance and creative-use instructions, not automatically
+  injected. The Bot role itself is unchanged.
+- `manifest.json` and `assets/`: versioned catalog and independent image copies.
+
+`AssistantCharacterPack` is directly available to the Bot worker. `read` reads `persona`
+or `guide`; `write` uses the previous `revision` to detect conflicting edits. `list`
+paginates metadata, `asset` resolves an ID, and `add_image` copies a generated or found
+image using the existing avatar loader and its Session-file / public-network checks.
+`update_asset` changes the title, kind or usage without replacing the image; `remove_asset`
+removes an asset without withdrawing previously sent content or clearing the current avatar.
+The guide explicitly permits autonomous changes to identity, style, the guide itself and
+asset organization, respecting the user's stated preferences.
+Use `AssistantCharacterPack({action: 'set_avatar', assetId})` to apply a saved image to the existing desktop and
+chat avatar. Registration alone neither changes the avatar nor sends a message.
+Generation and search still use the existing tools or delegated work; there is no new
+image generator or execution permission. Images never enter model context as base64.
+
+PNG, JPEG, WebP and GIF share the existing 2 MiB avatar limit. Images deduplicate by
+content hash; documents and metadata use atomic replacement. Restart preserves edits
+and assets, including when their original source disappears. Invalid persona content
+is omitted with a repair notice rather than blocking the Bot; corrupt assets/catalogs
+are reported, not silently reset. The guide contains creative suggestions and usage
+rules. This initial framework does not add a desktop pet overlay, notification UI,
+audio playback or an asset gallery.
 
 ### Bot operation boundaries
 
@@ -123,3 +154,84 @@ Mutation receipts identify their target and action. Discovery receipts also retu
 before/after schedule values. The desktop settings API retains its existing combined
 enable-and-configure operation; the model-facing tools separate these intents.
 The discovery exploration prompt and Inbox/Sleep loop are unchanged.
+
+
+### Sticker shelf and chat bubbles
+
+The Bot prompt includes up to 10 textual sticker entries (title, short usage, ID),
+never image bytes. The random selection is persisted separately from persona.md and
+stays stable across model calls and restart. A persona revision or a new durable
+compaction checkpoint refreshes it, favoring other available stickers; deleted or
+reclassified entries are removed and vacancies filled without padding the catalog.
+`AssistantStickerSearch` is immediately available to the Bot, accepts optional name/use
+keywords and returns up to 10 matching imageUrl attachment references; an empty query samples the library.
+Saved images are published as durable owner-conversation attachments, with stable IDs and
+existing image archive quotas. Chat does not read the private character-pack cache path;
+removing the source asset does not remove already published chat images.
+Sticker assets receive a Host-generated attachment identity carrying their presentation
+kind. Chat caps their thumbnail at 128 × 128 CSS pixels without enlarging small images;
+clicking opens a larger preview. Normal images and avatars keep their existing layout.
+The model uses the returned imageUrl unchanged; byte reads and sizing are handled by code.
+A failed checkpoint lookup preserves the selection and does not block conversation.
+
+SendUser's tool and parameter descriptions require an independent summary (up to 60
+characters) for text longer than 200 characters, and separate message items for separate
+ideas. These are model-facing instructions, not a new send rejection or automatic
+truncation. Newlines within one item still render within one bubble. The Bot role prompt
+is unchanged.
+
+
+### First-run character creation
+
+On enabled Host startup, after the assistant conversation/model is bound, a missing
+persona starts one normal Matter with a durable task key. No default persona is
+injected. A previously customized persona is adopted without replacement or greeting.
+The initializer briefly checks available preferences, freely invents a distinctive
+coherent identity when history is insufficient, and uses the same character-pack API.
+Downloaded images are preferred to repeated generation; offline creation can finish
+with an emoji avatar and no stickers. It never blocks the Bot loop.
+
+Initialization identity, worker permission, preparation and introduction mode live in
+Bot SQLite. Delegation publishes the worker identity before admitting its first run.
+Startup retries reuse the same task key; normal Matter recovery and failure feedback
+remain in charge after admission. `finish_initialization` validates a non-default
+persona and a saved avatar; completion feedback uses the existing durable Inbox
+message, adding first-person introduction guidance. A new user gets an introduction;
+an existing conversation gets a short explanation of the new appearance. Retries keep
+the same envelope, and restart neither creates another Matter nor repeats the greeting.
+`assistant.character-status` exposes setup state and startup errors. Disabled assistants
+do not initialize. A new installation without a conversation waits for first binding.
+
+The standalone `AssistantSetAvatar` model tool is removed. `set_avatar` in
+`AssistantCharacterPack` is the single write interface; existing avatar API reads and
+stored avatars remain compatible. New image avatars are saved in the pack before
+being applied to the existing UI cache.
+
+Character creation starts from the user's characters, communities and humor, rather
+than a generic assistant mascot. Stickers are reaction/meme images, not arbitrary
+illustrations. Optional asset `sourceUrl` and `attribution` preserve provenance separately
+from the short chat `usage` and the injected sticker shelf. Existing custom packs are
+not overwritten by changes to the creation brief.
+
+System instructions define responsibilities and work mechanisms; the character defines
+speaking style. Initialization first checks user history and interests, then uses
+current internet memes if no clear interests are found. It looks for suitable existing
+chat stickers online and leaves the collection empty if none are available.
+Authored summaries remain optional and collapsible regardless of length; the 200-character
+guidance refers to visible prose, excluding image/link destinations. Stickers are rendered
+outside the text disclosure and remain visible when it is collapsed.
+
+On first character initialization, a short setup message is sent through the durable
+conversation outbox without a model turn. Retries reuse its message identity. The
+completion envelope snapshots the actual discovery toggle: enabled means explaining
+token usage and pause/frequency options; disabled means offering to enable it, without
+changing settings. If the pack contains stickers, the Bot is asked to include one with
+its first introduction using a published asset URL. These onboarding instructions are
+only delivered on initialization completion, not added to every Bot turn.
+
+
+## Appearance onboarding and desktop pet
+
+On a bound assistant, first-run onboarding posts one durable Inbox question for a missing character pack. `AssistantSetup` starts the existing Matter-based initializer only after the user chooses a style or accepts a random interesting character; declining is persisted. After character setup or a decline, the pet is checked separately. Existing selected pets and customized personas are preserved. A pet can match the character or be independent; changing the character does not recreate the pet. Pending delegation retries reuse their task identity across restarts.
+
+`AssistantPetPack` exposes requirements, list, status, create and select. Creation validates and installs local assets without selecting them. Selection updates the current Host's desktop settings; the local desktop watches those settings and loads the selected pet without a restart. A remote Host selection does not activate a pet on the local machine. The floating window fits its visible contents and moves the bubble below the pet at the top edge.

@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import { createPetAssistantChat } from './pet-assistant-chat.js';
+import { createPetDesktop } from './pet-desktop.js';
 import { createAssistantWebBackend } from './assistant-web-backend.js';
 import { startAssistantWebServer } from './assistant-web-server.js';
 import { resolveDesktopWslHostHandoff } from './runtime-host-wsl-handoff.js';
@@ -933,9 +935,11 @@ const clientSettingsTools = buildClientSettingsTools({
   },
 });
 const managedArtifactPreview = new ManagedArtifactPreview();
+let refreshPetSettings = () => {};
 const clientSettingsWatcher = startClientSettingsWatcher(
   workspaceRoot,
   () => {
+    refreshPetSettings();
     void clientSettingsEffects.refresh(true).catch((error) =>
       console.error("[runtime-host] Client settings refresh failed:", error),
     );
@@ -1012,7 +1016,13 @@ mcpManager.onChange(() => {
 });
 
 registerPersistentClientIpc();
+const petDesktop = createPetDesktop({ workspaceRoot, settingsStore, mainWindowController,
+  assistantChat: createPetAssistantChat(() => runtimeHostManager?.current()?.candidate?.client),
+});
+refreshPetSettings = () => { void petDesktop.refresh(); };
+void petDesktop.refresh();
 registerPetPackIpc({
+  onChanged: () => { void petDesktop.refresh(); },
   ipcMain,
   workspaceRoot,
   mainWindowController,

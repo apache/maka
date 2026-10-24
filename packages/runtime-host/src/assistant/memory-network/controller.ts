@@ -42,6 +42,21 @@ export class MemoryController {
     store.db.exec(`CREATE TABLE IF NOT EXISTS memory_notifications(
       id TEXT PRIMARY KEY, owner TEXT NOT NULL, payload TEXT NOT NULL, delivered INTEGER NOT NULL DEFAULT 0)`);
   }
+  /** Presentation metadata only; never observes sources or computes coverage. */
+  activity(ownerSessionId: string) {
+    return this.store.list().flatMap((index) => {
+      const worker = this.store.worker(index.id);
+      if (worker?.ownerSessionId !== ownerSessionId) return [];
+      return [
+        {
+          id: index.id,
+          running: this.runs.has(index.id),
+          attempt: worker.lastAttempt ?? 0,
+          error: worker.lastError ?? null,
+        },
+      ];
+    });
+  }
   private flushNotifications() {
     if (!this.ctx.bot) return;
     for (const row of this.store.db

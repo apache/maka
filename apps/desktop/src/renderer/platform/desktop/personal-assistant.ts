@@ -19,8 +19,11 @@
 
 import type { PersonalAssistantPort } from '../../features/personal-assistant/index.js';
 
+import { createDesktopPetPresentation } from './pet-presentation.js';
+
 export function createDesktopPersonalAssistantPort(): PersonalAssistantPort {
   return {
+    pet: createDesktopPetPresentation(),
     call: async (method, input = {}, host) => {
       const result = await window.maka.runtimeHost.command('personal-assistant.call', { method, input }, host);
       return result.value;

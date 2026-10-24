@@ -20,7 +20,6 @@
 import { Fragment, memo, useEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type ReactNode } from 'react';
 import { ICON_SIZE, GitBranch, Pencil, RefreshCcw, Timer } from './icons.js';
 import { useClipboardCopyFeedback } from './clipboard-feedback.js';
-import { MessageSummary } from './message-summary.js';
 import { TranscriptDisclosure } from './transcript-disclosure.js';
 import { Markdown } from './markdown.js';
 import { formatTurnDuration } from './chat-display-helpers.js';
@@ -1372,10 +1371,11 @@ const AssistantAnswerBubble = memo(function AssistantAnswerBubble(props: Assista
           : 'maka-chat-message-bubble maka-chat-message-bubble-assistant maka-bubble-streaming'
       }
     >
-      <MessageSummary summary={props.summary}>
       <ImageMessageProvider identity={props.imageIdentity} streaming={isProgressiveStreamingEnabled(props.phase === 'streaming')}>
         <Markdown
           text={props.text}
+          summary={props.summary}
+          separateStickers
           imageDisplay={props.imageDisplay}
           streaming={props.phase === 'streaming'}
           settledText={settledText}
@@ -1392,7 +1392,6 @@ const AssistantAnswerBubble = memo(function AssistantAnswerBubble(props: Assista
           density="compact"
         />
       </ImageMessageProvider>
-      </MessageSummary>
       {truncated && (
         <Tooltip content={copy.outputTruncatedTitle}>
           {/* Colour-name archive, not the semantic one: Astryx paints

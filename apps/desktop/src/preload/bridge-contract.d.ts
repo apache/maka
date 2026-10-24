@@ -1079,6 +1079,12 @@ export interface MakaBridge {
     ): Promise<DesktopSessionSummary>;
   };
 
+  petDesktop: {
+    configuration(): Promise<{ enabled: boolean; mode: 'session' | 'assistant' }>;
+    subscribeConfiguration(handler: (value: { enabled: boolean; mode: 'session' | 'assistant' }) => void): () => void;
+    publish(value: import('../renderer/application/contracts/pet-desktop.js').PetPublication): void;
+    subscribeOpen(handler: (sessionId: string | undefined) => void): () => void;
+  };
   pets: {
     list(): Promise<PetPackManifestV1[]>;
     getSelection(): Promise<string | null>;

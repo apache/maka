@@ -112,6 +112,7 @@ export class InitiativeController {
         content: event.payload.text,
       });
       if (!accepted) throw Error('Bot did not accept the discovery report');
+      if (state.active) this.store.reported(state.active.id);
       this.notebook.put(id, 'reported', { preparedId: event.id, text: event.payload.text });
     }
   }
