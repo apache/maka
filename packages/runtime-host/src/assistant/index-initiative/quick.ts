@@ -27,6 +27,40 @@ import { awaitingUser } from '../execution-outcome.js';
 import { ASSISTANT_BACKGROUND_SESSION_LABEL } from '@maka/core/session';
 
 const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+const clockTime = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'Use HH:mm');
+const quietHoursSchema = z
+  .object({
+    start: clockTime,
+    end: clockTime,
+    timeZone: z
+      .string()
+      .max(100)
+      .refine((timeZone) => {
+        try {
+          new Intl.DateTimeFormat('en', { timeZone });
+          return true;
+        } catch {
+          return false;
+        }
+      }, 'Use a valid time zone, e.g. Asia/Shanghai'),
+  })
+  .strict()
+  .refine((value) => value.start !== value.end, 'Start and end must differ');
+type QuietHours = z.infer<typeof quietHoursSchema>;
+
+function inQuietHours(now: number, hours?: QuietHours | null): boolean {
+  if (!hours) return false;
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: hours.timeZone,
+    hourCycle: 'h23',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).formatToParts(now);
+  const time = `${parts.find((p) => p.type === 'hour')!.value}:${parts.find((p) => p.type === 'minute')!.value}`;
+  return hours.start < hours.end
+    ? time >= hours.start && time < hours.end
+    : time >= hours.start || time < hours.end;
+}
 const reportSchema = z
   .object({
     key: z
@@ -91,7 +125,12 @@ export class QuickDiscoveryController {
     action: 'enable' | 'pause' | 'check' | 'configure';
     intervalMinutes?: number;
     idleMinutes?: number;
+    quietHours?: QuietHours | null;
   }) {
+    const quietHours =
+      input.quietHours === undefined
+        ? undefined
+        : quietHoursSchema.nullable().parse(input.quietHours);
     await this.parent.bindingReady;
     this.ready();
     const binding = this.parent.store.get();
@@ -113,6 +152,7 @@ export class QuickDiscoveryController {
       if (idle < interval) throw Error('Idle cadence must be at least the activity cadence');
       s.intervalMs = interval;
       s.idleMs = idle;
+      if (quietHours !== undefined) s.quietHours = quietHours;
       if (input.action === 'enable') s.enabled = true;
       if (input.action === 'pause') {
         s.enabled = false;
@@ -154,7 +194,7 @@ export class QuickDiscoveryController {
             const token = await this.ctx.sources.activityToken(source.id);
             if (token === null)
               unavailable[source.id] =
-                'No lightweight observation; hourly fallback remains enabled';
+                'No lightweight observation; idle fallback applies outside configured quiet hours';
             else tokens[source.id] = hash([source.scope, token]);
           } catch (error) {
             unavailable[source.id] = String(error);
@@ -198,11 +238,12 @@ export class QuickDiscoveryController {
     )
       return;
     const last = s.lastFinishedAt ?? s.startedAt;
+    const quiet = inQuietHours(now, s.quietHours);
     if (
       !s.checkRequested &&
-      !s.pending &&
-      (now < last + s.intervalMs ||
-        (now < (s.observation?.at ?? 0) + s.intervalMs && now < last + s.idleMs))
+      ((!s.pending && now < last + s.intervalMs) ||
+        (now < (s.observation?.at ?? 0) + s.intervalMs &&
+          (quiet || (!s.pending && now < last + s.idleMs))))
     )
       return;
     // Cheap observations only: no source enumeration, body reads, index writes or model calls.
@@ -215,6 +256,9 @@ export class QuickDiscoveryController {
       Object.entries(tokens).sort(([a], [b]) => a.localeCompare(b));
     const changed =
       hash(sortedTokens(observation.tokens)) !== hash(sortedTokens(s.checkedTokens ?? {}));
+    // Only idle discovery is suppressed. Explicit checks and observed new activity still run;
+    // never advance the successful-check watermark merely because a wake was skipped.
+    if (!s.checkRequested && !changed && quiet) return;
     if (!s.checkRequested && !s.pending && !changed && now < last + s.idleMs) return;
     const agent = await this.worker(s);
     const snapshot = await agent.snapshot();
@@ -401,6 +445,12 @@ export function initializeQuickDiscovery(ctx: any, parent: any, directory: strin
       action: z.enum(['enable', 'pause', 'check', 'configure']),
       intervalMinutes: z.number().int().min(1).max(1440).optional(),
       idleMinutes: z.number().int().min(1).max(10080).optional(),
+      quietHours: quietHoursSchema
+        .nullable()
+        .optional()
+        .describe(
+          'Optional daily idle-only quiet window: start/end HH:mm and timeZone (e.g. Asia/Shanghai). Start inclusive, end exclusive; may cross midnight. New activity and explicit check still run. null disables the window; omission preserves it.',
+        ),
     })
     .strict();
   ctx.api.register('assistant.quick-discovery', (input: unknown) =>
@@ -413,7 +463,7 @@ export function initializeQuickDiscovery(ctx: any, parent: any, directory: strin
   for (const [name, description, parameters, impl] of [
     [
       'QuickDiscoveryControl',
-      'Configure or enable the separate quick-help discovery schedule only on user request: activity checks default to 15 minutes, quiet fallback to 60. check runs once; pause stops future checks. Does not change broad discovery, index maintenance or specific tasks.',
+      'Configure or enable the separate quick-help discovery schedule only on user request: activity checks default to 15 minutes, quiet fallback to 60. quietHours suppresses only idle wakes during a daily time window; new activity still wakes. check runs once even during quiet hours; pause stops future checks. Does not change broad discovery, index maintenance or specific tasks.',
       controlSchema,
       (input: any) => quick.control(input),
     ],

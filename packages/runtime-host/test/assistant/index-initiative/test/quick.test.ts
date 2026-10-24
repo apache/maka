@@ -94,6 +94,9 @@ async function setup() {
     advance: (ms: number) => {
       now += ms;
     },
+    setTime: (time: string) => {
+      now = Date.parse(time);
+    },
     change: () => {
       revision += 'x';
     },
@@ -277,6 +280,10 @@ test('restart retains the worker, watermark and cadence without another initial 
   const f = await setup();
   let recovered: QuickDiscoveryController | undefined;
   try {
+    await f.q.control({
+      action: 'configure',
+      quietHours: { start: '01:00', end: '08:30', timeZone: 'Asia/Shanghai' },
+    });
     f.advance(15 * 60000);
     await f.run();
     const before = f.q.state();
@@ -285,6 +292,7 @@ test('restart retains the worker, watermark and cadence without another initial 
     recovered.start(60000);
     assert.equal(recovered.state().workerSession, before.workerSession);
     assert.equal(recovered.state().checkedThrough, before.checkedThrough);
+    assert.deepEqual(recovered.state().quietHours, before.quietHours);
     f.change();
     f.advance(15 * 60000);
     await recovered.tick();
@@ -296,6 +304,116 @@ test('restart retains the worker, watermark and cadence without another initial 
       await recovered.close();
       recovered.store.close();
     }
+    await f.close();
+  }
+});
+
+test('idle quiet hours use the configured timezone, preserve progress and resume at the end', async () => {
+  const f = await setup();
+  try {
+    await f.q.control({
+      action: 'configure',
+      quietHours: { start: '01:00', end: '08:30', timeZone: 'Asia/Shanghai' },
+    });
+    f.setTime('2026-11-01T00:00:00+08:00');
+    await f.q.control({ action: 'check' });
+    await f.run();
+    const through = f.q.state().checkedThrough;
+    f.setTime('2026-11-01T01:00:00+08:00');
+    await f.run();
+    assert.equal(f.calls(), 1);
+    const scans = f.scans();
+    f.advance(1000);
+    await f.run();
+    assert.equal(f.scans(), scans, 'idle deadline must not cause a scan on every timer tick');
+    f.setTime('2026-11-01T08:15:00+08:00');
+    await f.run();
+    assert.equal(f.calls(), 1);
+    assert.equal(f.q.state().checkedThrough, through);
+    f.setTime('2026-11-01T08:30:00+08:00');
+    await f.run();
+    assert.equal(f.calls(), 2);
+    assert.notEqual(f.q.state().checkedThrough, through);
+  } finally {
+    await f.close();
+  }
+});
+
+test('new activity and explicit checks bypass quiet hours; changing cadence preserves the window', async () => {
+  const f = await setup();
+  try {
+    const hours = { start: '01:00', end: '08:30', timeZone: 'Asia/Shanghai' };
+    await f.q.control({ action: 'configure', quietHours: hours });
+    f.setTime('2026-11-01T02:00:00+08:00');
+    await f.q.control({ action: 'check' });
+    await f.run();
+    f.change();
+    f.advance(15 * 60000);
+    await f.run();
+    assert.equal(f.calls(), 2);
+    await f.q.control({ action: 'check' });
+    await f.run();
+    assert.equal(f.calls(), 3);
+    await f.q.control({ action: 'configure', intervalMinutes: 20, idleMinutes: 90 });
+    assert.deepEqual(f.q.state().quietHours, hours);
+    f.advance(90 * 60000);
+    await f.run();
+    assert.equal(f.calls(), 3);
+    await f.q.control({ action: 'configure', quietHours: null });
+    f.advance(20 * 60000);
+    await f.run();
+    assert.equal(f.calls(), 4);
+  } finally {
+    await f.close();
+  }
+});
+
+test('cross-midnight windows suppress idle fallback for unobservable sources too', async () => {
+  const f = await setup();
+  try {
+    await f.q.control({
+      action: 'configure',
+      quietHours: { start: '23:00', end: '08:30', timeZone: 'Asia/Shanghai' },
+    });
+    f.ctx.sources.activityToken = async () => null as any;
+    f.setTime('2026-11-01T22:00:00+08:00');
+    await f.q.control({ action: 'check' });
+    await f.run();
+    for (const time of ['2026-11-01T23:00:00+08:00', '2026-11-02T02:00:00+08:00']) {
+      f.setTime(time);
+      await f.run();
+      assert.equal(f.calls(), 1);
+    }
+    assert.match(f.q.state().observation.unavailable.mail, /quiet hours/);
+    f.setTime('2026-11-02T08:30:00+08:00');
+    await f.run();
+    assert.equal(f.calls(), 2);
+  } finally {
+    await f.close();
+  }
+});
+
+test('quiet window validation rejects ambiguous times and invalid zones without changing settings', async () => {
+  const f = await fixture();
+  try {
+    await f.remote('assistant.bind', { sessionId: 'owner' });
+    const quietHours = { start: '01:00', end: '08:30', timeZone: 'Asia/Shanghai' };
+    await f.remote('assistant.quick-discovery', { action: 'configure', quietHours });
+    for (const invalid of [
+      { ...quietHours, start: '25:00' },
+      { ...quietHours, start: '1:00' },
+      { ...quietHours, end: '01:00' },
+      { ...quietHours, timeZone: 'Invalid/Zone' },
+    ]) {
+      await assert.rejects(
+        f.remote('assistant.quick-discovery', { action: 'configure', quietHours: invalid }),
+      );
+    }
+    assert.deepEqual(
+      (await f.remote('assistant.quick-discovery-status', {})).quietHours,
+      quietHours,
+    );
+  } finally {
     await f.close();
   }
 });
