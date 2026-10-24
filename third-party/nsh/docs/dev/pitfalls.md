@@ -88,7 +88,9 @@ Things that were found the hard way. Read the section of the area you change bef
   has applied (`EngineControl::scroll(.., applied)`), and the core adds the ones still pending; otherwise a stale offset
   moves the window (and fires `onLoadMore`) backwards.
 - **Unbound list cells still show their last item**: the core moves them out of sight (never with a NaN frame: cells that
-  were never placed are skipped; UIKit throws on NaN geometry).
+  were never placed are skipped; UIKit throws on NaN geometry). Out of sight is not out of reach: the backends'
+  accessibility trees go by props, not frames, and a browser keeps such a cell in its accessibility tree, as a Tab
+  stop and for test-id lookups. The core hides them too (`Core::set_spare`) until it places them again.
 - **Tailwind variant order decides between variants**, not their order in the string: `odd:bg-a last:bg-b` gives an odd last row
   `bg-a` (Tailwind sorts `odd` after `last`), exactly as in CSS.
 
@@ -291,6 +293,9 @@ Things that were found the hard way. Read the section of the area you change bef
   under the watched one as given: watch a canonical path (a `..` in it makes every path look like a dot entry).
 - **GDK frame times are microseconds** (`FrameClock::frame_time`); `nsh_anim::Graph::tick` takes seconds and the
   scroll and transition code milliseconds: convert at each call site.
+- **AT-SPI reads widgets, not what NSH draws**: a view `snapshot` skips (`visibility: hidden`) is still presented, with
+  its subtree, until its accessible state is `Hidden` (`access.rs`); GTK's AT-SPI bridge then leaves out the widget
+  and its subtree (`gtk_accessible_should_present`; checked with an AT-SPI client on GTK 4.14).
 - **A widget's accessible role is effectively fixed** once its AT context is realized: GTK refuses to change it (with a
   critical), and nothing tells whether it is. Roles are decided when the view is created, from the batch that creates
   it (`access::prepare`); a later change detaches the view and puts it back.
@@ -404,6 +409,11 @@ Things that were found the hard way. Read the section of the area you change bef
   clip spaces are the placed frames (`ns().frame()`).
 - In `define_class!` methods, an early `return` of a `bool` or `Option<Retained<_>>` does not compile (the macro wraps
   the return type): write the body as one expression.
+- VoiceOver reads views, not layers: `visibility: hidden` hides only the view's layer (an `NSView`'s own `hidden` is
+  the navigation's, for screens under the top one), so `access.rs` takes such a view and its subtree out as it does
+  for `accessibilityElementsHidden`. `setAccessibilityChildren:` cannot be undone: `nil` leaves the view without
+  children instead of AppKit's again, so a subtree shown again stayed out of reach; `NshView` answers
+  `accessibilityChildren` itself (none while hidden or grouped, else `NSView`'s).
 - In-process screenshots (`cacheDisplayInRect:`, `renderInContext:`) ignore `maskedCorners`, `shadowPath`, Core Image
   filters and cut masks at the mask layer's bounds; they show no sheets or `AVPlayerLayer` content, and
   `renderInContext:` no `WKWebView` pages either (`cacheDisplayInRect:`, the test agent's screenshot, shows them: WebKit

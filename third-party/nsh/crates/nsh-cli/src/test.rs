@@ -11,6 +11,13 @@
 //! each entry ([`RunnerMessage::Build`]): the runner links no bundler. On a
 //! real platform (`--target`) the apps run in its hosts, built with the
 //! app's crates (`test_host.rs`), and the test files in this process.
+//!
+//! Given a directory of an app with Rust crates of its own (`nsh.json`
+//! `"rust"`), the crates in it are tested first with `cargo test`, each in
+//! its own directory ([`cargo_test`]): their results are shown and counted
+//! with the TypeScript tests', so a Rust app without test files is tested
+//! too. Their tests run on this machine: with `--target` only the test
+//! files run.
 
 use std::{
     collections::HashMap,
@@ -29,7 +36,12 @@ use nsh_testing::{
     Built, Entry, Reply, RunnerMessage, TestRequest, TestResult, TestRun, TestStatus,
 };
 
-use crate::{build::BuildError, logger, rust_app::RustApp, ui};
+use crate::{
+    build::BuildError,
+    logger,
+    rust_app::{AppCrate, RustApp},
+    ui,
+};
 
 /// How long the app runs after it opened before the steps of standard
 /// input: long enough for the engine's idle collection (every second at
@@ -55,16 +67,31 @@ pub(crate) fn test(
 ) -> anyhow::Result<()> {
     let app_dir = entry.parent().unwrap_or(Path::new(".")).to_path_buf();
     let work_dir = app_dir.join(".nsh/test");
+    // The app's crates in the directory, which `cargo test` tests.
+    let crates: Vec<AppCrate> = match crate::rust_app::current() {
+        Some(app) if path.is_dir() => app
+            .crates()
+            .iter()
+            .filter(|c| c.dir().starts_with(path))
+            .cloned()
+            .collect(),
+        _ => Vec::new(),
+    };
     let files = if is_test_file(path) {
         vec![path.to_owned()]
     } else if path.is_dir() {
         let mut files = Vec::new();
         find_tests(path, &mut files);
         files.sort();
-        if files.is_empty() {
+        if files.is_empty() && (crates.is_empty() || target.is_some()) {
             bail!(
-                "no test files in {}: tests are `*.test.tsx` / `*.test.ts` files importing nsh/test",
-                ui::path(path)
+                "no test files in {}: tests are `*.test.tsx` / `*.test.ts` files importing nsh/test{}",
+                ui::path(path),
+                if crates.is_empty() {
+                    ""
+                } else {
+                    ", and the crates' Rust tests run without --target"
+                }
             );
         }
         files
@@ -103,12 +130,23 @@ pub(crate) fn test(
             .transpose()?,
         None => None,
     };
+    if !crates.is_empty() {
+        if target.is_some() {
+            ui::note("the crates' Rust tests (`cargo test`) run without --target");
+        } else {
+            for krate in &crates {
+                cargo_test(krate, filter.as_deref(), &mut tally);
+            }
+        }
+    }
     let host = target
+        .filter(|_| !files.is_empty())
         .map(|target| crate::test_host::starter(target, browser, &work_dir))
         .transpose()?;
     // On a real platform the apps run in hosts built with the app's crates:
     // the test files run here, whatever the app is.
     match crate::rust_app::current().filter(|_| host.is_none()) {
+        _ if files.is_empty() => {}
         Some(app) => {
             let request = TestRequest {
                 protocol: nsh_testing::PROTOCOL,
@@ -183,6 +221,12 @@ impl Tally {
     /// Shows how a test of the file shown as `file` ended, and counts it.
     fn show(&mut self, file: &str, result: &TestResult) {
         show(file, result);
+        self.count(file, result);
+    }
+
+    /// Counts how a test of the file shown as `file` ended, without showing
+    /// it.
+    fn count(&mut self, file: &str, result: &TestResult) {
         match result.status {
             TestStatus::Passed => self.passed += 1,
             TestStatus::Skipped => self.skipped += 1,
@@ -451,11 +495,16 @@ fn bytecode_of(entry: &Path, sets: &[SetDescription], announce: bool) -> anyhow:
 /// Prints how a test of the file shown as `file` ended: a line, and for a
 /// failure what was thrown, where, and what was on screen.
 fn show(file: &str, result: &TestResult) {
-    let line = format!(
-        "{file} › {} {}",
-        result.name,
-        ui::dim(format!("({})", ui::duration(result.elapsed)))
-    );
+    // `cargo test` does not time its tests: theirs show no time.
+    let line = if result.elapsed.is_zero() {
+        format!("{file} › {}", result.name)
+    } else {
+        format!(
+            "{file} › {} {}",
+            result.name,
+            ui::dim(format!("({})", ui::duration(result.elapsed)))
+        )
+    };
     let failure = match (result.status, &result.failure) {
         (TestStatus::Skipped, _) => {
             ui::plain(format!("{} {line} {}", ui::dim("○"), ui::dim("skipped")));
@@ -495,6 +544,132 @@ fn show(file: &str, result: &TestResult) {
         let texts: Vec<String> = screen.iter().map(|t| format!("{t:?}")).collect();
         ui::detail(format!("  on screen: {}", texts.join(", ")));
     }
+}
+
+/// Tests the app's crate `krate` with `cargo test --no-fail-fast` (only the
+/// tests whose name contains `filter`, if given) in its directory, and
+/// shows and counts each test it ran, under the file of its test target.
+/// A run that fails with no test failing (the tests do not build, a test
+/// binary crashed) counts as a failure of the crate, with cargo's output.
+fn cargo_test(krate: &AppCrate, filter: Option<&str>, tally: &mut Tally) {
+    let step = ui::Step::start(format!("testing {}", krate.package()));
+    let mut cmd = krate.cargo("test");
+    cmd.arg("--no-fail-fast").env("CARGO_TERM_COLOR", "never");
+    if let Some(filter) = filter {
+        cmd.arg(filter);
+    }
+    let ran = ui::capture_all(&mut cmd, |line| {
+        let line = line.trim_start();
+        if let Some(rest) = line.strip_prefix("Compiling ") {
+            step.status(rest.split(' ').next().unwrap_or(rest));
+        } else if let Some(rest) = line.strip_prefix("Running ") {
+            step.status(rest.split(" (").next().unwrap_or(rest));
+        }
+    });
+    step.finish();
+    let shown = ui::path(krate.dir());
+    let (status, output) = match ran {
+        Ok(ran) => ran,
+        Err(e) => {
+            tally.failed(&shown, &format!("run cargo test: {e}"));
+            return;
+        }
+    };
+    let targets = cargo_test_results(&output, &|source| match source {
+        Some(source) => ui::path(&krate.dir().join(source)),
+        None => format!("{shown} (doc tests)"),
+    });
+    let mut any_failed = false;
+    for (file, results) in &targets {
+        for result in results {
+            any_failed |= result.status == TestStatus::Failed;
+            tally.show(file, result);
+        }
+    }
+    if !status.success() && !any_failed {
+        tally.failed(
+            &shown,
+            &format!("cargo test failed ({status})\n{}", output.trim_end()),
+        );
+    }
+}
+
+/// The tests `cargo test`'s `output` reports, by test target in order:
+/// each target's name (`file` of its source, `src/lib.rs` or
+/// `tests/app/main.rs`; of `None` for the doc tests) and its tests, a
+/// failed one with what it printed (its panic).
+fn cargo_test_results(
+    output: &str,
+    file: &dyn Fn(Option<&str>) -> String,
+) -> Vec<(String, Vec<TestResult>)> {
+    let mut targets: Vec<(String, Vec<TestResult>)> = Vec::new();
+    // The failed test whose output is being read, and the output.
+    let mut failure: Option<(String, Vec<&str>)> = None;
+    let attach = |targets: &mut Vec<(String, Vec<TestResult>)>,
+                  failure: &mut Option<(String, Vec<&str>)>| {
+        let Some((name, lines)) = failure.take() else {
+            return;
+        };
+        let Some(result) = targets
+            .last_mut()
+            .and_then(|(_, results)| results.iter_mut().find(|r| r.name == name))
+        else {
+            return;
+        };
+        let message = lines.join("\n").trim().to_owned();
+        if let Some(failure) = &mut result.failure
+            && !message.is_empty()
+        {
+            failure.message = message;
+        }
+    };
+    for line in output.lines() {
+        let trimmed = line.trim_start();
+        if let Some(rest) = trimmed.strip_prefix("Running ") {
+            attach(&mut targets, &mut failure);
+            let source = rest.strip_prefix("unittests ").unwrap_or(rest);
+            let source = source.split(" (").next().unwrap_or(source);
+            targets.push((file(Some(source)), Vec::new()));
+        } else if trimmed.starts_with("Doc-tests ") {
+            attach(&mut targets, &mut failure);
+            targets.push((file(None), Vec::new()));
+        } else if let Some(name) = line
+            .strip_prefix("---- ")
+            .and_then(|l| l.strip_suffix(" stdout ----"))
+        {
+            attach(&mut targets, &mut failure);
+            failure = Some((name.to_owned(), Vec::new()));
+        } else if line == "failures:" || line.starts_with("test result: ") {
+            attach(&mut targets, &mut failure);
+        } else if let Some((_, lines)) = &mut failure {
+            lines.push(line);
+        } else if let Some((name, outcome)) = line
+            .strip_prefix("test ")
+            .and_then(|l| l.rsplit_once(" ... "))
+            && let Some((_, results)) = targets.last_mut()
+        {
+            let status = match outcome {
+                "ok" => TestStatus::Passed,
+                "FAILED" => TestStatus::Failed,
+                o if o.starts_with("ignored") => TestStatus::Skipped,
+                _ => continue,
+            };
+            let failure = (status == TestStatus::Failed).then(|| nsh_testing::Failure {
+                message: "failed".to_owned(),
+                stack: None,
+                screen: None,
+            });
+            results.push(TestResult::new(
+                name,
+                std::time::Duration::ZERO,
+                status,
+                failure,
+            ));
+        }
+    }
+    attach(&mut targets, &mut failure);
+    targets.retain(|(_, results)| !results.is_empty());
+    targets
 }
 
 /// The entry of the app `path` is part of: a directory's, a test file's
@@ -620,6 +795,85 @@ fn compiler() -> nsh_testing::Compile {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cargo_tests_are_read_by_target_with_their_failures() {
+        let output = "   Compiling app v0.1.0 (/app)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.00s
+     Running unittests src/lib.rs (target/debug/deps/app-0123)
+
+running 3 tests
+test tests::later ... ignored, slow
+test tests::adds ... ok
+test tests::fails ... FAILED
+
+failures:
+
+---- tests::fails stdout ----
+thread 'tests::fails' panicked at src/lib.rs:9:9:
+math is broken
+
+failures:
+    tests::fails
+
+test result: FAILED. 1 passed; 1 failed; 1 ignored; 0 measured; 0 filtered out
+
+     Running unittests src/main.rs (target/debug/deps/app-4567)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+
+     Running tests/app/main.rs (target/debug/deps/app-89ab)
+
+running 1 test
+test opens ... ok
+
+   Doc-tests app
+
+running 1 test
+test src/lib.rs - App (line 3) ... ok
+";
+        let targets = cargo_test_results(output, &|source| {
+            source.map_or("app (doc tests)".to_owned(), |s| format!("app/{s}"))
+        });
+        let names: Vec<(&str, Vec<(&str, TestStatus)>)> = targets
+            .iter()
+            .map(|(file, results)| {
+                (
+                    file.as_str(),
+                    results
+                        .iter()
+                        .map(|r| (r.name.as_str(), r.status))
+                        .collect(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            names,
+            [
+                (
+                    "app/src/lib.rs",
+                    vec![
+                        ("tests::later", TestStatus::Skipped),
+                        ("tests::adds", TestStatus::Passed),
+                        ("tests::fails", TestStatus::Failed),
+                    ]
+                ),
+                ("app/tests/app/main.rs", vec![("opens", TestStatus::Passed)]),
+                (
+                    "app (doc tests)",
+                    vec![("src/lib.rs - App (line 3)", TestStatus::Passed)]
+                ),
+            ]
+        );
+        let failed = &targets[0].1[2];
+        assert_eq!(
+            failed.failure.as_ref().unwrap().message,
+            "thread 'tests::fails' panicked at src/lib.rs:9:9:\nmath is broken"
+        );
+        assert!(targets[0].1[1].failure.is_none());
+    }
 
     #[test]
     fn test_files_are_found_where_the_app_keeps_them_and_know_their_app() {

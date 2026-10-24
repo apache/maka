@@ -125,6 +125,27 @@ pub(crate) struct AppCrate {
 }
 
 impl AppCrate {
+    /// Its package name.
+    pub(crate) fn package(&self) -> &str {
+        &self.package
+    }
+
+    /// Its directory.
+    pub(crate) fn dir(&self) -> &Path {
+        &self.dir
+    }
+
+    /// `cargo <subcommand>` for this crate, run in its directory: its own
+    /// workspace and target directory, as `cargo` there would use.
+    pub(crate) fn cargo(&self, subcommand: &str) -> Command {
+        let mut cmd = Command::new(cargo());
+        cmd.arg(subcommand)
+            .arg("--manifest-path")
+            .arg(self.dir.join("Cargo.toml"))
+            .current_dir(&self.dir);
+        cmd
+    }
+
     /// The name the generated code links it by (`app_gallery_native`):
     /// one per crate, so each crate's entry is found in its own.
     fn name(&self) -> String {
@@ -784,6 +805,11 @@ impl RustApp {
                     || path.extension().is_some_and(|e| e == "rs")
                     || path.file_name().is_some_and(|n| n == "Cargo.toml"))
         })
+    }
+
+    /// The crates `nsh.json` `"rust"` lists, in its order.
+    pub(crate) fn crates(&self) -> &[AppCrate] {
+        &self.crates
     }
 
     /// The directories of the app's Rust code (watched in development): its

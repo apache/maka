@@ -77,6 +77,11 @@ cargo test adds_a_todo        # 名称包含 "adds_a_todo" 的测试
 （[用 Rust 开发](./rust.md#测试)）。`examples/gallery-rs` 就这样测试它的 Rust 根组件，每个演示一个模块；`examples/rust-exports`
 从 Rust 测试它的 TSX 入口。
 
+`nsh test` 也会运行这些测试：传入带有 Rust crate 的应用（`nsh.json` `"rust"`）的目录时，它会在测试文件之前为其中每个 crate
+运行 `cargo test`，并把 Rust 测试与 TypeScript 测试一起显示和计数（`✓ src/lib.rs › tests::adds`），计入汇总和 `--junit`
+报告。所以无论是 Rust 应用、带 crate 的 TSX 应用还是 TSX 应用，`nsh test` 都是同一个命令；`nsh check` 同样会先对 crate 运行
+`cargo check --all-targets`，再对 TypeScript 做类型检查。
+
 ## 用 nsh test 编写测试
 
 测试文件是放在代码旁边的 `*.test.tsx` 或 `*.test.ts` 文件，它导入 `nsh/test`，就像上面的 `App.test.tsx`：

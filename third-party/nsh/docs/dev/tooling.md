@@ -64,7 +64,12 @@ downloaded from the npm registry's tarball URL the first time (ureq, no npm clie
 `dist.integrity` (SHA-512) recorded in the source for each host it supports (macOS, Linux and Windows, arm64 and x64; on Windows the compiler is
 `package/lib/tsc.exe`), unpacked into NSH's cache (`NSH_CACHE`, else `~/Library/Caches/nsh` / `$XDG_CACHE_HOME/nsh` /
 `%LOCALAPPDATA%\nsh`) and kept there. `--tsc <path>` /
-`NSH_TSC` run another `tsc` (a TypeScript 5 / 6 one, an offline copy). Updating TypeScript is a change of the version
+`NSH_TSC` run another `tsc` (a TypeScript 5 / 6 one, an offline copy). An app with Rust crates (`nsh.json` `"rust"`)
+has each crate checked first (`check::cargo_check`, called from `main.rs` `run` before the crates are described, so
+their errors are Cargo's own): `cargo check --all-targets --manifest-path <crate>/Cargo.toml` in the crate's directory,
+in the workspace and target directory Cargo uses there (`AppCrate::cargo`). A Rust app (`"root"`) is type checked only
+when it has a `tsconfig.json` (`check::has_typescript`: its test files'), which also decides whether `.nsh/types` is
+written for it. Updating TypeScript is a change of the version
 and the integrities (`npm view @typescript/typescript-<os>-<arch>@<version> dist.integrity`). The distribution
 (`cargo xtask dist`) does not ship the compiler: it is 24 MB per platform and most runs of `nsh` never check types.
 
@@ -395,7 +400,14 @@ Only the engine of a test file serves it: an app's bundle cannot import it (the 
 
 `crates/nsh-cli/src/test.rs` finds the test files (a directory's, outside hidden directories, `node_modules` and
 `target`), prints a line per test (a failure with its message, its frames in the test file and the texts on screen),
-writes a JUnit XML report with `--junit` (`Tally::junit`) and fails when any test failed. Given an app's entry, it writes a test file in `.nsh/test` that opens the entry on the
+writes a JUnit XML report with `--junit` (`Tally::junit`) and fails when any test failed. Given a directory of an
+app with Rust crates, it first runs `cargo test --no-fail-fast` for each crate in that directory, in the crate's own
+directory (`test::cargo_test`), and parses libtest's output (`cargo_test_results`: the test targets by their
+`Running` / `Doc-tests` lines, each `test <name> ... ok | FAILED | ignored`, a failure's `---- <name> stdout ----`
+block as its message) into `TestResult`s shown and counted with the test files' (without a time: libtest prints none);
+a failed run with no failed test (the tests do not build) counts as a failure of the crate, with Cargo's output. With
+`--target` the crates' tests do not run (they run on this machine), and a directory with crates and no test files is
+tested by `cargo test` alone. Given an app's entry, it writes a test file in `.nsh/test` that opens the entry on the
 network, waits 1.2 s (the engine's idle collection runs first, so retention bugs show up) and runs what standard input
 holds; with `--trace` that is the headless trace of the app: every batch under its step and each commit's timings
 (the engine's `trace`, `nsh::perf` lines).
@@ -694,13 +706,14 @@ program that describes them, builds the hosts and runners with them, and does ev
   `nsh-platform-android` without `js`; the APK's manifest gets the `com.longbridge.nsh.RUST` meta-data `AppActivity`
   reads) and `rust-web` (`docs/dev/web.md`), and the root to `test` (`app_root()`: `open(".")` of a test
   starts it). None of them, nor `describe`, links nsh-js, QuickJS, rolldown or the bundler: a Rust app compiles none of
-  them to build, run or package it; `nsh test` runs TypeScript tests, so its runner links QuickJS (not the bundler). `RustApp::runtime`, `android` and `web` build those
+  them to build, run or package it; `nsh test` runs the crates' `cargo test` and TypeScript tests, so its runner links QuickJS (not the bundler). `RustApp::runtime`, `android` and `web` build those
   instead; `nsh package` ships no bundle (`build::rust_root`: the crates' assets only); `nsh run` runs the desktops'
   runner in debug in place (`NSH_APP_DIR`: its `nsh` directory, and the app's logs on stderr), Catalyst's in an app
   bundle (`NSH_DEVELOPMENT`), and installs a package on the simulator and Android; on the web a dev session without
   builds serves the page. A crate change ends the command with `Restart` (`RustApp::watch`). `nsh build` writes what
-  it ships besides its runners (`app.json` and the crates' assets); neither it nor `nsh test` writes `.nsh/types` for
-  it, which has no TypeScript. The other commands refuse a Rust app's entry, before building anything.
+  it ships besides its runners (`app.json` and the crates' assets); `.nsh/types` is written for it only when it has a
+  `tsconfig.json` (for its test files). `nsh check` runs `cargo check` on its crates, and `tsc` with that
+  `tsconfig.json`. The other commands refuse a Rust app's entry, before building anything.
   `examples/gallery-rs` is one (`"root": "Gallery"`).
   The terminal's `rust-tui` wrapper calls `nsh_tui_app::run_rust(app_root())`, uses `NSH_APP_DIR` for resources during
   development and keeps the same console entry point on Windows.

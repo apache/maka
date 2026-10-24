@@ -132,8 +132,10 @@ enum Command {
     },
     /// Run an app's tests headless: its test files (`*.test.tsx`,
     /// `*.test.ts`, importing `nsh/test`), each test opening the app on an
-    /// engine of its own; or, given the app's entry, open it and take the
-    /// steps standard input gives (`await app.press("Add")`).
+    /// engine of its own, after the `cargo test` of its Rust crates
+    /// (`nsh.json` `"rust"`) in the directory; or, given the app's entry,
+    /// open it and take the steps standard input gives
+    /// (`await app.press("Add")`).
     Test {
         /// A test file, a directory whose test files to run (default: the
         /// current one), or an app's entry.
@@ -142,7 +144,8 @@ enum Command {
         /// The entry of the app `path` is part of (set from it).
         #[arg(skip)]
         entry: PathBuf,
-        /// Run only the tests whose name contains this.
+        /// Run only the tests whose name contains this (`cargo test`'s
+        /// too).
         #[arg(long)]
         filter: Option<String>,
         /// Print every mount batch of the apps the tests open, under the
@@ -171,7 +174,9 @@ enum Command {
         web_host: Option<PathBuf>,
     },
     /// Type check an app with TypeScript's native compiler (TypeScript 7,
-    /// downloaded once from the npm registry; no Node needed).
+    /// downloaded once from the npm registry; no Node needed); an app with
+    /// Rust crates (`nsh.json` `"rust"`): `cargo check` them first, and a
+    /// Rust app (`"root"`) without a `tsconfig.json` only that.
     Check {
         /// The entry module, or the app's directory (default: the current one),
         /// whose `App.tsx` is the entry.
@@ -493,14 +498,16 @@ fn run(mut command: Command) -> anyhow::Result<()> {
     }
     if let Some(entry) = command.entry_mut() {
         *entry = entry::resolve(entry)?;
-        // A Rust app has no TypeScript to declare things for.
-        types &= !rust_app::is_root(entry);
+        // A Rust app has no TypeScript to declare things for, unless it
+        // keeps TypeScript tests (a `tsconfig.json` for them).
+        types &= check::has_typescript(entry);
     }
-    // A Rust app (`nsh.json` "root") has no bundle: it is built, tested,
-    // run and packaged.
+    // A Rust app (`nsh.json` "root") has no bundle: it is built, checked,
+    // tested, run and packaged.
     let rust_command = matches!(
         command,
         Command::Build { .. }
+            | Command::Check { .. }
             | Command::Test { .. }
             | Command::Package(_)
             | Command::Run { .. }
@@ -514,8 +521,9 @@ fn run(mut command: Command) -> anyhow::Result<()> {
         && !rust_command
     {
         anyhow::bail!(
-            "{} declares a Rust app (\"root\"): it is built with `nsh build`, tested with `nsh test`, \
-             run with `nsh run` and packaged with `nsh package`; the other commands take a TSX entry",
+            "{} declares a Rust app (\"root\"): it is built with `nsh build`, checked with `nsh check`, \
+             tested with `nsh test`, run with `nsh run` and packaged with `nsh package`; the other \
+             commands take a TSX entry",
             ui::path(entry)
         );
     }
@@ -538,6 +546,15 @@ fn run(mut command: Command) -> anyhow::Result<()> {
     // from them, its hosts built with them. A development session ends
     // when its Rust code changes, and starts again with it built anew.
     rust_app::set_current(app.clone());
+    // Its crates are checked with cargo before anything is described from
+    // them: their errors are cargo's own. A Rust app without TypeScript
+    // has nothing else to check.
+    if let Command::Check { entry, .. } = &command {
+        check::cargo_check(&app)?;
+        if !check::has_typescript(entry) {
+            return Ok(());
+        }
+    }
     let mut restarted = false;
     loop {
         match app.describe() {

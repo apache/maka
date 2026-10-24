@@ -222,6 +222,7 @@ impl Mounter {
                 let old = std::mem::replace(&mut view.state_mut().style, style.clone());
                 crate::input::style_changed(view);
                 crate::transition::style_changed(surface, view, &old);
+                crate::access::style_changed(view, &old);
                 view.moved();
             }
             MountItem::Text {

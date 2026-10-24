@@ -198,6 +198,24 @@ pub struct TestResult {
     pub failure: Option<Failure>,
 }
 
+impl TestResult {
+    /// The result of a test that ran elsewhere (`cargo test`'s, which
+    /// `nsh test` reports with the app's TypeScript tests).
+    pub fn new(
+        name: impl Into<String>,
+        elapsed: Duration,
+        status: TestStatus,
+        failure: Option<Failure>,
+    ) -> TestResult {
+        TestResult {
+            name: name.into(),
+            elapsed,
+            status,
+            failure,
+        }
+    }
+}
+
 /// Whether a test ran and passed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum TestStatus {

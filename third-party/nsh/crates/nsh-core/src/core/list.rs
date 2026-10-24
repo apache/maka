@@ -29,11 +29,13 @@
 //!
 //! Row-local state travels with recycled cells, so
 //! apps keep it outside, keyed by id. Unbound cells keep their last content:
-//! the core moves them out of sight (never with a NaN frame; cells never
-//! placed are skipped). The header, footer and empty placeholder are cells
-//! with a role (`slot="header"`, ...) and are never recycled. Each cell is a
-//! Taffy root of its own (its width follows the list's cross axis), so
-//! scrolling relays out dirty cells only.
+//! the core moves those in the render window out of sight (never with a NaN
+//! frame; cells never placed are skipped) and hides them from touches and
+//! screen readers until they are placed again (`Core::set_spare`). The
+//! header, footer and empty placeholder are cells with a role
+//! (`slot="header"`, ...) and are never recycled. Each cell is a Taffy root
+//! of its own (its width follows the list's cross axis), so scrolling
+//! relays out dirty cells only.
 //!
 //! # Scroll commands
 //!
@@ -374,6 +376,9 @@ pub(super) struct ListState {
     /// Cells whose item moved to another index (a splice): the runtime
     /// learns their new index with the next bindings.
     moved: Vec<(u32, u32)>,
+    /// The items changed (a splice, a new count) since the core last
+    /// hid the cells without an item: the rows those show may be gone.
+    pub(super) items_changed: bool,
     /// Binds of overscan cells wait for the engine's budget
     /// ([`Self::take_paced`]); the rest bind with the window.
     pub(super) paced: bool,
@@ -457,6 +462,7 @@ impl ListState {
             issued: 0,
             pending: Vec::new(),
             moved: Vec::new(),
+            items_changed: false,
             paced: false,
             lead: 0.0,
             splice_anchor: 0.0,
@@ -567,6 +573,7 @@ impl ListState {
         if removed == 0 && inserted == 0 {
             return Vec::new();
         }
+        self.items_changed = true;
         // The visible content keeps its place instead.
         if !matches!(self.pin, Some(Pin::Reading { .. })) {
             self.pin = None;
@@ -1219,6 +1226,7 @@ impl ListState {
             }
         }
         self.source_dirty |= !self.source_geometry.is_empty();
+        self.items_changed = true;
         self.sizes.resize(count as usize, f32::NAN);
         self.rebuild_offsets();
         if self.load_more_at.is_some_and(|c| c != count) {
