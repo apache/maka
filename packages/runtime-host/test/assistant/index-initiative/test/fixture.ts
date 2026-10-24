@@ -60,7 +60,13 @@ export async function fixture(options: any = {}) {
     ],
   ]);
   query.bindRuntime({
-    list: async () => [],
+    list: async () =>
+      [...workers].map(([id, worker]) => ({
+        id,
+        cwd: root,
+        labels: worker.labels ?? [],
+        isArchived: worker.isArchived ?? false,
+      })),
     read: async (id: string, caller: any) =>
       caller.invocation?.sessionId === id && workers.has(id)
         ? { session: { id, cwd: root }, messages: workers.get(id).transcript ?? [] }
@@ -99,10 +105,13 @@ export async function fixture(options: any = {}) {
     create: async (input: any) => {
       assert.equal(input.background, true);
       const id = randomUUID();
-      workers.set(id, { status: 'idle' });
+      workers.set(id, { status: 'idle', labels: input.labels });
       return { id, sessionId: id, root: false };
     },
-    resume: async ({ sessionId }: any) => ({ id: sessionId, sessionId, root: false }),
+    resume: async ({ sessionId }: any) => {
+      if (workers.get(sessionId)?.isArchived) throw Error('Session is archived');
+      return { id: sessionId, sessionId, root: false };
+    },
     messageExecution: async (id: string, messageId: string) => ({
       messageId,
       state: workers.get(id)?.executions?.get(messageId) ?? 'not_admitted',

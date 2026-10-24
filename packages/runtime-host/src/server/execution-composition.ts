@@ -2118,6 +2118,7 @@ export async function createExecutionRuntimeHostComposition(
     ) =>
       Object.freeze({
         id: session.id,
+        isArchived: session.isArchived,
         ...(session.name ? { title: session.name } : {}),
         ...(session.cwd ? { cwd: session.cwd } : {}),
         ...(session.labels?.length ? { labels: session.labels } : {}),

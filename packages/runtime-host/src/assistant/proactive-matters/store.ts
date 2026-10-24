@@ -657,18 +657,32 @@ class SqliteMatterStore implements MatterStore {
     revision: number,
     body: string,
     operationId: string,
+    progressSummary?: string,
   ): Matter {
     const content = stateText(body);
+    if (progressSummary !== undefined) this.validateProgressSummary(progressSummary);
     return this.mutate(
       id,
       activationId,
       revision,
       operationId,
-      JSON.stringify(['checkpoint', id, activationId, revision, content]),
+      JSON.stringify([
+        'checkpoint',
+        id,
+        activationId,
+        revision,
+        content,
+        ...(progressSummary === undefined ? [] : [progressSummary]),
+      ]),
       (m) => {
         m.stateText = content;
+        if (progressSummary !== undefined) m.progressSummary = progressSummary.trim();
       },
     );
+  }
+  private validateProgressSummary(value: string): void {
+    if (!value.trim() || Array.from(value.trim()).length > 30)
+      throw new Error('Progress summary must contain 1–30 characters');
   }
   private reviewBasis(id: string, activationId: string, draftPath?: string): string {
     return createHash('sha256')
@@ -842,6 +856,8 @@ class SqliteMatterStore implements MatterStore {
         stateText(input.stateText);
         text(input.reason, 2000, 'reason');
         text(input.summary, 4000, 'summary');
+        if (input.progressSummary !== undefined)
+          this.validateProgressSummary(input.progressSummary);
         if (input.next !== undefined) text(input.next, 2000, 'next');
         if (!['continue', 'wait', 'complete'].includes(input.disposition))
           throw new Error('Invalid disposition');
@@ -875,6 +891,7 @@ class SqliteMatterStore implements MatterStore {
           );
         }
         m.stateText = input.stateText;
+        if (input.progressSummary !== undefined) m.progressSummary = input.progressSummary.trim();
         m.activation!.settled = true;
         m.executionFailures = 0;
         m.lastFailure = null;

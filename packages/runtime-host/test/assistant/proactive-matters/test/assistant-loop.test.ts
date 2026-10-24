@@ -66,6 +66,7 @@ test('unified entry + background index + timed task + parent feedback run togeth
           disposition: turns === 1 ? 'wait' : 'complete',
           reason: turns === 1 ? '测试尚未结束' : '读取了通过记录',
           summary: '只读核对验收状态',
+          progressSummary: '只读核对验收状态',
           update: turns === 1 ? '测试仍在运行' : '验收通过',
           ...(turns === 1
             ? { waitingFor: '测试结果产生', wakes: [{ kind: 'at', at: Date.now() + 100 }] }
@@ -207,6 +208,7 @@ test('Bot delegates for the visible owner and delivers task completion through S
           disposition: 'complete',
           reason: '核对完成',
           summary: '验收通过',
+          progressSummary: '验收通过',
           update: '验收通过',
         });
       } catch (error) {

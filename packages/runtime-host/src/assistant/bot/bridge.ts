@@ -19,7 +19,7 @@
 
 import type { TurnOrigin } from '@maka/core/turn-origin';
 import type { MessageContent } from '@maka/core/events';
-import type { InboxInput } from './store.js';
+import type { InboxInput, DiscoveryDelivery, DiscoveryFeedbackLink } from './store.js';
 
 export interface BotEndpoint {
   owner(): string | undefined;
@@ -32,6 +32,8 @@ export interface BotEndpoint {
     origin?: Extract<TurnOrigin, { kind: 'external_connector' }>,
   ): Promise<void>;
   post(input: InboxInput): void;
+  discoveryDeliveries?(): DiscoveryDelivery[];
+  discoveryFeedback?(): DiscoveryFeedbackLink[];
 }
 /** In-process routing only; durable mailbox and wake state belong to the Bot. */
 export class AssistantBotBridge {
@@ -63,6 +65,13 @@ export class AssistantBotBridge {
     if (!this.isConversation(sessionId)) return false;
     await this.endpoint!.receive(id, content, origin);
     return true;
+  }
+  discoveryContext(owner: string) {
+    if (!this.isConversation(owner)) throw Error('Assistant conversation unavailable');
+    return {
+      deliveries: this.endpoint!.discoveryDeliveries?.() ?? [],
+      feedback: this.endpoint!.discoveryFeedback?.() ?? [],
+    };
   }
   post(owner: string, input: InboxInput) {
     if (!this.isConversation(owner)) return false;

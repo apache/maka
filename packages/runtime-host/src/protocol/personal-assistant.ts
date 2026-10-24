@@ -70,6 +70,8 @@ const request = z
       'assistant.status',
       'assistant.bind',
       'assistant.control',
+      'assistant.quick-discovery',
+      'assistant.quick-discovery-status',
       'assistant.recover',
       'assistant.adopt-task',
     ]),

@@ -24,7 +24,7 @@ import { visibleFloatTasks, projectTasks, readFloatTasks, watchFloatTasks } from
 test('task list distinguishes execution, business waiting, queued and user input', () => {
   const items = [
     { id: 'running', status: 'active', runtimeStatus: 'running' },
-    { id: 'waiting', status: 'waiting', runtimeStatus: 'idle', waitingFor: '等待回复' },
+    { id: 'waiting', status: 'waiting', runtimeStatus: 'idle', summary: '等待回复', waitingFor: '不应显示的等待条件', state: '不应显示的长报告' },
     { id: 'queued', status: 'active', runtimeStatus: 'idle' },
     { id: 'attention', status: 'active', runtimeStatus: 'waiting_for_user' },
     { id: 'completed', status: 'completed', runtimeStatus: 'running' },
@@ -39,8 +39,8 @@ test('task list distinguishes execution, business waiting, queued and user input
   assert.equal(result.find(x => x.id === 'waiting')?.progress, '等待回复');
 });
 
-test('orders by durable update time with backwards compatible fallback and pending creation', () => {
-  const input = { items: [{ id: 'old', updatedAt: 100 }, { id: 'new', updatedAt: 300 }, { id: 'fallback', updates: [{ createdAt: 200, text: '最新结果' }] }], pending: [{ taskKey: 'pending', title: '创建中', status: 'creating' }] };
+test('orders by durable update time and pending creation without reading report history', () => {
+  const input = { items: [{ id: 'old', updatedAt: 100 }, { id: 'new', updatedAt: 300 }, { id: 'fallback', updatedAt: 200, summary: '最新结果', updates: [{ createdAt: 400, text: '不应显示' }] }], pending: [{ taskKey: 'pending', title: '创建中', status: 'creating' }] };
   const result = projectTasks(input);
   assert.deepEqual(result.map(x => x.id), ['new', 'fallback', 'old', 'pending:pending']);
   assert.deepEqual(projectTasks(input, Date.now() + 10000), result);
@@ -94,4 +94,9 @@ test('default list excludes archived tasks, including paused tasks with stale ru
   assert.equal(tasks.find(task => task.id === 'paused')?.phase, 'paused');
   assert.deepEqual(visibleFloatTasks(tasks, false).map(task => task.id), ['attention', 'queued', 'running', 'waiting']);
   assert.deepEqual(visibleFloatTasks(tasks, true), tasks);
+});
+
+ test('legacy tasks without AI previews do not expose or truncate detailed content', () => {
+  const [task] = projectTasks({ items: [{ id: 'old', status: 'completed', state: '完整报告', waitingFor: '完整条件', updates: [{ text: '完整进展' }] }] });
+  assert.equal(task.progress, '');
 });
