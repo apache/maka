@@ -132,6 +132,23 @@ The host supplies focus before delivering input or environment changes that can 
 this ordering; hosts wiring their own `Surface` and engine use the
 [focus-path embedding APIs](tui.md#public-embedding-api).
 
+## Component scope and project goals
+
+NSH targets native views and interaction with app-owned visual design. Common controls have one cross-platform
+home in `nsh/base`: `Switch` owns behavior, state, focus and accessibility while the app styles its track, thumb and
+states. A system-styled version of an existing control does not justify a second platform-specific public component.
+Improve the shared component's behavior and customization surface instead.
+
+Platform modules expose capabilities with platform-specific semantics. `nsh/mobile`'s `TabBar` is a mobile navigation
+capability; `nsh/base`'s `Tabs` switches tabbed content across platforms. Its presence does not establish a parallel
+catalog of system-styled form controls. Existing system-managed presentations (navigation headers and alerts) keep
+their documented behavior. An embedding app can register a particular native control when its product requires one.
+
+For additions, classify the capability by role, keep shared state and event contracts coherent across targets,
+and verify input, accessibility, measurement and app styling on affected platforms. The public
+[Goals and design principles](../../website/docs/goals.md) describes this boundary for app developers.
+The discussion in [PR #438](https://github.com/longbridge/nsh/pull/438#issuecomment-6380656764) records the rationale.
+
 ## Where new things go
 
 Names follow `gpui-base`'s, translated to TSX: before naming anything apps use, read `api-naming.md` (the conventions

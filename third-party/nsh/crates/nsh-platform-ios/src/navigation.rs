@@ -675,6 +675,12 @@ define_class!(
             size_screens(nav);
             let stack = self.ivars().stack;
             self.with_mounter(|m| m.stack_did_show(stack));
+            // UIKit installs its own pop delegate while loading the navigation
+            // view. Restore ours after showing a screen so hidden headers still
+            // use the mounted swipe-back policy.
+            if let Some(pop) = nav.interactivePopGestureRecognizer() {
+                pop.setDelegate(Some(ProtocolObject::from_ref(self)));
+            }
         }
     }
 

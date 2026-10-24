@@ -1,7 +1,9 @@
-//! What iOS and Android both have and the other platforms do not (TS
+//! Capabilities specific to iOS and Android (TS
 //! `nsh/mobile`): the system's tab bar ([`TabBar`]), a native component the
 //! two backends register themselves ([`TAB_BAR_COMPONENT`]). Elsewhere a
-//! component takes no room and shows nothing.
+//! component takes no room and shows nothing. Common controls belong to
+//! `nsh/base`; this module exposes mobile-specific semantics rather than
+//! a parallel set of system-styled controls.
 
 use crate::{
     JsonValue,

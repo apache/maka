@@ -6,7 +6,7 @@ order: 12.2
 
 # nsh/mobile
 
-`nsh/mobile` 收录 iOS 和 Android 共有的系统界面：目前是系统的标签栏 `TabBar`。它在 iOS（包括 iPadOS 和 Mac Catalyst）和 Android 上工作。Rust 代码使用 `nsh_core::mobile`；TSX 导入 `nsh/mobile`。这个模块在所有平台上都可以导入，所以同一个 bundle 能在各处运行：在其他平台上，它的组件不占空间、不显示内容，`isAvailable` 告诉你当前是否在 iOS 或 Android 上。只有其中一个平台才有的东西在 [nsh/ios](./nsh-ios.md) 或 [nsh/android](./nsh-android.md) 中，只有桌面才有的在 [nsh/desktop](./nsh-desktop.md) 中。
+`nsh/mobile` 收录 iOS 和 Android 共有的移动平台专属能力：目前是系统的标签栏 `TabBar`。它在 iOS（包括 iPadOS 和 Mac Catalyst）和 Android 上工作。Rust 代码使用 `nsh_core::mobile`；TSX 导入 `nsh/mobile`。这个模块在所有平台上都可以导入，所以同一个 bundle 能在各处运行：在其他平台上，它的组件不占空间、不显示内容，`isAvailable` 告诉你当前是否在 iOS 或 Android 上。只有其中一个平台才有的东西在 [nsh/ios](./nsh-ios.md) 或 [nsh/android](./nsh-android.md) 中，只有桌面才有的在 [nsh/desktop](./nsh-desktop.md) 中。
 
 ```rust tabs
 use nsh_core::mobile::{TabBarItem, tab_bar};
@@ -16,6 +16,10 @@ use nsh_core::mobile::{TabBarItem, tab_bar};
 import { isAvailable, TabBar } from "nsh/mobile";
 import type { TabBarItem, TabBarProps } from "nsh/mobile";
 ```
+
+## 模块范围
+
+这个模块提供移动平台专属的能力，例如用于应用顶层导航的系统标签栏。通用控件属于 [`nsh/base`](./nsh-base.md)：例如 [Switch](../elements/switch.md) 在手机、桌面和 Web 上共享行为与 API，轨道、滑块和各状态的样式由应用提供。`TabBar` 服务于移动应用导航，`Tabs` 服务于跨平台的标签内容切换。这个模块仅接受具有移动平台专属交互语义的能力。系统外观、尺寸或动画本身仍属于通用控件的共享职责。这个职责区别决定哪些能力适合放在这里（[目标与设计原则](../docs/goals.md)）。
 
 ## isAvailable
 

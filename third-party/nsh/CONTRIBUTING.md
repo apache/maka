@@ -9,6 +9,51 @@ Please submit **one PR that does one thing**. It makes your change easier to rev
 Before writing code, read [AGENTS.md](AGENTS.md) (the project rules, commands and conventions) and the page of
 [docs/dev](docs/dev/README.md) for the area you change.
 
+## Component design standards
+
+Native Shell provides native views, rendering, animation and interaction. Its goal is not to reproduce the default
+appearance of iOS, Android, macOS or Windows controls. Apps need their own colors, typography, spacing, shapes and
+state feedback; even a faithful system-styled button or switch cannot cover those design requirements. NSH supplies
+customizable views and unstyled behavior so apps can build a coherent design across platforms.
+
+Native integration is substantive: platform text fields provide text editing, selection menus, input methods and
+supported autofill services; components expose focus and accessibility semantics; animation and input run through
+the native runtime and platform backends. Preserve and improve these capabilities while leaving visual choices to
+the app. Check the affected platform's documented support rather than assuming every backend has identical system
+integration. See [Input](website/elements/input.md) and [Goals and design principles](website/docs/goals.md).
+
+NSH provides the primitives and unstyled foundation, corresponding to [GPUI Kit](https://gpui-kit.com)'s `gpui` and `gpui-base` layers.
+The styled-library role of `gpui-component` belongs to applications and third-party libraries. `nsh/base` should
+solve complex behavior, reactive state, input, focus, accessibility and adaptive presentation, with tests at the
+owning layer and customization through states, slots and parts. This includes complex workspace components such
+as `Dock`; complexity is a reason to share behavior, not to prescribe appearance.
+
+Website demos and Gallery are example applications. Their gradients, shadows, radii and motion exercise the
+framework's customization capabilities; they are not default styling for the base components. Keep visual
+experiments in examples and styled application/community components. Component implementations and PRs must
+preserve this separation, including the existing documented exceptions for system-managed presentation and
+`TextView` reading defaults.
+
+Apply these boundaries when proposing components:
+
+- **Common controls have one shared API.** Extend `nsh/base`'s `Switch`, `Button`, `Checkbox` and similar components.
+  Expose the parts and states applications need to style them. Do not add a second system-styled control to a
+  platform module: it would make apps select and maintain separate controls for the same behavior on each target.
+- **Platform modules require a platform-specific interaction or capability.** `nsh/mobile` accepts mobile-specific
+  capabilities whose role has no equivalent shared control. `TabBar` is the mobile system navigation bar, with its
+  platform-managed interaction and presentation; it is not precedent for a catalog of native-looking form controls.
+  A different appearance, size, tint or animation alone does not qualify a common control for this module.
+- **Prefer a shared abstraction when the role is shared.** A notification or toast proposal should first establish
+  a single cross-platform contract and adapt presentation internally where appropriate, rather than introduce
+  parallel controls that applications must choose between. This is a design criterion, not a new API declaration.
+- **Validate the integration.** Check input, keyboard and focus behavior, accessibility, intrinsic measurement,
+  controlled state and customization on the affected targets, alongside the public API and compatibility checks.
+
+[GPUI Kit](https://gpui-kit.com)'s separation of unstyled behavior and app-owned appearance informs NSH's component layers. NSH's platform
+backends additionally integrate with platform view and text-input infrastructure. Custom-rendered frameworks must
+supply their own integration with those services; rendering architecture alone does not establish whether a
+particular framework supports accessibility or autofill.
+
 ## NSH and React Native
 
 NSH has a design of its own, and React Native is a reference for which capabilities a mobile UI framework

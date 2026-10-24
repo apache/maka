@@ -159,6 +159,10 @@ Things that were found the hard way. Read the section of the area you change bef
 - **UINavigationController breaks transitions started during another one**: stack changes that arrive while
   `transitionCoordinator()` is set wait for `didShow` and are applied on the next main-queue turn (the coordinator outlives
   the callback); only pages the controller actually had count as popped by the user.
+- **UIKit installs its own interactive-pop delegate while loading a navigation controller's view**: assigning NSH's
+  delegate when the stack is created can be overwritten. Bind the current recognizer in `didShow`, after UIKit has
+  configured the screen, so hidden headers use NSH's mounted `popOnSwipe` / `popOnBack` policy too. Verify the gesture
+  with real system edge input; the in-process test agent does not start UIKit's interactive pop.
 - **`UIAlertController` asserts when its presentation controller's delegate is set**; a popover action sheet (iPad, Mac) hides
   its cancel action and runs it on a tap outside, so sheets without one get a hidden, untitled cancel answering "dismissed" (`null`).
 - **Catalyst: a mouse drag does not scroll a UIScrollView** (Mac behavior); test scrolling with trackpad-style scroll wheel
