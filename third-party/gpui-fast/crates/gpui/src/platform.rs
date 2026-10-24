@@ -2012,34 +2012,61 @@ impl From<TileId> for etagere::AllocId {
 
 /// The identity of the actual editor receiving platform text input.
 ///
-/// Composite handlers use their existing field allocation, so repainting does
-/// not change the target and moving focus to another field does. This weak
-/// identity neither retains the field nor grants focus to it.
+/// Composite handlers use their existing field allocation and its current
+/// focus admission. Repainting preserves the target; leaving and returning
+/// to the field revokes it. This weak identity neither retains the field nor
+/// grants focus to it.
 #[derive(Clone)]
-pub struct TextInputTarget(TextInputTargetIdentity);
+pub struct TextInputTarget {
+    identity: TextInputTargetIdentity,
+    focus_generation: u64,
+}
 
 #[derive(Clone)]
 enum TextInputTargetIdentity {
     Focus(crate::FocusId),
-    Field(std::rc::Weak<dyn std::any::Any>),
+    Field {
+        field: std::rc::Weak<dyn std::any::Any>,
+        admission: std::rc::Weak<()>,
+    },
 }
 
 impl TextInputTarget {
-    /// Identifies a field by the allocation its native editor already owns.
-    pub fn from_field<T: 'static>(field: &Rc<T>) -> Self {
+    /// Identifies a field and the admission owned by its native focus state.
+    /// Replace `admission` on each actual field or activation transition.
+    pub fn from_field<T: 'static>(field: &Rc<T>, admission: &Rc<()>) -> Self {
         let field: Rc<dyn std::any::Any> = field.clone();
-        Self(TextInputTargetIdentity::Field(Rc::downgrade(&field)))
+        Self {
+            identity: TextInputTargetIdentity::Field {
+                field: Rc::downgrade(&field),
+                admission: Rc::downgrade(admission),
+            },
+            focus_generation: 0,
+        }
     }
 }
 
 impl PartialEq for TextInputTarget {
     fn eq(&self, other: &Self) -> bool {
-        match (&self.0, &other.0) {
+        if self.focus_generation != other.focus_generation {
+            return false;
+        }
+        match (&self.identity, &other.identity) {
             (TextInputTargetIdentity::Focus(left), TextInputTargetIdentity::Focus(right)) => {
                 left == right
             }
-            (TextInputTargetIdentity::Field(left), TextInputTargetIdentity::Field(right)) => {
+            (
+                TextInputTargetIdentity::Field {
+                    field: left,
+                    admission: left_admission,
+                },
+                TextInputTargetIdentity::Field {
+                    field: right,
+                    admission: right_admission,
+                },
+            ) => {
                 std::rc::Weak::ptr_eq(left, right)
+                    && std::rc::Weak::ptr_eq(left_admission, right_admission)
             }
             _ => false,
         }
@@ -2112,11 +2139,17 @@ impl PlatformInputHandler {
         {
             return None;
         }
-        Some(
-            self.handler
-                .text_input_target(window, cx)
-                .unwrap_or(TextInputTarget(TextInputTargetIdentity::Focus(self.focus))),
-        )
+        let mut target = self
+            .handler
+            .text_input_target(window, cx)
+            .unwrap_or(TextInputTarget {
+                identity: TextInputTargetIdentity::Focus(self.focus),
+                focus_generation: 0,
+            });
+        // Composite native fields also lose their admission when their outer
+        // GPUI view leaves and regains focus without an intervening paint.
+        target.focus_generation = window.focus_generation();
+        Some(target)
     }
 
     /// Applies one platform composition snapshot to its original editor.
@@ -2527,8 +2560,9 @@ pub struct UTF16Selection {
 pub trait InputHandler: 'static {
     /// Identifies the actual editor inside a composite input handler.
     ///
-    /// Return the same field allocation across repaints. `None` uses the
-    /// handler's registered GPUI focus identity for a single editor.
+    /// Keep the field's admission across repaints and revoke it when focus
+    /// leaves. `None` uses the registered GPUI focus and its generation for a
+    /// single editor.
     fn text_input_target(
         &mut self,
         _window: &mut Window,

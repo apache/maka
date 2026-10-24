@@ -95,26 +95,32 @@ pub enum Osc<'a> {
 
 /// The negotiated, private NSH text-input extension carried by OSC 777.
 ///
-/// Text selection offsets count UTF-16 code units within `preedit`. Contexts
-/// identify editor admissions, not globally addressable editors. The application
-/// owns negotiation, focus acknowledgement, and rejection of stale contexts.
+/// Text selection offsets count UTF-16 code units within `preedit`. Enable and
+/// disable nonces identify an application subscription; composition IDs identify
+/// source-owned lifetimes. The application owns admission and stale-ID rejection.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NshTextInput {
     /// Ask whether the terminal implements this extension.
     Query,
     /// Acknowledge extension support without enabling forwarding.
     Supported,
-    /// Admit an editor context, or disable forwarding with zero.
-    Focus(u64),
-    /// Acknowledge that the terminal bound the requested context.
-    Focused(u64),
+    /// Subscribe to composition delivery with a positive application nonce.
+    Enable(NonZeroU64),
+    /// Acknowledge the subscription after draining old native delivery.
+    Ready(NonZeroU64),
+    /// Cancel only the named source-owned composition lifetime.
+    Cancel(NonZeroU64),
+    /// Revoke the subscription identified by this application nonce.
+    Disable(NonZeroU64),
+    /// Acknowledge revocation after draining native delivery.
+    Disabled(NonZeroU64),
     /// One atomic committed prefix and remaining composition snapshot.
     ///
     /// An inactive snapshot has empty preedit and selection `0..0`. Active
     /// snapshots may have empty preedit, including composition start. The range
     /// must fall on Unicode scalar boundaries; it may not split a surrogate pair.
     Update {
-        context: NonZeroU64,
+        composition: NonZeroU64,
         active: bool,
         selection: Range<usize>,
         commit: String,
@@ -183,17 +189,20 @@ impl Display for Osc<'_> {
                 match input {
                     NshTextInput::Query => f.write_str("query")?,
                     NshTextInput::Supported => f.write_str("supported")?,
-                    NshTextInput::Focus(context) => write!(f, "focus;{context}")?,
-                    NshTextInput::Focused(context) => write!(f, "focused;{context}")?,
+                    NshTextInput::Enable(nonce) => write!(f, "enable;{nonce}")?,
+                    NshTextInput::Ready(nonce) => write!(f, "ready;{nonce}")?,
+                    NshTextInput::Cancel(composition) => write!(f, "cancel;{composition}")?,
+                    NshTextInput::Disable(nonce) => write!(f, "disable;{nonce}")?,
+                    NshTextInput::Disabled(nonce) => write!(f, "disabled;{nonce}")?,
                     NshTextInput::Update {
-                        context,
+                        composition,
                         active,
                         selection,
                         commit,
                         preedit,
                     } => write!(
                         f,
-                        "update;{context};{};{};{};{};{}",
+                        "update;{composition};{};{};{};{};{}",
                         u8::from(*active),
                         selection.start,
                         selection.end,

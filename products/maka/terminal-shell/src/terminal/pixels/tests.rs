@@ -51,7 +51,14 @@ fn native_editor_focus_and_text_do_not_wait_for_another_pixel_frame() {
             const input = element('input');
             prop(input, 'style', {width: 240, height: 48, backgroundColor: '#204060', color: '#ffffff'});
             bindProp(input, 'value', value);
-            prop(input, 'onChange', text => value.set(text));
+            prop(input, 'onChange', text => {
+                value.set(text);
+                if (text.endsWith('|ABA')) {
+                    other.focus();
+                    input.focus();
+                    Clipboard.writeText('ABA-done');
+                }
+            });
             append(root, input);
             const body = element('view');
             prop(body, 'onPress', () => {});
@@ -414,6 +421,38 @@ fn native_editor_focus_and_text_do_not_wait_for_another_pixel_frame() {
     assert_eq!(copied(), "B2");
     click(32.0);
     assert_eq!(copied(), "BASE😀你", "blur cancels the old preedit");
+    stroke("end", None, false);
+    let before_aba = platform.text_input_target().unwrap();
+    assert!(
+        platform
+            .apply_composition(&before_aba, "|ABA", "cancelled by ABA", None, true)
+            .unwrap()
+    );
+    // The real asynchronous change callback focuses B then A in order, and
+    // publishes this clipboard marker after those native focus commands.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        platform.pump_with_draw(false);
+        if let Some(text) = platform.take_clipboard_write().and_then(|item| item.text()) {
+            assert_eq!(text, "ABA-done");
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "commit callback did not finish ABA"
+        );
+    }
+    assert_ne!(platform.text_input_target().unwrap(), before_aba);
+    assert!(
+        !platform
+            .apply_composition(&before_aba, "", "must not restore", None, true)
+            .unwrap()
+    );
+    assert_eq!(
+        copied(),
+        "BASE😀你|ABA",
+        "the prefix is committed exactly once"
+    );
     // Change density within this same application, as moving the terminal to
     // another screen does. Preserve logical layout and rasterize at full size.
     platform

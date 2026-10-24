@@ -34,8 +34,10 @@ the native owner thread and applies each complete update with
 The selection is relative to the preedit, in UTF-16 code units. An inactive
 update cancels its temporary mark. The committed prefix is applied first; if
 that edit changes the focused field, the remaining preedit is discarded.
-Transport session generations belong to the host and keep late producer
-updates from an earlier focus session out of the current one.
+The target identifies a native focus admission, so leaving and returning to
+the same field also invalidates it. The host binds each source composition
+lifetime to one such target and negotiates application admission separately;
+field changes do not require a transport round trip.
 
 Each successful GPU submission produces a `SubmittedFrame` containing an
 issuer-bound `FrameToken`, viewport generation and its owned readback ticket.

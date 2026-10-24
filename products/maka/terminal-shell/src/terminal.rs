@@ -332,7 +332,7 @@ fn drive(
 }
 
 /// An opted-in sender finishes its native composition before acknowledging
-/// focus0. Keep decoding that FIFO during the existing best-effort restoration
+/// disable(E). Keep decoding that FIFO during the existing best-effort restoration
 /// window. Cancellation cannot wait forever for blocked IO or a missing peer ACK;
 /// an incomplete release is reported instead of claiming the FIFO was drained.
 fn close_text_input(
@@ -399,7 +399,7 @@ fn close_text_input(
 }
 
 fn start_reader(presentation: Presentation, reader: EventReader) -> Result<Reader, String> {
-    // Reader lifetime extends through the negotiated focus0 handshake even
+    // Reader lifetime extends through the negotiated disable(E) handshake even
     // after external cancellation has stopped the UI and output driver.
     let stop = Arc::new(AtomicBool::new(false));
     let reading = stop.clone();
@@ -632,7 +632,27 @@ mod tests {
             },
             false,
         );
-        assert!(pixel_input.text_input.enable());
+        use termina::escape::osc::{NshTextInput, Osc};
+        assert!(
+            pixel_input
+                .text_input
+                .consume(&termina::Event::Osc(Osc::NshTextInput(
+                    NshTextInput::Supported
+                )))
+        );
+        let mut parser = termina::Parser::default();
+        parser
+            .parse(&pixel_input.text_input.take_control().unwrap(), false)
+            .unwrap();
+        let Some(termina::Event::Osc(Osc::NshTextInput(NshTextInput::Enable(nonce)))) =
+            parser.pop()
+        else {
+            panic!("support must request one subscription");
+        };
+        // Ready has not arrived: cancellation must still revoke this nonce.
+        let disable_packet = Osc::NshTextInput(NshTextInput::Disable(nonce))
+            .to_string()
+            .into_bytes();
         state.lock().unwrap().pixels = Some(pixel_input);
         let stop = Arc::new(AtomicBool::new(false));
         let (entered, observing) = mpsc::sync_channel(1);
@@ -702,11 +722,10 @@ mod tests {
             .unwrap()
             .unwrap();
         let bytes = written.lock().unwrap();
-        let release = b"\x1b]777;nsh-text-input;focus;0\x1b\\";
         assert_eq!(
             bytes
-                .windows(release.len())
-                .filter(|part| *part == release)
+                .windows(disable_packet.len())
+                .filter(|part| *part == disable_packet.as_slice())
                 .count(),
             1
         );

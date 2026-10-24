@@ -280,10 +280,16 @@ impl AppView {
     /// A view with no app yet (in `cx.new(|cx| AppView::new(...))`).
     pub fn new(options: AppOptions, window: &mut Window, cx: &mut Context<Self>) -> AppView {
         crate::rt::init(cx);
-        // The focused field's caret follows the window's activation
-        // (`text_input::window_focus`, checked as the view is drawn).
-        cx.observe_window_activation(window, |_, _, cx| cx.notify())
-            .detach();
+        // Revoke the native field's admission on activation changes even
+        // while terminal pixel output defers the next paint.
+        cx.observe_window_activation(window, |view: &mut AppView, window, cx| {
+            crate::text_input::window_focus(
+                &view.surface,
+                window.is_window_active() && view.focus.is_focused(window),
+            );
+            cx.notify();
+        })
+        .detach();
         bind_keys(cx);
         let surface = Surface::new(Environment {
             terminal_keyboard: options.terminal_keyboard,

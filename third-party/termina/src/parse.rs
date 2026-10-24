@@ -22,10 +22,10 @@
 #[cfg(windows)]
 pub mod windows;
 
-#[cfg(all(windows, feature = "windows-legacy"))]
-use windows::legacy;
 #[cfg(windows)]
 use windows::InputReaderMode;
+#[cfg(all(windows, feature = "windows-legacy"))]
+use windows::legacy;
 
 use std::{
     collections::VecDeque,
@@ -45,6 +45,7 @@ const TERMINAL_REPLY_INPUT_TIMEOUT: Duration = Duration::from_millis(100);
 use crate::EventReader;
 
 use crate::{
+    Event,
     escape::{
         self,
         csi::{self, Csi, KittyKeyboardFlags, ThemeMode},
@@ -54,7 +55,7 @@ use crate::{
         KeyCode, KeyEvent, KeyEventKind, KeyEventState, KittyGraphicsResponse, MediaKeyCode,
         ModifierKeyCode, Modifiers, MouseButton, MouseEvent, MouseEventKind, SgrMouseEvent,
     },
-    style, Event,
+    style,
 };
 
 /// An incremental parser for terminal input.
@@ -575,11 +576,13 @@ fn parse_nsh_text_input(payload: &str) -> Result<osc::NshTextInput> {
     let input = match fields.next() {
         Some("query") => osc::NshTextInput::Query,
         Some("supported") => osc::NshTextInput::Supported,
-        Some("focus") => osc::NshTextInput::Focus(unsigned(fields.next())?),
-        Some("focused") => osc::NshTextInput::Focused(unsigned(fields.next())?),
+        Some("enable") => osc::NshTextInput::Enable(unsigned(fields.next())?),
+        Some("ready") => osc::NshTextInput::Ready(unsigned(fields.next())?),
+        Some("cancel") => osc::NshTextInput::Cancel(unsigned(fields.next())?),
+        Some("disable") => osc::NshTextInput::Disable(unsigned(fields.next())?),
+        Some("disabled") => osc::NshTextInput::Disabled(unsigned(fields.next())?),
         Some("update") => {
-            let context = std::num::NonZeroU64::new(unsigned(fields.next())?)
-                .ok_or(MalformedSequenceError)?;
+            let composition = unsigned(fields.next())?;
             let active = match fields.next() {
                 Some("0") => false,
                 Some("1") => true,
@@ -592,7 +595,7 @@ fn parse_nsh_text_input(payload: &str) -> Result<osc::NshTextInput> {
                 bail!();
             }
             osc::NshTextInput::Update {
-                context,
+                composition,
                 active,
                 selection,
                 commit,
@@ -2058,19 +2061,24 @@ mod test {
     #[test]
     fn nsh_text_input_packets_keep_composition_and_following_keys_separate() {
         use osc::NshTextInput;
+        use std::num::NonZeroU64;
+        let nonce = NonZeroU64::new(7).unwrap();
+        let composition = NonZeroU64::new(11).unwrap();
         let mut parser = Parser::default();
         parser
-            .parse(b"\x1b]777;nsh-text-input;focused;7\x1b\\", false)
+            .parse(b"\x1b]777;nsh-text-input;ready;7\x1b\\", false)
             .unwrap();
         assert_eq!(
             parser.pop(),
-            Some(Event::Osc(osc::Osc::NshTextInput(NshTextInput::Focused(7))))
+            Some(Event::Osc(osc::Osc::NshTextInput(NshTextInput::Ready(
+                nonce
+            ))))
         );
         // One partial commit containing a delimiter/control, with a remaining
         // preedit selecting the entire supplementary-plane character.
         parser
             .parse(
-                b"\x1b]777;nsh-text-input;update;7;1;1;3;5aW9Oxs=;5L2g8J+",
+                b"\x1b]777;nsh-text-input;update;11;1;1;3;5aW9Oxs=;5L2g8J+",
                 true,
             )
             .unwrap();
@@ -2079,7 +2087,7 @@ mod test {
         assert_eq!(
             parser.pop(),
             Some(Event::Osc(osc::Osc::NshTextInput(NshTextInput::Update {
-                context: std::num::NonZeroU64::new(7).unwrap(),
+                composition,
                 active: true,
                 selection: 1..3,
                 commit: "好;\x1b".into(),
@@ -2087,36 +2095,67 @@ mod test {
             })))
         );
         assert_eq!(parser.pop(), Some(Event::Key(KeyCode::Char('z').into())));
-        for valid in [
-            "update;7;1;0;0;;", // composition start, not a commit
-            "update;7;0;0;0;;", // cancellation, not a commit
-            "focus;0",
-            "focused;0",
+        for (valid, expected) in [
+            ("query", NshTextInput::Query),
+            ("supported", NshTextInput::Supported),
+            ("enable;7", NshTextInput::Enable(nonce)),
+            ("ready;7", NshTextInput::Ready(nonce)),
+            ("cancel;11", NshTextInput::Cancel(composition)),
+            ("disable;7", NshTextInput::Disable(nonce)),
+            ("disabled;7", NshTextInput::Disabled(nonce)),
+            (
+                "ready;18446744073709551615",
+                NshTextInput::Ready(NonZeroU64::new(u64::MAX).unwrap()),
+            ),
+            (
+                "update;11;1;0;0;;", // composition start, not a commit
+                NshTextInput::Update {
+                    composition,
+                    active: true,
+                    selection: 0..0,
+                    commit: String::new(),
+                    preedit: String::new(),
+                },
+            ),
+            (
+                "update;11;0;0;0;;", // cancellation, not a commit
+                NshTextInput::Update {
+                    composition,
+                    active: false,
+                    selection: 0..0,
+                    commit: String::new(),
+                    preedit: String::new(),
+                },
+            ),
         ] {
-            parser
-                .parse(
-                    format!("\x1b]777;nsh-text-input;{valid}\x1b\\").as_bytes(),
-                    false,
-                )
-                .unwrap();
-            assert!(matches!(
+            let wire = format!("\x1b]777;nsh-text-input;{valid}\x1b\\");
+            parser.parse(wire.as_bytes(), false).unwrap();
+            assert_eq!(
                 parser.pop(),
-                Some(Event::Osc(osc::Osc::NshTextInput(_)))
-            ));
+                Some(Event::Osc(osc::Osc::NshTextInput(expected.clone())))
+            );
+            assert_eq!(osc::Osc::NshTextInput(expected).to_string(), wire);
         }
         for invalid in [
-            "update;7;1;2;3;;5L2g8J+YgDs=", // surrogate interior
-            "update;7;1;3;1;;5L2g8J+YgDs=", // reversed range
-            "update;7;1;0;5;;5L2g8J+YgDs=", // past the preedit
-            "update;0;1;0;0;;",             // no admitted context
-            "update;7;2;0;0;;",             // invalid active flag
-            "update;7;0;0;1;;YQ==",         // inactive preedit
-            "update;7;1;0;0;/w==;",         // invalid decoded UTF-8
-            "update;7;1;0;0;YR==;",         // nonzero Base64 padding bits
-            "update;7;1;0;0;YQ=;",          // missing Base64 padding
-            "update;7;1;0;0;;extra;",       // extra field
-            "focus;18446744073709551616",   // u64 overflow
-            "focus;+7",                     // not unsigned decimal wire text
+            "update;11;1;2;3;;5L2g8J+YgDs=", // surrogate interior
+            "update;11;1;3;1;;5L2g8J+YgDs=", // reversed range
+            "update;11;1;0;5;;5L2g8J+YgDs=", // past the preedit
+            "update;0;1;0;0;;",              // no composition lifetime
+            "update;11;2;0;0;;",             // invalid active flag
+            "update;11;0;0;1;;YQ==",         // inactive preedit
+            "update;11;1;0;0;/w==;",         // invalid decoded UTF-8
+            "update;11;1;0;0;YR==;",         // nonzero Base64 padding bits
+            "update;11;1;0;0;YQ=;",          // missing Base64 padding
+            "update;11;1;0;0;;extra;",       // extra field
+            "enable;0",
+            "ready;0",
+            "cancel;0",
+            "disable;0",
+            "disabled;0",
+            "enable;18446744073709551616", // u64 overflow
+            "enable;+7",                   // not unsigned decimal wire text
+            "enable",
+            "query;7",
             "future;7",
         ] {
             parser

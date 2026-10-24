@@ -649,6 +649,8 @@ impl FocusTarget {
 struct Focus {
     target: Option<FocusTarget>,
     inactive: bool,
+    /// Revoked by this sole owner whenever its focus admission changes.
+    admission: Rc<()>,
 }
 
 thread_local! {
@@ -723,6 +725,7 @@ pub(crate) fn focused_target(surface: &Surface) -> Option<FocusTarget> {
     FOCUS.with(|f| {
         if let Some(f) = f.borrow_mut().get_mut(&surface.key()) {
             f.target = None;
+            f.admission = Rc::new(());
         }
     });
     blink::update();
@@ -808,6 +811,9 @@ pub(crate) fn set_focus_target(surface: &Rc<Surface>, target: Option<FocusTarget
         }
         return;
     }
+    FOCUS.with(|f| {
+        f.borrow_mut().entry(surface.key()).or_default().admission = Rc::new(());
+    });
     if let Some(old) = &old {
         let view = old.view();
         if let Some(input) = input_of(view) {
@@ -860,6 +866,9 @@ pub(crate) fn window_focus(surface: &Rc<Surface>, has_focus: bool) -> bool {
         let entry = f.entry(surface.key()).or_default();
         let changed = entry.inactive == has_focus;
         entry.inactive = !has_focus;
+        if changed {
+            entry.admission = Rc::new(());
+        }
         changed
     });
     if !changed {
@@ -913,7 +922,12 @@ pub(crate) mod ime {
     /// The live native field, independent of the surface's shared GPUI focus.
     pub(crate) fn target(surface: &Surface) -> Option<gpui::TextInputTarget> {
         let (_, input) = field(surface)?;
-        Some(gpui::TextInputTarget::from_field(&input))
+        FOCUS.with(|focuses| {
+            focuses
+                .borrow()
+                .get(&surface.key())
+                .map(|focus| gpui::TextInputTarget::from_field(&input, &focus.admission))
+        })
     }
 
     /// The UTF-16 range of the composition, if there is one.
@@ -2382,6 +2396,7 @@ mod tests {
                 Focus {
                     target: Some(FocusTarget::View(view)),
                     inactive: false,
+                    ..Default::default()
                 },
             )
         });

@@ -1,10 +1,10 @@
-//! Negotiated composition packets stay on the terminal FIFO. Only this
-//! native owner retains an editor target; the IO owner keeps wire state.
+//! Composition packets share the physical-input FIFO. Only the native owner
+//! retains an editor admission; the IO owner negotiates one subscription.
 
 use super::super::Presentation;
 use gpui::TextInputTarget;
 use nsh_gpui_terminal::TerminalPlatform;
-use std::collections::VecDeque;
+use std::{collections::VecDeque, num::NonZeroU64};
 use termina::{
     Event,
     escape::osc::{NshTextInput, Osc},
@@ -14,76 +14,83 @@ use termina::{
 enum Phase {
     #[default]
     Unnegotiated,
-    Enabled,
-    Closing,
+    Enabling,
+    Ready,
+    Closing {
+        submitted: bool,
+    },
     Closed,
 }
 
-#[derive(Default)]
 pub(in crate::terminal) struct Wire {
+    nonce: NonZeroU64,
     phase: Phase,
-    controls: VecDeque<u64>,
-    acknowledgements: VecDeque<(u64, bool)>,
+    controls: VecDeque<NshTextInput>,
+}
+
+impl Default for Wire {
+    fn default() -> Self {
+        let bytes = *uuid::Uuid::new_v4().as_bytes();
+        Self {
+            nonce: NonZeroU64::new(u64::from_le_bytes(bytes[..8].try_into().unwrap()).max(1))
+                .unwrap(),
+            phase: Phase::default(),
+            controls: VecDeque::new(),
+        }
+    }
 }
 
 impl Wire {
-    /// Closing still decodes stdin until the sender confirms that forwarding
-    /// is disabled. Old composition and ordinary input never reach the shell.
+    /// Admission happens while reading the FIFO: a snapshot preceding ready(E)
+    /// must not become admissible just because the UI drains it afterward.
+    /// Closing continues decoding until disabled(E), consuming further input.
     pub fn consume(&mut self, event: &Event) -> bool {
-        if let Event::Osc(Osc::NshTextInput(NshTextInput::Focused(context))) = event
-            && self
-                .acknowledgements
-                .front()
-                .is_some_and(|(expected, _)| expected == context)
-        {
-            let (_, closing) = self.acknowledgements.pop_front().unwrap();
-            if closing {
+        let Event::Osc(Osc::NshTextInput(packet)) = event else {
+            return matches!(self.phase, Phase::Closing { .. } | Phase::Closed);
+        };
+        match packet {
+            NshTextInput::Supported if matches!(self.phase, Phase::Unnegotiated) => {
+                self.phase = Phase::Enabling;
+                self.controls.push_back(NshTextInput::Enable(self.nonce));
+            }
+            NshTextInput::Ready(nonce)
+                if *nonce == self.nonce && matches!(self.phase, Phase::Enabling) =>
+            {
+                self.phase = Phase::Ready;
+            }
+            NshTextInput::Disabled(nonce)
+                if *nonce == self.nonce
+                    && matches!(self.phase, Phase::Closing { submitted: true }) =>
+            {
                 self.phase = Phase::Closed;
             }
+            NshTextInput::Update { .. } => return !self.ready(),
+            _ => {}
         }
-        if matches!(self.phase, Phase::Closing | Phase::Closed) {
-            return true;
-        }
-        matches!(
-            event,
-            Event::Osc(Osc::NshTextInput(
-                NshTextInput::Query | NshTextInput::Focus(_)
-            ))
-        )
+        true
     }
 
-    pub(in crate::terminal) fn enable(&mut self) -> bool {
-        if matches!(self.phase, Phase::Unnegotiated) {
-            self.phase = Phase::Enabled;
-            true
-        } else {
-            false
-        }
+    fn ready(&self) -> bool {
+        matches!(self.phase, Phase::Ready)
     }
 
-    fn enabled(&self) -> bool {
-        matches!(self.phase, Phase::Enabled)
-    }
-
-    fn focus(&mut self, context: u64) {
-        if self.enabled() {
-            self.controls.push_back(context);
+    fn cancel(&mut self, composition: NonZeroU64) {
+        if self.ready() {
+            self.controls.push_back(NshTextInput::Cancel(composition));
         }
     }
 
     pub fn take_control(&mut self) -> Option<Vec<u8>> {
-        let context = self.controls.pop_front()?;
-        self.acknowledgements.push_back((context, false));
-        Some(encode(NshTextInput::Focus(context)))
+        self.controls.pop_front().map(encode)
     }
 
     pub fn begin_close(&mut self) -> Option<Vec<u8>> {
-        if !self.enabled() {
+        if !matches!(self.phase, Phase::Enabling | Phase::Ready) {
             return None;
         }
-        self.phase = Phase::Closing;
+        self.phase = Phase::Closing { submitted: false };
         self.controls.clear();
-        Some(encode(NshTextInput::Focus(0)))
+        Some(encode(NshTextInput::Disable(self.nonce)))
     }
 
     pub fn closed(&self) -> bool {
@@ -91,15 +98,14 @@ impl Wire {
     }
 
     pub fn release_submitted(&mut self) {
-        self.acknowledgements.push_back((0, true));
+        self.phase = Phase::Closing { submitted: true };
     }
 
-    /// If blocked output prevented even queuing focus0, retain that release
-    /// before the final reset. This best-effort path does not imply an ACK.
+    /// If blocked output prevented queuing disable(E), retain it before the
+    /// final reset. This best-effort path does not imply an acknowledgement.
     pub fn pending_release(&self) -> Option<Vec<u8>> {
-        (matches!(self.phase, Phase::Closing)
-            && !self.acknowledgements.iter().any(|(_, closing)| *closing))
-        .then(|| encode(NshTextInput::Focus(0)))
+        matches!(self.phase, Phase::Closing { submitted: false })
+            .then(|| encode(NshTextInput::Disable(self.nonce)))
     }
 }
 
@@ -111,45 +117,26 @@ fn encode(input: NshTextInput) -> Vec<u8> {
     Osc::NshTextInput(input).to_string().into_bytes()
 }
 
+struct Composition {
+    id: NonZeroU64,
+    target: TextInputTarget,
+}
+
+#[derive(Default)]
 pub(super) struct Owner {
-    target: Option<TextInputTarget>,
-    context: u64,
-    acknowledged: bool,
+    high_water: u64,
+    active: Option<Composition>,
 }
 
 impl Owner {
     pub fn new() -> Self {
-        let bytes = *uuid::Uuid::new_v4().as_bytes();
-        Self {
-            target: None,
-            context: u64::from_le_bytes(bytes[..8].try_into().unwrap()).max(1),
-            acknowledged: false,
-        }
+        Self::default()
     }
 
-    fn changed(
-        &mut self,
-        target: Option<TextInputTarget>,
-        presentation: &Presentation,
-    ) -> Result<(), String> {
-        self.context = self
-            .context
-            .checked_add(1)
-            .ok_or("terminal text-input context exhausted")?;
-        self.target = target;
-        self.acknowledged = false;
-        self.announce(presentation);
-        Ok(())
-    }
-
-    fn announce(&self, presentation: &Presentation) {
+    fn cancel_source(composition: NonZeroU64, presentation: &Presentation) {
         let mut state = presentation.state.lock().unwrap();
         if let Some(inbox) = &mut state.pixels {
-            inbox.text_input.focus(if self.target.is_some() {
-                self.context
-            } else {
-                0
-            });
+            inbox.text_input.cancel(composition);
         }
         drop(state);
         presentation.wake_driver();
@@ -160,26 +147,34 @@ impl Owner {
         platform: &TerminalPlatform,
         presentation: &Presentation,
     ) -> Result<(), String> {
-        let target = platform.text_input_target();
-        if target != self.target {
-            self.changed(target, presentation)?;
+        if self
+            .active
+            .as_ref()
+            .is_some_and(|active| platform.text_input_target().as_ref() != Some(&active.target))
+        {
+            self.blur(platform, presentation)?;
         }
         Ok(())
     }
 
-    /// Cancel before native focus is disabled; clearing a mark never commits it.
+    /// Clear only the admitted editor's temporary mark, never committing it or
+    /// touching another editor. A revoked native admission has already blurred.
     pub fn blur(
         &mut self,
         platform: &TerminalPlatform,
         presentation: &Presentation,
     ) -> Result<(), String> {
-        if let Some(target) = &self.target {
-            if platform.text_input_target().as_ref() == Some(target) {
+        if let Some(active) = self.active.take() {
+            let result = if platform.text_input_target().as_ref() == Some(&active.target) {
                 platform
-                    .apply_composition(target, "", "", Some(0..0), false)
-                    .map_err(|e| e.to_string())?;
-            }
-            self.changed(None, presentation)?;
+                    .apply_composition(&active.target, "", "", Some(0..0), false)
+                    .map(|_| ())
+                    .map_err(|e| e.to_string())
+            } else {
+                Ok(())
+            };
+            Self::cancel_source(active.id, presentation);
+            result?;
         }
         Ok(())
     }
@@ -190,60 +185,66 @@ impl Owner {
         platform: &TerminalPlatform,
         presentation: &Presentation,
     ) -> Result<(), String> {
-        // A preceding mouse/key/callback may have changed the real editor.
+        // A preceding mouse/key/callback may have revoked the editor admission.
         self.sync(platform, presentation)?;
-        match packet {
-            NshTextInput::Supported => {
-                let enabled = presentation
-                    .state
-                    .lock()
-                    .unwrap()
-                    .pixels
-                    .as_mut()
-                    .unwrap()
-                    .text_input
-                    .enable();
-                if enabled {
-                    self.announce(presentation);
-                }
-            }
-            NshTextInput::Focused(context) => {
-                let enabled = presentation
-                    .state
-                    .lock()
-                    .unwrap()
-                    .pixels
-                    .as_ref()
-                    .unwrap()
-                    .text_input
-                    .enabled();
-                if enabled && self.target.is_some() && *context == self.context {
-                    self.acknowledged = true;
-                }
-            }
-            NshTextInput::Update {
-                context,
-                active,
-                selection,
+        let NshTextInput::Update {
+            composition,
+            active,
+            selection,
+            commit,
+            preedit,
+        } = packet
+        else {
+            return Ok(());
+        };
+        if !presentation
+            .state
+            .lock()
+            .unwrap()
+            .pixels
+            .as_ref()
+            .is_some_and(|inbox| inbox.text_input.ready())
+        {
+            return Ok(());
+        }
+        if composition.get() > self.high_water {
+            self.blur(platform, presentation)?;
+            self.high_water = composition.get();
+            // Cancel callbacks may change focus; bind the new source lifetime
+            // only once to the actual admission after those callbacks.
+            let Some(target) = platform.text_input_target() else {
+                Self::cancel_source(*composition, presentation);
+                return Ok(());
+            };
+            self.active = Some(Composition {
+                id: *composition,
+                target,
+            });
+        }
+        let Some(current) = self
+            .active
+            .as_ref()
+            .filter(|current| current.id == *composition)
+        else {
+            return Ok(());
+        };
+        // The native API rechecks admission after a committed prefix. Never
+        // retry a packet whose prefix may already have been applied.
+        let applied = platform
+            .apply_composition(
+                &current.target,
                 commit,
                 preedit,
-            } if self.acknowledged && context.get() == self.context => {
-                if let Some(target) = &self.target {
-                    // The native API rechecks this target after a partial
-                    // commit; never replay a packet whose prefix was applied.
-                    platform
-                        .apply_composition(
-                            target,
-                            commit,
-                            preedit,
-                            Some(selection.clone()),
-                            *active,
-                        )
-                        .map_err(|e| e.to_string())?;
-                    self.sync(platform, presentation)?;
-                }
-            }
-            _ => {}
+                Some(selection.clone()),
+                *active,
+            )
+            .map_err(|e| e.to_string())?;
+        if !applied {
+            self.blur(platform, presentation)?;
+        } else if !*active {
+            self.active = None;
+        } else {
+            self.sync(platform, presentation)?;
         }
         Ok(())
     }
