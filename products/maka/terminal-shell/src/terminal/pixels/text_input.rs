@@ -52,7 +52,7 @@ impl Wire {
         )
     }
 
-    fn enable(&mut self) -> bool {
+    pub(in crate::terminal) fn enable(&mut self) -> bool {
         if matches!(self.phase, Phase::Unnegotiated) {
             self.phase = Phase::Enabled;
             true
@@ -92,6 +92,14 @@ impl Wire {
 
     pub fn release_submitted(&mut self) {
         self.acknowledgements.push_back((0, true));
+    }
+
+    /// If blocked output prevented even queuing focus0, retain that release
+    /// before the final reset. This best-effort path does not imply an ACK.
+    pub fn pending_release(&self) -> Option<Vec<u8>> {
+        (matches!(self.phase, Phase::Closing)
+            && !self.acknowledgements.iter().any(|(_, closing)| *closing))
+        .then(|| encode(NshTextInput::Focus(0)))
     }
 }
 

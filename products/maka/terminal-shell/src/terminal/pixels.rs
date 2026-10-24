@@ -394,7 +394,8 @@ pub(super) fn cleanup(presentation: &Presentation, failed: bool) -> Vec<u8> {
         }
     }
     let inbox = state.pixels.as_ref().unwrap();
-    let mut bytes = b"\x1b[?1016l\x1b[?1004l\x1b[?1003l".to_vec();
+    let mut bytes = inbox.text_input.pending_release().unwrap_or_default();
+    bytes.extend_from_slice(b"\x1b[?1016l\x1b[?1004l\x1b[?1003l");
     match inbox.capabilities.protocol {
         Some(probe::Protocol::Kitty) => {
             let slots = state.pixel_probe.slots;

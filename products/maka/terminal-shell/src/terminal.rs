@@ -49,6 +49,8 @@ const SETUP: &[u8] = b"\x1b[?1049h\x1b[?25l\x1b[?1000h\x1b[?1002h\x1b[?1006h\x1b
 const CLEANUP: &[u8] =
     b"\x1b[?2026l\x1b[?2004l\x1b[?1006l\x1b[?1002l\x1b[?1000l\x1b[?25h\x1b[?1049l";
 const TICK: Duration = Duration::from_millis(16);
+// One existing best-effort restoration window, shared by IME release and IO.
+const RESTORATION_WAIT: Duration = Duration::from_millis(100);
 
 pub(crate) type GpuWorker = thread::JoinHandle<Result<(), String>>;
 
@@ -172,7 +174,13 @@ pub(crate) fn run(
         // blocked owner, including startup errors after terminal mutation.
         drive(&mut output, &presentation, &commands, &frames, &pending)
     })();
-    let text_input_cleanup = close_text_input(&mut output, &presentation, input.as_ref());
+    let restoration_deadline = Instant::now() + RESTORATION_WAIT;
+    let text_input_cleanup = close_text_input(
+        &mut output,
+        &presentation,
+        input.as_ref(),
+        restoration_deadline,
+    );
     let result = match (result, text_input_cleanup) {
         (Ok(()), cleanup) => cleanup,
         (Err(error), Ok(())) => Err(error),
@@ -186,7 +194,7 @@ pub(crate) fn run(
     cleanup.extend(pixels::cleanup(&presentation, result.is_err()));
     cleanup.extend_from_slice(CLEANUP);
     let cleanup = output.close(cleanup).and_then(|receipt| {
-        match receipt.recv_timeout(Duration::from_millis(100)) {
+        match receipt.recv_timeout(restoration_deadline.saturating_duration_since(Instant::now())) {
             Ok(result) => result.map_err(|error| error.to_string()),
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 Err("terminal output restoration is still pending behind blocked output".into())
@@ -324,11 +332,14 @@ fn drive(
 }
 
 /// An opted-in sender finishes its native composition before acknowledging
-/// focus0. Keep decoding that FIFO before returning stdin to the parent shell.
+/// focus0. Keep decoding that FIFO during the existing best-effort restoration
+/// window. Cancellation cannot wait forever for blocked IO or a missing peer ACK;
+/// an incomplete release is reported instead of claiming the FIFO was drained.
 fn close_text_input(
     output: &mut Output,
     presentation: &Presentation,
     reader: Option<&Reader>,
+    deadline: Instant,
 ) -> Result<(), String> {
     let bytes = presentation
         .state
@@ -338,34 +349,20 @@ fn close_text_input(
         .as_mut()
         .and_then(pixels::Inbox::close_text_input);
     let Some(bytes) = bytes else { return Ok(()) };
-    while !output.poll()? {
-        thread::park();
-    }
-    output.take_flushed();
-    presentation
-        .state
-        .lock()
-        .unwrap()
-        .pixels
-        .as_mut()
-        .unwrap()
-        .text_input
-        .release_submitted();
-    output.submit([bytes])?;
-    while !output.poll()? {
-        thread::park();
-    }
-    output.take_flushed();
+    let mut release = Some(bytes);
     loop {
+        let writable = output.poll()?;
         let state = presentation.state.lock().unwrap();
-        if state
-            .pixels
-            .as_ref()
-            .is_some_and(|inbox| inbox.text_input.closed())
+        if writable
+            && release.is_none()
+            && state
+                .pixels
+                .as_ref()
+                .is_some_and(|inbox| inbox.text_input.closed())
         {
             return Ok(());
         }
-        if reader.is_none_or(|reader| {
+        if reader.is_some_and(|reader| {
             reader.stop.load(Ordering::Acquire)
                 || reader
                     .handle
@@ -373,11 +370,31 @@ fn close_text_input(
                     .is_none_or(thread::JoinHandle::is_finished)
         }) {
             return Err(state.error.clone().unwrap_or_else(|| {
-                "terminal input ended before text-input focus release was acknowledged".into()
+                "terminal text-input release incomplete: input ended before acknowledgement".into()
             }));
         }
         drop(state);
-        thread::park();
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(
+                "terminal text-input release is still pending; terminal restoration incomplete"
+                    .into(),
+            );
+        }
+        if writable && let Some(bytes) = release.take() {
+            output.take_flushed();
+            presentation
+                .state
+                .lock()
+                .unwrap()
+                .pixels
+                .as_mut()
+                .unwrap()
+                .text_input
+                .release_submitted();
+            output.submit([bytes])?;
+        }
+        thread::park_timeout(remaining);
     }
 }
 
@@ -581,6 +598,7 @@ mod tests {
         struct Blocked {
             entered: mpsc::SyncSender<()>,
             resume: mpsc::Receiver<()>,
+            bytes: Arc<Mutex<Vec<u8>>>,
         }
         impl Write for Blocked {
             fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
@@ -590,6 +608,7 @@ mod tests {
                         .recv()
                         .map_err(|_| io::Error::other("gate closed"))?;
                 }
+                self.bytes.lock().unwrap().extend_from_slice(bytes);
                 Ok(bytes.len())
             }
             fn flush(&mut self) -> io::Result<()> {
@@ -597,12 +616,32 @@ mod tests {
             }
         }
         let state = Arc::new(Mutex::new(Inbox::default()));
+        let mut pixel_input = pixels::Inbox::new(
+            pixels::Capabilities {
+                size: termina::WindowSize {
+                    cols: 80,
+                    rows: 24,
+                    pixel_width: Some(640),
+                    pixel_height: Some(384),
+                },
+                mouse: pixels::MouseCoordinates::Cells,
+                protocol: Some(pixels::Protocol::Sixel),
+                synchronized: false,
+                sixel_geometry: Default::default(),
+                ui_scale: 1.0,
+            },
+            false,
+        );
+        assert!(pixel_input.text_input.enable());
+        state.lock().unwrap().pixels = Some(pixel_input);
         let stop = Arc::new(AtomicBool::new(false));
         let (entered, observing) = mpsc::sync_channel(1);
         let (resume, gate) = mpsc::channel();
+        let written = Arc::new(Mutex::new(Vec::new()));
         let mut output = Output::new(Blocked {
             entered,
             resume: gate,
+            bytes: written.clone(),
         })
         .unwrap();
         output.submit([b"SETUP".to_vec()]).unwrap();
@@ -630,7 +669,16 @@ mod tests {
                 &receive,
                 &AtomicBool::new(false),
             );
-            let _ = finished.send(result);
+            let release = close_text_input(
+                &mut output,
+                &presentation,
+                None,
+                Instant::now() + RESTORATION_WAIT,
+            );
+            let mut cleanup = pixels::cleanup(&presentation, release.is_err());
+            cleanup.extend_from_slice(CLEANUP);
+            let cleanup = output.close(cleanup).unwrap();
+            let _ = finished.send((result, release, cleanup));
         });
         observing.recv_timeout(Duration::from_secs(1)).unwrap();
         if external {
@@ -640,10 +688,29 @@ mod tests {
         }
         // The caller can now run Host close/recovery while stdout is still
         // held by the test gate. No UI engine or output join is required.
-        result
+        let (driver, release, cleanup) = result.recv_timeout(Duration::from_secs(2)).unwrap();
+        driver.unwrap();
+        assert!(
+            release
+                .unwrap_err()
+                .contains("text-input release is still pending")
+        );
+        assert!(matches!(cleanup.try_recv(), Err(mpsc::TryRecvError::Empty)));
+        resume.send(()).unwrap();
+        cleanup
             .recv_timeout(Duration::from_secs(2))
             .unwrap()
             .unwrap();
-        resume.send(()).unwrap();
+        let bytes = written.lock().unwrap();
+        let release = b"\x1b]777;nsh-text-input;focus;0\x1b\\";
+        assert_eq!(
+            bytes
+                .windows(release.len())
+                .filter(|part| *part == release)
+                .count(),
+            1
+        );
+        assert!(bytes.starts_with(b"SETUPFRAME"));
+        assert!(bytes.ends_with(CLEANUP));
     }
 }
