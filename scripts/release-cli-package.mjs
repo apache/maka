@@ -35,6 +35,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { createRequire } from 'node:module';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { npmSpawnOptions } from './npm-spawn.mjs';
 import { validateCliReleaseArtifactMetrics } from './release-cli-artifact-policy.mjs';
@@ -53,6 +54,9 @@ import {
 
 const repoRoot = resolve(import.meta.dirname, '..');
 const cliSource = join(repoRoot, 'packages/cli');
+const evalUndiciVersion = createRequire(join(repoRoot, 'packages/eval/package.json'))(
+  'undici/package.json',
+).version;
 const allowDirty = process.argv.includes('--allow-dirty');
 const developmentBuild = process.argv.includes('--development');
 const nightlyVersion = process.env.MAKA_CLI_NIGHTLY_VERSION?.trim();
@@ -371,9 +375,9 @@ function copyDependencyClosure(cli) {
   };
   visit(cli, stageRoot);
 
-  const evalUndici = findDependency(cli, 'undici', '8.11.2');
+  const evalUndici = findDependency(cli, 'undici', evalUndiciVersion);
   if (!evalUndici?.path || !existsSync(evalUndici.path)) {
-    throw new Error('The installed CLI closure does not contain undici@8.11.2');
+    throw new Error(`The installed CLI closure does not contain undici@${evalUndiciVersion}`);
   }
   copyThirdPartyPackage(realpathSync(evalUndici.path), join(stageRoot, 'node_modules/undici'));
   copiedDestinations.set(join(stageRoot, 'node_modules/undici'), realpathSync(evalUndici.path));
@@ -667,7 +671,7 @@ function writeReleaseManifest(cli, publishable) {
       `CLI manifest and installed lockfile disagree: ${source.version} vs ${cli.version}`,
     );
   }
-  const undici = findDependency(cli, 'undici', '8.11.2');
+  const undici = findDependency(cli, 'undici', evalUndiciVersion);
   const dependencies = { ...source.dependencies, undici: undici.version };
   const updateCompatibility = source.maka?.managedRuntimeHostUpdateCompatibility;
   if (!Number.isSafeInteger(updateCompatibility) || updateCompatibility < 1) {
