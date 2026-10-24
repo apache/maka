@@ -47,7 +47,10 @@ impl Args {
     pub(super) async fn run(self) -> Result<ExitCode, HostError> {
         let stop = CancellationToken::new();
         let _signals = crate::signals::watch(stop.clone())?;
-        let mut client = crate::deployment::connect_local(self.root.clone()).await?;
+        let mut client = tokio::select! {
+            result = crate::deployment::connect_local(self.root.clone()) => result?,
+            _ = stop.cancelled() => return Ok(ExitCode::SUCCESS),
+        };
         let result = self.launch(&client, &stop).await;
         let cleanup = client.quit().await;
         match (result, cleanup) {

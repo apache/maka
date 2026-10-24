@@ -104,7 +104,7 @@ async fn connect_inner(
         launcher: selection.is_none().then(|| launcher.to_owned()),
         ..Default::default()
     };
-    let result = tokio::time::timeout(Duration::from_secs(30), async {
+    let result: Result<Connection, HostError> = async {
         let (_launch, root_id) = loop {
             let root_path = path.clone();
             let result = tokio::task::spawn_blocking(move || {
@@ -249,10 +249,8 @@ async fn connect_inner(
             }
             pause().await;
         }
-    })
-    .await
-    .map_err(|_| HostError::from("Host did not become Ready before the startup deadline"))
-    .and_then(|result| result);
+    }
+    .await;
     if result.is_err()
         && let Some(mut child) = child
         && let Err(cleanup) =
