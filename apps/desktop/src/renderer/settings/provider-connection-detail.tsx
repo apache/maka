@@ -172,6 +172,7 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
     setBaseUrl,
     enabledModelIds,
     modelChoices,
+    testModelLabel,
     testing,
     deleting,
     detailActionBusy,
@@ -627,6 +628,7 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
                 isLoading={testing}
                 clickAction={() => runTest()}
                 label={copy.testConnection}
+                tooltip={testModelLabel ? copy.testConnectionModelHint(testModelLabel) : undefined}
               />
             )}
           />
