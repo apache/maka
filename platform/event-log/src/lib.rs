@@ -54,6 +54,7 @@ pub mod recovery;
 pub mod root;
 pub mod root_store;
 pub use root_store::{RootStore, SessionStore};
+pub mod recall;
 pub mod run_source;
 mod schema;
 pub mod sessions;

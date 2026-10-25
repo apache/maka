@@ -18,8 +18,5 @@
  */
 
 mod material;
-mod passages;
-mod rank;
-mod reader;
 pub mod search;
 mod types;

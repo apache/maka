@@ -626,7 +626,7 @@ export interface ServiceMethods {
           };
     };
     recall: {
-      mode: 'query';
+      mode: 'subscription';
       input: Runtime.RecallQuery;
       output: Runtime.AgentRecallPage;
     };

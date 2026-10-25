@@ -53,7 +53,7 @@ impl RootStore {
     ) -> Result<crate::artifacts::ArtifactEntry, StoreError> {
         self.require_open()?;
         let (source, _, _) = self
-            .pin_attachment(source_session, target.id(), Some(target))
+            .pin_session_pair(source_session, target.id(), Some(target))
             .await?;
         source.get_artifact(source_session, artifact).await
     }
@@ -74,7 +74,7 @@ impl RootStore {
             ));
         };
         let (source, target, same_partition) = self
-            .pin_attachment(session_id, &request.target_session_id, execution)
+            .pin_session_pair(session_id, &request.target_session_id, execution)
             .await?;
         if same_partition {
             target.copy_plugin_attachment(namespace, request).await
@@ -85,7 +85,7 @@ impl RootStore {
         }
     }
 
-    async fn pin_attachment(
+    pub(super) async fn pin_session_pair(
         &self,
         session_id: &str,
         target_session: &str,

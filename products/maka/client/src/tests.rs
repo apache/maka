@@ -143,11 +143,18 @@ impl Handler for CounterHandler {
                     }
                 }
                 "watch" => {
+                    if input["once"] == true {
+                        return Ok(json!({"sent":owner.effects.load(Ordering::SeqCst)}));
+                    }
                     context
                         .emit(json!({"sent":owner.effects.load(Ordering::SeqCst)}))
                         .await?;
                     context.scope().cancellation.cancelled().await;
                     owner.watches_closed.fetch_add(1, Ordering::SeqCst);
+                    if input["holdCleanup"] == true {
+                        owner.started.notify_one();
+                        owner.release.notified().await;
+                    }
                     Ok(json!({"closed":true}))
                 }
                 _ => Err("unknown counter method".into()),

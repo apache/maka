@@ -26,6 +26,7 @@ use sqlx::SqliteConnection;
 use std::collections::HashMap;
 
 const COLUMNS: &str = "source_sequence,item_index,turn_id,message_id,timestamp,role,has_thinking,user_origin,state_status,tool_use_id,tool_name,tool_origin,parent_tool_call_id,parent_operation_id,has_args,result_valid,settlement,is_error,content_kind,tool_title,presentation,duration_ms";
+pub(crate) const RECALL_BODY: &str = super::history::BODY;
 const INSERT: &str = r#"WITH payload(value) AS (VALUES(?6)) INSERT INTO transcript_directory
  (session_id,source_sequence,item_index,turn_id,message_id,timestamp,role,has_thinking,user_origin,state_status,tool_use_id,tool_name,tool_origin,parent_tool_call_id,parent_operation_id,has_args,result_valid,settlement,is_error,content_kind,tool_title,presentation,duration_ms)
  SELECT ?1,?2,?3,?4,?5,json_extract(value,'$.ts'),json_extract(value,'$.type'),
@@ -150,8 +151,9 @@ fn record_on_handle(db: &RawConnection, session: &str, source: i64) -> Result<()
             item,
             &row.message.turn_id,
             &row.message.id,
-            payload
+            &payload
         ])?;
+        crate::recall::maintenance::record(db, session, row.position, &payload)?;
     }
     Ok(())
 }
@@ -189,9 +191,40 @@ pub(crate) async fn copy(
             // SAFETY: exclusive original-writer callback; temporary relations never escape.
             let db = unsafe { RawConnection::from_handle(handle.as_ptr()) }?;
             db.set_prepared_statement_cache_capacity(100);
-            copy_on_handle(&db, &source, &target, through)
+            copy_on_handle(&db, &source, &target, through)?;
+            rebuild_recall(&db, &target)
         })
         .await?
+}
+
+fn rebuild_recall(db: &RawConnection, session: &str) -> Result<(), StoreError> {
+    db.execute(
+        "DELETE FROM recall_documents WHERE session_id=?1",
+        [session],
+    )?;
+    let mut after = 0i64;
+    loop {
+        let source: Option<i64> = db
+            .prepare_cached("SELECT MIN(source_sequence) FROM transcript_directory WHERE session_id=?1 AND source_sequence>?2")?
+            .query_row(params![session, after], |row| row.get(0))?;
+        let Some(source) = source else { break };
+        for row in emit::source_on_handle(db, session, source)? {
+            let (sequence, item) = read::sql_position(row.position)?;
+            let included: bool = db
+                .prepare_cached("SELECT EXISTS(SELECT 1 FROM transcript_directory WHERE session_id=?1 AND source_sequence=?2 AND item_index=?3)")?
+                .query_row(params![session, sequence, item], |row| row.get(0))?;
+            if included {
+                crate::recall::maintenance::record(
+                    db,
+                    session,
+                    row.position,
+                    &serde_json::to_vec(&row.message)?,
+                )?;
+            }
+        }
+        after = source;
+    }
+    Ok(())
 }
 
 fn copy_on_handle(
@@ -356,7 +389,9 @@ pub(crate) async fn index_imported_sessions(
 mod tests {
     use super::*;
     use crate::EventLog;
-    use maka_agent_facts::event::{EventWrite, Fact, Invocation, InvocationInput, RuntimeEvent};
+    use maka_agent_facts::event::{
+        EventWrite, Fact, Invocation, InvocationInput, InvocationOutcome, RuntimeEvent,
+    };
     use sqlx::Connection;
 
     fn event(session: &str, invocation: &str, id: &str, fact: Fact) -> RuntimeEvent {
@@ -372,6 +407,97 @@ mod tests {
         event.id = id.into();
         event.recorded_at = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1);
         event
+    }
+
+    #[tokio::test]
+    async fn public_append_keeps_original_ordinals_and_reopen_needs_no_body_cache() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("directory.sqlite");
+        let log = EventLog::open(&path).await.unwrap();
+        let open = EventWrite::plain(event(
+            "bare",
+            "turn",
+            "open",
+            Fact::InvocationOpened {
+                configuration: None,
+                input: InvocationInput::Message {
+                    source_messages: Vec::new(),
+                    content: "literal user".into(),
+                    request_fingerprint: None,
+                },
+            },
+        ))
+        .unwrap();
+        let first = log.append(&open).await.unwrap();
+        let end = log
+            .append(
+                &EventWrite::plain(event(
+                    "bare",
+                    "turn",
+                    "end",
+                    Fact::InvocationEnded {
+                        outcome: InvocationOutcome::Completed,
+                    },
+                ))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        log.connection.run(move |db| Box::pin(async move {
+            check_read(db,"bare",end).await?;
+            let rows: Vec<(i64,String)> = sqlx::query_as("SELECT item_index,role FROM transcript_directory WHERE session_id='bare' AND source_sequence=? ORDER BY item_index").bind(first as i64).fetch_all(&mut *db).await?;
+            assert_eq!(rows,vec![(0,"user".into()),(1,"turn_state".into())]);
+            assert_eq!(sqlx::query_scalar::<_,i64>("SELECT count(*) FROM transcript_cache.rows").fetch_one(&mut *db).await?,0);
+            Ok(())
+        })).await.unwrap();
+        log.close().await.unwrap();
+        let log = EventLog::open(&path).await.unwrap();
+        log.connection
+            .run(move |db| {
+                Box::pin(async move {
+                    check_read(db, "bare", end).await?;
+                    assert_eq!(
+                        sqlx::query_scalar::<_, i64>(
+                            "SELECT count(*) FROM transcript_directory WHERE session_id='bare'"
+                        )
+                        .fetch_one(&mut *db)
+                        .await?,
+                        3
+                    );
+                    assert_eq!(
+                        sqlx::query_scalar::<_, String>(
+                            "SELECT d.body FROM recall_terms JOIN recall_documents d ON d.id=recall_terms.rowid WHERE recall_terms MATCH ?1 AND d.session_id='bare'"
+                        )
+                        .bind(crate::recall::grams("literal"))
+                        .fetch_all(&mut *db)
+                        .await?,
+                        ["literal user"]
+                    );
+                    assert_eq!(
+                        sqlx::query_scalar::<_, i64>(
+                            "SELECT count(*) FROM recall_documents WHERE session_id='bare'"
+                        )
+                        .fetch_one(&mut *db)
+                        .await?,
+                        3
+                    );
+                    let mut tx = db.begin().await?;
+                    sqlx::query("DELETE FROM transcript_directory WHERE session_id='bare'")
+                        .execute(&mut *tx)
+                        .await?;
+                    assert_eq!(
+                        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM recall_terms")
+                            .fetch_one(&mut *tx)
+                            .await?,
+                        0
+                    );
+                    tx.rollback().await?;
+                    Ok(())
+                })
+            })
+            .await
+            .unwrap();
+        log.close().await.unwrap();
     }
 
     #[tokio::test]

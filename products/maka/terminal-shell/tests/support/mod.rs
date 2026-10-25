@@ -518,6 +518,7 @@ impl Fixture {
                             &[
                                 "list",
                                 "catalog",
+                                "recall",
                                 "projects",
                                 "directories",
                                 "create",

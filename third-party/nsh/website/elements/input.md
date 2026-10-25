@@ -248,6 +248,8 @@ let password!: YNode;
 
 ## Platform notes
 
+- On macOS, single-line text, placeholders and carets share the native field's font metrics and are centered together
+  inside the content box. `lineHeight` participates in layout; multiline editors also use it for paragraph spacing.
 - Inputs inside a [scroll view](./scroll.md#keyboard) are kept clear of the keyboard natively. Elsewhere use
   [`KeyboardAvoidingView`](./keyboard-avoiding-view.md).
 - `disabled` disables the input (no focus) as well as applying the disabled styles; a `readonly` input keeps its

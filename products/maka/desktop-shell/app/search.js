@@ -18,10 +18,8 @@
  */
 
 // The Search page: what was said in every task, as the Host's `agent.recall`
-// finds it. It follows the native client's Search page (maka-gpui
-// crates/search/src/page.rs) and the TUI's "Search conversations"
-// (plugins/agent/recall/index.ts): the field is searched as the person types,
-// after a pause; the answer lists the tasks whose titles match, then the
+// finds it. The field is searched after the person pauses typing; the
+// answer lists the tasks whose titles match, then the
 // passages that match, grouped by task; a passage opens its task at that
 // message (the transcript's anchor). The page's state lives as long as the
 // window, so going Back to it shows the same words and results.
@@ -33,7 +31,7 @@
 
 import { div, list } from 'gpui-kit';
 import { v_flex, h_flex, InputState, TextView, Scrollbar } from 'gpui-base';
-import { query, log } from './host.js';
+import { subscribe, next, close, log } from './host.js';
 import { rowPositionKey } from './history-position.js';
 import {
   palette,
@@ -53,15 +51,6 @@ import { t, onLanguageChange } from './locale.js';
 
 /** How long the page waits after the field last changed before it searches. */
 const PAUSE_MS = 250;
-/** Results asked for, the Host's most: title matches first, passages fill the rest. */
-const LIMIT = 25;
-/** The most words one search takes, and the most characters in a word (recall/types.rs). */
-/** How much of a passage a row shows, in characters, and how much of that comes before the first match. */
-const EXCERPT_CHARS = 220;
-const BEFORE_MATCH = 60;
-/** How far a cut moves to fall between two words, in characters. */
-const WORD_SLACK = 16;
-
 /** The words of `value` as the Host is asked for them: split on whitespace, as the TUI splits them. */
 function termsOf(value) {
   return value.split(/\s+/u).filter(Boolean);
@@ -117,6 +106,7 @@ export class Search {
     this.serial = 0;
     /** The search waiting out the pause or running, `{ serial, words, terms }`, or null. */
     this.pending = null;
+    this.read = null;
     /**
      * The last answer, `{ serial, words, terms, titles, groups, complete,
      * results }`: the passages grouped by task in the Host's order, and the
@@ -126,7 +116,6 @@ export class Search {
     this.answer = null;
     /** Why the last search failed, `{ words, message }`, or null. */
     this.failure = null;
-    /** Whether the field holds more words, or a longer word, than the Host takes. */
     /** The key of the result Up and Down moved to, or null. */
     this.cursor = null;
     /** The key of the item at the top of the results while they last showed, or null. */
@@ -142,10 +131,34 @@ export class Search {
   show() {
     this.open = true;
     this.restoring = this.top !== null && this.shown() !== null;
+    const words = this.field.value();
+    const terms = termsOf(words);
+    if (terms.length > 0 && (this.answer === null || !sameTerms(terms, this.answer.terms)))
+      this.search(words, PAUSE_MS);
   }
 
   hide() {
     this.open = false;
+    this.serial += 1;
+    this.pending = null;
+    this.cancelRead();
+  }
+
+  cancelRead() {
+    const read = this.read;
+    this.read = null;
+    if (read !== null) void this.releaseRead(read);
+  }
+
+  releaseRead(read) {
+    if (read.handle === null) return Promise.resolve();
+    if (read.closing === null) {
+      read.closing = close(read.handle);
+      void read.closing.catch((error) =>
+        console.error('Closing conversation search failed:', error),
+      );
+    }
+    return read.closing;
   }
 
   /**
@@ -182,6 +195,7 @@ export class Search {
       return;
     }
     this.serial += 1;
+    this.cancelRead();
     this.pending = null;
     this.failure = null;
     if (terms.length === 0) {
@@ -197,12 +211,18 @@ export class Search {
     const terms = termsOf(this.words);
     if (terms.length === 0) return;
     const answer = this.answer;
-    if (answer === null || this.failure !== null || !sameTerms(terms, answer.terms)) {
+    if (this.pending !== null && this.read !== null && sameTerms(terms, this.pending.terms)) return;
+    if (
+      this.pending !== null ||
+      answer === null ||
+      this.failure !== null ||
+      !sameTerms(terms, answer.terms)
+    ) {
       this.search(this.words, 0);
       return;
     }
     const key = this.cursor ?? answer.results[0] ?? null;
-    if (key !== null) this.openResult(key);
+    if (key !== null) this.openResult(key, answer.serial);
   }
 
   /** Retry: searches the field's words again now. */
@@ -236,6 +256,7 @@ export class Search {
 
   /** Moves the cursor to the next result (`step` 1) or the one before (-1), from the field. */
   move(step) {
+    if (!this.open || this.pending !== null) return;
     const keys = this.shown()?.results ?? [];
     if (keys.length === 0) return;
     const at = keys.indexOf(this.cursor);
@@ -245,15 +266,12 @@ export class Search {
     this.hooks.changed();
   }
 
-  /**
-   * Searches `words` after `pause` ms, or now. Words the Host would refuse
-   * are not sent; the line under the field says why. The Host has no
-   * cancel, so each search is numbered and an answer to any but the latest
-   * is dropped (accept).
-   */
+  /** A new search cancels its predecessor before waiting out the typing pause. */
   search(words, pause) {
+    this.words = words;
     const terms = termsOf(words);
     const serial = ++this.serial;
+    this.cancelRead();
     this.failure = null;
     this.cursor = null;
     this.pending = terms.length === 0 ? null : { serial, words, terms };
@@ -261,30 +279,32 @@ export class Search {
     if (this.pending === null) return;
     this.cx.spawn(async (cx) => {
       if (pause > 0) await cx.sleep(pause);
-      if (serial !== this.serial) return;
+      if (!this.open || serial !== this.serial) return;
       log(`search #${serial}: asking for ${terms.length} word(s)`);
-      let found;
       try {
-        found = await this.recall(terms);
+        const found = await this.recall(terms, serial);
+        if (serial !== this.serial || !this.open) return;
+        if (found === null) throw new Error('Conversation search ended without a result.');
+        this.accept(serial, words, terms, found);
       } catch (error) {
         this.fail(serial, words, error);
-        return;
       }
-      this.accept(serial, words, terms, found);
     });
   }
 
-  /** One `agent.recall` across every task, archived ones too. */
-  recall(terms) {
+  /** One cancellable search across every readable conversation, including archives. */
+  async recall(terms, serial) {
+    const read = { handle: null, closing: null };
+    this.read = read;
     this.stats.calls += 1;
-    return query('agent', 'recall', {
-      terms,
-      question: null,
-      limit: LIMIT,
-      session_id: null,
-      since: null,
-      until: null,
-    });
+    try {
+      read.handle = await subscribe('agent', 'recall', { terms, session_id: null });
+      if (this.read !== read || serial !== this.serial || !this.open) return null;
+      return await next(read.handle);
+    } finally {
+      if (this.read === read) this.read = null;
+      await this.releaseRead(read);
+    }
   }
 
   /** Takes the Host's answer to search `serial`, if it is the latest. Resolves with whether it was. */
@@ -355,9 +375,17 @@ export class Search {
   }
 
   /** Opens result `key` (a list item's key): a title at its task's newest message, a passage at its own. */
-  openResult(key) {
+  openResult(key, serial) {
     const answer = this.shown();
-    if (answer === null) return;
+    if (
+      !this.open ||
+      this.pending !== null ||
+      this.failure !== null ||
+      answer === null ||
+      answer.serial !== serial ||
+      !sameTerms(termsOf(this.field.value()), answer.terms)
+    )
+      return;
     const session = answer.titles.find((entry) => titleKey(entry) === key);
     if (session !== undefined) {
       log(`search: opening ${session.id}`);
@@ -405,63 +433,15 @@ function groupsOf(passages) {
   return [...byTask.values()];
 }
 
-/**
- * One RegExp that finds any of `terms`, the longer first, as the Host matches
- * them: literally, in any case, composed (NFC) as the Host composes the terms
- * and the excerpts it returns.
- */
-function matcher(terms) {
-  const escaped = terms
-    .map((term) => term.normalize('NFC'))
-    .sort((a, b) => b.length - a.length)
-    .map((term) => term.replace(/[\\^$.*+?()[\]{}|/]/g, '\\$&'));
-  return new RegExp(escaped.join('|'), 'giu');
-}
-
-/** Whether the UTF-16 unit at `index` is the second half of a surrogate pair. */
-function lowSurrogate(value, index) {
-  const unit = value.charCodeAt(index);
-  return unit >= 0xdc00 && unit <= 0xdfff;
-}
-
-/**
- * A passage's text as its row shows it, as HTML: runs of whitespace made one
- * space; about EXCERPT_CHARS of it, from about BEFORE_MATCH before the first
- * match, cut between words where a space is near, with "…" where it was
- * cut; every match of `terms` marked on `fill`. All of the text is
- * escaped, so none of it is read as markup.
- */
-export function excerptHtml(excerpt, terms, fill) {
-  const pattern = matcher(terms);
-  const whole = excerpt.replace(/\s+/gu, ' ').trim();
-  pattern.lastIndex = 0;
-  const first = pattern.exec(whole);
-  const at = first === null ? 0 : first.index;
-  const matched = first === null ? 0 : first[0].length;
-  let start = Math.max(0, at - BEFORE_MATCH);
-  let end = Math.min(whole.length, start + EXCERPT_CHARS);
-  start = Math.max(0, Math.min(start, end - EXCERPT_CHARS));
-  if (start > 0 && whole[start - 1] !== ' ') {
-    const space = whole.indexOf(' ', start);
-    if (space >= 0 && space < Math.min(at, start + WORD_SLACK)) start = space + 1;
-  }
-  if (end < whole.length && whole[end] !== ' ') {
-    const space = whole.lastIndexOf(' ', end);
-    if (space > Math.max(at + matched, end - WORD_SLACK)) end = space;
-  }
-  if (start > 0 && lowSurrogate(whole, start)) start -= 1;
-  if (end < whole.length && lowSurrogate(whole, end)) end += 1;
-  const shown = whole.slice(start, end);
+/** Renders the Host's match-centered preview without changing its source offsets. */
+export function excerptHtml(excerpt, highlights, fill) {
   let html = '';
   let last = 0;
-  // matchAll starts where the exec above left the pattern's lastIndex.
-  pattern.lastIndex = 0;
-  for (const match of shown.matchAll(pattern)) {
-    html += `${escapeHtml(shown.slice(last, match.index))}<mark color="${fill}">${escapeHtml(match[0])}</mark>`;
-    last = match.index + match[0].length;
+  for (const { start, end } of highlights) {
+    html += `${escapeHtml(excerpt.slice(last, start))}<mark color="${fill}">${escapeHtml(excerpt.slice(start, end))}</mark>`;
+    last = end;
   }
-  html += escapeHtml(shown.slice(last));
-  return `${start > 0 ? '…' : ''}${html}${end < whole.length ? '…' : ''}`;
+  return html + escapeHtml(excerpt.slice(last));
 }
 
 /** A block in the page's column, which the transcript's reading column matches. */
@@ -587,7 +567,7 @@ function resultItems(answer, byId, fill) {
       items.push({
         key: passageKey(passage),
         kind: 'passage',
-        html: excerptHtml(passage.excerpt, answer.terms, fill),
+        html: excerptHtml(passage.excerpt, passage.highlights, fill),
       });
     }
   }
@@ -624,7 +604,7 @@ function resultsList(search, answer, sessions, stale, cx) {
         (index, cx) => resultItem(items[index], search.cursor, answer.serial, stale, cx),
       )
         .on_visible_range_change((range, count) => search.showing(range, count, items, from))
-        .on_item_click((key) => search.openResult(key)),
+        .on_item_click((key) => search.openResult(key, answer.serial)),
     )
     .child(Scrollbar.vertical(id).absolute().inset_0());
 }

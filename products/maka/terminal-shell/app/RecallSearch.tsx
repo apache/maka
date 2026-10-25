@@ -31,7 +31,7 @@ import type {
 } from '../../../../packages/plugin-sdk/src/index.js';
 import { host } from './host';
 import { tr } from './locale';
-import { createText, errorText, renderText, type UiText } from './text';
+import { createText, errorText, renderText, UiError, type UiText } from './text';
 import { Icon } from './Icon';
 import {
   C,
@@ -48,10 +48,17 @@ export type RecallTarget = {
   sessionId: string;
   anchor?: { messageId: string; position: HistoryRowPosition };
 };
-type Request = { id: number; terms: RecallQuery['terms']; signature: string };
+type Request = {
+  id: number;
+  terms: RecallQuery['terms'];
+  signature: string;
+  stream: { next(): Promise<AgentRecallPage | null>; close(): Promise<void> } | null;
+  closing: Promise<void> | null;
+};
+type Answer = { request: Request; page: AgentRecallPage };
 type SearchState =
   | { kind: 'empty' }
-  | { kind: 'loading'; request: Request }
+  | { kind: 'loading'; request: Request; previous: Answer | null }
   | { kind: 'failed'; request: Request; error: UiText }
   | { kind: 'ready'; request: Request; page: AgentRecallPage };
 type Result =
@@ -61,6 +68,20 @@ type Row =
   | { id: string; kind: 'result'; request: number; index: number; result: Result }
   | { id: string; kind: 'gap'; reason: string };
 type Selection = { request: number; index: number };
+const SEARCH_PAUSE_MS = 250;
+
+function excerptRuns(passage: AgentRecallPassage) {
+  const runs: { text: string; matched: boolean }[] = [];
+  let end = 0;
+  for (const range of passage.highlights) {
+    if (range.start > end)
+      runs.push({ text: passage.excerpt.slice(end, range.start), matched: false });
+    runs.push({ text: passage.excerpt.slice(range.start, range.end), matched: true });
+    end = range.end;
+  }
+  if (end < passage.excerpt.length) runs.push({ text: passage.excerpt.slice(end), matched: false });
+  return runs;
+}
 
 export function RecallSearch(props: {
   origin: string | null;
@@ -76,17 +97,38 @@ export function RecallSearch(props: {
   let alive = true;
   let sequence = 0;
   let wanted: Request | null = null;
-  let reading = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
   let list: YNode | undefined;
   let removeKeys = () => {};
+  const release = (request: Request) => {
+    if (!request.stream) return Promise.resolve();
+    return (request.closing ??= request.stream.close().catch((reason) => {
+      if (alive) openError.set(errorText(reason));
+    }));
+  };
+  const cancel = () => {
+    if (timer !== undefined) clearTimeout(timer);
+    timer = undefined;
+    const previous = wanted;
+    wanted = null;
+    if (previous) void release(previous);
+  };
   cleanup(() => {
     alive = false;
-    wanted = null;
+    cancel();
     removeKeys();
   });
-  const results = computed<Result[]>(() => {
+  const answer = computed<Answer | null>(() => {
     const current = state();
     return current.kind === 'ready'
+      ? current
+      : current.kind === 'loading'
+        ? current.previous
+        : null;
+  });
+  const results = computed<Result[]>(() => {
+    const current = answer();
+    return current
       ? [
           ...current.page.titles.map((session): Result => ({ kind: 'title', session })),
           ...current.page.passages.map(
@@ -99,8 +141,8 @@ export function RecallSearch(props: {
       : [];
   });
   const rows = computed<Row[]>(() => {
-    const current = state();
-    if (current.kind !== 'ready') return [];
+    const current = answer();
+    if (!current) return [];
     return [
       ...results().map(
         (result, index): Row => ({
@@ -125,36 +167,24 @@ export function RecallSearch(props: {
     const current = state();
     return current.kind === 'ready' && (!current.page.complete || current.page.gaps.length > 0);
   };
-  const read = async () => {
-    if (reading) return;
-    reading = true;
+  const read = async (request: Request) => {
     try {
-      while (alive && wanted) {
-        const request = wanted;
-        try {
-          const page = await host.query('agent', 'recall', {
-            terms: request.terms,
-            session_id: null,
-          });
-          if (!alive) return;
-          if (wanted === request) {
-            state.set({ kind: 'ready', request, page });
-            if (page.titles.length || page.passages.length || page.gaps.length)
-              list?.scrollToIndex({ index: 0, animated: false });
-            return;
-          }
-        } catch (reason) {
-          if (!alive) return;
-          if (wanted === request) {
-            state.set({ kind: 'failed', request, error: errorText(reason) });
-            return;
-          }
-        }
-        // Admitted Host work cannot be cancelled by dropping its Promise.
-        // Finish this read, then issue only the latest wanted query.
-      }
+      request.stream = await host.subscribe('agent', 'recall', {
+        terms: request.terms,
+        session_id: null,
+      });
+      if (!alive || wanted !== request) return;
+      const page = await request.stream.next();
+      if (!alive || wanted !== request) return;
+      if (page === null) throw new UiError('Conversation search ended without a result.');
+      state.set({ kind: 'ready', request, page });
+      if (page.titles.length || page.passages.length || page.gaps.length)
+        list?.scrollToIndex({ index: 0, animated: false });
+    } catch (reason) {
+      if (alive && wanted === request)
+        state.set({ kind: 'failed', request, error: errorText(reason) });
     } finally {
-      reading = false;
+      await release(request);
     }
   };
   const search = (text: string, retry = false) => {
@@ -164,13 +194,24 @@ export function RecallSearch(props: {
     const signature = JSON.stringify(terms);
     query.set(text);
     if (!retry && signature === wanted?.signature) return;
-    wanted = terms ? { id: ++sequence, terms, signature } : null;
+    const previous = answer();
+    cancel();
+    wanted = terms ? { id: ++sequence, terms, signature, stream: null, closing: null } : null;
     batch(() => {
-      state.set(wanted ? { kind: 'loading', request: wanted } : { kind: 'empty' });
+      state.set(wanted ? { kind: 'loading', request: wanted, previous } : { kind: 'empty' });
       selected.set(0);
       openError.set('');
     });
-    if (wanted) void read();
+    if (wanted) {
+      const request = wanted;
+      timer = setTimeout(
+        () => {
+          timer = undefined;
+          if (alive && wanted === request) void read(request);
+        },
+        retry ? 0 : SEARCH_PAUSE_MS,
+      );
+    }
   };
   const failure = () => {
     const current = state();
@@ -181,7 +222,7 @@ export function RecallSearch(props: {
     if (alive && current.kind === 'failed' && current.request.id === request) search(query(), true);
   };
   const move = (delta: number) => {
-    if (!alive || opening() || !results().length) return;
+    if (!alive || opening() || state().kind !== 'ready' || !results().length) return;
     const next = Math.max(0, Math.min(results().length - 1, index() + delta));
     selected.set(next);
     list?.scrollToIndex({
@@ -222,6 +263,12 @@ export function RecallSearch(props: {
   };
   const submit = () => {
     const current = state();
+    if (current.kind === 'loading' && timer !== undefined) {
+      clearTimeout(timer);
+      timer = undefined;
+      if (wanted === current.request) void read(current.request);
+      return;
+    }
     if (current.kind === 'ready') void choose({ request: current.request.id, index: index() });
   };
   const close = () => {
@@ -339,6 +386,7 @@ export function RecallSearch(props: {
             {failure() ? renderText(failure()!.error) : ''}
           </Text>
           <Button
+            accessibilityLabel={tr('Retry')}
             onPress={inputAction(retry, failure()?.request.id)}
             style={controlStyle}
             hoverStyle={controlHoverStyle}
@@ -364,7 +412,7 @@ export function RecallSearch(props: {
           ref={(node) => {
             list = node;
           }}
-          style={{ flex: 1, minHeight: 0 }}
+          style={{ flex: 1, minHeight: 0, opacity: state().kind === 'ready' ? 1 : 0.5 }}
           empty={
             <If when={state().kind === 'ready'}>
               <Text style={{ ...bodyTextStyle, color: C.muted }}>
@@ -385,6 +433,7 @@ export function RecallSearch(props: {
                   );
                 const result = row.result;
                 const session = result.kind === 'title' ? result.session : result.passage.session;
+                const preview = result.kind === 'passage' ? excerptRuns(result.passage) : [];
                 const title = () => session.title || tr('Untitled conversation');
                 return (
                   <Button
@@ -397,7 +446,7 @@ export function RecallSearch(props: {
                       request: row.request,
                       index: row.index,
                     })}
-                    disabled={opening()}
+                    disabled={opening() || state().kind !== 'ready'}
                     selected={index() === row.index}
                     style={{
                       height: result.kind === 'title' ? 72 : 128,
@@ -452,7 +501,23 @@ export function RecallSearch(props: {
                         ellipsizeMode="tail"
                         style={{ ...captionTextStyle, color: C.secondary }}
                       >
-                        {result.kind === 'passage' ? result.passage.excerpt : ''}
+                        <Each of={preview}>
+                          {(run) => (
+                            <Text
+                              style={
+                                run().matched
+                                  ? {
+                                      backgroundColor: `${C.accent}33`,
+                                      color: C.text,
+                                      fontWeight: '600',
+                                    }
+                                  : {}
+                              }
+                            >
+                              {run().text}
+                            </Text>
+                          )}
+                        </Each>
                       </Text>
                     </If>
                   </Button>

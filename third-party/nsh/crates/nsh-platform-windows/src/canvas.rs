@@ -2624,7 +2624,14 @@ mod tests {
             // Erased by the head.
             assert_eq!(px(&expected, 22, 40), [0, 0, 0, 0]);
             assert_eq!(px(&expected, 60, 40), [0, 0, 255, 255]);
-            assert_eq!(px(&alone, 40, 25)[3], (alpha * 255.0) as u8);
+            // The rasterizer rounds the coverage its own way (127.5 is 127 or
+            // 128 on different devices, WARP among them).
+            let want = (alpha * 255.0) as u8;
+            assert!(
+                px(&alone, 40, 25)[3].abs_diff(want) <= 1,
+                "alpha {} for {alpha}",
+                px(&alone, 40, 25)[3]
+            );
         }
     }
 

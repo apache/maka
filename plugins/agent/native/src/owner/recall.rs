@@ -18,7 +18,7 @@
  */
 
 use super::auxiliary::persistence;
-use super::{ResolvedConfiguration, StoredSessionConfiguration, resolve_session};
+use super::{StoredSessionConfiguration, resolve_session};
 use crate::contract::{RecallPage, RecallPassage};
 use futures_util::future::BoxFuture;
 use maka_agent_facts::tool_call::ToolRejection;
@@ -27,12 +27,11 @@ use maka_agent_facts::tool_output::ToolOutput;
 use maka_agent_facts::tool_output::ToolSuccess;
 use maka_agent_facts::tools::*;
 use maka_agent_ports::session::catalog;
-use maka_agent_ports::session::history;
 use maka_assistant::recall::search::{self, History};
 use maka_capabilities::call::Scope;
 use maka_event_log::sessions::{CatalogFilter, CatalogScope, SessionPosition};
 use serde_json::Value;
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 use tokio_util::sync::CancellationToken;
 
 #[derive(Clone)]
@@ -80,20 +79,18 @@ impl Recall {
             .privacy
             .incognito_active)
     }
-    async fn session(
+    async fn metadata(
         &self,
-        call: &Scope,
         id: &str,
-    ) -> Result<maka_event_log::sessions::SessionRecord<ResolvedConfiguration>, String> {
-        let session = self
-            .scoped_store(call, id)
+    ) -> Result<maka_event_log::sessions::SessionRecord<StoredSessionConfiguration>, String> {
+        if !super::owns_session(&self.prefix, id) {
+            return Err("Recall Session unavailable".into());
+        }
+        self.store
+            .get_session::<StoredSessionConfiguration>(id)
             .await
             .map_err(|error| error.to_string())?
-            .get::<StoredSessionConfiguration>()
-            .await
-            .map_err(|error| error.to_string())?
-            .ok_or("agent_session_unavailable")?;
-        resolve_session(session)
+            .ok_or_else(|| "agent_session_unavailable".into())
     }
     async fn check(&self, call: &Scope) -> Result<(), ToolError> {
         if call.cancellation.is_cancelled() || self.stop.is_cancelled() {
@@ -139,60 +136,119 @@ impl Recall {
         call: &Scope,
     ) -> Result<RecallPage, String> {
         query.validate()?;
-        self.check(call).await.map_err(|e| e.to_string())?;
-        if let Some(id) = &query.session_id {
-            self.session(call, id).await?;
-        }
-        let (titles, catalog_complete) = search::titles(self.as_ref(), call, &query)
-            .await
-            .map_err(|e| e.to_string())?;
-        let mut title_matches = Vec::new();
-        for title in titles {
-            if query
-                .limit
-                .is_some_and(|limit| title_matches.len() == limit)
-            {
-                break;
+        let cancellation = call.cancellation.child_token();
+        let _cancel_on_drop = cancellation.clone().drop_guard();
+        let operation = async {
+            self.check(call).await.map_err(|e| e.to_string())?;
+            let mut summaries = BTreeMap::<String, crate::contract::Session>::new();
+            if let Some(id) = &query.session_id {
+                summaries.insert(
+                    id.clone(),
+                    crate::service::summary_for(
+                        &self.data_source,
+                        resolve_session(self.metadata(id).await?)?,
+                    ),
+                );
             }
-            title_matches.push(crate::service::summary_for(
-                &self.data_source,
-                self.session(call, &title.id).await?,
-            ));
-        }
-        let found = search::search(self.clone(), call, &query, search::Content::Anchor)
-            .await
-            .map_err(|e| e.to_string())?;
-        let mut passages = Vec::new();
-        for passage in found.passages {
-            if query
-                .limit
-                .is_some_and(|limit| title_matches.len() + passages.len() == limit)
-            {
-                break;
+            let (titles, catalog_complete) = search::titles(self.as_ref(), call, &query)
+                .await
+                .map_err(|e| e.to_string())?;
+            let mut title_matches = Vec::new();
+            for title in titles {
+                if query
+                    .limit
+                    .is_some_and(|limit| title_matches.len() == limit)
+                {
+                    break;
+                }
+                if !summaries.contains_key(&title.id) {
+                    summaries.insert(
+                        title.id.clone(),
+                        crate::service::summary_for(
+                            &self.data_source,
+                            resolve_session(self.metadata(&title.id).await?)?,
+                        ),
+                    );
+                }
+                title_matches.push(
+                    summaries
+                        .get(&title.id)
+                        .expect("loaded source summary")
+                        .clone(),
+                );
             }
-            let session = self.session(call, &passage.session_id).await?;
-            let excerpt = passage
-                .messages
-                .iter()
-                .find(|message| message.is_anchor)
-                .map(|message| message.text.clone())
-                .unwrap_or_default();
-            passages.push(RecallPassage {
-                session: crate::service::summary_for(&self.data_source, session),
-                anchor_message_id: passage.anchor_message_id,
-                anchor_position: passage.anchor_position,
-                excerpt,
-                matched_terms: passage.matched_terms,
-            });
-        }
-        self.check(call).await.map_err(|e| e.to_string())?;
-        let page = RecallPage {
-            titles: title_matches,
-            passages,
-            complete: catalog_complete && found.searched_every_session,
-            gaps: found.gaps,
+            let found = search::search(self.clone(), call, &query, search::Content::Anchor)
+                .await
+                .map_err(|e| e.to_string())?;
+            let mut passages = Vec::new();
+            for passage in found.passages {
+                if query
+                    .limit
+                    .is_some_and(|limit| title_matches.len() + passages.len() == limit)
+                {
+                    break;
+                }
+                if !summaries.contains_key(&passage.session_id) {
+                    summaries.insert(
+                        passage.session_id.clone(),
+                        crate::service::summary_for(
+                            &self.data_source,
+                            resolve_session(self.metadata(&passage.session_id).await?)?,
+                        ),
+                    );
+                }
+                let session = summaries
+                    .get(&passage.session_id)
+                    .expect("loaded source summary")
+                    .clone();
+                let excerpt = passage
+                    .messages
+                    .into_iter()
+                    .find(|message| message.is_anchor)
+                    .map(|message| message.text)
+                    .unwrap_or_default();
+                passages.push(RecallPassage {
+                    session,
+                    anchor_message_id: passage.anchor_message_id,
+                    anchor_position: passage.anchor_position,
+                    excerpt,
+                    highlights: vec![],
+                    matched_terms: passage.matched_terms,
+                });
+            }
+            let terms = query.terms;
+            let stop = cancellation.clone();
+            let passages = tokio::task::spawn_blocking(move || {
+                for passage in &mut passages {
+                    if stop.is_cancelled() {
+                        return Err("Recall cancelled".to_owned());
+                    }
+                    let (excerpt, highlights) = preview::excerpt(&passage.excerpt, &terms, &stop)?;
+                    passage.excerpt = excerpt;
+                    passage.highlights = highlights;
+                }
+                if stop.is_cancelled() {
+                    return Err("Recall cancelled".to_owned());
+                }
+                Ok(passages)
+            })
+            .await
+            .map_err(|error| format!("Recall preview worker failed: {error}"))??;
+            self.check(call).await.map_err(|e| e.to_string())?;
+            let page = RecallPage {
+                titles: title_matches,
+                passages,
+                complete: catalog_complete && found.searched_every_session,
+                gaps: found.gaps,
+            };
+            Ok(page)
         };
-        Ok(page)
+        tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => Err("Recall cancelled".into()),
+            _ = self.stop.cancelled() => Err("Recall cancelled".into()),
+            result = operation => result,
+        }
     }
     pub fn tools(self: &Arc<Self>) -> Vec<ToolRegistration> {
         search::definitions()
@@ -281,54 +337,140 @@ impl History for Recall {
             })
         })
     }
-    fn read(
+    fn find(
         &self,
         call: Scope,
-        input: history::Read,
-    ) -> BoxFuture<'_, Result<history::Page, ToolError>> {
+        query: search::Query,
+    ) -> BoxFuture<'_, Result<search::Matches, ToolError>> {
         Box::pin(async move {
-            input.validate().map_err(failed)?;
-            self.check(&call).await?;
-            self.scoped_store(&call, &input.session_id)
-                .await?
-                .get::<StoredSessionConfiguration>()
-                .await
-                .map_err(persistence)?
-                .ok_or_else(|| failed("Recall Session unavailable"))?;
-            let high_water = *self
-                .scoped_store(&call, &input.session_id)
-                .await?
-                .subscribe_commits()
-                .map_err(persistence)?
-                .borrow();
-            let through = input.through.unwrap_or(high_water);
-            if through > high_water {
-                return Err(failed("Recall history fence invalid"));
+            let cancellation = call.cancellation.child_token();
+            let _cancel_on_drop = cancellation.clone().drop_guard();
+            let operation = async {
+                self.check(&call).await?;
+                if let Some(id) = &query.session_id {
+                    self.metadata(id).await.map_err(failed)?;
+                }
+                let input = maka_event_log::recall::SearchQuery {
+                    terms: query.terms,
+                    session_id: query.session_id,
+                    since: query.since,
+                    until: query.until,
+                    exclude: exclusion(&call),
+                    limit: query.limit,
+                };
+                let batch = self
+                    .store
+                    .search_history(&self.prefix, input, cancellation)
+                    .await
+                    .map_err(failed)?;
+                let mut sessions = BTreeMap::new();
+                let mut found = Vec::with_capacity(batch.hits.len());
+                for mut hit in batch.hits {
+                    if !sessions.contains_key(&hit.session_id) {
+                        let record = self.metadata(&hit.session_id).await.map_err(failed)?;
+                        sessions.insert(
+                            hit.session_id.clone(),
+                            search::Session {
+                                id: record.id,
+                                title: record.configuration.title,
+                                last_message_at: record
+                                    .last_message
+                                    .map(|message| message.recorded_at),
+                            },
+                        );
+                    }
+                    let session = sessions
+                        .get(&hit.session_id)
+                        .expect("loaded source Session")
+                        .clone();
+                    let matched_terms = std::mem::take(&mut hit.matched_terms);
+                    let score = hit.score;
+                    let through = hit.through;
+                    found.push(search::Hit {
+                        session,
+                        message: indexed_message(hit),
+                        matched_terms,
+                        score,
+                        through,
+                    });
+                }
+                self.check(&call).await?;
+                Ok(search::Matches {
+                    hits: found,
+                    gaps: batch.gaps,
+                })
+            };
+            tokio::select! {
+                biased;
+                _ = call.cancellation.cancelled() => Err(failed("Recall cancelled")),
+                _ = self.stop.cancelled() => Err(failed("Recall cancelled")),
+                result = operation => result,
             }
-            let page = self
-                .scoped_store(&call, &input.session_id)
-                .await?
-                .history_text(
-                    &input.session_id,
-                    through,
-                    input.position,
-                    false,
-                    maka_event_log::transcript::HistoryLimits {
-                        max_bytes: 8192,
-                        max_chunks: Some(8),
-                        max_json_bytes: 96 * 1024,
+        })
+    }
+    fn context(
+        &self,
+        call: Scope,
+        input: search::More,
+        through: Option<u64>,
+    ) -> BoxFuture<'_, Result<search::Context, ToolError>> {
+        Box::pin(async move {
+            let cancellation = call.cancellation.child_token();
+            let _cancel_on_drop = cancellation.clone().drop_guard();
+            let operation = async {
+                self.check(&call).await?;
+                let session = self.metadata(&input.session_id).await.map_err(failed)?;
+                let selected = if let Some(invocation) = call.identity.agent() {
+                    Some(self.scoped_store(&call, &invocation.session_id).await?)
+                } else {
+                    None
+                };
+                let context = self
+                    .store
+                    .history_context(
+                        &self.prefix,
+                        &input.session_id,
+                        &input.anchor_message_id,
+                        input.before.unwrap_or(8),
+                        input.after.unwrap_or(8),
+                        through,
+                        exclusion(&call),
+                        selected.as_ref(),
+                        cancellation,
+                    )
+                    .await
+                    .map_err(failed)?;
+                let anchor = search::Anchor {
+                    message_id: context.anchor.message_id.clone(),
+                    position: context.anchor.position,
+                    turn_id: context.anchor.turn_id.clone(),
+                };
+                let mut messages = context
+                    .messages
+                    .into_iter()
+                    .map(indexed_message)
+                    .collect::<Vec<_>>();
+                messages.push(indexed_message(context.anchor));
+                messages.sort_by_key(|message| message.position);
+                self.check(&call).await?;
+                Ok(search::Context {
+                    session: search::Session {
+                        id: session.id,
+                        title: session.configuration.title,
+                        last_message_at: session.last_message.map(|message| message.recorded_at),
                     },
-                )
-                .await
-                .map_err(failed)?;
-            self.scoped_store(&call, &input.session_id)
-                .await?
-                .get::<StoredSessionConfiguration>()
-                .await
-                .map_err(persistence)?
-                .ok_or_else(|| failed("Recall Session unavailable"))?;
-            self.check(&call).await?;
-            Ok(page)
+                    anchor,
+                    messages,
+                    has_more_before: context.has_more_before,
+                    has_more_after: context.has_more_after,
+                })
+            };
+            tokio::select! {
+                biased;
+                _ = call.cancellation.cancelled() => Err(failed("Recall cancelled")),
+                _ = self.stop.cancelled() => Err(failed("Recall cancelled")),
+                result = operation => result,
+            }
         })
     }
 }
@@ -441,4 +583,22 @@ fn invalid(error: impl std::fmt::Display) -> ToolRejection {
     }
 }
 
+fn exclusion(call: &Scope) -> Option<(String, String)> {
+    call.identity
+        .agent()
+        .map(|invocation| (invocation.session_id.clone(), invocation.turn_id.clone()))
+}
+fn indexed_message(hit: maka_event_log::recall::SearchHit) -> search::Message {
+    search::Message {
+        message_id: hit.message_id,
+        position: hit.position,
+        turn_id: hit.turn_id,
+        timestamp: hit.timestamp,
+        role: hit.role,
+        text: hit.body,
+        attachments: hit.attachments,
+    }
+}
+
 mod material;
+mod preview;

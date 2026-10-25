@@ -8292,6 +8292,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tracing-subscriber",
+ "unicode-normalization",
  "uuid",
 ]
 
@@ -8621,6 +8622,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tokio-util",
+ "unicode-normalization",
  "uuid",
  "windows-sys 0.61.2",
 ]

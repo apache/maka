@@ -390,6 +390,31 @@ CREATE TABLE transcript_failures (
  PRIMARY KEY(session_id,source_sequence)
 );
 
+CREATE TABLE recall_documents (
+    id INTEGER PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    source_sequence INTEGER NOT NULL,
+    item_index INTEGER NOT NULL,
+    message_id TEXT NOT NULL,
+    turn_id TEXT NOT NULL,
+    timestamp INTEGER NOT NULL,
+    role TEXT NOT NULL,
+    body TEXT NOT NULL,
+    folded TEXT NOT NULL,
+    attachments TEXT NOT NULL,
+    UNIQUE(session_id, source_sequence, item_index),
+    UNIQUE(session_id, message_id),
+    FOREIGN KEY(session_id, source_sequence, item_index)
+        REFERENCES transcript_directory(session_id, source_sequence, item_index) ON DELETE CASCADE
+);
+CREATE INDEX recall_document_turn ON recall_documents(session_id, turn_id, source_sequence, item_index);
+CREATE INDEX recall_document_context ON recall_documents(session_id, source_sequence, item_index)
+    WHERE body<>'' OR role IN ('tool_call','tool_result');
+CREATE VIRTUAL TABLE recall_terms USING fts5(grams, content='', contentless_delete=1, detail=full);
+CREATE TRIGGER recall_document_deleted AFTER DELETE ON recall_documents BEGIN
+    DELETE FROM recall_terms WHERE rowid=old.id;
+END;
+
 CREATE TABLE "shell_runs" (
     session_id TEXT NOT NULL REFERENCES session_control(id),
     id TEXT NOT NULL,

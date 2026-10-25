@@ -11774,6 +11774,70 @@ mod views {
         );
     }
 
+    /// A list whose rows are regions: row 2 shows nothing until `LATE`.
+    #[derive(Default)]
+    struct RegionRows;
+
+    thread_local! {
+        static REGION_ITEMS: Cell<Option<Signal<Vec<u32>>>> = const { Cell::new(None) };
+        static LATE: Cell<Option<Signal<bool>>> = const { Cell::new(None) };
+    }
+
+    impl Component for RegionRows {
+        type Props = RowsProps;
+        type Event = NoEvent;
+
+        fn view(_: RowsProps, _: Scope<NoEvent>) -> impl IntoElement {
+            let items = signal(vec![1, 2]);
+            let late = signal(false);
+            REGION_ITEMS.with(|i| i.set(Some(items)));
+            LATE.with(|l| l.set(Some(late)));
+            view().child(each(
+                items,
+                |n| *n,
+                move |item, index| {
+                    dynamic(move || {
+                        let n = item.get();
+                        (n != 2 || late.get()).then(|| text(format!("{n}@{}", index.get())))
+                    })
+                },
+            ))
+        }
+    }
+
+    #[test]
+    fn each_keeps_rows_whose_root_is_a_region() {
+        let mut c = core();
+        c.mount_root(&Root::new::<RegionRows>(|| RowsProps {}));
+        let batch = c.commit().unwrap();
+        let list = root_host(&batch);
+        assert_eq!(order(&c, list), ["1@0"]);
+        let items = REGION_ITEMS.with(Cell::get).unwrap();
+        let late = LATE.with(Cell::get).unwrap();
+        // Row 1 stays and its region runs again (its index moved); row 2
+        // stays, still empty.
+        {
+            let _entered = c.components.runtime.enter();
+            items.set(vec![3, 1, 2]);
+        }
+        c.commit();
+        assert_eq!(order(&c, list), ["3@0", "1@1"]);
+        // Row 2's region, kept empty, shows its row now.
+        {
+            let _entered = c.components.runtime.enter();
+            late.set(true);
+        }
+        c.commit();
+        assert_eq!(order(&c, list), ["3@0", "1@1", "2@2"]);
+        // Rows kept as they are, a new one after them.
+        {
+            let _entered = c.components.runtime.enter();
+            items.set(vec![3, 1, 2, 4]);
+        }
+        c.commit();
+        assert_eq!(order(&c, list), ["3@0", "1@1", "2@2", "4@3"]);
+    }
+
     /// Made with `#[component]`: reads the appearance and a timer.
     #[component]
     fn Clock(_props: (), cx: Scope<NoEvent>) -> impl IntoElement {
