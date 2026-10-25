@@ -133,6 +133,7 @@ export interface RevisionSendPorts<TDraft extends RevisionDraftIdentity> {
     revisionUnavailableTitle: string;
     revisionAttachmentsUnsupported: string;
     revisionCommandUnsupported: string;
+    revisionFollowUpUnsupported: string;
   };
   compactSession: (sessionId: string) => Promise<boolean>;
   resolveNewTaskSessionHandler: () => (
@@ -240,6 +241,17 @@ export async function revisionAwareSend<TDraft extends RevisionDraftIdentity>(
   );
   const followUpAtSubmit = slashCommand ? undefined : metadata?.followUpMode;
   if (sessionId && followUpAtSubmit) {
+    // A follow-up (steer or queue) hands the draft and the whole staged plate
+    // to another turn and then clears that plate -- the restored quotes an
+    // active edit is holding for its replacement would be consumed by an
+    // unrelated turn, and the emptied plate would let the later replacement
+    // pass the incremental-only gate without the source message's quotes.
+    // The slash-command branch below refuses on the same terms.
+    if (revisionSend && revision) {
+      const actionCopy = ports.revisionUnavailableCopy;
+      ports.toastApi.info(actionCopy.revisionUnavailableTitle, actionCopy.revisionFollowUpUnsupported);
+      return false;
+    }
     const queued = await ports.enqueueFollowUp(sessionId, text, followUpAtSubmit, {
       ...metadata,
       workspaceFileReferences,
