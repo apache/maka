@@ -25,12 +25,13 @@ import type { Position } from './history';
 import { C, controlStyle, captionTextStyle } from './ui';
 import { Icon } from './Icon';
 import { tr } from './locale';
+import { uiScale } from './uiScale';
 
-// Match the desktop's dense pixel ticks while retaining whole-cell terminal targets.
-const markPitch = platform.isTerminal ? 16 : 10;
+// Cell input rounds by half a 16 / scale row; include the two-point stroke.
+const markPitch = () => (platform.isTerminal ? 16 : Math.max(24, 16 / uiScale.factor() + 2));
 const railInset = platform.isTerminal ? 0 : 6;
 const railMargin = 32;
-const railWidth = 24;
+const railWidth = () => (platform.isTerminal ? 24 : markPitch());
 
 function TurnMark(props: { active: boolean; busy: boolean; landmark: boolean }) {
   const color = () => (props.active ? C.text : C.line);
@@ -40,9 +41,9 @@ function TurnMark(props: { active: boolean; busy: boolean; landmark: boolean }) 
         pointerEvents="none"
         accessibilityElementsHidden
         style={{
-          width: railWidth,
-          height: markPitch,
-          lineHeight: markPitch,
+          width: railWidth(),
+          height: markPitch(),
+          lineHeight: markPitch(),
           textAlign: 'center',
           color: color(),
         }}
@@ -54,17 +55,17 @@ function TurnMark(props: { active: boolean; busy: boolean; landmark: boolean }) 
     <Canvas
       pointerEvents="none"
       accessibilityElementsHidden
-      style={{ width: railWidth, height: markPitch }}
+      style={{ width: railWidth(), height: markPitch() }}
       draw={(cx) => {
         cx.strokeStyle = color();
         cx.lineWidth = 2;
         cx.lineCap = 'round';
         cx.beginPath();
-        if (props.busy) cx.arc(18, 5, 3, 0, Math.PI * 2);
+        if (props.busy) cx.arc(railWidth() - 6, markPitch() / 2, 3, 0, Math.PI * 2);
         else {
           const width = props.active ? 20 : props.landmark ? 8 : 12;
-          cx.moveTo(railWidth - width - 1, 5);
-          cx.lineTo(railWidth - 1, 5);
+          cx.moveTo(railWidth() - width - 1, markPitch() / 2);
+          cx.lineTo(railWidth() - 1, markPitch() / 2);
         }
         cx.stroke();
       }}
@@ -82,7 +83,7 @@ function RailFade(props: { bottom: boolean }) {
         left: 0,
         top: props.bottom ? undefined : 0,
         bottom: props.bottom ? 0 : undefined,
-        width: railWidth,
+        width: railWidth(),
         height: 24,
       }}
       draw={(cx) => {
@@ -90,7 +91,7 @@ function RailFade(props: { bottom: boolean }) {
         fade.addColorStop(0, props.bottom ? `${C.background}00` : C.background);
         fade.addColorStop(1, props.bottom ? C.background : `${C.background}00`);
         cx.fillStyle = fade;
-        cx.fillRect(0, 0, railWidth, 24);
+        cx.fillRect(0, 0, railWidth(), 24);
       }}
     />
   );
@@ -122,7 +123,6 @@ function NavigationMark(props: {
       })}
       tooltip={
         <Overlay
-          hintOnFocus
           pointerEvents="none"
           placement="left"
           hintDelay={0}
@@ -150,8 +150,8 @@ function NavigationMark(props: {
       selected={props.active}
       onPress={inputAction(props.navigate, props.item())}
       style={{
-        height: markPitch,
-        width: railWidth,
+        height: markPitch(),
+        width: railWidth(),
         borderRadius: 4,
         alignItems: 'center',
         justifyContent: 'center',
@@ -178,13 +178,13 @@ export function TurnNavigation(props: {
 }) {
   const height = signal(0);
   const offset = signal(0);
-  const contentHeight = computed(() => props.items().length * markPitch + railInset * 2);
+  const contentHeight = computed(() => props.items().length * markPitch() + railInset * 2);
   const frameHeight = computed(() => {
     // Bound the instrument's geometry, never its item count or history source.
     const available = Math.min(420, Math.max(0, height() - railMargin * 2));
     return Math.min(
       contentHeight(),
-      platform.isTerminal ? Math.floor(available / markPitch) * markPitch : available,
+      platform.isTerminal ? Math.floor(available / markPitch()) * markPitch() : available,
     );
   });
   const activeIndex = computed(() => {
@@ -211,16 +211,16 @@ export function TurnNavigation(props: {
   return (
     <View
       onLayout={(frame) => height.set(frame.size.height)}
-      style={{ width: railWidth, minHeight: 0, justifyContent: 'center' }}
+      style={{ width: railWidth(), minHeight: 0, justifyContent: 'center' }}
     >
-      <View style={{ width: railWidth, height: frameHeight() }}>
+      <View style={{ width: railWidth(), height: frameHeight() }}>
         <List
           ref={rail}
           testID="turn-navigation"
           accessibilityLabel={tr('Turn navigation')}
           each={props.items()}
           keyExtractor={(item) => item.turnId}
-          estimatedItemSize={markPitch}
+          estimatedItemSize={markPitch()}
           scrollbar={false}
           contentStyle={{ paddingVertical: railInset }}
           onScrollIntent={() => props.cancel()}
@@ -252,8 +252,8 @@ export function TurnNavigation(props: {
               right: 0,
               top: '100%',
               marginTop: platform.isTerminal ? 0 : 8,
-              width: railWidth,
-              height: platform.isTerminal ? 32 : 24,
+              width: railWidth(),
+              height: platform.isTerminal ? 32 : markPitch(),
               borderRadius: 8,
               alignItems: 'center',
               justifyContent: 'center',
