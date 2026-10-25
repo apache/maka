@@ -1,0 +1,226 @@
+{
+  "scope": "Initial behavior ledger. Passing this manifest covers only its named cases on the recorded platform and architecture; it does not establish complete runtime parity.",
+  "platform_architectures": {
+    "linux": ["x64", "arm64"],
+    "macos": ["arm64"],
+    "windows": ["x64"]
+  },
+  "static_reference": {
+    "app_version": "26.915.31945",
+    "runtime": "0.0.16/20260915001755-492f19756c31",
+    "sky_artifact_sha256": "71d2a64db3d7b74c00cdb73bf47cbee76d60e7611e4c6e23f2aced25c5c22957",
+    "rea_evidence_id": "ev_b380ae28fdc1d77e7806772f549a4151478d842f4421f619c365cef85f44c209",
+    "coverage": "Selected shipped JavaScript wrappers only; no execution or native-helper equivalence was established. Versions identify evidence, never select compatible installed apps."
+  },
+  "unified_facade_reference": {
+    "location": "@oai/cua/dist/lib/js/oai_js_cua/src/tinysky_alt/create_tinysky_alt.js",
+    "artifact_sha256": "abc406496719f27a8b42e4f68afd423f4da43cbf10f42c2d57d8a905d8c8fb1c",
+    "rea_summary_evidence_id": "ev_ba523369d54ccafb2c1f63e9a3cb4759ec17b1b5fe12a340f9c47d6aa651a5cd",
+    "coverage": "Five selected shipped JavaScript modules and package metadata; 466 files remain unselected. Static analysis does not establish native helper behavior or runtime execution."
+  },
+  "cases": [
+    {
+      "id": "native.exact-window",
+      "platforms": ["linux", "macos", "windows"],
+      "scenario": "Open two independently observed fixture windows in one process; target exactly one and enter text.",
+      "oracles": ["target_text", "sibling_text", "input_recipient"]
+    },
+    {
+      "id": "native.closed-window",
+      "platforms": ["linux", "macos", "windows"],
+      "scenario": "Close a bound window, then attempt input through its old handle while a sibling remains.",
+      "oracles": ["refusal", "sibling_text", "input_events"]
+    },
+    {
+      "id": "native.stale-element",
+      "platforms": ["linux", "macos", "windows"],
+      "scenario": "Remove the observed control and replace its ordinal with another control without refreshing the observation; act on the old index.",
+      "oracles": ["refusal", "replacement_state", "sibling_state", "input_events"]
+    },
+    {
+      "id": "native.unicode-and-controls",
+      "platforms": ["linux", "macos", "windows"],
+      "scenario": "Type ASCII, Korean, emoji and combining marks, followed by Tab and Return in fields that report focus and submit events.",
+      "oracles": ["exact_text", "focused_field", "submit_events", "key_events"]
+    },
+    {
+      "id": "native.literal-protocol-suffix",
+      "platforms": ["linux", "macos", "windows"],
+      "scenario": "Type literal text ending in protocol-looking delimiters and read the complete field value independently.",
+      "oracles": ["requested_text", "exact_text"]
+    },
+    {
+      "id": "native.key-chords",
+      "platforms": ["linux", "macos", "windows"],
+      "scenario": "Deliver modifier chords and then an unmodified key; inspect both field effects and remaining modifier state.",
+      "oracles": ["exact_text", "key_events", "held_modifiers"]
+    },
+    {
+      "id": "native.click-target-and-count",
+      "platforms": ["linux", "macos", "windows"],
+      "scenario": "Exercise element and screenshot-coordinate clicks, supported buttons and click counts against independent event counters.",
+      "oracles": ["button_events", "click_counts", "recipient", "system_pointer", "focused_window"]
+    },
+    {
+      "id": "native.capture-scale-and-window-move",
+      "platforms": ["linux", "macos", "windows"],
+      "scenario": "Capture a scaled window, move it and change its size before coordinate input; inspect refusal or exact recipient without coordinate reinterpretation.",
+      "oracles": ["capture_dimensions", "refusal", "recipient", "input_events"]
+    },
+    {
+      "id": "native.screenshot-and-ax",
+      "platforms": ["linux", "macos", "windows"],
+      "scenario": "Compare AX-only, screenshot-only and combined observations of the same stable fixture state, including window frame and image scale.",
+      "oracles": ["ax_semantics", "image_geometry", "window_geometry", "pixel_probe"]
+    },
+    {
+      "id": "native.select-text",
+      "platforms": ["linux", "macos", "windows"],
+      "scenario": "Select an exact substring and inspect selection/caret, or observe the platform's supported refusal.",
+      "static_expectation": {"linux": "The inspected unified facade refuses selectText.", "windows": "The inspected unified facade refuses selectText.", "macos": "Forwarded to the native helper; detailed selection behavior needs live evidence."},
+      "oracles": ["refusal", "selection", "caret", "exact_text"]
+    },
+    {
+      "id": "native.select-ambiguity-and-unicode",
+      "platforms": ["linux", "macos", "windows"],
+      "scenario": "Try repeated and overlapping substrings, prefix/suffix disambiguation and cursor-before/after around a non-BMP character, including platform refusals.",
+      "oracles": ["refusals", "selected_texts", "caret_positions", "exact_text"]
+    },
+    {
+      "id": "native.set-value",
+      "platforms": ["linux", "macos", "windows"],
+      "scenario": "Set an indexed editable value and inspect change events, or observe the platform's supported refusal.",
+      "static_expectation": {"linux": "The inspected unified facade refuses setValue."},
+      "oracles": ["refusal", "exact_text", "change_events"]
+    },
+    {
+      "id": "native.paste-text-and-restore",
+      "platforms": ["linux", "macos", "windows"],
+      "scenario": "Paste plain text into an existing selection while the clipboard holds several fixture formats; inspect inserted text and clipboard restoration.",
+      "oracles": ["exact_text", "selection", "clipboard_formats", "clipboard_payloads"]
+    },
+    {
+      "id": "native.paste-rich-formats",
+      "platforms": ["linux", "macos", "windows"],
+      "scenario": "Request HTML and Markdown paste, including default format, and inspect styling/text or an explicit platform refusal.",
+      "static_expectation": {"linux": "The inspected unified facade accepts text-only paste.", "windows": "The inspected unified facade accepts text-only paste."},
+      "oracles": ["refusals", "exact_text", "formatting", "clipboard_payloads"]
+    },
+    {
+      "id": "native.paste-identical-replacement",
+      "platforms": ["linux", "macos", "windows"],
+      "scenario": "Replace selected text with identical text; distinguish successful dispatch from a no-op or uncertainty without replay.",
+      "oracles": ["exact_text", "selection", "paste_events", "reported_effect", "clipboard_payloads"]
+    },
+    {
+      "id": "native.clipboard-newer-copy",
+      "platforms": ["linux", "macos", "windows"],
+      "scenario": "During paste, let the fixture take clipboard ownership, including a same-content copy; verify the newer copy survives cleanup.",
+      "oracles": ["exact_text", "clipboard_owner", "clipboard_formats", "clipboard_payloads"]
+    },
+    {
+      "id": "native.scroll-point-units",
+      "platforms": ["linux", "macos", "windows"],
+      "scenario": "Request page and pixel scrolling at a point; inspect actual scroll offsets and platform-specific refusals.",
+      "static_expectation": {"linux": "The inspected unified facade requires pixel distance and refuses page distance.", "macos": "The inspected unified facade accepts page distance and refuses pixel distance.", "windows": "The inspected unified facade requires point plus pixel distance."},
+      "oracles": ["refusals", "scroll_offsets", "scroll_events", "system_pointer", "focused_window"]
+    },
+    {
+      "id": "native.scroll-indexed-and-stale",
+      "platforms": ["linux", "macos", "windows"],
+      "scenario": "Scroll an observed container, replace it without refreshing observation, then reuse the old index; inspect replacement and sibling offsets or platform refusal.",
+      "static_expectation": {"windows": "The inspected unified facade refuses indexed scrolling."},
+      "oracles": ["refusals", "target_offsets", "replacement_offsets", "sibling_offsets", "scroll_events"]
+    },
+    {
+      "id": "native.drag-and-release",
+      "platforms": ["linux", "macos", "windows"],
+      "scenario": "Drag between captured window points, then interrupt a second drag; inspect recipient path, final position and released buttons.",
+      "oracles": ["drag_events", "final_position", "held_buttons", "sibling_state"]
+    },
+    {
+      "id": "native.secondary-actions-and-modal",
+      "platforms": ["linux", "macos", "windows"],
+      "scenario": "Invoke an advertised secondary action and interact with a modal while the parent and another window remain visible.",
+      "oracles": ["advertised_actions", "refusals", "modal_state", "parent_state", "sibling_state"]
+    },
+    {
+      "id": "native.app-launch",
+      "platforms": ["linux", "macos", "windows"],
+      "scenario": "Launch a fixture app from current inventory, including an ambiguous or removed inventory entry; inspect process/window ownership.",
+      "oracles": ["refusals", "launch_count", "window_owners"]
+    },
+    {
+      "id": "browser.navigation-and-origin-approval",
+      "platforms": ["linux", "macos", "windows"],
+      "scenario": "Navigate an owned fixture tab to approved and refused exact origins, including a redirect; observe requests independently at each server.",
+      "oracles": ["approval_scopes", "request_log", "final_origin", "refusals"]
+    },
+    {
+      "id": "browser.form-and-screenshot",
+      "platforms": ["linux", "macos", "windows"],
+      "scenario": "Read AX, type Unicode into a form, click Submit and capture the tab; inspect server payload and capture geometry.",
+      "oracles": ["ax_semantics", "submitted_payload", "image_geometry", "pixel_probe"]
+    },
+    {
+      "id": "browser.frames-and-stale-nodes",
+      "platforms": ["linux", "macos", "windows"],
+      "scenario": "Act in same-origin and cross-origin frames and shadow/slot content; replace a frame and retry its old node index.",
+      "oracles": ["frame_recipients", "submitted_payloads", "refusals", "replacement_state"]
+    },
+    {
+      "id": "browser.user-tab-claim",
+      "platforms": ["linux", "macos", "windows"],
+      "scenario": "Bind a fixture user tab through a mention and exact profile identity, then change or remove the claimed target.",
+      "oracles": ["claim_scope", "refusals", "target_identity", "sibling_state"]
+    },
+    {
+      "id": "browser.turn-cleanup",
+      "platforms": ["linux", "macos", "windows"],
+      "scenario": "Create temporary and explicitly kept fixture tabs, finish or interrupt the owning turn and inspect tabs independently.",
+      "oracles": ["remaining_owned_tabs", "remaining_user_tabs", "cleanup_events"]
+    },
+    {
+      "id": "browser.visibility-and-session-name",
+      "platforms": ["linux", "macos", "windows"],
+      "scenario": "Create a fixture tab with visibility and session-name options; observe presentation/ownership or exact provider refusal.",
+      "oracles": ["refusals", "visibility", "session_ownership", "remaining_tabs"]
+    },
+    {
+      "id": "lifecycle.repl-reset-and-isolation",
+      "platforms": ["linux", "macos", "windows"],
+      "scenario": "Retain variables across calls, use two independent sessions, reset one and retry its old handles.",
+      "oracles": ["variable_results", "refusals", "other_session_state", "remaining_user_surfaces"]
+    },
+    {
+      "id": "lifecycle.cancel-before-mutation",
+      "platforms": ["linux", "macos", "windows"],
+      "scenario": "Cancel while a fixture blocks a pre-dispatch accessibility lookup, release that lookup, and observe whether any subsequent input is delivered.",
+      "oracles": ["refusal", "input_events", "exact_text", "held_buttons", "clipboard_payloads"]
+    },
+    {
+      "id": "lifecycle.unknown-outcome-no-replay",
+      "platforms": ["linux", "macos", "windows"],
+      "scenario": "Break the task-owned helper connection after native dispatch; recover or reset and verify the uncertain operation is never replayed.",
+      "oracles": ["reported_effect", "dispatch_count", "recovery_state", "remaining_user_surfaces"]
+    },
+    {
+      "id": "approval.app-scope-and-revoke",
+      "platforms": ["linux", "macos", "windows"],
+      "scenario": "Allow one fixture app, attempt a second, revoke the first and reuse its retained handle; preserve caller sandbox and approval settings.",
+      "oracles": ["approval_requests", "grant_scopes", "refusals", "input_events", "caller_policy"]
+    },
+    {
+      "id": "approval.stop-current-turn",
+      "platforms": ["linux", "macos", "windows"],
+      "scenario": "Request host Stop for one fixture app, retry within that turn and in a new turn; inspect per-app state and persisted grant.",
+      "oracles": ["refusals", "input_events", "stopped_scope", "persisted_grants"]
+    },
+    {
+      "id": "audio.opt-in-and-exact-recording",
+      "platforms": ["linux", "macos", "windows"],
+      "scenario": "Exercise default-off audio refusal and explicit opt-in with a generated fixture tone; inspect approval, WAV structure and decoded samples.",
+      "oracles": ["refusals", "approval_requests", "wav_format", "sample_count", "tone_measurement"]
+    }
+  ]
+}
