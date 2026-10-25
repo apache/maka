@@ -386,14 +386,15 @@ async fn observe_live(
                         .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
             })
     });
-    let code_changed = if selection.is_none()
+    let launcher_owned = selection.is_none()
         && update_attempt.launcher.is_some()
         && status.lifecycle_mode == maka_host_runtime::application::host::LifecycleMode::Ephemeral
         && cli_owned
         && matches!(
             store::read(&directory(expected_root)?).await?,
             store::Installation::Missing
-        ) {
+        );
+    let code_changed = if launcher_owned {
         status.generation.as_deref() != update_attempt.generation().await?
     } else {
         false
@@ -472,8 +473,8 @@ async fn observe_live(
         return Err("The restarted Host still uses older bundled applications. Update the managed Host executable, then retry opening Maka.".into());
     }
     update_attempt.startup_error = startup_error;
-    // Release only this launcher's session. Retirement atomically refuses other
-    // sessions or accepted work; a stale status observation cannot authorize it.
+    // Launcher-owned upgrades cancel the old incarnation's work, including
+    // persistent terminals. Other owners retain their idle-only update policy.
     client.close().await?;
     let target_changed = || -> Result<bool, HostError> {
         let current = match discovery::read(path) {
@@ -522,8 +523,13 @@ async fn observe_live(
         if tokio::time::Instant::now() >= retirement_deadline {
             return Err("Host did not reach idle retirement before the operation deadline".into());
         }
-        match Client::retire_with_options(&discovery.endpoint, discovery.host_epoch, false, false)
-            .await
+        match Client::retire_with_options(
+            &discovery.endpoint,
+            discovery.host_epoch,
+            launcher_owned,
+            false,
+        )
+        .await
         {
             Ok(true) => {
                 update_attempt.restarted = true;
@@ -895,6 +901,14 @@ mod tests {
             publication,
             Options {
                 generation: generation.clone(),
+                lifecycle_mode: if generation
+                    .as_deref()
+                    .is_some_and(|generation| generation.starts_with("cli-sha256:"))
+                {
+                    maka_host_runtime::application::host::LifecycleMode::Ephemeral
+                } else {
+                    maka_host_runtime::application::host::LifecycleMode::Service
+                },
                 ..Options::default()
             },
         )
@@ -1469,6 +1483,54 @@ mod tests {
         client.close().await.unwrap();
         stop.cancel();
         server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn launcher_owned_updates_interrupt_the_old_host_and_wait_for_cleanup() {
+        tokio::time::timeout(Duration::from_secs(60), async {
+            for code_changed in [false, true] {
+                let temporary = tempfile::tempdir().unwrap();
+                let root = temporary.path().join("host");
+                let launcher = temporary.path().join("launcher");
+                std::fs::write(&launcher, b"current executable").unwrap();
+                let mut attempted = UpdateAttempt {
+                    launcher: Some(launcher),
+                    ..Default::default()
+                };
+                let generation = if code_changed {
+                    format!("cli-sha256:{}", "0".repeat(64))
+                } else {
+                    attempted.generation().await.unwrap().unwrap().to_owned()
+                };
+                let (root_id, epoch, _stop, server) =
+                    serve_product(&root, !code_changed, false, Some(generation)).await;
+                let discovery = discovery::read(&root).unwrap();
+                let other = Client::connect(&discovery.endpoint, Some(epoch))
+                    .await
+                    .unwrap();
+                assert!(
+                    !Client::retire_with_options(&discovery.endpoint, epoch, false, false)
+                        .await
+                        .unwrap()
+                );
+                assert!(
+                    live(&root, &root_id, None, &mut attempted)
+                        .await
+                        .unwrap()
+                        .is_none()
+                );
+                assert!(attempted.restarted);
+                // Returning to startup must mean physical cleanup released the
+                // writer, even while an old client still holds its connection.
+                let owner = RootOwner::open(&root, &RootNamespaces::for_current_account().unwrap())
+                    .unwrap();
+                assert_eq!(owner.root_id(), root_id);
+                drop((owner, other));
+                server.await.unwrap();
+            }
+        })
+        .await
+        .unwrap();
     }
 
     #[tokio::test]
