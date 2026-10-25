@@ -1776,12 +1776,20 @@ export const EmptyHome: Story = {
     const layout = canvasElement.querySelector<HTMLElement>('.maka-chat-layout')!;
     const columns = canvasElement.querySelectorAll<HTMLElement>('.maka-chatContent, .maka-composer-astryx');
     expect(columns).toHaveLength(2);
+    // macOS overlay scrollbars consume no width. Probe the browser's native
+    // mode so classic-scrollbar coverage stays enforced where it applies.
+    const scrollbarProbe = document.createElement('div');
+    scrollbarProbe.style.cssText = 'position:absolute;width:100px;height:100px;overflow:scroll;visibility:hidden;border:0;';
+    scrollbarProbe.style.scrollbarWidth = getComputedStyle(layout).scrollbarWidth;
+    canvasElement.append(scrollbarProbe);
+    const classicScrollbars = scrollbarProbe.offsetWidth > scrollbarProbe.clientWidth;
+    scrollbarProbe.remove();
     // Native scrollbars appearing and disappearing must keep both columns centered.
     for (const messages of [[], longConversation, []]) {
       await transition({ messages });
       await waitFor(() => {
         expect(layout.scrollHeight > layout.clientHeight).toBe(messages.length > 0);
-        if (messages.length > 0) {
+        if (messages.length > 0 && classicScrollbars) {
           expect(layout.offsetWidth - layout.clientWidth).toBeGreaterThan(0);
         }
         const box = layout.getBoundingClientRect();
@@ -5188,7 +5196,7 @@ export const NewTaskWorktreePicker: Story = {
       await userEvent.hover(existing);
     };
     await expect(projectTrigger.querySelector('.lucide-folder-open')).not.toBeNull();
-    await expect(worktreeTrigger()).toHaveTextContent('主目录');
+    await expect(worktreeTrigger()).toHaveTextContent('主工作树');
     await expect(worktreeTrigger().querySelector('.lucide-monitor')).not.toBeNull();
     await userEvent.click(projectTrigger);
     const infrastructure = await body.findByRole('menuitem', { name: 'infrastructure' });
@@ -5198,11 +5206,11 @@ export const NewTaskWorktreePicker: Story = {
     await expect(body.queryByRole('menuitem', { name: '新建工作树' })).toBeNull();
     await userEvent.click(infrastructure);
     await expect(projectTrigger).toHaveTextContent('infrastructure');
-    await expect(worktreeTrigger()).toHaveTextContent('主目录');
+    await expect(worktreeTrigger()).toHaveTextContent('主工作树');
     await closed();
 
     await openWorktrees();
-    await body.findByRole('menuitem', { name: '主目录' });
+    await body.findByRole('menuitem', { name: '主工作树' });
     await body.findByRole('menuitem', { name: '新建工作树' });
     await expect(body.queryByRole('menuitem', { name: /^preview/ })).toBeNull();
     await expandExisting();
@@ -5217,8 +5225,8 @@ export const NewTaskWorktreePicker: Story = {
     await openWorktrees();
     await expandExisting();
     await expect((await body.findByRole('menuitem', { name: /^preview/ })).querySelector('.lucide-check')).not.toBeNull();
-    await userEvent.click(await body.findByRole('menuitem', { name: '主目录' }));
-    await expect(worktreeTrigger()).toHaveTextContent('主目录');
+    await userEvent.click(await body.findByRole('menuitem', { name: '主工作树' }));
+    await expect(worktreeTrigger()).toHaveTextContent('主工作树');
     await closed();
     await openWorktrees();
     await userEvent.click(await body.findByRole('menuitem', { name: '新建工作树' }));
@@ -5234,7 +5242,7 @@ export const NewTaskWorktreePicker: Story = {
     (await body.findByRole('menuitem', { name: 'backend-service' })).focus();
     await userEvent.keyboard('{Enter}');
     await expect(projectTrigger).toHaveTextContent('backend-service');
-    await expect(worktreeTrigger()).toHaveTextContent('主目录');
+    await expect(worktreeTrigger()).toHaveTextContent('主工作树');
     await closed();
     await openWorktrees();
     (await body.findByRole('menuitem', { name: '已有工作树' })).focus();
