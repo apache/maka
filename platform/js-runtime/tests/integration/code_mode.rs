@@ -59,7 +59,7 @@ fn executor() -> CodeExecutor {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn json_numbers_keep_javascript_semantics_in_tools_and_committed_scratch() {
-    let tools = Arc::new(Tools(|_name, input, _cancel| -> ToolFuture {
+    let tools = Arc::new(Tools(|_name, input: Value, _cancel| -> ToolFuture {
         Box::pin(async move {
             Ok(if input.is_null() {
                 json!({
