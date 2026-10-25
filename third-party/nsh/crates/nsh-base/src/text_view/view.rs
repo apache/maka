@@ -17,11 +17,11 @@ use nsh_core::{
     },
 };
 
-use super::markdown::{Projection, ProjectionKind};
-use super::parse::{DocumentState, SourceOrigin};
 use super::{
     Alert, Block, CodeBlock, ColumnAlign, CustomNode, Document, Image, ImageLength, Inline,
     ListItem, MarkdownExtension, MarkdownOptions, MarkdownPlugins, Parser, Table,
+    markdown::{Projection, ProjectionKind},
+    parse::{DocumentState, SourceOrigin},
     parts::{TextViewClasses, TextViewPart as Part, TextViewParts, TextViewStyles},
 };
 use crate::theme::theme;
@@ -439,6 +439,13 @@ pub fn TextView(props: TextViewProps, cx: Scope<TextViewEvent>) -> impl IntoElem
         // Parent mode contributes these mounted texts to the surrounding
         // reader and selection area; it owns no independent scroll offset.
         .selection_area(props.selectable)
+        .map(|mut el| {
+            if let Some(parts) = use_context::<TextViewParts>() {
+                let style = std::mem::take(el.style());
+                *el.style() = parts.refine(Part::Root, style);
+            }
+            el
+        })
         .app_class(move || props.classes.with(|c| c.root.clone()))
         .inline_style(move || {
             props

@@ -4,5 +4,4 @@
 mod dock;
 mod resizable;
 mod sheet;
-
 mod text_view;
