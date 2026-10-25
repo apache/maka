@@ -236,7 +236,8 @@ impl Ranked {
 }
 
 const COLUMNS: &str = "d.session_id,d.message_id,d.source_sequence,d.item_index,d.turn_id,d.timestamp,d.role,d.body,d.attachments";
-const VISIBLE:&str="JOIN session_control s ON s.id=d.session_id JOIN root_control.session_routes r ON r.session_id=s.id
+// Indexed candidates must drive scope checks, rather than probing FTS for every session document.
+const VISIBLE:&str="CROSS JOIN session_control s ON s.id=d.session_id CROSS JOIN root_control.session_routes r ON r.session_id=s.id
     WHERE r.partition=?1 AND r.ready=1 AND r.visible=1 AND instr(d.session_id,?2)=1
     AND NOT EXISTS(SELECT 1 FROM session_retirements retired WHERE retired.session_id=s.id AND retired.remove_session=1)";
 
@@ -335,7 +336,7 @@ fn search_on_handle(
     }
     let query = format!(
         "SELECT {COLUMNS},d.folded,bm25(recall_terms)
-         FROM recall_terms JOIN recall_documents d ON d.id=recall_terms.rowid {VISIBLE}
+         FROM recall_terms CROSS JOIN recall_documents d ON d.id=recall_terms.rowid {VISIBLE}
          AND recall_terms MATCH ?3 AND (?4 IS NULL OR d.session_id=?4)
          AND (?5 IS NULL OR d.timestamp>=?5) AND (?6 IS NULL OR d.timestamp<=?6)
          AND NOT(d.session_id=COALESCE(?7,'') AND d.turn_id=COALESCE(?8,''))
