@@ -339,6 +339,65 @@ test('idle quiet hours use the configured timezone, preserve progress and resume
   }
 });
 
+for (const freshObservation of [false, true]) {
+  test(`failed work retries during quiet hours with a ${freshObservation ? 'fresh' : 'stale'} observation, without bypassing admission guards`, async () => {
+    const f = await setup();
+    try {
+      await f.q.control({
+        action: 'configure',
+        quietHours: { start: '01:00', end: '08:30', timeZone: 'Asia/Shanghai' },
+      });
+      f.setTime('2026-11-01T00:00:00+08:00');
+      await f.q.control({ action: 'check' });
+      await f.run();
+      const through = f.q.state().checkedThrough;
+      f.setTime('2026-11-01T00:50:00+08:00');
+      f.fail(true);
+      await f.q.control({ action: 'check' });
+      await f.run();
+      const pending = f.q.state().pending;
+      assert.ok(pending);
+      const retryAt = Date.parse('2026-11-01T01:05:00+08:00');
+      assert.equal(f.q.state().retryAt, retryAt);
+      assert.equal(f.q.state().checkedThrough, through);
+      // A cadence change can leave the failed run's observation fresh at its original deadline.
+      if (freshObservation) await f.q.control({ action: 'configure', intervalMinutes: 30 });
+      f.fail(false);
+      f.setTime('2026-11-01T01:04:59+08:00');
+      await f.run();
+      assert.equal(f.calls(), 2, 'quiet-hours bypass must not run before retryAt');
+      f.setTime('2026-11-01T01:05:00+08:00');
+      await f.q.control({ action: 'pause' });
+      await f.run();
+      assert.equal(f.calls(), 2, 'pending work must respect pause');
+      await f.q.control({ action: 'enable' });
+      for (const status of ['running', 'waiting_for_user']) {
+        f.agent.snapshot = async () => ({ agent: { status } });
+        await f.run();
+        assert.equal(f.calls(), 2, `pending work must respect ${status}`);
+        assert.equal(f.q.state().pending.id, pending.id);
+      }
+      f.agent.snapshot = async () => ({ agent: { status: 'idle' } });
+      await f.run();
+      assert.equal(f.calls(), 3, 'due retry must not wait until quiet hours end');
+      assert.equal(f.q.state().checkedThrough, pending.to, 'retry preserves its captured range');
+      assert.deepEqual(f.q.state().checkedTokens, pending.tokens);
+      assert.equal(f.q.state().pending, null);
+      assert.equal(f.q.state().retryAt, null);
+      assert.equal(f.q.state().workerSession, 'worker');
+      f.setTime('2026-11-01T02:05:00+08:00');
+      await f.run();
+      assert.equal(f.calls(), 3, 'ordinary idle fallback must still respect quiet hours');
+      assert.equal(f.q.state().checkedThrough, pending.to);
+      f.setTime('2026-11-01T08:30:00+08:00');
+      await f.run();
+      assert.equal(f.calls(), 4, 'idle fallback resumes at the exclusive quiet-hours end');
+    } finally {
+      await f.close();
+    }
+  });
+}
+
 test('new activity and explicit checks bypass quiet hours; changing cadence preserves the window', async () => {
   const f = await setup();
   try {

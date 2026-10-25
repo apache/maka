@@ -241,9 +241,9 @@ export class QuickDiscoveryController {
     const quiet = inQuietHours(now, s.quietHours);
     if (
       !s.checkRequested &&
-      ((!s.pending && now < last + s.intervalMs) ||
-        (now < (s.observation?.at ?? 0) + s.intervalMs &&
-          (quiet || (!s.pending && now < last + s.idleMs))))
+      !s.pending &&
+      (now < last + s.intervalMs ||
+        (now < (s.observation?.at ?? 0) + s.intervalMs && (quiet || now < last + s.idleMs)))
     )
       return;
     // Cheap observations only: no source enumeration, body reads, index writes or model calls.
@@ -256,9 +256,10 @@ export class QuickDiscoveryController {
       Object.entries(tokens).sort(([a], [b]) => a.localeCompare(b));
     const changed =
       hash(sortedTokens(observation.tokens)) !== hash(sortedTokens(s.checkedTokens ?? {}));
-    // Only idle discovery is suppressed. Explicit checks and observed new activity still run;
-    // never advance the successful-check watermark merely because a wake was skipped.
-    if (!s.checkRequested && !changed && quiet) return;
+    // Only idle discovery is suppressed. Explicit checks, observed new activity and pending
+    // retries still run, subject to the retry deadline and admission guards above/below.
+    // Never advance the successful-check watermark merely because a wake was skipped.
+    if (!s.checkRequested && !s.pending && !changed && quiet) return;
     if (!s.checkRequested && !s.pending && !changed && now < last + s.idleMs) return;
     const agent = await this.worker(s);
     const snapshot = await agent.snapshot();
