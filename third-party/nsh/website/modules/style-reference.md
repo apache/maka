@@ -392,6 +392,18 @@ For animations driven by values, gestures or springs, use [nsh/animated](./nsh-a
 |---|---|---|---|
 | `cursor` | `"auto" \| "default" \| "pointer" \| "text" \| "grab" \| "grabbing" \| "not-allowed" \| ...` (every CSS cursor keyword, and `"none"`) | `.cursor(Cursor)`, `.cursor_pointer()` | The pointer shape over the view, for pointers (iPad trackpads, Mac Catalyst, desktops). |
 
+### SVG paint
+
+CSS's paint properties of SVG shapes, which any element takes and the elements inside it inherit, as in a browser.
+They paint what Rust components draw on canvases.
+
+| Key | Type | Rust | Description |
+|---|---|---|---|
+| `fill` | `"none" \| "currentColor" \| ColorValue` | `.fill_color(c)`, `.fill_none()`, `.fill_current()` | What shapes are filled with; `currentColor` is the element's text color. |
+| `stroke` | `"none" \| "currentColor" \| ColorValue` | `.stroke_color(c)`, `.stroke_none()`, `.stroke_current()` | What the outlines of shapes are painted with. |
+| `strokeWidth` | `number \| string` | `.stroke_width(w)` | The width of those outlines, a length (1 by default). |
+| `strokeDasharray` | `number \| string` | — | Dashes and gaps along those outlines: lengths separated by spaces or commas (`"4 2"`), an odd list repeated, or `"none"`. |
+
 ## TextStyle
 
 Text styles apply to `<Text>` and `<Input>`. They are also inherited, as in CSS: text properties set on a view pass to the texts and inputs inside it, and nested `<Text>` spans inherit from their parent text. All keys of `ViewStyle` apply too. See [Text](../docs/text.md).

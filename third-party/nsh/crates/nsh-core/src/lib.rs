@@ -100,9 +100,10 @@ pub use crate::{
     },
     style::{
         BorderStyle, Borders, Color, CornerRadii, DecorationStyle, EllipsizeMode, FontFamily,
-        FontVariant, ObjectPosition, PatchValue, PositionAxis, Shadow, Style, StyleDecl,
-        StyleError, StyleKey, StylePatch, StyleValue, TextAlign, TextDecoration, TextShadow,
-        TextStyle, TextTransform, TransformOrigin, VerticalAlign, ViewStyle,
+        FontVariant, ObjectPosition, PaintStyle, PatchValue, PositionAxis, Shadow, Style,
+        StyleDecl, StyleError, StyleKey, StylePatch, StyleValue, SvgPaint, TextAlign,
+        TextDecoration, TextShadow, TextStyle, TextTransform, TransformOrigin, VerticalAlign,
+        ViewStyle,
     },
     text::{
         ATTACHMENT_CHAR, ApproxTextEngine, AttachmentAlignments, AttributedText, BackgroundBox,

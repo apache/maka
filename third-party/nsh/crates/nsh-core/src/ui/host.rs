@@ -23,11 +23,12 @@ use crate::{
     WebSource,
     canvas::{
         CanvasFont, CanvasGradient, CanvasImage, CanvasOp, CanvasTextAlign, CanvasTextBaseline,
-        Composite, Drawing, FillRule, LineCap, LineJoin, Num, Paint, Path, PathOp,
+        Composite, Drawing, FillRule, LineCap, LineJoin, Num, Paint, Path, PathOp, ViewPaint,
     },
     geometry::{Bounds, Corners, Point, Radians, ScaledPixels},
     js::host::HostProps,
     overlay::{Align, OverlayAnchor, Placement},
+    style::SvgPaint,
 };
 
 /// Whether `a` and `b` set the same property (their values aside).
@@ -1754,6 +1755,48 @@ impl Painter {
     pub fn fill_style(mut self, paint: impl Into<CanvasPaint>) -> Self {
         let paint = self.paint(paint);
         self.op(CanvasOp::FillStyle(paint))
+    }
+
+    /// Fills with the canvas view's `fill` style (CSS's, inherited from the
+    /// views around it; `currentColor` is its text color), or `initial`
+    /// where nothing sets one: shapes a component draws take the app's
+    /// `fill-*` classes, and follow them and the appearance without being
+    /// drawn again ([`Drawing::view_paints`]).
+    pub fn fill_style_from_view(self, initial: SvgPaint) -> Self {
+        self.view_paint(
+            ViewPaint::Fill(initial),
+            CanvasOp::FillStyle(Paint::Color(Color::TRANSPARENT)),
+        )
+    }
+
+    /// Strokes with the canvas view's `stroke` style, or `initial` where
+    /// nothing sets one ([`Self::fill_style_from_view`]).
+    pub fn stroke_style_from_view(self, initial: SvgPaint) -> Self {
+        self.view_paint(
+            ViewPaint::Stroke(initial),
+            CanvasOp::StrokeStyle(Paint::Color(Color::TRANSPARENT)),
+        )
+    }
+
+    /// Strokes as wide as the canvas view's `strokeWidth` style (1 where
+    /// nothing sets one, CSS's initial value).
+    pub fn line_width_from_view(self) -> Self {
+        self.view_paint(ViewPaint::StrokeWidth, CanvasOp::LineWidth(Num::Const(1.0)))
+    }
+
+    /// Dashes strokes as the canvas view's `strokeDasharray` style does
+    /// (solid where nothing sets one).
+    pub fn line_dash_from_view(self) -> Self {
+        self.view_paint(
+            ViewPaint::StrokeDasharray,
+            CanvasOp::LineDash(Arc::from([])),
+        )
+    }
+
+    fn view_paint(mut self, view: ViewPaint, placeholder: CanvasOp) -> Self {
+        let at = self.drawing.ops.len() as u32;
+        self.drawing.view_paints.push((at, view));
+        self.op(placeholder)
     }
 
     /// Strokes with `paint` (`strokeStyle`).

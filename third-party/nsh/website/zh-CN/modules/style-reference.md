@@ -392,6 +392,17 @@ view()
 |---|---|---|---|
 | `cursor` | `"auto" \| "default" \| "pointer" \| "text" \| "grab" \| "grabbing" \| "not-allowed" \| ...`（所有 CSS 光标关键字及 `"none"`） | `.cursor(Cursor)`、`.cursor_pointer()` | 指针悬停在视图上时的形状，适用于指针设备（iPad 触控板、Mac Catalyst、桌面）。 |
 
+### SVG 绘制
+
+CSS 中 SVG 图形的绘制属性：任何元素都可以设置，并像在浏览器中一样由内部元素继承。它们决定 Rust 组件在画布上绘制的内容的颜色和线条。
+
+| 键 | 类型 | Rust | 说明 |
+|---|---|---|---|
+| `fill` | `"none" \| "currentColor" \| ColorValue` | `.fill_color(c)`、`.fill_none()`、`.fill_current()` | 图形的填充；`currentColor` 是元素的文字颜色。 |
+| `stroke` | `"none" \| "currentColor" \| ColorValue` | `.stroke_color(c)`、`.stroke_none()`、`.stroke_current()` | 图形轮廓的颜色。 |
+| `strokeWidth` | `number \| string` | `.stroke_width(w)` | 轮廓的宽度，一个长度（默认 1）。 |
+| `strokeDasharray` | `number \| string` | — | 轮廓上的虚线与间隔：用空格或逗号分隔的长度（`"4 2"`），奇数个时重复一遍，或 `"none"`。 |
+
 ## TextStyle
 
 文字样式用于 `<Text>` 和 `<Input>`。它们也像 CSS 一样会继承：视图上设置的文字属性会传给其中的文字和输入框，嵌套的 `<Text>` 片段继承父文字的样式。`ViewStyle` 的全部键同样适用。见 [文字](../docs/text.md)。

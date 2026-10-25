@@ -2782,6 +2782,59 @@ pub trait Styled: Sized {
         self
     }
 
+    /// What the shapes the element draws are filled with (`fill`,
+    /// Tailwind's `fill-<color>`; the elements inside inherit it, as in
+    /// CSS): the areas of `nsh_base::plot`.
+    fn fill_color(mut self, color: impl IntoReactive<AdaptiveColor>) -> Self {
+        self.style().bind_value(color, |s, color: AdaptiveColor| {
+            s.color(&[StyleKey::Fill], color);
+        });
+        self
+    }
+
+    /// No fill (`fill-none`).
+    fn fill_none(mut self) -> Self {
+        self.style().keyword(StyleKey::Fill, "none");
+        self
+    }
+
+    /// The text color as the fill (`fill-current`, `currentColor`).
+    fn fill_current(mut self) -> Self {
+        self.style().keyword(StyleKey::Fill, "currentColor");
+        self
+    }
+
+    /// What the outlines of the shapes the element draws are painted with
+    /// (`stroke`, Tailwind's `stroke-<color>`; inherited, as in CSS): the
+    /// lines and grids of `nsh_base::plot`.
+    fn stroke_color(mut self, color: impl IntoReactive<AdaptiveColor>) -> Self {
+        self.style().bind_value(color, |s, color: AdaptiveColor| {
+            s.color(&[StyleKey::Stroke], color);
+        });
+        self
+    }
+
+    /// No stroke (`stroke-none`).
+    fn stroke_none(mut self) -> Self {
+        self.style().keyword(StyleKey::Stroke, "none");
+        self
+    }
+
+    /// The text color as the stroke (`stroke-current`, `currentColor`).
+    fn stroke_current(mut self) -> Self {
+        self.style().keyword(StyleKey::Stroke, "currentColor");
+        self
+    }
+
+    /// The width of those outlines (`strokeWidth`, Tailwind's
+    /// `stroke-<number>`; 1 by default, inherited).
+    fn stroke_width(mut self, width: impl IntoReactive<AbsoluteLength>) -> Self {
+        self.style().bind_value(width, |s, width: AbsoluteLength| {
+            s.number(StyleKey::StrokeWidth, points(width));
+        });
+        self
+    }
+
     /// The font size, in points.
     fn text_size(mut self, size: impl IntoReactive<Length>) -> Self {
         self.style().bind_value(size, |s, size: Length| {
@@ -3479,6 +3532,18 @@ mod tests {
 
     fn s() -> StyleRefinement {
         StyleRefinement::default()
+    }
+
+    #[test]
+    fn svg_paint_is_tailwinds() {
+        same(
+            s().fill_color(RED.shade(600))
+                .stroke_color(SKY.shade(500))
+                .stroke_width(px(2.0)),
+            "fill-red-600 stroke-sky-500 stroke-2",
+        );
+        same(s().fill_none().stroke_current(), "fill-none stroke-current");
+        same(s().fill_current().stroke_none(), "fill-current stroke-none");
     }
 
     #[test]
