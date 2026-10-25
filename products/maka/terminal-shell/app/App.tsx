@@ -57,6 +57,7 @@ import type { BrowserWorkspace } from './browsing';
 import { Workbench, canDockBrowser } from './Workbench';
 import { WorkspaceBrowser, type WorkspaceBrowserProps } from './WorkspaceBrowser';
 import { performSessionAction, type SessionAction } from './sessionLifecycle';
+import { createTerminalInterrupt, TerminalInterrupt } from './TerminalInterrupt';
 
 type OverlayTarget = {
   sessionId: string | null;
@@ -415,6 +416,15 @@ function App() {
     selected() === context.sessionId &&
     (context.sessionId === null || handle()?.sessionId === context.sessionId) &&
     (context.instance === null ? overlay() === null : closeOverlay(context.instance));
+  const interrupt = createTerminalInterrupt({
+    session: handle,
+    blocked: () => overlay() !== null,
+    report,
+    dismissOverlay: () => {
+      const current = overlay();
+      return current !== null && closeOverlay(current.instance);
+    },
+  });
   const commandSessions = (context: ActionContext) => {
     if (closeCommand(context)) open({ kind: 'search', sessionId: context.sessionId });
   };
@@ -1064,6 +1074,7 @@ function App() {
           );
         }}
       </Each>
+      <TerminalInterrupt state={interrupt} />
     </View>
   );
 }

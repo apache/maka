@@ -177,6 +177,7 @@ impl Args {
 pub fn application_bundle() -> Bundle {
     let capabilities = nsh_core::access::Capabilities::from_json(&serde_json::json!({
         "clipboard": true,
+        "host": ["terminal.exit"],
         "network": {"http": [{"host":"*","methods":["GET"],"schemes":["http","https"]}]}
     }))
     .expect("static terminal application capabilities");

@@ -679,6 +679,30 @@ export function createComposerCompletion(options: Options) {
     index,
     query,
     queryComposing,
+    clearDraft() {
+      const owner = options.session();
+      const target = editor();
+      if (
+        !alive ||
+        !owner ||
+        !target ||
+        target.sessionId !== owner.sessionId ||
+        !options.active() ||
+        !owner.editable() ||
+        composing()
+      )
+        return;
+      const text = owner.draft();
+      if (!text) return;
+      target.node.replaceRange({
+        start: 0,
+        end: text.length,
+        text: '',
+        expectedText: text,
+        expectedSelection: selection(),
+      });
+      close();
+    },
     anchor: () => (opened()?.explicit ? addAnchor : (caret() ?? editor()?.node)),
     addButton(node: YNode) {
       addAnchor = node;

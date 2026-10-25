@@ -134,6 +134,7 @@ pub(super) fn spawn(
 
 struct Session {
     engine: LocalEngine<TerminalTextEngine>,
+    host: nsh_engine::HostChannel,
     surface: Surface,
     environment: Environment,
     sink: Sink,
@@ -160,12 +161,14 @@ impl Session {
         };
         surface.set_access(access);
         surface.set_host_services_enabled(true);
+        config.environment.fallback_key_bindings = true;
         let assets = config
             .assets
             .get_or_insert_with(|| Arc::new(crate::ApplicationAssets));
         surface.set_assets(Some(assets.clone()));
         let sink = Sink::default();
         let environment = config.environment;
+        let host = config.host.clone();
         let engine = LocalEngine::start(config, TerminalTextEngine::new(metrics), sink.clone())
             .ok_or("NSH UI engine failed to start")?;
         let terminal = Terminal::with_options(
@@ -177,6 +180,7 @@ impl Session {
         .map_err(|error| error.to_string())?;
         Ok(Self {
             engine,
+            host,
             surface,
             environment,
             sink,
@@ -239,6 +243,7 @@ impl Session {
             changed = true;
         }
         for event in command.inputs {
+            super::interrupt::activity(&self.host, &event);
             changed |= match event {
                 Event::Mouse(mouse)
                     if matches!(

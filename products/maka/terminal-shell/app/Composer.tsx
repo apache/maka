@@ -119,6 +119,16 @@ export function Composer(props: {
   cleanup(() => unbind());
   const cardRoot = signal<YNode | null>(null);
   effect(() => {
+    const owner = props.session();
+    const node = cardRoot();
+    if (node && props.active() && owner?.editable() && owner.invocation() === null && owner.draft())
+      return keymap.bind('ctrl+c', completion.clearDraft, {
+        when: 'always',
+        within: node,
+        fallback: true,
+      });
+  });
+  effect(() => {
     const stop = props.stopAction();
     const node = cardRoot();
     if (node) return keymap.bind('escape', stop, { when: 'always', within: node });

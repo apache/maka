@@ -26,6 +26,7 @@ mod adapter;
 mod frame_trace;
 mod graphics;
 mod input;
+mod interrupt;
 mod output;
 mod pixels;
 mod ui;
@@ -61,6 +62,7 @@ struct Presentation {
     activation: activation::Activation,
     stop: Arc<AtomicBool>,
     driver: Option<thread::Thread>,
+    host: nsh_engine::HostChannel,
 }
 
 impl Presentation {
@@ -127,8 +129,17 @@ pub(crate) fn run(
     let presentation = Presentation {
         stop: stop.clone(),
         driver: Some(thread::current()),
+        host: config.host.clone(),
         ..Default::default()
     };
+    let closing = stop.clone();
+    let activation = presentation.activation.clone();
+    let driver = thread::current();
+    config.host.handle("terminal.exit", move |_| {
+        closing.store(true, Ordering::Release);
+        activation.clear();
+        driver.unpark();
+    });
     config.context = config.context.with(presentation.activation.clone());
     let setup = [SETUP, graphics::QUERY].concat();
     let setup = {

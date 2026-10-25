@@ -45,6 +45,22 @@ export const commonMessages = {
   Models: msg_models,
   'New conversation': msg_helpNew,
   'Original image': ['Original image', '原始图片', '原始圖片'],
+  'Press Ctrl+C again to exit.': [
+    'Press Ctrl+C again to exit.',
+    '再按一次 Ctrl+C 退出。',
+    '再按一次 Ctrl+C 結束。',
+  ],
+  'Stop the current task?': [
+    'Stop the current task?',
+    '要停止当前任务吗？',
+    '要停止目前的工作嗎？',
+  ],
+  'The task will keep running unless you choose to stop it.': [
+    'The task will keep running unless you choose to stop it.',
+    '只有选择停止，才会中断当前任务。',
+    '只有選擇停止，才會中斷目前的工作。',
+  ],
+  'Stop task': ['Stop task', '停止任务', '停止工作'],
   Retry: msg_checklistRetry,
   Save: ['Save', '保存', '儲存'],
   'shared · view only': ['shared · view only', '共享 · 仅查看', '共用 · 僅檢視'],

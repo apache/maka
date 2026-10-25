@@ -417,6 +417,7 @@ fn run(
                 });
             }
             if let Some(input) = input {
+                super::super::interrupt::terminal_activity(&presentation.host, &input.event);
                 let dispatch_start = input.queued_at.map(|_| Instant::now());
                 let measurement =
                     if let (Some(queued), Some(start)) = (input.queued_at, dispatch_start) {
