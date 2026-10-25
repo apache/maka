@@ -49,6 +49,7 @@ import {
 import type { CompletionToken, Selection } from './composerCompletion.ts';
 import { C, bodyTextStyle, captionTextStyle } from './ui';
 import { Icon } from './Icon';
+import { createComposerPaste } from './composerPaste';
 
 type Source = 'add' | 'files' | 'skills' | 'commands' | 'slash';
 type Rect = { x: number; y: number; width: number; height: number };
@@ -178,6 +179,17 @@ export function createComposerCompletion(options: Options) {
     close();
     editor()?.node.focus();
   };
+  const paste = createComposerPaste({
+    session: options.session,
+    active: options.active,
+    editor: (owner) => {
+      const target = editor();
+      return target?.sessionId === owner.sessionId ? target.node : null;
+    },
+    selection,
+    composing,
+    dismiss: close,
+  });
   const row = <T extends Omit<Row, 'action'>>(read: Read, value: T): Row =>
     Object.assign(value, { action: { read: read.serial, id: value.id } }) as Row;
   const commandRows = (read: Read) =>
@@ -679,6 +691,10 @@ export function createComposerCompletion(options: Options) {
     index,
     query,
     queryComposing,
+    paste: paste.paste,
+    drop: paste.drop,
+    pasteFocus: paste.focus,
+    pasteBlur: paste.blur,
     clearDraft() {
       const owner = options.session();
       const target = editor();

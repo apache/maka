@@ -43,14 +43,20 @@ fn native_editor_focus_and_text_do_not_wait_for_another_pixel_frame() {
         import { element, prop, bindProp, append } from 'nsh:rt';
         const value = signal('');
         const second = signal('B');
+        const pastes = signal([]);
         keymap.bind('mod+k', () => value.set(keymap.label('mod+k')), { when: 'always' });
         keymap.bind('mod+j', () => Clipboard.writeText(value()), { when: 'always' });
+        keymap.bind('mod+h', () => Clipboard.writeText('paste-events:' + pastes().join('|')), { when: 'always' });
         mount(() => {
             const root = element('view');
             prop(root, 'style', {flex: 1, padding: 16, backgroundColor: '#111111'});
             const input = element('input');
             prop(input, 'style', {width: 240, height: 48, backgroundColor: '#204060', color: '#ffffff'});
             bindProp(input, 'value', value);
+            prop(input, 'onFileDrop', () => {});
+            prop(input, 'onPaste', event => {
+                pastes.set([...pastes(), event.uris.length ? event.uris.join(';') : event.text]);
+            });
             prop(input, 'onChange', text => {
                 value.set(text);
                 if (text.endsWith('|ABA')) {
@@ -155,6 +161,21 @@ fn native_editor_focus_and_text_do_not_wait_for_another_pixel_frame() {
     assert!(platform.input_caret_bounds().is_none());
     assert!(platform.input_candidate_bounds().is_none());
     let initial_count = Cell::new(count.get());
+    let paste = |text: &str| {
+        application.update(|cx| {
+            window
+                .borrow()
+                .as_ref()
+                .unwrap()
+                .update(cx, |view, window, cx| {
+                    let accepted = view.paste(nsh_core::PasteEvent::new(text));
+                    window.refresh();
+                    cx.notify();
+                    accepted
+                })
+                .unwrap()
+        })
+    };
     let click_at = |x, y| {
         let position = point(px(x), px(y));
         platform
@@ -273,6 +294,7 @@ fn native_editor_focus_and_text_do_not_wait_for_another_pixel_frame() {
     assert!(platform.input_caret_bounds().is_none());
     assert!(platform.input_candidate_bounds().is_none());
     platform.paste("must not enter the old editor").unwrap();
+    assert!(!paste("must not enter the old editor"));
     click(32.0);
     assert_eq!(copied(), "a你好😀");
 
@@ -283,6 +305,7 @@ fn native_editor_focus_and_text_do_not_wait_for_another_pixel_frame() {
     assert!(platform.input_caret_bounds().is_none());
     assert!(platform.input_candidate_bounds().is_none());
     platform.paste("must not enter an inactive editor").unwrap();
+    assert!(!paste("must not enter an inactive editor"));
     platform.set_active(true).unwrap();
     platform.pump_with_draw(false);
     assert_eq!(copied(), "a你好😀");
@@ -317,6 +340,39 @@ fn native_editor_focus_and_text_do_not_wait_for_another_pixel_frame() {
             "Control-based mod binding did not reach the engine"
         );
     }
+    assert_eq!(count.get(), initial_count.get());
+    assert!(paste("first"));
+    assert!(paste("second"));
+    stroke("a", None, true);
+    assert!(paste("'/tmp/a b.png' /tmp/c.txt"));
+    stroke("h", None, true);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        platform.pump_with_draw(false);
+        if let Some(text) = platform.take_clipboard_write().and_then(|item| item.text())
+            && text.starts_with("paste-events:")
+        {
+            assert_eq!(
+                text,
+                "paste-events:first|second|file:///tmp/a%20b.png;file:///tmp/c.txt"
+            );
+            break;
+        }
+        assert!(
+            errors.borrow().is_none(),
+            "paste failed: {:?}",
+            errors.borrow()
+        );
+        assert!(
+            Instant::now() < deadline,
+            "native paste events were not reported"
+        );
+    }
+    assert_eq!(
+        copied(),
+        "firstsecond",
+        "file paste must preserve the selected text"
+    );
     assert_eq!(count.get(), initial_count.get());
     // Composition enters the same native editor and WGPU painter. The app's
     // committed value stays observable while the preedit has visible glyphs.

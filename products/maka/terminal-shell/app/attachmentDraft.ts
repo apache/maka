@@ -40,6 +40,7 @@ export type UploadRow = {
 };
 export type AttachmentEdit = { attachments: DraftAttachment[]; settledUploads: string[] };
 type UploadSubscription = { next(): Promise<any[] | null>; close(): void };
+type UploadIntake = { next(): Promise<unknown>; close(): void };
 
 // Native status is only progress. The original Journal receipt is the sole
 // authority for readiness, recovery and whether an attempt exists at all.
@@ -68,12 +69,14 @@ export function createAttachmentDraft(options: {
   const picker = signal(false);
   const restoring = signal(true);
   const error = createText();
+  const notice = createText();
   const recovering = signal<string | null>(null);
   // Keep adopted IDs for this observer's lifetime: a Journal read that began
   // before CAS must not resurrect a file after removal or a successful send.
   const settled = new Map<string, 'pending' | 'saved'>();
   let alive = true;
   let subscription: UploadSubscription | null = null;
+  const intakes = signal<Set<UploadIntake>>(new Set());
   let reading = false;
   let watchFailed = false;
   const owns = (target: { owner: string }) => alive && target.owner === options.sessionId;
@@ -193,6 +196,9 @@ export function createAttachmentDraft(options: {
     alive = false;
     subscription?.close();
     subscription = null;
+    const observing = intakes();
+    intakes.set(new Set());
+    for (const intake of observing) intake.close();
   });
   const inspect = async (target: AttachmentTarget) => {
     if (!owns(target) || recovering()) return;
@@ -220,14 +226,15 @@ export function createAttachmentDraft(options: {
       if (alive) recovering.set(null);
     }
   };
-  const status = (value: unknown) => {
+  const status = (value: unknown, focus = true) => {
     const update = attachmentStatus(value);
     if (!alive || !update || settled.has(update.operationId)) return;
     const original = originals().find((original) => original.id === update.operationId);
     if (original && (original.receipt || original.abandoned)) return;
     if (update.kind === 'reading') {
+      notice.set('');
       picker.set(false);
-      options.focus();
+      if (focus) options.focus();
     }
     const kept = selecting().filter((item) => item.id !== update.operationId);
     selecting.set([
@@ -296,8 +303,60 @@ export function createAttachmentDraft(options: {
     picker,
     restoring,
     error,
+    notice,
     recovering,
     status,
+    reportError(reason: unknown) {
+      if (alive) error.set(errorText(reason));
+    },
+    notify(reason: unknown) {
+      if (alive) notice.set(errorText(reason));
+    },
+    clearNotice() {
+      if (alive) notice.set('');
+    },
+    observeIntake(intake: UploadIntake, onText: (text: string) => void) {
+      if (!alive) {
+        intake.close();
+        return;
+      }
+      if (!watchFailed) error.set('');
+      notice.set('');
+      intakes.set(new Set([...intakes(), intake]));
+      void (async () => {
+        try {
+          while (alive && intakes().has(intake)) {
+            const value = await intake.next();
+            if (!alive || !intakes().has(intake) || value === null) break;
+            if (
+              value &&
+              typeof value === 'object' &&
+              'kind' in value &&
+              value.kind === 'text' &&
+              'text' in value &&
+              typeof value.text === 'string'
+            )
+              onText(value.text);
+            else if (
+              value &&
+              typeof value === 'object' &&
+              'kind' in value &&
+              value.kind === 'notice' &&
+              'error' in value &&
+              typeof value.error === 'string'
+            )
+              notice.set(errorText(value.error));
+            else status(value, false);
+          }
+        } catch (reason) {
+          if (alive) notice.set(errorText(reason));
+        } finally {
+          const observing = new Set(intakes());
+          if (observing.delete(intake)) intakes.set(observing);
+          intake.close();
+        }
+      })();
+    },
     remove,
     recover,
     abandon,
@@ -334,6 +393,7 @@ export function createAttachmentDraft(options: {
     blocked() {
       if (restoring()) return tr('Restoring attachment drafts…');
       if (error()) return tr('Attachment state needs attention. Your draft is kept.');
+      if (intakes().size) return tr('Preparing attachments… You can keep typing.');
       if (rows().some((row) => row.kind === 'unknown'))
         return tr('Recover the original upload receipt before sending.');
       if (rows().some((row) => row.kind === 'reading' || row.kind === 'uploading'))

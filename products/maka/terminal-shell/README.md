@@ -77,7 +77,9 @@ File previews are captured contents: **Refresh** reads the current file again. T
 | Ctrl+0 or Ctrl+Alt+0 | Reset and save the pixel interface scale to 100% |
 | Ctrl+Q | Quit |
 
-Model selection uses **Ctrl+G** because classic terminals encode Ctrl+M as the same carriage return as Enter. Paste through your terminal's paste command.
+Model selection uses **Ctrl+G** because classic terminals encode Ctrl+M as the same carriage return as Enter.
+
+Drag files into the message composer, or paste their absolute paths, to add attachments. File URLs, shell-quoted paths with spaces, and Windows paths under WSL are accepted. Ordinary text pastes into the current selection and remains undoable. Paste images or copied files with **Ctrl+V** when the terminal forwards that shortcut; **Alt+V** and **Ctrl+Alt+V** also read the system clipboard directly. Uploads retain their original conversation when you switch conversations, and the resulting attachments use the same saved drafts as files added through **+**.
 
 Type in **Search conversations**, use ↑/↓ to select, and Enter or a mouse click to open a result. Terms match literal substrings with Unicode normalization and case-insensitive OR matching. History uses a persistent SQLite FTS5 index maintained with the original messages. Changing the query or closing search cancels the old subscription. Results show a highlighted preview around the match and open its original message; title matches open the conversation at its latest messages. Search does not read thinking or follow the sidebar workspace and archive filters. Model search uses the Host's model catalog and loads later pages automatically.
 

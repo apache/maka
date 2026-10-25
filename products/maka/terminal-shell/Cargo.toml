@@ -28,6 +28,8 @@ build = "build.rs"
 [dependencies]
 base64 = "0.23.1"
 clap.workspace = true
+clipboard-rs = { version = "0.3.5", features = ["wayland"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
 open = "5.4.5"
 percent-encoding = "2.3.2"
 url = "2.5.8"
@@ -58,6 +60,12 @@ gpui = { package = "gpui-fast", version = "0.1.10", default-features = false }
 gpui_wgpu = { package = "gpui-fast-wgpu", version = "0.1.10", default-features = false, features = ["offscreen"] }
 nsh-platform-gpui.workspace = true
 nsh-gpui-terminal.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+clipboard-win = "5.4.1"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+image = { version = "0.25", default-features = false, features = ["tiff"] }
 
 [build-dependencies]
 nsh-bundler = { workspace = true, features = ["bundle"] }

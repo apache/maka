@@ -95,6 +95,7 @@ impl Bindings {
         let mut registry = Registry::ui_set("maka/host");
         registry.register::<uploads::AttachmentPicker>();
         registry.class::<terminal_grid::TerminalGrid>();
+        registry.class::<uploads::UploadIntake>();
         registry.value("host", move || {
             Instance::new(ApplicationHost {
                 owner: owner.clone(),
@@ -601,6 +602,16 @@ impl ScopedHost {
             serde_json::to_value(draft).map_err(|error| error.to_string())
         })
         .await
+    }
+
+    /// Admit files selected by this editor's native paste or drop gesture.
+    pub fn begin_file_drop(&self, uris: Vec<String>) -> Instance<uploads::UploadIntake> {
+        Instance::new(uploads::UploadIntake::files(self.scope.clone(), uris))
+    }
+
+    /// Read native clipboard content only for the user's explicit paste action.
+    pub fn begin_clipboard_paste(&self) -> Instance<uploads::UploadIntake> {
+        Instance::new(uploads::UploadIntake::clipboard(self.scope.clone()))
     }
 
     /// Observe original upload receipts, including work admitted by an older view.

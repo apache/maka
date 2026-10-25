@@ -2272,31 +2272,58 @@ fn paste(surface: &Surface, view: &NshView) {
         let Some(surface) = Surface::by_key(key) else {
             return;
         };
-        if focused(&surface).as_ref() != Some(&view) {
-            return;
-        }
-        let Some(input) = input_of(&view) else {
-            return;
-        };
         let text = item.as_ref().and_then(|item| item.text());
-        if view.state().events.contains(EventKind::Paste) {
-            surface.event(
-                view.id(),
-                EventKind::Paste,
-                EventPayload::Paste(Box::new(pasted_content(text.clone(), item))),
-            );
-        }
-        if input.config.borrow().paste_behavior != nsh_core::PasteBehavior::Insert {
-            return;
-        }
-        let Some(text) = text else {
-            return;
-        };
-        let text = pasted(&text, input.multiline());
-        if !text.is_empty() {
-            insert(&surface, &view, &input, &text, false);
-        }
+        paste_content(&surface, &view, pasted_content(text, item));
     });
+}
+
+pub(crate) fn paste_content(
+    surface: &Surface,
+    view: &NshView,
+    mut paste: nsh_core::PasteEvent,
+) -> bool {
+    if !window_active(surface) || focused(surface).as_ref() != Some(view) {
+        return false;
+    }
+    let Some(input) = input_of(view) else {
+        return false;
+    };
+    let config = input.config.borrow();
+    if !config.editable {
+        return false;
+    }
+    let events = view.state().events;
+    let inferred_files = if events.contains(EventKind::FileDrop)
+        && paste.files.is_empty()
+        && paste.uris.is_empty()
+        && let Some(uris) = nsh_core::platform::clipboard::files_from_text(&paste.text)
+    {
+        paste.text.clear();
+        paste.uris = uris;
+        true
+    } else {
+        false
+    };
+    let text = (config.paste_behavior == nsh_core::PasteBehavior::Insert)
+        .then(|| pasted(&paste.text, input.multiline()));
+    drop(config);
+    if events.contains(EventKind::Paste) {
+        surface.event(
+            view.id(),
+            EventKind::Paste,
+            EventPayload::Paste(Box::new(paste)),
+        );
+    } else if inferred_files {
+        surface.event(
+            view.id(),
+            EventKind::FileDrop,
+            EventPayload::FileDrop(paste.uris),
+        );
+    }
+    if let Some(text) = text.filter(|text| !text.is_empty()) {
+        insert(surface, view, &input, &text, false);
+    }
+    true
 }
 
 /// What clipboard `item` holds, for `onPaste`: `text`, its images and its

@@ -1333,6 +1333,16 @@ export const conversationMessages = {
   'Upload selected file': ['Upload selected file', '上传所选文件', '上傳所選檔案'],
   'Uploading\u2026': ['Uploading…', '正在上传…', '正在上傳…'],
   'Selected file': ['Selected file', '所选文件', '所選檔案'],
+  'The input changed. Paste again.': [
+    'The input changed. Paste again.',
+    '输入内容已变化，请重新粘贴。',
+    '輸入內容已變更，請重新貼上。',
+  ],
+  'Preparing attachments… You can keep typing.': [
+    'Preparing attachments… You can keep typing.',
+    '正在准备附件… 你可以继续输入。',
+    '正在準備附件… 你可以繼續輸入。',
+  ],
   '(empty)': ['(empty)', '（空）', '（空）'],
   '{message} {detail}': ['{message} {detail}', '{message} {detail}', '{message} {detail}'],
   Sandbox: ['Sandbox', '沙箱', '沙箱'],

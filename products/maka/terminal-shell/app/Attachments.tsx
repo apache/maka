@@ -93,7 +93,6 @@ export function DraftAttachments(props: {
         pathPlaceholder={tr('Absolute file path…')}
         uploadLabel={tr('Upload selected file')}
         uploadingLabel={tr('Uploading…')}
-        selectedFileLabel={tr('Selected file')}
         visible={owner.picker()}
         disabled={owner.restoring()}
         onStatus={owner.status}
@@ -244,6 +243,9 @@ export function DraftAttachments(props: {
           </View>
         )}
       </Each>
+      <If when={owner.notice()}>
+        <Text style={{ ...captionTextStyle, color: C.warning }}>{owner.notice()}</Text>
+      </If>
       <If when={owner.error()}>
         <Text selectable style={{ color: C.danger }}>
           {owner.error()}

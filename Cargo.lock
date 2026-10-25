@@ -9424,9 +9424,12 @@ version = "0.2.0"
 dependencies = [
  "base64 0.23.1",
  "clap",
+ "clipboard-rs",
+ "clipboard-win",
  "crossterm",
  "gpui-fast",
  "gpui-fast-wgpu",
+ "image",
  "maka-agent-api",
  "maka-agent-facts",
  "maka-app-client",

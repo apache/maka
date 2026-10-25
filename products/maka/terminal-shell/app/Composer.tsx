@@ -371,6 +371,10 @@ export function Composer(props: {
                       value={owner?.draft() ?? ''}
                       readonly={!owner?.editable()}
                       onChange={owner ? (text) => completion.change(owner, text) : undefined}
+                      onPaste={owner ? (event) => completion.paste(owner, event) : undefined}
+                      onFileDrop={owner ? (event) => completion.drop(owner, event) : undefined}
+                      onFocus={owner ? () => completion.pasteFocus(owner) : undefined}
+                      onBlur={owner ? () => completion.pasteBlur(owner) : undefined}
                       onSelectionChange={
                         owner ? (event) => completion.selection(owner, event) : undefined
                       }

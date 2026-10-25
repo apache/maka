@@ -93,6 +93,15 @@ The backends declare this capability through `Environment.fallback_key_bindings`
 unsupported hosts reject fallback bindings. This local adaptation supplies a
 generic input phase; application interrupt and exit policy remains with Maka.
 
+The GPUI `AppView::paste` entry delivers a host-provided user paste through the
+same focused-editor policy as the system clipboard. Terminal bracketed pastes
+therefore report `onPaste` before the mounted `pasteBehavior` decides insertion,
+while ordinary character and IME commits retain their text-input path.
+Both backends interpret a complete pasted path list as file URIs only for an
+input listening for file drops. Other input fields keep their literal text.
+The file content is reported once through `onPaste`, or through `onFileDrop`
+when no paste listener is mounted, without inserting the paths as text.
+
 Maka's workspace uses these local crates, including NSH's offscreen renderer and
 image codec; changing them here changes the code built and tested with Maka.
 

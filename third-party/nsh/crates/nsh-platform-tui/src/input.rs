@@ -1139,8 +1139,9 @@ impl Surface {
         );
     }
 
-    /// A native paste reports its original text before any edit; the
-    /// mounted policy decides insertion without waiting for app code.
+    /// A native paste reports its content before any edit; file-capable
+    /// inputs receive complete path lists as files, and the mounted policy
+    /// decides text insertion without waiting for app code.
     pub(crate) fn paste_input(&mut self, id: NodeId, text: String) {
         let Some(node) = self.node(id) else {
             return;
@@ -1149,14 +1150,28 @@ impl Surface {
             return;
         }
         let insert = node.input.paste_behavior == nsh_core::PasteBehavior::Insert;
-        if node.events.contains(EventKind::Paste) {
-            self.emit(
-                id,
-                EventKind::Paste,
-                EventPayload::Paste(Box::new(nsh_core::PasteEvent::new(text.clone()))),
-            );
+        let mut paste = nsh_core::PasteEvent::new(text);
+        let inferred_files = if node.events.contains(EventKind::FileDrop)
+            && let Some(uris) = nsh_core::platform::clipboard::files_from_text(&paste.text)
+        {
+            paste.text.clear();
+            paste.uris = uris;
+            true
+        } else {
+            false
+        };
+        let has_paste = node.events.contains(EventKind::Paste);
+        let text = if has_paste {
+            paste.text.clone()
+        } else {
+            std::mem::take(&mut paste.text)
+        };
+        if has_paste {
+            self.emit(id, EventKind::Paste, EventPayload::Paste(Box::new(paste)));
+        } else if inferred_files {
+            self.emit(id, EventKind::FileDrop, EventPayload::FileDrop(paste.uris));
         }
-        if insert {
+        if insert && !inferred_files {
             self.edit_input(id, |editor, config| editor.replace(&text, config));
         }
     }
@@ -3534,6 +3549,79 @@ mod tests {
                 );
             }
         }
+
+        let mut surface = form();
+        surface.apply(MountBatch {
+            items: vec![
+                MountItem::InputValue {
+                    id: 2,
+                    text: String::new(),
+                    count: 0,
+                },
+                MountItem::Events {
+                    id: 2,
+                    events: mask(&[EventKind::Paste, EventKind::FileDrop, EventKind::ChangeText]),
+                },
+            ],
+        });
+        surface.set_focus(Some(2));
+        surface.handle_event(Event::Paste("one".into()));
+        surface.handle_event(Event::Paste("two".into()));
+        assert_eq!(
+            surface.input_context().unwrap().text.as_deref(),
+            Some("onetwo")
+        );
+        surface.selection(2, 1, 3);
+        let before = surface.input_context().unwrap();
+        let paths = "'/tmp/a b.png' /tmp/c.txt";
+        for events in [
+            mask(&[EventKind::Paste, EventKind::FileDrop]),
+            mask(&[EventKind::FileDrop]),
+        ] {
+            surface.apply(MountBatch {
+                items: vec![MountItem::Events { id: 2, events }],
+            });
+            surface.events.clear();
+            assert!(surface.handle_event(Event::Paste(paths.into())));
+            let after = surface.input_context().unwrap();
+            assert_eq!(after.text, before.text);
+            assert_eq!(after.selection, before.selection);
+            assert_eq!(after.event_count, before.event_count);
+            let delivered: Vec<_> = surface
+                .events
+                .iter()
+                .filter_map(|event| match event {
+                    SurfaceEvent::Event(2, kind, payload) => Some((*kind, payload)),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(delivered.len(), 1);
+            let uris = if events.contains(EventKind::Paste) {
+                let (EventKind::Paste, EventPayload::Paste(paste)) = delivered[0] else {
+                    panic!("file paste was not delivered");
+                };
+                assert!(paste.text.is_empty() && paste.files.is_empty());
+                &paste.uris
+            } else {
+                let (EventKind::FileDrop, EventPayload::FileDrop(uris)) = delivered[0] else {
+                    panic!("file drop was not delivered");
+                };
+                uris
+            };
+            assert_eq!(uris, &["file:///tmp/a%20b.png", "file:///tmp/c.txt"]);
+        }
+        surface.apply(MountBatch {
+            items: vec![MountItem::Events {
+                id: 2,
+                events: mask(&[EventKind::Paste, EventKind::ChangeText]),
+            }],
+        });
+        surface.selection(2, 6, 6);
+        surface.handle_event(Event::Paste(paths.into()));
+        assert_eq!(
+            surface.input_context().unwrap().text.as_deref(),
+            Some("onetwo'/tmp/a b.png' /tmp/c.txt")
+        );
     }
 
     #[test]

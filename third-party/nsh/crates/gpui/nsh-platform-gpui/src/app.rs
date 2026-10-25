@@ -277,6 +277,16 @@ impl AppView {
         crate::input::cancel_pointer(&self.surface);
     }
 
+    /// Delivers a user paste to the current editable input, reporting its
+    /// content before inserting text according to the input's paste policy.
+    /// Returns whether the focused input accepted the paste.
+    pub fn paste(&self, paste: nsh_core::PasteEvent) -> bool {
+        let Some(view) = crate::text_input::focused(&self.surface) else {
+            return false;
+        };
+        crate::text_input::paste_content(&self.surface, &view, paste)
+    }
+
     /// A view with no app yet (in `cx.new(|cx| AppView::new(...))`).
     pub fn new(options: AppOptions, window: &mut Window, cx: &mut Context<Self>) -> AppView {
         crate::rt::init(cx);

@@ -464,7 +464,15 @@ fn run(
                         "composition"
                     }
                     Event::Paste(text) => {
-                        platform.paste(text).map_err(|error| error.to_string())?;
+                        application.update(|cx| {
+                            if let Some(window) = window.borrow().as_ref() {
+                                let _ = window.update(cx, |view, window, cx| {
+                                    view.paste(nsh_core::PasteEvent::new(text));
+                                    window.refresh();
+                                    cx.notify();
+                                });
+                            }
+                        });
                         "paste_dispatched"
                     }
                     event => {
