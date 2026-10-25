@@ -54,6 +54,7 @@ pub mod recovery;
 pub mod root;
 pub mod root_store;
 pub use root_store::{RootStore, SessionStore};
+pub mod recall;
 pub mod run_source;
 mod schema;
 pub mod sessions;
@@ -212,7 +213,9 @@ impl EventLog {
 
     fn require_session_scope(expected: Option<&str>, actual: &str) -> Result<(), StoreError> {
         if expected.is_some_and(|expected| expected != actual) {
-            return Err(StoreError::InvalidTransition("foreign Session resource".into()));
+            return Err(StoreError::InvalidTransition(
+                "foreign Session resource".into(),
+            ));
         }
         Ok(())
     }

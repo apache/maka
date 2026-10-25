@@ -39,6 +39,7 @@ mod applications;
 mod attachments;
 mod control;
 mod plugins;
+mod recall;
 mod recovery;
 mod retirement;
 mod subscriptions;

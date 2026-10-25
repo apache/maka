@@ -95,7 +95,7 @@ async fn recall_native_queries_keep_unicode_dates_titles_namespace_and_exact_his
         let f = Fixture::new("http://127.0.0.1:1/v1", None).await;
         let session = imported(&f, "A café conversation", &f.owner.prefix, "The original café answer").await;
         let foreign = imported(&f, "Foreign conversation", "other_", "The original café answer").await;
-        let found = f.query("recall", json!({"terms":["CAFÉ"],"since":1000,"until":2000})).await.unwrap();
+        let found = f.recall(json!({"terms":["CAFÉ"],"since":1000,"until":2000})).await.unwrap();
         assert_eq!(found["complete"], true, "{found}");
         assert_eq!(found["titles"], json!([]));
         let passages = found["passages"].as_array().unwrap();
@@ -105,32 +105,48 @@ async fn recall_native_queries_keep_unicode_dates_titles_namespace_and_exact_his
         let through = f.query("observe", json!({"sessionId":session})).await.unwrap()["through"].clone();
         let page = f.query("history", json!({"sessionId":session,"through":through,"position":{"kind":"row","position":hit["anchorPosition"],"field":"body"}})).await.unwrap();
         assert_eq!(page["chunks"][0]["messageId"], hit["anchorMessageId"]);
-        assert!(page["chunks"][0]["text"].as_str().unwrap().contains("café"));
-        let title = f.query("recall", json!({"terms":["conversation"],"session_id":session})).await.unwrap();
+        let original = page["chunks"][0]["text"].as_str().unwrap();
+        assert!(original.contains("café") || original.contains("cafe\u{301}"));
+        let title = f.recall(json!({"terms":["conversation"],"session_id":session})).await.unwrap();
         assert_eq!(title["titles"][0]["id"], session);
-        assert_eq!(f.query("recall", json!({"terms":["café"],"since":4000})).await.unwrap()["passages"], json!([]));
-        assert!(f.query("recall", json!({"terms":["café"],"session_id":foreign})).await.is_err());
-        assert!(f.app.client().start(f.binding(2).await, "recall".into(), json!({"terms":["café"]}), scope(&f.issuer,false), Attachments::new().into()).await.is_err());
-        assert!(f.query("recall", json!({"terms":[],"since":2000,"until":1000})).await.is_err());
-        let long = format!("needle cafe\u{301} {}\n终点", "字".repeat(6000));
+        assert_eq!(f.recall(json!({"terms":["café"],"since":4000})).await.unwrap()["passages"], json!([]));
+        assert!(f.recall(json!({"terms":["café"],"session_id":foreign})).await.is_err());
+        assert!(f.app.client().subscribe(f.binding(2).await, "recall".into(), json!({"terms":["café"]}), scope(&f.issuer,false), Attachments::new().into()).await.is_err());
+        assert!(f.recall(json!({"terms":[],"since":2000,"until":1000})).await.is_err());
+        let long = format!("needle cafe\u{301} {}\n😀终点", "字".repeat(6000));
         let mut long_session = String::new();
         for index in 0..12 {
             let answer = if index == 11 { long.as_str() } else { "needle short answer" };
             let id = imported(&f, &format!("needle title {index}"), &f.owner.prefix, answer).await;
             if index == 11 { long_session = id; }
         }
-        let found = f.query("recall", json!({"terms":["needle"]})).await.unwrap();
+        let found = f.recall(json!({"terms":["needle"]})).await.unwrap();
         assert_eq!(found["complete"], true, "{found}");
         assert_eq!(found["titles"].as_array().unwrap().len(), 24, "both seed and imported titles remain searchable");
         let passages = found["passages"].as_array().unwrap();
         assert_eq!(passages.len(), 12, "title matches must not consume an implicit passage budget");
         let hit = passages.iter().find(|hit| hit["session"]["id"] == long_session).unwrap();
-        assert_eq!(hit["excerpt"], long, "the full source anchor preserves Unicode and its tail");
+        let preview = hit["excerpt"].as_str().unwrap();
+        assert!(preview.contains("needle"));
+        assert!(preview.chars().count() < long.chars().count(), "search returns a preview while history retains the complete source");
         let through = f.query("observe", json!({"sessionId":long_session})).await.unwrap()["through"].clone();
         let page = f.query("history", json!({"sessionId":long_session,"through":through,"position":{"kind":"row","position":hit["anchorPosition"],"field":"body"}})).await.unwrap();
         assert_eq!(page["chunks"][0]["messageId"], hit["anchorMessageId"]);
         assert_eq!(page["chunks"][0]["totalBytes"], long.len());
-        let limited = f.query("recall", json!({"terms":["needle"],"since":0,"limit":3})).await.unwrap();
+        let ending = f.recall(json!({"terms":["终点"],"session_id":long_session})).await.unwrap();
+        let endings = ending["passages"].as_array().unwrap();
+        assert_eq!(endings.len(), 1);
+        let ending = &endings[0];
+        assert_eq!(ending["session"]["id"], long_session);
+        let preview = ending["excerpt"].as_str().unwrap();
+        assert!(preview.contains("😀终点"));
+        let highlights = ending["highlights"].as_array().unwrap();
+        assert_eq!(highlights.len(), 1);
+        let start = usize::try_from(highlights[0]["start"].as_u64().unwrap()).unwrap();
+        let end = usize::try_from(highlights[0]["end"].as_u64().unwrap()).unwrap();
+        let utf16: Vec<_> = preview.encode_utf16().collect();
+        assert_eq!(String::from_utf16(&utf16[start..end]).unwrap(), "终点");
+        let limited = f.recall(json!({"terms":["needle"],"since":0,"limit":3})).await.unwrap();
         assert_eq!(limited["titles"], json!([]));
         assert_eq!(limited["passages"].as_array().unwrap().len(), 3);
         f.app.shutdown().await.unwrap();
@@ -148,8 +164,9 @@ async fn recall_native_model_tools_expand_exclude_active_turn_and_retain_materia
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let f = Fixture::configured(&format!("http://{}/v1",listener.local_addr().unwrap()),None,None,None,|settings| settings.recall=true).await;
         images::enable_vision(&f).await;
-        let source = imported(&f, "Earlier conversation", &f.owner.prefix, "The original café answer").await;
-        let found = f.query("recall",json!({"terms":["café"],"session_id":source})).await.unwrap();
+        let complete_answer = format!("The original café answer\n{}\n完整末尾 中😀", "字".repeat(6000));
+        let source = imported(&f, "Earlier conversation", &f.owner.prefix, &complete_answer).await;
+        let found = f.recall(json!({"terms":["café"],"session_id":source})).await.unwrap();
         let anchor = found["passages"][0]["anchorMessageId"].clone();
         let bytes = b"historical attachment contents\nsecond line";
         let uploaded = attachments::upload(&f,&source,"notes.txt",bytes,Uuid::new_v4()).await.unwrap();
@@ -160,11 +177,11 @@ async fn recall_native_model_tools_expand_exclude_active_turn_and_retain_materia
         let target = f.create("Current conversation").await;
         let started = f.mutation(2,"send",json!({"sessionId":target,"message":"café current turn must be excluded","model":f.selection().await}),Uuid::new_v4()).await.unwrap();
         assert_eq!(started["kind"],"started");
-        for (name,input,previous) in [
-            ("Recall",json!({"terms":["café","second","third","fourth","fifth","sixth","seventh","eighth","ninth"],"question":"original question ".repeat(40),"limit":26}), None),
-            ("RecallMore",json!({"session_id":source,"anchor_message_id":anchor,"before":9,"after":9}), Some("original café answer")),
-            ("RecallMaterial",json!({"session_id":source,"artifact_id":artifact}), Some("A later exchange")),
-            ("RecallMaterial",json!({"session_id":source,"artifact_id":image}), Some("historical attachment contents")),
+        for (name,input,previous,complete_context) in [
+            ("Recall",json!({"terms":["café","second","third","fourth","fifth","sixth","seventh","eighth","ninth"],"limit":26}), None, false),
+            ("RecallMore",json!({"session_id":source,"anchor_message_id":anchor,"before":9,"after":9}), Some("original café answer"), true),
+            ("RecallMaterial",json!({"session_id":source,"artifact_id":artifact}), Some("A later exchange"), true),
+            ("RecallMaterial",json!({"session_id":source,"artifact_id":image}), Some("historical attachment contents"), false),
         ] {
             let (mut socket,_) = listener.accept().await.unwrap();
             let sent = request(&mut socket).await;
@@ -172,6 +189,9 @@ async fn recall_native_model_tools_expand_exclude_active_turn_and_retain_materia
             if let Some(expected) = previous {
                 let result = sent["messages"].as_array().unwrap().iter().rev().find(|m| m["role"] == "tool").unwrap()["content"].as_str().unwrap();
                 assert!(result.contains(expected),"{result}");
+                if complete_context {
+                    assert!(result.contains(&complete_answer), "Recall and RecallMore must preserve the entire source message, including its Unicode tail");
+                }
                 assert!(!result.contains("current turn must be excluded"));
             }
             tool(&mut socket,name,input).await;
@@ -227,11 +247,17 @@ async fn recall_native_privacy_revokes_offered_tools_and_pending_queries() {
             |settings| settings.recall = true,
         )
         .await;
-        let source = imported(&f, "Private source", &f.owner.prefix, "The original café answer").await;
+        let source = imported(
+            &f,
+            "Private source",
+            &f.owner.prefix,
+            "The original café answer",
+        )
+        .await;
         let target = f.create("Privacy transition").await;
         let query = json!({"terms":["café"],"session_id":source});
         assert_eq!(
-            f.query("recall", query.clone()).await.unwrap()["passages"]
+            f.recall(query.clone()).await.unwrap()["passages"]
                 .as_array()
                 .unwrap()
                 .len(),
@@ -263,7 +289,7 @@ async fn recall_native_privacy_revokes_offered_tools_and_pending_queries() {
             maka_agent_facts::configuration::policy::RuntimePolicyMutationResult::Committed { .. }
         ));
         assert!(
-            f.query("recall", query.clone())
+            f.recall(query.clone())
                 .await
                 .unwrap_err()
                 .contains("privacy mode")
@@ -300,7 +326,7 @@ async fn recall_native_privacy_revokes_offered_tools_and_pending_queries() {
             .await
             .unwrap();
         assert_eq!(
-            f.query("recall", query).await.unwrap()["passages"]
+            f.recall(query).await.unwrap()["passages"]
                 .as_array()
                 .unwrap()
                 .len(),

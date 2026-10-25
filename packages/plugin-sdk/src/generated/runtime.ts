@@ -8874,7 +8874,6 @@ export interface RecallQuery {
    * @minItems 1
    */
   terms: [string, ...string[]];
-  question?: string | null;
   /**
    * An explicit caller-selected result budget; omission retains all matching results.
    */
@@ -8894,9 +8893,13 @@ export interface AgentRecallPassage {
   anchorMessageId: string;
   anchorPosition: HistoryRowPosition;
   /**
-   * Complete text of the original anchor message; rendering may choose a preview.
+   * Match-centered display preview. The anchor retains access to the complete source.
    */
   excerpt: string;
+  /**
+   * Highlight ranges in UTF-16 code units within `excerpt`.
+   */
+  highlights: AgentRecallHighlight[];
   matchedTerms: string[];
 }
 /**
@@ -8906,6 +8909,10 @@ export interface AgentRecallPassage {
 export interface HistoryRowPosition {
   sourceSequence: number;
   itemIndex: number;
+}
+export interface AgentRecallHighlight {
+  start: number;
+  end: number;
 }
 export interface AgentImportSourceRef {
   id: string;

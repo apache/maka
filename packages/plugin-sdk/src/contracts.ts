@@ -20789,7 +20789,7 @@ export const contracts = {
           resources: {},
         },
         recall: {
-          mode: 'query',
+          mode: 'subscription',
           input: {
             $schema: 'https://json-schema.org/draft/2020-12/schema',
             title: 'RecallQuery',
@@ -20802,10 +20802,6 @@ export const contracts = {
                   minLength: 1,
                 },
                 minItems: 1,
-              },
-              question: {
-                type: ['string', 'null'],
-                minLength: 1,
               },
               limit: {
                 description:
@@ -21228,8 +21224,15 @@ export const contracts = {
                   },
                   excerpt: {
                     description:
-                      'Complete text of the original anchor message; rendering may choose a preview.',
+                      'Match-centered display preview. The anchor retains access to the complete source.',
                     type: 'string',
+                  },
+                  highlights: {
+                    description: 'Highlight ranges in UTF-16 code units within `excerpt`.',
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/AgentRecallHighlight',
+                    },
                   },
                   matchedTerms: {
                     type: 'array',
@@ -21244,6 +21247,7 @@ export const contracts = {
                   'anchorMessageId',
                   'anchorPosition',
                   'excerpt',
+                  'highlights',
                   'matchedTerms',
                 ],
               },
@@ -21267,6 +21271,23 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: ['sourceSequence', 'itemIndex'],
+              },
+              AgentRecallHighlight: {
+                type: 'object',
+                properties: {
+                  start: {
+                    type: 'integer',
+                    format: 'uint',
+                    minimum: 0,
+                  },
+                  end: {
+                    type: 'integer',
+                    format: 'uint',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['start', 'end'],
               },
             },
           },

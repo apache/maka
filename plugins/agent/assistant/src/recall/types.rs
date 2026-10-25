@@ -27,8 +27,6 @@ use unicode_normalization::UnicodeNormalization;
 pub struct Query {
     #[schemars(length(min = 1), inner(length(min = 1)))]
     pub terms: Vec<String>,
-    #[schemars(length(min = 1))]
-    pub question: Option<String>,
     /// An explicit caller-selected result budget; omission retains all matching results.
     #[schemars(range(min = 1))]
     pub limit: Option<usize>,
@@ -42,7 +40,6 @@ impl Query {
         if self.terms.is_empty()
             || self.limit.is_some_and(|n| n == 0)
             || self.since.zip(self.until).is_some_and(|(a, b)| a > b)
-            || self.question.as_ref().is_some_and(|text| !nonempty(text))
             || self.session_id.as_ref().is_some_and(|text| !nonempty(text))
         {
             return Err(
@@ -70,8 +67,6 @@ pub struct More {
     pub anchor_message_id: String,
     pub before: Option<usize>,
     pub after: Option<usize>,
-    /// Byte offset in the anchor's NFC text, useful for a long individual message.
-    pub offset: Option<usize>,
 }
 impl More {
     pub fn validate(&self) -> Result<(), String> {
@@ -96,8 +91,6 @@ pub struct PassageMessage {
     pub text: String,
     pub timestamp: u64,
     pub is_anchor: bool,
-    pub offset: usize,
-    pub next_offset: Option<usize>,
     pub attachments: Vec<maka_agent_facts::attachment::AttachmentRef>,
 }
 #[derive(Serialize)]
@@ -112,7 +105,6 @@ pub struct Passage {
     pub score: f64,
     pub has_more_before: bool,
     pub has_more_after: bool,
-    pub truncated: bool,
 }
 #[derive(Serialize)]
 pub struct ResultSet {
@@ -128,22 +120,19 @@ impl ResultSet {
         }
         for passage in &self.passages {
             text.push_str(&format!(
-                "\nSession: {} ({})\nAnchor: {}\nMore before: {}; more after: {}; clipped: {}\n",
+                "\nSession: {} ({})\nAnchor: {}\nMore before: {}; more after: {}\n",
                 passage.session_title,
                 passage.session_id,
                 passage.anchor_message_id,
                 passage.has_more_before,
-                passage.has_more_after,
-                passage.truncated
+                passage.has_more_after
             ));
             for message in &passage.messages {
                 text.push_str(&format!(
-                    "\n{:?} {}{} (offset {}, next {:?}):\n{}\n",
+                    "\n{:?} {}{}:\n{}\n",
                     message.role,
                     message.message_id,
                     if message.is_anchor { " [anchor]" } else { "" },
-                    message.offset,
-                    message.next_offset,
                     message.text
                 ));
                 for attachment in &message.attachments {

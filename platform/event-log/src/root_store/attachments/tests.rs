@@ -197,7 +197,7 @@ async fn cancelled_accepted_copy_keeps_both_session_pins_until_target_cleanup() 
     let (_directory, root, source, target) = fixture().await;
     let request = upload(&source, &target, &vec![3; 2 * 64 * 1024 + 1]).await;
     let (source_owner, target_owner, same) = root
-        .pin_attachment(source.id(), target.id(), None)
+        .pin_session_pair(source.id(), target.id(), None)
         .await
         .unwrap();
     assert!(!same);
@@ -296,7 +296,7 @@ async fn same_partition_copy_keeps_existing_atomic_path() {
 async fn selected_copy_reuses_original_target_and_shared_source_binding_custody() {
     use futures_util::poll;
     use maka_agent_facts::{
-        event::Invocation,
+        event::{EventWrite, Fact, Invocation, InvocationInput, InvocationOutcome, RuntimeEvent},
         workspace::{BindingStamp, PermissionBasis},
     };
     use std::time::Duration;
@@ -326,6 +326,48 @@ async fn selected_copy_reuses_original_target_and_shared_source_binding_custody(
                 .await
                 .unwrap();
         }
+        let source_invocation = Invocation {
+            session_id: source.id().into(),
+            turn_id: "recall-turn".into(),
+            run_id: "recall-run".into(),
+            invocation_id: "recall-invocation".into(),
+        };
+        let event =
+            |fact| EventWrite::plain(RuntimeEvent::new(source_invocation.clone(), fact)).unwrap();
+        source
+            .append_batch(&[
+                event(Fact::InvocationOpened {
+                    configuration: None,
+                    input: InvocationInput::Message {
+                        source_messages: Vec::new(),
+                        content: "custody-recall evidence".into(),
+                        request_fingerprint: None,
+                    },
+                }),
+                event(Fact::InvocationEnded {
+                    outcome: InvocationOutcome::Completed,
+                }),
+            ])
+            .await
+            .unwrap();
+        let anchor = root
+            .search_history(
+                "source",
+                crate::recall::SearchQuery {
+                    terms: vec!["custody-recall".into()],
+                    session_id: Some(source.id().into()),
+                    since: None,
+                    until: None,
+                    exclude: None,
+                    limit: None,
+                },
+                tokio_util::sync::CancellationToken::new(),
+            )
+            .await
+            .unwrap()
+            .hits
+            .pop()
+            .unwrap();
         let request = upload(&source, &target, &[7; 129]).await;
         let scope = target
             .execution_scope(Some(PermissionBasis {
@@ -353,6 +395,24 @@ async fn selected_copy_reuses_original_target_and_shared_source_binding_custody(
         // exercises the captured-custody contract without relying on fairness.
         let mut writer = Box::pin(root.gates.write([gates::Key::Binding(target_binding.id)]));
         assert!(poll!(&mut writer).is_pending());
+        let recalled = tokio::time::timeout(
+            Duration::from_secs(2),
+            root.history_context(
+                "source",
+                source.id(),
+                &anchor.message_id,
+                0,
+                0,
+                Some(anchor.through),
+                None,
+                Some(&selected),
+                tokio_util::sync::CancellationToken::new(),
+            ),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(recalled.anchor.body, "custody-recall evidence");
         assert!(
             tokio::time::timeout(
                 Duration::from_secs(2),

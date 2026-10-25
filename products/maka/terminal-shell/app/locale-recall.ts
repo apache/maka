@@ -39,6 +39,11 @@ export const recallMessages = {
     '輸入關鍵字，搜尋對話歷史。',
   ],
   'Searching conversations…': ['Searching conversations…', '正在搜索会话…', '正在搜尋對話…'],
+  'Conversation search ended without a result.': [
+    'Conversation search ended without a result.',
+    '会话搜索结束，但未返回结果。',
+    '對話搜尋結束，但未傳回結果。',
+  ],
   'Search is incomplete. Available matches are shown.': [
     'Search is incomplete. Available matches are shown.',
     '部分会话未能搜索，已显示可用结果。',

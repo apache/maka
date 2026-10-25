@@ -332,10 +332,6 @@ impl ApplicationHost {
             SubscriptionKind::File(Some(
                 serde_json::from_value(input.clone()).map_err(|_| "Invalid file read selector")?,
             ))
-        } else if endpoint == "terminal" {
-            // Terminal subscriptions can return a real final item: in particular,
-            // readDisplay's End and a refused acquire's failed business outcome.
-            SubscriptionKind::Terminal
         } else {
             SubscriptionKind::Events
         };
@@ -755,7 +751,6 @@ pub struct ScopedSubscription {
 }
 enum SubscriptionKind {
     Events,
-    Terminal,
     File(Option<maka_agent_api::contract::FileRead>),
 }
 
@@ -774,7 +769,7 @@ impl ScopedSubscription {
         let (owner, subscription, source) = this.with_mut(|item| {
             let source = match &mut item.kind {
                 SubscriptionKind::File(source) => source.take(),
-                SubscriptionKind::Events | SubscriptionKind::Terminal => None,
+                SubscriptionKind::Events => None,
             };
             (item.owner.clone(), item.subscription.clone(), source)
         });
@@ -794,19 +789,15 @@ impl ScopedSubscription {
         if this.with(|item| matches!(item.kind, SubscriptionKind::File(_))) {
             return Err("Consume file subscriptions with readFile".into());
         }
-        let (owner, subscription, terminal) = this.with(|item| {
-            (
-                item.owner.clone(),
-                item.subscription.clone(),
-                matches!(item.kind, SubscriptionKind::Terminal),
-            )
-        });
+        let (owner, subscription) =
+            this.with(|item| (item.owner.clone(), item.subscription.clone()));
         drop(this);
         execute(owner, async move {
             match subscription.next().await? {
-                Some(SubscriptionEvent::Item(value)) => Ok(value),
-                Some(SubscriptionEvent::Finished(value)) if terminal => Ok(value),
-                Some(SubscriptionEvent::Finished(_)) | None => Ok(JsonValue::Null),
+                Some(SubscriptionEvent::Item(value) | SubscriptionEvent::Finished(value)) => {
+                    Ok(value)
+                }
+                None => Ok(JsonValue::Null),
             }
         })
         .await

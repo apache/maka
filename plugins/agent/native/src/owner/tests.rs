@@ -941,6 +941,23 @@ impl Fixture {
             .result()
             .await
     }
+    async fn recall(&self, input: Value) -> Result<Value, String> {
+        let mut subscription = self
+            .app
+            .client()
+            .subscribe(
+                self.binding(2).await,
+                "recall".into(),
+                input,
+                scope(&self.issuer, true),
+                Attachments::new().into(),
+            )
+            .await?;
+        while subscription.recv().await.is_some() {}
+        let completion = subscription.completion().await;
+        completion.cleanup?;
+        completion.result
+    }
     async fn drained(&self) {
         while !self.owner.workers.is_empty() {
             tokio::task::yield_now().await;

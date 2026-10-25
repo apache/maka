@@ -21,6 +21,8 @@ use super::*;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn editor_copy_and_undo_precede_interrupt_and_ctrl_c_requires_confirming_the_current_run() {
+    use ratatui::{buffer::Buffer, layout::Rect, style::Modifier};
+
     tokio::time::timeout(Duration::from_secs(60), async {
         let mut fixture = Fixture::open().await;
         let client = fixture.client().await;
@@ -38,6 +40,8 @@ async fn editor_copy_and_undo_precede_interrupt_and_ctrl_c_requires_confirming_t
         tab_to_label(&mut view, "Message composer").await;
         wait_editable_composer(&mut view).await;
         const DRAFT: &str = "CTRL_C_UNDO_DRAFT_你好";
+        const RECALL_NEEDLE: &str = "RECALL_TAIL_cafe\u{301}_中文😀";
+        const RECALL_QUERY: &str = "RECALL_UNMATCHED RECALL_TAIL_CAFÉ_中文😀";
         view.handle_event(Event::Paste(DRAFT.into()));
         support::wait_draft(&client, &fixture.session, DRAFT).await;
         support::wait_enabled_button(&mut view, "Send message").await;
@@ -65,8 +69,16 @@ async fn editor_copy_and_undo_precede_interrupt_and_ctrl_c_requires_confirming_t
         {
             tab_to_label(&mut view, "Message composer").await;
             wait_editable_composer(&mut view).await;
-            view.handle_event(Event::Paste(message.into()));
-            support::wait_draft(&client, &fixture.session, message).await;
+            let draft = if index == 1 {
+                format!(
+                    "{message} RECALL_PREVIEW_HEAD {}{RECALL_NEEDLE}",
+                    "earlier context ".repeat(60)
+                )
+            } else {
+                message.to_owned()
+            };
+            view.handle_event(Event::Paste(draft.clone()));
+            support::wait_draft(&client, &fixture.session, &draft).await;
             support::wait_enabled_button(&mut view, "Send message").await;
             view.handle_event(Event::Key(KeyEvent::new(
                 KeyCode::Enter,
@@ -176,7 +188,79 @@ async fn editor_copy_and_undo_precede_interrupt_and_ctrl_c_requires_confirming_t
             .await;
             previous = Some(invocation);
         }
-        assert_eq!(fixture.request_count.load(Ordering::SeqCst), 2);
+        shortcut(&mut view, 'o');
+        wait_focused_input(&mut view, "Search conversation history").await;
+        view.handle_event(Event::Paste(RECALL_QUERY.into()));
+        view.handle_event(Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        )));
+        let result =
+            support::wait_enabled_button(&mut view, "Open matching passage in NSH real Agent")
+                .await;
+        wait_view(&mut view, |screen| screen.contains("RECALL_TAIL_")).await;
+        let viewport = view.surface().viewport();
+        let area = Rect::new(
+            0,
+            0,
+            (viewport.width.0 / 8.0) as u16,
+            (viewport.height.0 / 16.0) as u16,
+        );
+        let mut buffer = Buffer::empty(area);
+        view.render(area, &mut buffer);
+        let left = (result.frame.origin.x.0 / 8.0).floor().max(0.0) as u16;
+        let right = ((result.frame.origin.x.0 + result.frame.size.width.0) / 8.0)
+            .ceil()
+            .min(f32::from(area.width)) as u16;
+        let top = (result.frame.origin.y.0 / 16.0).floor().max(0.0) as u16;
+        let bottom = ((result.frame.origin.y.0 + result.frame.size.height.0) / 16.0)
+            .ceil()
+            .min(f32::from(area.height)) as u16;
+        let prefix = "RECALL_TAIL_";
+        let (x, y) = (top..bottom)
+            .find_map(|y| {
+                (left..=right.saturating_sub(prefix.len() as u16)).find_map(|x| {
+                    let text: String = (0..prefix.len())
+                        .map(|offset| buffer[(x + offset as u16, y)].symbol())
+                        .collect();
+                    (text == prefix).then_some((x, y))
+                })
+            })
+            .expect("the matched excerpt must be visible in its native result row");
+        assert!(
+            (0..prefix.len()).all(|offset| buffer[(x + offset as u16, y)]
+                .modifier
+                .contains(Modifier::BOLD)),
+            "the actual matching excerpt must retain its native span highlight"
+        );
+        shortcut(&mut view, 'a');
+        view.handle_event(Event::Paste("RECALL_NO_CONVERSATION_MATCH".into()));
+        view.control().unwrap().dispatch_event(
+            result.id,
+            nsh_core::EventKind::Press,
+            nsh_core::EventPayload::None,
+        );
+        wait_view(&mut view, |screen| {
+            screen.contains("No matching conversations or messages.")
+        })
+        .await;
+        wait_focused_input(&mut view, "Search conversation history").await;
+        shortcut(&mut view, 'a');
+        view.handle_event(Event::Paste(RECALL_QUERY.into()));
+        support::click_button(&mut view, "Open matching passage in NSH real Agent").await;
+        wait_view_state(&mut view, |view, screen| {
+            screen.contains("RECALL_PREVIEW_HEAD")
+                && !view
+                    .accessibility_snapshot()
+                    .iter()
+                    .any(|node| node.label == "Close conversation search")
+        })
+        .await;
+        assert_eq!(
+            fixture.request_count.load(Ordering::SeqCst),
+            2,
+            "searching and opening the exact original source must not call a model"
+        );
         drop(view);
         bindings.close().await.unwrap();
         fixture.finish().await;

@@ -42,6 +42,7 @@ sqlx-core = { version = "0.9", default-features = false }
 futures-util.workspace = true
 serde_json.workspace = true
 regex = "1.13.1"
+unicode-normalization = "0.1.25"
 unicode-width = "0.2.2"
 sha2.workspace = true
 thiserror.workspace = true

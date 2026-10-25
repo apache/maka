@@ -35,7 +35,17 @@ pub struct RecallPassage {
     pub session: Session,
     pub anchor_message_id: String,
     pub anchor_position: RowPosition,
-    /// Complete text of the original anchor message; rendering may choose a preview.
+    /// Match-centered display preview. The anchor retains access to the complete source.
     pub excerpt: String,
+    /// Highlight ranges in UTF-16 code units within `excerpt`.
+    pub highlights: Vec<RecallHighlight>,
     pub matched_terms: Vec<String>,
+}
+
+#[derive(Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentRecallHighlight")]
+pub struct RecallHighlight {
+    pub start: usize,
+    pub end: usize,
 }

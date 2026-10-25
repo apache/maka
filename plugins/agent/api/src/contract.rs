@@ -1623,7 +1623,7 @@ pub fn contract() -> Contract {
                 ),
                 (
                     "recall".into(),
-                    method::<RecallQuery, RecallPage>(MethodMode::Query),
+                    method::<RecallQuery, RecallPage>(MethodMode::Subscription),
                 ),
                 (
                     "imports".into(),

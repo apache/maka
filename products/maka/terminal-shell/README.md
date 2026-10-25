@@ -50,9 +50,9 @@ Use **Connections & models** on Home or **Settings** in the sidebar to add a con
 
 **Settings → General** also provides scrollable multiline editors for the assistant’s global **AGENTS.md** and the compaction prompt. Save to apply document edits; **Use default prompt** selects the Host default for the compaction prompt.
 
-The header has separate controls for the session sidebar, **Search sessions** (Ctrl+O) and **Commands** (Ctrl+P). The sidebar toggle uses a neutral icon at rest and shows the expand or collapse direction on hover or keyboard focus. **Search sessions** focuses title search within the selected scope and Active/Archived filter.
+The header provides the sidebar toggle and **Commands** (Ctrl+P). The sidebar toggle uses a neutral icon at rest and shows the expand or collapse direction on hover or keyboard focus. Open **Search conversations** from the sidebar or with Ctrl+O to search titles and message contents across readable conversations, including archives.
 
-**Sessions** uses a collapsible sidebar when the terminal has room for both it and the conversation; smaller windows use a dialog. **New conversation** sits above the compact workspace scope, title search and filters; **Settings** sits below the list. Drag the divider or use **‹** / **›** to adjust the sidebar. Choose **All workspaces**, the current session's exact workspace, or a project. A project's **+** creates in its Host-authorized directory. An isolated worktree is not necessarily part of its parent project. Keyboard controls remain available without persistent help rows.
+**Sessions** uses a collapsible sidebar when the terminal has room for both it and the conversation; smaller windows use a dialog. **New conversation** sits above the compact workspace scope, conversation search and filters; **Settings** sits below the list. Drag the divider to adjust the sidebar. Choose **All workspaces**, the current session's exact workspace, or a project. A project's **+** creates in its Host-authorized directory. An isolated worktree is not necessarily part of its parent project. Keyboard controls remain available without persistent help rows.
 
 Open **Files** in a conversation header or **Commands** to browse its authorized workspace. Files and current Git changes open in session-owned preview tabs, docked on the right when space allows and in a dialog otherwise. Directory updates retain the already requested range; scrolling automatically requests later pages. Switching conversations closes its previews and watches while preserving the conversation draft.
 
@@ -63,7 +63,7 @@ File previews are captured contents: **Refresh** reads the current file again. T
 | Key | Action |
 | --- | --- |
 | Ctrl+P | Open **Commands** |
-| Ctrl+O | Open **Sessions** |
+| Ctrl+O | Open **Search conversations** |
 | Ctrl+G | Open model and effort choices in **Models** |
 | Ctrl+N | Create a conversation |
 | Ctrl+L | Jump to the latest messages |
@@ -73,13 +73,13 @@ File previews are captured contents: **Refresh** reads the current file again. T
 | Enter | Send from the composer, select a search result, or activate the focused control |
 | Shift+Enter | Insert a newline in the composer |
 | Esc | Go back within **Models**, then close it; otherwise close the overlay or focused browser, or request Stop from the conversation |
-| Ctrl+C | Copy selected text through the terminal's OSC 52 support |
+| Ctrl+C | Copy selected text; otherwise clear an idle draft with undo, confirm stopping a running task, or press twice to exit while idle |
 | Ctrl+0 or Ctrl+Alt+0 | Reset and save the pixel interface scale to 100% |
 | Ctrl+Q | Quit |
 
 Model selection uses **Ctrl+G** because classic terminals encode Ctrl+M as the same carriage return as Enter. Paste through your terminal's paste command.
 
-In a search field, type to search, use ↑/↓ to select, and Enter to activate. Sessions searches titles within the chosen scope, using the complete case-sensitive literal substring. The Host applies this search before paging; it does not search conversation contents, paths or IDs. Model search uses the Host's catalog. Results load automatically as you scroll or move down.
+Type in **Search conversations**, use ↑/↓ to select, and Enter or a mouse click to open a result. Terms match literal substrings with Unicode normalization and case-insensitive OR matching. History uses a persistent SQLite FTS5 index maintained with the original messages. Changing the query or closing search cancels the old subscription. Results show a highlighted preview around the match and open its original message; title matches open the conversation at its latest messages. Search does not read thinking or follow the sidebar workspace and archive filters. Model search uses the Host's model catalog and loads later pages automatically.
 
 Click the composer's model label or press Ctrl+G to open **Models**, then choose **Model** or **Reasoning effort**. Effort choices come from the selected model's published policy; **Off** appears only when supported. A known default selects its actual level directly, without a separate Default row. If the provider controls an unknown default, no level is invented; after choosing an explicit level, **Use provider settings** clears that override. Re-selecting the same model on the same connection preserves an explicit effort choice. Escape or **Back** returns from either list to the menu; another Escape or **Close** closes it and restores focus to the opener, preserving the draft and caret.
 
