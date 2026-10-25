@@ -303,6 +303,11 @@ draw a panel.
   every canvas at once (Stocks p95 ~3.3 → ~7.5 ms, 2% of frames over a refresh: the main thread fills the screen's
   RGBA16F backing stores), 8-bit contents (canvas phase ~0.45 → ~1.6 ms).
 
+  Canvases drawn at once unless they paint often (`canvas.rs` `Cadence`: 10 paints a second): three 340×40 line
+  charts redrawn every 2 s (a menu-bar panel's) hold ~83 MB of footprint asynchronously and ~21 MB at once, with
+  ~30% less CPU time over 40 s. The gallery's tour is unchanged in frame time and CPU; peak memory on the pages with
+  canvases drops (Canvas scrolling ~383 → ~310 MB, Animations ~290 → ~232, Gestures ~279 → ~221).
+
   List binds while scrolling (release host, 120 Hz MacBook Pro; the list scrolled by chained native
   `scrollToOffset({ animated: true })` every 300 ms, no input; each display link refresh logged with its link
   timestamp and main-thread time; three runs each, refreshes missed = link gaps of two periods or more). Before =

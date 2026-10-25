@@ -213,7 +213,7 @@ Monitor shows); *resident* adds the pages of the system's shared libraries:
 
 Through the gallery's tour the process holds 84–230 MB up to the Canvas page and ~350–360 MB from the Text View page
 on, with what it caches on purpose (decoded images, bounded at 128 MB; the Text View page's documents) and the
-frameworks it loads on first use (WebKit for web views); the Canvas page's rasters, up to ~380 MB with all three
+frameworks it loads on first use (WebKit for web views); the Canvas page's rasters, up to ~310 MB with all three
 canvases on screen, go when the page closes.
 
 ### App size
@@ -238,8 +238,10 @@ What makes these numbers:
 
 - **Frames only for changes**: the display link ticks while a native animation runs and stops with it; an animation
   stops with its page (its view's deletion ends its keyframes, a loop stops in its component's `cleanup`).
-- **Canvases on Core Animation's threads**: canvases draw asynchronously (`drawsAsynchronously`), and an animated value
-  redraws only the area the operations reading it cover.
+- **Canvases drawn where they cost least**: a canvas that paints often (an animation, live data) draws on Core
+  Animation's threads (`drawsAsynchronously`), which keeps the main thread free; one redrawn now and then draws at
+  once, without the graphics memory asynchronous drawing holds. An animated value redraws only the area the
+  operations reading it cover.
 - **Static canvas parts kept**: once a drawing stays unchanged, a long part before its first animated operation is
   kept as a layer; each frame draws that layer and replays only the animated rest, at once on the main thread (the
   Canvas page's gauge, clock and dot matrix: no GPU work and half the memory).

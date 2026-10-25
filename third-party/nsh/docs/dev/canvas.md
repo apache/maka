@@ -58,8 +58,9 @@ that operation on runs again (the operations before it still set the state; thei
 animated part begins a path of its own). macOS keeps that part too, as a `CGLayer` (`canvas.rs` `Prefix`), when it
 is long (128 operations or more: drawing a layer costs about what replaying a sparkline does) and the drawing has been
 painted unchanged 30 times (a drawing that keeps changing would rasterize it on the main thread more often than it
-draws from it); such a canvas then draws at once instead of asynchronously, where its layer is made, and goes back to
-Core Animation's threads when its drawing changes. On Linux, a canvas out of sight (outside a clipping ancestor or the window) is not
+draws from it); such a canvas draws at once, where its layer is made. Other canvases draw at once too unless they
+paint 10 times a second or more (`canvas.rs` `Cadence`), when Core Animation replays them on its threads
+(`docs/dev/macos.md`). On Linux, a canvas out of sight (outside a clipping ancestor or the window) is not
 drawn until it comes into sight: its animations ask for no frames. Android, the web runtime and the GPUI backend (which rasterizes the drawing, text outlines
 included, with tiny-skia into a pixmap in device pixels: `nsh-platform-gpui` `canvas.rs`) still redraw the
 whole canvas. Numbers:

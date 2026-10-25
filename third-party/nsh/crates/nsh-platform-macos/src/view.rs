@@ -375,10 +375,10 @@ define_class!(
                 crate::canvas::draw(cx, &state, dirty, size, scale, asynchronous);
             }
             CGContext::restore_g_state(c);
-            // A canvas that keeps its static part redraws little: drawn at
-            // once, without the drawing threads' cost per layer.
+            // Where the next paint happens (`canvas.rs`): Core Animation's
+            // threads for a canvas painting often, at once for the rest.
             if let Some(canvas) = &state.canvas
-                && canvas.keeps_prefix() == asynchronous
+                && canvas.draws_asynchronously() != asynchronous
             {
                 layer.setDrawsAsynchronously(!asynchronous);
             }
@@ -1197,11 +1197,12 @@ impl NshView {
         layer.setDelegate(Some(objc2::runtime::ProtocolObject::from_ref(&*drawer)));
         layer.setAnchorPoint(CGPoint::new(0.0, 0.0));
         layer.setNeedsDisplayOnBoundsChange(true);
-        // Canvases are drawn on Core Animation's threads (paths and
-        // gradients are costly; measured on the Stocks demo, main-thread
-        // time per frame went from 3.5 to 1.8 ms); text is cheap to draw
-        // and drawn at once, which was faster.
-        layer.setDrawsAsynchronously(self.state().canvas.is_some());
+        // Drawn at once: text is cheap to draw, which measured faster than
+        // asynchronously, and a canvas moves to Core Animation's threads
+        // once it paints often (`canvas.rs`; paths and gradients are
+        // costly: on the Stocks demo main-thread time per frame went from
+        // 3.5 to 1.8 ms).
+        layer.setDrawsAsynchronously(false);
         layer.setContentsScale(self.backing_scale());
         // Above the decoration behind it (fills, gradients, inset
         // shadows), below the children and the borders in front.

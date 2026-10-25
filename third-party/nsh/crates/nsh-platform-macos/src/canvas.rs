@@ -20,6 +20,15 @@
 //! does, and rasterizing one runs on the main thread, where a full replay
 //! is only recorded for Core Animation's drawing threads.
 //!
+//! Where a canvas draws ([`CanvasState::draws_asynchronously`]): at once on
+//! the main thread, unless it paints often ([`FREQUENT`] times a second or
+//! more: an animation, live data) and keeps no layer, when Core Animation
+//! replays it on its threads, which keeps the main thread free. Drawing
+//! there costs graphics memory (~50 MB for the process on macOS 27, held
+//! while any canvas draws so) and Metal work per layer, which a canvas
+//! redrawn now and then (a chart updated every few seconds) gains nothing
+//! from.
+//!
 //! Images are loaded through [`crate::image::load`] when a drawing names
 //! them, kept per canvas and drawn once loaded, at their natural size in
 //! pixels as points (as a canvas bitmap's CSS pixels).
@@ -29,6 +38,7 @@ use std::{
     f64::consts::TAU,
     rc::Rc,
     sync::Arc,
+    time::{Duration, Instant},
 };
 
 use nsh_core::{
@@ -81,6 +91,48 @@ pub(crate) struct CanvasState {
     prefix: RefCell<Option<Prefix>>,
     /// How often the drawing was painted since it was set.
     redrawn: Cell<u32>,
+    /// How often it paints ([`CanvasState::draws_asynchronously`]).
+    cadence: Cadence,
+}
+
+/// How many paints a second make a canvas draw on Core Animation's threads.
+const FREQUENT: u32 = 10;
+
+/// How often a canvas paints, counted a second at a time.
+#[derive(Default)]
+struct Cadence {
+    /// When the current second began, and its paints so far.
+    since: Cell<Option<Instant>>,
+    paints: Cell<u32>,
+    /// [`FREQUENT`] paints in the current second, or in the last one.
+    frequent: Cell<bool>,
+}
+
+impl Cadence {
+    /// A paint at `now`.
+    fn paint(&self, now: Instant) {
+        match self.since.get() {
+            Some(since) if now.duration_since(since) < Duration::from_secs(1) => {
+                let paints = self.paints.get() + 1;
+                self.paints.set(paints);
+                if paints >= FREQUENT {
+                    self.frequent.set(true);
+                }
+            }
+            since => {
+                // A new second: the last one was slow, or a second without
+                // paints came between.
+                if since.is_some_and(|since| {
+                    self.paints.get() < FREQUENT
+                        || now.duration_since(since) >= Duration::from_secs(2)
+                }) {
+                    self.frequent.set(false);
+                }
+                self.since.set(Some(now));
+                self.paints.set(1);
+            }
+        }
+    }
 }
 
 /// How often a drawing is painted unchanged before its static part is kept
@@ -235,9 +287,16 @@ impl CanvasState {
         0 < self.split && self.redrawn.get() >= STABLE
     }
 
+    /// Whether Core Animation draws it on its threads
+    /// (`drawsAsynchronously`): when it paints often and keeps no layer.
+    pub(crate) fn draws_asynchronously(&self) -> bool {
+        self.cadence.frequent.get() && !self.keeps_prefix()
+    }
+
     /// [`draw`]'s replay; `asynchronous`: `cx` records for Core Animation's
     /// drawing threads.
     fn paint(&self, cx: &CGContext, dirty: CGRect, size: CGSize, scale: f64, asynchronous: bool) {
+        self.cadence.paint(Instant::now());
         let canvas = self;
         let Some(drawing) = canvas.drawing.as_ref() else {
             return;
@@ -1353,6 +1412,41 @@ mod tests {
             Some(AnimationValue::Number(0.4)),
         ];
         canvas
+    }
+
+    #[test]
+    fn a_canvas_painting_often_draws_asynchronously() {
+        let start = Instant::now();
+        let at = |ms: u64| start + Duration::from_millis(ms);
+        // Redrawn every 2 s: at once.
+        let rare = Cadence::default();
+        for n in 0..5 {
+            rare.paint(at(n * 2000));
+        }
+        assert!(!rare.frequent.get());
+        // An animation at 120 Hz: on Core Animation's threads from its
+        // tenth frame.
+        let animated = Cadence::default();
+        for n in 0..9 {
+            animated.paint(at(n * 8));
+        }
+        assert!(!animated.frequent.get());
+        animated.paint(at(72));
+        assert!(animated.frequent.get());
+        for n in 10..240 {
+            animated.paint(at(n * 8));
+        }
+        assert!(animated.frequent.get());
+        // It stops: the next paint, a second on, draws at once again.
+        animated.paint(at(240 * 8 + 3000));
+        assert!(!animated.frequent.get());
+        // A canvas keeping its static part draws at once however often.
+        let mut canvas = sparkline_canvas(5.0);
+        canvas.cadence.frequent.set(true);
+        canvas.split = MIN_PREFIX;
+        assert!(!canvas.draws_asynchronously());
+        canvas.redrawn.set(0);
+        assert!(canvas.draws_asynchronously());
     }
 
     #[test]

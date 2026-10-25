@@ -714,7 +714,7 @@
     "crates/nsh-platform-macos/src/animation.rs": "ad70729a97b8f22bcab1d9eb47644d2f9e8ede7796456b833d3cdf31b901a0e8",
     "crates/nsh-platform-macos/src/app.rs": "c0170d9212dbae7e81c15782284d23b1020abfeb1ce3f1629b2aee500fc970a8",
     "crates/nsh-platform-macos/src/blur.rs": "04af7f839f5e5a9d7005638c836b748c2364c804e45174a22d8c8a1e3d7945d1",
-    "crates/nsh-platform-macos/src/canvas.rs": "d927d8f589014ef487a948cfc5705bec95ee187b8cff5238a169f5200b7a8a4e",
+    "crates/nsh-platform-macos/src/canvas.rs": "21a3099e8dbf2d0b322b6515f5d5c89a768fb43e6882f076a09184aeefcf3657",
     "crates/nsh-platform-macos/src/chrome.rs": "83129a8a83998c110487f496c04ad9c5e8363c6d6ea6f64666789ac13d1fbb6c",
     "crates/nsh-platform-macos/src/decor.rs": "f32418bc52317ab6000ef9abb6c9ce6a287ba5bc362ffbde9049e41a29061c83",
     "crates/nsh-platform-macos/src/dev.rs": "c985b558d791963b13a83f8dbc5a48395dc1ae105b23abb7637f29d81975f5ed",
@@ -738,7 +738,7 @@
     "crates/nsh-platform-macos/src/text.rs": "ff5de5d8db0099f156a8dd643f7d85a804325f78bb9d3b7ea965e36c97fbaabf",
     "crates/nsh-platform-macos/src/text_input.rs": "e95ba49c88617fd38ebad9cde53bf25a9ff75bbbe8505b1117bb0ec02816b8a6",
     "crates/nsh-platform-macos/src/transition.rs": "41d697d2faa7c8677ad6e5120c0dd20f54a24ab885d4f3014062615968df60c7",
-    "crates/nsh-platform-macos/src/view.rs": "1c8334489a9f7a3a5aaddf88384353822f7ea592b73a3fb5439190a3da04b5c3",
+    "crates/nsh-platform-macos/src/view.rs": "2f182f6dd2bae79ae25168311fae444220ffd06132a745996965f956a0d23a22",
     "crates/nsh-platform-macos/src/visual.rs": "87b87844da3d1d269c1f21d53c7c7d2cd1dbc3a6d14e80daf1db0dae72032c39",
     "crates/nsh-platform-tui/Cargo.toml": "8757c1cfc5b97419ea8ac3d7502493c123cace9fe61d5998ebd7f7d6d9926e11",
     "crates/nsh-platform-tui/src/app.rs": "aedfa72f03d47e480ab193f312d30ee1739655b66c9ff1c6a742b45e51d3793d",
@@ -911,7 +911,7 @@
     "docs/dev/animation.md": "751ad601076b6e3e5c9d7d8eda276157ff8f76f906907dc2a92fb4d797ca1fa0",
     "docs/dev/api-naming.md": "46389466c880556a8fa346c5a89a4a89d3de3e96a8c4f795d2576bc0405ae1fe",
     "docs/dev/architecture.md": "dd96d2a3ea5d26d23d17e0db36a1b280486be933eb83452f8fbb5d4c87023951",
-    "docs/dev/canvas.md": "5bf8a715a6341bffe5ea8e3a539fbd6ae7fa2217f5aba7ff81e41a30af1c0a04",
+    "docs/dev/canvas.md": "be260e253e77a552b54d31501643ca9c63a3460eb6e963374c17e4f7fa4f722f",
     "docs/dev/compatibility.md": "26336d6349cbedd0a70990dd5a4d2e7e48c604242974ac164e68bbeb4ad1cddd",
     "docs/dev/components.md": "6878d7131fda0cc0918c82fb75e006ddf4c9324a5206f57b11e35339c344b6f5",
     "docs/dev/dock.md": "51527992aeec0387fe7ebdb82b7d24ed4ab6f0dc19b3332e23236cb7a3ad1041",
@@ -924,9 +924,9 @@
     "docs/dev/js-modules.md": "7294701ce4c69d8625e43e33a0cee0d7d81d6004bf55272938777431da9ee048",
     "docs/dev/layerfs.md": "df9b16b2f5f1e61f9693f63b61438a51461d05b535a0046d50ac9ba1ade12b8b",
     "docs/dev/linux.md": "05ce611a052a17c8184a6575a5a8e4af205d4da1f0f0676c5f7f2aa371d2de15",
-    "docs/dev/macos.md": "d74381ae9995364f899bd70abacc447244206f5a45eb9cce25476af953d74717",
+    "docs/dev/macos.md": "0b23556304b5e91400079c911ed6e9e85da4ca7be46ae81a2118908e2251ea28",
     "docs/dev/native-pipeline.md": "07f803365af6ac90d5247c70d2e85ce9e03393f0e9e122c46690f85e381a0c55",
-    "docs/dev/performance.md": "229957c07ead01028e6c7a6761ac2110cb5104aa996e93bb76adf54679d76c7b",
+    "docs/dev/performance.md": "cc9174a22b24ede70222ac598fe157f5ddf012180d242d892a8c8f02f8fc13fe",
     "docs/dev/pitfalls.md": "b89a76d8d9f26c45d65302e830308592e261b6b30d792964961e61313aacf1dc",
     "docs/dev/reactive-components.md": "cd447fe8cfbe9026d7cadd5fa42d9c387e4c1b1b7e1c5adddd55c3f1beb94a4d",
     "docs/dev/rust-classes.md": "1f70015213dbcf56e6d6e4641019092003c22eb57ca324d9c4a85578b4468139",
@@ -1505,7 +1505,7 @@
     "website/docs/navigation.md": "02e244b6163a0377b6e1c2147fceea1d67c97bee753b0e2632bce49171ee70b6",
     "website/docs/networking.md": "266b3e68ab44b1509afb2b43d21874be4c44d0a69fe7b4bee9adf3f86be83ad2",
     "website/docs/packaging.md": "690ecec5e728174c649f16078472150edf2be9bfafc93c40b370f1bb79351a8d",
-    "website/docs/performance-report.md": "26ea93986bebfe23501286f5f0fc670d4aff46862a1b3bee6a4a1d3d397a8405",
+    "website/docs/performance-report.md": "8924d78b30d232996c0f6a9d3cc21c93643c0b9a8e95a6dd3235f316a9f854cc",
     "website/docs/performance.md": "25cd68d35d05e874326b59792f495ed979995dabadb3eafc42f1381ecdf565c7",
     "website/docs/platform-specific.md": "d6b8c1fa6cab0731190755904b41cc4cd04098d6fdc525577f49621b23c699bd",
     "website/docs/platforms.md": "e14ee6a89a6a9ef9e76b66a5b0226d1c7b4da8810c524b80d06ed7ef63246251",
@@ -1698,7 +1698,7 @@
     "website/zh-CN/docs/navigation.md": "4fad62c6523ecca3fb6efc28fd0f1d517b8c0111a1937fc474f9162c6a06f5c6",
     "website/zh-CN/docs/networking.md": "a5af32ffb01efda4db9c0c551677694098b085a308abe7faf9a39c7efa7797f4",
     "website/zh-CN/docs/packaging.md": "3a2c0c94f199df4d62e25487569a9446baf27b1fec60326b30fd90a823a67416",
-    "website/zh-CN/docs/performance-report.md": "5934116f93a9fa8e69bf2d9c17352f3d8e4b2d26009b9cf8483cb7ccd048b2e0",
+    "website/zh-CN/docs/performance-report.md": "aa4ce2bdcd22d29ca539878a06aa64618d47af76b3c17d437c3e2c4ea2a281f7",
     "website/zh-CN/docs/performance.md": "46c839f1120ceff410ed27954f010de74290967c04b07933217ce78a489bcc61",
     "website/zh-CN/docs/platform-specific.md": "07373a69c92161f0805e1cbccedc46f436542bf777a5f19a20e0400764e623cf",
     "website/zh-CN/docs/platforms.md": "2172982ecd8f6ff936f3ddce29c1af3ab716b082e2b95ed9932405fe9a31ff08",
@@ -1778,7 +1778,7 @@
     "website/zh-CN/modules/tailwind-reference.md": "9f366de10fe05a3fcf34f7e2ad7a6d7f8dc82379084f4958bef2c5761aff968f"
   },
   "upstream_repository": "https://github.com/longbridge/nsh",
-  "upstream_revision": "394ae4c67cc476271b3adffd24edc145cb5f3f41",
+  "upstream_revision": "6e1c6fd054c9b78f57c9ca8d84cc88f3e4490ef4",
   "file_sources": {
     ".github/workflows/rust-app.yml": {
       "repository": "https://github.com/longbridge/nsh",
@@ -2798,7 +2798,7 @@
     },
     "crates/nsh-platform-macos/src/canvas.rs": {
       "repository": "https://github.com/longbridge/nsh",
-      "revision": "394ae4c67cc476271b3adffd24edc145cb5f3f41"
+      "revision": "6e1c6fd054c9b78f57c9ca8d84cc88f3e4490ef4"
     },
     "crates/nsh-platform-macos/src/fps.rs": {
       "repository": "https://github.com/longbridge/nsh",
@@ -2846,7 +2846,7 @@
     },
     "crates/nsh-platform-macos/src/view.rs": {
       "repository": "https://github.com/longbridge/nsh",
-      "revision": "394ae4c67cc476271b3adffd24edc145cb5f3f41"
+      "revision": "6e1c6fd054c9b78f57c9ca8d84cc88f3e4490ef4"
     },
     "crates/nsh-platform-web/Cargo.toml": {
       "repository": "https://github.com/longbridge/nsh",
@@ -3130,7 +3130,7 @@
     },
     "docs/dev/canvas.md": {
       "repository": "https://github.com/longbridge/nsh",
-      "revision": "394ae4c67cc476271b3adffd24edc145cb5f3f41"
+      "revision": "6e1c6fd054c9b78f57c9ca8d84cc88f3e4490ef4"
     },
     "docs/dev/compatibility.md": {
       "repository": "https://github.com/longbridge/nsh",
@@ -3166,11 +3166,11 @@
     },
     "docs/dev/macos.md": {
       "repository": "https://github.com/longbridge/nsh",
-      "revision": "394ae4c67cc476271b3adffd24edc145cb5f3f41"
+      "revision": "6e1c6fd054c9b78f57c9ca8d84cc88f3e4490ef4"
     },
     "docs/dev/performance.md": {
       "repository": "https://github.com/longbridge/nsh",
-      "revision": "394ae4c67cc476271b3adffd24edc145cb5f3f41"
+      "revision": "6e1c6fd054c9b78f57c9ca8d84cc88f3e4490ef4"
     },
     "docs/dev/pitfalls.md": {
       "repository": "https://github.com/longbridge/nsh",
@@ -3554,7 +3554,7 @@
     },
     "website/docs/performance-report.md": {
       "repository": "https://github.com/longbridge/nsh",
-      "revision": "394ae4c67cc476271b3adffd24edc145cb5f3f41"
+      "revision": "6e1c6fd054c9b78f57c9ca8d84cc88f3e4490ef4"
     },
     "website/docs/performance.md": {
       "repository": "https://github.com/longbridge/nsh",
@@ -3782,7 +3782,7 @@
     },
     "website/zh-CN/docs/performance-report.md": {
       "repository": "https://github.com/longbridge/nsh",
-      "revision": "394ae4c67cc476271b3adffd24edc145cb5f3f41"
+      "revision": "6e1c6fd054c9b78f57c9ca8d84cc88f3e4490ef4"
     },
     "website/zh-CN/docs/performance.md": {
       "repository": "https://github.com/longbridge/nsh",

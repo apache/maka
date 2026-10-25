@@ -57,12 +57,17 @@ server client, log forwarding, the error overlay: `dev.rs`). The runtime needs m
   every frame of a scroll (~165 `viewWillDraw` and backing-store checks per frame in the gallery's Lists demo, ~70% of
   the frame's main-thread time). Plain sublayers are not visible-rect managed. A content layer is drawn again when
   its content changes and when its size does (`needsDisplayOnBoundsChange`), not when the view moves (transitions
-  redrew every moving text on every frame before). Canvases draw asynchronously (`drawsAsynchronously`: Core
-  Animation replays the drawing on its threads; Stocks idle, main-thread time per frame ~3.3 → ~1.8 ms, process CPU
-  ~60% → ~30%); text draws at once, which measured faster than asynchronously. A canvas whose long static part is
-  kept as a `CGLayer` (`canvas.rs`: a drawing painted unchanged 30 times) draws at once instead: each frame draws the
-  layer and replays the animated rest, and Core Animation's drawing threads, their Metal work and their IOSurface
-  backing stores cost more than that (the gallery's Canvas page: CPU 7–10% → 4–6%, GPU 5–6% → 0%, ~210 → ~105 MB).
+  redrew every moving text on every frame before). Text draws at once, which measured faster than asynchronously.
+  A canvas draws at once too until it paints 10 times a second or more (an animation, live data: `canvas.rs`
+  `Cadence`), when it draws asynchronously (`drawsAsynchronously`: Core Animation replays the drawing on its
+  threads; Stocks idle, main-thread time per frame ~3.3 → ~1.8 ms, process CPU ~60% → ~30%), and at once again after
+  a slow second. Drawing asynchronously costs graphics memory (`footprint`'s "Owned physical footprint (unmapped)
+  (graphics)", ~50–60 MB for the process while any canvas draws so) and Metal work per layer, which a canvas redrawn
+  every few seconds gains nothing from: three 340×40 charts redrawn every 2 s hold ~21 MB at once against ~83 MB
+  asynchronously. A canvas whose long static part is kept as a `CGLayer` (`canvas.rs`: a drawing painted unchanged
+  30 times) draws at once however often it paints: each frame draws the layer and replays the animated rest, which
+  costs less than the drawing threads, their Metal work and their IOSurface backing stores (the gallery's Canvas
+  page: CPU 7–10% → 4–6%, GPU 5–6% → 0%, ~210 → ~105 MB).
   Contents stay in the screen's format: 8-bit contents (`kCAContentsFormatRGBA8Uint`) measured slower on the
   ProMotion display, which converts them on every frame.
 - **No masks on what scrolls, where avoidable** (`visual.rs`): the window server pays for a mask on every frame its
