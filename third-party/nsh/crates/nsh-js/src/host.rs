@@ -1989,7 +1989,10 @@ const report = (v) => text(String(v));
 
     #[test]
     fn fallback_shortcuts_require_support_and_deliver_their_handler_after_native_input() {
-        use nsh_core::keymap::{KeyMatch, Keystroke};
+        use nsh_core::{
+            Prop, ROOT_ID,
+            keymap::{KeyMatch, Keystroke},
+        };
 
         let host = Host::new().unwrap();
         host.eval_source(

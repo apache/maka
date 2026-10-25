@@ -107,25 +107,30 @@ impl Headless {
         if from == to {
             return;
         }
-        if let Some(old) = from {
-            self.screen.set_focused(None);
-            self.screen.set_key_focus(None);
-            self.set_focused_state(old, false);
-            self.send(old, EventKind::Blur, EventPayload::None);
-        }
+        self.screen.set_focused(None);
+        self.screen.set_key_focus(None);
         if let Some(new) = to {
             if self.screen.input(new).is_some() {
                 self.screen.set_focused(Some(new));
             } else {
                 self.screen.set_key_focus(Some(new));
             }
+        }
+        self.engine
+            .control()
+            .set_focus_path(self.screen.focus_path());
+        if let Some(old) = from {
+            self.set_focused_state(old, false);
+            self.send(old, EventKind::Blur, EventPayload::None);
+        }
+        if let Some(new) = to {
             self.set_focused_state(new, true);
             self.send(new, EventKind::Focus, EventPayload::None);
         }
     }
 
     /// The pressable's `focus:` state, which follows the keyboard focus.
-    fn set_focused_state(&mut self, id: NodeId, on: bool) {
+    pub(super) fn set_focused_state(&mut self, id: NodeId, on: bool) {
         if self.screen.input(id).is_none()
             && let Some(states) = self.screen.set_state(id, FOCUSED, on)
         {

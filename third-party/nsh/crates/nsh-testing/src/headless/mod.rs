@@ -582,13 +582,26 @@ impl Headless {
     }
 
     fn apply(&mut self, batch: &MountBatch) {
-        let focused = self.screen.focused();
+        let focused = self
+            .screen
+            .focused()
+            .or(self.screen.key_focus())
+            .filter(|old| {
+                !batch
+                    .items
+                    .iter()
+                    .any(|item| matches!(item, MountItem::Delete { id } if id == old))
+            });
         self.screen.apply(batch);
         // The app moved the focus (`focus()`, `blur()`): platforms tell the
         // views as when the user moves it.
-        let now = self.screen.focused();
+        let now = self.screen.focused().or(self.screen.key_focus());
         if now != focused {
+            self.engine
+                .control()
+                .set_focus_path(self.screen.focus_path());
             if let Some(old) = focused {
+                self.set_focused_state(old, false);
                 self.send(old, EventKind::Blur, EventPayload::None);
             }
             if let Some(new) = now {
@@ -1349,17 +1362,7 @@ impl Headless {
         if self.screen.input(id).is_some_and(|i| !i.config.editable) {
             return Err(format!("the input `{selector}` is not editable"));
         }
-        if self.screen.focused() != Some(id) {
-            let previous = self.screen.focused();
-            self.screen.set_focused(Some(id));
-            self.engine
-                .control()
-                .set_focus_path(self.screen.focus_path());
-            if let Some(old) = previous {
-                self.send(old, EventKind::Blur, EventPayload::None);
-            }
-            self.send(id, EventKind::Focus, EventPayload::None);
-        }
+        self.move_focus(Some(id));
         Ok(id)
     }
 
@@ -1852,6 +1855,104 @@ mod tests {
         let mut app = Headless::start(EngineConfig::new(Root::of::<Metrics>())).unwrap();
         app.first_render().unwrap();
         app.wait_for("33 24 0 24").unwrap();
+    }
+
+    #[component]
+    fn FocusTransfer() -> impl IntoElement {
+        let blurs = signal(0_u32);
+        let presses = signal(0_u32);
+        view()
+            .child(
+                view()
+                    .test_id("button")
+                    .w(px(100.0))
+                    .h(px(30.0))
+                    .on_press(move || presses.update(|n| *n += 1))
+                    .on_blur(move || blurs.update(|n| *n += 1)),
+            )
+            .child(input().test_id("field"))
+            .child(text(move || {
+                format!("Blurs {} Presses {}", blurs.get(), presses.get())
+            }))
+    }
+
+    #[test]
+    fn input_steps_transfer_pressable_focus_without_reviving_it_after_submit() {
+        let mut config = EngineConfig::new(Root::of::<FocusTransfer>());
+        config.environment.os = nsh_core::platform::Os::MacOs;
+        config.environment.idiom = nsh_core::platform::Idiom::Desktop;
+        let mut app = Headless::start(config).unwrap();
+        app.first_render().unwrap();
+        app.press_key("tab").unwrap();
+        assert!(app.screen.key_focus().is_some());
+        app.type_text("id:field", "Ada").unwrap();
+        app.wait_for("Blurs 1 Presses 0").unwrap();
+        app.submit("id:field").unwrap();
+        app.press_key("enter").unwrap();
+        app.press_key("space").unwrap();
+        assert!(app.shows("Blurs 1 Presses 0"));
+        assert_eq!(app.screen.key_focus(), None);
+    }
+
+    #[test]
+    fn input_focus_commands_release_pressable_focus_before_blur() {
+        let mut config = EngineConfig::new(Root::of::<FocusTransfer>());
+        config.environment.os = nsh_core::platform::Os::MacOs;
+        config.environment.idiom = nsh_core::platform::Idiom::Desktop;
+        let mut app = Headless::start(config).unwrap();
+        app.first_render().unwrap();
+        app.press_key("tab").unwrap();
+        let field = app.screen.resolve(&Selector::parse("id:field").unwrap())[0];
+        app.apply(&MountBatch {
+            items: vec![MountItem::Command {
+                id: field,
+                command: Command::Focus,
+            }],
+            ..Default::default()
+        });
+        app.done().unwrap();
+        app.wait_for("Blurs 1 Presses 0").unwrap();
+        app.apply(&MountBatch {
+            items: vec![MountItem::Command {
+                id: field,
+                command: Command::Blur,
+            }],
+            ..Default::default()
+        });
+        app.done().unwrap();
+        app.press_key("enter").unwrap();
+        assert!(app.shows("Blurs 1 Presses 0"));
+        assert_eq!(app.screen.key_focus(), None);
+    }
+
+    #[test]
+    fn replacing_a_focused_id_does_not_send_the_old_blur_to_its_replacement() {
+        let mut config = EngineConfig::new(Root::of::<FocusTransfer>());
+        config.environment.os = nsh_core::platform::Os::MacOs;
+        let mut app = Headless::start(config).unwrap();
+        app.first_render().unwrap();
+        app.press_key("tab").unwrap();
+        let old = app.screen.key_focus().unwrap();
+        let mut events = nsh_core::EventMask::default();
+        events.set(EventKind::Blur, true);
+        app.apply(&MountBatch {
+            items: vec![
+                MountItem::Delete { id: old },
+                MountItem::Create {
+                    id: old,
+                    kind: nsh_core::ViewKind::View,
+                },
+                MountItem::Insert {
+                    parent: ROOT_ID,
+                    child: old,
+                    before: None,
+                },
+                MountItem::Events { id: old, events },
+            ],
+        });
+        app.done().unwrap();
+        assert!(app.shows("Blurs 0 Presses 0"));
+        assert_eq!(app.screen.key_focus(), None);
     }
 
     /// A name field that says hello and keeps what was sent.

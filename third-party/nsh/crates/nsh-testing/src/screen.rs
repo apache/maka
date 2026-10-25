@@ -671,8 +671,11 @@ impl Screen {
                 self.js_grants.push(*block);
             }
             Command::ClearJsResponder => self.js_block = false,
-            Command::Focus if self.input(id).is_some() => self.focused = Some(id),
-            Command::Blur if id == ROOT || self.focused == Some(id) => self.focused = None,
+            Command::Focus if self.input(id).is_some() => self.set_focused(Some(id)),
+            Command::Blur if id == ROOT || self.focused == Some(id) => {
+                self.set_focused(None);
+                self.set_key_focus(None);
+            }
             Command::ScrollTo { x, y, .. } => {
                 let end = self.scroll_end(id);
                 if let Some(scroll) = self.scroll_mut(id) {
@@ -921,6 +924,12 @@ impl Screen {
     }
 
     fn revoke_focus(&mut self, id: NodeId) {
+        if self
+            .key_focus
+            .is_some_and(|focus| focus == id || self.is_inside(focus, id))
+        {
+            self.key_focus = None;
+        }
         if self
             .focused
             .is_some_and(|focus| focus == id || self.is_inside(focus, id))
@@ -1965,7 +1974,7 @@ impl Screen {
     }
 
     pub(crate) fn focus_path(&self) -> Vec<NodeId> {
-        let Some(mut id) = self.focused else {
+        let Some(mut id) = self.focused.or_else(|| self.key_focus()) else {
             return Vec::new();
         };
         let mut path = vec![id];
@@ -1977,12 +1986,15 @@ impl Screen {
     }
 
     pub(crate) fn set_focused(&mut self, id: Option<NodeId>) {
+        if id.is_some() {
+            self.key_focus = None;
+        }
         self.focused = id;
     }
 
     /// The pressable with the keyboard focus, while it is mounted.
     pub(crate) fn key_focus(&self) -> Option<NodeId> {
-        self.key_focus.filter(|id| self.nodes.contains_key(id))
+        self.key_focus.filter(|&id| self.is_attached(id))
     }
 
     pub(crate) fn set_key_focus(&mut self, id: Option<NodeId>) {
@@ -2045,6 +2057,70 @@ impl Screen {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn detached_pressable_focus_does_not_revive_after_reinsertion_or_id_reuse() {
+        for delete in [false, true] {
+            let mut screen = Screen::default();
+            screen.apply(&batch(vec![
+                create(2, ViewKind::View),
+                create(4, ViewKind::View),
+                create(6, ViewKind::View),
+                project(ROOT, 2, &[]),
+                insert(2, 4),
+                project(ROOT, 6, &[]),
+            ]));
+            screen
+                .nodes
+                .get_mut(&4)
+                .unwrap()
+                .events
+                .set(EventKind::Press, true);
+            screen.set_key_focus(Some(4));
+            screen.apply(&batch(vec![MountItem::Remove { id: 6 }]));
+            assert_eq!(screen.key_focus(), Some(4), "unrelated removal keeps focus");
+            if delete {
+                screen.apply(&batch(vec![MountItem::Delete { id: 4 }]));
+                screen.apply(&batch(vec![create(4, ViewKind::View), insert(2, 4)]));
+                screen
+                    .nodes
+                    .get_mut(&4)
+                    .unwrap()
+                    .events
+                    .set(EventKind::Press, true);
+            } else {
+                screen.apply(&batch(vec![MountItem::Remove { id: 2 }]));
+                assert_eq!(screen.key_focus(), None);
+                screen.apply(&batch(vec![project(ROOT, 2, &[])]));
+            }
+            assert!(screen.hears(4, EventKind::Press));
+            assert_eq!(
+                screen.key_focus(),
+                None,
+                "attachment cannot restore keyboard focus"
+            );
+        }
+    }
+
+    #[test]
+    fn native_retirement_keeps_a_cell_with_pressable_keyboard_focus() {
+        let mut screen = Screen::default();
+        screen.apply(&batch(vec![
+            create(2, ViewKind::View),
+            create(4, ViewKind::View),
+            project(ROOT, 2, &[]),
+            insert(2, 4),
+        ]));
+        screen.set_key_focus(Some(4));
+        screen.apply(&batch(vec![MountItem::RetireListCell {
+            id: 2,
+            request: 1,
+            roots: vec![2],
+        }]));
+        assert!(screen.is_attached(4));
+        assert!(matches!(screen.take_input_results().as_slice(),
+            [InputResult::RetireListCell { focus_path: Some(path), .. }] if path == &[4, 2, ROOT]));
+    }
 
     /// A canvas over a pressable pad, both inside a plain container.
     fn canvas_screen() -> Screen {
