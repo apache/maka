@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import { isAssistantCard, type AssistantCard } from './assistant-card.js';
+
 import type { ExecutorConfiguration } from './executor-catalog.js';
 
 import { isWorkHubActionReceipt, type WorkHubActionReceipt } from './workhub-action-result.js';
@@ -883,6 +885,7 @@ export function isConversationTextMessage(message: StoredMessage): boolean {
 export interface AssistantMessage {
   /** Model-authored preview; text remains the complete message. */
   summary?: string;
+  card?: AssistantCard;
   type: 'assistant';
   interrupted?: true;
   id: string;
@@ -1379,7 +1382,7 @@ const USER_MESSAGE_SHAPE = defineObjectShape<UserMessage>()(
 );
 const ASSISTANT_MESSAGE_SHAPE = defineObjectShape<AssistantMessage>()(
   ['type', 'id', 'turnId', 'ts', 'text', 'modelId'],
-  ['thinking', 'contentOrder', 'providerOptions', 'interrupted', 'summary'],
+  ['thinking', 'contentOrder', 'providerOptions', 'interrupted', 'summary', 'card'],
 );
 const TOOL_CALL_MESSAGE_SHAPE = defineObjectShape<ToolCallMessage>()(
   ['type', 'id', 'turnId', 'ts', 'toolName', 'args'],
@@ -1671,6 +1674,7 @@ function decodeMessage(
         typeof message.text === 'string' &&
         typeof message.modelId === 'string' &&
         (message.summary === undefined || typeof message.summary === 'string') &&
+        (message.card === undefined || isAssistantCard(message.card)) &&
         (message.interrupted === undefined || message.interrupted === true) &&
         (message.providerOptions === undefined || isRecord(message.providerOptions)) &&
         (message.thinking === undefined || isAssistantThinking(message.thinking)) &&

@@ -33,6 +33,8 @@
  * projection, or ledger logic lives here. Those arrive in later nodes.
  */
 
+import { isAssistantCard, type AssistantCard } from './assistant-card.js';
+
 import { decodeEventWaitProvenance, type EventWaitProvenance } from './event-wait-delivery.js';
 import { isWorkHubActionReceipt, type WorkHubActionReceipt } from './workhub-action-result.js';
 import { isToolCallOutcome } from './tool-result-status.js';
@@ -182,6 +184,7 @@ export function isTerminalRuntimeEventStatus(value: unknown): boolean {
 export interface RuntimeEventTextContent extends MessageContent {
   /** Model-authored collapsed preview, independent of the full text. */
   summary?: string;
+  card?: AssistantCard;
   kind: 'text';
   /** Failed response fragment retained for display, never for model replay. */
   interrupted?: true;
@@ -742,6 +745,7 @@ const TEXT_CONTENT_SHAPE = defineObjectShape<RuntimeEventTextContent>()(
   ['kind', 'text'],
   [
     'summary',
+    'card',
     'displayText',
     'interrupted',
     'origin',
@@ -1050,6 +1054,7 @@ export function decodeRuntimeEvent(value: unknown): RuntimeEvent {
         ...normalizeMessageContent(value.content as unknown as MessageContent),
         ...(value.content.interrupted === true ? { interrupted: true as const } : {}),
         ...(value.content.summary !== undefined ? { summary: value.content.summary } : {}),
+        ...(value.content.card !== undefined ? { card: value.content.card } : {}),
         ...(value.content.origin !== undefined
           ? { origin: decodeTurnOrigin(value.content.origin) }
           : {}),
@@ -1084,6 +1089,7 @@ function isRuntimeEventContent(value: unknown): value is RuntimeEventContent {
       if (
         !hasExactShape(value, TEXT_CONTENT_SHAPE) ||
         (value.summary !== undefined && typeof value.summary !== 'string') ||
+        (value.card !== undefined && !isAssistantCard(value.card)) ||
         (value.origin !== undefined && !isTurnOrigin(value.origin)) ||
         (value.steering !== undefined && value.steering !== true) ||
         (value.runtimeContextName !== undefined &&
