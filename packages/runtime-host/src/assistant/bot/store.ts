@@ -213,6 +213,7 @@ export class BotStore {
       text: string;
       discoveryIds?: string[];
     }[],
+    receipt?: { key: string; value: unknown },
   ): string[] {
     return this.transaction(() => {
       const serialize = (items: typeof texts) =>
@@ -269,6 +270,7 @@ export class BotStore {
       });
       if (!old)
         this.db.prepare('INSERT INTO outbox_batches(id,payload) VALUES(?,?)').run(batchId, payload);
+      if (receipt) this.set(receipt.key, receipt.value);
       return ids;
     });
   }

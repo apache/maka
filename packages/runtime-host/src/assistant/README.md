@@ -171,12 +171,16 @@ removing the source asset does not remove already published chat images.
 Sticker assets receive a Host-generated attachment identity carrying their presentation
 kind. Chat caps their thumbnail at 128 × 128 CSS pixels without enlarging small images;
 clicking opens a larger preview. Normal images and avatars keep their existing layout.
-The model uses the returned imageUrl unchanged; byte reads and sizing are handled by code.
+`SendUser.messages[].stickerId` accepts a saved sticker ID directly, alongside optional
+`text` and `summary`, or alone for a sticker-only bubble. The Host publishes the image
+and adds the attachment reference without another model lookup. All images resolve
+before any message is queued; failed resolution sends no partial batch. A durable receipt
+keeps retries identical even after the source sticker is removed or the Host restarts.
+Existing Markdown imageUrl messages remain supported; byte reads and sizing are handled by code.
 A failed checkpoint lookup preserves the selection and does not block conversation.
 
-SendUser's tool and parameter descriptions require an independent summary (up to 60
-characters) for text longer than 200 characters, and separate message items for separate
-ideas. These are model-facing instructions, not a new send rejection or automatic
+SendUser's tool description asks for an independent summary for text longer than
+200 characters. It does not require splitting long sentences or paragraphs into bubbles. These are model-facing instructions, not a new send rejection or automatic
 truncation. Newlines within one item still render within one bubble. The Bot role prompt
 is unchanged.
 

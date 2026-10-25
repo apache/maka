@@ -1848,6 +1848,102 @@ test('sticker lookup publishes a saved image to the owner conversation without l
   await until(() => done);
 });
 
+test('SendUser publishes sticker IDs atomically and replays the saved batch after asset removal and restart', async (t) => {
+  const png = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==',
+    'base64',
+  );
+  let failPublish = false;
+  let publishes = 0;
+  const f = await fixture(
+    async () => ({ bytes: png, mimeType: 'image/png' }),
+    undefined,
+    async (owner, id) => {
+      assert.equal(owner, 'owner');
+      publishes++;
+      if (failPublish) throw Error('publish failed');
+      return `maka://runtime/attachments/sticker-${id}`;
+    },
+  );
+  t.after(f.close);
+  let request: any;
+  let done = false;
+  f.runner(async ({ invoke }) => {
+    await invoke('InboxCheck');
+    const saved = await invoke('AssistantCharacterPack', {
+      action: 'add_image',
+      source: 'image.png',
+      title: '开心',
+      kind: 'avatar',
+    });
+    const id = saved.asset.id;
+    await assert.rejects(
+      invoke('SendUser', {
+        messageId: 'not-sticker',
+        messages: [{ stickerId: id }],
+      }),
+      /sticker asset/,
+    );
+    await invoke('AssistantCharacterPack', {
+      action: 'update_asset',
+      assetId: id,
+      kind: 'sticker',
+    });
+    request = {
+      messageId: 'direct-sticker',
+      messages: [{ text: '正文保留', summary: '摘要保留', stickerId: id }, { stickerId: id }],
+    };
+    await assert.rejects(
+      invoke('SendUser', { messageId: 'empty', messages: [{}] }),
+      /text or stickerId/,
+    );
+    await assert.rejects(
+      invoke('SendUser', {
+        messageId: 'invalid',
+        messages: [{ text: '不能提前发' }, { stickerId: '0'.repeat(64) }],
+      }),
+    );
+    failPublish = true;
+    await assert.rejects(invoke('SendUser', request), /publish failed/);
+    assert.equal(f.visible.filter((m) => m.type === 'assistant').length, 0);
+    failPublish = false;
+    const sent = await invoke('SendUser', request);
+    assert.equal(sent.messageIds.length, 2);
+    const output = f.visible.filter((m) => m.type === 'assistant');
+    assert.equal(output[0].summary, '摘要保留');
+    assert.equal(output[0].text, `正文保留\n\n![表情](maka://runtime/attachments/sticker-${id})`);
+    assert.equal(output[1].text, `![表情](maka://runtime/attachments/sticker-${id})`);
+    await invoke('AssistantCharacterPack', { action: 'remove_asset', assetId: id });
+    const before = publishes;
+    assert.deepEqual(await invoke('SendUser', request), sent);
+    assert.equal(publishes, before, 'retry does not need the deleted asset');
+    await assert.rejects(
+      invoke('SendUser', {
+        ...request,
+        messages: [{ text: 'changed', stickerId: id }],
+      }),
+      /different batch/,
+    );
+    await invoke('Sleep');
+    done = true;
+  });
+  await f.send('direct', 'hello');
+  await until(() => done);
+  done = false;
+  const before = publishes;
+  f.runner(async ({ invoke }) => {
+    await invoke('InboxCheck');
+    await invoke('SendUser', request);
+    await invoke('Sleep');
+    done = true;
+  });
+  await f.restart();
+  await f.send('retry', 'retry');
+  await until(() => done);
+  assert.equal(publishes, before);
+  assert.equal(f.visible.filter((m) => m.type === 'assistant').length, 2);
+});
+
 for (const userHasSpoken of [false, true])
   test(`first-run character Matter finishes and Bot greets appropriately (prior user=${userHasSpoken})`, async (t) => {
     const f = await fixture(undefined, undefined, undefined, true);
