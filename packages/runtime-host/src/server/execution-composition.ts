@@ -193,6 +193,7 @@ import {
   createHostMemoryExtractionModel,
   createHostPluginModel,
   createHostSessionEffectModel,
+  createHostWorktreeNameGenerator,
   createHostPromptSuggestionModel,
   createHostCheckinModel,
   resolveDefaultModelHeader,
@@ -269,6 +270,8 @@ import { HostPersonalAssistantWorkspace } from './personal-assistant-workspace.j
 import { HostSessionCatalogCoordinator } from './session-catalog-coordinator.js';
 import { SessionBackgroundActivityProjection } from './session-background-activity.js';
 import { SessionInteractionActivityProjection } from './session-interaction-activity.js';
+import { HostWorktreeManager, type HostWorktreeManagerOptions } from './worktree-manager.js';
+import { createWorktreeHandlers } from './worktree-handlers.js';
 import { HostWorkspaceResolver } from './workspace-resolver.js';
 import { HostSessionRetirementCoordinator } from './session-retirement-coordinator.js';
 import { HostStorageMaintenance } from './storage-maintenance.js';
@@ -357,6 +360,7 @@ export interface ExecutionRuntimeHostCompositionDependencies {
   readonly primaryBackendFactory?: BackendFactory;
   readonly eventWaitSources?: HostGoalEventWaitSources;
   readonly generateSessionTitle?: HostSessionEffectModel['generateTitle'];
+  readonly generateWorktreeName?: HostWorktreeManagerOptions['generateName'];
   readonly oauthAuthorization?: Pick<
     HostOAuthCoordinatorInput,
     'startCodexAuthorization' | 'pollCodexAuthorization' | 'exchangeCodexCode'
@@ -1023,11 +1027,27 @@ export async function createExecutionRuntimeHostComposition(
       policy: runtimePolicyStores.operations,
       publish: () => hostChanges.publishConnectionCatalog(),
     });
+    let generateWorktreeName: HostWorktreeManagerOptions['generateName'] = async () => undefined;
+    const taskWorktrees = new HostWorktreeManager({
+      stateRoot: context.owner.capability.canonicalPath,
+      catalog: openedProjectCatalog,
+      listSessions: () => stores.sessionStore.listHeaders(),
+      isSessionActive: (sessionId) => rootCoordinator?.hasActiveOrPendingTurn(sessionId) ?? false,
+      hasLiveSessionResources: (sessionId) => runtimeResources!.hasLiveSessionResources(sessionId),
+      generateName: (description) => generateWorktreeName(description),
+      requestDrain: context.requestDrain,
+      withSessions: (ids, operation) => sessionAdmission.runMany(ids, operation),
+      changed: () => hostChanges.publishProjectCatalog(),
+    });
+    const worktreeHandlers = createWorktreeHandlers(taskWorktrees, (sessionId) =>
+      stores.sessionStore.readHeaderSnapshot(sessionId),
+    );
     const projectMembership = new HostProjectMembershipGate();
     const workspaceResolver = new HostWorkspaceResolver(
       openedProjectCatalog,
       projectMembership,
       () => hostChanges.publishProjectCatalog(),
+      taskWorktrees,
     );
     const skills = new HostSkillCatalogCoordinator(
       new SkillCatalogRepository({
@@ -1102,6 +1122,10 @@ export async function createExecutionRuntimeHostComposition(
       projectMembership,
       context.requestDrain,
       new HostProjectDirectoryAuthority(options.projectDirectoryRoots),
+      {
+        listSessions: () => stores.sessionStore.listHeaders(),
+        isBound: (sessionId) => taskWorktrees.isBound(sessionId),
+      },
     );
     let rootCoordinator: RootTurnCoordinator | undefined;
     let workHubCoordination: HostWorkHubCoordinationCoordinator;
@@ -1690,6 +1714,14 @@ export async function createExecutionRuntimeHostComposition(
       runtimeEventStore: stores.runtimeEventStore,
       canonicalPermissionOutcomes,
     });
+    generateWorktreeName =
+      dependencies.generateWorktreeName ??
+      createHostWorktreeNameGenerator({
+        runtimePolicy: runtimePolicyStores,
+        oauthCredentials,
+        usage: openedUsageStores,
+        requestDrain: context.requestDrain,
+      });
     const sessionEffectModel = createHostSessionEffectModel({
       runtimePolicy: runtimePolicyStores,
       oauthCredentials,
@@ -2079,6 +2111,7 @@ export async function createExecutionRuntimeHostComposition(
             ? 'The assistant conversation accepts messages through its Inbox, not direct model Turns'
             : undefined,
       (sessionId, event) => imageDelivery?.observe(sessionId, event),
+      (header) => taskWorktrees.assertReady(header.id, header.cwd),
     );
     const coordinator = rootCoordinator;
     const pluginModel = createHostPluginModel({
@@ -2630,6 +2663,7 @@ export async function createExecutionRuntimeHostComposition(
       admission: sessionAdmission,
       continuity: continuityCoordinator,
       workspaceResolver,
+      worktrees: taskWorktrees,
       requestDrain: context.requestDrain,
       isTurnBusy: (sessionId) => rootCoordinator?.hasActiveOrPendingTurn(sessionId) ?? false,
       configureExecutor: async (header, configuration) => {
@@ -3225,6 +3259,8 @@ export async function createExecutionRuntimeHostComposition(
     });
     const executionInspect = new HostExecutionInspectCoordinator(stores);
     const sessionRevisions = new HostSessionRevisionCoordinator({
+      worktrees: taskWorktrees,
+      projectMembership,
       ...(options.imageArchiveLimits ? { imageArchiveLimits: options.imageArchiveLimits } : {}),
       stores,
       artifacts: openedArtifactStore,
@@ -3435,7 +3471,9 @@ export async function createExecutionRuntimeHostComposition(
       }),
       createRuntimeHostDomainModule({
         id: 'project-catalog',
-        handlers: [projects.handlers],
+        handlers: [projects.handlers, worktreeHandlers],
+        drain: [() => taskWorktrees.beginDrain()],
+        close: [() => taskWorktrees.close()],
       }),
       createRuntimeHostDomainModule({
         id: 'session',

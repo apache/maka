@@ -22,14 +22,16 @@ import type { TaskReadinessServices } from '../../features/conversation/index.js
 
 export type DesktopTaskReadinessBridge = {
   readonly taskReadiness: Pick<MakaBridge['taskReadiness'], 'getSnapshot'>;
-  readonly newTasks: Pick<MakaBridge['newTasks'], 'getReadiness'>;
+  readonly newTasks: Pick<MakaBridge['newTasks'], 'getReadiness' | 'subscribeChanges'>;
 };
 
 export function createDesktopTaskReadinessServices(
   bridge: DesktopTaskReadinessBridge = window.maka,
 ): TaskReadinessServices {
   return {
-    readSession: (sessionId, request) => bridge.taskReadiness.getSnapshot(request, sessionId),
-    readNewTask: (target, request) => bridge.newTasks.getReadiness(target, request),
+    subscribeChanges: (listener) => bridge.newTasks.subscribeChanges(listener),
+    // workspaceFixed controls recovery UI; it is not part of the IPC request.
+    readSession: (sessionId, { workspaceFixed: _fixed, ...request }) => bridge.taskReadiness.getSnapshot(request, sessionId),
+    readNewTask: (target, { workspaceFixed: _fixed, ...request }) => bridge.newTasks.getReadiness(target, request),
   };
 }

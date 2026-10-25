@@ -64,7 +64,7 @@ export interface BoundedShellOptions {
   /**
    * Hard wall-clock cap on the command, counted from its admission so the
    * owning supervisor's startup does not consume it; the child is SIGTERM'd
-   * and `timedOut` is set.
+   * and `timedOut` is set. Zero disables this cap; abortSignal still applies.
    */
   timeoutMs: number;
   /** Per-stream retained-tail cap in characters. Defaults to BASH_MAX_RETAINED_CHARS. */
@@ -215,7 +215,7 @@ function runSpawnedProcessWithBoundedTail(
     let timer: NodeJS.Timeout | undefined;
     void admitted.then(
       () => {
-        if (settled || termination) return;
+        if (settled || termination || options.timeoutMs === 0) return;
         timer = setTimeout(() => beginTermination({ timedOut: true }), options.timeoutMs);
       },
       () => {},

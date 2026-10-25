@@ -383,6 +383,8 @@ export interface SessionBackgroundActivitySnapshot {
 }
 
 export interface SessionSummary {
+  /** The Host exposes an explicit, fixed project working directory. */
+  workspaceFixed?: boolean;
   id: string;
   cwd?: string;
   projectId?: string | null;

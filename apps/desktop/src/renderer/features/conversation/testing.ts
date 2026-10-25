@@ -85,6 +85,7 @@ export function stubConversationServices(
   const { sessions, ...rest } = overrides;
   return {
     observation: { openTranscript() { throw new Error('Transcript observation not configured'); }, subscribeEvents: () => () => {}, listActiveInteractions: async () => [], subscribeActiveInteractions: () => () => {}, shellRuns: { list: async () => [], subscribeUpdates: () => () => {}, subscribeResync: () => () => {} }, subscribeVisible: () => () => {}, queryCancelledMessages: async () => ({ cancelledMessageIds: [] }) },
+    resolveWorktreePreparation: async () => { throw new Error('Worktree preparation recovery is not stubbed'); },
     listMessages: async () => [],
     readFailedMessage: async () => { throw new Error('Failed-message recovery is not stubbed'); },
     releaseRecoveryAttachments: async () => undefined,
@@ -198,3 +199,10 @@ export {
   visibleCheckinCards,
 } from './model/checkin.js';
 export { editCheckinCard, runCheckinAction } from './model/checkin-action.js';
+
+export {
+  BranchWorktreeRoot,
+  ComposerSubmissionServicesProvider,
+} from './submission-services.js';
+
+export { TaskReadinessComposer } from './ui/task-readiness-provider.js';

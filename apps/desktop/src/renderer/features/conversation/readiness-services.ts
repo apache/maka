@@ -26,10 +26,12 @@ export interface TaskReadinessRequest {
   readonly connectionSlug?: string;
   readonly model?: string;
   readonly cwd?: string;
+  readonly workspaceFixed?: boolean;
 }
 
-/** The two Host reads behind the Composer's readiness notice; nothing else. */
+/** Host readiness reads and invalidation shared by the notice and send gate. */
 export interface TaskReadinessServices {
+  subscribeChanges(listener: () => void): () => void;
   readSession(sessionId: string, request: TaskReadinessRequest): Promise<TaskSubmissionReadinessSnapshot>;
   readNewTask(target: ConversationNewTaskTarget, request: TaskReadinessRequest): Promise<TaskSubmissionReadinessSnapshot>;
 }

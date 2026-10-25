@@ -71,6 +71,8 @@ import {
 } from '@maka/runtime/session-manager';
 import {
   decodeSessionCatalogProjection,
+  decodeSessionCreateWorkspace,
+  type WorkspaceTarget,
   decodeSharedSessionCatalogProjection,
   SESSION_CATALOG_LIVE_RUN_STATE_SCHEMA_VERSION,
   SESSION_CATALOG_LABEL_MAX_BYTES,
@@ -208,6 +210,7 @@ export interface HostSessionCatalogCoordinatorOptions {
   readonly admission: SessionAdmissionGate;
   readonly continuity: SessionContinuity;
   readonly workspaceResolver: HostWorkspaceResolver;
+  readonly worktrees?: import('./worktree-manager.js').HostWorktreeManager;
   readonly requestDrain: () => void;
   readonly isTurnBusy?: (sessionId: string) => boolean;
   readonly configureExecutor?: (
@@ -340,6 +343,7 @@ export class HostSessionCatalogCoordinator {
   readonly #continuity: SessionContinuity;
   readonly #workspaceResolver: HostWorkspaceResolver;
   readonly #requestDrain: () => void;
+  readonly #worktrees: import('./worktree-manager.js').HostWorktreeManager | undefined;
   readonly #configureExecutor: HostSessionCatalogCoordinatorOptions['configureExecutor'];
   readonly #retireExecutor: HostSessionCatalogCoordinatorOptions['retireExecutor'];
   readonly #assertExecutorAvailable: HostSessionCatalogCoordinatorOptions['assertExecutorAvailable'];
@@ -348,6 +352,7 @@ export class HostSessionCatalogCoordinator {
     | undefined;
 
   constructor(options: HostSessionCatalogCoordinatorOptions) {
+    this.#worktrees = options.worktrees;
     this.#stores = options.stores;
     this.#turnIndex = options.turnIndex;
     this.#runtimePolicy = options.runtimePolicy;
@@ -743,6 +748,7 @@ export class HostSessionCatalogCoordinator {
     }
     let prepared: PreparedSessionCreate;
     try {
+      input = { ...input, workspace: decodeSessionCreateWorkspace(input.workspace) };
       prepared = await prepareCreate(input);
     } catch (error) {
       return createOperationFailure(error, 'invalid_request');
@@ -757,9 +763,7 @@ export class HostSessionCatalogCoordinator {
           requestFingerprint,
         );
         if (probe.kind === 'existing') {
-          return createSuccess(
-            projectSessionCatalogRecord(await this.#stores.readCatalogRecord(input.sessionId)),
-          );
+          return await this.#createdSession(input.sessionId);
         }
         if (probe.kind === 'conflict') {
           return createFailure(
@@ -767,53 +771,70 @@ export class HostSessionCatalogCoordinator {
             'Session identity belongs to a different create request',
           );
         }
-        return await this.#workspaceResolver.runWithUsageRecorded(
-          input.workspace,
-          async (workspace) => {
-            const [model, policy] = await Promise.all([
-              this.#resolveCreateExecution(input, workspace.cwd),
-              this.#readRuntimePolicy(),
-            ]);
-            const createInput: CreateSessionInput = {
-              cwd: workspace.cwd,
-              ...(workspace.projectId === null ? {} : { projectId: workspace.projectId }),
-              name: prepared.name,
-              labels: [...prepared.labels],
-              ...(model.executorId
-                ? {
-                    executorId: model.executorId,
-                    ...(model.executorConfig ? { executorConfig: model.executorConfig } : {}),
-                  }
-                : {}),
-              ...(model.connectionId ? { llmConnectionId: model.connectionId } : {}),
-              llmConnectionSlug: model.connectionSlug,
-              model: model.model,
-              ...(model.thinkingLevel === undefined ? {} : { thinkingLevel: model.thinkingLevel }),
-              ...(input.toolProfile === undefined ? {} : { toolProfile: input.toolProfile }),
-              permissionMode: prepared.permissionMode ?? policy.policy.chatDefaults.permissionMode,
-              toolMode:
-                toolMode ?? (policy.policy.chatDefaults.codeModeEnabled ? 'code_mode' : 'direct'),
-              collaborationMode: input.collaborationMode ?? 'agent',
-              orchestrationMode: input.orchestrationMode ?? 'default',
-            };
-            commitAttempted = true;
-            const result = await this.#stores.createStableSession({
-              sessionId: input.sessionId,
-              requestFingerprint,
-              input: createInput,
-            });
-            if (result.kind === 'conflict') {
-              return createFailure(
-                'operation_conflict',
-                'Session identity belongs to a different create request',
-              );
-            }
-            await this.#continuity.refreshCanonical(input.sessionId, lease);
-            return createSuccess(
-              projectSessionCatalogRecord(await this.#stores.readCatalogRecord(input.sessionId)),
+        let target: WorkspaceTarget = input.workspace;
+        if (input.workspace.kind === 'project') {
+          try {
+            if (!this.#worktrees && input.workspace.worktree)
+              throw new Error('Worktree selection is unavailable');
+            target = this.#worktrees
+              ? await this.#worktrees.prepareTask(
+                  input.workspace.projectId,
+                  input.workspace.worktree,
+                  input.sessionId,
+                  input.taskDescription ?? prepared.name,
+                )
+              : input.workspace;
+          } catch (error) {
+            throw new WorkspaceResolutionError(
+              'operation_conflict',
+              error instanceof Error ? error.message : 'Worktree preparation failed',
             );
-          },
-        );
+          }
+        }
+        return await this.#workspaceResolver.runWithUsageRecorded(target, async (workspace) => {
+          const [model, policy] = await Promise.all([
+            this.#resolveCreateExecution(input, workspace.cwd),
+            this.#readRuntimePolicy(),
+          ]);
+          const createInput: CreateSessionInput = {
+            cwd: workspace.cwd,
+            ...(workspace.projectId === null ? {} : { projectId: workspace.projectId }),
+            name: prepared.name,
+            labels: [...prepared.labels],
+            ...(model.executorId
+              ? {
+                  executorId: model.executorId,
+                  ...(model.executorConfig ? { executorConfig: model.executorConfig } : {}),
+                }
+              : {}),
+            ...(model.connectionId ? { llmConnectionId: model.connectionId } : {}),
+            llmConnectionSlug: model.connectionSlug,
+            model: model.model,
+            ...(model.thinkingLevel === undefined ? {} : { thinkingLevel: model.thinkingLevel }),
+            ...(input.toolProfile === undefined ? {} : { toolProfile: input.toolProfile }),
+            permissionMode: prepared.permissionMode ?? policy.policy.chatDefaults.permissionMode,
+            toolMode:
+              toolMode ?? (policy.policy.chatDefaults.codeModeEnabled ? 'code_mode' : 'direct'),
+            collaborationMode: input.collaborationMode ?? 'agent',
+            orchestrationMode: input.orchestrationMode ?? 'default',
+          };
+          if (workspace.projectId && this.#worktrees)
+            await this.#worktrees.bind(input.sessionId, workspace.cwd);
+          commitAttempted = true;
+          const result = await this.#stores.createStableSession({
+            sessionId: input.sessionId,
+            requestFingerprint,
+            input: createInput,
+          });
+          if (result.kind === 'conflict') {
+            return createFailure(
+              'operation_conflict',
+              'Session identity belongs to a different create request',
+            );
+          }
+          await this.#continuity.refreshCanonical(input.sessionId, lease);
+          return await this.#createdSession(input.sessionId);
+        });
       } catch (error) {
         if (error instanceof SessionOperationFailure || error instanceof WorkspaceResolutionError) {
           return createFailure(
@@ -828,6 +849,15 @@ export class HostSessionCatalogCoordinator {
         return createFailure('commit_outcome_unknown', 'Session creation outcome is unknown');
       }
     });
+  }
+
+  async #createdSession(sessionId: string): Promise<OperationOutcome<'session.create'>> {
+    const record = projectSessionCatalogRecord(await this.#stores.readCatalogRecord(sessionId));
+    const workspaceBlocker =
+      'workspace' in record
+        ? await this.#worktrees?.workspaceBlocker(record.workspace.hostCwd)
+        : undefined;
+    return { ok: true, result: { ...record, ...(workspaceBlocker ? { workspaceBlocker } : {}) } };
   }
 
   #updateMetadata(
@@ -1084,6 +1114,14 @@ export class HostSessionCatalogCoordinator {
             'WorkHub Coordination Session workspace requires WorkHub authority',
           );
         }
+        if (
+          this.#worktrees &&
+          (current.header.projectId || (await this.#worktrees.isBound(input.sessionId)))
+        )
+          return workspaceFailure(
+            'operation_conflict',
+            'Session worktree bindings cannot be changed',
+          );
         if (current.revision !== input.expectedRevision) {
           return workspaceSuccess(revisionConflict(input.expectedRevision, current.revision));
         }
@@ -1742,6 +1780,7 @@ function createRequestFingerprint(
   input: SessionCreateInput,
   prepared: PreparedSessionCreate,
 ): string {
+  const worktree = input.workspace.kind === 'project' ? input.workspace.worktree : undefined;
   const identity = [
     'session.create.v5',
     input.sessionId,
@@ -1771,7 +1810,15 @@ function createRequestFingerprint(
     input.collaborationMode ?? 'agent',
     input.orchestrationMode ?? 'default',
   ];
-  return `sha256:${createHash('sha256').update(JSON.stringify(identity)).digest('hex')}`;
+  return `sha256:${createHash('sha256')
+    .update(
+      JSON.stringify(
+        worktree || input.taskDescription
+          ? [...identity, worktree ?? null, input.taskDescription ?? null]
+          : identity,
+      ),
+    )
+    .digest('hex')}`;
 }
 
 export function projectSessionCatalogRecord(
@@ -1787,7 +1834,7 @@ export function projectSessionCatalogRecord(
     workspace: {
       target:
         typeof header.projectId === 'string'
-          ? { kind: 'project', projectId: header.projectId }
+          ? { kind: 'project', projectId: header.projectId, worktreePath: header.cwd }
           : { kind: 'host_path', path: header.cwd },
       hostCwd: header.cwd,
     },
@@ -2079,10 +2126,6 @@ function isNotFound(error: unknown): boolean {
 function successQuery(
   result: SessionCatalogQueryResult,
 ): OperationOutcome<'session.catalog.query'> {
-  return { ok: true, result };
-}
-
-function createSuccess(result: SessionCatalogItem): OperationOutcome<'session.create'> {
   return { ok: true, result };
 }
 

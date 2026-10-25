@@ -371,6 +371,10 @@ describe('TaskEntryRoot render scope', () => {
       catalog: {
         getCatalog: async () => catalog(),
       },
+      worktrees: { query: async () => ({
+        config: { rootDirectory: '/worktrees', projects: {} },
+        projects: [{ id: 'project-a', name: 'project-a', mainPath: '/tmp/project-a', config: {}, worktrees: [] }],
+      }) },
       sessions: {
         relocateWorkspace: async (_sessionId, projectId) => {
           recoverySelectedProject = projectId;
@@ -402,6 +406,8 @@ describe('TaskEntryRoot render scope', () => {
 
     assert.equal(latestRecoveryPicker?.showForActiveSession, true);
     assert.equal(latestRecoveryPicker?.isMenuOpen, true);
+    assert.equal(latestRecoveryPicker?.groups[0]?.projectWorktrees, undefined, 'Session recovery must not offer new-task worktree actions');
+    assert.equal(latestRecoveryPicker?.isWorktree, false);
     assert.deepEqual(recoveryPickerOpenStates.slice(-2), [false, true]);
     assert.equal(latestRecoveryPicker?.groups.length, 1);
     assert.deepEqual(

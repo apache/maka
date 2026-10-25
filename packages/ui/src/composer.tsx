@@ -75,6 +75,7 @@ import { FolderOpen } from './icons.js';
 import { WorkspacePicker, type WorkspacePickerModel } from './workspace-picker.js';
 import { useComposerDraft, type ComposerDraftPersistence, type ComposerDraftRecovery } from './use-composer-draft.js';
 import { useComposerHistory } from './use-composer-history.js';
+import { useComposerWorkspaceOverflow } from './use-composer-workspace-overflow.js';
 import {
   composerWireText,
   createChatInputActionOwner,
@@ -940,6 +941,7 @@ export const Composer = forwardRef<
   });
   // PR-UI-15: locale-aware copy for placeholder + toolbar states.
   const locale = useUiLocale();
+  const workspaceOverflow = useComposerWorkspaceOverflow(props.workspacePicker);
   const [executorModelPending, setExecutorModelPending] = useState(false);
   const [executorRestorePending, setExecutorRestorePending] = useState(false);
   const executorNativeDisabledReason = props.executorPicker?.selection ? executorCopy(locale).nativeOperations : undefined;
@@ -2319,7 +2321,7 @@ export const Composer = forwardRef<
             </div>
           )}
           footerActions={(
-            <div className="maka-composer-footer-leading maka-composer-left-controls">
+            <div ref={workspaceOverflow.ref} data-workspace-layout={workspaceOverflow.layout} className="maka-composer-footer-leading maka-composer-left-controls">
               {/* Resting order: ＋ leftmost, then permission icon. */}
               {showPlusMenu ? (
                 <span className="maka-composer-plus-menu">
@@ -2551,7 +2553,7 @@ export const Composer = forwardRef<
               {props.workspacePicker &&
               (!props.activeSession || props.workspacePicker.showForActiveSession) ? (
                 <div className="maka-composer-workspace">
-                  <WorkspacePicker workspacePicker={props.workspacePicker} />
+                  <WorkspacePicker workspacePicker={props.workspacePicker} compact={workspaceOverflow.compact} />
                 </div>
               ) : null}
               {/* Mode readouts sit after the model pair, so a mode turning on

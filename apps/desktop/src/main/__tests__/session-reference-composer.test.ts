@@ -44,8 +44,9 @@ let root: Root | undefined;
 
 const sessionLocalServices: Pick<
   ConversationServices,
-  'listMessages' | 'readFailedMessage' | 'releaseRecoveryAttachments' | 'cancelMessage' | 'reconcileMessage' | 'subscribeChanges' | 'runtimeHosts'
+  'resolveWorktreePreparation' | 'listMessages' | 'readFailedMessage' | 'releaseRecoveryAttachments' | 'cancelMessage' | 'reconcileMessage' | 'subscribeChanges' | 'runtimeHosts'
 > = {
+  resolveWorktreePreparation: async () => { throw new Error('Worktree preparation is not used in reference tests'); },
   listMessages: async () => [],
   readFailedMessage: async () => { throw new Error('Failed-message drafts are not used in reference tests'); },
   releaseRecoveryAttachments: async () => {},

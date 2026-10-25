@@ -126,6 +126,26 @@ test("binds new-session Skill discovery to its explicit Project", async () => {
     collaborationMode: "plan",
     permissionMode: "bypass",
   });
+  await handler({} as never, undefined, {
+    projectId: "project-docs",
+    worktreePath: "/worktrees/docs",
+  });
+  assert.deepEqual(target, {
+    kind: "new_session",
+    context: { workspace: { kind: "project", projectId: "project-docs", worktreePath: "/worktrees/docs" } },
+    collaborationMode: "agent",
+    permissionMode: "ask",
+  });
+  await assert.rejects(handler({} as never, undefined, {
+    projectId: "project-docs", worktreePath: "relative/path",
+  }), /absolute/);
+  await assert.rejects(handler({} as never, undefined, {
+    projectId: null, worktreePath: "/worktrees/docs",
+  }), /project/i);
+  await handler({} as never, "existing-session", {
+    projectId: "project-docs", worktreePath: "/ignored-draft-selection",
+  });
+  assert.deepEqual(target, { kind: "session", sessionId: "existing-session" });
 });
 
 test("blocks Skill location opening for a remote Runtime Host", async () => {

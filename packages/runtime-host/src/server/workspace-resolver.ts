@@ -60,6 +60,10 @@ export class HostWorkspaceResolver {
     private readonly catalog: Pick<ProjectCatalog, 'list' | 'touch'>,
     private readonly membership: HostProjectMembershipGate,
     private readonly onProjectChanged: () => void,
+    private readonly worktrees?: {
+      mainPath(projectId: string): Promise<string>;
+      validatePath(projectId: string, path: string): Promise<string>;
+    },
   ) {}
 
   resolve(target: WorkspaceTarget): Promise<ResolvedWorkspace> {
@@ -126,9 +130,26 @@ export class HostWorkspaceResolver {
         `Project is unavailable: ${target.projectId}`,
       );
     }
+    let cwd = project.preferredPath;
+    try {
+      if (this.worktrees)
+        cwd = target.worktreePath
+          ? await this.worktrees.validatePath(project.id, target.worktreePath)
+          : await this.worktrees.mainPath(project.id);
+      else if (target.worktreePath) throw new Error('Worktree targets are unavailable');
+    } catch (error) {
+      throw new WorkspaceResolutionError(
+        'operation_conflict',
+        error instanceof Error ? error.message : 'Worktree is unavailable',
+      );
+    }
     return {
-      target: { kind: 'project', projectId: project.id },
-      cwd: project.preferredPath,
+      target: {
+        kind: 'project',
+        projectId: project.id,
+        ...(target.worktreePath ? { worktreePath: cwd } : {}),
+      },
+      cwd,
       projectId: project.id,
       project,
     };

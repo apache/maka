@@ -21,7 +21,8 @@ import { JsonArrayPageBudget } from './json-array-page-budget.js';
 
 import { createHash } from 'node:crypto';
 import { reportUnexpectedOperation } from '@maka/core/redaction';
-import type { ProjectRecord } from '@maka/core/project';
+import { findProjectByIdentity, type ProjectRecord } from '@maka/core/project';
+import type { SessionHeader } from '@maka/core/session';
 import {
   ProjectArchivedError,
   type ProjectCatalog,
@@ -29,6 +30,7 @@ import {
   ProjectPathConflictError,
   ProjectPathMismatchError,
   ProjectUnavailableError,
+  resolveProjectLocation,
 } from '@maka/storage/project-catalog';
 import {
   decodeProjectCatalogProject,
@@ -51,6 +53,8 @@ import {
 } from './project-directory-authority.js';
 import type { HostProjectMembershipGate } from './project-membership-gate.js';
 
+class ProjectRelinkWorkspaceConflictError extends Error {}
+
 export class HostProjectCatalogCoordinator {
   readonly handlers: ProjectCatalogOperationHandlerMap = {
     'project.catalog.query': (input) => this.#query(input),
@@ -64,6 +68,10 @@ export class HostProjectCatalogCoordinator {
     private readonly membership: HostProjectMembershipGate,
     private readonly requestDrain: () => void,
     private readonly directories = new HostProjectDirectoryAuthority(),
+    private readonly fixedWorkspaces?: {
+      listSessions(): Promise<readonly Pick<SessionHeader, 'id' | 'cwd' | 'projectId'>[]>;
+      isBound(sessionId: string): Promise<boolean>;
+    },
   ) {}
 
   async #query(
@@ -139,7 +147,8 @@ export class HostProjectCatalogCoordinator {
         error instanceof ProjectArchivedError ||
         error instanceof ProjectUnavailableError ||
         error instanceof ProjectPathConflictError ||
-        error instanceof ProjectPathMismatchError
+        error instanceof ProjectPathMismatchError ||
+        error instanceof ProjectRelinkWorkspaceConflictError
       ) {
         return mutationFailure('operation_conflict', error.message);
       }
@@ -173,7 +182,8 @@ export class HostProjectCatalogCoordinator {
         );
       }
       case 'relink': {
-        const result = await this.catalog.relinkWithSessions(input.projectId, input.path);
+        const path = await this.#relinkPath(input.projectId, input.path);
+        const result = await this.catalog.relinkWithSessions(input.projectId, path);
         for (const sessionId of result.updatedSessionIds) this.sessionChanges.publish(sessionId);
         return projectResult(result.project);
       }
@@ -184,6 +194,29 @@ export class HostProjectCatalogCoordinator {
       case 'restore':
         return projectResult(await this.catalog.restore(input.projectId));
     }
+  }
+
+  async #relinkPath(projectId: string, path: string): Promise<string> {
+    if (!this.fixedWorkspaces) return path;
+    const project = findProjectByIdentity(await this.catalog.list(), projectId);
+    if (!project) throw new ProjectNotFoundError(projectId);
+    const resolved = await resolveProjectLocation({ path, intent: 'selected' });
+    const destination = resolved.git?.worktreeRoot ?? resolved.canonicalPath;
+    for (const session of await this.fixedWorkspaces.listSessions()) {
+      // Relink only changes the surviving project's working directories. Sessions
+      // of an absorbed project keep their paths and may safely retain bindings.
+      if (
+        session.projectId &&
+        findProjectByIdentity([project], session.projectId) &&
+        session.cwd !== destination &&
+        (await this.fixedWorkspaces.isBound(session.id))
+      ) {
+        throw new ProjectRelinkWorkspaceConflictError(
+          "Cannot relink this project because it would change a task's fixed workspace",
+        );
+      }
+    }
+    return destination;
   }
 }
 

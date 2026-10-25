@@ -24,7 +24,10 @@ import { afterEach, describe, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { act, createElement, type ComponentProps, type ReactNode } from 'react';
 import type { TaskSubmissionReadinessSnapshot } from '@maka/core/task-submission-readiness';
-import { LocaleProvider } from '@maka/ui';
+import { LocaleProvider, type ComposerHandle } from '@maka/ui';
+import { createRoot } from 'react-dom/client';
+import { parseHTML } from 'linkedom';
+import { TaskReadinessComposer } from '../../renderer/features/conversation/testing.js';
 import * as Conversation from '../../renderer/features/conversation/index.js';
 import {
   OnboardingAuthorityProvider,
@@ -92,7 +95,9 @@ function recordingServices() {
     readonly request: Request;
     readonly answer: ReturnType<typeof deferred<TaskSubmissionReadinessSnapshot>>;
   }> = [];
+  const listeners = new Set<() => void>();
   const services: TaskReadinessServices = {
+    subscribeChanges(listener) { listeners.add(listener); return () => { listeners.delete(listener); }; },
     readSession(sessionId, request) {
       const answer = deferred<TaskSubmissionReadinessSnapshot>();
       reads.push({ kind: 'session', target: sessionId, request, answer });
@@ -104,7 +109,7 @@ function recordingServices() {
       return answer.promise;
     },
   };
-  return { services, reads };
+  return { services, reads, changed: () => { for (const listener of listeners) listener(); } };
 }
 
 function noticeRecorder() {
@@ -155,6 +160,97 @@ const sessionRequest: Request = { connectionSlug: 'openai', model: 'gpt-5', cwd:
 const newTaskTarget: NewTaskTarget = { profileId: 'local', hostId: 'host-1', projectId: 'project-1' };
 
 describe('TaskReadinessProvider', () => {
+  test('a fixed unavailable worktree explains the send blocker without offering a different workspace', async () => {
+    const { root } = installReactRenderer();
+    const { services, reads } = recordingServices();
+    const notice = noticeRecorder();
+    await act(async () => root.render(owner(services, {
+      request: { ...sessionRequest, workspaceFixed: true }, refreshKey: {}, sessionId: 'a',
+    }, createElement(TaskReadinessNoticeConsumer, { surface: notice.Surface }))));
+    await act(async () => reads[0]!.answer.resolve(snapshot('workspace')));
+    assert.equal(notice.latest()?.title, 'This conversation’s worktree is unavailable. Messages cannot be sent right now.');
+    assert.equal(notice.latest()?.description, '');
+    assert.equal(notice.latest()?.actionLabel, copy.workspace.actionLabel.retry);
+  });
+
+  test('cleanup disables sending while preserving an editable draft, then recovery enables it', async () => {
+    const { document, window } = parseHTML('<html><body><div id="root"></div></body></html>');
+    const globals = {
+      document, window, HTMLElement: window.HTMLElement, Element: window.Element, Node: window.Node,
+      MutationObserver: window.MutationObserver,
+      ResizeObserver: class { observe() {} unobserve() {} disconnect() {} },
+      CSS: { escape: (value: string) => value },
+      getComputedStyle: () => ({ getPropertyValue: () => '', paddingTop: '0', paddingBottom: '0' }),
+      requestAnimationFrame: () => 0, cancelAnimationFrame() {}, IS_REACT_ACT_ENVIRONMENT: true,
+    };
+    const previous = new Map(Object.keys(globals).map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
+    for (const [key, value] of Object.entries(globals)) Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
+    window.getSelection = () => null;
+    document.getSelection = () => null;
+    window.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} }) as unknown as MediaQueryList;
+    // Match browser attribute casing; linkedom otherwise preserves React's key.
+    const setAttribute = window.HTMLElement.prototype.setAttribute;
+    window.HTMLElement.prototype.setAttribute = function (name, value) {
+      return setAttribute.call(this, name === 'contentEditable' ? 'contenteditable' : name, value);
+    };
+    const root = createRoot(document.querySelector('#root')!);
+    const { services, reads, changed } = recordingServices();
+    const ref = { current: null as ComposerHandle | null };
+    let sends = 0;
+    const refreshKey = {};
+    const render = (sessionId: string, sendBlocked = false) => owner(services, {
+      request: { ...sessionRequest, workspaceFixed: true }, refreshKey, sessionId,
+    }, createElement(TaskReadinessComposer, {
+      ref, draftKey: sessionId, sendBlocked, onSend: () => { sends += 1; return false; }, onStop() {},
+    }));
+    const sendButton = () => document.querySelector('button[aria-label="Send"]')!;
+    try {
+      await act(async () => root.render(render('a')));
+      await act(async () => reads[0]!.answer.resolve(READY));
+      await act(async () => ref.current!.setDraft('a', 'keep this draft'));
+      assert.notEqual(sendButton().getAttribute('aria-disabled'), 'true');
+      await act(async () => changed());
+      await act(async () => reads[1]!.answer.resolve(snapshot('workspace')));
+      assert.equal(sendButton().getAttribute('aria-disabled'), 'true');
+      const editor = document.querySelector('[contenteditable="true"]');
+      assert.ok(editor, 'workspace failure does not disable editing');
+      assert.equal(ref.current!.getText(), 'keep this draft');
+      await act(async () => {
+        document.querySelector('form')!.dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }));
+        const enter = new window.Event('keydown', { bubbles: true, cancelable: true });
+        Object.defineProperties(enter, { key: { value: 'Enter' }, code: { value: 'Enter' } });
+        editor.dispatchEvent(enter);
+      });
+      assert.equal(sends, 0, 'neither form submission nor Enter reaches the Host');
+      await act(async () => changed());
+      assert.equal(sendButton().getAttribute('aria-disabled'), 'true', 'rechecking must keep a confirmed blocker');
+      await act(async () => reads[2]!.answer.reject(new Error('temporary read failure')));
+      assert.equal(sendButton().getAttribute('aria-disabled'), 'true', 'a failed recheck is not recovery');
+      await act(async () => window.dispatchEvent(new window.Event('focus')));
+      await act(async () => reads[3]!.answer.resolve(READY));
+      assert.notEqual(sendButton().getAttribute('aria-disabled'), 'true');
+      assert.equal(ref.current!.getText(), 'keep this draft');
+      await act(async () => {
+        document.querySelector('form')!.dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }));
+      });
+      assert.equal(sends, 1, 'the same submit path works once the workspace is ready');
+      await act(async () => root.render(render('a', true)));
+      assert.equal(sendButton().getAttribute('aria-disabled'), 'true', 'other send gates remain effective');
+      await act(async () => changed());
+      await act(async () => reads[4]!.answer.resolve(snapshot('workspace')));
+      await act(async () => root.render(render('b')));
+      await act(async () => ref.current!.setDraft('b', 'another draft'));
+      assert.notEqual(sendButton().getAttribute('aria-disabled'), 'true', 'another Session is independent');
+    } finally {
+      await act(async () => root.unmount());
+      window.HTMLElement.prototype.setAttribute = setAttribute;
+      for (const [key, descriptor] of previous) {
+        if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+        else Reflect.deleteProperty(globalThis, key);
+      }
+    }
+  });
+
   test('reads the Session target and publishes only the latest answer', async () => {
     const { root, container } = installReactRenderer();
     const { services, reads } = recordingServices();
@@ -354,6 +450,7 @@ describe('Desktop task readiness adapter', () => {
         },
       },
       newTasks: {
+        subscribeChanges: () => () => {},
         getReadiness: async (target, input) => {
           calls.push(['newTasks.getReadiness', target, input]);
           return READY;
@@ -361,7 +458,7 @@ describe('Desktop task readiness adapter', () => {
       },
     };
     const services = createDesktopTaskReadinessServices(bridge);
-    assert.equal(await services.readSession('session-1', sessionRequest), READY);
+    assert.equal(await services.readSession('session-1', { ...sessionRequest, workspaceFixed: true }), READY);
     assert.equal(await services.readNewTask(newTaskTarget, { cwd: '/work' }), READY);
     assert.deepEqual(calls, [
       ['taskReadiness.getSnapshot', sessionRequest, 'session-1'],

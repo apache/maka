@@ -144,6 +144,8 @@ export interface ChatViewGoalIndicatorProps {
  */
 export interface TransientUserMessageProjection {
   deliveryStatus?: string;
+  deliveryProgress?: boolean;
+  deliveryElapsed?: string;
   deliveryDetail?: string;
   deliveryTone?: 'neutral' | 'warning' | 'danger';
   deliveryDiagnostic?: string;

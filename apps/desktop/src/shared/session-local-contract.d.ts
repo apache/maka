@@ -47,8 +47,15 @@ export interface DesktopLocalMessage {
   readonly retryScheduled?: boolean;
   readonly waitingForConnection?: boolean;
   readonly error?: string;
+  readonly pauseReason?: import('@maka/core/worktree').WorktreeBlocker['kind'];
   /** Main can reach the Host, so it delivers the message without the user. */
   readonly delivering?: true;
+  /** Live preparation of the retained first message, before Host admission. */
+  readonly worktreePreparation?: {
+    readonly phase: 'preparing' | 'checkout' | 'initializing' | 'finalizing';
+    readonly elapsedSeconds: number;
+    readonly path?: string;
+  };
 }
 
 /** Read on demand for editing a definite failure; reading never consumes the original. */
@@ -71,6 +78,7 @@ export interface DesktopCachedTranscript {
 }
 
 export interface DesktopSessionLocalBridge {
+  resolveWorktreePreparation(sessionId: string, messageId: string, decision: 'main' | 'cancel'): Promise<void>;
   listMessages(sessionId: string): Promise<readonly DesktopLocalMessage[]>;
   readFailedMessage(sessionId: string, messageId: string): Promise<DesktopLocalMessageDraft>;
   /** Release exact recovery approvals owned by this renderer, even after changing Host or Session. */

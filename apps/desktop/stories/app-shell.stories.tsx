@@ -17,10 +17,14 @@
  * under the License.
  */
 
+import { BranchWorktreeRoot, ComposerSubmissionServicesProvider } from '../src/renderer/features/conversation/testing.js';
+import { windowSubmissionServices } from '../src/main/__tests__/app-shell-chat-actions-fixture.js';
+import { createFakeTaskEntryServices, TaskEntryRoot, TaskEntryServicesProvider, TaskEntryWorkspacePickerConsumer } from '../src/renderer/features/task-entry/testing.js';
+import { deriveTurnFooterActions } from '../src/renderer/application/contracts/turn-footer-actions.js';
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { expect, fn, userEvent, waitFor, within } from 'storybook/test';
 import { ResizeHandle, useResizable } from '@astryxdesign/core/Resizable';
-import { useEffect, useReducer, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import type { ComponentProps } from 'react';
 import type { ProjectRecord } from '@maka/core/project';
 import type { SessionSummary, StoredMessage } from '@maka/core/session';
@@ -43,7 +47,7 @@ import {
   ToastProvider,
   useUiLocale,
 } from '@maka/ui';
-import type { ChatModelChoice, ComposerHandle, SessionViewMode, TurnViewModel, LiveTurnBuffer } from '@maka/ui';
+import type { ChatModelChoice, ComposerHandle, SessionViewMode, TurnViewModel, LiveTurnBuffer, TransientUserMessageProjection } from '@maka/ui';
 import { SessionRail, type SessionRailStoryProps } from '../../../packages/ui/stories/session-rail-harness.js';
 import { deriveMessageQueueProjection } from '../src/renderer/application/contracts/message-queue-projection';
 import { retractQueuedEntryToDraft, withQueuedSteeringTransients } from '../src/renderer/application/contracts/transient-message-projection';
@@ -72,8 +76,8 @@ import {
 import { AppShell as AstryxAppShell } from '@astryxdesign/core/AppShell';
 import { Button } from '@astryxdesign/core';
 import { GoalDialog } from '../src/renderer/features/goals/testing';
-import { localMessagePresentation } from '../src/renderer/features/conversation/testing';
-import { getSessionLocalCopy } from '../src/renderer/locales/session-local-copy';
+import { SessionLocalMessages, stubConversationServices } from '../src/renderer/features/conversation/testing';
+import { ConversationServicesProvider } from '../src/renderer/features/conversation';
 import type { DesktopLocalMessage } from '../src/shared/session-local-contract';
 
 const NOW = Date.UTC(2026, 6, 1, 9, 30, 0);
@@ -825,35 +829,56 @@ export const PromptSentBeforeTurnLands: Story = {
   },
 };
 
-function FailedLocalMessageHarness({ paused = false }: { paused?: boolean }) {
-  const locale = useUiLocale();
-  const copy = getSessionLocalCopy(locale);
-  const message: DesktopLocalMessage = {
-    sessionId: activeSession.id, messageId: 'failed-local', createdAt: NOW,
-    state: paused ? 'paused' : 'failed', canCancel: true, placement: 'next_turn', localDisplayPlacement: 'current_turn',
-    text: '请保留这条未发送的问题，我需要编辑后重新发送。',
-    attachments: [], inlineReferences: [], error: paused ? undefined : 'Host rejected the message before admission.',
-  };
-  const presentation = localMessagePresentation(message, locale);
-  return <ComposedShell chat={{
-    messages: conversation.slice(0, 2),
-    transientMessages: [{
-      id: message.messageId, text: message.text, ts: message.createdAt, transientPlacement: 'transcript',
-      deliveryStatus: presentation.status, deliveryDetail: presentation.detail, deliveryTone: presentation.tone,
-      deliveryDiagnostic: message.error, deliveryDiagnosticLabel: copy.diagnostics,
-      deliveryActions: paused
-        ? [{ label: copy.editUnsent, onClick: noop }, { label: copy.resume, onClick: noop }, { label: copy.removeUnsent, onClick: noop }]
-        : [{ label: copy.edit, onClick: noop }, { label: copy.remove, onClick: noop }],
-    }],
-  }} />;
+function LocalMessageHarness({ paused = false, preparing = false }: { paused?: boolean; preparing?: boolean }) {
+  const services = useMemo(() => {
+    const message: DesktopLocalMessage = {
+      sessionId: activeSession.id, messageId: 'failed-local', createdAt: NOW,
+      state: preparing ? 'saved' : paused ? 'paused' : 'failed', canCancel: true,
+      placement: 'next_turn', localDisplayPlacement: 'current_turn',
+      text: preparing ? '为搜索页面添加筛选功能。' : '请保留这条未发送的问题，我需要编辑后重新发送。',
+      attachments: [], inlineReferences: [], error: paused || preparing ? undefined : 'Host rejected the message before admission.',
+      ...(preparing ? { delivering: true as const, worktreePreparation: { phase: 'initializing' as const, elapsedSeconds: 12, path: '/workspace/worktrees/maka/search-filters' } } : {}),
+    };
+    return stubConversationServices({ listMessages: async () => [message] });
+  }, [paused, preparing]);
+  const [transient, setTransient] = useState<TransientUserMessageProjection>();
+  const publish = useCallback((_sessionId: string, message: TransientUserMessageProjection) => setTransient(message), []);
+  const retire = useCallback(() => setTransient(undefined), []);
+  const captureUnsentDraftRestore = useCallback(() => ({ restore: () => true, release: noop }), []);
+  return <ConversationServicesProvider services={services}>
+    <SessionLocalMessages sessionId={activeSession.id} publish={publish} update={publish} retire={retire}
+      canRestoreDraft={() => true} restoreDraft={noop} captureUnsentDraftRestore={captureUnsentDraftRestore} />
+    <ComposedShell chat={{
+      messages: preparing ? [] : conversation.slice(0, 2),
+      transientMessages: transient ? [transient] : [],
+    }} />
+  </ConversationServicesProvider>;
 }
+
+// Real path: New task → New worktree → first send is saved locally while the Host runs setup.
+export const WorktreePreparation: Story = {
+  render: () => <LocalMessageHarness preparing />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText('正在运行初始化脚本');
+    const feedback = canvasElement.querySelector<HTMLElement>('.maka-message-delivery');
+    if (!feedback) throw new Error('Worktree preparation feedback is missing');
+    await expect(within(feedback).getByText('/workspace/worktrees/maka/search-filters')).toBeVisible();
+    await expect(feedback).toHaveTextContent('12 秒');
+    await expect(within(feedback).getByRole('button', { name: '不使用工作树' })).toBeVisible();
+    await expect(within(feedback).getByRole('button', { name: /^取消$/ })).toBeVisible();
+    await expect(canvas.getByText('为搜索页面添加筛选功能。')).toBeVisible();
+    expect(feedback.scrollWidth).toBeLessThanOrEqual(feedback.clientWidth + 1);
+  },
+};
 
 // Real path: send in an existing conversation → Host rejects admission → the
 // durable failed local copy retains its feedback and edit/delete actions.
 // The production presenter derives the failed status rather than hardcoding it.
 export const FailedLocalMessage: Story = {
-  render: () => <FailedLocalMessageHarness />,
+  render: () => <LocalMessageHarness />,
   play: async ({ canvasElement }) => {
+    await within(canvasElement).findByText('请保留这条未发送的问题，我需要编辑后重新发送。');
     const failed = canvasElement.querySelector('[data-transient-message-id="failed-local"]')!;
     const failedMetadata = failed.querySelector<HTMLElement>('.maka-message-meta')!;
     // Actionable delivery remains visible beside, not inside, the metadata.
@@ -899,8 +924,9 @@ export const FailedLocalMessage: Story = {
 // State transitions are tested through SessionLocalMessages; this story checks
 // the production message frame's status and action visibility in a browser.
 export const PausedLocalMessage: Story = {
-  render: () => <FailedLocalMessageHarness paused />,
+  render: () => <LocalMessageHarness paused />,
   play: async ({ canvasElement }) => {
+    await within(canvasElement).findByText('请保留这条未发送的问题，我需要编辑后重新发送。');
     const row = canvasElement.querySelector('[data-transient-message-id="failed-local"]')!;
     await expect(row.querySelector('.maka-message-delivery [role="status"]')).toBeVisible();
     const actions = row.querySelectorAll<HTMLButtonElement>('.maka-message-delivery-actions button');
@@ -5102,4 +5128,230 @@ export const SessionContextEventWaitUnknownNarrow: Story = {
 export const SessionContextEventWaitReady: Story = {
   render: () => <EventWaitContextStory label="Result available, waiting to continue" />,
   play: assertEventWaitLayout,
+};
+
+const worktreeComposerServices = createFakeTaskEntryServices({
+  catalog: { getCatalog: async () => ({
+    defaultProfileId: 'lab-server',
+    hosts: [{
+      profile: { id: 'lab-server', name: 'Lab server', kind: 'remote' },
+      hostId: 'host-lab', readiness: 'ready', state: 'available',
+      projects: [project({ id: 'project-backend', name: 'backend-service' }), project({ id: 'project-infra', name: 'infrastructure' }), project({ id: 'project-plain', name: 'notes-folder' })],
+      selectedProjectId: 'project-backend', branch: 'main',
+      capabilities: { chooseClientDirectory: false, chooseHostDirectory: true, selectNoProject: false },
+      chatDefaults: { permissionMode: 'ask', thinkingLevel: 'high' },
+    }],
+  }) },
+  worktrees: { query: async () => ({
+    config: { rootDirectory: '/srv/worktrees', projects: {} },
+    projects: [
+      { id: 'project-backend', name: 'backend-service', mainPath: '/srv/backend-service', config: {},
+        worktrees: [{ projectId: 'project-backend', name: 'add-search', path: '/srv/worktrees/backend/add-search',
+          branch: 'feature/search', head: 'abc', isMain: false, managed: true, available: true, locked: false, sessionCount: 1 },
+          ...Array.from({ length: 9 }, (_, index) => ({
+            projectId: 'project-backend', name: `sandbox-${index + 1}`, path: `/srv/worktrees/backend/sandbox-${index + 1}`,
+            branch: `sandbox-${index + 1}`, head: 'abc', isMain: false, managed: true, available: true, locked: false, sessionCount: 0,
+          }))] },
+      { id: 'project-infra', name: 'infrastructure', mainPath: '/srv/infrastructure', config: {},
+        worktrees: [{ projectId: 'project-infra', name: 'preview', path: '/srv/worktrees/infra/preview',
+          branch: 'preview', head: 'abc', isMain: false, managed: true, available: true, locked: false, sessionCount: 0 }] },
+    ],
+  }) },
+});
+
+function WorktreeComposerStory() {
+  return <ToastProvider><TaskEntryServicesProvider services={worktreeComposerServices}>
+    <TaskEntryRoot>{(taskEntry) => <TaskEntryWorkspacePickerConsumer manageProjects={noop}>
+      {(workspacePicker) => <ComposedShell session={null} chat={{ messages: [] }} composer={{
+        draftKey: taskEntry.selectors.draftKey,
+        newChatModel: { llmConnectionId: 'connection-anthropic-main', llmConnectionSlug: 'anthropic-main', model: 'claude-sonnet-4-5' },
+        onPickNewChatModel: noop, onOpenModelSettings: noop, workspacePicker,
+      }} />}
+    </TaskEntryWorkspacePickerConsumer>}</TaskEntryRoot>
+  </TaskEntryServicesProvider></ToastProvider>;
+}
+
+// Real path: New task → choose a Project → choose Local/New or search among at least ten Existing worktrees in the working-directory submenu.
+export const NewTaskWorktreePicker: Story = {
+  render: () => <WorktreeComposerStory />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const body = within(document.body);
+    const projectTrigger = await canvas.findByRole('button', { name: /选择项目：.*backend-service/ });
+    await canvas.findByRole('button', { name: /^工作目录：/ });
+    const worktreeTrigger = () => canvas.getByRole('button', { name: /^工作目录：/ });
+    const closed = () => waitFor(() => expect(body.queryByRole('menu')).toBeNull());
+    const openWorktrees = () => userEvent.click(worktreeTrigger());
+    const expandExisting = async () => {
+      const existing = await body.findByRole('menuitem', { name: '已有工作树' });
+      await expect(existing).toHaveAttribute('aria-haspopup', 'menu');
+      await userEvent.hover(existing);
+    };
+    await expect(projectTrigger.querySelector('.lucide-folder-open')).not.toBeNull();
+    await expect(worktreeTrigger()).toHaveTextContent('主目录');
+    await expect(worktreeTrigger().querySelector('.lucide-monitor')).not.toBeNull();
+    await userEvent.click(projectTrigger);
+    const infrastructure = await body.findByRole('menuitem', { name: 'infrastructure' });
+    await expect(infrastructure).not.toHaveAttribute('aria-haspopup');
+    await userEvent.hover(infrastructure);
+    await expect(body.getAllByRole('menu')).toHaveLength(1);
+    await expect(body.queryByRole('menuitem', { name: '新建工作树' })).toBeNull();
+    await userEvent.click(infrastructure);
+    await expect(projectTrigger).toHaveTextContent('infrastructure');
+    await expect(worktreeTrigger()).toHaveTextContent('主目录');
+    await closed();
+
+    await openWorktrees();
+    await body.findByRole('menuitem', { name: '主目录' });
+    await body.findByRole('menuitem', { name: '新建工作树' });
+    await expect(body.queryByRole('menuitem', { name: /^preview/ })).toBeNull();
+    await expandExisting();
+    await expect(body.queryByRole('menuitem', { name: /^add-search/ })).toBeNull();
+    const preview = await body.findByRole('menuitem', { name: /^preview/ });
+    await expect(body.queryByRole('searchbox', { name: '搜索工作树' })).toBeNull();
+    await userEvent.click(preview);
+    await expect(projectTrigger).toHaveTextContent('infrastructure');
+    await expect(worktreeTrigger()).toHaveTextContent('preview');
+    await expect(worktreeTrigger().querySelector('.lucide-git-branch')).not.toBeNull();
+    await closed();
+    await openWorktrees();
+    await expandExisting();
+    await expect((await body.findByRole('menuitem', { name: /^preview/ })).querySelector('.lucide-check')).not.toBeNull();
+    await userEvent.click(await body.findByRole('menuitem', { name: '主目录' }));
+    await expect(worktreeTrigger()).toHaveTextContent('主目录');
+    await closed();
+    await openWorktrees();
+    await userEvent.click(await body.findByRole('menuitem', { name: '新建工作树' }));
+    await expect(worktreeTrigger()).toHaveTextContent('新建工作树');
+    await expect(projectTrigger).toHaveTextContent('infrastructure');
+    await closed();
+
+    await userEvent.click(projectTrigger);
+    await userEvent.click(await body.findByRole('menuitem', { name: 'notes-folder' }));
+    await closed();
+    await expect(canvas.queryByRole('button', { name: /^工作目录：/ })).toBeNull();
+    await userEvent.click(projectTrigger);
+    (await body.findByRole('menuitem', { name: 'backend-service' })).focus();
+    await userEvent.keyboard('{Enter}');
+    await expect(projectTrigger).toHaveTextContent('backend-service');
+    await expect(worktreeTrigger()).toHaveTextContent('主目录');
+    await closed();
+    await openWorktrees();
+    (await body.findByRole('menuitem', { name: '已有工作树' })).focus();
+    await userEvent.keyboard('{ArrowRight}');
+    const search = await body.findByRole('searchbox', { name: '搜索工作树' });
+    await waitFor(() => expect(search).toHaveFocus());
+    await userEvent.type(search, 'ADD');
+    await expect(body.queryByRole('menuitem', { name: /^sandbox-1/ })).toBeNull();
+    await body.findByRole('menuitem', { name: /^add-search/ });
+    await userEvent.clear(search);
+    await userEvent.type(search, 'no such worktree');
+    await body.findByText('没有匹配的工作树');
+    await expect(search).toHaveValue('no such worktree');
+    await userEvent.keyboard('{Escape}');
+    await expect(body.queryByRole('searchbox', { name: '搜索工作树' })).toBeNull();
+    const existingTrigger = await body.findByRole('menuitem', { name: '已有工作树' });
+    await expect(existingTrigger).toHaveFocus();
+    await userEvent.keyboard('{ArrowRight}');
+    const reopenedSearch = await body.findByRole('searchbox', { name: '搜索工作树' });
+    await expect(reopenedSearch).toHaveValue('');
+    await waitFor(() => expect(reopenedSearch).toHaveFocus());
+    await userEvent.type(reopenedSearch, 'search');
+    await userEvent.keyboard('{ArrowDown}');
+    await expect(await body.findByRole('menuitem', { name: /^add-search/ })).toHaveFocus();
+    await userEvent.keyboard('{Enter}');
+    await expect(worktreeTrigger()).toHaveTextContent('add-search');
+    await expect(projectTrigger).toHaveTextContent('backend-service');
+    await closed();
+    for (const [button, label] of [[projectTrigger, 'backend-service'], [worktreeTrigger(), 'add-search']] as const) {
+      const text = within(button).getByText(label, { exact: true });
+      await expect(text.scrollWidth).toBeLessThanOrEqual(text.clientWidth + 1);
+    }
+    // Real path: drag the workbar divider narrower and wider while composing.
+    // Sample the real card every frame across the transition, not just endpoints.
+    const card = canvasElement.querySelector<HTMLElement>('.maka-composer-astryx')!;
+    const footer = canvasElement.querySelector<HTMLElement>('.maka-composer-footer-leading')!;
+    const originalWidth = card.style.width;
+    const rowHeight = footer.getBoundingClientRect().height;
+    const widths = Array.from({ length: 41 }, (_, index) => 800 - index * 10);
+    const samples: { width: number; compact: boolean; overflow: number; height: number }[] = [];
+    try {
+      for (const width of [...widths, ...widths.toReversed()]) {
+        card.style.width = `${width}px`;
+        await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+        samples.push({
+          width,
+          compact: projectTrigger.getBoundingClientRect().width === projectTrigger.getBoundingClientRect().height,
+          overflow: footer.scrollWidth - footer.clientWidth,
+          height: footer.getBoundingClientRect().height,
+        });
+      }
+      await expect(samples.every((sample) => sample.overflow <= 1 && sample.height === rowHeight)).toBe(true);
+      // Long labels must collapse even above the former fixed 640px breakpoint.
+      await expect(samples.some((sample) => sample.width > 640 && sample.compact)).toBe(true);
+      await expect(samples[0]?.compact).toBe(false);
+      await expect(samples.at(-1)?.compact).toBe(false);
+      await expect(samples.slice(0, widths.length)).toEqual(samples.slice(widths.length).toReversed());
+    } finally {
+      card.style.width = originalWidth;
+    }
+    await openWorktrees();
+    await expandExisting();
+    const finalSearch = await body.findByRole('searchbox', { name: '搜索工作树' });
+    await expect(finalSearch).toHaveValue('');
+    await userEvent.type(finalSearch, 'add');
+    await expect((await body.findByRole('menuitem', { name: /^add-search/ })).querySelector('.lucide-check')).not.toBeNull();
+  },
+};
+
+const forkWorktreeAction = fn();
+const forkWorktreeServices = {
+  ...windowSubmissionServices(),
+  readBranchWorkspace: async () => ({ path: '/srv/worktrees/backend/add-search', canCreate: true }),
+};
+
+function ForkWorktreeStory() {
+  const locale = useUiLocale();
+  return <ComposerSubmissionServicesProvider services={forkWorktreeServices}>
+    <BranchWorktreeRoot sessionId="fork-worktree-source">
+      <ComposedShell chat={{
+        deriveTurnPresentation: (turns) => ({
+          footerActionsByTurn: Object.fromEntries(turns.map((turn) => [turn.turnId, deriveTurnFooterActions({ turnId: turn.turnId, status: turn.status, hasContent: true, locale })])),
+          failedReasonLabels: {}, failedSeverities: {}, failedExecutionStateLabels: {}, lineageBadgesByTurn: {},
+        }),
+        onTurnFooterAction: forkWorktreeAction,
+      }} />
+    </BranchWorktreeRoot>
+  </ComposerSubmissionServicesProvider>;
+}
+
+// Real path: completed conversation turn → Fork → choose a worktree directly from the menu.
+export const ForkWorktreeChoice: Story = {
+  render: () => <ForkWorktreeStory />,
+  play: async ({ canvasElement }) => {
+    forkWorktreeAction.mockClear();
+    const canvas = within(canvasElement);
+    const body = within(document.body);
+    const buttons = await canvas.findAllByRole('button', { name: /分支|分叉/ });
+    const button = buttons[buttons.length - 1]!;
+    await waitFor(() => expect(button).toHaveAttribute('aria-haspopup', 'menu'));
+    button.focus();
+    await userEvent.keyboard('{Enter}');
+    const same = await body.findByRole('menuitem', { name: '当前 worktree' });
+    await expect(body.queryByRole('dialog')).not.toBeInTheDocument();
+    await userEvent.click(same);
+    await expect(forkWorktreeAction).toHaveBeenLastCalledWith(expect.any(String), 'branch');
+    button.focus();
+    await userEvent.keyboard('{Enter}');
+    await userEvent.click(await body.findByRole('menuitem', { name: '新建 worktree' }));
+    await expect(forkWorktreeAction).toHaveBeenLastCalledWith(expect.any(String), 'branch-worktree');
+    button.focus();
+    await userEvent.keyboard('{Enter}');
+    await userEvent.keyboard('{Escape}');
+    await expect(body.queryByRole('menu')).not.toBeInTheDocument();
+    await expect(forkWorktreeAction).toHaveBeenCalledTimes(2);
+    button.focus();
+    await userEvent.keyboard('{Enter}');
+    await body.findByRole('menuitem', { name: '新建 worktree' });
+  },
 };

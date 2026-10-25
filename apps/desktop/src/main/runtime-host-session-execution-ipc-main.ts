@@ -814,6 +814,7 @@ export function registerRuntimeHostSessionExecutionIpc(
       const normalized = normalizeRuntimeHostBranchFromTurnInput(input);
       const createBranch = () =>
         deps.client.copySession("branch", {
+          ...(normalized.worktree ? { worktree: normalized.worktree } : {}),
           sourceSessionId: sessionId,
           targetSessionId: normalized.copyId,
           ...(normalized.sourceTurnId === undefined

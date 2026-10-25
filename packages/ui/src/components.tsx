@@ -65,7 +65,7 @@ export {
   type TransientUserMessageProjection,
 } from './chat-view.js';
 export { WorkspacePicker } from './workspace-picker.js';
-export type { WorkspacePickerModel } from './workspace-picker.js';
+export type { WorkspacePickerModel, WorkspacePickerWorktreeMenu } from './workspace-picker.js';
 export {
   deriveTitlebarProjectName,
   TitlebarSessionIdentity,

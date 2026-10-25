@@ -26,6 +26,7 @@ import type {
   TurnMessageSubmitInput,
   TurnMessageSubmitResult,
 } from '@maka/runtime-host/protocol';
+import type { TaskWorktreeSelection } from '@maka/core/worktree';
 import type { DesktopSessionSummaryInput } from '../shared/desktop-session-projection.js';
 import type { DesktopLocalMessageState } from '../shared/session-local-contract.js';
 import type { DesktopTranscriptReplicaSnapshot } from './desktop-transcript-replica.js';
@@ -64,12 +65,15 @@ export interface LocalOutboxRecord {
   readonly fingerprint: string;
   readonly result?: TurnMessageSubmitResult;
   readonly error?: string;
+  readonly pauseReason?: import('@maka/core/worktree').WorktreeBlocker['kind'];
 }
 
 function readOutboxRecord(row: Record<string, unknown>): LocalOutboxRecord {
   const record = JSON.parse(String(row.payload)) as LocalOutboxRecord;
   return {
     ...record,
+    ...(record.state === 'paused' && !record.pauseReason && record.error?.startsWith('WORKTREE_INITIALIZATION_FAILED:')
+      ? { pauseReason: 'worktree_initialization' as const, error: undefined } : {}),
     // Older readers take the column state and ignore the payload state. Keep
     // pauses inert for them, while preserving the distinction from real failures.
     state: row.state === 'failed' && record.state === 'paused'
@@ -274,6 +278,10 @@ export class DesktopSessionLocalStore {
   }
 
   update(record: LocalOutboxRecord): void {
+    this.#transaction(() => this.#updateMessage(record));
+  }
+
+  #updateMessage(record: LocalOutboxRecord): void {
     const previous = this.get(record.partition, record.messageId);
     if (!previous) throw new Error('Local intent was removed');
     if (
@@ -281,16 +289,14 @@ export class DesktopSessionLocalStore {
       previous.intent.originHostEpoch !== record.intent.originHostEpoch
     )
       throw new Error('Cannot retarget a dispatched Message epoch');
-    this.#transaction(() => {
+    this.#db
+      .prepare('UPDATE outbox SET state = ?, payload = ? WHERE partition = ? AND message_id = ?')
+      .run(record.state === 'paused' ? 'failed' : record.state, JSON.stringify(record), record.partition, record.messageId);
+    // Host references and local bytes change ownership in the same commit.
+    if (record.intent.attachmentsPrepared)
       this.#db
-        .prepare('UPDATE outbox SET state = ?, payload = ? WHERE partition = ? AND message_id = ?')
-        .run(record.state === 'paused' ? 'failed' : record.state, JSON.stringify(record), record.partition, record.messageId);
-      // Host references and local bytes change ownership in the same commit.
-      if (record.intent.attachmentsPrepared)
-        this.#db
-          .prepare('DELETE FROM outbox_attachments WHERE partition = ? AND message_id = ?')
-          .run(record.partition, record.messageId);
-    });
+        .prepare('DELETE FROM outbox_attachments WHERE partition = ? AND message_id = ?')
+        .run(record.partition, record.messageId);
   }
 
   cancel(partition: string, messageId: string): void {
@@ -324,6 +330,18 @@ export class DesktopSessionLocalStore {
     this.#advanceRevision(partition);
   }
 
+  /** Clearing the creation intent must not lose a first Message's workspace pause on restart. */
+  saveCreatedSession(
+    record: LocalOutboxRecord,
+    summary: DesktopSessionSummaryInput,
+    pauseReason?: LocalOutboxRecord['pauseReason'],
+  ): void {
+    this.#transaction(() => {
+      if (pauseReason) this.#updateMessage({ ...record, state: 'paused', pauseReason, error: undefined });
+      this.saveSession(record.partition, summary);
+    });
+  }
+
   sessions(partition: string): DesktopSessionSummaryInput[] {
     return this.#db
       .prepare('SELECT summary FROM sessions WHERE partition = ? ORDER BY updated_at DESC')
@@ -335,14 +353,28 @@ export class DesktopSessionLocalStore {
     const row = this.#db
       .prepare('SELECT creation FROM sessions WHERE partition = ? AND session_id = ?')
       .get(partition, sessionId);
-    return row?.creation ? (JSON.parse(String(row.creation)) as SessionCreateInput) : undefined;
+    if (!row?.creation) return undefined;
+    const creation = JSON.parse(String(row.creation)) as SessionCreateInput & {
+      /** Local intents saved before the unified creation workspace contract. */
+      worktree?: TaskWorktreeSelection;
+    };
+    if (creation.worktree === undefined) return creation;
+    const { worktree, ...request } = creation;
+    if (request.workspace.kind !== 'project' || request.workspace.worktree !== undefined)
+      throw new Error('Conflicting saved worktree selection');
+    // Preserve the original selection and request identity when an offline
+    // first message is delivered after upgrading the Client and Host.
+    return { ...request, workspace: { ...request.workspace, worktree } };
   }
 
   saveCatalog(partition: string, summaries: readonly DesktopSessionSummaryInput[]): string[] {
     return this.#transaction(() => {
       const removed: string[] = [];
       const seen = new Set(summaries.map((summary) => summary.id));
-      for (const summary of summaries) this.saveSession(partition, summary);
+      // Discovering a committed Session does not acknowledge its create response:
+      // that response may still carry a blocker for the retained first Message.
+      for (const summary of summaries)
+        this.saveSession(partition, summary, this.creation(partition, summary.id));
       for (const previous of this.sessions(partition)) {
         if (!seen.has(previous.id) && !this.creation(partition, previous.id)) {
           this.removeSession(partition, previous.id);

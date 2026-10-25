@@ -411,3 +411,18 @@ function projection(overrides: Partial<SessionCatalogProjection> = {}): SessionC
     ...overrides,
   };
 }
+
+
+test('branch workspace IPC forwards Host capability without consulting the managed list', async () => {
+  const ipc = ipcHarness();
+  const deps = createDeps([]);
+  let requested: string | undefined;
+  deps.client.querySessionWorktree = async (sessionId) => {
+    requested = sessionId;
+    return { path: '/project/main', canCreate: true };
+  };
+  deps.client.queryWorktrees = async () => { throw new Error('Must not infer capabilities from discovery'); };
+  registerRuntimeHostSessionCatalogIpc(deps, ipc as unknown as IpcMain);
+  assert.deepEqual(await ipc.invoke('worktree:session', 'main-task'), { path: '/project/main', canCreate: true });
+  assert.equal(requested, 'main-task');
+});

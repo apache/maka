@@ -137,6 +137,7 @@ export function normalizeUserQuestionResponse(input: unknown): UserQuestionRespo
 
 export function normalizeBranchFromTurnInput(input: unknown): BranchFromTurnInput {
   const value = requireObject(input, 'Invalid branch turn input');
+  if (value.worktree !== undefined && value.worktree !== 'same' && value.worktree !== 'new') throw new Error('Invalid branch worktree mode');
   const name =
     value.name === undefined
       ? undefined
@@ -158,6 +159,7 @@ export function normalizeBranchFromTurnInput(input: unknown): BranchFromTurnInpu
     ...(sourceTurnId === undefined ? {} : { sourceTurnId }),
     ...(name ? { name } : {}),
     ...(value.sideConversation === true ? { sideConversation: true } : {}),
+    ...(value.worktree === undefined ? {} : { worktree: value.worktree }),
   };
 }
 

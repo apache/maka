@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import type { WorktreeSnapshot } from '@maka/core/worktree';
 import { deferred } from '@maka/core/test-only/async-primitives';
 import { strict as assert } from 'node:assert';
 import { afterEach, describe, it } from 'node:test';
@@ -409,6 +410,281 @@ describe('Session workspace archived-project recovery', () => {
 });
 
 describe('useTaskEntryController', () => {
+  function worktreeSnapshot(hostId: string): WorktreeSnapshot {
+    return {
+      config: { rootDirectory: '/worktrees', projects: {} },
+      projects: ['project-a', 'project-b'].map((id) => ({
+        id, name: id, mainPath: `/repos/${hostId}/${id}`, config: { defaultMode: 'new' },
+        worktrees: [{
+          projectId: id, name: 'feature', path: `/worktrees/${hostId}/${id}/feature`,
+          branch: 'feature/search', head: 'abc', isMain: false, managed: true,
+          available: true, locked: false, sessionCount: 0,
+        }, {
+          projectId: id, name: 'locked', path: `/worktrees/${hostId}/${id}/locked`,
+          head: 'abc', isMain: false, managed: false, available: true, locked: true, sessionCount: 0,
+        }, {
+          projectId: id, name: 'missing', path: `/worktrees/${hostId}/${id}/missing`,
+          head: 'abc', isMain: false, managed: true, available: false, locked: false, sessionCount: 0,
+        }],
+      })),
+    };
+  }
+
+  it('keeps project and worktree selections separate on their owning Host and defaults to the main directory', async () => {
+    const { root } = installReactRenderer();
+    const projects = [project('project-a'), project('project-b')];
+    const local = readyHost({ projects });
+    const remote = { ...readyRemoteHost('host-remote'), projects };
+    const queries: string[] = [];
+    const services = createFakeTaskEntryServices({
+      catalog: { getCatalog: async () => ({ defaultProfileId: 'local', hosts: [local, remote] }) },
+      worktrees: { query: async (projectId, host) => {
+        assert.equal(projectId, undefined, 'Load each Host catalog, including projects that are not selected');
+        queries.push(host.hostId);
+        return worktreeSnapshot(host.hostId);
+      } },
+    });
+    await act(async () => renderController(root, services));
+    assert.deepEqual(queries.sort(), ['host-local', 'host-remote']);
+    assert.deepEqual(controller().selectors.target?.worktree, { kind: 'main' }, 'An unchosen worktree must not apply the configured new-worktree default');
+    assert.equal(controller().selectors.workspacePicker.isWorktree, false);
+    const remoteMenu = () => controller().selectors.workspacePicker.groups.find((group) => group.id === 'remote')!.projectWorktrees!['project-b']!;
+    assert.deepEqual(remoteMenu().options.map((option) => option.value), [
+      'main', 'new', '/worktrees/host-remote/project-b/feature',
+    ], 'Unavailable and locked worktrees must not appear in the selection menu');
+    await act(async () => remoteMenu().onSelect('/worktrees/host-remote/project-b/feature'));
+    assert.deepEqual(controller().selectors.target, {
+      profileId: 'remote', hostId: 'host-remote', projectId: 'project-b',
+      worktree: { kind: 'existing', path: '/worktrees/host-remote/project-b/feature' },
+    });
+    assert.equal(controller().selectors.projectPath, '/worktrees/host-remote/project-b/feature');
+    assert.equal(controller().selectors.workspacePicker.label, 'project-b');
+    assert.equal(controller().selectors.workspacePicker.isWorktree, true);
+    assert.equal(controller().selectors.workspacePicker.branch, 'feature/search');
+    const draftKey = controller().selectors.draftKey;
+    await act(async () => remoteMenu().onSelect('new'));
+    assert.deepEqual(controller().selectors.target?.worktree, { kind: 'new' });
+    assert.equal(controller().selectors.draftKey, draftKey, 'Changing worktree must retain the composed prompt');
+    assert.equal(controller().selectors.workspacePicker.isWorktree, true);
+    await act(async () => remoteMenu().onSelect('main'));
+    assert.deepEqual(controller().selectors.target?.worktree, { kind: 'main' });
+    assert.equal(controller().selectors.projectPath, '/repos/host-remote/project-b');
+    assert.equal(controller().selectors.workspacePicker.label, 'project-b');
+    assert.equal(controller().selectors.workspacePicker.isWorktree, false);
+    assert.equal(controller().selectors.draftKey, draftKey);
+  });
+
+  it('ignores worktree catalogs returned for an obsolete Host identity', async () => {
+    const { root } = installReactRenderer();
+    const stale = deferred<WorktreeSnapshot>();
+    let hostId = 'old-host';
+    const services = createFakeTaskEntryServices({
+      catalog: { getCatalog: async () => catalog(readyHost({ hostId })) },
+      worktrees: { query: (_projectId, host) => host.hostId === 'old-host'
+        ? stale.promise : Promise.resolve(worktreeSnapshot(host.hostId)) },
+    });
+    await act(async () => renderController(root, services));
+    hostId = 'new-host';
+    await act(async () => controller().commands.refresh());
+    await act(async () => stale.resolve(worktreeSnapshot('old-host')));
+    const menu = controller().selectors.workspacePicker.groups[0]!.projectWorktrees!['project-a']!;
+    assert.deepEqual(menu.options.filter((option) => option.value.startsWith('/')).map((option) => option.value), [
+      '/worktrees/new-host/project-a/feature',
+    ]);
+    assert.equal(controller().selectors.target?.hostId, 'new-host');
+    assert.equal(controller().selectors.projectPath, '/repos/new-host/project-a');
+  });
+
+  it('remembers each project worktree across project switches and renderer remounts', async (t) => {
+    const stored = new Map<string, string>();
+    const previous = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+    Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: {
+      getItem: (key: string) => stored.get(key) ?? null,
+      setItem: (key: string, value: string) => stored.set(key, value),
+    } });
+    t.after(() => {
+      if (previous) Object.defineProperty(globalThis, 'localStorage', previous);
+      else Reflect.deleteProperty(globalThis, 'localStorage');
+    });
+    const { root } = installReactRenderer();
+    const projects = [project('project-a'), project('project-b')];
+    let localHostId = 'host-local';
+    const fake = createFakeTaskEntryServices({
+      catalog: { getCatalog: async () => ({ defaultProfileId: 'local', hosts: [
+        readyHost({ hostId: localHostId, projects }),
+        { ...readyRemoteHost('host-remote'), projects },
+      ] }) },
+    });
+    const makeServices = () => createDesktopTaskEntryServices({
+      newTasks: fake.catalog,
+      worktrees: { query: async (_projectId: string | undefined, host?: { hostId: string }) => worktreeSnapshot(host!.hostId) },
+    } as unknown as DesktopTaskEntryBridge);
+    const menu = (projectId: string, profileId = 'local') =>
+      controller().selectors.workspacePicker.groups.find((group) => group.id === profileId)!.projectWorktrees![projectId]!;
+    await act(async () => renderController(root, makeServices()));
+    await act(async () => menu('project-a').onSelect('new'));
+    await act(async () => menu('project-b').onSelect('/worktrees/host-local/project-b/feature'));
+    await act(async () => controller().commands.selectLocalProject('project-a'));
+    assert.deepEqual(controller().selectors.target?.worktree, { kind: 'new' });
+    await act(async () => controller().selectors.workspacePicker.groups[1]!.onSelectProject!('project-a'));
+    assert.deepEqual(controller().selectors.target?.worktree, { kind: 'main' }, 'Same project ID on another Host has its own preference');
+    await act(async () => root.render(null));
+    await act(async () => renderController(root, makeServices()));
+    assert.deepEqual(controller().selectors.target?.worktree, { kind: 'new' });
+    await act(async () => controller().selectors.workspacePicker.groups[0]!.onSelectProject!('project-b'));
+    assert.deepEqual(controller().selectors.target?.worktree, { kind: 'existing', path: '/worktrees/host-local/project-b/feature' });
+    assert.equal(controller().selectors.projectPath, '/worktrees/host-local/project-b/feature');
+    assert.equal(controller().selectors.workspacePicker.branch, 'feature/search');
+    await act(async () => menu('project-a').onSelect('main'));
+    await act(async () => root.render(null));
+    await act(async () => renderController(root, makeServices()));
+    assert.deepEqual(controller().selectors.target?.worktree, { kind: 'main' }, 'Explicit Main overrides the remembered New choice');
+    localHostId = 'replacement-host';
+    await act(async () => controller().commands.refresh());
+    await act(async () => controller().commands.selectLocalProject('project-b'));
+    assert.deepEqual(controller().selectors.target?.worktree, { kind: 'main' }, 'A replacement Host must not inherit paths from the old Host');
+    assert.equal(menu('project-b').value, 'main');
+  });
+
+  it('falls back to Main when the remembered worktree is removed, unavailable, or locked', async () => {
+    const { root } = installReactRenderer();
+    let snapshot = worktreeSnapshot('host-local');
+    const services = createFakeTaskEntryServices({
+      catalog: { getCatalog: async () => catalog() },
+      worktrees: {
+        query: async () => snapshot,
+        readSelection: () => ({ kind: 'existing', path: '/worktrees/host-local/project-a/feature' }),
+      },
+    });
+    await act(async () => renderController(root, services));
+    assert.equal(controller().selectors.workspacePicker.isWorktree, true);
+    for (const reason of ['removed', 'unavailable', 'locked', 'plain-folder']) {
+      snapshot = worktreeSnapshot('host-local');
+      const project = snapshot.projects[0]!;
+      if (reason === 'removed') project.worktrees = [];
+      if (reason === 'unavailable') project.worktrees[0]!.available = false;
+      if (reason === 'locked') project.worktrees[0]!.locked = true;
+      if (reason === 'plain-folder') snapshot.projects = [];
+      await act(async () => controller().commands.refresh());
+      assert.deepEqual(controller().selectors.target?.worktree, { kind: 'main' }, reason);
+      assert.equal(controller().selectors.workspacePicker.groups[0]!.projectWorktrees!['project-a']!.value, 'main');
+      assert.equal(controller().selectors.workspacePicker.isWorktree, false);
+      assert.notEqual(controller().selectors.projectPath, '/worktrees/host-local/project-a/feature');
+    }
+  });
+
+  it('keeps a validated Main fallback while the next worktree read is pending or fails', async () => {
+    const { root } = installReactRenderer();
+    const errors: unknown[] = [];
+    const snapshot = worktreeSnapshot('host-local');
+    snapshot.projects[0]!.worktrees = [];
+    let query = Promise.resolve(snapshot);
+    const services = createFakeTaskEntryServices({
+      catalog: { getCatalog: async () => catalog() },
+      worktrees: {
+        query: () => query,
+        readSelection: () => ({ kind: 'existing', path: '/worktrees/host-local/project-a/deleted' }),
+      },
+    });
+    const assertMain = () => {
+      assert.deepEqual(controller().selectors.target?.worktree, { kind: 'main' });
+      assert.equal(controller().selectors.projectPath, snapshot.projects[0]!.mainPath);
+    };
+    await act(async () => renderController(root, services, errors));
+    assertMain();
+    const refresh = deferred<WorktreeSnapshot>();
+    query = refresh.promise;
+    await act(async () => controller().commands.refresh());
+    assertMain();
+    await act(async () => refresh.reject(new Error('Temporary discovery failure')));
+    assertMain();
+    assert.ok(errors.length > 0);
+  });
+
+  it('preserves the submission worktree across discovery failures and retries', async () => {
+    const { root } = installReactRenderer();
+    const errors: unknown[] = [];
+    const local = readyHost();
+    const remote = readyRemoteHost('host-remote');
+    const existing = { kind: 'existing' as const, path: '/worktrees/host-local/project-a/feature' };
+    let query = deferred<WorktreeSnapshot>();
+    const services = createFakeTaskEntryServices({
+      catalog: { getCatalog: async () => ({ defaultProfileId: 'local', hosts: [local, remote] }) },
+      worktrees: {
+        query: (_projectId, host) => host.hostId === 'host-local'
+          ? query.promise : Promise.resolve(worktreeSnapshot(host.hostId)),
+        readSelection: (host) => host.hostId === 'host-local' ? existing : { kind: 'new' },
+      },
+    });
+    const localMenu = () => controller().selectors.workspacePicker.groups[0]!.projectWorktrees!['project-a']!;
+    const remoteMenu = () => controller().selectors.workspacePicker.groups[1]!.projectWorktrees!['project-a']!;
+    const assertSubmissionTarget = (worktree: typeof existing | { kind: 'new' }) => {
+      // AppShell passes this target directly to ComposerSubmissionProvider.
+      assert.deepEqual(controller().selectors.target, {
+        profileId: 'local', hostId: 'host-local', projectId: 'project-a', worktree,
+      });
+    };
+    await act(async () => renderController(root, services, errors));
+    assertSubmissionTarget(existing);
+    await act(async () => query.reject(new Error('Temporary worktree query timeout')));
+    assertSubmissionTarget(existing);
+    assert.equal(controller().selectors.projectPath, existing.path);
+    assert.equal(localMenu().value, existing.path);
+    assert.equal(localMenu().pending, false, 'A failed read must stop presenting a loading state');
+    assert.ok(localMenu().options.some((option) => option.value === existing.path));
+    assert.match(JSON.stringify(errors), /Unable to load worktrees/);
+    assert.equal(remoteMenu().value, 'new', 'Another Host resolving successfully must retain its own selection');
+    assert.ok(controller().selectors.workspacePicker.retry, 'A failed worktree read must offer a retry');
+
+    query = deferred<WorktreeSnapshot>();
+    await act(async () => controller().selectors.workspacePicker.retry!.onClick());
+    await act(async () => query.resolve(worktreeSnapshot('host-local')));
+    assertSubmissionTarget(existing);
+    assert.equal(localMenu().pending, false);
+    assert.equal(controller().selectors.workspacePicker.retry, undefined);
+
+    await act(async () => localMenu().onSelect('new'));
+    query = deferred<WorktreeSnapshot>();
+    await act(async () => controller().commands.refresh());
+    await act(async () => query.reject(new Error('Temporary worktree query timeout')));
+    assertSubmissionTarget({ kind: 'new' });
+    assert.equal(remoteMenu().value, 'new');
+
+    query = deferred<WorktreeSnapshot>();
+    await act(async () => controller().selectors.workspacePicker.retry!.onClick());
+    await act(async () => query.resolve(worktreeSnapshot('host-local')));
+    assertSubmissionTarget({ kind: 'new' });
+    assert.equal(localMenu().pending, false);
+    assert.equal(controller().selectors.workspacePicker.retry, undefined);
+  });
+
+  it('ignores malformed stored worktree preferences and tolerates unavailable storage', async (t) => {
+    const previous = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+    let stored = '{broken';
+    Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: {
+      getItem: () => stored,
+      setItem: () => { throw new Error('Storage unavailable'); },
+    } });
+    t.after(() => {
+      if (previous) Object.defineProperty(globalThis, 'localStorage', previous);
+      else Reflect.deleteProperty(globalThis, 'localStorage');
+    });
+    const { root } = installReactRenderer();
+    const fake = createFakeTaskEntryServices({ catalog: { getCatalog: async () => catalog() } });
+    const services = createDesktopTaskEntryServices({
+      newTasks: fake.catalog,
+      worktrees: { query: async () => worktreeSnapshot('host-local') },
+    } as unknown as DesktopTaskEntryBridge);
+    for (const value of ['{broken', 'null', '{"kind":"other"}', '{"kind":"existing","path":42}', '{"kind":"existing","path":""}']) {
+      stored = value;
+      await act(async () => root.render(null));
+      await act(async () => renderController(root, services));
+      assert.deepEqual(controller().selectors.target?.worktree, { kind: 'main' });
+    }
+    await act(async () => controller().selectors.workspacePicker.groups[0]!.projectWorktrees!['project-a']!.onSelect('new'));
+    assert.deepEqual(controller().selectors.target?.worktree, { kind: 'new' }, 'Storage failures must not prevent selecting a worktree');
+  });
+
   it('projects the target and keeps draft identity in sync with Workspace Picker selections', async () => {
     const { root } = installReactRenderer();
     const services = createFakeTaskEntryServices({

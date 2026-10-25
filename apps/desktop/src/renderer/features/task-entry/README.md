@@ -63,7 +63,8 @@ workspace-unavailable notice instead.
   preserve the selected target and retain the existing localized diagnostic.
 - Remote directory registration is accepted only for the Host that opened the
   picker. Closing or completing the picker restores focus to its opener.
-- Draft identity is target-scoped. An unresolved catalog always uses the stable
+- The Project picker and working-directory picker are separate controls. Selecting a Project restores its last working-directory choice. The working-directory menu offers Main worktree, New worktree, and an Existing worktrees submenu; choosing an existing worktree leaves the Project label unchanged. Plain folders do not show the worktree control. Worktree catalogs load per Host and retain Host identity. Choices are persisted locally per Host profile, Host identity, and Project, including across renderer restarts. Main is the default without a saved choice; missing, unavailable, or locked worktrees fall back to Main when the catalog resolves. Session recovery keeps its separate Project relocation actions.
+- Draft identity follows Host and Project; selecting a worktree preserves the composed prompt. An unresolved catalog always uses the stable
   unresolved new-task key, preserving reload and target-switch handoff behavior.
 
 ## Registration recovery

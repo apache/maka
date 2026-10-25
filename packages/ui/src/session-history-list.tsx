@@ -39,6 +39,7 @@ import {
   AlertTriangle,
   Archive,
   FolderOpen,
+  GitBranch,
   Globe,
   Pencil,
   Pin,
@@ -897,6 +898,9 @@ const SessionNavRow = memo(function SessionNavRow(props: {
   const hoverDescriptionId = useId();
   const locale = useUiLocale();
   const copy = getConversationCopy(locale).sessions;
+  const location = props.worktree
+    ? deriveTitlebarProjectName({ projectPath: props.location ?? props.session.cwd })
+    : props.location;
   const activityAt = sessionActivityAt(props.session);
   const name = presentSessionName(props.session.name, locale);
   const session = useMemo(
@@ -990,6 +994,11 @@ const SessionNavRow = memo(function SessionNavRow(props: {
     >
       <SideNavItem
         label={name}
+        icon={
+          <span className="maka-session-row-worktree-icon" aria-hidden="true">
+            {props.worktree ? <GitBranch size={ICON_SIZE.meta} /> : null}
+          </span>
+        }
         aria-describedby={hoverDescriptionId}
         size="md"
         isSelected={props.active}
@@ -1071,17 +1080,19 @@ const SessionNavRow = memo(function SessionNavRow(props: {
       <SessionHoverCardDescription
         id={hoverDescriptionId}
         session={session}
+        worktree={props.worktree}
         status={previewStatus}
         projectName={props.projectName}
-        location={props.location}
+        location={location}
         locale={locale}
       />
       <SessionHoverCardLayer
         containerRef={containerRef}
         session={session}
+        worktree={props.worktree}
         status={previewStatus}
         projectName={props.projectName}
-        location={props.location}
+        location={location}
         locale={locale}
       />
       {props.actions && (
@@ -1103,6 +1114,7 @@ const SessionNavRow = memo(function SessionNavRow(props: {
 const SessionHoverCardLayer = memo(function SessionHoverCardLayer(props: {
   containerRef: RefObject<HTMLElement | null>;
   session: SessionSummary;
+  worktree: boolean;
   status: string;
   projectName?: string;
   location?: string;
@@ -1122,6 +1134,7 @@ const SessionHoverCardLayer = memo(function SessionHoverCardLayer(props: {
   return hoverCard.renderHoverCard(
     <SessionHoverCardContent
       session={props.session}
+      worktree={props.worktree}
       status={props.status}
       projectName={props.projectName}
       location={props.location}
@@ -1133,6 +1146,7 @@ const SessionHoverCardLayer = memo(function SessionHoverCardLayer(props: {
 function SessionHoverCardDescription(props: {
   id: string;
   session: SessionSummary;
+  worktree: boolean;
   status: string;
   projectName?: string;
   location?: string;
@@ -1150,7 +1164,9 @@ function SessionHoverCardDescription(props: {
     session.executorId,
     permission,
     props.projectName,
-    props.location,
+    props.worktree && props.location
+      ? `worktree: ${props.location}`
+      : props.location,
     activityAt !== undefined
       ? `${copy.updated} ${formatAbsoluteTimestamp(activityAt, props.locale)}`
       : undefined,
@@ -1163,6 +1179,7 @@ function SessionHoverCardDescription(props: {
 
 function SessionHoverCardContent(props: {
   session: SessionSummary;
+  worktree: boolean;
   status: string;
   projectName?: string;
   location?: string;
@@ -1173,6 +1190,7 @@ function SessionHoverCardContent(props: {
   const session = props.session;
   const activityAt = sessionActivityAt(session);
   const permission = conversationCopy.permissions.mode[session.permissionMode].label;
+  const location = props.location;
 
   return (
     <span className="maka-sidebar-hover-card" data-kind="session">
@@ -1196,14 +1214,29 @@ function SessionHoverCardContent(props: {
         <span aria-hidden="true">·</span>
         <span>{permission}</span>
       </span>
-      {props.projectName ? (
-        <span className="maka-sidebar-hover-card-project" title={session.cwd}>
-          {props.projectName}
+      {props.projectName || (props.worktree && location) ? (
+        <span className="maka-sidebar-hover-card-meta">
+          {props.projectName ? (
+            <span
+              className="maka-sidebar-hover-card-project"
+              title={props.worktree ? undefined : session.cwd}
+            >
+              {props.projectName}
+            </span>
+          ) : null}
+          {props.projectName && props.worktree && location ? (
+            <span aria-hidden="true">·</span>
+          ) : null}
+          {props.worktree && location ? (
+            <span className="maka-sidebar-hover-card-worktree" title={location}>
+              {location}
+            </span>
+          ) : null}
         </span>
       ) : null}
-      {props.location ? (
-        <span className="maka-sidebar-hover-card-location" title={props.location}>
-          {props.location}
+      {!props.worktree && location ? (
+        <span className="maka-sidebar-hover-card-location" title={location}>
+          {location}
         </span>
       ) : null}
       {activityAt !== undefined ? (

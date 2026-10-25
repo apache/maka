@@ -19,18 +19,40 @@
 
 import type { MakaBridge } from '../../../preload/bridge-contract.js';
 import type { TaskEntryServices } from '../../features/task-entry';
+import { safeLocalStorageGet, safeLocalStorageSet } from './browser-storage.js';
 import {
   defaultRuntimeHostDiagnosticTarget,
   runOnDefaultRuntimeHost,
 } from './default-runtime-host-operation.js';
 
-export type DesktopTaskEntryBridge = Pick<MakaBridge, 'app' | 'newTasks' | 'projects' | 'sessions'>;
+export type DesktopTaskEntryBridge = Pick<MakaBridge, 'app' | 'newTasks' | 'projects' | 'sessions'> & Partial<Pick<MakaBridge, 'worktrees'>>;
 
 /** The only Desktop-to-Task Entry adapter. */
 export function createDesktopTaskEntryServices(
   bridge: DesktopTaskEntryBridge = window.maka,
 ): TaskEntryServices {
   return {
+    worktrees: bridge.worktrees ? {
+      query: (projectId, host) => bridge.worktrees!.query(projectId, host),
+      readSelection(host, projectId) {
+        const key = `maka-project-worktree-v1:${JSON.stringify([host.profileId, host.hostId, projectId])}`;
+        try {
+          const value: unknown = JSON.parse(safeLocalStorageGet(key) ?? 'null');
+          if (!value || typeof value !== 'object' || !('kind' in value)) return undefined;
+          if (value.kind === 'main' || value.kind === 'new') return { kind: value.kind };
+          if (value.kind === 'existing' && 'path' in value && typeof value.path === 'string' && value.path.trim()) {
+            return { kind: 'existing', path: value.path };
+          }
+        } catch {
+          // Ignore malformed or unavailable local preferences.
+        }
+        return undefined;
+      },
+      writeSelection(host, projectId, selection) {
+        const key = `maka-project-worktree-v1:${JSON.stringify([host.profileId, host.hostId, projectId])}`;
+        safeLocalStorageSet(key, JSON.stringify(selection));
+      },
+    } : undefined,
     catalog: {
       ...bridge.newTasks,
       async renameProject(host, projectId, name) {

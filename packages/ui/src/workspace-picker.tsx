@@ -25,7 +25,16 @@ import { Icon } from '@astryxdesign/core/Icon';
 import { ICON_SIZE, AlertTriangle, Check, FolderOpen, Network, Plus, RefreshCcw, Settings, X } from './icons.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
+import { WorktreePicker } from './worktree-picker.js';
 import { NewProjectDialog } from './new-project-dialog.js';
+
+export interface WorkspacePickerWorktreeMenu {
+  mainPath?: string;
+  pending?: boolean;
+  value: string;
+  options: readonly { value: string; label: string; description?: string; disabled?: boolean }[];
+  onSelect(value: string): void;
+}
 
 export interface WorkspacePickerGroup {
   id: string;
@@ -37,6 +46,7 @@ export interface WorkspacePickerGroup {
   projects: readonly ProjectRecord[];
   selectedProjectId?: string | null;
   onSelectProject?(projectId: string): void;
+  projectWorktrees?: Readonly<Record<string, WorkspacePickerWorktreeMenu>>;
   /**
    * Create a project on this host. The dialog collects an optional name (see
    * `NewProjectDialog`) and passes it here; the handler then asks for the
@@ -50,6 +60,7 @@ export interface WorkspacePickerGroup {
 }
 
 export interface WorkspacePickerModel {
+  isWorktree?: boolean;
   label?: string;
   hostBadge?: string;
   branch?: string | null;
@@ -64,16 +75,28 @@ export interface WorkspacePickerModel {
   retry?: { label: string; onClick(): void };
 }
 
-export function WorkspacePicker({ workspacePicker: picker }: {
+export function WorkspacePicker({ workspacePicker: picker, compact = false }: {
   workspacePicker: WorkspacePickerModel;
+  compact?: boolean;
 }) {
-  const copy = getConversationCopy(useUiLocale()).workspace;
+  const locale = useUiLocale();
+  const copy = getConversationCopy(locale).workspace;
   const locked = picker.pending === true;
   // Which host's New project dialog is open. The dialog optionally names the
   // project, then the caller's `onAdd` opens the folder picker — a blank name
   // simply means the folder's name will be used.
   const [newProjectGroupId, setNewProjectGroupId] = useState<string | null>(null);
   const newProjectGroup = picker.groups.find((group) => group.id === newProjectGroupId);
+  const selectedGroup = picker.groups.find((group) => group.id === picker.selectedGroupId);
+  const selectedProject = selectedGroup?.projects.find((project) =>
+    project.id === selectedGroup.selectedProjectId && project.available && project.archivedAt === undefined);
+  const worktrees = selectedProject ? selectedGroup?.projectWorktrees?.[selectedProject.id] : undefined;
+  const accessibleLabel = copy.chooseAriaLabel(
+    picker.hostBadge
+      ? `${picker.hostBadge} · ${picker.label ?? copy.current}`
+      : picker.label ?? copy.current,
+    picker.branch ?? undefined,
+  );
 
   return (
     <>
@@ -83,7 +106,8 @@ export function WorkspacePicker({ workspacePicker: picker }: {
       onOpenChange={picker.onOpenChange}
       className="maka-composer-quiet-menu"
       button={{
-        label: picker.label ?? copy.choose,
+        label: compact ? accessibleLabel : picker.label ?? copy.choose,
+        isIconOnly: compact,
         icon: <FolderOpen size={ICON_SIZE.meta} aria-hidden="true" />,
         variant: 'ghost',
         size: 'sm',
@@ -104,12 +128,7 @@ export function WorkspacePicker({ workspacePicker: picker }: {
             <Icon icon="chevronDown" size="sm" color="secondary" className="maka-workspace-picker-chevron" />
           </span>
         ),
-        'aria-label': copy.chooseAriaLabel(
-          picker.hostBadge
-            ? `${picker.hostBadge} · ${picker.label ?? copy.current}`
-            : picker.label ?? copy.current,
-          picker.branch ?? undefined,
-        ),
+        'aria-label': accessibleLabel,
       }}
     >
       {picker.groups.length > 0 ? <div className="maka-workspace-picker-scroll">
@@ -129,36 +148,30 @@ export function WorkspacePicker({ workspacePicker: picker }: {
                 {group.status ? <span>{group.status}</span> : null}
               </div>
               {projects.map((project) => {
-              const missing = !project.available;
-              return (
-                <DropdownMenuItem
-                  key={project.id}
-                  icon={missing
-                    ? <AlertTriangle size={ICON_SIZE.meta} aria-hidden="true" />
-                    : <FolderOpen size={ICON_SIZE.meta} aria-hidden="true" />}
-                  label={project.name}
-                  endContent={missing
-                    ? (
-                        <span className="maka-workspace-picker-status">
-                          {group.onRelink ? copy.relink : copy.unavailable}
-                        </span>
-                      )
-                    : picker.selectedGroupId === group.id &&
-                        project.id === group.selectedProjectId
-                      ? <Check size={ICON_SIZE.control} aria-hidden="true" />
-                      : undefined}
-                  onClick={() => {
-                    if (missing) group.onRelink?.(project.id);
-                    else group.onSelectProject?.(project.id);
-                  }}
-                  isDisabled={
-                    locked ||
-                    group.disabled ||
-                    (!missing && !group.onSelectProject) ||
-                    (missing && !group.onRelink)
-                  }
-                />
-              );
+                const missing = !project.available;
+                const selected = picker.selectedGroupId === group.id && project.id === group.selectedProjectId;
+                const isDisabled = locked || group.disabled ||
+                  (!missing && !group.onSelectProject) || (missing && !group.onRelink);
+                const onClick = () => {
+                  if (missing) group.onRelink?.(project.id);
+                  else group.onSelectProject?.(project.id);
+                };
+                const icon = missing
+                  ? <AlertTriangle size={ICON_SIZE.meta} aria-hidden="true" />
+                  : <FolderOpen size={ICON_SIZE.meta} aria-hidden="true" />;
+                const check = selected ? <Check size={ICON_SIZE.control} aria-hidden="true" /> : undefined;
+                return (
+                  <DropdownMenuItem
+                    key={project.id}
+                    icon={icon}
+                    label={project.name}
+                    endContent={missing
+                      ? <span className="maka-workspace-picker-status">{group.onRelink ? copy.relink : copy.unavailable}</span>
+                      : check}
+                    onClick={onClick}
+                    isDisabled={isDisabled}
+                  />
+                );
               })}
               {group.onAdd ? (
                 <DropdownMenuItem
@@ -203,6 +216,12 @@ export function WorkspacePicker({ workspacePicker: picker }: {
         </div>
       ) : null}
     </DropdownMenu>
+    {worktrees && (worktrees.pending || worktrees.options.some((option) => option.value !== 'main')) ? (
+      <>
+        {!compact && <span aria-hidden="true" className="maka-workspace-picker-divider">/</span>}
+        <WorktreePicker menu={worktrees} disabled={locked || selectedGroup?.disabled} compact={compact} />
+      </>
+    ) : null}
     {newProjectGroup ? (
       // Portalled out of the picker's subtree on purpose. Astryx's Dialog is a
       // native `<dialog>` that does NOT portal itself, and the composer renders

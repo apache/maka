@@ -103,6 +103,8 @@ export interface CreateSessionInput {
  * side and not the other is a type error nowhere.
  */
 export type CreateSessionRequestInput = Omit<Partial<CreateSessionInput>, 'thinkingLevel'> & {
+  worktree?: import('./worktree.js').TaskWorktreeSelection;
+  taskDescription?: string;
   /** `null` explicitly bypasses the configured per-model default. */
   thinkingLevel?: ThinkingLevel | null;
   mode?: SessionStartMode;
@@ -130,6 +132,7 @@ export interface UserMessageInput extends MessageContent {
 }
 
 export interface BranchFromTurnInput {
+  worktree?: 'same' | 'new';
   /**
    * Settled turn to branch through. Absent forks with an empty context — a side
    * conversation opened before the source has any completed turn (valid only

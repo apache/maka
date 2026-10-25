@@ -33,6 +33,24 @@ import {
 } from '../protocol/index.js';
 
 describe('Session catalog protocol', () => {
+  test('creation returns a typed workspace blocker without changing the catalog contract', () => {
+    const session = projection();
+    const spec = HOST_OPERATION_SPECS['session.create'];
+    const blocked = {
+      ...session,
+      workspaceBlocker: { kind: 'worktree_initialization', path: '/worktrees/task' },
+    };
+    assert.deepEqual(spec.decodeOutput(session), session);
+    assert.deepEqual(spec.decodeOutput(blocked), blocked);
+    assert.throws(() => decodeSessionCatalogItem(blocked), isProtocolError);
+    for (const workspaceBlocker of [
+      { kind: 'worktree_initialization' },
+      { kind: 'unknown', path: '/worktrees/task' },
+      'WORKTREE_INITIALIZATION_FAILED: /worktrees/task',
+    ])
+      assert.throws(() => spec.decodeOutput({ ...session, workspaceBlocker }), isProtocolError);
+  });
+
   test('preserves unknown and authoritative background activity for Owner and Guest catalogs', () => {
     const shared = {
       kind: 'shared_session',

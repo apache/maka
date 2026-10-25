@@ -757,17 +757,14 @@ export const ProjectGroups: Story = {
     if (!taskHoverCard) throw new Error('task hover card is missing');
     await expect(within(taskHoverCard).getByText('worktree 上的修复')).toBeVisible();
     await expect(within(taskHoverCard).getByText(/glm-4\.7/)).toBeVisible();
-    // The visible location line, not just its accessible description: a task in
-    // a multi-location project says which working directory it actually uses.
-    const locationLine = within(taskHoverCard).getByText(
-      '/workspace/maka-agent/.worktree/sidebar',
-      { exact: true },
+    // The worktree is identified by its directory name in the visible card.
+    const locationLine = taskHoverCard.querySelector<HTMLElement>(
+      '.maka-sidebar-hover-card-worktree[title="sidebar"]',
     );
+    if (!locationLine) throw new Error('worktree directory name is missing');
     await expect(locationLine).toBeVisible();
-    expect(locationLine).toHaveAttribute(
-      'title',
-      '/workspace/maka-agent/.worktree/sidebar',
-    );
+    expect(locationLine).toHaveTextContent('sidebar');
+    expect(taskHoverCard).not.toHaveTextContent('/workspace/maka-agent/.worktree/sidebar');
 
     await userEvent.hover(navigation);
     await waitFor(() => expect(

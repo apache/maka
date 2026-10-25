@@ -1857,6 +1857,7 @@ function registerHostClientIpc(
   );
   registerWorkspaceSearchIpc({
     ipcMain: scopedIpc,
+    queryWorktrees: (projectId) => client.queryWorktrees(projectId),
     getProjectRoot: async (sessionId, projectId) => {
       if (typeof projectId !== "string") {
         return resolveProjectRootForContext(sessionId);

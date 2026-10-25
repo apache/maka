@@ -206,3 +206,7 @@ export { formatCompactTokenCount } from './compact-token-count.js';
 export * from './revision-staged-context.js';
 
 export { TranscriptDisclosure } from './transcript-disclosure.js';
+
+export { getWorktreeCopy } from './worktree-copy.js';
+
+export { TurnBranchWorktreeProvider } from './chat-turn.js';

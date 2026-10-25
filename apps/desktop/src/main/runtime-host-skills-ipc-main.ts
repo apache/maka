@@ -24,6 +24,7 @@ import { findSkillLocation } from '@maka/core/skill-locations';
 import type { ChatDefaultPermissionMode } from '@maka/core/settings';
 import { resolveSkillDiscoveryPaths, scanSkillsWithDiagnostics } from '@maka/runtime/skills';
 import { type InvocableSkillEntry } from '@maka/runtime/skill-invocation';
+import { decodeWorkspaceTarget } from '@maka/runtime-host/protocol';
 import type {
   SkillCatalogGovernanceItem,
   SkillCatalogManagedUpdateMutation,
@@ -130,7 +131,18 @@ export function registerRuntimeHostSkillsIpc(
         target = { kind: "session" as const, sessionId };
       } else {
         const projectId = normalizeNewSessionProjectId(newSessionContext);
-        const workspace = await deps.resolveNewSessionWorkspaceTarget(projectId);
+        const worktreePath = newSessionContext && typeof newSessionContext === 'object'
+          ? (newSessionContext as Record<string, unknown>).worktreePath
+          : undefined;
+        if (worktreePath !== undefined && typeof projectId !== 'string')
+          throw new Error('Worktree skill discovery requires an explicit project');
+        let workspace = await deps.resolveNewSessionWorkspaceTarget(projectId);
+        if (worktreePath !== undefined) {
+          if (workspace?.kind !== 'project')
+            throw new Error('Worktree skill discovery requires a project workspace');
+          // Decode the Host path here; the Host validates repository membership.
+          workspace = decodeWorkspaceTarget({ ...workspace, worktreePath });
+        }
         if (!workspace) return [];
         target = {
           kind: "new_session" as const,

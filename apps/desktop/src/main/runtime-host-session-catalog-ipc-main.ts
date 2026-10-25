@@ -66,7 +66,7 @@ type RuntimeHostSessionCatalogClient = Pick<
   | 'setSessionLifecycle'
   | 'updateSessionConfiguration'
   | 'updateSessionMetadata'
->;
+> & Partial<Pick<DesktopRuntimeHostClient, 'queryWorktrees' | 'mutateWorktrees' | 'querySessionWorktree'>>;
 
 export interface DesktopHostSessionSummary extends SessionCatalogSummary {
   revision: number;
@@ -105,6 +105,18 @@ export function registerRuntimeHostSessionCatalogIpc(
   deps: RuntimeHostSessionCatalogIpcDeps,
   ipcMain: ReconnectableReadIpcMain,
 ): void {
+  handleReconnectableRead(ipcMain, 'worktree:session', (_event, sessionId: string) => {
+    if (!deps.client.querySessionWorktree) throw new Error('Session workspace is unavailable');
+    return deps.client.querySessionWorktree(sessionId);
+  });
+  handleReconnectableRead(ipcMain, 'worktree:query', (_event, projectId?: string) => {
+    if (!deps.client.queryWorktrees) throw new Error('Worktree catalog is unavailable');
+    return deps.client.queryWorktrees(projectId);
+  });
+  ipcMain.handle('worktree:mutate', (_event, input: import('@maka/core/worktree').WorktreeMutation) => {
+    if (!deps.client.mutateWorktrees) throw new Error('Worktree management is unavailable');
+    return deps.client.mutateWorktrees(input);
+  });
   const newId = deps.newId ?? randomUUID;
   const pendingCleanup = new Set<string>();
   const recoveryTask = deps.sessionCopyCleanup.recover().then((recovery) => {
@@ -529,13 +541,21 @@ function normalizeSessionListFilter(value: unknown): SessionListFilter | undefin
 }
 
 export function resolveDesktopSessionCreateInput(input: CreateSessionRequestInput | undefined, sessionId: string, workspace: WorkspaceTarget): SessionCreateInput {
+  if (input?.worktree && (workspace.kind !== 'project' || workspace.worktreePath !== undefined))
+    throw new Error('Worktree selection requires a project without another directory selection');
   const request = resolveCreateSessionRequest(input);
   const executorId = normalizeOptionalString(input?.executorId, 'executor id');
   if (executorId && (input?.llmConnectionId !== undefined || input?.llmConnectionSlug !== undefined)) {
     throw new Error('Plugin executor selection cannot include a model connection');
   }
   return {
-    sessionId, workspace,
+    sessionId,
+    workspace: workspace.kind === 'project'
+      ? { kind: 'project', projectId: workspace.projectId,
+          ...(input?.worktree ? { worktree: input.worktree } :
+            workspace.worktreePath ? { worktree: { kind: 'existing', path: workspace.worktreePath } } : {}) }
+      : workspace,
+    ...(input?.taskDescription ? { taskDescription: input.taskDescription.slice(0, 8000) } : {}),
     ...(request.mode === undefined ? {} : { mode: request.mode }),
     name: request.name,
     ...(request.labels === undefined ? {} : { labels: request.labels }),

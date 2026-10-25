@@ -43,6 +43,8 @@ async function loadBridge(changeDuringRead: 'guest' | 'owner') {
   let catalogReads = 0;
   let projectReads = 0;
   const scopedCalls: string[] = [];
+  const searchRequests: unknown[] = [];
+  const skillRequests: unknown[] = [];
   const ipcRenderer = {
     on(channel: string, listener: (...args: unknown[]) => void) {
       const handlers = listeners.get(channel) ?? new Set();
@@ -53,12 +55,18 @@ async function loadBridge(changeDuringRead: 'guest' | 'owner') {
       listeners.get(channel)?.delete(listener);
     },
     send() {},
-    async invoke(channel: string, scope?: { hostId?: string }) {
+    async invoke(channel: string, scope?: { hostId?: string }, input?: unknown, context?: unknown) {
       if (scope?.hostId) {
         scopedCalls.push(scope.hostId);
         assert.equal(scope.hostId, owner.hostId, 'Guest reconnects must not redirect Owner reads');
       }
       switch (channel) {
+        case 'skills:listInvocable':
+          skillRequests.push(context);
+          return [];
+        case 'workspace:searchFiles':
+          searchRequests.push(input);
+          return { ok: true, files: [] };
         case 'runtime-host:identities': return [
           { ...owner, epoch: owner.targetEpoch, isDefault: true },
           { ...guest, epoch: guest.targetEpoch, isDefault: false },
@@ -127,6 +135,8 @@ async function loadBridge(changeDuringRead: 'guest' | 'owner') {
     bridge,
     catalogReads: () => catalogReads,
     scopedCalls,
+    searchRequests,
+    skillRequests,
     emitOwnerCatalogChanged: () => emit('external-agents:catalog-changed', owner),
   };
 }
@@ -142,6 +152,30 @@ test('successful external-agent setup invalidates the new-task executor catalog'
   } finally {
     unsubscribe();
   }
+});
+
+test('new-task file searches carry the selected worktree to the owning Host', async () => {
+  const { bridge, searchRequests } = await loadBridge('guest');
+  const target = { profileId: 'local', hostId: 'local-host', projectId: 'project-a' };
+  await bridge.newTasks.searchFiles({ ...target, worktree: { kind: 'existing', path: '/worktrees/feature' } }, 'file', { limit: 10 });
+  await bridge.newTasks.searchFiles({ ...target, worktree: { kind: 'main' } }, 'file');
+  assert.deepEqual(JSON.parse(JSON.stringify(searchRequests)), [
+    { query: 'file', projectId: 'project-a', worktreePath: '/worktrees/feature', limit: 10 },
+    { query: 'file', projectId: 'project-a' },
+  ]);
+});
+
+test('new-task skills use an existing worktree and preview new worktrees in main', async () => {
+  const { bridge, skillRequests } = await loadBridge('guest');
+  const target = { profileId: 'local', hostId: 'local-host', projectId: 'project-a' };
+  await bridge.newTasks.listInvocableSkills({ ...target, worktree: { kind: 'existing', path: '/worktrees/feature' } });
+  await bridge.newTasks.listInvocableSkills({ ...target, worktree: { kind: 'main' } });
+  await bridge.newTasks.listInvocableSkills({ ...target, worktree: { kind: 'new' } });
+  assert.deepEqual(JSON.parse(JSON.stringify(skillRequests)), [
+    { projectId: 'project-a', worktreePath: '/worktrees/feature' },
+    { projectId: 'project-a' },
+    { projectId: 'project-a' },
+  ]);
 });
 
 test('offline Guest notifications cannot starve the Local new-task catalog or redirect onboarding', async () => {

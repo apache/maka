@@ -42,15 +42,21 @@ import { mergeTransientMessageProjection } from '../../renderer/application/cont
 import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
 import { createAppShellSessionEventHandlers } from '../../renderer/features/conversation/testing.js';
 import { createAppShellSessionUiStateController } from '../../renderer/features/conversation/testing.js';
+import { SettingsNavigationProvider, type SettingsNavigation } from '../../renderer/application/contracts/settings-presentation/settings-navigation.js';
 
 afterEach(cleanupFakeDom);
 
-function localDeliveryHarness(initial: readonly DesktopLocalMessage[]) {
+function localDeliveryHarness(initial: readonly DesktopLocalMessage[], profileId = 'profile-1') {
   const { root } = installReactRenderer();
   const snapshots = new Map<string, readonly DesktopLocalMessage[]>([['session-1', initial]]);
   const transient = new Map<string, TransientUserMessageProjection>();
   const published: string[] = [];
   const retired: string[] = [];
+  const cancelledWorktrees: string[] = [];
+  const settingsRequests: Array<Parameters<SettingsNavigation['openSettingsSection']>> = [];
+  const navigation: SettingsNavigation = {
+    openSettingsSection: (...request) => { settingsRequests.push(request); },
+  };
   const restored: Array<[string, RestoredDraftContent]> = [];
   const draftState = { empty: true, available: true };
   const released: string[] = [];
@@ -88,12 +94,14 @@ function localDeliveryHarness(initial: readonly DesktopLocalMessage[]) {
     transient.delete(key);
   };
   return {
-    snapshots, transient, published, retired, restored, services, retire, draftState, released,
+    snapshots, transient, published, retired, restored, services, retire, draftState, released, cancelledWorktrees, settingsRequests,
     refresh: async (sessionId: string) => act(async () => changed(sessionId)),
     render: async (sessionId: string, queue: readonly MessageQueueEntryProjection[] = [], runningTurnIds: readonly string[] = []) => {
       await act(async () => root.render(createElement(LocaleProvider, { locale: 'en', children:
+        createElement(SettingsNavigationProvider, { navigation, children:
         createElement(ConversationServicesProvider, { services, children: createElement(SessionLocalMessages, {
-          sessionId, queue, session: { runningTurnIds }, publish, update, retire,
+          sessionId, profileId, queue, session: { runningTurnIds }, publish, update, retire,
+          onWorktreeCancelled: (id) => cancelledWorktrees.push(id),
           canRestoreDraft: () => draftState.empty,
           captureUnsentDraftRestore: (id) => ({
             restore: (draft) => {
@@ -103,11 +111,36 @@ function localDeliveryHarness(initial: readonly DesktopLocalMessage[]) {
             release() {},
           }),
           restoreDraft: () => { throw new Error('Failed-message drafts are not used in this test'); },
-        }) }),
+        }) }) }),
       })));
     },
   };
 }
+
+test('failed worktree initialization opens recovery settings on the message owner Host', async () => {
+  const harness = localDeliveryHarness([{
+    sessionId: 'session-1', messageId: 'initial-message', createdAt: 1,
+    state: 'paused', pauseReason: 'worktree_initialization', canCancel: true,
+    placement: 'next_turn', text: 'Start task', attachments: [], inlineReferences: [],
+  }], 'remote-profile');
+  await harness.render('session-1');
+  const action = harness.transient.get('session-1:initial-message')?.deliveryActions
+    ?.find((item) => item.label === 'Open Worktree settings');
+  assert.ok(action);
+  await act(async () => { action.onClick(); });
+  assert.deepEqual(harness.settingsRequests, [['worktrees', 'remote-profile']]);
+  const resumed: string[] = [];
+  harness.services.resumeMessage = async (sessionId, messageId) => {
+    resumed.push(`${sessionId}:${messageId}`);
+  };
+  // Another client may have resolved initialization without changing our local pause.
+  const resume = harness.transient.get('session-1:initial-message')?.deliveryActions
+    ?.find((item) => item.label === 'Continue sending');
+  assert.ok(resume, 'A retained initialization pause must allow an explicit readiness retry');
+  await act(async () => { await resume.onClick(); });
+  assert.deepEqual(resumed, ['session-1:initial-message']);
+  assert.deepEqual(harness.restored, [], 'Continuing must not require editing the original message');
+});
 
 test('navigation during unsent editing hands recovery to the captured Session without deleting the original', async () => {
   const message: DesktopLocalMessage = {
@@ -1026,4 +1059,23 @@ test('editing a queued message retracts it and restores its content under the ow
   assert.deepEqual(retracted.at(-1), ['session-a', 'entry-2']);
   assert.deepEqual(restoredDrafts.at(-1), ['session-a', 'follow up']);
   assert.equal(restoredContext.at(-1)![1].directoryReferences, followUp.content.directoryReferences);
+});
+
+test('worktree preparation offers main-directory continuation and cancellation instead of message editing', async () => {
+  const preparing: DesktopLocalMessage = { sessionId: 'session-1', messageId: 'first', createdAt: 1,
+    state: 'saved', canCancel: true, placement: 'current_turn', text: 'Build it', attachments: [], inlineReferences: [],
+    delivering: true, worktreePreparation: { phase: 'initializing', elapsedSeconds: 4 } };
+  for (const decision of ['main', 'cancel'] as const) {
+    const harness = localDeliveryHarness([preparing]);
+    const calls: string[] = [];
+    harness.services.resolveWorktreePreparation = async (sessionId, messageId, action) => { calls.push(`${sessionId}:${messageId}:${action}`); };
+    await harness.render('session-1');
+    const actions = harness.transient.get('session-1:first')?.deliveryActions;
+    assert.deepEqual(actions?.map((action) => action.label), ['Do not use a worktree', 'Cancel']);
+    await act(async () => { await actions?.[decision === 'main' ? 0 : 1]?.onClick(); });
+    assert.deepEqual(calls, [`session-1:first:${decision}`]);
+    assert.deepEqual(harness.cancelledWorktrees, decision === 'cancel' ? ['session-1'] : []);
+    assert.equal(harness.transient.has('session-1:first'), decision === 'main');
+    cleanupFakeDom();
+  }
 });

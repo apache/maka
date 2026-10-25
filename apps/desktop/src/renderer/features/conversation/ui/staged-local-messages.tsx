@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { useCallback, useLayoutEffect, useRef, type ComponentProps } from 'react';
+import { useCallback, useLayoutEffect, useRef, useSyncExternalStore, type ComponentProps } from 'react';
 import { selectSessionById, useSessionCatalogController } from '../../../application/contracts/session-catalog/session-catalog-state.js';
 import { composerMessageRecovery } from '../controller/composer-message-recovery.js';
 import { SessionLocalMessages } from '../controller/session-local-messages.js';
@@ -29,7 +29,7 @@ import { useConversationOwner } from './conversation-context.js';
 
 /** Local recovery reads the same staging owner as the persistent composer. */
 export function StagedLocalMessages(props: Omit<ComponentProps<typeof SessionLocalMessages>,
-  'canRestoreDraft' | 'restoreDraft' | 'captureUnsentDraftRestore' | 'publish' | 'update' | 'retire'> & {
+  'canRestoreDraft' | 'restoreDraft' | 'captureUnsentDraftRestore' | 'publish' | 'update' | 'retire' | 'profileId'> & {
   readonly directoryHostId?: string;
   readonly enabled: boolean;
   readonly restoreContext: ComposerStagingCommands['restoreContext'];
@@ -37,6 +37,9 @@ export function StagedLocalMessages(props: Omit<ComponentProps<typeof SessionLoc
   const { directoryHostId, enabled, restoreContext, ...localMessages } = props;
   const { composer: composerRef, draftContextRestorer } = useConversationQueueCommands();
   const catalog = useSessionCatalogController();
+  const profileId = useSyncExternalStore(catalog.subscribe, () =>
+    props.sessionId ? selectSessionById(catalog.getState(), props.sessionId)?.profileId : undefined,
+  );
   const { commands, ui } = useConversationOwner().workspace;
   const queue = useSessionUiRead(ui.reads, 'queue', props.sessionId);
   const staging = useComposerStaging();
@@ -81,7 +84,7 @@ export function StagedLocalMessages(props: Omit<ComponentProps<typeof SessionLoc
         draftContextRestorer.current = undefined;
     };
   }, [draftContextRestorer, restoreContext]);
-  return <SessionLocalMessages {...localMessages} queue={props.queue ?? queue?.entries} captureUnsentDraftRestore={captureUnsentDraftRestore}
+  return <SessionLocalMessages {...localMessages} profileId={profileId} queue={props.queue ?? queue?.entries} captureUnsentDraftRestore={captureUnsentDraftRestore}
     publish={commands.addTransientMessage} update={commands.updateTransientMessage}
     retire={commands.removeTransientMessage} {...composerMessageRecovery({
     sessionId: props.sessionId,

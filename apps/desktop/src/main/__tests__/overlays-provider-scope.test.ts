@@ -80,6 +80,18 @@ afterEach(() => {
 });
 
 describe('OverlaysRoot', () => {
+  test('a Host-scoped section replaces the previously selected Settings Host', async () => {
+    const { root } = installReactRenderer();
+    await act(async () => renderRoot(root));
+    await act(async () => latest!.commands.openProjectSettings('local-profile'));
+    await act(async () => latest!.commands.closeSettings());
+    await act(async () => latest!.commands.openSettingsSection('worktrees', 'remote-profile'));
+    assert.equal(latest?.selectors.settings.open, true);
+    assert.deepEqual(latest?.selectors.settings.request, {
+      section: 'worktrees', profileId: 'remote-profile',
+    });
+  });
+
   test('hands the shell frame closed overlays and stable commands', async () => {
     const { root } = installReactRenderer();
     await act(async () => renderRoot(root));

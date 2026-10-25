@@ -22,7 +22,7 @@ import { getConversationCopy, useUiLocale } from '@maka/ui';
 import type { ChatDefaultPermissionMode } from '@maka/core/settings';
 import type { InvocableSkillEntry } from '@maka/runtime/skill-invocation';
 import { useComposerStaging } from './composer-staging-context.js';
-import type { ConversationSession } from '../ports.js';
+import type { ConversationNewTaskTarget, ConversationSession } from '../ports.js';
 import { useConversationServices } from '../services.js';
 import {
   selectSessionById,
@@ -44,11 +44,7 @@ export interface ComposerMentionsSurface {
   readonly newSessionModel?: { llmConnectionSlug: string; model: string };
   readonly newSessionCollaborationMode?: 'agent' | 'plan';
   readonly newSessionPermissionMode?: ChatDefaultPermissionMode;
-  readonly newTaskTarget?: {
-    readonly profileId: string;
-    readonly hostId: string;
-    readonly projectId: string | null;
-  };
+  readonly newTaskTarget?: ConversationNewTaskTarget;
 }
 
 
@@ -263,6 +259,10 @@ function useConversationMentions(surface: ComposerMentionsSurface): ComposerMent
       surface.newTaskTarget?.profileId,
       surface.newTaskTarget?.hostId,
       surface.newTaskTarget?.projectId,
+      surface.newTaskTarget?.worktree?.kind,
+      surface.newTaskTarget?.worktree?.kind === 'existing'
+        ? surface.newTaskTarget.worktree.path
+        : undefined,
       surface.sessionId,
     ],
   );

@@ -211,7 +211,8 @@ function sameTarget(
       next &&
       previous.profileId === next.profileId &&
       previous.hostId === next.hostId &&
-      previous.projectId === next.projectId,
+      previous.projectId === next.projectId &&
+      JSON.stringify(previous.worktree) === JSON.stringify(next.worktree),
   );
 }
 
@@ -366,6 +367,7 @@ export function TaskEntryWorkspacePickerConsumer({
     readonly profileId: string;
     readonly runtimeHostId: string;
     readonly projectId?: string | null;
+    readonly workspaceFixed?: boolean;
     readonly profileKind: RuntimeHostProfileKind;
   };
   readonly children: (workspacePicker: WorkspacePickerModel) => ReactNode;
@@ -373,7 +375,7 @@ export function TaskEntryWorkspacePickerConsumer({
   const owner = useTaskEntryOwner();
   const controllerPicker = useTaskEntrySelection(owner, selectWorkspacePicker);
   const recovery = useTaskEntrySelection(owner, selectSessionWorkspaceRecovery);
-  const recoveryRequested = Boolean(activeSession && recovery?.sessionId === activeSession.id);
+  const recoveryRequested = Boolean(activeSession && !activeSession.workspaceFixed && recovery?.sessionId === activeSession.id);
   const [recoveryMenuOpen, setRecoveryMenuOpen] = useState(false);
   useEffect(() => {
     setRecoveryMenuOpen(recoveryRequested);
@@ -410,6 +412,7 @@ export function TaskEntryWorkspacePickerConsumer({
       return {
         ...defaultPicker,
         label: activeProject?.name ?? activeGroup?.label,
+        isWorktree: false,
         branch: null,
         showForActiveSession: true,
         isMenuOpen: recoveryMenuOpen,
@@ -422,6 +425,7 @@ export function TaskEntryWorkspacePickerConsumer({
               ...activeGroup,
               projects: activeGroup.projects.filter((project) => project.available),
               selectedProjectId: activeSession.projectId ?? null,
+              projectWorktrees: undefined,
               onSelectProject: (projectId: string) => void owner.commands.relocateSessionWorkspace({
                 sessionId: activeSession.id,
                 profileId: activeSession.profileId,

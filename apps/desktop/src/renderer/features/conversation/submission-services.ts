@@ -24,6 +24,8 @@ import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import type { SkillInvocationResult } from '@maka/runtime/skill-invocation';
 import type { ComposerIngestInput } from '@maka/ui/composer-attachments';
+import { createElement, type ReactNode } from 'react';
+import { BranchWorktreeProvider } from './ui/branch-worktree-provider.js';
 import { createServicesContext } from '../../application/contracts/feature-services.js';
 import type { DesktopSessionSummary } from '../../../shared/desktop-session-projection.js';
 import type { ConversationNewTaskTarget } from './ports.js';
@@ -70,6 +72,7 @@ export type ConversationStopResult =
  * bridge namespace.
  */
 export interface ComposerSubmissionServices {
+  readBranchWorkspace?(sessionId: string): Promise<{ path: string; canCreate: boolean }>;
   submitMessage(
     sessionId: string,
     placement: MessagePlacement,
@@ -87,7 +90,7 @@ export interface ComposerSubmissionServices {
   stop(sessionId: string, input: { readonly source: 'stop_button' }): Promise<ConversationStopResult>;
   branchFromTurn(
     sessionId: string,
-    input: { readonly sourceTurnId: string; readonly copyId: string },
+    input: { readonly sourceTurnId: string; readonly copyId: string; readonly worktree?: 'same' | 'new' },
   ): Promise<DesktopSessionSummary>;
   respondToSandboxBoundary(sessionId: string, response: SandboxBoundaryResponse): Promise<void>;
   respondToUserQuestion(sessionId: string, response: UserQuestionResponse): Promise<void>;
@@ -95,4 +98,15 @@ export interface ComposerSubmissionServices {
 
 const context = createServicesContext<ComposerSubmissionServices>('ComposerSubmissionServicesProvider');
 export const ComposerSubmissionServicesProvider = context.Provider;
+
+/** Load worktree choices for the displayed transcript. */
+export function BranchWorktreeRoot(props: { sessionId?: string; sessionRevision?: number; children: ReactNode }) {
+  const services = context.useServices();
+  return createElement(BranchWorktreeProvider, {
+    services,
+    sessionId: props.sessionId,
+    sessionRevision: props.sessionRevision,
+    children: props.children,
+  });
+}
 export const useComposerSubmissionServices = context.useServices;

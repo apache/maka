@@ -80,6 +80,7 @@
      Electron traffic-light clearance shared with the settings navigation. */
   padding-top: var(--space-6);
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   /* X close button moved to the sidebar `返回应用` — header hosts the
      page title only, left-aligned. */
@@ -94,6 +95,7 @@
 
 .settingsRuntimeHostSelector {
   margin-left: auto;
+  flex-shrink: 0;
   min-width: 0;
 }
 

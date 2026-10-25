@@ -719,11 +719,9 @@ function AppShellContent({
   // Where a NEW chat starts. Built unconditionally and handed to the composer,
   // which renders it only while no session owns it — the project is fixed once
   // the first message creates one, so there is nothing to pick after that.
-  const taskReadinessWorkspace = activeSession?.cwd ?? taskEntry.selectors.projectPath;
-  const taskReadinessRequest = {
-    ...Conversation.resolveTaskReadinessModelTarget(activeSession, activeSessionSendOutcome, newChatModel),
-    ...(taskReadinessWorkspace ? { cwd: taskReadinessWorkspace } : {}),
-  };
+  const taskReadinessRequest = Conversation.resolveTaskReadinessRequest(
+    activeSession, activeSessionSendOutcome, newChatModel, taskEntry.selectors.projectPath,
+  );
   const taskSubmissionHardBlocked =
     !activeId && !taskEntry.selectors.target;
   const openNewTaskSurface = useCallback(() => {
@@ -740,9 +738,7 @@ function AppShellContent({
     return ownerToken;
   }, [composerEditing, composerStaging, sessionSettingIntent.commands, setNavSelection, setSearchScrollTarget, startNewSession]);
 
-  const createSession = useCallback(async () => {
-    openNewTaskSurface();
-  }, [openNewTaskSurface]);
+  const createSession = useCallback(async () => void openNewTaskSurface(), [openNewTaskSurface]);
 
   // Stable, because the rail's Project rows carry it: a fresh identity here
   // rebuilt the whole list on every AppShell commit (#4109).
@@ -1124,6 +1120,7 @@ function AppShellContent({
         isNewChatOwnerActive: isNewChatSendSurfaceActive,
         activateFirstSendSession: Conversation.createExecutorSessionActivator(executor, commitSession, setNavSelection, setActiveId),
         openSession: openSessionInChat,
+        openNewTaskSurface,
         retireSession: clearSessionRendererState,
         refreshSessions,
         reloadExecutionBoundary: reloadActiveExecutionBoundary,

@@ -300,14 +300,18 @@ Session whose workspace recovery a blocker opens, with the stable recovery and
 Add Project commands. The provider resolves the picker action from those facts,
 so a shell render with the same facts leaves the notice reader alone. It
 receives no snapshot, refresh command or notice.
-`TaskReadinessNoticeConsumer` is the only reader: the transcript surface renders
-it in the notice slot, a workspace blocker opens the picker, and every other
-action reads again.
+`TaskReadinessNoticeConsumer` renders the transcript notice. A recoverable
+workspace blocker opens the picker; a fixed worktree shows its unavailable
+message and offers a recheck. `TaskReadinessComposer` reads the same snapshot
+inside the staged Composer leaf and blocks sending for the matching Session's
+confirmed workspace failure while preserving draft editing and other send gates.
+The Desktop adapter strips the UI-only `workspaceFixed` flag before IPC.
 
 The Desktop adapter injects the two Host reads as `TaskReadinessServices`; the
 feature does not access `window.maka`. A changed request, target or refresh key
 clears the previous snapshot before reading again, and a sequence fence admits
-only the latest read. A shared Session has neither an owner Session nor a
+only the latest read. Catalog changes and window focus also recheck readiness;
+refreshes retain confirmed workspace blockers until a successful new observation. A shared Session has neither an owner Session nor a
 new-task target and reads nothing. The snapshot context is module-local and
 `controllerOwners` fixes the controller at the provider. Send-time admission
 (`checkTaskSubmissionReadiness`) does not read this snapshot; it moves with

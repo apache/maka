@@ -80,6 +80,13 @@ export function ComposerSubmissionProvider<Owner extends ComposerSurfaceOwner>(p
         <CatalogRowWatch catalog={catalog} sessionIds={submission.revisionWatch.sessionIds}
           onRows={submission.revisionWatch.onRows} />
         <StagedLocalMessages sessionId={submission.turnReader.activeId}
+          onWorktreeCancelled={(sessionId) => {
+            const owner = props.shell.captureOwner();
+            const active = owner.sessionId === sessionId && props.shell.isOwnerActive(owner);
+            props.shell.retireSession(sessionId);
+            if (active) props.shell.openNewTaskSurface?.();
+            void props.shell.refreshSessions();
+          }}
           directoryHostId={props.directoryHostId}
           enabled={props.recoveryEnabled && !submission.reader.revisionDraft}
           restoreContext={props.staging.restoreContext} />
