@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { UiLocale } from '@maka/core/ui-locale';
+import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 const en = {
   chooseTitle: 'Select worktree',
   overview: 'Give each task its own checkout and initialization steps.',
@@ -114,4 +114,12 @@ const tw: Copy = {
   branchHelp: '對話截取到所選訊息；新 worktree 使用來源目錄目前 HEAD，不攜帶未提交變更。', createHelp: '傳送任務時由 AI 產生目錄名稱與分支名稱，不攜帶未提交變更。',
   initialization: { pending: '等待初始化', running: '初始化中', ready: '就緒', failed: '初始化失敗', skipped: '已略過初始化' }, confirmBranch: '確認分叉',
 };
-export function getWorktreeCopy(locale: UiLocale): Copy { return locale === 'en' ? en : locale === 'zh-TW' ? tw : zh; }
+const WORKTREE_COPY: UiCatalog<Copy> = {
+  en,
+  'zh-CN': zh,
+  'zh-TW': tw,
+};
+
+export function getWorktreeCopy(locale: UiLocale): Copy {
+  return WORKTREE_COPY[locale];
+}
