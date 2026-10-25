@@ -1062,6 +1062,16 @@ function App() {
                   overlay()?.instance === current.instance && selected() === current.sessionId
                 }
                 close={closeOverlay}
+                changed={() => {
+                  const owner = handle();
+                  if (
+                    alive &&
+                    selected() === current.sessionId &&
+                    owner?.sessionId === current.sessionId
+                  )
+                    void owner.refresh().catch(report);
+                  if (alive) void browsing.refresh().catch(report);
+                }}
                 create={(workspace) => create(workspace, current.sessionId)}
               />
             );

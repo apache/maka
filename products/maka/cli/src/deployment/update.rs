@@ -161,10 +161,10 @@ impl Expected {
             let mut target = current.clone();
             target.mode = settings.mode.unwrap_or(current.mode);
             target.websocket = settings.websocket.unwrap_or(current.websocket);
-            target.project_directory_roots = settings
-                .directories
-                .resolve(current.project_directory_roots.clone())
-                .await?;
+            let replace_roots = settings.directories.is_specified();
+            if replace_roots {
+                target.project_directory_roots = settings.directories.resolve(None).await?;
+            }
             target.validate(&root, &directory)?;
             // Code and configuration are one target. The calling distribution
             // understands every field it writes, unlike an arbitrary older pin.
@@ -184,7 +184,9 @@ impl Expected {
             };
             target.executable = executable;
             target.sha256 = sha256;
-            if target == current {
+            if target == current
+                && (!replace_roots || current.config_revision != self.expected_revision)
+            {
                 if pending.is_some() {
                     return Err("another update is pending; reconcile it first".into());
                 }
@@ -195,6 +197,17 @@ impl Expected {
                 }
                 target.config_revision += 1;
                 target.validate(&root, &directory)?;
+                let roots = if replace_roots {
+                    Some(crate::application::directories(
+                        target.project_directory_roots.clone(),
+                    )?)
+                } else {
+                    None
+                };
+                let target = updates::Pending {
+                    deployment: target,
+                    roots,
+                };
                 updates::prepare(&directory, lease.clone(), current.clone(), target.clone())
                     .await?;
                 Some(target)
@@ -202,14 +215,15 @@ impl Expected {
         } else {
             pending
         };
-        let deployment = if let Some(target) = target {
+        let deployment = if let Some(pending) = target {
+            let target = &pending.deployment;
             target.validate(&root, &directory)?;
             let Some(owner) = retire(&current, self.expected_policy_revision.is_some()).await?
             else {
                 lease.validate()?;
                 return Ok(Outcome::ActiveTasks {
                     deployment: current,
-                    target,
+                    target: target.clone(),
                 });
             };
             let owner = Arc::new(owner);
@@ -219,8 +233,13 @@ impl Expected {
                 // still be reactivated; there is no second cleanup authority.
                 super::service::remove(current.clone(), lease.clone(), owner.clone()).await?;
             }
-            updates::commit(&directory, lease.clone(), owner, current, target.clone()).await?;
-            target
+            if let Some(roots) = &pending.roots {
+                crate::application::configure_workspace_locations(owner.clone(), roots.clone())
+                    .await?;
+            }
+            let deployment = target.clone();
+            updates::commit(&directory, lease.clone(), owner, current, pending).await?;
+            deployment
         } else {
             current
         };

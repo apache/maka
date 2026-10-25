@@ -121,6 +121,15 @@ export type SettingsUpdateInput_ApiProtocol =
   | 'anthropic-messages';
 export type SettingsUpdateInput_ModelModality = 'text' | 'image' | 'audio' | 'pdf' | 'video';
 export type SettingsUpdateInput_RelayServiceTier = 'fast';
+export type SettingsUpdateWorkspaceLocationsOutput_ManagementRejection =
+  | 'invalid_bundle'
+  | 'download_failed'
+  | 'invalid_document'
+  | 'invalid_source'
+  | 'package_unavailable'
+  | 'execution_environment'
+  | 'instance_unavailable'
+  | 'parent_disabled';
 /**
  * A physical model call or tool attempt, never copied conversation membership.
  */
@@ -900,6 +909,31 @@ export interface ServiceMethods {
       input: Runtime.PricingUpdate;
       output: Runtime.SettingsPricingResult;
     };
+    updateWorkspaceLocations: {
+      mode: 'mutation';
+      input: {
+        source: Runtime.DeploymentRef;
+        roots: Runtime.DirectoryRootSpec[];
+      };
+      /**
+       * A deterministic refusal is a recorded business result. Uncertain SQL/worker
+       * failures remain in the original operation journal's Unknown outcome.
+       */
+      output:
+        | {
+            value: SettingsUpdateWorkspaceLocationsOutput_SettingsWorkspaceLocations;
+            status: 'committed';
+          }
+        | {
+            currentRevision: number;
+            status: 'conflict';
+          }
+        | {
+            reason: SettingsUpdateWorkspaceLocationsOutput_ManagementRejection;
+            diagnostic?: string | null;
+            status: 'rejected';
+          };
+    };
     usage: {
       mode: 'query';
       input: Runtime.SettingsUsageRead;
@@ -921,6 +955,11 @@ export interface ServiceMethods {
         summary: SettingsUsageSummaryOutput_SettingsUsageTotals;
         nextCursor: SettingsUsageSummaryOutput_UsageGroupCursor | null;
       };
+    };
+    workspaceLocations: {
+      mode: 'query';
+      input: {};
+      output: SettingsWorkspaceLocationsOutput_SettingsWorkspaceLocations | null;
     };
   };
   settingsAuthentication: {
@@ -1263,6 +1302,19 @@ export interface SettingsUpdateInput_ModelModalities {
   input: SettingsUpdateInput_ModelModality[];
   output: SettingsUpdateInput_ModelModality[];
 }
+export interface SettingsUpdateWorkspaceLocationsOutput_SettingsWorkspaceLocations {
+  source: SettingsUpdateWorkspaceLocationsOutput_DeploymentRef;
+  roots: SettingsUpdateWorkspaceLocationsOutput_DirectoryRootSpec[];
+}
+export interface SettingsUpdateWorkspaceLocationsOutput_DeploymentRef {
+  stateDomain: string;
+  deployment: string;
+  revision: number;
+}
+export interface SettingsUpdateWorkspaceLocationsOutput_DirectoryRootSpec {
+  label: string;
+  path: string;
+}
 export interface SettingsUsageOutput_UsageFence {
   stateDomain: string;
   /**
@@ -1448,6 +1500,19 @@ export interface SettingsUsageSummaryOutput_UsageGroupCursor {
    * None is the unknown-provider group, not the beginning of pagination.
    */
   key: string | null;
+}
+export interface SettingsWorkspaceLocationsOutput_SettingsWorkspaceLocations {
+  source: SettingsWorkspaceLocationsOutput_DeploymentRef;
+  roots: SettingsWorkspaceLocationsOutput_DirectoryRootSpec[];
+}
+export interface SettingsWorkspaceLocationsOutput_DeploymentRef {
+  stateDomain: string;
+  deployment: string;
+  revision: number;
+}
+export interface SettingsWorkspaceLocationsOutput_DirectoryRootSpec {
+  label: string;
+  path: string;
 }
 /**
  * Durable recipient, not a registration lease. Re-loading the same package can

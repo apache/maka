@@ -293,6 +293,12 @@ impl ApplicationHost {
         }))
     }
 
+    pub async fn refresh(this: Instance<Self>) -> Result<(), String> {
+        let owner = this.with(|host| host.owner.clone());
+        drop(this);
+        execute(owner.clone(), async move { owner.client.refresh().await }).await
+    }
+
     /// Query a service exposed by the original Host catalogue.
     pub async fn query(
         this: Instance<Self>,

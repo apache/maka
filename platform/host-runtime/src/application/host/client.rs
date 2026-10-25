@@ -242,6 +242,25 @@ impl Client {
             _ => Err("Host capture response mismatch".into()),
         }
     }
+    /// Refresh future calls within the original owner's endpoint selections.
+    /// Accepted calls retain their original custody and are never replayed.
+    pub async fn refresh(&mut self) -> Result<()> {
+        if self.phase != Phase::Ready || self.peer.is_some() {
+            return Err("Host refresh requires a ready owner session".into());
+        }
+        match self.control(SessionControl::Refresh).await? {
+            Response::Refreshed(result) => {
+                if let Ok(catalogue) = &result {
+                    catalogue.validate()?;
+                    catalogue.check_names(self.connected.consumers.keys())?;
+                    self.connected.catalogue = catalogue.clone();
+                }
+                self.phase = Phase::Ready;
+                result.map(|_| ())
+            }
+            _ => Err("Host refresh response mismatch".into()),
+        }
+    }
     pub fn check_approval(
         &self,
         source: &DeploymentRef,
@@ -340,7 +359,10 @@ impl Client {
                 }
                 // A cancelled control observer may have left its acknowledgement
                 // buffered. None substitutes for the final session cleanup.
-                Response::Epochs(_) | Response::Captured(_) | Response::Approved { .. } => {}
+                Response::Epochs(_)
+                | Response::Captured(_)
+                | Response::Refreshed(_)
+                | Response::Approved { .. } => {}
                 _ => return Err("Host session cleanup remains unconfirmed".into()),
             }
         }

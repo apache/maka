@@ -90,7 +90,9 @@ struct Session {
     mode: SessionMode,
 }
 enum SessionMode {
-    Owned,
+    Owned {
+        selections: BTreeMap<String, HostEndpoint>,
+    },
     Peer {
         source: DeploymentRef,
         selections: BTreeMap<String, HostEndpoint>,
@@ -524,7 +526,9 @@ impl Host {
                             endpoints.clone()
                         };
                         (
-                            SessionMode::Owned,
+                            SessionMode::Owned {
+                                selections: selections.clone(),
+                            },
                             Peer::new(
                                 self.source.clone(),
                                 selections
@@ -608,77 +612,98 @@ impl Host {
                         if matches!(command, SessionControl::Close) {
                             break Ok(());
                         }
-                        let SessionMode::Peer {
-                            source: origin,
-                            selections,
-                        } = &session.mode
-                        else {
-                            return Err("Host-owned session cannot approve peer sources".into());
-                        };
-                        let response = match command {
-                            SessionControl::Epochs => Response::Epochs(
-                                Endpoints::capture(&self.application.client(), selections)
-                                    .await
-                                    .map(|endpoints| endpoints.epochs()),
-                            ),
-                            SessionControl::Capture => {
-                                captured = None;
-                                let result =
+                        let response = if matches!(command, SessionControl::Refresh) {
+                            let result = async {
+                                let SessionMode::Owned { selections } = &session.mode else {
+                                    return Err("Peer sessions require captured approval".into());
+                                };
+                                let endpoints =
+                                    Endpoints::start(&self.application.client(), selections)
+                                        .await?;
+                                let catalogue = Catalogue::captured(&endpoints);
+                                wire::encode_bounded(
+                                    &Response::Refreshed(Ok(catalogue.clone())),
+                                    usize::MAX,
+                                )?;
+                                session.transport.replace_endpoints(endpoints)?;
+                                Ok(catalogue)
+                            }
+                            .await;
+                            Response::Refreshed(result)
+                        } else {
+                            let SessionMode::Peer {
+                                source: origin,
+                                selections,
+                            } = &session.mode
+                            else {
+                                return Err("Host-owned session cannot approve peer sources".into());
+                            };
+                            match command {
+                                SessionControl::Epochs => Response::Epochs(
                                     Endpoints::capture(&self.application.client(), selections)
                                         .await
-                                        .map(|endpoints| {
-                                            let catalogue = Catalogue::captured(&endpoints);
-                                            captured = Some(endpoints);
-                                            catalogue
-                                        });
-                                let response = Response::Captured(result);
-                                if let Err(error) = wire::encode_bounded(&response, usize::MAX) {
+                                        .map(|endpoints| endpoints.epochs()),
+                                ),
+                                SessionControl::Capture => {
                                     captured = None;
-                                    Response::Captured(Err(format!(
-                                        "cannot encode Host captured catalogue: {error}"
-                                    )))
-                                } else {
-                                    response
-                                }
-                            }
-                            SessionControl::Approve {
-                                source,
-                                consumers,
-                                retain,
-                                captured: expected,
-                            } => {
-                                let result = (|| {
-                                    source.validate()?;
-                                    if source.state_domain != origin.state_domain
-                                        || source.deployment != origin.deployment
+                                    let result =
+                                        Endpoints::capture(&self.application.client(), selections)
+                                            .await
+                                            .map(|endpoints| {
+                                                let catalogue = Catalogue::captured(&endpoints);
+                                                captured = Some(endpoints);
+                                                catalogue
+                                            });
+                                    let response = Response::Captured(result);
+                                    if let Err(error) = wire::encode_bounded(&response, usize::MAX)
                                     {
-                                        return Err("foreign approval deployment".into());
-                                    }
-                                    let approved = if consumers.is_empty() {
-                                        None
+                                        captured = None;
+                                        Response::Captured(Err(format!(
+                                            "cannot encode Host captured catalogue: {error}"
+                                        )))
                                     } else {
-                                        Some(Peer::new(source.clone(), consumers)?)
-                                    };
-                                    if approved.is_none() != expected.is_none() {
-                                        return Err(
-                                            "approval requires its captured endpoints".into()
-                                        );
+                                        response
                                     }
-                                    session.peer.check_update(approved.clone(), &retain)?;
-                                    if let Some(expected) = expected {
-                                        let endpoints = captured
-                                            .take()
-                                            .ok_or("Host endpoints were not captured")?;
-                                        if Catalogue::captured(&endpoints) != expected {
-                                            return Err("Host captured endpoints differ".into());
+                                }
+                                SessionControl::Approve {
+                                    source,
+                                    consumers,
+                                    retain,
+                                    captured: expected,
+                                } => {
+                                    let result = (|| {
+                                        source.validate()?;
+                                        if source.state_domain != origin.state_domain
+                                            || source.deployment != origin.deployment
+                                        {
+                                            return Err("foreign approval deployment".into());
                                         }
-                                        session.transport.replace_endpoints(endpoints)?;
-                                    }
-                                    session.peer.update(approved, &retain)
-                                })();
-                                Response::Approved { source, result }
+                                        let approved = if consumers.is_empty() {
+                                            None
+                                        } else {
+                                            Some(Peer::new(source.clone(), consumers)?)
+                                        };
+                                        if approved.is_none() != expected.is_none() {
+                                            return Err(
+                                                "approval requires its captured endpoints".into()
+                                            );
+                                        }
+                                        session.peer.check_update(approved.clone(), &retain)?;
+                                        if let Some(expected) = expected {
+                                            let endpoints = captured
+                                                .take()
+                                                .ok_or("Host endpoints were not captured")?;
+                                            if Catalogue::captured(&endpoints) != expected {
+                                                return Err("Host captured endpoints differ".into());
+                                            }
+                                            session.transport.replace_endpoints(endpoints)?;
+                                        }
+                                        session.peer.update(approved, &retain)
+                                    })();
+                                    Response::Approved { source, result }
+                                }
+                                SessionControl::Close | SessionControl::Refresh => unreachable!(),
                             }
-                            SessionControl::Close => unreachable!(),
                         };
                         tokio::select! {
                             biased;
@@ -725,7 +750,7 @@ impl Host {
                 wire::write(&mut output, &Response::Accepted).await?;
                 // Carry buffered bytes into the existing bounded transport.
                 match &session.mode {
-                    SessionMode::Owned => {
+                    SessionMode::Owned { .. } => {
                         session
                             .transport
                             .serve_owned(input.inner, output, session.peer.clone())?

@@ -50,7 +50,7 @@ enum Observation {
 #[serde(rename_all = "camelCase")]
 struct Installed {
     deployment: Deployment,
-    pending_update: Option<Deployment>,
+    pending_update: Option<updates::Pending>,
     supervisor: service::Observation,
     host: HostObservation,
     operation: OperationState,
@@ -160,7 +160,7 @@ async fn observe_host(deployment: &Deployment) -> HostObservation {
 pub(super) async fn pending(
     directory: &Path,
     current: &Deployment,
-) -> Result<Option<Deployment>, HostError> {
+) -> Result<Option<updates::Pending>, HostError> {
     let mut connection = SqliteConnection::connect_with(
         &SqliteConnectOptions::new()
             .filename(directory.join("deployment.sqlite"))
@@ -171,9 +171,9 @@ pub(super) async fn pending(
         let value: Option<String> = sqlx::query_scalar(
             "SELECT CASE WHEN length(CAST(target AS BLOB)) <= 65536 THEN target ELSE '' END FROM deployment_update WHERE singleton = 1",
         ).fetch_optional(&mut connection).await?;
-        let target = value.map(|value| serde_json::from_str::<Deployment>(&value)).transpose()?;
+        let target = value.map(|value| serde_json::from_str::<updates::Pending>(&value)).transpose()?;
         if let Some(target) = &target {
-            target.validate_record(directory)?;
+            target.deployment.validate_record(directory)?;
             updates::validate_target(current, target)?;
         }
         Ok::<_, HostError>(target)

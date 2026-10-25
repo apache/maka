@@ -1092,9 +1092,14 @@ mod tests {
                 project_directory_roots: Some(vec![]),
                 admission: super::super::Admission::Active,
             };
-            store::install(&deployment_directory, lease.clone(), owner, deployment)
-                .await
-                .unwrap();
+            store::install(
+                &deployment_directory,
+                lease.clone(),
+                Arc::new(owner),
+                deployment,
+            )
+            .await
+            .unwrap();
             drop(lease);
         } else {
             drop(owner);

@@ -181,6 +181,7 @@ pub enum Response {
     Accepted,
     Epochs(Result<BTreeMap<String, Option<Uuid>>>),
     Captured(Result<Catalogue>),
+    Refreshed(Result<Catalogue>),
     Approved {
         source: DeploymentRef,
         result: Result<()>,
@@ -200,6 +201,7 @@ pub enum SessionControl {
     Close,
     Epochs,
     Capture,
+    Refresh,
     Approve {
         source: DeploymentRef,
         consumers: BTreeSet<InstanceId>,

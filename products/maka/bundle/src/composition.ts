@@ -154,7 +154,14 @@ function settingsComposition(configuration: CompositionConfiguration) {
         },
         'host-deployment-gateway',
       ),
-      settings: node('settings', { locale: configuration.locale }),
+      settings: node('settings', {
+        locale: configuration.locale,
+        workspaceLocations: {
+          agent: 'agent',
+          skills: configuration.skills ? 'skills' : null,
+          processes: configuration.processes ? 'workspace-processes' : null,
+        },
+      }),
       'settings-authentication': node('settings-authentication'),
       'settings-setup': node('settings-setup'),
       'skill-outcomes': node('skill-outcomes'),

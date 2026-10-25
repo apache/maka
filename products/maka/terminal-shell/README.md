@@ -46,6 +46,8 @@ Without `--session`, the centered composer offers **Choose workspace** before ed
 
 Use **Connections & models** on Home or **Settings** in the sidebar to add a connection and API key, fetch its model catalog or add a model ID manually, and configure supported reasoning efforts and the connection default. These settings can be configured here even with a fresh Host. Choose **Choose workspace** or press Ctrl+N, then choose a directory published by the Host. Within a conversation, a new conversation reuses its authorized workspace. Creation opens **Models** to select the connection, model and effort before sending.
 
+**Choose workspace → Manage locations** adds or removes named folders using absolute paths on the connected Host. Save the list to keep it across restarts and executable updates. Removing a location does not delete its files. Folders that cannot be opened are omitted from the picker.
+
 **Settings → General** also provides scrollable multiline editors for the assistant’s global **AGENTS.md** and the compaction prompt. Save to apply document edits; **Use default prompt** selects the Host default for the compaction prompt.
 
 The header has separate controls for the session sidebar, **Search sessions** (Ctrl+O) and **Commands** (Ctrl+P). The sidebar toggle uses a neutral icon at rest and shows the expand or collapse direction on hover or keyboard focus. **Search sessions** focuses title search within the selected scope and Active/Archived filter.

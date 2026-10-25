@@ -62,7 +62,7 @@ const CONTROL_METHODS: [&str; 11] = [
 ];
 const CONTROL_KIND: &str = "agent-control";
 const SETTINGS_KIND: &str = "settings";
-const SETTINGS_METHODS: [&str; 9] = [
+const SETTINGS_METHODS: [&str; 10] = [
     "create",
     "update",
     "remove",
@@ -72,6 +72,7 @@ const SETTINGS_METHODS: [&str; 9] = [
     "setDefault",
     "updateAssistantPreferences",
     "updateNetwork",
+    "updateWorkspaceLocations",
 ];
 fn settings_route(endpoint: &str, method: &str) -> bool {
     (endpoint == "settings" && SETTINGS_METHODS.contains(&method))
@@ -202,6 +203,14 @@ impl Client {
             .catalogue()
             .describe(endpoint)?
             .clone())
+    }
+
+    pub async fn refresh(&self) -> Result<()> {
+        let mut host = self.0.host.lock().await;
+        if self.0.closing.load(Ordering::Acquire) {
+            return Err("client scope is closing".into());
+        }
+        host.refresh().await
     }
 
     async fn open(
@@ -888,7 +897,11 @@ impl Mutation {
                     _ => return Err("Host method is not a mutation".into()),
                 };
                 let contract = RecoveryContract::for_method(&self.description.contract, &self.operation.method).map_err(error)?;
-                if reference.source != self.operation.host || reference.namespace != self.description.provider
+                // The connection's source witness predates live configuration edits.
+                // The Host freezes the selected consumer's revision in this original receipt.
+                if reference.source.state_domain != self.operation.host.state_domain
+                    || reference.source.deployment != self.operation.host.deployment
+                    || reference.namespace != self.description.provider
                     || reference.export != self.description.export || reference.method != self.operation.method || reference.contract != contract {
                     return Err("Host preparation differs from the original client target".into());
                 }

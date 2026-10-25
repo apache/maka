@@ -289,6 +289,13 @@ impl Install {
                 // Remove the old projection before granting a new installation:
                 // an old login trigger must not resurrect it across the cut.
                 service::remove(existing.clone(), lease.clone(), owner.clone()).await?;
+                if directories_specified {
+                    crate::application::configure_workspace_locations(
+                        owner.clone(),
+                        crate::application::directories(requested.project_directory_roots.clone())?,
+                    )
+                    .await?;
+                }
                 store::change(
                     &directory,
                     lease.clone(),
@@ -317,6 +324,14 @@ impl Install {
             )?;
             if owner.root_id() != root.root_id() {
                 return Err("State Root changed during installation".into());
+            }
+            let owner = Arc::new(owner);
+            if directories_specified {
+                crate::application::configure_workspace_locations(
+                    owner.clone(),
+                    crate::application::directories(requested.project_directory_roots.clone())?,
+                )
+                .await?;
             }
             store::install(&directory, lease.clone(), owner, requested).await?
         };

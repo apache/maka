@@ -46631,6 +46631,180 @@ export const contracts = {
           },
           resources: {},
         },
+        updateWorkspaceLocations: {
+          mode: 'mutation',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'SettingsWorkspaceLocationsUpdate',
+            type: 'object',
+            properties: {
+              source: {
+                $ref: '#/$defs/DeploymentRef',
+              },
+              roots: {
+                type: 'array',
+                items: {
+                  $ref: '#/$defs/DirectoryRootSpec',
+                },
+              },
+            },
+            additionalProperties: false,
+            required: ['source', 'roots'],
+            $defs: {
+              DeploymentRef: {
+                type: 'object',
+                properties: {
+                  stateDomain: {
+                    type: 'string',
+                  },
+                  deployment: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  revision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['stateDomain', 'deployment', 'revision'],
+              },
+              DirectoryRootSpec: {
+                type: 'object',
+                properties: {
+                  label: {
+                    type: 'string',
+                  },
+                  path: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['label', 'path'],
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'ManagementResultForSettingsWorkspaceLocations',
+            description:
+              "A deterministic refusal is a recorded business result. Uncertain SQL/worker\nfailures remain in the original operation journal's Unknown outcome.",
+            oneOf: [
+              {
+                type: 'object',
+                properties: {
+                  value: {
+                    $ref: '#/$defs/SettingsWorkspaceLocations',
+                  },
+                  status: {
+                    type: 'string',
+                    const: 'committed',
+                  },
+                },
+                additionalProperties: false,
+                required: ['status', 'value'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  currentRevision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  status: {
+                    type: 'string',
+                    const: 'conflict',
+                  },
+                },
+                additionalProperties: false,
+                required: ['status', 'currentRevision'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  reason: {
+                    $ref: '#/$defs/ManagementRejection',
+                  },
+                  diagnostic: {
+                    type: ['string', 'null'],
+                  },
+                  status: {
+                    type: 'string',
+                    const: 'rejected',
+                  },
+                },
+                additionalProperties: false,
+                required: ['status', 'reason'],
+              },
+            ],
+            $defs: {
+              SettingsWorkspaceLocations: {
+                type: 'object',
+                properties: {
+                  source: {
+                    $ref: '#/$defs/DeploymentRef',
+                  },
+                  roots: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/DirectoryRootSpec',
+                    },
+                  },
+                },
+                additionalProperties: false,
+                required: ['source', 'roots'],
+              },
+              DeploymentRef: {
+                type: 'object',
+                properties: {
+                  stateDomain: {
+                    type: 'string',
+                  },
+                  deployment: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  revision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['stateDomain', 'deployment', 'revision'],
+              },
+              DirectoryRootSpec: {
+                type: 'object',
+                properties: {
+                  label: {
+                    type: 'string',
+                  },
+                  path: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['label', 'path'],
+              },
+              ManagementRejection: {
+                type: 'string',
+                enum: [
+                  'invalid_bundle',
+                  'download_failed',
+                  'invalid_document',
+                  'invalid_source',
+                  'package_unavailable',
+                  'execution_environment',
+                  'instance_unavailable',
+                  'parent_disabled',
+                ],
+              },
+            },
+          },
+          resources: {},
+        },
         usage: {
           mode: 'query',
           input: {
@@ -47848,6 +48022,78 @@ export const contracts = {
                 description: 'Breakdown selected for a bounded summary page.',
                 type: 'string',
                 enum: ['byProvider', 'byModel', 'byTool'],
+              },
+            },
+          },
+          resources: {},
+        },
+        workspaceLocations: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'SettingsWorkspaceLocationsRead',
+            type: 'object',
+            additionalProperties: false,
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'Nullable_SettingsWorkspaceLocations',
+            anyOf: [
+              {
+                $ref: '#/$defs/SettingsWorkspaceLocations',
+              },
+              {
+                type: 'null',
+              },
+            ],
+            $defs: {
+              SettingsWorkspaceLocations: {
+                type: 'object',
+                properties: {
+                  source: {
+                    $ref: '#/$defs/DeploymentRef',
+                  },
+                  roots: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/DirectoryRootSpec',
+                    },
+                  },
+                },
+                additionalProperties: false,
+                required: ['source', 'roots'],
+              },
+              DeploymentRef: {
+                type: 'object',
+                properties: {
+                  stateDomain: {
+                    type: 'string',
+                  },
+                  deployment: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  revision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['stateDomain', 'deployment', 'revision'],
+              },
+              DirectoryRootSpec: {
+                type: 'object',
+                properties: {
+                  label: {
+                    type: 'string',
+                  },
+                  path: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['label', 'path'],
               },
             },
           },

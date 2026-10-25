@@ -80,6 +80,7 @@ async fn public_ipc_persists_original_gateway_intent_and_retires_original_owner(
         write.start().await.unwrap();
         assert!(matches!(write.receive().await.unwrap(), Reply::Prepared { .. }));
         let reference = write.reference().unwrap().clone();
+        client.refresh().await.unwrap();
         assert!(store.application_intent(deployment, support::identity(13), reference.operation).await.unwrap().is_none());
         assert!(matches!(write.confirm().await.unwrap(), Reply::Mutation { ref reply, cleanup: Ok(()) } if matches!(reply.receipt, Receipt::Recorded { outcome: OperationOutcome::Returned { .. }, cleanup: OperationCleanup::Confirmed })));
         assert!(write.cleanup_confirmed());
@@ -502,6 +503,11 @@ async fn reconnect_captures_the_replacement_host_registration() {
         let mut read = connected.call("business", "read".into(), Value::Null, Default::default()).await.unwrap();
         read.start().await.unwrap();
         assert!(matches!(read.receive().await.unwrap(), Reply::Finished { result: Ok(ref value), cleanup: Ok(()) } if value["effects"] == 0));
+        original.refresh().await.unwrap();
+        assert_eq!(original.catalogue(), connected.catalogue());
+        let mut refreshed = original.call("business", "read".into(), Value::Null, Default::default()).await.unwrap();
+        refreshed.start().await.unwrap();
+        assert!(matches!(refreshed.receive().await.unwrap(), Reply::Finished { result: Ok(ref value), cleanup: Ok(()) } if value["effects"] == 0));
         original.close().await.unwrap();
         connected.close().await.unwrap();
         assert!(Client::retire(&fixture.address, fixture.host.epoch()).await.unwrap());

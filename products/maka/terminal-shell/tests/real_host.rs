@@ -49,6 +49,8 @@ mod support;
 mod terminal_workbench;
 #[path = "real_host/tool_cards.rs"]
 mod tool_cards;
+#[path = "real_host/workspace_locations.rs"]
+mod workspace_locations;
 
 use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,

@@ -39,12 +39,14 @@ use uuid::Uuid;
 
 const PROCESS_INSTANCES: [&str; 2] = ["workspace-processes", "coordinator-workspace-processes"];
 
-/// Managed deployment directories are authoritative; standalone reopen preserves source edits.
+/// Configured directories seed a new Host; saved application sources own later edits.
 pub(crate) enum Roots {
     Saved,
     Configured(Option<Vec<DirectoryRootSpec>>),
 }
-fn directories(roots: Option<Vec<DirectoryRootSpec>>) -> Result<Vec<DirectoryRootSpec>, HostError> {
+pub(crate) fn directories(
+    roots: Option<Vec<DirectoryRootSpec>>,
+) -> Result<Vec<DirectoryRootSpec>, HostError> {
     DirectoryRootSpec::normalize(match roots {
         Some(roots) => roots,
         None => vec![DirectoryRootSpec {
@@ -192,12 +194,8 @@ async fn prepare(
             root.display()
         ))
     })?;
-    let roots = match roots {
-        Roots::Saved => None,
-        Roots::Configured(roots) => Some(directories(roots)?),
-    };
     let configured =
-        apply_launch_configuration(store, loaded.source().reference.deployment, roots).await?;
+        apply_launch_configuration(store, loaded.source().reference.deployment, None).await?;
     let loaded = if outcome.applied || configured {
         store
             .load_application(loaded.source().reference.deployment)
@@ -393,7 +391,16 @@ async fn apply_launch_configuration(
         .map(serde_json::to_value)
         .transpose()?
         .filter(|roots| current != Some(roots));
-    if roots.is_none() && processes.is_empty() {
+    let locations = serde_json::to_value(workspace_location_targets(&metadata.source.input))?;
+    let locations_changed = metadata
+        .source
+        .input
+        .instances
+        .get("settings")
+        .is_some_and(|node| {
+            node.configuration.values.get("workspaceLocations") != Some(&locations)
+        });
+    if roots.is_none() && processes.is_empty() && !locations_changed {
         return Ok(false);
     }
     // Read payloads only when a launcher-owned value might change.
@@ -403,51 +410,18 @@ async fn apply_launch_configuration(
         .ok_or("public Host source missing")?;
     let (mut source, packages, _, _) = loaded.into_parts();
     let input = &mut source.input;
-    let helper_changes = refresh_helpers(input, &packages, &helper);
+    let helper_changes = refresh_product_configuration(input, &packages, &helper);
     if roots.is_none() && helper_changes.is_empty() {
         return Ok(false);
     }
     if let Some(roots) = roots {
-        configuration_values(input, &packages, "agent", maka_agent_api::IMPLEMENTATION)
-            .ok_or("managed Agent configuration no longer targets the saved native component")?
-            .insert("workspaceRoots".into(), roots.clone());
-        if input.instances.contains_key("skills") {
-            configuration_values(input, &packages, "skills", maka_skills_api::IMPLEMENTATION)
-                .ok_or("managed skills configuration no longer targets the saved native component")?
-                .insert("projectRoots".into(), roots.clone());
-        }
-        if input.instances.contains_key("workspace-processes") {
-            let filesystem = configuration_values(
-                input,
-                &packages,
-                "workspace-processes",
-                maka_workspace_api::processes::IMPLEMENTATION,
-            )
-            .ok_or("managed process configuration no longer targets the saved native component")?
-            .get_mut("filesystem")
-            .and_then(Value::as_object_mut)
-            .ok_or("public Host filesystem ceiling missing")?;
-            let previous = current
-                .and_then(Value::as_array)
-                .ok_or("saved published directories missing")?;
-            let rules = filesystem
-                .get_mut("rules")
-                .and_then(Value::as_array_mut)
-                .ok_or("saved filesystem rules missing")?;
-            // Replace the published roots' write ceiling, preserving narrower
-            // user-authored read/deny rules and unrelated filesystem restrictions.
-            rules.retain(|rule| {
-                !(rule["scope"] == "subtree"
-                    && rule["access"] == "write"
-                    && previous.iter().any(|root| root["path"] == rule["path"]))
-            });
-            for root in roots.as_array().expect("directory list") {
-                if !rules.iter().any(|rule| rule["path"] == root["path"]) {
-                    rules
-                        .push(json!({"path": root["path"], "scope": "subtree", "access": "write"}));
-                }
-            }
-        }
+        let targets = workspace_location_targets(input);
+        maka_settings_native::workspace_locations::replace(
+            input,
+            &packages,
+            &targets,
+            &serde_json::from_value::<Vec<DirectoryRootSpec>>(roots)?,
+        )?;
     }
     store
         .commit_application(
@@ -461,7 +435,27 @@ async fn apply_launch_configuration(
     Ok(true)
 }
 
-fn refresh_helpers(input: &mut Input, packages: &[super::Package], helper: &Value) -> Vec<String> {
+fn workspace_location_targets(
+    input: &Input,
+) -> maka_settings_native::workspace_locations::Configuration {
+    maka_settings_native::workspace_locations::Configuration {
+        agent: "agent".into(),
+        skills: input
+            .instances
+            .contains_key("skills")
+            .then(|| "skills".into()),
+        processes: input
+            .instances
+            .contains_key("workspace-processes")
+            .then(|| "workspace-processes".into()),
+    }
+}
+
+fn refresh_product_configuration(
+    input: &mut Input,
+    packages: &[super::Package],
+    helper: &Value,
+) -> Vec<String> {
     let mut changes = Vec::new();
     for name in PROCESS_INSTANCES {
         // Custom components and composition wrappers own their configuration.
@@ -478,6 +472,23 @@ fn refresh_helpers(input: &mut Input, packages: &[super::Package], helper: &Valu
             ));
         }
     }
+    let locations = serde_json::to_value(workspace_location_targets(input))
+        .expect("workspace location targets serialize");
+    if configuration_values(input, packages, "agent", maka_agent_api::IMPLEMENTATION).is_some()
+        && let Some(values) = configuration_values(
+            input,
+            packages,
+            "settings",
+            maka_settings_native::IMPLEMENTATION,
+        )
+        && values.get("workspaceLocations") != Some(&locations)
+    {
+        values.insert("workspaceLocations".into(), locations);
+        changes.push(
+            "/instances/settings/configuration/values/workspaceLocations: follow product services"
+                .into(),
+        );
+    }
     changes
 }
 
@@ -488,7 +499,7 @@ pub(super) fn launch_changes(
     configuration: &Value,
 ) -> Result<Vec<String>, HostError> {
     let helper = serde_json::to_value(std::env::current_exe()?)?;
-    let mut changes = refresh_helpers(&mut input.clone(), packages, &helper);
+    let mut changes = refresh_product_configuration(&mut input.clone(), packages, &helper);
     let mut selection = serde_json::from_value(configuration.clone())?;
     changes.extend(publication::refresh_from_plan(&mut selection, plan)?);
     Ok(changes)
@@ -548,32 +559,25 @@ pub(super) async fn apply_update(store: &RootStore) -> Result<super::update::Out
     Ok(outcome)
 }
 
-fn configuration_values<'a>(
-    input: &'a mut Input,
-    packages: &[super::Package],
-    name: &str,
-    expected: &str,
-) -> Option<&'a mut BTreeMap<String, Value>> {
-    use maka_plugin_core::{
-        composition::PackageUse,
-        package::{EntryTarget, Implementation, PackageSelection},
-    };
-    let node = input.instances.get_mut(name)?;
-    let PackageSelection::Pinned { package } = &node.package else {
-        return None;
-    };
-    let native = packages
-        .iter()
-        .find(|bytes| bytes.application_ref() == *package)
-        .and_then(|bytes| bytes.manifest().application.as_ref())
-        .and_then(|declaration| declaration.entries.get(&EntryTarget::Host));
-    if node.use_package != PackageUse::Entry
-        || !node.configuration.parameters.is_empty()
-        || !matches!(native, Some(entry) if matches!(&entry.implementation, Implementation::Native { implementation } if implementation == expected))
-    {
-        return None;
-    }
-    Some(&mut node.configuration.values)
+use maka_settings_native::workspace_locations::configuration_values;
+
+pub(crate) async fn configure_workspace_locations(
+    owner: Arc<RootOwner>,
+    roots: Vec<DirectoryRootSpec>,
+) -> Result<(), HostError> {
+    let store = maka_transport::open_store(owner).await?;
+    let result = replace_workspace_locations(&store, roots).await;
+    store.drain().await;
+    result
+}
+
+async fn replace_workspace_locations(
+    store: &RootStore,
+    roots: Vec<DirectoryRootSpec>,
+) -> Result<(), HostError> {
+    let (loaded, _) = prepare_saved(store, Roots::Configured(Some(roots.clone()))).await?;
+    apply_launch_configuration(store, loaded.source().reference.deployment, Some(roots)).await?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -988,9 +992,7 @@ mod tests {
             )
             .await
             .unwrap();
-        prepare(&store, Roots::Configured(Some(vec![])))
-            .await
-            .unwrap();
+        replace_workspace_locations(&store, vec![]).await.unwrap();
         let changed = store.load_application(deployment).await.unwrap().unwrap();
         assert_eq!(changed.source().reference.revision, revision + 2);
         assert_eq!(
@@ -1017,9 +1019,15 @@ mod tests {
                 .values["permissions"]["access"],
             "read_only"
         );
-        prepare(&store, Roots::Configured(Some(vec![])))
-            .await
-            .unwrap();
+        prepare(
+            &store,
+            Roots::Configured(Some(vec![DirectoryRootSpec {
+                label: "Workspace".into(),
+                path: workspace.clone(),
+            }])),
+        )
+        .await
+        .unwrap();
         prepare(&store, Roots::Saved).await.unwrap();
         assert_eq!(
             store
@@ -1042,6 +1050,13 @@ mod tests {
                 std::fs::remove_file(&old_helper).unwrap();
             }
             let mut stale = expected.clone();
+            stale
+                .instances
+                .get_mut("settings")
+                .unwrap()
+                .configuration
+                .values
+                .remove("workspaceLocations");
             for name in ["workspace-processes", "coordinator-workspace-processes"] {
                 stale
                     .instances

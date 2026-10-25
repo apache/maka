@@ -292,7 +292,7 @@ impl Fixture {
         let settings = package(
             "test.nsh.settings",
             maka_settings_native::IMPLEMENTATION,
-            empty.clone(),
+            serde_json::to_value(maka_settings_native::native().configuration).unwrap(),
             json!({}),
             json!({"Settings":{"contract":settings_contract,"availability":"required"}}),
         );
@@ -386,7 +386,7 @@ impl Fixture {
         };
         let mut plan = json!({"environment":{"location":"host"},"instances":{
             "agent":node(&agent, 1, json!({"locale":"en","workspaceRoots":[{"label":"Workspace","path":workspace}],"tools":tools,"todo":true,"permissions":permissions}), if has_files { json!({"files":[{"kind":"instance","path":["files"],"export":"files"}]}) } else { json!({}) }),
-            "settings":node(&settings, 2, json!({}), json!({})),
+            "settings":node(&settings, 2, json!({"workspaceLocations":{"agent":"agent","skills":null,"processes":if terminals { Some("processes") } else { None }}}), json!({})),
             "authentication":node(&authentication, 6, json!({}), json!({})),
             "setup":node(&setup, 7, json!({}), json!({})),
             "receipts":node(&receipts, 3, json!({}), json!({})),
@@ -582,6 +582,8 @@ impl Fixture {
                                 "updateAssistantPreferences",
                                 "network",
                                 "updateNetwork",
+                                "workspaceLocations",
+                                "updateWorkspaceLocations",
                             ],
                             false,
                         ),

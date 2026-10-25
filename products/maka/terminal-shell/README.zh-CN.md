@@ -44,6 +44,8 @@ cargo run -p maka-cli
 
 从首页 **Connections & models** 或侧栏 **Settings** 可添加连接和 API key、获取模型目录或手动添加模型 ID，并配置模型支持的推理档位及连接默认档位；全新 Host 也能直接在这里完成这些配置。点击 **Choose workspace** 或按 Ctrl+N，选择 Host 发布的目录。在已有会话中新建时，复用该会话已获授权的工作区。创建完成后打开 **Models**，选择连接、模型和推理档位，再发送消息。
 
+**Choose workspace → Manage locations** 可添加或移除命名目录，路径使用所连接 Host 上的绝对路径。保存后的列表会保留到重启和可执行文件更新之后。移除位置不会删除文件；无法打开的文件夹不会出现在选择器中。
+
 **Settings → General** 也提供助手全局 **AGENTS.md** 和压缩提示词的可滚动多行编辑器。保存后应用文档修改；**Use default prompt** 可为压缩提示词选择 Host 默认值。
 
 顶部提供独立的侧栏开关、**Search sessions**（Ctrl+O）和 **Commands**（Ctrl+P）。侧栏开关平时显示中性图标，悬停或键盘聚焦时显示展开或收起方向。**Search sessions** 聚焦所选范围及 Active/Archived 筛选下的标题搜索。
