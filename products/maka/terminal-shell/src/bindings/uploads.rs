@@ -17,7 +17,7 @@
  * under the License.
  */
 
-//! Native selection owns paths and bytes; JavaScript observes only upload metadata.
+//! Native intake snapshots files and images; upload observations contain only metadata.
 
 use super::{EDITOR, Scope, ScopedHost, execute};
 use maka_capabilities::call::ReadResource;
