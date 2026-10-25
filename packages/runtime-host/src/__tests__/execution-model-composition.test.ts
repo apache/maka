@@ -1389,6 +1389,8 @@ test('persistent assistant workers compact on wake without changing ordinary ses
     'quick',
     'quick-unknown',
     'quick-large',
+    'quick-large-below',
+    'quick-large-low',
     'quick-explicit',
     'quick-below',
     'explicit',
@@ -1430,11 +1432,17 @@ test('persistent assistant workers compact on wake without changing ordinary ses
             output: 10,
             lastRequestAnchor: {
               inputTokens:
-                scenario === 'below' || scenario === 'quick-below'
+                scenario === 'below'
                   ? 1_000
-                  : scenario === 'quick-unknown' || scenario === 'quick-large'
-                    ? 70_000
-                    : 7_000,
+                  : scenario === 'quick-below'
+                    ? 5_500
+                    : scenario === 'quick-large'
+                      ? 700_000
+                      : scenario === 'quick-large-below'
+                        ? 690_000
+                        : scenario === 'quick-unknown' || scenario === 'quick-large-low'
+                          ? 70_000
+                          : 7_000,
               outputTokens: 10,
             },
           },
@@ -1452,7 +1460,7 @@ test('persistent assistant workers compact on wake without changing ordinary ses
             ...(scenario === 'unknown' || scenario === 'quick-unknown'
               ? { models: [{ id: MODEL_ID }] }
               : {}),
-            ...(scenario === 'quick-large'
+            ...(scenario.startsWith('quick-large')
               ? { models: [{ id: MODEL_ID, contextWindow: 1_000_000 }] }
               : {}),
             ...(scenario === 'explicit' || scenario === 'quick-explicit'
@@ -1524,14 +1532,7 @@ test('persistent assistant workers compact on wake without changing ordinary ses
         false,
         JSON.stringify(events),
       );
-      const compacts = [
-        'bot',
-        'discovery',
-        'judgement',
-        'quick',
-        'quick-unknown',
-        'quick-large',
-      ].includes(scenario);
+      const compacts = ['bot', 'discovery', 'judgement', 'quick', 'quick-large'].includes(scenario);
       assert.equal(checkpoints, compacts ? 1 : 0, scenario);
       const main = provider.requests.filter((request) => request.body.stream === true);
       assert.equal(main.length, 1, scenario);

@@ -410,14 +410,13 @@ async function buildHostAiSdkBackend(
           modelId: target.model,
           // Keep the three discovery workers compact without resetting their
           // Sessions or in-flight work. Explicit model thresholds still win.
-          ...(input.context.header.labels?.includes(ASSISTANT_BACKGROUND_SESSION_LABEL)
+          ...(input.context.header.labels?.includes(ASSISTANT_BACKGROUND_SESSION_LABEL) &&
+          contextWindow !== undefined
             ? input.context.header.labels.some((label) =>
                 /^(assistant-quick-discovery|assistant-discovery|assistant-judgement):/.test(label),
               )
               ? {
-                  fallbackCompactionThresholdTokens: Math.floor(
-                    Math.min(64_000, (contextWindow ?? 128_000) * 0.5),
-                  ),
+                  fallbackCompactionThresholdTokens: Math.floor(contextWindow * 0.7),
                 }
               : input.context.header.labels.some((label) => label.startsWith('assistant-bot:')) &&
                   contextWindow !== undefined
