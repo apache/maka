@@ -171,8 +171,10 @@ const MAX_IMPLEMENTATION_CHILD_REQUESTS =
   MIN_IMPLEMENTATION_CHILD_REQUESTS + MAX_IMPLEMENTATION_CHILD_PTY_READS - 1;
 const HEADLESS_CODING_V1_PROMPT_HASH =
   'sha256:e490f6055478bf8cdcef1aa85217de623f0954120a692358dbba2065ba6710fc';
+// Product Grep now advertises retained tool-result paths; keep the profile's
+// tool set and prompt while deliberately pinning the expanded wire contract.
 const HEADLESS_CODING_V1_TOOLS_HASH =
-  'sha256:1c225493cbb6c72bb34e2e7a669cec45aa27bfef73dab2f2df05dfb6bb7c1dae';
+  'sha256:c6b07222afd090b9750d7c371f46bcbcbea236ec3da2bb4245edae7b848f76ed';
 const execFileAsync = promisify(execFile);
 test('backend creation resolves a bound Session by immutable Connection identity', async () => {
   let observedRef: unknown;
@@ -2785,6 +2787,16 @@ test('hosted execution freezes the headless coding provider wire contract', asyn
       'WriteStdin',
       'apply_patch',
     ]);
+    const grep = tools.find((tool) => tool.name === 'Grep');
+    assert.ok(grep);
+    assert.match(grep.description, /searches the same retained text as Read/u);
+    assert.deepEqual(Object.keys(grep.parameters.properties), ['pattern', 'path', 'glob']);
+    assert.deepEqual(grep.parameters.required, ['pattern']);
+    assert.match(grep.parameters.properties.path.description, /Maka tool-result address/u);
+    assert.equal(
+      grep.parameters.properties.glob.description,
+      'Optional ripgrep file glob, for example **/*.ts.',
+    );
     // DeepSeek defaults to portable ApplyPatch instead of Write/Edit, including
     // hosted headless sessions. Freeze its actual function-call wire format.
     const patch = tools.find((tool) => tool.name === 'apply_patch');

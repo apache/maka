@@ -37,6 +37,7 @@ import {
 import { archiveToolResultAsTransition } from '../tool-result-archive-transition.js';
 import {
   readToolResultArchiveResource,
+  searchToolResultArchiveResource,
   parseToolResultArchiveResourceRef,
 } from '../tool-result-archive-resource.js';
 import type { ModelProjectionTransition } from '@maka/core/model-projection-transition';
@@ -180,6 +181,21 @@ test('reads committed SQLite evidence after reopen without any Artifact payload'
         ok: true,
         serializedResult: f.body,
       });
+      const resources = { readArchivedToolResultResource: reader };
+      const input = { path: 'maka://runtime/tool-results/response', pattern: 'bounded' };
+      const found = (await searchToolResultArchiveResource(resources, 'session', input)) as {
+        matchedLines: number;
+      };
+      assert.equal(found.matchedLines, 1);
+      const hidden = (await searchToolResultArchiveResource(resources, 'session', {
+        ...input,
+        pattern: 'RAW SECRET',
+      })) as { matchedLines: number };
+      assert.equal(hidden.matchedLines, 0);
+      const foreign = (await searchToolResultArchiveResource(resources, 'foreign', input)) as {
+        error: string;
+      };
+      assert.equal(foreign.error, 'not_found');
       assert.equal((await reader({ ...f.request, sessionId: 'foreign' })).ok, false);
     } finally {
       evidence.close();
