@@ -40,6 +40,8 @@ jobs:
       MBX_CACHE_EXPORT_GROUP: ci-${{ github.run_id }}-${{ github.run_attempt }}-test
       MBX_GC_AUTO: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && '0' || '1' }}
       MBX_TARGET_VIEWS: "0"
+      # Linked outputs already live in target; retain cache copies only for export.
+      MBX_CACHE_LINKS: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && '1' || '0' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -121,7 +123,20 @@ jobs:
           rustup target add x86_64-pc-windows-msvc
           cargo check --locked --manifest-path third-party/termina/Cargo.toml --lib --target x86_64-pc-windows-msvc --target-dir "${CARGO_TARGET_DIR:-target}"
           cargo check --locked --manifest-path third-party/termina/Cargo.toml --lib --target x86_64-pc-windows-msvc --target-dir "${CARGO_TARGET_DIR:-target}" --features windows-legacy
+      - name: Report storage before checks
+        run: |
+          df -h "$GITHUB_WORKSPACE" "$RUNNER_TEMP"
+          for path in "$GITHUB_WORKSPACE/target" "$HOME/.cache/mbx" "$HOME/.cargo/registry" "$HOME/.cargo/git"; do
+            if [ -d "$path" ]; then du -sh "$path"; fi
+          done
       - run: just check
+      - name: Report storage after checks
+        if: ${{ always() && steps.mbx.outcome == 'success' }}
+        run: |
+          df -h "$GITHUB_WORKSPACE" "$RUNNER_TEMP"
+          for path in "$GITHUB_WORKSPACE/target" "$HOME/.cache/mbx" "$HOME/.cargo/registry" "$HOME/.cargo/git"; do
+            if [ -d "$path" ]; then du -sh "$path"; fi
+          done
       - run: just build
       - name: Native CLI smoke
         run: |
