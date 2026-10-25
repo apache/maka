@@ -364,7 +364,9 @@ function snapshotManifest(manifest: PetPackManifestV1): PetPackManifestV1 {
     ...(manifest.description === undefined ? {} : { description: manifest.description }),
     spriteSheet: { ...manifest.spriteSheet },
     animations,
-    ...(manifest.idleVariants === undefined ? {} : { idleVariants: manifest.idleVariants.map(snapshotAnimation) }),
+    ...(manifest.idleVariants === undefined
+      ? {}
+      : { idleVariants: manifest.idleVariants.map(snapshotAnimation) }),
   };
 }
 

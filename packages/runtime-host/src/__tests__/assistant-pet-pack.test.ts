@@ -212,11 +212,17 @@ test('select validates the installed pack, updates desktop settings, and survive
   assert.equal((await restarted.status()).selectedPetId, 'test.pet');
 });
 
-
 test('idle variants survive installation and service restart', async (t) => {
   const f = await fixture(t);
-  const variants = [{frames:[0],fps:2,loop:true},{frames:[0],fps:3,loop:false}];
-  const result = await f.invoke({action:'create', manifest:{...manifest(), idleVariants:variants}, spriteSheetPath:f.path});
+  const variants = [
+    { frames: [0], fps: 2, loop: true },
+    { frames: [0], fps: 3, loop: false },
+  ];
+  const result = await f.invoke({
+    action: 'create',
+    manifest: { ...manifest(), idleVariants: variants },
+    spriteSheetPath: f.path,
+  });
   assert.equal(result.idleAnimationCount, 3);
   const restarted = createAssistantPetPacks(f.state, f.readImage);
   assert.deepEqual((await restarted.list())[0].idleVariants, variants);

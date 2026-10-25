@@ -536,7 +536,12 @@ export function validatePetPackManifest(value: unknown): PetManifestValidationRe
         const path = `$.idleVariants[${index}]`;
         validateAnimation(variant, 'idle', frameCount, issues, path);
         if (isRecord(variant) && Object.hasOwn(variant, 'fallback')) {
-          addIssue(issues, 'unknown_field', `${path}.fallback`, 'idle variants rotate automatically; fallback is not supported');
+          addIssue(
+            issues,
+            'unknown_field',
+            `${path}.fallback`,
+            'idle variants rotate automatically; fallback is not supported',
+          );
         }
       }
     }
