@@ -1815,7 +1815,7 @@
     "crates/nsh-base/src/editor/state.rs": "c2bb03ad5a2771917ab938f193bbf5d97bcb96d3fc9037e2e1922c6e4f48863d",
     "crates/nsh-base/src/editor/touch.rs": "81cf3176cd82cc22f401492ef875400692ead937a442105e48a91e1ce3fac8fd",
     "crates/nsh-base/src/editor/types.rs": "1151dc9a5ed8a3e4312fc394219659edb5045f0214fa51d113f56b808ecd565d",
-    "crates/nsh-base/src/editor/view.rs": "ce523a28873a343261bcdece7cf1d3fc49296c1358ed941245e52aacdfa7d4b9",
+    "crates/nsh-base/src/editor/view.rs": "c66d2d8918fb5a261da9d0e5cbd886964c0d68f81f1d510a8a334ab7a883152c",
     "crates/nsh-base/src/syntax.rs": "b913cddc13f5f9fbb1ac9d2b622bba5bfe9a3f06972cec405f5291861cf489e3",
     "crates/nsh-base/src/window.rs": "ccb68188d36102160c80f08ec7e9d26324b9beec4873ae988460a6f9f43d5e59",
     "crates/nsh-base/tests/base/diff.rs": "58f3eae1d50f6e0802c38f67ae0267da1719e3dabea7ac7d5d7772430de93ca7",
@@ -1842,7 +1842,7 @@
     "website/zh-CN/elements/editor.md": "b6ccb919a736d14fb24a5e396364e6e88268402c873ed882e37c853d55672d71"
   },
   "upstream_repository": "https://github.com/longbridge/nsh",
-  "upstream_revision": "6e40fc400541c5a4c0b3fbb851dffcb848630eed",
+  "upstream_revision": "8b75235f334daf13b5496db705efbfa284fe593f",
   "file_sources": {
     ".github/workflows/rust-app.yml": {
       "repository": "https://github.com/longbridge/nsh",
@@ -4154,7 +4154,7 @@
     },
     "crates/nsh-base/src/editor/view.rs": {
       "repository": "https://github.com/longbridge/nsh",
-      "revision": "ab78a5cce0267bf707d8f7e5a4578ca6c5aec892"
+      "revision": "8b75235f334daf13b5496db705efbfa284fe593f"
     },
     "crates/nsh-base/src/syntax.rs": {
       "repository": "https://github.com/longbridge/nsh",

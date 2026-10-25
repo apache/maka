@@ -193,7 +193,10 @@ fn gutter(ed: Ed, layer: Layer, pointer: GutterPointer) -> impl IntoElement {
             let st = ed.st.borrow();
             let digits = st.buffer.line_count().max(1).ilog10() as usize + 1;
             let zero = super::controller::text_width(&st.font.css(), "0");
-            zero * digits.max(2) as f32
+            // Whole points: the text engines of AppKit, UIKit and Win32 round
+            // a measured width up, so a number laid out in the exact width
+            // of its digits is a fraction too wide and shows as "…".
+            (zero * digits.max(2) as f32).ceil()
         }
     };
     let fold_width = {
