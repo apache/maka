@@ -109,7 +109,7 @@ impl Directory {
                             continue;
                         }
                         let bytes = gix::path::to_unix_separators_on_windows(
-                            gix::path::try_into_bstr(path.clone())
+                            gix::path::into_bstr(path.clone())
                                 .map_err(|_| error("files_unavailable"))?,
                         )
                         .into_owned();

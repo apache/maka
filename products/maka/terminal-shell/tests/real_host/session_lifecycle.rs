@@ -44,7 +44,7 @@ async fn fill_title(view: &mut AppView, title: &str) {
 }
 
 async fn actions(view: &mut AppView, title: &str) {
-    shortcut(view, 'o');
+    open_session_browser(view).await;
     wait_enabled_node(view, &format!("Actions for {title}")).await;
     support::click_label(view, &format!("Actions for {title}"));
     wait_enabled_node(view, "Fork conversation").await;
@@ -154,13 +154,12 @@ async fn real_session_lifecycle_keeps_original_revisions_history_and_separate_dr
         wait_view_state(&mut view, |view, _| !view.accessibility_snapshot().iter()
             .any(|node| node.label == "Stop response")).await;
 
-        // The search's keyboard action opens the highlighted original row.
-        shortcut(&mut view, 'o');
-        wait_focused_input(&mut view, "Search session titles").await;
-        wait_enabled_node(&mut view, "Actions for NSH real Agent").await;
-        let original_search = view.surface().input_context().unwrap();
+        // Native keyboard activation retains the original row's action anchor.
+        open_session_browser(&mut view).await;
+        tab_to_label(&mut view, "Actions for NSH real Agent").await;
+        let original_anchor = view.surface().focused().unwrap();
         for exit in ["Back from conversation actions", "Close conversation actions"] {
-            view.handle_event(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL)));
+            view.handle_event(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
             activate(&mut view, "Rename conversation").await;
             wait_focused_input(&mut view, "Conversation title").await;
             support::click_label(&mut view, exit);
@@ -168,13 +167,11 @@ async fn real_session_lifecycle_keeps_original_revisions_history_and_separate_dr
                 wait_enabled_node(&mut view, "Fork conversation").await;
                 view.handle_event(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
             }
-            wait_focused_input(&mut view, "Search session titles").await;
-            assert_eq!(view.surface().focused(), Some(original_search.node));
-            let restored = view.surface().input_context().unwrap();
-            assert_eq!(restored.text, original_search.text);
-            assert_eq!(restored.selection, original_search.selection);
+            wait_view_state(&mut view, |view, _| view.accessibility_snapshot().iter().any(|node| {
+                node.id == original_anchor && node.focused && node.label == "Actions for NSH real Agent"
+            })).await;
         }
-        view.handle_event(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL)));
+        view.handle_event(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
         activate(&mut view, "Rename conversation").await;
         fill_title(&mut view, "Renamed original").await;
         let observed = client.query("agent", "observe", json!({"sessionId":fixture.session})).await.unwrap();
@@ -201,7 +198,7 @@ async fn real_session_lifecycle_keeps_original_revisions_history_and_separate_dr
         wait_view(&mut view, |screen| screen.contains("This conversation is archived.")).await;
         assert_eq!(client.query("agent", "observe", json!({"sessionId":fixture.session})).await.unwrap()["session"]["archived"], true);
         support::wait_draft(&client, &fixture.session, "Original draft stays with its owner").await;
-        shortcut(&mut view, 'o');
+        open_session_browser(&mut view).await;
         wait_enabled_node(&mut view, "Show archived conversations").await;
         support::click_label(&mut view, "Show archived conversations");
         wait_enabled_node(&mut view, "Actions for Renamed original").await;
@@ -233,7 +230,7 @@ async fn real_session_lifecycle_keeps_original_revisions_history_and_separate_dr
         assert_eq!(view.surface().input_context().unwrap().text.as_deref(), Some(""));
         view.handle_event(Event::Paste("Independent fork draft".into()));
         support::wait_draft(&client, &fork_id, "Independent fork draft").await;
-        shortcut(&mut view, 'o');
+        open_session_browser(&mut view).await;
         wait_enabled_node(&mut view, "Open conversation Renamed original").await;
         support::click_label(&mut view, "Open conversation Renamed original");
         wait_view(&mut view, |screen| screen.contains("Original draft stays with its owner")).await;
@@ -241,12 +238,12 @@ async fn real_session_lifecycle_keeps_original_revisions_history_and_separate_dr
         wait_editable_composer(&mut view).await;
         assert_eq!(view.surface().input_context().unwrap().text.as_deref(), Some("Original draft stays with its owner"));
 
-        shortcut(&mut view, 'o');
+        open_session_browser(&mut view).await;
         wait_enabled_node(&mut view, "Choose workspace scope").await;
         support::click_label(&mut view, "Choose workspace scope");
-        wait_view(&mut view, |screen| screen.contains("Choose a workspace below")).await;
+        wait_enabled_node(&mut view, "Workspace scopes").await;
         support::click_text(&mut view, "Current workspace");
-        wait_view(&mut view, |screen| !screen.contains("Choose a workspace below") && screen.contains("Search sessions…")).await;
+        wait_enabled_node(&mut view, "Conversations").await;
         actions(&mut view, "Renamed original").await;
         support::click_label(&mut view, "Delete conversation");
         wait_enabled_node(&mut view, "Confirm delete conversation").await;
@@ -258,7 +255,7 @@ async fn real_session_lifecycle_keeps_original_revisions_history_and_separate_dr
         assert_eq!(remaining["sessions"][0]["id"], fork_id);
         // The removed source no longer grants a workspace-scoped read. The
         // same browser must retire that scope and still expose the real fork.
-        shortcut(&mut view, 'o');
+        open_session_browser(&mut view).await;
         wait_enabled_node(&mut view, "Open conversation Independent fork").await;
         wait_view(&mut view, |screen| screen.contains("All workspaces")).await;
         support::wait_draft(&client, &fork_id, "Independent fork draft").await;

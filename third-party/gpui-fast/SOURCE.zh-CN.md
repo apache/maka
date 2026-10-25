@@ -19,7 +19,7 @@
 
 # GPUI Fast 平台清理补丁
 
-从 [GPUI Fast](https://github.com/longbridge/gpui-fast/tree/b836dd970b26830f2124b7cf91b0e19018fd12da) `main` 固定 revision（manifest 采用正式 `0.1.10` 发布依赖规则） 保留 core、macOS、Windows、Linux 和 scheduler 五个 crate。按上游发布规则使用 `gpui-fast*` 包名，保持原 Rust library 名；修改过的 scheduler 对应 `gpui-pre-scheduler` 0.3.9。未修改 helper 使用同一正式发布及其 0.3.9 支持快照。Kit 选择官方 `gpui-fast` feature，根 registry source patch 提供修改过的实现；移除旧 gpui-pre Git 兼容 facade。
+从 [GPUI Fast](https://github.com/longbridge/gpui-fast/tree/124f79b0f14c688ae87877e370c015a9dc9d7ce5) `main` 固定 revision（manifest 采用正式 `0.1.10` 发布依赖规则） 保留 core、macOS、Windows、Linux 和 scheduler 五个 crate。按上游发布规则使用 `gpui-fast*` 包名，保持原 Rust library 名；修改过的 scheduler 对应 `gpui-pre-scheduler` 0.3.9。未修改 helper 使用同一正式发布及其 0.3.9 支持快照。Kit 选择官方 `gpui-fast` feature，根 registry source patch 提供修改过的实现；移除旧 gpui-pre Git 兼容 facade。
 
 `upstream.json` 列出改动前的有限原始文件清单与 SHA-256。保留上游许可和署名；Maka 新文件不进入该清单。隔离 workspace 仅规范化 helper 依赖和显式许可文件路径。
 
@@ -85,3 +85,7 @@ Window 可根据原 ClickInputState interruption 创建不可 clone 的 InputGes
 ## 一次滚轮手势只滚动一个容器（2026-10-20）
 
 Maka 自己的改动。滚动容器嵌在另一个滚动容器里时（例如对话列表里的工具输出框），在它上面的一次滚轮或触控板手势（或一次触摸拖动）会让两者一起滚动，因为指针下每个 `Div` 和 `List` 的滚动监听器都会处理每个滚轮事件。现在 `Window` 持有一个 `ScrollLatch`（`crates/gpui/src/gestures.rs`）：指针下沿手势方向（增量较大的那一轴）真正滚动了的最内层容器取得这次手势，直到手势结束，滚到尽头也不放手。它外层的容器（监听器在它之后运行）把这次手势的事件留给它，滚动中移到指针下的容器也不接手。滚不动的容器让事件继续向外传，所以框已在尽头时，下一次手势交给页面，与浏览器的滚动链一致；vendored GPUI Kit 的 `ScrollableMask` 在边缘把事件交给外层容器的行为也保持不变。手势在以下情况结束：收到 `TouchPhase::Started` 事件、滚轮事件位置改变、或取得手势的容器 300 毫秒内没有处理它的事件。以 `TouchPhase::Started` 开始的手势，要在收到 `TouchPhase::Ended` 之后才会因停顿而结束，因为手指可能停在触控板上。事件仍会继续传播，滚动条等其他滚轮监听器照常收到。用滚轮另一轴滚动单轴容器的情况不参与，行为不变。`Div` 的滚轮监听器现在按本帧布局的范围钳制偏移（prepaint 原本就会这样钳制）。改动在 `gestures.rs`、`window.rs`、`elements/div.rs` 和 `elements/list.rs`，测试为 `elements/div.rs` 中九个、`elements/list.rs` 中两个。对 Kit 0.8.0 固定版本 `77ff6f794dca3bcee2e90977cedf12a64aed17e4` 的审查确认，其捕获阶段滚动区域（[#3500](https://github.com/longbridge/gpui-kit/pull/3500)）不能替代这些区域之外原生 `Div` 与 `List` 滚动器所需的 latch。导入的 mask 测试为独立的触控板与横向滚轮场景分别创建原生窗口，避免一个场景继承另一个场景尚在进行的手势。原有轴向与偏移断言全部保留；生产滚动归属与传播行为保持不变。
+
+## 上游同步（2026-10-25）
+
+五个适配 crate 更新至 `124f79b0f14c688ae87877e370c015a9dc9d7ce5`，合入文本布局生命周期修复与 Windows 帧调度、设备唤醒改动及原生回归测试。保留 Maka 原有输入、滚动与清理 owner；Windows 测试清单补入上游新增的 serde_json。

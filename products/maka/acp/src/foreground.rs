@@ -67,7 +67,10 @@ impl Foreground {
                     self.peer.stop.cancel();
                     return;
                 }
-                acp::StopReason::Other("_maka_failed".into())
+                acp::StopReason::Other(acp::OtherStopReason::new(
+                    "_maka_failed",
+                    Default::default(),
+                ))
             }
         };
         drop(self.active);
@@ -331,8 +334,14 @@ impl Foreground {
         Ok(match execution.state {
             ExecutionState::Completed => acp::StopReason::EndTurn,
             ExecutionState::Cancelled => acp::StopReason::Cancelled,
-            ExecutionState::Failed => acp::StopReason::Other("_maka_failed".into()),
-            ExecutionState::Paused => acp::StopReason::Other("_maka_paused".into()),
+            ExecutionState::Failed => acp::StopReason::Other(acp::OtherStopReason::new(
+                "_maka_failed",
+                Default::default(),
+            )),
+            ExecutionState::Paused => acp::StopReason::Other(acp::OtherStopReason::new(
+                "_maka_paused",
+                Default::default(),
+            )),
             _ => return Err("Agent work is not physically settled".into()),
         })
     }

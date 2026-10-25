@@ -18,10 +18,10 @@
  */
 
 use super::*;
-#[path = "acp/setup_tests.rs"]
-mod setup_tests;
 #[path = "acp/post_cleanup.rs"]
 mod post_cleanup;
+#[path = "acp/setup_tests.rs"]
+mod setup_tests;
 
 async fn setup(
     protocol: u8,
@@ -218,7 +218,7 @@ async fn execute(f: &Fixture, session: &str, text: &str) -> Value {
     result
 }
 async fn form(f: &Fixture, session: &str) -> maka_agent_facts::interaction::InteractionRecord {
-    let mut changes = f.session(&session).await.subscribe_commits().unwrap();
+    let mut changes = f.session(session).await.subscribe_commits().unwrap();
     loop {
         if let Some(record) = f
             .session(session)
@@ -378,9 +378,19 @@ async fn reject_changed_authority(f: &Fixture, session: &str) {
         .root_turn
         .unwrap()
         .invocation;
-    let execution_scope = f.session(session).await.execution_scope(Some(
-        f.owner.session(session).await.unwrap().configuration.permission_basis(),
-    )).await.unwrap();
+    let execution_scope = f
+        .session(session)
+        .await
+        .execution_scope(Some(
+            f.owner
+                .session(session)
+                .await
+                .unwrap()
+                .configuration
+                .permission_basis(),
+        ))
+        .await
+        .unwrap();
     let execution = execution_scope.store().execution_custody().unwrap();
     for field in ["invocation", "cwd"] {
         let scope = f

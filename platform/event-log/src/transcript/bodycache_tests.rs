@@ -67,9 +67,20 @@ async fn user_input(log: &EventLog, turn: &str, input: InvocationInput) -> u64 {
 }
 
 async fn read(log: &EventLog, through: u64, position: Position) -> Page {
-    log.history_text("cache", through, position, false, 8192, 1, 32768)
-        .await
-        .unwrap()
+    log.history_view(
+        "cache",
+        through,
+        crate::transcript::HistoryWindow {
+            position,
+            include_thinking: false,
+            view: maka_agent_ports::session::history::HistoryView::Text,
+            max_bytes: 8192,
+            max_chunks: Some(1),
+            max_json_bytes: 32768,
+        },
+    )
+    .await
+    .unwrap()
 }
 
 #[tokio::test]
@@ -475,7 +486,18 @@ async fn late_sibling_conflicts_roll_back_all_earlier_cache_fills() {
         })
         .await;
         let result = log
-            .history_text("cache", through, Position::Start, false, 8192, 1, 32768)
+            .history_view(
+                "cache",
+                through,
+                crate::transcript::HistoryWindow {
+                    position: Position::Start,
+                    include_thinking: false,
+                    view: maka_agent_ports::session::history::HistoryView::Text,
+                    max_bytes: 8192,
+                    max_chunks: Some(1),
+                    max_json_bytes: 32768,
+                },
+            )
             .await;
         assert!(
             matches!(result, Err(crate::StoreError::TranscriptConflict)),

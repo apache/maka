@@ -108,7 +108,7 @@ pub(super) async fn finish(listener: &TcpListener, f: &Fixture) -> Value {
     result
 }
 pub(super) async fn pending(f: &Fixture, session: &str) -> InteractionRecord {
-    let mut commits = f.session(&session).await.subscribe_commits().unwrap();
+    let mut commits = f.session(session).await.subscribe_commits().unwrap();
     loop {
         if let Some(record) = f
             .session(session)

@@ -22,10 +22,10 @@
 #[cfg(windows)]
 pub mod windows;
 
-#[cfg(windows)]
-use windows::InputReaderMode;
 #[cfg(all(windows, feature = "windows-legacy"))]
 use windows::legacy;
+#[cfg(windows)]
+use windows::InputReaderMode;
 
 use std::{
     collections::VecDeque,
@@ -45,7 +45,6 @@ const TERMINAL_REPLY_INPUT_TIMEOUT: Duration = Duration::from_millis(100);
 use crate::EventReader;
 
 use crate::{
-    Event,
     escape::{
         self,
         csi::{self, Csi, KittyKeyboardFlags, ThemeMode},
@@ -55,7 +54,7 @@ use crate::{
         KeyCode, KeyEvent, KeyEventKind, KeyEventState, KittyGraphicsResponse, MediaKeyCode,
         ModifierKeyCode, Modifiers, MouseButton, MouseEvent, MouseEventKind, SgrMouseEvent,
     },
-    style,
+    style, Event,
 };
 
 /// An incremental parser for terminal input.

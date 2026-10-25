@@ -1,9 +1,9 @@
 Cua Driver Rust SDK and its workspace crates
 Source: https://github.com/trycua/cua
 Fork: https://github.com/maka-agent/cua
-Revision: 2af03305efd8e713f833dcaed1f247f4f616eca5
-Based on upstream 7a0fe0b0ba6c58de586c863d79ef41976233b1e7 with an X11 cursor
-badge viewport and clipped-glyph fix.
+Revision: afcdf58a76cb9998f4e2fed8c0124d81ac4f1fcf
+The pinned fork includes the upstream 0.32 driver and retains Maka cursor
+ownership and overlay adaptations.
 Linked as pinned Cargo Git dependencies. No Cua perception extension or model
 artifacts are included. Transitive dependencies retain their own licenses.
 

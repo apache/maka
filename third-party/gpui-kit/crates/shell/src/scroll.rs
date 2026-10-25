@@ -132,10 +132,11 @@ where
 
         // The wrapper lays the area out as a flex item along the scrolled
         // axis, so the area shrinks to the wrapper's size. Sized by its 100%
-        // alone, the area is not held to a maximum size on the wrapper: in a
-        // column whose height follows its content, inside a row, the area
-        // came out as tall as that column and the wrapper clipped the rows
-        // past its maximum height instead of scrolling to them.
+        // alone, the area is not held to a maximum size on the wrapper with
+        // GPUI Fast: in a column whose height follows its content, inside a
+        // row, the area came out as tall as that column and the wrapper
+        // clipped the rows past its maximum height instead of scrolling to
+        // them.
         div()
             .id(root_id)
             .size_full()

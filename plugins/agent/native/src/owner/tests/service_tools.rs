@@ -926,7 +926,7 @@ pub(super) async fn stored_facts(
     session: &str,
 ) -> Vec<maka_agent_facts::event::StoredEvent> {
     fixture
-        .session(&(session))
+        .session(session)
         .await
         .scoped_prefix(
             maka_agent_facts::event::LogScope::Session { id: session.into() },
@@ -942,7 +942,7 @@ async fn pending_approval(
     fixture: &Fixture,
     session: &str,
 ) -> maka_agent_facts::interaction::InteractionRecord {
-    let mut commits = fixture.session(&session).await.subscribe_commits().unwrap();
+    let mut commits = fixture.session(session).await.subscribe_commits().unwrap();
     loop {
         if let Some(record) = fixture
             .session(session)
@@ -1371,14 +1371,17 @@ async fn installed_javascript_service_is_a_real_model_tool_with_business_project
         let Page::Ready { chunks, .. } = fixture
             .session(&session)
             .await
-            .history_text(
+            .history_view(
                 &session,
                 through,
-                Position::Start,
-                false,
-                8192,
-                8,
-                64 * 1024,
+                maka_event_log::transcript::HistoryWindow {
+                    position: Position::Start,
+                    include_thinking: false,
+                    view: maka_agent_ports::session::history::HistoryView::Text,
+                    max_bytes: 8192,
+                    max_chunks: Some(8),
+                    max_json_bytes: 64 * 1024,
+                },
             )
             .await
             .unwrap();
@@ -1414,11 +1417,13 @@ async fn installed_javascript_service_is_a_real_model_tool_with_business_project
                         .history_source(
                             &session,
                             through,
-                            result.position,
-                            field,
-                            None,
-                            position,
-                            13,
+                            maka_event_log::transcript::HistorySourceRead {
+                                locator: result.position,
+                                field,
+                                path: None,
+                                position,
+                                max_bytes: 13,
+                            },
                         )
                         .await
                         .unwrap();
@@ -1913,7 +1918,8 @@ async fn unresponsive_native_tool_reaches_original_cleanup_budget_and_keeps_host
                 .any(|status| status.activation.instance() == &id(21) && status.calls > 0)
         );
         assert!(
-            !fixture.facts_after_failed_shutdown(&session)
+            !fixture
+                .facts_after_failed_shutdown(&session)
                 .await
                 .iter()
                 .any(|fact| matches!(fact, Fact::ToolSettled { .. }))

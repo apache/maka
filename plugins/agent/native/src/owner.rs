@@ -944,7 +944,7 @@ impl Owner {
         .map_err(|_| "agent_metadata_failed")?;
         match changed {
             SessionMutation::Committed(record) => Ok(MetadataResult::Committed {
-                session: Box::new(crate::service::summary(self, resolve_session(record)?)),
+                session: Box::new(crate::service::summary(self, resolve_session(*record)?)),
             }),
             SessionMutation::RevisionConflict { expected, actual } => {
                 Ok(MetadataResult::RevisionConflict { expected, actual })

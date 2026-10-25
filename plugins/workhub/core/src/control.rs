@@ -198,7 +198,9 @@ impl Assignments {
                                     let observation = commands
                                         .cancel(SessionOperation {
                                             session_id: receipt.invocation.session_id.clone(),
-                                            operation_id: execution_id(&assignment.request.operation_id)?,
+                                            operation_id: execution_id(
+                                                &assignment.request.operation_id,
+                                            )?,
                                         })
                                         .await?;
                                     record.stopped = Some(
@@ -214,7 +216,9 @@ impl Assignments {
                                     let observation = commands
                                         .retract(SessionOperation {
                                             session_id: receipt.invocation.session_id.clone(),
-                                            operation_id: execution_id(&assignment.request.operation_id)?,
+                                            operation_id: execution_id(
+                                                &assignment.request.operation_id,
+                                            )?,
                                         })
                                         .await?;
                                     selection(observation.state, &receipt.invocation)

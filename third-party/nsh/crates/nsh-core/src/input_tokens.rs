@@ -30,8 +30,11 @@ use crate::{Color, Points};
 /// Drawing only: token styles do not alter text metrics or source offsets.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct InputTokenStyle {
+    /// Text color override; `None` retains the editor's color.
     pub color: Option<Color>,
+    /// Optional fill behind the token's text.
     pub background_color: Option<Color>,
+    /// Corner radius of the token's background fill.
     pub border_radius: Points,
 }
 
@@ -40,7 +43,9 @@ pub struct InputTokenStyle {
 #[derive(Clone, Debug)]
 pub struct InputTokenRule {
     pattern: Regex,
+    /// Drawing applied to each matching token capture.
     pub style: InputTokenStyle,
+    /// Whether committed matches are selected and edited as whole units.
     pub atomic: bool,
 }
 
@@ -66,6 +71,7 @@ impl InputTokenRule {
         })
     }
 
+    /// Returns the original regular expression, including its named capture.
     pub fn pattern(&self) -> &str {
         self.pattern.as_str()
     }
@@ -74,16 +80,22 @@ impl InputTokenRule {
 /// A current source range (UTF-8 bytes), with no replacement display string.
 #[derive(Clone, Debug, PartialEq)]
 pub struct InputTokenSpan {
+    /// Half-open UTF-8 byte range in the editor's committed text.
     pub range: Range<usize>,
+    /// Drawing inherited from the matching rule.
     pub style: InputTokenStyle,
+    /// Whether this span becomes indivisible when it is no longer pending.
     pub atomic: bool,
 }
 
 /// Whether an edit continues an unfinished token or confirms its text.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TokenEdit {
+    /// Insert text while allowing the current token to remain unfinished.
     Typing,
+    /// Remove text while preserving an unfinished token when possible.
     Delete,
+    /// Confirm the edit and apply atomic selection to matching tokens.
     Commit,
 }
 
@@ -99,6 +111,8 @@ pub struct InputTokens {
 }
 
 impl InputTokens {
+    /// Replace changed rules and rescan the text, retaining a matching pending range.
+    /// Returns whether the rules changed.
     pub fn set_rules(&mut self, rules: &[InputTokenRule], text: &str) -> bool {
         if self.rules == rules {
             return false;
@@ -109,10 +123,12 @@ impl InputTokens {
         true
     }
 
+    /// Returns the current nonoverlapping token ranges in source order.
     pub fn spans(&self) -> &[InputTokenSpan] {
         &self.spans
     }
 
+    /// Returns the unfinished token range retained by undo snapshots.
     pub fn pending(&self) -> Option<Range<usize>> {
         self.pending.clone()
     }
@@ -123,6 +139,7 @@ impl InputTokens {
         self.scan(text);
     }
 
+    /// Rescan restored text and retain `pending` only if it still matches a token.
     pub fn restore(&mut self, text: &str, pending: Option<Range<usize>>) {
         self.reset(text);
         self.pending = pending.filter(|range| self.spans.iter().any(|s| s.range == *range));
@@ -193,6 +210,7 @@ impl InputTokens {
         span.atomic && self.pending.as_ref() != Some(&span.range)
     }
 
+    /// Whether the byte offset lies outside the interior of a committed atom.
     pub fn is_caret(&self, at: usize) -> bool {
         !self
             .spans
@@ -219,12 +237,15 @@ impl InputTokens {
         range
     }
 
+    /// Whether the byte range overlaps any committed atomic token.
     pub fn intersects_atom(&self, range: &Range<usize>) -> bool {
         self.spans
             .iter()
             .any(|s| self.atom(s) && range.start < s.range.end && s.range.start < range.end)
     }
 
+    /// Confirm a pending token when selection leaves it, then snap to atom boundaries.
+    /// The returned anchor and caret preserve the selection's direction.
     pub fn select(&mut self, anchor: usize, caret: usize) -> (usize, usize) {
         if self
             .pending

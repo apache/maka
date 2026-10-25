@@ -87,7 +87,7 @@ export async function packLauncher(directory) {
       ['pack', '--json', '--ignore-scripts', '--offline'],
       npmSpawnOptions({ cwd: packageDirectory, encoding: 'utf8', timeout: 180_000 }),
     );
-    const [packed, ...extra] = JSON.parse(stdout);
+    const [packed, ...extra] = Object.values(JSON.parse(stdout));
     const archive = `maka-agent-cli-${version}.tgz`;
     if (
       extra.length ||

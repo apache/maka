@@ -554,6 +554,7 @@ impl Fixture {
                                 "observe",
                                 "history",
                                 "historyLandmarks",
+                                "recall",
                                 "watch",
                             ],
                             false,
@@ -1045,7 +1046,12 @@ pub async fn wait_enabled_button(
         }
     })
     .await
-    .unwrap_or_else(|_| panic!("native button {label:?} did not become enabled"))
+    .unwrap_or_else(|_| {
+        panic!(
+            "native button {label:?} did not become enabled:\n{}",
+            view.snapshot()
+        )
+    })
 }
 
 pub async fn click_button(view: &mut AppView, label: &str) {
@@ -1195,6 +1201,13 @@ pub fn wait_view_state(
             let snapshot = view.snapshot();
             if predicate(view, &snapshot) {
                 return snapshot;
+            }
+            if started.elapsed() >= Duration::from_secs(20) {
+                evidence(
+                    &format!("timeout-{}-ax", caller.line()),
+                    &format!("{:#?}", view.accessibility_snapshot()),
+                );
+                evidence_cells(&format!("timeout-{}", caller.line()), view);
             }
             assert!(
                 started.elapsed() < Duration::from_secs(20),

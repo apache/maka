@@ -290,12 +290,14 @@ async fn multiple_large_results_keep_conversation_metadata_readable() {
         .history_view(
             "session",
             through,
-            Position::Start,
-            false,
-            HistoryView::Conversation,
-            128 * 1024,
-            None,
-            1024 * 1024,
+            maka_event_log::transcript::HistoryWindow {
+                position: Position::Start,
+                include_thinking: false,
+                view: HistoryView::Conversation,
+                max_bytes: 128 * 1024,
+                max_chunks: None,
+                max_json_bytes: 1024 * 1024,
+            },
         )
         .await
         .unwrap();

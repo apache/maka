@@ -183,7 +183,14 @@ async fn active_anchor_is_atomic_bounded_and_survives_next_turn_and_reopen() {
         .unwrap();
     assert_eq!(source.anchor.unwrap().event, *anchor.event());
     assert!(source.tail.is_empty());
-    assert!(log.unfinished_invocations(0, 10).await.unwrap().invocations.len() == 1);
+    assert!(
+        log.unfinished_invocations(0, 10)
+            .await
+            .unwrap()
+            .invocations
+            .len()
+            == 1
+    );
     log.append(&event(
         "active",
         Fact::InvocationEnded {

@@ -29,7 +29,7 @@ async fn pending(
     session: &str,
     step: &std::cell::Cell<&'static str>,
 ) -> InteractionRecord {
-    let mut commits = fixture.session(&session).await.subscribe_commits().unwrap();
+    let mut commits = fixture.session(session).await.subscribe_commits().unwrap();
     loop {
         commits.borrow_and_update();
         step.set("pending.query");

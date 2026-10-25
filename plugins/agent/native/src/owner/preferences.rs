@@ -95,7 +95,7 @@ impl Owner {
             .map_err(|_| "agent_preference_commit_unknown")?
         {
             SessionMutation::Committed(session) => Ok(MetadataResult::Committed {
-                session: Box::new(crate::service::summary(self, resolve_session(session)?)),
+                session: Box::new(crate::service::summary(self, resolve_session(*session)?)),
             }),
             SessionMutation::RevisionConflict { expected, actual } => {
                 Ok(MetadataResult::RevisionConflict { expected, actual })

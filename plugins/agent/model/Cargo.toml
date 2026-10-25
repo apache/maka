@@ -28,13 +28,13 @@ maka-agent-ports.workspace = true
 maka-capabilities.workspace = true
 maka-providers.workspace = true
 uuid.workspace = true
-hyper = { version = "1.11.1", default-features = false }
+hyper = { version = "1.12.0", default-features = false }
 futures-util.workspace = true
 tokio-tungstenite.workspace = true
 maka-responses.workspace = true
 maka-provider-protocol.workspace = true
 jiff.workspace = true
-base64 = "0.22.1"
+base64 = "0.23.1"
 serde.workspace = true
 serde_json.workspace = true
 reqwest = { workspace = true, features = ["form", "stream"] }
@@ -44,5 +44,5 @@ tokio.workspace = true
 tokio-util.workspace = true
 
 [dev-dependencies]
-tokio-rustls = { version = "0.26.5", default-features = false, features = ["aws_lc_rs", "tls12"] }
+tokio-rustls = { version = "0.26.6", default-features = false, features = ["aws_lc_rs", "tls12"] }
 tokio = { workspace = true, features = ["net", "io-util"] }

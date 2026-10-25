@@ -308,6 +308,12 @@ impl EventLog {
     }
 }
 
+pub(crate) struct RootCatalogPage<'a> {
+    pub position: SessionPosition<'a>,
+    pub limit: usize,
+    pub count_pending: bool,
+}
+
 impl EventLog {
     pub(crate) fn catalog_selection_valid(
         scope: &CatalogScope,
@@ -322,11 +328,14 @@ impl EventLog {
         partition: usize,
         scope: CatalogScope,
         filter: CatalogFilter,
-        position: SessionPosition<'_>,
-        limit: usize,
+        page: RootCatalogPage<'_>,
         expected: (i64, i64),
-        count_pending: bool,
     ) -> Result<(Vec<String>, u64), StoreError> {
+        let RootCatalogPage {
+            position,
+            limit,
+            count_pending,
+        } = page;
         self.validate_root()?;
         if partition >= crate::root_store::PARTITION_COUNT
             || limit == 0

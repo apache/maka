@@ -6,9 +6,9 @@ use std::{
 };
 
 use crate::{
-    TextSelectionContentKey, TextSelectionCoverage, TextSelectionEndpoint, TextSelectionEvent,
-    TextSelectionHandle, TextSelectionRegistration, TextSelectionRun, TextSelectionScopeId,
-    TextSelectionSnapshot,
+    GlobalState, TextSelectionContentKey, TextSelectionCoverage, TextSelectionEndpoint,
+    TextSelectionEvent, TextSelectionHandle, TextSelectionRegistration, TextSelectionRun,
+    TextSelectionScopeId, TextSelectionSnapshot,
 };
 use gpui::{
     App, Bounds, EntityId, FocusHandle, Hitbox, HitboxId, Pixels, Point, WeakEntity, Window,
@@ -97,6 +97,7 @@ struct InlineContribution {
     run: Option<TextSelectionRun>,
     selection_edges: Option<(Bounds<Pixels>, Bounds<Pixels>)>,
     copy_projection: Option<CopyProjection>,
+    table_cell: Option<Bounds<Pixels>>,
 }
 
 /// TextView's renderer-specific bridge to base-owned window selection.
@@ -131,6 +132,15 @@ impl CopyProjection {
             Self::Text(projection) => projection.project(start, end),
             Self::InlineObject(projection) => projection.project(start, end),
             Self::CustomBlock(projection) => projection.project(start, end),
+        }
+    }
+
+    /// Selects nothing: the selection started in a table cell this is not in.
+    fn deselect(&self) {
+        match self {
+            Self::Text(projection) => projection.reset(),
+            Self::InlineObject(projection) => projection.deselect(),
+            Self::CustomBlock(projection) => projection.deselect(),
         }
     }
 }
@@ -213,6 +223,7 @@ impl TextViewSelectionAdapter {
                     || current.cursor != previous.cursor
                     || current.coverage != previous.coverage;
                 drop(previous);
+                let anchor_cell = state.selection_adapter.selection.table_cell_selection(cx);
                 // Gesture snapshots are current before paint. Refresh the rich
                 // document's byte ranges from its retained native layouts
                 // before its existing Plain/Source serializer reads them.
@@ -229,14 +240,36 @@ impl TextViewSelectionAdapter {
                         }
                         for report in state.selection_adapter.contributions.values() {
                             if let Some(projection) = &report.copy_projection {
-                                projection
-                                    .project(start - report.translation, end - report.translation);
+                                match crate::global_state::confine_to_cell(
+                                    anchor_cell.map(|bounds| (start, bounds)),
+                                    report.table_cell.map(|cell| {
+                                        Bounds::new(cell.origin + report.translation, cell.size)
+                                    }),
+                                    start,
+                                    end,
+                                ) {
+                                    Some((start, end)) => projection.project(
+                                        start - report.translation,
+                                        end - report.translation,
+                                    ),
+                                    None => projection.deselect(),
+                                }
                             }
                         }
                     }
                 }
                 let last = state.parsed_content.document.blocks.len().saturating_sub(1);
-                let blocks = current.block_range(selection_id, last);
+                let blocks = if anchor_cell.is_some() {
+                    let Some(anchor) = current
+                        .anchor
+                        .filter(|anchor| anchor.endpoint.entity_id() == Some(selection_id))
+                    else {
+                        return String::new();
+                    };
+                    anchor.block_ix.map(|ix| ix..=ix)
+                } else {
+                    current.block_range(selection_id, last)
+                };
                 state.selected_text_in(blocks)
             },
             cx,
@@ -299,7 +332,8 @@ impl TextViewSelectionAdapter {
         self.selection.clone()
     }
 
-    pub(super) fn clear_copy_projections(&mut self) {
+    pub(super) fn clear_copy_projections(&mut self, cx: &App) {
+        self.selection.clear_table_cell_selection(cx);
         for report in self.contributions.values_mut() {
             report.copy_projection = None;
         }
@@ -315,6 +349,7 @@ impl TextViewSelectionAdapter {
 
     pub(super) fn report_inline(
         &mut self,
+        table_cell: Option<Bounds<Pixels>>,
         hitbox: &Hitbox,
         text_bounds: Vec<Bounds<Pixels>>,
         run: Option<TextSelectionRun>,
@@ -330,6 +365,7 @@ impl TextViewSelectionAdapter {
                 run,
                 selection_edges,
                 copy_projection,
+                table_cell,
             },
         );
     }
@@ -405,6 +441,25 @@ impl TextViewSelectionAdapter {
         cx: &App,
     ) -> crate::TouchHandleLayout {
         self.selection.prepaint_touch_handles(window, cx)
+    }
+
+    pub(super) fn record_table_cell(&self, bounds: Bounds<Pixels>, cx: &App) {
+        self.selection.record_table_cell(bounds, cx);
+    }
+
+    pub(super) fn painted_selection_points(
+        &self,
+        cx: &App,
+    ) -> Option<(Point<Pixels>, Point<Pixels>)> {
+        let (anchor, cursor) = self.selection_points(cx)?;
+        crate::global_state::confine_to_cell(
+            self.selection
+                .table_cell_selection(cx)
+                .map(|bounds| (anchor, bounds)),
+            GlobalState::global(cx).table_cell(),
+            anchor,
+            cursor,
+        )
     }
 
     pub(super) fn selection_points(&self, cx: &App) -> Option<(Point<Pixels>, Point<Pixels>)> {

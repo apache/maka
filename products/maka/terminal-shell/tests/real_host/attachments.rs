@@ -54,8 +54,8 @@ async fn attachments_survive_restart_and_send_original_images_without_message_te
         wait_view_state(&mut view, |view, screen| screen.contains("fixture-model") && model_menu_closed(view)).await;
         let chosen = client.query("agent", "observe", json!({"sessionId":fixture.session})).await.unwrap();
         assert_eq!(chosen["session"]["backend"], json!({"kind":"model","connectionId":fixture.selection["connectionId"],"modelId":"fixture-model","thinkingLevel":null}));
-        super::wait_enabled_node(&mut view, "Attach files").await;
-        support::click_label(&mut view, "Attach files");
+        support::click_button(&mut view, "Add to message").await;
+        support::click_button(&mut view, "Attach files").await;
         super::tab_to_label(&mut view, "Attachment path").await;
         view.handle_event(Event::Paste(path.to_str().unwrap().into()));
         let (done, committed) = tokio::sync::oneshot::channel();

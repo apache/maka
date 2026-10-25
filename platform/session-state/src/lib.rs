@@ -273,12 +273,11 @@ impl Drop for Snapshot {
         });
         // Drop cannot return an I/O failure. Fail subsequent use closed rather
         // than silently hiding a leaked lease or uncollected staging state.
-        if let Err(error) = result {
-            if let Ok(mut partition) =
+        if let Err(error) = result
+            && let Ok(mut partition) =
                 self.session.backend.0.partitions[self.session.partition].lock()
-            {
-                partition.failure = Some(error.to_string());
-            }
+        {
+            partition.failure = Some(error.to_string());
         }
     }
 }

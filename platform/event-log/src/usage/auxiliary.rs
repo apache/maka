@@ -150,11 +150,10 @@ impl EventLog {
                         if used { return Err(invalid("Application operation already attempted its auxiliary model")); }
                         (binding, Some(session))
                     } else { binding(&mut tx, &source).await? };
-                    if let Some(expected) = expected_session.as_deref() {
-                        if session_id.as_deref() != Some(expected) {
+                    if let Some(expected) = expected_session.as_deref()
+                        && session_id.as_deref() != Some(expected) {
                             return Err(invalid("foreign auxiliary Session"));
                         }
-                    }
                     if let Some(quote) = &quote {
                         quote.validate(&binding.model).map_err(invalid)?;
                     }

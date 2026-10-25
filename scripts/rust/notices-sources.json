@@ -9,12 +9,6 @@
       "source": "https://github.com/zowens/crc32c/blob/254a861f7cc71bfe455e86f0e1d86e3c83c33390/src/combine.rs ; https://github.com/madler/zlib/blob/cacf7f1d4e3d44d871b605da3b647f07d718623f/zlib.h"
     }
   ],
-  "rquickjs@0.12.9": [
-    {
-      "file": "scripts/rust/licenses/declared-mit.txt",
-      "source": "https://github.com/longbridge/gpui-kit/blob/c5f8eca4a0759f8c0c7ed624eddfd03f1c93a5f2/crates/shell/rquickjs-compat/Cargo.toml"
-    }
-  ],
   "deno_native_certs@0.3.1": [
     {
       "file": "scripts/rust/licenses/declared-mit.txt",
@@ -63,10 +57,10 @@
       "source": "https://github.com/dsherret/sys_traits/blob/75cbf3ea478624cc78275b0264e78e9ae13ce3f5/macros/Cargo.toml"
     }
   ],
-  "sys_traits@0.1.28": [
+  "sys_traits@0.1.29": [
     {
       "file": "scripts/rust/licenses/declared-mit.txt",
-      "source": "https://github.com/dsherret/sys_traits/blob/709e02e198721f81b485c078ccdf1835fa3e6a40/Cargo.toml"
+      "source": "https://github.com/dsherret/sys_traits/blob/0b168a2935d4c398d38ea5d25af8f793858299b5/Cargo.toml"
     }
   ],
   "selectors@0.38.0": [

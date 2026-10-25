@@ -105,16 +105,19 @@ async fn more_than_ten_thousand_actual_observations_remain_readable() {
     let through = end(&log, session, InvocationOutcome::Completed).await;
 
     let Page::Ready { chunks, .. } = log
-        .history_text(
+        .history_view(
             session,
             through,
-            Position::Event {
-                sequence: completion,
+            maka_event_log::transcript::HistoryWindow {
+                position: Position::Event {
+                    sequence: completion,
+                },
+                include_thinking: false,
+                view: maka_agent_ports::session::history::HistoryView::Text,
+                max_bytes: 32 * 1024,
+                max_chunks: Some(1),
+                max_json_bytes: 64 * 1024,
             },
-            false,
-            32 * 1024,
-            1,
-            64 * 1024,
         )
         .await
         .unwrap();

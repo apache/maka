@@ -159,6 +159,14 @@ impl InlineObjectSelectionProjection {
             *selected = object_in_selection(self.bounds, start, end);
         }
     }
+
+    pub(super) fn deselect(&self) {
+        if let Some(selected) = self.selected.upgrade()
+            && let Ok(mut selected) = selected.lock()
+        {
+            *selected = false;
+        }
+    }
 }
 
 fn object_in_selection(
@@ -326,9 +334,11 @@ impl Element for InlineObject {
                             |row| row.contains(&bounds.center()),
                         )
                     })
-                    || state.selection_points(cx).is_some_and(|(start, end)| {
-                        object_in_selection(self.selection_bounds, start, end)
-                    }))
+                    || state
+                        .painted_selection_points(cx)
+                        .is_some_and(|(start, end)| {
+                            object_in_selection(self.selection_bounds, start, end)
+                        }))
         });
         if let Ok(mut value) = self.selected.lock() {
             *value = selected;
@@ -339,8 +349,9 @@ impl Element for InlineObject {
         }
         if selectable {
             window.set_cursor_style(CursorStyle::IBeam, hitbox);
-            view.as_ref().unwrap().query(cx, |state, _| {
+            view.as_ref().unwrap().query(cx, |state, cx| {
                 state.selection_adapter.report_inline(
+                    GlobalState::global(cx).table_cell(),
                     hitbox,
                     vec![bounds],
                     None,

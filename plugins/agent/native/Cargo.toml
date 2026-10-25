@@ -40,7 +40,7 @@ maka-agent-authority.workspace = true
 maka-web-api.workspace = true
 maka-agent-api.workspace = true
 maka-interactions-api.workspace = true
-base64 = "0.22.1"
+base64 = "0.23.1"
 cap-std.workspace = true
 maka-agent-engine.workspace = true
 maka-assistant.workspace = true
@@ -71,12 +71,12 @@ serde_json.workspace = true
 sha2.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
-tracing = { version = "0.1", default-features = false, features = ["std"] }
+tracing = { version = "0.1.44", default-features = false, features = ["std"] }
 uuid.workspace = true
 
 [dev-dependencies]
-image = { version = "0.25", default-features = false, features = ["png"] }
-tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt"] }
+image = { version = "0.25.10", default-features = false, features = ["png"] }
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt"] }
 maka-computer-native.workspace = true
 maka-computer-use = { workspace = true, features = ["native-desktop"] }
 maka-external-agent.workspace = true

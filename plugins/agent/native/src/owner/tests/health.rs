@@ -84,7 +84,7 @@ mod acceptance {
     use maka_agent_facts::interaction::{InteractionRecord, InteractionRequest};
 
     async fn pending(f: &Fixture, session: &str) -> InteractionRecord {
-        let mut commits = f.session(&session).await.subscribe_commits().unwrap();
+        let mut commits = f.session(session).await.subscribe_commits().unwrap();
         loop {
             if let Some(record) = f
                 .session(session)

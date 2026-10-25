@@ -210,7 +210,12 @@ async fn reassign_bindings(
                     "SELECT id,workspace_json FROM workspace_bindings
                      WHERE owner_scope=? AND json_extract(workspace_json,'$.projectId')=? AND id>?
                      ORDER BY id LIMIT 32",
-                ).bind(owner_scope).bind(project_id).bind(&cursor).fetch_all(&mut *connection).await?;
+                )
+                .bind(owner_scope)
+                .bind(project_id)
+                .bind(&cursor)
+                .fetch_all(&mut *connection)
+                .await?;
                 if rows.is_empty() {
                     break;
                 }

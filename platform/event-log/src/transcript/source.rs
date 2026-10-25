@@ -31,6 +31,15 @@ use maka_agent_ports::session::history::SourceRole;
 use maka_agent_ports::session::history::SourceSegment;
 use sqlx::{Connection, Row};
 
+/// Exact canonical field selection and UTF-8 window for a source read.
+pub struct HistorySourceRead {
+    pub locator: RowPosition,
+    pub field: SourceField,
+    pub path: Option<Vec<SourceSegment>>,
+    pub position: SourcePosition,
+    pub max_bytes: usize,
+}
+
 fn source_sql() -> String {
     format!("WITH original AS (SELECT
     CASE ?4
@@ -101,17 +110,19 @@ impl EventLog {
             .await
     }
     /// Reads one selected immutable canonical field with a bounded UTF-8 body.
-    #[allow(clippy::too_many_arguments)]
     pub async fn history_source(
         &self,
         session: &str,
         through: u64,
-        locator: RowPosition,
-        field: SourceField,
-        path: Option<Vec<SourceSegment>>,
-        position: SourcePosition,
-        max_bytes: usize,
+        source: HistorySourceRead,
     ) -> Result<HistorySource, StoreError> {
+        let HistorySourceRead {
+            locator,
+            field,
+            path,
+            position,
+            max_bytes,
+        } = source;
         self.validate_root()?;
         crate::sessions::validate_id(session)?;
         if !(4..=128 * 1024).contains(&max_bytes) {

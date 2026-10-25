@@ -35,7 +35,6 @@ type Target = {
   key: string;
   position: Position;
   turnId: string;
-  through: number;
 };
 const sameTarget = (left: Target | null, right: Target | null) =>
   left === right ||
@@ -71,7 +70,6 @@ export function FinalActions(props: {
             key: props.ownerKey(),
             position: { ...row.position },
             turnId: row.turnId,
-            through: row.metadataThrough ?? props.through(),
           }
         : null;
     },
@@ -180,7 +178,6 @@ export function FinalActions(props: {
         <TurnUsage
           sessionId={usage()!.sessionId}
           turnId={usage()!.turnId}
-          through={usage()!.through}
           current={() => usage() !== null && owns(usage()!)}
           close={inputAction(closeUsage, usage())}
         />

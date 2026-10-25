@@ -24,4 +24,4 @@ publish.workspace = true
 
 [dependencies]
 maka-agent-ports.workspace = true
-unicode-normalization = "0.1.25"
+unicode-normalization = "0.1.26"

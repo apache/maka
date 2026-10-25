@@ -204,7 +204,7 @@ async fn canonical(
     f: &Fixture,
     session: &str,
 ) -> Result<Vec<maka_agent_facts::event::StoredEvent>, maka_event_log::StoreError> {
-    let through = f.through(&session).await;
+    let through = f.through(session).await;
     let mut after = 0;
     let mut events = Vec::new();
     loop {
@@ -283,7 +283,7 @@ async fn verify(f: &Fixture, session: &str, invocation: &str, pictures: &[Pictur
         }
     }
     assert_eq!((opened, requests, completed, terminal), (1, 1, 1, 1));
-    let through = f.through(&session).await;
+    let through = f.through(session).await;
     let mut input = json!({"sessionId":session,"through":through,"position":{"kind":"start"}});
     let mut user = String::new();
     let mut answer = String::new();
@@ -480,7 +480,7 @@ async fn run_protocol(count: usize, side: u32, options: Options) {
         invocation = Some(sent["invocationId"].as_str().unwrap().to_owned());
         metrics["admission_ms"] = json!(turn.elapsed().as_secs_f64()*1000.0);
         stage.set("model_http");
-        let mut commits = f.session(&session).await.subscribe_commits().unwrap();
+        let mut commits = f.session(session).await.subscribe_commits().unwrap();
         let terminal_failure = async {
             loop {
                 commits.borrow_and_update();

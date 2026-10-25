@@ -475,14 +475,16 @@ impl Handler for Agent {
                             .history_view(
                                 &input.session_id,
                                 through,
-                                input.position,
-                                input.include_thinking,
-                                input.view,
-                                32 * 1024,
-                                (input.view
-                                    == maka_agent_ports::session::history::HistoryView::Text)
-                                    .then_some(8),
-                                64 * 1024,
+                                maka_event_log::transcript::HistoryWindow {
+                                    position: input.position,
+                                    include_thinking: input.include_thinking,
+                                    view: input.view,
+                                    max_bytes: 32 * 1024,
+                                    max_chunks: (input.view
+                                        == maka_agent_ports::session::history::HistoryView::Text)
+                                        .then_some(8),
+                                    max_json_bytes: 64 * 1024,
+                                },
                             )
                             .await
                             .map_err(|_| "agent_history_unavailable")?;
@@ -690,11 +692,13 @@ impl Handler for Agent {
                             .history_source(
                                 &input.session_id,
                                 input.through,
-                                position,
-                                input.field,
-                                input.path,
-                                input.position,
-                                8192,
+                                maka_event_log::transcript::HistorySourceRead {
+                                    locator: position,
+                                    field: input.field,
+                                    path: input.path,
+                                    position: input.position,
+                                    max_bytes: 8192,
+                                },
                             )
                             .await
                             .map_err(|_| "agent_history_unavailable")?;

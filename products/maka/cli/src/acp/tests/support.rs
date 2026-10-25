@@ -28,6 +28,43 @@ use serde_json::{Value, json};
 use std::{collections::BTreeMap, path::PathBuf};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
+// Inspect the real runtime journals without exposing storage partitions in production.
+pub fn journal_databases(database: &std::path::Path) -> Vec<PathBuf> {
+    let mut databases = std::fs::read_dir(database.parent().unwrap().join("runtime-partitions"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "sqlite")
+        })
+        .collect::<Vec<_>>();
+    databases.sort();
+    assert!(
+        !databases.is_empty(),
+        "the real Host must own runtime journals"
+    );
+    databases
+}
+
+pub async fn intent_count(database: &std::path::Path) -> i64 {
+    use sqlx::Connection;
+    let mut count = 0;
+    for journal in journal_databases(database) {
+        let options = sqlx::sqlite::SqliteConnectOptions::new()
+            .filename(journal)
+            .read_only(true);
+        let mut connection = sqlx::SqliteConnection::connect_with(&options)
+            .await
+            .unwrap();
+        count += sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM application_intents")
+            .fetch_one(&mut connection)
+            .await
+            .unwrap();
+        connection.close().await.unwrap();
+    }
+    count
+}
+
 pub fn catalog_transport() -> std::sync::Arc<dyn maka_agent_ports::model::Transport> {
     struct Unavailable;
     impl maka_agent_ports::model::Transport for Unavailable {

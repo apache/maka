@@ -212,7 +212,9 @@ impl EventLog {
 
     fn require_session_scope(expected: Option<&str>, actual: &str) -> Result<(), StoreError> {
         if expected.is_some_and(|expected| expected != actual) {
-            return Err(StoreError::InvalidTransition("foreign Session resource".into()));
+            return Err(StoreError::InvalidTransition(
+                "foreign Session resource".into(),
+            ));
         }
         Ok(())
     }

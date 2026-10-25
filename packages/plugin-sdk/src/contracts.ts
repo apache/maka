@@ -378,12 +378,12 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  text: {
-                    type: 'string',
-                  },
                   kind: {
                     type: 'string',
                     const: 'ready',
+                  },
+                  text: {
+                    type: 'string',
                   },
                 },
                 additionalProperties: false,
@@ -432,6 +432,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'annotated',
+                  },
                   source: {
                     type: 'string',
                   },
@@ -441,10 +445,6 @@ export const contracts = {
                       $ref: '#/$defs/DiffRow',
                     },
                   },
-                  kind: {
-                    type: 'string',
-                    const: 'annotated',
-                  },
                 },
                 additionalProperties: false,
                 required: ['kind', 'source', 'rows'],
@@ -453,6 +453,10 @@ export const contracts = {
                 description: 'Comparisons use complete UTF-8 text without NUL.',
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'comparison',
+                  },
                   before: {
                     type: 'string',
                   },
@@ -461,10 +465,6 @@ export const contracts = {
                   },
                   language: {
                     type: ['string', 'null'],
-                  },
-                  kind: {
-                    type: 'string',
-                    const: 'comparison',
                   },
                 },
                 additionalProperties: false,
@@ -475,6 +475,10 @@ export const contracts = {
                   'Invalid, binary or oversized patches display literally, without diff gutters.',
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'patch',
+                  },
                   source: {
                     type: 'string',
                   },
@@ -483,10 +487,6 @@ export const contracts = {
                   },
                   language: {
                     type: ['string', 'null'],
-                  },
-                  kind: {
-                    type: 'string',
-                    const: 'patch',
                   },
                 },
                 additionalProperties: false,
@@ -1544,6 +1544,10 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
+                  mode: {
+                    type: 'string',
+                    const: 'pipes',
+                  },
                   stdout: {
                     type: 'string',
                   },
@@ -1562,10 +1566,6 @@ export const contracts = {
                   redacted: {
                     type: 'boolean',
                   },
-                  mode: {
-                    type: 'string',
-                    const: 'pipes',
-                  },
                 },
                 required: [
                   'mode',
@@ -1580,6 +1580,10 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
+                  mode: {
+                    type: 'string',
+                    const: 'pty',
+                  },
                   screen: {
                     type: 'string',
                   },
@@ -1612,10 +1616,6 @@ export const contracts = {
                   },
                   redacted: {
                     type: 'boolean',
-                  },
-                  mode: {
-                    type: 'string',
-                    const: 'pty',
                   },
                 },
                 required: [
@@ -1832,15 +1832,15 @@ export const contracts = {
                   type: 'object',
                   additionalProperties: false,
                   properties: {
+                    type: {
+                      type: 'string',
+                      const: 'text',
+                    },
                     text: {
                       type: 'string',
                       minLength: 1,
                       pattern: '^[^\\x00-\\x1f\\x7f-\\x9f]+$',
                     },
-                    type: {
-                      type: 'string',
-                      const: 'text',
-                    },
                   },
                   required: ['type', 'text'],
                 },
@@ -1848,15 +1848,15 @@ export const contracts = {
                   type: 'object',
                   additionalProperties: false,
                   properties: {
+                    type: {
+                      type: 'string',
+                      const: 'paste',
+                    },
                     text: {
                       type: 'string',
                       minLength: 1,
                       pattern: '^[^\\x00-\\x08\\x0b\\x0c\\x0e-\\x1f\\x7f-\\x9f]+$',
                     },
-                    type: {
-                      type: 'string',
-                      const: 'paste',
-                    },
                   },
                   required: ['type', 'text'],
                 },
@@ -1864,6 +1864,10 @@ export const contracts = {
                   type: 'object',
                   additionalProperties: false,
                   properties: {
+                    type: {
+                      type: 'string',
+                      const: 'key',
+                    },
                     key: {
                       type: 'string',
                       pattern:
@@ -1873,10 +1877,6 @@ export const contracts = {
                       $ref: '#/$defs/TerminalModifiers',
                       default: [],
                     },
-                    type: {
-                      type: 'string',
-                      const: 'key',
-                    },
                   },
                   required: ['type', 'key'],
                 },
@@ -1884,6 +1884,10 @@ export const contracts = {
                   type: 'object',
                   additionalProperties: false,
                   properties: {
+                    type: {
+                      type: 'string',
+                      const: 'mouse',
+                    },
                     event: {
                       $ref: '#/$defs/RawEvent',
                     },
@@ -1910,10 +1914,6 @@ export const contracts = {
                     modifiers: {
                       $ref: '#/$defs/TerminalModifiers',
                       default: [],
-                    },
-                    type: {
-                      type: 'string',
-                      const: 'mouse',
                     },
                   },
                   required: ['type', 'event', 'x', 'y'],
@@ -2588,14 +2588,14 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'read',
+                  },
                   sequence: {
                     type: 'integer',
                     format: 'uint64',
                     minimum: 0,
-                  },
-                  kind: {
-                    type: 'string',
-                    const: 'read',
                   },
                 },
                 additionalProperties: false,
@@ -2604,6 +2604,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'write',
+                  },
                   sequence: {
                     type: 'integer',
                     format: 'uint64',
@@ -2615,10 +2619,6 @@ export const contracts = {
                     minimum: 0,
                   },
                   value: true,
-                  kind: {
-                    type: 'string',
-                    const: 'write',
-                  },
                 },
                 additionalProperties: false,
                 required: ['kind', 'sequence', 'value'],
@@ -2672,16 +2672,16 @@ export const contracts = {
                 {
                   type: 'object',
                   properties: {
+                    kind: {
+                      type: 'string',
+                      const: 'ready',
+                    },
                     revision: {
                       type: ['integer', 'null'],
                       format: 'uint64',
                       minimum: 0,
                     },
                     value: true,
-                    kind: {
-                      type: 'string',
-                      const: 'ready',
-                    },
                   },
                   additionalProperties: false,
                   required: ['kind'],
@@ -2689,12 +2689,12 @@ export const contracts = {
                 {
                   type: 'object',
                   properties: {
-                    diagnostic: {
-                      type: 'string',
-                    },
                     kind: {
                       type: 'string',
                       const: 'failed',
+                    },
+                    diagnostic: {
+                      type: 'string',
                     },
                   },
                   additionalProperties: false,
@@ -2778,15 +2778,15 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'write',
+                  },
                   expectedDigest: {
                     type: ['string', 'null'],
                   },
                   text: {
                     type: 'string',
-                  },
-                  kind: {
-                    type: 'string',
-                    const: 'write',
                   },
                 },
                 additionalProperties: false,
@@ -2869,15 +2869,15 @@ export const contracts = {
                 {
                   type: 'object',
                   properties: {
+                    kind: {
+                      type: 'string',
+                      const: 'ready',
+                    },
                     digest: {
                       type: ['string', 'null'],
                     },
                     text: {
                       type: ['string', 'null'],
-                    },
-                    kind: {
-                      type: 'string',
-                      const: 'ready',
                     },
                   },
                   additionalProperties: false,
@@ -2886,12 +2886,12 @@ export const contracts = {
                 {
                   type: 'object',
                   properties: {
-                    error: {
-                      $ref: '#/$defs/TextFileError',
-                    },
                     kind: {
                       type: 'string',
                       const: 'failed',
+                    },
+                    error: {
+                      $ref: '#/$defs/TextFileError',
                     },
                   },
                   additionalProperties: false,
@@ -3061,15 +3061,15 @@ export const contracts = {
                   'Find over native readable descendants, including folded slots. SourceText uses\noriginal literal bytes; Markdown uses its width-independent rendered text.',
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'find',
+                  },
                   query: {
                     type: 'string',
                   },
                   step: {
                     $ref: '#/$defs/FindStep',
-                  },
-                  kind: {
-                    type: 'string',
-                    const: 'find',
                   },
                 },
                 additionalProperties: false,
@@ -3090,13 +3090,13 @@ export const contracts = {
                 description: 'Move the original terminal viewport by physical rows.',
                 type: 'object',
                 properties: {
-                  rows: {
-                    type: 'integer',
-                    format: 'int32',
-                  },
                   kind: {
                     type: 'string',
                     const: 'scroll_rows',
+                  },
+                  rows: {
+                    type: 'integer',
+                    format: 'int32',
                   },
                 },
                 additionalProperties: false,
@@ -3107,6 +3107,10 @@ export const contracts = {
                   "Reveal a UTF-8 byte in the descendant's native readable text, as returned by Find.",
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'reveal_source',
+                  },
                   path: {
                     type: 'array',
                     items: {
@@ -3127,10 +3131,6 @@ export const contracts = {
                     minimum: 0,
                     default: null,
                   },
-                  kind: {
-                    type: 'string',
-                    const: 'reveal_source',
-                  },
                 },
                 additionalProperties: false,
                 required: ['kind', 'path', 'offset'],
@@ -3140,13 +3140,13 @@ export const contracts = {
                   'TUI: focus and minimally reveal an enabled scene Item. Settlement waits\nfor its successful presentation; this never submits the item.',
                 type: 'object',
                 properties: {
-                  key: {
-                    type: 'string',
-                    minLength: 1,
-                  },
                   kind: {
                     type: 'string',
                     const: 'focus_item',
+                  },
+                  key: {
+                    type: 'string',
+                    minLength: 1,
                   },
                 },
                 additionalProperties: false,
@@ -3155,13 +3155,13 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  key: {
-                    type: 'string',
-                    minLength: 1,
-                  },
                   kind: {
                     type: 'string',
                     const: 'reveal_child',
+                  },
+                  key: {
+                    type: 'string',
+                    minLength: 1,
                   },
                 },
                 additionalProperties: false,
@@ -3185,29 +3185,14 @@ export const contracts = {
             {
               type: 'object',
               properties: {
-                key: {
-                  type: 'string',
-                },
-                event: true,
                 kind: {
                   type: 'string',
                   const: 'raw',
                 },
-              },
-              additionalProperties: false,
-              required: ['kind', 'key', 'event'],
-            },
-            {
-              type: 'object',
-              properties: {
                 key: {
                   type: 'string',
                 },
                 event: true,
-                kind: {
-                  type: 'string',
-                  const: 'action',
-                },
               },
               additionalProperties: false,
               required: ['kind', 'key', 'event'],
@@ -3215,6 +3200,25 @@ export const contracts = {
             {
               type: 'object',
               properties: {
+                kind: {
+                  type: 'string',
+                  const: 'action',
+                },
+                key: {
+                  type: 'string',
+                },
+                event: true,
+              },
+              additionalProperties: false,
+              required: ['kind', 'key', 'event'],
+            },
+            {
+              type: 'object',
+              properties: {
+                kind: {
+                  type: 'string',
+                  const: 'component',
+                },
                 key: {
                   type: 'string',
                 },
@@ -3225,10 +3229,6 @@ export const contracts = {
                   type: 'string',
                 },
                 event: true,
-                kind: {
-                  type: 'string',
-                  const: 'component',
-                },
               },
               additionalProperties: false,
               required: ['kind', 'key', 'child', 'name', 'event'],
@@ -4381,15 +4381,15 @@ export const contracts = {
                   'Replace a UTF-16 range in the current revision, preserving its suffix.',
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'replace_range',
+                  },
                   range: {
                     $ref: '#/$defs/TextRange',
                   },
                   text: {
                     type: 'string',
-                  },
-                  kind: {
-                    type: 'string',
-                    const: 'replace_range',
                   },
                 },
                 additionalProperties: false,
@@ -4398,12 +4398,12 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  text: {
-                    type: 'string',
-                  },
                   kind: {
                     type: 'string',
                     const: 'replace',
+                  },
+                  text: {
+                    type: 'string',
                   },
                 },
                 additionalProperties: false,
@@ -4412,12 +4412,12 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  text: {
-                    type: 'string',
-                  },
                   kind: {
                     type: 'string',
                     const: 'reset',
+                  },
+                  text: {
+                    type: 'string',
                   },
                 },
                 additionalProperties: false,
@@ -4428,12 +4428,12 @@ export const contracts = {
                   'Continue initialization after Reset, without creating undo history.\nThe same native owner retains the complete buffer.',
                 type: 'object',
                 properties: {
-                  text: {
-                    type: 'string',
-                  },
                   kind: {
                     type: 'string',
                     const: 'append',
+                  },
+                  text: {
+                    type: 'string',
                   },
                 },
                 additionalProperties: false,
@@ -4713,12 +4713,12 @@ export const contracts = {
                 {
                   type: 'object',
                   properties: {
-                    reason: {
-                      $ref: '#/$defs/EditorConflict',
-                    },
                     status: {
                       type: 'string',
                       const: 'conflict',
+                    },
+                    reason: {
+                      $ref: '#/$defs/EditorConflict',
                     },
                   },
                   additionalProperties: false,
@@ -4770,6 +4770,10 @@ export const contracts = {
                 {
                   type: 'object',
                   properties: {
+                    kind: {
+                      type: 'string',
+                      const: 'restore',
+                    },
                     version: {
                       type: 'integer',
                       format: 'uint64',
@@ -4779,10 +4783,6 @@ export const contracts = {
                       $ref: '#/$defs/EditorSnapshot',
                     },
                     metadata: true,
-                    kind: {
-                      type: 'string',
-                      const: 'restore',
-                    },
                   },
                   additionalProperties: false,
                   required: ['kind', 'version', 'snapshot', 'metadata'],
@@ -4790,15 +4790,15 @@ export const contracts = {
                 {
                   type: 'object',
                   properties: {
+                    kind: {
+                      type: 'string',
+                      const: 'ready',
+                    },
                     saved: {
                       type: 'boolean',
                     },
                     initialized: {
                       type: 'boolean',
-                    },
-                    kind: {
-                      type: 'string',
-                      const: 'ready',
                     },
                   },
                   additionalProperties: false,
@@ -4807,12 +4807,12 @@ export const contracts = {
                 {
                   type: 'object',
                   properties: {
-                    diagnostic: {
-                      type: 'string',
-                    },
                     kind: {
                       type: 'string',
                       const: 'failed',
+                    },
+                    diagnostic: {
+                      type: 'string',
                     },
                   },
                   additionalProperties: false,
@@ -5139,12 +5139,12 @@ export const contracts = {
                 {
                   type: 'object',
                   properties: {
-                    reason: {
-                      $ref: '#/$defs/EditorConflict',
-                    },
                     status: {
                       type: 'string',
                       const: 'conflict',
+                    },
+                    reason: {
+                      $ref: '#/$defs/EditorConflict',
                     },
                   },
                   additionalProperties: false,
@@ -5296,12 +5296,12 @@ export const contracts = {
                 {
                   type: 'object',
                   properties: {
-                    reason: {
-                      $ref: '#/$defs/EditorConflict',
-                    },
                     status: {
                       type: 'string',
                       const: 'conflict',
+                    },
+                    reason: {
+                      $ref: '#/$defs/EditorConflict',
                     },
                   },
                   additionalProperties: false,
@@ -5370,6 +5370,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'at_revision',
+                  },
                   owner: {
                     type: 'string',
                     minLength: 1,
@@ -5378,10 +5382,6 @@ export const contracts = {
                     type: 'integer',
                     format: 'uint64',
                     minimum: 0,
-                  },
-                  kind: {
-                    type: 'string',
-                    const: 'at_revision',
                   },
                 },
                 additionalProperties: false,
@@ -5935,15 +5935,15 @@ export const contracts = {
                   'Replace a UTF-16 range in the current revision, preserving its suffix.',
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'replace_range',
+                  },
                   range: {
                     $ref: '#/$defs/TextRange',
                   },
                   text: {
                     type: 'string',
-                  },
-                  kind: {
-                    type: 'string',
-                    const: 'replace_range',
                   },
                 },
                 additionalProperties: false,
@@ -5952,12 +5952,12 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  text: {
-                    type: 'string',
-                  },
                   kind: {
                     type: 'string',
                     const: 'replace',
+                  },
+                  text: {
+                    type: 'string',
                   },
                 },
                 additionalProperties: false,
@@ -5966,12 +5966,12 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  text: {
-                    type: 'string',
-                  },
                   kind: {
                     type: 'string',
                     const: 'reset',
+                  },
+                  text: {
+                    type: 'string',
                   },
                 },
                 additionalProperties: false,
@@ -5982,12 +5982,12 @@ export const contracts = {
                   'Continue initialization after Reset, without creating undo history.\nThe same native owner retains the complete buffer.',
                 type: 'object',
                 properties: {
-                  text: {
-                    type: 'string',
-                  },
                   kind: {
                     type: 'string',
                     const: 'append',
+                  },
+                  text: {
+                    type: 'string',
                   },
                 },
                 additionalProperties: false,
@@ -6181,12 +6181,12 @@ export const contracts = {
                 {
                   type: 'object',
                   properties: {
-                    reason: {
-                      $ref: '#/$defs/EditorConflict',
-                    },
                     status: {
                       type: 'string',
                       const: 'conflict',
+                    },
+                    reason: {
+                      $ref: '#/$defs/EditorConflict',
                     },
                   },
                   additionalProperties: false,
@@ -6233,6 +6233,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'at_revision',
+                  },
                   owner: {
                     type: 'string',
                     minLength: 1,
@@ -6241,10 +6245,6 @@ export const contracts = {
                     type: 'integer',
                     format: 'uint64',
                     minimum: 0,
-                  },
-                  kind: {
-                    type: 'string',
-                    const: 'at_revision',
                   },
                 },
                 additionalProperties: false,
@@ -6798,15 +6798,15 @@ export const contracts = {
                   'Replace a UTF-16 range in the current revision, preserving its suffix.',
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'replace_range',
+                  },
                   range: {
                     $ref: '#/$defs/TextRange',
                   },
                   text: {
                     type: 'string',
-                  },
-                  kind: {
-                    type: 'string',
-                    const: 'replace_range',
                   },
                 },
                 additionalProperties: false,
@@ -6815,12 +6815,12 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  text: {
-                    type: 'string',
-                  },
                   kind: {
                     type: 'string',
                     const: 'replace',
+                  },
+                  text: {
+                    type: 'string',
                   },
                 },
                 additionalProperties: false,
@@ -6829,12 +6829,12 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  text: {
-                    type: 'string',
-                  },
                   kind: {
                     type: 'string',
                     const: 'reset',
+                  },
+                  text: {
+                    type: 'string',
                   },
                 },
                 additionalProperties: false,
@@ -6845,12 +6845,12 @@ export const contracts = {
                   'Continue initialization after Reset, without creating undo history.\nThe same native owner retains the complete buffer.',
                 type: 'object',
                 properties: {
-                  text: {
-                    type: 'string',
-                  },
                   kind: {
                     type: 'string',
                     const: 'append',
+                  },
+                  text: {
+                    type: 'string',
                   },
                 },
                 additionalProperties: false,
@@ -7044,12 +7044,12 @@ export const contracts = {
                 {
                   type: 'object',
                   properties: {
-                    reason: {
-                      $ref: '#/$defs/EditorConflict',
-                    },
                     status: {
                       type: 'string',
                       const: 'conflict',
+                    },
+                    reason: {
+                      $ref: '#/$defs/EditorConflict',
                     },
                   },
                   additionalProperties: false,
@@ -7096,6 +7096,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'at_revision',
+                  },
                   owner: {
                     type: 'string',
                     minLength: 1,
@@ -7104,10 +7108,6 @@ export const contracts = {
                     type: 'integer',
                     format: 'uint64',
                     minimum: 0,
-                  },
-                  kind: {
-                    type: 'string',
-                    const: 'at_revision',
                   },
                 },
                 additionalProperties: false,
@@ -7162,13 +7162,13 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      id: {
-                        type: 'string',
-                        minLength: 1,
-                      },
                       kind: {
                         type: 'string',
                         const: 'uploaded',
+                      },
+                      id: {
+                        type: 'string',
+                        minLength: 1,
                       },
                     },
                     additionalProperties: false,
@@ -7177,6 +7177,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'history',
+                      },
                       through: {
                         type: 'integer',
                         format: 'uint64',
@@ -7190,10 +7194,6 @@ export const contracts = {
                         type: 'integer',
                         format: 'uint32',
                         minimum: 0,
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'history',
                       },
                     },
                     additionalProperties: false,
@@ -7231,6 +7231,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'ready',
+                  },
                   source: {
                     $ref: '#/$defs/AgentAttachmentImageSource',
                   },
@@ -7259,10 +7263,6 @@ export const contracts = {
                     maxLength: 43692,
                     pattern: '^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$',
                   },
-                  kind: {
-                    type: 'string',
-                    const: 'ready',
-                  },
                 },
                 additionalProperties: false,
                 required: ['kind', 'source', 'offset', 'totalBytes', 'mimeType', 'digest', 'data'],
@@ -7274,13 +7274,13 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      id: {
-                        type: 'string',
-                        minLength: 1,
-                      },
                       kind: {
                         type: 'string',
                         const: 'uploaded',
+                      },
+                      id: {
+                        type: 'string',
+                        minLength: 1,
                       },
                     },
                     additionalProperties: false,
@@ -7289,6 +7289,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'history',
+                      },
                       through: {
                         type: 'integer',
                         format: 'uint64',
@@ -7302,10 +7306,6 @@ export const contracts = {
                         type: 'integer',
                         format: 'uint32',
                         minimum: 0,
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'history',
                       },
                     },
                     additionalProperties: false,
@@ -7387,13 +7387,13 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      cursor: {
-                        type: 'string',
-                        minLength: 1,
-                      },
                       kind: {
                         type: 'string',
                         const: 'at',
+                      },
+                      cursor: {
+                        type: 'string',
+                        minLength: 1,
                       },
                     },
                     additionalProperties: false,
@@ -7402,16 +7402,16 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'after',
+                      },
                       revision: {
                         type: 'string',
                       },
                       cursor: {
                         type: 'string',
                         minLength: 1,
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'after',
                       },
                     },
                     additionalProperties: false,
@@ -7420,16 +7420,16 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'before',
+                      },
                       revision: {
                         type: 'string',
                       },
                       cursor: {
                         type: 'string',
                         minLength: 1,
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'before',
                       },
                     },
                     additionalProperties: false,
@@ -7453,13 +7453,13 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      projectId: {
-                        type: 'string',
-                        format: 'uuid',
-                      },
                       kind: {
                         type: 'string',
                         const: 'project',
+                      },
+                      projectId: {
+                        type: 'string',
+                        format: 'uuid',
                       },
                     },
                     additionalProperties: false,
@@ -7470,13 +7470,13 @@ export const contracts = {
                       'Resolve the exact workspace from an owned session, never a caller path.',
                     type: 'object',
                     properties: {
-                      sessionId: {
-                        type: 'string',
-                        minLength: 1,
-                      },
                       kind: {
                         type: 'string',
                         const: 'workspace',
+                      },
+                      sessionId: {
+                        type: 'string',
+                        minLength: 1,
                       },
                     },
                     additionalProperties: false,
@@ -7646,6 +7646,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'model',
+                      },
                       connectionId: {
                         type: 'string',
                         minLength: 1,
@@ -7664,10 +7668,6 @@ export const contracts = {
                           },
                         ],
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'model',
-                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'connectionId', 'modelId'],
@@ -7675,12 +7675,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      selection: {
-                        $ref: '#/$defs/AgentExecutorSelection',
-                      },
                       kind: {
                         type: 'string',
                         const: 'executor',
+                      },
+                      selection: {
+                        $ref: '#/$defs/AgentExecutorSelection',
                       },
                     },
                     additionalProperties: false,
@@ -7881,6 +7881,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'create',
+                  },
                   sessionId: {
                     type: 'string',
                   },
@@ -7903,10 +7907,6 @@ export const contracts = {
                   approval: {
                     $ref: '#/$defs/AgentGoalApproval',
                   },
-                  kind: {
-                    type: 'string',
-                    const: 'create',
-                  },
                 },
                 additionalProperties: false,
                 required: ['kind', 'sessionId', 'objective', 'maxIterations', 'start', 'approval'],
@@ -7914,6 +7914,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'control',
+                  },
                   sessionId: {
                     type: 'string',
                   },
@@ -7941,10 +7945,6 @@ export const contracts = {
                       },
                     ],
                     default: null,
-                  },
-                  kind: {
-                    type: 'string',
-                    const: 'control',
                   },
                 },
                 additionalProperties: false,
@@ -8146,6 +8146,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'committed',
+                  },
                   goalId: {
                     type: 'string',
                     format: 'uuid',
@@ -8155,10 +8159,6 @@ export const contracts = {
                     format: 'uint64',
                     minimum: 0,
                   },
-                  kind: {
-                    type: 'string',
-                    const: 'committed',
-                  },
                 },
                 additionalProperties: false,
                 required: ['kind', 'goalId', 'revision'],
@@ -8166,14 +8166,14 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'conflict',
+                  },
                   actual: {
                     type: ['integer', 'null'],
                     format: 'uint64',
                     minimum: 0,
-                  },
-                  kind: {
-                    type: 'string',
-                    const: 'conflict',
                   },
                 },
                 additionalProperties: false,
@@ -8182,12 +8182,12 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  reason: {
-                    type: 'string',
-                  },
                   kind: {
                     type: 'string',
                     const: 'rejected',
+                  },
+                  reason: {
+                    type: 'string',
                   },
                 },
                 additionalProperties: false,
@@ -8224,6 +8224,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'approve',
+                      },
                       proposalId: {
                         type: 'string',
                       },
@@ -8235,10 +8239,6 @@ export const contracts = {
                       approval: {
                         $ref: '#/$defs/AgentPlanApproval',
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'approve',
-                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'proposalId', 'proposalRevision', 'approval'],
@@ -8246,13 +8246,13 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      proposalId: {
-                        type: 'string',
-                      },
                       kind: {
                         type: 'string',
                         const: 'revise',
                       },
+                      proposalId: {
+                        type: 'string',
+                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'proposalId'],
@@ -8260,13 +8260,13 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      proposalId: {
-                        type: 'string',
-                      },
                       kind: {
                         type: 'string',
                         const: 'abandon',
                       },
+                      proposalId: {
+                        type: 'string',
+                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'proposalId'],
@@ -8274,15 +8274,15 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'resume',
+                      },
                       executionId: {
                         type: 'string',
                       },
                       approval: {
                         $ref: '#/$defs/AgentPlanApproval',
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'resume',
                       },
                     },
                     additionalProperties: false,
@@ -8291,15 +8291,15 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'cancel',
+                      },
                       executionId: {
                         type: 'string',
                       },
                       reason: {
                         type: 'string',
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'cancel',
                       },
                     },
                     additionalProperties: false,
@@ -8497,14 +8497,14 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'committed',
+                  },
                   revision: {
                     type: 'integer',
                     format: 'uint64',
                     minimum: 0,
-                  },
-                  kind: {
-                    type: 'string',
-                    const: 'committed',
                   },
                 },
                 additionalProperties: false,
@@ -8513,14 +8513,14 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'conflict',
+                  },
                   actual: {
                     type: 'integer',
                     format: 'uint64',
                     minimum: 0,
-                  },
-                  kind: {
-                    type: 'string',
-                    const: 'conflict',
                   },
                 },
                 additionalProperties: false,
@@ -8529,12 +8529,12 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  reason: {
-                    type: 'string',
-                  },
                   kind: {
                     type: 'string',
                     const: 'rejected',
+                  },
+                  reason: {
+                    type: 'string',
                   },
                 },
                 additionalProperties: false,
@@ -8579,12 +8579,12 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  session: {
-                    $ref: '#/$defs/AgentSession',
-                  },
                   kind: {
                     type: 'string',
                     const: 'changed',
+                  },
+                  session: {
+                    $ref: '#/$defs/AgentSession',
                   },
                 },
                 additionalProperties: false,
@@ -8593,12 +8593,12 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  sessionId: {
-                    type: 'string',
-                  },
                   kind: {
                     type: 'string',
                     const: 'removed',
+                  },
+                  sessionId: {
+                    type: 'string',
                   },
                 },
                 additionalProperties: false,
@@ -8607,6 +8607,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'revision_conflict',
+                  },
                   expected: {
                     type: 'integer',
                     format: 'uint64',
@@ -8617,10 +8621,6 @@ export const contracts = {
                     format: 'uint64',
                     minimum: 0,
                   },
-                  kind: {
-                    type: 'string',
-                    const: 'revision_conflict',
-                  },
                 },
                 additionalProperties: false,
                 required: ['kind', 'expected', 'actual'],
@@ -8628,12 +8628,12 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  reason: {
-                    $ref: '#/$defs/AgentRejection',
-                  },
                   kind: {
                     type: 'string',
                     const: 'rejected',
+                  },
+                  reason: {
+                    $ref: '#/$defs/AgentRejection',
                   },
                 },
                 additionalProperties: false,
@@ -8771,6 +8771,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'model',
+                      },
                       connectionId: {
                         type: 'string',
                         minLength: 1,
@@ -8789,10 +8793,6 @@ export const contracts = {
                           },
                         ],
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'model',
-                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'connectionId', 'modelId'],
@@ -8800,12 +8800,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      selection: {
-                        $ref: '#/$defs/AgentExecutorSelection',
-                      },
                       kind: {
                         type: 'string',
                         const: 'executor',
+                      },
+                      selection: {
+                        $ref: '#/$defs/AgentExecutorSelection',
                       },
                     },
                     additionalProperties: false,
@@ -9175,12 +9175,12 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  execution: {
-                    $ref: '#/$defs/AgentExecution',
-                  },
                   kind: {
                     type: 'string',
                     const: 'started',
+                  },
+                  execution: {
+                    $ref: '#/$defs/AgentExecution',
                   },
                 },
                 additionalProperties: false,
@@ -9189,12 +9189,12 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  reason: {
-                    $ref: '#/$defs/AgentCompactRejection',
-                  },
                   kind: {
                     type: 'string',
                     const: 'rejected',
+                  },
+                  reason: {
+                    $ref: '#/$defs/AgentCompactRejection',
                   },
                 },
                 additionalProperties: false,
@@ -9559,12 +9559,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      selection: {
-                        $ref: '#/$defs/AgentDirectorySelection',
-                      },
                       kind: {
                         type: 'string',
                         const: 'isolated_git',
+                      },
+                      selection: {
+                        $ref: '#/$defs/AgentDirectorySelection',
                       },
                     },
                     additionalProperties: false,
@@ -9573,15 +9573,15 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'project',
+                      },
                       project: {
                         $ref: '#/$defs/AgentProjectRef',
                       },
                       selection: {
                         $ref: '#/$defs/AgentDirectorySelection',
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'project',
                       },
                     },
                     additionalProperties: false,
@@ -9590,12 +9590,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      selection: {
-                        $ref: '#/$defs/AgentDirectorySelection',
-                      },
                       kind: {
                         type: 'string',
                         const: 'directory',
+                      },
+                      selection: {
+                        $ref: '#/$defs/AgentDirectorySelection',
                       },
                     },
                     additionalProperties: false,
@@ -9604,13 +9604,13 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      sessionId: {
-                        type: 'string',
-                        minLength: 1,
-                      },
                       kind: {
                         type: 'string',
                         const: 'session',
+                      },
+                      sessionId: {
+                        type: 'string',
+                        minLength: 1,
                       },
                     },
                     additionalProperties: false,
@@ -9663,12 +9663,12 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  session: {
-                    $ref: '#/$defs/AgentSession',
-                  },
                   kind: {
                     type: 'string',
                     const: 'created',
+                  },
+                  session: {
+                    $ref: '#/$defs/AgentSession',
                   },
                 },
                 additionalProperties: false,
@@ -9677,12 +9677,12 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  reason: {
-                    $ref: '#/$defs/AgentRejection',
-                  },
                   kind: {
                     type: 'string',
                     const: 'rejected',
+                  },
+                  reason: {
+                    $ref: '#/$defs/AgentRejection',
                   },
                 },
                 additionalProperties: false,
@@ -9820,6 +9820,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'model',
+                      },
                       connectionId: {
                         type: 'string',
                         minLength: 1,
@@ -9838,10 +9842,6 @@ export const contracts = {
                           },
                         ],
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'model',
-                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'connectionId', 'modelId'],
@@ -9849,12 +9849,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      selection: {
-                        $ref: '#/$defs/AgentExecutorSelection',
-                      },
                       kind: {
                         type: 'string',
                         const: 'executor',
+                      },
+                      selection: {
+                        $ref: '#/$defs/AgentExecutorSelection',
                       },
                     },
                     additionalProperties: false,
@@ -10094,6 +10094,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'before',
+                      },
                       through: {
                         type: 'integer',
                         format: 'uint64',
@@ -10105,10 +10109,6 @@ export const contracts = {
                         format: 'uint64',
                         minimum: 1,
                         maximum: 9007199254740991,
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'before',
                       },
                     },
                     additionalProperties: false,
@@ -10170,6 +10170,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'execution',
+                      },
                       invocation: {
                         $ref: '#/$defs/Invocation',
                       },
@@ -10186,10 +10190,6 @@ export const contracts = {
                           },
                         ],
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'execution',
-                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'invocation', 'reason'],
@@ -10197,6 +10197,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'model_step',
+                      },
                       invocation: {
                         $ref: '#/$defs/Invocation',
                       },
@@ -10216,10 +10220,6 @@ export const contracts = {
                           },
                         ],
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'model_step',
-                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'invocation', 'stepId', 'status'],
@@ -10227,15 +10227,15 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'session_title',
+                      },
                       invocation: {
                         $ref: '#/$defs/Invocation',
                       },
                       cause: {
                         $ref: '#/$defs/TitleFailureCause',
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'session_title',
                       },
                     },
                     additionalProperties: false,
@@ -10293,15 +10293,15 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'http',
+                      },
                       status: {
                         type: 'integer',
                         format: 'uint16',
                         minimum: 100,
                         maximum: 599,
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'http',
                       },
                     },
                     additionalProperties: false,
@@ -10332,12 +10332,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      reason: {
-                        $ref: '#/$defs/ProviderFailureReason',
-                      },
                       kind: {
                         type: 'string',
                         const: 'provider',
+                      },
+                      reason: {
+                        $ref: '#/$defs/ProviderFailureReason',
                       },
                     },
                     additionalProperties: false,
@@ -10396,12 +10396,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      cause: {
-                        $ref: '#/$defs/ModelFailureCause',
-                      },
                       kind: {
                         type: 'string',
                         const: 'model',
+                      },
+                      cause: {
+                        $ref: '#/$defs/ModelFailureCause',
                       },
                     },
                     additionalProperties: false,
@@ -10466,15 +10466,15 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'children',
+                  },
                   selection: {
                     $ref: '#/$defs/AgentDirectorySelection',
                   },
                   after: {
                     type: ['string', 'null'],
-                  },
-                  kind: {
-                    type: 'string',
-                    const: 'children',
                   },
                 },
                 additionalProperties: false,
@@ -10512,15 +10512,15 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'roots',
+                  },
                   roots: {
                     type: 'array',
                     items: {
                       $ref: '#/$defs/AgentDirectory',
                     },
-                  },
-                  kind: {
-                    type: 'string',
-                    const: 'roots',
                   },
                 },
                 additionalProperties: false,
@@ -10529,6 +10529,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'children',
+                  },
                   directory: {
                     $ref: '#/$defs/AgentDirectory',
                   },
@@ -10541,10 +10545,6 @@ export const contracts = {
                   },
                   after: {
                     type: ['string', 'null'],
-                  },
-                  kind: {
-                    type: 'string',
-                    const: 'children',
                   },
                 },
                 additionalProperties: false,
@@ -10622,28 +10622,28 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      messageId: {
-                        type: 'string',
-                        minLength: 1,
-                      },
                       kind: {
                         type: 'string',
                         const: 'retract',
                       },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'messageId'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
                       messageId: {
                         type: 'string',
                         minLength: 1,
                       },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'messageId'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
                       kind: {
                         type: 'string',
                         const: 'promote',
+                      },
+                      messageId: {
+                        type: 'string',
+                        minLength: 1,
                       },
                     },
                     additionalProperties: false,
@@ -10652,16 +10652,16 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'update',
+                      },
                       messageId: {
                         type: 'string',
                         minLength: 1,
                       },
                       message: {
                         type: 'string',
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'update',
                       },
                     },
                     additionalProperties: false,
@@ -10670,16 +10670,16 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'reorder',
+                      },
                       messageIds: {
                         type: 'array',
                         items: {
                           type: 'string',
                         },
                         minItems: 1,
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'reorder',
                       },
                     },
                     additionalProperties: false,
@@ -10696,14 +10696,14 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'committed',
+                  },
                   revision: {
                     type: 'integer',
                     format: 'uint64',
                     minimum: 0,
-                  },
-                  kind: {
-                    type: 'string',
-                    const: 'committed',
                   },
                 },
                 additionalProperties: false,
@@ -10712,6 +10712,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'revision_conflict',
+                  },
                   expected: {
                     type: 'integer',
                     format: 'uint64',
@@ -10722,10 +10726,6 @@ export const contracts = {
                     format: 'uint64',
                     minimum: 0,
                   },
-                  kind: {
-                    type: 'string',
-                    const: 'revision_conflict',
-                  },
                 },
                 additionalProperties: false,
                 required: ['kind', 'expected', 'actual'],
@@ -10733,12 +10733,12 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  reason: {
-                    $ref: '#/$defs/AgentQueueRejection',
-                  },
                   kind: {
                     type: 'string',
                     const: 'rejected',
+                  },
+                  reason: {
+                    $ref: '#/$defs/AgentQueueRejection',
                   },
                 },
                 additionalProperties: false,
@@ -10839,6 +10839,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'rejected',
+                  },
                   sessionId: {
                     type: 'string',
                   },
@@ -10855,10 +10859,6 @@ export const contracts = {
                       },
                     ],
                   },
-                  kind: {
-                    type: 'string',
-                    const: 'rejected',
-                  },
                 },
                 additionalProperties: false,
                 required: ['kind', 'sessionId', 'reason'],
@@ -10866,6 +10866,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'started',
+                  },
                   sessionId: {
                     type: 'string',
                   },
@@ -10875,10 +10879,6 @@ export const contracts = {
                   messageId: {
                     type: 'string',
                   },
-                  kind: {
-                    type: 'string',
-                    const: 'started',
-                  },
                 },
                 additionalProperties: false,
                 required: ['kind', 'sessionId', 'invocationId', 'messageId'],
@@ -10886,6 +10886,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'queued',
+                  },
                   sessionId: {
                     type: 'string',
                   },
@@ -10896,10 +10900,6 @@ export const contracts = {
                     type: 'integer',
                     format: 'uint64',
                     minimum: 0,
-                  },
-                  kind: {
-                    type: 'string',
-                    const: 'queued',
                   },
                 },
                 additionalProperties: false,
@@ -11101,12 +11101,12 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  execution: {
-                    $ref: '#/$defs/AgentExecution',
-                  },
                   kind: {
                     type: 'string',
                     const: 'found',
+                  },
+                  execution: {
+                    $ref: '#/$defs/AgentExecution',
                   },
                 },
                 additionalProperties: false,
@@ -11195,13 +11195,13 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
-                      methodId: {
-                        type: 'string',
-                        minLength: 1,
-                      },
                       kind: {
                         type: 'string',
                         const: 'authenticate',
+                      },
+                      methodId: {
+                        type: 'string',
+                        minLength: 1,
                       },
                     },
                     required: ['kind', 'methodId'],
@@ -11216,6 +11216,10 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'checked',
+                  },
                   info: {
                     anyOf: [
                       {
@@ -11231,10 +11235,6 @@ export const contracts = {
                     items: {
                       $ref: '#/$defs/ExecutorAuthenticationMethod',
                     },
-                  },
-                  kind: {
-                    type: 'string',
-                    const: 'checked',
                   },
                 },
                 required: ['kind', 'methods'],
@@ -11254,12 +11254,12 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  diagnostic: {
-                    type: 'string',
-                  },
                   kind: {
                     type: 'string',
                     const: 'unresolved',
+                  },
+                  diagnostic: {
+                    type: 'string',
                   },
                 },
                 required: ['kind', 'diagnostic'],
@@ -11315,12 +11315,12 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  url: {
-                    type: 'string',
-                  },
                   kind: {
                     type: 'string',
                     const: 'authorization_url',
+                  },
+                  url: {
+                    type: 'string',
                   },
                 },
                 required: ['kind', 'url'],
@@ -11508,12 +11508,12 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  session: {
-                    $ref: '#/$defs/AgentSession',
-                  },
                   kind: {
                     type: 'string',
                     const: 'forked',
+                  },
+                  session: {
+                    $ref: '#/$defs/AgentSession',
                   },
                 },
                 additionalProperties: false,
@@ -11522,6 +11522,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'revision_conflict',
+                  },
                   expected: {
                     type: 'integer',
                     format: 'uint64',
@@ -11532,10 +11536,6 @@ export const contracts = {
                     format: 'uint64',
                     minimum: 0,
                   },
-                  kind: {
-                    type: 'string',
-                    const: 'revision_conflict',
-                  },
                 },
                 additionalProperties: false,
                 required: ['kind', 'expected', 'actual'],
@@ -11543,12 +11543,12 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  reason: {
-                    $ref: '#/$defs/AgentRejection',
-                  },
                   kind: {
                     type: 'string',
                     const: 'rejected',
+                  },
+                  reason: {
+                    $ref: '#/$defs/AgentRejection',
                   },
                 },
                 additionalProperties: false,
@@ -11686,6 +11686,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'model',
+                      },
                       connectionId: {
                         type: 'string',
                         minLength: 1,
@@ -11704,10 +11708,6 @@ export const contracts = {
                           },
                         ],
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'model',
-                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'connectionId', 'modelId'],
@@ -11715,12 +11715,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      selection: {
-                        $ref: '#/$defs/AgentExecutorSelection',
-                      },
                       kind: {
                         type: 'string',
                         const: 'executor',
+                      },
+                      selection: {
+                        $ref: '#/$defs/AgentExecutorSelection',
                       },
                     },
                     additionalProperties: false,
@@ -12195,6 +12195,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'model',
+                      },
                       connectionId: {
                         type: 'string',
                         minLength: 1,
@@ -12213,10 +12217,6 @@ export const contracts = {
                           },
                         ],
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'model',
-                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'connectionId', 'modelId'],
@@ -12224,12 +12224,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      selection: {
-                        $ref: '#/$defs/AgentExecutorSelection',
-                      },
                       kind: {
                         type: 'string',
                         const: 'executor',
+                      },
+                      selection: {
+                        $ref: '#/$defs/AgentExecutorSelection',
                       },
                     },
                     additionalProperties: false,
@@ -12470,6 +12470,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'pending',
+                  },
                   operationId: {
                     type: 'string',
                     format: 'uuid',
@@ -12479,10 +12483,6 @@ export const contracts = {
                     format: 'uint64',
                     minimum: 0,
                   },
-                  kind: {
-                    type: 'string',
-                    const: 'pending',
-                  },
                 },
                 additionalProperties: false,
                 required: ['kind', 'operationId', 'through'],
@@ -12490,6 +12490,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'ready',
+                  },
                   operationId: {
                     type: 'string',
                     format: 'uuid',
@@ -12505,10 +12509,6 @@ export const contracts = {
                   modelId: {
                     type: 'string',
                   },
-                  kind: {
-                    type: 'string',
-                    const: 'ready',
-                  },
                 },
                 additionalProperties: false,
                 required: ['kind', 'operationId', 'through', 'text', 'modelId'],
@@ -12516,6 +12516,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'failed',
+                  },
                   operationId: {
                     type: 'string',
                     format: 'uuid',
@@ -12527,10 +12531,6 @@ export const contracts = {
                   },
                   reason: {
                     $ref: '#/$defs/AgentRecapFailure',
-                  },
-                  kind: {
-                    type: 'string',
-                    const: 'failed',
                   },
                 },
                 additionalProperties: false,
@@ -12599,12 +12599,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      patch: {
-                        type: 'string',
-                      },
                       kind: {
                         type: 'string',
                         const: 'text',
+                      },
+                      patch: {
+                        type: 'string',
                       },
                     },
                     additionalProperties: false,
@@ -12745,6 +12745,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'available',
+                  },
                   source: {
                     $ref: '#/$defs/AgentGlobalInstructionSource',
                   },
@@ -12759,10 +12763,6 @@ export const contracts = {
                   },
                   exists: {
                     type: 'boolean',
-                  },
-                  kind: {
-                    type: 'string',
-                    const: 'available',
                   },
                 },
                 additionalProperties: false,
@@ -13078,6 +13078,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'committed',
+                      },
                       goalId: {
                         type: 'string',
                         format: 'uuid',
@@ -13087,10 +13091,6 @@ export const contracts = {
                         format: 'uint64',
                         minimum: 0,
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'committed',
-                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'goalId', 'revision'],
@@ -13098,14 +13098,14 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'conflict',
+                      },
                       actual: {
                         type: ['integer', 'null'],
                         format: 'uint64',
                         minimum: 0,
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'conflict',
                       },
                     },
                     additionalProperties: false,
@@ -13114,12 +13114,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      reason: {
-                        type: 'string',
-                      },
                       kind: {
                         type: 'string',
                         const: 'rejected',
+                      },
+                      reason: {
+                        type: 'string',
                       },
                     },
                     additionalProperties: false,
@@ -13194,15 +13194,15 @@ export const contracts = {
                       'Reveal this exact row field from its beginning, including empty tool rows.',
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'row',
+                      },
                       position: {
                         $ref: '#/$defs/HistoryRowPosition',
                       },
                       field: {
                         $ref: '#/$defs/HistoryField',
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'row',
                       },
                     },
                     additionalProperties: false,
@@ -13211,12 +13211,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      cursor: {
-                        $ref: '#/$defs/Cursor',
-                      },
                       kind: {
                         type: 'string',
                         const: 'before',
+                      },
+                      cursor: {
+                        $ref: '#/$defs/Cursor',
                       },
                     },
                     additionalProperties: false,
@@ -13225,12 +13225,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      cursor: {
-                        $ref: '#/$defs/Cursor',
-                      },
                       kind: {
                         type: 'string',
                         const: 'after',
+                      },
+                      cursor: {
+                        $ref: '#/$defs/Cursor',
                       },
                     },
                     additionalProperties: false,
@@ -13241,15 +13241,15 @@ export const contracts = {
                       'Locate canonical output at an execution event, including sparse rows.',
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'event',
+                      },
                       sequence: {
                         type: 'integer',
                         format: 'uint64',
                         minimum: 1,
                         maximum: 9007199254740991,
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'event',
                       },
                     },
                     additionalProperties: false,
@@ -13320,6 +13320,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'ready',
+                  },
                   through: {
                     type: 'integer',
                     format: 'uint64',
@@ -13350,10 +13354,6 @@ export const contracts = {
                         type: 'null',
                       },
                     ],
-                  },
-                  kind: {
-                    type: 'string',
-                    const: 'ready',
                   },
                 },
                 additionalProperties: false,
@@ -13481,15 +13481,15 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'native',
+                      },
                       requestedModelId: {
                         type: 'string',
                       },
                       reportedModelId: {
                         type: ['string', 'null'],
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'native',
                       },
                     },
                     additionalProperties: false,
@@ -13498,12 +13498,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      modelId: {
-                        type: 'string',
-                      },
                       kind: {
                         type: 'string',
                         const: 'imported',
+                      },
+                      modelId: {
+                        type: 'string',
                       },
                     },
                     additionalProperties: false,
@@ -13518,12 +13518,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      taskId: {
-                        type: 'string',
-                      },
                       kind: {
                         type: 'string',
                         const: 'workhub_task',
+                      },
+                      taskId: {
+                        type: 'string',
                       },
                     },
                     additionalProperties: false,
@@ -13532,12 +13532,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      graphId: {
-                        type: 'string',
-                      },
                       kind: {
                         type: 'string',
                         const: 'workhub_graph',
+                      },
+                      graphId: {
+                        type: 'string',
                       },
                     },
                     additionalProperties: false,
@@ -14028,6 +14028,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'save_source',
+                  },
                   revision: {
                     type: 'integer',
                     format: 'uint64',
@@ -14045,10 +14049,6 @@ export const contracts = {
                   location: {
                     $ref: '#/$defs/AgentImportLocation',
                   },
-                  kind: {
-                    type: 'string',
-                    const: 'save_source',
-                  },
                 },
                 additionalProperties: false,
                 required: ['kind', 'revision', 'id', 'name', 'location'],
@@ -14056,6 +14056,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'remove_source',
+                  },
                   revision: {
                     type: 'integer',
                     format: 'uint64',
@@ -14066,10 +14070,6 @@ export const contracts = {
                     type: 'string',
                     format: 'uuid',
                   },
-                  kind: {
-                    type: 'string',
-                    const: 'remove_source',
-                  },
                 },
                 additionalProperties: false,
                 required: ['kind', 'revision', 'id'],
@@ -14077,6 +14077,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'copy',
+                  },
                   selection: {
                     $ref: '#/$defs/AgentImportSelection',
                   },
@@ -14086,10 +14090,6 @@ export const contracts = {
                   title: {
                     type: 'string',
                     minLength: 1,
-                  },
-                  kind: {
-                    type: 'string',
-                    const: 'copy',
                   },
                 },
                 additionalProperties: false,
@@ -14102,13 +14102,13 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      directory: {
-                        $ref: '#/$defs/AgentDirectorySelection',
-                      },
                       kind: {
                         type: 'string',
                         const: 'codex',
                       },
+                      directory: {
+                        $ref: '#/$defs/AgentDirectorySelection',
+                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'directory'],
@@ -14116,13 +14116,13 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      directory: {
-                        $ref: '#/$defs/AgentDirectorySelection',
-                      },
                       kind: {
                         type: 'string',
                         const: 'claude_code',
                       },
+                      directory: {
+                        $ref: '#/$defs/AgentDirectorySelection',
+                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'directory'],
@@ -14130,16 +14130,16 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'open_code',
+                      },
                       directory: {
                         $ref: '#/$defs/AgentDirectorySelection',
                       },
                       database: {
                         type: 'string',
                         minLength: 1,
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'open_code',
                       },
                     },
                     additionalProperties: false,
@@ -14226,6 +14226,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'sources',
+                  },
                   revision: {
                     type: 'integer',
                     format: 'uint64',
@@ -14237,10 +14241,6 @@ export const contracts = {
                       $ref: '#/$defs/AgentImportSource',
                     },
                   },
-                  kind: {
-                    type: 'string',
-                    const: 'sources',
-                  },
                 },
                 additionalProperties: false,
                 required: ['kind', 'revision', 'sources'],
@@ -14248,12 +14248,12 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  session: {
-                    $ref: '#/$defs/AgentSession',
-                  },
                   kind: {
                     type: 'string',
                     const: 'imported',
+                  },
+                  session: {
+                    $ref: '#/$defs/AgentSession',
                   },
                 },
                 additionalProperties: false,
@@ -14332,13 +14332,13 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      directory: {
-                        $ref: '#/$defs/AgentDirectorySelection',
-                      },
                       kind: {
                         type: 'string',
                         const: 'codex',
                       },
+                      directory: {
+                        $ref: '#/$defs/AgentDirectorySelection',
+                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'directory'],
@@ -14346,13 +14346,13 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      directory: {
-                        $ref: '#/$defs/AgentDirectorySelection',
-                      },
                       kind: {
                         type: 'string',
                         const: 'claude_code',
                       },
+                      directory: {
+                        $ref: '#/$defs/AgentDirectorySelection',
+                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'directory'],
@@ -14360,16 +14360,16 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'open_code',
+                      },
                       directory: {
                         $ref: '#/$defs/AgentDirectorySelection',
                       },
                       database: {
                         type: 'string',
                         minLength: 1,
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'open_code',
                       },
                     },
                     additionalProperties: false,
@@ -14528,6 +14528,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'model',
+                      },
                       connectionId: {
                         type: 'string',
                         minLength: 1,
@@ -14546,10 +14550,6 @@ export const contracts = {
                           },
                         ],
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'model',
-                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'connectionId', 'modelId'],
@@ -14557,12 +14557,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      selection: {
-                        $ref: '#/$defs/AgentExecutorSelection',
-                      },
                       kind: {
                         type: 'string',
                         const: 'executor',
+                      },
+                      selection: {
+                        $ref: '#/$defs/AgentExecutorSelection',
                       },
                     },
                     additionalProperties: false,
@@ -14774,15 +14774,15 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'children',
+                  },
                   selection: {
                     $ref: '#/$defs/AgentDirectorySelection',
                   },
                   after: {
                     type: ['string', 'null'],
-                  },
-                  kind: {
-                    type: 'string',
-                    const: 'children',
                   },
                 },
                 additionalProperties: false,
@@ -14820,15 +14820,15 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'roots',
+                  },
                   roots: {
                     type: 'array',
                     items: {
                       $ref: '#/$defs/AgentDirectory',
                     },
-                  },
-                  kind: {
-                    type: 'string',
-                    const: 'roots',
                   },
                 },
                 additionalProperties: false,
@@ -14837,6 +14837,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'children',
+                  },
                   directory: {
                     $ref: '#/$defs/AgentDirectory',
                   },
@@ -14849,10 +14853,6 @@ export const contracts = {
                   },
                   after: {
                     type: ['string', 'null'],
-                  },
-                  kind: {
-                    type: 'string',
-                    const: 'children',
                   },
                 },
                 additionalProperties: false,
@@ -14921,15 +14921,15 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'catalog',
+                  },
                   source: {
                     $ref: '#/$defs/AgentImportSourceRef',
                   },
                   query: {
                     $ref: '#/$defs/AgentImportQuery',
-                  },
-                  kind: {
-                    type: 'string',
-                    const: 'catalog',
                   },
                 },
                 additionalProperties: false,
@@ -14938,6 +14938,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'preview',
+                  },
                   source: {
                     $ref: '#/$defs/AgentImportSourceRef',
                   },
@@ -14953,10 +14957,6 @@ export const contracts = {
                     minimum: 0,
                     maximum: 9007199254740991,
                   },
-                  kind: {
-                    type: 'string',
-                    const: 'preview',
-                  },
                 },
                 additionalProperties: false,
                 required: ['kind', 'source', 'entry', 'digest', 'after'],
@@ -14964,12 +14964,12 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  after: {
-                    type: ['string', 'null'],
-                  },
                   kind: {
                     type: 'string',
                     const: 'copies',
+                  },
+                  after: {
+                    type: ['string', 'null'],
                   },
                 },
                 additionalProperties: false,
@@ -15034,6 +15034,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'sources',
+                  },
                   revision: {
                     type: 'integer',
                     format: 'uint64',
@@ -15045,10 +15049,6 @@ export const contracts = {
                       $ref: '#/$defs/AgentImportSource',
                     },
                   },
-                  kind: {
-                    type: 'string',
-                    const: 'sources',
-                  },
                 },
                 additionalProperties: false,
                 required: ['kind', 'revision', 'sources'],
@@ -15056,6 +15056,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'catalog',
+                  },
                   source: {
                     $ref: '#/$defs/AgentImportSourceRef',
                   },
@@ -15069,10 +15073,6 @@ export const contracts = {
                   next: {
                     type: ['string', 'null'],
                   },
-                  kind: {
-                    type: 'string',
-                    const: 'catalog',
-                  },
                 },
                 additionalProperties: false,
                 required: ['kind', 'source', 'entries', 'next'],
@@ -15080,12 +15080,12 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  preview: {
-                    $ref: '#/$defs/AgentImportPreview',
-                  },
                   kind: {
                     type: 'string',
                     const: 'preview',
+                  },
+                  preview: {
+                    $ref: '#/$defs/AgentImportPreview',
                   },
                 },
                 additionalProperties: false,
@@ -15094,6 +15094,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'copies',
+                  },
                   sessions: {
                     type: 'array',
                     items: {
@@ -15103,10 +15107,6 @@ export const contracts = {
                   },
                   next: {
                     type: ['string', 'null'],
-                  },
-                  kind: {
-                    type: 'string',
-                    const: 'copies',
                   },
                 },
                 additionalProperties: false,
@@ -15185,13 +15185,13 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      directory: {
-                        $ref: '#/$defs/AgentDirectorySelection',
-                      },
                       kind: {
                         type: 'string',
                         const: 'codex',
                       },
+                      directory: {
+                        $ref: '#/$defs/AgentDirectorySelection',
+                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'directory'],
@@ -15199,13 +15199,13 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      directory: {
-                        $ref: '#/$defs/AgentDirectorySelection',
-                      },
                       kind: {
                         type: 'string',
                         const: 'claude_code',
                       },
+                      directory: {
+                        $ref: '#/$defs/AgentDirectorySelection',
+                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'directory'],
@@ -15213,16 +15213,16 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'open_code',
+                      },
                       directory: {
                         $ref: '#/$defs/AgentDirectorySelection',
                       },
                       database: {
                         type: 'string',
                         minLength: 1,
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'open_code',
                       },
                     },
                     additionalProperties: false,
@@ -15533,6 +15533,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'model',
+                      },
                       connectionId: {
                         type: 'string',
                         minLength: 1,
@@ -15551,10 +15555,6 @@ export const contracts = {
                           },
                         ],
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'model',
-                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'connectionId', 'modelId'],
@@ -15562,12 +15562,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      selection: {
-                        $ref: '#/$defs/AgentExecutorSelection',
-                      },
                       kind: {
                         type: 'string',
                         const: 'executor',
+                      },
+                      selection: {
+                        $ref: '#/$defs/AgentExecutorSelection',
                       },
                     },
                     additionalProperties: false,
@@ -15832,6 +15832,10 @@ export const contracts = {
                       'Consent for one already journaled service call; never a service grant.',
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'service_approval',
+                      },
                       toolUseId: {
                         type: 'string',
                       },
@@ -15852,10 +15856,6 @@ export const contracts = {
                         format: 'uint64',
                         minimum: 0,
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'service_approval',
-                      },
                     },
                     additionalProperties: false,
                     required: [
@@ -15871,6 +15871,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'permissions',
+                      },
                       toolUseId: {
                         type: ['string', 'null'],
                       },
@@ -15880,10 +15884,6 @@ export const contracts = {
                       request: {
                         $ref: '#/$defs/PermissionRequest',
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'permissions',
-                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'toolUseId', 'basis', 'request'],
@@ -15891,6 +15891,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'question',
+                      },
                       toolUseId: {
                         type: 'string',
                       },
@@ -15900,10 +15904,6 @@ export const contracts = {
                           $ref: '#/$defs/InteractionQuestion',
                         },
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'question',
-                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'toolUseId', 'questions'],
@@ -15911,6 +15911,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'form',
+                      },
                       toolUseId: {
                         type: 'string',
                       },
@@ -15926,10 +15930,6 @@ export const contracts = {
                           $ref: '#/$defs/FormField',
                         },
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'form',
-                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'toolUseId', 'message', 'requester', 'fields'],
@@ -15937,6 +15937,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'client_capability',
+                      },
                       toolUseId: {
                         type: 'string',
                       },
@@ -15954,10 +15958,6 @@ export const contracts = {
                             type: 'null',
                           },
                         ],
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'client_capability',
                       },
                     },
                     additionalProperties: false,
@@ -16197,6 +16197,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'string',
+                      },
                       default: {
                         type: ['string', 'null'],
                       },
@@ -16220,38 +16224,16 @@ export const contracts = {
                           },
                         ],
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'string',
-                      },
                     },
                     required: ['kind'],
                   },
                   {
                     type: 'object',
                     properties: {
-                      default: {
-                        type: ['number', 'null'],
-                        format: 'double',
-                      },
-                      minimum: {
-                        type: ['number', 'null'],
-                        format: 'double',
-                      },
-                      maximum: {
-                        type: ['number', 'null'],
-                        format: 'double',
-                      },
                       kind: {
                         type: 'string',
                         const: 'number',
                       },
-                    },
-                    required: ['kind'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
                       default: {
                         type: ['number', 'null'],
                         format: 'double',
@@ -16264,29 +16246,51 @@ export const contracts = {
                         type: ['number', 'null'],
                         format: 'double',
                       },
+                    },
+                    required: ['kind'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
                       kind: {
                         type: 'string',
                         const: 'integer',
                       },
+                      default: {
+                        type: ['number', 'null'],
+                        format: 'double',
+                      },
+                      minimum: {
+                        type: ['number', 'null'],
+                        format: 'double',
+                      },
+                      maximum: {
+                        type: ['number', 'null'],
+                        format: 'double',
+                      },
                     },
                     required: ['kind'],
                   },
                   {
                     type: 'object',
                     properties: {
-                      default: {
-                        type: ['boolean', 'null'],
-                      },
                       kind: {
                         type: 'string',
                         const: 'boolean',
                       },
+                      default: {
+                        type: ['boolean', 'null'],
+                      },
                     },
                     required: ['kind'],
                   },
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'single_select',
+                      },
                       options: {
                         type: 'array',
                         items: {
@@ -16296,16 +16300,16 @@ export const contracts = {
                       default: {
                         type: ['string', 'null'],
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'single_select',
-                      },
                     },
                     required: ['kind', 'options'],
                   },
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'multi_select',
+                      },
                       options: {
                         type: 'array',
                         items: {
@@ -16327,10 +16331,6 @@ export const contracts = {
                         type: ['integer', 'null'],
                         format: 'uint',
                         minimum: 0,
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'multi_select',
                       },
                     },
                     required: ['kind', 'options'],
@@ -16394,12 +16394,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      origin: {
-                        type: 'string',
-                      },
                       kind: {
                         type: 'string',
                         const: 'browser_origin',
+                      },
+                      origin: {
+                        type: 'string',
                       },
                     },
                     additionalProperties: false,
@@ -16419,15 +16419,15 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'mcp_tool',
+                      },
                       serverId: {
                         type: 'string',
                       },
                       toolName: {
                         type: 'string',
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'mcp_tool',
                       },
                     },
                     additionalProperties: false,
@@ -16440,6 +16440,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'service_approval_decision',
+                      },
                       decision: {
                         $ref: '#/$defs/Decision',
                       },
@@ -16448,10 +16452,6 @@ export const contracts = {
                         format: 'uint64',
                         minimum: 0,
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'service_approval_decision',
-                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'decision', 'committedAt'],
@@ -16459,6 +16459,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'permissions_decision',
+                      },
                       decision: {
                         $ref: '#/$defs/Decision2',
                       },
@@ -16467,10 +16471,6 @@ export const contracts = {
                         format: 'uint64',
                         minimum: 0,
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'permissions_decision',
-                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'decision', 'committedAt'],
@@ -16478,6 +16478,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'question_answer',
+                      },
                       answers: {
                         type: 'array',
                         items: {
@@ -16489,10 +16493,6 @@ export const contracts = {
                         format: 'uint64',
                         minimum: 0,
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'question_answer',
-                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'answers', 'committedAt'],
@@ -16500,14 +16500,14 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'form_answer',
+                      },
                       committedAt: {
                         type: 'integer',
                         format: 'uint64',
                         minimum: 0,
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'form_answer',
                       },
                     },
                     unevaluatedProperties: false,
@@ -16515,15 +16515,15 @@ export const contracts = {
                       {
                         type: 'object',
                         properties: {
+                          action: {
+                            type: 'string',
+                            const: 'accept',
+                          },
                           values: {
                             type: 'object',
                             additionalProperties: {
                               $ref: '#/$defs/FormValue',
                             },
-                          },
-                          action: {
-                            type: 'string',
-                            const: 'accept',
                           },
                         },
                         required: ['action', 'values'],
@@ -16554,6 +16554,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'client_capability_decision',
+                      },
                       decision: {
                         $ref: '#/$defs/Decision',
                       },
@@ -16562,10 +16566,6 @@ export const contracts = {
                         format: 'uint64',
                         minimum: 0,
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'client_capability_decision',
-                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'decision', 'committedAt'],
@@ -16573,6 +16573,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'closure',
+                      },
                       reason: {
                         $ref: '#/$defs/ClosureReason',
                       },
@@ -16580,10 +16584,6 @@ export const contracts = {
                         type: 'integer',
                         format: 'uint64',
                         minimum: 0,
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'closure',
                       },
                     },
                     additionalProperties: false,
@@ -16611,15 +16611,15 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      decision: {
+                        type: 'string',
+                        const: 'allow',
+                      },
                       permissions: {
                         $ref: '#/$defs/Permissions',
                       },
                       scope: {
                         $ref: '#/$defs/Scope2',
-                      },
-                      decision: {
-                        type: 'string',
-                        const: 'allow',
                       },
                     },
                     additionalProperties: false,
@@ -16715,13 +16715,13 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      cursor: {
-                        type: 'string',
-                        minLength: 1,
-                      },
                       kind: {
                         type: 'string',
                         const: 'at',
+                      },
+                      cursor: {
+                        type: 'string',
+                        minLength: 1,
                       },
                     },
                     additionalProperties: false,
@@ -16730,16 +16730,16 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'after',
+                      },
                       revision: {
                         type: 'string',
                       },
                       cursor: {
                         type: 'string',
                         minLength: 1,
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'after',
                       },
                     },
                     additionalProperties: false,
@@ -16748,16 +16748,16 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'before',
+                      },
                       revision: {
                         type: 'string',
                       },
                       cursor: {
                         type: 'string',
                         minLength: 1,
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'before',
                       },
                     },
                     additionalProperties: false,
@@ -16781,13 +16781,13 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      projectId: {
-                        type: 'string',
-                        format: 'uuid',
-                      },
                       kind: {
                         type: 'string',
                         const: 'project',
+                      },
+                      projectId: {
+                        type: 'string',
+                        format: 'uuid',
                       },
                     },
                     additionalProperties: false,
@@ -16798,13 +16798,13 @@ export const contracts = {
                       'Resolve the exact workspace from an owned session, never a caller path.',
                     type: 'object',
                     properties: {
-                      sessionId: {
-                        type: 'string',
-                        minLength: 1,
-                      },
                       kind: {
                         type: 'string',
                         const: 'workspace',
+                      },
+                      sessionId: {
+                        type: 'string',
+                        minLength: 1,
                       },
                     },
                     additionalProperties: false,
@@ -16974,6 +16974,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'model',
+                      },
                       connectionId: {
                         type: 'string',
                         minLength: 1,
@@ -16992,10 +16996,6 @@ export const contracts = {
                           },
                         ],
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'model',
-                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'connectionId', 'modelId'],
@@ -17003,12 +17003,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      selection: {
-                        $ref: '#/$defs/AgentExecutorSelection',
-                      },
                       kind: {
                         type: 'string',
                         const: 'executor',
+                      },
+                      selection: {
+                        $ref: '#/$defs/AgentExecutorSelection',
                       },
                     },
                     additionalProperties: false,
@@ -17357,12 +17357,12 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  session: {
-                    $ref: '#/$defs/AgentSession',
-                  },
                   kind: {
                     type: 'string',
                     const: 'observed',
+                  },
+                  session: {
+                    $ref: '#/$defs/AgentSession',
                   },
                 },
                 additionalProperties: false,
@@ -17371,12 +17371,12 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  reason: {
-                    $ref: '#/$defs/AgentRejection',
-                  },
                   kind: {
                     type: 'string',
                     const: 'rejected',
+                  },
+                  reason: {
+                    $ref: '#/$defs/AgentRejection',
                   },
                 },
                 additionalProperties: false,
@@ -17514,6 +17514,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'model',
+                      },
                       connectionId: {
                         type: 'string',
                         minLength: 1,
@@ -17532,10 +17536,6 @@ export const contracts = {
                           },
                         ],
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'model',
-                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'connectionId', 'modelId'],
@@ -17543,12 +17543,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      selection: {
-                        $ref: '#/$defs/AgentExecutorSelection',
-                      },
                       kind: {
                         type: 'string',
                         const: 'executor',
+                      },
+                      selection: {
+                        $ref: '#/$defs/AgentExecutorSelection',
                       },
                     },
                     additionalProperties: false,
@@ -17855,12 +17855,12 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  session: {
-                    $ref: '#/$defs/AgentSession',
-                  },
                   kind: {
                     type: 'string',
                     const: 'committed',
+                  },
+                  session: {
+                    $ref: '#/$defs/AgentSession',
                   },
                 },
                 additionalProperties: false,
@@ -17869,6 +17869,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'revision_conflict',
+                  },
                   expected: {
                     type: 'integer',
                     format: 'uint64',
@@ -17879,10 +17883,6 @@ export const contracts = {
                     format: 'uint64',
                     minimum: 0,
                   },
-                  kind: {
-                    type: 'string',
-                    const: 'revision_conflict',
-                  },
                 },
                 additionalProperties: false,
                 required: ['kind', 'expected', 'actual'],
@@ -17890,12 +17890,12 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  reason: {
-                    $ref: '#/$defs/AgentRejection',
-                  },
                   kind: {
                     type: 'string',
                     const: 'rejected',
+                  },
+                  reason: {
+                    $ref: '#/$defs/AgentRejection',
                   },
                 },
                 additionalProperties: false,
@@ -18033,6 +18033,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'model',
+                      },
                       connectionId: {
                         type: 'string',
                         minLength: 1,
@@ -18051,10 +18055,6 @@ export const contracts = {
                           },
                         ],
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'model',
-                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'connectionId', 'modelId'],
@@ -18062,12 +18062,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      selection: {
-                        $ref: '#/$defs/AgentExecutorSelection',
-                      },
                       kind: {
                         type: 'string',
                         const: 'executor',
+                      },
+                      selection: {
+                        $ref: '#/$defs/AgentExecutorSelection',
                       },
                     },
                     additionalProperties: false,
@@ -18482,6 +18482,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'model',
+                      },
                       connectionId: {
                         type: 'string',
                         minLength: 1,
@@ -18500,10 +18504,6 @@ export const contracts = {
                           },
                         ],
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'model',
-                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'connectionId', 'modelId'],
@@ -18511,12 +18511,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      selection: {
-                        $ref: '#/$defs/AgentExecutorSelection',
-                      },
                       kind: {
                         type: 'string',
                         const: 'executor',
+                      },
+                      selection: {
+                        $ref: '#/$defs/AgentExecutorSelection',
                       },
                     },
                     additionalProperties: false,
@@ -19566,14 +19566,14 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'committed',
+                      },
                       revision: {
                         type: 'integer',
                         format: 'uint64',
                         minimum: 0,
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'committed',
                       },
                     },
                     additionalProperties: false,
@@ -19582,14 +19582,14 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'conflict',
+                      },
                       actual: {
                         type: 'integer',
                         format: 'uint64',
                         minimum: 0,
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'conflict',
                       },
                     },
                     additionalProperties: false,
@@ -19598,12 +19598,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      reason: {
-                        type: 'string',
-                      },
                       kind: {
                         type: 'string',
                         const: 'rejected',
+                      },
+                      reason: {
+                        type: 'string',
                       },
                     },
                     additionalProperties: false,
@@ -19624,6 +19624,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'register',
+                  },
                   selection: {
                     $ref: '#/$defs/AgentDirectorySelection',
                   },
@@ -19637,10 +19641,6 @@ export const contracts = {
                       },
                     ],
                   },
-                  kind: {
-                    type: 'string',
-                    const: 'register',
-                  },
                 },
                 additionalProperties: false,
                 required: ['kind', 'selection', 'expected'],
@@ -19648,16 +19648,16 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'rename',
+                  },
                   project: {
                     $ref: '#/$defs/AgentProjectRef',
                   },
                   name: {
                     type: 'string',
                     minLength: 1,
-                  },
-                  kind: {
-                    type: 'string',
-                    const: 'rename',
                   },
                 },
                 additionalProperties: false,
@@ -19666,13 +19666,13 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  project: {
-                    $ref: '#/$defs/AgentProjectRef',
-                  },
                   kind: {
                     type: 'string',
                     const: 'archive',
                   },
+                  project: {
+                    $ref: '#/$defs/AgentProjectRef',
+                  },
                 },
                 additionalProperties: false,
                 required: ['kind', 'project'],
@@ -19680,13 +19680,13 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  project: {
-                    $ref: '#/$defs/AgentProjectRef',
-                  },
                   kind: {
                     type: 'string',
                     const: 'restore',
                   },
+                  project: {
+                    $ref: '#/$defs/AgentProjectRef',
+                  },
                 },
                 additionalProperties: false,
                 required: ['kind', 'project'],
@@ -19694,6 +19694,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'relocate',
+                  },
                   project: {
                     $ref: '#/$defs/AgentProjectRef',
                   },
@@ -19709,10 +19713,6 @@ export const contracts = {
                         type: 'null',
                       },
                     ],
-                  },
-                  kind: {
-                    type: 'string',
-                    const: 'relocate',
                   },
                 },
                 additionalProperties: false,
@@ -19765,12 +19765,12 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  project: {
-                    $ref: '#/$defs/AgentProject',
-                  },
                   kind: {
                     type: 'string',
                     const: 'committed',
+                  },
+                  project: {
+                    $ref: '#/$defs/AgentProject',
                   },
                 },
                 additionalProperties: false,
@@ -19927,6 +19927,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'configuration',
+                  },
                   path: {
                     type: 'string',
                   },
@@ -19947,10 +19951,6 @@ export const contracts = {
                     items: {
                       type: 'string',
                     },
-                  },
-                  kind: {
-                    type: 'string',
-                    const: 'configuration',
                   },
                 },
                 additionalProperties: false,
@@ -20014,6 +20014,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'list',
+                  },
                   cursor: {
                     anyOf: [
                       {
@@ -20024,10 +20028,6 @@ export const contracts = {
                       },
                     ],
                   },
-                  kind: {
-                    type: 'string',
-                    const: 'list',
-                  },
                 },
                 additionalProperties: false,
                 required: ['kind', 'cursor'],
@@ -20035,12 +20035,12 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  selection: {
-                    $ref: '#/$defs/AgentDirectorySelection',
-                  },
                   kind: {
                     type: 'string',
                     const: 'directory',
+                  },
+                  selection: {
+                    $ref: '#/$defs/AgentDirectorySelection',
                   },
                 },
                 additionalProperties: false,
@@ -20093,6 +20093,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'projects',
+                  },
                   revision: {
                     type: 'string',
                     pattern: '^[a-f0-9]{64}$',
@@ -20114,10 +20118,6 @@ export const contracts = {
                       },
                     ],
                   },
-                  kind: {
-                    type: 'string',
-                    const: 'projects',
-                  },
                 },
                 additionalProperties: false,
                 required: ['kind', 'revision', 'projects', 'next'],
@@ -20125,12 +20125,12 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  location: {
-                    $ref: '#/$defs/AgentProjectLocation',
-                  },
                   kind: {
                     type: 'string',
                     const: 'directory',
+                  },
+                  location: {
+                    $ref: '#/$defs/AgentProjectLocation',
                   },
                 },
                 additionalProperties: false,
@@ -20345,12 +20345,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      taskId: {
-                        type: 'string',
-                      },
                       kind: {
                         type: 'string',
                         const: 'workhub_task',
+                      },
+                      taskId: {
+                        type: 'string',
                       },
                     },
                     additionalProperties: false,
@@ -20359,12 +20359,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      graphId: {
-                        type: 'string',
-                      },
                       kind: {
                         type: 'string',
                         const: 'workhub_graph',
+                      },
+                      graphId: {
+                        type: 'string',
                       },
                     },
                     additionalProperties: false,
@@ -20412,6 +20412,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'ready',
+                  },
                   revision: {
                     type: 'integer',
                     format: 'uint64',
@@ -20423,10 +20427,6 @@ export const contracts = {
                   message: {
                     type: 'string',
                   },
-                  kind: {
-                    type: 'string',
-                    const: 'ready',
-                  },
                 },
                 additionalProperties: false,
                 required: ['kind', 'revision', 'hasAttachments', 'message'],
@@ -20434,6 +20434,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'revision_conflict',
+                  },
                   expected: {
                     type: 'integer',
                     format: 'uint64',
@@ -20443,10 +20447,6 @@ export const contracts = {
                     type: 'integer',
                     format: 'uint64',
                     minimum: 0,
-                  },
-                  kind: {
-                    type: 'string',
-                    const: 'revision_conflict',
                   },
                 },
                 additionalProperties: false,
@@ -20523,6 +20523,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'begin',
+                      },
                       version: {
                         type: 'string',
                       },
@@ -20537,10 +20541,6 @@ export const contracts = {
                       content: {
                         $ref: '#/$defs/AgentFileContent',
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'begin',
-                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'version', 'digest', 'bytes', 'content'],
@@ -20548,6 +20548,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'chunk',
+                      },
                       offset: {
                         type: 'integer',
                         format: 'uint64',
@@ -20557,10 +20561,6 @@ export const contracts = {
                         type: 'string',
                         maxLength: 43692,
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'chunk',
-                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'offset', 'data'],
@@ -20568,6 +20568,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'end',
+                      },
                       version: {
                         type: 'string',
                       },
@@ -20578,10 +20582,6 @@ export const contracts = {
                         type: 'integer',
                         format: 'uint64',
                         minimum: 0,
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'end',
                       },
                     },
                     additionalProperties: false,
@@ -20612,14 +20612,14 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'binary',
+                      },
                       bytes: {
                         type: 'integer',
                         format: 'uint64',
                         minimum: 0,
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'binary',
                       },
                     },
                     additionalProperties: false,
@@ -20628,12 +20628,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      fileKind: {
-                        $ref: '#/$defs/AgentFileKind',
-                      },
                       kind: {
                         type: 'string',
                         const: 'unsupported',
+                      },
+                      fileKind: {
+                        $ref: '#/$defs/AgentFileKind',
                       },
                     },
                     additionalProperties: false,
@@ -20657,12 +20657,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      mimeType: {
-                        type: 'string',
-                      },
                       kind: {
                         type: 'string',
                         const: 'image',
+                      },
+                      mimeType: {
+                        type: 'string',
                       },
                     },
                     additionalProperties: false,
@@ -20733,6 +20733,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'ready',
+                  },
                   patch: {
                     $ref: '#/$defs/AgentWorkspacePatch',
                   },
@@ -20749,10 +20753,6 @@ export const contracts = {
                   text: {
                     type: 'string',
                     maxLength: 8192,
-                  },
-                  kind: {
-                    type: 'string',
-                    const: 'ready',
                   },
                 },
                 additionalProperties: false,
@@ -20992,6 +20992,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'model',
+                      },
                       connectionId: {
                         type: 'string',
                         minLength: 1,
@@ -21010,10 +21014,6 @@ export const contracts = {
                           },
                         ],
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'model',
-                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'connectionId', 'modelId'],
@@ -21021,12 +21021,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      selection: {
-                        $ref: '#/$defs/AgentExecutorSelection',
-                      },
                       kind: {
                         type: 'string',
                         const: 'executor',
+                      },
+                      selection: {
+                        $ref: '#/$defs/AgentExecutorSelection',
                       },
                     },
                     additionalProperties: false,
@@ -21308,6 +21308,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'pending',
+                      },
                       operationId: {
                         type: 'string',
                         format: 'uuid',
@@ -21317,10 +21321,6 @@ export const contracts = {
                         format: 'uint64',
                         minimum: 0,
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'pending',
-                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'operationId', 'through'],
@@ -21328,6 +21328,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'ready',
+                      },
                       operationId: {
                         type: 'string',
                         format: 'uuid',
@@ -21343,10 +21347,6 @@ export const contracts = {
                       modelId: {
                         type: 'string',
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'ready',
-                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'operationId', 'through', 'text', 'modelId'],
@@ -21354,6 +21354,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'failed',
+                      },
                       operationId: {
                         type: 'string',
                         format: 'uuid',
@@ -21365,10 +21369,6 @@ export const contracts = {
                       },
                       reason: {
                         $ref: '#/$defs/AgentRecapFailure',
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'failed',
                       },
                     },
                     additionalProperties: false,
@@ -21411,13 +21411,13 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      decision: {
-                        $ref: '#/$defs/Decision',
-                      },
                       kind: {
                         type: 'string',
                         const: 'service_approval',
                       },
+                      decision: {
+                        $ref: '#/$defs/Decision',
+                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'decision'],
@@ -21425,13 +21425,13 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      decision: {
-                        $ref: '#/$defs/Decision2',
-                      },
                       kind: {
                         type: 'string',
                         const: 'permissions',
                       },
+                      decision: {
+                        $ref: '#/$defs/Decision2',
+                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'decision'],
@@ -21439,15 +21439,15 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'question',
+                      },
                       answers: {
                         type: 'array',
                         items: {
                           type: ['string', 'null'],
                         },
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'question',
                       },
                     },
                     additionalProperties: false,
@@ -21466,15 +21466,15 @@ export const contracts = {
                       {
                         type: 'object',
                         properties: {
+                          action: {
+                            type: 'string',
+                            const: 'accept',
+                          },
                           values: {
                             type: 'object',
                             additionalProperties: {
                               $ref: '#/$defs/FormValue',
                             },
-                          },
-                          action: {
-                            type: 'string',
-                            const: 'accept',
                           },
                         },
                         required: ['action', 'values'],
@@ -21505,12 +21505,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      decision: {
-                        $ref: '#/$defs/Decision',
-                      },
                       kind: {
                         type: 'string',
                         const: 'client_capability',
+                      },
+                      decision: {
+                        $ref: '#/$defs/Decision',
                       },
                     },
                     additionalProperties: false,
@@ -21538,15 +21538,15 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      decision: {
+                        type: 'string',
+                        const: 'allow',
+                      },
                       permissions: {
                         $ref: '#/$defs/Permissions',
                       },
                       scope: {
                         $ref: '#/$defs/Scope2',
-                      },
-                      decision: {
-                        type: 'string',
-                        const: 'allow',
                       },
                     },
                     additionalProperties: false,
@@ -21682,12 +21682,12 @@ export const contracts = {
                   'Includes a concurrent winner. Consumers inspect the canonical outcome.',
                 type: 'object',
                 properties: {
-                  record: {
-                    $ref: '#/$defs/InteractionRecord',
-                  },
                   kind: {
                     type: 'string',
                     const: 'recorded',
+                  },
+                  record: {
+                    $ref: '#/$defs/InteractionRecord',
                   },
                 },
                 additionalProperties: false,
@@ -21696,12 +21696,12 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  reason: {
-                    $ref: '#/$defs/AgentInteractionRejection',
-                  },
                   kind: {
                     type: 'string',
                     const: 'rejected',
+                  },
+                  reason: {
+                    $ref: '#/$defs/AgentInteractionRejection',
                   },
                 },
                 additionalProperties: false,
@@ -21761,6 +21761,10 @@ export const contracts = {
                       'Consent for one already journaled service call; never a service grant.',
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'service_approval',
+                      },
                       toolUseId: {
                         type: 'string',
                       },
@@ -21781,10 +21785,6 @@ export const contracts = {
                         format: 'uint64',
                         minimum: 0,
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'service_approval',
-                      },
                     },
                     additionalProperties: false,
                     required: [
@@ -21800,6 +21800,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'permissions',
+                      },
                       toolUseId: {
                         type: ['string', 'null'],
                       },
@@ -21809,10 +21813,6 @@ export const contracts = {
                       request: {
                         $ref: '#/$defs/PermissionRequest',
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'permissions',
-                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'toolUseId', 'basis', 'request'],
@@ -21820,6 +21820,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'question',
+                      },
                       toolUseId: {
                         type: 'string',
                       },
@@ -21829,10 +21833,6 @@ export const contracts = {
                           $ref: '#/$defs/InteractionQuestion',
                         },
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'question',
-                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'toolUseId', 'questions'],
@@ -21840,6 +21840,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'form',
+                      },
                       toolUseId: {
                         type: 'string',
                       },
@@ -21855,10 +21859,6 @@ export const contracts = {
                           $ref: '#/$defs/FormField',
                         },
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'form',
-                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'toolUseId', 'message', 'requester', 'fields'],
@@ -21866,6 +21866,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'client_capability',
+                      },
                       toolUseId: {
                         type: 'string',
                       },
@@ -21883,10 +21887,6 @@ export const contracts = {
                             type: 'null',
                           },
                         ],
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'client_capability',
                       },
                     },
                     additionalProperties: false,
@@ -22126,6 +22126,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'string',
+                      },
                       default: {
                         type: ['string', 'null'],
                       },
@@ -22149,38 +22153,16 @@ export const contracts = {
                           },
                         ],
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'string',
-                      },
                     },
                     required: ['kind'],
                   },
                   {
                     type: 'object',
                     properties: {
-                      default: {
-                        type: ['number', 'null'],
-                        format: 'double',
-                      },
-                      minimum: {
-                        type: ['number', 'null'],
-                        format: 'double',
-                      },
-                      maximum: {
-                        type: ['number', 'null'],
-                        format: 'double',
-                      },
                       kind: {
                         type: 'string',
                         const: 'number',
                       },
-                    },
-                    required: ['kind'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
                       default: {
                         type: ['number', 'null'],
                         format: 'double',
@@ -22193,29 +22175,51 @@ export const contracts = {
                         type: ['number', 'null'],
                         format: 'double',
                       },
+                    },
+                    required: ['kind'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
                       kind: {
                         type: 'string',
                         const: 'integer',
                       },
+                      default: {
+                        type: ['number', 'null'],
+                        format: 'double',
+                      },
+                      minimum: {
+                        type: ['number', 'null'],
+                        format: 'double',
+                      },
+                      maximum: {
+                        type: ['number', 'null'],
+                        format: 'double',
+                      },
                     },
                     required: ['kind'],
                   },
                   {
                     type: 'object',
                     properties: {
-                      default: {
-                        type: ['boolean', 'null'],
-                      },
                       kind: {
                         type: 'string',
                         const: 'boolean',
                       },
+                      default: {
+                        type: ['boolean', 'null'],
+                      },
                     },
                     required: ['kind'],
                   },
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'single_select',
+                      },
                       options: {
                         type: 'array',
                         items: {
@@ -22225,16 +22229,16 @@ export const contracts = {
                       default: {
                         type: ['string', 'null'],
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'single_select',
-                      },
                     },
                     required: ['kind', 'options'],
                   },
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'multi_select',
+                      },
                       options: {
                         type: 'array',
                         items: {
@@ -22256,10 +22260,6 @@ export const contracts = {
                         type: ['integer', 'null'],
                         format: 'uint',
                         minimum: 0,
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'multi_select',
                       },
                     },
                     required: ['kind', 'options'],
@@ -22323,12 +22323,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      origin: {
-                        type: 'string',
-                      },
                       kind: {
                         type: 'string',
                         const: 'browser_origin',
+                      },
+                      origin: {
+                        type: 'string',
                       },
                     },
                     additionalProperties: false,
@@ -22348,15 +22348,15 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'mcp_tool',
+                      },
                       serverId: {
                         type: 'string',
                       },
                       toolName: {
                         type: 'string',
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'mcp_tool',
                       },
                     },
                     additionalProperties: false,
@@ -22369,6 +22369,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'service_approval_decision',
+                      },
                       decision: {
                         $ref: '#/$defs/Decision',
                       },
@@ -22377,10 +22381,6 @@ export const contracts = {
                         format: 'uint64',
                         minimum: 0,
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'service_approval_decision',
-                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'decision', 'committedAt'],
@@ -22388,6 +22388,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'permissions_decision',
+                      },
                       decision: {
                         $ref: '#/$defs/Decision2',
                       },
@@ -22396,10 +22400,6 @@ export const contracts = {
                         format: 'uint64',
                         minimum: 0,
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'permissions_decision',
-                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'decision', 'committedAt'],
@@ -22407,6 +22407,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'question_answer',
+                      },
                       answers: {
                         type: 'array',
                         items: {
@@ -22418,10 +22422,6 @@ export const contracts = {
                         format: 'uint64',
                         minimum: 0,
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'question_answer',
-                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'answers', 'committedAt'],
@@ -22429,14 +22429,14 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'form_answer',
+                      },
                       committedAt: {
                         type: 'integer',
                         format: 'uint64',
                         minimum: 0,
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'form_answer',
                       },
                     },
                     unevaluatedProperties: false,
@@ -22444,15 +22444,15 @@ export const contracts = {
                       {
                         type: 'object',
                         properties: {
+                          action: {
+                            type: 'string',
+                            const: 'accept',
+                          },
                           values: {
                             type: 'object',
                             additionalProperties: {
                               $ref: '#/$defs/FormValue',
                             },
-                          },
-                          action: {
-                            type: 'string',
-                            const: 'accept',
                           },
                         },
                         required: ['action', 'values'],
@@ -22483,6 +22483,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'client_capability_decision',
+                      },
                       decision: {
                         $ref: '#/$defs/Decision',
                       },
@@ -22491,10 +22495,6 @@ export const contracts = {
                         format: 'uint64',
                         minimum: 0,
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'client_capability_decision',
-                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'decision', 'committedAt'],
@@ -22502,6 +22502,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'closure',
+                      },
                       reason: {
                         $ref: '#/$defs/ClosureReason',
                       },
@@ -22509,10 +22513,6 @@ export const contracts = {
                         type: 'integer',
                         format: 'uint64',
                         minimum: 0,
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'closure',
                       },
                     },
                     additionalProperties: false,
@@ -22540,15 +22540,15 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      decision: {
+                        type: 'string',
+                        const: 'allow',
+                      },
                       permissions: {
                         $ref: '#/$defs/Permissions',
                       },
                       scope: {
                         $ref: '#/$defs/Scope2',
-                      },
-                      decision: {
-                        type: 'string',
-                        const: 'allow',
                       },
                     },
                     additionalProperties: false,
@@ -22676,12 +22676,12 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  execution: {
-                    $ref: '#/$defs/AgentExecution',
-                  },
                   kind: {
                     type: 'string',
                     const: 'started',
+                  },
+                  execution: {
+                    $ref: '#/$defs/AgentExecution',
                   },
                 },
                 additionalProperties: false,
@@ -22690,12 +22690,12 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  reason: {
-                    $ref: '#/$defs/AgentResumeParkReason',
-                  },
                   kind: {
                     type: 'string',
                     const: 'parked',
+                  },
+                  reason: {
+                    $ref: '#/$defs/AgentResumeParkReason',
                   },
                 },
                 additionalProperties: false,
@@ -22772,12 +22772,12 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  input: {
-                    $ref: '#/$defs/AgentScheduledInput',
-                  },
                   kind: {
                     type: 'string',
                     const: 'create',
+                  },
+                  input: {
+                    $ref: '#/$defs/AgentScheduledInput',
                   },
                 },
                 additionalProperties: false,
@@ -22786,6 +22786,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'update',
+                  },
                   taskId: {
                     type: 'string',
                   },
@@ -22797,10 +22801,6 @@ export const contracts = {
                   input: {
                     $ref: '#/$defs/AgentScheduledInput',
                   },
-                  kind: {
-                    type: 'string',
-                    const: 'update',
-                  },
                 },
                 additionalProperties: false,
                 required: ['kind', 'taskId', 'revision', 'input'],
@@ -22808,25 +22808,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  taskId: {
-                    type: 'string',
-                  },
-                  revision: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 0,
-                  },
                   kind: {
                     type: 'string',
                     const: 'approve',
                   },
-                },
-                additionalProperties: false,
-                required: ['kind', 'taskId', 'revision'],
-              },
-              {
-                type: 'object',
-                properties: {
                   taskId: {
                     type: 'string',
                   },
@@ -22835,17 +22820,17 @@ export const contracts = {
                     format: 'uint64',
                     minimum: 0,
                   },
+                },
+                additionalProperties: false,
+                required: ['kind', 'taskId', 'revision'],
+              },
+              {
+                type: 'object',
+                properties: {
                   kind: {
                     type: 'string',
                     const: 'pause',
                   },
-                },
-                additionalProperties: false,
-                required: ['kind', 'taskId', 'revision'],
-              },
-              {
-                type: 'object',
-                properties: {
                   taskId: {
                     type: 'string',
                   },
@@ -22854,17 +22839,17 @@ export const contracts = {
                     format: 'uint64',
                     minimum: 0,
                   },
+                },
+                additionalProperties: false,
+                required: ['kind', 'taskId', 'revision'],
+              },
+              {
+                type: 'object',
+                properties: {
                   kind: {
                     type: 'string',
                     const: 'resume',
                   },
-                },
-                additionalProperties: false,
-                required: ['kind', 'taskId', 'revision'],
-              },
-              {
-                type: 'object',
-                properties: {
                   taskId: {
                     type: 'string',
                   },
@@ -22873,9 +22858,24 @@ export const contracts = {
                     format: 'uint64',
                     minimum: 0,
                   },
+                },
+                additionalProperties: false,
+                required: ['kind', 'taskId', 'revision'],
+              },
+              {
+                type: 'object',
+                properties: {
                   kind: {
                     type: 'string',
                     const: 'trigger_now',
+                  },
+                  taskId: {
+                    type: 'string',
+                  },
+                  revision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
                   },
                 },
                 additionalProperties: false,
@@ -22884,6 +22884,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'snooze',
+                  },
                   taskId: {
                     type: 'string',
                   },
@@ -22896,10 +22900,6 @@ export const contracts = {
                     type: 'integer',
                     format: 'int64',
                   },
-                  kind: {
-                    type: 'string',
-                    const: 'snooze',
-                  },
                 },
                 additionalProperties: false,
                 required: ['kind', 'taskId', 'revision', 'delayMs'],
@@ -22907,6 +22907,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'acknowledge',
+                  },
                   taskId: {
                     type: 'string',
                   },
@@ -22918,10 +22922,6 @@ export const contracts = {
                   fireId: {
                     type: 'string',
                   },
-                  kind: {
-                    type: 'string',
-                    const: 'acknowledge',
-                  },
                 },
                 additionalProperties: false,
                 required: ['kind', 'taskId', 'revision', 'fireId'],
@@ -22929,6 +22929,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'clear_history',
+                  },
                   taskId: {
                     type: 'string',
                   },
@@ -22936,10 +22940,6 @@ export const contracts = {
                     type: 'integer',
                     format: 'uint64',
                     minimum: 0,
-                  },
-                  kind: {
-                    type: 'string',
-                    const: 'clear_history',
                   },
                 },
                 additionalProperties: false,
@@ -22948,6 +22948,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'delete',
+                  },
                   taskId: {
                     type: 'string',
                   },
@@ -22955,10 +22959,6 @@ export const contracts = {
                     type: 'integer',
                     format: 'uint64',
                     minimum: 0,
-                  },
-                  kind: {
-                    type: 'string',
-                    const: 'delete',
                   },
                 },
                 additionalProperties: false,
@@ -23017,13 +23017,13 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      runAt: {
-                        type: 'integer',
-                        format: 'int64',
-                      },
                       kind: {
                         type: 'string',
                         const: 'once',
+                      },
+                      runAt: {
+                        type: 'integer',
+                        format: 'int64',
                       },
                     },
                     additionalProperties: false,
@@ -23032,6 +23032,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'interval',
+                      },
                       everySeconds: {
                         type: 'integer',
                         format: 'uint32',
@@ -23041,10 +23045,6 @@ export const contracts = {
                         type: 'integer',
                         format: 'int64',
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'interval',
-                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'everySeconds', 'startAt'],
@@ -23052,16 +23052,16 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'calendar',
+                      },
                       recurrence: {
                         $ref: '#/$defs/Recurrence',
                       },
                       anchorAt: {
                         type: 'integer',
                         format: 'int64',
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'calendar',
                       },
                     },
                     additionalProperties: false,
@@ -23070,16 +23070,16 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'cron',
+                      },
                       expression: {
                         type: 'string',
                       },
                       startAt: {
                         type: 'integer',
                         format: 'int64',
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'cron',
                       },
                     },
                     additionalProperties: false,
@@ -23107,6 +23107,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'session',
+                      },
                       target: {
                         $ref: '#/$defs/AgentScheduledTarget',
                       },
@@ -23122,10 +23126,6 @@ export const contracts = {
                             type: 'null',
                           },
                         ],
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'session',
                       },
                     },
                     additionalProperties: false,
@@ -23134,6 +23134,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'agent_run',
+                      },
                       target: {
                         $ref: '#/$defs/AgentScheduledTarget',
                       },
@@ -23149,10 +23153,6 @@ export const contracts = {
                             type: 'null',
                           },
                         ],
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'agent_run',
                       },
                     },
                     additionalProperties: false,
@@ -23331,6 +23331,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'committed',
+                  },
                   taskId: {
                     type: 'string',
                   },
@@ -23339,10 +23343,6 @@ export const contracts = {
                     format: 'uint64',
                     minimum: 0,
                   },
-                  kind: {
-                    type: 'string',
-                    const: 'committed',
-                  },
                 },
                 additionalProperties: false,
                 required: ['kind', 'taskId', 'revision'],
@@ -23350,14 +23350,14 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'conflict',
+                  },
                   actual: {
                     type: ['integer', 'null'],
                     format: 'uint64',
                     minimum: 0,
-                  },
-                  kind: {
-                    type: 'string',
-                    const: 'conflict',
                   },
                 },
                 additionalProperties: false,
@@ -23366,12 +23366,12 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  reason: {
-                    type: 'string',
-                  },
                   kind: {
                     type: 'string',
                     const: 'rejected',
+                  },
+                  reason: {
+                    type: 'string',
                   },
                 },
                 additionalProperties: false,
@@ -23441,6 +23441,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'list',
+                  },
                   cursor: {
                     type: ['string', 'null'],
                   },
@@ -23449,10 +23453,6 @@ export const contracts = {
                     format: 'uint64',
                     minimum: 0,
                   },
-                  kind: {
-                    type: 'string',
-                    const: 'list',
-                  },
                 },
                 additionalProperties: false,
                 required: ['kind'],
@@ -23460,12 +23460,12 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  taskId: {
-                    type: 'string',
-                  },
                   kind: {
                     type: 'string',
                     const: 'get',
+                  },
+                  taskId: {
+                    type: 'string',
                   },
                 },
                 additionalProperties: false,
@@ -23474,12 +23474,12 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  reference: {
-                    $ref: '#/$defs/RecoveryRef',
-                  },
                   kind: {
                     type: 'string',
                     const: 'receipt',
+                  },
+                  reference: {
+                    $ref: '#/$defs/RecoveryRef',
                   },
                 },
                 additionalProperties: false,
@@ -23596,6 +23596,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'page',
+                  },
                   revision: {
                     type: 'integer',
                     format: 'uint64',
@@ -23610,10 +23614,6 @@ export const contracts = {
                   nextCursor: {
                     type: ['string', 'null'],
                   },
-                  kind: {
-                    type: 'string',
-                    const: 'page',
-                  },
                 },
                 additionalProperties: false,
                 required: ['kind', 'revision', 'tasks'],
@@ -23621,6 +23621,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'task',
+                  },
                   detail: {
                     anyOf: [
                       {
@@ -23631,10 +23635,6 @@ export const contracts = {
                       },
                     ],
                   },
-                  kind: {
-                    type: 'string',
-                    const: 'task',
-                  },
                 },
                 additionalProperties: false,
                 required: ['kind'],
@@ -23642,14 +23642,14 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'changed',
+                  },
                   revision: {
                     type: 'integer',
                     format: 'uint64',
                     minimum: 0,
-                  },
-                  kind: {
-                    type: 'string',
-                    const: 'changed',
                   },
                 },
                 additionalProperties: false,
@@ -23658,6 +23658,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'receipt',
+                  },
                   result: {
                     anyOf: [
                       {
@@ -23667,10 +23671,6 @@ export const contracts = {
                         type: 'null',
                       },
                     ],
-                  },
-                  kind: {
-                    type: 'string',
-                    const: 'receipt',
                   },
                 },
                 additionalProperties: false,
@@ -23830,12 +23830,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      body: {
-                        type: 'string',
-                      },
                       kind: {
                         type: 'string',
                         const: 'text',
+                      },
+                      body: {
+                        type: 'string',
                       },
                     },
                     additionalProperties: false,
@@ -23848,13 +23848,13 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      runAt: {
-                        type: 'integer',
-                        format: 'int64',
-                      },
                       kind: {
                         type: 'string',
                         const: 'once',
+                      },
+                      runAt: {
+                        type: 'integer',
+                        format: 'int64',
                       },
                     },
                     additionalProperties: false,
@@ -23863,6 +23863,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'interval',
+                      },
                       everySeconds: {
                         type: 'integer',
                         format: 'uint32',
@@ -23872,10 +23876,6 @@ export const contracts = {
                         type: 'integer',
                         format: 'int64',
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'interval',
-                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'everySeconds', 'startAt'],
@@ -23883,16 +23883,16 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'calendar',
+                      },
                       recurrence: {
                         $ref: '#/$defs/Recurrence',
                       },
                       anchorAt: {
                         type: 'integer',
                         format: 'int64',
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'calendar',
                       },
                     },
                     additionalProperties: false,
@@ -23901,16 +23901,16 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'cron',
+                      },
                       expression: {
                         type: 'string',
                       },
                       startAt: {
                         type: 'integer',
                         format: 'int64',
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'cron',
                       },
                     },
                     additionalProperties: false,
@@ -23938,6 +23938,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'session',
+                      },
                       target: {
                         $ref: '#/$defs/AgentScheduledTarget',
                       },
@@ -23953,10 +23957,6 @@ export const contracts = {
                             type: 'null',
                           },
                         ],
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'session',
                       },
                     },
                     additionalProperties: false,
@@ -23965,6 +23965,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'agent_run',
+                      },
                       target: {
                         $ref: '#/$defs/AgentScheduledTarget',
                       },
@@ -23980,10 +23984,6 @@ export const contracts = {
                             type: 'null',
                           },
                         ],
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'agent_run',
                       },
                     },
                     additionalProperties: false,
@@ -24165,12 +24165,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      sessionId: {
-                        type: 'string',
-                      },
                       kind: {
                         type: 'string',
                         const: 'agent',
+                      },
+                      sessionId: {
+                        type: 'string',
                       },
                     },
                     additionalProperties: false,
@@ -24228,6 +24228,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'committed',
+                      },
                       taskId: {
                         type: 'string',
                       },
@@ -24236,10 +24240,6 @@ export const contracts = {
                         format: 'uint64',
                         minimum: 0,
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'committed',
-                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'taskId', 'revision'],
@@ -24247,14 +24247,14 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'conflict',
+                      },
                       actual: {
                         type: ['integer', 'null'],
                         format: 'uint64',
                         minimum: 0,
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'conflict',
                       },
                     },
                     additionalProperties: false,
@@ -24263,12 +24263,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      reason: {
-                        type: 'string',
-                      },
                       kind: {
                         type: 'string',
                         const: 'rejected',
+                      },
+                      reason: {
+                        type: 'string',
                       },
                     },
                     additionalProperties: false,
@@ -24368,6 +24368,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'ready',
+                  },
                   through: {
                     type: 'integer',
                     format: 'uint64',
@@ -24391,10 +24395,6 @@ export const contracts = {
                         type: 'null',
                       },
                     ],
-                  },
-                  kind: {
-                    type: 'string',
-                    const: 'ready',
                   },
                 },
                 additionalProperties: false,
@@ -24496,6 +24496,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'model',
+                      },
                       connectionId: {
                         type: 'string',
                         minLength: 1,
@@ -24514,10 +24518,6 @@ export const contracts = {
                           },
                         ],
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'model',
-                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'connectionId', 'modelId'],
@@ -24525,12 +24525,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      selection: {
-                        $ref: '#/$defs/AgentExecutorSelection',
-                      },
                       kind: {
                         type: 'string',
                         const: 'executor',
+                      },
+                      selection: {
+                        $ref: '#/$defs/AgentExecutorSelection',
                       },
                     },
                     additionalProperties: false,
@@ -24586,12 +24586,12 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  session: {
-                    $ref: '#/$defs/AgentSession',
-                  },
                   kind: {
                     type: 'string',
                     const: 'committed',
+                  },
+                  session: {
+                    $ref: '#/$defs/AgentSession',
                   },
                 },
                 additionalProperties: false,
@@ -24600,6 +24600,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'revision_conflict',
+                  },
                   expected: {
                     type: 'integer',
                     format: 'uint64',
@@ -24610,10 +24614,6 @@ export const contracts = {
                     format: 'uint64',
                     minimum: 0,
                   },
-                  kind: {
-                    type: 'string',
-                    const: 'revision_conflict',
-                  },
                 },
                 additionalProperties: false,
                 required: ['kind', 'expected', 'actual'],
@@ -24621,12 +24621,12 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  reason: {
-                    $ref: '#/$defs/AgentRejection',
-                  },
                   kind: {
                     type: 'string',
                     const: 'rejected',
+                  },
+                  reason: {
+                    $ref: '#/$defs/AgentRejection',
                   },
                 },
                 additionalProperties: false,
@@ -24764,6 +24764,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'model',
+                      },
                       connectionId: {
                         type: 'string',
                         minLength: 1,
@@ -24782,10 +24786,6 @@ export const contracts = {
                           },
                         ],
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'model',
-                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'connectionId', 'modelId'],
@@ -24793,12 +24793,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      selection: {
-                        $ref: '#/$defs/AgentExecutorSelection',
-                      },
                       kind: {
                         type: 'string',
                         const: 'executor',
+                      },
+                      selection: {
+                        $ref: '#/$defs/AgentExecutorSelection',
                       },
                     },
                     additionalProperties: false,
@@ -25081,6 +25081,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'rejected',
+                  },
                   sessionId: {
                     type: 'string',
                   },
@@ -25097,10 +25101,6 @@ export const contracts = {
                       },
                     ],
                   },
-                  kind: {
-                    type: 'string',
-                    const: 'rejected',
-                  },
                 },
                 additionalProperties: false,
                 required: ['kind', 'sessionId', 'reason'],
@@ -25108,6 +25108,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'started',
+                  },
                   sessionId: {
                     type: 'string',
                   },
@@ -25117,10 +25121,6 @@ export const contracts = {
                   messageId: {
                     type: 'string',
                   },
-                  kind: {
-                    type: 'string',
-                    const: 'started',
-                  },
                 },
                 additionalProperties: false,
                 required: ['kind', 'sessionId', 'invocationId', 'messageId'],
@@ -25128,6 +25128,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'queued',
+                  },
                   sessionId: {
                     type: 'string',
                   },
@@ -25138,10 +25142,6 @@ export const contracts = {
                     type: 'integer',
                     format: 'uint64',
                     minimum: 0,
-                  },
-                  kind: {
-                    type: 'string',
-                    const: 'queued',
                   },
                 },
                 additionalProperties: false,
@@ -25333,6 +25333,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'model',
+                      },
                       model: {
                         $ref: '#/$defs/ModelSelection',
                       },
@@ -25346,10 +25350,6 @@ export const contracts = {
                           },
                         ],
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'model',
-                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'model'],
@@ -25357,12 +25357,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      selection: {
-                        $ref: '#/$defs/AgentExecutorSelection',
-                      },
                       kind: {
                         type: 'string',
                         const: 'executor',
+                      },
+                      selection: {
+                        $ref: '#/$defs/AgentExecutorSelection',
                       },
                     },
                     additionalProperties: false,
@@ -25532,12 +25532,12 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  patch: {
-                    $ref: '#/$defs/AgentWorkspacePatch',
-                  },
                   kind: {
                     type: 'string',
                     const: 'ready',
+                  },
+                  patch: {
+                    $ref: '#/$defs/AgentWorkspacePatch',
                   },
                 },
                 additionalProperties: false,
@@ -25617,12 +25617,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      position: {
-                        $ref: '#/$defs/HistoryRowPosition',
-                      },
                       kind: {
                         type: 'string',
                         const: 'row',
+                      },
+                      position: {
+                        $ref: '#/$defs/HistoryRowPosition',
                       },
                     },
                     additionalProperties: false,
@@ -25631,13 +25631,13 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      toolUseId: {
-                        type: 'string',
-                        minLength: 1,
-                      },
                       kind: {
                         type: 'string',
                         const: 'tool_use',
+                      },
+                      toolUseId: {
+                        type: 'string',
+                        minLength: 1,
                       },
                     },
                     additionalProperties: false,
@@ -25731,15 +25731,15 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'before',
+                      },
                       offset: {
                         type: 'integer',
                         format: 'uint64',
                         minimum: 0,
                         maximum: 9007199254740991,
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'before',
                       },
                     },
                     additionalProperties: false,
@@ -25748,15 +25748,15 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'after',
+                      },
                       offset: {
                         type: 'integer',
                         format: 'uint64',
                         minimum: 0,
                         maximum: 9007199254740991,
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'after',
                       },
                     },
                     additionalProperties: false,
@@ -25773,6 +25773,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'ready',
+                  },
                   through: {
                     type: 'integer',
                     format: 'uint64',
@@ -25785,10 +25789,6 @@ export const contracts = {
                     description:
                       'Complete file-path evidence resolved on the Host for copying only.\nThis is display text, never a filesystem capability or open command.',
                     type: ['string', 'null'],
-                  },
-                  kind: {
-                    type: 'string',
-                    const: 'ready',
                   },
                 },
                 additionalProperties: false,
@@ -25905,15 +25905,15 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'native',
+                      },
                       requestedModelId: {
                         type: 'string',
                       },
                       reportedModelId: {
                         type: ['string', 'null'],
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'native',
                       },
                     },
                     additionalProperties: false,
@@ -25922,12 +25922,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      modelId: {
-                        type: 'string',
-                      },
                       kind: {
                         type: 'string',
                         const: 'imported',
+                      },
+                      modelId: {
+                        type: 'string',
                       },
                     },
                     additionalProperties: false,
@@ -25942,12 +25942,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      taskId: {
-                        type: 'string',
-                      },
                       kind: {
                         type: 'string',
                         const: 'workhub_task',
+                      },
+                      taskId: {
+                        type: 'string',
                       },
                     },
                     additionalProperties: false,
@@ -25956,12 +25956,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      graphId: {
-                        type: 'string',
-                      },
                       kind: {
                         type: 'string',
                         const: 'workhub_graph',
+                      },
+                      graphId: {
+                        type: 'string',
                       },
                     },
                     additionalProperties: false,
@@ -26275,6 +26275,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'ready',
+                  },
                   through: {
                     type: 'integer',
                     format: 'uint64',
@@ -26307,10 +26311,6 @@ export const contracts = {
                     type: 'string',
                     maxLength: 43692,
                     pattern: '^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$',
-                  },
-                  kind: {
-                    type: 'string',
-                    const: 'ready',
                   },
                 },
                 additionalProperties: false,
@@ -26526,12 +26526,12 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  attachment: {
-                    $ref: '#/$defs/AgentAttachment',
-                  },
                   kind: {
                     type: 'string',
                     const: 'uploaded',
+                  },
+                  attachment: {
+                    $ref: '#/$defs/AgentAttachment',
                   },
                 },
                 additionalProperties: false,
@@ -26540,12 +26540,12 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  reason: {
-                    $ref: '#/$defs/AgentAttachmentRejection',
-                  },
                   kind: {
                     type: 'string',
                     const: 'rejected',
+                  },
+                  reason: {
+                    $ref: '#/$defs/AgentAttachmentRejection',
                   },
                 },
                 additionalProperties: false,
@@ -26621,6 +26621,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'events',
+                  },
                   through: {
                     type: 'integer',
                     format: 'uint64',
@@ -26637,10 +26641,6 @@ export const contracts = {
                       $ref: '#/$defs/AgentDelivery',
                     },
                   },
-                  kind: {
-                    type: 'string',
-                    const: 'events',
-                  },
                 },
                 additionalProperties: false,
                 required: ['kind', 'through', 'nextAfter', 'events'],
@@ -26648,12 +26648,12 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  queue: {
-                    $ref: '#/$defs/AgentQueue',
-                  },
                   kind: {
                     type: 'string',
                     const: 'queue',
+                  },
+                  queue: {
+                    $ref: '#/$defs/AgentQueue',
                   },
                 },
                 additionalProperties: false,
@@ -26662,12 +26662,12 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  pending: {
-                    $ref: '#/$defs/AgentPendingInteractions',
-                  },
                   kind: {
                     type: 'string',
                     const: 'interactions',
+                  },
+                  pending: {
+                    $ref: '#/$defs/AgentPendingInteractions',
                   },
                 },
                 additionalProperties: false,
@@ -26714,12 +26714,12 @@ export const contracts = {
                       'Both external text streams share the original ExecutorStarted message.',
                     type: 'object',
                     properties: {
-                      messageId: {
-                        type: 'string',
-                      },
                       kind: {
                         type: 'string',
                         const: 'executor_started',
+                      },
+                      messageId: {
+                        type: 'string',
                       },
                     },
                     additionalProperties: false,
@@ -26741,6 +26741,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'step_ended',
+                      },
                       stepId: {
                         type: 'string',
                       },
@@ -26749,10 +26753,6 @@ export const contracts = {
                           'The model/executor completed; this says nothing about tool business success.',
                         type: 'boolean',
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'step_ended',
-                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'stepId', 'completed'],
@@ -26760,6 +26760,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'part_started',
+                      },
                       messageId: {
                         type: 'string',
                       },
@@ -26772,10 +26776,6 @@ export const contracts = {
                       textKind: {
                         $ref: '#/$defs/AgentContentKind',
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'part_started',
-                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'messageId', 'stepId', 'partId', 'textKind'],
@@ -26783,6 +26783,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'delta',
+                      },
                       stepId: {
                         type: 'string',
                       },
@@ -26792,10 +26796,6 @@ export const contracts = {
                       text: {
                         type: 'string',
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'delta',
-                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'stepId', 'partId', 'text'],
@@ -26803,15 +26803,15 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'part_finished',
+                      },
                       stepId: {
                         type: 'string',
                       },
                       partId: {
                         type: 'string',
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'part_finished',
                       },
                     },
                     additionalProperties: false,
@@ -26822,6 +26822,10 @@ export const contracts = {
                       'Model input observations are display-only; they cannot authorize a tool effect.',
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'tool_input_started',
+                      },
                       toolUseId: {
                         type: 'string',
                       },
@@ -26834,10 +26838,6 @@ export const contracts = {
                       providerExecuted: {
                         type: 'boolean',
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'tool_input_started',
-                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'toolUseId', 'stepId', 'name', 'providerExecuted'],
@@ -26845,15 +26845,15 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'tool_input_delta',
+                      },
                       toolUseId: {
                         type: 'string',
                       },
                       text: {
                         type: 'string',
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'tool_input_delta',
                       },
                     },
                     additionalProperties: false,
@@ -26864,6 +26864,10 @@ export const contracts = {
                       'Complete model input was observed, not authorization to execute it.',
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'tool_input_ready',
+                      },
                       toolUseId: {
                         type: 'string',
                       },
@@ -26876,10 +26880,6 @@ export const contracts = {
                       providerExecuted: {
                         type: 'boolean',
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'tool_input_ready',
-                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'toolUseId', 'stepId', 'name', 'providerExecuted'],
@@ -26889,6 +26889,10 @@ export const contracts = {
                       'Original Host admission, not a claim that the effect is currently using CPU.',
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'tool_dispatched',
+                      },
                       toolUseId: {
                         type: 'string',
                       },
@@ -26905,10 +26909,6 @@ export const contracts = {
                           },
                         ],
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'tool_dispatched',
-                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'toolUseId', 'name'],
@@ -26916,12 +26916,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      toolUseId: {
-                        type: 'string',
-                      },
                       kind: {
                         type: 'string',
                         const: 'tool_rejected',
+                      },
+                      toolUseId: {
+                        type: 'string',
                       },
                     },
                     additionalProperties: false,
@@ -26930,15 +26930,15 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'tool_settled',
+                      },
                       toolUseId: {
                         type: 'string',
                       },
                       settlement: {
                         $ref: '#/$defs/ToolSettlement',
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'tool_settled',
                       },
                     },
                     additionalProperties: false,
@@ -26949,15 +26949,15 @@ export const contracts = {
                       'Provider-reported completion, distinct from a Host effect settlement.',
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'provider_tool_result',
+                      },
                       toolUseId: {
                         type: 'string',
                       },
                       isError: {
                         type: 'boolean',
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'provider_tool_result',
                       },
                     },
                     additionalProperties: false,
@@ -26966,15 +26966,15 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'executor_tool_start',
+                      },
                       toolUseId: {
                         type: 'string',
                       },
                       name: {
                         type: 'string',
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'executor_tool_start',
                       },
                     },
                     additionalProperties: false,
@@ -26983,6 +26983,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'executor_tool_progress',
+                      },
                       toolUseId: {
                         type: 'string',
                       },
@@ -26991,10 +26995,6 @@ export const contracts = {
                           'The most recent at most 2048 codepoints of reported progress, not the complete result.',
                         type: 'string',
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'executor_tool_progress',
-                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'toolUseId', 'text'],
@@ -27002,15 +27002,15 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'executor_tool_result',
+                      },
                       toolUseId: {
                         type: 'string',
                       },
                       isError: {
                         type: 'boolean',
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'executor_tool_result',
                       },
                     },
                     additionalProperties: false,
@@ -27019,12 +27019,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      failed: {
-                        type: 'boolean',
-                      },
                       kind: {
                         type: 'string',
                         const: 'ended',
+                      },
+                      failed: {
+                        type: 'boolean',
                       },
                     },
                     additionalProperties: false,
@@ -27113,12 +27113,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      taskId: {
-                        type: 'string',
-                      },
                       kind: {
                         type: 'string',
                         const: 'workhub_task',
+                      },
+                      taskId: {
+                        type: 'string',
                       },
                     },
                     additionalProperties: false,
@@ -27127,12 +27127,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      graphId: {
-                        type: 'string',
-                      },
                       kind: {
                         type: 'string',
                         const: 'workhub_graph',
+                      },
+                      graphId: {
+                        type: 'string',
                       },
                     },
                     additionalProperties: false,
@@ -27358,12 +27358,12 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  directoryIdentity: {
-                    type: 'string',
-                  },
                   kind: {
                     type: 'string',
                     const: 'ready',
+                  },
+                  directoryIdentity: {
+                    type: 'string',
                   },
                 },
                 additionalProperties: false,
@@ -27383,12 +27383,12 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  reason: {
-                    $ref: '#/$defs/AgentFileUnavailable',
-                  },
                   kind: {
                     type: 'string',
                     const: 'unavailable',
+                  },
+                  reason: {
+                    $ref: '#/$defs/AgentFileUnavailable',
                   },
                 },
                 additionalProperties: false,
@@ -27841,6 +27841,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'list',
+                  },
                   cursor: {
                     type: ['string', 'null'],
                   },
@@ -27849,10 +27853,6 @@ export const contracts = {
                     format: 'uint64',
                     minimum: 0,
                   },
-                  kind: {
-                    type: 'string',
-                    const: 'list',
-                  },
                 },
                 additionalProperties: false,
                 required: ['kind'],
@@ -27860,12 +27860,12 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  taskId: {
-                    type: 'string',
-                  },
                   kind: {
                     type: 'string',
                     const: 'get',
+                  },
+                  taskId: {
+                    type: 'string',
                   },
                 },
                 additionalProperties: false,
@@ -27874,12 +27874,12 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  reference: {
-                    $ref: '#/$defs/RecoveryRef',
-                  },
                   kind: {
                     type: 'string',
                     const: 'receipt',
+                  },
+                  reference: {
+                    $ref: '#/$defs/RecoveryRef',
                   },
                 },
                 additionalProperties: false,
@@ -27996,6 +27996,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'page',
+                  },
                   revision: {
                     type: 'integer',
                     format: 'uint64',
@@ -28010,10 +28014,6 @@ export const contracts = {
                   nextCursor: {
                     type: ['string', 'null'],
                   },
-                  kind: {
-                    type: 'string',
-                    const: 'page',
-                  },
                 },
                 additionalProperties: false,
                 required: ['kind', 'revision', 'tasks'],
@@ -28021,6 +28021,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'task',
+                  },
                   detail: {
                     anyOf: [
                       {
@@ -28031,10 +28035,6 @@ export const contracts = {
                       },
                     ],
                   },
-                  kind: {
-                    type: 'string',
-                    const: 'task',
-                  },
                 },
                 additionalProperties: false,
                 required: ['kind'],
@@ -28042,14 +28042,14 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'changed',
+                  },
                   revision: {
                     type: 'integer',
                     format: 'uint64',
                     minimum: 0,
-                  },
-                  kind: {
-                    type: 'string',
-                    const: 'changed',
                   },
                 },
                 additionalProperties: false,
@@ -28058,6 +28058,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'receipt',
+                  },
                   result: {
                     anyOf: [
                       {
@@ -28067,10 +28071,6 @@ export const contracts = {
                         type: 'null',
                       },
                     ],
-                  },
-                  kind: {
-                    type: 'string',
-                    const: 'receipt',
                   },
                 },
                 additionalProperties: false,
@@ -28230,12 +28230,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      body: {
-                        type: 'string',
-                      },
                       kind: {
                         type: 'string',
                         const: 'text',
+                      },
+                      body: {
+                        type: 'string',
                       },
                     },
                     additionalProperties: false,
@@ -28248,13 +28248,13 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      runAt: {
-                        type: 'integer',
-                        format: 'int64',
-                      },
                       kind: {
                         type: 'string',
                         const: 'once',
+                      },
+                      runAt: {
+                        type: 'integer',
+                        format: 'int64',
                       },
                     },
                     additionalProperties: false,
@@ -28263,6 +28263,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'interval',
+                      },
                       everySeconds: {
                         type: 'integer',
                         format: 'uint32',
@@ -28272,10 +28276,6 @@ export const contracts = {
                         type: 'integer',
                         format: 'int64',
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'interval',
-                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'everySeconds', 'startAt'],
@@ -28283,16 +28283,16 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'calendar',
+                      },
                       recurrence: {
                         $ref: '#/$defs/Recurrence',
                       },
                       anchorAt: {
                         type: 'integer',
                         format: 'int64',
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'calendar',
                       },
                     },
                     additionalProperties: false,
@@ -28301,16 +28301,16 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'cron',
+                      },
                       expression: {
                         type: 'string',
                       },
                       startAt: {
                         type: 'integer',
                         format: 'int64',
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'cron',
                       },
                     },
                     additionalProperties: false,
@@ -28338,6 +28338,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'session',
+                      },
                       target: {
                         $ref: '#/$defs/AgentScheduledTarget',
                       },
@@ -28353,10 +28357,6 @@ export const contracts = {
                             type: 'null',
                           },
                         ],
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'session',
                       },
                     },
                     additionalProperties: false,
@@ -28365,6 +28365,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'agent_run',
+                      },
                       target: {
                         $ref: '#/$defs/AgentScheduledTarget',
                       },
@@ -28380,10 +28384,6 @@ export const contracts = {
                             type: 'null',
                           },
                         ],
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'agent_run',
                       },
                     },
                     additionalProperties: false,
@@ -28565,12 +28565,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      sessionId: {
-                        type: 'string',
-                      },
                       kind: {
                         type: 'string',
                         const: 'agent',
+                      },
+                      sessionId: {
+                        type: 'string',
                       },
                     },
                     additionalProperties: false,
@@ -28628,6 +28628,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'committed',
+                      },
                       taskId: {
                         type: 'string',
                       },
@@ -28636,10 +28640,6 @@ export const contracts = {
                         format: 'uint64',
                         minimum: 0,
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'committed',
-                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'taskId', 'revision'],
@@ -28647,14 +28647,14 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'conflict',
+                      },
                       actual: {
                         type: ['integer', 'null'],
                         format: 'uint64',
                         minimum: 0,
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'conflict',
                       },
                     },
                     additionalProperties: false,
@@ -28663,12 +28663,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      reason: {
-                        type: 'string',
-                      },
                       kind: {
                         type: 'string',
                         const: 'rejected',
+                      },
+                      reason: {
+                        type: 'string',
                       },
                     },
                     additionalProperties: false,
@@ -28713,13 +28713,13 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      invocationId: {
-                        type: 'string',
-                        minLength: 1,
-                      },
                       kind: {
                         type: 'string',
                         const: 'invocation',
+                      },
+                      invocationId: {
+                        type: 'string',
+                        minLength: 1,
                       },
                     },
                     additionalProperties: false,
@@ -28728,13 +28728,13 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      messageId: {
-                        type: 'string',
-                        minLength: 1,
-                      },
                       kind: {
                         type: 'string',
                         const: 'message',
+                      },
+                      messageId: {
+                        type: 'string',
+                        minLength: 1,
                       },
                     },
                     additionalProperties: false,
@@ -28812,6 +28812,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'delivered',
+                  },
                   shared: {
                     type: 'boolean',
                   },
@@ -28834,10 +28838,6 @@ export const contracts = {
                     type: 'integer',
                     format: 'uint32',
                     minimum: 0,
-                  },
-                  kind: {
-                    type: 'string',
-                    const: 'delivered',
                   },
                 },
                 additionalProperties: false,
@@ -29030,12 +29030,12 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  text: {
-                    type: 'string',
-                  },
                   status: {
                     type: 'string',
                     const: 'completed',
+                  },
+                  text: {
+                    type: 'string',
                   },
                 },
                 additionalProperties: false,
@@ -29044,12 +29044,12 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  reason: {
-                    type: ['string', 'null'],
-                  },
                   status: {
                     type: 'string',
                     const: 'cancelled',
+                  },
+                  reason: {
+                    type: ['string', 'null'],
                   },
                 },
                 additionalProperties: false,
@@ -29058,6 +29058,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  status: {
+                    type: 'string',
+                    const: 'failed',
+                  },
                   message: {
                     type: 'string',
                   },
@@ -29067,10 +29071,6 @@ export const contracts = {
                   recoverable: {
                     type: 'boolean',
                     default: false,
-                  },
-                  status: {
-                    type: 'string',
-                    const: 'failed',
                   },
                 },
                 additionalProperties: false,
@@ -29084,13 +29084,13 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  text: {
-                    type: 'string',
-                  },
                   type: {
                     type: 'string',
                     const: 'output_delta',
                   },
+                  text: {
+                    type: 'string',
+                  },
                 },
                 required: ['type', 'text'],
               },
@@ -29098,13 +29098,13 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  text: {
-                    type: 'string',
-                  },
                   type: {
                     type: 'string',
                     const: 'thinking_delta',
                   },
+                  text: {
+                    type: 'string',
+                  },
                 },
                 required: ['type', 'text'],
               },
@@ -29112,6 +29112,10 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
+                  type: {
+                    type: 'string',
+                    const: 'tool_start',
+                  },
                   toolCallId: {
                     type: 'string',
                   },
@@ -29119,10 +29123,6 @@ export const contracts = {
                     type: 'string',
                   },
                   input: true,
-                  type: {
-                    type: 'string',
-                    const: 'tool_start',
-                  },
                 },
                 required: ['type', 'toolCallId', 'name', 'input'],
               },
@@ -29130,15 +29130,15 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
+                  type: {
+                    type: 'string',
+                    const: 'tool_progress',
+                  },
                   toolCallId: {
                     type: 'string',
                   },
                   text: {
                     type: 'string',
-                  },
-                  type: {
-                    type: 'string',
-                    const: 'tool_progress',
                   },
                 },
                 required: ['type', 'toolCallId', 'text'],
@@ -29147,6 +29147,10 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
+                  type: {
+                    type: 'string',
+                    const: 'tool_result',
+                  },
                   toolCallId: {
                     type: 'string',
                   },
@@ -29156,10 +29160,6 @@ export const contracts = {
                   isError: {
                     type: 'boolean',
                     default: false,
-                  },
-                  type: {
-                    type: 'string',
-                    const: 'tool_result',
                   },
                 },
                 required: ['type', 'toolCallId', 'text'],
@@ -29228,12 +29228,12 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
-                      mode: {
-                        $ref: '#/$defs/GraphMode',
-                      },
                       kind: {
                         type: 'string',
                         const: 'start',
+                      },
+                      mode: {
+                        $ref: '#/$defs/GraphMode',
                       },
                     },
                     required: ['kind', 'mode'],
@@ -29274,12 +29274,12 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  epoch: {
-                    $ref: '#/$defs/GraphEpoch',
-                  },
                   kind: {
                     type: 'string',
                     const: 'committed',
+                  },
+                  epoch: {
+                    $ref: '#/$defs/GraphEpoch',
                   },
                 },
                 required: ['kind', 'epoch'],
@@ -29288,6 +29288,10 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'conflict',
+                  },
                   current: {
                     anyOf: [
                       {
@@ -29298,10 +29302,6 @@ export const contracts = {
                       },
                     ],
                   },
-                  kind: {
-                    type: 'string',
-                    const: 'conflict',
-                  },
                 },
                 required: ['kind'],
               },
@@ -29309,12 +29309,12 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  reason: {
-                    type: 'string',
-                  },
                   kind: {
                     type: 'string',
                     const: 'rejected',
+                  },
+                  reason: {
+                    type: 'string',
                   },
                 },
                 required: ['kind', 'reason'],
@@ -29437,12 +29437,12 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
-                      outcome: {
-                        $ref: '#/$defs/WorkHubControlOutcome',
-                      },
                       kind: {
                         type: 'string',
                         const: 'returned',
+                      },
+                      outcome: {
+                        $ref: '#/$defs/WorkHubControlOutcome',
                       },
                     },
                     required: ['kind', 'outcome'],
@@ -29455,13 +29455,13 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
-                      result: {
-                        $ref: '#/$defs/AgentPatchResult',
-                      },
                       kind: {
                         type: 'string',
                         const: 'patch',
                       },
+                      result: {
+                        $ref: '#/$defs/AgentPatchResult',
+                      },
                     },
                     required: ['kind', 'result'],
                   },
@@ -29469,13 +29469,13 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
-                      result: {
-                        $ref: '#/$defs/AgentStopped',
-                      },
                       kind: {
                         type: 'string',
                         const: 'stop',
                       },
+                      result: {
+                        $ref: '#/$defs/AgentStopped',
+                      },
                     },
                     required: ['kind', 'result'],
                   },
@@ -29483,13 +29483,13 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
-                      result: {
-                        $ref: '#/$defs/AgentResumeResult',
-                      },
                       kind: {
                         type: 'string',
                         const: 'resume',
                       },
+                      result: {
+                        $ref: '#/$defs/AgentResumeResult',
+                      },
                     },
                     required: ['kind', 'result'],
                   },
@@ -29497,12 +29497,12 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
-                      result: {
-                        $ref: '#/$defs/AgentQueueMutationResult',
-                      },
                       kind: {
                         type: 'string',
                         const: 'retract',
+                      },
+                      result: {
+                        $ref: '#/$defs/AgentQueueMutationResult',
                       },
                     },
                     required: ['kind', 'result'],
@@ -29548,12 +29548,12 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
-                      patch: {
-                        $ref: '#/$defs/AgentWorkspacePatch',
-                      },
                       kind: {
                         type: 'string',
                         const: 'ready',
+                      },
+                      patch: {
+                        $ref: '#/$defs/AgentWorkspacePatch',
                       },
                     },
                     required: ['kind', 'patch'],
@@ -29600,12 +29600,12 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
-                      execution: {
-                        $ref: '#/$defs/AgentExecution',
-                      },
                       kind: {
                         type: 'string',
                         const: 'started',
+                      },
+                      execution: {
+                        $ref: '#/$defs/AgentExecution',
                       },
                     },
                     required: ['kind', 'execution'],
@@ -29614,12 +29614,12 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
-                      reason: {
-                        $ref: '#/$defs/AgentResumeParkReason',
-                      },
                       kind: {
                         type: 'string',
                         const: 'parked',
+                      },
+                      reason: {
+                        $ref: '#/$defs/AgentResumeParkReason',
                       },
                     },
                     required: ['kind', 'reason'],
@@ -29688,14 +29688,14 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'committed',
+                      },
                       revision: {
                         type: 'integer',
                         format: 'uint64',
                         minimum: 0,
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'committed',
                       },
                     },
                     required: ['kind', 'revision'],
@@ -29704,6 +29704,10 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'revision_conflict',
+                      },
                       expected: {
                         type: 'integer',
                         format: 'uint64',
@@ -29714,10 +29718,6 @@ export const contracts = {
                         format: 'uint64',
                         minimum: 0,
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'revision_conflict',
-                      },
                     },
                     required: ['kind', 'expected', 'actual'],
                   },
@@ -29725,12 +29725,12 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
-                      reason: {
-                        $ref: '#/$defs/AgentQueueRejection',
-                      },
                       kind: {
                         type: 'string',
                         const: 'rejected',
+                      },
+                      reason: {
+                        $ref: '#/$defs/AgentQueueRejection',
                       },
                     },
                     required: ['kind', 'reason'],
@@ -29825,12 +29825,12 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  workspace: {
-                    $ref: '#/$defs/AgentDirectorySelection',
-                  },
                   kind: {
                     type: 'string',
                     const: 'pending',
+                  },
+                  workspace: {
+                    $ref: '#/$defs/AgentDirectorySelection',
                   },
                 },
                 required: ['kind', 'workspace'],
@@ -29839,12 +29839,12 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  session: {
-                    $ref: '#/$defs/AgentSession',
-                  },
                   kind: {
                     type: 'string',
                     const: 'ready',
+                  },
+                  session: {
+                    $ref: '#/$defs/AgentSession',
                   },
                 },
                 required: ['kind', 'session'],
@@ -29853,12 +29853,12 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  reason: {
-                    $ref: '#/$defs/AgentRejection',
-                  },
                   kind: {
                     type: 'string',
                     const: 'rejected',
+                  },
+                  reason: {
+                    $ref: '#/$defs/AgentRejection',
                   },
                 },
                 required: ['kind', 'reason'],
@@ -30017,6 +30017,10 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'model',
+                      },
                       connectionId: {
                         type: 'string',
                         minLength: 1,
@@ -30035,10 +30039,6 @@ export const contracts = {
                           },
                         ],
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'model',
-                      },
                     },
                     required: ['kind', 'connectionId', 'modelId'],
                   },
@@ -30046,12 +30046,12 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
-                      selection: {
-                        $ref: '#/$defs/AgentExecutorSelection',
-                      },
                       kind: {
                         type: 'string',
                         const: 'executor',
+                      },
+                      selection: {
+                        $ref: '#/$defs/AgentExecutorSelection',
                       },
                     },
                     required: ['kind', 'selection'],
@@ -30469,13 +30469,13 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
-                      agentId: {
-                        type: 'string',
-                        minLength: 1,
-                      },
                       kind: {
                         type: 'string',
                         const: 'agent',
+                      },
+                      agentId: {
+                        type: 'string',
+                        minLength: 1,
                       },
                     },
                     required: ['kind', 'agentId'],
@@ -30484,13 +30484,13 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
-                      presetId: {
-                        type: 'string',
-                        minLength: 1,
-                      },
                       kind: {
                         type: 'string',
                         const: 'preset',
+                      },
+                      presetId: {
+                        type: 'string',
+                        minLength: 1,
                       },
                     },
                     required: ['kind', 'presetId'],
@@ -30499,13 +30499,13 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
-                      executorId: {
-                        type: 'string',
-                        minLength: 1,
-                      },
                       kind: {
                         type: 'string',
                         const: 'executor',
+                      },
+                      executorId: {
+                        type: 'string',
+                        minLength: 1,
                       },
                     },
                     required: ['kind', 'executorId'],
@@ -30514,12 +30514,12 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
-                      operatorId: {
-                        $ref: '#/$defs/OperatorId',
-                      },
                       kind: {
                         type: 'string',
                         const: 'operator',
+                      },
+                      operatorId: {
+                        $ref: '#/$defs/OperatorId',
                       },
                     },
                     required: ['kind', 'operatorId'],
@@ -30782,12 +30782,12 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
-                      epoch: {
-                        $ref: '#/$defs/GraphEpoch',
-                      },
                       kind: {
                         type: 'string',
                         const: 'committed',
+                      },
+                      epoch: {
+                        $ref: '#/$defs/GraphEpoch',
                       },
                     },
                     required: ['kind', 'epoch'],
@@ -30796,6 +30796,10 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'conflict',
+                      },
                       current: {
                         anyOf: [
                           {
@@ -30806,10 +30810,6 @@ export const contracts = {
                           },
                         ],
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'conflict',
-                      },
                     },
                     required: ['kind'],
                   },
@@ -30817,12 +30817,12 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
-                      reason: {
-                        type: 'string',
-                      },
                       kind: {
                         type: 'string',
                         const: 'rejected',
+                      },
+                      reason: {
+                        type: 'string',
                       },
                     },
                     required: ['kind', 'reason'],
@@ -31058,13 +31058,13 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
-                      agentId: {
-                        type: 'string',
-                        minLength: 1,
-                      },
                       kind: {
                         type: 'string',
                         const: 'agent',
+                      },
+                      agentId: {
+                        type: 'string',
+                        minLength: 1,
                       },
                     },
                     required: ['kind', 'agentId'],
@@ -31073,13 +31073,13 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
-                      presetId: {
-                        type: 'string',
-                        minLength: 1,
-                      },
                       kind: {
                         type: 'string',
                         const: 'preset',
+                      },
+                      presetId: {
+                        type: 'string',
+                        minLength: 1,
                       },
                     },
                     required: ['kind', 'presetId'],
@@ -31088,13 +31088,13 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
-                      executorId: {
-                        type: 'string',
-                        minLength: 1,
-                      },
                       kind: {
                         type: 'string',
                         const: 'executor',
+                      },
+                      executorId: {
+                        type: 'string',
+                        minLength: 1,
                       },
                     },
                     required: ['kind', 'executorId'],
@@ -31103,12 +31103,12 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
-                      operatorId: {
-                        $ref: '#/$defs/OperatorId',
-                      },
                       kind: {
                         type: 'string',
                         const: 'operator',
+                      },
+                      operatorId: {
+                        $ref: '#/$defs/OperatorId',
                       },
                     },
                     required: ['kind', 'operatorId'],
@@ -31296,12 +31296,12 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  workspace: {
-                    $ref: '#/$defs/AgentDirectorySelection',
-                  },
                   kind: {
                     type: 'string',
                     const: 'pending',
+                  },
+                  workspace: {
+                    $ref: '#/$defs/AgentDirectorySelection',
                   },
                 },
                 required: ['kind', 'workspace'],
@@ -31310,12 +31310,12 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  session: {
-                    $ref: '#/$defs/AgentSession',
-                  },
                   kind: {
                     type: 'string',
                     const: 'ready',
+                  },
+                  session: {
+                    $ref: '#/$defs/AgentSession',
                   },
                 },
                 required: ['kind', 'session'],
@@ -31324,12 +31324,12 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  reason: {
-                    $ref: '#/$defs/AgentRejection',
-                  },
                   kind: {
                     type: 'string',
                     const: 'rejected',
+                  },
+                  reason: {
+                    $ref: '#/$defs/AgentRejection',
                   },
                 },
                 required: ['kind', 'reason'],
@@ -31488,6 +31488,10 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'model',
+                      },
                       connectionId: {
                         type: 'string',
                         minLength: 1,
@@ -31506,10 +31510,6 @@ export const contracts = {
                           },
                         ],
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'model',
-                      },
                     },
                     required: ['kind', 'connectionId', 'modelId'],
                   },
@@ -31517,12 +31517,12 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
-                      selection: {
-                        $ref: '#/$defs/AgentExecutorSelection',
-                      },
                       kind: {
                         type: 'string',
                         const: 'executor',
+                      },
+                      selection: {
+                        $ref: '#/$defs/AgentExecutorSelection',
                       },
                     },
                     required: ['kind', 'selection'],
@@ -31828,12 +31828,12 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  snapshot: {
-                    $ref: '#/$defs/WorkHubPresets',
-                  },
                   kind: {
                     type: 'string',
                     const: 'saved',
+                  },
+                  snapshot: {
+                    $ref: '#/$defs/WorkHubPresets',
                   },
                 },
                 required: ['kind', 'snapshot'],
@@ -31842,12 +31842,12 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  snapshot: {
-                    $ref: '#/$defs/WorkHubPresets',
-                  },
                   kind: {
                     type: 'string',
                     const: 'conflict',
+                  },
+                  snapshot: {
+                    $ref: '#/$defs/WorkHubPresets',
                   },
                 },
                 required: ['kind', 'snapshot'],
@@ -32046,15 +32046,15 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'blocked',
+                      },
                       dependencies: {
                         type: 'array',
                         items: {
                           type: 'string',
                         },
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'blocked',
                       },
                     },
                     required: ['kind', 'dependencies'],
@@ -32074,6 +32074,10 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'preparing',
+                      },
                       stage: {
                         $ref: '#/$defs/WorkHubPreparationStage',
                       },
@@ -32086,10 +32090,6 @@ export const contracts = {
                       },
                       state: {
                         $ref: '#/$defs/WorkHubPreparationState',
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'preparing',
                       },
                     },
                     required: ['kind', 'stage', 'operation', 'state'],
@@ -32131,12 +32131,12 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
-                      reason: {
-                        type: 'string',
-                      },
                       kind: {
                         type: 'string',
                         const: 'rejected',
+                      },
+                      reason: {
+                        type: 'string',
                       },
                     },
                     required: ['kind', 'reason'],
@@ -32145,6 +32145,10 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'started',
+                      },
                       sessionId: {
                         type: 'string',
                       },
@@ -32161,10 +32165,6 @@ export const contracts = {
                           },
                         ],
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'started',
-                      },
                     },
                     required: ['kind', 'sessionId', 'invocationId'],
                   },
@@ -32172,6 +32172,10 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'queued',
+                      },
                       sessionId: {
                         type: 'string',
                       },
@@ -32187,10 +32191,6 @@ export const contracts = {
                             type: 'null',
                           },
                         ],
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'queued',
                       },
                     },
                     required: ['kind', 'sessionId', 'messageId'],
@@ -32214,6 +32214,10 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'attachment',
+                      },
                       index: {
                         type: 'integer',
                         format: 'uint',
@@ -32223,10 +32227,6 @@ export const contracts = {
                         type: 'integer',
                         format: 'uint',
                         minimum: 0,
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'attachment',
                       },
                     },
                     required: ['kind', 'index', 'total'],
@@ -32296,12 +32296,12 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
-                      reason: {
-                        type: 'string',
-                      },
                       kind: {
                         type: 'string',
                         const: 'rejected',
+                      },
+                      reason: {
+                        type: 'string',
                       },
                     },
                     required: ['kind', 'reason'],
@@ -32358,6 +32358,10 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'delivered',
+                      },
                       shared: {
                         type: 'boolean',
                       },
@@ -32380,10 +32384,6 @@ export const contracts = {
                         minimum: 0,
                         description:
                           'Count for this exact Run; original Session interactions retain all authority.',
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'delivered',
                       },
                     },
                     required: ['kind', 'shared', 'execution', 'pendingInteractions'],
@@ -32747,13 +32747,13 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
-                      agentId: {
-                        type: 'string',
-                        minLength: 1,
-                      },
                       kind: {
                         type: 'string',
                         const: 'agent',
+                      },
+                      agentId: {
+                        type: 'string',
+                        minLength: 1,
                       },
                     },
                     required: ['kind', 'agentId'],
@@ -32762,13 +32762,13 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
-                      presetId: {
-                        type: 'string',
-                        minLength: 1,
-                      },
                       kind: {
                         type: 'string',
                         const: 'preset',
+                      },
+                      presetId: {
+                        type: 'string',
+                        minLength: 1,
                       },
                     },
                     required: ['kind', 'presetId'],
@@ -32777,13 +32777,13 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
-                      executorId: {
-                        type: 'string',
-                        minLength: 1,
-                      },
                       kind: {
                         type: 'string',
                         const: 'executor',
+                      },
+                      executorId: {
+                        type: 'string',
+                        minLength: 1,
                       },
                     },
                     required: ['kind', 'executorId'],
@@ -32792,12 +32792,12 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
-                      operatorId: {
-                        $ref: '#/$defs/OperatorId',
-                      },
                       kind: {
                         type: 'string',
                         const: 'operator',
+                      },
+                      operatorId: {
+                        $ref: '#/$defs/OperatorId',
                       },
                     },
                     required: ['kind', 'operatorId'],
@@ -32930,15 +32930,15 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'blocked',
+                      },
                       dependencies: {
                         type: 'array',
                         items: {
                           type: 'string',
                         },
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'blocked',
                       },
                     },
                     required: ['kind', 'dependencies'],
@@ -32958,6 +32958,10 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'preparing',
+                      },
                       stage: {
                         $ref: '#/$defs/WorkHubPreparationStage',
                       },
@@ -32970,10 +32974,6 @@ export const contracts = {
                       },
                       state: {
                         $ref: '#/$defs/WorkHubPreparationState',
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'preparing',
                       },
                     },
                     required: ['kind', 'stage', 'operation', 'state'],
@@ -33015,12 +33015,12 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
-                      reason: {
-                        type: 'string',
-                      },
                       kind: {
                         type: 'string',
                         const: 'rejected',
+                      },
+                      reason: {
+                        type: 'string',
                       },
                     },
                     required: ['kind', 'reason'],
@@ -33029,6 +33029,10 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'started',
+                      },
                       sessionId: {
                         type: 'string',
                       },
@@ -33045,10 +33049,6 @@ export const contracts = {
                           },
                         ],
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'started',
-                      },
                     },
                     required: ['kind', 'sessionId', 'invocationId'],
                   },
@@ -33056,6 +33056,10 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'queued',
+                      },
                       sessionId: {
                         type: 'string',
                       },
@@ -33071,10 +33075,6 @@ export const contracts = {
                             type: 'null',
                           },
                         ],
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'queued',
                       },
                     },
                     required: ['kind', 'sessionId', 'messageId'],
@@ -33098,6 +33098,10 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'attachment',
+                      },
                       index: {
                         type: 'integer',
                         format: 'uint',
@@ -33107,10 +33111,6 @@ export const contracts = {
                         type: 'integer',
                         format: 'uint',
                         minimum: 0,
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'attachment',
                       },
                     },
                     required: ['kind', 'index', 'total'],
@@ -33180,12 +33180,12 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
-                      reason: {
-                        type: 'string',
-                      },
                       kind: {
                         type: 'string',
                         const: 'rejected',
+                      },
+                      reason: {
+                        type: 'string',
                       },
                     },
                     required: ['kind', 'reason'],
@@ -33242,6 +33242,10 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'delivered',
+                      },
                       shared: {
                         type: 'boolean',
                       },
@@ -33264,10 +33268,6 @@ export const contracts = {
                         minimum: 0,
                         description:
                           'Count for this exact Run; original Session interactions retain all authority.',
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'delivered',
                       },
                     },
                     required: ['kind', 'shared', 'execution', 'pendingInteractions'],
@@ -33491,15 +33491,15 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'answered',
+                  },
                   answers: {
                     type: 'array',
                     items: {
                       $ref: '#/$defs/QuestionResponse',
                     },
-                  },
-                  kind: {
-                    type: 'string',
-                    const: 'answered',
                   },
                 },
                 required: ['kind', 'answers'],
@@ -33508,12 +33508,12 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  reason: {
-                    $ref: '#/$defs/ClosureReason',
-                  },
                   kind: {
                     type: 'string',
                     const: 'closed',
+                  },
+                  reason: {
+                    $ref: '#/$defs/ClosureReason',
                   },
                 },
                 required: ['kind', 'reason'],
@@ -33522,12 +33522,12 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  reason: {
-                    $ref: '#/$defs/QuestionRejection',
-                  },
                   kind: {
                     type: 'string',
                     const: 'rejected',
+                  },
+                  reason: {
+                    $ref: '#/$defs/QuestionRejection',
                   },
                 },
                 required: ['kind', 'reason'],
@@ -33620,6 +33620,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'string',
+                      },
                       default: {
                         type: ['string', 'null'],
                       },
@@ -33643,38 +33647,16 @@ export const contracts = {
                           },
                         ],
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'string',
-                      },
                     },
                     required: ['kind'],
                   },
                   {
                     type: 'object',
                     properties: {
-                      default: {
-                        type: ['number', 'null'],
-                        format: 'double',
-                      },
-                      minimum: {
-                        type: ['number', 'null'],
-                        format: 'double',
-                      },
-                      maximum: {
-                        type: ['number', 'null'],
-                        format: 'double',
-                      },
                       kind: {
                         type: 'string',
                         const: 'number',
                       },
-                    },
-                    required: ['kind'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
                       default: {
                         type: ['number', 'null'],
                         format: 'double',
@@ -33687,29 +33669,51 @@ export const contracts = {
                         type: ['number', 'null'],
                         format: 'double',
                       },
+                    },
+                    required: ['kind'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
                       kind: {
                         type: 'string',
                         const: 'integer',
                       },
+                      default: {
+                        type: ['number', 'null'],
+                        format: 'double',
+                      },
+                      minimum: {
+                        type: ['number', 'null'],
+                        format: 'double',
+                      },
+                      maximum: {
+                        type: ['number', 'null'],
+                        format: 'double',
+                      },
                     },
                     required: ['kind'],
                   },
                   {
                     type: 'object',
                     properties: {
-                      default: {
-                        type: ['boolean', 'null'],
-                      },
                       kind: {
                         type: 'string',
                         const: 'boolean',
                       },
+                      default: {
+                        type: ['boolean', 'null'],
+                      },
                     },
                     required: ['kind'],
                   },
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'single_select',
+                      },
                       options: {
                         type: 'array',
                         items: {
@@ -33719,16 +33723,16 @@ export const contracts = {
                       default: {
                         type: ['string', 'null'],
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'single_select',
-                      },
                     },
                     required: ['kind', 'options'],
                   },
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'multi_select',
+                      },
                       options: {
                         type: 'array',
                         items: {
@@ -33750,10 +33754,6 @@ export const contracts = {
                         type: ['integer', 'null'],
                         format: 'uint',
                         minimum: 0,
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'multi_select',
                       },
                     },
                     required: ['kind', 'options'],
@@ -33785,12 +33785,12 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  result: {
-                    $ref: '#/$defs/FormResult',
-                  },
                   kind: {
                     type: 'string',
                     const: 'answered',
+                  },
+                  result: {
+                    $ref: '#/$defs/FormResult',
                   },
                 },
                 required: ['kind', 'result'],
@@ -33799,12 +33799,12 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  reason: {
-                    $ref: '#/$defs/ClosureReason',
-                  },
                   kind: {
                     type: 'string',
                     const: 'closed',
+                  },
+                  reason: {
+                    $ref: '#/$defs/ClosureReason',
                   },
                 },
                 required: ['kind', 'reason'],
@@ -33813,12 +33813,12 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  reason: {
-                    $ref: '#/$defs/QuestionRejection',
-                  },
                   kind: {
                     type: 'string',
                     const: 'rejected',
+                  },
+                  reason: {
+                    $ref: '#/$defs/QuestionRejection',
                   },
                 },
                 required: ['kind', 'reason'],
@@ -33832,15 +33832,15 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      action: {
+                        type: 'string',
+                        const: 'accept',
+                      },
                       values: {
                         type: 'object',
                         additionalProperties: {
                           $ref: '#/$defs/FormValue',
                         },
-                      },
-                      action: {
-                        type: 'string',
-                        const: 'accept',
                       },
                     },
                     required: ['action', 'values'],
@@ -34045,12 +34045,12 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  reference: {
-                    type: 'string',
-                  },
                   kind: {
                     type: 'string',
                     const: 'applied',
+                  },
+                  reference: {
+                    type: 'string',
                   },
                 },
                 required: ['kind', 'reference'],
@@ -34070,12 +34070,12 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  reason: {
-                    type: 'string',
-                  },
                   kind: {
                     type: 'string',
                     const: 'rejected',
+                  },
+                  reason: {
+                    type: 'string',
                   },
                 },
                 required: ['kind', 'reason'],
@@ -34215,12 +34215,12 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  reference: {
-                    type: 'string',
-                  },
                   kind: {
                     type: 'string',
                     const: 'applied',
+                  },
+                  reference: {
+                    type: 'string',
                   },
                 },
                 required: ['kind', 'reference'],
@@ -34240,12 +34240,12 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  reason: {
-                    type: 'string',
-                  },
                   kind: {
                     type: 'string',
                     const: 'rejected',
+                  },
+                  reason: {
+                    type: 'string',
                   },
                 },
                 required: ['kind', 'reason'],
@@ -34283,12 +34283,12 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  reference: {
-                    type: 'string',
-                  },
                   kind: {
                     type: 'string',
                     const: 'applied',
+                  },
+                  reference: {
+                    type: 'string',
                   },
                 },
                 required: ['kind', 'reference'],
@@ -34308,12 +34308,12 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  reason: {
-                    type: 'string',
-                  },
                   kind: {
                     type: 'string',
                     const: 'rejected',
+                  },
+                  reason: {
+                    type: 'string',
                   },
                 },
                 required: ['kind', 'reason'],
@@ -34470,6 +34470,10 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'page',
+                  },
                   writable: {
                     type: 'boolean',
                   },
@@ -34505,10 +34509,6 @@ export const contracts = {
                     items: {
                       type: 'string',
                     },
-                  },
-                  kind: {
-                    type: 'string',
-                    const: 'page',
                   },
                 },
                 required: [
@@ -34802,6 +34802,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'loaded',
+                  },
                   revision: {
                     type: 'string',
                   },
@@ -34844,10 +34848,6 @@ export const contracts = {
                   receipt: {
                     $ref: '#/$defs/SkillInvocationReceipt',
                   },
-                  kind: {
-                    type: 'string',
-                    const: 'loaded',
-                  },
                 },
                 required: [
                   'kind',
@@ -34867,6 +34867,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'resource',
+                  },
                   revision: {
                     type: 'string',
                   },
@@ -34910,10 +34914,6 @@ export const contracts = {
                   receipt: {
                     $ref: '#/$defs/SkillInvocationReceipt',
                   },
-                  kind: {
-                    type: 'string',
-                    const: 'resource',
-                  },
                 },
                 required: [
                   'kind',
@@ -34941,15 +34941,15 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'unavailable',
+                  },
                   reason: {
                     $ref: '#/$defs/SkillFailureReason',
                   },
                   receipt: {
                     $ref: '#/$defs/SkillInvocationReceipt',
-                  },
-                  kind: {
-                    type: 'string',
-                    const: 'unavailable',
                   },
                 },
                 required: ['kind', 'reason', 'receipt'],
@@ -34957,12 +34957,12 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  reason: {
-                    type: 'string',
-                  },
                   kind: {
                     type: 'string',
                     const: 'resource_unavailable',
+                  },
+                  reason: {
+                    type: 'string',
                   },
                 },
                 required: ['kind', 'reason'],
@@ -35299,6 +35299,10 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'ready',
+                  },
                   text: {
                     type: ['string', 'null'],
                     description: 'None preserves the original message exactly.',
@@ -35313,10 +35317,6 @@ export const contracts = {
                       type: 'string',
                     },
                   },
-                  kind: {
-                    type: 'string',
-                    const: 'ready',
-                  },
                 },
                 required: ['kind', 'record', 'requiredTools'],
               },
@@ -35324,12 +35324,12 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  invocation: {
-                    $ref: '#/$defs/SkillInvocationResult',
-                  },
                   kind: {
                     type: 'string',
                     const: 'blocked',
+                  },
+                  invocation: {
+                    $ref: '#/$defs/SkillInvocationResult',
                   },
                 },
                 required: ['kind', 'invocation'],
@@ -35621,6 +35621,10 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'ready',
+                  },
                   review: {
                     $ref: '#/$defs/SkillLibraryReview',
                   },
@@ -35643,10 +35647,6 @@ export const contracts = {
                   },
                   locallyModified: {
                     type: 'boolean',
-                  },
-                  kind: {
-                    type: 'string',
-                    const: 'ready',
                   },
                 },
                 required: [
@@ -35674,12 +35674,12 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  reason: {
-                    type: 'string',
-                  },
                   kind: {
                     type: 'string',
                     const: 'rejected',
+                  },
+                  reason: {
+                    type: 'string',
                   },
                 },
                 required: ['kind', 'reason'],
@@ -35922,6 +35922,10 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'page',
+                  },
                   writable: {
                     type: 'boolean',
                   },
@@ -35961,10 +35965,6 @@ export const contracts = {
                     type: 'integer',
                     format: 'uint',
                     minimum: 0,
-                  },
-                  kind: {
-                    type: 'string',
-                    const: 'page',
                   },
                 },
                 required: [
@@ -36344,14 +36344,14 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'applied',
+                  },
                   revision: {
                     type: 'integer',
                     format: 'uint64',
                     minimum: 0,
-                  },
-                  kind: {
-                    type: 'string',
-                    const: 'applied',
                   },
                 },
                 required: ['kind', 'revision'],
@@ -36371,12 +36371,12 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  reason: {
-                    type: 'string',
-                  },
                   kind: {
                     type: 'string',
                     const: 'rejected',
+                  },
+                  reason: {
+                    type: 'string',
                   },
                 },
                 required: ['kind', 'reason'],
@@ -36659,15 +36659,15 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'recorded',
+                      },
                       outcome: {
                         $ref: '#/$defs/OperationOutcome',
                       },
                       cleanup: {
                         $ref: '#/$defs/OperationCleanup',
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'recorded',
                       },
                     },
                     required: ['kind', 'outcome', 'cleanup'],
@@ -36676,12 +36676,12 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
-                      diagnostic: {
-                        type: 'string',
-                      },
                       kind: {
                         type: 'string',
                         const: 'unavailable',
+                      },
+                      diagnostic: {
+                        type: 'string',
                       },
                     },
                     required: ['kind', 'diagnostic'],
@@ -36707,11 +36707,11 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
-                      value: true,
                       kind: {
                         type: 'string',
                         const: 'returned',
                       },
+                      value: true,
                     },
                     required: ['kind', 'value'],
                   },
@@ -36719,12 +36719,12 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
-                      diagnostic: {
-                        type: 'string',
-                      },
                       kind: {
                         type: 'string',
                         const: 'unknown',
+                      },
+                      diagnostic: {
+                        type: 'string',
                       },
                     },
                     required: ['kind', 'diagnostic'],
@@ -36761,12 +36761,12 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
-                      diagnostic: {
-                        type: 'string',
-                      },
                       kind: {
                         type: 'string',
                         const: 'failed',
+                      },
+                      diagnostic: {
+                        type: 'string',
                       },
                     },
                     required: ['kind', 'diagnostic'],
@@ -36779,12 +36779,12 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
-                      reference: {
-                        type: 'string',
-                      },
                       kind: {
                         type: 'string',
                         const: 'applied',
+                      },
+                      reference: {
+                        type: 'string',
                       },
                     },
                     required: ['kind', 'reference'],
@@ -36804,12 +36804,12 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
-                      reason: {
-                        type: 'string',
-                      },
                       kind: {
                         type: 'string',
                         const: 'rejected',
+                      },
+                      reason: {
+                        type: 'string',
                       },
                     },
                     required: ['kind', 'reason'],
@@ -36854,24 +36854,10 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
-                      path: {
-                        type: 'string',
-                        minLength: 1,
-                      },
-                      diff: {
-                        type: 'string',
-                      },
                       type: {
                         type: 'string',
                         const: 'create_file',
                       },
-                    },
-                    required: ['type', 'path', 'diff'],
-                  },
-                  {
-                    type: 'object',
-                    additionalProperties: false,
-                    properties: {
                       path: {
                         type: 'string',
                         minLength: 1,
@@ -36879,9 +36865,23 @@ export const contracts = {
                       diff: {
                         type: 'string',
                       },
+                    },
+                    required: ['type', 'path', 'diff'],
+                  },
+                  {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
                       type: {
                         type: 'string',
                         const: 'update_file',
+                      },
+                      path: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                      diff: {
+                        type: 'string',
                       },
                     },
                     required: ['type', 'path', 'diff'],
@@ -36890,13 +36890,13 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
-                      path: {
-                        type: 'string',
-                        minLength: 1,
-                      },
                       type: {
                         type: 'string',
                         const: 'delete_file',
+                      },
+                      path: {
+                        type: 'string',
+                        minLength: 1,
                       },
                     },
                     required: ['type', 'path'],
@@ -36911,11 +36911,11 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  value: true,
                   kind: {
                     type: 'string',
                     const: 'completed',
                   },
+                  value: true,
                 },
                 required: ['kind', 'value'],
               },
@@ -36923,12 +36923,12 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  message: {
-                    type: 'string',
-                  },
                   kind: {
                     type: 'string',
                     const: 'failed',
+                  },
+                  message: {
+                    type: 'string',
                   },
                 },
                 required: ['kind', 'message'],
@@ -36969,11 +36969,11 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  value: true,
                   kind: {
                     type: 'string',
                     const: 'completed',
                   },
+                  value: true,
                 },
                 required: ['kind', 'value'],
               },
@@ -36981,12 +36981,12 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  message: {
-                    type: 'string',
-                  },
                   kind: {
                     type: 'string',
                     const: 'failed',
+                  },
+                  message: {
+                    type: 'string',
                   },
                 },
                 required: ['kind', 'message'],
@@ -37025,11 +37025,11 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  value: true,
                   kind: {
                     type: 'string',
                     const: 'completed',
                   },
+                  value: true,
                 },
                 required: ['kind', 'value'],
               },
@@ -37037,12 +37037,12 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  message: {
-                    type: 'string',
-                  },
                   kind: {
                     type: 'string',
                     const: 'failed',
+                  },
+                  message: {
+                    type: 'string',
                   },
                 },
                 required: ['kind', 'message'],
@@ -37082,11 +37082,11 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  value: true,
                   kind: {
                     type: 'string',
                     const: 'completed',
                   },
+                  value: true,
                 },
                 required: ['kind', 'value'],
               },
@@ -37094,12 +37094,12 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  message: {
-                    type: 'string',
-                  },
                   kind: {
                     type: 'string',
                     const: 'failed',
+                  },
+                  message: {
+                    type: 'string',
                   },
                 },
                 required: ['kind', 'message'],
@@ -37145,6 +37145,10 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'chunk',
+                  },
                   mimeType: {
                     type: 'string',
                     pattern: '^image/(png|jpeg|gif|webp)$',
@@ -37165,10 +37169,6 @@ export const contracts = {
                     type: 'string',
                     minLength: 1,
                     maxLength: 43692,
-                  },
-                  kind: {
-                    type: 'string',
-                    const: 'chunk',
                   },
                 },
                 required: ['kind', 'mimeType', 'totalBytes', 'offset', 'data'],
@@ -37225,11 +37225,11 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  value: true,
                   kind: {
                     type: 'string',
                     const: 'completed',
                   },
+                  value: true,
                 },
                 required: ['kind', 'value'],
               },
@@ -37237,12 +37237,12 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  message: {
-                    type: 'string',
-                  },
                   kind: {
                     type: 'string',
                     const: 'failed',
+                  },
+                  message: {
+                    type: 'string',
                   },
                 },
                 required: ['kind', 'message'],
@@ -37279,11 +37279,11 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  value: true,
                   kind: {
                     type: 'string',
                     const: 'completed',
                   },
+                  value: true,
                 },
                 required: ['kind', 'value'],
               },
@@ -37291,12 +37291,12 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  message: {
-                    type: 'string',
-                  },
                   kind: {
                     type: 'string',
                     const: 'failed',
+                  },
+                  message: {
+                    type: 'string',
                   },
                 },
                 required: ['kind', 'message'],
@@ -37471,11 +37471,11 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  value: true,
                   kind: {
                     type: 'string',
                     const: 'completed',
                   },
+                  value: true,
                 },
                 required: ['kind', 'value'],
               },
@@ -37483,12 +37483,12 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  message: {
-                    type: 'string',
-                  },
                   kind: {
                     type: 'string',
                     const: 'failed',
+                  },
+                  message: {
+                    type: 'string',
                   },
                 },
                 required: ['kind', 'message'],
@@ -37526,11 +37526,11 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  value: true,
                   kind: {
                     type: 'string',
                     const: 'completed',
                   },
+                  value: true,
                 },
                 required: ['kind', 'value'],
               },
@@ -37538,12 +37538,12 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  message: {
-                    type: 'string',
-                  },
                   kind: {
                     type: 'string',
                     const: 'failed',
+                  },
+                  message: {
+                    type: 'string',
                   },
                 },
                 required: ['kind', 'message'],
@@ -37574,11 +37574,11 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  value: true,
                   kind: {
                     type: 'string',
                     const: 'completed',
                   },
+                  value: true,
                 },
                 required: ['kind', 'value'],
               },
@@ -37586,12 +37586,12 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  message: {
-                    type: 'string',
-                  },
                   kind: {
                     type: 'string',
                     const: 'failed',
+                  },
+                  message: {
+                    type: 'string',
                   },
                 },
                 required: ['kind', 'message'],
@@ -37622,11 +37622,11 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  value: true,
                   kind: {
                     type: 'string',
                     const: 'completed',
                   },
+                  value: true,
                 },
                 required: ['kind', 'value'],
               },
@@ -37634,12 +37634,12 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  message: {
-                    type: 'string',
-                  },
                   kind: {
                     type: 'string',
                     const: 'failed',
+                  },
+                  message: {
+                    type: 'string',
                   },
                 },
                 required: ['kind', 'message'],
@@ -37724,11 +37724,11 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  value: true,
                   kind: {
                     type: 'string',
                     const: 'completed',
                   },
+                  value: true,
                 },
                 required: ['kind', 'value'],
               },
@@ -37736,12 +37736,12 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  message: {
-                    type: 'string',
-                  },
                   kind: {
                     type: 'string',
                     const: 'failed',
+                  },
+                  message: {
+                    type: 'string',
                   },
                 },
                 required: ['kind', 'message'],
@@ -37951,6 +37951,10 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'exited',
+                  },
                   code: {
                     type: ['integer', 'null'],
                     format: 'int32',
@@ -37964,10 +37968,6 @@ export const contracts = {
                   error: {
                     type: ['string', 'null'],
                   },
-                  kind: {
-                    type: 'string',
-                    const: 'exited',
-                  },
                 },
                 required: ['kind', 'success', 'stopped'],
               },
@@ -37975,12 +37975,12 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  message: {
-                    type: 'string',
-                  },
                   kind: {
                     type: 'string',
                     const: 'failed',
+                  },
+                  message: {
+                    type: 'string',
                   },
                 },
                 required: ['kind', 'message'],
@@ -37995,13 +37995,13 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  id: {
-                    type: 'string',
-                    format: 'uuid',
-                  },
                   kind: {
                     type: 'string',
                     const: 'started',
+                  },
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
                   },
                 },
                 required: ['kind', 'id'],
@@ -38010,6 +38010,10 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'output',
+                  },
                   stream: {
                     $ref: '#/$defs/ProtocolProcessStream',
                   },
@@ -38022,10 +38026,6 @@ export const contracts = {
                       maximum: 255,
                     },
                     maxItems: 8192,
-                  },
-                  kind: {
-                    type: 'string',
-                    const: 'output',
                   },
                 },
                 required: ['kind', 'stream', 'bytes'],
@@ -38186,6 +38186,10 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'exited',
+                  },
                   code: {
                     type: ['integer', 'null'],
                     format: 'int32',
@@ -38199,10 +38203,6 @@ export const contracts = {
                   error: {
                     type: ['string', 'null'],
                   },
-                  kind: {
-                    type: 'string',
-                    const: 'exited',
-                  },
                 },
                 required: ['kind', 'success', 'stopped'],
               },
@@ -38210,12 +38210,12 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  message: {
-                    type: 'string',
-                  },
                   kind: {
                     type: 'string',
                     const: 'failed',
+                  },
+                  message: {
+                    type: 'string',
                   },
                 },
                 required: ['kind', 'message'],
@@ -38230,13 +38230,13 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  id: {
-                    type: 'string',
-                    format: 'uuid',
-                  },
                   kind: {
                     type: 'string',
                     const: 'started',
+                  },
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
                   },
                 },
                 required: ['kind', 'id'],
@@ -38245,6 +38245,10 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'output',
+                  },
                   stream: {
                     $ref: '#/$defs/ProtocolProcessStream',
                   },
@@ -38257,10 +38261,6 @@ export const contracts = {
                       maximum: 255,
                     },
                     maxItems: 8192,
-                  },
-                  kind: {
-                    type: 'string',
-                    const: 'output',
                   },
                 },
                 required: ['kind', 'stream', 'bytes'],
@@ -38306,13 +38306,13 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  methodId: {
-                    type: 'string',
-                    minLength: 1,
-                  },
                   kind: {
                     type: 'string',
                     const: 'authenticate',
+                  },
+                  methodId: {
+                    type: 'string',
+                    minLength: 1,
                   },
                 },
                 required: ['kind', 'methodId'],
@@ -38327,6 +38327,10 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'checked',
+                  },
                   info: {
                     anyOf: [
                       {
@@ -38342,10 +38346,6 @@ export const contracts = {
                     items: {
                       $ref: '#/$defs/ExecutorAuthenticationMethod',
                     },
-                  },
-                  kind: {
-                    type: 'string',
-                    const: 'checked',
                   },
                 },
                 required: ['kind', 'methods'],
@@ -38365,12 +38365,12 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  diagnostic: {
-                    type: 'string',
-                  },
                   kind: {
                     type: 'string',
                     const: 'unresolved',
+                  },
+                  diagnostic: {
+                    type: 'string',
                   },
                 },
                 required: ['kind', 'diagnostic'],
@@ -38426,12 +38426,12 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  url: {
-                    type: 'string',
-                  },
                   kind: {
                     type: 'string',
                     const: 'authorization_url',
+                  },
+                  url: {
+                    type: 'string',
                   },
                 },
                 required: ['kind', 'url'],
@@ -38475,12 +38475,12 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  value: {
-                    $ref: '#/$defs/TerminalLeaseUpdate',
-                  },
                   kind: {
                     type: 'string',
                     const: 'completed',
+                  },
+                  value: {
+                    $ref: '#/$defs/TerminalLeaseUpdate',
                   },
                 },
                 required: ['kind', 'value'],
@@ -38489,12 +38489,12 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  message: {
-                    type: 'string',
-                  },
                   kind: {
                     type: 'string',
                     const: 'failed',
+                  },
+                  message: {
+                    type: 'string',
                   },
                 },
                 required: ['kind', 'message'],
@@ -38564,15 +38564,15 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'source_owned',
+                      },
                       sourceSessionId: {
                         type: 'string',
                       },
                       ownerSessionId: {
                         type: 'string',
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'source_owned',
                       },
                     },
                     required: ['kind', 'sourceSessionId', 'ownerSessionId'],
@@ -38581,12 +38581,12 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
-                      sourceSessionId: {
-                        type: 'string',
-                      },
                       kind: {
                         type: 'string',
                         const: 'source_unavailable',
+                      },
+                      sourceSessionId: {
+                        type: 'string',
                       },
                     },
                     required: ['kind', 'sourceSessionId'],
@@ -38689,6 +38689,10 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
+                      mode: {
+                        type: 'string',
+                        const: 'pipes',
+                      },
                       stdout: {
                         type: 'string',
                       },
@@ -38707,10 +38711,6 @@ export const contracts = {
                       redacted: {
                         type: 'boolean',
                       },
-                      mode: {
-                        type: 'string',
-                        const: 'pipes',
-                      },
                     },
                     required: [
                       'mode',
@@ -38725,6 +38725,10 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
+                      mode: {
+                        type: 'string',
+                        const: 'pty',
+                      },
                       screen: {
                         type: 'string',
                       },
@@ -38757,10 +38761,6 @@ export const contracts = {
                       },
                       redacted: {
                         type: 'boolean',
-                      },
-                      mode: {
-                        type: 'string',
-                        const: 'pty',
                       },
                     },
                     required: [
@@ -38877,15 +38877,15 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
+                      type: {
+                        type: 'string',
+                        const: 'text',
+                      },
                       text: {
                         type: 'string',
                         minLength: 1,
                         pattern: '^[^\\x00-\\x1f\\x7f-\\x9f]+$',
                       },
-                      type: {
-                        type: 'string',
-                        const: 'text',
-                      },
                     },
                     required: ['type', 'text'],
                   },
@@ -38893,15 +38893,15 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
+                      type: {
+                        type: 'string',
+                        const: 'paste',
+                      },
                       text: {
                         type: 'string',
                         minLength: 1,
                         pattern: '^[^\\x00-\\x08\\x0b\\x0c\\x0e-\\x1f\\x7f-\\x9f]+$',
                       },
-                      type: {
-                        type: 'string',
-                        const: 'paste',
-                      },
                     },
                     required: ['type', 'text'],
                   },
@@ -38909,6 +38909,10 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
+                      type: {
+                        type: 'string',
+                        const: 'key',
+                      },
                       key: {
                         type: 'string',
                         pattern:
@@ -38918,10 +38922,6 @@ export const contracts = {
                         $ref: '#/$defs/TerminalModifiers',
                         default: [],
                       },
-                      type: {
-                        type: 'string',
-                        const: 'key',
-                      },
                     },
                     required: ['type', 'key'],
                   },
@@ -38929,6 +38929,10 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
+                      type: {
+                        type: 'string',
+                        const: 'mouse',
+                      },
                       event: {
                         $ref: '#/$defs/RawEvent',
                       },
@@ -38955,10 +38959,6 @@ export const contracts = {
                       modifiers: {
                         $ref: '#/$defs/TerminalModifiers',
                         default: [],
-                      },
-                      type: {
-                        type: 'string',
-                        const: 'mouse',
                       },
                     },
                     required: ['type', 'event', 'x', 'y'],
@@ -39018,12 +39018,12 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  value: {
-                    $ref: '#/$defs/TerminalControlReceipt',
-                  },
                   kind: {
                     type: 'string',
                     const: 'completed',
+                  },
+                  value: {
+                    $ref: '#/$defs/TerminalControlReceipt',
                   },
                 },
                 required: ['kind', 'value'],
@@ -39032,12 +39032,12 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  message: {
-                    type: 'string',
-                  },
                   kind: {
                     type: 'string',
                     const: 'failed',
+                  },
+                  message: {
+                    type: 'string',
                   },
                 },
                 required: ['kind', 'message'],
@@ -39104,12 +39104,12 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  value: {
-                    $ref: '#/$defs/TerminalPage',
-                  },
                   kind: {
                     type: 'string',
                     const: 'completed',
+                  },
+                  value: {
+                    $ref: '#/$defs/TerminalPage',
                   },
                 },
                 required: ['kind', 'value'],
@@ -39118,12 +39118,12 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  message: {
-                    type: 'string',
-                  },
                   kind: {
                     type: 'string',
                     const: 'failed',
+                  },
+                  message: {
+                    type: 'string',
                   },
                 },
                 required: ['kind', 'message'],
@@ -39197,15 +39197,15 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'source_owned',
+                      },
                       sourceSessionId: {
                         type: 'string',
                       },
                       ownerSessionId: {
                         type: 'string',
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'source_owned',
                       },
                     },
                     required: ['kind', 'sourceSessionId', 'ownerSessionId'],
@@ -39214,12 +39214,12 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
-                      sourceSessionId: {
-                        type: 'string',
-                      },
                       kind: {
                         type: 'string',
                         const: 'source_unavailable',
+                      },
+                      sourceSessionId: {
+                        type: 'string',
                       },
                     },
                     required: ['kind', 'sourceSessionId'],
@@ -39322,6 +39322,10 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
+                      mode: {
+                        type: 'string',
+                        const: 'pipes',
+                      },
                       stdout: {
                         type: 'string',
                       },
@@ -39340,10 +39344,6 @@ export const contracts = {
                       redacted: {
                         type: 'boolean',
                       },
-                      mode: {
-                        type: 'string',
-                        const: 'pipes',
-                      },
                     },
                     required: [
                       'mode',
@@ -39358,6 +39358,10 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
+                      mode: {
+                        type: 'string',
+                        const: 'pty',
+                      },
                       screen: {
                         type: 'string',
                       },
@@ -39390,10 +39394,6 @@ export const contracts = {
                       },
                       redacted: {
                         type: 'boolean',
-                      },
-                      mode: {
-                        type: 'string',
-                        const: 'pty',
                       },
                     },
                     required: [
@@ -39463,12 +39463,12 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  value: {
-                    $ref: '#/$defs/ResourceUpdate',
-                  },
                   kind: {
                     type: 'string',
                     const: 'completed',
+                  },
+                  value: {
+                    $ref: '#/$defs/ResourceUpdate',
                   },
                 },
                 required: ['kind', 'value'],
@@ -39477,12 +39477,12 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  message: {
-                    type: 'string',
-                  },
                   kind: {
                     type: 'string',
                     const: 'failed',
+                  },
+                  message: {
+                    type: 'string',
                   },
                 },
                 required: ['kind', 'message'],
@@ -39530,15 +39530,15 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'source_owned',
+                      },
                       sourceSessionId: {
                         type: 'string',
                       },
                       ownerSessionId: {
                         type: 'string',
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'source_owned',
                       },
                     },
                     required: ['kind', 'sourceSessionId', 'ownerSessionId'],
@@ -39547,12 +39547,12 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
-                      sourceSessionId: {
-                        type: 'string',
-                      },
                       kind: {
                         type: 'string',
                         const: 'source_unavailable',
+                      },
+                      sourceSessionId: {
+                        type: 'string',
                       },
                     },
                     required: ['kind', 'sourceSessionId'],
@@ -39655,6 +39655,10 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
+                      mode: {
+                        type: 'string',
+                        const: 'pipes',
+                      },
                       stdout: {
                         type: 'string',
                       },
@@ -39673,10 +39677,6 @@ export const contracts = {
                       redacted: {
                         type: 'boolean',
                       },
-                      mode: {
-                        type: 'string',
-                        const: 'pipes',
-                      },
                     },
                     required: [
                       'mode',
@@ -39691,6 +39691,10 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
+                      mode: {
+                        type: 'string',
+                        const: 'pty',
+                      },
                       screen: {
                         type: 'string',
                       },
@@ -39723,10 +39727,6 @@ export const contracts = {
                       },
                       redacted: {
                         type: 'boolean',
-                      },
-                      mode: {
-                        type: 'string',
-                        const: 'pty',
                       },
                     },
                     required: [
@@ -39796,12 +39796,12 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  value: {
-                    $ref: '#/$defs/TerminalDisplayPart',
-                  },
                   kind: {
                     type: 'string',
                     const: 'completed',
+                  },
+                  value: {
+                    $ref: '#/$defs/TerminalDisplayPart',
                   },
                 },
                 required: ['kind', 'value'],
@@ -39810,12 +39810,12 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  message: {
-                    type: 'string',
-                  },
                   kind: {
                     type: 'string',
                     const: 'failed',
+                  },
+                  message: {
+                    type: 'string',
                   },
                 },
                 required: ['kind', 'message'],
@@ -39830,6 +39830,10 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'begin',
+                      },
                       revision: {
                         type: 'integer',
                         format: 'uint64',
@@ -39854,10 +39858,6 @@ export const contracts = {
                           },
                         ],
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'begin',
-                      },
                     },
                     required: ['kind', 'revision', 'metadata', 'scrollbackRows'],
                   },
@@ -39865,15 +39865,15 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'rows',
+                      },
                       parts: {
                         type: 'array',
                         items: {
                           $ref: '#/$defs/RowPart',
                         },
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'rows',
                       },
                     },
                     required: ['kind', 'parts'],
@@ -40214,12 +40214,12 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  value: {
-                    $ref: '#/$defs/TerminalOutputEvent',
-                  },
                   kind: {
                     type: 'string',
                     const: 'completed',
+                  },
+                  value: {
+                    $ref: '#/$defs/TerminalOutputEvent',
                   },
                 },
                 required: ['kind', 'value'],
@@ -40228,12 +40228,12 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  message: {
-                    type: 'string',
-                  },
                   kind: {
                     type: 'string',
                     const: 'failed',
+                  },
+                  message: {
+                    type: 'string',
                   },
                 },
                 required: ['kind', 'message'],
@@ -40248,6 +40248,10 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'data',
+                      },
                       sequence: {
                         type: 'integer',
                         format: 'uint64',
@@ -40264,10 +40268,6 @@ export const contracts = {
                         type: 'string',
                         minLength: 1,
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'data',
-                      },
                     },
                     required: ['kind', 'sequence', 'size', 'initialSize', 'dataBase64'],
                   },
@@ -40275,6 +40275,10 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'resize',
+                      },
                       sequence: {
                         type: 'integer',
                         format: 'uint64',
@@ -40287,10 +40291,6 @@ export const contracts = {
                       initialSize: {
                         $ref: '#/$defs/TerminalSize',
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'resize',
-                      },
                     },
                     required: ['kind', 'sequence', 'size', 'initialSize'],
                   },
@@ -40298,29 +40298,10 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
-                      after: {
-                        type: 'integer',
-                        format: 'uint64',
-                        minimum: 0,
-                        maximum: 9007199254740991,
-                      },
-                      size: {
-                        $ref: '#/$defs/TerminalSize',
-                      },
-                      initialSize: {
-                        $ref: '#/$defs/TerminalSize',
-                      },
                       kind: {
                         type: 'string',
                         const: 'pending',
                       },
-                    },
-                    required: ['kind', 'after', 'size', 'initialSize'],
-                  },
-                  {
-                    type: 'object',
-                    additionalProperties: false,
-                    properties: {
                       after: {
                         type: 'integer',
                         format: 'uint64',
@@ -40333,9 +40314,28 @@ export const contracts = {
                       initialSize: {
                         $ref: '#/$defs/TerminalSize',
                       },
+                    },
+                    required: ['kind', 'after', 'size', 'initialSize'],
+                  },
+                  {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
                       kind: {
                         type: 'string',
                         const: 'closed',
+                      },
+                      after: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                        maximum: 9007199254740991,
+                      },
+                      size: {
+                        $ref: '#/$defs/TerminalSize',
+                      },
+                      initialSize: {
+                        $ref: '#/$defs/TerminalSize',
                       },
                     },
                     required: ['kind', 'after', 'size', 'initialSize'],
@@ -40344,12 +40344,12 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
-                      reason: {
-                        $ref: '#/$defs/TerminalOutputUnavailable',
-                      },
                       kind: {
                         type: 'string',
                         const: 'unavailable',
+                      },
+                      reason: {
+                        $ref: '#/$defs/TerminalOutputUnavailable',
                       },
                     },
                     required: ['kind', 'reason'],
@@ -40426,12 +40426,12 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  value: {
-                    $ref: '#/$defs/TerminalReleased',
-                  },
                   kind: {
                     type: 'string',
                     const: 'completed',
+                  },
+                  value: {
+                    $ref: '#/$defs/TerminalReleased',
                   },
                 },
                 required: ['kind', 'value'],
@@ -40440,12 +40440,12 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  message: {
-                    type: 'string',
-                  },
                   kind: {
                     type: 'string',
                     const: 'failed',
+                  },
+                  message: {
+                    type: 'string',
                   },
                 },
                 required: ['kind', 'message'],
@@ -40530,12 +40530,12 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  value: {
-                    $ref: '#/$defs/ResourceUpdate',
-                  },
                   kind: {
                     type: 'string',
                     const: 'completed',
+                  },
+                  value: {
+                    $ref: '#/$defs/ResourceUpdate',
                   },
                 },
                 required: ['kind', 'value'],
@@ -40544,12 +40544,12 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  message: {
-                    type: 'string',
-                  },
                   kind: {
                     type: 'string',
                     const: 'failed',
+                  },
+                  message: {
+                    type: 'string',
                   },
                 },
                 required: ['kind', 'message'],
@@ -40597,15 +40597,15 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'source_owned',
+                      },
                       sourceSessionId: {
                         type: 'string',
                       },
                       ownerSessionId: {
                         type: 'string',
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'source_owned',
                       },
                     },
                     required: ['kind', 'sourceSessionId', 'ownerSessionId'],
@@ -40614,12 +40614,12 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
-                      sourceSessionId: {
-                        type: 'string',
-                      },
                       kind: {
                         type: 'string',
                         const: 'source_unavailable',
+                      },
+                      sourceSessionId: {
+                        type: 'string',
                       },
                     },
                     required: ['kind', 'sourceSessionId'],
@@ -40722,6 +40722,10 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
+                      mode: {
+                        type: 'string',
+                        const: 'pipes',
+                      },
                       stdout: {
                         type: 'string',
                       },
@@ -40740,10 +40744,6 @@ export const contracts = {
                       redacted: {
                         type: 'boolean',
                       },
-                      mode: {
-                        type: 'string',
-                        const: 'pipes',
-                      },
                     },
                     required: [
                       'mode',
@@ -40758,6 +40758,10 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
+                      mode: {
+                        type: 'string',
+                        const: 'pty',
+                      },
                       screen: {
                         type: 'string',
                       },
@@ -40790,10 +40794,6 @@ export const contracts = {
                       },
                       redacted: {
                         type: 'boolean',
-                      },
-                      mode: {
-                        type: 'string',
-                        const: 'pty',
                       },
                     },
                     required: [
@@ -40863,12 +40863,12 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  value: {
-                    $ref: '#/$defs/TerminalStopped',
-                  },
                   kind: {
                     type: 'string',
                     const: 'completed',
+                  },
+                  value: {
+                    $ref: '#/$defs/TerminalStopped',
                   },
                 },
                 required: ['kind', 'value'],
@@ -40877,12 +40877,12 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  message: {
-                    type: 'string',
-                  },
                   kind: {
                     type: 'string',
                     const: 'failed',
+                  },
+                  message: {
+                    type: 'string',
                   },
                 },
                 required: ['kind', 'message'],
@@ -40943,15 +40943,15 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'source_owned',
+                      },
                       sourceSessionId: {
                         type: 'string',
                       },
                       ownerSessionId: {
                         type: 'string',
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'source_owned',
                       },
                     },
                     required: ['kind', 'sourceSessionId', 'ownerSessionId'],
@@ -40960,12 +40960,12 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
-                      sourceSessionId: {
-                        type: 'string',
-                      },
                       kind: {
                         type: 'string',
                         const: 'source_unavailable',
+                      },
+                      sourceSessionId: {
+                        type: 'string',
                       },
                     },
                     required: ['kind', 'sourceSessionId'],
@@ -41068,6 +41068,10 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
+                      mode: {
+                        type: 'string',
+                        const: 'pipes',
+                      },
                       stdout: {
                         type: 'string',
                       },
@@ -41086,10 +41090,6 @@ export const contracts = {
                       redacted: {
                         type: 'boolean',
                       },
-                      mode: {
-                        type: 'string',
-                        const: 'pipes',
-                      },
                     },
                     required: [
                       'mode',
@@ -41104,6 +41104,10 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
+                      mode: {
+                        type: 'string',
+                        const: 'pty',
+                      },
                       screen: {
                         type: 'string',
                       },
@@ -41136,10 +41140,6 @@ export const contracts = {
                       },
                       redacted: {
                         type: 'boolean',
-                      },
-                      mode: {
-                        type: 'string',
-                        const: 'pty',
                       },
                     },
                     required: [
@@ -41209,12 +41209,12 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  value: {
-                    $ref: '#/$defs/ResourceUpdate',
-                  },
                   kind: {
                     type: 'string',
                     const: 'completed',
+                  },
+                  value: {
+                    $ref: '#/$defs/ResourceUpdate',
                   },
                 },
                 required: ['kind', 'value'],
@@ -41223,12 +41223,12 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  message: {
-                    type: 'string',
-                  },
                   kind: {
                     type: 'string',
                     const: 'failed',
+                  },
+                  message: {
+                    type: 'string',
                   },
                 },
                 required: ['kind', 'message'],
@@ -41276,15 +41276,15 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'source_owned',
+                      },
                       sourceSessionId: {
                         type: 'string',
                       },
                       ownerSessionId: {
                         type: 'string',
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'source_owned',
                       },
                     },
                     required: ['kind', 'sourceSessionId', 'ownerSessionId'],
@@ -41293,12 +41293,12 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
-                      sourceSessionId: {
-                        type: 'string',
-                      },
                       kind: {
                         type: 'string',
                         const: 'source_unavailable',
+                      },
+                      sourceSessionId: {
+                        type: 'string',
                       },
                     },
                     required: ['kind', 'sourceSessionId'],
@@ -41401,6 +41401,10 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
+                      mode: {
+                        type: 'string',
+                        const: 'pipes',
+                      },
                       stdout: {
                         type: 'string',
                       },
@@ -41419,10 +41423,6 @@ export const contracts = {
                       redacted: {
                         type: 'boolean',
                       },
-                      mode: {
-                        type: 'string',
-                        const: 'pipes',
-                      },
                     },
                     required: [
                       'mode',
@@ -41437,6 +41437,10 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
+                      mode: {
+                        type: 'string',
+                        const: 'pty',
+                      },
                       screen: {
                         type: 'string',
                       },
@@ -41469,10 +41473,6 @@ export const contracts = {
                       },
                       redacted: {
                         type: 'boolean',
-                      },
-                      mode: {
-                        type: 'string',
-                        const: 'pty',
                       },
                     },
                     required: [
@@ -41546,12 +41546,12 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  value: {
-                    $ref: '#/$defs/TerminalPage',
-                  },
                   kind: {
                     type: 'string',
                     const: 'completed',
+                  },
+                  value: {
+                    $ref: '#/$defs/TerminalPage',
                   },
                 },
                 required: ['kind', 'value'],
@@ -41560,12 +41560,12 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  message: {
-                    type: 'string',
-                  },
                   kind: {
                     type: 'string',
                     const: 'failed',
+                  },
+                  message: {
+                    type: 'string',
                   },
                 },
                 required: ['kind', 'message'],
@@ -41639,15 +41639,15 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'source_owned',
+                      },
                       sourceSessionId: {
                         type: 'string',
                       },
                       ownerSessionId: {
                         type: 'string',
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'source_owned',
                       },
                     },
                     required: ['kind', 'sourceSessionId', 'ownerSessionId'],
@@ -41656,12 +41656,12 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
-                      sourceSessionId: {
-                        type: 'string',
-                      },
                       kind: {
                         type: 'string',
                         const: 'source_unavailable',
+                      },
+                      sourceSessionId: {
+                        type: 'string',
                       },
                     },
                     required: ['kind', 'sourceSessionId'],
@@ -41764,6 +41764,10 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
+                      mode: {
+                        type: 'string',
+                        const: 'pipes',
+                      },
                       stdout: {
                         type: 'string',
                       },
@@ -41782,10 +41786,6 @@ export const contracts = {
                       redacted: {
                         type: 'boolean',
                       },
-                      mode: {
-                        type: 'string',
-                        const: 'pipes',
-                      },
                     },
                     required: [
                       'mode',
@@ -41800,6 +41800,10 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
+                      mode: {
+                        type: 'string',
+                        const: 'pty',
+                      },
                       screen: {
                         type: 'string',
                       },
@@ -41832,10 +41836,6 @@ export const contracts = {
                       },
                       redacted: {
                         type: 'boolean',
-                      },
-                      mode: {
-                        type: 'string',
-                        const: 'pty',
                       },
                     },
                     required: [
@@ -41926,12 +41926,12 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  value: {
-                    $ref: '#/$defs/TerminalOutputEvent',
-                  },
                   kind: {
                     type: 'string',
                     const: 'completed',
+                  },
+                  value: {
+                    $ref: '#/$defs/TerminalOutputEvent',
                   },
                 },
                 required: ['kind', 'value'],
@@ -41940,12 +41940,12 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  message: {
-                    type: 'string',
-                  },
                   kind: {
                     type: 'string',
                     const: 'failed',
+                  },
+                  message: {
+                    type: 'string',
                   },
                 },
                 required: ['kind', 'message'],
@@ -41960,6 +41960,10 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'data',
+                      },
                       sequence: {
                         type: 'integer',
                         format: 'uint64',
@@ -41976,10 +41980,6 @@ export const contracts = {
                         type: 'string',
                         minLength: 1,
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'data',
-                      },
                     },
                     required: ['kind', 'sequence', 'size', 'initialSize', 'dataBase64'],
                   },
@@ -41987,6 +41987,10 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'resize',
+                      },
                       sequence: {
                         type: 'integer',
                         format: 'uint64',
@@ -41999,10 +42003,6 @@ export const contracts = {
                       initialSize: {
                         $ref: '#/$defs/TerminalSize',
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'resize',
-                      },
                     },
                     required: ['kind', 'sequence', 'size', 'initialSize'],
                   },
@@ -42010,29 +42010,10 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
-                      after: {
-                        type: 'integer',
-                        format: 'uint64',
-                        minimum: 0,
-                        maximum: 9007199254740991,
-                      },
-                      size: {
-                        $ref: '#/$defs/TerminalSize',
-                      },
-                      initialSize: {
-                        $ref: '#/$defs/TerminalSize',
-                      },
                       kind: {
                         type: 'string',
                         const: 'pending',
                       },
-                    },
-                    required: ['kind', 'after', 'size', 'initialSize'],
-                  },
-                  {
-                    type: 'object',
-                    additionalProperties: false,
-                    properties: {
                       after: {
                         type: 'integer',
                         format: 'uint64',
@@ -42045,9 +42026,28 @@ export const contracts = {
                       initialSize: {
                         $ref: '#/$defs/TerminalSize',
                       },
+                    },
+                    required: ['kind', 'after', 'size', 'initialSize'],
+                  },
+                  {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
                       kind: {
                         type: 'string',
                         const: 'closed',
+                      },
+                      after: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                        maximum: 9007199254740991,
+                      },
+                      size: {
+                        $ref: '#/$defs/TerminalSize',
+                      },
+                      initialSize: {
+                        $ref: '#/$defs/TerminalSize',
                       },
                     },
                     required: ['kind', 'after', 'size', 'initialSize'],
@@ -42056,12 +42056,12 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
-                      reason: {
-                        $ref: '#/$defs/TerminalOutputUnavailable',
-                      },
                       kind: {
                         type: 'string',
                         const: 'unavailable',
+                      },
+                      reason: {
+                        $ref: '#/$defs/TerminalOutputUnavailable',
                       },
                     },
                     required: ['kind', 'reason'],
@@ -42216,6 +42216,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'stale',
+                  },
                   actual: {
                     anyOf: [
                       {
@@ -42226,10 +42230,6 @@ export const contracts = {
                       },
                     ],
                   },
-                  kind: {
-                    type: 'string',
-                    const: 'stale',
-                  },
                 },
                 additionalProperties: false,
                 required: ['kind', 'actual'],
@@ -42237,6 +42237,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'ready',
+                  },
                   target: {
                     $ref: '#/$defs/ConnectionCredentialTarget',
                   },
@@ -42253,10 +42257,6 @@ export const contracts = {
                   },
                   editing: {
                     $ref: '#/$defs/SettingsConnectionEditingFacts',
-                  },
-                  kind: {
-                    type: 'string',
-                    const: 'ready',
                   },
                 },
                 additionalProperties: false,
@@ -42522,6 +42522,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'continue',
+                  },
                   revision: {
                     type: 'integer',
                     format: 'uint64',
@@ -42531,10 +42535,6 @@ export const contracts = {
                     type: 'integer',
                     format: 'uint',
                     minimum: 0,
-                  },
-                  kind: {
-                    type: 'string',
-                    const: 'continue',
                   },
                 },
                 additionalProperties: false,
@@ -42549,14 +42549,14 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'changed',
+                  },
                   revision: {
                     type: 'integer',
                     format: 'uint64',
                     minimum: 0,
-                  },
-                  kind: {
-                    type: 'string',
-                    const: 'changed',
                   },
                 },
                 additionalProperties: false,
@@ -42565,6 +42565,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'ready',
+                  },
                   revision: {
                     type: 'integer',
                     format: 'uint64',
@@ -42591,10 +42595,6 @@ export const contracts = {
                     type: ['integer', 'null'],
                     format: 'uint',
                     minimum: 0,
-                  },
-                  kind: {
-                    type: 'string',
-                    const: 'ready',
                   },
                 },
                 additionalProperties: false,
@@ -42939,12 +42939,12 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  reason: {
-                    $ref: '#/$defs/ConfigurationRejection',
-                  },
                   kind: {
                     type: 'string',
                     const: 'rejected',
+                  },
+                  reason: {
+                    $ref: '#/$defs/ConfigurationRejection',
                   },
                 },
                 additionalProperties: false,
@@ -42953,6 +42953,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'committed',
+                  },
                   catalogRevision: {
                     type: 'integer',
                     format: 'uint64',
@@ -42968,10 +42972,6 @@ export const contracts = {
                       },
                     ],
                   },
-                  kind: {
-                    type: 'string',
-                    const: 'committed',
-                  },
                 },
                 additionalProperties: false,
                 required: ['kind', 'catalogRevision'],
@@ -42979,6 +42979,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'revision_conflict',
+                  },
                   expectedRevision: {
                     type: 'integer',
                     format: 'uint64',
@@ -42989,10 +42993,6 @@ export const contracts = {
                     format: 'uint64',
                     minimum: 0,
                   },
-                  kind: {
-                    type: 'string',
-                    const: 'revision_conflict',
-                  },
                 },
                 additionalProperties: false,
                 required: ['kind', 'expectedRevision', 'actualRevision'],
@@ -43000,12 +43000,12 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  slug: {
-                    type: 'string',
-                  },
                   kind: {
                     type: 'string',
                     const: 'connection_exists',
+                  },
+                  slug: {
+                    type: 'string',
                   },
                 },
                 additionalProperties: false,
@@ -43014,6 +43014,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'connection_stale',
+                  },
                   expected: {
                     $ref: '#/$defs/ConnectionVersionBasis',
                   },
@@ -43027,10 +43031,6 @@ export const contracts = {
                       },
                     ],
                   },
-                  kind: {
-                    type: 'string',
-                    const: 'connection_stale',
-                  },
                 },
                 additionalProperties: false,
                 required: ['kind', 'expected', 'actual'],
@@ -43038,12 +43038,12 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  target: {
-                    $ref: '#/$defs/ConnectionTarget',
-                  },
                   kind: {
                     type: 'string',
                     const: 'invalid_default_target',
+                  },
+                  target: {
+                    $ref: '#/$defs/ConnectionTarget',
                   },
                 },
                 additionalProperties: false,
@@ -43108,15 +43108,15 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      scope: {
+                        type: 'string',
+                        const: 'connection',
+                      },
                       connectionId: {
                         type: 'string',
                       },
                       kind: {
                         $ref: '#/$defs/ConnectionCredentialKind',
-                      },
-                      scope: {
-                        type: 'string',
-                        const: 'connection',
                       },
                     },
                     additionalProperties: false,
@@ -43125,12 +43125,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      kind: {
-                        $ref: '#/$defs/PasswordKind',
-                      },
                       scope: {
                         type: 'string',
                         const: 'network_proxy',
+                      },
+                      kind: {
+                        $ref: '#/$defs/PasswordKind',
                       },
                     },
                     additionalProperties: false,
@@ -43155,12 +43155,12 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  status: {
-                    $ref: '#/$defs/CredentialStatus',
-                  },
                   kind: {
                     type: 'string',
                     const: 'status',
+                  },
+                  status: {
+                    $ref: '#/$defs/CredentialStatus',
                   },
                 },
                 additionalProperties: false,
@@ -43210,15 +43210,15 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      scope: {
+                        type: 'string',
+                        const: 'connection',
+                      },
                       connectionId: {
                         type: 'string',
                       },
                       kind: {
                         $ref: '#/$defs/ConnectionCredentialKind',
-                      },
-                      scope: {
-                        type: 'string',
-                        const: 'connection',
                       },
                     },
                     additionalProperties: false,
@@ -43227,12 +43227,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      kind: {
-                        $ref: '#/$defs/PasswordKind',
-                      },
                       scope: {
                         type: 'string',
                         const: 'network_proxy',
+                      },
+                      kind: {
+                        $ref: '#/$defs/PasswordKind',
                       },
                     },
                     additionalProperties: false,
@@ -43300,15 +43300,15 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      scope: {
+                        type: 'string',
+                        const: 'connection',
+                      },
                       connectionId: {
                         type: 'string',
                       },
                       kind: {
                         $ref: '#/$defs/ConnectionCredentialKind',
-                      },
-                      scope: {
-                        type: 'string',
-                        const: 'connection',
                       },
                     },
                     additionalProperties: false,
@@ -43317,12 +43317,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      kind: {
-                        $ref: '#/$defs/PasswordKind',
-                      },
                       scope: {
                         type: 'string',
                         const: 'network_proxy',
+                      },
+                      kind: {
+                        $ref: '#/$defs/PasswordKind',
                       },
                     },
                     additionalProperties: false,
@@ -43392,12 +43392,12 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  reason: {
-                    $ref: '#/$defs/ConfigurationRejection',
-                  },
                   kind: {
                     type: 'string',
                     const: 'rejected',
+                  },
+                  reason: {
+                    $ref: '#/$defs/ConfigurationRejection',
                   },
                 },
                 additionalProperties: false,
@@ -43406,6 +43406,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'committed',
+                  },
                   vaultRevision: {
                     type: 'integer',
                     format: 'uint64',
@@ -43413,10 +43417,6 @@ export const contracts = {
                   },
                   status: {
                     $ref: '#/$defs/CredentialStatus',
-                  },
-                  kind: {
-                    type: 'string',
-                    const: 'committed',
                   },
                 },
                 additionalProperties: false,
@@ -43436,6 +43436,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'connection_stale',
+                  },
                   expected: {
                     $ref: '#/$defs/ConnectionVersionBasis',
                   },
@@ -43449,10 +43453,6 @@ export const contracts = {
                       },
                     ],
                   },
-                  kind: {
-                    type: 'string',
-                    const: 'connection_stale',
-                  },
                 },
                 additionalProperties: false,
                 required: ['kind', 'expected', 'actual'],
@@ -43460,6 +43460,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'credential_stale',
+                  },
                   expected: {
                     anyOf: [
                       {
@@ -43479,10 +43483,6 @@ export const contracts = {
                         type: 'null',
                       },
                     ],
-                  },
-                  kind: {
-                    type: 'string',
-                    const: 'credential_stale',
                   },
                 },
                 additionalProperties: false,
@@ -43527,15 +43527,15 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      scope: {
+                        type: 'string',
+                        const: 'connection',
+                      },
                       connectionId: {
                         type: 'string',
                       },
                       kind: {
                         $ref: '#/$defs/ConnectionCredentialKind',
-                      },
-                      scope: {
-                        type: 'string',
-                        const: 'connection',
                       },
                     },
                     additionalProperties: false,
@@ -43544,12 +43544,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      kind: {
-                        $ref: '#/$defs/PasswordKind',
-                      },
                       scope: {
                         type: 'string',
                         const: 'network_proxy',
+                      },
+                      kind: {
+                        $ref: '#/$defs/PasswordKind',
                       },
                     },
                     additionalProperties: false,
@@ -43611,13 +43611,13 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  query: {
-                    type: 'string',
-                    default: '',
-                  },
                   kind: {
                     type: 'string',
                     const: 'start',
+                  },
+                  query: {
+                    type: 'string',
+                    default: '',
                   },
                 },
                 additionalProperties: false,
@@ -43626,6 +43626,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'continue',
+                  },
                   revision: {
                     type: 'integer',
                     format: 'uint64',
@@ -43634,10 +43638,6 @@ export const contracts = {
                   },
                   cursor: {
                     $ref: '#/$defs/SettingsModelCursor',
-                  },
-                  kind: {
-                    type: 'string',
-                    const: 'continue',
                   },
                 },
                 additionalProperties: false,
@@ -43674,14 +43674,14 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'changed',
+                  },
                   revision: {
                     type: 'integer',
                     format: 'uint64',
                     minimum: 0,
-                  },
-                  kind: {
-                    type: 'string',
-                    const: 'changed',
                   },
                 },
                 additionalProperties: false,
@@ -43690,6 +43690,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'ready',
+                  },
                   revision: {
                     type: 'integer',
                     format: 'uint64',
@@ -43714,10 +43718,6 @@ export const contracts = {
                         type: 'null',
                       },
                     ],
-                  },
-                  kind: {
-                    type: 'string',
-                    const: 'ready',
                   },
                 },
                 additionalProperties: false,
@@ -43907,12 +43907,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      target: {
-                        $ref: '#/$defs/ConnectionTarget',
-                      },
                       kind: {
                         type: 'string',
                         const: 'unavailable',
+                      },
+                      target: {
+                        $ref: '#/$defs/ConnectionTarget',
                       },
                     },
                     additionalProperties: false,
@@ -43921,12 +43921,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      choice: {
-                        $ref: '#/$defs/SettingsModelChoice',
-                      },
                       kind: {
                         type: 'string',
                         const: 'ready',
+                      },
+                      choice: {
+                        $ref: '#/$defs/SettingsModelChoice',
                       },
                     },
                     additionalProperties: false,
@@ -44089,15 +44089,15 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      scope: {
+                        type: 'string',
+                        const: 'connection',
+                      },
                       connectionId: {
                         type: 'string',
                       },
                       kind: {
                         $ref: '#/$defs/ConnectionCredentialKind',
-                      },
-                      scope: {
-                        type: 'string',
-                        const: 'connection',
                       },
                     },
                     additionalProperties: false,
@@ -44106,12 +44106,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      kind: {
-                        $ref: '#/$defs/PasswordKind',
-                      },
                       scope: {
                         type: 'string',
                         const: 'network_proxy',
+                      },
+                      kind: {
+                        $ref: '#/$defs/PasswordKind',
                       },
                     },
                     additionalProperties: false,
@@ -44151,6 +44151,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'continue',
+                  },
                   revision: {
                     type: 'integer',
                     format: 'uint64',
@@ -44160,10 +44164,6 @@ export const contracts = {
                     type: 'integer',
                     format: 'uint64',
                     minimum: 0,
-                  },
-                  kind: {
-                    type: 'string',
-                    const: 'continue',
                   },
                 },
                 additionalProperties: false,
@@ -44178,6 +44178,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'page',
+                  },
                   revision: {
                     type: 'integer',
                     format: 'uint64',
@@ -44199,10 +44203,6 @@ export const contracts = {
                     format: 'uint64',
                     minimum: 0,
                   },
-                  kind: {
-                    type: 'string',
-                    const: 'page',
-                  },
                 },
                 additionalProperties: false,
                 required: ['kind', 'revision', 'offset', 'entries', 'nextOffset'],
@@ -44210,6 +44210,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'revision_changed',
+                  },
                   expectedRevision: {
                     type: 'integer',
                     format: 'uint64',
@@ -44219,10 +44223,6 @@ export const contracts = {
                     type: 'integer',
                     format: 'uint64',
                     minimum: 0,
-                  },
-                  kind: {
-                    type: 'string',
-                    const: 'revision_changed',
                   },
                 },
                 additionalProperties: false,
@@ -44235,12 +44235,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      pricing: {
-                        $ref: '#/$defs/Pricing',
-                      },
                       source: {
                         type: 'string',
                         const: 'builtin',
+                      },
+                      pricing: {
+                        $ref: '#/$defs/Pricing',
                       },
                     },
                     additionalProperties: false,
@@ -44249,15 +44249,15 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      source: {
+                        type: 'string',
+                        const: 'custom',
+                      },
                       pricing: {
                         $ref: '#/$defs/Pricing',
                       },
                       resetEffect: {
                         $ref: '#/$defs/PricingResetEffect',
-                      },
-                      source: {
-                        type: 'string',
-                        const: 'custom',
                       },
                     },
                     additionalProperties: false,
@@ -44430,12 +44430,12 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  reason: {
-                    $ref: '#/$defs/ConfigurationRejection',
-                  },
                   kind: {
                     type: 'string',
                     const: 'rejected',
+                  },
+                  reason: {
+                    $ref: '#/$defs/ConfigurationRejection',
                   },
                 },
                 additionalProperties: false,
@@ -44444,6 +44444,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'committed',
+                  },
                   catalogRevision: {
                     type: 'integer',
                     format: 'uint64',
@@ -44459,10 +44463,6 @@ export const contracts = {
                       },
                     ],
                   },
-                  kind: {
-                    type: 'string',
-                    const: 'committed',
-                  },
                 },
                 additionalProperties: false,
                 required: ['kind', 'catalogRevision'],
@@ -44470,6 +44470,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'revision_conflict',
+                  },
                   expectedRevision: {
                     type: 'integer',
                     format: 'uint64',
@@ -44480,10 +44484,6 @@ export const contracts = {
                     format: 'uint64',
                     minimum: 0,
                   },
-                  kind: {
-                    type: 'string',
-                    const: 'revision_conflict',
-                  },
                 },
                 additionalProperties: false,
                 required: ['kind', 'expectedRevision', 'actualRevision'],
@@ -44491,12 +44491,12 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  slug: {
-                    type: 'string',
-                  },
                   kind: {
                     type: 'string',
                     const: 'connection_exists',
+                  },
+                  slug: {
+                    type: 'string',
                   },
                 },
                 additionalProperties: false,
@@ -44505,6 +44505,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'connection_stale',
+                  },
                   expected: {
                     $ref: '#/$defs/ConnectionVersionBasis',
                   },
@@ -44518,10 +44522,6 @@ export const contracts = {
                       },
                     ],
                   },
-                  kind: {
-                    type: 'string',
-                    const: 'connection_stale',
-                  },
                 },
                 additionalProperties: false,
                 required: ['kind', 'expected', 'actual'],
@@ -44529,12 +44529,12 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  target: {
-                    $ref: '#/$defs/ConnectionTarget',
-                  },
                   kind: {
                     type: 'string',
                     const: 'invalid_default_target',
+                  },
+                  target: {
+                    $ref: '#/$defs/ConnectionTarget',
                   },
                 },
                 additionalProperties: false,
@@ -44615,12 +44615,12 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  target: {
-                    $ref: '#/$defs/ConnectionTarget',
-                  },
                   kind: {
                     type: 'string',
                     const: 'unavailable',
+                  },
+                  target: {
+                    $ref: '#/$defs/ConnectionTarget',
                   },
                 },
                 additionalProperties: false,
@@ -44629,12 +44629,12 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  choice: {
-                    $ref: '#/$defs/SettingsModelChoice',
-                  },
                   kind: {
                     type: 'string',
                     const: 'ready',
+                  },
+                  choice: {
+                    $ref: '#/$defs/SettingsModelChoice',
                   },
                 },
                 additionalProperties: false,
@@ -44917,15 +44917,15 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      scope: {
+                        type: 'string',
+                        const: 'connection',
+                      },
                       connectionId: {
                         type: 'string',
                       },
                       kind: {
                         $ref: '#/$defs/ConnectionCredentialKind',
-                      },
-                      scope: {
-                        type: 'string',
-                        const: 'connection',
                       },
                     },
                     additionalProperties: false,
@@ -44934,12 +44934,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      kind: {
-                        $ref: '#/$defs/PasswordKind',
-                      },
                       scope: {
                         type: 'string',
                         const: 'network_proxy',
+                      },
+                      kind: {
+                        $ref: '#/$defs/PasswordKind',
                       },
                     },
                     additionalProperties: false,
@@ -44964,12 +44964,12 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  connection: {
-                    $ref: '#/$defs/ConnectionIdentity',
-                  },
                   kind: {
                     type: 'string',
                     const: 'saved',
+                  },
+                  connection: {
+                    $ref: '#/$defs/ConnectionIdentity',
                   },
                 },
                 additionalProperties: false,
@@ -44978,12 +44978,12 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  reason: {
-                    $ref: '#/$defs/SettingsCredentialRejection',
-                  },
                   kind: {
                     type: 'string',
                     const: 'rejected',
+                  },
+                  reason: {
+                    $ref: '#/$defs/SettingsCredentialRejection',
                   },
                 },
                 additionalProperties: false,
@@ -45103,12 +45103,12 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  reason: {
-                    $ref: '#/$defs/ConfigurationRejection',
-                  },
                   kind: {
                     type: 'string',
                     const: 'rejected',
+                  },
+                  reason: {
+                    $ref: '#/$defs/ConfigurationRejection',
                   },
                 },
                 additionalProperties: false,
@@ -45117,6 +45117,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'committed',
+                  },
                   catalogRevision: {
                     type: 'integer',
                     format: 'uint64',
@@ -45132,10 +45136,6 @@ export const contracts = {
                       },
                     ],
                   },
-                  kind: {
-                    type: 'string',
-                    const: 'committed',
-                  },
                 },
                 additionalProperties: false,
                 required: ['kind', 'catalogRevision'],
@@ -45143,6 +45143,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'revision_conflict',
+                  },
                   expectedRevision: {
                     type: 'integer',
                     format: 'uint64',
@@ -45153,10 +45157,6 @@ export const contracts = {
                     format: 'uint64',
                     minimum: 0,
                   },
-                  kind: {
-                    type: 'string',
-                    const: 'revision_conflict',
-                  },
                 },
                 additionalProperties: false,
                 required: ['kind', 'expectedRevision', 'actualRevision'],
@@ -45164,12 +45164,12 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  slug: {
-                    type: 'string',
-                  },
                   kind: {
                     type: 'string',
                     const: 'connection_exists',
+                  },
+                  slug: {
+                    type: 'string',
                   },
                 },
                 additionalProperties: false,
@@ -45178,6 +45178,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'connection_stale',
+                  },
                   expected: {
                     $ref: '#/$defs/ConnectionVersionBasis',
                   },
@@ -45191,10 +45195,6 @@ export const contracts = {
                       },
                     ],
                   },
-                  kind: {
-                    type: 'string',
-                    const: 'connection_stale',
-                  },
                 },
                 additionalProperties: false,
                 required: ['kind', 'expected', 'actual'],
@@ -45202,12 +45202,12 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  target: {
-                    $ref: '#/$defs/ConnectionTarget',
-                  },
                   kind: {
                     type: 'string',
                     const: 'invalid_default_target',
+                  },
+                  target: {
+                    $ref: '#/$defs/ConnectionTarget',
                   },
                 },
                 additionalProperties: false,
@@ -45478,12 +45478,12 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  reason: {
-                    $ref: '#/$defs/ConfigurationRejection',
-                  },
                   kind: {
                     type: 'string',
                     const: 'rejected',
+                  },
+                  reason: {
+                    $ref: '#/$defs/ConfigurationRejection',
                   },
                 },
                 additionalProperties: false,
@@ -45492,6 +45492,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'committed',
+                  },
                   catalogRevision: {
                     type: 'integer',
                     format: 'uint64',
@@ -45507,10 +45511,6 @@ export const contracts = {
                       },
                     ],
                   },
-                  kind: {
-                    type: 'string',
-                    const: 'committed',
-                  },
                 },
                 additionalProperties: false,
                 required: ['kind', 'catalogRevision'],
@@ -45518,6 +45518,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'revision_conflict',
+                  },
                   expectedRevision: {
                     type: 'integer',
                     format: 'uint64',
@@ -45528,10 +45532,6 @@ export const contracts = {
                     format: 'uint64',
                     minimum: 0,
                   },
-                  kind: {
-                    type: 'string',
-                    const: 'revision_conflict',
-                  },
                 },
                 additionalProperties: false,
                 required: ['kind', 'expectedRevision', 'actualRevision'],
@@ -45539,12 +45539,12 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  slug: {
-                    type: 'string',
-                  },
                   kind: {
                     type: 'string',
                     const: 'connection_exists',
+                  },
+                  slug: {
+                    type: 'string',
                   },
                 },
                 additionalProperties: false,
@@ -45553,6 +45553,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'connection_stale',
+                  },
                   expected: {
                     $ref: '#/$defs/ConnectionVersionBasis',
                   },
@@ -45566,10 +45570,6 @@ export const contracts = {
                       },
                     ],
                   },
-                  kind: {
-                    type: 'string',
-                    const: 'connection_stale',
-                  },
                 },
                 additionalProperties: false,
                 required: ['kind', 'expected', 'actual'],
@@ -45577,12 +45577,12 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  target: {
-                    $ref: '#/$defs/ConnectionTarget',
-                  },
                   kind: {
                     type: 'string',
                     const: 'invalid_default_target',
+                  },
+                  target: {
+                    $ref: '#/$defs/ConnectionTarget',
                   },
                 },
                 additionalProperties: false,
@@ -45653,12 +45653,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      preference: {
-                        $ref: '#/$defs/LanguagePreference',
-                      },
                       kind: {
                         type: 'string',
                         const: 'language',
+                      },
+                      preference: {
+                        $ref: '#/$defs/LanguagePreference',
                       },
                     },
                     additionalProperties: false,
@@ -45667,12 +45667,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      prompt: {
-                        type: ['string', 'null'],
-                      },
                       kind: {
                         type: 'string',
                         const: 'compaction_prompt',
+                      },
+                      prompt: {
+                        type: ['string', 'null'],
                       },
                     },
                     additionalProperties: false,
@@ -45681,12 +45681,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      displayName: {
-                        type: 'string',
-                      },
                       kind: {
                         type: 'string',
                         const: 'personalization',
+                      },
+                      displayName: {
+                        type: 'string',
                       },
                     },
                     additionalProperties: false,
@@ -45695,12 +45695,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      enabled: {
-                        type: 'boolean',
-                      },
                       kind: {
                         type: 'string',
                         const: 'workspace_instructions',
+                      },
+                      enabled: {
+                        type: 'boolean',
                       },
                     },
                     additionalProperties: false,
@@ -45709,12 +45709,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      incognitoActive: {
-                        type: 'boolean',
-                      },
                       kind: {
                         type: 'string',
                         const: 'privacy',
+                      },
+                      incognitoActive: {
+                        type: 'boolean',
                       },
                     },
                     additionalProperties: false,
@@ -45723,12 +45723,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      enabled: {
-                        type: 'boolean',
-                      },
                       kind: {
                         type: 'string',
                         const: 'shell_titles',
+                      },
+                      enabled: {
+                        type: 'boolean',
                       },
                     },
                     additionalProperties: false,
@@ -45749,14 +45749,14 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'committed',
+                  },
                   revision: {
                     type: 'integer',
                     format: 'uint64',
                     minimum: 0,
-                  },
-                  kind: {
-                    type: 'string',
-                    const: 'committed',
                   },
                 },
                 additionalProperties: false,
@@ -45765,6 +45765,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'revision_conflict',
+                  },
                   expectedRevision: {
                     type: 'integer',
                     format: 'uint64',
@@ -45774,10 +45778,6 @@ export const contracts = {
                     type: 'integer',
                     format: 'uint64',
                     minimum: 0,
-                  },
-                  kind: {
-                    type: 'string',
-                    const: 'revision_conflict',
                   },
                 },
                 additionalProperties: false,
@@ -45905,12 +45905,12 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  reason: {
-                    $ref: '#/$defs/ConfigurationRejection',
-                  },
                   kind: {
                     type: 'string',
                     const: 'rejected',
+                  },
+                  reason: {
+                    $ref: '#/$defs/ConfigurationRejection',
                   },
                 },
                 additionalProperties: false,
@@ -45919,6 +45919,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'committed',
+                  },
                   catalogRevision: {
                     type: 'integer',
                     format: 'uint64',
@@ -45934,10 +45938,6 @@ export const contracts = {
                       },
                     ],
                   },
-                  kind: {
-                    type: 'string',
-                    const: 'committed',
-                  },
                 },
                 additionalProperties: false,
                 required: ['kind', 'catalogRevision'],
@@ -45945,6 +45945,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'revision_conflict',
+                  },
                   expectedRevision: {
                     type: 'integer',
                     format: 'uint64',
@@ -45955,10 +45959,6 @@ export const contracts = {
                     format: 'uint64',
                     minimum: 0,
                   },
-                  kind: {
-                    type: 'string',
-                    const: 'revision_conflict',
-                  },
                 },
                 additionalProperties: false,
                 required: ['kind', 'expectedRevision', 'actualRevision'],
@@ -45966,12 +45966,12 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  slug: {
-                    type: 'string',
-                  },
                   kind: {
                     type: 'string',
                     const: 'connection_exists',
+                  },
+                  slug: {
+                    type: 'string',
                   },
                 },
                 additionalProperties: false,
@@ -45980,6 +45980,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'connection_stale',
+                  },
                   expected: {
                     $ref: '#/$defs/ConnectionVersionBasis',
                   },
@@ -45993,10 +45997,6 @@ export const contracts = {
                       },
                     ],
                   },
-                  kind: {
-                    type: 'string',
-                    const: 'connection_stale',
-                  },
                 },
                 additionalProperties: false,
                 required: ['kind', 'expected', 'actual'],
@@ -46004,12 +46004,12 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  target: {
-                    $ref: '#/$defs/ConnectionTarget',
-                  },
                   kind: {
                     type: 'string',
                     const: 'invalid_default_target',
+                  },
+                  target: {
+                    $ref: '#/$defs/ConnectionTarget',
                   },
                 },
                 additionalProperties: false,
@@ -46115,15 +46115,15 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      scope: {
+                        type: 'string',
+                        const: 'connection',
+                      },
                       connectionId: {
                         type: 'string',
                       },
                       kind: {
                         $ref: '#/$defs/ConnectionCredentialKind',
-                      },
-                      scope: {
-                        type: 'string',
-                        const: 'connection',
                       },
                     },
                     additionalProperties: false,
@@ -46132,12 +46132,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      kind: {
-                        $ref: '#/$defs/PasswordKind',
-                      },
                       scope: {
                         type: 'string',
                         const: 'network_proxy',
+                      },
+                      kind: {
+                        $ref: '#/$defs/PasswordKind',
                       },
                     },
                     additionalProperties: false,
@@ -46219,12 +46219,12 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  result: {
-                    $ref: '#/$defs/NetworkProxyUpdateResult',
-                  },
                   kind: {
                     type: 'string',
                     const: 'applied',
+                  },
+                  result: {
+                    $ref: '#/$defs/NetworkProxyUpdateResult',
                   },
                 },
                 additionalProperties: false,
@@ -46248,6 +46248,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'committed',
+                      },
                       revision: {
                         type: 'integer',
                         format: 'uint64',
@@ -46256,10 +46260,6 @@ export const contracts = {
                       credentialStatus: {
                         $ref: '#/$defs/CredentialStatus',
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'committed',
-                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'revision', 'credentialStatus'],
@@ -46267,6 +46267,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'revision_conflict',
+                      },
                       expectedRevision: {
                         type: 'integer',
                         format: 'uint64',
@@ -46277,10 +46281,6 @@ export const contracts = {
                         format: 'uint64',
                         minimum: 0,
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'revision_conflict',
-                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'expectedRevision', 'actualRevision'],
@@ -46288,15 +46288,15 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'proxy_target_mismatch',
+                      },
                       expected: {
                         $ref: '#/$defs/CredentialTarget',
                       },
                       actual: {
                         $ref: '#/$defs/CredentialTarget',
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'proxy_target_mismatch',
                       },
                     },
                     additionalProperties: false,
@@ -46305,6 +46305,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'credential_stale',
+                      },
                       expected: {
                         anyOf: [
                           {
@@ -46324,10 +46328,6 @@ export const contracts = {
                             type: 'null',
                           },
                         ],
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'credential_stale',
                       },
                     },
                     additionalProperties: false,
@@ -46366,15 +46366,15 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      scope: {
+                        type: 'string',
+                        const: 'connection',
+                      },
                       connectionId: {
                         type: 'string',
                       },
                       kind: {
                         $ref: '#/$defs/ConnectionCredentialKind',
-                      },
-                      scope: {
-                        type: 'string',
-                        const: 'connection',
                       },
                     },
                     additionalProperties: false,
@@ -46383,12 +46383,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      kind: {
-                        $ref: '#/$defs/PasswordKind',
-                      },
                       scope: {
                         type: 'string',
                         const: 'network_proxy',
+                      },
+                      kind: {
+                        $ref: '#/$defs/PasswordKind',
                       },
                     },
                     additionalProperties: false,
@@ -46484,12 +46484,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      pricing: {
-                        $ref: '#/$defs/Pricing',
-                      },
                       kind: {
                         type: 'string',
                         const: 'upsert',
+                      },
+                      pricing: {
+                        $ref: '#/$defs/Pricing',
                       },
                     },
                     additionalProperties: false,
@@ -46498,12 +46498,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      modelKey: {
-                        type: 'string',
-                      },
                       kind: {
                         type: 'string',
                         const: 'delete',
+                      },
+                      modelKey: {
+                        type: 'string',
                       },
                     },
                     additionalProperties: false,
@@ -46546,12 +46546,12 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  result: {
-                    $ref: '#/$defs/PricingUpdated',
-                  },
                   kind: {
                     type: 'string',
                     const: 'updated',
+                  },
+                  result: {
+                    $ref: '#/$defs/PricingUpdated',
                   },
                 },
                 additionalProperties: false,
@@ -46575,30 +46575,30 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      revision: {
-                        type: 'integer',
-                        format: 'uint64',
-                        minimum: 0,
-                      },
                       kind: {
                         type: 'string',
                         const: 'committed',
                       },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'revision'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
                       revision: {
                         type: 'integer',
                         format: 'uint64',
                         minimum: 0,
                       },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'revision'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
                       kind: {
                         type: 'string',
                         const: 'unchanged',
+                      },
+                      revision: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
                       },
                     },
                     additionalProperties: false,
@@ -46607,6 +46607,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'revision_conflict',
+                      },
                       expectedRevision: {
                         type: 'integer',
                         format: 'uint64',
@@ -46616,10 +46620,6 @@ export const contracts = {
                         type: 'integer',
                         format: 'uint64',
                         minimum: 0,
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'revision_conflict',
                       },
                     },
                     additionalProperties: false,
@@ -46694,12 +46694,12 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  value: {
-                    $ref: '#/$defs/SettingsWorkspaceLocations',
-                  },
                   status: {
                     type: 'string',
                     const: 'committed',
+                  },
+                  value: {
+                    $ref: '#/$defs/SettingsWorkspaceLocations',
                   },
                 },
                 additionalProperties: false,
@@ -46708,14 +46708,14 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  status: {
+                    type: 'string',
+                    const: 'conflict',
+                  },
                   currentRevision: {
                     type: 'integer',
                     format: 'uint64',
                     minimum: 0,
-                  },
-                  status: {
-                    type: 'string',
-                    const: 'conflict',
                   },
                 },
                 additionalProperties: false,
@@ -46724,15 +46724,15 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  status: {
+                    type: 'string',
+                    const: 'rejected',
+                  },
                   reason: {
                     $ref: '#/$defs/ManagementRejection',
                   },
                   diagnostic: {
                     type: ['string', 'null'],
-                  },
-                  status: {
-                    type: 'string',
-                    const: 'rejected',
                   },
                 },
                 additionalProperties: false,
@@ -47105,15 +47105,15 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'agent',
+                      },
                       invocation: {
                         $ref: '#/$defs/Invocation',
                       },
                       purpose: {
                         $ref: '#/$defs/ModelPurpose',
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'agent',
                       },
                     },
                     required: ['kind', 'invocation', 'purpose'],
@@ -47121,12 +47121,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      source: {
-                        $ref: '#/$defs/UsageAuxiliarySource',
-                      },
                       kind: {
                         type: 'string',
                         const: 'auxiliary',
+                      },
+                      source: {
+                        $ref: '#/$defs/UsageAuxiliarySource',
                       },
                     },
                     required: ['kind', 'source'],
@@ -47162,6 +47162,10 @@ export const contracts = {
                       'One auxiliary request owned by an admitted native application mutation.',
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'application_operation',
+                      },
                       source: {
                         $ref: '#/$defs/DeploymentRef',
                       },
@@ -47175,10 +47179,6 @@ export const contracts = {
                       fingerprint: {
                         type: 'string',
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'application_operation',
-                      },
                     },
                     required: ['kind', 'source', 'namespace', 'operation', 'fingerprint'],
                   },
@@ -47187,12 +47187,12 @@ export const contracts = {
                       'One Host-owned title request, authorized by the first committed user opening.\nIt may finish after that invocation ends and cannot execute tools.',
                     type: 'object',
                     properties: {
-                      invocation: {
-                        $ref: '#/$defs/Invocation',
-                      },
                       kind: {
                         type: 'string',
                         const: 'session_title',
+                      },
+                      invocation: {
+                        $ref: '#/$defs/Invocation',
                       },
                     },
                     required: ['kind', 'invocation'],
@@ -47200,15 +47200,15 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'agent',
+                      },
                       invocation: {
                         $ref: '#/$defs/Invocation',
                       },
                       operation_id: {
                         type: 'string',
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'agent',
                       },
                     },
                     required: ['kind', 'invocation', 'operation_id'],
@@ -47216,13 +47216,13 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      id: {
-                        type: 'string',
-                        format: 'uuid',
-                      },
                       kind: {
                         type: 'string',
                         const: 'host_effect',
+                      },
+                      id: {
+                        type: 'string',
+                        format: 'uuid',
                       },
                     },
                     required: ['kind', 'id'],
@@ -47438,12 +47438,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      step_id: {
-                        type: 'string',
-                      },
                       kind: {
                         type: 'string',
                         const: 'provider',
+                      },
+                      step_id: {
+                        type: 'string',
                       },
                     },
                     required: ['kind', 'step_id'],
@@ -47451,15 +47451,15 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'code_mode',
+                      },
                       parent_operation_id: {
                         type: 'string',
                       },
                       parent_tool_call_id: {
                         type: 'string',
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'code_mode',
                       },
                     },
                     required: ['kind', 'parent_operation_id', 'parent_tool_call_id'],
@@ -47469,15 +47469,15 @@ export const contracts = {
                       "An independently running cell accepted by an exec control call.\nIts parent may settle once startup/observation completes; its own nested\ntool effects must still drain before the cell's canonical settlement.",
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'code_cell',
+                      },
                       parent_operation_id: {
                         type: 'string',
                       },
                       parent_tool_call_id: {
                         type: 'string',
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'code_cell',
                       },
                     },
                     required: ['kind', 'parent_operation_id', 'parent_tool_call_id'],
@@ -47497,6 +47497,10 @@ export const contracts = {
                       'Explicit Host SDK work, never dispatch inferred from executor observations.',
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'host_sdk',
+                      },
                       package_id: {
                         type: 'string',
                       },
@@ -47508,10 +47512,6 @@ export const contracts = {
                       },
                       parent_operation_id: {
                         type: ['string', 'null'],
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'host_sdk',
                       },
                     },
                     required: [
@@ -47530,12 +47530,12 @@ export const contracts = {
                     description: 'No effect was admitted, so no execution duration is reported.',
                     type: 'object',
                     properties: {
-                      reason: {
-                        $ref: '#/$defs/RejectionKind',
-                      },
                       kind: {
                         type: 'string',
                         const: 'rejected',
+                      },
+                      reason: {
+                        $ref: '#/$defs/RejectionKind',
                       },
                     },
                     required: ['kind', 'reason'],
@@ -47543,16 +47543,16 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'settled',
+                      },
                       startedAt: {
                         type: 'number',
                         format: 'double',
                       },
                       outcome: {
                         $ref: '#/$defs/UsageToolStatus',
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'settled',
                       },
                     },
                     required: ['kind', 'startedAt', 'outcome'],
@@ -48204,15 +48204,15 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      scope: {
+                        type: 'string',
+                        const: 'connection',
+                      },
                       connectionId: {
                         type: 'string',
                       },
                       kind: {
                         $ref: '#/$defs/ConnectionCredentialKind',
-                      },
-                      scope: {
-                        type: 'string',
-                        const: 'connection',
                       },
                     },
                     additionalProperties: false,
@@ -48221,12 +48221,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      kind: {
-                        $ref: '#/$defs/PasswordKind',
-                      },
                       scope: {
                         type: 'string',
                         const: 'network_proxy',
+                      },
+                      kind: {
+                        $ref: '#/$defs/PasswordKind',
                       },
                     },
                     additionalProperties: false,
@@ -48251,12 +48251,12 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  connection: {
-                    $ref: '#/$defs/ConnectionIdentity',
-                  },
                   kind: {
                     type: 'string',
                     const: 'saved',
+                  },
+                  connection: {
+                    $ref: '#/$defs/ConnectionIdentity',
                   },
                 },
                 additionalProperties: false,
@@ -48265,12 +48265,12 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  reason: {
-                    $ref: '#/$defs/SettingsCredentialRejection',
-                  },
                   kind: {
                     type: 'string',
                     const: 'rejected',
+                  },
+                  reason: {
+                    $ref: '#/$defs/SettingsCredentialRejection',
                   },
                 },
                 additionalProperties: false,
@@ -48279,15 +48279,15 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'failed',
+                  },
                   reason: {
                     $ref: '#/$defs/SettingsLoginFailure',
                   },
                   message: {
                     type: 'string',
-                  },
-                  kind: {
-                    type: 'string',
-                    const: 'failed',
                   },
                 },
                 additionalProperties: false,
@@ -48782,12 +48782,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      name: {
-                        type: 'string',
-                      },
                       kind: {
                         type: 'string',
                         const: 'root',
+                      },
+                      name: {
+                        type: 'string',
                       },
                     },
                     additionalProperties: false,
@@ -48796,12 +48796,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      package: {
-                        $ref: '#/$defs/PackageRef',
-                      },
                       kind: {
                         type: 'string',
                         const: 'package',
+                      },
+                      package: {
+                        $ref: '#/$defs/PackageRef',
                       },
                     },
                     additionalProperties: false,
@@ -48879,6 +48879,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'instance',
+                      },
                       path: {
                         type: 'array',
                         items: {
@@ -48888,10 +48892,6 @@ export const contracts = {
                       export: {
                         type: 'string',
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'instance',
-                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'path', 'export'],
@@ -48899,12 +48899,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      name: {
-                        type: 'string',
-                      },
                       kind: {
                         type: 'string',
                         const: 'import',
+                      },
+                      name: {
+                        type: 'string',
                       },
                     },
                     additionalProperties: false,
@@ -48913,6 +48913,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'remote',
+                      },
                       deployment: {
                         type: 'string',
                       },
@@ -48921,10 +48925,6 @@ export const contracts = {
                       },
                       export: {
                         type: 'string',
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'remote',
                       },
                     },
                     additionalProperties: false,
@@ -48946,6 +48946,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'bound',
+                      },
                       key: {
                         type: 'string',
                       },
@@ -48963,10 +48967,6 @@ export const contracts = {
                       target: {
                         $ref: '#/$defs/Target',
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'bound',
-                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'key', 'label', 'target'],
@@ -48974,6 +48974,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'package',
+                      },
                       key: {
                         type: 'string',
                       },
@@ -48993,10 +48997,6 @@ export const contracts = {
                       },
                       export: {
                         type: 'string',
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'package',
                       },
                     },
                     additionalProperties: false,
@@ -49123,13 +49123,13 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      text: {
-                        type: 'string',
-                      },
                       kind: {
                         type: 'string',
                         const: 'text',
                       },
+                      text: {
+                        type: 'string',
+                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'text'],
@@ -49137,13 +49137,13 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      text: {
-                        type: 'string',
-                      },
                       kind: {
                         type: 'string',
                         const: 'number',
                       },
+                      text: {
+                        type: 'string',
+                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'text'],
@@ -49151,12 +49151,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      value: {
-                        type: 'boolean',
-                      },
                       kind: {
                         type: 'string',
                         const: 'boolean',
+                      },
+                      value: {
+                        type: 'boolean',
                       },
                     },
                     additionalProperties: false,
@@ -49186,12 +49186,12 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  value: {
-                    $ref: '#/$defs/DeploymentRef',
-                  },
                   status: {
                     type: 'string',
                     const: 'committed',
+                  },
+                  value: {
+                    $ref: '#/$defs/DeploymentRef',
                   },
                 },
                 additionalProperties: false,
@@ -49200,14 +49200,14 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  status: {
+                    type: 'string',
+                    const: 'conflict',
+                  },
                   currentRevision: {
                     type: 'integer',
                     format: 'uint64',
                     minimum: 0,
-                  },
-                  status: {
-                    type: 'string',
-                    const: 'conflict',
                   },
                 },
                 additionalProperties: false,
@@ -49216,15 +49216,15 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  status: {
+                    type: 'string',
+                    const: 'rejected',
+                  },
                   reason: {
                     $ref: '#/$defs/ManagementRejection',
                   },
                   diagnostic: {
                     type: ['string', 'null'],
-                  },
-                  status: {
-                    type: 'string',
-                    const: 'rejected',
                   },
                 },
                 additionalProperties: false,
@@ -49297,6 +49297,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'insert',
+                      },
                       name: {
                         type: 'string',
                       },
@@ -49318,10 +49322,6 @@ export const contracts = {
                           },
                         },
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'insert',
-                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'name', 'package', 'settings', 'bindings'],
@@ -49329,6 +49329,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'update',
+                      },
                       name: {
                         type: 'string',
                       },
@@ -49345,10 +49349,6 @@ export const contracts = {
                           },
                         },
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'update',
-                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'name', 'configuration', 'bindings'],
@@ -49356,12 +49356,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      name: {
-                        type: 'string',
-                      },
                       kind: {
                         type: 'string',
                         const: 'remove',
+                      },
+                      name: {
+                        type: 'string',
                       },
                     },
                     additionalProperties: false,
@@ -49413,13 +49413,13 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      text: {
-                        type: 'string',
-                      },
                       kind: {
                         type: 'string',
                         const: 'text',
                       },
+                      text: {
+                        type: 'string',
+                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'text'],
@@ -49427,13 +49427,13 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      text: {
-                        type: 'string',
-                      },
                       kind: {
                         type: 'string',
                         const: 'number',
                       },
+                      text: {
+                        type: 'string',
+                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'text'],
@@ -49441,12 +49441,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      value: {
-                        type: 'boolean',
-                      },
                       kind: {
                         type: 'string',
                         const: 'boolean',
+                      },
+                      value: {
+                        type: 'boolean',
                       },
                     },
                     additionalProperties: false,
@@ -49470,6 +49470,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'instance',
+                      },
                       path: {
                         type: 'array',
                         items: {
@@ -49479,10 +49483,6 @@ export const contracts = {
                       export: {
                         type: 'string',
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'instance',
-                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'path', 'export'],
@@ -49490,12 +49490,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      name: {
-                        type: 'string',
-                      },
                       kind: {
                         type: 'string',
                         const: 'import',
+                      },
+                      name: {
+                        type: 'string',
                       },
                     },
                     additionalProperties: false,
@@ -49504,6 +49504,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'remote',
+                      },
                       deployment: {
                         type: 'string',
                       },
@@ -49512,10 +49516,6 @@ export const contracts = {
                       },
                       export: {
                         type: 'string',
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'remote',
                       },
                     },
                     additionalProperties: false,
@@ -49543,12 +49543,12 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  value: {
-                    $ref: '#/$defs/DeploymentRef',
-                  },
                   status: {
                     type: 'string',
                     const: 'committed',
+                  },
+                  value: {
+                    $ref: '#/$defs/DeploymentRef',
                   },
                 },
                 additionalProperties: false,
@@ -49557,14 +49557,14 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  status: {
+                    type: 'string',
+                    const: 'conflict',
+                  },
                   currentRevision: {
                     type: 'integer',
                     format: 'uint64',
                     minimum: 0,
-                  },
-                  status: {
-                    type: 'string',
-                    const: 'conflict',
                   },
                 },
                 additionalProperties: false,
@@ -49573,15 +49573,15 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  status: {
+                    type: 'string',
+                    const: 'rejected',
+                  },
                   reason: {
                     $ref: '#/$defs/ManagementRejection',
                   },
                   diagnostic: {
                     type: ['string', 'null'],
-                  },
-                  status: {
-                    type: 'string',
-                    const: 'rejected',
                   },
                 },
                 additionalProperties: false,
@@ -49687,6 +49687,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'chunk',
+                  },
                   offset: {
                     type: 'integer',
                     format: 'uint',
@@ -49700,10 +49704,6 @@ export const contracts = {
                   text: {
                     type: 'string',
                     maxLength: 16384,
-                  },
-                  kind: {
-                    type: 'string',
-                    const: 'chunk',
                   },
                 },
                 additionalProperties: false,
@@ -49750,12 +49750,12 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  value: {
-                    $ref: '#/$defs/PackageInstalled',
-                  },
                   status: {
                     type: 'string',
                     const: 'committed',
+                  },
+                  value: {
+                    $ref: '#/$defs/PackageInstalled',
                   },
                 },
                 additionalProperties: false,
@@ -49764,14 +49764,14 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  status: {
+                    type: 'string',
+                    const: 'conflict',
+                  },
                   currentRevision: {
                     type: 'integer',
                     format: 'uint64',
                     minimum: 0,
-                  },
-                  status: {
-                    type: 'string',
-                    const: 'conflict',
                   },
                 },
                 additionalProperties: false,
@@ -49780,15 +49780,15 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  status: {
+                    type: 'string',
+                    const: 'rejected',
+                  },
                   reason: {
                     $ref: '#/$defs/ManagementRejection',
                   },
                   diagnostic: {
                     type: ['string', 'null'],
-                  },
-                  status: {
-                    type: 'string',
-                    const: 'rejected',
                   },
                 },
                 additionalProperties: false,
@@ -49899,12 +49899,12 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  value: {
-                    $ref: '#/$defs/PackageInstalled',
-                  },
                   status: {
                     type: 'string',
                     const: 'committed',
+                  },
+                  value: {
+                    $ref: '#/$defs/PackageInstalled',
                   },
                 },
                 additionalProperties: false,
@@ -49913,14 +49913,14 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  status: {
+                    type: 'string',
+                    const: 'conflict',
+                  },
                   currentRevision: {
                     type: 'integer',
                     format: 'uint64',
                     minimum: 0,
-                  },
-                  status: {
-                    type: 'string',
-                    const: 'conflict',
                   },
                 },
                 additionalProperties: false,
@@ -49929,15 +49929,15 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  status: {
+                    type: 'string',
+                    const: 'rejected',
+                  },
                   reason: {
                     $ref: '#/$defs/ManagementRejection',
                   },
                   diagnostic: {
                     type: ['string', 'null'],
-                  },
-                  status: {
-                    type: 'string',
-                    const: 'rejected',
                   },
                 },
                 additionalProperties: false,
@@ -50041,12 +50041,12 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  value: {
-                    $ref: '#/$defs/PackageInstalled',
-                  },
                   status: {
                     type: 'string',
                     const: 'committed',
+                  },
+                  value: {
+                    $ref: '#/$defs/PackageInstalled',
                   },
                 },
                 additionalProperties: false,
@@ -50055,14 +50055,14 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  status: {
+                    type: 'string',
+                    const: 'conflict',
+                  },
                   currentRevision: {
                     type: 'integer',
                     format: 'uint64',
                     minimum: 0,
-                  },
-                  status: {
-                    type: 'string',
-                    const: 'conflict',
                   },
                 },
                 additionalProperties: false,
@@ -50071,15 +50071,15 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  status: {
+                    type: 'string',
+                    const: 'rejected',
+                  },
                   reason: {
                     $ref: '#/$defs/ManagementRejection',
                   },
                   diagnostic: {
                     type: ['string', 'null'],
-                  },
-                  status: {
-                    type: 'string',
-                    const: 'rejected',
                   },
                 },
                 additionalProperties: false,
@@ -50171,6 +50171,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'continue',
+                  },
                   source: {
                     $ref: '#/$defs/DeploymentRef',
                   },
@@ -50183,10 +50187,6 @@ export const contracts = {
                         type: 'null',
                       },
                     ],
-                  },
-                  kind: {
-                    type: 'string',
-                    const: 'continue',
                   },
                 },
                 additionalProperties: false,
@@ -50471,13 +50471,13 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      text: {
-                        type: 'string',
-                      },
                       kind: {
                         type: 'string',
                         const: 'text',
                       },
+                      text: {
+                        type: 'string',
+                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'text'],
@@ -50485,13 +50485,13 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      text: {
-                        type: 'string',
-                      },
                       kind: {
                         type: 'string',
                         const: 'number',
                       },
+                      text: {
+                        type: 'string',
+                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'text'],
@@ -50499,12 +50499,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      value: {
-                        type: 'boolean',
-                      },
                       kind: {
                         type: 'string',
                         const: 'boolean',
+                      },
+                      value: {
+                        type: 'boolean',
                       },
                     },
                     additionalProperties: false,
@@ -50659,13 +50659,13 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      text: {
-                        type: 'string',
-                      },
                       kind: {
                         type: 'string',
                         const: 'text',
                       },
+                      text: {
+                        type: 'string',
+                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'text'],
@@ -50673,13 +50673,13 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      text: {
-                        type: 'string',
-                      },
                       kind: {
                         type: 'string',
                         const: 'number',
                       },
+                      text: {
+                        type: 'string',
+                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'text'],
@@ -50687,12 +50687,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      value: {
-                        type: 'boolean',
-                      },
                       kind: {
                         type: 'string',
                         const: 'boolean',
+                      },
+                      value: {
+                        type: 'boolean',
                       },
                     },
                     additionalProperties: false,
@@ -50754,6 +50754,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'many',
+                      },
                       min: {
                         type: 'integer',
                         format: 'uint',
@@ -50763,10 +50767,6 @@ export const contracts = {
                         type: 'integer',
                         format: 'uint',
                         minimum: 0,
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'many',
                       },
                     },
                     additionalProperties: false,
@@ -50971,12 +50971,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      package: {
-                        $ref: '#/$defs/PackageRef',
-                      },
                       source: {
                         type: 'string',
                         const: 'pinned',
+                      },
+                      package: {
+                        $ref: '#/$defs/PackageRef',
                       },
                     },
                     additionalProperties: false,
@@ -51037,6 +51037,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'instance',
+                      },
                       path: {
                         type: 'array',
                         items: {
@@ -51046,10 +51050,6 @@ export const contracts = {
                       export: {
                         type: 'string',
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'instance',
-                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'path', 'export'],
@@ -51057,12 +51057,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      name: {
-                        type: 'string',
-                      },
                       kind: {
                         type: 'string',
                         const: 'import',
+                      },
+                      name: {
+                        type: 'string',
                       },
                     },
                     additionalProperties: false,
@@ -51071,6 +51071,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'remote',
+                      },
                       deployment: {
                         type: 'string',
                       },
@@ -51079,10 +51083,6 @@ export const contracts = {
                       },
                       export: {
                         type: 'string',
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'remote',
                       },
                     },
                     additionalProperties: false,
@@ -51233,15 +51233,15 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'service',
+                      },
                       methods: {
                         type: 'object',
                         additionalProperties: {
                           $ref: '#/$defs/Method',
                         },
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'service',
                       },
                     },
                     additionalProperties: false,
@@ -51250,6 +51250,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'component',
+                      },
                       props: true,
                       events: {
                         type: 'object',
@@ -51261,10 +51265,6 @@ export const contracts = {
                           $ref: '#/$defs/Capture',
                         },
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'component',
-                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'props', 'events', 'captures'],
@@ -51272,11 +51272,11 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      schema: true,
                       kind: {
                         type: 'string',
                         const: 'value',
                       },
+                      schema: true,
                     },
                     additionalProperties: false,
                     required: ['kind', 'schema'],
@@ -51284,14 +51284,14 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      resource: {
-                        type: 'string',
-                      },
-                      schema: true,
                       kind: {
                         type: 'string',
                         const: 'resource',
                       },
+                      resource: {
+                        type: 'string',
+                      },
+                      schema: true,
                     },
                     additionalProperties: false,
                     required: ['kind', 'resource', 'schema'],
@@ -51374,12 +51374,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      resource: {
-                        $ref: '#/$defs/ResourceType',
-                      },
                       kind: {
                         type: 'string',
                         const: 'resource',
+                      },
+                      resource: {
+                        $ref: '#/$defs/ResourceType',
                       },
                     },
                     additionalProperties: false,
@@ -51765,13 +51765,13 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      text: {
-                        type: 'string',
-                      },
                       kind: {
                         type: 'string',
                         const: 'text',
                       },
+                      text: {
+                        type: 'string',
+                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'text'],
@@ -51779,13 +51779,13 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      text: {
-                        type: 'string',
-                      },
                       kind: {
                         type: 'string',
                         const: 'number',
                       },
+                      text: {
+                        type: 'string',
+                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'text'],
@@ -51793,12 +51793,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      value: {
-                        type: 'boolean',
-                      },
                       kind: {
                         type: 'string',
                         const: 'boolean',
+                      },
+                      value: {
+                        type: 'boolean',
                       },
                     },
                     additionalProperties: false,
@@ -51847,12 +51847,12 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  value: {
-                    $ref: '#/$defs/DeploymentRef',
-                  },
                   status: {
                     type: 'string',
                     const: 'committed',
+                  },
+                  value: {
+                    $ref: '#/$defs/DeploymentRef',
                   },
                 },
                 additionalProperties: false,
@@ -51861,14 +51861,14 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  status: {
+                    type: 'string',
+                    const: 'conflict',
+                  },
                   currentRevision: {
                     type: 'integer',
                     format: 'uint64',
                     minimum: 0,
-                  },
-                  status: {
-                    type: 'string',
-                    const: 'conflict',
                   },
                 },
                 additionalProperties: false,
@@ -51877,15 +51877,15 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  status: {
+                    type: 'string',
+                    const: 'rejected',
+                  },
                   reason: {
                     $ref: '#/$defs/ManagementRejection',
                   },
                   diagnostic: {
                     type: ['string', 'null'],
-                  },
-                  status: {
-                    type: 'string',
-                    const: 'rejected',
                   },
                 },
                 additionalProperties: false,
@@ -52114,12 +52114,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      package: {
-                        $ref: '#/$defs/PackageRef',
-                      },
                       source: {
                         type: 'string',
                         const: 'pinned',
+                      },
+                      package: {
+                        $ref: '#/$defs/PackageRef',
                       },
                     },
                     additionalProperties: false,
@@ -52180,6 +52180,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'instance',
+                      },
                       path: {
                         type: 'array',
                         items: {
@@ -52189,10 +52193,6 @@ export const contracts = {
                       export: {
                         type: 'string',
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'instance',
-                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'path', 'export'],
@@ -52200,12 +52200,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      name: {
-                        type: 'string',
-                      },
                       kind: {
                         type: 'string',
                         const: 'import',
+                      },
+                      name: {
+                        type: 'string',
                       },
                     },
                     additionalProperties: false,
@@ -52214,6 +52214,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'remote',
+                      },
                       deployment: {
                         type: 'string',
                       },
@@ -52222,10 +52226,6 @@ export const contracts = {
                       },
                       export: {
                         type: 'string',
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'remote',
                       },
                     },
                     additionalProperties: false,
@@ -52376,15 +52376,15 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'service',
+                      },
                       methods: {
                         type: 'object',
                         additionalProperties: {
                           $ref: '#/$defs/Method',
                         },
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'service',
                       },
                     },
                     additionalProperties: false,
@@ -52393,6 +52393,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'component',
+                      },
                       props: true,
                       events: {
                         type: 'object',
@@ -52404,10 +52408,6 @@ export const contracts = {
                           $ref: '#/$defs/Capture',
                         },
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'component',
-                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'props', 'events', 'captures'],
@@ -52415,11 +52415,11 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      schema: true,
                       kind: {
                         type: 'string',
                         const: 'value',
                       },
+                      schema: true,
                     },
                     additionalProperties: false,
                     required: ['kind', 'schema'],
@@ -52427,14 +52427,14 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      resource: {
-                        type: 'string',
-                      },
-                      schema: true,
                       kind: {
                         type: 'string',
                         const: 'resource',
                       },
+                      resource: {
+                        type: 'string',
+                      },
+                      schema: true,
                     },
                     additionalProperties: false,
                     required: ['kind', 'resource', 'schema'],
@@ -52517,12 +52517,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      resource: {
-                        $ref: '#/$defs/ResourceType',
-                      },
                       kind: {
                         type: 'string',
                         const: 'resource',
+                      },
+                      resource: {
+                        $ref: '#/$defs/ResourceType',
                       },
                     },
                     additionalProperties: false,
@@ -52556,12 +52556,12 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  value: {
-                    $ref: '#/$defs/DeploymentRef',
-                  },
                   status: {
                     type: 'string',
                     const: 'committed',
+                  },
+                  value: {
+                    $ref: '#/$defs/DeploymentRef',
                   },
                 },
                 additionalProperties: false,
@@ -52570,14 +52570,14 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  status: {
+                    type: 'string',
+                    const: 'conflict',
+                  },
                   currentRevision: {
                     type: 'integer',
                     format: 'uint64',
                     minimum: 0,
-                  },
-                  status: {
-                    type: 'string',
-                    const: 'conflict',
                   },
                 },
                 additionalProperties: false,
@@ -52586,15 +52586,15 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  status: {
+                    type: 'string',
+                    const: 'rejected',
+                  },
                   reason: {
                     $ref: '#/$defs/ManagementRejection',
                   },
                   diagnostic: {
                     type: ['string', 'null'],
-                  },
-                  status: {
-                    type: 'string',
-                    const: 'rejected',
                   },
                 },
                 additionalProperties: false,
@@ -52681,12 +52681,12 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  value: {
-                    $ref: '#/$defs/DeploymentRef',
-                  },
                   status: {
                     type: 'string',
                     const: 'committed',
+                  },
+                  value: {
+                    $ref: '#/$defs/DeploymentRef',
                   },
                 },
                 additionalProperties: false,
@@ -52695,14 +52695,14 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  status: {
+                    type: 'string',
+                    const: 'conflict',
+                  },
                   currentRevision: {
                     type: 'integer',
                     format: 'uint64',
                     minimum: 0,
-                  },
-                  status: {
-                    type: 'string',
-                    const: 'conflict',
                   },
                 },
                 additionalProperties: false,
@@ -52711,15 +52711,15 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  status: {
+                    type: 'string',
+                    const: 'rejected',
+                  },
                   reason: {
                     $ref: '#/$defs/ManagementRejection',
                   },
                   diagnostic: {
                     type: ['string', 'null'],
-                  },
-                  status: {
-                    type: 'string',
-                    const: 'rejected',
                   },
                 },
                 additionalProperties: false,
@@ -53014,15 +53014,15 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'recorded',
+                      },
                       outcome: {
                         $ref: '#/$defs/OperationOutcome',
                       },
                       cleanup: {
                         $ref: '#/$defs/OperationCleanup',
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'recorded',
                       },
                     },
                     additionalProperties: false,
@@ -53031,12 +53031,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      diagnostic: {
-                        type: 'string',
-                      },
                       kind: {
                         type: 'string',
                         const: 'unavailable',
+                      },
+                      diagnostic: {
+                        type: 'string',
                       },
                     },
                     additionalProperties: false,
@@ -53062,11 +53062,11 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      value: true,
                       kind: {
                         type: 'string',
                         const: 'returned',
                       },
+                      value: true,
                     },
                     additionalProperties: false,
                     required: ['kind', 'value'],
@@ -53074,12 +53074,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      diagnostic: {
-                        type: 'string',
-                      },
                       kind: {
                         type: 'string',
                         const: 'unknown',
+                      },
+                      diagnostic: {
+                        type: 'string',
                       },
                     },
                     additionalProperties: false,
@@ -53114,12 +53114,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      diagnostic: {
-                        type: 'string',
-                      },
                       kind: {
                         type: 'string',
                         const: 'failed',
+                      },
+                      diagnostic: {
+                        type: 'string',
                       },
                     },
                     additionalProperties: false,
@@ -53346,6 +53346,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'continue',
+                      },
                       source: {
                         $ref: '#/$defs/DeploymentRef',
                       },
@@ -53358,10 +53362,6 @@ export const contracts = {
                             type: 'null',
                           },
                         ],
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'continue',
                       },
                     },
                     additionalProperties: false,
@@ -53653,12 +53653,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      package: {
-                        $ref: '#/$defs/PackageRef',
-                      },
                       source: {
                         type: 'string',
                         const: 'pinned',
+                      },
+                      package: {
+                        $ref: '#/$defs/PackageRef',
                       },
                     },
                     additionalProperties: false,
@@ -53706,6 +53706,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'instance',
+                      },
                       path: {
                         type: 'array',
                         items: {
@@ -53715,10 +53719,6 @@ export const contracts = {
                       export: {
                         type: 'string',
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'instance',
-                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'path', 'export'],
@@ -53726,12 +53726,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      name: {
-                        type: 'string',
-                      },
                       kind: {
                         type: 'string',
                         const: 'import',
+                      },
+                      name: {
+                        type: 'string',
                       },
                     },
                     additionalProperties: false,
@@ -53740,6 +53740,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'remote',
+                      },
                       deployment: {
                         type: 'string',
                       },
@@ -53748,10 +53752,6 @@ export const contracts = {
                       },
                       export: {
                         type: 'string',
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'remote',
                       },
                     },
                     additionalProperties: false,
@@ -53893,15 +53893,15 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'service',
+                      },
                       methods: {
                         type: 'object',
                         additionalProperties: {
                           $ref: '#/$defs/Method',
                         },
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'service',
                       },
                     },
                     additionalProperties: false,
@@ -53910,6 +53910,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'component',
+                      },
                       props: true,
                       events: {
                         type: 'object',
@@ -53921,10 +53925,6 @@ export const contracts = {
                           $ref: '#/$defs/Capture',
                         },
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'component',
-                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'props', 'events', 'captures'],
@@ -53932,11 +53932,11 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      schema: true,
                       kind: {
                         type: 'string',
                         const: 'value',
                       },
+                      schema: true,
                     },
                     additionalProperties: false,
                     required: ['kind', 'schema'],
@@ -53944,14 +53944,14 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      resource: {
-                        type: 'string',
-                      },
-                      schema: true,
                       kind: {
                         type: 'string',
                         const: 'resource',
                       },
+                      resource: {
+                        type: 'string',
+                      },
+                      schema: true,
                     },
                     additionalProperties: false,
                     required: ['kind', 'resource', 'schema'],
@@ -54034,12 +54034,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      resource: {
-                        $ref: '#/$defs/ResourceType',
-                      },
                       kind: {
                         type: 'string',
                         const: 'resource',
+                      },
+                      resource: {
+                        $ref: '#/$defs/ResourceType',
                       },
                     },
                     additionalProperties: false,
@@ -54087,6 +54087,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'insert',
+                      },
                       name: {
                         type: 'string',
                       },
@@ -54108,10 +54112,6 @@ export const contracts = {
                           },
                         },
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'insert',
-                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'name', 'package', 'settings', 'bindings'],
@@ -54119,6 +54119,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'update',
+                      },
                       name: {
                         type: 'string',
                       },
@@ -54135,10 +54139,6 @@ export const contracts = {
                           },
                         },
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'update',
-                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'name', 'configuration', 'bindings'],
@@ -54146,12 +54146,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      name: {
-                        type: 'string',
-                      },
                       kind: {
                         type: 'string',
                         const: 'remove',
+                      },
+                      name: {
+                        type: 'string',
                       },
                     },
                     additionalProperties: false,
@@ -54190,13 +54190,13 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      text: {
-                        type: 'string',
-                      },
                       kind: {
                         type: 'string',
                         const: 'text',
                       },
+                      text: {
+                        type: 'string',
+                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'text'],
@@ -54204,13 +54204,13 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      text: {
-                        type: 'string',
-                      },
                       kind: {
                         type: 'string',
                         const: 'number',
                       },
+                      text: {
+                        type: 'string',
+                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'text'],
@@ -54218,12 +54218,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      value: {
-                        type: 'boolean',
-                      },
                       kind: {
                         type: 'string',
                         const: 'boolean',
+                      },
+                      value: {
+                        type: 'boolean',
                       },
                     },
                     additionalProperties: false,
@@ -54299,12 +54299,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      name: {
-                        type: 'string',
-                      },
                       kind: {
                         type: 'string',
                         const: 'root',
+                      },
+                      name: {
+                        type: 'string',
                       },
                     },
                     additionalProperties: false,
@@ -54313,12 +54313,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      package: {
-                        $ref: '#/$defs/PackageRef',
-                      },
                       kind: {
                         type: 'string',
                         const: 'package',
+                      },
+                      package: {
+                        $ref: '#/$defs/PackageRef',
                       },
                     },
                     additionalProperties: false,
@@ -54423,11 +54423,11 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  outcome: true,
                   status: {
                     type: 'string',
                     const: 'completed',
                   },
+                  outcome: true,
                 },
                 required: ['status', 'outcome'],
               },
@@ -54592,6 +54592,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'continue',
+                      },
                       source: {
                         $ref: '#/$defs/DeploymentRef',
                       },
@@ -54604,10 +54608,6 @@ export const contracts = {
                             type: 'null',
                           },
                         ],
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'continue',
                       },
                     },
                     additionalProperties: false,
@@ -54899,12 +54899,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      package: {
-                        $ref: '#/$defs/PackageRef',
-                      },
                       source: {
                         type: 'string',
                         const: 'pinned',
+                      },
+                      package: {
+                        $ref: '#/$defs/PackageRef',
                       },
                     },
                     additionalProperties: false,
@@ -54952,6 +54952,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'instance',
+                      },
                       path: {
                         type: 'array',
                         items: {
@@ -54961,10 +54965,6 @@ export const contracts = {
                       export: {
                         type: 'string',
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'instance',
-                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'path', 'export'],
@@ -54972,12 +54972,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      name: {
-                        type: 'string',
-                      },
                       kind: {
                         type: 'string',
                         const: 'import',
+                      },
+                      name: {
+                        type: 'string',
                       },
                     },
                     additionalProperties: false,
@@ -54986,6 +54986,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'remote',
+                      },
                       deployment: {
                         type: 'string',
                       },
@@ -54994,10 +54998,6 @@ export const contracts = {
                       },
                       export: {
                         type: 'string',
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'remote',
                       },
                     },
                     additionalProperties: false,
@@ -55139,15 +55139,15 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'service',
+                      },
                       methods: {
                         type: 'object',
                         additionalProperties: {
                           $ref: '#/$defs/Method',
                         },
-                      },
-                      kind: {
-                        type: 'string',
-                        const: 'service',
                       },
                     },
                     additionalProperties: false,
@@ -55156,6 +55156,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'component',
+                      },
                       props: true,
                       events: {
                         type: 'object',
@@ -55167,10 +55171,6 @@ export const contracts = {
                           $ref: '#/$defs/Capture',
                         },
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'component',
-                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'props', 'events', 'captures'],
@@ -55178,11 +55178,11 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      schema: true,
                       kind: {
                         type: 'string',
                         const: 'value',
                       },
+                      schema: true,
                     },
                     additionalProperties: false,
                     required: ['kind', 'schema'],
@@ -55190,14 +55190,14 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      resource: {
-                        type: 'string',
-                      },
-                      schema: true,
                       kind: {
                         type: 'string',
                         const: 'resource',
                       },
+                      resource: {
+                        type: 'string',
+                      },
+                      schema: true,
                     },
                     additionalProperties: false,
                     required: ['kind', 'resource', 'schema'],
@@ -55280,12 +55280,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      resource: {
-                        $ref: '#/$defs/ResourceType',
-                      },
                       kind: {
                         type: 'string',
                         const: 'resource',
+                      },
+                      resource: {
+                        $ref: '#/$defs/ResourceType',
                       },
                     },
                     additionalProperties: false,
@@ -55333,6 +55333,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'insert',
+                      },
                       name: {
                         type: 'string',
                       },
@@ -55354,10 +55358,6 @@ export const contracts = {
                           },
                         },
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'insert',
-                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'name', 'package', 'settings', 'bindings'],
@@ -55365,6 +55365,10 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'update',
+                      },
                       name: {
                         type: 'string',
                       },
@@ -55381,10 +55385,6 @@ export const contracts = {
                           },
                         },
                       },
-                      kind: {
-                        type: 'string',
-                        const: 'update',
-                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'name', 'configuration', 'bindings'],
@@ -55392,12 +55392,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      name: {
-                        type: 'string',
-                      },
                       kind: {
                         type: 'string',
                         const: 'remove',
+                      },
+                      name: {
+                        type: 'string',
                       },
                     },
                     additionalProperties: false,
@@ -55436,13 +55436,13 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      text: {
-                        type: 'string',
-                      },
                       kind: {
                         type: 'string',
                         const: 'text',
                       },
+                      text: {
+                        type: 'string',
+                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'text'],
@@ -55450,13 +55450,13 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      text: {
-                        type: 'string',
-                      },
                       kind: {
                         type: 'string',
                         const: 'number',
                       },
+                      text: {
+                        type: 'string',
+                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'text'],
@@ -55464,12 +55464,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      value: {
-                        type: 'boolean',
-                      },
                       kind: {
                         type: 'string',
                         const: 'boolean',
+                      },
+                      value: {
+                        type: 'boolean',
                       },
                     },
                     additionalProperties: false,
@@ -55545,12 +55545,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      name: {
-                        type: 'string',
-                      },
                       kind: {
                         type: 'string',
                         const: 'root',
+                      },
+                      name: {
+                        type: 'string',
                       },
                     },
                     additionalProperties: false,
@@ -55559,12 +55559,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      package: {
-                        $ref: '#/$defs/PackageRef',
-                      },
                       kind: {
                         type: 'string',
                         const: 'package',
+                      },
+                      package: {
+                        $ref: '#/$defs/PackageRef',
                       },
                     },
                     additionalProperties: false,
@@ -55712,12 +55712,12 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  snapshot: {
-                    $ref: '#/$defs/WebSnapshot',
-                  },
                   kind: {
                     type: 'string',
                     const: 'updated',
+                  },
+                  snapshot: {
+                    $ref: '#/$defs/WebSnapshot',
                   },
                 },
                 required: ['kind', 'snapshot'],
@@ -55861,12 +55861,12 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  snapshot: {
-                    $ref: '#/$defs/WebSnapshot',
-                  },
                   kind: {
                     type: 'string',
                     const: 'updated',
+                  },
+                  snapshot: {
+                    $ref: '#/$defs/WebSnapshot',
                   },
                 },
                 required: ['kind', 'snapshot'],
@@ -56041,11 +56041,11 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  value: true,
                   kind: {
                     type: 'string',
                     const: 'completed',
                   },
+                  value: true,
                 },
                 required: ['kind', 'value'],
               },
@@ -56053,12 +56053,12 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  message: {
-                    type: 'string',
-                  },
                   kind: {
                     type: 'string',
                     const: 'failed',
+                  },
+                  message: {
+                    type: 'string',
                   },
                 },
                 required: ['kind', 'message'],
@@ -56090,11 +56090,11 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  value: true,
                   kind: {
                     type: 'string',
                     const: 'completed',
                   },
+                  value: true,
                 },
                 required: ['kind', 'value'],
               },
@@ -56102,12 +56102,12 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  message: {
-                    type: 'string',
-                  },
                   kind: {
                     type: 'string',
                     const: 'failed',
+                  },
+                  message: {
+                    type: 'string',
                   },
                 },
                 required: ['kind', 'message'],
@@ -56162,12 +56162,12 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  snapshot: {
-                    $ref: '#/$defs/WebSnapshot',
-                  },
                   kind: {
                     type: 'string',
                     const: 'updated',
+                  },
+                  snapshot: {
+                    $ref: '#/$defs/WebSnapshot',
                   },
                 },
                 required: ['kind', 'snapshot'],
@@ -56311,12 +56311,12 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  snapshot: {
-                    $ref: '#/$defs/WebSnapshot',
-                  },
                   kind: {
                     type: 'string',
                     const: 'updated',
+                  },
+                  snapshot: {
+                    $ref: '#/$defs/WebSnapshot',
                   },
                 },
                 required: ['kind', 'snapshot'],
@@ -56506,11 +56506,11 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  value: true,
                   kind: {
                     type: 'string',
                     const: 'completed',
                   },
+                  value: true,
                 },
                 required: ['kind', 'value'],
               },
@@ -56518,12 +56518,12 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  message: {
-                    type: 'string',
-                  },
                   kind: {
                     type: 'string',
                     const: 'failed',
+                  },
+                  message: {
+                    type: 'string',
                   },
                 },
                 required: ['kind', 'message'],
@@ -56676,13 +56676,13 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
-                      name: {
-                        type: 'string',
-                        minLength: 1,
-                      },
                       kind: {
                         type: 'string',
                         const: 'header',
+                      },
+                      name: {
+                        type: 'string',
+                        minLength: 1,
                       },
                     },
                     required: ['kind', 'name'],
@@ -56701,12 +56701,12 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  snapshot: {
-                    $ref: '#/$defs/JevSnapshot',
-                  },
                   kind: {
                     type: 'string',
                     const: 'updated',
+                  },
+                  snapshot: {
+                    $ref: '#/$defs/JevSnapshot',
                   },
                 },
                 required: ['kind', 'snapshot'],
@@ -56825,14 +56825,14 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
+                      type: {
+                        type: 'string',
+                        const: 'noul',
+                      },
                       instructions: true,
                       criteria: {
                         type: ['object', 'null'],
                         additionalProperties: true,
-                      },
-                      type: {
-                        type: 'string',
-                        const: 'noul',
                       },
                     },
                     required: ['type', 'instructions'],
@@ -56841,14 +56841,14 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
+                      type: {
+                        type: 'string',
+                        const: 'choice',
+                      },
                       instructions: true,
                       criteria: {
                         type: 'object',
                         additionalProperties: true,
-                      },
-                      type: {
-                        type: 'string',
-                        const: 'choice',
                       },
                     },
                     required: ['type', 'instructions', 'criteria'],
@@ -56857,14 +56857,14 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
+                      type: {
+                        type: 'string',
+                        const: 'score',
+                      },
                       instructions: true,
                       criteria: {
                         type: 'array',
                         items: true,
-                      },
-                      type: {
-                        type: 'string',
-                        const: 'score',
                       },
                     },
                     required: ['type', 'instructions', 'criteria'],
@@ -56879,12 +56879,12 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  value: {
-                    $ref: '#/$defs/JevEvaluationResult',
-                  },
                   kind: {
                     type: 'string',
                     const: 'completed',
+                  },
+                  value: {
+                    $ref: '#/$defs/JevEvaluationResult',
                   },
                 },
                 required: ['kind', 'value'],
@@ -56893,12 +56893,12 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  message: {
-                    type: 'string',
-                  },
                   kind: {
                     type: 'string',
                     const: 'failed',
+                  },
+                  message: {
+                    type: 'string',
                   },
                 },
                 required: ['kind', 'message'],
@@ -56932,13 +56932,13 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
-                      noul: {
-                        type: 'number',
-                        format: 'double',
-                      },
                       type: {
                         type: 'string',
                         const: 'noul',
+                      },
+                      noul: {
+                        type: 'number',
+                        format: 'double',
                       },
                     },
                     required: ['type', 'noul'],
@@ -56947,6 +56947,10 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
+                      type: {
+                        type: 'string',
+                        const: 'choice',
+                      },
                       choice: {
                         type: 'string',
                       },
@@ -56961,10 +56965,6 @@ export const contracts = {
                           format: 'double',
                         },
                       },
-                      type: {
-                        type: 'string',
-                        const: 'choice',
-                      },
                     },
                     required: ['type', 'choice', 'confidence', 'probabilities'],
                   },
@@ -56972,6 +56972,10 @@ export const contracts = {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
+                      type: {
+                        type: 'string',
+                        const: 'score',
+                      },
                       score: {
                         type: 'number',
                         format: 'double',
@@ -56992,10 +56996,6 @@ export const contracts = {
                         additionalProperties: {
                           type: 'string',
                         },
-                      },
-                      type: {
-                        type: 'string',
-                        const: 'score',
                       },
                     },
                     required: ['type', 'score', 'confidence', 'probabilities', 'legend'],
@@ -57071,12 +57071,12 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  snapshot: {
-                    $ref: '#/$defs/JevSnapshot',
-                  },
                   kind: {
                     type: 'string',
                     const: 'updated',
+                  },
+                  snapshot: {
+                    $ref: '#/$defs/JevSnapshot',
                   },
                 },
                 required: ['kind', 'snapshot'],
@@ -57267,12 +57267,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      cursor: {
-                        $ref: '#/$defs/HostLogCursor',
-                      },
                       kind: {
                         type: 'string',
                         const: 'after',
+                      },
+                      cursor: {
+                        $ref: '#/$defs/HostLogCursor',
                       },
                     },
                     additionalProperties: false,
@@ -57304,6 +57304,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'data',
+                  },
                   cursor: {
                     $ref: '#/$defs/HostLogCursor',
                   },
@@ -57325,10 +57329,6 @@ export const contracts = {
                   },
                   hasMore: {
                     type: 'boolean',
-                  },
-                  kind: {
-                    type: 'string',
-                    const: 'data',
                   },
                 },
                 additionalProperties: false,
@@ -57378,12 +57378,12 @@ export const contracts = {
                   {
                     type: 'object',
                     properties: {
-                      cursor: {
-                        $ref: '#/$defs/HostLogCursor',
-                      },
                       kind: {
                         type: 'string',
                         const: 'after',
+                      },
+                      cursor: {
+                        $ref: '#/$defs/HostLogCursor',
                       },
                     },
                     additionalProperties: false,
@@ -57415,6 +57415,10 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'data',
+                  },
                   cursor: {
                     $ref: '#/$defs/HostLogCursor',
                   },
@@ -57436,10 +57440,6 @@ export const contracts = {
                   },
                   hasMore: {
                     type: 'boolean',
-                  },
-                  kind: {
-                    type: 'string',
-                    const: 'data',
                   },
                 },
                 additionalProperties: false,
@@ -57501,15 +57501,15 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'completed',
+                  },
                   artifact: {
                     type: 'string',
                   },
                   state: {
                     $ref: '#/$defs/ComputerReplState',
-                  },
-                  kind: {
-                    type: 'string',
-                    const: 'completed',
                   },
                 },
                 required: ['kind', 'artifact', 'state'],
@@ -57520,15 +57520,15 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'failed',
+                  },
                   message: {
                     type: 'string',
                   },
                   state: {
                     $ref: '#/$defs/ComputerReplState',
-                  },
-                  kind: {
-                    type: 'string',
-                    const: 'failed',
                   },
                 },
                 required: ['kind', 'message', 'state'],
@@ -57558,15 +57558,15 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'completed',
+                  },
                   artifact: {
                     type: 'string',
                   },
                   state: {
                     $ref: '#/$defs/ComputerReplState',
-                  },
-                  kind: {
-                    type: 'string',
-                    const: 'completed',
                   },
                 },
                 required: ['kind', 'artifact', 'state'],
@@ -57577,15 +57577,15 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'failed',
+                  },
                   message: {
                     type: 'string',
                   },
                   state: {
                     $ref: '#/$defs/ComputerReplState',
-                  },
-                  kind: {
-                    type: 'string',
-                    const: 'failed',
                   },
                 },
                 required: ['kind', 'message', 'state'],
@@ -57685,12 +57685,12 @@ export const contracts = {
               {
                 type: 'object',
                 properties: {
-                  connection: {
-                    $ref: '#/$defs/ConnectionVersionBasis',
-                  },
                   kind: {
                     type: 'string',
                     const: 'ready',
+                  },
+                  connection: {
+                    $ref: '#/$defs/ConnectionVersionBasis',
                   },
                 },
                 additionalProperties: false,

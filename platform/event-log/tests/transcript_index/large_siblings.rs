@@ -49,11 +49,13 @@ async fn source(
             .history_source(
                 SESSION,
                 through,
-                position,
-                field,
-                None,
-                SourcePosition::After { offset },
-                4096,
+                maka_event_log::transcript::HistorySourceRead {
+                    locator: position,
+                    field,
+                    path: None,
+                    position: SourcePosition::After { offset },
+                    max_bytes: 4096,
+                },
             )
             .await
             .unwrap();
@@ -218,15 +220,17 @@ async fn large_sibling_arguments_preserve_exact_history_sources_across_fences_an
                 .history_view(
                     SESSION,
                     through,
-                    Position::Row {
-                        position,
-                        field: HistoryField::Body,
+                    maka_event_log::transcript::HistoryWindow {
+                        position: Position::Row {
+                            position,
+                            field: HistoryField::Body,
+                        },
+                        include_thinking: false,
+                        view: HistoryView::Conversation,
+                        max_bytes: 8192,
+                        max_chunks: Some(1),
+                        max_json_bytes: 65536,
                     },
-                    false,
-                    HistoryView::Conversation,
-                    8192,
-                    Some(1),
-                    65536,
                 )
                 .await
                 .unwrap();
@@ -247,14 +251,16 @@ async fn large_sibling_arguments_preserve_exact_history_sources_across_fences_an
                     .history_view(
                         SESSION,
                         through,
-                        Position::After {
-                            cursor: after.unwrap(),
+                        maka_event_log::transcript::HistoryWindow {
+                            position: Position::After {
+                                cursor: after.unwrap(),
+                            },
+                            include_thinking: false,
+                            view: HistoryView::Conversation,
+                            max_bytes: 8192,
+                            max_chunks: Some(1),
+                            max_json_bytes: 65536,
                         },
-                        false,
-                        HistoryView::Conversation,
-                        8192,
-                        Some(1),
-                        65536,
                     )
                     .await
                     .unwrap();
@@ -271,15 +277,17 @@ async fn large_sibling_arguments_preserve_exact_history_sources_across_fences_an
                 log.history_view(
                     SESSION,
                     through,
-                    Position::Row {
-                        position,
-                        field: HistoryField::Thinking
-                    },
-                    true,
-                    HistoryView::Conversation,
-                    8192,
-                    Some(1),
-                    65536,
+                    maka_event_log::transcript::HistoryWindow {
+                        position: Position::Row {
+                            position,
+                            field: HistoryField::Thinking
+                        },
+                        include_thinking: true,
+                        view: HistoryView::Conversation,
+                        max_bytes: 8192,
+                        max_chunks: Some(1),
+                        max_json_bytes: 65536
+                    }
                 )
                 .await
                 .is_err(),
@@ -328,15 +336,17 @@ async fn large_sibling_arguments_preserve_exact_history_sources_across_fences_an
                 log.history_view(
                     SESSION,
                     through,
-                    Position::Row {
-                        position,
-                        field: HistoryField::Body
-                    },
-                    false,
-                    HistoryView::Conversation,
-                    8192,
-                    Some(1),
-                    65536
+                    maka_event_log::transcript::HistoryWindow {
+                        position: Position::Row {
+                            position,
+                            field: HistoryField::Body
+                        },
+                        include_thinking: false,
+                        view: HistoryView::Conversation,
+                        max_bytes: 8192,
+                        max_chunks: Some(1),
+                        max_json_bytes: 65536
+                    }
                 )
                 .await
                 .is_err()
@@ -384,11 +394,13 @@ async fn large_sibling_arguments_preserve_exact_history_sources_across_fences_an
             log.history_source(
                 SESSION,
                 completion,
-                result_position,
-                SourceField::Result,
-                None,
-                SourcePosition::Start,
-                4096
+                maka_event_log::transcript::HistorySourceRead {
+                    locator: result_position,
+                    field: SourceField::Result,
+                    path: None,
+                    position: SourcePosition::Start,
+                    max_bytes: 4096
+                }
             )
             .await
             .is_err()

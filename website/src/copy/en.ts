@@ -195,7 +195,7 @@ export const en: Copy = {
     source: {
       h2: 'Build from source',
       prerequisites: [
-        'Rust stable, Node.js 24 LTS, npm 11.19.0 and just.',
+        'Rust stable, Node.js 26, npm 12.2.1 and just.',
         'macOS needs Xcode Command Line Tools; Linux Computer Use needs the X11 development libraries.',
       ],
       clone: 'Step 1: Clone the repository',

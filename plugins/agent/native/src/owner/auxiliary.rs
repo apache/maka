@@ -52,7 +52,7 @@ pub(super) enum Admission {
     Source(AuxiliarySource),
     Operation {
         reference: Box<maka_plugin_core::operation::RecoveryRef>,
-        scope: maka_event_log::applications::operations::OperationDispatchScope,
+        scope: Box<maka_event_log::applications::operations::OperationDispatchScope>,
         execution: Option<(
             Arc<dyn maka_agent_facts::tools::ExecutionCustody>,
             Invocation,

@@ -94,7 +94,7 @@ pub(super) fn capture(binding: &Binding, cancel: Arc<AtomicBool>) -> io::Result<
                 })
             })
             .transpose()?;
-        let relative = gix::path::from_bstr(name.as_bstr());
+        let relative = gix::path::from_bstr(name.as_bstr()).map_err(io::Error::other)?;
         let after = if present.contains(&name) {
             let indexed = current.entry_by_path(name.as_bstr()).map(|e| e.mode);
             read_image(
@@ -155,7 +155,9 @@ fn read_image(
     if meta.file_type().is_symlink() {
         return Ok(Some(Image {
             mode: Mode::SYMLINK.bits(),
-            bytes: gix::path::into_bstr(fs::read_link(&path)?).to_vec(),
+            bytes: gix::path::into_bstr(fs::read_link(&path)?)
+                .map_err(io::Error::other)?
+                .to_vec(),
         }));
     }
     if meta.is_dir() {

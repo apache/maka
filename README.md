@@ -27,7 +27,7 @@ Maka provides a terminal workbench and a native desktop shell. A Runtime Host ow
 
 ## Run from source
 
-Install Rust stable, Node.js 24 LTS, npm 11.19.0 and [just](https://github.com/casey/just). Native Computer Use additionally needs Xcode Command Line Tools on macOS or the X11 development libraries on Linux.
+Install Rust stable, Node.js 26, npm 12.2.1 and [just](https://github.com/casey/just). Native Computer Use additionally needs Xcode Command Line Tools on macOS or the X11 development libraries on Linux.
 
 ```sh
 git clone https://github.com/apache/maka.git

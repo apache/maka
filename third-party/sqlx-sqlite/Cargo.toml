@@ -139,7 +139,7 @@ features = [
 default-features = false
 
 [dependencies.libsqlite3-sys]
-version = ">=0.30.1, <0.38.0"
+version = "0.39"
 features = [
     "pkg-config",
     "vcpkg",

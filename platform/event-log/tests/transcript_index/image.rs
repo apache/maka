@@ -114,14 +114,17 @@ async fn actual_tool_images_are_immutable_scoped_and_reconstructed_without_paths
     let through = end(&log, "images", InvocationOutcome::Completed).await;
 
     let Page::Ready { chunks, .. } = log
-        .history_text(
+        .history_view(
             "images",
             through,
-            Position::Start,
-            false,
-            8192,
-            8,
-            64 * 1024,
+            maka_event_log::transcript::HistoryWindow {
+                position: Position::Start,
+                include_thinking: false,
+                view: maka_agent_ports::session::history::HistoryView::Text,
+                max_bytes: 8192,
+                max_chunks: Some(8),
+                max_json_bytes: 64 * 1024,
+            },
         )
         .await
         .unwrap();
@@ -225,14 +228,17 @@ async fn actual_tool_images_are_immutable_scoped_and_reconstructed_without_paths
         chunks: copy_chunks,
         ..
     } = log
-        .history_text(
+        .history_view(
             "copy",
             copy_fence,
-            Position::Start,
-            false,
-            8192,
-            8,
-            64 * 1024,
+            maka_event_log::transcript::HistoryWindow {
+                position: Position::Start,
+                include_thinking: false,
+                view: maka_agent_ports::session::history::HistoryView::Text,
+                max_bytes: 8192,
+                max_chunks: Some(8),
+                max_json_bytes: 64 * 1024,
+            },
         )
         .await
         .unwrap();
@@ -514,7 +520,18 @@ async fn borrowed_upload_is_frozen_at_settlement_before_any_history_copy() {
     .unwrap();
     for session in ["borrowed", "borrowed-copy"] {
         let Page::Ready { chunks, .. } = log
-            .history_text(session, through, Position::Start, false, 8192, 8, 64 * 1024)
+            .history_view(
+                session,
+                through,
+                maka_event_log::transcript::HistoryWindow {
+                    position: Position::Start,
+                    include_thinking: false,
+                    view: maka_agent_ports::session::history::HistoryView::Text,
+                    max_bytes: 8192,
+                    max_chunks: Some(8),
+                    max_json_bytes: 64 * 1024,
+                },
+            )
             .await
             .unwrap();
         let sequence = chunks

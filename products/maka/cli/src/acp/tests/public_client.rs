@@ -293,28 +293,12 @@ async fn independent_public_agent_client_lists_and_watches_files_after_reconnect
     async fn invalidated(call: &mut LocalCall) {
         assert_eq!(item(call).await, json!({"kind":"changed"}));
     }
-    async fn intent_count(database: &std::path::Path) -> i64 {
-        use sqlx::Connection;
-        let mut connection = sqlx::SqliteConnection::connect_with(
-            &sqlx::sqlite::SqliteConnectOptions::new()
-                .filename(database)
-                .read_only(true),
-        )
-        .await
-        .unwrap();
-        let count = sqlx::query_scalar("SELECT COUNT(*) FROM application_intents")
-            .fetch_one(&mut connection)
-            .await
-            .unwrap();
-        connection.close().await.unwrap();
-        count
-    }
     tokio::time::timeout(Duration::from_secs(60), async {
         let mut fixture = Fixture::open().await;
         let session = fixture.session.clone();
         let directory = fixture.workspace.join("watched");
         std::fs::create_dir(&directory).unwrap();
-        let before = intent_count(&fixture.database).await;
+        let before = support::intent_count(&fixture.database).await;
         // Registration and its actual Ready precede every initial directory read.
         let (mut changes, identity) = subscribe(&fixture.native, &session).await;
         listing(&fixture.native, &session, &identity, json!([])).await;
@@ -396,7 +380,7 @@ async fn independent_public_agent_client_lists_and_watches_files_after_reconnect
         fresh.close().await.unwrap();
         assert!(fresh.cleanup_confirmed());
         assert_eq!(
-            intent_count(&fixture.database).await,
+            support::intent_count(&fixture.database).await,
             before,
             "file queries and subscriptions must not create mutation intents"
         );
@@ -415,21 +399,7 @@ async fn independent_public_agent_client_lists_and_watches_files_after_reconnect
 async fn independent_public_agent_client_reads_context_without_own_model_request() {
     tokio::time::timeout(Duration::from_secs(40), async {
         let mut fixture = Fixture::open().await;
-        let before = {
-            use sqlx::Connection;
-            let options = sqlx::sqlite::SqliteConnectOptions::new()
-                .filename(&fixture.database)
-                .read_only(true);
-            let mut connection = sqlx::SqliteConnection::connect_with(&options)
-                .await
-                .unwrap();
-            let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM application_intents")
-                .fetch_one(&mut connection)
-                .await
-                .unwrap();
-            connection.close().await.unwrap();
-            count
-        };
+        let before = support::intent_count(&fixture.database).await;
         let observed = support::query(
             &fixture.native,
             "agent",
@@ -541,18 +511,7 @@ async fn independent_public_agent_client_reads_context_without_own_model_request
         reconnected.quit().await.unwrap();
         fixture.server.await.unwrap().unwrap();
         {
-            use sqlx::Connection;
-            let options = sqlx::sqlite::SqliteConnectOptions::new()
-                .filename(&fixture.database)
-                .read_only(true);
-            let mut connection = sqlx::SqliteConnection::connect_with(&options)
-                .await
-                .unwrap();
-            let after: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM application_intents")
-                .fetch_one(&mut connection)
-                .await
-                .unwrap();
-            connection.close().await.unwrap();
+            let after = support::intent_count(&fixture.database).await;
             assert_eq!(
                 after, before,
                 "context queries and rejections must not create caller intents"
@@ -726,14 +685,20 @@ async fn independent_public_agent_client_finds_published_fork_after_uncertain_ho
         }),Default::default()).await.unwrap();
         call.start().await.unwrap();
         let Reply::Prepared { reference } = call.receive().await.unwrap() else { panic!("fork not prepared"); };
-        let options = sqlx::sqlite::SqliteConnectOptions::new().filename(&fixture.database);
-        let mut connection = sqlx::SqliteConnection::connect_with(&options).await.unwrap();
+        let mut connections = Vec::new();
         // The real copy transaction may commit; only this original operation's
         // later Host settlement UPDATE is rejected, matching the existing Host
         // uncertain_durable_settlement fixture. No receipt/outcome is fabricated.
         // Only the typed UUID is interpolated; SQLite trigger definitions cannot bind it.
-        sqlx::query(sqlx::AssertSqlSafe(format!("CREATE TRIGGER reject_fork_settlement BEFORE UPDATE OF outcome_json ON application_operations WHEN OLD.operation='{}' BEGIN SELECT RAISE(ABORT,'fork settlement fixture'); END;",reference.operation)))
-            .execute(&mut connection).await.unwrap();
+        // Prepared has not dispatched yet. Install the operation-specific fault
+        // in the real runtime journals before confirmation chooses its partition.
+        for database in support::journal_databases(&fixture.database) {
+            let options = sqlx::sqlite::SqliteConnectOptions::new().filename(database);
+            let mut connection = sqlx::SqliteConnection::connect_with(&options).await.unwrap();
+            sqlx::query(sqlx::AssertSqlSafe(format!("CREATE TRIGGER reject_fork_settlement BEFORE UPDATE OF outcome_json ON application_operations WHEN OLD.operation='{}' BEGIN SELECT RAISE(ABORT,'fork settlement fixture'); END;",reference.operation)))
+                .execute(&mut connection).await.unwrap();
+            connections.push(connection);
+        }
         let Reply::Mutation { reply, cleanup } = call.confirm().await.unwrap() else { panic!("fork returned no receipt"); };
         cleanup.unwrap();
         assert_eq!(reply.reference,*reference);
@@ -741,8 +706,10 @@ async fn independent_public_agent_client_finds_published_fork_after_uncertain_ho
         assert!(diagnostic.contains("settlement outcome unknown"),"{diagnostic}");
         call.close().await.unwrap();
         assert!(call.cleanup_confirmed());
-        sqlx::query("DROP TRIGGER reject_fork_settlement").execute(&mut connection).await.unwrap();
-        connection.close().await.unwrap();
+        for mut connection in connections {
+            sqlx::query("DROP TRIGGER reject_fork_settlement").execute(&mut connection).await.unwrap();
+            connection.close().await.unwrap();
+        }
         let unresolved = json!({"reference":reference,"receipt":{
             "kind":"recorded","outcome":{"kind":"unresolved"},"cleanup":{"kind":"unconfirmed"},
         }});

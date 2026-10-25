@@ -11,9 +11,9 @@
 
 [package]
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 name = "gix-index"
-version = "0.55.0"
+version = "0.58.0"
 authors = ["Sebastian Thiel <sebastian.thiel@icloud.com>"]
 build = false
 include = [
@@ -40,7 +40,6 @@ features = [
 ]
 
 [features]
-parallel = ["gix-features/parallel"]
 serde = [
     "dep:serde",
     "smallvec/serde",
@@ -73,32 +72,38 @@ version = "0.2.29"
 version = "1.0.7"
 
 [dependencies.gix-bitmap]
-version = "^0.4.0"
+version = "^0.6.1"
 
-[dependencies.gix-features]
-version = "^0.49.1"
-features = ["progress"]
+[dependencies.gix-error]
+version = "^0.5.2"
 
 [dependencies.gix-fs]
-version = "^0.22.1"
+version = "^0.24.1"
 
 [dependencies.gix-hash]
-version = "^0.26.1"
+version = "^0.28.1"
 
 [dependencies.gix-lock]
-version = "^24.0.0"
+version = "^26.0.0"
 
 [dependencies.gix-object]
-version = "^0.64.0"
+version = "^0.66.1"
+
+[dependencies.gix-parallel]
+version = "^0.50.0"
+
+[dependencies.gix-trace]
+version = "^0.3.1"
 
 [dependencies.gix-traverse]
-version = "^0.61.0"
+version = "^0.64.0"
 
 [dependencies.gix-utils]
-version = "^0.3.6"
+version = "^0.5.1"
+features = ["progress"]
 
 [dependencies.gix-validate]
-version = "^0.11.4"
+version = "^0.13.1"
 
 [dependencies.hashbrown]
 version = "0.17.1"
@@ -117,9 +122,6 @@ default-features = false
 
 [dependencies.smallvec]
 version = "1.15.1"
-
-[dependencies.thiserror]
-version = "2.0.18"
 
 [dev-dependencies.criterion]
 version = "0.8.2"
@@ -143,6 +145,7 @@ features = [
 default-features = false
 
 [lints.clippy]
+assert_is_empty = "allow"
 bool_to_int_with_if = "allow"
 borrow_as_ptr = "allow"
 cast_lossless = "allow"
@@ -161,7 +164,6 @@ explicit_into_iter_loop = "allow"
 explicit_iter_loop = "allow"
 filter_map_next = "allow"
 fn_params_excessive_bools = "allow"
-from_iter_instead_of_collect = "allow"
 if_not_else = "allow"
 ignored_unit_patterns = "allow"
 implicit_clone = "allow"

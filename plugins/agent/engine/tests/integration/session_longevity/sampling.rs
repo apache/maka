@@ -119,7 +119,7 @@ impl ToolExecutor for Echo {
         let index = self.index;
         Box::pin(async move {
             let step = input["step"].as_u64().expect("fixture step is an integer") as usize;
-            if step % 100 == 0 {
+            if step.is_multiple_of(100) {
                 gate.checkpoint(index, &cancellation, async {
                     super::sample(&gate.root, "active_sample", step, gate.paused.len(), 0).await;
                 })

@@ -11,9 +11,6 @@ license-file = "../../LICENSE-APACHE"
 
 [package.metadata]
 
-[package.metadata.cargo-shear]
-ignored = ["scap"]
-
 [lints]
 
 [lints.rust]
@@ -145,3 +142,8 @@ optional = true
 
 [target."cfg(target_os = \"windows\")".build-dependencies.windows-registry]
 version = "0.6.0"
+[package.metadata.cargo-shear]
+ignored = ["scap"]
+
+[dev-dependencies]
+serde_json = "1"

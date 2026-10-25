@@ -485,7 +485,7 @@ async fn verify(
     case: Case,
     served: &Value,
 ) -> Value {
-    let through = fixture.through(&session).await;
+    let through = fixture.through(session).await;
     let mut after = 0;
     let mut dispatched = BTreeMap::new();
     let mut settled = BTreeSet::new();

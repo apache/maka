@@ -128,7 +128,7 @@ impl Recall {
                     let output = maka_files_native::attachments::read(
                         &recall.scoped_store(&call, &target).await?,
                         &target,
-                        &id,
+                        id,
                         &request,
                         record.kind == ArtifactKind::Image,
                         &call.cancellation,

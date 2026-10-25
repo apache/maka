@@ -168,7 +168,11 @@ mod impls {
     use crate::{Entry, PathStorageRef, State, entry::Stage};
 
     impl Entry {
-        pub(crate) fn fmt_debug(&self, f: &mut Formatter, path_backing: Option<&PathStorageRef>) -> std::fmt::Result {
+        pub(crate) fn fmt_debug(
+            &self,
+            f: &mut Formatter,
+            path_backing: Option<&PathStorageRef>,
+        ) -> std::fmt::Result {
             if f.alternate() {
                 write!(
                     f,
@@ -244,7 +248,7 @@ mod impls {
 pub(crate) mod util {
     #[inline]
     pub fn var_int(data: &[u8]) -> Option<(u64, &[u8])> {
-        let (num, consumed) = gix_features::decode::leb64_from_read(data).ok()?;
+        let (num, consumed) = gix_utils::decode::leb64_from_read(data).ok()?;
         let data = &data[consumed..];
         (num, data).into()
     }

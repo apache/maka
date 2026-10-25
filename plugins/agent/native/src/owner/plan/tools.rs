@@ -247,7 +247,7 @@ impl Owner {
     ) -> Result<Snapshot<MessageBasis>, String> {
         if !self.settings.plans
             || self
-                .tool_store(&context)?
+                .tool_store(context)?
                 .get::<StoredSessionConfiguration>()
                 .await
                 .map_err(|error| error.to_string())?
@@ -257,7 +257,7 @@ impl Owner {
             return Err("plan_unavailable".into());
         }
         let boundary = self
-            .tool_store(&context)?
+            .tool_store(context)?
             .invocation_boundary(
                 &context.invocation.session_id,
                 &context.invocation.invocation_id,
@@ -275,7 +275,7 @@ impl Owner {
             return Err("plan_invocation_inactive".into());
         }
         let configuration = self
-            .tool_store(&context)?
+            .tool_store(context)?
             .invocation_configuration(&context.invocation)
             .await
             .map_err(reason)?

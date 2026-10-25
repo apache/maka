@@ -10,7 +10,7 @@
     "test": "node scripts/build.mjs && node --test --test-concurrency=1 tests/*.test.mjs"
   },
   "devDependencies": {
-    "ajv": "8.18.0",
+    "ajv": "8.20.0",
     "ajv-formats": "3.0.1"
   }
 }

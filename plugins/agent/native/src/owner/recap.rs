@@ -160,14 +160,17 @@ impl recap::History for Backend {
                 .scoped_store(&scope, &self.session)
                 .await
                 .map_err(failed)?
-                .history_text(
+                .history_view(
                     &self.session,
                     through,
-                    input.position,
-                    false,
-                    8192,
-                    8,
-                    96 * 1024,
+                    maka_event_log::transcript::HistoryWindow {
+                        position: input.position,
+                        include_thinking: false,
+                        view: maka_agent_ports::session::history::HistoryView::Text,
+                        max_bytes: 8192,
+                        max_chunks: Some(8),
+                        max_json_bytes: 96 * 1024,
+                    },
                 )
                 .await
                 .map_err(persistence)?;
@@ -315,7 +318,7 @@ impl Owner {
                     &self.store,
                     auxiliary::Admission::Operation {
                         reference: Box::new(reference),
-                        scope: dispatch,
+                        scope: Box::new(dispatch),
                         execution: scope
                             .identity
                             .agent()

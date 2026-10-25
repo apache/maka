@@ -223,10 +223,12 @@ impl RootStore {
                 index,
                 scope.clone(),
                 filter,
-                position,
-                limit,
+                crate::sessions::RootCatalogPage {
+                    position,
+                    limit,
+                    count_pending,
+                },
                 vector.partition(index),
-                count_pending,
             )
         }))
         .await?;
@@ -486,7 +488,7 @@ impl RootStore {
                 use sqlx::Connection;
                 let mut tx=db.begin().await?; require_snapshot(&mut tx,expected).await?;
                 if !session_visible(&mut tx,index,&after).await? {return Err(StoreError::SessionNotFound);}
-                Ok(sqlx::query_scalar::<_,i64>("SELECT created_at FROM session_imports WHERE session_id=? AND state='published'").bind(after).fetch_optional(&mut *tx).await?.ok_or(StoreError::SessionNotFound)?)
+                sqlx::query_scalar::<_,i64>("SELECT created_at FROM session_imports WHERE session_id=? AND state='published'").bind(after).fetch_optional(&mut *tx).await?.ok_or(StoreError::SessionNotFound)
             })).await?)
         } else {
             None

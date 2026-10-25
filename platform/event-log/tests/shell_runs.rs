@@ -563,7 +563,12 @@ async fn shell_and_protocol_admission_fence_the_complete_workspace_basis() {
         .attach_workspace("shell-fixture", &json!({"path":"/replacement"}))
         .await
         .unwrap();
-    let revision = log.get_session::<serde_json::Value>("session").await.unwrap().unwrap().revision;
+    let revision = log
+        .get_session::<serde_json::Value>("session")
+        .await
+        .unwrap()
+        .unwrap()
+        .revision;
     assert!(matches!(
         log.update_session_permissions::<serde_json::Value, _>(
             "session",

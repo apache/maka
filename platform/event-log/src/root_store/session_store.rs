@@ -58,9 +58,7 @@ use maka_agent_facts::model::prompt_source::{WireFormat, WireGroup};
 use maka_agent_facts::read::ResourceAddress;
 use maka_agent_facts::shell_run::{ShellPatch, ShellRun};
 use maka_agent_facts::workspace::PermissionBasis;
-use maka_agent_ports::session::history::{
-    HistorySource, HistoryView, Page, Position, SourceField, SourcePosition, SourceSegment,
-};
+use maka_agent_ports::session::history::{HistorySource, Page};
 use serde::de::DeserializeOwned;
 use uuid::Uuid;
 
@@ -815,41 +813,12 @@ impl SessionStore {
         &self,
         session: &str,
         through: u64,
-        locator: RowPosition,
-        field: SourceField,
-        path: Option<Vec<SourceSegment>>,
-        position: SourcePosition,
-        max_bytes: usize,
+        source: crate::transcript::HistorySourceRead,
     ) -> Result<HistorySource, StoreError> {
         self.check_session(session)?;
         self.scoped()
             .await?
-            .history_source(session, through, locator, field, path, position, max_bytes)
-            .await
-    }
-
-    pub async fn history_text(
-        &self,
-        session: &str,
-        through: u64,
-        position: Position,
-        include_thinking: bool,
-        max_bytes: usize,
-        max_chunks: usize,
-        max_json_bytes: usize,
-    ) -> Result<Page, StoreError> {
-        self.check_session(session)?;
-        self.scoped()
-            .await?
-            .history_text(
-                session,
-                through,
-                position,
-                include_thinking,
-                max_bytes,
-                max_chunks,
-                max_json_bytes,
-            )
+            .history_source(session, through, source)
             .await
     }
 
@@ -857,26 +826,12 @@ impl SessionStore {
         &self,
         session: &str,
         through: u64,
-        position: Position,
-        include_thinking: bool,
-        view: HistoryView,
-        max_bytes: usize,
-        max_chunks: Option<usize>,
-        max_json_bytes: usize,
+        window: crate::transcript::HistoryWindow,
     ) -> Result<Page, StoreError> {
         self.check_session(session)?;
         self.scoped()
             .await?
-            .history_view(
-                session,
-                through,
-                position,
-                include_thinking,
-                view,
-                max_bytes,
-                max_chunks,
-                max_json_bytes,
-            )
+            .history_view(session, through, window)
             .await
     }
 

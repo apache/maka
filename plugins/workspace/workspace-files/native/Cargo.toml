@@ -24,7 +24,7 @@ publish.workspace = true
 
 [dependencies]
 maka-agent-facts.workspace = true
-base64 = "0.22.1"
+base64 = "0.23.1"
 cap-std.workspace = true
 futures-util.workspace = true
 maka-agent-api.workspace = true

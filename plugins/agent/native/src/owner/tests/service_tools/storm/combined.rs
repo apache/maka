@@ -1764,7 +1764,7 @@ async fn verify_combined_facts(
     initial_after: u64,
     served: &Value,
 ) -> Value {
-    let through = fixture.through(&session).await;
+    let through = fixture.through(session).await;
     let case = CASE;
     let mut after = initial_after;
     let mut dispatched = BTreeMap::new();

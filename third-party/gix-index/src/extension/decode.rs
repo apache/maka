@@ -1,4 +1,5 @@
 use crate::{extension, extension::Signature, util::from_be_u32};
+use gix_error::{Result, bail};
 
 pub(crate) fn header(data: &[u8]) -> (Signature, u32, &[u8]) {
     let (signature, data) = data.split_at(4);
@@ -6,33 +7,18 @@ pub(crate) fn header(data: &[u8]) -> (Signature, u32, &[u8]) {
     (signature.try_into().unwrap(), from_be_u32(size), data)
 }
 
-mod error {
-    use crate::extension;
-
-    /// The error returned when decoding extensions.
-    #[derive(Debug, thiserror::Error)]
-    #[expect(missing_docs)]
-    pub enum Error {
-        #[error(
-            "Encountered mandatory extension '{}' which isn't implemented yet",
-            String::from_utf8_lossy(signature)
-        )]
-        MandatoryUnimplemented { signature: extension::Signature },
-        #[error("Could not parse mandatory link extension")]
-        Link(#[from] extension::link::decode::Error),
-    }
-}
-pub use error::Error;
-
 pub(crate) fn all(
     maybe_beginning_of_extensions: &[u8],
     object_hash: gix_hash::Kind,
     alloc_limit_bytes: Option<usize>,
-) -> Result<(Outcome, &[u8]), Error> {
-    let mut ext_iter = match extension::Iter::new_without_checksum(maybe_beginning_of_extensions, object_hash) {
-        Some(iter) => iter,
-        None => return Ok((Outcome::default(), maybe_beginning_of_extensions)),
-    };
+) -> Result<(Outcome, &[u8])> {
+    use gix_error::{ResultExt, message};
+
+    let mut ext_iter =
+        match extension::Iter::new_without_checksum(maybe_beginning_of_extensions, object_hash) {
+            Some(iter) => iter,
+            None => return Ok((Outcome::default(), maybe_beginning_of_extensions)),
+        };
 
     let mut ext = Outcome::default();
     for (signature, ext_data) in ext_iter.by_ref() {
@@ -44,7 +30,8 @@ pub(crate) fn all(
                 ext.resolve_undo = extension::resolve_undo::decode(ext_data, object_hash);
             }
             extension::untracked_cache::SIGNATURE => {
-                ext.untracked = extension::untracked_cache::decode(ext_data, object_hash, alloc_limit_bytes);
+                ext.untracked =
+                    extension::untracked_cache::decode(ext_data, object_hash, alloc_limit_bytes);
             }
             extension::fs_monitor::SIGNATURE => {
                 ext.fs_monitor = extension::fs_monitor::decode(ext_data);
@@ -56,15 +43,27 @@ pub(crate) fn all(
                 ext.offset_table = true;
             } // not relevant/obtained already
             mandatory if mandatory[0].is_ascii_lowercase() => match mandatory {
-                extension::link::SIGNATURE => ext.link = extension::link::decode(ext_data, object_hash)?.into(),
+                extension::link::SIGNATURE => {
+                    ext.link = extension::link::decode(ext_data, object_hash)
+                        .or_raise(|| message("Could not parse mandatory link extension"))?
+                        .into();
+                }
                 extension::sparse::SIGNATURE => {
                     if !ext_data.is_empty() {
                         // only used as a marker, if this changes we need this implementation.
-                        return Err(Error::MandatoryUnimplemented { signature: mandatory });
+                        bail!(
+                            "Encountered mandatory extension '{}' which isn't implemented yet",
+                            String::from_utf8_lossy(&mandatory)
+                        );
                     }
                     ext.is_sparse = true;
                 }
-                unknown => return Err(Error::MandatoryUnimplemented { signature: unknown }),
+                unknown => {
+                    bail!(
+                        "Encountered mandatory extension '{}' which isn't implemented yet",
+                        String::from_utf8_lossy(&unknown)
+                    );
+                }
             },
             _unknown => {} // skip unknown extensions, too
         }

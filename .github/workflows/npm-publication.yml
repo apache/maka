@@ -40,9 +40,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '24'
+          node-version: "26"
       - id: source
         name: Freeze one source archive for every platform
         run: |
@@ -54,7 +54,7 @@ jobs:
           appendFileSync(process.env.GITHUB_OUTPUT, 'version=' + version + '\n' +
             'build_id=' + process.env.GITHUB_RUN_ID + '.' + process.env.GITHUB_RUN_ATTEMPT + '\n');
           JS
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: native-preview-source
           path: release/asf/*
@@ -84,14 +84,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '24'
+          node-version: "26"
       - name: Update Rust
         run: rustup update stable --no-self-update
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: '3.12'
+          python-version: "3.15"
       - name: Select the checked-in npm toolchain
         shell: bash
         run: npm install --global --ignore-scripts --no-audit --no-fund "$(node -p 'require("./package.json").packageManager')"
@@ -99,7 +99,7 @@ jobs:
         if: runner.os == 'Linux'
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
         with:
-          version: 0.16.0
+          version: 0.17.0
       - name: Install native build dependencies
         if: runner.os == 'Linux'
         run: |
@@ -111,10 +111,10 @@ jobs:
         run: echo "LIBCLANG_PATH=$(xcode-select -p)/Toolchains/XcodeDefault.xctoolchain/usr/lib" >> "$GITHUB_ENV"
       - name: Install cargo-zigbuild
         if: runner.os == 'Linux'
-        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2
+        uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
         with:
-          tool: cargo-zigbuild@0.23.4
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+          tool: cargo-zigbuild@0.24.0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: native-preview-source
           path: source
@@ -160,12 +160,12 @@ jobs:
         with:
           path: target/v8/${{ steps.v8-key.outputs.key }}
           key: maka-v8-${{ matrix.target }}-${{ steps.v8-key.outputs.key }}
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: native-preview-${{ matrix.target }}
           path: native-preview/*
           if-no-files-found: error
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ hashFiles('v8-preview/*.json') != '' }}
         with:
           name: v8-prebuilt-${{ matrix.target }}
@@ -180,12 +180,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '24'
+          node-version: "26"
       - name: Select the checked-in npm toolchain
         run: npm install --global --ignore-scripts --no-audit --no-fund "$(node -p 'require("./package.json").packageManager')"
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: native-preview-*
           merge-multiple: true
@@ -194,7 +194,7 @@ jobs:
         run: node scripts/rust/pack-launcher.mjs native-preview
       - name: Validate the complete release
         run: node scripts/rust/publish-cli.mjs native-preview
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: npm-release
           path: native-preview/*
@@ -212,13 +212,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '24'
+          node-version: "26"
       - name: Select the checked-in npm toolchain
         shell: bash
         run: npm install --global --ignore-scripts --no-audit --no-fund "$(node -p 'require("./package.json").packageManager')"
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: npm-release
           path: native-preview
@@ -241,13 +241,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '24'
+          node-version: "26"
           registry-url: https://registry.npmjs.org
       - name: Select the checked-in npm toolchain
         run: npm install --global --ignore-scripts --no-audit --no-fund "$(node -p 'require("./package.json").packageManager')"
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: npm-release
           path: native-preview

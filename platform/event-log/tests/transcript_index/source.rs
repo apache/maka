@@ -100,14 +100,17 @@ async fn literal_tool_fields_reach_every_byte_without_summarizing_json_or_crossi
     let through = *log.subscribe_commits().borrow();
 
     let Page::Ready { chunks, .. } = log
-        .history_text(
+        .history_view(
             "source",
             through,
-            Position::Start,
-            false,
-            8192,
-            8,
-            64 * 1024,
+            maka_event_log::transcript::HistoryWindow {
+                position: Position::Start,
+                include_thinking: false,
+                view: maka_agent_ports::session::history::HistoryView::Text,
+                max_bytes: 8192,
+                max_chunks: Some(8),
+                max_json_bytes: 64 * 1024,
+            },
         )
         .await
         .unwrap();
@@ -139,7 +142,17 @@ async fn literal_tool_fields_reach_every_byte_without_summarizing_json_or_crossi
                 let mut text = String::new();
                 loop {
                     let source = log
-                        .history_source("source", through, sequence, field, None, position, budget)
+                        .history_source(
+                            "source",
+                            through,
+                            maka_event_log::transcript::HistorySourceRead {
+                                locator: sequence,
+                                field,
+                                path: None,
+                                position,
+                                max_bytes: budget,
+                            },
+                        )
                         .await
                         .unwrap();
                     assert!(source.origin.is_none());
@@ -194,11 +207,13 @@ async fn literal_tool_fields_reach_every_byte_without_summarizing_json_or_crossi
             log.history_source(
                 "source",
                 0,
-                sequence,
-                field,
-                None,
-                SourcePosition::Start,
-                8192
+                maka_event_log::transcript::HistorySourceRead {
+                    locator: sequence,
+                    field,
+                    path: None,
+                    position: SourcePosition::Start,
+                    max_bytes: 8192
+                }
             )
             .await
             .is_err()
@@ -207,11 +222,13 @@ async fn literal_tool_fields_reach_every_byte_without_summarizing_json_or_crossi
             log.history_source(
                 "other",
                 through,
-                sequence,
-                field,
-                None,
-                SourcePosition::Start,
-                8192
+                maka_event_log::transcript::HistorySourceRead {
+                    locator: sequence,
+                    field,
+                    path: None,
+                    position: SourcePosition::Start,
+                    max_bytes: 8192
+                }
             )
             .await
             .is_err()
@@ -225,11 +242,13 @@ async fn literal_tool_fields_reach_every_byte_without_summarizing_json_or_crossi
             log.history_source(
                 "source",
                 through,
-                sequence,
-                wrong,
-                None,
-                SourcePosition::Start,
-                8192
+                maka_event_log::transcript::HistorySourceRead {
+                    locator: sequence,
+                    field: wrong,
+                    path: None,
+                    position: SourcePosition::Start,
+                    max_bytes: 8192
+                }
             )
             .await
             .is_err()
@@ -244,11 +263,13 @@ async fn literal_tool_fields_reach_every_byte_without_summarizing_json_or_crossi
             log.history_source(
                 "source",
                 through,
-                sequence,
-                field,
-                None,
-                SourcePosition::After { offset: middle },
-                8192
+                maka_event_log::transcript::HistorySourceRead {
+                    locator: sequence,
+                    field,
+                    path: None,
+                    position: SourcePosition::After { offset: middle },
+                    max_bytes: 8192
+                }
             )
             .await
             .is_err()
@@ -257,13 +278,15 @@ async fn literal_tool_fields_reach_every_byte_without_summarizing_json_or_crossi
             log.history_source(
                 "source",
                 through,
-                sequence,
-                field,
-                None,
-                SourcePosition::After {
-                    offset: expected.len() as u64 + 1
-                },
-                8192
+                maka_event_log::transcript::HistorySourceRead {
+                    locator: sequence,
+                    field,
+                    path: None,
+                    position: SourcePosition::After {
+                        offset: expected.len() as u64 + 1
+                    },
+                    max_bytes: 8192
+                }
             )
             .await
             .is_err()
@@ -277,11 +300,13 @@ async fn literal_tool_fields_reach_every_byte_without_summarizing_json_or_crossi
             .history_source(
                 "source",
                 through,
-                sequence,
-                field,
-                None,
-                SourcePosition::Start,
-                8192,
+                maka_event_log::transcript::HistorySourceRead {
+                    locator: sequence,
+                    field,
+                    path: None,
+                    position: SourcePosition::Start,
+                    max_bytes: 8192,
+                },
             )
             .await
             .unwrap();
@@ -298,13 +323,15 @@ async fn literal_tool_fields_reach_every_byte_without_summarizing_json_or_crossi
             .history_source(
                 "source",
                 through,
-                sequence,
-                field,
-                None,
-                SourcePosition::After {
-                    offset: expected.len() as u64,
+                maka_event_log::transcript::HistorySourceRead {
+                    locator: sequence,
+                    field,
+                    path: None,
+                    position: SourcePosition::After {
+                        offset: expected.len() as u64,
+                    },
+                    max_bytes: 8192,
                 },
-                8192,
             )
             .await
             .unwrap();
@@ -315,11 +342,13 @@ async fn literal_tool_fields_reach_every_byte_without_summarizing_json_or_crossi
         .history_source(
             "source",
             through,
-            sequences[4],
-            SourceField::Arguments,
-            None,
-            SourcePosition::Start,
-            8192,
+            maka_event_log::transcript::HistorySourceRead {
+                locator: sequences[4],
+                field: SourceField::Arguments,
+                path: None,
+                position: SourcePosition::Start,
+                max_bytes: 8192,
+            },
         )
         .await
         .unwrap();
@@ -420,7 +449,17 @@ async fn failure_search_reads_original_diagnostic_fields_and_visible_body() {
         let mut position = SourcePosition::Start;
         for _ in 0..16 {
             let page = log
-                .history_source("failed", through, hit.position, field, None, position, 31)
+                .history_source(
+                    "failed",
+                    through,
+                    maka_event_log::transcript::HistorySourceRead {
+                        locator: hit.position,
+                        field,
+                        path: None,
+                        position,
+                        max_bytes: 31,
+                    },
+                )
                 .await
                 .unwrap();
             assert_eq!(page.position, hit.position);
@@ -448,11 +487,13 @@ async fn failure_search_reads_original_diagnostic_fields_and_visible_body() {
             .history_source(
                 "failed",
                 through,
-                hit.position,
-                SourceField::Body,
-                None,
-                SourcePosition::Start,
-                8192,
+                maka_event_log::transcript::HistorySourceRead {
+                    locator: hit.position,
+                    field: SourceField::Body,
+                    path: None,
+                    position: SourcePosition::Start,
+                    max_bytes: 8192,
+                },
             )
             .await
             .unwrap();
@@ -462,11 +503,13 @@ async fn failure_search_reads_original_diagnostic_fields_and_visible_body() {
             log.history_source(
                 "failed",
                 through - 1,
-                hit.position,
-                field,
-                None,
-                SourcePosition::Start,
-                8192
+                maka_event_log::transcript::HistorySourceRead {
+                    locator: hit.position,
+                    field,
+                    path: None,
+                    position: SourcePosition::Start,
+                    max_bytes: 8192
+                }
             )
             .await
             .is_err()
@@ -554,11 +597,13 @@ async fn structured_values_page_literal_text_and_exact_json_without_aliasing_key
                         .history_source(
                             "structured",
                             through,
-                            sequence,
-                            field,
-                            Some(vec![Key("content".into())]),
-                            position,
-                            budget,
+                            maka_event_log::transcript::HistorySourceRead {
+                                locator: sequence,
+                                field,
+                                path: Some(vec![Key("content".into())]),
+                                position,
+                                max_bytes: budget,
+                            },
                         )
                         .await
                         .unwrap();
@@ -625,11 +670,13 @@ async fn structured_values_page_literal_text_and_exact_json_without_aliasing_key
                 .history_source(
                     "structured",
                     through,
-                    sequence,
-                    field,
-                    Some(path.clone()),
-                    SourcePosition::Start,
-                    8192,
+                    maka_event_log::transcript::HistorySourceRead {
+                        locator: sequence,
+                        field,
+                        path: Some(path.clone()),
+                        position: SourcePosition::Start,
+                        max_bytes: 8192,
+                    },
                 )
                 .await
                 .unwrap();
@@ -649,11 +696,13 @@ async fn structured_values_page_literal_text_and_exact_json_without_aliasing_key
                 log.history_source(
                     "structured",
                     through,
-                    sequence,
-                    field,
-                    Some(path),
-                    SourcePosition::Start,
-                    8192
+                    maka_event_log::transcript::HistorySourceRead {
+                        locator: sequence,
+                        field,
+                        path: Some(path),
+                        position: SourcePosition::Start,
+                        max_bytes: 8192
+                    }
                 )
                 .await
                 .is_err()
@@ -663,11 +712,13 @@ async fn structured_values_page_literal_text_and_exact_json_without_aliasing_key
             log.history_source(
                 "structured",
                 through,
-                sequence,
-                SourceField::Body,
-                Some(vec![]),
-                SourcePosition::Start,
-                8192
+                maka_event_log::transcript::HistorySourceRead {
+                    locator: sequence,
+                    field: SourceField::Body,
+                    path: Some(vec![]),
+                    position: SourcePosition::Start,
+                    max_bytes: 8192
+                }
             )
             .await
             .is_err()
@@ -676,11 +727,13 @@ async fn structured_values_page_literal_text_and_exact_json_without_aliasing_key
             log.history_source(
                 "structured",
                 through,
-                sequence,
-                field,
-                Some(vec![Key("content".into())]),
-                SourcePosition::After { offset: 1 },
-                8192
+                maka_event_log::transcript::HistorySourceRead {
+                    locator: sequence,
+                    field,
+                    path: Some(vec![Key("content".into())]),
+                    position: SourcePosition::After { offset: 1 },
+                    max_bytes: 8192
+                }
             )
             .await
             .is_err()
@@ -689,11 +742,13 @@ async fn structured_values_page_literal_text_and_exact_json_without_aliasing_key
             log.history_source(
                 "foreign",
                 through,
-                sequence,
-                field,
-                Some(vec![Key("content".into())]),
-                SourcePosition::Start,
-                8192
+                maka_event_log::transcript::HistorySourceRead {
+                    locator: sequence,
+                    field,
+                    path: Some(vec![Key("content".into())]),
+                    position: SourcePosition::Start,
+                    max_bytes: 8192
+                }
             )
             .await
             .is_err()
@@ -702,11 +757,13 @@ async fn structured_values_page_literal_text_and_exact_json_without_aliasing_key
             .history_source(
                 "structured",
                 through,
-                sequence,
-                field,
-                Some(vec![]),
-                SourcePosition::Tail,
-                8192,
+                maka_event_log::transcript::HistorySourceRead {
+                    locator: sequence,
+                    field,
+                    path: Some(vec![]),
+                    position: SourcePosition::Tail,
+                    max_bytes: 8192,
+                },
             )
             .await
             .unwrap();
@@ -714,11 +771,13 @@ async fn structured_values_page_literal_text_and_exact_json_without_aliasing_key
             .history_source(
                 "structured",
                 through,
-                sequence,
-                field,
-                None,
-                SourcePosition::Tail,
-                8192,
+                maka_event_log::transcript::HistorySourceRead {
+                    locator: sequence,
+                    field,
+                    path: None,
+                    position: SourcePosition::Tail,
+                    max_bytes: 8192,
+                },
             )
             .await
             .unwrap();
@@ -733,11 +792,13 @@ async fn structured_values_page_literal_text_and_exact_json_without_aliasing_key
         .history_source(
             "structured",
             through,
-            sequences[1],
-            SourceField::Result,
-            Some(vec![Key("content".into())]),
-            SourcePosition::Tail,
-            8192,
+            maka_event_log::transcript::HistorySourceRead {
+                locator: sequences[1],
+                field: SourceField::Result,
+                path: Some(vec![Key("content".into())]),
+                position: SourcePosition::Tail,
+                max_bytes: 8192,
+            },
         )
         .await
         .unwrap();
@@ -818,17 +879,20 @@ async fn soft_first_history_and_source_keep_complete_title_with_bounded_text() {
         .await
         .unwrap();
     let history = log
-        .history_text(
+        .history_view(
             session,
             through,
-            Position::Row {
-                position: locator,
-                field: HistoryField::Body,
+            maka_event_log::transcript::HistoryWindow {
+                position: Position::Row {
+                    position: locator,
+                    field: HistoryField::Body,
+                },
+                include_thinking: false,
+                view: maka_agent_ports::session::history::HistoryView::Text,
+                max_bytes: 8,
+                max_chunks: Some(1),
+                max_json_bytes: 64 * 1024,
             },
-            false,
-            8,
-            1,
-            64 * 1024,
         )
         .await;
     let mut source_pages = Vec::new();
@@ -838,11 +902,13 @@ async fn soft_first_history_and_source_keep_complete_title_with_bounded_text() {
             .history_source(
                 session,
                 through,
-                locator,
-                SourceField::Arguments,
-                None,
-                position,
-                8,
+                maka_event_log::transcript::HistorySourceRead {
+                    locator,
+                    field: SourceField::Arguments,
+                    path: None,
+                    position,
+                    max_bytes: 8,
+                },
             )
             .await;
         let next = result.as_ref().ok().and_then(|source| {
@@ -859,22 +925,26 @@ async fn soft_first_history_and_source_keep_complete_title_with_bounded_text() {
         .history_source(
             "other",
             through,
-            locator,
-            SourceField::Arguments,
-            None,
-            SourcePosition::Start,
-            8,
+            maka_event_log::transcript::HistorySourceRead {
+                locator,
+                field: SourceField::Arguments,
+                path: None,
+                position: SourcePosition::Start,
+                max_bytes: 8,
+            },
         )
         .await;
     let old = log
         .history_source(
             session,
             locator.source_sequence - 1,
-            locator,
-            SourceField::Arguments,
-            None,
-            SourcePosition::Start,
-            8,
+            maka_event_log::transcript::HistorySourceRead {
+                locator,
+                field: SourceField::Arguments,
+                path: None,
+                position: SourcePosition::Start,
+                max_bytes: 8,
+            },
         )
         .await;
     log.close().await.unwrap();

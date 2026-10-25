@@ -85,6 +85,13 @@ pub struct Plan {
     recovery: Option<Binding>,
 }
 
+/// A pinned package replacement at one expanded instance path.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PackageChange {
+    pub path: Vec<String>,
+    pub package: PackageRef,
+}
+
 impl Plan {
     pub fn prepare(
         input: &Input,
@@ -103,7 +110,7 @@ impl Plan {
         packages: &Packages,
         remote: &RemoteExports,
         replace: impl Fn(&PackageRef) -> Option<PackageRef>,
-    ) -> Result<(Self, Vec<(Vec<String>, PackageRef)>), Error> {
+    ) -> Result<(Self, Vec<PackageChange>), Error> {
         let target = input.environment.entry_target()?;
         composition::validate_nodes(&input.instances)?;
         for root in [&input.launch, &input.recovery].into_iter().flatten() {
@@ -228,7 +235,7 @@ struct Builder<'a> {
     nodes: BTreeMap<InstanceId, Pending<'a>>,
     aliases: BTreeMap<Vec<String>, InstanceId>,
     replace: &'a dyn Fn(&PackageRef) -> Option<PackageRef>,
-    package_changes: Vec<(Vec<String>, PackageRef)>,
+    package_changes: Vec<PackageChange>,
 }
 
 impl<'a> Builder<'a> {
@@ -393,7 +400,10 @@ impl<'a> Builder<'a> {
             };
             let package = match (self.replace)(&package).filter(|next| next != &package) {
                 Some(next) => {
-                    self.package_changes.push((path.clone(), next.clone()));
+                    self.package_changes.push(PackageChange {
+                        path: path.clone(),
+                        package: next.clone(),
+                    });
                     next
                 }
                 None => package,

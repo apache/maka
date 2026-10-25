@@ -38,4 +38,6 @@ mod source;
 mod timing;
 mod tool_metadata;
 mod tools;
+pub use history::HistoryWindow;
 pub use read::*;
+pub use source::HistorySourceRead;

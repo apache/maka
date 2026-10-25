@@ -334,11 +334,13 @@ impl OwnedConnection {
                     let reader_owner = runtime.spawn(run_readers(
                         read_receiver,
                         reader_stop.clone(),
-                        read_options,
-                        authority.clone(),
-                        prepared.clone(),
-                        control.clone(),
-                        retained.clone(),
+                        ReaderContext {
+                            options: read_options,
+                            authority: authority.clone(),
+                            prepared: prepared.clone(),
+                            control: control.clone(),
+                            retained: retained.clone(),
+                        },
                         owner_stop.clone(),
                     ));
                     let mut last_changes = 0_i64;
@@ -742,16 +744,21 @@ impl OwnedConnection {
     }
 }
 
-// Both persistent readers remain on the original owner's runtime. The mutex
-// protects only ingress removal; SQL and accepted jobs run independently.
-async fn run_readers(
-    receiver: mpsc::Receiver<ReadEnvelope>,
-    stop: CancellationToken,
+#[derive(Clone)]
+struct ReaderContext {
     options: SqliteConnectOptions,
     authority: Arc<ConnectionAuthority>,
     prepared: Option<PreparedCache>,
     control: Option<ReadOnlyControl>,
     retained: Arc<Retained>,
+}
+
+// Both persistent readers remain on the original owner's runtime. The mutex
+// protects only ingress removal; SQL and accepted jobs run independently.
+async fn run_readers(
+    receiver: mpsc::Receiver<ReadEnvelope>,
+    stop: CancellationToken,
+    context: ReaderContext,
     writer_stop: CancellationToken,
 ) -> Result<(), StoreError> {
     let receiver = Arc::new(tokio::sync::Mutex::new(receiver));
@@ -760,11 +767,7 @@ async fn run_readers(
         readers.spawn(reader_worker(
             receiver.clone(),
             stop.clone(),
-            options.clone(),
-            authority.clone(),
-            prepared.clone(),
-            control.clone(),
-            retained.clone(),
+            context.clone(),
             slot,
         ));
     }
@@ -787,13 +790,16 @@ async fn run_readers(
 async fn reader_worker(
     receiver: Arc<tokio::sync::Mutex<mpsc::Receiver<ReadEnvelope>>>,
     stop: CancellationToken,
-    options: SqliteConnectOptions,
-    authority: Arc<ConnectionAuthority>,
-    prepared: Option<PreparedCache>,
-    control: Option<ReadOnlyControl>,
-    retained: Arc<Retained>,
+    context: ReaderContext,
     slot: usize,
 ) -> Result<(), StoreError> {
+    let ReaderContext {
+        options,
+        authority,
+        prepared,
+        control,
+        retained,
+    } = context;
     let mut connection = None;
     let mut failure = None;
     loop {

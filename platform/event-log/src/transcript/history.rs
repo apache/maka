@@ -67,6 +67,16 @@ const CONVERSATION_USER: &str = "COALESCE((SELECT group_concat(line, char(10)) F
     SELECT '▱ ' || json_extract(value, '$.path')
         FROM json_each(payload, '$.directoryReferences') WHERE json_type(value, '$.path') = 'text')), '')";
 
+/// Projection and delivery budgets for one immutable history window.
+pub struct HistoryWindow {
+    pub position: Position,
+    pub include_thinking: bool,
+    pub view: HistoryView,
+    pub max_bytes: usize,
+    pub max_chunks: Option<usize>,
+    pub max_json_bytes: usize,
+}
+
 impl EventLog {
     /// Exact ascending UTF-8 windows over immutable derived text. The byte and
     /// fragment budgets apply to the whole window, never to a silently clipped
@@ -75,42 +85,20 @@ impl EventLog {
     /// including metadata and empty projection boundaries. The first complete
     /// fragment advances even when its metadata exceeds this target; subsequent
     /// fragments are packed within it. Cursor positions grant no access.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn history_text(
-        &self,
-        session: &str,
-        through: u64,
-        position: Position,
-        include_thinking: bool,
-        max_bytes: usize,
-        max_chunks: usize,
-        max_json_bytes: usize,
-    ) -> Result<Page, StoreError> {
-        self.history_view(
-            session,
-            through,
-            position,
-            include_thinking,
-            HistoryView::Text,
-            max_bytes,
-            Some(max_chunks),
-            max_json_bytes,
-        )
-        .await
-    }
-
-    #[allow(clippy::too_many_arguments)]
     pub async fn history_view(
         &self,
         session: &str,
         through: u64,
-        position: Position,
-        include_thinking: bool,
-        view: HistoryView,
-        max_bytes: usize,
-        max_chunks: Option<usize>,
-        max_json_bytes: usize,
+        window: HistoryWindow,
     ) -> Result<Page, StoreError> {
+        let HistoryWindow {
+            position,
+            include_thinking,
+            view,
+            max_bytes,
+            max_chunks,
+            max_json_bytes,
+        } = window;
         self.validate_root()?;
         if !(4..=128 * 1024).contains(&max_bytes)
             || max_chunks == Some(0)

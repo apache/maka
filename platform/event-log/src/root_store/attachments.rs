@@ -112,7 +112,7 @@ impl RootStore {
             None
         };
         let source = self.session(session_id).await?.owner()?;
-        let target = self.session(&target_session).await?.owner()?;
+        let target = self.session(target_session).await?.owner()?;
         let sessions = Arc::new(
             self.gates
                 .read([

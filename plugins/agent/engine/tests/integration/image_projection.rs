@@ -42,7 +42,9 @@ const LARGE_TOOL_IMAGE_BYTES: usize = 50 * 1024 * 1024 + 1;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn reopened_images_preserve_complete_accepted_artifacts_and_copied_authority() {
-    tokio::time::timeout(Duration::from_secs(60), async {
+    // Both requests carry about 230 MiB of base64 images in total. The debug
+    // fixture takes about a minute; allow headroom for concurrent test work.
+    tokio::time::timeout(Duration::from_secs(120), async {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("events.sqlite");
         let log = SessionFixture::open(&path).await.unwrap();
@@ -117,10 +119,13 @@ async fn reopened_images_preserve_complete_accepted_artifacts_and_copied_authori
         for (url, size) in urls.into_iter().zip([FOUR_MIB, FOUR_MIB, LARGE_TOOL_IMAGE_BYTES, FOUR_MIB, 8, 50 * 1024 * 1024]) {
             assert_fixture_image(url, size);
         }
-        let text = body["messages"].to_string();
-        assert!(text.contains("\"detail\":\"high\""), "tool image detail reaches the provider after reopening");
+        let text = message_text(&body["messages"]);
+        assert!(body["messages"].as_array().unwrap().iter()
+            .flat_map(|message| message["content"].as_array().into_iter().flatten())
+            .any(|part| part["image_url"]["detail"] == "high"),
+            "tool image detail reaches the provider after reopening");
         for name in ["invalid", "missing", "historical", "workspace"] {
-            assert!(text.contains(&format!("Image attachment \\\"{name}\\\" could not be loaded")), "missing error for {name}");
+            assert!(text.contains(&format!("Image attachment \"{name}\" could not be loaded")), "missing error for {name}");
         }
         assert!(text.contains("unsupported_mime"));
         assert!(!text.contains("per-request image budget"));
@@ -155,7 +160,7 @@ async fn reopened_images_preserve_complete_accepted_artifacts_and_copied_authori
             assert_fixture_image(url, size);
         }
         let reference = branch.resolve_history_artifact("branch", "session", "historical").await.unwrap().unwrap();
-        assert!(copied_request["messages"].to_string().contains(&reference.resource_ref().unwrap()),
+        assert!(message_text(&copied_request["messages"]).contains(&reference.resource_ref().unwrap()),
             "Read must receive the destination-owned resource URI");
         let tool_reference = branch.resolve_history_artifact("branch", "session", "tool").await.unwrap().unwrap();
         let maka_agent_facts::attachment::StorageRef::SessionFile { relative_path, .. } = tool_reference else { panic!("owned tool image") };
@@ -173,6 +178,25 @@ async fn reopened_images_preserve_complete_accepted_artifacts_and_copied_authori
             "rendering aliases cannot rewrite canonical input");
         engine.drain().await;
     }).await.expect("image projection must make bounded progress");
+}
+
+fn message_text(messages: &Value) -> String {
+    let mut text = String::new();
+    for message in messages.as_array().unwrap() {
+        match &message["content"] {
+            Value::String(content) => text.push_str(content),
+            Value::Array(parts) => {
+                for part in parts {
+                    if let Some(content) = part["text"].as_str() {
+                        text.push_str(content);
+                    }
+                }
+            }
+            _ => {}
+        }
+        text.push('\n');
+    }
+    text
 }
 
 fn assert_fixture_image(url: &str, size: usize) {

@@ -115,7 +115,18 @@ async fn cold_windows_use_complete_directory_and_preserve_all_anchor_kinds_after
         })
         .await;
         let Page::Ready { chunks, .. } = log
-            .history_text("a", through, position, false, 8192, 32, 65536)
+            .history_view(
+                "a",
+                through,
+                maka_event_log::transcript::HistoryWindow {
+                    position,
+                    include_thinking: false,
+                    view: maka_agent_ports::session::history::HistoryView::Text,
+                    max_bytes: 8192,
+                    max_chunks: Some(32),
+                    max_json_bytes: 65536,
+                },
+            )
             .await
             .unwrap();
         assert_eq!(
@@ -154,7 +165,18 @@ async fn cold_windows_use_complete_directory_and_preserve_all_anchor_kinds_after
         after,
         ..
     } = log
-        .history_text("a", through, Position::Tail, false, 8192, 1, 65536)
+        .history_view(
+            "a",
+            through,
+            maka_event_log::transcript::HistoryWindow {
+                position: Position::Tail,
+                include_thinking: false,
+                view: maka_agent_ports::session::history::HistoryView::Text,
+                max_bytes: 8192,
+                max_chunks: Some(1),
+                max_json_bytes: 65536,
+            },
+        )
         .await
         .unwrap();
     assert_eq!(chunks.len(), 1);
@@ -174,7 +196,18 @@ async fn cold_windows_use_complete_directory_and_preserve_all_anchor_kinds_after
         after,
         ..
     } = log
-        .history_text("a", live, Position::Start, false, 8192, 32, 65536)
+        .history_view(
+            "a",
+            live,
+            maka_event_log::transcript::HistoryWindow {
+                position: Position::Start,
+                include_thinking: false,
+                view: maka_agent_ports::session::history::HistoryView::Text,
+                max_bytes: 8192,
+                max_chunks: Some(32),
+                max_json_bytes: 65536,
+            },
+        )
         .await
         .unwrap();
     assert_eq!(

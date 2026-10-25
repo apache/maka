@@ -299,9 +299,14 @@ async fn activate_worker_mode(
     crate::owner::tests::provide_without_workhub(&mut native).unwrap();
     let captured = Arc::new(std::sync::Mutex::new(None));
     let capture = captured.clone();
-    crate::workhub::provide_captured(&mut native, bundled_catalog(), Arc::new(move |owner| {
-        *capture.lock().unwrap() = Some(owner);
-    })).unwrap();
+    crate::workhub::provide_captured(
+        &mut native,
+        bundled_catalog(),
+        Arc::new(move |owner| {
+            *capture.lock().unwrap() = Some(owner);
+        }),
+    )
+    .unwrap();
     if !matches!(
         behavior,
         WorkerBehavior::Returned | WorkerBehavior::DeniedQuery(_) | WorkerBehavior::External
@@ -402,7 +407,11 @@ async fn activate_worker_mode(
     .await
     .unwrap();
     fixture.app.ready().await.unwrap();
-    captured.lock().unwrap().take().expect("actual coordinator Owner")
+    captured
+        .lock()
+        .unwrap()
+        .take()
+        .expect("actual coordinator Owner")
 }
 async fn binding(fixture: &Fixture) -> Binding {
     let client = fixture.app.client();
@@ -1623,7 +1632,7 @@ async fn workhub_creates_selected_worker_and_transfers_original_attachment_bytes
             assert_eq!(copied.summary.as_deref(),Some(maka_agent_facts::artifact::content_digest(bytes).as_str()));
             assert!(fixture.session(worker).await.read_artifact_chunk(worker,&copied.id,0,bytes.len()).await.unwrap().unwrap().bytes==*bytes,"original transfer bytes differ: {name}");
         }
-        let through=fixture.through(&worker).await;
+        let through=fixture.through(worker).await;
         let events=fixture.session(worker).await.session_events(worker,0,through,512,usize::MAX).await.unwrap();
         let received=events.events.iter().find_map(|stored|match &stored.event.fact {
             Fact::InvocationOpened {input:maka_agent_facts::event::InvocationInput::Message {content,..},..}=>content.attachments.as_ref(),
@@ -1881,7 +1890,7 @@ async fn workhub_presets_freeze_selected_worker_tools_and_recover_after_restart(
         let persisted_presets=query_import(&fixture,hub::EXPORT,"presets",json!({})).await;
         let intents=fixture.store.application_intents(fixture.app.source().unwrap().deployment,id(1),0,128).await.unwrap();
         fixture.app.shutdown().await.unwrap();fixture.config.shutdown().await.unwrap();
-        let prefix=fixture.session(&(worker)).await.scoped_prefix(maka_agent_facts::event::LogScope::Session {id:worker.to_owned()},256,4*1024*1024).await.unwrap();
+        let prefix=fixture.session(worker).await.scoped_prefix(maka_agent_facts::event::LogScope::Session {id:worker.to_owned()},256,4*1024*1024).await.unwrap();
         let original_invocation=task["status"]["invocationId"].as_str().unwrap();
         let mut lifecycle=[0usize;4];
         let mut requested_step=None;

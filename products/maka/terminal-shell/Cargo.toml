@@ -26,11 +26,11 @@ publish.workspace = true
 build = "build.rs"
 
 [dependencies]
-base64 = "0.22.1"
+base64 = "0.23.1"
 clap.workspace = true
-open = "5.4.4"
-percent-encoding = "2.3"
-url = "2.5"
+open = "5.4.5"
+percent-encoding = "2.3.2"
+url = "2.5.8"
 maka-agent-api.workspace = true
 maka-agent-facts.workspace = true
 maka-app-client.workspace = true

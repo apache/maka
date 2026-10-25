@@ -297,7 +297,10 @@ async fn explicit_read_marker_keeps_original_tail_authority_and_receipt() {
         let fixture = Fixture::new(&base, None).await;
         let session = fixture.create("Read marker").await;
         let read = |message: &str| json!({"sessionId":session,"messageId":message});
-        let initial = fixture.query("observe", json!({"sessionId":session})).await.unwrap();
+        let initial = fixture
+            .query("observe", json!({"sessionId":session}))
+            .await
+            .unwrap();
         assert_eq!(initial["session"]["tailMessageId"], Value::Null);
         assert_eq!(initial["session"]["hasUnread"], false);
         fixture.send(&session).await.unwrap();

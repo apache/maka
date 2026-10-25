@@ -32,15 +32,15 @@ thiserror.workspace = true
 tokio.workspace = true
 serde_json.workspace = true
 tokio-util = { workspace = true, features = ["rt"] }
-hyper = { version = "1.10", features = ["server", "http1"] }
-hyper-util = { version = "0.1.20", features = ["tokio", "client-proxy"] }
-http-body-util = "0.1.3"
+hyper = { version = "1.12.0", features = ["server", "http1"] }
+hyper-util = { version = "0.1.21", features = ["tokio", "client-proxy"] }
+http-body-util = "0.1.5"
 futures-util.workspace = true
-base64 = "0.22.1"
+base64 = "0.23.1"
 percent-encoding = "2.3.2"
 tokio-socks = "0.5.3"
-tokio-rustls = { version = "0.26.5", default-features = false, features = ["aws_lc_rs", "tls12"] }
-rustls-platform-verifier = "0.7.0"
+tokio-rustls = { version = "0.26.6", default-features = false, features = ["aws_lc_rs", "tls12"] }
+rustls-platform-verifier = "0.7.1"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_Networking_WinSock"] }

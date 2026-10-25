@@ -61,11 +61,11 @@ maka-acp.workspace = true
 maka-config.workspace = true
 maka-terminal-shell.workspace = true
 maka-plugin-core.workspace = true
-base64 = "0.22"
+base64 = "0.23.1"
 clap.workspace = true
-flate2 = "1"
+flate2 = "1.1.10"
 reqwest.workspace = true
-semver = "1"
+semver = "1.0.28"
 tar = { version = "0.4.46", default-features = false }
 maka-host-runtime.workspace = true
 maka-event-log.workspace = true
@@ -81,7 +81,7 @@ tokio = { workspace = true, features = ["process"] }
 tokio-util = { workspace = true, features = ["io-util"] }
 uuid.workspace = true
 tempfile.workspace = true
-tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "tracing-log"] }
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "tracing-log"] }
 
 [build-dependencies]
 nsh-bundler = { workspace = true, features = ["bundle"] }
@@ -92,7 +92,7 @@ nsh-base.workspace = true
 maka-capabilities.workspace = true
 maka-ui-runtime.workspace = true
 crossterm.workspace = true
-image = { version = "0.25", default-features = false, features = ["png"] }
+image = { version = "0.25.10", default-features = false, features = ["png"] }
 maka-agent-native.workspace = true
 maka-app-client.workspace = true
 maka-files-native.workspace = true
@@ -104,12 +104,12 @@ nsh-engine.workspace = true
 nsh-platform-tui.workspace = true
 ratatui.workspace = true
 rusqlite.workspace = true
-log = "0.4"
+log = "0.4.34"
 schemars.workspace = true
 agent-client-protocol.workspace = true
 tokio-util = { workspace = true, features = ["compat"] }
-hyper = { version = "1.11.1", features = ["server", "http1"] }
-hyper-util = { version = "0.1.20", features = ["tokio"] }
+hyper = { version = "1.12.0", features = ["server", "http1"] }
+hyper-util = { version = "0.1.21", features = ["tokio"] }
 http-body-util = "0.1.5"
 futures-util.workspace = true
 libc.workspace = true

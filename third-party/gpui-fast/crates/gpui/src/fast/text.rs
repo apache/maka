@@ -3,7 +3,7 @@
 
 use crate::fast::layout::Adopted;
 use crate::{
-    App, AvailableSpace, DecorationRun, FontRun, FrameCache, Hsla, LayoutId, LineLayout,
+    App, AvailableSpace, Bounds, DecorationRun, FontRun, FrameCache, Hsla, LayoutId, LineLayout,
     LineLayoutCache, LineLayoutIndex, Pixels, PlatformTextSystem, SharedString, Size,
     StrikethroughStyle, TextLayout, TextLayoutInner, TextOverflow, TextRun, TextStyle,
     TruncateFrom, UnderlineStyle, WhiteSpace, Window, WindowTextSystem, WrappedLine,
@@ -198,21 +198,7 @@ pub(crate) fn layout_text(
     window: &mut Window,
     cx: &mut App,
 ) -> LayoutId {
-    let text_style = crate::fast::text_style::text_style(window);
-    let font_size = text_style.font_size.to_pixels(window.rem_size());
-    let line_height = window.pixel_snap(
-        text_style
-            .line_height
-            .to_pixels(font_size.into(), window.rem_size()),
-    );
-    let inputs = TextMeasureInputs {
-        text,
-        runs: runs.unwrap_or_default(),
-        text_style,
-        font_size,
-        line_height,
-        layout: RefCell::new(layout.clone()),
-    };
+    let inputs = measure_inputs(layout, text, runs.unwrap_or_default(), window);
     window.request_carried_measured_layout(
         inputs,
         adopt_measurement,
@@ -220,6 +206,116 @@ pub(crate) fn layout_text(
         measure_text,
         cx,
     )
+}
+
+/// The inputs of text laid out in the text style in effect, keeping its
+/// measurement in `layout`.
+fn measure_inputs(
+    layout: &TextLayout,
+    text: SharedString,
+    runs: Vec<TextRun>,
+    window: &Window,
+) -> TextMeasureInputs {
+    let text_style = crate::fast::text_style::text_style(window);
+    let font_size = text_style.font_size.to_pixels(window.rem_size());
+    let line_height = window.pixel_snap(
+        text_style
+            .line_height
+            .to_pixels(font_size.into(), window.rem_size()),
+    );
+    TextMeasureInputs {
+        text,
+        runs,
+        text_style,
+        font_size,
+        line_height,
+        layout: RefCell::new(layout.clone()),
+    }
+}
+
+/// [`TextLayout`]'s prepaint: notes the bounds the text is painted in.
+///
+/// Text should be measured by the time it is prepainted: carried over from
+/// last frame as its layout is requested, or by Taffy as it lays the text's
+/// node out. Should a gap in retention let text reach prepaint without a
+/// measurement (a node no layout computed this frame reaches, say), upstream
+/// panics here. It is measured here instead, as plain text in the text style
+/// in effect at the size it is prepainted at, so that the frame degrades
+/// (the text loses its runs' colors and fonts for a frame) rather than the
+/// app aborting.
+pub(crate) fn prepaint_text(
+    layout: &TextLayout,
+    bounds: Bounds<Pixels>,
+    text: &str,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    if layout.0.borrow().is_none() {
+        report_unmeasured(
+            "text reached prepaint unmeasured; measured there as plain text",
+            text,
+        );
+        let inputs = measure_inputs(
+            layout,
+            SharedString::from(text.to_owned()),
+            Vec::new(),
+            window,
+        );
+        // A node no layout reached has no size: lay the text out unwrapped
+        // rather than a glyph to a line.
+        let (known, available) = if bounds.size.width > Pixels::ZERO {
+            (
+                bounds.size.map(Some),
+                bounds.size.map(AvailableSpace::Definite),
+            )
+        } else {
+            (
+                Size::default(),
+                Size::new(AvailableSpace::MaxContent, AvailableSpace::MaxContent),
+            )
+        };
+        measure_text(&inputs, known, available, window, cx);
+    }
+    if let Some(inner) = layout.0.borrow_mut().as_mut() {
+        inner.bounds = Some(bounds);
+    }
+}
+
+/// Whether [`TextLayout`]'s paint can paint the text: it was measured and
+/// prepainted. Upstream panics when it was not; it is left unpainted instead.
+/// See [`prepaint_text`].
+pub(crate) fn paintable(layout: &TextLayout, text: &str) -> bool {
+    let paintable = layout
+        .0
+        .borrow()
+        .as_ref()
+        .is_some_and(|inner| inner.bounds.is_some());
+    if !paintable {
+        report_unmeasured(
+            "text painted before it was measured and prepainted; not painted",
+            text,
+        );
+    }
+    paintable
+}
+
+/// Whether [`report_unmeasured`] has reported anything in this process.
+static REPORTED_UNMEASURED: AtomicBool = AtomicBool::new(false);
+
+/// Logs text found unmeasured where it should not be: as an error the first
+/// time, and at debug level after that, since a frame that finds it is likely
+/// to be followed by many that find it again.
+fn report_unmeasured(what: &str, text: &str) {
+    const SHOWN_CHARS: usize = 32;
+    let mut shown: String = text.chars().take(SHOWN_CHARS).collect();
+    if text.chars().nth(SHOWN_CHARS).is_some() {
+        shown.push('…');
+    }
+    if REPORTED_UNMEASURED.swap(true, Ordering::Relaxed) {
+        log::debug!("{what}: {shown:?}");
+    } else {
+        log::error!("{what}: {shown:?}");
+    }
 }
 
 /// Takes over the measurement `previous` left, if it stands for `inputs`. See

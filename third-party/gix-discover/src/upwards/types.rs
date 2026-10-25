@@ -1,0 +1,272 @@
+use std::{env, ffi::OsStr, path::PathBuf};
+
+/// A repository-discovery outcome that callers may handle separately from operational failures.
+/// Missing repositories and search limits are classified as [`gix_error::Class::NotFound`].
+/// Rejected trust is classified as [`gix_error::Class::PermissionDenied`].
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum Error {
+    /// No repository was found before reaching the root directory.
+    NoGitRepository {
+        /// The normalized starting path, preserving its native spelling.
+        path: PathBuf,
+    },
+    /// No repository was found within the configured ceiling.
+    NoGitRepositoryWithinCeiling {
+        /// The normalized starting path.
+        path: PathBuf,
+        /// The number of parent directories reached when the ceiling stopped discovery.
+        ceiling_height: usize,
+    },
+    /// No repository was found on the starting filesystem.
+    NoGitRepositoryWithinFs {
+        /// The normalized starting path.
+        path: PathBuf,
+        /// The first directory on a different filesystem.
+        limit: PathBuf,
+    },
+    /// A repository was found but did not meet the required trust level.
+    NoTrustedGitRepository {
+        /// The normalized starting path.
+        path: PathBuf,
+        /// The rejected repository candidate.
+        candidate: PathBuf,
+        /// The required trust level.
+        required: gix_sec::Trust,
+        /// The minimum ownership-derived trust of the paths checked by [`TrustPolicy::Required`].
+        trust: gix_sec::Trust,
+    },
+}
+
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoGitRepository { path } => write!(
+                f,
+                "Could not find a git repository in \"{}\" or in any of its parents",
+                path.display()
+            ),
+            Self::NoGitRepositoryWithinCeiling { path, ceiling_height } => write!(
+                f,
+                "Could not find a git repository in \"{}\" or in any of its parents within ceiling height of {ceiling_height}",
+                path.display()
+            ),
+            Self::NoGitRepositoryWithinFs { path, limit } => write!(
+                f,
+                "Could not find a git repository in \"{}\" or in any of its parents within device limits below \"{}\"",
+                path.display(),
+                limit.display()
+            ),
+            Self::NoTrustedGitRepository { path, candidate, .. } => write!(
+                f,
+                "Could not find a trusted git repository in \"{}\" or in any of its parents, candidate at \"{}\" discarded",
+                path.display(),
+                candidate.display()
+            ),
+        }
+    }
+}
+
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::NoGitRepository { .. }
+            | Self::NoGitRepositoryWithinCeiling { .. }
+            | Self::NoGitRepositoryWithinFs { .. } => Some(const { &gix_error::ClassificationMarker::NOT_FOUND }),
+            Self::NoTrustedGitRepository { .. } => Some(const { &gix_error::ClassificationMarker::PERMISSION_DENIED }),
+        }
+    }
+}
+
+/// How to obtain the trust level returned alongside a discovered [`repository::Path`][crate::repository::Path].
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub enum TrustPolicy {
+    /// Derive trust from ownership via [`gix_sec::Trust::from_path_ownership()`] and require it to be at least
+    /// the given level.
+    ///
+    /// The returned trust is the minimum across the repository candidate itself (a gitfile or git directory),
+    /// its target git directory (if gitfile), the common directory referenced by `commondir` if present, and the worktree
+    /// known from repository detection if it exists. A missing worktree is skipped, but missing git or common
+    /// directories are errors. A trusted target cannot upgrade an untrusted gitfile.
+    ///
+    /// This trust describes all checked paths, not just the returned [`repository::Path`][crate::repository::Path],
+    /// which does not retain the original gitfile. The given level is only an acceptance threshold, not the
+    /// returned value: `Required(Reduced)` can return `Full` when all checked paths are owned by the current user.
+    /// If the minimum falls below the threshold, discovery fails with [`Error::NoTrustedGitRepository`].
+    Required(gix_sec::Trust),
+    /// Return the given trust level unchanged, without computing trust from ownership.
+    ///
+    /// This is a caller-supplied assertion of trust, not an ownership-derived result.
+    Assume(gix_sec::Trust),
+}
+
+impl Default for TrustPolicy {
+    fn default() -> Self {
+        TrustPolicy::Required(gix_sec::Trust::Reduced)
+    }
+}
+
+/// Options to help guide the [discovery][crate::upwards()] of repositories, along with their options
+/// when instantiated.
+pub struct Options<'a> {
+    /// Determine how discovery obtains its returned trust level; see [`TrustPolicy`] for the checked paths
+    /// and the distinction between an acceptance threshold and assumed trust.
+    ///
+    /// This defaults to [`Required(Reduced)`][TrustPolicy::Required] as our default settings are geared towards avoiding abuse.
+    /// Set it to `Required(Full)` to only see repositories that [are owned by the current user][gix_sec::Trust::from_path_ownership()],
+    /// or [`TrustPolicy::Assume`] to skip trust computation and return the given trust level.
+    pub trust: TrustPolicy,
+    /// When discovering a repository, ignore any repositories that are located in these directories or any of their parents.
+    ///
+    /// Entries are made absolute and lexically normalized, but symlinks are not resolved. They must therefore use the
+    /// physical, symlink-resolved spelling of the directory to match the path traversed during discovery.
+    ///
+    /// Note that we ignore ceiling directories if the search directory is directly on top of one, which by default is an error
+    /// if `match_ceiling_dir_or_error` is true, the default.
+    pub ceiling_dirs: Vec<PathBuf>,
+    /// If true, default true, and `ceiling_dirs` is not empty, we expect at least one ceiling directory to
+    /// contain our search dir or else there will be an error.
+    pub match_ceiling_dir_or_error: bool,
+    /// if `true` avoid crossing filesystem boundaries.
+    /// Only supported on Unix-like systems.
+    // TODO: test on Linux
+    // TODO: Handle WASI once https://github.com/rust-lang/rust/issues/71213 is resolved
+    pub cross_fs: bool,
+    /// If true, limit discovery to `.git` directories.
+    ///
+    /// This  will fail to find typical bare repositories, but would find them if they happen to be named `.git`.
+    /// Use this option if repos with worktrees are the only kind of repositories you are interested in for
+    /// optimal discovery performance.
+    pub dot_git_only: bool,
+    /// If set, the _current working directory_ (absolute path) to use when resolving relative paths. Note that
+    /// that this is merely an optimization for those who discover a lot of repositories in the same process.
+    ///
+    /// If unset, the current working directory will be obtained automatically.
+    /// Note that the path here might or might not contained decomposed unicode, which may end up in a path
+    /// relevant us, like the git-dir or the worktree-dir. However, when opening the repository, it will
+    /// change decomposed unicode to precomposed unicode based on the value of `core.precomposeUnicode`, and we
+    /// don't have to deal with that value here just yet.
+    pub current_dir: Option<&'a std::path::Path>,
+}
+
+impl Default for Options<'_> {
+    fn default() -> Self {
+        Options {
+            trust: TrustPolicy::default(),
+            ceiling_dirs: vec![],
+            match_ceiling_dir_or_error: true,
+            cross_fs: false,
+            dot_git_only: false,
+            current_dir: None,
+        }
+    }
+}
+
+impl Options<'_> {
+    /// Loads discovery options overrides from the environment.
+    ///
+    /// The environment variables are:
+    /// - `GIT_CEILING_DIRECTORIES` for `ceiling_dirs`
+    ///
+    /// Note that `GIT_DISCOVERY_ACROSS_FILESYSTEM` for `cross_fs` is **not** read,
+    /// as it requires parsing of `git-config` style boolean values.
+    // TODO: test
+    pub fn apply_environment(mut self) -> Self {
+        let name = "GIT_CEILING_DIRECTORIES";
+        if let Some(ceiling_dirs) = env::var_os(name) {
+            self.ceiling_dirs = parse_ceiling_dirs(&ceiling_dirs);
+        }
+        self
+    }
+}
+
+/// Parse a byte-string of `:`-separated paths into `Vec<PathBuf>`.
+/// On Windows, paths are separated by `;`.
+/// Non-absolute paths are discarded.
+/// To match git, all paths are normalized, until an empty path is encountered.
+pub(crate) fn parse_ceiling_dirs(ceiling_dirs: &OsStr) -> Vec<PathBuf> {
+    let mut should_normalize = true;
+    let mut out = Vec::new();
+    for ceiling_dir in std::env::split_paths(ceiling_dirs) {
+        if ceiling_dir.as_os_str().is_empty() {
+            should_normalize = false;
+            continue;
+        }
+
+        // Only absolute paths are allowed
+        if ceiling_dir.is_relative() {
+            continue;
+        }
+
+        let mut dir = ceiling_dir;
+        if should_normalize && let Ok(normalized) = gix_path::realpath(&dir) {
+            dir = normalized;
+        }
+        out.push(dir);
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+
+    #[test]
+    #[cfg(unix)]
+    fn parse_ceiling_dirs_from_environment_format() -> gix_testtools::TestResult {
+        use std::{fs, os::unix::fs::symlink};
+
+        use super::*;
+
+        // Setup filesystem
+        let dir = tempfile::tempdir()?;
+        let direct_path = dir.path().join("direct");
+        let symlink_path = dir.path().join("symlink");
+        fs::create_dir(&direct_path)?;
+        symlink(&direct_path, &symlink_path)?;
+
+        // Parse & build ceiling dirs string
+        let symlink_str = symlink_path.to_str().expect("symlink path is valid utf8");
+        let ceiling_dir_string = format!("{symlink_str}:relative::{symlink_str}");
+        let ceiling_dirs = parse_ceiling_dirs(OsStr::new(ceiling_dir_string.as_str()));
+
+        assert_eq!(ceiling_dirs.len(), 2, "Relative path is discarded");
+        assert_eq!(ceiling_dirs[0], symlink_path.canonicalize()?, "Symlinks are resolved");
+        assert_eq!(
+            ceiling_dirs[1], symlink_path,
+            "Symlink are not resolved after empty item"
+        );
+
+        dir.close()?;
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn parse_ceiling_dirs_from_environment_format() -> gix_testtools::TestResult {
+        use std::{fs, os::windows::fs::symlink_dir};
+
+        use super::*;
+
+        // Setup filesystem
+        let dir = tempfile::tempdir()?;
+        let direct_path = dir.path().join("direct");
+        let symlink_path = dir.path().join("symlink");
+        fs::create_dir(&direct_path)?;
+        symlink_dir(&direct_path, &symlink_path)?;
+
+        // Parse & build ceiling dirs string
+        let symlink_str = symlink_path.to_str().expect("symlink path is valid utf8");
+        let ceiling_dir_string = format!("{};relative;;{}", symlink_str, symlink_str);
+        let ceiling_dirs = parse_ceiling_dirs(OsStr::new(ceiling_dir_string.as_str()));
+
+        assert_eq!(ceiling_dirs.len(), 2, "Relative path is discarded");
+        assert_eq!(ceiling_dirs[0], direct_path, "Symlinks are resolved");
+        assert_eq!(
+            ceiling_dirs[1], symlink_path,
+            "Symlink are not resolved after empty item"
+        );
+
+        dir.close()?;
+        Ok(())
+    }
+}

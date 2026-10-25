@@ -25,7 +25,7 @@ publish.workspace = true
 [dependencies]
 alacritty_terminal = { version = "0.26.0", default-features = false }
 async-channel = "2.5.0"
-base64 = "0.22.1"
+base64 = "0.23.1"
 futures-lite = "2.6.1"
 gpui-shell.workspace = true
 hex.workspace = true

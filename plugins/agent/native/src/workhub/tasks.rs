@@ -771,11 +771,11 @@ impl Hub {
             .get(&worker)
             .and_then(Option::as_ref)
             .ok_or("workhub_worker_unavailable")?;
-        let original = self.coordinator_source(&context).await?;
+        let original = self.coordinator_source(context).await?;
         let language = self
             .agent
             .0
-            .tool_store(&context)?
+            .tool_store(context)?
             .invocation_configuration(&context.invocation)
             .await
             .map_err(|error| error.to_string())?
@@ -812,7 +812,7 @@ impl Hub {
             _ => return Err("workhub_execution_selection_invalid".into()),
         };
         let attachments = self
-            .transfers(&context, content.attachments.as_deref().unwrap_or_default())
+            .transfers(context, content.attachments.as_deref().unwrap_or_default())
             .await?;
         let original = if source_messages.len() == 1 {
             &source_messages[0].unprepared_content.text

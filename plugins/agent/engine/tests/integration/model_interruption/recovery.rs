@@ -27,7 +27,7 @@ use maka_agent_ports::model::{
 use maka_capabilities::http;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Fault {
     Send,
     Idle,
@@ -187,8 +187,8 @@ impl Socket for FaultSocket {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn send_and_idle_faults_recover_the_original_request_but_opaque_effects_and_protocol_errors_stop()
  {
-    tokio::time::timeout(Duration::from_secs(15), async {
-        for fault in [Fault::Send, Fault::Idle, Fault::OpaqueIdle, Fault::Protocol] {
+    for fault in [Fault::Send, Fault::Idle, Fault::OpaqueIdle, Fault::Protocol] {
+        tokio::time::timeout(Duration::from_secs(15), async {
             let recover = matches!(fault, Fault::Send | Fault::Idle);
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let base = format!("http://{}/v1", listener.local_addr().unwrap());
@@ -244,6 +244,6 @@ async fn send_and_idle_faults_recover_the_original_request_but_opaque_effects_an
                 let expected = if fault == Fault::OpaqueIdle { "model_timeout" } else { "model_adapter" };
                 assert!(matches!(&prefix.events.last().unwrap().event.fact, Fact::InvocationEnded { outcome: InvocationOutcome::Failed { class, .. } } if class == expected));
             }
-        }
-    }).await.expect("recovery and terminal boundaries must settle");
+        }).await.unwrap_or_else(|_| panic!("{fault:?} recovery and terminal boundaries must settle"));
+    }
 }

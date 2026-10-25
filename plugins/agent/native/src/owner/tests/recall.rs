@@ -227,7 +227,13 @@ async fn recall_native_privacy_revokes_offered_tools_and_pending_queries() {
             |settings| settings.recall = true,
         )
         .await;
-        let source = imported(&f, "Private source", &f.owner.prefix, "The original café answer").await;
+        let source = imported(
+            &f,
+            "Private source",
+            &f.owner.prefix,
+            "The original café answer",
+        )
+        .await;
         let target = f.create("Privacy transition").await;
         let query = json!({"terms":["café"],"session_id":source});
         assert_eq!(

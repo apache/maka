@@ -55,7 +55,7 @@ impl WorkspacePath {
         if bytes.contains(&b'\\') {
             return Err(invalid());
         }
-        let path = gix::path::try_from_bstr(bytes.as_bstr()).map_err(|_| invalid())?;
+        let path = gix::path::from_bstr(bytes.as_bstr()).map_err(|_| invalid())?;
         if path.is_absolute()
             || !path
                 .components()

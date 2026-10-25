@@ -298,7 +298,8 @@ impl Processes {
             controls: &self.protocol,
             id,
         };
-        let result = async {
+
+        async {
             // The same SQL transaction checks the live invocation and captured
             // configuration, and retains Session removal until actual cleanup.
             let store = maka_agent_authority::permissions::execution(
@@ -328,8 +329,7 @@ impl Processes {
             }
             result
         }
-        .await;
-        result
+        .await
     }
     async fn launch(&self, input: Launch, context: &Context) -> Result<Completion, ToolError> {
         cancelled(&context.scope().cancellation)?;
@@ -387,8 +387,8 @@ impl Processes {
         };
         // The original mutation owns this application process through physical
         // exit. It is not an Agent invocation and creates no Session process row.
-        let result = worker::run(self, context, id, plan, receive, None).await;
-        result
+
+        worker::run(self, context, id, plan, receive, None).await
     }
     async fn protocol_input(&self, input: Input, context: &Context) -> Result<Written, ToolError> {
         if input.bytes.as_ref().is_some_and(|b| b.len() > CHUNK_BYTES) {

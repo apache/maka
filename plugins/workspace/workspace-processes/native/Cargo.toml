@@ -23,7 +23,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
-base64 = "0.22.1"
+base64 = "0.23.1"
 maka-agent-facts.workspace = true
 maka-capabilities.workspace = true
 futures-util.workspace = true

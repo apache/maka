@@ -86,7 +86,9 @@ pub async fn spawn(
         stream::resize(&master, size)?;
         let flags = rustix::fs::fcntl_getfl(&master)?;
         rustix::fs::fcntl_setfl(&master, flags | OFlags::NONBLOCK)?;
-        let master = Arc::new(AsyncFd::new(master)?);
+        // SAFETY: AsyncFd owns this OwnedFd, whose descriptor stays open and
+        // unchanged until it is dropped or returned by into_inner.
+        let master = Arc::new(unsafe { AsyncFd::register(master)? });
         command
             .env("TERM", "xterm-256color")
             .env("COLORTERM", "truecolor")

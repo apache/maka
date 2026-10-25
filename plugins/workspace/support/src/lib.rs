@@ -506,7 +506,7 @@ mod tests {
             panic!("roots")
         };
         let selection = entries[0].selection.clone();
-        std::fs::set_permissions(&denied, std::fs::Permissions::from_mode(0)).unwrap();
+        std::fs::set_permissions(&denied, std::fs::Permissions::from_mode(0o0)).unwrap();
         assert!(
             directory::capture(&denied).is_err(),
             "permission test requires an unprivileged account"
@@ -551,7 +551,7 @@ mod tests {
             ["folder-33", "folder-34"]
         );
         assert!(after.is_none());
-        std::fs::set_permissions(&published, std::fs::Permissions::from_mode(0)).unwrap();
+        std::fs::set_permissions(&published, std::fs::Permissions::from_mode(0o0)).unwrap();
         let unavailable = query(
             roots.clone(),
             Directories::Children {

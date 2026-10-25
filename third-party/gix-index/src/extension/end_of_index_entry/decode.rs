@@ -4,6 +4,7 @@ use crate::{
     extension::end_of_index_entry::{MIN_SIZE, MIN_SIZE_WITH_HEADER, SIGNATURE},
     util::from_be_u32,
 };
+use gix_error::Result;
 
 /// Decode the end of index entry extension, which is no more than a glorified offset to the first byte of all extensions to allow
 /// loading entries and extensions in parallel.
@@ -13,7 +14,7 @@ use crate::{
 /// stored prior to this one to assure they are correct.
 ///
 /// If the checksum wasn't matched, we will ignore this extension entirely.
-pub fn decode(data: &[u8], object_hash: gix_hash::Kind) -> Result<Option<usize>, gix_hash::hasher::Error> {
+pub fn decode(data: &[u8], object_hash: gix_hash::Kind) -> Result<Option<usize>> {
     let hash_len = object_hash.len_in_bytes();
     if data.len() < MIN_SIZE_WITH_HEADER + hash_len {
         return Ok(None);
@@ -38,7 +39,9 @@ pub fn decode(data: &[u8], object_hash: gix_hash::Kind) -> Result<Option<usize>,
 
     let mut hasher = gix_hash::hasher(object_hash);
     let mut last_chunk = None;
-    for (signature, chunk) in extension::Iter::new(&data[offset..data.len() - MIN_SIZE_WITH_HEADER - hash_len]) {
+    for (signature, chunk) in
+        extension::Iter::new(&data[offset..data.len() - MIN_SIZE_WITH_HEADER - hash_len])
+    {
         hasher.update(&signature);
         hasher.update(&(chunk.len() as u32).to_be_bytes());
         last_chunk = Some(chunk);

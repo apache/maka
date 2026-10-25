@@ -1,44 +1,15 @@
 use filetime::FileTime;
 
+use gix_error::{Error, Result};
+
 use crate::{Entry, State, Version, entry, extension};
 
 mod entries;
 ///
 pub mod header;
 
-mod error {
-    use crate::{decode, extension};
-    use std::collections::TryReserveError;
-
-    /// The error returned by [`State::from_bytes()`][crate::State::from_bytes()].
-    #[derive(Debug, thiserror::Error)]
-    #[expect(missing_docs)]
-    pub enum Error {
-        #[error(transparent)]
-        Header(#[from] decode::header::Error),
-        #[error("Could not hash index data")]
-        Hasher(#[from] gix_hash::hasher::Error),
-        #[error("Index data would require more memory than can be reserved")]
-        OutOfMemory,
-        #[error("Could not parse entry at index {index}")]
-        Entry { index: u32 },
-        #[error("Mandatory extension wasn't implemented or malformed.")]
-        Extension(#[from] extension::decode::Error),
-        #[error("Index trailer should have been {expected} bytes long, but was {actual}")]
-        UnexpectedTrailerLength { expected: usize, actual: usize },
-        #[error("Shared index checksum mismatch")]
-        Verify(#[from] gix_hash::verify::Error),
-    }
-
-    impl From<TryReserveError> for Error {
-        #[cold]
-        fn from(_: TryReserveError) -> Self {
-            Self::OutOfMemory
-        }
-    }
-}
-pub use error::Error;
-use gix_features::parallel::InOrderIter;
+use gix_error::{ResourceExhaustionKind, ResultExt, bail, corruption, message};
+use gix_parallel::InOrderIter;
 
 use crate::util::read_u32;
 
@@ -77,15 +48,19 @@ impl State {
             expected_checksum,
             alloc_limit_bytes,
         }: Options,
-    ) -> Result<(Self, Option<gix_hash::ObjectId>), Error> {
-        let _span = gix_features::trace::detail!("gix_index::State::from_bytes()", options = ?_options);
+    ) -> Result<(Self, Option<gix_hash::ObjectId>)> {
+        let _span = gix_trace::detail!("gix_index::State::from_bytes()", options = ?_options);
         let (version, num_entries, post_header_data) = header::decode(data, object_hash)?;
         let start_of_extensions = extension::end_of_index_entry::decode(data, object_hash)?;
-        if num_entries as usize > entries::max_entries_possible(data.len(), start_of_extensions, object_hash, version) {
-            return Err(header::Error::Corrupt("Declared entry count exceeds possible entries for file size").into());
+        if num_entries as usize
+            > entries::max_entries_possible(data.len(), start_of_extensions, object_hash, version)
+        {
+            bail!(corruption(
+                "Declared entry count exceeds possible entries for file size"
+            ));
         }
 
-        let mut num_threads = gix_features::parallel::num_threads(thread_limit);
+        let mut num_threads = gix_parallel::num_threads(thread_limit);
         let path_backing_buffer_size = entries::estimate_path_storage_requirements_in_bytes(
             num_entries,
             data.len(),
@@ -96,7 +71,7 @@ impl State {
         ensure_in_alloc_limit(
             (num_entries as usize)
                 .checked_mul(std::mem::size_of::<Entry>())
-                .ok_or(Error::OutOfMemory)?,
+                .ok_or_else(|| allocation_error(ResourceExhaustionKind::AllocationFailure))?,
             alloc_limit_bytes,
         )?;
         ensure_in_alloc_limit(path_backing_buffer_size, alloc_limit_bytes)?;
@@ -104,77 +79,93 @@ impl State {
         let (entries, ext, data) = match start_of_extensions {
             Some(offset) if num_threads > 1 => {
                 let extensions_data = &data[offset..];
-                let index_offsets_table = extension::index_entry_offset_table::find(extensions_data, object_hash);
-                let (entries_res, ext_res) = gix_features::parallel::threads(|scope| {
-                    let extension_loading =
-                        (extensions_data.len() > min_extension_block_in_bytes_for_threading).then({
+                let index_offsets_table =
+                    extension::index_entry_offset_table::find(extensions_data, object_hash);
+                let (entries_res, ext_res) = gix_parallel::threads(|scope| {
+                    let extension_loading = (extensions_data.len()
+                        > min_extension_block_in_bytes_for_threading)
+                        .then({
                             num_threads -= 1;
                             || {
-                                gix_features::parallel::build_thread()
+                                gix_parallel::build_thread()
                                     .name("gix-index.from_bytes.load-extensions".into())
-                                    .spawn_scoped(scope, || {
-                                        extension::decode::all(extensions_data, object_hash, alloc_limit_bytes)
-                                    })
+                                    .spawn_scoped(
+                                        scope,
+                                        gix_trace::in_thread(|| {
+                                            extension::decode::all(
+                                                extensions_data,
+                                                object_hash,
+                                                alloc_limit_bytes,
+                                            )
+                                        }),
+                                    )
                                     .expect("valid name")
                             }
                         });
                     let entries_res = match index_offsets_table {
                         Some(entry_offsets) => {
-                            let chunk_size = (entry_offsets.len() as f32 / num_threads as f32).ceil() as usize;
+                            let chunk_size =
+                                (entry_offsets.len() as f32 / num_threads as f32).ceil() as usize;
                             let entry_offsets_chunked = entry_offsets.chunks(chunk_size);
                             let num_chunks = entry_offsets_chunked.len();
                             let mut threads = Vec::with_capacity(num_chunks);
                             for (id, chunks) in entry_offsets_chunked.enumerate() {
                                 let chunks = chunks.to_vec();
                                 threads.push(
-                                    gix_features::parallel::build_thread()
+                                    gix_parallel::build_thread()
                                         .name(format!("gix-index.from_bytes.read-entries.{id}"))
-                                        .spawn_scoped(scope, move || {
-                                            let num_entries_for_chunks =
-                                                chunks.iter().map(|c| c.num_entries).sum::<u32>() as usize;
-                                            let mut entries = vec_with_capacity(num_entries_for_chunks)?;
-                                            let path_backing_buffer_size_for_chunks =
-                                                entries::estimate_path_storage_requirements_in_bytes(
-                                                    num_entries_for_chunks as u32,
-                                                    data.len() / num_chunks,
-                                                    start_of_extensions.map(|ofs| ofs / num_chunks),
-                                                    object_hash,
-                                                    version,
-                                                );
-                                            let mut path_backing =
-                                                vec_with_capacity(path_backing_buffer_size_for_chunks)?;
-                                            let mut is_sparse = false;
-                                            for offset in chunks {
-                                                let (
-                                                    entries::Outcome {
-                                                        is_sparse: chunk_is_sparse,
+                                        .spawn_scoped(
+                                            scope,
+                                            gix_trace::in_thread(move || {
+                                                let num_entries_for_chunks =
+                                                    chunks.iter().map(|c| c.num_entries).sum::<u32>() as usize;
+                                                let mut entries = vec_with_capacity(num_entries_for_chunks)?;
+                                                let path_backing_buffer_size_for_chunks =
+                                                    entries::estimate_path_storage_requirements_in_bytes(
+                                                        num_entries_for_chunks as u32,
+                                                        data.len() / num_chunks,
+                                                        start_of_extensions.map(|ofs| ofs / num_chunks),
+                                                        object_hash,
+                                                        version,
+                                                    );
+                                                let mut path_backing =
+                                                    vec_with_capacity(path_backing_buffer_size_for_chunks)?;
+                                                let mut is_sparse = false;
+                                                for offset in chunks {
+                                                    let (
+                                                        entries::Outcome {
+                                                            is_sparse: chunk_is_sparse,
+                                                        },
+                                                        _data,
+                                                    ) = entries::chunk(
+                                                        &data[offset.from_beginning_of_file as usize..],
+                                                        &mut entries,
+                                                        &mut path_backing,
+                                                        offset.num_entries,
+                                                        object_hash,
+                                                        version,
+                                                    )?;
+                                                    is_sparse |= chunk_is_sparse;
+                                                }
+                                                Ok::<_, Error>((
+                                                    id,
+                                                    EntriesOutcome {
+                                                        entries,
+                                                        path_backing,
+                                                        is_sparse,
                                                     },
-                                                    _data,
-                                                ) = entries::chunk(
-                                                    &data[offset.from_beginning_of_file as usize..],
-                                                    &mut entries,
-                                                    &mut path_backing,
-                                                    offset.num_entries,
-                                                    object_hash,
-                                                    version,
-                                                )?;
-                                                is_sparse |= chunk_is_sparse;
-                                            }
-                                            Ok::<_, Error>((
-                                                id,
-                                                EntriesOutcome {
-                                                    entries,
-                                                    path_backing,
-                                                    is_sparse,
-                                                },
-                                            ))
-                                        })
+                                                ))
+                                            }),
+                                        )
                                         .expect("valid name"),
                                 );
                             }
-                            let mut results =
-                                InOrderIter::from(threads.into_iter().map(|thread| thread.join().unwrap()));
-                            let mut acc = results.next().expect("have at least two results, one per thread");
+                            let mut results = InOrderIter::from(
+                                threads.into_iter().map(|thread| thread.join().unwrap()),
+                            );
+                            let mut acc = results
+                                .next()
+                                .expect("have at least two results, one per thread");
                             // We explicitly don't adjust the reserve in acc and rather allow for more copying
                             // to happens as vectors grow to keep the peak memory size low.
                             // NOTE: one day, we might use a memory pool for paths. We could encode the block of memory
@@ -233,16 +224,19 @@ impl State {
         };
 
         if data.len() != object_hash.len_in_bytes() {
-            return Err(Error::UnexpectedTrailerLength {
-                expected: object_hash.len_in_bytes(),
-                actual: data.len(),
-            });
+            bail!(corruption(format!(
+                "Index trailer should have been {} bytes long, but was {}",
+                object_hash.len_in_bytes(),
+                data.len()
+            )));
         }
 
         let checksum = gix_hash::ObjectId::from_bytes_or_panic(data);
         let checksum = (!checksum.is_null()).then_some(checksum);
         if let Some((expected_checksum, actual_checksum)) = expected_checksum.zip(checksum) {
-            actual_checksum.verify(&expected_checksum)?;
+            actual_checksum
+                .verify(&expected_checksum)
+                .or_raise(|| message("Shared index checksum mismatch"))?;
         }
         let EntriesOutcome {
             entries,
@@ -289,9 +283,10 @@ struct EntriesOutcome {
     pub is_sparse: bool,
 }
 
-fn vec_with_capacity<T>(capacity: usize) -> Result<Vec<T>, Error> {
+fn vec_with_capacity<T>(capacity: usize) -> Result<Vec<T>> {
     let mut vec = Vec::new();
-    vec.try_reserve(capacity).map_err(|_| Error::OutOfMemory)?;
+    vec.try_reserve(capacity)
+        .or_raise(|| message("Index data would require more memory than can be reserved"))?;
     Ok(vec)
 }
 
@@ -301,7 +296,7 @@ fn entries(
     num_entries: u32,
     object_hash: gix_hash::Kind,
     version: Version,
-) -> Result<(EntriesOutcome, &[u8]), Error> {
+) -> Result<(EntriesOutcome, &[u8])> {
     let mut entries = vec_with_capacity(num_entries as usize)?;
     let mut path_backing = vec_with_capacity(path_backing_buffer_size)?;
     entries::chunk(
@@ -312,16 +307,18 @@ fn entries(
         object_hash,
         version,
     )
-    .map(|(entries::Outcome { is_sparse }, data): (entries::Outcome, &[u8])| {
-        (
-            EntriesOutcome {
-                entries,
-                path_backing,
-                is_sparse,
-            },
-            data,
-        )
-    })
+    .map(
+        |(entries::Outcome { is_sparse }, data): (entries::Outcome, &[u8])| {
+            (
+                EntriesOutcome {
+                    entries,
+                    path_backing,
+                    is_sparse,
+                },
+                data,
+            )
+        },
+    )
 }
 
 pub(crate) fn stat(data: &[u8]) -> Option<(entry::Stat, &[u8])> {
@@ -354,9 +351,14 @@ pub(crate) fn stat(data: &[u8]) -> Option<(entry::Stat, &[u8])> {
     ))
 }
 
-fn ensure_in_alloc_limit(size: usize, alloc_limit_bytes: Option<usize>) -> Result<(), Error> {
+fn ensure_in_alloc_limit(size: usize, alloc_limit_bytes: Option<usize>) -> Result {
     if alloc_limit_bytes.is_some_and(|limit| size > limit) {
-        return Err(Error::OutOfMemory);
+        return Err(allocation_error(ResourceExhaustionKind::AllocationLimit));
     }
     Ok(())
+}
+
+fn allocation_error(kind: ResourceExhaustionKind) -> Error {
+    message("Index data would require more memory than can be reserved")
+        .resource_exhaustion_error(kind)
 }

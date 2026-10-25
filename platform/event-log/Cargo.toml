@@ -38,7 +38,7 @@ maka-presentation.workspace = true
 rusqlite = { workspace = true, features = ["functions", "blob"] }
 sqlx = { workspace = true, features = ["sqlite-preupdate-hook"] }
 # Explicit acknowledged rollback after a failed COMMIT; SQLx does not reexport the trait.
-sqlx-core = { version = "0.9", default-features = false }
+sqlx-core = { version = "0.9.0", default-features = false }
 futures-util.workspace = true
 serde_json.workspace = true
 regex = "1.13.1"

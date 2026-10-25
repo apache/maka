@@ -215,7 +215,7 @@ impl Computer {
         };
         maka_agent_authority::permissions::execution(
             &self.store,
-            &invocation,
+            invocation,
             call.execution().map(|token| token.as_ref()),
         )?
         .commit_artifact(artifact, bytes)

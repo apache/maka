@@ -162,13 +162,7 @@ async fn form_scenario() {
     use tokio::sync::oneshot;
 
     let fixture = support::Fixture::open().await;
-    let mut database = SqliteConnection::connect_with(
-        &SqliteConnectOptions::new()
-            .filename(&fixture.database)
-            .read_only(true),
-    )
-    .await
-    .unwrap();
+    let journals = support::journal_databases(&fixture.database);
     let (provider, mut model_requests) = (fixture.provider, fixture.model_requests);
     let mut native = fixture.native;
     let session = fixture.session.clone();
@@ -216,6 +210,19 @@ async fn form_scenario() {
         let acp::ElicitationScope::Session(scope) = form.scope else { panic!("expected session scope"); };
         assert_eq!(scope.session_id.to_string(), session.as_str());
         let tool_id = scope.tool_call_id.expect("form must identify the dispatched tool").to_string();
+        let mut interaction_database = None;
+        for journal in journals {
+            let options = SqliteConnectOptions::new().filename(journal).read_only(true);
+            let mut connection = SqliteConnection::connect_with(&options).await.unwrap();
+            let requests: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM interaction_requests").fetch_one(&mut connection).await.unwrap();
+            if requests > 0 {
+                assert!(interaction_database.is_none(), "one interaction must have one journal owner");
+                interaction_database = Some(connection);
+            } else {
+                connection.close().await.unwrap();
+            }
+        }
+        let mut database = interaction_database.expect("the form callback must have a durable interaction journal");
         let requests: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM interaction_requests").fetch_one(&mut database).await.unwrap();
         assert_eq!(requests, 1, "the form callback must come from a durable Host interaction");
         let before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM interaction_outcomes").fetch_one(&mut database).await.unwrap();
@@ -246,6 +253,7 @@ async fn form_scenario() {
             tool.tool_call_id.to_string() == tool_id && serde_json::to_value(tool).unwrap()["status"] == "completed"
         }), "the same tool must be visibly complete before idle");
         connection.send_request(acp::CloseSessionRequest::new(session.as_str())).block_task().await?;
+        database.close().await.unwrap();
         Ok(())
     }).await.unwrap();
     tokio::time::timeout(Duration::from_secs(10), serving)
@@ -256,7 +264,6 @@ async fn form_scenario() {
     native.close().await.unwrap();
     fixture.stop.cancel();
     fixture.server.await.unwrap().unwrap();
-    database.close().await.unwrap();
     drop(provider);
 }
 

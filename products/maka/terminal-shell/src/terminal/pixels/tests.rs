@@ -340,7 +340,7 @@ fn native_editor_focus_and_text_do_not_wait_for_another_pixel_frame() {
                 .borrow_mut()
                 .drain(..)
                 .map(|frame| frame.complete().unwrap().pixels().to_vec())
-                .last();
+                .next_back();
             if let Some(pixels) = pixels {
                 initial_count.set(count.get());
                 return pixels;

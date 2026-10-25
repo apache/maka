@@ -351,12 +351,12 @@ pub(super) async fn advance(
                     continue;
                 }
             }
-            if let (Some(sequence), Some(n)) = (f.dirty, &update) {
-                if sequence <= f.low || sequence >= f.high {
-                    f.dirty = if sequence <= f.low { n.right } else { n.left };
-                    write_frame(db, kind, id, state.depth, &f).await?;
-                    continue;
-                }
+            if let (Some(sequence), Some(n)) = (f.dirty, &update)
+                && (sequence <= f.low || sequence >= f.high)
+            {
+                f.dirty = if sequence <= f.low { n.right } else { n.left };
+                write_frame(db, kind, id, state.depth, &f).await?;
+                continue;
             }
             if f.dirty.is_none()
                 && (f.base.root.is_none() || (f.low <= f.base.low && f.high >= f.base.high))

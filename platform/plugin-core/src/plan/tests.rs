@@ -231,7 +231,7 @@ fn package_replacements_validate_nested_providers_and_consumers_atomically() {
         Plan::prepare(&input, &packages, &RemoteExports::new()).unwrap(),
         original
     );
-    for (path, package) in changes {
+    for PackageChange { path, package } in changes {
         let node = input.instances.get_mut(&path[0]).unwrap();
         if path.len() == 1 {
             node.package = package.into();

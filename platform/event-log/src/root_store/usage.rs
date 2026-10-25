@@ -196,14 +196,13 @@ async fn summary_page(
     after: Option<UsageGroupCursor>,
 ) -> Result<UsageReport, StoreError> {
     query.validate(&domain)?;
-    if let Some(cursor) = &after {
-        if query.through.is_none()
+    if let Some(cursor) = &after
+        && (query.through.is_none()
             || cursor.group != group
             || (cursor.key.is_none() && group != Group::ByProvider)
-            || cursor.key.as_ref().is_some_and(|key| key.len() > 48 * 1024)
-        {
-            return Err(invalid("invalid Usage group cursor"));
-        }
+            || cursor.key.as_ref().is_some_and(|key| key.len() > 48 * 1024))
+    {
+        return Err(invalid("invalid Usage group cursor"));
     }
     let after = after.map(|cursor| cursor.key);
     let reports =
@@ -344,16 +343,15 @@ async fn activity_page(
     selection
         .validate()
         .map_err(|_| invalid("invalid Usage selection"))?;
-    if let Some(cursor) = &after {
-        if query.through.is_none()
+    if let Some(cursor) = &after
+        && (query.through.is_none()
             || !cursor.completed_at.is_finite()
             || cursor.completed_at < 0.0
             || cursor.partition >= PARTITION_COUNT
             || cursor.request_id.is_empty()
-            || cursor.request_id.len() > 128
-        {
-            return Err(invalid("invalid Usage activity cursor"));
-        }
+            || cursor.request_id.len() > 128)
+    {
+        return Err(invalid("invalid Usage activity cursor"));
     }
     let pages =
         futures_util::future::join_all(journals.into_iter().enumerate().map(|(index, owner)| {
