@@ -130,6 +130,8 @@ jobs:
             if [ -d "$path" ]; then du -sh "$path"; fi
           done
       - run: just check
+        env:
+          NEXTEST_PROFILE: ci
       - name: Report storage after checks
         if: ${{ always() && steps.mbx.outcome == 'success' }}
         run: |

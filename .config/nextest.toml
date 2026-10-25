@@ -30,3 +30,7 @@ threads-required = "num-test-threads"
 [[profile.default.overrides]]
 filter = 'package(maka-host-runtime) | package(maka-host-js) | package(maka-agent-native) | (package(maka-agent-engine) & binary(integration)) | (package(maka-cli) & (binary(integration) | binary(terminal_real_host)))'
 threads-required = 3
+
+[profile.ci]
+# Collect all failures while inheriting default scheduling and timeouts.
+fail-fast = false
