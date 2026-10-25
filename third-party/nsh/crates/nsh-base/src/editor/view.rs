@@ -835,7 +835,7 @@ fn selection_rects(ed: Ed) -> impl IntoElement {
             .into_iter()
             .map(|b| {
                 part(
-                    rect(b).bg(move || theme().primary.opacity(0.22)),
+                    rect(b).bg(move || theme().selection()),
                     props,
                     EditorPart::Selection,
                 )

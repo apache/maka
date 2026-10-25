@@ -1363,9 +1363,9 @@ type label:Complete (
 expect Inlined: 1
 expect value
 # The fifth editor's diagnostics: the unnecessary code in its part's
-# style, the deprecated code struck through.
+# style, the deprecated code (also a warning) struck through and underlined.
 style span:unused color #00ff00ff
-style span:legacy textDecorationLine line-through
+style span:legacy textDecorationLine underline line-through
 # Resting over the unnecessary code reports its diagnostic with its tags,
 # its code's page and the place related to it.
 event text:"unused = legacy();" onHoverMove position.x=1 position.y=5

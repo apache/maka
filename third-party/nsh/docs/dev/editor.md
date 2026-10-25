@@ -371,7 +371,7 @@ The defaults are the theme's tokens (`crate::theme()`), so a theme and the dark 
 | `content` | 4 points before the text |
 | `line` | Every row (nothing by default) |
 | `activeLine` | `muted` at 60 % behind the rows of lines with a caret |
-| `selection` | `primary` at 22 % |
+| `selection` | The theme's selection color: its `selection` color, else `primary` at 22 % |
 | `caret` | 2 points wide, `foreground`, blinking every 530 ms while focused |
 | `composition` | Underlined, on `background` |
 | `searchMatch` / `currentSearchMatch` | Amber (`#fbbf24` / `#d97706` dark) at 25 % / 55 % |

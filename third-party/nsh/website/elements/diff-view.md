@@ -364,7 +364,7 @@ set with `fontFamily`, `fontSize` and `lineHeight`.
 | `indicatorDeleted` | A deleted line's bar or `−` | Red, 3pt wide |
 | `separator` | A separator of collapsed lines, or a patch's hunk header | `⋯` and the count on `muted` |
 | `hunkActions` | The box of the app's actions on a change | At the change's top right |
-| `lineSelected` | Over the selected lines' rows of their side | A faint `primary` tint |
+| `lineSelected` | Over the selected lines' rows of their side | The theme's selection color (as the `Editor`'s selections) |
 | `annotation` | The box of an annotation, under its line | Across its line's side |
 | `addAnnotation` | The box of the add control, the gutter's width and a line tall | The control at its right |
 | `fileHeader` | The header of a file of a patch | The path and counts on `secondary`, a `border` line below |

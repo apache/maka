@@ -405,6 +405,66 @@ mod tests {
         assert!(!holds(&(4..7), 3));
     }
 
+    /// The link's underline follows its word's characters in any text:
+    /// Chinese (three bytes, one UTF-16 unit), an emoji (four bytes, two
+    /// units), and `\r\n` and `\r` line breaks (one `\n` in the buffer).
+    #[test]
+    fn a_word_is_underlined_where_its_characters_are() {
+        for text in [
+            "let 名字 = foo;\nlet bar = 你好世界(foo, 👍x);\nbaz(bar)",
+            "let 名字 = foo;\r\nlet bar = 你好世界(foo, 👍x);\r\nbaz(bar)",
+            "let 名字 = foo;\rlet bar = 你好世界(foo, 👍x);\rbaz(bar)",
+        ] {
+            let st = state(text);
+            let lines = st.buffer.line_count();
+            assert_eq!(lines, 3, "{text:?}");
+            let rows = 0..st.display.row_count();
+            for word in ["名字", "foo", "bar", "你好世界", "baz"] {
+                let at = st.buffer.text().find(word).unwrap();
+                let found = word_at(&st, at);
+                assert_eq!(found, at..at + word.len(), "{word} in {text:?}");
+                // Through the position the app answers with.
+                let (a, b) = (st.position(found.start), st.position(found.end));
+                assert_eq!(
+                    (st.offset_of(a), st.offset_of(b)),
+                    (found.start, found.end),
+                    "{word} in {text:?}"
+                );
+                // The columns count UTF-16 units of the (normalized) line.
+                let line = st
+                    .buffer
+                    .text()
+                    .lines()
+                    .nth(a.line as usize)
+                    .unwrap()
+                    .to_owned();
+                let before: usize = line[..line.find(word).unwrap()].encode_utf16().count();
+                assert_eq!(a.column as usize, before, "{word} in {text:?}");
+                // Its rectangle starts where its first character is and
+                // is as wide as the word.
+                let rects = st.range_rects(found.clone(), rows.clone(), false);
+                assert_eq!(rects.len(), 1, "{word} in {text:?}");
+                let row = st.display.locate(&st.buffer.snapshot(), found.start).0;
+                assert_eq!(
+                    rects[0].origin.x,
+                    st.display.x_in(&st.buffer, row, found.start)
+                );
+                assert_eq!(
+                    rects[0].size.width,
+                    st.display.x_in(&st.buffer, row, found.end)
+                        - st.display.x_in(&st.buffer, row, found.start)
+                );
+                // A pointer over its middle hits one of its characters.
+                let mid = Point::new(
+                    rects[0].origin.x + rects[0].size.width / 2.0,
+                    rects[0].origin.y + px(5.0),
+                );
+                let hit = hit(&st, mid);
+                assert!(hit.over && holds(&found, hit.offset), "{word} in {text:?}");
+            }
+        }
+    }
+
     #[test]
     fn mod_is_command_on_apple_platforms_and_control_elsewhere_without_alt() {
         let modifier = |cmd: bool, ctrl: bool, alt: bool| Modifiers {

@@ -160,7 +160,7 @@ time (after a frame on WebAssembly). A patch's files each have a highlighter per
 | `indicatorAdded` / `indicatorDeleted` | `bars`: a 3 point bar at the gutter's edge; `classic`: `+` / `−` in green / red |
 | `separator` | `⋯` and the count (or the hunk header) on `muted`, `muted-foreground`; a press expands the gap |
 | `hunkActions` | The box of the app's actions, 8 points from the right of a change's first row |
-| `lineSelected` | Over the selected rows of their side, gutter and text: `primary` at 12 % |
+| `lineSelected` | Over the selected rows of their side, gutter and text: the theme's selection color |
 | `annotation` | The box of an annotation, under its line across its side (split) or the view (unified) |
 | `addAnnotation` | The box of the add control: the gutter's width, a line tall, the control at its right |
 | `fileHeader` | A file's header: `▾` / `▸`, the path (`old → new` when moved), `+n` green and `−n` red on `secondary`, a `border` line below; a press collapses or expands the file |

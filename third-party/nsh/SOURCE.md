@@ -26,7 +26,7 @@ at `de176695240d550f2b303643b8019146c7989e7f`. The upstream project is
 
 `upstream.json` keeps that initial `repository` and `revision`. Its
 `upstream_revision` records the latest integrated `longbridge/nsh` main revision:
-`dcc67ba3e11461ec4abd25162522a9818844adb0`. The first upstream synchronization
+`ab78a5cce0267bf707d8f7e5a4578ca6c5aec892`. The first upstream synchronization
 starts from `6bb0b7908043132067456e4a21dd57c90a0bdce5`, already included in the
 initial fork import.
 
@@ -38,6 +38,12 @@ the README retains the terminal backend description). This is a mixed-source
 vendor tree, not a claim that one upstream revision contains the fork features.
 The source, tests, resources, original licenses and independent workspaces are
 retained. `SOURCE.md` and `upstream.json` are Maka's provenance files.
+The trailing-whitespace measurement integration preserves `TextEngine::measure_canvas`
+for platform-specific advances (including the terminal font catalog), while
+using upstream whitespace-inclusive measurement when that hook is absent.
+Upstream selection/link geometry regressions and the local canvas override
+regression are both retained.
+
 The Editor / DiffView import adds their headless regressions, shared syntax
 highlighting, per-engine registry setup, and pointer-event payload support.
 Maka already passes `nsh_base::registry()` to its bundler and engine; these
