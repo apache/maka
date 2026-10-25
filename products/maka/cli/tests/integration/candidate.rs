@@ -619,9 +619,9 @@ impl Drop for CandidateFixture {
     }
 }
 
-struct RootStartupFixture {
+pub(super) struct RootStartupFixture {
     directory: Option<tempfile::TempDir>,
-    root: PathBuf,
+    pub(super) root: PathBuf,
     initialized: Option<CandidateFixture>,
     admission_pending: bool,
 }
@@ -642,7 +642,16 @@ impl RootStartupFixture {
         self.directory.as_ref().unwrap().path()
     }
 
-    fn adopt(&mut self) -> &CandidateFixture {
+    pub(super) fn initialized(directory: tempfile::TempDir, fixture: CandidateFixture) -> Self {
+        Self {
+            root: fixture.root.clone(),
+            directory: Some(directory),
+            initialized: Some(fixture),
+            admission_pending: false,
+        }
+    }
+
+    pub(super) fn adopt(&mut self) -> &CandidateFixture {
         let fixture = self
             .initialized
             .get_or_insert_with(|| CandidateFixture::adopt_existing(self.root.clone()));
@@ -650,7 +659,7 @@ impl RootStartupFixture {
         fixture
     }
 
-    fn begin_admission(&mut self) {
+    pub(super) fn begin_admission(&mut self) {
         self.admission_pending = true;
     }
 }

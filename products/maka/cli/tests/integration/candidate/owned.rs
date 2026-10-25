@@ -149,29 +149,61 @@ fn unconfirmed_root_startup_preserves_absent_and_partial_roots() {
     }
 }
 
+fn isolated_root_fixture() -> RootStartupFixture {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().join("root");
+    let namespaces = RootNamespaces {
+        ownership: directory.path().join("owners"),
+        control: directory.path().join("control"),
+    };
+    let owner = RootOwner::create(&root, &namespaces).unwrap();
+    let candidate = CandidateFixture {
+        child: None,
+        root,
+        root_id: owner.root_id().to_owned(),
+        registration: owner.control_directory().join("registration.json"),
+        lock: owner.lock_path().to_owned(),
+        cleanup: FixtureCleanup::Pending,
+    };
+    drop(owner);
+    RootStartupFixture::initialized(directory, candidate)
+}
+
+#[test]
+fn initialized_root_fixture_retains_each_pending_launcher_until_completion() {
+    for reuse in [false, true] {
+        for completed in [false, true] {
+            let mut fixture = isolated_root_fixture();
+            let directory = fixture.directory().to_owned();
+            let root = fixture.root.clone();
+            if reuse {
+                fixture.begin_admission();
+                fixture.adopt();
+            }
+            fixture.begin_admission();
+            if completed {
+                fixture.adopt();
+            }
+            drop(fixture);
+            assert_eq!(directory.exists(), !completed);
+            assert_eq!(root.exists(), !completed);
+            if !completed {
+                // No launcher or Host was started by this state-transition regression.
+                fs::remove_dir_all(directory).unwrap();
+            }
+        }
+    }
+}
+
 #[test]
 fn failed_root_fixture_cleanup_preserves_its_directory_and_is_not_retried_on_drop() {
-    let mut startup_fixture = RootStartupFixture::new();
+    let mut startup_fixture = isolated_root_fixture();
     let directory = startup_fixture.directory().to_owned();
-    let namespaces = RootNamespaces {
-        ownership: directory.join("owners"),
-        control: directory.join("control"),
-    };
-    let owner = RootOwner::create(&startup_fixture.root, &namespaces).unwrap();
-    let control = owner.control_directory().to_owned();
-    let lock = owner.lock_path().to_owned();
+    let candidate = startup_fixture.initialized.as_ref().unwrap();
+    let control = candidate.registration.parent().unwrap().to_owned();
+    let lock = candidate.lock.clone();
     let unexpected = control.join("unowned-entry");
     fs::write(&unexpected, b"preserve").unwrap();
-    startup_fixture.initialized = Some(CandidateFixture {
-        child: None,
-        root: startup_fixture.root.clone(),
-        root_id: owner.root_id().to_owned(),
-        registration: control.join("registration.json"),
-        lock: lock.clone(),
-        cleanup: FixtureCleanup::Pending,
-    });
-    startup_fixture.admission_pending = false;
-    drop(owner);
 
     assert!(!startup_fixture.initialized.as_mut().unwrap().cleanup());
     assert_eq!(fs::read(&unexpected).unwrap(), b"preserve");

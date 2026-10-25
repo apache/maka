@@ -17,7 +17,7 @@
  * under the License.
  */
 
-use super::candidate::CandidateFixture;
+use super::candidate::{CandidateFixture, RootStartupFixture};
 use maka_event_log::root::{RootNamespaces, RootOwner};
 use maka_host_runtime::application::host::{Client, discovery};
 use std::{
@@ -126,9 +126,11 @@ async fn desktop_shell_owns_its_child_and_preserves_the_selected_host_and_other_
             std::fs::metadata(&executable).unwrap().len()
         );
         shell(directory.path());
-        let fixture = CandidateFixture::new(directory.path().join("Host root 中文"));
+        let candidate = CandidateFixture::new(directory.path().join("Host root 中文"));
+        let mut fixture = RootStartupFixture::initialized(directory, candidate);
         // The Root has no saved application: use the existing standalone initialization.
         stage("first-shell-start");
+        fixture.begin_admission();
         let (mut first, endpoint, epoch, _) = started(&executable, &fixture.root).await;
         stage("first-shell-ready");
         let registered = discovery::read(&fixture.root).unwrap();
@@ -149,6 +151,7 @@ async fn desktop_shell_owns_its_child_and_preserves_the_selected_host_and_other_
             .unwrap();
         stage("first-shell-wait");
         assert_eq!(first.wait().await.unwrap().code(), Some(73));
+        fixture.adopt();
         stage("first-launcher-exited");
         let live = Client::status(&endpoint, Some(epoch)).await.unwrap();
         assert_eq!(live.source, original_source);
@@ -158,6 +161,7 @@ async fn desktop_shell_owns_its_child_and_preserves_the_selected_host_and_other_
         );
 
         stage("second-shell-start");
+        fixture.begin_admission();
         let (mut second, same_endpoint, same_epoch, shell_pid) =
             started(&executable, &fixture.root).await;
         stage("second-shell-ready");
@@ -188,6 +192,7 @@ async fn desktop_shell_owns_its_child_and_preserves_the_selected_host_and_other_
             std::io::Error::last_os_error().raw_os_error(),
             Some(libc::ESRCH)
         );
+        fixture.adopt();
         let live = Client::status(&endpoint, Some(epoch)).await.unwrap();
         assert_eq!(live.source, original_source);
         assert!(!live.closing && !live.closed);
@@ -199,6 +204,7 @@ async fn desktop_shell_owns_its_child_and_preserves_the_selected_host_and_other_
         assert!(original_launch.2.is_none());
 
         stage("reopened-shell-start");
+        fixture.begin_admission();
         let (mut reopened, new_endpoint, new_epoch, _) = started(&executable, &fixture.root).await;
         stage("reopened-shell-ready");
         assert_ne!(new_epoch, epoch);
@@ -218,6 +224,7 @@ async fn desktop_shell_owns_its_child_and_preserves_the_selected_host_and_other_
             .unwrap();
         stage("reopened-shell-wait");
         assert!(reopened.wait().await.unwrap().success());
+        fixture.adopt();
         stage("reopened-host-save");
         assert_eq!(
             saved(&fixture.root).await,
@@ -252,8 +259,10 @@ async fn desktop_shell_spawn_failure_ignores_path_and_releases_its_host() {
         shell(&decoy);
         // What a lookup by bare name would find.
         shell_at(decoy.join("maka-desktop-shell"));
-        let fixture = CandidateFixture::new(directory.path().join("root"));
+        let candidate = CandidateFixture::new(directory.path().join("root"));
+        let mut fixture = RootStartupFixture::initialized(directory, candidate);
         stage("launcher-start-and-output");
+        fixture.begin_admission();
         let result = Command::new(&executable)
             .args(["desktop", "--root"])
             .arg(&fixture.root)
@@ -261,6 +270,7 @@ async fn desktop_shell_spawn_failure_ignores_path_and_releases_its_host() {
             .output()
             .await
             .unwrap();
+        fixture.adopt();
         eprintln!(
             "desktop spawn-failure lifecycle: launcher_status={}",
             result.status
