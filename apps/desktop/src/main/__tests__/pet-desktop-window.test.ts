@@ -82,7 +82,7 @@ async function harness(selectedPetId: string | null = null) {
   let focuses=0;
   const submitted: any[] = [];
   const controller = module.exports.createPetDesktop({ workspaceRoot:'/tmp/fixture',settingsStore:store as any,
-    assistantChat: { target: async () => 'assistant-target', send: async input => { submitted.push(input); } },
+    assistantChat: { cardAction: async input => { submitted.push(input); return {selectedKey: input.actionKey ?? null}; }, target: async () => 'assistant-target', send: async input => { submitted.push(input); } },
     mainWindowController:{isMainRenderer:(sender:any)=>sender===main.webContents,browserWindow:()=>main,
       send:(...args:any[])=>main.webContents.send(...args),focus:()=>{focuses++;}} as any });
   await controller.refresh();
@@ -183,4 +183,21 @@ test('composer focuses native panel and renderer, retains mouse input until clos
   assert.equal(win.ignoring, true);
   h.ipc.emit('pet-desktop:action', {sender}, 'interactive');
   assert.equal(win.ignoring, false);
+});
+
+test('pet card IPC preserves cards, validates identity and rejects malformed actions', async () => {
+  const h=await harness('test'); const sender=h.windows[0]!.webContents;
+  await h.handlers.get('pet-desktop:chat-target')!({sender});
+  const card={type:'offer',title:'整理材料',items:[{title:'报销',actions:[{kind:'reply',label:'帮我整理',value:'整理材料'}]}]};
+  h.ipc.emit('pet-desktop:publish',{sender:h.main.webContents},{kind:'assistant',surface:{activity:'idle',label:'ready',sessionId:'assistant-target'}});
+  h.ipc.emit('pet-desktop:publish',{sender:h.main.webContents},{kind:'messages',sessionId:'assistant-target',messages:[{id:'m',text:'需要吗',card}]});
+  assert.deepEqual(h.windows[0]!.webContents.sent.at(-1)?.[1]?.messages[0].card,card);
+  const call=h.handlers.get('pet-desktop:card-action')!;
+  await call({sender},{target:'assistant-target',cardId:'m',actionKey:'0:0'});
+  assert.equal(h.submitted[0].actionKey,'0:0');
+  await assert.rejects(call({sender:{}},{target:'assistant-target',cardId:'m',actionKey:'0:0'}));
+  await assert.rejects(call({sender},{target:'assistant-target',cardId:'m',actionKey:'bad'}));
+  const n=h.windows[0]!.webContents.sent.length;
+  h.ipc.emit('pet-desktop:publish',{sender:h.main.webContents},{kind:'messages',sessionId:'assistant-target',messages:[{id:'m',text:'unsafe',card:{...card,type:'script'}}]});
+  assert.equal(h.windows[0]!.webContents.sent.length,n);
 });

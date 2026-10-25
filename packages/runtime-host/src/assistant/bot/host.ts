@@ -75,7 +75,9 @@ export function initializeBot(
       characterInitialization.delivered(input);
     },
   });
-  const cardInput = z.object({ sessionId: z.string().min(1).max(512), cardId: z.string().min(1).max(512) }).strict();
+  const cardInput = z
+    .object({ sessionId: z.string().min(1).max(512), cardId: z.string().min(1).max(512) })
+    .strict();
   const checkCardOwner = (sessionId: string) => {
     bot.ready();
     if (bot.owner() !== sessionId) throw Error('Assistant conversation changed');
@@ -263,7 +265,12 @@ export function initializeBot(
       const request = JSON.stringify(input.messages);
       const previous = store.get<{
         request: string;
-        messages: { text: string; summary?: string; card?: AssistantCard; discoveryIds?: string[] }[];
+        messages: {
+          text: string;
+          summary?: string;
+          card?: AssistantCard;
+          discoveryIds?: string[];
+        }[];
       }>(receiptKey);
       if (previous && previous.request !== request)
         throw Error('Message ID has different batch content');

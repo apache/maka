@@ -24,16 +24,18 @@ import { createPetAssistantChat } from '../pet-assistant-chat.js';
 function harness() {
   let enabled = true, owner = 'assistant-owner', blocked = false;
   const calls: any[] = [];
+  const requests: any[] = [];
   const initial = {
     hostId: 'host-a',
     async request(_method: string, input: any) {
+      if (input.method.startsWith('assistant.card-')) { requests.push(input); return {value: {selectedKey: input.input.actionKey ?? null}}; }
       return {value: input.method === 'assistant.enablement' ? {enabled} : {state: {sessionId: owner}}};
     },
     async submitMessage(input: any) { calls.push(input); return {disposition: blocked ? 'blocked' : 'inbox'}; },
   };
   let current: typeof initial | undefined = initial;
   const chat = createPetAssistantChat(() => current as any);
-  return { chat, calls, disable:()=>{enabled=false;}, rebind:()=>{owner='other';},
+  return { chat, calls, requests, disable:()=>{enabled=false;}, rebind:()=>{owner='other';},
     disconnect:()=>{current=undefined;}, block:()=>{blocked=true;}, switchHost:()=>{current={...initial,hostId:'host-b'};} };
 }
 test('sends to the assistant Inbox with the original identity retained for retry', async () => {
@@ -51,4 +53,22 @@ test('closing assistant, changing its binding or switching Hosts prevents misdel
 test('blocked admission is an error, never a sent acknowledgement', async () => {
   const h=harness();const target=await h.chat.target();h.block();
   await assert.rejects(h.chat.send({target,id:'id',text:'你好'}), /消息未送达/);
+});
+
+test('pet card actions reuse stored card selection without a second text submission', async () => {
+  const h = harness(); const target = await h.chat.target();
+  assert.deepEqual(await h.chat.cardAction({target, cardId:'card-1'}), {selectedKey:null});
+  assert.deepEqual(await h.chat.cardAction({target, cardId:'card-1',actionKey:'0:1'}), {selectedKey:'0:1'});
+  assert.deepEqual(h.requests, [
+    {method:'assistant.card-status',input:{sessionId:'assistant-owner',cardId:'card-1'}},
+    {method:'assistant.card-reply',input:{sessionId:'assistant-owner',cardId:'card-1',actionKey:'0:1'}},
+  ]);
+  assert.equal(h.calls.length,0);
+});
+test('stale pet cards cannot be sent to another assistant or Host', async () => {
+  for (const change of ['disable','rebind','disconnect','switchHost'] as const) {
+    const h=harness(); const target=await h.chat.target(); h[change]();
+    await assert.rejects(h.chat.cardAction({target,cardId:'card-1',actionKey:'0:0'}));
+    assert.equal(h.requests.length,0);
+  }
 });

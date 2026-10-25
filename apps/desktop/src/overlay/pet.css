@@ -124,3 +124,25 @@ body[data-pet-animation="sleep"] canvas { animation: breathe 6s ease-in-out infi
 body[data-pet-animation="poke"] canvas { animation: none; }
 @keyframes idle-sway { 25% { transform: rotate(-2deg) translateY(-2px); } 75% { transform: rotate(2deg) translateY(-2px); } }
 @keyframes idle-stretch { 35% { transform: scaleY(1.04) scaleX(.98) translateY(-2px); } 65% { transform: scaleY(.99) scaleX(1.015); } }
+
+/* Bounded cards shrink to their content; choices stay outside the scroll body. */
+#bubble[data-card="true"] { width: 308px; max-width: 308px; height: auto; max-height: 286px; display: flex; flex-direction: column; }
+#bubble[data-card="true"] #content-row { flex-shrink: 0; }
+#bubble[data-card="true"] #content { max-height: 22px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 12px; color: var(--muted); }
+#bubble[data-card="true"] #pagination, #bubble[data-card="true"] .bubble-heading { flex-shrink: 0; }
+#card { display: flex; flex-direction: column; flex: 0 1 auto; min-height: 0; padding-top: 7px; user-select: text; overflow-wrap: anywhere; }
+.pet-card-title { flex-shrink: 0; max-height: 44px; overflow: auto; font-size: 15px; line-height: 1.45; margin: 0 0 7px; font-weight: 650; }
+.pet-card-body { flex: 0 1 auto; min-height: 0; overflow: auto; scrollbar-width: thin; overscroll-behavior: contain; padding-right: 4px; }
+.pet-card-description, .pet-card-item p { font-size: 12px; line-height: 1.5; margin: 3px 0; color: var(--muted); white-space: pre-wrap; }
+.pet-card-item + .pet-card-item { margin-top: 8px; }
+.pet-card-item h3 { font-size: 12px; margin: 0; font-weight: 600; line-height: 1.5; }
+.pet-card-fact { display: flex; gap: 8px; font-size: 11px; line-height: 1.5; margin: 3px 0; }
+.pet-card-fact span:first-child { color: var(--muted); flex-shrink: 0; }
+.pet-card-actions { flex-shrink: 0; max-height: 78px; overflow: auto; display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; padding-top: 8px; border-top: 1px solid var(--edge); scrollbar-width: thin; }
+.pet-card-actions button { flex: 1 1 70px; min-width: 0; padding: 7px 8px; border: 1px solid var(--edge); border-radius: 8px; background: color-mix(in srgb, var(--accent) 9%, transparent); font-size: 12px; line-height: 1.35; }
+.pet-card-actions button:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 20%, transparent); }
+.pet-card-actions button:disabled { color: var(--muted); background: color-mix(in srgb, var(--muted) 7%, transparent); opacity: .65; }
+.pet-card-error { flex-shrink: 0; max-height: 30px; overflow: auto; color: #b87536; font-size: 11px; margin: 4px 0 0; }
+
+.pet-card-item h3 { display: inline; margin-right: 6px; }
+.pet-card-item p { display: inline; }

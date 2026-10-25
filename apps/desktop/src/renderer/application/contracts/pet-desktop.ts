@@ -19,6 +19,8 @@
 
 import type { PetActivityState, PetPackManifestV1 } from "@maka/core/pet";
 
+import type { AssistantCard } from "@maka/core/assistant-card";
+
 export type PetMode = "session" | "assistant";
 export interface PetSurface {
   activity: PetActivityState;
@@ -34,6 +36,7 @@ export interface PetMessage {
   id: string;
   text: string;
   summary?: string;
+  card?: AssistantCard;
 }
 export interface PetDesktopState {
   mode: PetMode;

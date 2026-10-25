@@ -127,7 +127,11 @@ export function petMessageText(message: PetMessage): string {
  * Keep the existing 4–20s bounds; hover/focus pauses longer reading.
  */
 export function petMessageDuration(message: PetMessage): number {
-  return Math.max(4000, Math.min(20000, 2000 + Array.from(petMessageText(message).replace(/\s/g, "")).length * 220));
+  const card = message.card;
+  const visible = [petMessageText(message), card?.title, card?.description,
+    ...(card?.items ?? []).flatMap(item => [item.title, item.description,
+      ...(item.facts ?? []).map(f => `${f.label} ${f.value}`), ...(item.actions ?? []).map(a => a.label)])].filter(Boolean).join(' ');
+  return Math.max(4000, Math.min(20000, 2000 + Array.from(visible.replace(/\s/g, "")).length * 220));
 }
 
 export function shouldClosePetComposer(text: string, idleMs: number, sending: boolean, composing: boolean) {
