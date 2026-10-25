@@ -311,10 +311,10 @@ mod tests {
     }
 
     #[test]
-    fn blocked_output_finishes_upload_and_retirement_before_cleanup() {
+    fn blocked_output_finishes_upload_and_retained_placement_before_cleanup() {
         // The writer is protocol agnostic. This complete Kitty-shaped payload
-        // includes the retirement suffix that must never become a second job.
-        let transaction = b"\x1b[H\x1b_Ga=T,i=41,p=1,q=1,m=0;AAAA\x1b\\\x1b[?2026h\x1b_Ga=d,d=I,i=73,q=2\x1b\\\x1b[?2026l";
+        // includes the retained placement suffix that must never become a second job.
+        let transaction = b"\x1b[?2026h\x1b[H\x1b_Ga=T,i=41,p=1,z=1,q=0,m=0;AAAA\x1b\\\x1b_Ga=p,i=73,p=1,z=0,q=1\x1b\\\x1b[?2026l";
         let bytes = Arc::new(Mutex::new(Vec::new()));
         let (gate, receive) = mpsc::channel();
         let (entered, observing) = mpsc::sync_channel(1);

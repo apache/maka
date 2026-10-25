@@ -228,12 +228,14 @@ focus, editing, capture, scrolling and application callbacks. Focus projections 
 their existing FIFO order. Terminal input follows this same route as window input, independently of output
 completion or presentation receipts.
 
-For Kitty output, `nsh-gpui-terminal::kitty::KittyFrame::wire` contains one complete `q=1` upload followed by
-retirement of the old owned image. The sole output owner writes and flushes the whole wire indivisibly before
-recording completion with `mark_presented`. Frame tokens and this receipt identify output for diagnostics; they do
-not authorize or delay input. Success replies do not gate this receipt; the sole reader ends the graphics session
-on any negative reply for either owned slot, including a late error. The independent capability query still
-requires its own positive reply. A completed flush does not prove display vsync.
+For Kitty output, the host confirms the terminal cursor is at the origin before uploading a frame. The
+`nsh-gpui-terminal::kitty::KittyFrame::wire` transaction uploads the new image at `z=1` with `q=0` and
+retains the previous placement underneath at `z=0`, enclosed in a synchronized update. The host waits
+for both the complete writer flush and the matching image success reply before recording completion
+with `mark_presented` and reusing the older slot. This bounds storage to two images without exposing
+an empty canvas during asynchronous image loading. The sole reader ends the graphics session on any
+negative reply for either owned slot, including a late error. Frame receipts govern resource reuse;
+they do not authorize or delay input, and do not prove display vsync.
 
 Home and End stay on the nearest enabled Scroll containing the native focus, including when it is already at that
 edge or its content fits. Editors retain their own Home and End behavior. Arrow keys, page keys and wheels keep
