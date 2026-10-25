@@ -641,10 +641,6 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
       const inFlight =
         state && [...state.inFlight.values()].some((entry) => entry.messageId === messageId);
       if (inFlight) return { kind: 'recovering' };
-      const steeringIndex =
-        state?.steering.findIndex((entry) => entry.messageId === messageId) ?? -1;
-      const followupIndex =
-        state?.followup.findIndex((entry) => entry.messageId === messageId) ?? -1;
       if (
         state?.transition &&
         state.transition.entries.some((entry) => entry.messageId === messageId)
@@ -657,13 +653,32 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
         messageId,
         cancellationClaimId,
       );
-      if (state && steeringIndex >= 0) {
-        const [entry] = state.steering.splice(steeringIndex, 1);
+      // The durable claim write yields the event loop, and steering
+      // consumption happens outside the admission lock: the queue captured
+      // above can be pulled, nacked, or folded into a terminal transition
+      // before the claim lands. Re-read the live disposition instead of
+      // splicing through the stale pre-await indices — a message the pull
+      // already handed to a run must answer 'recovering', not 'cancelled'.
+      const inFlightAfterClaim =
+        state && [...state.inFlight.values()].some((entry) => entry.messageId === messageId);
+      if (inFlightAfterClaim) return { kind: 'recovering' };
+      if (
+        state?.transition &&
+        state.transition.entries.some((entry) => entry.messageId === messageId)
+      ) {
+        return { kind: 'recovering' };
+      }
+      const steeringIndexAfterClaim =
+        state?.steering.findIndex((entry) => entry.messageId === messageId) ?? -1;
+      const followupIndexAfterClaim =
+        state?.followup.findIndex((entry) => entry.messageId === messageId) ?? -1;
+      if (state && steeringIndexAfterClaim >= 0) {
+        const [entry] = state.steering.splice(steeringIndexAfterClaim, 1);
         if (entry) this.#releaseEntry(entry);
         this.#mutated(state);
         this.#maybeReclaim(sessionId, state);
-      } else if (state && followupIndex >= 0) {
-        const [entry] = state.followup.splice(followupIndex, 1);
+      } else if (state && followupIndexAfterClaim >= 0) {
+        const [entry] = state.followup.splice(followupIndexAfterClaim, 1);
         if (entry) this.#releaseEntry(entry);
         this.#mutated(state);
         this.#maybeReclaim(sessionId, state);
