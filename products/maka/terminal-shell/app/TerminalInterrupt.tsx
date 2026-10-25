@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { cleanup, effect, inputAction, signal, Text, View } from 'nsh';
+import { cleanup, effect, signal, Text, View } from 'nsh';
 import { Button, Dialog } from 'nsh/base';
 import { host } from 'nsh/host';
 import { keymap } from 'nsh/keymap';
@@ -144,66 +144,69 @@ export function TerminalInterrupt(props: { state: ReturnType<typeof createTermin
           </View>
         </View>
       </If>
-      <Each
-        of={props.state.confirmation() ? [props.state.confirmation()!] : []}
-        key={(request) => `${request.owner.sessionId}:${request.invocationId}`}
-      >
-        {(request) => (
-          <Dialog
-            animation="none"
-            onOpenChange={props.state.dismiss}
-            style={{
-              flex: 1,
-              justifyContent: 'center',
-              alignItems: 'center',
-              backgroundColor: '#00000099',
-            }}
-          >
-            <View
+      <Each of={props.state.confirmation() ? [props.state.confirmation()!] : []}>
+        {(request) => {
+          // A late click must retain this dialog's identity, not read its replacement.
+          const expected = request();
+          return (
+            <Dialog
+              animation="none"
+              onOpenChange={props.state.dismiss}
               style={{
-                width: '90%',
-                maxWidth: 480,
-                padding: 24,
-                gap: 24,
-                borderRadius: 16,
-                backgroundColor: C.surface,
+                flex: 1,
+                justifyContent: 'center',
+                alignItems: 'center',
+                backgroundColor: '#00000099',
               }}
             >
-              <Text style={{ ...bodyTextStyle, color: C.text }}>
-                {tr('Stop the current task?')}
-              </Text>
-              <Text style={{ ...bodyTextStyle, color: C.secondary }}>
-                {tr('The task will keep running unless you choose to stop it.')}
-              </Text>
               <View
                 style={{
-                  flexDirection: 'row',
-                  flexWrap: 'wrap',
-                  justifyContent: 'flex-end',
-                  gap: 8,
+                  width: '90%',
+                  maxWidth: 480,
+                  padding: 24,
+                  gap: 24,
+                  borderRadius: 16,
+                  backgroundColor: C.surface,
                 }}
               >
-                <Button
-                  ref={(node) => node.focus()}
-                  onPress={props.state.dismiss}
-                  style={{ ...controlStyle, backgroundColor: C.raised }}
-                  hoverStyle={controlHoverStyle}
-                  focusStyle={controlFocusStyle}
+                <Text style={{ ...bodyTextStyle, color: C.text }}>
+                  {tr('Stop the current task?')}
+                </Text>
+                <Text style={{ ...bodyTextStyle, color: C.secondary }}>
+                  {tr('The task will keep running unless you choose to stop it.')}
+                </Text>
+                <View
+                  style={{
+                    flexDirection: 'row',
+                    flexWrap: 'wrap',
+                    justifyContent: 'flex-end',
+                    gap: 8,
+                  }}
                 >
-                  <Text style={{ ...bodyTextStyle, color: C.text }}>{tr('Keep running')}</Text>
-                </Button>
-                <Button
-                  onPress={inputAction(props.state.confirm, request())}
-                  style={controlStyle}
-                  hoverStyle={controlHoverStyle}
-                  focusStyle={controlFocusStyle}
-                >
-                  <Text style={{ ...bodyTextStyle, color: C.danger }}>{tr('Stop task')}</Text>
-                </Button>
+                  <Button
+                    ref={(node) => node.focus()}
+                    accessibilityLabel={tr('Keep running')}
+                    onPress={props.state.dismiss}
+                    style={{ ...controlStyle, backgroundColor: C.raised }}
+                    hoverStyle={controlHoverStyle}
+                    focusStyle={controlFocusStyle}
+                  >
+                    <Text style={{ ...bodyTextStyle, color: C.text }}>{tr('Keep running')}</Text>
+                  </Button>
+                  <Button
+                    accessibilityLabel={tr('Stop task')}
+                    onPress={() => props.state.confirm(expected)}
+                    style={controlStyle}
+                    hoverStyle={controlHoverStyle}
+                    focusStyle={controlFocusStyle}
+                  >
+                    <Text style={{ ...bodyTextStyle, color: C.danger }}>{tr('Stop task')}</Text>
+                  </Button>
+                </View>
               </View>
-            </View>
-          </Dialog>
-        )}
+            </Dialog>
+          );
+        }}
       </Each>
     </>
   );
