@@ -523,6 +523,8 @@ impl Fixture {
                                 "directories",
                                 "create",
                                 "selectBackend",
+                                "compact",
+                                "compactionPrompt",
                                 "projectMcp",
                                 "trustProjectMcp",
                                 "globalInstructions",

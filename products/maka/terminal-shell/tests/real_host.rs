@@ -23,6 +23,10 @@ mod attachment_draft;
 mod attachment_intake;
 #[path = "real_host/attachments.rs"]
 mod attachments;
+#[path = "real_host/compaction.rs"]
+mod compaction;
+#[path = "real_host/composer_completion.rs"]
+mod composer_completion;
 #[path = "real_host/final_actions.rs"]
 mod final_actions;
 #[path = "real_host/interactions.rs"]

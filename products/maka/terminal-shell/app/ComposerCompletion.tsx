@@ -409,13 +409,13 @@ export function createComposerCompletion(options: Options) {
       return;
     }
     const context = { owner, editor: binding.node, text, selection: range };
+    const requested = explicit();
     if (dismissed && !sameDismissed(context)) dismissed = null;
     if (sameDismissed(context)) {
       hide();
       return;
     }
     const token = completionToken(text, range);
-    const requested = explicit();
     const source =
       requested ??
       (token?.kind === 'file'

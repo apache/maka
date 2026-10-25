@@ -43,6 +43,7 @@ import { Palette } from './Palette';
 import type { CommandEntry, ComposerCommand } from './composerCommands';
 import { WorkspacePicker } from './WorkspacePicker';
 import { ModelSelect } from './ModelSelect';
+import { CompactDialog } from './CompactDialog';
 import { ModelSettings } from './ModelSettings';
 import type { ModelBackend } from './modelSelection';
 import { InteractionComposer, interactionOutcomeSummary } from './InteractionComposer';
@@ -65,6 +66,7 @@ type OverlayTarget = {
   | { kind: 'commands' | 'workspaces' | 'sessions' | 'search' }
   | { kind: 'models'; focusOnClose?: 'composer' }
   | { kind: 'settings'; model?: ModelSelection }
+  | { kind: 'compact'; owner: ConversationHandle; prompt?: string }
 );
 type Overlay = OverlayTarget & { instance: number };
 type ActionContext = { instance: number | null; sessionId: string | null };
@@ -475,13 +477,8 @@ function App() {
     if (!closeCommand(context)) return false;
     const owner = handle();
     if (!owner) return false;
-    try {
-      await owner.compact(prompt);
-      return true;
-    } catch (reason) {
-      report(reason);
-      return false;
-    }
+    open({ kind: 'compact', sessionId: owner.sessionId, owner, prompt });
+    return true;
   };
   const commands = (context: ActionContext): CommandEntry[] => [
     ...(uiScale.supported
@@ -997,6 +994,14 @@ function App() {
         {(value) => {
           const current = value();
           const close = inputAction(closeOverlay, current.instance);
+          if (current.kind === 'compact')
+            return (
+              <CompactDialog
+                owner={current.owner}
+                prompt={current.prompt}
+                close={() => closeOverlay(current.instance)}
+              />
+            );
           if (current.kind === 'search')
             return (
               <RecallSearch
