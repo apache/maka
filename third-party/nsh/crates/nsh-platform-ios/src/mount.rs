@@ -221,6 +221,35 @@ fn reaches_beyond(root: &UIView, limit: CGFloat) -> bool {
     false
 }
 
+/// The content width a vertical scroll view keeps. `reaches` says whether
+/// anything inside it is wider than `viewport`; the caller asks that once the
+/// batch has applied every frame, so a child that only just arrived counts —
+/// a first mount sends the content size before its children's frames.
+fn settled_content_width(viewport: CGFloat, content: CGFloat, reaches: bool) -> CGFloat {
+    if viewport > 0.0 && content > viewport && !reaches {
+        viewport
+    } else {
+        content
+    }
+}
+
+/// The width a narrowed scroll view keeps. Its content was narrowed to the
+/// viewport; the core's width comes back once something inside reaches past
+/// the viewport again — a later batch widened a row, and the core sends no
+/// new content size for it.
+fn narrowed_width(viewport: CGFloat, core: CGFloat, reaches: bool) -> CGFloat {
+    if reaches { core } else { viewport }
+}
+
+/// Whether the width judgement applies to a scroll view at all: one that
+/// scrolls vertically and is not zoomed. A node switched to horizontal (or
+/// given a zoom view) holds something the vertical extent never described,
+/// so the width narrowed while it was vertical is stale — restoring it would
+/// cut the content short.
+fn still_judged(horizontal: bool, zoomable: bool) -> bool {
+    !horizontal && !zoomable
+}
+
 /// The innermost visible subview of `view` at `point` (in `view`),
 /// interaction enabled or not, honoring `pointerEvents`.
 fn innermost(view: &UIView, point: CGPoint) -> Retained<UIView> {
@@ -542,6 +571,20 @@ pub(crate) struct Mounter {
     touch_listeners: usize,
     /// Scroll views a JS responder keeps from scrolling.
     blocked_scrolls: Vec<Retained<UIScrollView>>,
+    /// Vertical scroll views whose content size arrived in this batch, with
+    /// the height that came with it. A batch applies a scroll view's content
+    /// size before the frames of the children it measures (`ScrollContent` is
+    /// queued when the scroll view is, its children after it), so a size that
+    /// looks too wide is only judged after the whole batch is in place.
+    content_sizes: Vec<(NodeId, CGFloat)>,
+    /// The core's width and height for every vertical scroll view the platform
+    /// narrowed, by id. The core does not resend a content size it did not
+    /// change, so a later batch that widens what such a scroll view holds has
+    /// to give that width back from here.
+    narrowed: Vec<(NodeId, CGFloat, CGFloat)>,
+    /// Whether this batch moved any frame: nothing under a narrowed scroll
+    /// view can have grown otherwise, so the judgement is skipped.
+    frames_applied: bool,
     /// The surface lays out right to left: native controls mirror.
     rtl: bool,
     /// Sticky cells of lists, by list.
@@ -617,6 +660,9 @@ impl Mounter {
             touch_trackers: Vec::new(),
             touch_listeners: 0,
             blocked_scrolls: Vec::new(),
+            content_sizes: Vec::new(),
+            narrowed: Vec::new(),
+            frames_applied: false,
             rtl: false,
             components,
             areas: Vec::new(),
@@ -660,6 +706,77 @@ impl Mounter {
             area.batch_applied();
         }
         self.focused_caret_moved();
+        self.settle_content_sizes();
+    }
+
+    /// Narrows the content size of a vertical scroll view to its width when
+    /// nothing inside reaches past it — a stale extent left by an earlier
+    /// layout makes the page pan sideways over nothing. Judged here, after
+    /// the batch put every child's frame in place: a first mount sends the
+    /// size before its children exist, and asking then would narrow a row
+    /// that really is wider than the viewport.
+    fn settle_content_sizes(&mut self) {
+        let frames_applied = std::mem::take(&mut self.frames_applied);
+        for (id, height) in std::mem::take(&mut self.content_sizes) {
+            let mut narrowed = None;
+            if let Some(Slot {
+                native: Native::Scroll(scroll),
+                ..
+            }) = self.slot(id)
+            {
+                let viewport = scroll.bounds().size.width;
+                let content = scroll.contentSize().width;
+                // Content that fits cannot be narrowed; walking the subtree
+                // to learn that would cost the page on every batch.
+                if viewport > 0.0 && content > viewport {
+                    let width = settled_content_width(
+                        viewport,
+                        content,
+                        reaches_beyond(scroll, viewport + 0.5),
+                    );
+                    if width != content {
+                        scroll.setContentSize(CGSize::new(width, height));
+                        narrowed = Some((content, height));
+                    }
+                }
+            }
+            self.narrowed.retain(|&(n, ..)| n != id);
+            if let Some((width, height)) = narrowed {
+                self.narrowed.push((id, width, height));
+            }
+        }
+        if frames_applied {
+            self.rejudge_narrowed();
+        }
+    }
+
+    /// Gives back the width the core sent once a later batch widens what a
+    /// narrowed scroll view holds. The core does not resend a content size it
+    /// did not change, so without this the tail stays out of reach — the bug
+    /// this judgement fixes, in the other order.
+    fn rejudge_narrowed(&mut self) {
+        let mut i = 0;
+        while i < self.narrowed.len() {
+            let (id, core, height) = self.narrowed[i];
+            let mut done = true;
+            if let Some(slot) = self.slot(id)
+                && let Native::Scroll(scroll) = &slot.native
+                && still_judged(slot.horizontal, slot.zoom_view().is_some())
+            {
+                let viewport = scroll.bounds().size.width;
+                let reaches = reaches_beyond(scroll, viewport + 0.5);
+                let width = narrowed_width(viewport, core, reaches);
+                if width != scroll.contentSize().width {
+                    scroll.setContentSize(CGSize::new(width, height));
+                }
+                done = width == core;
+            }
+            if done {
+                self.narrowed.swap_remove(i);
+            } else {
+                i += 1;
+            }
+        }
     }
 
     /// Reports the focused input's caret if the batch moved it (the input
@@ -949,6 +1066,7 @@ impl Mounter {
                 }
             }
             MountItem::Frame { id, frame } => {
+                self.frames_applied = true;
                 if let Some(Slot {
                     native: Native::HeaderItem(view),
                     ..
@@ -1097,6 +1215,14 @@ impl Mounter {
                 keyboard_dismiss,
                 mirrored,
             } => {
+                // A node that stops being vertical drops the width narrowed
+                // while it was: the extent it holds is measured the other way.
+                let vertical = self
+                    .slot(id)
+                    .is_some_and(|s| still_judged(horizontal, s.zoom_view().is_some()));
+                if !vertical {
+                    self.narrowed.retain(|&(n, ..)| n != id);
+                }
                 if let Some(s) = self.slot_mut(id)
                     && s.mirrored != mirrored
                 {
@@ -1142,25 +1268,14 @@ impl Mounter {
                     },
                 ) = self.slot(id)
                 {
-                    let mut size = CGSize::new(size.width.0 as CGFloat, size.height.0 as CGFloat);
-                    // A vertical scroll view's content is laid out at the scroll
-                    // view's width (the module's contract). A content size wider
-                    // than that, with nothing inside reaching it, is a stale
-                    // extent from an earlier pass: the page would pan sideways
-                    // over nothing. What does reach it (an absolutely placed
-                    // row) keeps the size.
-                    let viewport = scroll.bounds().size.width;
-                    if !s.horizontal
-                        && s.zoom_view().is_none()
-                        && viewport > 0.0
-                        && size.width > viewport
-                        && !reaches_beyond(scroll, viewport + 0.5)
-                    {
-                        size = CGSize::new(viewport, size.height);
-                    }
+                    let size = CGSize::new(size.width.0 as CGFloat, size.height.0 as CGFloat);
+                    let vertical = still_judged(s.horizontal, s.zoom_view().is_some());
                     match s.zoom_view() {
                         Some(zoom) => crate::zoom::layout(scroll, &zoom, size, s.centers()),
                         None => scroll.setContentSize(size),
+                    }
+                    if vertical {
+                        self.content_sizes.push((id, size.height));
                     }
                 }
             }
@@ -4506,4 +4621,82 @@ fn disappear(
         Some(&done),
         mtm,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A first mount's children arrive after the content size does; judged
+    /// once they are in place, a row wider than the viewport keeps its width.
+    #[test]
+    fn a_row_wider_than_the_viewport_keeps_its_width() {
+        assert_eq!(settled_content_width(320.0, 400.0, true), 400.0);
+    }
+
+    /// A width left behind by an earlier layout, with nothing inside reaching
+    /// it, narrows to the viewport: the page would pan over nothing.
+    #[test]
+    fn a_stale_extent_narrows_to_the_viewport() {
+        assert_eq!(settled_content_width(320.0, 500.0, false), 320.0);
+    }
+
+    /// A narrowed scroll view keeps the viewport while nothing reaches it, and
+    /// takes the core's width back once a later batch widens a row. The core
+    /// sends no new size for that batch, so the judgement is made again here.
+    #[test]
+    fn a_narrowed_view_takes_the_core_width_back_once_a_row_grows() {
+        assert_eq!(narrowed_width(320.0, 500.0, false), 320.0);
+        assert_eq!(narrowed_width(320.0, 500.0, true), 500.0);
+    }
+
+    /// A node switched to horizontal (or given a zoom view) is no longer
+    /// judged: the width narrowed while it was vertical describes nothing it
+    /// holds now, and giving 500 back to 600 points of horizontal content
+    /// would leave the last 100 unreachable.
+    #[test]
+    fn a_scroll_view_that_stops_being_vertical_is_not_judged() {
+        assert!(still_judged(false, false));
+        assert!(!still_judged(true, false));
+        assert!(!still_judged(false, true));
+    }
+
+    /// Content that fits is left alone.
+    #[test]
+    fn content_within_the_viewport_is_left_alone() {
+        assert_eq!(settled_content_width(320.0, 100.0, false), 100.0);
+    }
+
+    /// The judgement reads the children's frames, so it only means anything
+    /// after they are in place: the same scroll view keeps a 400pt row it was
+    /// sent a size for before the row existed, and narrows a 500pt size over
+    /// children that fit.
+    #[test]
+    fn the_judgement_reads_the_frames_that_are_in_place() {
+        // No window is involved: frames and a content size only. UIKit still
+        // wants the main thread, so this skips where the test thread is not
+        // it (a plain `cargo test`) and runs under `nsh test`.
+        let Some(mtm) = MainThreadMarker::new() else {
+            eprintln!("skipped: UIKit views need the main thread");
+            return;
+        };
+        let scroll = UIScrollView::new(mtm);
+        scroll.setFrame(CGRect::new(CGPoint::ZERO, CGSize::new(320.0, 200.0)));
+        let row = UIView::new(mtm);
+        scroll.addSubview(&row);
+
+        // The content size arrived before the row's frame did.
+        row.setFrame(CGRect::new(CGPoint::ZERO, CGSize::new(400.0, 50.0)));
+        assert_eq!(
+            settled_content_width(320.0, 400.0, reaches_beyond(&scroll, 320.5)),
+            400.0
+        );
+
+        // A wider size over a row that fits: narrowed to the viewport.
+        row.setFrame(CGRect::new(CGPoint::ZERO, CGSize::new(300.0, 50.0)));
+        assert_eq!(
+            settled_content_width(320.0, 500.0, reaches_beyond(&scroll, 320.5)),
+            320.0
+        );
+    }
 }

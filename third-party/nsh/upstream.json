@@ -648,7 +648,7 @@
     "crates/nsh-platform-ios/src/interaction.rs": "10b85e580a1c507a884d62c222c3f0b115ff82eac0f38e944954e17f9219d0ec",
     "crates/nsh-platform-ios/src/keymap.rs": "578fb8e85781ffa08f53ff1aaf65baa1ea80a08dc6892f4d6f180d649aaf54d3",
     "crates/nsh-platform-ios/src/lib.rs": "ea83764b4f0b856dd1f463ee191b6d2d014a13858f60e10db34fda72d553db72",
-    "crates/nsh-platform-ios/src/mount.rs": "a93cc5ad3d20fcb0992271d7fc2796350cfa1ff7c650251433330e704a735bb8",
+    "crates/nsh-platform-ios/src/mount.rs": "f78e487e768019ddd7b091ad5c1495509f93409ad95dd5c48e978f2c1d2b98ce",
     "crates/nsh-platform-ios/src/native_view.rs": "e73867cf00a330e184a6be6830d7b25894db62c1149e85fbe97b316f374831e6",
     "crates/nsh-platform-ios/src/navigation.rs": "211ad08a79e005fed05ba3618500dc15655f21806d8897b14789e4be6694290d",
     "crates/nsh-platform-ios/src/net.rs": "289365dc5d62b09d9a2da14fc1bcc041cf37f6fed409db24916be830ac850760",
@@ -1842,7 +1842,7 @@
     "website/zh-CN/elements/editor.md": "b6ccb919a736d14fb24a5e396364e6e88268402c873ed882e37c853d55672d71"
   },
   "upstream_repository": "https://github.com/longbridge/nsh",
-  "upstream_revision": "ab78a5cce0267bf707d8f7e5a4578ca6c5aec892",
+  "upstream_revision": "6e40fc400541c5a4c0b3fbb851dffcb848630eed",
   "file_sources": {
     ".github/workflows/rust-app.yml": {
       "repository": "https://github.com/longbridge/nsh",
@@ -2698,7 +2698,7 @@
     },
     "crates/nsh-platform-ios/src/mount.rs": {
       "repository": "https://github.com/longbridge/nsh",
-      "revision": "dcc67ba3e11461ec4abd25162522a9818844adb0"
+      "revision": "6e40fc400541c5a4c0b3fbb851dffcb848630eed"
     },
     "crates/nsh-platform-ios/src/navigation.rs": {
       "repository": "https://github.com/longbridge/nsh",
