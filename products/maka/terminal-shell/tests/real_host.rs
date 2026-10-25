@@ -525,25 +525,9 @@ async fn empty_settings_configure_a_real_connection_and_manual_reasoning_model_b
         wait_view(&mut view, |screen| screen.contains("Add your first connection, then fetch or add a model.")).await;
         activate(&mut view, "Add connection").await;
         wait_view(&mut view, |screen| screen.contains("Choose the API provider for this connection.") && !screen.contains("Loading settings…")).await;
-        // Provider inventory uses the production virtual List. Wheel its real
-        // painted rows until the OpenRouter provider is physically available.
-        tokio::time::timeout(Duration::from_secs(20), async {
-            loop {
-                support::tick(&mut view);
-                let screen = view.snapshot();
-                if screen.contains("OpenRouter") {
-                    break;
-                }
-                let anchor = view.accessibility_snapshot().into_iter().find_map(|node| {
-                    let label = node.label.strip_prefix("Connect ")?;
-                    screen.lines().any(|line| line.contains(label)).then(|| label.to_owned())
-                });
-                if let Some(anchor) = anchor {
-                    support::scroll_text(&mut view, &anchor, MouseEventKind::ScrollDown);
-                }
-                tokio::time::sleep(Duration::from_millis(5)).await;
-            }
-        }).await.expect("the real provider inventory did not reveal OpenRouter");
+        fill(&mut view, "Search providers", "OPENROUTER").await;
+        wait_view(&mut view, |screen| screen.contains("OpenRouter") && !screen.contains("Loading settings…")).await;
+        assert_input(&mut view, "Search providers", "OPENROUTER").await;
         support::click_button(&mut view, "Connect OpenRouter").await;
         wait_view(&mut view, |screen| screen.contains("Connection settings") && screen.contains("Connection name")).await;
         fill(&mut view, "Connection name", "UI 连接").await;
@@ -593,6 +577,13 @@ async fn empty_settings_configure_a_real_connection_and_manual_reasoning_model_b
         activate(&mut view, "Default effort high").await;
         activate(&mut view, "Save model").await;
         wait_view(&mut view, |screen| screen.contains("Connection models") && screen.contains("Model saved.") && screen.contains("Manual UI Agent")).await;
+        fill(&mut view, "Search models", "MANUAL UI").await;
+        wait_view_state(&mut view, |view, screen| screen.contains("Manual UI Agent") && !view.accessibility_snapshot().iter().any(|node| node.label == "Edit model fixture-discovered-model")).await;
+        assert_input(&mut view, "Search models", "MANUAL UI").await;
+        fill(&mut view, "Search models", "fixture-discovered-model").await;
+        wait_view_state(&mut view, |view, screen| screen.contains("fixture-discovered-model") && !view.accessibility_snapshot().iter().any(|node| node.label == "Edit model manual-ui-agent")).await;
+        fill(&mut view, "Search models", "").await;
+        wait_view(&mut view, |screen| screen.contains("Manual UI Agent") && screen.contains("fixture-discovered-model")).await;
         activate(&mut view, "Set default manual-ui-agent").await;
         wait_view(&mut view, |screen| screen.contains("Default model saved.")).await;
         let catalog = client.query("settings", "connections", json!({"kind":"start"})).await.unwrap();
@@ -610,10 +601,45 @@ async fn empty_settings_configure_a_real_connection_and_manual_reasoning_model_b
         assert_eq!(models["choices"][0]["defaultThinkingLevel"], "high");
         assert_eq!(models["defaultModel"]["kind"], "ready");
         assert_eq!(models["defaultModel"]["choice"]["selection"]["modelId"], "manual-ui-agent");
+        // Put the searched connection beyond the public catalog's first page.
+        // Empty inventories keep these rows out of the real model/send flow.
+        let mut catalog_revision = catalog["revision"].clone();
+        for index in 0..16 {
+            let last = index == 15;
+            let mutation = client.mutation(
+                Uuid::new_v4(), "settings", "create",
+                json!({"expectedCatalogRevision":catalog_revision,"connection":{
+                    "slug":if last { "last-page-connection".to_owned() } else { format!("search-filler-{index}") },
+                    "name":if last { "Later 中文 connection".to_owned() } else { format!("Search filler {index}") },
+                    "provider":detail["target"]["provider"],"configuration":{"baseUrl":fixture.base_url},
+                    "enabled":false,"enabledModelIds":[]
+                }}), Default::default(), None, Value::Null,
+            ).await.unwrap();
+            mutation.prepare().await.unwrap();
+            let reply = mutation.confirm().await.unwrap();
+            let Receipt::Recorded { outcome: OperationOutcome::Returned { value }, .. } = reply.receipt else {
+                panic!("the real settings catalog mutation was not recorded")
+            };
+            assert_eq!(value["kind"], "committed");
+            catalog_revision = value["catalogRevision"].clone();
+        }
+        let first_page = client.query("settings", "connections", json!({"kind":"start"})).await.unwrap();
+        assert_eq!(first_page["connections"].as_array().unwrap().len(), 16);
+        assert_eq!(first_page["next"], 16);
+        assert!(!first_page["connections"].as_array().unwrap().iter().any(|row| row["slug"] == "last-page-connection"));
         activate(&mut view, "Back from connection settings").await;
         wait_view(&mut view, |screen| screen.contains("Connection settings") && screen.contains("Connection name")).await;
         activate(&mut view, "Back from connection settings").await;
         wait_view_state(&mut view, |view, screen| screen.contains("Connections & models") && screen.contains("Refresh connections") && view.accessibility_snapshot().iter().any(|node| node.role == nsh_core::AccessibilityRole::Button && node.label == "Close settings" && !node.state.disabled) && !view.accessibility_snapshot().iter().any(|node| node.role == nsh_core::AccessibilityRole::Button && node.label == "Back from connection settings")).await;
+        fill(&mut view, "Search connections", "later 中文 OPENROUTER").await;
+        wait_view_state(&mut view, |view, screen| screen.contains("Later 中文 connection") && !screen.contains("Loading settings…") && !view.accessibility_snapshot().iter().any(|node| node.label == "Edit connection UI 连接")).await;
+        assert_input(&mut view, "Search connections", "later 中文 OPENROUTER").await;
+        activate(&mut view, "Edit connection Later 中文 connection").await;
+        wait_view(&mut view, |screen| screen.contains("Connection settings") && screen.contains("Connection name")).await;
+        assert_input(&mut view, "Connection ID", "last-page-connection").await;
+        activate(&mut view, "Back from connection settings").await;
+        fill(&mut view, "Search connections", "UI-CONNECTION").await;
+        wait_view_state(&mut view, |view, screen| screen.contains("UI 连接") && !screen.contains("Loading settings…") && !view.accessibility_snapshot().iter().any(|node| node.label == "Edit connection Later 中文 connection")).await;
         activate(&mut view, "Close settings").await;
         wait_view_state(&mut view, |view, screen| screen.contains("Make something remarkable.") && !view.accessibility_snapshot().iter().any(|node| node.role == nsh_core::AccessibilityRole::Button && node.label == "Close settings")).await;
         support::click_button(&mut view, "Choose composer workspace").await;

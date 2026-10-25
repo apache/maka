@@ -722,8 +722,15 @@ export const settingsMessages = {
   ],
   'Saving…': tui_session_saving,
   'Search Host plugins': ['Search Host plugins', '搜索 Host 插件', '搜尋 Host 外掛'],
+  'Search connections': ['Search connections', '搜索连接', '搜尋連線'],
+  'Search connections…': ['Search connections…', '搜索连接…', '搜尋連線…'],
   'Search models': ['Search models', '搜索模型', '搜尋模型'],
   'Search models…': ['Search models…', '搜索模型…', '搜尋模型…'],
+  'Search providers': ['Search providers', '搜索提供商', '搜尋供應商'],
+  'Search providers…': ['Search providers…', '搜索提供商…', '搜尋供應商…'],
+  'No matching connections.': ['No matching connections.', '没有匹配的连接。', '沒有符合的連線。'],
+  'No matching models.': ['No matching models.', '没有匹配的模型。', '沒有符合的模型。'],
+  'No matching providers.': ['No matching providers.', '没有匹配的提供商。', '沒有符合的供應商。'],
   'Search plugins…': ['Search plugins…', '搜索插件…', '搜尋外掛…'],
   'Select the reasoning efforts supported by this model. They will be available in conversations.':
     [
@@ -820,10 +827,10 @@ export const settingsMessages = {
     '连接目录未能继续加载。',
     '連線目錄未能繼續載入。',
   ],
-  'The connection catalog keeps changing. Refresh to try again.': [
-    'The connection catalog keeps changing. Refresh to try again.',
-    '连接目录持续变化，请刷新后重试。',
-    '連線目錄持續變更，請重新整理後再試。',
+  'The provider catalog did not advance.': [
+    'The provider catalog did not advance.',
+    '提供商目录未能继续加载。',
+    '供應商目錄未能繼續載入。',
   ],
   'The connection catalog revision is missing.': [
     'The connection catalog revision is missing.',
