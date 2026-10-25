@@ -419,6 +419,11 @@
   min-width: 0;
   max-width: 100%;
 }
+/* Agent recovery includes explanatory text and an action. Let it wrap rather
+   than consume the model label's width in the otherwise single-row controls. */
+.maka-composer-left-controls .maka-model-selection-controls:has(.maka-executor-recovery) {
+  flex-wrap: wrap;
+}
 /* Selector's className belongs to the trigger INSIDE its Field. The Field
    is the model group's flex item, so its automatic content minimum must be
    released here for the label to yield space to usage, branch, and send. */
