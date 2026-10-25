@@ -32,7 +32,7 @@ use deno_core::{
 use maka_agent_facts::tools::ToolExecutor;
 use maka_code_runtime::{ToolScope, complete};
 use serde_json::{Value, json};
-use std::sync::Arc;
+use std::{future::Future, pin::Pin, sync::Arc};
 use tokio::{
     runtime::Handle,
     sync::{mpsc, oneshot},
@@ -43,6 +43,16 @@ pub struct Repl {
     sender: mpsc::Sender<Evaluation>,
     stopped: CancellationToken,
     worker: tokio::task::JoinHandle<Result<(), CellAbort>>,
+}
+
+/// A trusted Host admission fence for the native effects caused by one VM.
+/// Sealing must reject new effects and wait until every previously registered
+/// effect has either durable execution custody or a confirmed no-effect refusal.
+/// It does not wait for admitted native effects to finish.
+pub trait ReplAdmission: Send + Sync {
+    fn seal(
+        &self,
+    ) -> Pin<Box<dyn Future<Output = Result<(), maka_agent_facts::tools::ToolError>> + Send + '_>>;
 }
 
 struct Evaluation {
@@ -63,7 +73,25 @@ impl Repl {
     /// two bridge functions `call(name, input)` and `emit(CellOutput)`; these
     /// are not globals and contain no persistent invocation authority.
     pub fn new(bootstrap: impl Into<String>, limits: CellLimits) -> Self {
-        let bootstrap = bootstrap.into();
+        Self::spawn(bootstrap.into(), limits, None)
+    }
+
+    /// Return an interrupted VM's result after the Host confirms admission
+    /// custody. The Host must retain this REPL and join `close()` to observe
+    /// actual effect settlement and any late persistence or cleanup failure.
+    pub fn new_observed(
+        bootstrap: impl Into<String>,
+        limits: CellLimits,
+        admission: Arc<dyn ReplAdmission>,
+    ) -> Self {
+        Self::spawn(bootstrap.into(), limits, Some(admission))
+    }
+
+    fn spawn(
+        bootstrap: String,
+        limits: CellLimits,
+        admission: Option<Arc<dyn ReplAdmission>>,
+    ) -> Self {
         crate::initialize_platform();
         let (sender, receiver) = mpsc::channel(1);
         let stopped = CancellationToken::new();
@@ -74,7 +102,7 @@ impl Repl {
                 .enable_all()
                 .build()
                 .map_err(|e| CellAbort::Internal(e.to_string()))?
-                .block_on(serve(bootstrap, limits, receiver, stop, host))
+                .block_on(serve(bootstrap, limits, receiver, stop, host, admission))
         });
         Self {
             sender,
@@ -97,6 +125,7 @@ impl Repl {
         tokio::select! {
             biased;
             _ = cancellation.cancelled() => return Err(CellAbort::Cancelled),
+            _ = self.stopped.cancelled() => return Err(closed()),
             result = self.sender.send(Evaluation { source, executor, cancellation: cancellation.clone(), context, timeout, reply }) => {
                 result.map_err(|_| closed())?;
             }
@@ -123,6 +152,7 @@ async fn serve(
     mut receiver: mpsc::Receiver<Evaluation>,
     stopped: CancellationToken,
     host: Handle,
+    admission: Option<Arc<dyn ReplAdmission>>,
 ) -> Result<(), CellAbort> {
     let mut runtime = JsRuntime::try_new(RuntimeOptions {
         inspector: true,
@@ -198,14 +228,15 @@ async fn serve(
         let terminate = isolate.clone();
         let interrupted = CancellationToken::new();
         let interrupt = interrupted.clone();
-        let timeout = request.timeout;
+        let budget = request.context.timeout_budget(request.timeout);
+        let timeout = budget.clone();
         let monitor = host.spawn(async move {
             tokio::select! {
                 biased;
                 _ = finish.cancelled() => return,
                 _ = cancellation.cancelled() => {},
                 _ = stop.cancelled() => {},
-                _ = tokio::time::sleep(timeout) => {},
+                _ = timeout.expired() => {},
             }
             interrupt.cancel();
             terminate.terminate_execution();
@@ -213,22 +244,34 @@ async fn serve(
         sequence += 1;
         // Local inspector transport gives real REPL lexical bindings and await;
         // there is deliberately no inspector socket or arbitrary CDP endpoint.
-        inspector.post_message(
-            sequence,
-            "Runtime.evaluate",
-            Some(json!({
-                "expression":request.source,
-                "replMode":true, "awaitPromise":true, "returnByValue":false,
-                "objectGroup":"maka-repl-result"
-            })),
-        );
+        {
+            let _execution = request.context.enter_execution();
+            inspector.post_message(
+                sequence,
+                "Runtime.evaluate",
+                Some(json!({
+                    "expression":request.source,
+                    "replMode":true, "awaitPromise":true, "returnByValue":false,
+                    "objectGroup":"maka-repl-result"
+                })),
+            );
+        }
         let mut completed = false;
+        let interrupted_message = if admission.is_some() {
+            "REPL interrupted"
+        } else {
+            "REPL interrupted; reset required"
+        };
         let result = tokio::select! {
             biased;
-            _ = interrupted.cancelled() => Err(CellDiagnostic::limit("REPL interrupted; reset required")),
-            _ = heap_exhausted.cancelled() => Err(CellDiagnostic::limit("JavaScript heap; reset required")),
+            _ = interrupted.cancelled() => Err(CellDiagnostic::limit(interrupted_message)),
+            _ = heap_exhausted.cancelled() => Err(CellDiagnostic::limit(if admission.is_some() { "JavaScript heap" } else { "JavaScript heap; reset required" })),
             result = async {
-                runtime.run_event_loop(Default::default()).await
+                let mut event_loop = std::pin::pin!(runtime.run_event_loop(Default::default()));
+                std::future::poll_fn(|cx| {
+                    let _execution = request.context.enter_execution();
+                    event_loop.as_mut().poll(cx)
+                }).await
                     .map_err(|e| CellDiagnostic::new(CellDiagnosticKind::ExecutionError, e.to_string()))?;
                 let response = responses.recv().await.ok_or_else(|| CellDiagnostic::new(CellDiagnosticKind::ExecutionError, "inspector closed"))?;
                 let value: Value = serde_json::from_str(&response)
@@ -249,26 +292,65 @@ async fn serve(
                 } else { Ok(Value::Null) }
             } => result,
         };
-        // Drain native work even after a JS exception, timeout or a lost caller.
+        let result = if budget.is_expired() {
+            interrupted.cancel();
+            Err(CellDiagnostic::limit(interrupted_message))
+        } else {
+            result
+        };
+        // This closes the VM producer, including queued operations that have
+        // not obtained Host execution custody. Accepted effects retain the
+        // Host's original Run cancellation source and their exact futures.
         scope.cancel();
-        scope.settle().await;
         finished.cancel();
         monitor
             .await
             .map_err(|e| CellAbort::Internal(e.to_string()))?;
+        // The watchdog may have committed termination concurrently with the
+        // completion response. Read its final state after joining it.
         let poisoned = !completed || interrupted.is_cancelled() || heap_exhausted.is_cancelled();
+        let owner_stopped = stopped.is_cancelled();
+        if poisoned {
+            stopped.cancel();
+            receiver.close();
+            while let Ok(queued) = receiver.try_recv() {
+                let _ = queued.reply.send(Err(closed()));
+            }
+        }
+        if poisoned && let Some(admission) = &admission {
+            match admission.seal().await {
+                Ok(()) => {
+                    let observed = if let Some(error) = request.context.failure() {
+                        Err(CellAbort::Tool(error))
+                    } else if request.cancellation.is_cancelled() || owner_stopped {
+                        Err(CellAbort::Cancelled)
+                    } else {
+                        Ok(complete(result, scope.calls()))
+                    };
+                    let _ = request.reply.send(observed);
+                    // Keep polling the same original effects after the VM
+                    // observer has returned. The retained owner joins us.
+                    scope.settle().await;
+                    if let Some(error) = request.context.failure() {
+                        return Err(CellAbort::Tool(error));
+                    }
+                    return Ok(());
+                }
+                Err(error) => request.context.fail(error),
+            }
+        }
+        // Ordinary REPL users and failed admission fences still drain before
+        // publication. Failure to establish custody cannot authorize detachment.
+        scope.settle().await;
         let result = if let Some(error) = request.context.failure() {
             Err(CellAbort::Tool(error))
-        } else if request.cancellation.is_cancelled() || stopped.is_cancelled() {
+        } else if request.cancellation.is_cancelled() || owner_stopped {
             Err(CellAbort::Cancelled)
         } else {
             Ok(complete(result, scope.calls()))
         };
         // Publish terminal state before waking the observer. The Session still
         // owns and joins this worker on reset/close, but it cannot be reused.
-        if poisoned {
-            stopped.cancel();
-        }
         let _ = request.reply.send(result);
         if poisoned {
             break;
