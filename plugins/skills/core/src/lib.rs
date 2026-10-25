@@ -17,7 +17,6 @@
  * under the License.
  */
 
-pub mod api;
 mod catalog;
 mod context;
 mod discovery;
@@ -34,10 +33,9 @@ pub use types::*;
 pub use catalog::{Catalog, HostCapabilities, LoadedInstructions, Preference, Preferences};
 pub use context::{SearchMatch, SearchResult, SkillMetadata};
 pub use discovery::{
-    BundledSource, DiscoveredSkill, DiscoveryDiagnostic, DiscoveryFailure, DiscoverySnapshot,
-    Origin, OriginFailure, OriginStatus, QuerySnapshot, RejectedSkill, ScanError, SkillLocation,
-    Source, SourceCatalog, SourceCatalogError, governance_catalog, prepare_bundled, safe_source_id,
-    scan, scan_with_bundled, source_catalog,
+    DiscoveredSkill, DiscoveryDiagnostic, DiscoveryFailure, DiscoverySnapshot, LocationId,
+    RejectedSkill, ScanError, SkillLocation, Source, prepare_bundled, safe_source_id, scan,
+    scan_with_bundled,
 };
 pub use document::{InvalidDocument, SkillDocument, parse};
 pub use fields::{Issue, IssueCode, Manifest, PartialManifest, Severity, SkillAttributes};

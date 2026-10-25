@@ -22,7 +22,7 @@ use super::{emit, evidence, read};
 use crate::StoreError;
 use maka_presentation::ProjectionError;
 use rusqlite::{Connection as RawConnection, OptionalExtension, params};
-use sqlx::{Connection, SqliteConnection};
+use sqlx::SqliteConnection;
 use std::collections::HashMap;
 
 const COLUMNS: &str = "source_sequence,item_index,turn_id,message_id,timestamp,role,has_thinking,user_origin,state_status,tool_use_id,tool_name,tool_origin,parent_tool_call_id,parent_operation_id,has_args,result_valid,settlement,is_error,content_kind,tool_title,presentation,duration_ms";
@@ -48,16 +48,6 @@ pub(super) async fn check_read(
     through: u64,
 ) -> Result<(), StoreError> {
     read::sql_number(through)?;
-    let installed: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM transcript_directory_installed WHERE singleton=1)",
-    )
-    .fetch_one(&mut *connection)
-    .await?;
-    if !installed {
-        return Err(StoreError::InvalidTransition(
-            "history directory is not installed".into(),
-        ));
-    }
     evidence::fence(connection, through).await?;
     let failure: Option<(i64, String, Option<String>)> = sqlx::query_as("SELECT source_sequence,category,reason FROM transcript_failures WHERE session_id=?1 AND source_sequence<=?2 ORDER BY source_sequence LIMIT 1")
         .bind(session).bind(read::sql_number(through)?).fetch_optional(connection).await?;
@@ -166,37 +156,7 @@ fn record_on_handle(db: &RawConnection, session: &str, source: i64) -> Result<()
     Ok(())
 }
 
-/// Called only before publishing a fully initialized public EventLog.
-pub(crate) async fn initialize(connection: &mut SqliteConnection) -> Result<(), StoreError> {
-    let installed: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM transcript_directory_installed WHERE singleton=1)",
-    )
-    .fetch_one(&mut *connection)
-    .await?;
-    if installed {
-        return Ok(());
-    }
-    let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
-    tx.run_on_worker(|handle| {
-        // SAFETY: the original writer exclusively borrows this handle for backfill.
-        let db = unsafe { RawConnection::from_handle(handle.as_ptr()) }?;
-        db.set_prepared_statement_cache_capacity(100);
-        db.execute_batch("DELETE FROM transcript_directory; DELETE FROM transcript_failures;")?;
-        let mut after = String::new();
-        loop {
-            let session: Option<String> = db.prepare_cached("SELECT id FROM (SELECT event_session AS id FROM runtime_events WHERE event_session>?1 UNION SELECT session_id FROM session_history_members WHERE session_id>?1) WHERE id>?1 AND NOT EXISTS(SELECT 1 FROM session_retirements r WHERE r.session_id=id AND r.remove_session=1 AND r.completed=1) AND NOT EXISTS(SELECT 1 FROM session_history_copies c WHERE c.session_id=id AND c.state='abandoned') ORDER BY id LIMIT 1")?
-                .query_row([&after], |r| r.get(0)).optional()?;
-            let Some(session) = session else { break };
-            backfill_session(&db, &session)?;
-            after = session;
-        }
-        db.execute("INSERT INTO transcript_directory_installed VALUES(1)", [])?;
-        Ok::<(),StoreError>(())
-    }).await??;
-    tx.commit().await.map_err(StoreError::CommitUnknown)
-}
-
-fn backfill_session(db: &RawConnection, session: &str) -> Result<(), StoreError> {
+fn index_session(db: &RawConnection, session: &str) -> Result<(), StoreError> {
     let sql = format!(
         "SELECT e.sequence FROM runtime_events e WHERE e.event_session=?1 AND e.sequence>?2 AND {} UNION SELECT e.sequence FROM session_history_members h JOIN runtime_events e ON e.sequence=h.sequence WHERE h.session_id=?1 AND e.sequence>?2 AND {} ORDER BY sequence LIMIT 1",
         emit::ELIGIBLE,
@@ -386,7 +346,7 @@ pub(crate) async fn index_imported_sessions(
         db.set_prepared_statement_cache_capacity(100);
         for session in sessions {
             let removed: bool = db.prepare_cached("SELECT EXISTS(SELECT 1 FROM session_retirements WHERE session_id=?1 AND remove_session=1 AND completed=1 UNION ALL SELECT 1 FROM session_history_copies WHERE session_id=?1 AND state='abandoned')")?.query_row([&session], |r| r.get(0))?;
-            if !removed { backfill_session(&db,&session)?; }
+            if !removed { index_session(&db,&session)?; }
         }
         Ok::<(),StoreError>(())
     }).await?
@@ -396,11 +356,8 @@ pub(crate) async fn index_imported_sessions(
 mod tests {
     use super::*;
     use crate::EventLog;
-    use maka_agent_facts::event::{
-        EventWrite, Fact, Invocation, InvocationInput, InvocationOutcome, RuntimeEvent,
-    };
-    use maka_agent_facts::import::{Content, Record, Source};
-    use sqlx::sqlite::SqliteConnectOptions;
+    use maka_agent_facts::event::{EventWrite, Fact, Invocation, InvocationInput, RuntimeEvent};
+    use sqlx::Connection;
 
     fn event(session: &str, invocation: &str, id: &str, fact: Fact) -> RuntimeEvent {
         let mut event = RuntimeEvent::new(
@@ -418,186 +375,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn public_append_keeps_original_ordinals_and_reopen_needs_no_body_cache() {
-        let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("directory.sqlite");
-        let log = EventLog::open(&path).await.unwrap();
-        let open = EventWrite::plain(event(
-            "bare",
-            "turn",
-            "open",
-            Fact::InvocationOpened {
-                configuration: None,
-                input: InvocationInput::Message {
-                    source_messages: Vec::new(),
-                    content: "literal user".into(),
-                    request_fingerprint: None,
-                },
-            },
-        ))
-        .unwrap();
-        let first = log.append(&open).await.unwrap();
-        let end = log
-            .append(
-                &EventWrite::plain(event(
-                    "bare",
-                    "turn",
-                    "end",
-                    Fact::InvocationEnded {
-                        outcome: InvocationOutcome::Completed,
-                    },
-                ))
-                .unwrap(),
-            )
-            .await
-            .unwrap();
-        log.connection.run(move |db| Box::pin(async move {
-            check_read(db,"bare",end).await?;
-            let rows: Vec<(i64,String)> = sqlx::query_as("SELECT item_index,role FROM transcript_directory WHERE session_id='bare' AND source_sequence=? ORDER BY item_index").bind(first as i64).fetch_all(&mut *db).await?;
-            assert_eq!(rows,vec![(0,"user".into()),(1,"turn_state".into())]);
-            assert_eq!(sqlx::query_scalar::<_,i64>("SELECT count(*) FROM transcript_cache.rows").fetch_one(&mut *db).await?,0);
-            Ok(())
-        })).await.unwrap();
-        log.close().await.unwrap();
-        let log = EventLog::open(&path).await.unwrap();
-        log.connection
-            .run(move |db| {
-                Box::pin(async move {
-                    check_read(db, "bare", end).await?;
-                    assert_eq!(
-                        sqlx::query_scalar::<_, i64>(
-                            "SELECT count(*) FROM transcript_directory WHERE session_id='bare'"
-                        )
-                        .fetch_one(db)
-                        .await?,
-                        3
-                    );
-                    Ok(())
-                })
-            })
-            .await
-            .unwrap();
-        log.close().await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn schema_does_not_certify_and_upgrade_keeps_legacy_collision_bytes_and_bare_owners() {
-        let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("legacy.sqlite");
-        let mut db = SqliteConnection::connect_with(
-            &SqliteConnectOptions::new()
-                .filename(&path)
-                .create_if_missing(true),
-        )
-        .await
-        .unwrap();
-        crate::schema::initialize_connection(&mut db).await.unwrap();
-        assert_eq!(
-            sqlx::query_scalar::<_, i64>("SELECT count(*) FROM transcript_directory_installed")
-                .fetch_one(&mut db)
-                .await
-                .unwrap(),
-            0
-        );
-        let source = Source {
-            adapter: "historical".into(),
-            session_id: "foreign".into(),
-        };
-        for (index, content) in [
-            Content::User {
-                text: "old literal".into(),
-            },
-            Content::ToolCall {
-                call_id: "same".into(),
-                name: "Read".into(),
-                input: None,
-            },
-            Content::ToolCall {
-                call_id: "same".into(),
-                name: "Read".into(),
-                input: None,
-            },
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            // Construct already-accepted old facts, not a new import admission path.
-            let event = event(
-                "old-bare",
-                "old-turn",
-                &format!("old-{index}"),
-                Fact::MessageImported {
-                    source: source.clone(),
-                    record: Box::new(Record {
-                        source_message_id: format!("m{index}"),
-                        source_turn_id: "turn".into(),
-                        timestamp: Some(1),
-                        content,
-                    }),
-                },
-            );
-            let mut tx = db.begin().await.unwrap();
-            crate::append::ingress::insert(
-                &mut tx,
-                &event,
-                serde_json::to_string(&event).unwrap(),
-                crate::append::ingress::Position::Imported(None),
-            )
-            .await
-            .unwrap();
-            tx.commit().await.unwrap();
-        }
-        let removed = event(
-            "removed",
-            "removed-turn",
-            "removed-event",
-            Fact::MessageImported {
-                source,
-                record: Box::new(Record {
-                    source_message_id: "removed-message".into(),
-                    source_turn_id: "removed-turn".into(),
-                    timestamp: None,
-                    content: Content::User {
-                        text: "removed literal".into(),
-                    },
-                }),
-            },
-        );
-        let mut tx = db.begin().await.unwrap();
-        crate::append::ingress::insert(
-            &mut tx,
-            &removed,
-            serde_json::to_string(&removed).unwrap(),
-            crate::append::ingress::Position::Imported(None),
-        )
-        .await
-        .unwrap();
-        tx.commit().await.unwrap();
-        sqlx::query("INSERT INTO session_retirements VALUES('removed',1,1)")
-            .execute(&mut db)
-            .await
-            .unwrap();
-        let original: Vec<String> =
-            sqlx::query_scalar("SELECT event_json FROM event_log ORDER BY sequence")
-                .fetch_all(&mut db)
-                .await
-                .unwrap();
-        db.close().await.unwrap();
-        let log = EventLog::open(&path).await.unwrap();
-        log.connection.run(move |db| Box::pin(async move {
-            assert_eq!(sqlx::query_scalar::<_,String>("SELECT event_json FROM event_log ORDER BY sequence").fetch_all(&mut *db).await?,original);
-            assert_eq!(sqlx::query_as::<_,(i64,String,i64,i64)>("SELECT source_sequence,category,claimant_source_sequence,attempted_item_index FROM transcript_failures WHERE session_id='old-bare'").fetch_one(&mut *db).await?,(3,"namespace".into(),2,0));
-            assert_eq!(sqlx::query_scalar::<_,i64>("SELECT count(*) FROM transcript_directory WHERE session_id='old-bare'").fetch_one(&mut *db).await?,2);
-            assert_eq!(sqlx::query_scalar::<_,i64>("SELECT count(*) FROM transcript_directory WHERE session_id='removed'").fetch_one(&mut *db).await?,0);
-            check_read(db,"old-bare",2).await?;
-            assert!(matches!(check_read(db,"old-bare",3).await,Err(StoreError::TranscriptConflict)));
-            Ok(())
-        })).await.unwrap();
-        log.close().await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn accepted_legacy_projection_error_is_recorded_without_rejecting_fact() {
+    async fn accepted_projection_error_is_recorded_without_rejecting_fact() {
         use maka_agent_facts::model::{
             ModelEvent, ModelFinishReason, ModelStep, ModelUsage, TextKind,
         };
@@ -789,39 +567,16 @@ mod tests {
             .unwrap();
         log.close().await.unwrap();
     }
-
     #[test]
-    fn only_identified_view_errors_are_optional() {
+    fn projection_classification_does_not_hide_storage_or_invariant_errors() {
         assert_eq!(
-            optional_failure(&ProjectionError::TooLarge.into()).map(|(category, _)| category),
-            Some("too_large")
+            optional_failure(&ProjectionError::Invalid("invalid view").into()),
+            Some(("invalid", "invalid view")),
         );
-        assert_eq!(
-            optional_failure(&StoreError::TranscriptConflict).map(|(category, _)| category),
-            Some("reference")
-        );
-        assert_eq!(
-            optional_failure(&StoreError::InvalidTransition(
-                "missing or inconsistent durable tool payload".into()
-            ))
-            .map(|(category, _)| category),
-            Some("raw_binding")
-        );
-        assert_eq!(
-            optional_failure(&StoreError::InvalidTransition("unrelated invariant".into())),
-            None
-        );
-        assert_eq!(
-            optional_failure(&StoreError::Io(std::io::Error::other("write failed"))),
-            None
-        );
-        assert_eq!(
-            optional_failure(&StoreError::Sqlite(rusqlite::Error::InvalidQuery)),
-            None
-        );
-        assert_eq!(
-            optional_failure(&StoreError::Sqlx(sqlx::Error::RowNotFound)),
-            None
+        assert!(optional_failure(&StoreError::Sqlite(rusqlite::Error::InvalidQuery)).is_none());
+        assert!(
+            optional_failure(&StoreError::InvalidTransition("unrelated invariant".into()))
+                .is_none()
         );
     }
 }

@@ -42,7 +42,9 @@ const LARGE_TOOL_IMAGE_BYTES: usize = 50 * 1024 * 1024 + 1;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn reopened_images_preserve_complete_accepted_artifacts_and_copied_authority() {
-    tokio::time::timeout(Duration::from_secs(60), async {
+    // Two real provider projections of copied >50 MiB evidence took 85s in a
+    // debug run; allow roughly twice that measured duration under build contention.
+    tokio::time::timeout(Duration::from_secs(180), async {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("events.sqlite");
         let log = SessionFixture::open(&path).await.unwrap();
@@ -51,6 +53,7 @@ async fn reopened_images_preserve_complete_accepted_artifacts_and_copied_authori
         artifact(&log, "invalid", FOUR_MIB + 1, false).await;
         artifact(&log, "overflow", 8, true).await;
         artifact(&log, "accepted-50-mib", 50 * 1024 * 1024, true).await;
+
         let prior = identity("historical");
         let mut historical = attachment("historical");
         historical["bytes"] = json!(FOUR_MIB);
@@ -79,24 +82,30 @@ async fn reopened_images_preserve_complete_accepted_artifacts_and_copied_authori
             "prior-large-result".into(), std::time::SystemTime::now(), prior.clone(),
             "prior-step:read-large".into(), ToolSuccess::image(large_bytes, "image/png".into()).unwrap(),
         ).unwrap();
+
         let generated_id = large_result.projection_artifacts()[0].artifact().id.clone();
         log.append(&large_result).await.unwrap();
         drop(large_result);
         log.append(&EventWrite::plain(RuntimeEvent::new(prior, Fact::InvocationEnded { outcome: InvocationOutcome::Completed })).unwrap()).await.unwrap();
+
         let revision = log.get_session::<Value>("session").await.unwrap().unwrap().revision;
         assert!(matches!(log.root().copy_session(maka_event_log::sessions::SessionCopy {
             source_session_id: "session".into(), target_session_id: "branch".into(),
             expected_source_revision: revision, purpose: maka_agent_facts::session::CopyPurpose::Branch { turn_id: None, side_conversation: false },
         }, &json!({}), 2).await.unwrap(), maka_event_log::sessions::SessionCopyResult::Committed(_)));
+
         log.close().await.unwrap();
 
         let log = Arc::new(SessionFixture::open(&path).await.unwrap());
+
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}/v1", listener.local_addr().unwrap());
         let observed_log = log.clone();
         let server = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
+
             let body = request(&mut socket).await;
+
             let prefix = observed_log.prefix(100, 128 * 1024).await.unwrap();
             assert!(prefix.events.iter().any(|stored| stored.event.invocation.invocation_id == "invocation-current"
                 && matches!(stored.event.fact, Fact::ModelRequested { .. })));
@@ -110,6 +119,7 @@ async fn reopened_images_preserve_complete_accepted_artifacts_and_copied_authori
         let engine = engine();
         engine.run(log.store(), input(&base, json!([attachment("invalid"), attachment("missing"), foreign, workspace,
             attachment("fits"), attachment("overflow"), attachment("accepted-50-mib")])), CancellationToken::new()).await.unwrap();
+
         let body = server.await.unwrap();
         let mut urls = Vec::new();
         collect_images(&body["messages"], &mut urls);
@@ -117,15 +127,22 @@ async fn reopened_images_preserve_complete_accepted_artifacts_and_copied_authori
         for (url, size) in urls.into_iter().zip([FOUR_MIB, FOUR_MIB, LARGE_TOOL_IMAGE_BYTES, FOUR_MIB, 8, 50 * 1024 * 1024]) {
             assert_fixture_image(url, size);
         }
-        let text = body["messages"].to_string();
-        assert!(text.contains("\"detail\":\"high\""), "tool image detail reaches the provider after reopening");
+        assert!(body["messages"].as_array().unwrap().iter().any(|message| {
+            message["content"].as_array().is_some_and(|parts| {
+                parts.iter().any(|part| part["image_url"]["detail"] == "high")
+            })
+        }), "tool image detail reaches the provider after reopening");
+        let text: Vec<_> = message_text(&body["messages"]).collect();
         for name in ["invalid", "missing", "historical", "workspace"] {
-            assert!(text.contains(&format!("Image attachment \\\"{name}\\\" could not be loaded")), "missing error for {name}");
+            assert!(text.iter().any(|text| text.contains(&format!("Image attachment \"{name}\" could not be loaded"))), "missing error for {name}");
         }
-        assert!(text.contains("unsupported_mime"));
-        assert!(!text.contains("per-request image budget"));
-        assert!(text.contains("session_mismatch"));
-        assert!(text.contains("unsupported_ref_kind"));
+        for reason in ["unsupported_mime", "session_mismatch", "unsupported_ref_kind"] {
+            assert!(text.iter().any(|text| text.contains(reason)), "missing reason {reason}");
+        }
+        assert!(text.iter().all(|text| !text.contains("per-request image budget")));
+        drop(text);
+        drop(body);
+
         let prefix = log.prefix(100, 128 * 1024).await.unwrap();
         let canonical = serde_json::to_string(&prefix).unwrap();
         assert!(!canonical.contains("data:image"), "projection must not persist image bytes");
@@ -138,15 +155,19 @@ async fn reopened_images_preserve_complete_accepted_artifacts_and_copied_authori
         let base = format!("http://{}/v1", listener.local_addr().unwrap());
         let copied_request = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
+
             let body = request(&mut socket).await;
+
             respond(&mut socket).await;
             body
         });
+
         let mut copied = input(&base, json!([]));
         copied.invocation = identity("branch-current");
         copied.invocation.session_id = "branch".into();
         let branch = log.select("branch").await.unwrap();
         engine.run(branch.store(), copied, CancellationToken::new()).await.unwrap();
+
         let copied_request = copied_request.await.unwrap();
         let mut inherited_images = Vec::new();
         collect_images(&copied_request["messages"], &mut inherited_images);
@@ -155,8 +176,10 @@ async fn reopened_images_preserve_complete_accepted_artifacts_and_copied_authori
             assert_fixture_image(url, size);
         }
         let reference = branch.resolve_history_artifact("branch", "session", "historical").await.unwrap().unwrap();
-        assert!(copied_request["messages"].to_string().contains(&reference.resource_ref().unwrap()),
+        assert!(message_text(&copied_request["messages"]).any(|text| text.contains(&reference.resource_ref().unwrap())),
             "Read must receive the destination-owned resource URI");
+        drop(copied_request);
+
         let tool_reference = branch.resolve_history_artifact("branch", "session", "tool").await.unwrap().unwrap();
         let maka_agent_facts::attachment::StorageRef::SessionFile { relative_path, .. } = tool_reference else { panic!("owned tool image") };
         assert!(branch.read_tool_result("branch", "prior-result").await.unwrap().unwrap().serialized_result.contains(&relative_path),
@@ -171,7 +194,9 @@ async fn reopened_images_preserve_complete_accepted_artifacts_and_copied_authori
             && matches!(e.event.fact, Fact::InvocationOpened { .. })).unwrap();
         assert!(!serde_json::to_string(&source_opening.event).unwrap().contains("history-"),
             "rendering aliases cannot rewrite canonical input");
+
         engine.drain().await;
+
     }).await.expect("image projection must make bounded progress");
 }
 
@@ -188,6 +213,19 @@ fn assert_fixture_image(url: &str, size: usize) {
         bytes[8..].iter().all(|byte| *byte == 0),
         "provider image bytes differ from the accepted artifact"
     );
+}
+
+fn message_text(messages: &Value) -> impl Iterator<Item = &str> {
+    messages.as_array().unwrap().iter().flat_map(|message| {
+        let content = &message["content"];
+        content.as_str().into_iter().chain(
+            content
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|part| part["text"].as_str()),
+        )
+    })
 }
 
 fn collect_images<'a>(value: &'a Value, urls: &mut Vec<&'a str>) {

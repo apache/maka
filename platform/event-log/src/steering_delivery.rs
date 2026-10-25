@@ -62,7 +62,7 @@ impl EventLog {
                             invocation.clone(),
                             Fact::MessageSteered {
                                 message: Box::new(admission.source.message.clone()),
-                                source: Some(Box::new(admission.source)),
+                                source: Box::new(admission.source),
                             },
                         ))
                         .map_err(|error| StoreError::InvalidTransition(error.to_string()))?;

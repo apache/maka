@@ -97,36 +97,6 @@ impl Drop for Worker {
 }
 
 #[cfg(test)]
-mod registry_tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn archive_waits_for_acknowledged_title_cleanup_and_releases_finished_entries() {
-        let registry = Registry::default();
-        for id in 0..64 {
-            let session = format!("title-{id}");
-            let mut worker = registry.start(&session, CancellationToken::new()).unwrap();
-            let mut waiting = Box::pin(registry.cancel_and_wait(&session));
-            assert!(futures_util::poll!(&mut waiting).is_pending());
-            assert!(worker.work.cancellation.is_cancelled());
-            worker.complete(true);
-            waiting.await.unwrap();
-            drop(worker);
-            assert!(registry.active.lock().unwrap().is_empty());
-        }
-        let worker = registry.start("lost", CancellationToken::new()).unwrap();
-        let mut waiting = Box::pin(registry.cancel_and_wait("lost"));
-        assert!(futures_util::poll!(&mut waiting).is_pending());
-        drop(worker);
-        assert!(
-            waiting.await.is_err(),
-            "a disappeared worker cannot confirm cleanup"
-        );
-        assert!(registry.active.lock().unwrap().is_empty());
-    }
-}
-
-#[cfg(test)]
 pub(super) struct WriteGate {
     pub(super) entered: tokio::sync::Semaphore,
     pub(super) release: tokio::sync::Semaphore,
@@ -480,5 +450,35 @@ impl Owner {
                 Err(error) => return Err(persistence(error)),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod registry_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn archive_waits_for_acknowledged_title_cleanup_and_releases_finished_entries() {
+        let registry = Registry::default();
+        for id in 0..64 {
+            let session = format!("title-{id}");
+            let mut worker = registry.start(&session, CancellationToken::new()).unwrap();
+            let mut waiting = Box::pin(registry.cancel_and_wait(&session));
+            assert!(futures_util::poll!(&mut waiting).is_pending());
+            assert!(worker.work.cancellation.is_cancelled());
+            worker.complete(true);
+            waiting.await.unwrap();
+            drop(worker);
+            assert!(registry.active.lock().unwrap().is_empty());
+        }
+        let worker = registry.start("lost", CancellationToken::new()).unwrap();
+        let mut waiting = Box::pin(registry.cancel_and_wait("lost"));
+        assert!(futures_util::poll!(&mut waiting).is_pending());
+        drop(worker);
+        assert!(
+            waiting.await.is_err(),
+            "a disappeared worker cannot confirm cleanup"
+        );
+        assert!(registry.active.lock().unwrap().is_empty());
     }
 }

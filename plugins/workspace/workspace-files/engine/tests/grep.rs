@@ -170,21 +170,26 @@ async fn slice_search_matches_ripgrep_regex_lines_and_complete_ignore_scope() {
     for n in 0..6 {
         fs::write(root.join(format!("cap{n}.txt")), "CAP\n".repeat(60)).unwrap();
     }
+    fs::create_dir(root.join("z-later")).unwrap();
+    fs::write(root.join("z-later/tail.txt"), "CAP\n").unwrap();
     let result = grep(&executor, json!({"pattern":"CAP"})).await.unwrap();
-    let matches = result["matches"].as_array().unwrap();
-    assert_eq!(matches.len(), 360);
+    let mut expected = (0..6)
+        .flat_map(|file| {
+            let path = root.join(format!("cap{file}.txt"));
+            (1..=60).map(move |line| format!("{}:{line}:CAP", path.display()))
+        })
+        .collect::<Vec<_>>();
+    expected.push(format!("{}:1:CAP", root.join("z-later/tail.txt").display()));
+    let mut actual = result["matches"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|value| value.as_str().unwrap().to_owned())
+        .collect::<Vec<_>>();
+    actual.sort();
+    expected.sort();
+    assert_eq!(actual, expected);
     assert_eq!(result["complete"], true);
-    assert!(matches.iter().all(|m| {
-        let line: usize = m
-            .as_str()
-            .unwrap()
-            .rsplit(':')
-            .nth(1)
-            .unwrap()
-            .parse()
-            .unwrap();
-        line <= 60
-    }));
 }
 
 #[tokio::test]

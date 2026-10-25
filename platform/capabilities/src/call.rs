@@ -30,14 +30,6 @@ use serde::{Deserialize, Serialize};
 use std::{any::Any, sync::Arc};
 use tokio_util::sync::CancellationToken;
 
-tokio::task_local! { static CURRENT: Scope; }
-
-/// Available while polling an admitted plugin tool. Preparation and detached
-/// tasks have no implicit authority; Service/Executor contexts pass it explicitly.
-pub fn current() -> Option<Scope> {
-    CURRENT.try_with(Clone::clone).ok()
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(
     tag = "kind",
@@ -101,57 +93,11 @@ impl std::ops::Deref for Scope {
 
 /// Embedding dispatch owns an issuer. A different embedding can create its own
 /// issuer but cannot mint scopes accepted by this one's resource adapters.
-pub type Evidence = Arc<dyn Any + Send + Sync>;
-
-/// Capture the embedding's authority once at call entry. Forwarded calls retain
-/// this evidence; resource adapters still recheck revocation before effects.
-pub trait Admission: Send + Sync {
-    fn authorize<'a>(
-        &'a self,
-        identity: &'a Identity,
-    ) -> futures_util::future::BoxFuture<'a, Result<Evidence, ToolError>>;
-}
-
 #[derive(Clone, Default)]
 pub struct Issuer {
     source: Arc<()>,
-    admission: Option<Arc<dyn Admission>>,
 }
 impl Issuer {
-    pub fn with_admission(admission: Arc<dyn Admission>) -> Self {
-        Self {
-            admission: Some(admission),
-            ..Self::default()
-        }
-    }
-
-    pub async fn admit(
-        &self,
-        identity: Identity,
-        cancellation: CancellationToken,
-    ) -> Result<Scope, ToolError> {
-        let evidence = match &self.admission {
-            Some(admission) => Some(tokio::select! {
-                biased;
-                _ = cancellation.cancelled() => return Err(ToolError::Failed("plugin invocation is closed".into())),
-                evidence = admission.authorize(&identity) => evidence?,
-            }),
-            None => None,
-        };
-        Scope::new(self.source.clone(), identity, evidence, cancellation)
-    }
-    pub async fn run<T>(
-        &self,
-        identity: Identity,
-        cancellation: CancellationToken,
-        operation: impl Future<Output = Result<T, ToolError>>,
-    ) -> Result<T, ToolError> {
-        let scope = self.admit(identity, cancellation).await?;
-        let _closed = scope.cancellation.clone().drop_guard();
-        let result = CURRENT.scope(scope.clone(), operation).await;
-        scope.finish().await?;
-        result
-    }
     pub fn issue(
         &self,
         identity: Identity,

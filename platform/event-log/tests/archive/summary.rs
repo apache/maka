@@ -80,15 +80,15 @@ async fn stale_after_opening_binds_summary_and_late_prune_rolls_back_checkpoint(
         let sequence = archive_sequence.to_be_bytes();
         let bytes = serde_json::to_vec(archived.event()).unwrap();
         let mut leaf = Sha256::new();
-        leaf.update(b"maka.source.leaf.v2\0");
+        leaf.update(b"maka.source.leaf.v1\0");
         leaf.update(8_u64.to_be_bytes());
         leaf.update(sequence);
         leaf.update((bytes.len() as u64).to_be_bytes());
         leaf.update(bytes);
         let mut hash = Sha256::new();
-        hash.update(b"maka.effective-context.v2\0");
+        hash.update(b"maka.effective-context.v1\0");
         hash.update(fresh.source_evidence.digest.as_bytes());
-        hash.update(Sha256::digest(b"maka.archive.copy.v2\0"));
+        hash.update(Sha256::digest(b"maka.archive.copy.v1\0"));
         hash.update(sequence);
         hash.update(leaf.finalize());
         assert_eq!(

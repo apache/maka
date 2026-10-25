@@ -24,7 +24,7 @@ use maka_agent_facts::{
 };
 
 async fn events_since(fixture: &Fixture, session: &str, mut after: u64) -> Vec<StoredEvent> {
-    let through = fixture.through(&session).await;
+    let through = fixture.through(session).await;
     let mut events = Vec::new();
     while after < through {
         let page = fixture

@@ -206,7 +206,11 @@ impl Owner {
         Ok(())
     }
     async fn goal_meter(&self, session: &str) -> Result<Meter, String> {
-        let model = self.store.session_usage_totals(session).await.map_err(reason)?;
+        let model = self
+            .store
+            .session_usage_totals(session)
+            .await
+            .map_err(reason)?;
         Ok(Meter {
             known: model.input.known.saturating_add(model.output.known),
             missing: model.input.missing.saturating_add(model.output.missing),

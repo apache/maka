@@ -209,7 +209,6 @@ async fn content_negotiation_extraction_and_limits_do_not_hide_incomplete_result
         page.content
     );
     assert!(!page.content.contains("SECRET_SCRIPT"));
-    assert!(!page.truncated);
     assert_eq!(first.closes.load(Ordering::SeqCst), 1);
     assert_eq!(second.closes.load(Ordering::SeqCst), 1);
     assert!(
@@ -232,7 +231,6 @@ async fn content_negotiation_extraction_and_limits_do_not_hide_incomplete_result
         .fetch(&parent, "https://docs.example/large")
         .await
         .unwrap();
-    assert!(!page.truncated);
     assert_eq!(page.content, markdown);
 
     let complete = format!("{}UNIQUE_FINAL_CONTENT", "a".repeat(5 * 1024 * 1024));
@@ -248,7 +246,6 @@ async fn content_negotiation_extraction_and_limits_do_not_hide_incomplete_result
         .await
         .unwrap();
     assert_eq!(page.content, complete);
-    assert!(!page.truncated);
     assert_eq!(oversized.closes.load(Ordering::SeqCst), 1);
 
     let deep = reply(
@@ -266,7 +263,6 @@ async fn content_negotiation_extraction_and_limits_do_not_hide_incomplete_result
         page.content,
         format!("{}content{}", "<div>".repeat(150), "</div>".repeat(150))
     );
-    assert!(!page.truncated);
     assert_eq!(deep.closes.load(Ordering::SeqCst), 1);
     assert!(!parent.cancellation.is_cancelled());
 }

@@ -231,7 +231,7 @@ fn package_replacements_validate_nested_providers_and_consumers_atomically() {
         Plan::prepare(&input, &packages, &RemoteExports::new()).unwrap(),
         original
     );
-    for (path, package) in changes {
+    for super::PackageChange { path, package } in changes {
         let node = input.instances.get_mut(&path[0]).unwrap();
         if path.len() == 1 {
             node.package = package.into();
@@ -246,35 +246,6 @@ fn package_replacements_validate_nested_providers_and_consumers_atomically() {
     assert_eq!(
         Plan::prepare(&input, &packages, &RemoteExports::new()).unwrap(),
         updated
-    );
-}
-
-#[test]
-fn forwarded_exports_and_plan_snapshots_share_frozen_declarations() {
-    let (input, packages) = fixture();
-    let plan = Plan::prepare(&input, &packages, &RemoteExports::new()).unwrap();
-    let content = instance(&plan, &["a", "content"]);
-    let original = &content.exports["Content"].declaration;
-    assert!(Arc::ptr_eq(
-        original,
-        &instance(&plan, &["a"]).exports["App"].declaration
-    ));
-    assert!(Arc::ptr_eq(original, &plan.launch().unwrap().declaration));
-    let snapshot = plan.clone();
-    let retained = instance(&snapshot, &["a", "content"]);
-    assert!(Arc::ptr_eq(
-        original,
-        &retained.exports["Content"].declaration
-    ));
-    assert!(Arc::ptr_eq(
-        content.entry.as_ref().unwrap(),
-        retained.entry.as_ref().unwrap()
-    ));
-    assert_eq!(
-        serde_json::to_value(original).unwrap(),
-        json!({
-            "contract": contract(), "availability": "required"
-        })
     );
 }
 
@@ -486,10 +457,17 @@ fn actual_export_checks_use_the_full_public_contract() {
     );
     let mut actual = BTreeMap::from([("Content".into(), contract())]);
     entry.check_exports(&actual, |contract| contract).unwrap();
+    let Interface::Component { props, .. } = &mut actual.get_mut("Content").unwrap().interface
+    else {
+        unreachable!()
+    };
+    *props = json!({"type":"string"}).into();
+    assert!(entry.check_exports(&actual, |contract| contract).is_err());
     actual.get_mut("Content").unwrap().interface = Interface::Value {
         schema: json!({"type":"object"}).into(),
     };
     assert!(entry.check_exports(&actual, |contract| contract).is_err());
+    actual.insert("Content".into(), contract());
     actual.insert("undeclared".into(), contract());
     assert!(entry.check_exports(&actual, |contract| contract).is_err());
 }

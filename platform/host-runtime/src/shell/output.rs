@@ -88,7 +88,6 @@ struct Shared {
     state: Mutex<State>,
     initial_size: TerminalSize,
     changed: Notify,
-    host_changes: tokio::sync::watch::Sender<()>,
 }
 /// A read-only cursor; retaining bytes never retains the native process.
 pub struct PtyStream {
@@ -96,7 +95,7 @@ pub struct PtyStream {
     after: u64,
 }
 impl Output {
-    pub fn new(size: TerminalSize, host_changes: tokio::sync::watch::Sender<()>) -> Result<Self> {
+    pub fn new(size: TerminalSize) -> Result<Self> {
         Ok(Self(Arc::new(Shared {
             files: Files {
                 payload: tempfile::tempfile()?,
@@ -111,7 +110,6 @@ impl Output {
             }),
             initial_size: size,
             changed: Notify::new(),
-            host_changes,
         })))
     }
     pub fn stream(&self, after: u64) -> Result<PtyStream> {
@@ -160,13 +158,13 @@ impl Output {
                 state.sequence = sequence;
                 state.size = size;
                 drop(state);
-                self.notify();
+                self.0.changed.notify_waiters();
                 Ok(())
             }
             Err(error) => {
                 let error = Arc::new(error);
                 self.0.state.lock().unwrap().failure = Some(error.clone());
-                self.notify();
+                self.0.changed.notify_waiters();
                 Err(ShellError::Replay(error))
             }
         }
@@ -187,11 +185,7 @@ impl Output {
     }
     pub fn close(&self) {
         self.0.state.lock().unwrap().closed = true;
-        self.notify();
-    }
-    fn notify(&self) {
         self.0.changed.notify_waiters();
-        self.0.host_changes.send_replace(());
     }
 }
 impl PtyStream {
@@ -365,7 +359,7 @@ mod tests {
         TerminalSize::new(80, 24).unwrap()
     }
     fn output() -> Output {
-        Output::new(size(), tokio::sync::watch::channel(()).0).unwrap()
+        Output::new(size()).unwrap()
     }
 
     #[tokio::test]

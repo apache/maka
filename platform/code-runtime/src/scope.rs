@@ -27,11 +27,6 @@ use std::{
 use tokio::{runtime::Handle, sync::oneshot};
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
-#[derive(Default)]
-struct Admission {
-    calls: Vec<ToolCall>,
-}
-
 pub struct ToolScope {
     context: CellContext,
     executor: Arc<dyn ToolExecutor>,
@@ -39,7 +34,7 @@ pub struct ToolScope {
     cancellation: CancellationToken,
     tasks: TaskTracker,
     host: Handle,
-    admission: Mutex<Admission>,
+    calls: Mutex<Vec<ToolCall>>,
 }
 
 impl ToolScope {
@@ -56,7 +51,7 @@ impl ToolScope {
             cancellation,
             tasks: TaskTracker::new(),
             host,
-            admission: Mutex::new(Admission::default()),
+            calls: Mutex::new(Vec::new()),
         })
     }
 
@@ -70,7 +65,7 @@ impl ToolScope {
     }
 
     pub fn calls(&self) -> Vec<ToolCall> {
-        self.admission.lock().unwrap().calls.clone()
+        self.calls.lock().unwrap().clone()
     }
 
     pub fn start(
@@ -91,20 +86,18 @@ impl ToolScope {
             ));
         }
         {
-            let mut admission = self.admission.lock().unwrap();
+            let mut calls = self.calls.lock().unwrap();
             if self.cancellation.is_cancelled() {
                 return Err(CellDiagnostic::new(
                     CellDiagnosticKind::ExecutionError,
                     "cell cancelled",
                 ));
             }
-            let index = admission.calls.len() + 1;
-            let mut reserved = admission.calls.clone();
-            reserved.push(ToolCall {
+            let index = calls.len() + 1;
+            calls.push(ToolCall {
                 index,
                 name: name.clone(),
             });
-            admission.calls = reserved;
         }
         let (sender, receiver) = oneshot::channel();
         let scope = self.clone();

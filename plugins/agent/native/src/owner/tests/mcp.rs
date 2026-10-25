@@ -37,7 +37,7 @@ async fn approval(
     fixture: &Fixture,
     session: &str,
 ) -> maka_agent_facts::interaction::InteractionRecord {
-    let mut changes = fixture.session(&session).await.subscribe_commits().unwrap();
+    let mut changes = fixture.session(session).await.subscribe_commits().unwrap();
     loop {
         if let Some(record) = fixture
             .session(session)
@@ -129,7 +129,6 @@ async fn exercise_mcp_permissions() {
             .await;
         }
         if !preapproved {
-
             let pending = approval(&fixture, &session).await;
 
             assert_eq!(calls(&record), 0, "confirmation must precede MCP effect");

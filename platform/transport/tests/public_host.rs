@@ -335,6 +335,56 @@ struct PeerHost {
     selections: BTreeMap<String, HostEndpoint>,
 }
 impl PeerHost {
+    fn startup_helper(&self) -> std::path::PathBuf {
+        use maka_host_runtime::application::host::startup::Ready;
+        let directory = self.directory.path();
+        let ready = Ready {
+            root_id: self.host.root_id().into(),
+            epoch: self.host.epoch(),
+        };
+        std::fs::write(
+            directory.join("startup.json"),
+            serde_json::to_vec(&ready).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            directory.join("startup-helper.mjs"),
+            include_str!("support/startup-helper.mjs"),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let executable = directory.join("startup-helper");
+            let script = directory.join("startup-helper.mjs");
+            let fixture = directory.join("startup.json");
+            let quote = |path: &std::path::Path| {
+                format!("'{}'", path.to_str().unwrap().replace('\'', "'\"'\"'"))
+            };
+            std::fs::write(
+                &executable,
+                format!(
+                    "#!/bin/sh\nexec node {} {} \"$@\"\n",
+                    quote(&script),
+                    quote(&fixture)
+                ),
+            )
+            .unwrap();
+            std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+            executable
+        }
+        #[cfg(windows)]
+        {
+            let executable = directory.join("startup-helper.cmd");
+            std::fs::write(
+                &executable,
+                "@node \"%~dp0startup-helper.mjs\" \"%~dp0startup.json\" %*\r\n",
+            )
+            .unwrap();
+            executable
+        }
+    }
+
     async fn start() -> Self {
         let directory = tempfile::tempdir().unwrap();
         maka_event_log::root::private_directory(directory.path()).unwrap();
@@ -763,6 +813,7 @@ async fn discovered_connections_release_ui_roots_without_stopping_the_shared_hos
     let fixture = support::setup(PeerHost::start()).await;
     tokio::time::timeout(Duration::from_secs(30), async {
         let registration = fixture.host.publish_registration(&fixture.address, None).unwrap();
+        let helper = fixture.startup_helper();
         let (ui, source, _) = fixture.ui("tui-connections", PresentationTarget::Tui).await;
         let configuration = || Configuration { hosts: vec![maka_transport::Host {
             name: "local".into(),
@@ -777,17 +828,17 @@ async fn discovered_connections_release_ui_roots_without_stopping_the_shared_hos
                 1 => input.hosts[0].location = HostLocation::Public { root: fixture.directory.path().join("host"), state_domain: Some("0".repeat(64)) },
                 _ => input.hosts[0].location = HostLocation::Public { root: fixture.directory.path().join("never-create"), state_domain: None },
             }
-            let mut connections = Connections::prepare(ui.clone(), source.deployment, PresentationTarget::Tui, input, fixture.namespaces.clone(), std::path::PathBuf::from("unused-local-startup-helper"), NativeRegistry::default(), Some(maka_host_js::factory(Default::default()))).await.unwrap();
+            let mut connections = Connections::prepare(ui.clone(), source.deployment, PresentationTarget::Tui, input, fixture.namespaces.clone(), helper.clone(), NativeRegistry::default(), Some(maka_host_js::factory(Default::default()))).await.unwrap();
             assert!(connections.start().await.is_err());
             connections.close().await.unwrap();
         }
         assert!(!fixture.directory.path().join("never-create").exists());
-        let mut connections = Connections::prepare(ui.clone(), source.deployment, PresentationTarget::Tui, configuration(), fixture.namespaces.clone(), std::path::PathBuf::from("unused-local-startup-helper"), NativeRegistry::default(), Some(maka_host_js::factory(Default::default()))).await.unwrap();
+        let mut connections = Connections::prepare(ui.clone(), source.deployment, PresentationTarget::Tui, configuration(), fixture.namespaces.clone(), helper.clone(), NativeRegistry::default(), Some(maka_host_js::factory(Default::default()))).await.unwrap();
         connections.start().await.unwrap();
         let frozen = connections.registrations();
         assert_eq!(frozen.len(), 2);
         let (second_ui, second_source, _) = fixture.ui("second_ui-connections", PresentationTarget::Tui).await;
-        let mut other = Connections::prepare(second_ui.clone(), second_source.deployment, PresentationTarget::Tui, configuration(), fixture.namespaces.clone(), std::path::PathBuf::from("unused-local-startup-helper"), NativeRegistry::default(), Some(maka_host_js::factory(Default::default()))).await.unwrap();
+        let mut other = Connections::prepare(second_ui.clone(), second_source.deployment, PresentationTarget::Tui, configuration(), fixture.namespaces.clone(), helper.clone(), NativeRegistry::default(), Some(maka_host_js::factory(Default::default()))).await.unwrap();
         other.start().await.unwrap();
         assert_eq!(fixture.host.status().sessions, 2);
         connections.close().await.unwrap();
@@ -824,6 +875,7 @@ async fn quitting_an_externally_stopped_host_requires_its_original_root_release(
         for replacement in [false, true] {
         let fixture = PeerHost::start().await;
         let registration = fixture.host.publish_registration(&fixture.address, None).unwrap();
+        let helper = fixture.startup_helper();
         let (ui, source, _) = fixture.ui("external-stop-ui", PresentationTarget::Tui).await;
         let ui_root = fixture.directory.path().join("external-stop-ui");
         let host_root = fixture.directory.path().join("host");
@@ -836,7 +888,7 @@ async fn quitting_an_externally_stopped_host_requires_its_original_root_release(
             endpoints: fixture.selections.clone(), native: vec![],
         }] };
         let mut connections = Connections::prepare(ui.clone(), source.deployment, PresentationTarget::Tui,
-            configuration, fixture.namespaces.clone(), std::path::PathBuf::from("unused-local-startup-helper"),
+            configuration, fixture.namespaces.clone(), helper.clone(),
             NativeRegistry::default(), Some(maka_host_js::factory(Default::default()))).await.unwrap();
         connections.start().await.unwrap();
         assert_eq!(fixture.host.status().sessions, 1);

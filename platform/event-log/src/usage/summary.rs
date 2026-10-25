@@ -91,6 +91,12 @@ impl EventLog {
                     tools.push(TOOLS);
                     query.restrict(&mut tools, through);
                     let tool_row = tools.build().fetch_one(&mut *tx).await?;
+                    let selection = GroupSelection {
+                        page,
+                        after: after.as_ref(),
+                        key_order,
+                        totals_only,
+                    };
                     let mut summary = Summary {
                         pending: Pending {
                             models: pending(&mut tx, &query, through, "model_usage", "started_at")
@@ -110,13 +116,8 @@ impl EventLog {
                             &mut tx,
                             &query,
                             through,
-                            MODELS,
-                            "json_extract(quote_json, '$.providerId')",
-                            page,
                             Group::ByProvider,
-                            after.as_ref(),
-                            key_order,
-                            totals_only,
+                            &selection,
                         )
                         .await?
                         .iter()
@@ -127,48 +128,26 @@ impl EventLog {
                             })
                         })
                         .collect::<Result<_, StoreError>>()?,
-                        by_model: groups(
-                            &mut tx,
-                            &query,
-                            through,
-                            MODELS,
-                            "model_id",
-                            page,
-                            Group::ByModel,
-                            after.as_ref(),
-                            key_order,
-                            totals_only,
-                        )
-                        .await?
-                        .iter()
-                        .map(|row| {
-                            Ok(ModelSummary {
-                                model_id: row.try_get("key")?,
-                                totals: read_models(row)?,
+                        by_model: groups(&mut tx, &query, through, Group::ByModel, &selection)
+                            .await?
+                            .iter()
+                            .map(|row| {
+                                Ok(ModelSummary {
+                                    model_id: row.try_get("key")?,
+                                    totals: read_models(row)?,
+                                })
                             })
-                        })
-                        .collect::<Result<_, StoreError>>()?,
-                        by_tool: groups(
-                            &mut tx,
-                            &query,
-                            through,
-                            TOOLS,
-                            "name",
-                            page,
-                            Group::ByTool,
-                            after.as_ref(),
-                            key_order,
-                            totals_only,
-                        )
-                        .await?
-                        .iter()
-                        .map(|row| {
-                            Ok(ToolSummary {
-                                name: row.try_get("key")?,
-                                totals: read_tools(row)?,
+                            .collect::<Result<_, StoreError>>()?,
+                        by_tool: groups(&mut tx, &query, through, Group::ByTool, &selection)
+                            .await?
+                            .iter()
+                            .map(|row| {
+                                Ok(ToolSummary {
+                                    name: row.try_get("key")?,
+                                    totals: read_tools(row)?,
+                                })
                             })
-                        })
-                        .collect::<Result<_, StoreError>>()?,
+                            .collect::<Result<_, StoreError>>()?,
                     };
                     let mut next_offset = None;
                     if let Some((group, offset)) = page
@@ -213,18 +192,31 @@ impl EventLog {
     }
 }
 
+struct GroupSelection<'a> {
+    page: Option<(Group, u64)>,
+    after: Option<&'a Option<String>>,
+    key_order: bool,
+    totals_only: bool,
+}
+
 async fn groups(
     connection: &mut sqlx::SqliteConnection,
     query: &Query,
     through: u64,
-    columns: &'static str,
-    key: &'static str,
-    page: Option<(Group, u64)>,
     group: Group,
-    after: Option<&Option<String>>,
-    key_order: bool,
-    totals_only: bool,
+    selection: &GroupSelection<'_>,
 ) -> Result<Vec<SqliteRow>, StoreError> {
+    let GroupSelection {
+        page,
+        after,
+        key_order,
+        totals_only,
+    } = *selection;
+    let (columns, key) = match group {
+        Group::ByProvider => (MODELS, "json_extract(quote_json, '$.providerId')"),
+        Group::ByModel => (MODELS, "model_id"),
+        Group::ByTool => (TOOLS, "name"),
+    };
     if totals_only || page.is_some_and(|(selected, _)| selected != group) {
         return Ok(vec![]);
     }

@@ -125,7 +125,6 @@ impl LoadedInstructions<'_> {
             name: self.skill.document.manifest.name.clone(),
             scope: location.scope.clone(),
             source: location.source.clone(),
-            truncated: self.truncated,
         })
     }
 }

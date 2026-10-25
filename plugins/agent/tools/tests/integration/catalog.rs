@@ -400,7 +400,7 @@ async fn discovery_state_failure_after_successful_t2_is_fatal() {
     });
     let search = preflight::call("search", "tool_search", json!({"query":"echo"}));
     let invocation = preflight::invocation("discovery-state-failure");
-    preflight::accepted(&log, &invocation, &[search.clone()]).await;
+    preflight::accepted(&log, &invocation, std::slice::from_ref(&search)).await;
     let catalog = ToolCatalog::new([registration(
         "echo",
         json!({"type":"object"}),

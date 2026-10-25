@@ -26,7 +26,7 @@ use sqlx::Connection;
 
 /// A metadata CAS is distinct from event-log append and delivery revisions.
 pub enum SessionMutation<T> {
-    Committed(SessionRecord<T>),
+    Committed(Box<SessionRecord<T>>),
     RevisionConflict { expected: u64, actual: u64 },
 }
 
@@ -41,7 +41,7 @@ impl EventLog {
             .change_session_archived(id, None, archived, now)
             .await?
         {
-            SessionMutation::Committed(record) => Ok(record),
+            SessionMutation::Committed(record) => Ok(*record),
             SessionMutation::RevisionConflict { .. } => unreachable!("no revision precondition"),
         }
     }
@@ -69,7 +69,7 @@ impl EventLog {
             return Err(StoreError::SessionBusy);
         }
         if record.archived == archived {
-            return Ok(SessionMutation::Committed(record));
+            return Ok(SessionMutation::Committed(Box::new(record)));
         }
         if record.revision >= MAX_SAFE_INTEGER {
             return Err(invalid("session revision exhausted"));
@@ -87,7 +87,7 @@ impl EventLog {
         let record = read(&mut tx, &id).await?.ok_or(StoreError::SessionNotFound)?;
         tx.commit().await.map_err(StoreError::CommitUnknown)?;
         commits.metadata();
-        Ok(SessionMutation::Committed(record))
+        Ok(SessionMutation::Committed(Box::new(record)))
         })).await
     }
 
@@ -195,7 +195,7 @@ impl EventLog {
                     let previous = configuration.clone();
                     update(&mut configuration)?;
                     if !always_advance && configuration == previous {
-                        return Ok(SessionMutation::Committed(record));
+                        return Ok(SessionMutation::Committed(Box::new(record)));
                     }
                     let configuration = serde_json::to_value(configuration)?;
                     crate::workspace_bindings::require_current_reference(&mut tx, &configuration)
@@ -231,7 +231,7 @@ impl EventLog {
                         .ok_or(StoreError::SessionNotFound)?;
                     tx.commit().await.map_err(StoreError::CommitUnknown)?;
                     commits.metadata();
-                    Ok(SessionMutation::Committed(record))
+                    Ok(SessionMutation::Committed(Box::new(record)))
                 })
             })
             .await

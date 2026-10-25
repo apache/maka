@@ -82,15 +82,4 @@ impl ResourceAddress {
             Self::ToolResult(id) => ToolResultAddress::event_path(id),
         }
     }
-
-    /// A compact, still valid locator. No ID truncation or uniqueness assumption.
-    pub fn compact_path(&self) -> Result<String, &'static str> {
-        let path = self.canonical_path()?;
-        let (prefix, id) = match self {
-            Self::Attachment(_) => ("attachment:", &path[ATTACHMENT_RESOURCE_PREFIX.len()..]),
-            Self::Task(_) => ("task:", &path[RESOURCE_REF_PREFIX.len()..]),
-            Self::ToolResult(_) => ("archive:", &path["maka://runtime/tool-results/".len()..]),
-        };
-        Ok(format!("{prefix}{id}"))
-    }
 }

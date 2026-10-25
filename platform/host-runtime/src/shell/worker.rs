@@ -375,7 +375,7 @@ mod tests {
             .await
             .unwrap();
         let size = TerminalSize::new(80, 24).unwrap();
-        let output = Output::new(size, watch::channel(()).0).unwrap();
+        let output = Output::new(size).unwrap();
         let mut terminal = Terminal::new(size, output.clone());
         let record = log
             .create_shell_run(ShellRun {

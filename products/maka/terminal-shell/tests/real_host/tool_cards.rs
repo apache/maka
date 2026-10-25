@@ -159,7 +159,7 @@ async fn readable_tool_cards_preserve_paged_originals_across_workspace_changes_a
         // A real reasoning part appends another row to this same process group.
         support::focus_activity(&mut view).await;
         view.handle_event(Event::Key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE)));
-        let wide = wait_view(&mut view, |screen| screen.contains("Search sessions…") && screen.contains("Read lines") && screen.contains("起点_原始")).await;
+        let wide = wait_view(&mut view, |screen| screen.contains("All workspaces") && screen.contains("Read lines") && screen.contains("起点_原始")).await;
         support::scroll_snapshot_text(&mut view, &wide, "起点_原始", MouseEventKind::ScrollDown);
         let reading = wait_view_state(&mut view, |view, screen| screen.contains("Read file") && !screen.contains("起点_原始") && view.accessibility_snapshot().iter().any(|node| node.role == nsh_core::AccessibilityRole::Button && node.label == "Return to latest" && !node.state.disabled)).await;
         assert!(support::wait_enabled_button(&mut view, "Toggle tool WorkspaceDocument").await.state.selected);

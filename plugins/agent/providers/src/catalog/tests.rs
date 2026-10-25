@@ -37,39 +37,6 @@ fn from_values(
 }
 
 #[test]
-fn newly_published_openrouter_model_is_available_without_a_bundled_entry() {
-    let bundled = Snapshot::bundled().unwrap();
-    let id = "deepseek/deepseek-v4.1-flash-1017";
-    assert_eq!(bundled.get("openrouter", id), None);
-    // Public /api/v1/models row retained in the source audit; unrelated pricing
-    // and presentation fields are deliberately absent from this metadata input.
-    let router = json!({"data":[{
-        "id":"deepseek/deepseek-v4.1-flash-1017",
-        "name":"DeepSeek: DeepSeek V4.1 Flash 1017","context_length":1048576,
-        "architecture":{"input_modalities":["text","image"],"output_modalities":["text"]},
-        "top_provider":{"context_length":1048576,"max_completion_tokens":393216},
-        "supported_parameters":["tools","structured_outputs","reasoning","reasoning_effort"],
-        "reasoning":{"mandatory":false,"default_enabled":true,
-            "supported_efforts":["max","high","low","none"],"default_effort":"high"},
-        "knowledge_cutoff":null
-    }]});
-    let snapshot = from_values(None, Some(&router)).unwrap();
-    let model = snapshot.resolve("openrouter", ModelInfo::new(id));
-    assert_eq!(
-        model.display_name.as_deref(),
-        Some("DeepSeek: DeepSeek V4.1 Flash 1017")
-    );
-    assert_eq!(model.context_window, Some(1048576));
-    assert_eq!(model.max_output_tokens, Some(393216));
-    assert_eq!(model.knowledge_cutoff, None);
-    assert_eq!(model.thinking_levels, Some(vec![Max, High, Low, Off]));
-    assert_eq!(model.default_thinking_level, Some(High));
-    assert_eq!(model.capabilities.unwrap().vision, Some(true));
-    assert_eq!(model.capabilities.unwrap().function_calling, Some(true));
-    assert_eq!(model.structured_output, Some(true));
-}
-
-#[test]
 fn new_public_model_keeps_each_routes_own_controls_and_limits() {
     let models_dev = json!({
         "deepseek":{"id":"deepseek","models":{

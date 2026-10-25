@@ -139,7 +139,7 @@ impl RootStore {
             .change_session_archived(id, None, archived, now)
             .await?
         {
-            SessionMutation::Committed(record) => Ok(record),
+            SessionMutation::Committed(record) => Ok(*record),
             SessionMutation::RevisionConflict { .. } => unreachable!("no revision precondition"),
         }
     }

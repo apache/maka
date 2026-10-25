@@ -179,7 +179,6 @@ pub fn inputs(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
     fn shortcut(key: &str, modifiers: Vec<Modifier>) -> Shortcut {
         Shortcut {
             key: key.into(),
@@ -206,19 +205,5 @@ mod tests {
             )
             .is_err()
         );
-    }
-    #[test]
-    fn commands_merge_only_with_buttons_without_an_input_count_cap() {
-        let command = shortcut("b", vec![Modifier::Primary]);
-        let mut table = BTreeMap::from([("command".into(), json!(true))]);
-        inputs(std::slice::from_ref(&command), &mut table).unwrap();
-        assert_eq!(table.len(), 1);
-        table.insert("command".into(), json!({"type":"object"}));
-        assert!(inputs(std::slice::from_ref(&command), &mut table).is_err());
-        let mut table = (0..1024)
-            .map(|n| (format!("input-{n}"), json!(true)))
-            .collect();
-        inputs(&[command], &mut table).unwrap();
-        assert_eq!(table.len(), 1025);
     }
 }

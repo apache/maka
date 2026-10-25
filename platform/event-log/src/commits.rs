@@ -47,7 +47,10 @@ pub struct SessionSubscription {
     peers: Vec<SessionSubscription>,
 }
 impl SessionSubscription {
-    pub(crate) fn with_peers(mut self, peers: Vec<Self>) -> Self { self.peers = peers; self }
+    pub(crate) fn with_peers(mut self, peers: Vec<Self>) -> Self {
+        self.peers = peers;
+        self
+    }
     pub(crate) fn with_control(mut self, control: watch::Receiver<()>) -> Self {
         self.control = Some(control);
         self
@@ -59,7 +62,8 @@ impl SessionSubscription {
         use futures_util::{StreamExt, stream::FuturesUnordered};
         let mut pending: FuturesUnordered<_> = std::iter::once(&mut self.receiver)
             .chain(self.peers.iter_mut().map(|peer| &mut peer.receiver))
-            .map(|receiver| receiver.changed()).collect();
+            .map(|receiver| receiver.changed())
+            .collect();
         if let Some(control) = &mut self.control {
             tokio::select! {
                 changed = pending.next() => changed.expect("primary subscription"),
@@ -200,7 +204,7 @@ impl Drop for Registration {
             // A new subscriber may have replaced our dead weak entry already.
             if sessions
                 .get(&self.session)
-                .is_some_and(|entry| entry.as_ptr() == self as *const _)
+                .is_some_and(|entry| std::ptr::eq(entry.as_ptr(), self))
             {
                 sessions.remove(&self.session);
             }

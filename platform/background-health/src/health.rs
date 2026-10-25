@@ -402,15 +402,14 @@ mod tests {
             privacy,
         )
     }
-    async fn scope() -> call::Scope {
+    fn scope() -> call::Scope {
         call::Issuer::default()
-            .admit(
+            .issue(
                 call::Identity::Remote {
                     request_id: uuid::Uuid::new_v4(),
                 },
                 CancellationToken::new(),
             )
-            .await
             .unwrap()
     }
     fn input(url: bool, logs: bool) -> Input {
@@ -423,7 +422,7 @@ mod tests {
     #[tokio::test]
     async fn process_and_endpoint_are_independent_logs_are_opt_in_and_bodies_are_discarded() {
         let (health, _, http, _) = backend();
-        let scope = scope().await;
+        let scope = scope();
         let report =
             serde_json::to_value(health.check(&scope, input(false, false)).await.unwrap()).unwrap();
         assert_eq!(report["process"]["status"], "failed");
@@ -452,7 +451,7 @@ mod tests {
     #[tokio::test]
     async fn redirects_are_observations_and_failed_settlement_is_not_a_health_result() {
         let (health, _, http, _) = backend();
-        let scope = scope().await;
+        let scope = scope();
         for (status, expected) in [(302, "unknown"), (503, "unhealthy")] {
             reply(&http, status, false);
             let report =
@@ -471,7 +470,7 @@ mod tests {
     #[tokio::test]
     async fn unauthorized_resource_invalid_reference_and_privacy_do_not_probe() {
         let (health, files, http, privacy) = backend();
-        let scope = scope().await;
+        let scope = scope();
         files.denied.store(true, Ordering::SeqCst);
         assert!(health.check(&scope, input(true, false)).await.is_err());
         assert!(http.calls.lock().unwrap().is_empty());
@@ -497,7 +496,7 @@ mod tests {
     #[tokio::test]
     async fn cancellation_drains_probe_and_is_not_reported_as_unhealthy() {
         let (health, _, http, _) = backend();
-        let parent = scope().await;
+        let parent = scope();
         let check = health.check(&parent, input(true, false));
         let cancel = async {
             http.started.notified().await;

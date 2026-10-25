@@ -550,21 +550,40 @@ impl Fixture {
         matching.into_iter().next().unwrap()
     }
 
-    async fn facts_after_failed_shutdown(&self, session: &str) -> Vec<maka_agent_facts::event::Fact> {
+    async fn facts_after_failed_shutdown(
+        &self,
+        session: &str,
+    ) -> Vec<maka_agent_facts::event::Fact> {
         // Root admission is closed after uncertain physical cleanup. Inspect
         // only the original durable evidence, without admitting another job.
         assert!(self.store.shutdown().await.is_err());
         let database = rusqlite::Connection::open_with_flags(
-            self.session_database(session), rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-        ).unwrap();
+            self.session_database(session),
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .unwrap();
         let (count, bytes): (i64, i64) = database.query_row(
             "SELECT COUNT(*), COALESCE(SUM(length(CAST(event_json AS BLOB))),0) FROM runtime_events WHERE event_session=?",
             [session], |row| Ok((row.get(0)?, row.get(1)?)),
         ).unwrap();
-        assert!(count <= 256 && bytes <= 4 * 1024 * 1024, "fixture evidence exceeds original prefix bounds");
-        let mut statement = database.prepare("SELECT event_json FROM runtime_events WHERE event_session=? ORDER BY sequence").unwrap();
-        statement.query_map([session], |row| row.get::<_, String>(0)).unwrap()
-            .map(|row| serde_json::from_str::<maka_agent_facts::event::RuntimeEvent>(&row.unwrap()).unwrap().fact).collect()
+        assert!(
+            count <= 256 && bytes <= 4 * 1024 * 1024,
+            "fixture evidence exceeds original prefix bounds"
+        );
+        let mut statement = database
+            .prepare(
+                "SELECT event_json FROM runtime_events WHERE event_session=? ORDER BY sequence",
+            )
+            .unwrap();
+        statement
+            .query_map([session], |row| row.get::<_, String>(0))
+            .unwrap()
+            .map(|row| {
+                serde_json::from_str::<maka_agent_facts::event::RuntimeEvent>(&row.unwrap())
+                    .unwrap()
+                    .fact
+            })
+            .collect()
     }
 
     fn session_database(&self, id: &str) -> std::path::PathBuf {
@@ -1829,7 +1848,14 @@ async fn tool_source_uses_original_agent_grant_and_frozen_canonical_fields() {
     use maka_plugin_core::scope::Scope as StorageScope;
     let fixture = Fixture::new("http://127.0.0.1:9/v1", None).await;
     let seed = fixture.create("Tool source").await;
-    let configuration = fixture.session(&seed).await.get::<StoredSessionConfiguration>().await.unwrap().unwrap().configuration;
+    let configuration = fixture
+        .session(&seed)
+        .await
+        .get::<StoredSessionConfiguration>()
+        .await
+        .unwrap()
+        .unwrap()
+        .configuration;
     let session = format!("{}{}", fixture.owner.prefix, Uuid::new_v4().simple());
     let plugin = PluginSession {
         session_id: session.clone(),

@@ -52,7 +52,7 @@ pub(super) struct Fetch {
     /// Import a local package through the same validation path (no registry access).
     #[arg(long, requires = "integrity", conflicts_with = "directory")]
     archive: Option<PathBuf>,
-    /// Expected sha512-<base64> of the local package, supplied by its trusted source.
+    /// Expected `sha512-<base64>` of the local package, supplied by its trusted source.
     #[arg(long, requires = "archive")]
     integrity: Option<String>,
     /// Import a previously verified directory delivered over a trusted transport.

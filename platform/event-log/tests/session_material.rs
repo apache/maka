@@ -191,7 +191,13 @@ async fn collection_waits_for_the_last_history_owner_and_preserves_frozen_accoun
         log.prefix(100, 1_000_000).await,
         Err(StoreError::MaterialCollected)
     ));
-    assert!(log.unfinished_invocations(0, 10).await.unwrap().invocations.is_empty());
+    assert!(
+        log.unfinished_invocations(0, 10)
+            .await
+            .unwrap()
+            .invocations
+            .is_empty()
+    );
     assert!(
         log.append(&opening).await.is_err(),
         "collection cannot resurrect a retired invocation"

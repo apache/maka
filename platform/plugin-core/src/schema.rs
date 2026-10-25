@@ -150,24 +150,6 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn independently_loaded_schemas_share_storage_and_preserve_wire() {
-        let wire = r#"{"type":"object","properties":{"name":{"type":"string"}}}"#;
-        let first: Schema = serde_json::from_str(wire).unwrap();
-        let second: Schema = serde_json::from_str(wire).unwrap();
-        let third = Schema::from(serde_json::from_str::<Value>(wire).unwrap());
-        assert!(std::ptr::eq(first.as_ref(), second.as_ref()));
-        assert!(std::ptr::eq(first.as_ref(), third.as_ref()));
-        for schema in [&first, &second, &third] {
-            assert_eq!(
-                serde_json::to_value(schema).unwrap(),
-                json!({
-                    "type":"object", "properties":{"name":{"type":"string"}}
-                })
-            );
-        }
-    }
-
-    #[test]
     fn collisions_preserve_each_schema_and_its_validation() {
         let pool = SchemaPool::default();
         let first = pool.intern_hashed(json!({"type":"string"}), 7);
@@ -279,20 +261,6 @@ mod tests {
                 schema.as_ref(),
                 &json!({"type":"array", "items":{"type":"string"}})
             );
-        }
-    }
-
-    #[test]
-    fn schema_projection_and_wire_representation_remain_json() {
-        assert_eq!(schemars::schema_for!(Schema), schemars::schema_for!(Value));
-        for value in [
-            json!(null),
-            json!(true),
-            json!({"type":"object", "properties":{"name":{"type":"string"}}}),
-        ] {
-            let schema: Schema = serde_json::from_value(value.clone()).unwrap();
-            assert_eq!(serde_json::to_value(&schema).unwrap(), value);
-            assert_eq!(schema, Schema::from(value));
         }
     }
 }

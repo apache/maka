@@ -234,14 +234,14 @@ async fn drive(
             Request::Call {
                 id,
                 name,
-                args,
+                mut args,
                 kwargs,
             } => {
                 if let Some(name) = name.strip_prefix("tool:") {
-                    let input = match (args.as_slice(), kwargs.is_empty()) {
-                        ([value], true) => Ok(value.clone()),
-                        ([], false) => Ok(Value::Object(kwargs)),
-                        ([], true) => Ok(serde_json::json!({})),
+                    let input = match (args.len(), kwargs.is_empty()) {
+                        (1, true) => Ok(args.remove(0)),
+                        (0, false) => Ok(Value::Object(kwargs)),
+                        (0, true) => Ok(serde_json::json!({})),
                         _ => Err(helpers::error(
                             "tool expects one JSON argument or keyword arguments",
                         )),

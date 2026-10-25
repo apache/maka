@@ -86,14 +86,25 @@ async fn attachment_references_remain_structured_after_reopen() {
                 run_id: format!("run{index}"),
                 invocation_id: format!("invocation{index}"),
             },
-            Fact::MessageSteered {
-                source: None,
-                message: Box::new(DeliveredMessage {
+            {
+                let message = DeliveredMessage {
                     origin: None,
                     message_id: "same-client-id".into(),
                     content: input.clone(),
                     submitted_content_digest: format!("sha256:{}", "a".repeat(64)),
-                }),
+                };
+                let mut unprepared_content = message.content.clone();
+                unprepared_content.preparation.clear();
+                Fact::MessageSteered {
+                    source: Box::new(maka_agent_facts::message::RootSourceMessage {
+                        message: message.clone(),
+                        unprepared_content,
+                        submitted_placement: maka_agent_facts::message::Placement::CurrentTurn,
+                        disposition: maka_agent_facts::message::MessageDisposition::Steering,
+                        submitted_intent: None,
+                    }),
+                    message: Box::new(message),
+                }
             },
         );
         log.append(&maka_agent_facts::event::EventWrite::plain(steering).unwrap())

@@ -33,14 +33,12 @@ enum Failure {
     Changed,
     Unavailable,
     Invalid,
-    Limit,
     Unknown,
 }
 impl From<maka_session_import::Error> for Failure {
     fn from(error: maka_session_import::Error) -> Self {
         use maka_session_import::Error;
         match error {
-            Error::Limit { .. } => Self::Limit,
             Error::Invalid(_) | Error::Decode { .. } => Self::Invalid,
             _ => Self::Unavailable,
         }
@@ -51,7 +49,6 @@ impl Failure {
         match self {
             Self::Changed => ImportsPage::Changed,
             Self::Invalid => ImportsPage::Invalid,
-            Self::Limit => ImportsPage::Limit,
             Self::Unavailable | Self::Unknown => ImportsPage::Unavailable,
         }
     }
@@ -59,7 +56,6 @@ impl Failure {
         Ok(match self {
             Self::Changed => ImportResult::Changed,
             Self::Invalid => ImportResult::Invalid,
-            Self::Limit => ImportResult::Limit,
             Self::Unavailable => ImportResult::Unavailable,
             Self::Unknown => return Err("agent_import_unknown".into()),
         })
@@ -253,12 +249,18 @@ impl Owner {
                 }
                 let (records, next) = self
                     .store
-                    .imported_sessions::<StoredSessionConfiguration>(&self.prefix, after.as_deref(), 16)
+                    .imported_sessions::<StoredSessionConfiguration>(
+                        &self.prefix,
+                        after.as_deref(),
+                        16,
+                    )
                     .await
                     .map_err(|_| Failure::Unavailable)?;
                 let sessions = records
                     .into_iter()
-                    .map(|record| resolve_session(record).map(|record| crate::service::summary(self, record)))
+                    .map(|record| {
+                        resolve_session(record).map(|record| crate::service::summary(self, record))
+                    })
                     .collect::<Result<Vec<_>, _>>()
                     .map_err(|_| Failure::Unavailable)?;
                 ImportsPage::Copies { sessions, next }
@@ -329,7 +331,10 @@ impl Owner {
                     .await
                     .map_err(|_| Failure::Unknown)?
                     .ok_or(Failure::Unavailable)?;
-                let workspace = self.store.attach_workspace(&self.prefix, &workspace).await
+                let workspace = self
+                    .store
+                    .attach_workspace(&self.prefix, &workspace)
+                    .await
                     .map_err(|_| Failure::Unavailable)?;
                 let owner = maka_event_log::sessions::PluginSession {
                     session_id: self.operation_id(&operation),
@@ -365,7 +370,10 @@ impl Owner {
                         _ => Failure::Unknown,
                     })?;
                 Ok(ImportResult::Imported {
-                    session: Box::new(crate::service::summary(self, resolve_session(record).map_err(|_| Failure::Unavailable)?)),
+                    session: Box::new(crate::service::summary(
+                        self,
+                        resolve_session(record).map_err(|_| Failure::Unavailable)?,
+                    )),
                 })
             }
             other => {

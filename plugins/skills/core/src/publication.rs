@@ -24,8 +24,6 @@ use maka_agent_facts::artifact::content_digest;
 use tokio_util::sync::CancellationToken;
 
 mod directory;
-mod installation;
-pub use installation::set_installation;
 mod io;
 use directory::Directory;
 mod journal;

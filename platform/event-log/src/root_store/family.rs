@@ -272,10 +272,10 @@ impl RootStore {
         let mut calls = std::collections::HashSet::new();
         for record in &records {
             record.validate().map_err(invalid)?;
-            if let maka_agent_facts::import::Content::ToolCall { call_id, .. } = &record.content {
-                if !calls.insert(call_id) {
-                    return Err(invalid("duplicate imported tool call identity"));
-                }
+            if let maka_agent_facts::import::Content::ToolCall { call_id, .. } = &record.content
+                && !calls.insert(call_id)
+            {
+                return Err(invalid("duplicate imported tool call identity"));
             }
         }
         let configuration = serde_json::to_value(configuration)?;

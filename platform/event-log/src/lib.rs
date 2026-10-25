@@ -212,7 +212,9 @@ impl EventLog {
 
     fn require_session_scope(expected: Option<&str>, actual: &str) -> Result<(), StoreError> {
         if expected.is_some_and(|expected| expected != actual) {
-            return Err(StoreError::InvalidTransition("foreign Session resource".into()));
+            return Err(StoreError::InvalidTransition(
+                "foreign Session resource".into(),
+            ));
         }
         Ok(())
     }
@@ -361,8 +363,7 @@ impl EventLog {
                                 connection,
                                 initialize_control.as_ref(),
                             )
-                            .await?;
-                            transcript::directory::initialize(connection).await
+                            .await
                         }
                         OpenPurpose::RootControl => {
                             root_store::initialize_control(connection).await

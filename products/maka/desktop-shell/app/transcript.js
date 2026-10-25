@@ -436,7 +436,7 @@ export class Transcript {
     const start = this.rows.find((row) => row.turnId === last.turnId && row.role === 'user');
     if (!start) return { turnId: last.turnId, message: null };
     // A turn a WorkHub notice started is WorkHub's to start again, not the user's.
-    const notice = originOf(start) !== null;
+    const notice = start.origin !== null;
     const whole = start.fragments[0]?.offset === 0 && utf8Length(start.text) === start.totalBytes;
     const files = (start.attachments ?? []).length > 0;
     const message = whole && !notice && !files ? ownText(start) : '';
@@ -1157,7 +1157,7 @@ function displayItems(transcript) {
     } else if (row.role === 'compaction') {
       // As in the TUI, a checkpoint shows only once it was adopted.
       if (row.compaction !== null) items.push({ key: row.key, kind: 'compaction', row });
-    } else if (row.role === 'user' && originOf(row) !== null) {
+    } else if (row.role === 'user' && row.origin !== null) {
       items.push({ key: row.key, kind: 'notice', row, notice: workhubNotice(row) });
     } else {
       items.push({ key: row.key, kind: row.role === 'user' ? 'user' : 'assistant', row });
@@ -1454,23 +1454,6 @@ function failureRow(item, cx) {
     );
 }
 
-// A task's notice recorded before the Host kept origins (de2c51a4b): its
-// message id is `m_wh_` and a SHA-256 (workhub/tasks/notifications.rs), and
-// its text starts by naming the task.
-const LEGACY_NOTICE_ID = /^m_wh_[0-9a-f]{64}$/;
-const LEGACY_NOTICE_TEXT = /^WorkHub task (wt_[0-9a-f]{64}) has ended\./;
-
-/**
- * Where a user message came from when it is not the user's: history's
- * `origin`, or for a WorkHub task's notice recorded before history had one,
- * the task its id and text show. Null for the user's own messages.
- */
-function originOf(row) {
-  if (row.origin !== null) return row.origin;
-  if (!LEGACY_NOTICE_ID.test(row.messageId ?? '')) return null;
-  return { kind: 'workhub_task', taskId: LEGACY_NOTICE_TEXT.exec(row.text)?.[1] ?? null };
-}
-
 /**
  * What a WorkHub notice says: `{ graph, taskId, worker, outcome }`. History
  * gives the message's origin, a task (`taskId`) or a task graph (`graph`,
@@ -1483,7 +1466,7 @@ function originOf(row) {
  * user's words.
  */
 function workhubNotice(row) {
-  const origin = originOf(row);
+  const origin = row.origin;
   const ofTask = origin.kind === 'workhub_task';
   const notice = {
     graph: origin.kind === 'workhub_graph',

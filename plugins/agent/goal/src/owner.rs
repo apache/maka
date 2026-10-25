@@ -401,9 +401,7 @@ impl Owner {
                             Status::Cancelled | Status::CancellationUnknown
                         )
                     {
-                        commands
-                            .cancel(pending.request.operation())
-                            .await?;
+                        commands.cancel(pending.request.operation()).await?;
                     }
                     return Ok(());
                 }

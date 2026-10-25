@@ -554,6 +554,7 @@ impl Fixture {
                                 "observe",
                                 "history",
                                 "historyLandmarks",
+                                "recall",
                                 "watch",
                             ],
                             false,
@@ -1043,7 +1044,25 @@ pub async fn wait_enabled_button(
         }
     })
     .await
-    .unwrap_or_else(|_| panic!("native button {label:?} did not become enabled"))
+    .unwrap_or_else(|_| {
+        let buttons: Vec<_> = view
+            .accessibility_snapshot()
+            .into_iter()
+            .filter(|node| node.role == nsh_core::AccessibilityRole::Button)
+            .map(|node| {
+                (
+                    node.id,
+                    node.label.chars().take(160).collect::<String>(),
+                    node.state.disabled,
+                    node.frame,
+                )
+            })
+            .collect();
+        panic!(
+            "native button {label:?} did not become enabled:\n{}\nbuttons={buttons:#?}",
+            view.snapshot()
+        )
+    })
 }
 
 pub async fn click_button(view: &mut AppView, label: &str) {

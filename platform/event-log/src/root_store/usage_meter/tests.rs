@@ -72,7 +72,7 @@ use maka_agent_facts::{
     model::{ModelEvent, ModelFinishReason, ModelStep},
 };
 use serde_json::{Value, json};
-use sqlx::{Connection, Row};
+use sqlx::Row;
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
@@ -301,7 +301,7 @@ async fn lifetime_read_and_terminal_pending_lookup_remain_indexed_after_large_hi
 }
 
 #[tokio::test]
-async fn migration_backfills_once_and_capacity_error_does_not_rollback_canonical_settlement() {
+async fn capacity_error_does_not_rollback_canonical_settlement() {
     let directory = tempfile::tempdir().unwrap();
     let root = root(directory.path()).await;
     let session = session(&root).await;
@@ -314,12 +314,6 @@ async fn migration_backfills_once_and_capacity_error_does_not_rollback_canonical
         .await
         .unwrap();
     let log = session.owner().unwrap();
-    log.connection.run(|db|Box::pin(async move {
-        let mut tx=db.begin().await?;
-        sqlx::raw_sql("DROP TABLE session_usage_pending; DROP TABLE session_usage_totals; DROP INDEX auxiliary_usage_meter_observation;").execute(&mut *tx).await?;
-        sqlx::raw_sql(include_str!("../../../migrations/0049_session_usage_totals.sql")).execute(&mut *tx).await?;
-        tx.commit().await?;Ok(())
-    })).await.unwrap();
     assert_eq!(
         root.session_usage_totals("source").await.unwrap(),
         totals(11, 0, 0, 1)

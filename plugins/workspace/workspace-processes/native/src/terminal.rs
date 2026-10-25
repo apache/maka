@@ -252,14 +252,11 @@ impl Processes {
                 context.emit(value.clone()).await.map_err(failed)?;
                 previous = Some(revision);
             }
-            loop {
-                tokio::select! { biased;
-                    _ = context.scope().cancellation.cancelled() => return Ok(value),
-                    _ = self.drain.cancelled() => return Ok(value),
-                    change = changes.changed() => {
-                        change.map_err(|_| failed("Terminal resource observation closed"))?;
-                        break;
-                    }
+            tokio::select! { biased;
+                _ = context.scope().cancellation.cancelled() => return Ok(value),
+                _ = self.drain.cancelled() => return Ok(value),
+                change = changes.changed() => {
+                    change.map_err(|_| failed("Terminal resource observation closed"))?;
                 }
             }
         }
@@ -292,25 +289,21 @@ impl Processes {
                 context.emit(value.clone()).await.map_err(failed)?;
                 previous = Some(value.clone());
             }
-            loop {
-                tokio::select! { biased;
-                    _ = context.scope().cancellation.cancelled() => return Ok(value),
-                    _ = self.drain.cancelled() => return Ok(value),
-                    update = async { handle.as_mut().expect("live handle").changed().await }, if handle.is_some() => {
-                        if let Err(error) = update {
-                            // A committed final cut followed by normal sender closure is
-                            // not a worker failure. Stop polling that closed receiver.
-                            let settled = handle.as_ref().and_then(|handle| handle.latest())
-                                .is_some_and(|update| update.is_ok_and(|record| !record.state.active()));
-                            if !settled { return Err(worker_error(error)); }
-                            handle = None;
-                        }
-                        break;
+            tokio::select! { biased;
+                _ = context.scope().cancellation.cancelled() => return Ok(value),
+                _ = self.drain.cancelled() => return Ok(value),
+                update = async { handle.as_mut().expect("live handle").changed().await }, if handle.is_some() => {
+                    if let Err(error) = update {
+                        // A committed final cut followed by normal sender closure is
+                        // not a worker failure. Stop polling that closed receiver.
+                        let settled = handle.as_ref().and_then(|handle| handle.latest())
+                            .is_some_and(|update| update.is_ok_and(|record| !record.state.active()));
+                        if !settled { return Err(worker_error(error)); }
+                        handle = None;
                     }
-                    change = changes.changed() => {
-                        change.map_err(|_| failed("Terminal resource observation closed"))?;
-                        break;
-                    }
+                }
+                change = changes.changed() => {
+                    change.map_err(|_| failed("Terminal resource observation closed"))?;
                 }
             }
         }

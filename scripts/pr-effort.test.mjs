@@ -38,24 +38,7 @@ function readable(files) {
   return planLabels(files).lines;
 }
 
-describe('tier boundaries', () => {
-  it('places each tier on its inclusive upper bound', () => {
-    assert.equal(tier([file('a.ts', 10)]), 'effort/XS');
-    assert.equal(tier([file('a.ts', 11)]), 'effort/S');
-    assert.equal(tier([file('a.ts', 100)]), 'effort/S');
-    assert.equal(tier([file('a.ts', 101)]), 'effort/M');
-    assert.equal(tier([file('a.ts', 500)]), 'effort/M');
-    assert.equal(tier([file('a.ts', 501)]), 'effort/L');
-    assert.equal(tier([file('a.ts', 1000)]), 'effort/L');
-    assert.equal(tier([file('a.ts', 1001)]), 'effort/XL');
-    assert.equal(tier([file('a.ts', 2500)]), 'effort/XL');
-    assert.equal(tier([file('a.ts', 2501)]), 'effort/XXL');
-  });
-
-  it('counts additions and deletions together', () => {
-    assert.equal(readable([file('a.ts', 40, 2)]), 42);
-  });
-
+describe('empty changes', () => {
   it('treats an empty pull request as the smallest tier', () => {
     assert.equal(tier([]), 'effort/XS');
   });

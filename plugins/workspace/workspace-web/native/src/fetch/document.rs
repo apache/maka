@@ -104,7 +104,6 @@ fn render(url: Url, text: String, media: Media) -> Result<Page, Error> {
                         title: None,
                         content: original,
                         format: Format::Text,
-                        truncated: false,
                     });
                 }
                 nodes.extend(node.children_it(false).map(|child| (child, depth + 1)));
@@ -117,7 +116,6 @@ fn render(url: Url, text: String, media: Media) -> Result<Page, Error> {
                         title: None,
                         content: original,
                         format: Format::Text,
-                        truncated: false,
                     });
                 }
             };
@@ -135,6 +133,5 @@ fn render(url: Url, text: String, media: Media) -> Result<Page, Error> {
         title,
         content,
         format,
-        truncated: false,
     })
 }

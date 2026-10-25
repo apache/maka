@@ -100,7 +100,6 @@ async fn selected_skill_tools_use_actual_agent_context_and_original_grants_over_
                     tool(&mut loaded_socket, "Skill", continuation).await;
                     let (next_socket, page) = next(&listener).await;
                     assert_eq!(page["kind"], "loaded");
-                    assert_eq!(page["truncated"], false);
                     assert_eq!(page["instructionOffset"], complete.len());
                     complete.push_str(page["instructions"].as_str().unwrap());
                     continuation = page["next"].clone();

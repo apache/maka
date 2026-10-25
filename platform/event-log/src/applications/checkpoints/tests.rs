@@ -569,18 +569,39 @@ async fn root_source(store: &crate::RootStore, deployment: Uuid, expected: u64) 
 #[tokio::test]
 async fn idle_root_checkpoint_and_deployment_watch_release_original_authority() {
     let dir = tempfile::tempdir().unwrap();
-    let namespaces = RootNamespaces { ownership: dir.path().join("ownership"), control: dir.path().join("control") };
+    let namespaces = RootNamespaces {
+        ownership: dir.path().join("ownership"),
+        control: dir.path().join("control"),
+    };
     let path = dir.path().join("root");
     let owner = Arc::new(RootOwner::create(&path, &namespaces).unwrap());
     let root = Arc::new(crate::RootStore::open(owner).await.unwrap());
     let reference = root_source(&root, Uuid::new_v4(), 0).await;
     let checkpoints = root.ui_checkpoints(&reference, &instance()).await.unwrap();
     let mut changes = root.subscribe_application(reference).unwrap();
-    checkpoints.write("open", None, "v1", &json!({}), &json!({}), vec![1,2,3]).await.unwrap();
-    assert_eq!(checkpoints.read("open", |_| Ok(())).await.unwrap().unwrap().0.content, vec![1,2,3]);
+    checkpoints
+        .write("open", None, "v1", &json!({}), &json!({}), vec![1, 2, 3])
+        .await
+        .unwrap();
+    assert_eq!(
+        checkpoints
+            .read("open", |_| Ok(()))
+            .await
+            .unwrap()
+            .unwrap()
+            .0
+            .content,
+        vec![1, 2, 3]
+    );
     root.shutdown().await.unwrap();
-    assert!(matches!(checkpoints.read("open", |_| Ok(())).await, Err(StoreError::ConnectionClosed)));
-    assert!(matches!(changes.next().await, Err(StoreError::ConnectionClosed)));
+    assert!(matches!(
+        checkpoints.read("open", |_| Ok(())).await,
+        Err(StoreError::ConnectionClosed)
+    ));
+    assert!(matches!(
+        changes.next().await,
+        Err(StoreError::ConnectionClosed)
+    ));
     drop(root);
     let reopened = RootOwner::open(&path, &namespaces).unwrap();
     drop((reopened, checkpoints, changes));

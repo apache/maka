@@ -31,6 +31,89 @@ use tokio::sync::mpsc;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sdk_nine_idle_sessions_can_close_and_resume_on_one_connection() {
+    tokio::time::timeout(Duration::from_secs(40), async {
+        let fixture = support::Fixture::open().await;
+        let workspace = fixture.workspace.clone();
+        let mut native = fixture.native;
+        let mut model_requests = fixture.model_requests;
+        let (sdk, facade) = tokio::io::duplex(1024);
+        let (facade_read, facade_write) = tokio::io::split(facade);
+        let serving = tokio::spawn(maka_acp::serve(
+            fixture.client,
+            facade_read,
+            facade_write,
+            tokio_util::sync::CancellationToken::new(),
+        ));
+        let (sdk_read, sdk_write) = tokio::io::split(sdk);
+        let result = Client
+            .v2()
+            .connect_with(
+                ByteStreams::new(sdk_write.compat_write(), sdk_read.compat()),
+                async |connection| {
+                    connection
+                        .send_request(acp::InitializeRequest::new(
+                            ProtocolVersion::V2,
+                            acp::Implementation::new("maka-sdk-idle-sessions", "1"),
+                        ))
+                        .block_task()
+                        .await?;
+                    let mut sessions = Vec::new();
+                    for _ in 0..9 {
+                        let created = connection
+                            .send_request(acp::NewSessionRequest::new(&workspace))
+                            .block_task()
+                            .await?;
+                        sessions.push(created.session_id);
+                    }
+                    for id in &sessions {
+                        connection
+                            .send_request(acp::CloseSessionRequest::new(id.clone()))
+                            .block_task()
+                            .await?;
+                    }
+                    for id in &sessions {
+                        connection
+                            .send_request(acp::ResumeSessionRequest::new(id.clone(), &workspace))
+                            .block_task()
+                            .await?;
+                    }
+                    for id in &sessions {
+                        connection
+                            .send_request(acp::CloseSessionRequest::new(id.clone()))
+                            .block_task()
+                            .await?;
+                    }
+                    Ok(sessions)
+                },
+            )
+            .await;
+        // Settle the real owners even when the ninth request is rejected.
+        tokio::time::timeout(Duration::from_secs(10), serving)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        native.close().await.unwrap();
+        fixture.stop.cancel();
+        fixture.server.await.unwrap().unwrap();
+        assert!(
+            matches!(
+                model_requests.try_recv(),
+                Err(mpsc::error::TryRecvError::Empty)
+            ),
+            "idle session lifecycle must not invoke the model"
+        );
+        drop(fixture.provider);
+        let sessions = result.expect("nine idle sessions must create, close, resume and close");
+        let unique: std::collections::HashSet<_> = sessions.into_iter().collect();
+        assert_eq!(unique.len(), 9);
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sdk_published_directory_depth_uses_path_progress() {
     tokio::time::timeout(Duration::from_secs(40), async {
         let fixture = support::Fixture::open().await;
@@ -162,9 +245,15 @@ async fn form_scenario() {
     use tokio::sync::oneshot;
 
     let fixture = support::Fixture::open().await;
+    let session_database = fixture
+        .database_containing(
+            "SELECT EXISTS(SELECT 1 FROM session_control WHERE id=?)",
+            &[&fixture.session],
+        )
+        .await;
     let mut database = SqliteConnection::connect_with(
         &SqliteConnectOptions::new()
-            .filename(&fixture.database)
+            .filename(&session_database)
             .read_only(true),
     )
     .await

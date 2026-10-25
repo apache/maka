@@ -224,9 +224,11 @@ async fn import_is_retryable_history_not_an_execution_and_survives_copy_and_rest
             prefix.high_water,
             maka_agent_ports::session::history::Position::Start,
             false,
-            16 * 1024,
-            8,
-            1024 * 1024,
+            maka_event_log::transcript::HistoryLimits {
+                max_bytes: 16 * 1024,
+                max_chunks: Some(8),
+                max_json_bytes: 1024 * 1024,
+            },
         )
         .await
         .unwrap();

@@ -532,7 +532,6 @@ async fn projection_sql_fault_preserves_database_codes_and_rolls_back_all_neighb
          WHEN NEW.through_sequence=5
          BEGIN SELECT RAISE(ABORT,'projection storage fault'); END;",
     ] {
-        let (legacy_code, legacy_message) = legacy_projection_failure(trigger).await;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("events.sqlite");
         let log = open(&path).await;
@@ -574,10 +573,13 @@ async fn projection_sql_fault_preserves_database_codes_and_rolls_back_all_neighb
             let database = error
                 .as_database_error()
                 .expect("database error survived shared receipt");
-            assert_eq!(database.code().unwrap(), legacy_code);
-            assert_eq!(database.message(), legacy_message);
-            assert!(database.message().contains("projection storage fault"));
-            assert!(database.as_error().source().is_some());
+            let original = database
+                .as_error()
+                .source()
+                .and_then(|cause| cause.downcast_ref::<sqlx::sqlite::SqliteError>())
+                .expect("shared failure retains the original SQLite error");
+            assert_eq!(database.code(), sqlx::error::DatabaseError::code(original));
+            assert_eq!(database.message(), "projection storage fault");
         }
         assert!(!commits.has_changed().unwrap());
         log.connection.shutdown().await.unwrap();
@@ -626,48 +628,4 @@ fn assert_projection_positions(path: &std::path::Path) {
         )
         .unwrap();
     assert_eq!(Some(&semantic), canonical.last());
-}
-
-// Measure the old INSERT-trigger/UDF error contract using the same real
-// projector and injected fault. rusqlite's callback reporting can translate a
-// nested SQLite code; comparing its actual SQLx result avoids inventing codes.
-async fn legacy_projection_failure(trigger: &'static str) -> (String, String) {
-    use sqlx::Connection as _;
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("legacy.sqlite");
-    let log = open(&path).await;
-    let failure = log.connection.run(move |db| Box::pin(async move {
-        sqlx::raw_sql("CREATE TRIGGER context_source_append AFTER INSERT ON event_log
-            WHEN NEW.invocation_id IS NOT NULL AND NEW.event_json IS NOT NULL BEGIN
-              SELECT context_source_record(NEW.sequence,NEW.event_session,NEW.invocation_id,NEW.event_json,NEW.kind);
-            END;
-            CREATE TRIGGER context_semantic_append AFTER INSERT ON event_log
-            WHEN NEW.invocation_id IS NOT NULL AND NEW.event_json IS NOT NULL BEGIN
-              SELECT context_semantic_record(NEW.sequence,NEW.event_json);
-            END;").execute(&mut *db).await?;
-        sqlx::raw_sql(trigger).execute(&mut *db).await?;
-        let mut tx = db.begin().await?;
-        let mut error = None;
-        for write in [delta("legacy-first", "one"), delta("legacy-poison", "two")] {
-            let event = write.event();
-            let result = sqlx::query("INSERT INTO event_log(event_id,invocation_id,kind,operation_id,event_json) VALUES(?,?,?,?,?)")
-                .bind(&event.id).bind(&event.invocation.invocation_id).bind(event.fact.kind())
-                .bind(event.fact.operation_id()).bind(serde_json::to_string(event)?)
-                .execute(&mut *tx).await;
-            if let Err(cause) = result { error = Some(cause); break; }
-        }
-        let error = error.expect("legacy projection fault must fire");
-        let database = error.as_database_error().expect("legacy SQLx database error");
-        assert!(database.message().contains("projection storage fault"));
-        let failure = (database.code().unwrap().into_owned(), database.message().to_owned());
-        tx.rollback().await?;
-        Ok(failure)
-    })).await.unwrap();
-    log.connection.shutdown().await.unwrap();
-    assert_projection_positions(&path);
-    eprintln!(
-        "legacy projection failure: code={} message={}",
-        failure.0, failure.1
-    );
-    failure
 }

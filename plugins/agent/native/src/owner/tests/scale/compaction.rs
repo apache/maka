@@ -207,7 +207,7 @@ async fn phase(
 ) -> (Value, Option<String>, u64) {
     let before = *load
         .fixture
-        .session(&session)
+        .session(session)
         .await
         .subscribe_commits()
         .unwrap()
@@ -245,7 +245,7 @@ async fn phase(
     let cpu_seconds = usage().0 - cpu;
     let through = *load
         .fixture
-        .session(&session)
+        .session(session)
         .await
         .subscribe_commits()
         .unwrap()
@@ -344,7 +344,7 @@ async fn original_history(
 ) -> (usize, usize) {
     let through = *load
         .fixture
-        .session(&session)
+        .session(session)
         .await
         .subscribe_commits()
         .unwrap()

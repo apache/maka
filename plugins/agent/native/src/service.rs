@@ -57,39 +57,53 @@ impl Handler for Agent {
                 "catalog" => {
                     let mut input: List = decode(input)?;
                     let mut changes = owner.store.subscribe_catalog_changes();
-                    changes.borrow_and_update();
-                    let page = catalog_page(&owner, &input).await?;
-                    let mut revision = page.revision.clone();
-                    let mut anchor = page.sessions.first().map(|session| session.id.clone());
-                    context.emit(encode(page)?).await?;
+                    let mut revision = None;
                     loop {
+                        // Observe notifications before reading so a racing commit
+                        // remains available to wake the next attempt.
+                        changes.borrow_and_update();
+                        let unchanged = if let Some(revision) = &revision {
+                            owner
+                                .store
+                                .catalog_revision(
+                                    catalog_scope(&owner, &input).await?,
+                                    catalog_filter(&input),
+                                )
+                                .await
+                                .map_err(|_| "agent_catalog_unavailable")?
+                                == *revision
+                        } else {
+                            false
+                        };
+                        if !unchanged {
+                            match catalog_page(&owner, &input).await {
+                                Ok(page) => {
+                                    revision = Some(page.revision.clone());
+                                    input.position = page.sessions.first().map_or(
+                                        SessionPosition::Start,
+                                        |session| SessionPosition::At {
+                                            cursor: session.id.clone(),
+                                        },
+                                    );
+                                    context.emit(encode(page)?).await?;
+                                }
+                                // Start/At can race an internal snapshot read.
+                                // After/Before require the caller's exact revision
+                                // and cannot be retried after it becomes stale.
+                                Err(error)
+                                    if error == "agent_catalog_changed"
+                                        && matches!(
+                                            input.position,
+                                            SessionPosition::Start | SessionPosition::At { .. }
+                                        ) => {}
+                                Err(error) => return Err(error),
+                            }
+                        }
                         tokio::select! {
                             biased;
                             _ = context.scope().cancellation.cancelled() => return Err("agent_observation_cancelled".into()),
                             result = changes.changed() => result.map_err(|_| "agent_observation_closed")?,
                         }
-                        changes.borrow_and_update();
-                        let current = owner
-                            .store
-                            .catalog_revision(
-                                catalog_scope(&owner, &input).await?,
-                                catalog_filter(&input),
-                            )
-                            .await
-                            .map_err(|_| "agent_catalog_unavailable")?;
-                        if current == revision {
-                            continue;
-                        }
-                        input.position = anchor.as_ref().map_or(
-                            crate::contract::SessionPosition::Start,
-                            |cursor| crate::contract::SessionPosition::At {
-                                cursor: cursor.clone(),
-                            },
-                        );
-                        let page = catalog_page(&owner, &input).await?;
-                        revision = page.revision.clone();
-                        anchor = page.sessions.first().map(|session| session.id.clone());
-                        context.emit(encode(page)?).await?;
                     }
                 }
                 "projectMcp" => encode(owner.project_mcp(decode(input)?, context.scope()).await?),
@@ -478,11 +492,13 @@ impl Handler for Agent {
                                 input.position,
                                 input.include_thinking,
                                 input.view,
-                                32 * 1024,
-                                (input.view
-                                    == maka_agent_ports::session::history::HistoryView::Text)
-                                    .then_some(8),
-                                64 * 1024,
+                                maka_event_log::transcript::HistoryLimits {
+                                    max_bytes: 32 * 1024,
+                                    max_chunks: (input.view
+                                        == maka_agent_ports::session::history::HistoryView::Text)
+                                        .then_some(8),
+                                    max_json_bytes: 64 * 1024,
+                                },
                             )
                             .await
                             .map_err(|_| "agent_history_unavailable")?;
@@ -690,9 +706,11 @@ impl Handler for Agent {
                             .history_source(
                                 &input.session_id,
                                 input.through,
-                                position,
-                                input.field,
-                                input.path,
+                                maka_event_log::transcript::SourceSelection {
+                                    locator: position,
+                                    field: input.field,
+                                    path: input.path,
+                                },
                                 input.position,
                                 8192,
                             )

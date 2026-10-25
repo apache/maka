@@ -125,7 +125,6 @@ pub(super) struct WaitInput {
     /// Approximate text-output budget (64..32768 tokens).
     #[serde(default = "default_tokens")]
     #[schemars(range(min = 64, max = 32768))]
-    #[serde(alias = "max_output_tokens")]
     max_tokens: usize,
     /// Request cancellation. Running means accepted effects are still being settled.
     #[serde(default)]

@@ -47,9 +47,11 @@ async fn tail(log: &SessionFixture, through: u64, turns: u64) -> (f64, usize) {
             through,
             Position::Tail,
             false,
-            16 * 1024,
-            32,
-            64 * 1024,
+            maka_event_log::transcript::HistoryLimits {
+                max_bytes: 16 * 1024,
+                max_chunks: Some(32),
+                max_json_bytes: 64 * 1024,
+            },
         )
         .await
         .unwrap();

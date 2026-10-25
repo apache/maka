@@ -119,14 +119,13 @@ pub enum Fact {
     },
     InvocationOpened {
         input: InvocationInput,
-        /// Absent only for older/synthetic facts; never recover it from mutable metadata.
+        /// Absent when message preparation fails before configuration capture.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         configuration: Option<Box<crate::execution::InvocationConfiguration>>,
     },
     ModelRequested {
         /// Complete ModelObserved items are durably accepted before stream end.
-        /// Absent on older journals, which accept only ModelCompleted output.
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        /// Otherwise history accepts only the complete ModelCompleted output.
         item_acceptance: bool,
         step_id: String,
         model_id: String,
@@ -149,9 +148,7 @@ pub enum Fact {
     MessageSteered {
         message: Box<crate::input::DeliveredMessage>,
         /// Canonical input at consumption, including accepted queue edits.
-        /// Absent only in older facts; never reconstruct it from the submit receipt.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        source: Option<Box<crate::message::RootSourceMessage>>,
+        source: Box<crate::message::RootSourceMessage>,
     },
     ContextCheckpointRecorded {
         checkpoint: crate::context::ContextCheckpoint,
@@ -160,7 +157,7 @@ pub enum Fact {
         placeholder: crate::archive::ArchivedPlaceholder,
     },
     /// Durable stream evidence. Marked requests accept complete items as they
-    /// arrive; legacy requests accept history at ModelCompleted only.
+    /// arrive; completion-only requests accept history at ModelCompleted.
     ModelObserved {
         step_id: String,
         event: crate::model::ModelEvent,
@@ -169,7 +166,7 @@ pub enum Fact {
         step_id: String,
         status: ModelInterruption,
         /// Provider-owned diagnostic for users and inspection, not model input
-        /// or retry authority. Missing on journals written by older Hosts.
+        /// or retry authority. Cancellation need not include a diagnostic.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         diagnostic: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -220,24 +217,21 @@ pub enum Fact {
 
 pub fn validate_steered_source(
     message: &crate::input::DeliveredMessage,
-    source: Option<&crate::message::RootSourceMessage>,
+    source: &crate::message::RootSourceMessage,
     session: &str,
 ) -> Result<(), &'static str> {
-    message.validate()?;
-    if let Some(source) = source {
-        source.validate()?;
-        if source.message != *message
-            || source.disposition != crate::message::MessageDisposition::Steering
-            || source
-                .submitted_intent
-                .as_ref()
-                .is_some_and(crate::message::SubmittedTurnIntent::is_exact_turn)
-        {
-            return Err("steering differs from its canonical source");
-        }
-        if let Some(intent) = &source.submitted_intent {
-            crate::input::validate_selection_session(&intent.input_selection_sources, session)?;
-        }
+    source.validate()?;
+    if source.message != *message
+        || source.disposition != crate::message::MessageDisposition::Steering
+        || source
+            .submitted_intent
+            .as_ref()
+            .is_some_and(crate::message::SubmittedTurnIntent::is_exact_turn)
+    {
+        return Err("steering differs from its canonical source");
+    }
+    if let Some(intent) = &source.submitted_intent {
+        crate::input::validate_selection_session(&intent.input_selection_sources, session)?;
     }
     Ok(())
 }
@@ -286,7 +280,7 @@ pub enum ModelInterruption {
     Cancelled,
     TimedOut,
     Failed,
-    /// Trusted ingress permits retry: legacy steps can discard observations;
+    /// Trusted ingress permits retry: completion-only steps can discard observations;
     /// item-accepting steps must retain completed items and settle their tools.
     /// This records safety evidence, not an instruction to retry.
     RetryableFailure,

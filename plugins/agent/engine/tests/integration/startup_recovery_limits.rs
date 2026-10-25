@@ -75,7 +75,13 @@ async fn recovery_excludes_large_stream_history_but_bounds_execution_authority()
         vec![invocation()]
     );
     assert_eq!(recover(&log).await.unwrap(), 1);
-    assert!(log.unfinished_invocations(0, 1).await.unwrap().invocations.is_empty());
+    assert!(
+        log.unfinished_invocations(0, 1)
+            .await
+            .unwrap()
+            .invocations
+            .is_empty()
+    );
     assert!(
         matches!(log.turn_boundary("session", "turn").await.unwrap().unwrap().state,
         maka_event_log::turns::InvocationState::Ended { outcome: InvocationOutcome::Failed { class, .. }, .. }

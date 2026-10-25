@@ -64,7 +64,7 @@ pub(super) async fn composition(
     session: &str,
 ) -> maka_agent_facts::composition::RequestComposition {
     let prefix = fixture
-        .session(&(session))
+        .session(session)
         .await
         .scoped_prefix(
             maka_agent_facts::event::LogScope::Session { id: session.into() },

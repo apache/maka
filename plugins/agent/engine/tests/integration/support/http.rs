@@ -74,7 +74,10 @@ pub async fn read_request_bounded(socket: &mut TcpStream, max_body_bytes: usize)
             assert!(body.len() <= max_body_bytes);
             assert_eq!(&bytes[offset + size..offset + size + 2], b"\r\n");
             offset += size + 2;
+            bytes.drain(..offset);
+            offset = 0;
         }
+        drop(bytes);
         return serde_json::from_slice(&body).unwrap();
     }
     let length: usize = headers

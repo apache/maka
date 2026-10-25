@@ -61,6 +61,8 @@ async fn queue_management_preserves_the_stream_draft_and_original_message_identi
         let (mut view, bindings) = fixture.view(fixture.client().await, Some(fixture.session.clone()));
         view.resize(120, 40);
         wait_editable_composer(&mut view).await;
+        support::click_button(&mut view, "Jump to turn: Keep working while I manage followups").await;
+        view.handle_event(Event::Mouse(MouseEvent {kind:MouseEventKind::Moved,column:0,row:0,modifiers:KeyModifiers::NONE}));
         wait_view(&mut view, |screen| screen.contains("QUEUE_CURRENT_RESPONSE")).await;
 
         // Queueing a follow-up uses the resident saved draft. It must not pull

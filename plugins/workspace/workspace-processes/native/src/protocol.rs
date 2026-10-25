@@ -298,37 +298,33 @@ impl Processes {
             controls: &self.protocol,
             id,
         };
-        let result = async {
-            // The same SQL transaction checks the live invocation and captured
-            // configuration, and retains Session removal until actual cleanup.
-            let store = maka_agent_authority::permissions::execution(
-                &self.store,
-                &tool.invocation,
-                tool.execution.as_deref(),
-            )?;
-            store
-                .admit_session_process_for(&tool.invocation, id, &configuration.permission_basis())
-                .await
-                .map_err(persistence)?;
-            custody.phase = ProcessPhase::Active;
-            let result = worker::run(
-                self,
-                context,
-                id,
-                plan,
-                receive,
-                Some((&store, &configuration)),
-            )
-            .await;
-            if result.is_ok() {
-                custody.phase = ProcessPhase::Drained;
-                // The worker has physically drained. A journal failure leaves
-                // recovery work, not an unknown live process; SQL owns its pins.
-                store.clean_session_process(id).await.map_err(persistence)?;
-            }
-            result
-        }
+        // The same SQL transaction checks the live invocation and captured
+        // configuration, and retains Session removal until actual cleanup.
+        let store = maka_agent_authority::permissions::execution(
+            &self.store,
+            &tool.invocation,
+            tool.execution.as_deref(),
+        )?;
+        store
+            .admit_session_process_for(&tool.invocation, id, &configuration.permission_basis())
+            .await
+            .map_err(persistence)?;
+        custody.phase = ProcessPhase::Active;
+        let result = worker::run(
+            self,
+            context,
+            id,
+            plan,
+            receive,
+            Some((&store, &configuration)),
+        )
         .await;
+        if result.is_ok() {
+            custody.phase = ProcessPhase::Drained;
+            // The worker has physically drained. A journal failure leaves
+            // recovery work, not an unknown live process; SQL owns its pins.
+            store.clean_session_process(id).await.map_err(persistence)?;
+        }
         result
     }
     async fn launch(&self, input: Launch, context: &Context) -> Result<Completion, ToolError> {
@@ -387,8 +383,7 @@ impl Processes {
         };
         // The original mutation owns this application process through physical
         // exit. It is not an Agent invocation and creates no Session process row.
-        let result = worker::run(self, context, id, plan, receive, None).await;
-        result
+        worker::run(self, context, id, plan, receive, None).await
     }
     async fn protocol_input(&self, input: Input, context: &Context) -> Result<Written, ToolError> {
         if input.bytes.as_ref().is_some_and(|b| b.len() > CHUNK_BYTES) {

@@ -141,7 +141,10 @@ impl Owner {
                     .await
                 {
                     Ok(SessionMutation::Committed(session)) => Ok(SessionChanged::Changed {
-                        session: Box::new(crate::service::summary(self, resolve_session(session)?)),
+                        session: Box::new(crate::service::summary(
+                            self,
+                            resolve_session(*session)?,
+                        )),
                     }),
                     Ok(SessionMutation::RevisionConflict { expected, actual }) => {
                         Ok(SessionChanged::RevisionConflict { expected, actual })

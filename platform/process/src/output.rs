@@ -49,7 +49,30 @@ pub struct Captured {
 impl Captured {
     /// Present the final native evidence using the shell tool's common format.
     pub fn into_output(self, cwd: PathBuf, command: String) -> Value {
-        render(cwd, command, self)
+        #[cfg(windows)]
+        let cwd = dunce::simplified(&cwd);
+        let (status, code, failure) = match self.outcome {
+            Outcome::Exited(exit) if exit.success() => ("completed", Some(0), None),
+            Outcome::Exited(exit) => ("failed", exit.code(), Some(failure(exit))),
+            Outcome::Interrupted {
+                reason: Termination::Timeout,
+                ..
+            } => ("timed_out", Some(124), None),
+            Outcome::Interrupted {
+                reason: Termination::Cancelled,
+                ..
+            } => ("cancelled", Some(130), None),
+        };
+        let mut result = json!({"kind":"terminal","cwd":cwd,"cmd":command,"status":status,
+        "output":{"mode":"pipes","stdout":self.stdout,"stderr":self.stderr,
+        "stdoutTruncated":self.stdout_truncated,"stderrTruncated":self.stderr_truncated,"redacted":false}});
+        if let Some(code) = code {
+            result["exitCode"] = json!(code);
+        }
+        if let Some(failure) = failure {
+            result["failureMessage"] = json!(failure);
+        }
+        result
     }
 
     pub(crate) fn new(outcome: Outcome, mut stdout: Tail, mut stderr: Tail) -> Self {
@@ -61,33 +84,6 @@ impl Captured {
             stderr_truncated: stderr.truncated,
         }
     }
-}
-
-pub(crate) fn render(cwd: PathBuf, command: String, captured: Captured) -> Value {
-    #[cfg(windows)]
-    let cwd = dunce::simplified(&cwd);
-    let (status, code, failure) = match captured.outcome {
-        Outcome::Exited(exit) if exit.success() => ("completed", Some(0), None),
-        Outcome::Exited(exit) => ("failed", exit.code(), Some(failure(exit))),
-        Outcome::Interrupted {
-            reason: Termination::Timeout,
-            ..
-        } => ("timed_out", Some(124), None),
-        Outcome::Interrupted {
-            reason: Termination::Cancelled,
-            ..
-        } => ("cancelled", Some(130), None),
-    };
-    let mut result = json!({"kind":"terminal","cwd":cwd,"cmd":command,"status":status,
-        "output":{"mode":"pipes","stdout":captured.stdout,"stderr":captured.stderr,
-        "stdoutTruncated":captured.stdout_truncated,"stderrTruncated":captured.stderr_truncated,"redacted":false}});
-    if let Some(code) = code {
-        result["exitCode"] = json!(code);
-    }
-    if let Some(failure) = failure {
-        result["failureMessage"] = json!(failure);
-    }
-    result
 }
 
 fn failure(exit: ExitStatus) -> String {

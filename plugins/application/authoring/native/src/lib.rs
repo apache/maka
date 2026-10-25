@@ -361,20 +361,6 @@ impl NativeOwner for Requests {
 mod tests {
     use super::*;
     use maka_event_log::root::{RootNamespaces, RootOwner};
-    #[test]
-    fn submit_tool_schema_declares_object_and_keeps_command_variants() {
-        let maka_plugin_core::contract::Interface::Service { methods } = contract().interface
-        else {
-            panic!("authoring service");
-        };
-        let schema = &methods["submit"].input;
-        assert_eq!(schema["type"], "object");
-        assert_eq!(schema["oneOf"].as_array().unwrap().len(), 10);
-        let command = json!({"method":"instances","input":{"kind":"start"}});
-        assert!(serde_json::from_value::<Command>(command).is_ok());
-        assert!(serde_json::from_value::<Command>(json!({"method":"instances"})).is_err());
-        assert!(serde_json::from_value::<Command>(json!({"method":"unknown","input":{}})).is_err());
-    }
     fn requests(store: Arc<RootStore>) -> Requests {
         Requests {
             store,

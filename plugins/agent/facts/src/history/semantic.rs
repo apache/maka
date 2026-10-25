@@ -222,29 +222,6 @@ fn row(stored: &StoredEvent, index: u64, order: RowPosition, kind: SemanticKind)
 }
 
 impl Frontier {
-    /// View-only recovery output. This does not settle a canonical operation.
-    /// The view owner includes these rows only for the prior-unknown policy.
-    pub fn unknown_rows(&self, invocation: &Invocation) -> Vec<SemanticRow> {
-        self.calls
-            .iter()
-            .filter_map(|(operation_id, call)| {
-                let sequence = call.dispatched_at?;
-                Some(SemanticRow {
-                    id: position(sequence, 0),
-                    revision: sequence,
-                    invocation: invocation.clone(),
-                    order: position(sequence, 0),
-                    kind: SemanticKind::UnknownTool {
-                        operation_id: operation_id.clone(),
-                        call_id: call.call_id.clone(),
-                        name: call.name.clone(),
-                        custom: call.custom,
-                    },
-                })
-            })
-            .collect()
-    }
-
     fn stable(&mut self, transition: &mut Transition, cut: RowPosition) {
         self.stable_cut = Some(self.stable_cut.map_or(cut, |old| old.max(cut)));
         transition.stable_cut = self.stable_cut;

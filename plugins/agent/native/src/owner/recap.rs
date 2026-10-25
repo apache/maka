@@ -165,9 +165,11 @@ impl recap::History for Backend {
                     through,
                     input.position,
                     false,
-                    8192,
-                    8,
-                    96 * 1024,
+                    maka_event_log::transcript::HistoryLimits {
+                        max_bytes: 8192,
+                        max_chunks: Some(8),
+                        max_json_bytes: 96 * 1024,
+                    },
                 )
                 .await
                 .map_err(persistence)?;
@@ -315,7 +317,7 @@ impl Owner {
                     &self.store,
                     auxiliary::Admission::Operation {
                         reference: Box::new(reference),
-                        scope: dispatch,
+                        scope: Box::new(dispatch),
                         execution: scope
                             .identity
                             .agent()

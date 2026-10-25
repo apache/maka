@@ -21,7 +21,12 @@ import { UiError, errorText, renderText, type UiText } from './text';
 import { tr } from './locale';
 import { cleanup, inputAction, Scroll, signal, Text, View } from 'nsh';
 import { Button, Dialog } from 'nsh/base';
-import type { ModelUsage, UsageModelAttempt } from '../../../../packages/plugin-sdk/src/index.js';
+import type {
+  ModelUsage,
+  UsageActivityCursor,
+  UsageFence,
+  UsageModelAttempt,
+} from '../../../../packages/plugin-sdk/src/index.js';
 import { host } from './host';
 import { C, controlStyle, controlHoverStyle, controlFocusStyle } from './ui';
 import { Icon } from './Icon';
@@ -49,16 +54,16 @@ function total(attempts: UsageModelAttempt[], key: Counter): string {
   return String(value);
 }
 
-/** Read the original physical accounting fence; copied history never creates usage. */
+/** Read original turn accounting at one captured usage fence, including across retries. */
 export function TurnUsage(props: {
   sessionId: string;
   turnId: string;
-  through: number;
   current(): boolean;
   close(): void;
 }) {
   const reading = signal<Reading>({ kind: 'loading', checked: 0 });
   let alive = true;
+  let through: UsageFence | null = null;
   cleanup(() => {
     alive = false;
   });
@@ -69,7 +74,8 @@ export function TurnUsage(props: {
     try {
       const matching: UsageModelAttempt[] = [];
       const seen = new Set<string>();
-      let offset = 0;
+      let cursor: UsageActivityCursor | null = null;
+      let checked = 0;
       let expectedTotal: number | null = null;
       for (;;) {
         const page = await host.query('settings', 'usage', {
@@ -77,22 +83,29 @@ export function TurnUsage(props: {
             from: 0,
             to: Number.MAX_SAFE_INTEGER,
             sessionId: props.sessionId,
-            through: props.through,
+            through,
           },
           selection: { kind: 'model', status: null, search: '' },
-          offset,
+          cursor,
         });
         if (!active()) return;
-        const end = offset + page.attempts.length;
+        checked += page.attempts.length;
         if (
-          page.through !== props.through ||
+          (through !== null &&
+            (page.through.stateDomain !== through.stateDomain ||
+              page.through.partitions.some(
+                (position, index) => position !== through!.partitions[index],
+              ))) ||
           !Number.isSafeInteger(page.total) ||
           page.total < 0 ||
           (expectedTotal !== null && page.total !== expectedTotal) ||
-          end > page.total ||
-          (page.nextOffset == null ? end !== page.total : page.nextOffset !== end || end <= offset)
+          checked > page.total ||
+          (page.nextCursor === null
+            ? checked !== page.total
+            : checked >= page.total || page.attempts.length === 0)
         )
           throw new UiError('The original turn usage page could not be verified.');
+        through = page.through;
         expectedTotal = page.total;
         for (const activity of page.attempts) {
           if (
@@ -112,9 +125,9 @@ export function TurnUsage(props: {
           )
             matching.push(attempt);
         }
-        if (page.nextOffset == null) break;
-        offset = page.nextOffset;
-        reading.set({ kind: 'loading', checked: offset });
+        if (page.nextCursor === null) break;
+        cursor = page.nextCursor;
+        reading.set({ kind: 'loading', checked });
       }
       reading.set({ kind: 'ready', attempts: matching });
     } catch (reason) {
@@ -217,7 +230,7 @@ export function TurnUsage(props: {
                 onPress={inputAction(read, {
                   sessionId: props.sessionId,
                   turnId: props.turnId,
-                  through: props.through,
+                  through,
                 })}
               >
                 <Text style={{ color: C.accent }}>{tr('Retry')}</Text>

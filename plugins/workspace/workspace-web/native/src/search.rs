@@ -177,7 +177,6 @@ fn decode(bytes: &[u8], input: &Query) -> Result<Results, Error> {
                 title,
                 snippet,
                 url: url.to_string(),
-                truncated: false,
             })
         })
         .take(input.limit)
@@ -185,7 +184,7 @@ fn decode(bytes: &[u8], input: &Query) -> Result<Results, Error> {
     let omitted_results = total - rows.len();
     Ok(Results {
         query: input.query.clone(),
-        truncated: omitted_results > 0 || rows.iter().any(|row| row.truncated),
+        truncated: omitted_results > 0,
         omitted_results,
         rows,
     })
@@ -216,7 +215,7 @@ pub fn native(
 mod tests {
     use super::*;
     #[test]
-    fn results_disclose_omissions_and_clipping_without_returning_unsafe_urls() {
+    fn results_disclose_omissions_preserve_snippets_and_filter_unsafe_urls() {
         let bytes = serde_json::to_vec(&serde_json::json!({"results":[
             {"title":"bad","url":"javascript:alert(1)"},
             {"title":"credential","url":"https://secret@example.com/"},
@@ -236,8 +235,11 @@ mod tests {
         assert_eq!(result.rows.len(), 2);
         assert_eq!(result.omitted_results, 3);
         assert!(result.truncated);
-        assert!(!result.rows[0].truncated);
+        assert_eq!(result.rows[0].title, "useful");
+        assert_eq!(result.rows[0].url, "https://example.com/a");
         assert_eq!(result.rows[0].snippet, "字".repeat(401));
+        assert_eq!(result.rows[1].title, "b");
+        assert_eq!(result.rows[1].url, "https://example.com/b");
         assert!(
             decode(
                 br#"{"error":"provider rejected request"}"#,

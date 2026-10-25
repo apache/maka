@@ -37,8 +37,6 @@ pub enum Error {
         line: u64,
         source: serde_json::Error,
     },
-    #[error("source limit exceeded: {kind} (maximum {max})")]
-    Limit { kind: &'static str, max: u64 },
     #[error("invalid source: {0}")]
     Invalid(&'static str),
 }
@@ -81,9 +79,8 @@ impl Records {
         }
         Ok(self.records)
     }
-    pub fn retain(&mut self, keep: impl FnMut(&Record) -> bool) -> Result<(), Error> {
+    pub fn retain(&mut self, keep: impl FnMut(&Record) -> bool) {
         self.records.retain(keep);
-        Ok(())
     }
 }
 

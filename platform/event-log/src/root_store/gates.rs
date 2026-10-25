@@ -79,7 +79,9 @@ impl Gates {
             changed: tokio::sync::Notify::new(),
         })
     }
-    pub(super) fn cancellation(&self) -> CancellationToken { self.stop.clone() }
+    pub(super) fn cancellation(&self) -> CancellationToken {
+        self.stop.clone()
+    }
     pub(super) fn close(&self) {
         self.lifetime.lock().unwrap().closing = true;
         self.stop.cancel();
@@ -262,6 +264,20 @@ impl Drop for Registration {
     }
 }
 
+pub(super) struct RecoveryPin {
+    gates: Arc<Gates>,
+    released: Option<tokio::sync::oneshot::Sender<()>>,
+}
+impl Drop for RecoveryPin {
+    fn drop(&mut self) {
+        self.gates.lifetime.lock().unwrap().recovering = false;
+        self.gates.changed.notify_waiters();
+        if let Some(released) = self.released.take() {
+            let _ = released.send(());
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -307,19 +323,5 @@ mod tests {
         assert!(matches!(closed.await, Err(StoreError::ConnectionClosed)));
         drop(writer);
         assert!(gates.entries.lock().unwrap().is_empty());
-    }
-}
-
-pub(super) struct RecoveryPin {
-    gates: Arc<Gates>,
-    released: Option<tokio::sync::oneshot::Sender<()>>,
-}
-impl Drop for RecoveryPin {
-    fn drop(&mut self) {
-        self.gates.lifetime.lock().unwrap().recovering = false;
-        self.gates.changed.notify_waiters();
-        if let Some(released) = self.released.take() {
-            let _ = released.send(());
-        }
     }
 }

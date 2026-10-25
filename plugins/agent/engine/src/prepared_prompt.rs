@@ -99,7 +99,7 @@ impl PreparedPrompt {
             suffix: &'a [Message],
         }
         let identity = crate::runner::digest(&Identity {
-            domain: "maka.prepared-prompt.v2",
+            domain: "maka.prepared-prompt.v1",
             body: self.body.identity(),
             system: self.system.as_deref(),
             prefix: &self.prefix,

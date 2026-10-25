@@ -21,8 +21,6 @@ use sqlx::SqliteConnection;
 
 use crate::StoreError;
 
-pub(crate) mod terminal_display;
-
 static MIGRATIONS: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 
 pub(crate) async fn initialize_connection(
@@ -84,11 +82,7 @@ pub(crate) async fn initialize_connection_with_control(
             .await?;
     }
     crate::sqlite_functions::register(connection).await?;
-    terminal_display::register(connection, true).await?;
-    let migrated = MIGRATIONS.run_direct(None, &mut *connection, false).await;
-    let removed = terminal_display::register(connection, false).await;
-    migrated?;
-    removed?;
+    MIGRATIONS.run_direct(None, &mut *connection, false).await?;
     sqlx::raw_sql("PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;")
         .execute(&mut *connection)
         .await?;
@@ -106,5 +100,6 @@ pub(crate) async fn initialize_connection_with_control(
 }
 
 #[cfg(test)]
-#[path = "../tests/migrations/prior_artifacts.rs"]
-mod artifact_payload_tests;
+mod fixtures;
+#[cfg(test)]
+pub(crate) use fixtures::schema as fixture;

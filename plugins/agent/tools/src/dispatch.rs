@@ -222,7 +222,6 @@ impl<'a> RequestTools<'a> {
 
     pub fn into_step(self, step_id: &str) -> StepTools<'a> {
         StepTools {
-            finished: self.finished.clone(),
             request: self,
             step_id: step_id.to_owned(),
             admission: Admission::Fresh,
@@ -233,7 +232,6 @@ impl<'a> RequestTools<'a> {
 /// Call-order admission is separate from execution scheduling. Serial execution
 /// alone does not make exclusive-step siblings legal.
 pub struct StepTools<'a> {
-    finished: Arc<AtomicBool>,
     request: RequestTools<'a>,
     step_id: String,
     admission: Admission,
@@ -262,7 +260,7 @@ impl Admission {
 
 impl<'a> StepTools<'a> {
     pub fn finished(&self) -> bool {
-        self.finished.load(Ordering::Acquire)
+        self.request.finished()
     }
 
     pub async fn invoke(
@@ -283,7 +281,7 @@ impl<'a> StepTools<'a> {
         let run = request.run;
         let operation_id = format!("{}:{}", self.step_id, call.id);
         let identity = ToolCallIdentity::provider(self.step_id.clone(), call.id.clone());
-        let finished = self.finished.clone();
+        let finished = request.finished.clone();
         let catalog = if run.mode == ToolMode::CodeMode {
             &request.direct
         } else {

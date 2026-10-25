@@ -900,21 +900,18 @@ export const MESSAGES = {
     '尋找模型失敗：{value}',
   ],
   findingModels: ['Finding models…', '正在查找模型…', '正在尋找模型…'],
-  creatingConnectionStep: ['Creating the connection', '正在创建连接', '正在建立連線'],
   hostCreatedNoConnection: [
     'the Host created no connection',
     'Host 没有创建连接',
     'Host 沒有建立連線',
   ],
   added: ['Added', '已添加', '已新增'],
-  savingKeyStep: ['Saving the key', '正在保存密钥', '正在儲存金鑰'],
   addedWithoutKey: [
     'added without a key: {value}',
     '已添加但未保存密钥：{value}',
     '已新增但未儲存金鑰：{value}',
   ],
   keySaved: ['Key saved', '密钥已保存', '金鑰已儲存'],
-  findingModelsStep: ['Finding models', '正在查找模型', '正在尋找模型'],
   addedThen: ['Added; {value}', '已添加；{value}', '已新增；{value}'],
   hostRefusedKey: [
     'the Host refused the key ({value})',
@@ -934,33 +931,6 @@ export const MESSAGES = {
     '尋找模型失敗，請檢查金鑰和端點，然後使用「尋找模型」',
   ],
   connectionGone: ['the connection is gone', '该连接已不存在', '該連線已不存在'],
-  importPrompt: ['Import', '导入', '匯入'],
-  importFailed: ['Import: {value}', '导入：{value}', '匯入：{value}'],
-  importingFailed: ['Importing: {value}', '导入失败：{value}', '匯入失敗：{value}'],
-  importing: ['Importing…', '正在导入…', '正在匯入…'],
-  notJson: ['the file is not JSON', '该文件不是 JSON', '該檔案不是 JSON'],
-  notSettingsExport: [
-    'the file is not a Maka settings export with keys (schema version 1)',
-    '该文件不是包含密钥的 Maka 设置导出文件（schema 版本 1）',
-    '該檔案不是包含金鑰的 Maka 設定匯出檔案（schema 版本 1）',
-  ],
-  onlyApiKeys: ['only API keys can be imported', '只能导入 API Key', '只能匯入 API Key'],
-  hostHasNoProvider: [
-    'this Host has no provider "{name}"',
-    '此 Host 没有服务商「{name}」',
-    '此 Host 沒有服務商「{name}」',
-  ],
-  invalidConnectionId: [
-    'its ID is not a valid connection ID',
-    '其 ID 不是有效的连接标识',
-    '其 ID 不是有效的連線識別碼',
-  ],
-  connectionIdExistsHere: [
-    'a connection with this ID exists',
-    '已有使用此标识的连接',
-    '已有使用此識別碼的連線',
-  ],
-  keyEmpty: ['the key is empty', '密钥为空', '金鑰為空'],
   enterName: [
     'Enter a name of at most 256 characters',
     '请输入不超过 256 个字符的名称',
@@ -1026,12 +996,6 @@ export const MESSAGES = {
     '已封存的任務會保留歷史紀錄。還原後會重新出現在側欄。',
   ],
   backToApp: ['Back to app', '返回应用', '返回應用'],
-  importFromExport: ['Import from Maka export…', '从 Maka 导出文件导入…', '從 Maka 匯出檔案匯入…'],
-  importFromExportTip: [
-    'Read the API keys from a settings file exported by the old Maka app',
-    '从旧版 Maka 应用导出的设置文件中读取 API Key',
-    '從舊版 Maka 應用程式匯出的設定檔中讀取 API Key',
-  ],
   addConnection: ['Add connection', '添加连接', '新增連線'],
 
   // Settings: General (settings.js)
@@ -1143,18 +1107,7 @@ export const MESSAGES = {
   ],
   changeProvider: ['Change provider', '更换服务商', '更換服務商'],
 
-  // Settings: import from an export (settings.js)
-  importReady: ['Will be imported', '将导入', '將匯入'],
-  importSkipped: ['Skipped', '已跳过', '已跳過'],
-  importWorking: ['Importing', '正在导入', '正在匯入'],
-  importDone: ['Imported', '已导入', '已匯入'],
-  importRowTitle: ['{name} ({id})', '{name}（{id}）', '{name}（{id}）'],
-  importRowTitleNoId: ['{name} (no ID)', '{name}（无 ID）', '{name}（無 ID）'],
-  fileHasNoKeys: ['The file has no keys.', '该文件中没有密钥。', '該檔案中沒有金鑰。'],
   close: ['Close', '关闭', '關閉'],
-  importKeysOne: ['Import {count} key', '导入 {count} 个密钥', '匯入 {count} 個金鑰'],
-  importKeysOther: ['Import {count} keys', '导入 {count} 个密钥', '匯入 {count} 個金鑰'],
-  importFrom: ['Import from {name}', '从 {name} 导入', '從 {name} 匯入'],
 
   // Settings: Subagents (subagents.js). Where the TUI's page
   // (plugins/shared/tui-messages.ts) words the same thing, these copy it.

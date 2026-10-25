@@ -1010,11 +1010,6 @@ export const conversationMessages = {
     '草稿尚未准备好保存。请先返回对话，再删除。',
     '草稿尚未準備好儲存。請先返回對話，再刪除。',
   ],
-  'The extracted page content is truncated.': [
-    'The extracted page content is truncated.',
-    '提取的页面内容已截断。',
-    '擷取的頁面內容已截斷。',
-  ],
   'The model changed before confirmation. Send again to confirm it.': [
     'The model changed before confirmation. Send again to confirm it.',
     '确认前模型已变化，请重新发送以确认。',
@@ -1292,11 +1287,6 @@ export const conversationMessages = {
   'Write file': msg_toolWriteAction,
   'Writing response': ['Writing response', '正在撰写回复', '正在撰寫回覆'],
   'Your answer': ['Your answer', '你的答案', '你的答案'],
-  '[Snippet truncated by the Host]': [
-    '[Snippet truncated by the Host]',
-    '[摘要已被 Host 截断]',
-    '[摘要已被 Host 截斷]',
-  ],
   bytes: msg_toolByteRange,
   'path and descendants': ['path and descendants', '此路径及其子路径', '此路徑及其子路徑'],
   'this exact path': ['this exact path', '此精确路径', '此精確路徑'],

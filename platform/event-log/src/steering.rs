@@ -31,12 +31,8 @@ pub(crate) async fn validate_append(
     let Fact::MessageSteered { message, source } = &event.fact else {
         return Ok(());
     };
-    maka_agent_facts::event::validate_steered_source(
-        message,
-        source.as_deref(),
-        &event.invocation.session_id,
-    )
-    .map_err(|error| StoreError::InvalidTransition(error.into()))?;
+    maka_agent_facts::event::validate_steered_source(message, source, &event.invocation.session_id)
+        .map_err(|error| StoreError::InvalidTransition(error.into()))?;
     let eligible: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM runtime_events WHERE invocation_id = ?
          AND kind = 'invocation_opened' AND json_extract(event_json, '$.fact.input.kind') IN ('message', 'continuation', 'handoff'))"
@@ -96,7 +92,7 @@ impl EventLog {
                             ));
                         };
                         maka_agent_facts::event::validate_steered_source(
-                            message, source.as_deref(), &event.invocation.session_id,
+                            message, source, &event.invocation.session_id,
                         )
                             .map_err(|error| StoreError::InvalidTransition(error.into()))?;
                         if event.invocation.session_id != session_id

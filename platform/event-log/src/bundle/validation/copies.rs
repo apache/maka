@@ -161,8 +161,12 @@ impl Copies {
                              AND ((kind='invocation_opened'
                                AND json_extract(event_json,'$.fact.input.kind')='message'
                                AND json_array_length(event_json,'$.fact.input.source_messages')>0)
-                               OR (kind='message_steered' AND json_type(event_json,'$.fact.source')='object')))"
-                        ).bind(sequence as i64).bind(turn_id).fetch_one(&mut *db).await?;
+                               OR kind='message_steered'))",
+                        )
+                        .bind(sequence as i64)
+                        .bind(turn_id)
+                        .fetch_one(&mut *db)
+                        .await?;
                         if !selected {
                             return Err(invalid(
                                 "revision source is not a selected canonical Message input",

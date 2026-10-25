@@ -29,7 +29,7 @@ use maka_event_log::root_store::RootStore;
 use maka_plugin_core::{
     composition::{ExecutionLocation, Override, PackageUse},
     package::{PackageRef, PackageSelection},
-    plan::Plan,
+    plan::{PackageChange, Plan},
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -455,7 +455,7 @@ fn updated_source(
         Plan::prepare_replacing(&input, &declarations, &Default::default(), |package| {
             replacement(package, replacements).cloned()
         })?;
-    for (path, package) in changes {
+    for PackageChange { path, package } in changes {
         let (root, relative) = path.split_first().ok_or("selected instance path missing")?;
         let node = input
             .instances

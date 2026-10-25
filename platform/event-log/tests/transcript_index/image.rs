@@ -119,9 +119,11 @@ async fn actual_tool_images_are_immutable_scoped_and_reconstructed_without_paths
             through,
             Position::Start,
             false,
-            8192,
-            8,
-            64 * 1024,
+            maka_event_log::transcript::HistoryLimits {
+                max_bytes: 8192,
+                max_chunks: Some(8),
+                max_json_bytes: 64 * 1024,
+            },
         )
         .await
         .unwrap();
@@ -230,9 +232,11 @@ async fn actual_tool_images_are_immutable_scoped_and_reconstructed_without_paths
             copy_fence,
             Position::Start,
             false,
-            8192,
-            8,
-            64 * 1024,
+            maka_event_log::transcript::HistoryLimits {
+                max_bytes: 8192,
+                max_chunks: Some(8),
+                max_json_bytes: 64 * 1024,
+            },
         )
         .await
         .unwrap();
@@ -514,7 +518,17 @@ async fn borrowed_upload_is_frozen_at_settlement_before_any_history_copy() {
     .unwrap();
     for session in ["borrowed", "borrowed-copy"] {
         let Page::Ready { chunks, .. } = log
-            .history_text(session, through, Position::Start, false, 8192, 8, 64 * 1024)
+            .history_text(
+                session,
+                through,
+                Position::Start,
+                false,
+                maka_event_log::transcript::HistoryLimits {
+                    max_bytes: 8192,
+                    max_chunks: Some(8),
+                    max_json_bytes: 64 * 1024,
+                },
+            )
             .await
             .unwrap();
         let sequence = chunks

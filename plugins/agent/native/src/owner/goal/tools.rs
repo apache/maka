@@ -113,7 +113,7 @@ impl Owner {
     ) -> Result<Saved<MessageBasis>, String> {
         if !self.settings.goals
             || self
-                .tool_store(&context)?
+                .tool_store(context)?
                 .get::<StoredSessionConfiguration>()
                 .await
                 .map_err(|error| error.to_string())?
@@ -138,7 +138,7 @@ impl Owner {
             .as_ref()
             .ok_or("goal_iteration_missing")?;
         let boundary = self
-            .tool_store(&context)?
+            .tool_store(context)?
             .invocation_boundary(
                 &context.invocation.session_id,
                 &context.invocation.invocation_id,

@@ -451,9 +451,11 @@ async fn adoption_markers_are_durable_timed_and_hidden_from_recall() {
                         Position::Start,
                         false,
                         view,
-                        128 * 1024,
-                        None,
-                        1024 * 1024,
+                        maka_event_log::transcript::HistoryLimits {
+                            max_bytes: 128 * 1024,
+                            max_chunks: None,
+                            max_json_bytes: 1024 * 1024,
+                        },
                     )
                     .await
                     .unwrap();
@@ -481,9 +483,11 @@ async fn adoption_markers_are_durable_timed_and_hidden_from_recall() {
                     Position::Start,
                     false,
                     HistoryView::Conversation,
-                    128 * 1024,
-                    None,
-                    1024 * 1024,
+                    maka_event_log::transcript::HistoryLimits {
+                        max_bytes: 128 * 1024,
+                        max_chunks: None,
+                        max_json_bytes: 1024 * 1024,
+                    },
                 )
                 .await
                 .unwrap();

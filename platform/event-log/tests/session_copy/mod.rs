@@ -720,9 +720,11 @@ async fn copies_own_history_and_files_without_replaying_execution_across_retries
                 root.high_water,
                 maka_agent_ports::session::history::Position::Start,
                 false,
-                16 * 1024,
-                8,
-                1024 * 1024,
+                maka_event_log::transcript::HistoryLimits {
+                    max_bytes: 16 * 1024,
+                    max_chunks: Some(8),
+                    max_json_bytes: 1024 * 1024,
+                },
             )
             .await
             .unwrap();
@@ -759,9 +761,11 @@ async fn copies_own_history_and_files_without_replaying_execution_across_retries
                     root.high_water,
                     maka_agent_ports::session::history::Position::Start,
                     false,
-                    16 * 1024,
-                    8,
-                    1024 * 1024
+                    maka_event_log::transcript::HistoryLimits {
+                        max_bytes: 16 * 1024,
+                        max_chunks: Some(8),
+                        max_json_bytes: 1024 * 1024
+                    }
                 )
                 .await
                 .unwrap()

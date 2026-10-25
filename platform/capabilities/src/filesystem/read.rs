@@ -534,15 +534,14 @@ fn invalid(error: impl ToString) -> ReadError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    async fn scope() -> crate::call::Scope {
+    fn scope() -> crate::call::Scope {
         crate::call::Issuer::default()
-            .admit(
+            .issue(
                 crate::call::Identity::Remote {
                     request_id: uuid::Uuid::new_v4(),
                 },
                 CancellationToken::new(),
             )
-            .await
             .unwrap()
     }
 
@@ -603,7 +602,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         std::fs::write(directory.path().join("allowed"), b"abcdef").unwrap();
         std::fs::write(directory.path().join("private"), b"secret").unwrap();
-        let owner = scope().await;
+        let owner = scope();
         let root = ReadRoot::open(directory.path()).await.unwrap();
         let restricted = root.clone().select(["allowed".into()].into()).unwrap();
         let cancellation = owner.cancellation.clone();
@@ -722,7 +721,7 @@ mod tests {
             Err(ReadError::Retired)
         ));
         owner.finish().await.unwrap();
-        let independent_owner = scope().await;
+        let independent_owner = scope();
         let independent = restricted.bind_scope(&independent_owner);
         assert_eq!(
             independent.read(read("allowed")).await.unwrap().bytes,

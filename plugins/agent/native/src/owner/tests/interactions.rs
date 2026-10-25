@@ -34,7 +34,7 @@ pub(super) async fn question_response(socket: &mut TcpStream) {
     socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
 }
 async fn pending(fixture: &Fixture, session: &str) -> InteractionRecord {
-    let mut commits = fixture.session(&session).await.subscribe_commits().unwrap();
+    let mut commits = fixture.session(session).await.subscribe_commits().unwrap();
     loop {
         if let Some(record) = fixture
             .session(session)

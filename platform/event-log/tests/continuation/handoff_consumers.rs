@@ -147,18 +147,26 @@ async fn handoff_output_keeps_one_public_identity_and_all_physical_evidence_afte
             let content = maka_agent_facts::input::MessageInput::from("additional direction");
             append(
                 &log,
-                &RuntimeEvent::new(
-                    current.invocation.clone(),
+                &RuntimeEvent::new(current.invocation.clone(), {
+                    let message = DeliveredMessage {
+                        origin: None,
+                        message_id: "steered-message".into(),
+                        submitted_content_digest: content.content_digest().unwrap(),
+                        content,
+                    };
+                    let mut unprepared_content = message.content.clone();
+                    unprepared_content.preparation.clear();
                     Fact::MessageSteered {
-                        source: None,
-                        message: Box::new(DeliveredMessage {
-                            origin: None,
-                            message_id: "steered-message".into(),
-                            submitted_content_digest: content.content_digest().unwrap(),
-                            content,
+                        source: Box::new(maka_agent_facts::message::RootSourceMessage {
+                            message: message.clone(),
+                            unprepared_content,
+                            submitted_placement: maka_agent_facts::message::Placement::CurrentTurn,
+                            disposition: maka_agent_facts::message::MessageDisposition::Steering,
+                            submitted_intent: None,
                         }),
-                    },
-                ),
+                        message: Box::new(message),
+                    }
+                }),
             )
             .await;
         }

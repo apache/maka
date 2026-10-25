@@ -334,10 +334,12 @@ impl OwnedConnection {
                     let reader_owner = runtime.spawn(run_readers(
                         read_receiver,
                         reader_stop.clone(),
-                        read_options,
+                        ReaderOptions {
+                            connection: read_options,
+                            prepared: prepared.clone(),
+                            control: control.clone(),
+                        },
                         authority.clone(),
-                        prepared.clone(),
-                        control.clone(),
                         retained.clone(),
                         owner_stop.clone(),
                     ));
@@ -742,15 +744,20 @@ impl OwnedConnection {
     }
 }
 
+#[derive(Clone)]
+struct ReaderOptions {
+    connection: SqliteConnectOptions,
+    prepared: Option<PreparedCache>,
+    control: Option<ReadOnlyControl>,
+}
+
 // Both persistent readers remain on the original owner's runtime. The mutex
 // protects only ingress removal; SQL and accepted jobs run independently.
 async fn run_readers(
     receiver: mpsc::Receiver<ReadEnvelope>,
     stop: CancellationToken,
-    options: SqliteConnectOptions,
+    options: ReaderOptions,
     authority: Arc<ConnectionAuthority>,
-    prepared: Option<PreparedCache>,
-    control: Option<ReadOnlyControl>,
     retained: Arc<Retained>,
     writer_stop: CancellationToken,
 ) -> Result<(), StoreError> {
@@ -762,8 +769,6 @@ async fn run_readers(
             stop.clone(),
             options.clone(),
             authority.clone(),
-            prepared.clone(),
-            control.clone(),
             retained.clone(),
             slot,
         ));
@@ -787,10 +792,8 @@ async fn run_readers(
 async fn reader_worker(
     receiver: Arc<tokio::sync::Mutex<mpsc::Receiver<ReadEnvelope>>>,
     stop: CancellationToken,
-    options: SqliteConnectOptions,
+    options: ReaderOptions,
     authority: Arc<ConnectionAuthority>,
-    prepared: Option<PreparedCache>,
-    control: Option<ReadOnlyControl>,
     retained: Arc<Retained>,
     slot: usize,
 ) -> Result<(), StoreError> {
@@ -816,7 +819,13 @@ async fn reader_worker(
         }
         let mut valid = authority.validate();
         if valid.is_ok() && connection.is_none() {
-            match connect_reader(&options, prepared.as_ref(), control.as_ref()).await {
+            match connect_reader(
+                &options.connection,
+                options.prepared.as_ref(),
+                options.control.as_ref(),
+            )
+            .await
+            {
                 Ok(opened) => connection = Some(opened),
                 Err(error) => {
                     if matches!(error, StoreError::StartupCleanupFailed { .. }) {

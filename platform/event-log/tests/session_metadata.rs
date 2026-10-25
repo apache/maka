@@ -137,7 +137,7 @@ async fn metadata_cas_noop_and_reopen_preserve_activity_fingerprint_and_active_e
             .revision
     );
     assert_eq!(
-        Some(updated.clone()),
+        Some((*updated).clone()),
         log.get_session::<Value>("session").await.unwrap()
     );
     assert_eq!(
@@ -147,7 +147,7 @@ async fn metadata_cas_noop_and_reopen_preserve_activity_fingerprint_and_active_e
     log.close().await.unwrap();
     let log = EventLog::open(&path).await.unwrap();
     assert_eq!(
-        Some(updated),
+        Some(*updated),
         log.probe_session_create::<Value>("session", "original-create")
             .await
             .unwrap()

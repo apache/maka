@@ -209,7 +209,13 @@ async fn repeated_checkpoints_cross_old_history_limits_with_bounded_tail_and_exa
     ))
     .await
     .unwrap();
-    assert!(log.unfinished_invocations(0, 10).await.unwrap().invocations.is_empty());
+    assert!(
+        log.unfinished_invocations(0, 10)
+            .await
+            .unwrap()
+            .invocations
+            .is_empty()
+    );
     log.close().await.unwrap();
 }
 

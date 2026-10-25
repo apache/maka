@@ -232,16 +232,10 @@ pub(crate) async fn consume(
             continue;
         };
         let matches = match &event.fact {
-            Fact::MessageSteered { message, source } => {
+            Fact::MessageSteered { source, .. } => {
                 *pending.steering_target() == event.invocation
                     && pending.source.disposition == MessageDisposition::Steering
-                    && match source.as_deref() {
-                        Some(source) => source == &pending.source,
-                        None => {
-                            pending.source.submitted_intent.is_none()
-                                && pending.source.message == **message
-                        }
-                    }
+                    && **source == pending.source
             }
             Fact::InvocationOpened { .. } => {
                 crate::message_sources::roots(event).iter().any(|source| {

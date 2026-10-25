@@ -351,7 +351,7 @@ async fn public_large_queue_edit_and_promotion_preserve_original_identity_and_ex
         assert_eq!(steering.len(), 1);
         assert_eq!(steering[0].event.invocation.invocation_id, started["invocationId"]);
         assert!(serde_json::to_vec(&steering[0].event).unwrap().len() > 1024 * 1024);
-        let Fact::MessageSteered { message, source: Some(steered) } = &steering[0].event.fact else { panic!("steering retains original source") };
+        let Fact::MessageSteered { message, source: steered } = &steering[0].event.fact else { panic!("steering retains original source") };
         assert_eq!(message.message_id, queued["messageId"]);
         assert!(message.content.text.as_bytes() == edited.as_bytes());
         assert!(steered.message.content.text.as_bytes() == edited.as_bytes());

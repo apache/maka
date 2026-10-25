@@ -142,9 +142,7 @@ impl InvocationView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use maka_agent_facts::context::{
-        CheckpointMode, ContextCheckpoint, SummaryFormat, TextSummary,
-    };
+    use maka_agent_facts::context::{CheckpointMode, ContextCheckpoint, TextSummary};
     use maka_agent_facts::event::{Invocation, InvocationOutcome, StoredEvent};
     use maka_agent_facts::model::ModelStep;
     use serde_json::json;
@@ -240,7 +238,6 @@ mod tests {
                                 previous_checkpoint_id: None,
                                 summary_step_id: "retry".into(),
                                 summary: TextSummary {
-                                    format: SummaryFormat::SectionsV1,
                                     text: "private summary".into(),
                                 },
                             },
@@ -350,7 +347,6 @@ mod tests {
                         previous_checkpoint_id: None,
                         summary_step_id: "retry".into(),
                         summary: TextSummary {
-                            format: SummaryFormat::SectionsV1,
                             text: "summary".into(),
                         },
                     },

@@ -84,6 +84,73 @@ pub struct Fixture {
     pub server: tokio::task::JoinHandle<Result<(), String>>,
 }
 impl Fixture {
+    pub async fn runtime_databases(&self) -> Vec<PathBuf> {
+        let mut entries =
+            tokio::fs::read_dir(self.database.parent().unwrap().join("runtime-partitions"))
+                .await
+                .unwrap();
+        let mut paths = Vec::new();
+        while let Some(entry) = entries.next_entry().await.unwrap() {
+            let path = entry.path();
+            if path
+                .extension()
+                .is_some_and(|extension| extension == "sqlite")
+                && entry.file_type().await.unwrap().is_file()
+            {
+                paths.push(path);
+            }
+        }
+        assert!(!paths.is_empty(), "fixture must have runtime databases");
+        paths
+    }
+
+    pub async fn database_containing(&self, query: &'static str, parameters: &[&str]) -> PathBuf {
+        use sqlx::Connection;
+        let mut matches = Vec::new();
+        for path in self.runtime_databases().await {
+            let mut connection = sqlx::SqliteConnection::connect_with(
+                &sqlx::sqlite::SqliteConnectOptions::new()
+                    .filename(&path)
+                    .read_only(true),
+            )
+            .await
+            .unwrap();
+            let mut query = sqlx::query_scalar::<_, bool>(query);
+            for parameter in parameters {
+                query = query.bind(*parameter);
+            }
+            if query.fetch_one(&mut connection).await.unwrap() {
+                matches.push(path);
+            }
+            connection.close().await.unwrap();
+        }
+        assert_eq!(
+            matches.len(),
+            1,
+            "expected one authoritative runtime database"
+        );
+        matches.pop().unwrap()
+    }
+
+    pub async fn intent_count(&self) -> i64 {
+        use sqlx::Connection;
+        let mut total = 0;
+        for path in self.runtime_databases().await {
+            let mut connection = sqlx::SqliteConnection::connect_with(
+                &sqlx::sqlite::SqliteConnectOptions::new()
+                    .filename(&path)
+                    .read_only(true),
+            )
+            .await
+            .unwrap();
+            total += sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM application_intents")
+                .fetch_one(&mut connection)
+                .await
+                .unwrap();
+            connection.close().await.unwrap();
+        }
+        total
+    }
     pub async fn open() -> Self {
         let directory = tempfile::tempdir().unwrap();
         maka_event_log::root::private_directory(directory.path()).unwrap();

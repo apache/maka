@@ -141,7 +141,6 @@ impl ValueCheckpoint {
             let mut ticket = resources.reserve().map_err(|e| e.to_string())?;
             let key = props.key.clone();
             let format = props.format.clone();
-            let wake = resources.clone();
             ticket.start();
             scope.scheduler.clone().spawn(async move {
                 let mut requests = requests;
@@ -252,7 +251,6 @@ impl ValueCheckpoint {
                             Err(error) => (failure(sequence, error), None),
                         })
                         .await;
-                    wake.notify();
                     match requests.recv().await {
                         Some((next, next_memory)) => {
                             command = next;

@@ -218,11 +218,11 @@ impl RootStore {
         vector: CatalogVector,
         count_pending: bool,
     ) -> Result<(Vec<(String, usize)>, u64), StoreError> {
+        let selection = crate::sessions::CatalogQuery::new(scope, filter)?;
         let pages = try_join_all(self.partitions.iter().enumerate().map(|(index, log)| {
             log.root_catalog_ids(
                 index,
-                scope.clone(),
-                filter,
+                selection.clone(),
                 position,
                 limit,
                 vector.partition(index),
@@ -486,7 +486,7 @@ impl RootStore {
                 use sqlx::Connection;
                 let mut tx=db.begin().await?; require_snapshot(&mut tx,expected).await?;
                 if !session_visible(&mut tx,index,&after).await? {return Err(StoreError::SessionNotFound);}
-                Ok(sqlx::query_scalar::<_,i64>("SELECT created_at FROM session_imports WHERE session_id=? AND state='published'").bind(after).fetch_optional(&mut *tx).await?.ok_or(StoreError::SessionNotFound)?)
+                sqlx::query_scalar::<_,i64>("SELECT created_at FROM session_imports WHERE session_id=? AND state='published'").bind(after).fetch_optional(&mut *tx).await?.ok_or(StoreError::SessionNotFound)
             })).await?)
         } else {
             None

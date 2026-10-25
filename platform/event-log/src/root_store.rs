@@ -304,7 +304,7 @@ pub(crate) async fn initialize_control(
             sqlx::query_as("SELECT version, partitions FROM root_store_layout WHERE singleton=1")
                 .fetch_one(&mut *connection)
                 .await?;
-        if layout != (2, PARTITION_COUNT as i64) {
+        if layout != (1, PARTITION_COUNT as i64) {
             return Err(StoreError::UnsupportedDatabase);
         }
     } else {
@@ -353,7 +353,7 @@ pub(crate) async fn initialize_control(
     sqlx::raw_sql(include_str!("root_store/routes.sql"))
         .execute(&mut *tx)
         .await?;
-    sqlx::query("INSERT INTO root_store_layout VALUES(1,2,?) ON CONFLICT(singleton) DO NOTHING")
+    sqlx::query("INSERT INTO root_store_layout VALUES(1,1,?) ON CONFLICT(singleton) DO NOTHING")
         .bind(PARTITION_COUNT as i64)
         .execute(&mut *tx)
         .await?;

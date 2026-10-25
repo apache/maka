@@ -514,6 +514,5 @@ impl maka_agent_ports::model::Events for ChannelEvents {
 mod stream_tests;
 
 pub use native::wire::{
-    PreparationContext, WireEncoding, prepare_wire_group, prepare_wire_group_with_context,
-    wire_codec, wire_message_metadata, wire_preparation_dependencies,
+    PreparationContext, WireEncoding, wire_message_metadata, wire_preparation_dependencies,
 };

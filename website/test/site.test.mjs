@@ -28,13 +28,10 @@ import test from 'node:test';
 import { headlineText, heroText } from '../scripts/hero-text.mjs';
 
 const dist = new URL('../dist/', import.meta.url);
-const repo = new URL('../../', import.meta.url);
 const page = (path) => readFileSync(new URL(path, dist), 'utf8');
 const locales = ['en', 'zh-CN'];
 const pages = ['index.html', 'downloads/index.html'];
 
-const positioning =
-  'Apache Maka (Incubating) is a high-performance agent workspace that keeps a complete record of everything it did.';
 // DISCLAIMER-WIP is the project's copy of the Incubator disclaimer, so the
 // site has to carry that paragraph rather than a wording of its own.
 const disclaimer = readFileSync(new URL('../../DISCLAIMER-WIP', import.meta.url), 'utf8')
@@ -82,8 +79,7 @@ test('every page carries a complete link preview', () => {
     for (const key of ['og:title', 'og:description', 'og:url']) {
       assert.ok(meta(html, key), `${path} ${key}`);
     }
-    // The alt is the language's positioning line plus the scene description the
-    // scene description, so shared previews remain accessible.
+    // The alt includes the positioning line and scene description for accessibility.
     const alt = meta(html, 'og:image:alt');
     assert.equal(meta(html, 'twitter:image:alt'), alt, path);
     const description = meta(page(`${locale}/index.html`), 'description');
@@ -143,24 +139,19 @@ test('the brand links to the homepage of the current language on every page', ()
   }
 });
 
-test('the English homepage uses the positioning sentence unchanged', () => {
-  assert.ok(page('en/index.html').includes(positioning));
-});
-
-// #4307 settled one sentence for the homepage, the READMEs and the repository
-// description. The description is a folded YAML scalar, so compare it unfolded.
-test('the READMEs and the repository description open with the same sentence', () => {
-  const root = new URL('../../', import.meta.url);
-  const read = (path) => readFileSync(new URL(path, root), 'utf8');
-  assert.ok(read('README.md').includes(positioning), 'README.md');
-  assert.ok(
-    read('README.zh-CN.md').includes(
-      'Apache Maka (Incubating) 是一个高性能 Agent 工作台，完整记录它做过的每一件事。',
-    ),
-    'README.zh-CN.md',
-  );
+test('the READMEs and repository description match the published positioning', () => {
+  const read = (path) => readFileSync(new URL(`../../${path}`, import.meta.url), 'utf8');
+  for (const locale of locales) {
+    const positioning = meta(page(`${locale}/index.html`), 'description');
+    assert.ok(positioning, `${locale} description`);
+    const readme = locale === 'en' ? 'README.md' : `README.${locale}.md`;
+    assert.ok(read(readme).includes(positioning), readme);
+  }
   const [, description] = read('.asf.yaml').match(/description: >-\n((?: {4}.*\n)+)/u);
-  assert.equal(description.replace(/\s+/gu, ' ').trim(), positioning);
+  assert.equal(
+    description.replace(/\s+/gu, ' ').trim(),
+    meta(page('en/index.html'), 'description'),
+  );
 });
 
 // Social previews are screenshots of these pages, so the copy the render

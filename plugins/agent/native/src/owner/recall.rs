@@ -313,9 +313,11 @@ impl History for Recall {
                     through,
                     input.position,
                     false,
-                    8192,
-                    8,
-                    96 * 1024,
+                    maka_event_log::transcript::HistoryLimits {
+                        max_bytes: 8192,
+                        max_chunks: Some(8),
+                        max_json_bytes: 96 * 1024,
+                    },
                 )
                 .await
                 .map_err(failed)?;

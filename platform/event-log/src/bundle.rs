@@ -100,63 +100,58 @@ async fn inventory(
     connection: &mut SqliteConnection,
     root: &str,
 ) -> Result<Inventory, BundleError> {
-    let revision: Option<i64> = sqlx::query_scalar(
-        "SELECT revision FROM session_control WHERE id=? AND NOT EXISTS(
-            SELECT 1 FROM session_retirements WHERE session_id=id AND remove_session=1)",
+    let exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM session_control WHERE id=? AND NOT EXISTS(
+            SELECT 1 FROM session_retirements WHERE session_id=id AND remove_session=1))",
     )
     .bind(root)
-    .fetch_optional(&mut *connection)
+    .fetch_one(&mut *connection)
     .await
     .map_err(StoreError::from)?;
-    let mut rows = vec![(
-        root.to_owned(),
-        revision.ok_or(StoreError::SessionNotFound)?,
-    )];
+    if !exists {
+        return Err(StoreError::SessionNotFound.into());
+    }
     let mut seen = HashSet::from([root.to_owned()]);
     let mut frontier = vec![root.to_owned()];
     while !frontier.is_empty() {
         // Deduplicate all parent-edge kinds before expanding the next frontier.
-        let children: Vec<(String, i64)> = sqlx::query_as(
-            "SELECT live.id,live.revision FROM session_history_copies c
+        let children: Vec<String> = sqlx::query_scalar(
+            "SELECT live.id FROM session_history_copies c
                JOIN session_control live ON live.id=c.session_id
              WHERE c.source_session_id IN (SELECT value FROM json_each(?1))
-               AND live.id NOT IN (SELECT value FROM json_each(?2))
                AND NOT EXISTS(SELECT 1 FROM session_retirements
                  WHERE session_id=live.id AND remove_session=1)
              UNION ALL
-             SELECT live.id,live.revision FROM plugin_sessions p
+             SELECT live.id FROM plugin_sessions p
                JOIN session_control live ON live.id=p.session_id
              WHERE p.authority_session_id IN (SELECT value FROM json_each(?1))
-               AND live.id NOT IN (SELECT value FROM json_each(?2))
                AND NOT EXISTS(SELECT 1 FROM session_retirements
                  WHERE session_id=live.id AND remove_session=1)
              UNION ALL
-             SELECT live.id,live.revision FROM session_bundle_members b
+             SELECT live.id FROM session_bundle_members b
                JOIN session_control live ON live.id=b.session_id
              WHERE b.parent_session_id IN (SELECT value FROM json_each(?1))
-               AND live.id NOT IN (SELECT value FROM json_each(?2))
                AND NOT EXISTS(SELECT 1 FROM session_retirements
                  WHERE session_id=live.id AND remove_session=1)
 ",
         )
         .bind(serde_json::to_string(&frontier).map_err(StoreError::from)?)
-        .bind(serde_json::to_string(&seen).map_err(StoreError::from)?)
         .fetch_all(&mut *connection)
         .await
         .map_err(StoreError::from)?;
         frontier.clear();
-        for (id, revision) in children {
+        for id in children {
             if seen.insert(id.clone()) {
-                frontier.push(id.clone());
-                rows.push((id, revision));
+                frontier.push(id);
             }
         }
     }
     // Session IDs are ASCII; this also matches Desktop's confirmation ordering.
-    rows.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+    let mut rows: Vec<_> = seen.into_iter().collect();
+    rows.sort_unstable();
     let mut digest = Sha256::new();
     let mut sessions = Vec::with_capacity(rows.len());
-    for (id, _) in rows {
+    for id in rows {
         if !sessions.is_empty() {
             digest.update(b"\n");
         }

@@ -77,7 +77,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
   const actionsAnchor = signal<YNode | null>(null);
   const navigationNotice = signal<{ kind: 'draft' | 'action'; message: UiText } | null>(null);
   const viewportHeight = signal(160);
-  let navigationRoot: YNode | undefined;
+  let navigationTarget: YNode | undefined;
   let list: YNode | undefined;
   let removeEscape = () => {};
   let alive = true;
@@ -178,19 +178,19 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
       choosingWorkspace.set(false);
     });
     list?.scrollToIndex({ index: 0, animated: false });
-    navigationRoot?.focus();
+    navigationTarget?.focus();
   };
   const escape = () => {
     if (actions()) return;
     if (choosingWorkspace()) {
       choosingWorkspace.set(false);
-      navigationRoot?.focus();
+      navigationTarget?.focus();
     } else props.close();
   };
   const focusBrowser = () => {
-    if (!props.focusRequest() || !navigationRoot) return;
+    if (!props.focusRequest() || !navigationTarget) return;
     choosingWorkspace.set(false);
-    navigationRoot.focus();
+    navigationTarget.focus();
     props.focusHandled();
   };
   effect(() => {
@@ -225,13 +225,10 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
   return (
     <View
       ref={(node) => {
-        navigationRoot = node;
         props.attach(node);
         removeEscape();
         removeEscape = keymap.bind('escape', escape, { when: 'always', within: node });
-        focusBrowser();
       }}
-      focusable
       style={{ flex: 1, minHeight: 0, backgroundColor: C.surface, padding: 12, gap: 8 }}
     >
       <View
@@ -265,6 +262,10 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
       </Button>
       <Button
         accessibilityLabel={tr('Choose workspace scope')}
+        ref={(node) => {
+          navigationTarget = node;
+          focusBrowser();
+        }}
         onPress={inputAction(toggleScopes, null)}
         style={{ ...controlStyle, flexDirection: 'row', alignItems: 'center', gap: 8 }}
         hoverStyle={{ backgroundColor: C.raised }}

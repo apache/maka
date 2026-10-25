@@ -80,7 +80,14 @@ async fn automatic_modes_apply_archived_sources_without_sealing_the_message() {
         log.append(&EventWrite::plain(checkpoint).unwrap())
             .await
             .unwrap();
-        assert_eq!(log.unfinished_invocations(0, 10).await.unwrap().invocations.len(), 1);
+        assert_eq!(
+            log.unfinished_invocations(0, 10)
+                .await
+                .unwrap()
+                .invocations
+                .len(),
+            1
+        );
         let source = log
             .capture_model_context("session", Some("writer"), 100_000, 64 * 1024 * 1024)
             .await
