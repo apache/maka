@@ -40,6 +40,7 @@ async fn editor_copy_and_undo_precede_interrupt_and_ctrl_c_requires_confirming_t
         const DRAFT: &str = "CTRL_C_UNDO_DRAFT_你好";
         view.handle_event(Event::Paste(DRAFT.into()));
         support::wait_draft(&client, &fixture.session, DRAFT).await;
+        support::wait_enabled_button(&mut view, "Send message").await;
         shortcut(&mut view, 'a');
         shortcut(&mut view, 'c');
         shortcut(&mut view, 'c');
@@ -48,10 +49,14 @@ async fn editor_copy_and_undo_precede_interrupt_and_ctrl_c_requires_confirming_t
         support::wait_draft(&client, &fixture.session, DRAFT).await;
         view.handle_event(Event::Key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE)));
         shortcut(&mut view, 'c');
+        wait_view(&mut view, |screen| !screen.contains(DRAFT)).await;
         support::wait_draft(&client, &fixture.session, "").await;
         shortcut(&mut view, 'z');
+        wait_view(&mut view, |screen| screen.contains(DRAFT)).await;
         support::wait_draft(&client, &fixture.session, DRAFT).await;
+        support::wait_enabled_button(&mut view, "Send message").await;
         shortcut(&mut view, 'c');
+        wait_view(&mut view, |screen| !screen.contains(DRAFT)).await;
         support::wait_draft(&client, &fixture.session, "").await;
         let mut previous = None;
         for (index, message) in ["FIRST_ESC_RUN", "SECOND_CONFIRMED_CTRL_C_RUN"]
