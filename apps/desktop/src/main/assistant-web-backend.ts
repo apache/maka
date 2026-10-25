@@ -40,6 +40,7 @@ export interface AssistantWebBackend {
   avatarImage(conversationId: string, id: string): Promise<{ bytes: Buffer; mimeType: string }>;
   history(query: URLSearchParams): Promise<WebHistory>;
   send(input: { conversationId: string; id: string; text: string }): Promise<void>;
+  cardAction(input: { conversationId: string; cardId: string; actionKey?: string }): Promise<{ selectedKey: string | null }>;
   close(): Promise<void>;
 }
 type Client = Pick<
@@ -80,6 +81,7 @@ export function visibleWebMessage(
       role: 'assistant',
       text: message.text,
       summary: message.summary,
+      card: message.card,
       at: message.ts,
     };
   return undefined;
@@ -289,6 +291,16 @@ export function createAssistantWebBackend(
             })
           : null,
       };
+    },
+    async cardAction(input) {
+      const t = await connect();
+      if (t.conversationId !== input.conversationId)
+        throw new AssistantWebError(409, '助手会话已变更，请刷新');
+      const result = await t.client.request('personal-assistant.call', {
+        method: input.actionKey === undefined ? 'assistant.card-status' : 'assistant.card-reply',
+        input: { sessionId: t.sessionId, cardId: input.cardId, ...(input.actionKey === undefined ? {} : { actionKey: input.actionKey }) },
+      });
+      return result.value as { selectedKey: string | null };
     },
     async send(input) {
       const t = await connect();

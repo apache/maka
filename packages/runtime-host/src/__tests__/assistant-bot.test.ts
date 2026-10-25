@@ -2072,3 +2072,81 @@ for (const userHasSpoken of [false, true])
       1,
     );
   });
+
+test('SendUser card batch validates before delivery and retries identically after restart', async (t) => {
+  const f = await fixture();
+  t.after(f.close);
+  const card = {
+    type: 'offer',
+    title: '报销材料',
+    items: [
+      {
+        title: '整理提交包',
+        facts: [{ label: '待补', value: '酒店发票' }],
+        actions: [
+          { kind: 'reply', label: '帮我整理', value: '帮我整理这次出差的报销材料，暂不提交。' },
+        ],
+      },
+    ],
+  };
+  let done = false;
+  f.runner(async ({ invoke }) => {
+    await invoke('InboxCheck');
+    await assert.rejects(
+      invoke('SendUser', {
+        messageId: 'bad-card',
+        messages: [
+          { text: '先不要发送' },
+          {
+            text: 'bad',
+            card: {
+              ...card,
+              items: [
+                {
+                  title: 'run',
+                  actions: [{ kind: 'link', label: 'run', value: 'javascript:alert(1)' }],
+                },
+              ],
+            },
+          },
+        ],
+      }),
+    );
+    assert.equal(f.visible.filter((m) => m.type === 'assistant').length, 0);
+    const input = {
+      messageId: 'card-batch',
+      messages: [{ text: '可以帮你整理。', summary: '已有材料可先整理', card }],
+    };
+    await invoke('SendUser', input);
+    await invoke('SendUser', input);
+    await assert.rejects(
+      invoke('SendUser', {
+        ...input,
+        messages: [{ ...input.messages[0], card: { ...card, title: 'changed' } }],
+      }),
+      /different batch/,
+    );
+    await invoke('Sleep');
+    done = true;
+  });
+  await f.send('card-user', '报销还没搞完');
+  await until(() => done);
+  assert.deepEqual(
+    f.visible.filter((m) => m.type === 'assistant').map((m) => m.card),
+    [card],
+  );
+  await f.restart();
+  done = false;
+  f.runner(async ({ invoke }) => {
+    await invoke('InboxCheck');
+    await invoke('SendUser', {
+      messageId: 'card-batch',
+      messages: [{ text: '可以帮你整理。', summary: '已有材料可先整理', card }],
+    });
+    await invoke('Sleep');
+    done = true;
+  });
+  await f.send('card-retry', '重试');
+  await until(() => done);
+  assert.equal(f.visible.filter((m) => m.type === 'assistant').length, 1);
+});

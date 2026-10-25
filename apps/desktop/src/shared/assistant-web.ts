@@ -17,12 +17,15 @@
  * under the License.
  */
 
+import type { AssistantCard } from '@maka/core/assistant-card';
+
 export interface WebMessage {
   id: string;
   sequence: number;
   role: 'user' | 'assistant';
   text: string;
   summary?: string;
+  card?: AssistantCard;
   at: number;
 }
 export interface WebAvatar {

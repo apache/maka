@@ -30,7 +30,6 @@
 
 /* A conversational surface on the existing transcript and composer. */
 .personal-assistant-chat {
-  --maka-reading-measure: 720px;
   --maka-turn-gap: 10px;
   --chat-user-bg: color-mix(in srgb, var(--accent) 20%, var(--background));
 }
@@ -48,6 +47,9 @@
   max-width: 84%;
   background: var(--muted);
 }
+/* The card is the message surface, not a panel nested inside a second bubble. */
+.personal-assistant-chat .maka-chat-message-bubble-assistant:has(.maka-message-card) { width: min(360px, 100%); background: transparent; padding: 0; }
+.personal-assistant-chat .maka-chat-message-bubble-assistant:has(.maka-message-card)::before { display: none; }
 .personal-assistant-chat .maka-assistant-answer-content { max-width: 100%; }
 .personal-assistant-chat .maka-turn[data-turn-id^="assistant-output"] .maka-turn-statusbar[data-turn-status="completed"] { display: none; }
 .personal-assistant-chat .maka-turn-footer { margin-top: 0; }

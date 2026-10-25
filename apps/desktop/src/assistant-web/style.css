@@ -402,3 +402,6 @@ textarea::placeholder {
     max-width: min(680px, calc(100% - 44px));
   }
 }
+
+.bubble:has(.maka-message-card) { width: min(360px, calc(100% - 44px)); background: transparent; padding: 0; border: 0; }
+.bubble:has(.maka-message-card)::before { display: none; }

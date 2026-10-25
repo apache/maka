@@ -168,6 +168,7 @@ export function backfillRuntimeEventsFromStoredMessages(
               kind: 'text',
               text: message.text,
               ...(message.summary !== undefined ? { summary: message.summary } : {}),
+              ...(message.card !== undefined ? { card: message.card } : {}),
               ...(message.interrupted ? { interrupted: true } : {}),
             },
             actions: { stateDelta: recoveryState(now, message) },
