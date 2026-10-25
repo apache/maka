@@ -45,20 +45,28 @@ async fn query(client: &Client, endpoint: &str, method: &str, input: Value) -> V
 
 #[test]
 fn root_startup_initializes_an_empty_root_reuses_its_host_and_preserves_another_client() {
-    let directory = tempfile::tempdir().unwrap();
-    let root = directory.path().join("root");
+    let mut startup_fixture = RootStartupFixture::new();
+    let root = startup_fixture.root.clone();
+    let executable = Path::new(env!("CARGO_BIN_EXE_maka"));
+    let started = Instant::now();
+    eprintln!(
+        "root startup lifecycle: executable_bytes={}",
+        fs::metadata(executable).unwrap().len()
+    );
+    let stage = |phase: &str| {
+        eprintln!(
+            "root startup lifecycle: phase={phase} elapsed_ms={}",
+            started.elapsed().as_millis()
+        );
+    };
     let runtime = tokio::runtime::Runtime::new().unwrap();
     runtime.block_on(async {
         tokio::time::timeout(Duration::from_secs(60), async {
             assert!(!root.exists());
-            // Bind cleanup first so accepted clients detach before it retires
-            // this fresh Root, including when an assertion unwinds.
-            let (fixture, mut first) = {
-                let first = startup::connect_root(Path::new(env!("CARGO_BIN_EXE_maka")), &root)
-                    .await
-                    .unwrap();
-                (CandidateFixture::adopt_existing(root.clone()), first)
-            };
+            stage("initial-connect");
+            let mut first = startup::connect_root(executable, &root).await.unwrap();
+            let fixture = startup_fixture.adopt();
+            stage("initial-admission");
             let found = discovery::read(&root).unwrap();
             found
                 .verify(
@@ -75,22 +83,27 @@ fn root_startup_initializes_an_empty_root_reuses_its_host_and_preserves_another_
             assert_eq!(catalog.get("before"), Some(&Value::Null));
             assert_eq!(catalog.get("after"), Some(&Value::Null));
 
-            let missing_helper = directory.path().join("never-created-startup-helper");
+            let missing_helper = startup_fixture
+                .directory()
+                .join("never-created-startup-helper");
             let error = startup::connect_root(&missing_helper, &root)
                 .await
                 .err()
                 .unwrap();
             assert!(error.starts_with("local Host startup helper:"), "{error}");
-            let mut second = startup::connect_root(Path::new(env!("CARGO_BIN_EXE_maka")), &root)
-                .await
-                .unwrap();
+            stage("reuse-connect");
+            startup_fixture.begin_admission();
+            let mut second = startup::connect_root(executable, &root).await.unwrap();
+            startup_fixture.adopt();
+            stage("reuse-admission");
             assert_eq!(second.epoch(), first.epoch());
             assert_eq!(second.source(), first.source());
             first.close().await.unwrap();
             assert_eq!(query(&second, "agent", "list", list).await, catalog);
             second.close().await.unwrap();
+            stage("clients-closed");
 
-            let fresh = directory.path().join("must-not-be-created");
+            let fresh = startup_fixture.directory().join("must-not-be-created");
             let error = startup::connect_root(&missing_helper, &fresh)
                 .await
                 .err()
@@ -104,10 +117,71 @@ fn root_startup_initializes_an_empty_root_reuses_its_host_and_preserves_another_
                     .unwrap(),
                 "local Host startup root must be absolute"
             );
+            stage("assertions-complete");
         })
         .await
         .unwrap();
     });
+}
+
+#[test]
+fn unconfirmed_root_startup_preserves_absent_and_partial_roots() {
+    for partial in [false, true] {
+        let fixture = RootStartupFixture::new();
+        let directory = fixture.directory().to_owned();
+        let root = fixture.root.clone();
+        assert!(!root.exists());
+        if partial {
+            fs::create_dir(&root).unwrap();
+            fs::write(root.join(maka_event_log::root::ROOT_MARKER), b"{").unwrap();
+        }
+        drop(fixture);
+        assert!(directory.exists());
+        assert_eq!(root.exists(), partial);
+        if partial {
+            assert_eq!(
+                fs::read(root.join(maka_event_log::root::ROOT_MARKER)).unwrap(),
+                b"{"
+            );
+        }
+        // This regression never started a helper or a Host.
+        fs::remove_dir_all(directory).unwrap();
+    }
+}
+
+#[test]
+fn failed_root_fixture_cleanup_preserves_its_directory_and_is_not_retried_on_drop() {
+    let mut startup_fixture = RootStartupFixture::new();
+    let directory = startup_fixture.directory().to_owned();
+    let namespaces = RootNamespaces {
+        ownership: directory.join("owners"),
+        control: directory.join("control"),
+    };
+    let owner = RootOwner::create(&startup_fixture.root, &namespaces).unwrap();
+    let control = owner.control_directory().to_owned();
+    let lock = owner.lock_path().to_owned();
+    let unexpected = control.join("unowned-entry");
+    fs::write(&unexpected, b"preserve").unwrap();
+    startup_fixture.initialized = Some(CandidateFixture {
+        child: None,
+        root: startup_fixture.root.clone(),
+        root_id: owner.root_id().to_owned(),
+        registration: control.join("registration.json"),
+        lock: lock.clone(),
+        cleanup: FixtureCleanup::Pending,
+    });
+    startup_fixture.admission_pending = false;
+    drop(owner);
+
+    assert!(!startup_fixture.initialized.as_mut().unwrap().cleanup());
+    assert_eq!(fs::read(&unexpected).unwrap(), b"preserve");
+    fs::remove_file(unexpected).unwrap();
+    drop(startup_fixture);
+    assert!(directory.exists());
+    assert!(control.exists(), "Drop must not retry an uncertain cleanup");
+    assert!(lock.exists());
+    // This regression uses isolated namespaces and never starts a child or Host.
+    fs::remove_dir_all(directory).unwrap();
 }
 
 #[test]

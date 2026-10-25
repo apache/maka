@@ -25,7 +25,7 @@ use std::{
     path::{Path, PathBuf},
     process::Stdio,
     sync::Arc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
@@ -66,6 +66,7 @@ async fn started(executable: &Path, root: &Path) -> (Child, PathBuf, uuid::Uuid,
         .kill_on_drop(true)
         .spawn()
         .unwrap();
+    eprintln!("desktop lifecycle: launcher_pid={:?}", child.id());
     let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
     let endpoint = PathBuf::from(lines.next_line().await.unwrap().expect("shell endpoint"));
     let epoch = lines
@@ -109,13 +110,27 @@ async fn saved(root: &Path) -> (uuid::Uuid, serde_json::Value, Option<Vec<u8>>) 
 
 #[tokio::test]
 async fn desktop_shell_owns_its_child_and_preserves_the_selected_host_and_other_clients() {
+    let started_at = Instant::now();
+    let stage = |phase: &str| {
+        eprintln!(
+            "desktop lifecycle: phase={phase} elapsed_ms={}",
+            started_at.elapsed().as_millis()
+        );
+    };
     tokio::time::timeout(Duration::from_secs(60), async {
         let directory = tempfile::tempdir().unwrap();
+        stage("copy-launcher");
         let executable = launcher(directory.path());
+        eprintln!(
+            "desktop lifecycle: executable_bytes={}",
+            std::fs::metadata(&executable).unwrap().len()
+        );
         shell(directory.path());
         let fixture = CandidateFixture::new(directory.path().join("Host root 中文"));
         // The Root has no saved application: use the existing standalone initialization.
+        stage("first-shell-start");
         let (mut first, endpoint, epoch, _) = started(&executable, &fixture.root).await;
+        stage("first-shell-ready");
         let registered = discovery::read(&fixture.root).unwrap();
         assert_eq!(registered.endpoint, endpoint);
         assert_eq!(registered.host_epoch, epoch);
@@ -132,7 +147,9 @@ async fn desktop_shell_owns_its_child_and_preserves_the_selected_host_and_other_
             .write_all(b"73\n")
             .await
             .unwrap();
+        stage("first-shell-wait");
         assert_eq!(first.wait().await.unwrap().code(), Some(73));
+        stage("first-launcher-exited");
         let live = Client::status(&endpoint, Some(epoch)).await.unwrap();
         assert_eq!(live.source, original_source);
         assert!(
@@ -140,8 +157,10 @@ async fn desktop_shell_owns_its_child_and_preserves_the_selected_host_and_other_
             "a separate peer keeps its Host alive after shell exit"
         );
 
+        stage("second-shell-start");
         let (mut second, same_endpoint, same_epoch, shell_pid) =
             started(&executable, &fixture.root).await;
+        stage("second-shell-ready");
         assert_eq!(same_endpoint, endpoint);
         assert_eq!(same_epoch, epoch);
         assert_eq!(
@@ -151,11 +170,13 @@ async fn desktop_shell_owns_its_child_and_preserves_the_selected_host_and_other_
         // Signal the launcher, not the Host or the independently connected client.
         // Keep wait() from closing stdin and racing SIGTERM with shell EOF.
         let second_stdin = second.stdin.take().unwrap();
+        stage("second-launcher-sigterm");
         assert_eq!(
             unsafe { libc::kill(second.id().unwrap() as i32, libc::SIGTERM) },
             0
         );
         let status = second.wait().await.unwrap();
+        stage("second-launcher-exited");
         drop(second_stdin);
         assert!(status.success(), "{status}");
         assert_eq!(
@@ -170,12 +191,16 @@ async fn desktop_shell_owns_its_child_and_preserves_the_selected_host_and_other_
         let live = Client::status(&endpoint, Some(epoch)).await.unwrap();
         assert_eq!(live.source, original_source);
         assert!(!live.closing && !live.closed);
+        stage("peer-quit");
         peer.quit().await.unwrap();
+        stage("first-host-save");
         let original_launch = saved(&fixture.root).await;
         assert_eq!(original_launch.0, original_source.deployment);
         assert!(original_launch.2.is_none());
 
+        stage("reopened-shell-start");
         let (mut reopened, new_endpoint, new_epoch, _) = started(&executable, &fixture.root).await;
+        stage("reopened-shell-ready");
         assert_ne!(new_epoch, epoch);
         let live = Client::status(&new_endpoint, Some(new_epoch))
             .await
@@ -191,12 +216,15 @@ async fn desktop_shell_owns_its_child_and_preserves_the_selected_host_and_other_
             .write_all(b"0\n")
             .await
             .unwrap();
+        stage("reopened-shell-wait");
         assert!(reopened.wait().await.unwrap().success());
+        stage("reopened-host-save");
         assert_eq!(
             saved(&fixture.root).await,
             original_launch,
             "reopening must preserve the original saved selection and configuration"
         );
+        stage("assertions-complete");
     })
     .await
     .expect("desktop launcher lifecycle did not settle");
@@ -204,15 +232,28 @@ async fn desktop_shell_owns_its_child_and_preserves_the_selected_host_and_other_
 
 #[tokio::test]
 async fn desktop_shell_spawn_failure_ignores_path_and_releases_its_host() {
+    let started_at = Instant::now();
+    let stage = |phase: &str| {
+        eprintln!(
+            "desktop spawn-failure lifecycle: phase={phase} elapsed_ms={}",
+            started_at.elapsed().as_millis()
+        );
+    };
     tokio::time::timeout(Duration::from_secs(40), async {
         let directory = tempfile::tempdir().unwrap();
+        stage("copy-launcher");
         let executable = launcher(directory.path());
+        eprintln!(
+            "desktop spawn-failure lifecycle: executable_bytes={}",
+            std::fs::metadata(&executable).unwrap().len()
+        );
         let decoy = directory.path().join("path");
         std::fs::create_dir(&decoy).unwrap();
         shell(&decoy);
         // What a lookup by bare name would find.
         shell_at(decoy.join("maka-desktop-shell"));
         let fixture = CandidateFixture::new(directory.path().join("root"));
+        stage("launcher-start-and-output");
         let result = Command::new(&executable)
             .args(["desktop", "--root"])
             .arg(&fixture.root)
@@ -220,6 +261,10 @@ async fn desktop_shell_spawn_failure_ignores_path_and_releases_its_host() {
             .output()
             .await
             .unwrap();
+        eprintln!(
+            "desktop spawn-failure lifecycle: launcher_status={}",
+            result.status
+        );
         assert!(!result.status.success());
         assert!(
             String::from_utf8_lossy(&result.stderr).contains("maka-desktop-shell"),
@@ -230,10 +275,12 @@ async fn desktop_shell_spawn_failure_ignores_path_and_releases_its_host() {
             result.stdout.is_empty(),
             "a PATH decoy must never be executed"
         );
+        stage("host-save");
         assert!(
             saved(&fixture.root).await.2.is_none(),
             "spawn failure must settle the startup owner and leave a reusable saved Host"
         );
+        stage("assertions-complete");
     })
     .await
     .expect("desktop shell spawn failure did not settle");
