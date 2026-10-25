@@ -20,6 +20,7 @@
 mod bridge;
 mod evaluate;
 mod execution_budget;
+mod json;
 mod module;
 pub mod plugin;
 pub mod repl;

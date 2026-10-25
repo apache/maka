@@ -21,7 +21,6 @@
 mod captured;
 mod engine;
 mod foreground;
-mod json;
 mod request;
 mod worker;
 
@@ -29,6 +28,7 @@ pub use captured::Captured;
 pub use foreground::{Foreground, ForegroundCallbacks, ForegroundModule};
 pub use request::RequestBridge;
 
+use crate::json;
 use deno_core::v8;
 use serde_json::Value;
 use std::sync::{
