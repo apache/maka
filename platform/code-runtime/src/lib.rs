@@ -22,11 +22,13 @@
 mod cell_context;
 mod result;
 mod scope;
+mod timeout;
 
 pub use cell_context::{CellContext, CellOutput, CellStore, NotificationGate, ToolMetadata};
 pub use result::{CellAbort, CellDiagnostic, CellDiagnosticKind, CellResult, ToolCall, complete};
 pub use scope::ToolScope;
 use std::time::Duration;
+pub use timeout::{CellTimeoutBudget, CellTimeoutGuard};
 
 #[derive(Clone, Debug)]
 pub struct CellLimits {

@@ -104,6 +104,7 @@ struct Inner {
     notification_ready: Notify,
     metadata: Vec<ToolMetadata>,
     notification_gate: NotificationGate,
+    timeout: crate::timeout::TimeoutClock,
 }
 
 struct State {
@@ -138,11 +139,29 @@ impl CellContext {
             notification_ready: Notify::new(),
             metadata,
             notification_gate,
+            timeout: Default::default(),
         })))
     }
 
     pub fn metadata(&self) -> &[ToolMetadata] {
         &self.0.metadata
+    }
+
+    /// Exclude a trusted Host wait from the REPL timeout. JavaScript cannot
+    /// acquire this scope; execution continues to consume budget while it lives.
+    pub fn suspend_timeout(&self) -> crate::CellTimeoutGuard {
+        self.0.timeout.suspend()
+    }
+
+    /// Interpreter-only scope around each synchronous VM dispatch or poll.
+    pub fn enter_execution(&self) -> crate::CellTimeoutGuard {
+        self.0.timeout.execute()
+    }
+
+    /// Start an interpreter watchdog now, excluding only suspended Host waits.
+    /// This does not suspend cancellation or heap accounting.
+    pub fn timeout_budget(&self, budget: std::time::Duration) -> crate::CellTimeoutBudget {
+        self.0.timeout.budget(budget)
     }
 
     /// Observation tools can emit a screenshot automatically and then receive
