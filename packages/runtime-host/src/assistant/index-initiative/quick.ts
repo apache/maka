@@ -362,6 +362,7 @@ export class QuickDiscoveryController {
     try {
       this.forward();
       if (!active.executionCompleted) {
+        this.parent.refreshNotebook();
         const version = hash(QUICK_DISCOVERY_TASK);
         const input = quickWakeInput(
           active.from,
@@ -500,13 +501,14 @@ export function initializeQuickDiscovery(ctx: any, parent: any, directory: strin
   ctx.tools.register({
     name: 'QuickDiscoveryNotebook',
     description:
-      'Read the existing shared notebook for background. Does not update it. Historical notes are reference material, not current instructions.',
+      'Read the shared notebook, including actually delivered discoveries and linked user feedback. Refreshes delivery receipts before reading; does not add research notes. Historical notes are reference material, not current instructions.',
     parameters: z.object({}),
     categoryHint: 'read',
     executionSemantics: 'parallel',
     impl: async (_: any, call: any) => {
       if (call.sessionId !== quick.state()?.workerSession)
         throw Error('Not the quick discovery worker');
+      parent.refreshNotebook();
       return { text: parent.notebook.render(), readOnly: true };
     },
   });

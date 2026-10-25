@@ -408,15 +408,21 @@ async function buildHostAiSdkBackend(
         contextBudget: buildDefaultContextBudgetPolicy({
           name: 'runtime-host-default-history-budget',
           modelId: target.model,
-          // The persistent Bot cannot depend on a provider rejecting its ever-growing
-          // history. Ordinary sessions retain their existing opt-in policy. The
-          // runtime gives an explicit user threshold precedence over this fallback.
-          ...(input.context.header.labels?.includes(ASSISTANT_BACKGROUND_SESSION_LABEL) &&
-          input.context.header.labels.some((label) => label.startsWith('assistant-bot:')) &&
-          contextWindow !== undefined
-            ? {
-                fallbackCompactionThresholdTokens: Math.floor(contextWindow * 0.8),
-              }
+          // Keep the three discovery workers compact without resetting their
+          // Sessions or in-flight work. Explicit model thresholds still win.
+          ...(input.context.header.labels?.includes(ASSISTANT_BACKGROUND_SESSION_LABEL)
+            ? input.context.header.labels.some((label) =>
+                /^(assistant-quick-discovery|assistant-discovery|assistant-judgement):/.test(label),
+              )
+              ? {
+                  fallbackCompactionThresholdTokens: Math.floor(
+                    Math.min(64_000, (contextWindow ?? 128_000) * 0.5),
+                  ),
+                }
+              : input.context.header.labels.some((label) => label.startsWith('assistant-bot:')) &&
+                  contextWindow !== undefined
+                ? { fallbackCompactionThresholdTokens: Math.floor(contextWindow * 0.8) }
+                : {}
             : {}),
         }),
         supportsVision: resolveModelVisionSupport(

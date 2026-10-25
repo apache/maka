@@ -31,7 +31,8 @@ async function setup() {
     revision = '1',
     calls = 0,
     scans = 0,
-    fail = false;
+    fail = false,
+    notebookRefreshes = 0;
   const delivered = new Map<string, any>(),
     prompts: string[] = [];
   const sessions: any[] = [];
@@ -40,6 +41,7 @@ async function setup() {
     snapshot: async () => ({ agent: { status: 'idle' } }),
     followup: async (text: string) => {
       calls++;
+      assert.equal(notebookRefreshes, calls, 'refresh receipts before every quick wake');
       prompts.push(text);
       return { disposition: 'turn_started' };
     },
@@ -51,6 +53,9 @@ async function setup() {
   };
   const parent = {
     bindingReady: Promise.resolve(),
+    refreshNotebook: () => {
+      notebookRefreshes++;
+    },
     store: { get: () => ({ sessionId: 'owner', cwd: root }) },
     asOwner: (_: any, fn: any) => fn(),
   };

@@ -1379,11 +1379,18 @@ test('provider dispatch fails closed when the Request Composition epoch commit f
   }
 });
 
-test('persistent assistant Bot compacts on wake by default without changing ordinary sessions or user thresholds', async () => {
+test('persistent assistant workers compact on wake without changing ordinary sessions or user thresholds', async () => {
   for (const scenario of [
     'bot',
     'ordinary',
+    'unrelated',
     'discovery',
+    'judgement',
+    'quick',
+    'quick-unknown',
+    'quick-large',
+    'quick-explicit',
+    'quick-below',
     'explicit',
     'below',
     'unknown',
@@ -1422,7 +1429,12 @@ test('persistent assistant Bot compacts on wake by default without changing ordi
             input: 7_000,
             output: 10,
             lastRequestAnchor: {
-              inputTokens: scenario === 'below' ? 1_000 : 7_000,
+              inputTokens:
+                scenario === 'below' || scenario === 'quick-below'
+                  ? 1_000
+                  : scenario === 'quick-unknown' || scenario === 'quick-large'
+                    ? 70_000
+                    : 7_000,
               outputTokens: 10,
             },
           },
@@ -1437,8 +1449,13 @@ test('persistent assistant Bot compacts on wake by default without changing ordi
           ...ready,
           connection: {
             ...ready.connection,
-            ...(scenario === 'unknown' ? { models: [{ id: MODEL_ID }] } : {}),
-            ...(scenario === 'explicit'
+            ...(scenario === 'unknown' || scenario === 'quick-unknown'
+              ? { models: [{ id: MODEL_ID }] }
+              : {}),
+            ...(scenario === 'quick-large'
+              ? { models: [{ id: MODEL_ID, contextWindow: 1_000_000 }] }
+              : {}),
+            ...(scenario === 'explicit' || scenario === 'quick-explicit'
               ? {
                   modelOverrides: {
                     [MODEL_ID]: { compactionThreshold: 20_000 },
@@ -1459,7 +1476,15 @@ test('persistent assistant Bot compacts on wake by default without changing ordi
         ? []
         : [
             ASSISTANT_BACKGROUND_SESSION_LABEL,
-            scenario === 'discovery' ? 'initiative:owner' : 'assistant-bot:owner',
+            scenario.startsWith('quick')
+              ? 'assistant-quick-discovery:owner'
+              : scenario === 'discovery'
+                ? 'assistant-discovery:owner'
+                : scenario === 'judgement'
+                  ? 'assistant-judgement:owner'
+                  : scenario === 'unrelated'
+                    ? 'initiative:owner'
+                    : 'assistant-bot:owner',
           ];
     fixture.context.allowMidTurnHistoryCompaction = true;
     const backend = await createHostAiSdkBackend(fixture);
@@ -1499,17 +1524,20 @@ test('persistent assistant Bot compacts on wake by default without changing ordi
         false,
         JSON.stringify(events),
       );
-      assert.equal(checkpoints, scenario === 'bot' ? 1 : 0, scenario);
+      const compacts = [
+        'bot',
+        'discovery',
+        'judgement',
+        'quick',
+        'quick-unknown',
+        'quick-large',
+      ].includes(scenario);
+      assert.equal(checkpoints, compacts ? 1 : 0, scenario);
       const main = provider.requests.filter((request) => request.body.stream === true);
       assert.equal(main.length, 1, scenario);
-      assert.equal(
-        JSON.stringify(main[0]?.body).includes('OLD_BOT_HISTORY'),
-        scenario !== 'bot',
-        scenario,
-      );
+      assert.equal(JSON.stringify(main[0]?.body).includes('OLD_BOT_HISTORY'), !compacts, scenario);
       assert.ok(JSON.stringify(main[0]?.body).includes('Inbox has new mail'), scenario);
-      if (scenario === 'bot')
-        assert.match(JSON.stringify(main[0]?.body), /maka_history_compact_checkpoint/);
+      if (compacts) assert.match(JSON.stringify(main[0]?.body), /maka_history_compact_checkpoint/);
     } finally {
       await backend.dispose();
       await provider.close();
