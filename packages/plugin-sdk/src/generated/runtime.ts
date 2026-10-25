@@ -8893,7 +8893,7 @@ export interface AgentRecallPassage {
   anchorMessageId: string;
   anchorPosition: HistoryRowPosition;
   /**
-   * Match-centered display preview. The anchor retains access to the complete source.
+   * Display preview beginning at the first match. The anchor opens the complete source.
    */
   excerpt: string;
   /**

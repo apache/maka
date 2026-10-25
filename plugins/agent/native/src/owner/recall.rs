@@ -136,10 +136,19 @@ impl Recall {
         call: &Scope,
     ) -> Result<RecallPage, String> {
         query.validate()?;
+        let cancellation = call.cancellation.child_token();
+        let _cancel_on_drop = cancellation.clone().drop_guard();
         let operation = async {
             self.check(call).await.map_err(|e| e.to_string())?;
+            let mut summaries = BTreeMap::<String, crate::contract::Session>::new();
             if let Some(id) = &query.session_id {
-                self.metadata(id).await?;
+                summaries.insert(
+                    id.clone(),
+                    crate::service::summary_for(
+                        &self.data_source,
+                        resolve_session(self.metadata(id).await?)?,
+                    ),
+                );
             }
             let (titles, catalog_complete) = search::titles(self.as_ref(), call, &query)
                 .await
@@ -152,10 +161,21 @@ impl Recall {
                 {
                     break;
                 }
-                title_matches.push(crate::service::summary_for(
-                    &self.data_source,
-                    resolve_session(self.metadata(&title.id).await?)?,
-                ));
+                if !summaries.contains_key(&title.id) {
+                    summaries.insert(
+                        title.id.clone(),
+                        crate::service::summary_for(
+                            &self.data_source,
+                            resolve_session(self.metadata(&title.id).await?)?,
+                        ),
+                    );
+                }
+                title_matches.push(
+                    summaries
+                        .get(&title.id)
+                        .expect("loaded source summary")
+                        .clone(),
+                );
             }
             let found = search::search(self.clone(), call, &query, search::Content::Anchor)
                 .await
@@ -168,23 +188,52 @@ impl Recall {
                 {
                     break;
                 }
-                let session = resolve_session(self.metadata(&passage.session_id).await?)?;
+                if !summaries.contains_key(&passage.session_id) {
+                    summaries.insert(
+                        passage.session_id.clone(),
+                        crate::service::summary_for(
+                            &self.data_source,
+                            resolve_session(self.metadata(&passage.session_id).await?)?,
+                        ),
+                    );
+                }
+                let session = summaries
+                    .get(&passage.session_id)
+                    .expect("loaded source summary")
+                    .clone();
                 let excerpt = passage
                     .messages
-                    .iter()
+                    .into_iter()
                     .find(|message| message.is_anchor)
-                    .map(|message| message.text.as_str())
+                    .map(|message| message.text)
                     .unwrap_or_default();
-                let (excerpt, highlights) = preview::excerpt(excerpt, &query.terms);
                 passages.push(RecallPassage {
-                    session: crate::service::summary_for(&self.data_source, session),
+                    session,
                     anchor_message_id: passage.anchor_message_id,
                     anchor_position: passage.anchor_position,
                     excerpt,
-                    highlights,
+                    highlights: vec![],
                     matched_terms: passage.matched_terms,
                 });
             }
+            let terms = query.terms;
+            let stop = cancellation.clone();
+            let passages = tokio::task::spawn_blocking(move || {
+                for passage in &mut passages {
+                    if stop.is_cancelled() {
+                        return Err("Recall cancelled".to_owned());
+                    }
+                    let (excerpt, highlights) = preview::excerpt(&passage.excerpt, &terms, &stop)?;
+                    passage.excerpt = excerpt;
+                    passage.highlights = highlights;
+                }
+                if stop.is_cancelled() {
+                    return Err("Recall cancelled".to_owned());
+                }
+                Ok(passages)
+            })
+            .await
+            .map_err(|error| format!("Recall preview worker failed: {error}"))??;
             self.check(call).await.map_err(|e| e.to_string())?;
             let page = RecallPage {
                 titles: title_matches,
@@ -196,7 +245,7 @@ impl Recall {
         };
         tokio::select! {
             biased;
-            _ = call.cancellation.cancelled() => Err("Recall cancelled".into()),
+            _ = cancellation.cancelled() => Err("Recall cancelled".into()),
             _ = self.stop.cancelled() => Err("Recall cancelled".into()),
             result = operation => result,
         }

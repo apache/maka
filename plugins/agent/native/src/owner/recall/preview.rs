@@ -18,6 +18,7 @@
  */
 
 use crate::contract::RecallHighlight;
+use tokio_util::sync::CancellationToken;
 use unicode_normalization::UnicodeNormalization;
 
 // The search dialog shows three lines in a column at most 760px wide with
@@ -25,39 +26,81 @@ use unicode_normalization::UnicodeNormalization;
 // windowed; its anchor always opens the complete source, including long terms.
 const DISPLAY_CHARACTERS: usize = 3 * 120;
 
-pub(super) fn excerpt(text: &str, terms: &[String]) -> (String, Vec<RecallHighlight>) {
-    let text: String = text.nfc().collect();
+fn check(stop: &CancellationToken) -> Result<(), String> {
+    if stop.is_cancelled() {
+        Err("Recall cancelled".into())
+    } else {
+        Ok(())
+    }
+}
+
+// Poll with the history reader's 8 KiB source granularity, keeping cancellation
+// checks out of each scalar's mutex path while allowing arbitrarily long input.
+fn characters<'a>(text: &'a str, stop: &'a CancellationToken) -> impl Iterator<Item = char> + 'a {
+    let mut next_check = 0;
+    text.char_indices()
+        .take_while(move |(at, _)| {
+            if *at < next_check {
+                return true;
+            }
+            next_check = at.saturating_add(8 * 1024);
+            !stop.is_cancelled()
+        })
+        .map(|(_, ch)| ch)
+}
+
+pub(super) fn excerpt(
+    text: &str,
+    terms: &[String],
+    stop: &CancellationToken,
+) -> Result<(String, Vec<RecallHighlight>), String> {
+    check(stop)?;
+    let text: String = characters(text, stop).nfc().collect();
+    check(stop)?;
     let folded = text.to_lowercase();
-    let terms: Vec<String> = terms
-        .iter()
-        .map(|term| term.nfc().collect::<String>().to_lowercase())
-        .filter(|term| !term.is_empty())
-        .collect();
-    let first = terms
-        .iter()
-        .filter_map(|term| folded.find(term).map(|at| (at, at + term.len())))
-        .min_by_key(|(start, end)| (*start, std::cmp::Reverse(*end)));
+    check(stop)?;
+    let mut folded_terms = Vec::with_capacity(terms.len());
+    for term in terms {
+        check(stop)?;
+        let term = characters(term, stop)
+            .nfc()
+            .collect::<String>()
+            .to_lowercase();
+        if !term.is_empty() {
+            folded_terms.push(term);
+        }
+    }
+    let terms = folded_terms;
+    let mut first = None;
+    for term in &terms {
+        check(stop)?;
+        if let Some(at) = folded.find(term) {
+            let candidate = (at, at + term.len());
+            if first.is_none_or(|(start, end)| at < start || (at == start && candidate.1 > end)) {
+                first = Some(candidate);
+            }
+        }
+    }
     let mut start = 0;
     let mut end = DISPLAY_CHARACTERS;
     if let Some((match_start, match_end)) = first {
         let mut folded_offset = 0;
         let mut first_character = None;
-        for (index, ch) in text.chars().enumerate() {
+        for (index, ch) in characters(&text, stop).enumerate() {
             let next = folded_offset + ch.to_lowercase().map(char::len_utf8).sum::<usize>();
             if first_character.is_none() && next > match_start {
                 first_character = Some(index);
             }
             if folded_offset < match_end && next >= match_end {
-                start = first_character
-                    .unwrap_or(index)
-                    .saturating_sub(DISPLAY_CHARACTERS / 4);
+                start = first_character.unwrap_or(index).saturating_sub(1);
                 end = (start + DISPLAY_CHARACTERS).max(index + 1);
                 break;
             }
             folded_offset = next;
         }
     }
-    let mut characters = text.chars().skip(start);
+    check(stop)?;
+    let mut characters = characters(&text, stop).skip(start);
     let shown: String = characters.by_ref().take(end - start).collect();
     let suffix = characters.next().is_some();
     let prefix = usize::from(start > 0);
@@ -79,7 +122,7 @@ pub(super) fn excerpt(text: &str, terms: &[String]) -> (String, Vec<RecallHighli
     let mut units = Vec::new();
     let mut folded_offset = 0;
     let mut display_offset = prefix;
-    for ch in shown.chars() {
+    for ch in self::characters(&shown, stop) {
         let next_folded = folded_offset + ch.to_lowercase().map(char::len_utf8).sum::<usize>();
         let next_display = display_offset
             + if ch.is_whitespace() {
@@ -94,6 +137,7 @@ pub(super) fn excerpt(text: &str, terms: &[String]) -> (String, Vec<RecallHighli
     let folded = shown.to_lowercase();
     let mut ranges = Vec::new();
     for term in terms {
+        check(stop)?;
         for (at, _) in folded.match_indices(&term) {
             let first = units.partition_point(|unit| unit.1 <= at);
             let after = units.partition_point(|unit| unit.0 < at + term.len());
@@ -113,7 +157,8 @@ pub(super) fn excerpt(text: &str, terms: &[String]) -> (String, Vec<RecallHighli
             highlights.push(RecallHighlight { start, end });
         }
     }
-    (excerpt, highlights)
+    check(stop)?;
+    Ok((excerpt, highlights))
 }
 
 #[cfg(test)]
@@ -127,8 +172,8 @@ mod tests {
             "old ".repeat(200),
             "later ".repeat(200)
         );
-        let terms = ["CAFÉ", "i", "終点", "fé"].map(str::to_owned);
-        let (text, ranges) = excerpt(&source, &terms);
+        let terms = ["😀", "CAFÉ", "i", "終点", "fé"].map(str::to_owned);
+        let (text, ranges) = excerpt(&source, &terms, &CancellationToken::new()).unwrap();
         assert!(text.starts_with('…') && text.ends_with('…'));
         assert!(text.contains("😀 café İ 終点"));
         let utf16: Vec<_> = text.encode_utf16().collect();
@@ -136,6 +181,6 @@ mod tests {
             .into_iter()
             .map(|range| String::from_utf16(&utf16[range.start..range.end]).unwrap())
             .collect();
-        assert_eq!(matches, ["café", "İ", "終点"]);
+        assert_eq!(matches, ["😀", "café", "İ", "終点"]);
     }
 }

@@ -35,7 +35,7 @@ pub struct RecallPassage {
     pub session: Session,
     pub anchor_message_id: String,
     pub anchor_position: RowPosition,
-    /// Match-centered display preview. The anchor retains access to the complete source.
+    /// Display preview beginning at the first match. The anchor opens the complete source.
     pub excerpt: String,
     /// Highlight ranges in UTF-16 code units within `excerpt`.
     pub highlights: Vec<RecallHighlight>,

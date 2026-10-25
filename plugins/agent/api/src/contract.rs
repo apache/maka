@@ -714,7 +714,7 @@ pub struct DataSource {
     pub deployment: uuid::Uuid,
     pub namespace: maka_plugin_core::composition::InstanceId,
 }
-#[derive(Serialize, JsonSchema, Deserialize)]
+#[derive(Clone, Serialize, JsonSchema, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentSession")]
 pub struct Session {
@@ -743,7 +743,7 @@ pub struct Session {
     pub tail_message_id: Option<String>,
     pub activity: SessionActivity,
 }
-#[derive(Serialize, JsonSchema, Deserialize)]
+#[derive(Clone, Serialize, JsonSchema, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[schemars(rename = "AgentSessionActivity")]
 pub enum SessionActivity {
