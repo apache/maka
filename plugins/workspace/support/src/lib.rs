@@ -132,6 +132,10 @@ fn choice(
         .map_err(|_| "agent_directory_unavailable")?;
     let (path, identity) =
         directory::capture(&selected).map_err(|_| "agent_directory_unavailable")?;
+    // Identity capture may use O_PATH; browsing also needs a readable directory.
+    let _entries = directory::open(&path, &identity)
+        .and_then(|directory| directory.entries())
+        .map_err(|_| "agent_directory_unavailable")?;
     root.directory
         .validate(&path)
         .map_err(|_| "agent_directory_unavailable")?;
@@ -507,9 +511,11 @@ mod tests {
         };
         let selection = entries[0].selection.clone();
         std::fs::set_permissions(&denied, std::fs::Permissions::from_mode(0o0)).unwrap();
-        assert!(
-            directory::capture(&denied).is_err(),
-            "permission test requires an unprivileged account"
+        assert_eq!(
+            std::fs::read_dir(&denied)
+                .expect_err("fixture child must deny directory reads")
+                .kind(),
+            std::io::ErrorKind::PermissionDenied
         );
         let page = query(
             roots.clone(),
@@ -551,7 +557,25 @@ mod tests {
             ["folder-33", "folder-34"]
         );
         assert!(after.is_none());
+        let DirectoryPage::Children { children, .. } = query(
+            roots.clone(),
+            Directories::Children {
+                selection: selection.clone(),
+                after: None,
+            },
+        )
+        .await
+        .unwrap() else {
+            panic!("children after permission restoration")
+        };
+        assert!(children.iter().any(|child| child.name == "folder-01"));
         std::fs::set_permissions(&published, std::fs::Permissions::from_mode(0o0)).unwrap();
+        assert_eq!(
+            std::fs::read_dir(&published)
+                .expect_err("fixture parent must deny directory reads")
+                .kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
         let unavailable = query(
             roots.clone(),
             Directories::Children {
