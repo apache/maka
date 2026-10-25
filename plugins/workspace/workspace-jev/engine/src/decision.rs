@@ -26,6 +26,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
+mod answer;
+
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[schemars(rename = "JevEvaluation")]
@@ -116,7 +118,7 @@ pub struct Usage {
     pub input_tokens: u64,
     pub output_tokens: u64,
 }
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, Serialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 #[schemars(rename = "JevAnswer")]
 pub enum Answer {
