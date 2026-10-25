@@ -1213,9 +1213,14 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
       );
       if ('deferred' in started) return;
       if ('error' in started) {
-        throw new RuntimeMessageAuthorityInvariantError(
-          `Durable Message recovery failed: ${started.error}`,
-        );
+        // startRecoveredMessages answers 'error' only with a retryable block
+        // -- an availability reason (feature gate or execution availability,
+        // e.g. the session's connection was removed after the Message was
+        // queued) or a concurrent root admission. Keep the admission durable
+        // and skip, the same way recover() keeps disabled-feature admissions
+        // durable without replaying them: throwing here would fail the whole
+        // boot recovery -- healthy sessions included -- on every restart.
+        return;
       }
       const recoveredMessageIds = new Set(recoveryBatch.map((entry) => entry.messageId));
       const remaining = pending.filter((entry) => !recoveredMessageIds.has(entry.messageId));
