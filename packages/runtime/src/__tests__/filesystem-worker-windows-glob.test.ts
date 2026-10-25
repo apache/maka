@@ -111,6 +111,87 @@ test('Windows Glob counts distinct matches across overlapping branches', async (
   assert.equal(capped.result.truncated, true);
 });
 
+for (const pattern of ['.', './.', '././.', '**/.', './**/.', '**/./.', 'visible/**/.']) {
+  test('Windows Glob preserves current-directory matches for ' + pattern, async () => {
+    const root = await fixture();
+    await mkdir(join(root, 'visible', 'nested'), { recursive: true });
+    await mkdir(join(root, '.hidden'));
+    await writeFile(join(root, 'file.txt'), '');
+    const expected = await globFiles({ cwd: root, pattern });
+    const response = await run(root, pattern);
+    assert.equal(response.ok, true);
+    if (!response.ok || response.result.kind !== 'glob') return;
+    assert.deepEqual([...response.result.files].sort(), [...expected.files].sort(), pattern);
+    assert.equal(response.result.truncated, false);
+    for (const limit of [1, expected.files.length]) {
+      const capped = await run(root, pattern, limit);
+      assert.equal(capped.ok, true);
+      if (!capped.ok || capped.result.kind !== 'glob') return;
+      assert.equal(capped.result.files.length, Math.min(limit, expected.files.length));
+      assert.equal(capped.result.truncated, expected.files.length > limit);
+    }
+  });
+}
+
+test('Windows Glob does not let globstar consume hidden directories', async () => {
+  const root = await fixture();
+  const hidden = join(root, '.hidden');
+  await mkdir(join(hidden, '.nested'), { recursive: true });
+  const visited: string[] = [];
+  const response = await run(root, '**/.*', 1, async (path) => {
+    visited.push(path);
+    return await readdir(path, { withFileTypes: true });
+  });
+  assert.equal(response.ok, true);
+  if (!response.ok || response.result.kind !== 'glob') return;
+  assert.deepEqual(response.result, { kind: 'glob', files: ['.hidden'], truncated: false });
+  assert.deepEqual(visited, [root]);
+});
+
+test('Windows Glob preserves globstar component transitions against production Glob', async () => {
+  const root = await fixture();
+  for (const path of [
+    ['.hidden', '.nested'],
+    ['.hidden', 'visible', '.deep'],
+    ['visible', '.hidden', '.nested'],
+  ]) {
+    await mkdir(join(root, ...path), { recursive: true });
+  }
+  await writeFile(join(root, '.hidden', 'visible', 'file.txt'), '');
+  await writeFile(join(root, 'visible', 'file.txt'), '');
+  await writeFile(join(root, 'file.txt'), '');
+  for (const pattern of [
+    '**/.*',
+    './**/.*',
+    '**/.*/**',
+    '**/.*/.*',
+    '**/.hidden/**',
+    '**/.hidden/.*',
+    '**/.hidden/**/.*',
+    'file.txt/**',
+    './file.txt/**',
+    '**/file.txt/**',
+    './**/file.txt/**',
+  ]) {
+    const expected = await globFiles({ cwd: root, pattern });
+    const response = await run(root, pattern);
+    assert.equal(response.ok, true);
+    if (!response.ok || response.result.kind !== 'glob') return;
+    assert.deepEqual([...response.result.files].sort(), [...expected.files].sort(), pattern);
+    for (const limit of [1, Math.max(1, expected.files.length)]) {
+      const capped = await run(root, pattern, limit);
+      assert.equal(capped.ok, true);
+      if (!capped.ok || capped.result.kind !== 'glob') return;
+      assert.deepEqual(
+        capped.result.files,
+        response.result.files.slice(0, limit),
+        `${pattern} limit=${limit}`,
+      );
+      assert.equal(capped.result.truncated, expected.files.length > limit);
+    }
+  }
+});
+
 for (const code of ['EACCES', 'EPERM', 'EIO', 'ENOENT', 'ENOTDIR', 'ELOOP']) {
   test('Windows Glob does not swallow an admitted subtree ' + code, async () => {
     const root = await fixture();

@@ -735,7 +735,7 @@ async function windowsNonFollowingGlob(
       const isLast = windowsGlobPatternIsLast(branch, currentPath.isDirectory);
       const isFirst = branch.indexes.includes(0);
 
-      if (isFirst && branch.pattern[0] === '.') {
+      if (isFirst && branch.pattern[0] === '.' && last > 0) {
         addWindowsGlobSubpattern(childPaths, currentPath, {
           ...branch,
           indexes: [1],
@@ -789,13 +789,15 @@ async function windowsNonFollowingGlob(
           if (part === GLOBSTAR) {
             let nextNonGlobIndex = nextIndex;
             while (branch.pattern[nextNonGlobIndex] === GLOBSTAR) nextNonGlobIndex += 1;
+            const hidden = entry.name.startsWith('.');
             const matchesDot =
-              entry.name.startsWith('.') &&
-              windowsGlobPartMatches(branch.pattern, nextNonGlobIndex, entry.name);
-            if (entry.name.startsWith('.') && !matchesDot) continue;
+              hidden && windowsGlobPartMatches(branch.pattern, nextNonGlobIndex, entry.name);
+            if (hidden && !matchesDot) continue;
 
             if (entry.isDirectory()) {
-              subIndexes.add(index);
+              // An explicit next component may consume a hidden entry, but
+              // globstar itself must not consume it or recurse through it.
+              if (!hidden) subIndexes.add(index);
             } else if (index === last && emit(relativePath)) {
               return result;
             }
@@ -805,7 +807,7 @@ async function windowsNonFollowingGlob(
             } else if (nextMatches && entry.isDirectory()) {
               subIndexes.add(index + 2);
             }
-            if ((nextMatches || branch.pattern[0] === '.') && entry.isDirectory()) {
+            if (!hidden && nextMatches && entry.isDirectory()) {
               subIndexes.add(nextIndex);
             }
           }
@@ -857,7 +859,7 @@ function windowsGlobPatternIsLast(branch: WindowsGlobBranchState, isDirectory: b
   const last = branch.pattern.length - 1;
   return (
     branch.indexes.includes(last) ||
-    (branch.pattern[last] === '' &&
+    ((branch.pattern[last] === '' || branch.pattern[last] === '.') &&
       isDirectory &&
       branch.indexes.includes(last - 1) &&
       branch.pattern.at(-2) === GLOBSTAR)

@@ -263,6 +263,35 @@ describe('Windows filesystem worker smoke', { skip: !enabled }, () => {
     );
   });
 
+  test('preserves dot and hidden-directory matching through the Windows broker', async () => {
+    const project = join(workspace, 'glob-dot-components');
+    await mkdir(join(project, 'visible'), { recursive: true });
+    await mkdir(join(project, '.hidden', '.nested'), { recursive: true });
+    await writeFile(join(project, 'file.txt'), 'fixture');
+    for (const [pattern, files] of [
+      ['.', ['.']],
+      ['./.', ['.']],
+      ['**/.', ['.', 'visible']],
+      ['**/.*', ['.hidden']],
+      ['**/.*/.*', ['.hidden/.nested']],
+    ] as const) {
+      const result = await client.execute({
+        operation: { kind: 'glob', path: project, pattern, limit: files.length },
+        cwd: workspace,
+        mode: 'ask',
+        expectedIdentity: 'unchecked',
+      });
+      assert.equal(result.kind, 'glob');
+      if (result.kind !== 'glob') return;
+      assert.deepEqual(
+        result.files.map((file) => file.replaceAll('\\', '/')).sort(),
+        [...files].sort(),
+        pattern,
+      );
+      assert.equal(result.truncated, false, pattern);
+    }
+  });
+
   test('reports exact and overflowing Glob caps through the Windows broker', async () => {
     const project = join(workspace, 'glob-completeness');
     await mkdir(project);
