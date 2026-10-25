@@ -97,10 +97,28 @@ async fn form_answers_survive_reopen_without_grants_and_match_semantically() {
             .unwrap()
             .matches
     );
+    values.insert("n".into(), json!(1));
+    let equivalent: InteractionAnswer =
+        serde_json::from_value(json!({"kind":"form","action":"accept","values":values})).unwrap();
+    assert!(
+        log.commit_interaction_outcome("form", equivalent.into_outcome(5))
+            .await
+            .unwrap()
+            .matches
+    );
+    values.insert("n".into(), json!(2));
+    let different: InteractionAnswer =
+        serde_json::from_value(json!({"kind":"form","action":"accept","values":values})).unwrap();
+    assert!(
+        !log.commit_interaction_outcome("form", different.into_outcome(6))
+            .await
+            .unwrap()
+            .matches
+    );
     let conflicting: InteractionAnswer =
         serde_json::from_value(json!({"kind":"form","action":"decline"})).unwrap();
     assert!(
-        !log.commit_interaction_outcome("form", conflicting.into_outcome(5))
+        !log.commit_interaction_outcome("form", conflicting.into_outcome(7))
             .await
             .unwrap()
             .matches
