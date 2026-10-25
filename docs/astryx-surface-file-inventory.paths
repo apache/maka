@@ -35,6 +35,7 @@ apps/desktop/src/renderer/features/connection-settings/services-context.tsx
 apps/desktop/src/renderer/features/conversation/controller/live-turn-reconciler.tsx
 apps/desktop/src/renderer/features/conversation/controller/session-local-messages.tsx
 apps/desktop/src/renderer/features/conversation/controller/transcript-reading-position-controller.tsx
+apps/desktop/src/renderer/features/conversation/ui/branch-worktree-provider.tsx
 apps/desktop/src/renderer/features/conversation/ui/checkin-home.tsx
 apps/desktop/src/renderer/features/conversation/ui/checkin-setting.tsx
 apps/desktop/src/renderer/features/conversation/ui/composer-mentions-provider.tsx
@@ -147,6 +148,9 @@ apps/desktop/src/renderer/features/workhub/ui/workhub-progress-card.tsx
 apps/desktop/src/renderer/features/workhub/ui/workhub-root.tsx
 apps/desktop/src/renderer/features/workhub/ui/workhub-surface-switch.tsx
 apps/desktop/src/renderer/features/workhub/ui/workhub-work-identity.tsx
+apps/desktop/src/renderer/features/worktrees/services-context.tsx
+apps/desktop/src/renderer/features/worktrees/ui/worktree-item.tsx
+apps/desktop/src/renderer/features/worktrees/ui/worktree-settings-page.tsx
 apps/desktop/src/renderer/maka-tokens.css
 apps/desktop/src/renderer/onboarding-hero.tsx
 apps/desktop/src/renderer/remote-project-directory-dialog.tsx
@@ -253,6 +257,7 @@ apps/desktop/src/renderer/styles/settings/theme-preview.css
 apps/desktop/src/renderer/styles/settings/usage.css
 apps/desktop/src/renderer/styles/settings/web-search.css
 apps/desktop/src/renderer/styles/settings/wechat.css
+apps/desktop/src/renderer/styles/settings/worktrees.css
 apps/desktop/src/renderer/styles/shell-layout.css
 apps/desktop/src/renderer/styles/sidebar.css
 apps/desktop/src/renderer/styles/theme-glass.css
@@ -345,3 +350,4 @@ packages/ui/src/transcript-scroll-authority.tsx
 packages/ui/src/ui.tsx
 packages/ui/src/user-question-prompt.tsx
 packages/ui/src/workspace-picker.tsx
+packages/ui/src/worktree-picker.tsx

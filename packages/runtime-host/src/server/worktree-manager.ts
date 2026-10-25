@@ -20,7 +20,7 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { mkdir, readFile, readdir, realpath, rename, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { basename, dirname, join } from 'node:path';
+import { basename, dirname, isAbsolute, join } from 'node:path';
 import { findProjectByIdentity, type ProjectRecord } from '@maka/core/project';
 import type {
   TaskWorktreeSelection,
@@ -514,13 +514,16 @@ export class HostWorktreeManager {
       case 'configure':
         return this.run('configuration', async () => {
           const state = await this.read();
-          const config = validateConfig(input.config);
-          if (input.projectId) {
+          if (input.projectId !== undefined) {
+            const config = validateConfig(input.config);
             const project = await this.project(input.projectId);
             state.config.projects[project.id] = config;
           } else {
-            if (!config.rootDirectory) throw new Error('Host worktree root is required');
-            state.config.rootDirectory = config.rootDirectory;
+            const { rootDirectory } = input.config;
+            if (!rootDirectory) throw new Error('Host worktree root is required');
+            if (!isAbsolute(rootDirectory) || rootDirectory.includes('\0'))
+              throw new Error('Worktree root must be an absolute Host path');
+            state.config.rootDirectory = rootDirectory;
           }
           await this.save();
           return { kind: 'configured' };
@@ -665,8 +668,7 @@ export class HostWorktreeManager {
         /* Naming failure deliberately creates a detached checkout. */
       }
       signal?.throwIfAborted();
-      const config = projectValue(project, state.config.projects);
-      const root = await realpathAllowMissing(config?.rootDirectory || state.config.rootDirectory);
+      const root = await realpathAllowMissing(state.config.rootDirectory);
       const parent = await this.withWorkspaceCheckouts(root, async () => {
         await this.assertManagedAncestors(root, true);
         return this.run('directories', () => this.projectDirectory(project, root));

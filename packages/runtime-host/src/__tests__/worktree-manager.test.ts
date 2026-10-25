@@ -82,7 +82,7 @@ test('relinking projects preserves worktree discovery and initialization recover
   await manager.mutate({
     kind: 'configure',
     projectId: repository.id,
-    config: { rootDirectory: join(f.root, 'relinked-worktrees'), setupScript: 'exit 1' },
+    config: { setupScript: 'exit 1' },
   });
   const retry = await createWorktree(manager, repository.id, 'retry-after-relink');
   const skip = await createWorktree(manager, repository.id, 'skip-after-relink');
@@ -109,9 +109,8 @@ test('relinking projects preserves worktree discovery and initialization recover
 });
 
 test('relinked identities retain configuration, directory allocations and operation reservations', async (t) => {
-  const { manager, catalog, original, repository, ...f } = await relinkFixture(t);
+  const { manager, catalog, original, repository, repo } = await relinkFixture(t);
   const config = {
-    rootDirectory: join(f.root, 'relinked-worktrees'),
     defaultMode: 'new' as const,
     setupScript: 'exit 1',
     cleanupScript: 'exit 1',
@@ -119,7 +118,7 @@ test('relinked identities retain configuration, directory allocations and operat
   await manager.mutate({ kind: 'configure', projectId: repository.id, config });
   const originalCheckout = await createWorktree(manager, repository.id, 'original-operation');
   await manager.bind('original-session', originalCheckout.path);
-  const { project } = await catalog.relinkWithSessions(original.id, f.repo);
+  const { project } = await catalog.relinkWithSessions(original.id, repo);
   for (const id of [project.id, repository.id]) {
     assert.equal(await manager.defaultMode(id), 'new');
     assert.deepEqual((await manager.snapshot(id)).projects[0]!.config, config);
@@ -143,7 +142,7 @@ test('relinked identities retain configuration, directory allocations and operat
   await manager.mutate({
     kind: 'configure',
     projectId: project.id,
-    config: { rootDirectory: config.rootDirectory, defaultMode: 'main' },
+    config: { defaultMode: 'main' },
   });
   assert.equal(await manager.defaultMode(repository.id), 'main');
   const replacement = await createWorktree(manager, repository.id, 'replacement');
@@ -627,6 +626,58 @@ test('invalid generated directory slugs fall back to detached checkouts inside t
   assert.equal(item.branch, undefined);
   assert.match(item.name, /^[a-f0-9]{8}$/);
   assert.equal(dirname(item.path), join(f.root, 'worktrees', 'Example'));
+});
+
+test('retired project root overrides are removed on restart without moving existing checkouts', async (t) => {
+  const f = await fixture(t);
+  const original = await f.create('existing-checkout');
+  await f.manager.bind('existing-session', original.path);
+  await f.manager.close();
+
+  const journalFile = join(f.options.stateRoot, 'worktrees.json');
+  const journal = JSON.parse(await readFile(journalFile, 'utf8'));
+  const projectConfig = { defaultMode: 'new', setupScript: 'exit 0', cleanupScript: 'exit 0' };
+  journal.config.projects[f.project.id] = {
+    ...projectConfig,
+    rootDirectory: journal.config.rootDirectory,
+  };
+  const hostRoot = join(f.root, 'host-worktrees');
+  journal.config.rootDirectory = hostRoot;
+  await writeFile(journalFile, JSON.stringify(journal));
+
+  const restarted = new HostWorktreeManager(f.options);
+  t.after(() => restarted.close());
+  const snapshot = await restarted.snapshot(f.project.id);
+  assert.deepEqual(snapshot.config.projects[f.project.id], projectConfig);
+  assert.deepEqual(snapshot.projects[0]!.config, projectConfig);
+  await restarted.assertReady('existing-session', original.path);
+  assert.equal(
+    (await createWorktree(restarted, f.project.id, 'existing-checkout')).path,
+    original.path,
+  );
+
+  const next = await createWorktree(restarted, f.project.id, 'new-checkout');
+  assert.equal(dirname(next.path), join(hostRoot, 'Example'));
+  assert.equal(next.initialization, 'ready');
+  assert.equal(await readFile(join(original.path, 'tracked.txt'), 'utf8'), 'committed\n');
+  const saved = JSON.parse(await readFile(journalFile, 'utf8'));
+  assert.deepEqual(saved.config.projects[f.project.id], projectConfig);
+  assert.equal(saved.bindings['existing-session'].path, original.path);
+});
+
+test('direct configuration rejects project root overrides and invalid Host roots', async (t) => {
+  const f = await fixture(t);
+  for (const rootDirectory of [join(f.root, 'override'), '']) {
+    const config = { rootDirectory, defaultMode: 'new' as const };
+    await assert.rejects(
+      f.manager.mutate({ kind: 'configure', projectId: f.project.id, config }),
+      /Project worktree root overrides are not supported/,
+    );
+  }
+  for (const rootDirectory of ['', 'relative/path', `${f.root}\0`]) {
+    await assert.rejects(f.manager.mutate({ kind: 'configure', config: { rootDirectory } }));
+  }
+  assert.equal((await f.manager.snapshot()).config.rootDirectory, join(f.root, 'worktrees'));
 });
 
 test('project folder names persist across rename, restart and root configuration changes', async (t) => {

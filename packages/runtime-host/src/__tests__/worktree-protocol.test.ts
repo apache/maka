@@ -31,7 +31,7 @@ import {
   LOCAL_OWNER_CONNECTION_AUTHORITY,
 } from '../server/connection-authority.js';
 
-test('custom worktree roots require Host-path authority for Host and project configuration', () => {
+test('configuring the Host worktree root requires Host-path authority', () => {
   const remote = createRuntimeHostConnectionAuthority({
     principalKind: 'remote_owner',
     principalId: 'remote-client',
@@ -44,15 +44,35 @@ test('custom worktree roots require Host-path authority for Host and project con
     ...remote,
     canUseHostPaths: true,
   });
-  for (const scope of [{}, { projectId: 'project' }]) {
-    const frame = decodeRequestFrame({
-      requestId: 'configure-worktrees',
-      operation: 'worktree.mutate',
-      input: { kind: 'configure', ...scope, config: { rootDirectory: '/custom/worktrees' } },
-    });
-    assert.equal(authorizeRuntimeHostOperation(remote, frame), false);
-    assert.equal(authorizeRuntimeHostOperation(authorizedRemote, frame), true);
-    assert.equal(authorizeRuntimeHostOperation(LOCAL_OWNER_CONNECTION_AUTHORITY, frame), true);
+  const frame = decodeRequestFrame({
+    requestId: 'configure-worktrees',
+    operation: 'worktree.mutate',
+    input: { kind: 'configure', config: { rootDirectory: '/custom/worktrees' } },
+  });
+  assert.equal(authorizeRuntimeHostOperation(remote, frame), false);
+  assert.equal(authorizeRuntimeHostOperation(authorizedRemote, frame), true);
+  assert.equal(authorizeRuntimeHostOperation(LOCAL_OWNER_CONNECTION_AUTHORITY, frame), true);
+});
+
+test('worktree configuration rejects project root overrides and invalid Host configuration', () => {
+  const spec = HOST_OPERATION_SPECS['worktree.mutate'];
+  for (const rootDirectory of ['/custom/worktrees', '']) {
+    assert.throws(() =>
+      spec.decodeInput({
+        kind: 'configure',
+        projectId: 'project',
+        config: { rootDirectory },
+      }),
+    );
+  }
+  for (const config of [
+    {},
+    { setupScript: 'npm ci' },
+    { rootDirectory: '' },
+    { rootDirectory: 'relative/path' },
+    { rootDirectory: '/custom/worktrees', setupScript: 'npm ci' },
+  ]) {
+    assert.throws(() => spec.decodeInput({ kind: 'configure', config }));
   }
 });
 
@@ -67,7 +87,6 @@ test('project-scoped worktree operations remain available without Host-path auth
   });
   for (const input of [
     { kind: 'configure', config: { setupScript: 'npm ci', cleanupScript: '', defaultMode: 'new' } },
-    { kind: 'configure', config: { rootDirectory: '' } },
     { kind: 'create', operationId: 'task', description: 'Add search' },
     { kind: 'create', operationId: 'fork', description: 'Fix search', sourcePath: '/repo/source' },
     { kind: 'initialize', path: '/repo/checkout', skip: true },

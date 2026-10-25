@@ -3852,8 +3852,8 @@ const worktreeSettingsBridge = {
     mutate: async (input: import('@maka/core/worktree').WorktreeMutation): Promise<import('@maka/core/worktree').WorktreeMutationResult> => {
       const project = worktreeStoryState.projects[0]!;
       if (input.kind === 'configure') {
-        if (input.projectId) project.config = { ...input.config };
-        else worktreeStoryState.config.rootDirectory = input.config.rootDirectory!;
+        if (input.projectId !== undefined) project.config = { ...input.config };
+        else worktreeStoryState.config.rootDirectory = input.config.rootDirectory;
         return { kind: 'configured' };
       }
       if (input.kind === 'initialize') {

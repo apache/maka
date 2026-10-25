@@ -20,7 +20,6 @@
 export type WorktreeInitialization = 'pending' | 'running' | 'ready' | 'failed' | 'skipped';
 
 export interface WorktreeProjectConfig {
-  rootDirectory?: string;
   defaultMode?: 'main' | 'new';
   setupScript?: string;
   cleanupScript?: string;
@@ -62,7 +61,8 @@ export interface WorktreeSnapshot {
 }
 
 export type WorktreeMutation =
-  | { kind: 'configure'; projectId?: string; config: WorktreeProjectConfig }
+  | { kind: 'configure'; projectId?: undefined; config: Pick<WorktreeConfig, 'rootDirectory'> }
+  | { kind: 'configure'; projectId: string; config: WorktreeProjectConfig }
   | {
       kind: 'create';
       projectId: string;

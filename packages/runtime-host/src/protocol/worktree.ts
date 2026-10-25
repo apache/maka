@@ -165,9 +165,9 @@ export const WORKTREE_OPERATION_SPECS = {
       decodeInput: decodeWorktreeMutation,
       decodeOutput: decodeWorktreeMutationResult,
     },
-    // Checkout paths are validated against the project; custom roots are arbitrary
-    // Host paths. An empty project override only restores the configured Host root.
-    (input) => input.kind === 'configure' && Boolean(input.config.rootDirectory),
+    // Checkout paths are validated against the project; the configured root is
+    // an arbitrary Host path.
+    (input) => input.kind === 'configure' && input.projectId === undefined,
   ),
 } as const;
 
@@ -176,7 +176,7 @@ export function decodeWorktreeProjectConfig(value: unknown): WorktreeProjectConf
     value,
     'Worktree configuration',
     [],
-    ['rootDirectory', 'defaultMode', 'setupScript', 'cleanupScript'],
+    ['defaultMode', 'setupScript', 'cleanupScript'],
   );
   if (
     config.defaultMode !== undefined &&
@@ -185,14 +185,6 @@ export function decodeWorktreeProjectConfig(value: unknown): WorktreeProjectConf
   )
     throw invalidProtocolFrame('Invalid worktree default mode');
   return {
-    ...(config.rootDirectory !== undefined
-      ? {
-          rootDirectory:
-            config.rootDirectory === ''
-              ? ''
-              : decodeHostPath(config.rootDirectory, 'Worktree root'),
-        }
-      : {}),
     ...(config.defaultMode !== undefined ? { defaultMode: config.defaultMode } : {}),
     ...(config.setupScript !== undefined
       ? { setupScript: string(config.setupScript, 'Setup script', 32_000) }
@@ -212,12 +204,22 @@ export function decodeWorktreeMutation(value: unknown): WorktreeMutation {
         ['kind', 'config'],
         ['projectId'],
       );
+      if (input.projectId === undefined) {
+        const config = requireShapedRecord(
+          input.config,
+          'Host worktree configuration',
+          ['rootDirectory'],
+          [],
+        );
+        return {
+          kind: 'configure',
+          config: { rootDirectory: decodeHostPath(config.rootDirectory, 'Worktree root') },
+        };
+      }
       return {
         kind: 'configure',
         config: decodeWorktreeProjectConfig(input.config),
-        ...(input.projectId !== undefined
-          ? { projectId: requireEntityId(input.projectId, 'projectId') }
-          : {}),
+        projectId: requireEntityId(input.projectId, 'projectId'),
       };
     }
     case 'create': {

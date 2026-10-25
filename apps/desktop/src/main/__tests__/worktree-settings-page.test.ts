@@ -234,7 +234,6 @@ test('settings expose failed setup recovery and resume only after retry or skip 
           ...snapshot.projects[0]!.config,
           [field]: `echo conflicting remote ${field}`,
           [otherField]: `echo remote ${otherField}`,
-          rootDirectory: '/remote/root',
           defaultMode: 'new',
         };
         await act(async () => { for (const listener of listeners) listener(); });
@@ -247,7 +246,6 @@ test('settings expose failed setup recovery and resume only after retry or skip 
           config: {
             [field]: localEdit,
             [otherField]: `echo remote ${otherField}`,
-            rootDirectory: '/remote/root',
             defaultMode: 'new',
           },
         });

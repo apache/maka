@@ -112,6 +112,10 @@ export function readWorktreeState(value: string): WorktreeState {
                     : initialization,
           })),
   };
+  // Retire project root overrides without moving existing checkouts or bindings.
+  for (const config of Object.values(state.config.projects)) {
+    if ('rootDirectory' in config) delete config.rootDirectory;
+  }
   for (const item of state.worktrees) {
     if (
       ![

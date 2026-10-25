@@ -19,7 +19,7 @@
 
 import { execFile } from 'node:child_process';
 import { realpath } from 'node:fs/promises';
-import { isAbsolute, resolve } from 'node:path';
+import { resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { runProcessWithBoundedTail, runShellWithBoundedTail } from '@maka/runtime/shell-exec';
 import type { WorktreeInfo, WorktreeProjectConfig } from '@maka/core/worktree';
@@ -39,11 +39,8 @@ export function projectDirectoryName(name: string): string {
 }
 
 export function validateConfig(config: WorktreeProjectConfig): WorktreeProjectConfig {
-  if (
-    config.rootDirectory &&
-    (!isAbsolute(config.rootDirectory) || config.rootDirectory.includes('\0'))
-  )
-    throw new Error('Worktree root must be an absolute Host path');
+  if ('rootDirectory' in config)
+    throw new Error('Project worktree root overrides are not supported');
   if (
     config.defaultMode !== undefined &&
     config.defaultMode !== 'main' &&

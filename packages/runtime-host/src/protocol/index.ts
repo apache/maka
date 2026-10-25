@@ -109,7 +109,8 @@ export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
 // Re-check against main before merging; sibling PRs may use the same next epoch.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 234 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 235 as const;
+// 235: Worktree roots are Host-only; project configuration rejects root overrides.
 // 234: Worktree catalogs use byte-bounded pages with revision-checked continuation.
 // 233: Host-owned preparation queries and typed Session creation workspace blockers.
 // 232: Session creation has one workspace selection; Host reports branch-worktree capability.
