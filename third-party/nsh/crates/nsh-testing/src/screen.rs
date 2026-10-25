@@ -1276,15 +1276,19 @@ impl Screen {
         first
     }
 
+    /// The view `selector` matches inside `target` (a text in the button
+    /// a press goes to); `None` when the match is `target` itself.
+    pub(crate) fn match_inside(&self, selector: &Selector, target: NodeId) -> Option<NodeId> {
+        self.resolve(selector)
+            .into_iter()
+            .find(|id| self.is_inside(*id, target))
+    }
+
     /// Where in `target` a press of what `selector` names lands: the
     /// center of the view it matches inside `target`, as a finger taps the
     /// text it reads. `None` when the match is `target` itself.
     pub(crate) fn press_point(&self, selector: &Selector, target: NodeId) -> Option<Point<Points>> {
-        let id = self
-            .resolve(selector)
-            .into_iter()
-            .find(|id| self.is_inside(*id, target))?;
-        let inner = self.bounds_in_root(id)?;
+        let inner = self.bounds_in_root(self.match_inside(selector, target)?)?;
         let outer = self.bounds_in_root(target)?;
         Some(nsh_core::geometry::point(
             inner.origin.x - outer.origin.x + inner.size.width / 2.0,

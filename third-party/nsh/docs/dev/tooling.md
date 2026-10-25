@@ -463,7 +463,8 @@ a gesture at a time; between gestures it waits only for the view to stop moving,
 view for the app to settle, so a page that is never quiet, a ticking timer, costs one settling per step rather than
 one per gesture), asks the platform where it is (`Native::bounds`; a span of a text (`Scene::span`) is pressed on its
 characters' first line, `Native::text_bounds`, the rectangles each platform highlights a selection with, and the
-platform's own hit testing gives the press to the span) and acts there with synthesized input
+platform's own hit testing gives the press to the span; a press of a view inside the one that takes it, a cell's
+text in a row, lands on the match's middle, `Scene::match_inside`, as headless) and acts there with synthesized input
 (`Native`: press, long press (on a manual clock, once the finger has landed, the agent moves the clock by the rest
 of the hold, as the headless driver's hold does: a hold the app times itself, a touch screen's `ContextMenu`, comes
 due), scroll, drag along `agent::drag_path` after resting `agent::LANDING`, typed keys,

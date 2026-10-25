@@ -439,6 +439,13 @@ pub trait Scene: Send + Sync {
         let _ = selector;
         Ok(None)
     }
+    /// The view `selector` matches inside view `id` (a text in the button
+    /// a press goes to), whose middle a press lands on; `None` when the
+    /// match is `id` itself.
+    fn match_inside(&self, selector: &str, id: NodeId) -> Result<Option<NodeId>, String> {
+        let _ = (selector, id);
+        Ok(None)
+    }
     /// Moves the app's manual clock ([`Model::move_clock`]).
     fn move_clock(&self, change: nsh_dev::protocol::ClockChange) -> Result<(), String>;
     /// Whether the app runs on a manual clock (`open`'s `clock`), which
@@ -456,6 +463,12 @@ pub trait Scene: Send + Sync {
 impl Scene for Model {
     fn canvas_node(&self, selector: &str) -> Result<Option<(NodeId, Point<Points>)>, String> {
         Ok(self.lock().screen.canvas_node(&Selector::parse(selector)?))
+    }
+    fn match_inside(&self, selector: &str, id: NodeId) -> Result<Option<NodeId>, String> {
+        Ok(self
+            .lock()
+            .screen
+            .match_inside(&Selector::parse(selector)?, id))
     }
     fn activity(&self) -> Result<Activity, String> {
         let state = self.lock();
@@ -703,6 +716,9 @@ pub fn answer(model: &Model, step: &TestStep) -> Option<Result<serde_json::Value
             SceneQuery::CanvasNode { selector } => {
                 model.canvas_node(selector).and_then(|n| json(to_value(n)))
             }
+            SceneQuery::MatchInside { selector, id } => {
+                model.match_inside(selector, *id).map(Value::from)
+            }
             SceneQuery::Clock { change } => model.move_clock(*change).map(|()| Value::Null),
             SceneQuery::HostSend { name, data } => model
                 .send_host_event(name, data.clone())
@@ -747,6 +763,12 @@ impl Scene for RemoteScene {
     fn canvas_node(&self, selector: &str) -> Result<Option<(NodeId, Point<Points>)>, String> {
         self.query(SceneQuery::CanvasNode {
             selector: selector.into(),
+        })
+    }
+    fn match_inside(&self, selector: &str, id: NodeId) -> Result<Option<NodeId>, String> {
+        self.query(SceneQuery::MatchInside {
+            selector: selector.into(),
+            id,
         })
     }
     fn activity(&self) -> Result<Activity, String> {
@@ -1317,6 +1339,9 @@ impl Agent {
             SceneQuery::CanvasNode { selector } => {
                 scene.canvas_node(&selector).and_then(|n| json(to_value(n)))
             }
+            SceneQuery::MatchInside { selector, id } => {
+                scene.match_inside(&selector, id).map(Value::from)
+            }
             SceneQuery::Clock { change } => scene.move_clock(change).map(|()| Value::Null),
             SceneQuery::HostSend { name, data } => {
                 scene.send_host_event(&name, data).map(|()| Value::Null)
@@ -1395,7 +1420,22 @@ impl Agent {
             ));
         }
         let Some((text, start, end)) = self.scene.span(id)? else {
-            return Ok((id, self.scroll_into_view(id, selector)?));
+            // A press on what the selector matches inside the view that
+            // takes it (a cell's text in a row) lands on that match, as a
+            // finger taps the text it reads.
+            let pressing = matches!(target, PickTarget::Pressable | PickTarget::LongPressable);
+            let inner = if pressing {
+                self.scene.match_inside(selector, id)?
+            } else {
+                None
+            };
+            let at = match inner {
+                Some(inner) if self.native.bounds(inner).is_some() => {
+                    self.scroll_into_view(inner, selector)?
+                }
+                _ => self.scroll_into_view(id, selector)?,
+            };
+            return Ok((id, at));
         };
         // A span of a text: its text view comes into view, then the finger
         // goes on its characters.
@@ -1806,8 +1846,10 @@ mod tests {
     }
 
     /// A platform whose views are where their ids say (`x` is the id), and
-    /// whose presses go to the view they are at, as the engine's events.
-    struct Fake(EngineControl, Arc<Mutex<Vec<String>>>);
+    /// whose presses go to the view they are at, or, with the model, to the
+    /// nearest view around it that takes presses, as a platform's hit test
+    /// gives them, as the engine's events.
+    struct Fake(EngineControl, Arc<Mutex<Vec<String>>>, Option<Arc<Model>>);
 
     impl Native for Fake {
         fn bounds(&self, id: NodeId) -> Option<Bounds<Points>> {
@@ -1820,7 +1862,16 @@ mod tests {
             Size::new(Points(10_000.0), Points(10_000.0))
         }
         fn press(&self, at: Point<Points>) {
-            let id = at.x.0.round() as NodeId;
+            let hit = at.x.0.round() as NodeId;
+            let id = self.2.as_ref().map_or(hit, |model| {
+                let state = model.lock();
+                state
+                    .screen
+                    .chain(hit)
+                    .into_iter()
+                    .find(|id| state.screen.hears(*id, EventKind::Press))
+                    .unwrap_or(hit)
+            });
             for kind in [EventKind::PressDown, EventKind::PressUp, EventKind::Press] {
                 self.0.dispatch_event(id, kind, EventPayload::None);
             }
@@ -1920,7 +1971,11 @@ mod tests {
         for scene in [model as Arc<dyn Scene>, remote as Arc<dyn Scene>] {
             let agent = Agent::new(
                 scene,
-                Box::new(Fake(engine.control(), Arc::new(Mutex::new(Vec::new())))),
+                Box::new(Fake(
+                    engine.control(),
+                    Arc::new(Mutex::new(Vec::new())),
+                    None,
+                )),
             );
             // Fake's canvas starts at x=1.5; its pad's center is x=4.
             assert_eq!(
@@ -1941,7 +1996,10 @@ mod tests {
             }
         });
         let typed = Arc::new(Mutex::new(Vec::new()));
-        let agent = Agent::new(model, Box::new(Fake(engine.control(), typed.clone())));
+        let agent = Agent::new(
+            model.clone(),
+            Box::new(Fake(engine.control(), typed.clone(), Some(model.clone()))),
+        );
         let ok = StepOutcome::Done {
             value: serde_json::Value::Null,
         };
@@ -1952,6 +2010,18 @@ mod tests {
                 value: serde_json::json!(["Count: 0", "Add"])
             }
         );
+        // The press goes to the button, at its text, as a finger taps what
+        // it reads.
+        let (button, at) = agent
+            .find("Add", "pressable view", PickTarget::Pressable)
+            .unwrap();
+        let label = model
+            .lock()
+            .screen
+            .resolve(&Selector::parse("Add").unwrap());
+        assert_eq!(label.len(), 1);
+        assert_ne!(label[0], button);
+        assert_eq!(at.x.0.round() as NodeId, label[0]);
         assert_eq!(
             agent.take(TestStep::Press {
                 selector: "Add".into()

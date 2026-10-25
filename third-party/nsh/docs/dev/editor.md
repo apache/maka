@@ -32,7 +32,7 @@ user-facing page is `website/elements/editor.md`; how each module works inside i
 | `fold.rs` | Where folds can start, by indentation |
 | `fold_set.rs` | Folds as sets of ranges: the app's `foldRanges` normalized and carried through edits, the folded set after an edit, levels, nesting, the outermost folds |
 | `search.rs` | Find and replace on `regex`: matches, replacements with groups, the next and previous match |
-| `diagnostics.rs` | `Mark<T>`: the app's ranges resolved to byte ranges once and carried through edits |
+| `diagnostics.rs` | `Mark<T>`: the app's ranges resolved to byte ranges once (line by line, an ASCII line's columns taken as bytes) and carried through edits (only the marks from the first change on, in order); the gutter's severities by binary search |
 | `highlight.rs` | `Highlighter`: the highlighting pipeline (tokens by line, jobs off the engine thread, guesses, edits), `Syntax` (what highlights a language), the built-in highlighter on syntect (feature `highlight`) |
 | `highlighter.rs` | `EditorHighlighter`, the trait of the app's highlighters, and what crosses it: `EditorText`, `EditorTextEdit`, `EditorTokens`; `EditorToken::from_scope` |
 | `languages.rs` | The engine's own languages and highlighters: `EditorLanguage`, `register_language`, `register_highlighter`, and `resolve` (registered first, then built in) |

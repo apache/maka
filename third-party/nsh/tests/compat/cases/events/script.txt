@@ -100,6 +100,7 @@ expect Pasted: none
 event id:paste onPaste text=hello
 expect Pasted: hello files 0 uris 0
 covers [events] onPaste
+prop id:paste pasteBehavior report
 covers [props] pasteBehavior
 covers [events] onContentSizeChange
 covers [props] selectedRange
