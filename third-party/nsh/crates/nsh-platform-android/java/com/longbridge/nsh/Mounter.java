@@ -1314,14 +1314,10 @@ final class Mounter {
         int[] at = new int[2], rootAt = new int[2];
         v.getLocationOnScreen(at);
         root.getLocationOnScreen(rootAt);
-        int meta = e.getMetaState(), modifiers = 0;
-        if ((meta & android.view.KeyEvent.META_CTRL_ON) != 0) modifiers |= 1;
-        if ((meta & android.view.KeyEvent.META_ALT_ON) != 0) modifiers |= 2;
-        if ((meta & android.view.KeyEvent.META_SHIFT_ON) != 0) modifiers |= 4;
-        if ((meta & android.view.KeyEvent.META_META_ON) != 0) modifiers |= 8;
         float d = density;
         Native.hover(handle(), id, e.getX() / d, e.getY() / d,
-                (e.getX() + at[0] - rootAt[0]) / d, (e.getY() + at[1] - rootAt[1]) / d, modifiers);
+                (e.getX() + at[0] - rootAt[0]) / d, (e.getY() + at[1] - rootAt[1]) / d,
+                modifiers(e.getMetaState()));
     }
 
     /** An interaction state of `id` changed: tells the core if it reads it. */
@@ -2386,6 +2382,45 @@ final class Mounter {
 
     void event(int id, int kind) {
         Native.event(handle(), id, kind, null, 0, 0, 0);
+    }
+
+    /** A press's touch: where it is now and the modifier keys it began with. */
+    static final class PressAt {
+        float x, y, rawX, rawY;
+        int meta;
+
+        /** Follows the touch's events (the pressed view's own). */
+        void track(android.view.MotionEvent e) {
+            if (e.getActionMasked() == android.view.MotionEvent.ACTION_DOWN) meta = e.getMetaState();
+            x = e.getX();
+            y = e.getY();
+            rawX = e.getRawX();
+            rawY = e.getRawY();
+        }
+    }
+
+    /**
+     * Press event {@code kind} of node {@code id} (view {@code v}, or a text span of it), with
+     * where the touch is in {@code v} and in its root view.
+     */
+    void press(int id, int kind, View v, PressAt at) {
+        // The surface, or the window of the modal the view is in.
+        View root = v.getRootView() == host.getRootView() ? host : v.getRootView();
+        int[] rootAt = new int[2];
+        root.getLocationOnScreen(rootAt);
+        float d = density;
+        Native.press(handle(), id, kind, at.x / d, at.y / d,
+                (at.rawX - rootAt[0]) / d, (at.rawY - rootAt[1]) / d, modifiers(at.meta), 1);
+    }
+
+    /** Modifier keys of a meta state: 1 Ctrl, 2 Alt, 4 Shift, 8 Meta. */
+    private static int modifiers(int meta) {
+        int modifiers = 0;
+        if ((meta & android.view.KeyEvent.META_CTRL_ON) != 0) modifiers |= 1;
+        if ((meta & android.view.KeyEvent.META_ALT_ON) != 0) modifiers |= 2;
+        if ((meta & android.view.KeyEvent.META_SHIFT_ON) != 0) modifiers |= 4;
+        if ((meta & android.view.KeyEvent.META_META_ON) != 0) modifiers |= 8;
+        return modifiers;
     }
 
     /** `RequestClose` with what the user did (`cancel`, `swipe`). */

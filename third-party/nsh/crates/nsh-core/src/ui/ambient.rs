@@ -333,6 +333,14 @@ pub fn global<G: Default + 'static>() -> Signal<G> {
     signal
 }
 
+/// [`global`] where a reactive runtime is entered (the engine's thread,
+/// while it runs Rust code), else `None`: for code that also runs outside
+/// an engine (a unit test of a component's model).
+pub fn try_global<G: Default + 'static>() -> Option<Signal<G>> {
+    super::reactive::try_with_data(|_| ())?;
+    Some(global::<G>())
+}
+
 /// The insets of the screen or modal the component on `host` is on, below
 /// its header, else the safe area (TS: `safeAreaInsets()`).
 pub(crate) fn insets_of(host: NodeId) -> EdgeInsets {

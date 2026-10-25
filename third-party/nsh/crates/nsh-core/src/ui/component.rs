@@ -686,7 +686,12 @@ pub struct Registry {
     /// The UI sets served under paths of this one's specifier
     /// ([`Registry::submodule`]).
     submodules: Arc<Vec<Registry>>,
+    /// What each engine serving the set runs once ([`Registry::setup`]).
+    setups: Arc<Vec<Setup>>,
 }
+
+/// A function each engine serving a set runs once ([`Registry::setup`]).
+type Setup = Arc<dyn Fn() + Send + Sync>;
 
 impl fmt::Debug for Registry {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -960,6 +965,7 @@ impl Registry {
         let mut out = Self::default();
         for set in sets.iter().flat_map(Registry::sets) {
             out.tokens = out.tokens.or(set.tokens);
+            Arc::make_mut(&mut out.setups).extend(set.setups.iter().cloned());
             let types = Arc::make_mut(&mut out.types);
             for (name, ty) in set.types.iter() {
                 if let Some(old) = types.insert(name, ty.clone()) {
@@ -1055,6 +1061,26 @@ impl Registry {
     pub fn tokens_from(&mut self, source: super::TokenSource) -> &mut Self {
         self.tokens = Some(source);
         self
+    }
+
+    /// Runs `f` once on each engine that serves the set, in its reactive
+    /// runtime, before the app's first op: what the set's crates keep per
+    /// engine is set up there (the languages an `Editor` knows,
+    /// `nsh_base::editor::register_language`; a value of
+    /// [`global`](super::prelude::global)), as a Rust app's root sets it up
+    /// before its children. An app's crate calls it from its
+    /// `#[native_module]` function.
+    pub fn setup(&mut self, f: impl Fn() + Send + Sync + 'static) -> &mut Self {
+        Arc::make_mut(&mut self.setups).push(Arc::new(f));
+        self
+    }
+
+    /// Runs the functions [`Registry::setup`] gave the set (a merged set's:
+    /// every set's, in order). The core runs them when it takes its sets.
+    pub(crate) fn run_setups(&self) {
+        for setup in self.setups.iter() {
+            setup();
+        }
     }
 
     /// The tokens of theme file `json` (`None`: the defaults), by the

@@ -42,7 +42,7 @@ use crate::{
     input::Input,
     native_view::NshView,
     navigation::{ModalHost, ScreenHost, StackHost},
-    press::PressRecognizer,
+    press::{PressAt, PressRecognizer},
     target::EventTarget,
     text_view::TextView,
     video::VideoHost,
@@ -2418,21 +2418,11 @@ impl Mounter {
         let Some(view) = self.slot(id).map(|s| s.native.view().retain()) else {
             return;
         };
-        let local = view.convertPoint_fromView(in_window, None);
-        let page = self.root_view_of(&view).map_or(in_window, |root| {
-            root.convertPoint_fromView(in_window, None)
-        });
-        // UIKeyModifierShift, Control, Alternate, Command.
-        let has = |bit: u32| modifiers & (1 << bit) != 0;
+        let (position, page_position) = self.pointer_positions(&view, in_window);
         let event = nsh_core::HoverEvent {
-            position: point(Points(local.x as f32), Points(local.y as f32)),
-            page_position: point(Points(page.x as f32), Points(page.y as f32)),
-            modifiers: nsh_core::keymap::Modifiers {
-                ctrl: has(18),
-                alt: has(19),
-                shift: has(17),
-                cmd: has(20),
-            },
+            position,
+            page_position,
+            modifiers: key_modifiers(modifiers),
         };
         self.control
             .dispatch_event(id, EventKind::HoverMove, EventPayload::Hover(event));
@@ -2444,24 +2434,31 @@ impl Mounter {
         let Some(view) = self.slot(id).map(|s| s.native.view().retain()) else {
             return;
         };
-        let local = view.convertPoint_fromView(in_window, None);
-        let page = self.root_view_of(&view).map_or(in_window, |root| {
-            root.convertPoint_fromView(in_window, None)
-        });
-        // UIKeyModifierShift, Control, Alternate, Command.
-        let has = |bit: u32| modifiers & (1 << bit) != 0;
+        let (position, page_position) = self.pointer_positions(&view, in_window);
         let event = nsh_core::ContextMenuEvent {
-            position: point(Points(local.x as f32), Points(local.y as f32)),
-            page_position: point(Points(page.x as f32), Points(page.y as f32)),
-            modifiers: nsh_core::keymap::Modifiers {
-                ctrl: has(18),
-                alt: has(19),
-                shift: has(17),
-                cmd: has(20),
-            },
+            position,
+            page_position,
+            modifiers: key_modifiers(modifiers),
         };
         self.control
             .dispatch_event(id, EventKind::ContextMenu, EventPayload::ContextMenu(event));
+    }
+
+    /// `in_window` (the window's coordinates) in `view` and in the root
+    /// view it is in.
+    fn pointer_positions(
+        &self,
+        view: &UIView,
+        in_window: CGPoint,
+    ) -> (nsh_core::Point<Points>, nsh_core::Point<Points>) {
+        let local = view.convertPoint_fromView(in_window, None);
+        let page = self.root_view_of(view).map_or(in_window, |root| {
+            root.convertPoint_fromView(in_window, None)
+        });
+        (
+            point(Points(local.x as f32), Points(local.y as f32)),
+            point(Points(page.x as f32), Points(page.y as f32)),
+        )
     }
 
     /// The root view `view` is in: the surface's, or its modal's (touches'
@@ -3535,7 +3532,7 @@ impl Mounter {
     }
 
     /// A finger went down on (or left) a pressable view.
-    pub(crate) fn press_changed(&mut self, id: NodeId, pressed: bool) {
+    pub(crate) fn press_changed(&mut self, id: NodeId, pressed: bool, at: PressAt) {
         self.report_state(id, nsh_core::tailwind::state::PRESSED, pressed);
         let Some(s) = self.slot(id) else { return };
         let event = if pressed {
@@ -3544,8 +3541,30 @@ impl Mounter {
             EventKind::PressUp
         };
         if s.events.contains(event) {
-            self.control.dispatch_event(id, event, EventPayload::None);
+            let payload = self.press_payload(id, at);
+            self.control.dispatch_event(id, event, payload);
         }
+    }
+
+    /// A press event on pressable text span `node` of text view `view`.
+    pub(crate) fn link_event(&mut self, node: NodeId, kind: EventKind, view: NodeId, at: PressAt) {
+        let payload = self.press_payload(view, at);
+        self.control.dispatch_event(node, kind, payload);
+    }
+
+    /// The payload of a press on view `id` (for a text's span, its text's
+    /// view).
+    fn press_payload(&self, id: NodeId, at: PressAt) -> EventPayload {
+        let Some(view) = self.slot(id).map(|s| s.native.view().retain()) else {
+            return EventPayload::None;
+        };
+        let (position, page_position) = self.pointer_positions(&view, at.in_window);
+        EventPayload::Press(nsh_core::PressEvent {
+            position,
+            page_position,
+            modifiers: key_modifiers(at.modifiers),
+            clicks: at.clicks,
+        })
     }
 
     /// Presses the element the app put in the trailing header slot, as a tap
@@ -3588,22 +3607,23 @@ impl Mounter {
     }
 
     /// The finger lifted on a pressable view.
-    pub(crate) fn pressed(&mut self, id: NodeId) {
+    pub(crate) fn pressed(&mut self, id: NodeId, at: PressAt) {
         if let Some(s) = self.slot(id)
             && s.events.contains(EventKind::Press)
         {
-            self.control
-                .dispatch_event(id, EventKind::Press, EventPayload::None);
+            let payload = self.press_payload(id, at);
+            self.control.dispatch_event(id, EventKind::Press, payload);
         }
     }
 
     /// A press was held for half a second.
-    pub(crate) fn long_pressed(&mut self, id: NodeId) {
+    pub(crate) fn long_pressed(&mut self, id: NodeId, at: PressAt) {
         if let Some(s) = self.slot(id)
             && s.events.contains(EventKind::LongPress)
         {
+            let payload = self.press_payload(id, at);
             self.control
-                .dispatch_event(id, EventKind::LongPress, EventPayload::None);
+                .dispatch_event(id, EventKind::LongPress, payload);
         }
     }
 
@@ -4134,6 +4154,18 @@ fn toggle<G: AsRef<UIGestureRecognizer>>(
             *slot = None;
         }
         _ => {}
+    }
+}
+
+/// The modifier keys of UIKeyModifierFlags.
+fn key_modifiers(flags: isize) -> nsh_core::keymap::Modifiers {
+    // UIKeyModifierShift, Control, Alternate, Command.
+    let has = |bit: u32| flags & (1 << bit) != 0;
+    nsh_core::keymap::Modifiers {
+        ctrl: has(18),
+        alt: has(19),
+        shift: has(17),
+        cmd: has(20),
     }
 }
 

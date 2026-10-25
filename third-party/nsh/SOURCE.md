@@ -26,7 +26,7 @@ at `de176695240d550f2b303643b8019146c7989e7f`. The upstream project is
 
 `upstream.json` keeps that initial `repository` and `revision`. Its
 `upstream_revision` records the latest integrated `longbridge/nsh` main revision:
-`7e6170566cc838426df21c2f900765b65a1ca68c`. The first upstream synchronization
+`dcc67ba3e11461ec4abd25162522a9818844adb0`. The first upstream synchronization
 starts from `6bb0b7908043132067456e4a21dd57c90a0bdce5`, already included in the
 initial fork import.
 
@@ -38,6 +38,16 @@ the README retains the terminal backend description). This is a mixed-source
 vendor tree, not a claim that one upstream revision contains the fork features.
 The source, tests, resources, original licenses and independent workspaces are
 retained. `SOURCE.md` and `upstream.json` are Maka's provenance files.
+The Editor / DiffView import adds their headless regressions, shared syntax
+highlighting, per-engine registry setup, and pointer-event payload support.
+Maka already passes `nsh_base::registry()` to its bundler and engine; these
+components use that registration path rather than a second application runtime.
+The iOS press bridge keeps the local owned `TextLink` representation while
+forwarding upstream touch positions, modifiers and click counts. The shared
+Unicode segmentation dependency follows upstream 1.13 for both the editor and
+terminal backend. These integrations do not replace the local terminal input,
+IME, completion or fallback-key capabilities described below.
+
 The local hint-observation integration retains an allocation lifetime separate
 from the upstream layout tree's reusable slab index. This prevents a delayed
 pointer observation from activating a newly allocated hint or anchor; the

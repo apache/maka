@@ -110,7 +110,12 @@ misses the deadline is not waited for again until it catches up (`docs/dev/macos
   a view that does not listen gets no event. When the set changes, the views left hear `onHoverOut` from the inside
   out, then the views entered `onHoverIn` from the outside in; then each hovered view with `onHoverMove` hears where
   the mouse is (`EventPayload::Hover`, JS `{ position, pagePosition, modifiers }`: the `Point` in the view, its transforms undone,
-  the `Point` in the root view as touches have it, the modifier keys as GPUI's `Modifiers`). The mouse leaving the window (while no button is down on
+  the `Point` in the root view as touches have it, the modifier keys as GPUI's `Modifiers`). A modifier key pressed or
+  released while the mouse rests is a move to where it is with the new modifiers, so a view hears Control or Command
+  come and go under a still mouse (an `Editor`'s definition link): Linux from the root's key events, macOS from a
+  local `flagsChanged` monitor (installed once a view hears hover moves), Windows from the modifiers' `WM_KEYDOWN` /
+  `WM_KEYUP`, GPUI from `on_modifiers_changed`, the web from `keydown` / `keyup` of `Control`, `Alt`, `Shift` and
+  `Meta` (`nsh.js` `modifiersChanged`). The mouse leaving the window (while no button is down on
   macOS) unhovers everything; on macOS and GPUI hover is picked again after every batch (on macOS also after every
   scroll), so a view removed or moved from under a still mouse hears `onHoverOut` and one that arrives there
   `onHoverIn`; on Linux and Windows that waits for the next mouse move. Moves with a button down are touches

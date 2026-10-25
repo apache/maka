@@ -1148,8 +1148,17 @@ pub unsafe extern "C" fn nsh_event(
         EventKind::Error => EventPayload::Error {
             message: text("message"),
         },
-        EventKind::HoverMove | EventKind::ContextMenu => {
-            // `{ position, pagePosition, modifiers }`, as handlers get it.
+        EventKind::HoverMove
+        | EventKind::ContextMenu
+        | EventKind::Press
+        | EventKind::LongPress
+        | EventKind::PressDown
+        | EventKind::PressUp
+            if matches!(kind, EventKind::HoverMove | EventKind::ContextMenu)
+                || value.get("pagePosition").is_some() =>
+        {
+            // `{ position, pagePosition, modifiers }` (presses: and
+            // `clicks`), as handlers get it.
             let at = |k: &str| {
                 let p = value.get(k);
                 let n = |c: &str| {
@@ -1178,6 +1187,13 @@ pub unsafe extern "C" fn nsh_event(
                     position,
                     page_position,
                     modifiers,
+                })
+            } else if kind != EventKind::ContextMenu {
+                EventPayload::Press(nsh_core::PressEvent {
+                    position,
+                    page_position,
+                    modifiers,
+                    clicks: (num("clicks") as u32).max(1),
                 })
             } else {
                 EventPayload::ContextMenu(nsh_core::ContextMenuEvent {

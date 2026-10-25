@@ -154,7 +154,7 @@ view()
 | `onLongPress` | `.on_long_press` | none | The finger stayed down for `delayLongPress` (500 ms). |
 | `onPressDown` / `onPressUp` | `.on_press_down` / `.on_press_up` | none | A finger went down / lifted or left. |
 | `onHoverIn` / `onHoverOut` | `.on_hover_in` / `.on_hover_out` | none | The mouse came over the view (or a view inside it) / left it or the window ([hover](./index.md#hover)). |
-| `onHoverMove` | `.on_hover_move` | `HoverEvent` | The mouse moved over the view with no button down: `position`, `pagePosition` (`Point`s) and `modifiers`; at most once a frame. |
+| `onHoverMove` | `.on_hover_move` | `HoverEvent` | The mouse moved over the view with no button down, or a modifier key was pressed or released while it rests there: `position`, `pagePosition` (`Point`s) and `modifiers`; at most once a frame. |
 | `onMouseMove` | `.on_mouse_move` | TSX `Point`; Rust `Point<Points>` | Mouse movement, including with a button down, on macOS, Linux, Windows, GPUI and web. Local coordinates in points; nested listeners hear it inside out, at most once a frame. |
 | `onContextMenu` | `.on_context_menu` | `ContextMenuEvent` | The secondary button was pressed over the view ([context menus](./index.md#context-menus)). |
 | `onFileDragEnter` / `onFileDragLeave` | `.on_file_drag_enter` / `.on_file_drag_leave` | none | A local-file drag entered / left the active desktop destination. |

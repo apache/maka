@@ -210,7 +210,7 @@ pub(crate) enum Cursor {
     /// The arrow.
     #[default]
     Arrow,
-    /// A hand (links, pressables with `cursor: pointer`).
+    /// A hand (`cursor: pointer`: links).
     Hand,
     /// The I-beam (text).
     Text,
@@ -670,10 +670,9 @@ pub(crate) fn command(surface: &Rc<Surface>, _id: NodeId, command: &Command) {
 // --- Cursors ------------------------------------------------------------------------
 
 /// The cursor of a CSS `cursor` value, `None` to inherit the parent's.
-fn css_cursor(cursor: nsh_core::Cursor, pressable: bool) -> Option<Cursor> {
+fn css_cursor(cursor: nsh_core::Cursor) -> Option<Cursor> {
     use nsh_core::Cursor as C;
     Some(match cursor {
-        C::Auto if pressable => Cursor::Hand,
         C::Auto => return None,
         C::Default => Cursor::Arrow,
         C::Pointer => Cursor::Hand,
@@ -699,7 +698,7 @@ fn css_cursor(cursor: nsh_core::Cursor, pressable: bool) -> Option<Cursor> {
 /// A view's own cursor: its style's, the I-beam over text fields and
 /// selectable text (a press target keeps the hand), or `None`.
 fn view_cursor(s: &ViewState) -> Option<Cursor> {
-    css_cursor(s.style.cursor, has_press(s.events)).or_else(|| {
+    css_cursor(s.style.cursor).or_else(|| {
         (s.kind == ViewKind::Input || crate::text::selectable(s)).then_some(Cursor::Text)
     })
 }
@@ -2676,6 +2675,21 @@ fn hover_event(surface: &Surface, view: &NshView, kind: EventKind) {
     }
 }
 
+/// The keyboard's modifiers changed (`modifiers` held now): while the
+/// mouse rests over the surface with no button down, the hovered views
+/// that listen hear `onHoverMove` again where it is, with the new
+/// modifiers (an editor underlines a definition while Mod is held), as
+/// they would on the next move.
+pub(crate) fn modifiers_changed(surface: &Surface, modifiers: Modifiers) {
+    let input = &surface.input;
+    if input.pointers.borrow().iter().any(|p| p.key == Key::Mouse) {
+        return;
+    }
+    if let Some((x, y)) = input.last.get() {
+        hover_moved(surface, x, y, modifiers);
+    }
+}
+
 /// Picks the hovered views again under a mouse that did not move: after a
 /// batch or a scroll moved views under it (or away), as on macOS.
 pub(crate) fn rehover(surface: &Surface) {
@@ -3562,11 +3576,11 @@ mod tests {
     #[test]
     fn cursors() {
         use nsh_core::Cursor as C;
-        assert_eq!(css_cursor(C::Auto, false), None);
-        assert_eq!(css_cursor(C::Auto, true), Some(Cursor::Hand));
-        assert_eq!(css_cursor(C::Default, true), Some(Cursor::Arrow));
-        assert_eq!(css_cursor(C::NotAllowed, false), Some(Cursor::NotAllowed));
-        assert_eq!(css_cursor(C::None, false), Some(Cursor::Hidden));
+        assert_eq!(css_cursor(C::Auto), None);
+        assert_eq!(css_cursor(C::Default), Some(Cursor::Arrow));
+        assert_eq!(css_cursor(C::Pointer), Some(Cursor::Hand));
+        assert_eq!(css_cursor(C::NotAllowed), Some(Cursor::NotAllowed));
+        assert_eq!(css_cursor(C::None), Some(Cursor::Hidden));
     }
 
     #[test]

@@ -2,7 +2,8 @@
 //! written in Rust, with no look of its own (as `gpui-base` is GPUI Kit's):
 //! controls (`Button`, `Checkbox`, `Radio` in a `RadioGroup`, `Switch`,
 //! `Tab` in `Tabs`), a progress bar (`Progress`), disclosure (`Collapsible`), navigation (stacks and pages), dialogs, popups on the core's overlays
-//! (`Popover`, `Menu`, `ContextMenu`, `Tooltip`, `Sheet`), toasts (`Toast`,
+//! (`Popover`, `Menu`, `ContextMenu`, `Tooltip`, `Sheet`), a code editor
+//! (`Editor`), the changes between two texts (`DiffView`), toasts (`Toast`,
 //! `ToastStack`, `ToastManager`), safe areas,
 //! selection areas,
 //! the system's dialogs and the software keyboard, and the theme's semantic
@@ -18,7 +19,9 @@ mod alert_dialog;
 mod button;
 mod checkbox;
 mod collapsible;
+mod diff;
 pub mod dock;
+pub mod editor;
 mod keyboard;
 mod menu;
 mod navigation;
@@ -31,11 +34,13 @@ mod safe_area;
 mod selection_area;
 mod sheet;
 mod switch;
+mod syntax;
 mod tabs;
 pub mod text_view;
 mod theme;
 mod toast;
 mod tooltip;
+mod window;
 
 use std::sync::Arc;
 
@@ -49,7 +54,22 @@ pub use crate::{
     button::{Button, ButtonElement, ButtonEvent, ButtonProps, button},
     checkbox::{Checkbox, CheckboxElement, CheckboxEvent, CheckboxProps, checkbox},
     collapsible::{Collapsible, CollapsibleElement, CollapsibleProps, collapsible},
+    diff::{
+        DiffAnnotation, DiffChange, DiffExpand, DiffFile, DiffFileStatus, DiffHunk, DiffIndicators,
+        DiffInline, DiffLayout, DiffLine, DiffLineRange, DiffSeparator, DiffSide, DiffStats,
+        DiffView, DiffViewApi, DiffViewClasses, DiffViewElement, DiffViewEvent, DiffViewPart,
+        DiffViewProps, DiffViewStyles, diff_view,
+    },
     dock::{DockArea, DockAreaElement, DockAreaEvent, DockAreaProps, dock_area},
+    editor::{
+        Editor, EditorApi, EditorBounds, EditorClasses, EditorCommand, EditorContextMenuEvent,
+        EditorDecoration, EditorDiagnostic, EditorDiagnosticCodeDescription,
+        EditorDiagnosticRelatedInformation, EditorDiagnosticSeverity, EditorDiagnosticTag,
+        EditorElement, EditorEvent, EditorFoldRange, EditorHoverEvent, EditorLocation, EditorPart,
+        EditorPosition, EditorProps, EditorRange, EditorRect, EditorScrollBeyond, EditorSearch,
+        EditorSearchResult, EditorSelection, EditorStyles, EditorTextPressEvent, EditorToken,
+        editor,
+    },
     keyboard::{
         AvoidBehavior, Keyboard, KeyboardAvoidingView, KeyboardAvoidingViewElement,
         KeyboardAvoidingViewProps, keyboard_avoiding_view,
@@ -119,6 +139,8 @@ pub fn registry() -> Registry {
         .register::<Checkbox>()
         .register::<Collapsible>()
         .register::<DockArea>()
+        .register::<DiffView>()
+        .register::<Editor>()
         .register::<Radio>()
         .register::<RadioGroup>()
         .register::<ResizablePanelGroup>()
@@ -165,7 +187,9 @@ mod tests {
                 "Checkbox",
                 "Collapsible",
                 "ContextMenu",
+                "DiffView",
                 "DockArea",
+                "Editor",
                 "KeyboardAvoidingView",
                 "Menu",
                 "MenuItem",

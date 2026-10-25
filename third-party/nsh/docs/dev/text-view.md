@@ -140,7 +140,7 @@ overlapping or off a character boundary, and keeps its header, actions, scroll v
 last: the app's `renderCodeBlock` (TS and Rust: the whole block is the app's), the app's `CodeHighlighter`
 (`provide_context`, Rust: `tree-sitter`, a theme of its own, ...), the built-in one.
 
-The built-in highlighter (`highlight.rs`, `nsh-base`'s feature `highlight`, on by default) is syntect 5 with pure-Rust
+The built-in highlighter (`highlight.rs`, on the tokens, palette and syntaxes of `syntax.rs`, which the `Editor` shares; `nsh-base`'s feature `highlight`, on by default) is syntect 5 with pure-Rust
 regexes (`regex-fancy`, so it builds for WebAssembly; no Oniguruma) and two-face's syntaxes (bat's set: syntect's own
 plus TypeScript / TSX, TOML, Dockerfile, ...). A block's language is found by extension or name, case-insensitive
 (`ts`, `tsx`, `rs`, `py`, `sh`, `yml`, `md`, `Rust`, ...) plus the other names fences use (`jsx`, `shell`, `golang`,
@@ -170,7 +170,8 @@ Some grammars give declarations and types one scope (Rust's `let`, `const` and `
 is `keyword.operator.rust`): those settle by their text (`Token::settle`). The website's Shiki themes
 (`website/src/light.theme.json` / `dark.theme.json`, `allsum-light` / `allsum-dark`) color the same scopes with the same
 palette, so the site's code looks as an app's does. These colors are the one look NSH ships beyond `TextView`'s
-typography; an app with its own palette provides its own `CodeHighlighter`.
+typography and the `Editor`'s look, which colors its text with the same tokens (`crate::syntax`, `editor.md`); an app
+with its own palette provides its own `CodeHighlighter`.
 
 Cost (release, x86-64, 500 lines of real files): a fresh block takes 22 ms in Rust, 139 ms in TSX (TypeScript's
 grammar is the heaviest), 2-3x that for the first block of a language, which compiles its regexes; loading the

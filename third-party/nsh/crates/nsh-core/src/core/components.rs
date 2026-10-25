@@ -694,10 +694,15 @@ fn same(a: &Option<Arc<ClassList>>, b: &Option<Arc<ClassList>>) -> bool {
 impl<M: TextEngine> Core<M> {
     /// The components this core can render (from `nsh-base` and the
     /// like), and the design tokens their sets bring
-    /// ([`Registry::tokens_from`]); set before the first op.
+    /// ([`Registry::tokens_from`]); set before the first op. Runs the
+    /// sets' setup functions ([`Registry::setup`]).
     pub fn set_components(&mut self, registry: Registry) {
         if let Some(Ok(tokens)) = registry.tokens(None) {
             self.set_tokens(tokens);
+        }
+        {
+            let _entered = self.components.runtime.enter();
+            registry.run_setups();
         }
         self.components.registry = registry;
     }

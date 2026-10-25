@@ -41,6 +41,11 @@
     },
     "statusBar": true,
     "clipboard": true,
+    "openUrl": {
+      "schemes": [
+        "https"
+      ]
+    },
     "picker": true
   }
 }

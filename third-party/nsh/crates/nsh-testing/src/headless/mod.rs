@@ -574,7 +574,19 @@ impl Headless {
     }
 
     fn apply(&mut self, batch: &MountBatch) {
+        let focused = self.screen.focused();
         self.screen.apply(batch);
+        // The app moved the focus (`focus()`, `blur()`): platforms tell the
+        // views as when the user moves it.
+        let now = self.screen.focused();
+        if now != focused {
+            if let Some(old) = focused {
+                self.send(old, EventKind::Blur, EventPayload::None);
+            }
+            if let Some(new) = now {
+                self.send(new, EventKind::Focus, EventPayload::None);
+            }
+        }
         self.exited |= batch.items.iter().any(|item| {
             matches!(
                 item,
@@ -1104,7 +1116,8 @@ impl Headless {
         if contact.reporting() {
             self.send_touch(&contact, nsh_core::TouchPhase::Start, path.clone(), at);
         }
-        let payload = self.press_payload(id, None);
+        let inside = self.screen.press_point(&parsed, id);
+        let payload = self.press_payload(id, inside);
         for kind in [EventKind::PressDown, EventKind::PressUp, EventKind::Press] {
             self.send(id, kind, payload.clone());
         }

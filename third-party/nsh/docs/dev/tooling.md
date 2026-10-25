@@ -260,9 +260,12 @@ preparing or laying out the text again or reporting `onTextLayout`. Empty spans 
 queries report an error, including bare selectors whose test id matches an empty span. Steps acting on a view are strict, as Playwright's: the matches
 are mapped to what the step acts on (`Screen::pick`: the pressable ancestor, the input inside, the scroll view around)
 and more than one fails the step; a press whose match, or a view between it and its pressable ancestor, is disabled
-(the accessibility state) fails too. Each step sends what a platform would, to the views that report it:
+(the accessibility state) fails too. When the app moves the focus (`focus()`, `blur()`), the input it left gets
+`Blur` and the one it went to `Focus`, as on a platform. Each step sends what a platform would, to the views that
+report it:
 
-- `press`: the match or its nearest pressable ancestor gets `PressIn`, `PressOut`, `Press`;
+- `press`: the match or its nearest pressable ancestor gets `PressIn`, `PressOut`, `Press`, at the match's center
+  (a press of a text inside a pressable view lands on the text, as a finger does);
 - `long_press`: the match or its nearest ancestor hearing long presses or presses gets `PressIn`, then after its
   `delayLongPress` (500 ms) `LongPress` and `PressOut`;
 - `clear`: the input takes the focus, gets a `KeyPress` of `Backspace` and an edit to nothing;

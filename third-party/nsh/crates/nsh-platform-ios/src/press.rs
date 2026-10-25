@@ -52,6 +52,19 @@ pub(crate) struct PressIvars {
     /// The pressable text span the current touch is on: its presses go
     /// there.
     link: std::cell::RefCell<Option<TextLink>>,
+    /// Where the touch is, and what it began with.
+    at: Cell<PressAt>,
+}
+
+/// A press's touch, for its events' payload.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct PressAt {
+    /// The touch's last location, in the window's coordinates.
+    pub(crate) in_window: CGPoint,
+    /// The modifier keys held when the touch began (UIKeyModifierFlags).
+    pub(crate) modifiers: isize,
+    /// UIKit's tap count of the touch: 2 for a double tap.
+    pub(crate) clicks: u32,
 }
 
 define_class!(
@@ -62,7 +75,7 @@ define_class!(
 
     impl PressRecognizer {
         #[unsafe(method(touchesBegan:withEvent:))]
-        fn touches_began(&self, touches: &NSSet<UITouch>, _event: &UIEvent) {
+        fn touches_began(&self, touches: &NSSet<UITouch>, event: &UIEvent) {
             let (Some(view), Some(touch)) = (self.view(), touches.anyObject()) else {
                 return self.set_state(UIGestureRecognizerState::Failed);
             };
@@ -85,6 +98,14 @@ define_class!(
                 None => ivars.long_press.get(),
             };
             ivars.start.set(touch.locationInView(Some(&view)));
+            // SAFETY: UIEvent's `modifierFlags` (iOS 13.4), a
+            // UIKeyModifierFlags (NSInteger).
+            let modifiers: isize = unsafe { msg_send![event, modifierFlags] };
+            ivars.at.set(PressAt {
+                in_window: touch.locationInView(None),
+                modifiers,
+                clicks: touch.tapCount().max(1) as u32,
+            });
             ivars.pressed.set(false);
             ivars.long_pressed.set(false);
             let generation = ivars.generation.get() + 1;
@@ -109,6 +130,7 @@ define_class!(
         #[unsafe(method(touchesMoved:withEvent:))]
         fn touches_moved(&self, touches: &NSSet<UITouch>, _event: &UIEvent) {
             let (Some(view), Some(touch)) = (self.view(), touches.anyObject()) else { return };
+            self.track(&touch);
             let p = touch.locationInView(Some(&view));
             let b = view.bounds();
             let inside = p.x >= -RETENTION
@@ -121,7 +143,10 @@ define_class!(
         }
 
         #[unsafe(method(touchesEnded:withEvent:))]
-        fn touches_ended(&self, _touches: &NSSet<UITouch>, _event: &UIEvent) {
+        fn touches_ended(&self, touches: &NSSet<UITouch>, _event: &UIEvent) {
+            if let Some(touch) = touches.anyObject() {
+                self.track(&touch);
+            }
             if !self.ivars().pressed.get() {
                 // A quick tap inside a scroll view: report the press in now.
                 self.press_in();
@@ -190,6 +215,7 @@ impl PressRecognizer {
             own: Cell::new(false),
             handles_press: Cell::new(false),
             link: std::cell::RefCell::new(None),
+            at: Cell::new(PressAt::default()),
         });
         // SAFETY: the designated initializer; `handlePress:` is implemented by
         // the target, which outlives the recognizer.
@@ -234,6 +260,19 @@ impl PressRecognizer {
         pressed.then_some(link)
     }
 
+    /// Where the current press's touch is.
+    pub(crate) fn at(&self) -> PressAt {
+        self.ivars().at.get()
+    }
+
+    fn track(&self, touch: &UITouch) {
+        let at = self.ivars().at.get();
+        self.ivars().at.set(PressAt {
+            in_window: touch.locationInView(None),
+            ..at
+        });
+    }
+
     /// The touch ended on the view: reports the press out, and returns
     /// true if this was a press (not a long press).
     pub(crate) fn release(&self) -> bool {
@@ -256,20 +295,21 @@ impl PressRecognizer {
 
     fn report(&self, report: Report) {
         let target = &self.ivars().target;
+        let Some(view) = self.view() else { return };
+        let id = view.tag() as NodeId;
+        let at = self.ivars().at.get();
         if let Some(link) = self.link() {
             let kind = match report {
                 Report::PressIn => EventKind::PressDown,
                 Report::PressOut => EventKind::PressUp,
                 Report::LongPress => EventKind::LongPress,
             };
-            return target.link_event(&link, kind);
+            return target.link_event(&link, kind, id, at);
         }
-        let Some(view) = self.view() else { return };
-        let id = view.tag() as NodeId;
         match report {
-            Report::PressIn => target.press_changed(id, true),
-            Report::PressOut => target.press_changed(id, false),
-            Report::LongPress => target.long_press(id),
+            Report::PressIn => target.press_changed(id, true, at),
+            Report::PressOut => target.press_changed(id, false, at),
+            Report::LongPress => target.long_press(id, at),
         }
     }
 

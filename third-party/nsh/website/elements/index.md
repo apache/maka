@@ -117,6 +117,8 @@ and take their look from the app.
 | `<KeyboardAvoidingView>` | `nsh_base::keyboard_avoiding_view()` | Keeps its content above the software keyboard | [KeyboardAvoidingView](./keyboard-avoiding-view.md) |
 | `AlertDialog` | `nsh_base::alert_dialog()` | The system's alert and action sheet | [AlertDialog](./alert-dialog.md) |
 | `<TextView>` | `nsh_base::text_view()` | Shows a Markdown or HTML document with texts and views | [TextView](./text-view.md) |
+| `<Editor>` | `nsh_base::editor()` | A code editor with highlighting, several carets, folding and search | [Editor](./editor.md) |
+| `<DiffView>` | `nsh_base::diff_view()` | The changes between two texts or of a patch, split or unified | [DiffView](./diff-view.md) |
 | `<SelectionArea>` | `nsh_base::selection_area()` | Makes the texts inside it select together | [SelectionArea](./selection-area.md) |
 | `<Popover>` | `nsh_base::popover()` | Content anchored to a trigger, on top of everything | [Popover](./popover.md) |
 | `<Menu>`, `<ContextMenu>`, `<MenuItem>`, `<MenuSeparator>`, `<Submenu>` | `nsh_base::menu()`, ... | Menus: popups with cascading submenus on desktops, sheets on phones | [Menu](./menu.md) |
@@ -206,7 +208,7 @@ desktop browsers, with an iPad's pointer or a Mac's mouse on iOS, and with a mou
 | Prop | Rust | Type | Description |
 |---|---|---|---|
 | `onHoverIn` | `.on_hover_in(..)` | `() => void` | The mouse came over the view or a view inside it. |
-| `onHoverMove` | `.on_hover_move(..)` | `(e: HoverEvent) => void` | The mouse moved over the view (or a view inside it) with no button down. |
+| `onHoverMove` | `.on_hover_move(..)` | `(e: HoverEvent) => void` | The mouse moved over the view (or a view inside it) with no button down, or a modifier key was pressed or released while it rests there. |
 | `onHoverOut` | `.on_hover_out(..)` | `() => void` | The mouse left the view and the views inside it, or the window. |
 
 Like CSS `:hover`, a view counts as hovered while the mouse is over it or over anything inside it, so the views around

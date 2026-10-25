@@ -1239,3 +1239,256 @@ covers [events] Toast.onDismissRequest
 covers [props] ToastStack.motion
 covers [props] ToastStack.placement
 covers [events] ToastStack.onExpandedChange
+
+# base-editor
+tap id:case-base-editor
+# The text is the editor's own, drawn a row per line; nothing is
+# reported before an edit.
+expect let x = 1;
+expect Value: none
+# The mouse resting over `let` reports a hover there once its delay
+# runs out: the character, its word and no diagnostic; leaving the text
+# ends it.
+event text:"let x = 1;" onHoverMove position.x=1 position.y=5
+wait 200
+expect Hover: 0:0 0-3 0
+event text:"let x = 1;" onHoverOut
+expect Hover: ended
+# The ref puts the caret at the line's end, reported with every
+# selection (the primary last).
+tap id:to-end
+expect Caret: 0:10
+# Typed through the ref: the whole new text is reported, the caret
+# after what was typed, and there is an edit to take back.
+tap id:insert
+expect Value: let x = 1; // ok
+expect Caret: 0:16
+expect History: Undo true Redo false
+# Undo takes it back, redo does it again.
+tap id:undo
+expect Value: let x = 1;
+expect History: Undo false Redo true
+tap id:redo
+expect Value: let x = 1; // ok
+expect History: Undo true Redo false
+# Edits by range, as a language server's: all in one step, which one
+# undo takes back.
+tap id:edit
+expect Value: const x = 10; // ok
+tap id:undo
+expect Value: let x = 1; // ok
+# A search finds its matches (case-sensitive: one `x`), and replacing
+# them all is one edit reporting how many.
+tap id:find
+expect Found: 1
+tap id:replace-all
+expect Read: replaced 1
+expect Value: let y = 1; // ok
+expect Found: 0
+# The ref reads the text and the selections back.
+tap id:read
+expect Read: let y = 1; // ok (1 selection)
+# Where the caret is (a row tall), the lines in view, the scrolling, and
+# offsets as UTF-16 code units of the text.
+tap id:geometry
+expect Read: caret 20 lines 0-0 scroll 0 offset 4 0:4
+# The primary selection's text, and going to a line puts the caret at
+# its start.
+tap id:select-word
+expect Read: selected y
+expect Caret: 0:5
+tap id:go-to-line
+expect Caret: 0:0
+# A command changes the case of the selection, which stays selected,
+# and another reports it for the app's find bar.
+tap id:upper
+expect Value: LET y = 1; // ok
+tap id:ask
+expect Asked: LET
+# The second editor's tab shows as an arrow, and the editor is as tall
+# as its rows: one line takes the two rows of `minRows` (20 points
+# each), five lines the three of `maxRows`, past which they scroll.
+expect →
+frame id:grow 0 0 300 40
+tap id:grow-more
+wait 100
+frame id:grow 0 0 300 60
+# The app's fold ranges (the outer one shorter than the indentation's):
+# level 2 folds the inner block alone.
+tap id:fold-level
+expect Folded: 1-2
+# Folding the outer block recursively keeps the inner one folded, so
+# unfolding the outer block alone leaves it folded.
+tap id:fold-recursive
+expect Folded: 0-2 1-2
+tap id:unfold
+expect Folded: 1-2
+tap id:fold-recursive
+expect Folded: 0-2 1-2
+tap id:unfold-recursive
+expect Folded: -
+# Any lines fold by hand, wherever folds start.
+tap id:fold-range
+expect Folded: 2-4
+# The app sets the folds and reads them back.
+tap id:set-folds
+expect Folded: 0-4
+expect Read: folds 0-4
+# The secondary button over the text: where in the text, from a pointer
+# (no touch selection).
+expect Menu: none
+event text:"LET y = 1; // ok" onContextMenu
+expect Menu: 0:0 pointer
+# The fourth editor completes. Typing a word asks the app once, and its
+# answer shows as a list that typing on filters.
+event label:Complete onFocus
+type label:Complete pr
+expect Requested: 1 p typing
+expect private
+type label:Complete in
+absent private
+expect print
+# Pressing an item puts it in place of what was typed.
+tap text:println
+expect Completed: println
+expect Accepted: println
+# A trigger character asks with an empty query: every item shows.
+type label:Complete .
+expect Requested: 2 - character
+tap text:private
+expect Completed: println.private
+expect Accepted: private
+# A pause in typing asks for an inline completion, shown at the caret.
+type label:Complete (
+expect Inlined: 1
+expect value
+# The fifth editor's diagnostics: the unnecessary code in its part's
+# style, the deprecated code struck through.
+style span:unused color #00ff00ff
+style span:legacy textDecorationLine line-through
+# Resting over the unnecessary code reports its diagnostic with its tags,
+# its code's page and the place related to it.
+event text:"unused = legacy();" onHoverMove position.x=1 position.y=5
+wait 200
+expect Tagged: never read unnecessary https://eslint.org/docs/latest/rules/no-unused-vars declared here file:///lib.ts 2
+# The sixth editor goes to definitions. Without Mod the pointer asks
+# nothing; with Mod (Command here) held over `goto` it asks at once, and
+# the app's answer underlines the word.
+event text:"goto target();" onHoverMove position.x=1 position.y=5
+wait 50
+expect Defined: none
+event text:"goto target();" onHoverMove position.x=1 position.y=5 modifiers.platform=true
+expect Defined: 1 hover 0 0-4
+# Moving inside the word asks nothing more; hiding the link and holding
+# Mod over the word again asks again.
+event text:"goto target();" onHoverMove position.x=2 position.y=6 modifiers.platform=true
+wait 50
+expect Defined: 1 hover 0 0-4
+tap id:hide-link
+event text:"goto target();" onHoverMove position.x=2 position.y=6 modifiers.platform=true
+expect Defined: 2 hover 0 0-4
+# The command asks at the caret, inside `target`.
+tap id:go-to-definition
+expect Defined: 3 key 7 5-11
+# Code actions at the selection, start first, with the caret's box.
+tap id:code-actions
+expect Acted: 5-11 5 placed
+covers [nsh/base] Editor
+covers [events] Editor.onHover
+covers [events] Editor.onHoverEnd
+covers [props] Editor.search
+covers [events] Editor.onSearchChange
+covers [events] Editor.onFindWithSelection
+covers [props] Editor.minRows
+covers [props] Editor.maxRows
+covers [props] Editor.showWhitespaces
+covers [props] Editor.foldRanges
+covers [events] Editor.onFoldChange
+covers [props] Editor.completion
+covers [props] Editor.completionTriggerCharacters
+covers [events] Editor.onCompletionRequest
+covers [events] Editor.onCompletionAccept
+covers [events] Editor.onInlineCompletionRequest
+covers [props] Editor.diagnostics
+covers [props] Editor.styles
+covers [events] Editor.onDefinitionRequest
+covers [events] Editor.onCodeActionRequest
+
+# base-diff
+tap id:case-base-diff
+# Two changes, one line each, with a line of context around them: the
+# two unchanged lines between them collapse into the app's separator,
+# told its gap (between changes 0 and 1) and how many lines it hides.
+expect Hidden 1 2
+expect Revert 0
+expect Keep 1
+tap id:inspect
+expect Read: +2 -2 2 [0@1:1>1:1 1@6:1>6:1]
+# The ref expands the gap: its lines show, the separator goes.
+tap id:expand
+absent Hidden 1 2
+# The app's annotation shows under new line 1.
+expect Note n1
+# The ref goes to the first change below the top, then on from it.
+tap id:next
+expect Hunk: 0
+tap id:next
+expect Hunk: 1
+tap id:current
+expect Hunk: current 1
+# Revert puts the change's old line back in the new text, reported with
+# both texts, which the app sets: one change is left.
+tap id:revert-0
+expect New: a b c d e f G h
+expect Old: a b c d e f g h
+tap id:inspect
+expect Read: +1 -1 1 [0@6:1>6:1]
+# Keep makes the change's new line the old text's: nothing differs.
+tap id:keep-0
+expect Old: a b c d e f G h
+tap id:inspect
+expect Read: +0 -0 0 []
+# A patch shows its hunk under its header.
+expect Header fn main
+# With softWrap the patch's long line wraps: no text holds all of it.
+absent alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho sigma tau upsilon phi chi psi omega
+# A press on its line's number (42) selects the line and presses the
+# number; the app's add control shows at the selection's end.
+tap text:42
+expect Selection: new 0-0
+expect Pressed: new 0
+expect Add new 0-0
+# The ref clears and sets the selection (to the side's lines) and reads
+# its text.
+tap id:select
+expect Selected: true new 0-0 alpha
+# A patch of two files: each under the app's header, told the file.
+expect File 0 a.ts modified +1 -1
+expect File 1 b.ts added +1 -0
+expect BETA
+# The files, and their changes counted across them.
+tap id:files
+expect Files: a.ts@0 b.ts@1 hunks 0:0 1:1
+# The app's header collapses its file through the ref, reported.
+tap id:file-0
+expect Toggled: a.ts true
+expect File 0 a.ts modified +1 -1 collapsed
+absent BETA
+tap id:file-0
+expect Toggled: a.ts false
+expect BETA
+covers [props] DiffView.softWrap
+covers [props] DiffView.annotations
+covers [props] DiffView.renderAnnotation
+covers [props] DiffView.renderAddAnnotation
+covers [events] DiffView.onLineSelectionChange
+covers [events] DiffView.onLineNumberPress
+covers [nsh/base] DiffView
+covers [props] DiffView.oldValue
+covers [props] DiffView.newValue
+covers [props] DiffView.patch
+covers [props] DiffView.contextLines
+covers [props] DiffView.renderSeparator
+covers [props] DiffView.renderHunkActions
+covers [props] DiffView.renderFileHeader
+covers [events] DiffView.onFileToggle

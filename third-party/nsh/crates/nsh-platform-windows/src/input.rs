@@ -103,6 +103,11 @@ struct TwoFinger {
 const VK_TAB: u16 = 0x09;
 /// `VK_MENU` (Alt).
 const VK_MENU: u16 = 0x12;
+/// The modifier keys' virtual key codes: Shift, Ctrl and Alt (and their
+/// left and right ones), and the Windows keys.
+const MODIFIER_KEYS: [u16; 11] = [
+    0x10, 0x11, VK_MENU, 0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0x5B, 0x5C,
+];
 
 /// What a pointer did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -130,6 +135,18 @@ pub(crate) struct Modifiers {
     pub(crate) alt: bool,
     /// The Windows key.
     pub(crate) meta: bool,
+}
+
+impl Modifiers {
+    /// As the core's modifiers (`meta` is its `cmd`).
+    fn core(self) -> nsh_core::keymap::Modifiers {
+        nsh_core::keymap::Modifiers {
+            ctrl: self.ctrl,
+            alt: self.alt,
+            shift: self.shift,
+            cmd: self.meta,
+        }
+    }
 }
 
 /// A mouse, touch or pen event.
@@ -198,7 +215,7 @@ pub(crate) enum Cursor {
     /// The arrow.
     #[default]
     Arrow,
-    /// A hand (links, pressables with `cursor: pointer`).
+    /// A hand (`cursor: pointer`: links).
     Hand,
     /// The I-beam (text).
     Text,
@@ -756,10 +773,9 @@ pub(crate) fn command(surface: &Rc<Surface>, _id: NodeId, command: &Command) {
 // --- Cursors ------------------------------------------------------------------------
 
 /// The cursor of a CSS `cursor` value, `None` to inherit the parent's.
-fn css_cursor(cursor: nsh_core::Cursor, pressable: bool) -> Option<Cursor> {
+fn css_cursor(cursor: nsh_core::Cursor) -> Option<Cursor> {
     use nsh_core::Cursor as C;
     Some(match cursor {
-        C::Auto if pressable => Cursor::Hand,
         C::Auto => return None,
         C::Default => Cursor::Arrow,
         C::Pointer => Cursor::Hand,
@@ -785,7 +801,7 @@ fn css_cursor(cursor: nsh_core::Cursor, pressable: bool) -> Option<Cursor> {
 /// A view's own cursor: its style's, the I-beam over text fields and
 /// selectable text (a press target keeps the hand), or `None`.
 fn view_cursor(s: &ViewState) -> Option<Cursor> {
-    css_cursor(s.style.cursor, has_press(s.events)).or_else(|| {
+    css_cursor(s.style.cursor).or_else(|| {
         (s.kind == ViewKind::Input || crate::text::selectable(s)).then_some(Cursor::Text)
     })
 }
@@ -873,12 +889,7 @@ fn context_menu(surface: &Rc<Surface>, x: f32, y: f32, modifiers: Modifiers) {
             let event = nsh_core::ContextMenuEvent {
                 position: point(Points(location_x), Points(location_y)),
                 page_position: point(Points(x), Points(y)),
-                modifiers: nsh_core::keymap::Modifiers {
-                    ctrl: modifiers.ctrl,
-                    alt: modifiers.alt,
-                    shift: modifiers.shift,
-                    cmd: modifiers.meta,
-                },
+                modifiers: modifiers.core(),
             };
             surface.event(id, EventKind::ContextMenu, EventPayload::ContextMenu(event));
             return;
@@ -1093,6 +1104,9 @@ pub(crate) fn wheel(surface: &Rc<Surface>, event: WheelEvent) {
 /// repeats) go to the modules; ups are not acted on.
 pub(crate) fn key(surface: &Rc<Surface>, event: KeyEvent) -> bool {
     let input = &surface.input;
+    if MODIFIER_KEYS.contains(&event.vk) && !event.repeat {
+        modifiers_changed(surface, event.modifiers);
+    }
     if !event.down {
         // `DefWindowProc` opens the window menu when Alt is released after
         // it saw no other key: swallow the release once Alt + key was ours.
@@ -1430,7 +1444,7 @@ fn down(
     let press = if native {
         None
     } else {
-        find_press(surface, &hit.view, &views, x, y)
+        find_press(surface, &hit.view, &views, x, y).map(|p| p.clicked(modifiers.core(), clicks))
     };
     let id = input.next_id.get();
     input.next_id.set(id.wrapping_add(1));
@@ -1477,20 +1491,20 @@ fn down(
                 SCROLL_PRESS_DELAY,
                 |surface, p| {
                     if let Some(press) = &mut p.press {
-                        press_in(surface, press);
+                        press_in(surface, press, (p.x, p.y));
                     }
                 },
             );
         } else {
-            press_in(surface, press);
+            press_in(surface, press, (x, y));
         }
         if press.events.contains(EventKind::LongPress) {
             let delay = press.long_delay.max(0.0) as u64;
             after(surface, key, generation, delay, |surface, p| {
                 let Some(press) = &mut p.press else { return };
-                press_in(surface, press);
+                press_in(surface, press, (p.x, p.y));
                 press.long = true;
-                press_event(surface, press.node, EventKind::LongPress);
+                press_event(surface, press, EventKind::LongPress, (p.x, p.y));
             });
         }
     }
@@ -1652,13 +1666,14 @@ fn finish(surface: &Rc<Surface>, mut p: Pointer, cancelled: bool) {
         Mode::Thumb(view, _) => crate::scroll::thumb_end(surface, &view),
         Mode::Idle | Mode::Free => {
             if let Some(mut press) = p.press.take() {
+                let at = (p.x, p.y);
                 if cancelled {
-                    press_out(surface, &mut press, false);
+                    press_out(surface, &mut press, false, at);
                 } else {
                     // A quick tap inside a scroll view: the press in now.
-                    press_in(surface, &mut press);
+                    press_in(surface, &mut press, at);
                     let inside = released_inside(&press.view, p.x, p.y);
-                    press_out(surface, &mut press, inside);
+                    press_out(surface, &mut press, inside, at);
                 }
             }
         }
@@ -1790,28 +1805,38 @@ fn find_press(
     })
 }
 
-fn press_in(surface: &Rc<Surface>, press: &mut Press) {
+/// Presses in: `onPressDown`, the first time. `at` is the pointer in root
+/// coordinates.
+fn press_in(surface: &Rc<Surface>, press: &mut Press, at: (f32, f32)) {
     if let Some(kind) = press.press_in() {
-        press_event(surface, press.node, kind);
+        press_event(surface, press, kind, at);
     }
 }
 
 /// Ends a press: `onPressUp`, then `onPress` if `fire` (released inside)
 /// and it was no long press.
-fn press_out(surface: &Rc<Surface>, press: &mut Press, fire: bool) {
+fn press_out(surface: &Rc<Surface>, press: &mut Press, fire: bool, at: (f32, f32)) {
     for kind in press.press_out(fire) {
-        press_event(surface, press.node, kind);
+        press_event(surface, press, kind, at);
     }
 }
 
-fn press_event(surface: &Surface, node: NodeId, kind: EventKind) {
-    log::debug!(target: "nsh::input", "{} on {node}", kind.prop_name());
-    surface.event(node, kind, EventPayload::None);
+/// Sends `kind` of `press` with the pointer at `(x, y)` (root coordinates).
+fn press_event(surface: &Surface, press: &Press, kind: EventKind, (x, y): (f32, f32)) {
+    log::debug!(target: "nsh::input", "{} on {}", kind.prop_name(), press.node);
+    let (location_x, location_y) = local(&press.view, x, y);
+    let event = nsh_core::PressEvent {
+        position: point(Points(location_x), Points(location_y)),
+        page_position: point(Points(x), Points(y)),
+        modifiers: press.modifiers,
+        clicks: press.clicks,
+    };
+    surface.event(press.node, kind, EventPayload::Press(event));
 }
 
 fn cancel_press(surface: &Rc<Surface>, p: &mut Pointer) {
     if let Some(mut press) = p.press.take() {
-        press_out(surface, &mut press, false);
+        press_out(surface, &mut press, false, (p.x, p.y));
     }
 }
 
@@ -2189,14 +2214,24 @@ fn hover_moved(surface: &Surface, x: f32, y: f32, modifiers: Modifiers) {
         let event = nsh_core::HoverEvent {
             position: point(Points(location_x), Points(location_y)),
             page_position: point(Points(x), Points(y)),
-            modifiers: nsh_core::keymap::Modifiers {
-                ctrl: modifiers.ctrl,
-                alt: modifiers.alt,
-                shift: modifiers.shift,
-                cmd: modifiers.meta,
-            },
+            modifiers: modifiers.core(),
         };
         surface.event(id, EventKind::HoverMove, EventPayload::Hover(event));
+    }
+}
+
+/// A modifier key went down or up (`modifiers` held now): while the mouse
+/// rests over the surface with no button down, the hovered views that
+/// listen hear `onHoverMove` again where it is, with the new modifiers (an
+/// editor underlines a definition while Ctrl is held), as they would on
+/// the next move.
+fn modifiers_changed(surface: &Surface, modifiers: Modifiers) {
+    let input = &surface.input;
+    if input.pointers.borrow().iter().any(|p| p.key == Key::Mouse) {
+        return;
+    }
+    if let Some((x, y)) = input.last.get() {
+        hover_moved(surface, x, y, modifiers);
     }
 }
 
@@ -2532,11 +2567,11 @@ mod tests {
     #[test]
     fn cursors() {
         use nsh_core::Cursor as C;
-        assert_eq!(css_cursor(C::Auto, false), None);
-        assert_eq!(css_cursor(C::Auto, true), Some(Cursor::Hand));
-        assert_eq!(css_cursor(C::Default, true), Some(Cursor::Arrow));
-        assert_eq!(css_cursor(C::NotAllowed, false), Some(Cursor::NotAllowed));
-        assert_eq!(css_cursor(C::None, false), Some(Cursor::Hidden));
+        assert_eq!(css_cursor(C::Auto), None);
+        assert_eq!(css_cursor(C::Default), Some(Cursor::Arrow));
+        assert_eq!(css_cursor(C::Pointer), Some(Cursor::Hand));
+        assert_eq!(css_cursor(C::NotAllowed), Some(Cursor::NotAllowed));
+        assert_eq!(css_cursor(C::None), Some(Cursor::Hidden));
     }
 
     #[test]

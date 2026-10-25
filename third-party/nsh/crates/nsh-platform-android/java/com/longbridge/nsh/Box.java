@@ -339,6 +339,8 @@ class Box extends ViewGroup implements Node {
     private float downRawX, downRawY;
     /** Where the press went down (for the ripple). */
     private float pressX, pressY;
+    /** The touch, for the press events' payload. */
+    private final Mounter.PressAt at = new Mounter.PressAt();
     private boolean panning, tracking, pressedIn, longPressed;
     private VelocityTracker velocity;
     private final Runnable longPress = this::onLongPress;
@@ -370,14 +372,14 @@ class Box extends ViewGroup implements Node {
         if (tracking && !panning) {
             if (!pressedIn) onPressIn();
             longPressed = true;
-            mounter.event(id, Native.LONG_PRESS);
+            mounter.press(id, Native.LONG_PRESS, this, at);
         }
     }
 
     private void onPressIn() {
         if (pressedIn || !tracking) return;
         pressedIn = true;
-        if (wants(Native.PRESS_IN)) mounter.event(id, Native.PRESS_IN);
+        if (wants(Native.PRESS_IN)) mounter.press(id, Native.PRESS_IN, this, at);
         mounter.pressFeedback(this, id, true, pressX, pressY);
     }
 
@@ -386,7 +388,7 @@ class Box extends ViewGroup implements Node {
         removeCallbacks(longPress);
         if (!pressedIn) return;
         pressedIn = false;
-        if (wants(Native.PRESS_OUT)) mounter.event(id, Native.PRESS_OUT);
+        if (wants(Native.PRESS_OUT)) mounter.press(id, Native.PRESS_OUT, this, at);
         mounter.pressFeedback(this, id, false, pressX, pressY);
     }
 
@@ -456,6 +458,7 @@ class Box extends ViewGroup implements Node {
         boolean pressable = pressable(), pannable = pannable(), twoFinger = twoFinger();
         if (!pressable && !pannable && !twoFinger) return false;
         float density = mounter.density;
+        if (pressable) at.track(e);
         switch (e.getActionMasked()) {
             case MotionEvent.ACTION_DOWN:
                 downRawX = e.getRawX();
@@ -523,7 +526,7 @@ class Box extends ViewGroup implements Node {
                     if (!pressedIn) onPressIn();
                     boolean press = !longPressed && wants(Native.PRESS);
                     pressOut();
-                    if (press) mounter.event(id, Native.PRESS);
+                    if (press) mounter.press(id, Native.PRESS, this, at);
                 }
                 pressOut();
                 panning = false;

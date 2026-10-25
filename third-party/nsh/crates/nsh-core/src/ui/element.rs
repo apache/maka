@@ -1289,7 +1289,7 @@ pub trait Interactive: Element {
     fn on_mouse_move<M>(self, listener: impl IntoListener<crate::Point<crate::Points>, M>) -> Self {
         self.on(
             EventKind::MouseMove,
-            events::typed(listener.into_listener(), events::offset),
+            events::typed(listener.into_listener(), events::mouse_position),
         )
     }
 

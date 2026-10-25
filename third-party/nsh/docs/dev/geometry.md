@@ -65,6 +65,10 @@ The rest of the Rust UI API (`nsh_core::ui`) follows GPUI's element APIs:
   are JS objects too, `{ width, height }`. An SVG has no pixels of its own: what `onLoad` and `Image.getSize` report
   for it is its intrinsic size in whole points carried in the same `Size<DevicePixels>` (`svg::reported_size`), while
   it lays out at `svg::size`'s unrounded `Size<Points>`.
+- **In JS values**: `Point<Points>`, `Size<Points>` and `Bounds<Points>` are `JsValue`s, TS's `Point`, `Size` and
+  `Bounds` (`{ x, y }`, `{ width, height }`, `{ origin, size }`), as events carry them, so a Rust component's event
+  payloads and ref methods take and return them typed (the `Editor`'s `caretBounds()`); `keymap::Modifiers` is TS's
+  `Modifiers` likewise.
 
 ### Deviations from GPUI, and why
 

@@ -237,6 +237,15 @@ final class Native {
     static native void hover(long handle, int id, float x, float y, float pageX, float pageY, int modifiers);
 
     /**
+     * Press event {@code kind} ({@code onPress}, {@code onLongPress}, {@code onPressDown},
+     * {@code onPressUp}) of node {@code id}: the touch at ({@code x}, {@code y}) in the pressed
+     * view and at ({@code pageX}, {@code pageY}) in its root view (dp); {@code modifiers} as
+     * {@link #hover}'s; {@code clicks}: the click count.
+     */
+    static native void press(long handle, int id, int kind, float x, float y, float pageX, float pageY,
+            int modifiers, int clicks);
+
+    /**
      * An event with an object payload ({@code Double}, {@code Boolean} or
      * {@code String} values), or a single value when {@code keys} is null.
      */

@@ -23,7 +23,11 @@ use objc2_ui_kit::{
     UITouch, UIView,
 };
 
-use crate::{input, mount::SharedMounter, press::PressRecognizer};
+use crate::{
+    input,
+    mount::SharedMounter,
+    press::{PressAt, PressRecognizer},
+};
 
 type DeferredCallback = Box<dyn FnOnce(&mut crate::mount::Mounter) + Send>;
 
@@ -60,11 +64,12 @@ define_class!(
             let Some(view) = recognizer.view() else { return };
             let id = view.tag() as NodeId;
             let link = recognizer.link();
+            let at = recognizer.at();
             // Press out first, then the press, as in React Native.
             if recognizer.release() {
                 match link {
-                    Some(link) => self.link_event(&link, EventKind::Press),
-                    None => self.with_mounter(move |m| m.pressed(id)),
+                    Some(link) => self.link_event(&link, EventKind::Press, id, at),
+                    None => self.with_mounter(move |m| m.pressed(id, at)),
                 }
             }
         }
@@ -563,13 +568,13 @@ impl EventTarget {
     }
 
     /// A finger went down on (or left) pressable view `id`.
-    pub(crate) fn press_changed(&self, id: NodeId, pressed: bool) {
-        self.with_mounter(move |m| m.press_changed(id, pressed));
+    pub(crate) fn press_changed(&self, id: NodeId, pressed: bool, at: PressAt) {
+        self.with_mounter(move |m| m.press_changed(id, pressed, at));
     }
 
     /// A press on view `id` was held long enough.
-    pub(crate) fn long_press(&self, id: NodeId) {
-        self.with_mounter(move |m| m.long_pressed(id));
+    pub(crate) fn long_press(&self, id: NodeId, at: PressAt) {
+        self.with_mounter(move |m| m.long_pressed(id, at));
     }
 
     /// The node under a touch on `view` and the nodes around it that listen
@@ -666,10 +671,17 @@ impl EventTarget {
         self.with_mounter(move |m| m.input_composition(id, text, marked));
     }
 
-    /// A press event on a pressable text span.
-    pub(crate) fn link_event(&self, link: &nsh_core::TextLink, kind: EventKind) {
+    /// A press event on a pressable text span of text view `view`.
+    pub(crate) fn link_event(
+        &self,
+        link: &nsh_core::TextLink,
+        kind: EventKind,
+        view: NodeId,
+        at: PressAt,
+    ) {
         if link.events.contains(kind) {
-            self.dispatch(link.node, kind, EventPayload::None);
+            let node = link.node;
+            self.with_mounter(move |m| m.link_event(node, kind, view, at));
         }
     }
 

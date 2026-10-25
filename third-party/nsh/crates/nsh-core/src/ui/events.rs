@@ -381,6 +381,14 @@ pub(crate) fn offset(p: &EventPayload) -> Option<Cow<'_, Point<Points>>> {
     }))
 }
 
+/// `onMouseMove`'s payload: the mouse in the view, local `x` / `y`.
+pub(crate) fn mouse_position(p: &EventPayload) -> Option<Cow<'_, Point<Points>>> {
+    Some(Cow::Owned(Point {
+        x: Points(number(p, "x")),
+        y: Points(number(p, "y")),
+    }))
+}
+
 pub(crate) fn pan(p: &EventPayload) -> Option<Cow<'_, PanEvent>> {
     match *p {
         EventPayload::Pan {

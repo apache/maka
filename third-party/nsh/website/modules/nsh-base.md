@@ -1,6 +1,6 @@
 ---
 title: nsh/base
-description: "Unstyled base components for an app's UI: buttons, checkboxes, radios, switches, tabs, resizable panels, dockable workspaces, Markdown and HTML documents, selections across texts, navigation stacks and dialogs, safe areas, system alert dialogs, the software keyboard and the status bar of pages and dialogs."
+description: "Unstyled base components for an app's UI: buttons, checkboxes, radios, switches, tabs, resizable panels, dockable workspaces, Markdown and HTML documents, a code editor, diffs, selections across texts, navigation stacks and dialogs, safe areas, system alert dialogs, the software keyboard and the status bar of pages and dialogs."
 order: 2.5
 demo: ui-navigation
 ---
@@ -11,7 +11,7 @@ demo: ui-navigation
 accessibility, on every platform. It sits between the primitives (`nsh` and the `nsh/<module>` modules) and the
 app's own component library, as `gpui-base` sits between `gpui` and a styled library in GPUI Kit (see
 [Modules](./index.md#three-layers)). It provides controls (`Button`, `Checkbox`, `Radio` in a `RadioGroup`, `Switch`, `Tab` in `Tabs`), regions that expand and collapse (`Collapsible`), a progress bar (`Progress`), workspaces the user arranges (`ResizablePanel`s in a
-`ResizablePanelGroup`, and `DockArea`'s splits, tab groups and docks), documents of Markdown or HTML (`TextView`), selections across texts
+`ResizablePanelGroup`, and `DockArea`'s splits, tab groups and docks), documents of Markdown or HTML (`TextView`), a code editor (`Editor`) and the changes between texts (`DiffView`), selections across texts
 (`SelectionArea`), popups shown on top of everything (`Popover`, `Menu` and `ContextMenu` with their `MenuItem`,
 `MenuSeparator` and `Submenu`, `Tooltip`, `Sheet`), toasts (`Toast` in a `ToastStack`, their lifecycle in a `ToastManager`), navigation (a `NavStack` of `NavPage`s driven
 by the state you create with `createNavStack`, and `Dialog` for content presented over everything else), safe areas
@@ -26,7 +26,7 @@ from the `nsh-base` crate (`nsh_base::{button, safe_area_view, …}`).
 
 ```rust tabs
 use nsh_base::{
-    AvoidBehavior, Edge, MarkdownExtension, MarkdownOptions, alert_dialog, button, checkbox, dialog, dock_area,
+    AvoidBehavior, Edge, MarkdownExtension, MarkdownOptions, alert_dialog, button, checkbox, dialog, diff_view, dock_area, editor,
     h_resizable, keyboard_avoiding_view, nav_page, nav_stack, radio, radio_group, resizable_panel, safe_area_view,
     selection_area, switch, tab, tabs, text_view, theme, toast, toast_stack, v_resizable,
 };
@@ -34,13 +34,13 @@ use nsh_base::{
 
 ```tsx tabs
 import {
-  AlertDialog, Button, Checkbox, Collapsible, ContextMenu, createNavStack, Dialog, DockArea, Keyboard, keyboardFrame, KeyboardAvoidingView, Menu, Progress,
+  AlertDialog, Button, Checkbox, Collapsible, ContextMenu, createNavStack, Dialog, DiffView, DockArea, Editor, Keyboard, keyboardFrame, KeyboardAvoidingView, Menu, Progress,
   MenuItem, MenuSeparator, NavPage, NavStack, Popover, Radio, RadioGroup, ResizablePanel, ResizablePanelGroup, SafeAreaView, safeArea, safeAreaInsets, SelectionArea, Sheet,
   Submenu, Switch, Tab, Tabs, TextView, Toast, ToastManager, ToastStack, Tooltip,
 } from "nsh/base";
 import type {
   AlertDialogAction, AlertDialogOptions, AlertDialogPresentation, AlertDialogRole, AvoidBehavior, ButtonProps,
-  CheckboxProps, CollapsibleProps, DialogChangeReason, DialogProps, DockAreaLayout, DockNode, DockRegion, Edge, Edges, HeaderStyle, NavPageProps, NavStackProps, NavStackState, ProgressProps, StatusBar,
+  CheckboxProps, CollapsibleProps, DialogChangeReason, DialogProps, DiffAnnotation, DiffFile, DiffHunk, DiffLineRange, DiffSeparator, DiffStats, DiffViewProps, DiffViewRef, DockAreaLayout, DockNode, DockRegion, EditorDecoration, EditorDiagnostic, EditorProps, EditorRef, EditorSearch, EditorSearchResult, EditorSelection, Edge, Edges, HeaderStyle, NavPageProps, NavStackProps, NavStackState, ProgressProps, StatusBar,
   RadioGroupProps, RadioProps, SelectionAreaProps, StatusBarForeground, SwitchProps, TabProps, TabsProps, TextViewProps, TextViewDocument, MarkdownExtension, MarkdownOptions,
   ToastEntry, ToastMotion, ToastOptions, ToastProps, ToastStackProps, ToastTransitionStatus,
 } from "nsh/base";
@@ -68,6 +68,8 @@ walkthroughs, see the [Navigation guide](../docs/navigation.md) and [Forms and k
 | [`Keyboard.dismiss()`, `keyboardFrame()`](../elements/keyboard-avoiding-view.md#hiding-the-keyboard) | `dismiss_keyboard()`, `keyboard_height()` | Hides the keyboard; its height over the surface. |
 | [`AlertDialog`](../elements/alert-dialog.md) | `alert_dialog()` | The platform's alert or action sheet. |
 | [`TextView`](../elements/text-view.md) | `text_view()` | A document of Markdown, HTML or blocks, drawn with texts and views, for streamed AI replies. |
+| [`Editor`](../elements/editor.md) | `editor()` | A code editor: syntax highlighting, several carets, folding, find and replace, diagnostics. |
+| [`DiffView`](../elements/diff-view.md) | `diff_view()` | The changes between two texts or of a patch, side by side or unified, with per-change actions. |
 | [`SelectionArea`](../elements/selection-area.md) | `selection_area()` | One selection across the texts inside it. |
 | [`Popover`](../elements/popover.md) | `popover()` | Content anchored to a trigger, on top of everything. |
 | [`Menu`, `ContextMenu`, `MenuItem`, `MenuSeparator`, `Submenu`](../elements/menu.md) | `menu()`, ... | Menus: popups with cascading submenus on desktops, sheets on phones. |
@@ -157,6 +159,21 @@ app's. See [Dock](../elements/dock.md).
 elements and views: headings, lists, code, tables, images, formulas, footnotes and the app's own syntax. It is made for
 AI chat replies that stream in, with a reading typography in the theme's colors that the app restyles part by part,
 and render functions that put the app's content in place. See [TextView](../elements/text-view.md).
+
+## Code
+
+### Editor
+
+`Editor` is a code editor for more than fifty languages: syntax highlighting, line numbers, several carets, folding,
+soft wrap, find and replace, diagnostics and decorations, with the keys of code editors. The text is the app's
+(`value` and `onChange`), and so is the find bar, which drives the editor's `search`. It comes with a look built from
+the theme's tokens that the app restyles part by part. See [Editor](../elements/editor.md).
+
+### DiffView
+
+`DiffView` shows the changes between two texts, or of the files of a patch, as code review tools do: side by side or
+unified, the words changed within lines highlighted, unchanged lines collapsed into separators that expand, in the
+`Editor`'s syntax colors. The app's actions keep or revert each change. See [DiffView](../elements/diff-view.md).
 
 ## Selection
 
@@ -320,7 +337,7 @@ launch screen.
 - [Forms and keyboard](../docs/forms-and-keyboard.md).
 - [Button](../elements/button.md), [Checkbox](../elements/checkbox.md), [Radio](../elements/radio.md), [Switch](../elements/switch.md), [Tabs](../elements/tabs.md), [Collapsible](../elements/collapsible.md), [Progress](../elements/progress.md), [NavStack](../elements/nav-stack.md), [Dialog](../elements/dialog.md),
   [SafeAreaView](../elements/safe-area-view.md), [KeyboardAvoidingView](../elements/keyboard-avoiding-view.md),
-  [AlertDialog](../elements/alert-dialog.md), [TextView](../elements/text-view.md),
+  [AlertDialog](../elements/alert-dialog.md), [TextView](../elements/text-view.md), [Editor](../elements/editor.md), [DiffView](../elements/diff-view.md),
   [SelectionArea](../elements/selection-area.md), [Text](../elements/text.md) and
   [Input](../elements/input.md).
 - [Device and environment](../docs/device-and-environment.md).

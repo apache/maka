@@ -49,6 +49,8 @@ const groups: { title: string; demos: DemoEntry[] }[] = [
       { name: "Tailwind", detail: "class=\"…\" resolved natively: variants, grid, shadows, motion", icon: "tailwind", screen: lazy(() => import("./demos/Tailwind").then((m) => m.Tailwind)) },
       { name: "Text", detail: "Fonts, spans, inline views and images, decorations, truncation, languages", icon: "text", screen: lazy(() => import("./demos/TextDemo").then((m) => m.TextDemo)) },
       { name: "Text View", detail: "Markdown and HTML documents, extensions, streaming replies", icon: "text", screen: lazy(() => import("./demos/TextViewDemo").then((m) => m.TextViewDemo)) },
+      { name: "Editor", detail: "Code with highlighting, several carets, folding, find and replace, a language server: diagnostics, hover, definitions, completion", icon: "text", screen: lazy(() => import("./demos/EditorDemo").then((m) => m.EditorDemo)) },
+      { name: "Diff", detail: "Two texts side by side or unified, changes navigated, reverted and kept, a patch", icon: "text", screen: lazy(() => import("./demos/DiffDemo").then((m) => m.DiffDemo)) },
       { name: "Images", detail: "Resize modes, tint, GIF / WebP, placeholders, blur, fade", icon: "image", screen: lazy(() => import("./demos/Images").then((m) => m.Images)) },
     ],
   },
