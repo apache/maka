@@ -138,8 +138,11 @@ misses the deadline is not waited for again until it catches up (`docs/dev/macos
   Space press the focused one; a click presses without focusing, so a pressable's `FOCUSED` state (`focus:` classes,
   `.focus(..)`) is keyboard focus, and `focus-visible:` is the same variant. `focusable={false}` (`Prop::Focusable`,
   `ViewProps::focusable`; Rust `.focusable(false)`) keeps a pressable out of the stops: a backdrop that closes a
-  popover, rows a list moves between with the arrow keys. Inputs are stops by default; terminal and GPUI also honor
-  `focusable={false}` on inputs. `true` makes nothing focusable that is not already interactive. Windows, Linux and GPUI move the focus between fields and
+  popover, rows a list moves between with the arrow keys. A pressable hears `onFocus` / `onBlur` (`EventKind::Focus` /
+  `Blur`, as inputs do) when the keyboard focus reaches and leaves it: AppKit's first responder, the browser's
+  `:focus-visible`; the headless driver's Tab moves it the same way there. Inputs are stops by default; terminal and
+  GPUI also honor `focusable={false}` on inputs. `true` makes nothing focusable that is not already interactive.
+  Windows, Linux and GPUI move the focus between fields and
   native components only so far.
 - **`onPanEnd` / `onPanStart`** carry `valueX` / `valueY`: the bound pan values at that moment (a drag may grab a value mid
   animation), for snapping.

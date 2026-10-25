@@ -92,6 +92,18 @@ pub enum AccessibilityRole {
     List,
     /// A grid.
     Grid,
+    /// A table: rows of cells under column headers.
+    Table,
+    /// A row of a table.
+    Row,
+    /// A cell of a table's row.
+    Cell,
+    /// A column's header cell.
+    #[prop(rename = "columnheader")]
+    ColumnHeader,
+    /// A group of a table's rows: its header, body or footer.
+    #[prop(rename = "rowgroup")]
+    RowGroup,
 }
 
 /// Whether a checkable element is checked (`accessibilityState.checked`).

@@ -26,7 +26,7 @@ at `de176695240d550f2b303643b8019146c7989e7f`. The upstream project is
 
 `upstream.json` keeps that initial `repository` and `revision`. Its
 `upstream_revision` records the latest integrated `longbridge/nsh` main revision:
-`492eabf5d0ce9de933a7407dd8b3a7ef0f372b22`. The first upstream synchronization
+`6a7b56f8474c8bc9c0fc5a2ed5c46ee700471fa9`. The first upstream synchronization
 starts from `6bb0b7908043132067456e4a21dd57c90a0bdce5`, already included in the
 initial fork import.
 
@@ -53,6 +53,14 @@ forwarding upstream touch positions, modifiers and click counts. The shared
 Unicode segmentation dependency follows upstream 1.13 for both the editor and
 terminal backend. These integrations do not replace the local terminal input,
 IME, completion or fallback-key capabilities described below.
+
+The DataTable / Table import adds virtualized row and column views, table
+accessibility roles, and pressable focus notifications through the existing
+registry. The focus declarations retain the terminal scroll/list events and
+input `focusable` behavior; headless keyboard focus coexists with the local
+native contact and input-result tracking. Editor scheduling and idle collection
+follow upstream's large-file work, without claiming its benchmark figures as
+Maka measurements. The terminal input and lifecycle adaptations remain intact.
 
 The local hint-observation integration retains an allocation lifetime separate
 from the upstream layout tree's reusable slab index. This prevents a delayed

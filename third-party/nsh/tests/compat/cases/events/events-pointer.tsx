@@ -1,7 +1,8 @@
 // A case of the API's test suite (docs/dev/compatibility.md): what the
 // platform reports of a finger, the mouse, dragged files and assistive
 // technologies: press in and out, hover in, moves over and out, file drags
-// entering, leaving and dropping, and accessibility actions. Each handler
+// entering, leaving and dropping, accessibility actions, and the keyboard
+// focus reaching and leaving a view that takes presses. Each handler
 // shows what it gets as text. Its script checks
 // each.
 import { Text, View, signal } from "nsh";
@@ -12,6 +13,7 @@ function App() {
   const mouse = signal("none");
   const drop = signal("none");
   const action = signal("none");
+  const keyFocus = signal("none");
   return (
     <View style={{ flex: 1, paddingTop: 64 }}>
       <View
@@ -56,6 +58,14 @@ function App() {
         style={{ height: 40 }}
       />
       <Text>Action: {action()}</Text>
+      <View
+        testID="key-focus"
+        style={{ height: 40 }}
+        onPress={() => {}}
+        onFocus={() => keyFocus.set("focused")}
+        onBlur={() => keyFocus.set(keyFocus() + " blurred")}
+      />
+      <Text>Key focus: {keyFocus()}</Text>
     </View>
   );
 }

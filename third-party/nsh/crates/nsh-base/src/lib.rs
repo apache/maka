@@ -3,7 +3,8 @@
 //! controls (`Button`, `Checkbox`, `Radio` in a `RadioGroup`, `Switch`,
 //! `Tab` in `Tabs`), a progress bar (`Progress`), disclosure (`Collapsible`), navigation (stacks and pages), dialogs, popups on the core's overlays
 //! (`Popover`, `Menu`, `ContextMenu`, `Tooltip`, `Sheet`), a code editor
-//! (`Editor`), the changes between two texts (`DiffView`), toasts (`Toast`,
+//! (`Editor`), the changes between two texts (`DiffView`), tables over any number of rows and columns (`DataTable`) and static tables
+//! with a table's semantics (`Table` and its parts), toasts (`Toast`,
 //! `ToastStack`, `ToastManager`), safe areas,
 //! selection areas,
 //! the system's dialogs and the software keyboard, and the theme's semantic
@@ -19,6 +20,7 @@ mod alert_dialog;
 mod button;
 mod checkbox;
 mod collapsible;
+mod data_table;
 mod diff;
 pub mod dock;
 pub mod editor;
@@ -35,6 +37,7 @@ mod selection_area;
 mod sheet;
 mod switch;
 mod syntax;
+mod table;
 mod tabs;
 pub mod text_view;
 mod theme;
@@ -54,6 +57,13 @@ pub use crate::{
     button::{Button, ButtonElement, ButtonEvent, ButtonProps, button},
     checkbox::{Checkbox, CheckboxElement, CheckboxEvent, CheckboxProps, checkbox},
     collapsible::{Collapsible, CollapsibleElement, CollapsibleProps, collapsible},
+    data_table::{
+        DataTable, DataTableAlign, DataTableApi, DataTableCell, DataTableClasses, DataTableColumn,
+        DataTableColumnGroup, DataTableColumnMove, DataTableContextMenu, DataTableDump,
+        DataTableElement, DataTableEvent, DataTableHeaderCell, DataTablePart, DataTablePress,
+        DataTableProps, DataTableRange, DataTableRows, DataTableSelection, DataTableSort,
+        DataTableSortDirection, DataTableStyles, DataTableTarget, data_table,
+    },
     diff::{
         DiffAnnotation, DiffChange, DiffExpand, DiffFile, DiffFileStatus, DiffHunk, DiffIndicators,
         DiffInline, DiffLayout, DiffLine, DiffLineRange, DiffSeparator, DiffSide, DiffStats,
@@ -100,6 +110,13 @@ pub use crate::{
     selection_area::{SelectionArea, SelectionAreaElement, SelectionAreaProps, selection_area},
     sheet::{Sheet, SheetElement, SheetEvent, SheetProps, sheet},
     switch::{Switch, SwitchElement, SwitchEvent, SwitchProps, switch},
+    table::{
+        Table, TableBody, TableBodyElement, TableCaption, TableCaptionElement, TableCell,
+        TableCellElement, TableElement, TableFooter, TableFooterElement, TableHead,
+        TableHeadElement, TableHeader, TableHeaderElement, TablePartProps, TableProps, TableRow,
+        TableRowElement, table, table_body, table_caption, table_cell, table_footer, table_head,
+        table_header, table_row,
+    },
     tabs::{Tab, TabElement, TabEvent, TabProps, Tabs, TabsElement, TabsProps, tab, tabs},
     text_view::{
         CodeHighlighter, MarkdownExtension, MarkdownOptions, MarkdownPlugin, MarkdownPlugins,
@@ -138,6 +155,7 @@ pub fn registry() -> Registry {
         .register::<SelectionArea>()
         .register::<Checkbox>()
         .register::<Collapsible>()
+        .register::<DataTable>()
         .register::<DockArea>()
         .register::<DiffView>()
         .register::<Editor>()
@@ -146,6 +164,14 @@ pub fn registry() -> Registry {
         .register::<ResizablePanelGroup>()
         .register::<ResizablePanel>()
         .register::<Switch>()
+        .register::<Table>()
+        .register::<TableHeader>()
+        .register::<TableBody>()
+        .register::<TableFooter>()
+        .register::<TableRow>()
+        .register::<TableHead>()
+        .register::<TableCell>()
+        .register::<TableCaption>()
         .register::<Progress>()
         .register::<Tab>()
         .register::<Tabs>()
@@ -187,6 +213,7 @@ mod tests {
                 "Checkbox",
                 "Collapsible",
                 "ContextMenu",
+                "DataTable",
                 "DiffView",
                 "DockArea",
                 "Editor",
@@ -206,6 +233,14 @@ mod tests {
                 "Submenu",
                 "Switch",
                 "Tab",
+                "Table",
+                "TableBody",
+                "TableCaption",
+                "TableCell",
+                "TableFooter",
+                "TableHead",
+                "TableHeader",
+                "TableRow",
                 "Tabs",
                 "TextView",
                 "Toast",

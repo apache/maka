@@ -487,6 +487,11 @@ fn role_for(a: &Accessibility, kind: ViewKind, pressable: bool) -> Gtk {
         Role::Toolbar => Gtk::Toolbar,
         Role::List => Gtk::List,
         Role::Grid => Gtk::Grid,
+        Role::Table => Gtk::Table,
+        Role::Row => Gtk::Row,
+        Role::Cell => Gtk::Cell,
+        Role::ColumnHeader => Gtk::ColumnHeader,
+        Role::RowGroup => Gtk::RowGroup,
     }
 }
 

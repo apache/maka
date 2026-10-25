@@ -380,7 +380,9 @@ fn traits(props: &ViewProps) -> UIAccessibilityTraits {
             AccessibilityRole::Adjustable | AccessibilityRole::Spinbutton => {
                 UIAccessibilityTraitAdjustable
             }
-            AccessibilityRole::Header => UIAccessibilityTraitHeader,
+            AccessibilityRole::Header | AccessibilityRole::ColumnHeader => {
+                UIAccessibilityTraitHeader
+            }
             AccessibilityRole::Summary => UIAccessibilityTraitSummaryElement,
             AccessibilityRole::Progressbar | AccessibilityRole::Timer => {
                 UIAccessibilityTraitUpdatesFrequently

@@ -1021,6 +1021,33 @@ covers [props] Progress.trackStyle
 covers [props] Progress.indicatorClass
 covers [props] Progress.indicatorStyle
 
+# base-table
+tap id:case-base-table
+# The roles and the table's label for screen readers.
+expect Recent invoices
+prop id:table role table
+prop id:table accessibilityLabel Invoices
+prop id:head role rowgroup
+prop id:body role rowgroup
+prop id:foot role rowgroup
+prop id:head-row role row
+prop id:title role columnheader
+prop id:cell role cell
+# A row's cells side by side; the groups and the caption stacked.
+frame id:head 0 20 390 30
+frame id:title 0 0 100 30
+frame id:amount 100 0 80 24
+frame id:foot 0 74 390 24
+frame id:caption 0 98 390 16
+covers [nsh/base] Table
+covers [nsh/base] TableHeader
+covers [nsh/base] TableBody
+covers [nsh/base] TableFooter
+covers [nsh/base] TableRow
+covers [nsh/base] TableHead
+covers [nsh/base] TableCell
+covers [nsh/base] TableCaption
+
 # The app's design tokens: shadcn's `neutral` with the app's theme over it.
 tap id:case-base-token
 expect token up #138a5aff
@@ -1492,3 +1519,46 @@ covers [props] DiffView.renderSeparator
 covers [props] DiffView.renderHunkActions
 covers [props] DiffView.renderFileHeader
 covers [events] DiffView.onFileToggle
+
+# base-data-table
+tap id:case-base-data-table
+# The app draws each cell with the text the table would show: rows 0, 3
+# and 4 are not among the rows the app holds, rows 1 and 2 are its two.
+expect Cell 1:name fig
+expect Cell 2:name pear
+expect Cell 2:qty 3
+# The rows in view are reported: all five, the last two empty.
+expect Visible: 0-5
+# A press on a cell selects it, reported.
+tap text:Cell 1:name fig
+expect Selected: row 1 column 0
+expect Pressed: 1:0 1
+# Screen readers get a grid named by the app.
+prop label:Fruits role grid
+# The ref sets the selection without reporting it, and reads it with the
+# rows in view.
+tap id:select
+expect Selected: row 1 column 0
+tap id:read
+expect Read: 2:1 0-5
+tap id:scroll
+# A sortable column's sort button reports the next sort, which the app
+# sets (`sort`): from it, the next press goes on to descending, then
+# clears it.
+tap id:sort:name
+expect Sorted: name ascending
+tap id:sort:name
+expect Sorted: name descending
+tap id:sort:name
+expect Sorted: cleared
+covers [events] DataTable.onRowPress
+covers [nsh/base] DataTable
+covers [props] DataTable.columns
+covers [props] DataTable.data
+covers [props] DataTable.rowCount
+covers [props] DataTable.dataStart
+covers [props] DataTable.cellSelectable
+covers [props] DataTable.sort
+covers [props] DataTable.renderCell
+covers [events] DataTable.onSortChange
+covers [events] DataTable.onVisibleRowsChange

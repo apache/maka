@@ -14,8 +14,14 @@ const MARGIN: usize = 4;
 const MIN_AHEAD: usize = 16;
 
 /// The window of rows made last, which the next one keeps when it can.
-#[derive(Debug, Default, Clone)]
-pub(crate) struct RowWindow(Rc<Cell<Window>>);
+#[derive(Debug, Clone)]
+pub(crate) struct RowWindow {
+    window: Rc<Cell<Window>>,
+    /// Rows kept made past the viewport's edges, at least.
+    margin: usize,
+    /// Rows made ahead of the viewport when the window moves, at least.
+    ahead: usize,
+}
 
 #[derive(Debug, Default, Clone, Copy)]
 struct Window {
@@ -25,24 +31,41 @@ struct Window {
     first: usize,
 }
 
+impl Default for RowWindow {
+    fn default() -> Self {
+        RowWindow::reaching(MARGIN, MIN_AHEAD)
+    }
+}
+
 impl RowWindow {
+    /// A window keeping `margin` items made past the viewport's edges and
+    /// making `ahead` ahead of it when it moves, at least (a window of
+    /// columns, which are wide, reaches less far than one of rows).
+    pub(crate) fn reaching(margin: usize, ahead: usize) -> Self {
+        RowWindow {
+            window: Rc::default(),
+            margin,
+            ahead,
+        }
+    }
+
     /// The rows to make with `visible` of `count` rows in view: the
     /// previous window while it covers them with half a viewport to spare,
     /// else the visible rows and a viewport and a half more ahead (the way
     /// they scrolled), half a viewport behind.
     pub(crate) fn rows(&self, visible: Range<usize>, count: usize) -> Range<usize> {
-        let w = self.0.get();
+        let w = self.window.get();
         let page = visible.len();
-        let margin = (page / 2).max(MARGIN);
+        let margin = (page / 2).max(self.margin);
         let need = visible.start.saturating_sub(margin)..(visible.end + margin).min(count);
         // Kept while it covers what is needed, within the rows there are,
         // and is not much more (the viewport grew smaller).
         let fits = w.start <= need.start && need.end <= w.end && w.end <= count;
-        if fits && w.end - w.start <= page * 4 + MIN_AHEAD * 3 {
+        if fits && w.end - w.start <= page * 4 + self.ahead * 3 {
             return w.start..w.end;
         }
-        let ahead = (page * 3 / 2).max(MIN_AHEAD);
-        let behind = (page / 2).max(MIN_AHEAD / 2);
+        let ahead = (page * 3 / 2).max(self.ahead);
+        let behind = (page / 2).max(self.ahead / 2);
         let (before, after) = if visible.start < w.first {
             (ahead, behind)
         } else {
@@ -50,7 +73,7 @@ impl RowWindow {
         };
         let start = visible.start.saturating_sub(before).min(count);
         let end = (visible.end + after).min(count);
-        self.0.set(Window {
+        self.window.set(Window {
             start,
             end,
             first: visible.start,

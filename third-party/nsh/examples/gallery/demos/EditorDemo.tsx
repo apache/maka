@@ -1,4 +1,4 @@
-import { type Bounds, cleanup, computed, Input, Overlay, type Point, Scroll, signal, Text, untracked, View, type YNode } from "nsh";
+import { type Bounds, cleanup, computed, Input, List, Overlay, type Point, signal, Text, untracked, View, type YNode } from "nsh";
 import {
   Button,
   DockArea,
@@ -586,32 +586,30 @@ export function EditorDemo() {
   /** The problems of the sample shown: pressing one puts the caret on it. */
   function Problems() {
     return (
-      <Scroll class="flex-1">
-        <View class="py-1">
-          <If when={problems().length > 0} else={<Text class="px-3 py-1 text-xs text-muted-foreground">No problems</Text>}>
-            <Each of={problems()}>
-              {(p) => (
-                <Button
-                  onPress={() => {
-                    const at = p().diagnostic.range.start;
-                    editor?.setSelections([{ anchor: at, head: at }]);
-                    editor?.revealPosition(at, true);
-                    editor?.focus();
-                  }}
-                  accessibilityLabel={p().diagnostic.message}
-                  class="flex-row gap-2 px-3 py-1 hover:bg-foreground/10 active:bg-foreground/15"
-                >
-                  <Dot severity={p().diagnostic.severity} />
-                  <Text numberOfLines={1} class="flex-1 text-xs text-foreground">
-                    {p().diagnostic.message}
-                  </Text>
-                  <Text class="font-mono text-[11px] tabular-nums text-muted-foreground">{`${p().diagnostic.range.start.line + 1}:${p().diagnostic.range.start.column + 1}`}</Text>
-                </Button>
-              )}
-            </Each>
-          </If>
-        </View>
-      </Scroll>
+      // A list, not a column of every row: a long file has thousands of
+      // problems, and only those in view are made.
+      <If when={problems().length > 0} else={<Text class="px-3 py-2 text-xs text-muted-foreground">No problems</Text>}>
+        <List each={problems()} estimatedItemSize={24} class="flex-1" contentClass="py-1">
+          {(p) => (
+            <Button
+              onPress={() => {
+                const at = p().diagnostic.range.start;
+                editor?.setSelections([{ anchor: at, head: at }]);
+                editor?.revealPosition(at, true);
+                editor?.focus();
+              }}
+              accessibilityLabel={p().diagnostic.message}
+              class="flex-row gap-2 px-3 py-1 hover:bg-foreground/10 active:bg-foreground/15"
+            >
+              <Dot severity={p().diagnostic.severity} />
+              <Text numberOfLines={1} class="flex-1 text-xs text-foreground">
+                {p().diagnostic.message}
+              </Text>
+              <Text class="font-mono text-[11px] tabular-nums text-muted-foreground">{`${p().diagnostic.range.start.line + 1}:${p().diagnostic.range.start.column + 1}`}</Text>
+            </Button>
+          )}
+        </List>
+      </If>
     );
   }
 

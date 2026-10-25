@@ -265,7 +265,8 @@ and more than one fails the step; a press whose match, or a view between it and 
 report it:
 
 - `press`: the match or its nearest pressable ancestor gets `PressIn`, `PressOut`, `Press`, at the match's center
-  (a press of a text inside a pressable view lands on the text, as a finger does);
+  (a press of a text inside a pressable view lands on the text, as a finger does); presses of one view within
+  500 ms count up (`clicks` 2 is a double press), as the platforms count them;
 - `long_press`: the match or its nearest ancestor hearing long presses or presses gets `PressIn`, then after its
   `delayLongPress` (500 ms) `LongPress` and `PressOut`;
 - `clear`: the input takes the focus, gets a `KeyPress` of `Backspace` and an edit to nothing;
@@ -298,8 +299,11 @@ report it:
 - `press_key` (`headless/keyboard.rs`, `app.keyboard.press`): the keystroke as `nsh/keymap` parses it for the
   environment's OS; on every environment (a hardware keyboard: phones and tablets have one too) the root's keymap
   (`MountItem::Keymap`, `Screen::keymap`) finds the binding that fires where the focus is (`Keymap::find`) and the
-  root hears `KeyCommand`; else the focused input takes a character, Backspace or the return key, else Escape goes
-  back when there is something to go back from;
+  root hears `KeyCommand`; else, on macOS and the web, Tab / Shift+Tab move the keyboard focus between the stops
+  (`Screen::tab_stops`: editable inputs and pressables not `focusable={false}`, in tree order, around), telling the
+  views `Blur` / `Focus` and the pressable its `FOCUSED` state, and Return or Space presses the pressable it is on (a
+  press of the pointer takes it off); else the focused input takes a character, Backspace or the return key, else
+  Escape goes back when there is something to go back from;
 - `wait`, `wait_for` / `wait_for_gone` / `wait_until` (until a selector matches, matches no more, a condition on the
   screen holds), `next_change` (one batch or animation frame: what `nsh/test`'s `waitUntil` waits for between calls
   of its JS condition), `idle` (until quiet for a while).

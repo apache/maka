@@ -227,6 +227,11 @@ pub(crate) fn role_for(a: &Accessibility, kind: ViewKind, pressable: bool) -> Op
         AxRole::Toolbar => Role::Toolbar,
         AxRole::List => Role::List,
         AxRole::Grid => Role::Grid,
+        AxRole::Table => Role::Table,
+        AxRole::Row => Role::Row,
+        AxRole::Cell => Role::Cell,
+        AxRole::ColumnHeader => Role::ColumnHeader,
+        AxRole::RowGroup => Role::RowGroup,
     })
 }
 

@@ -258,8 +258,10 @@ given to the highlighter when it comes back; the lines it highlighted from the t
 the edits replaced are dropped). When the lines in view are more than 500 lines past the highlighter's frontier (a jump
 to the end of a long file), a `Guess` highlights them with a highlighter made for it, starting 40 lines before them,
 and shows that until the highlighting from the top reaches them; a highlighter that does not guess is not asked
-again. Lines in view with no tokens at all (a jump, a scroll faster than the guess) are guessed at once, in the commit
-that shows them (`highlight_shown_now`), so no frame shows them plain. An edit shifts the tokens of the lines it
+again. Nothing is parsed on the engine thread: syntect costs about a millisecond a line, so a guess of the lines in
+view there took tens of milliseconds an edit in a long file (held paste keys never let a frame out); lines with no
+tokens yet (pasted, or jumped to) show plain until the job or the guess brings theirs, a frame or two later, as
+gpui-component's highlighters leave a long document's new text until their background parse. An edit shifts the tokens of the lines it
 touches with the text (`LineEdit`): typed text takes the color of the token it extends and the rest of the line keeps
 its colors until the highlighter gives the line new ones, so colors do not flicker. Lines not highlighted again keep
 the tokens they had. On WebAssembly there are no threads: jobs run in place, 4 ms per frame. `highlighting={false}`
