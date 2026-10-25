@@ -90,9 +90,8 @@ impl SchemaPool {
     }
 }
 
-// Value equality intentionally ignores object ordering and the sign of float
-// zero. Sharing must also preserve serialized representation, including when
-// serde_json's preserve_order or arbitrary_precision features are unified in.
+// Depending on serde_json's features, Value equality can ignore object ordering
+// or the sign of float zero. Sharing must also preserve serialized representation.
 fn same_representation(left: &Value, right: &Value) -> bool {
     match (left, right) {
         (Value::Number(a), Value::Number(b)) => a == b && a.to_string() == b.to_string(),
@@ -197,8 +196,7 @@ mod tests {
             let pool = SchemaPool::default();
             let values = wires.map(|s| serde_json::from_str::<Value>(s).unwrap());
             let expected = values.each_ref().map(|v| serde_json::to_string(v).unwrap());
-            assert_eq!(values[0], values[1]);
-            let schemas = values.map(|v| pool.intern(v));
+            let schemas = values.map(|v| pool.intern_hashed(v, 7));
             assert_eq!(
                 schemas
                     .each_ref()
@@ -207,7 +205,11 @@ mod tests {
             );
             if expected[0] != expected[1] {
                 assert!(!std::ptr::eq(schemas[0].as_ref(), schemas[1].as_ref()));
+            } else {
+                assert!(std::ptr::eq(schemas[0].as_ref(), schemas[1].as_ref()));
             }
+            let duplicate = pool.intern_hashed(schemas[1].as_ref().clone(), 7);
+            assert!(std::ptr::eq(schemas[1].as_ref(), duplicate.as_ref()));
         }
     }
 
