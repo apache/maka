@@ -47,9 +47,8 @@
   max-width: 84%;
   background: var(--muted);
 }
-/* The card is the message surface, not a panel nested inside a second bubble. */
-.personal-assistant-chat .maka-chat-message-bubble-assistant:has(.maka-message-card) { width: min(360px, 100%); background: transparent; padding: 0; }
-.personal-assistant-chat .maka-chat-message-bubble-assistant:has(.maka-message-card)::before { display: none; }
+/* Keep the normal bubble around both prose and its card, including its tail. */
+.personal-assistant-chat .maka-chat-message-bubble-assistant:has(.maka-message-card) { width: min(384px, 100%); }
 .personal-assistant-chat .maka-assistant-answer-content { max-width: 100%; }
 .personal-assistant-chat .maka-turn[data-turn-id^="assistant-output"] .maka-turn-statusbar[data-turn-status="completed"] { display: none; }
 .personal-assistant-chat .maka-turn-footer { margin-top: 0; }

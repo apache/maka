@@ -403,5 +403,4 @@ textarea::placeholder {
   }
 }
 
-.bubble:has(.maka-message-card) { width: min(360px, calc(100% - 44px)); background: transparent; padding: 0; border: 0; }
-.bubble:has(.maka-message-card)::before { display: none; }
+.bubble:has(.maka-message-card) { width: min(388px, calc(100% - 44px)); }

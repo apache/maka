@@ -5113,7 +5113,7 @@ function AssistantCardsDemo() {
   const composer = useRef<ComposerHandle>(null);
   const messages: StoredMessage[] = [
     user('cards-user', 'cards', 3, '今天事情有点多，也想看看周末能去哪儿走走。'),
-    { type: 'assistant', id: 'cards-offer', turnId: 'assistant-output:offer', ts: NOW - 1000, modelId: 'bot', text: '报销这边，我可以帮你收尾', card: {
+    { type: 'assistant', id: 'cards-offer', turnId: 'assistant-output:offer', ts: NOW - 1000, modelId: 'bot', text: '材料我先核对了一遍，你可以选一下怎么处理。', card: {
       type: 'offer', title: '报销这边，我可以帮你收尾', items: [{ title: '报销这边，我可以帮你收尾', description: '材料找到了 3 份，还缺用车凭证。要我先把已有材料整理好吗？', actions: [
         { kind: 'reply', label: '帮我整理', value: '请帮我整理这次出差的报销材料，先对应已有车票、酒店发票和行程，列出缺失材料。餐费暂不计入。' },
         { kind: 'reply', label: '缺什么？', value: '这次报销还缺哪些材料？' },
@@ -5142,6 +5142,10 @@ export const AssistantCards: Story = {
     expect(canvasElement.querySelectorAll('.maka-message-card')).toHaveLength(2);
     const card = canvasElement.querySelector<HTMLElement>('.maka-message-card')!;
     expect(card.getBoundingClientRect().width).toBeGreaterThan(250);
+    const bubble = card.closest<HTMLElement>('.maka-chat-message-bubble-assistant')!;
+    expect(getComputedStyle(bubble).paddingLeft).toBe('12px');
+    expect(getComputedStyle(bubble).backgroundColor).not.toBe('rgba(0, 0, 0, 0)');
+    expect(getComputedStyle(bubble, '::before').display).not.toBe('none');
     expect(getComputedStyle(canvasElement.querySelector('.personal-assistant-chat')!).getPropertyValue('--maka-reading-measure').trim()).toBe('800px');
     const choices = [...card.querySelectorAll<HTMLButtonElement>('button')];
     expect(choices).toHaveLength(3);
