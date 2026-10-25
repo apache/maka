@@ -932,6 +932,17 @@ async function createFixture(
           reject(new Error(`Goal did not reach ${status}`));
         }, 10_000);
         check();
+      }).then(async (current) => {
+        // Projection notifications precede authority commits. The public query
+        // waits for the Goal mutation and persistence lanes before acknowledging.
+        const reply = await goalCoordinator.handlers['goal.query'](
+          { sessionId: session.id },
+          operationContext(),
+        );
+        assert.ok(reply.ok);
+        assert.equal(reply.result.goal?.goalId, current.id);
+        assert.equal(reply.result.goal?.status, status);
+        return current;
       }),
     async close() {
       goalExecutions.beginDrain();
@@ -2192,14 +2203,43 @@ test('natural waiting preserves its deadline across a pending registration', {
   }
 });
 
-for (const control of ['new Turn', 'clear', 'drain'] as const)
-  test(`natural initial authorization releases Root and respects ${control}`, {
+for (const [control, delayedCommit] of [
+  ['new Turn', false],
+  ['new Turn', true],
+  ['clear', false],
+  ['drain', false],
+] as const)
+  test(`natural initial authorization releases Root and respects ${control}${delayedCommit ? ' with delayed persistence' : ''}`, {
     timeout: 15_000,
   }, async () => {
     const entered = deferred(),
       release = deferred();
+    const committing = deferred(),
+      releaseCommit = deferred();
+    const backing = createMemoryExecutionPersistenceProvider();
+    const persistenceProvider: ExecutionPersistenceProvider | undefined = delayedCommit
+      ? {
+          open: async (input) => {
+            const stores = await backing.open(input);
+            return {
+              ...stores,
+              goalStore: {
+                ...stores.goalStore,
+                commit: async (input) => {
+                  if (input.record?.goal.status === 'achieved') {
+                    committing.resolve();
+                    await releaseCommit.promise;
+                  }
+                  return stores.goalStore.commit(input);
+                },
+              },
+            };
+          },
+        }
+      : undefined;
     let evaluations = 0;
     const f = await createFixture({
+      persistenceProvider,
       model: scriptedWaitModel(() => []),
       eventWaitSources: {
         ...observationSources(async () => assert.fail('The superseded source must not be read')),
@@ -2239,7 +2279,21 @@ for (const control of ['new Turn', 'clear', 'drain'] as const)
           operationContext(),
         );
         assert.equal(reply.ok, true);
-        await f.waitForGoalStatus('achieved');
+        let reachedGoal = false;
+        const completion = f.waitForGoalStatus('achieved').then((goal) => {
+          reachedGoal = true;
+          return goal;
+        });
+        void completion.catch(() => undefined);
+        if (delayedCommit) {
+          await committing.promise;
+          await new Promise<void>((resolve) => setImmediate(resolve));
+          assert.equal(f.goal.manager.get(f.sessionId)?.status, 'achieved');
+          assert.equal((await f.goalStore.read(f.sessionId))!.record.goal.status, 'active');
+          assert.equal(reachedGoal, false, 'Goal status must wait for the authority commit');
+          releaseCommit.resolve();
+        }
+        await completion;
       } else if (control === 'clear') {
         f.goal.manager.clear(f.sessionId);
         await f.goal.handlers['goal.query']({ sessionId: f.sessionId }, operationContext());
@@ -2268,6 +2322,7 @@ for (const control of ['new Turn', 'clear', 'drain'] as const)
       assert.equal(evaluations, control === 'new Turn' ? 2 : 1);
       assert.equal(f.drainRequested(), false, f.errors.map(String).join('\n'));
     } finally {
+      releaseCommit.resolve();
       release.resolve();
       await f.close();
     }
