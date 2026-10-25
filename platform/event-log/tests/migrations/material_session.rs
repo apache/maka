@@ -226,7 +226,10 @@ async fn migration_39_preserves_live_collected_and_copied_evidence_and_original_
         );
         let db = Connection::open(&path).unwrap();
         assert_eq!(snapshot(&db), before);
-        assert_eq!(material_indexes(&db), expected_indexes);
+        assert!(
+            expected_indexes.is_subset(&material_indexes(&db)),
+            "migration removed an existing material lookup index"
+        );
         assert_eq!(
             db.query_row("SELECT max(version) FROM _sqlx_migrations", [], |r| r
                 .get::<_, i64>(0))

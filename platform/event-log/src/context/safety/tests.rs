@@ -27,22 +27,34 @@ use sqlx::Connection;
 const LEDGER: &str = "CREATE TABLE event_log (
     sequence INTEGER PRIMARY KEY AUTOINCREMENT,
     event_id TEXT NOT NULL UNIQUE,
-    invocation_id TEXT NOT NULL,
+    invocation_id TEXT,
     kind TEXT NOT NULL,
     operation_id TEXT,
-    event_json TEXT NOT NULL,
+    event_json TEXT,
     event_session TEXT GENERATED ALWAYS AS (json_extract(event_json,'$.invocation.session_id')) STORED
 );
-CREATE VIEW runtime_events AS SELECT * FROM event_log;
-CREATE INDEX invocation_sequence ON event_log(invocation_id, sequence);";
+CREATE VIEW runtime_events AS SELECT * FROM event_log WHERE invocation_id IS NOT NULL AND event_json IS NOT NULL;
+CREATE INDEX invocation_sequence ON event_log(invocation_id, sequence);
+CREATE UNIQUE INDEX operation_fact ON event_log(operation_id,kind) WHERE operation_id IS NOT NULL;
+CREATE UNIQUE INDEX invocation_boundary ON event_log(invocation_id,kind) WHERE kind='invocation_opened' OR kind='invocation_ended';
+CREATE INDEX model_observed_step ON event_log(invocation_id, CAST(json_extract(event_json,'$.fact.step_id') AS TEXT), sequence)
+    WHERE kind='model_observed';";
 const MIGRATION: &str = include_str!("../../../migrations/0042_context_obligations.sql");
+const EXECUTION_MIGRATION: &str = include_str!("../../../migrations/0053_execution_intervals.sql");
 
 async fn database() -> SqliteConnection {
     let mut db = SqliteConnection::connect("sqlite::memory:").await.unwrap();
     sqlx::raw_sql(LEDGER).execute(&mut db).await.unwrap();
     sqlx::raw_sql(MIGRATION).execute(&mut db).await.unwrap();
+    sqlx::raw_sql(EXECUTION_MIGRATION)
+        .execute(&mut db)
+        .await
+        .unwrap();
     db
 }
+
+#[path = "execution.rs"]
+mod execution;
 
 async fn append(db: &mut SqliteConnection, kind: &str, op: Option<&str>, fact: Value) -> u64 {
     let count: i64 = sqlx::query_scalar("SELECT COALESCE(MAX(sequence),0)+1 FROM event_log")

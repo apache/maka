@@ -47,13 +47,12 @@ pub(crate) async fn validate_append(
         ));
     }
     let pending: bool = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
-        "{}, {} SELECT EXISTS(SELECT 1 FROM unresolved WHERE kind != 0
-          OR id NOT IN (SELECT operation_id FROM private_summaries))",
+        "{} SELECT EXISTS(SELECT 1 FROM unresolved u WHERE kind != 0
+          OR NOT EXISTS(SELECT 1 FROM context_execution_steps s WHERE s.invocation_id=?1
+            AND s.operation_id=u.id AND s.purpose='summary' AND s.tool_observed_at IS NULL))",
         crate::recovery::unresolved!(""),
-        crate::context::safety::PRIVATE_SUMMARIES,
     )))
     .bind(&event.invocation.invocation_id)
-    .bind(i64::MAX)
     .fetch_one(&mut *tx)
     .await?;
     if pending {

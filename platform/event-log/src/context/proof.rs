@@ -41,9 +41,16 @@ pub(super) async fn by_kind(
     kind: &str,
     operation: Option<&str>,
 ) -> Result<(u64, RuntimeEvent), StoreError> {
-    decode(sqlx::query_as("SELECT sequence, CASE WHEN length(CAST(event_json AS BLOB)) <= 8388608 THEN event_json END
-        FROM runtime_events WHERE invocation_id = ? AND kind = ? AND (? IS NULL OR operation_id = ?)")
-        .bind(invocation).bind(kind).bind(operation).bind(operation).fetch_optional(connection).await?)
+    let row = if let Some(operation) = operation {
+        sqlx::query_as("SELECT sequence, CASE WHEN length(CAST(event_json AS BLOB)) <= 8388608 THEN event_json END
+            FROM runtime_events WHERE invocation_id = ? AND kind = ? AND operation_id = ?")
+            .bind(invocation).bind(kind).bind(operation).fetch_optional(connection).await?
+    } else {
+        sqlx::query_as("SELECT sequence, CASE WHEN length(CAST(event_json AS BLOB)) <= 8388608 THEN event_json END
+            FROM runtime_events WHERE invocation_id = ? AND kind = ?")
+            .bind(invocation).bind(kind).fetch_optional(connection).await?
+    };
+    decode(row)
 }
 
 fn decode(row: Option<(i64, Option<String>)>) -> Result<(u64, RuntimeEvent), StoreError> {
@@ -159,7 +166,8 @@ pub(super) async fn validate(
         ));
     }
     let changed_route: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM runtime_events WHERE invocation_id = ?1 AND kind = 'model_requested' AND sequence >= ?9 AND sequence < ?2
+        "SELECT EXISTS(SELECT 1 FROM event_log INDEXED BY context_summary_round
+         WHERE invocation_id = ?1 AND event_json IS NOT NULL AND kind = 'model_requested' AND sequence >= ?9 AND sequence < ?2
          AND json_extract(event_json, '$.fact.purpose') = 'summary'
          AND json_extract(event_json, '$.fact.source_high_water') = ?5
          AND json_extract(event_json, '$.fact.source_scope') = json(?10)
