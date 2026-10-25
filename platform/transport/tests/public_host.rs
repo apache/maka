@@ -337,49 +337,52 @@ struct PeerHost {
 }
 impl PeerHost {
     fn startup_helper(&self) -> std::path::PathBuf {
-        use maka_host_runtime::application::{host::startup::Ready, transport::wire};
-        // These fixtures already own the live Host. Exercise the launcher's
-        // Ready/EOF handshake while Connections verifies the real discovery.
-        let ready = wire::encode_bounded(
-            &Ready {
-                root_id: self.host.root_id().into(),
-                epoch: self.host.epoch(),
-            },
-            4096,
+        use maka_host_runtime::application::host::startup::Ready;
+        let directory = self.directory.path();
+        let ready = Ready {
+            root_id: self.host.root_id().into(),
+            epoch: self.host.epoch(),
+        };
+        std::fs::write(
+            directory.join("startup.json"),
+            serde_json::to_vec(&ready).unwrap(),
         )
         .unwrap();
-        let frame: Vec<_> = u32::try_from(ready.len())
-            .unwrap()
-            .to_be_bytes()
-            .into_iter()
-            .chain(ready)
-            .collect();
+        std::fs::write(
+            directory.join("startup-helper.mjs"),
+            include_str!("support/startup-helper.mjs"),
+        )
+        .unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let helper = self.directory.path().join("startup-helper");
-            let escaped: String = frame.iter().map(|byte| format!("\\{byte:03o}")).collect();
+            let executable = directory.join("startup-helper");
+            let script = directory.join("startup-helper.mjs");
+            let fixture = directory.join("startup.json");
+            let quote = |path: &std::path::Path| {
+                format!("'{}'", path.to_str().unwrap().replace('\'', "'\"'\"'"))
+            };
             std::fs::write(
-                &helper,
-                format!("#!/bin/sh\nprintf '{escaped}'\ncat >/dev/null\n"),
+                &executable,
+                format!(
+                    "#!/bin/sh\nexec node {} {} \"$@\"\n",
+                    quote(&script),
+                    quote(&fixture)
+                ),
             )
             .unwrap();
-            std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o700)).unwrap();
-            helper
+            std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+            executable
         }
         #[cfg(windows)]
         {
-            let helper = self.directory.path().join("startup-helper.cmd");
-            let bytes = frame
-                .iter()
-                .map(u8::to_string)
-                .collect::<Vec<_>>()
-                .join(",");
-            std::fs::write(&helper, format!(
-                "@echo off\r\npowershell.exe -NoLogo -NoProfile -NonInteractive -Command \"$output = [Console]::OpenStandardOutput(); $output.Write([byte[]]({bytes}), 0, {}); $output.Flush(); [Console]::OpenStandardInput().CopyTo([System.IO.Stream]::Null)\"\r\n",
-                frame.len(),
-            )).unwrap();
-            helper
+            let executable = directory.join("startup-helper.cmd");
+            std::fs::write(
+                &executable,
+                "@node \"%~dp0startup-helper.mjs\" \"%~dp0startup.json\" %*\r\n",
+            )
+            .unwrap();
+            executable
         }
     }
 
@@ -814,9 +817,9 @@ async fn discovered_connections_release_ui_roots_without_stopping_the_shared_hos
     use maka_plugin_core::composition::PresentationTarget;
     use maka_transport::{Configuration, Connections, HostLocation};
     let fixture = support::setup(PeerHost::start()).await;
-    let helper = fixture.startup_helper();
     tokio::time::timeout(Duration::from_secs(30), async {
         let registration = fixture.host.publish_registration(&fixture.address, None).unwrap();
+        let helper = fixture.startup_helper();
         let (ui, source, _) = fixture.ui("tui-connections", PresentationTarget::Tui).await;
         let configuration = || Configuration { hosts: vec![maka_transport::Host {
             name: "local".into(),
@@ -877,8 +880,8 @@ async fn quitting_an_externally_stopped_host_requires_its_original_root_release(
     tokio::time::timeout(Duration::from_secs(30), async {
         for replacement in [false, true] {
         let fixture = PeerHost::start().await;
-        let helper = fixture.startup_helper();
         let registration = fixture.host.publish_registration(&fixture.address, None).unwrap();
+        let helper = fixture.startup_helper();
         let (ui, source, _) = fixture.ui("external-stop-ui", PresentationTarget::Tui).await;
         let ui_root = fixture.directory.path().join("external-stop-ui");
         let host_root = fixture.directory.path().join("host");
@@ -891,7 +894,7 @@ async fn quitting_an_externally_stopped_host_requires_its_original_root_release(
             endpoints: fixture.selections.clone(), native: vec![],
         }] };
         let mut connections = Connections::prepare(ui.clone(), source.deployment, PresentationTarget::Tui,
-            configuration, fixture.namespaces.clone(), helper,
+            configuration, fixture.namespaces.clone(), helper.clone(),
             NativeRegistry::default(), Some(maka_host_js::factory(Default::default()))).await.unwrap();
         connections.start().await.unwrap();
         assert_eq!(fixture.host.status().sessions, 1);

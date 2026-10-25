@@ -29,20 +29,10 @@ async fn database() -> SqliteConnection {
     let mut db = SqliteConnection::connect("sqlite::memory:").await.unwrap();
     sqlx::raw_sql("CREATE TABLE context_source_lineages(invocation_id TEXT PRIMARY KEY,parent_invocation_id TEXT);")
         .execute(&mut db).await.unwrap();
-    sqlx::raw_sql(include_str!(
-        "../../../migrations/0045_context_lineage_jumps.sql"
-    ))
-    .execute(&mut db)
-    .await
-    .unwrap();
-    let schema = include_str!("../../../migrations/0041_context_semantic.sql");
-    sqlx::raw_sql(schema.split("CREATE TRIGGER").next().unwrap())
-        .execute(&mut db)
-        .await
-        .unwrap();
-    sqlx::raw_sql(include_str!(
-        "../../../migrations/0051_semantic_lookup_indexes.sql"
-    ))
+    sqlx::raw_sql(sqlx::AssertSqlSafe(crate::schema::fixture(|kind, name| {
+        name.starts_with("context_lineage_")
+            || (kind != "trigger" && name.starts_with("context_semantic_"))
+    })))
     .execute(&mut db)
     .await
     .unwrap();
@@ -196,39 +186,4 @@ async fn lineage_membership_grows_logarithmically_and_excludes_sibling_branches(
             .unwrap();
         assert_eq!(actual, expected, "{selected} contains {candidate}");
     }
-}
-
-#[tokio::test]
-async fn lineage_index_backfills_existing_branches_before_accepting_new_openings() {
-    let mut db = SqliteConnection::connect("sqlite::memory:").await.unwrap();
-    sqlx::raw_sql("CREATE TABLE context_source_lineages(invocation_id TEXT PRIMARY KEY,parent_invocation_id TEXT);")
-        .execute(&mut db).await.unwrap();
-    append_lineage(&mut db, 0, 63).await;
-    sqlx::query("INSERT INTO context_source_lineages VALUES('sibling','lineage-31')")
-        .execute(&mut db)
-        .await
-        .unwrap();
-    sqlx::raw_sql(include_str!(
-        "../../../migrations/0045_context_lineage_jumps.sql"
-    ))
-    .execute(&mut db)
-    .await
-    .unwrap();
-    append_lineage(&mut db, 64, 127).await;
-    {
-        let mut handle = db.lock_handle().await.unwrap();
-        let borrowed =
-            unsafe { rusqlite::Connection::from_handle(handle.as_raw_handle().as_ptr()) }.unwrap();
-        crate::context::evidence::register(&borrowed).unwrap();
-    }
-    let selected: (bool, bool, bool) = sqlx::query_as(
-        "SELECT
-        context_lineage_contains('lineage-127','lineage-0'),
-        context_lineage_contains('lineage-127','sibling'),
-        context_lineage_contains('sibling','lineage-31')",
-    )
-    .fetch_one(&mut db)
-    .await
-    .unwrap();
-    assert_eq!(selected, (true, false, true));
 }

@@ -99,8 +99,12 @@ mod tests {
     #[tokio::test]
     async fn turn_boundaries_are_scoped_fenced_and_do_not_restart_at_handoff_or_tail() {
         let mut db = SqliteConnection::connect(":memory:").await.unwrap();
-        let schema = include_str!("../../migrations/0033_transcript_directory.sql");
-        sqlx::raw_sql(&schema[schema.find("CREATE TABLE transcript_directory (").unwrap()..])
+        let schema = crate::schema::fixture(|_, name| {
+            name.starts_with("transcript_directory")
+                || name.starts_with("transcript_failures")
+                || name.starts_with("directory_")
+        });
+        sqlx::raw_sql(sqlx::AssertSqlSafe(schema.as_str()))
             .execute(&mut db)
             .await
             .unwrap();

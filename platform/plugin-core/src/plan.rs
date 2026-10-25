@@ -85,8 +85,7 @@ pub struct Plan {
     recovery: Option<Binding>,
 }
 
-/// A pinned package replacement at one expanded instance path.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Debug)]
 pub struct PackageChange {
     pub path: Vec<String>,
     pub package: PackageRef,

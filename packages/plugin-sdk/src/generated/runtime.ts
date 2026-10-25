@@ -2793,7 +2793,7 @@ export type SkillLibraryPreferenceResult =
       reason: string;
     };
 export type SkillScope = 'project' | 'workspace' | 'user' | 'custom';
-export type SkillSource = 'maka' | 'agents' | 'legacy' | 'custom';
+export type SkillSource = 'maka' | 'agents' | 'custom';
 export type SkillModelLoadResult =
   | {
       kind: 'loaded';
@@ -2805,7 +2805,6 @@ export type SkillModelLoadResult =
       relativePath: string;
       declaredTools: string[];
       declaredToolsTruncated: boolean;
-      truncated: boolean;
       receipt: SkillInvocationReceipt;
       [k: string]: unknown | undefined;
     }
@@ -2852,7 +2851,6 @@ export type SkillInvocationReceipt =
       name: string;
       scope: SkillScope;
       source: SkillSource;
-      truncated: boolean;
     }
   | {
       invocation: SkillInvocationMode;
@@ -3557,9 +3555,6 @@ export type AgentImportsPage =
     }
   | {
       kind: 'invalid';
-    }
-  | {
-      kind: 'limit';
     };
 export type AgentImportLocation =
   | {
@@ -3613,9 +3608,6 @@ export type AgentImportResult =
     }
   | {
       kind: 'invalid';
-    }
-  | {
-      kind: 'limit';
     };
 export type AgentProjectsRead =
   | {
@@ -5042,7 +5034,7 @@ export type MarkdownTextResult = {
 export interface ClientDraft {
   revision: number;
   text: string;
-  attachments?: ClientDraftAttachment[];
+  attachments: ClientDraftAttachment[];
 }
 /**
  * Display metadata for an immutable Host upload in this exact draft owner.
@@ -5097,7 +5089,7 @@ export interface ClientOperation {
   /**
    * Durable fence proving that this attempt did not dispatch.
    */
-  abandoned?: boolean;
+  abandoned: boolean;
   /**
    * Present only after original preparation has been durably recorded.
    */
@@ -8266,7 +8258,6 @@ export interface SkillLibraryEntry {
   description: string;
   valid: boolean;
   shadowedBy?: string | null;
-  metadataTruncated: boolean;
   issues: string[];
 }
 export interface SkillPreference {
@@ -8337,7 +8328,6 @@ export interface ReadInput {
 export interface SkillModelSearchResult {
   revision: string;
   query: string;
-  queryTruncated: boolean;
   matches: SearchMatch[];
   totalEligible: number;
   matchedCount: number;

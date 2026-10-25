@@ -75,7 +75,7 @@ impl Prompt {
         let codec = codec.into();
         let identity = identity.into();
         let mut hash = Sha256::new();
-        hash.update(b"maka-prepared-prompt-v3\0");
+        hash.update(b"maka-prepared-prompt-v1\0");
         for component in [self.identity.as_ref(), codec.as_ref(), identity.as_ref()] {
             hash.update((component.len() as u64).to_le_bytes());
             hash.update(component.as_bytes());
@@ -100,7 +100,7 @@ impl Prompt {
     pub fn with_instructions(mut self, instructions: impl Into<Arc<str>>) -> Self {
         let instructions = instructions.into();
         let mut hash = Sha256::new();
-        hash.update(b"maka-prompt-instructions-v3\0");
+        hash.update(b"maka-prompt-instructions-v1\0");
         for component in [self.identity.as_ref(), instructions.as_ref()] {
             hash.update((component.len() as u64).to_le_bytes());
             hash.update(component.as_bytes());
@@ -159,7 +159,7 @@ impl Prompt {
             }
         }
         let mut hash = HashWriter(Sha256::new());
-        hash.0.update(b"maka-prompt-memory-v2\0");
+        hash.0.update(b"maka-prompt-memory-v1\0");
         serde_json::to_writer(&mut hash, &messages).expect("prompt JSON");
         let identity = hex::encode(hash.0.finalize());
         let count = messages.len();

@@ -46,22 +46,12 @@ async fn initialize(db: &mut SqliteConnection) {
         CREATE TABLE session_history_copies(session_id TEXT PRIMARY KEY,source_session_id TEXT,through_sequence INTEGER,observed_through INTEGER);
         CREATE TABLE session_history_members(session_id TEXT,sequence INTEGER,archive_sequence INTEGER,PRIMARY KEY(session_id,sequence));")
         .execute(&mut *db).await.unwrap();
-    sqlx::raw_sql(include_str!(
-        "../../../migrations/0041_context_semantic.sql"
-    ))
+    sqlx::raw_sql(sqlx::AssertSqlSafe(crate::schema::fixture(|_, name| {
+        name.starts_with("context_semantic_")
+    })))
     .execute(&mut *db)
     .await
     .unwrap();
-    sqlx::raw_sql(include_str!(
-        "../../../migrations/0051_semantic_lookup_indexes.sql"
-    ))
-    .execute(&mut *db)
-    .await
-    .unwrap();
-    sqlx::query("DROP TRIGGER context_semantic_append")
-        .execute(&mut *db)
-        .await
-        .unwrap();
     sqlx::query("ATTACH ':memory:' AS prepared_cache")
         .execute(&mut *db)
         .await

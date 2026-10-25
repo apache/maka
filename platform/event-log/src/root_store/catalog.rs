@@ -218,17 +218,15 @@ impl RootStore {
         vector: CatalogVector,
         count_pending: bool,
     ) -> Result<(Vec<(String, usize)>, u64), StoreError> {
+        let selection = crate::sessions::CatalogQuery::new(scope, filter)?;
         let pages = try_join_all(self.partitions.iter().enumerate().map(|(index, log)| {
             log.root_catalog_ids(
                 index,
-                scope.clone(),
-                filter,
-                crate::sessions::RootCatalogPage {
-                    position,
-                    limit,
-                    count_pending,
-                },
+                selection.clone(),
+                position,
+                limit,
                 vector.partition(index),
+                count_pending,
             )
         }))
         .await?;

@@ -38,6 +38,19 @@ mod source;
 mod timing;
 mod tool_metadata;
 mod tools;
-pub use history::HistoryWindow;
 pub use read::*;
-pub use source::HistorySourceRead;
+
+/// Budgets for one history window, including its serialized metadata.
+#[derive(Clone, Copy, Debug)]
+pub struct HistoryLimits {
+    pub max_bytes: usize,
+    pub max_chunks: Option<usize>,
+    pub max_json_bytes: usize,
+}
+
+/// One canonical field within an immutable transcript row.
+pub struct SourceSelection {
+    pub locator: maka_agent_facts::history::RowPosition,
+    pub field: maka_agent_ports::session::history::SourceField,
+    pub path: Option<Vec<maka_agent_ports::session::history::SourceSegment>>,
+}

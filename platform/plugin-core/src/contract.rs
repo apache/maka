@@ -362,41 +362,8 @@ impl Cardinality {
 
 #[cfg(test)]
 mod interface_deserialization_tests {
-    use super::{Contract, Interface};
+    use super::Interface;
     use serde_json::{Value, json};
-
-    #[test]
-    fn contract_clones_share_schema_storage_without_changing_wire_or_compatibility() {
-        let wire = json!({"name":"example.shared", "version":1, "transport":"local",
-            "interface":{"kind":"service", "methods":{"read":{"mode":"query",
-                "input":{"type":"object", "properties":{"name":{"type":"string"}}},
-                "output":{"type":"array", "items":{"type":"string"}}, "resources":{}}}}});
-        let original: Contract = serde_json::from_value(wire.clone()).unwrap();
-        original.validate().unwrap();
-        let cloned = original.clone();
-        assert_eq!(serde_json::to_value(&cloned).unwrap(), wire);
-        let independent: Contract = serde_json::from_value(wire.clone()).unwrap();
-        assert!(original.accepts(&independent));
-        let mut changed_wire = wire;
-        changed_wire["interface"]["methods"]["read"]["input"]["properties"]["name"]["type"] =
-            json!("number");
-        let changed: Contract = serde_json::from_value(changed_wire).unwrap();
-        assert!(!original.accepts(&changed));
-        let Interface::Service { methods: original } = &original.interface else {
-            panic!()
-        };
-        let Interface::Service { methods: cloned } = &cloned.interface else {
-            panic!()
-        };
-        assert!(std::ptr::eq(
-            original["read"].input.as_object().unwrap(),
-            cloned["read"].input.as_object().unwrap()
-        ));
-        assert!(std::ptr::eq(
-            original["read"].output.as_object().unwrap(),
-            cloned["read"].output.as_object().unwrap()
-        ));
-    }
 
     #[test]
     fn interfaces_round_trip_with_the_tag_before_or_after_fields() {

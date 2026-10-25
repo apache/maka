@@ -33,14 +33,12 @@ enum Failure {
     Changed,
     Unavailable,
     Invalid,
-    Limit,
     Unknown,
 }
 impl From<maka_session_import::Error> for Failure {
     fn from(error: maka_session_import::Error) -> Self {
         use maka_session_import::Error;
         match error {
-            Error::Limit { .. } => Self::Limit,
             Error::Invalid(_) | Error::Decode { .. } => Self::Invalid,
             _ => Self::Unavailable,
         }
@@ -51,7 +49,6 @@ impl Failure {
         match self {
             Self::Changed => ImportsPage::Changed,
             Self::Invalid => ImportsPage::Invalid,
-            Self::Limit => ImportsPage::Limit,
             Self::Unavailable | Self::Unknown => ImportsPage::Unavailable,
         }
     }
@@ -59,7 +56,6 @@ impl Failure {
         Ok(match self {
             Self::Changed => ImportResult::Changed,
             Self::Invalid => ImportResult::Invalid,
-            Self::Limit => ImportResult::Limit,
             Self::Unavailable => ImportResult::Unavailable,
             Self::Unknown => return Err("agent_import_unknown".into()),
         })

@@ -107,8 +107,8 @@ impl Owner {
         &self,
         session: &str,
     ) -> Result<Option<BackendPreference>, String> {
-        // Old conversations predate the preference field. Their last admitted
-        // model is an exact identity to resolve, never a new global default.
+        // Direct sends need not save a picker preference. Recover their last
+        // admitted model identity without substituting a global default.
         let opening = self
             .store
             .session(session)

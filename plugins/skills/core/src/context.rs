@@ -75,7 +75,6 @@ pub struct SearchMatch<'a> {
 #[serde(rename_all = "camelCase")]
 pub struct SearchResult<'a> {
     pub query: String,
-    pub query_truncated: bool,
     pub matches: Vec<SearchMatch<'a>>,
     pub total_eligible: usize,
     pub matched_count: usize,
@@ -105,7 +104,6 @@ impl Catalog<'_> {
             })
             .collect::<Vec<_>>();
         SearchResult {
-            query_truncated: false,
             query,
             truncated: matches.len() < matched_count,
             matches,

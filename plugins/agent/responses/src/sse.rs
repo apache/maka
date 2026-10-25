@@ -20,7 +20,7 @@
 use crate::{Error, Result};
 use serde_json::Value;
 
-/// Incremental SSE framing, bounded per record (not per TCP chunk).
+/// Incremental SSE framing independent of TCP chunk boundaries.
 #[derive(Default)]
 pub struct Sse {
     line: Vec<u8>,
@@ -83,7 +83,7 @@ impl Sse {
 mod tests {
     use super::*;
     #[test]
-    fn framing_handles_split_crlf_multiline_data_and_bounds_comments() {
+    fn framing_handles_split_crlf_multiline_data_and_comments() {
         let mut stream = Sse::default();
         let input =
             b"\xef\xbb\xbf:comment\r\ndata: {\rdata: \"type\": \"response.created\"}\r\n\r\n";
@@ -92,10 +92,5 @@ mod tests {
             .filter_map(|byte| stream.push(*byte).unwrap())
             .collect::<Vec<_>>();
         assert_eq!(events, vec![serde_json::json!({"type":"response.created"})]);
-        let mut stream = Sse::default();
-        for _ in 0..8 * 1024 * 1024 {
-            assert!(stream.push(b':').unwrap().is_none());
-        }
-        assert!(stream.push(b'x').unwrap().is_none());
     }
 }

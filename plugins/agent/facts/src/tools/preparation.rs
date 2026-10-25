@@ -75,25 +75,6 @@ impl PreparedEffect {
         self
     }
 
-    /// Attach execution context after admission without moving journal-owned
-    /// leases into the callback or running the effect during preparation.
-    pub fn map_future(
-        mut self,
-        map: impl FnOnce(ToolFuture<ToolSuccess>, CancellationToken) -> ToolFuture<ToolSuccess>
-        + Send
-        + 'static,
-    ) -> Self {
-        let execute = self
-            .execute
-            .take()
-            .expect("prepared effect has not started");
-        self.execute = Some(Box::new(move |cancellation| {
-            let future = execute(cancellation.clone());
-            map(future, cancellation)
-        }));
-        self
-    }
-
     pub(super) fn start(&mut self, cancellation: CancellationToken) -> ToolFuture<ToolSuccess> {
         for admit in self.admissions.drain(..) {
             match admit() {

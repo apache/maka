@@ -1047,8 +1047,21 @@ pub async fn wait_enabled_button(
     })
     .await
     .unwrap_or_else(|_| {
+        let buttons: Vec<_> = view
+            .accessibility_snapshot()
+            .into_iter()
+            .filter(|node| node.role == nsh_core::AccessibilityRole::Button)
+            .map(|node| {
+                (
+                    node.id,
+                    node.label.chars().take(160).collect::<String>(),
+                    node.state.disabled,
+                    node.frame,
+                )
+            })
+            .collect();
         panic!(
-            "native button {label:?} did not become enabled:\n{}",
+            "native button {label:?} did not become enabled:\n{}\nbuttons={buttons:#?}",
             view.snapshot()
         )
     })
@@ -1201,13 +1214,6 @@ pub fn wait_view_state(
             let snapshot = view.snapshot();
             if predicate(view, &snapshot) {
                 return snapshot;
-            }
-            if started.elapsed() >= Duration::from_secs(20) {
-                evidence(
-                    &format!("timeout-{}-ax", caller.line()),
-                    &format!("{:#?}", view.accessibility_snapshot()),
-                );
-                evidence_cells(&format!("timeout-{}", caller.line()), view);
             }
             assert!(
                 started.elapsed() < Duration::from_secs(20),

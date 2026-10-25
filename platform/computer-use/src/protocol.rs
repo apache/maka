@@ -149,11 +149,8 @@ pub struct ClickOptions {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum MouseButton {
-    #[serde(alias = "l")]
     Left,
-    #[serde(alias = "r")]
     Right,
-    #[serde(alias = "m")]
     Middle,
 }
 impl MouseButton {
@@ -168,13 +165,9 @@ impl MouseButton {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Direction {
-    #[serde(alias = "u")]
     Up,
-    #[serde(alias = "d")]
     Down,
-    #[serde(alias = "l")]
     Left,
-    #[serde(alias = "r")]
     Right,
 }
 impl Direction {

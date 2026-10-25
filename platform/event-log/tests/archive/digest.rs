@@ -55,9 +55,9 @@ async fn effective_digest_covers_archives_beyond_the_first_page() {
     // Check the durable digest contract against the exact append inputs and
     // exposed replacements, including the record past the old page boundary.
     let mut hash = Sha256::new();
-    hash.update(b"maka.effective-context.v2\0");
+    hash.update(b"maka.effective-context.v1\0");
     hash.update(after.source_evidence.digest.as_bytes());
-    hash.update(Sha256::digest(b"maka.archive.copy.v2\0"));
+    hash.update(Sha256::digest(b"maka.archive.copy.v1\0"));
     for (actual, written) in archived.iter().zip(&archives) {
         let Fact::ToolResultArchived { placeholder } = &written.event().fact else {
             panic!()

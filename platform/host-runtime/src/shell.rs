@@ -71,7 +71,6 @@ pub(super) type Update = Option<std::result::Result<Arc<ShellObservation>, Arc<S
 pub struct ShellResources {
     log: Arc<RootStore>,
     active: Active,
-    output_changes: watch::Sender<()>,
     workers: TaskTracker,
     shutdown: CancellationToken,
     host_drain: CancellationToken,
@@ -82,7 +81,6 @@ impl ShellResources {
         Self {
             log,
             active: Arc::default(),
-            output_changes: watch::channel(()).0,
             workers: TaskTracker::new(),
             shutdown: host_drain.child_token(),
             host_drain,
@@ -111,7 +109,7 @@ impl ShellResources {
             return Err(ShellError::Rejected("invalid PTY launch"));
         }
         // File creation never holds the shared active-map lock.
-        let output = output::Output::new(size, self.output_changes.clone())?;
+        let output = output::Output::new(size)?;
         let mut active = self.active.lock().unwrap();
         if self.shutdown.is_cancelled() {
             return Err(ShellError::Rejected("shell resources are draining"));
@@ -203,11 +201,6 @@ impl ShellResources {
             .unwrap()
             .get(&(session.into(), id.into()))
             .cloned()
-    }
-
-    /// Coalesced wakeups only; bytes and cursors remain in each shared PTY replay.
-    pub fn subscribe_output(&self) -> watch::Receiver<()> {
-        self.output_changes.subscribe()
     }
 
     /// Non-interactive background commands use bounded pipes, never a V8.

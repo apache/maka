@@ -715,13 +715,12 @@ async fn copies_own_history_and_files_without_replaying_execution_across_retries
             1
         );
         let history = log
-            .history_view(
+            .history_text(
                 session,
                 root.high_water,
-                maka_event_log::transcript::HistoryWindow {
-                    position: maka_agent_ports::session::history::Position::Start,
-                    include_thinking: false,
-                    view: maka_agent_ports::session::history::HistoryView::Text,
+                maka_agent_ports::session::history::Position::Start,
+                false,
+                maka_event_log::transcript::HistoryLimits {
                     max_bytes: 16 * 1024,
                     max_chunks: Some(8),
                     max_json_bytes: 1024 * 1024,
@@ -757,13 +756,12 @@ async fn copies_own_history_and_files_without_replaying_execution_across_retries
             .unwrap();
         assert_eq!(
             serde_json::to_value(
-                log.history_view(
+                log.history_text(
                     session,
                     root.high_water,
-                    maka_event_log::transcript::HistoryWindow {
-                        position: maka_agent_ports::session::history::Position::Start,
-                        include_thinking: false,
-                        view: maka_agent_ports::session::history::HistoryView::Text,
+                    maka_agent_ports::session::history::Position::Start,
+                    false,
+                    maka_event_log::transcript::HistoryLimits {
                         max_bytes: 16 * 1024,
                         max_chunks: Some(8),
                         max_json_bytes: 1024 * 1024

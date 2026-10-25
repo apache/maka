@@ -67,16 +67,6 @@ const CONVERSATION_USER: &str = "COALESCE((SELECT group_concat(line, char(10)) F
     SELECT '▱ ' || json_extract(value, '$.path')
         FROM json_each(payload, '$.directoryReferences') WHERE json_type(value, '$.path') = 'text')), '')";
 
-/// Projection and delivery budgets for one immutable history window.
-pub struct HistoryWindow {
-    pub position: Position,
-    pub include_thinking: bool,
-    pub view: HistoryView,
-    pub max_bytes: usize,
-    pub max_chunks: Option<usize>,
-    pub max_json_bytes: usize,
-}
-
 impl EventLog {
     /// Exact ascending UTF-8 windows over immutable derived text. The byte and
     /// fragment budgets apply to the whole window, never to a silently clipped
@@ -85,20 +75,39 @@ impl EventLog {
     /// including metadata and empty projection boundaries. The first complete
     /// fragment advances even when its metadata exceeds this target; subsequent
     /// fragments are packed within it. Cursor positions grant no access.
+    pub async fn history_text(
+        &self,
+        session: &str,
+        through: u64,
+        position: Position,
+        include_thinking: bool,
+        limits: crate::transcript::HistoryLimits,
+    ) -> Result<Page, StoreError> {
+        self.history_view(
+            session,
+            through,
+            position,
+            include_thinking,
+            HistoryView::Text,
+            limits,
+        )
+        .await
+    }
+
     pub async fn history_view(
         &self,
         session: &str,
         through: u64,
-        window: HistoryWindow,
+        position: Position,
+        include_thinking: bool,
+        view: HistoryView,
+        limits: crate::transcript::HistoryLimits,
     ) -> Result<Page, StoreError> {
-        let HistoryWindow {
-            position,
-            include_thinking,
-            view,
+        let crate::transcript::HistoryLimits {
             max_bytes,
             max_chunks,
             max_json_bytes,
-        } = window;
+        } = limits;
         self.validate_root()?;
         if !(4..=128 * 1024).contains(&max_bytes)
             || max_chunks == Some(0)
@@ -886,8 +895,12 @@ mod tests {
     #[tokio::test]
     async fn conversation_retains_trace_parents_and_hides_transport_helpers() {
         let mut db = SqliteConnection::connect(":memory:").await.unwrap();
-        let schema = include_str!("../../migrations/0033_transcript_directory.sql");
-        sqlx::raw_sql(&schema[schema.find("CREATE TABLE transcript_directory (").unwrap()..])
+        let schema = crate::schema::fixture(|_, name| {
+            name.starts_with("transcript_directory")
+                || name.starts_with("transcript_failures")
+                || name.starts_with("directory_")
+        });
+        sqlx::raw_sql(sqlx::AssertSqlSafe(schema.as_str()))
             .execute(&mut db)
             .await
             .unwrap();
@@ -990,8 +1003,12 @@ mod tests {
         }
 
         let mut db = SqliteConnection::connect(":memory:").await.unwrap();
-        let schema = include_str!("../../migrations/0033_transcript_directory.sql");
-        sqlx::raw_sql(&schema[schema.find("CREATE TABLE transcript_directory (").unwrap()..])
+        let schema = crate::schema::fixture(|_, name| {
+            name.starts_with("transcript_directory")
+                || name.starts_with("transcript_failures")
+                || name.starts_with("directory_")
+        });
+        sqlx::raw_sql(sqlx::AssertSqlSafe(schema.as_str()))
             .execute(&mut db)
             .await
             .unwrap();

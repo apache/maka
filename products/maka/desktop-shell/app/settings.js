@@ -18,7 +18,7 @@
  */
 
 // Settings: the language and appearance, model connections, their API keys,
-// the default model, import from an old Maka settings export, WorkHub's
+// the default model, WorkHub's
 // subagents (subagents.js) and the archived tasks (archived.js). The calls
 // follow the TUI's settings
 // plugins (plugins/settings/connection-form/operations.ts and
@@ -26,13 +26,10 @@
 // as the `secret` resource of `settings.saveCredential`, then let
 // `setup.discoverModels` find and enable its models.
 //
-// A key lives only in the masked input, or in memory between reading an
-// export and importing it; it is never logged, and import rows drop it once
-// they are done.
+// A key lives only in the masked input and is never logged.
 
 import { div } from 'gpui-kit';
 import { v_flex, h_flex, InputState, Button } from 'gpui-base';
-import { openText } from 'maka-files';
 import { query, operation, log } from './host.js';
 import { Subagents, subagentsActions, subagentsStatus, subagentsSection } from './subagents.js';
 import { Archived, archivedStatus, archivedSection } from './archived.js';
@@ -118,8 +115,6 @@ export class Settings {
     this.form = null;
     /** The connection whose removal waits for a confirmation, if any. */
     this.removing = null;
-    /** { path, rows, error, done } while an export is being imported. */
-    this.importing = null;
     /** The Subagents page, read each time it shows. */
     this.subagents = new Subagents(hooks);
     /** The Archived page, read each time it shows. */
@@ -165,7 +160,6 @@ export class Settings {
     this.open = false;
     this.removing = null;
     this.closeForm();
-    this.closeImport();
     this.subagents.close();
     this.archived.close();
     this.hooks.changed();
@@ -403,7 +397,6 @@ export class Settings {
 
   openAdd() {
     if (this.busy !== null) return;
-    this.closeImport();
     this.form = { kind: 'add', provider: null, descriptor: null };
     this.providerQuery.set_value('');
     if (this.providers === null) {
@@ -437,7 +430,6 @@ export class Settings {
 
   openKey(connection) {
     if (this.busy !== null) return;
-    this.closeImport();
     this.form = { kind: 'key', connectionId: connection.basis.connectionId };
     this.key.set_value('');
     this.hooks.changed();
@@ -551,10 +543,8 @@ export class Settings {
    * Creates a connection, saves its key and finds its models. A key the
    * provider refuses leaves the connection in place without one, so the
    * error says so and Set key can retry.
-   * @param {(step: string) => void} [progress]
    */
-  async connect(spec, progress = () => {}) {
-    progress(t('creatingConnectionStep'));
+  async connect(spec) {
     const created = await this.catalogChange('create', (revision) => ({
       expectedCatalogRevision: revision,
       connection: {
@@ -572,7 +562,6 @@ export class Settings {
     await this.loadConnections();
     let note = t('added');
     if (spec.key) {
-      progress(t('savingKeyStep'));
       try {
         await this.storeKey(connectionId, spec.key);
       } catch (error) {
@@ -583,7 +572,6 @@ export class Settings {
       note = t('keySaved');
     }
     if (spec.descriptor.discovery) {
-      progress(t('findingModelsStep'));
       const found = await this.discover(connectionId);
       note = spec.key ? t('keySavedThen', { value: found }) : t('addedThen', { value: found });
     }
@@ -660,141 +648,6 @@ export class Settings {
     for (let n = 2; taken.has(slug); n += 1) slug = `${base}-${n}`;
     return slug;
   }
-
-  /** Shows the open panel and reads the chosen export. */
-  async chooseImport() {
-    if (this.busy !== null) return;
-    let file;
-    try {
-      file = await openText({ prompt: t('importPrompt'), maxBytes: 1 << 20 });
-    } catch (error) {
-      this.fail(t('importFailed', { value: error.message }));
-      return;
-    }
-    if (file !== null) await this.prepareImport(file.path, file.text);
-  }
-
-  /** Lists what an export holds and what importing it would do. */
-  async prepareImport(path, text) {
-    this.closeForm();
-    this.closeImport();
-    try {
-      if (this.providers === null) await this.loadProviders();
-      await this.loadConnections();
-      this.importing = {
-        path,
-        rows: importRows(text, this.providers, this.connections),
-        error: null,
-        done: false,
-      };
-    } catch (error) {
-      this.importing = { path, rows: [], error: error.message, done: true };
-    }
-    this.hooks.changed();
-  }
-
-  runImport() {
-    const plan = this.importing;
-    if (plan === null || plan.done) return;
-    const failure = (value) => t('importingFailed', { value });
-    return this.run(t('importing'), failure, async () => {
-      try {
-        for (const row of plan.rows.filter((r) => r.state === 'ready')) {
-          row.state = 'working';
-          this.hooks.changed();
-          try {
-            const descriptor = await this.descriptor(row.provider.identity);
-            const outcome = await this.connect(
-              {
-                provider: row.provider.identity,
-                descriptor,
-                name: row.name,
-                slug: row.slug,
-                endpoint: row.endpoint,
-                key: row.key,
-              },
-              (step) => {
-                row.note = step;
-                this.hooks.changed();
-              },
-            );
-            row.state = 'done';
-            row.note = outcome.note;
-          } catch (error) {
-            row.state = 'failed';
-            row.note = error.message;
-          } finally {
-            row.key = null;
-            this.hooks.changed();
-          }
-        }
-      } finally {
-        plan.done = true;
-        for (const row of plan.rows) row.key = null;
-      }
-    });
-  }
-
-  closeImport() {
-    for (const row of this.importing?.rows ?? []) row.key = null;
-    this.importing = null;
-    this.hooks.changed();
-  }
-}
-
-/**
- * The rows an old Maka settings export (schema version 1) turns into: one per
- * API key, matched to this Host's provider of the same name. Rows that cannot
- * be imported say why.
- */
-export function importRows(text, providers, connections) {
-  let data;
-  try {
-    data = JSON.parse(text);
-  } catch {
-    throw new Error(t('notJson'));
-  }
-  const credentials = data?.data?.credentials;
-  if (data?.schemaVersion !== 1 || !Array.isArray(credentials)) {
-    throw new Error(t('notSettingsExport'));
-  }
-  const taken = new Set(connections.map((c) => c.slug));
-  return credentials.map((credential) => {
-    const type = String(credential?.connection?.providerType ?? 'unknown');
-    const provider = providers.find((p) => p.identity.name === type) ?? null;
-    const slug = typeof credential?.slug === 'string' ? credential.slug : '';
-    const endpoint =
-      typeof credential?.connection?.effectiveBaseUrl === 'string'
-        ? credential.connection.effectiveBaseUrl
-        : '';
-    const key =
-      credential?.kind === 'api_key' && typeof credential.value === 'string'
-        ? credential.value.trim()
-        : '';
-    const row = {
-      slug,
-      provider,
-      name: provider?.label ?? type,
-      endpoint,
-      key,
-      state: 'ready',
-      note: '',
-    };
-    if (credential?.kind !== 'api_key') return skip(row, t('onlyApiKeys'));
-    if (provider === null) return skip(row, t('hostHasNoProvider', { name: type }));
-    if (!SLUG.test(slug) || slug.length > 64) return skip(row, t('invalidConnectionId'));
-    if (taken.has(slug)) return skip(row, t('connectionIdExistsHere'));
-    if (key === '') return skip(row, t('keyEmpty'));
-    taken.add(slug);
-    return row;
-  });
-}
-
-function skip(row, note) {
-  row.state = 'skipped';
-  row.note = note;
-  row.key = null;
-  return row;
 }
 
 /** Why the add form cannot be sent, or null. */
@@ -998,17 +851,11 @@ export function settingsPage(settings, cx) {
                 .child(text(t(title), 'display', m.ink).flex_1())
                 .when(loading, (el) => el.child(text(t('loading'), 'small', m.inkMuted)))
                 .when(settings.page === 'connections', (el) =>
-                  el
-                    .child(
-                      button('connection-import', t('importFromExport'), false, busy, cx)
-                        .tooltip(t('importFromExportTip'))
-                        .on_click(() => settings.chooseImport()),
-                    )
-                    .child(
-                      button('connection-add', t('addConnection'), true, busy, cx).on_click(() =>
-                        settings.openAdd(),
-                      ),
+                  el.child(
+                    button('connection-add', t('addConnection'), true, busy, cx).on_click(() =>
+                      settings.openAdd(),
                     ),
+                  ),
                 )
                 .when(actions !== null, (el) => el.child(actions)),
             )
@@ -1227,7 +1074,6 @@ function connectionSection(settings, cx) {
     .w_full()
     .gap(32)
     .when(settings.form?.kind === 'add', (el) => el.child(addForm(settings, cx)))
-    .when(settings.importing !== null, (el) => el.child(importPanel(settings, cx)))
     .child(group(null, null, null, rows, cx));
 }
 
@@ -1451,55 +1297,4 @@ function addForm(settings, cx) {
     rows,
     cx,
   );
-}
-
-function importPanel(settings, cx) {
-  const m = palette(cx);
-  const busy = settings.busy !== null;
-  const plan = settings.importing;
-  const ready = plan.rows.filter((row) => row.state === 'ready').length;
-  const states = {
-    ready: t('importReady'),
-    skipped: t('importSkipped'),
-    working: t('importWorking'),
-    done: t('importDone'),
-    failed: t('failed'),
-  };
-  const rows = plan.rows.map((row) =>
-    settingRow(
-      row.slug
-        ? t('importRowTitle', { name: row.name, id: row.slug })
-        : t('importRowTitleNoId', { name: row.name }),
-      [row.endpoint, row.note].filter((part) => part).join(' · ') || null,
-      text(states[row.state], 'small', row.state === 'failed' ? m.destructive : m.inkMuted),
-      cx,
-    ),
-  );
-  if (plan.error !== null) rows.push(text(plan.error, 'body', m.destructive).py(8));
-  if (plan.error === null && plan.rows.length === 0) {
-    rows.push(text(t('fileHasNoKeys'), 'body', m.inkMuted).py(8));
-  }
-  rows.push(
-    h_flex()
-      .py(8)
-      .gap(8)
-      .justify_end()
-      .child(
-        button('import-close', plan.done ? t('close') : t('cancel'), false, busy, cx).on_click(() =>
-          settings.closeImport(),
-        ),
-      )
-      .when(!plan.done && ready > 0, (el) =>
-        el.child(
-          button(
-            'import-run',
-            tn(ready, 'importKeysOne', 'importKeysOther'),
-            true,
-            busy,
-            cx,
-          ).on_click(() => settings.runImport()),
-        ),
-      ),
-  );
-  return group(t('importFrom', { name: plan.path.split('/').pop() }), plan.path, null, rows, cx);
 }

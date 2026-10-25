@@ -114,12 +114,6 @@ impl Registry {
             .cloned()
             .ok_or_else(|| "ACP session is not open on this connection".into())
     }
-    fn capacity(&self) -> Result<(), Error> {
-        if self.sessions.lock().unwrap().len() >= 8 {
-            return Err("ACP connection session limit reached".into());
-        }
-        Ok(())
-    }
     pub async fn create(
         &self,
         client: &Client,
@@ -132,7 +126,6 @@ impl Registry {
         if peer.stop.is_cancelled() {
             return Err("ACP transport closed".into());
         }
-        self.capacity()?;
         let selection = list::select(client, &cwd).await?;
         let Created::Created { session } = client.mutate("agent", "create", json!({"title":"New session","labels":[],"workspace":{"kind":"directory","selection":selection}}), Attachments::new()).await? else {
             return Err("Host rejected session creation".into());
@@ -168,9 +161,6 @@ impl Registry {
         let _creation = self.creation.lock().await;
         let id = request.session_id.to_string();
         let existing = self.sessions.lock().unwrap().get(&id).cloned();
-        if existing.is_none() {
-            self.capacity()?;
-        }
         let local = existing.unwrap_or_else(|| Session::new(id.clone()));
         let active = local.enter(&peer.stop)?;
         let observation: Observation = client

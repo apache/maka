@@ -154,12 +154,11 @@ async fn real_session_lifecycle_keeps_original_revisions_history_and_separate_dr
         wait_view_state(&mut view, |view, _| !view.accessibility_snapshot().iter()
             .any(|node| node.label == "Stop response")).await;
 
-        // Native keyboard activation retains the original row's action anchor.
+        // Both dismiss paths restore the original sidebar action button.
         open_session_browser(&mut view).await;
-        tab_to_label(&mut view, "Actions for NSH real Agent").await;
-        let original_anchor = view.surface().focused().unwrap();
+        let original_opener = support::wait_enabled_button(&mut view, "Actions for NSH real Agent").await;
         for exit in ["Back from conversation actions", "Close conversation actions"] {
-            view.handle_event(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
+            actions(&mut view, "NSH real Agent").await;
             activate(&mut view, "Rename conversation").await;
             wait_focused_input(&mut view, "Conversation title").await;
             support::click_label(&mut view, exit);
@@ -167,11 +166,11 @@ async fn real_session_lifecycle_keeps_original_revisions_history_and_separate_dr
                 wait_enabled_node(&mut view, "Fork conversation").await;
                 view.handle_event(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
             }
-            wait_view_state(&mut view, |view, _| view.accessibility_snapshot().iter().any(|node| {
-                node.id == original_anchor && node.focused && node.label == "Actions for NSH real Agent"
-            })).await;
+            wait_view_state(&mut view, |view, _| view.accessibility_snapshot().iter()
+                .any(|node| node.id == original_opener.id && node.focused)).await;
+            support::wait_draft(&client, &fixture.session, "Original draft stays with its owner").await;
         }
-        view.handle_event(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
+        actions(&mut view, "NSH real Agent").await;
         activate(&mut view, "Rename conversation").await;
         fill_title(&mut view, "Renamed original").await;
         let observed = client.query("agent", "observe", json!({"sessionId":fixture.session})).await.unwrap();
@@ -243,7 +242,15 @@ async fn real_session_lifecycle_keeps_original_revisions_history_and_separate_dr
         support::click_label(&mut view, "Choose workspace scope");
         wait_enabled_node(&mut view, "Workspace scopes").await;
         support::click_text(&mut view, "Current workspace");
-        wait_enabled_node(&mut view, "Conversations").await;
+        wait_view_state(&mut view, |view, screen| {
+            !screen.contains("All workspaces")
+                && !view.accessibility_snapshot().iter().any(|node| node.label == "Workspace scopes")
+                && view.accessibility_snapshot().iter().any(|node| {
+                    node.role == nsh_core::AccessibilityRole::Button
+                        && node.label == "Open conversation Renamed original"
+                        && !node.state.disabled
+                })
+        }).await;
         actions(&mut view, "Renamed original").await;
         support::click_label(&mut view, "Delete conversation");
         wait_enabled_node(&mut view, "Confirm delete conversation").await;

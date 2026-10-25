@@ -43,7 +43,7 @@ pub(crate) const PRIVATE_SUMMARIES: &str = "private_summaries(operation_id) AS (
       AND json_extract(o.event_json,'$.fact.event.kind') IN ('tool_call','provider_tool_result'))
 )";
 
-async fn legacy_execution_boundary(
+async fn canonical_execution_boundary(
     connection: &mut SqliteConnection,
     invocation: &str,
     through: u64,
@@ -122,7 +122,7 @@ async fn compare_cuts(db: &mut SqliteConnection) {
                     Boundary::Settled
                 }
             };
-            let expected = legacy_execution_boundary(db, "invocation", cut, boundary()).await;
+            let expected = canonical_execution_boundary(db, "invocation", cut, boundary()).await;
             let actual = execution_boundary(db, "invocation", cut, boundary()).await;
             assert_eq!(
                 actual.is_ok(),
@@ -130,45 +130,6 @@ async fn compare_cuts(db: &mut SqliteConnection) {
                 "cut={cut}, high={high}, model={model}: {actual:?} vs {expected:?}"
             );
         }
-    }
-}
-
-async fn compare_backfill(db: &mut SqliteConnection) {
-    let mut rebuilt = SqliteConnection::connect("sqlite::memory:").await.unwrap();
-    sqlx::raw_sql(LEDGER).execute(&mut rebuilt).await.unwrap();
-    let events: Vec<(i64, String, String, Option<String>, String)> = sqlx::query_as(
-        "SELECT sequence,event_id,kind,operation_id,event_json FROM event_log ORDER BY sequence",
-    )
-    .fetch_all(&mut *db)
-    .await
-    .unwrap();
-    for (sequence, id, kind, op, json) in events {
-        sqlx::query("INSERT INTO event_log(sequence,event_id,invocation_id,kind,operation_id,event_json) VALUES(?,?,'invocation',?,?,?)")
-            .bind(sequence).bind(id).bind(kind).bind(op).bind(json).execute(&mut rebuilt).await.unwrap();
-    }
-    sqlx::raw_sql(MIGRATION)
-        .execute(&mut rebuilt)
-        .await
-        .unwrap();
-    sqlx::raw_sql(EXECUTION_MIGRATION)
-        .execute(&mut rebuilt)
-        .await
-        .unwrap();
-    compare_cuts(&mut rebuilt).await;
-    for query in [
-        "SELECT json_array(invocation_id,kind,operation_id,call_id,call_name,opened_at,closed_at) FROM context_execution_work ORDER BY 1",
-        "SELECT json_array(invocation_id,operation_id,requested_at,purpose,item_acceptance,observed_at,tool_observed_at,barrier_at,accepted_at,terminal_at,terminal_kind,terminal_status) FROM context_execution_steps ORDER BY 1",
-        "SELECT json_array(invocation_id,operation_id,opened_at) FROM context_independent_tools ORDER BY 1",
-    ] {
-        let expected: Vec<String> = sqlx::query_scalar(query).fetch_all(&mut *db).await.unwrap();
-        let actual: Vec<String> = sqlx::query_scalar(query)
-            .fetch_all(&mut rebuilt)
-            .await
-            .unwrap();
-        assert_eq!(
-            actual, expected,
-            "backfill differs from incremental append: {query}"
-        );
     }
 }
 
@@ -282,7 +243,6 @@ async fn intervals_preserve_tool_call_and_independent_descendant_cuts() {
         .await
         .unwrap();
     assert!(model_boundary(&mut db, "invocation", before).await.is_err());
-    compare_backfill(&mut db).await;
 }
 
 #[tokio::test]
@@ -318,7 +278,6 @@ async fn intervals_preserve_interrupted_observation_and_summary_privacy_cuts() {
                             .await
                             .unwrap();
                     }
-                    compare_backfill(&mut db).await;
                 }
             }
         }
@@ -354,7 +313,6 @@ async fn intervals_require_exact_provider_results_and_preserve_accepted_call_cut
                     .is_ok(),
                 name == "provider"
             );
-            compare_backfill(&mut db).await;
         }
     }
     let mut db = database().await;
@@ -411,13 +369,22 @@ async fn summary_tool_observations_remain_nonprivate_after_settlement() {
 }
 
 #[tokio::test]
-async fn execution_backfill_rollback_and_reopen_preserve_historical_answers() {
+async fn execution_rollback_and_reopen_preserve_historical_answers() {
     let directory = tempfile::tempdir().unwrap();
     let options = sqlx::sqlite::SqliteConnectOptions::new()
         .filename(directory.path().join("execution.db"))
         .create_if_missing(true);
     let mut db = SqliteConnection::connect_with(&options).await.unwrap();
     sqlx::raw_sql(LEDGER).execute(&mut db).await.unwrap();
+    sqlx::raw_sql(sqlx::AssertSqlSafe(obligation_schema()))
+        .execute(&mut db)
+        .await
+        .unwrap();
+    sqlx::raw_sql(sqlx::AssertSqlSafe(execution_schema()))
+        .execute(&mut db)
+        .await
+        .unwrap();
+
     append(
         &mut db,
         "model_requested",
@@ -440,11 +407,6 @@ async fn execution_backfill_rollback_and_reopen_preserve_historical_answers() {
         json!({"call":{"origin":{"kind":"code_cell"}}}),
     )
     .await;
-    sqlx::raw_sql(MIGRATION).execute(&mut db).await.unwrap();
-    sqlx::raw_sql(EXECUTION_MIGRATION)
-        .execute(&mut db)
-        .await
-        .unwrap();
     compare_cuts(&mut db).await;
     {
         let mut tx = db.begin().await.unwrap();
@@ -473,8 +435,8 @@ fn fixed_work_does_not_scan_completed_steps_or_failed_private_summaries() {
     use rusqlite::{Connection, StatementStatus, params};
     let mut db = Connection::open_in_memory().unwrap();
     db.execute_batch(LEDGER).unwrap();
-    db.execute_batch(MIGRATION).unwrap();
-    db.execute_batch(EXECUTION_MIGRATION).unwrap();
+    db.execute_batch(&obligation_schema()).unwrap();
+    db.execute_batch(&execution_schema()).unwrap();
     let mut samples = Vec::new();
     let mut sequence = 0_i64;
     let mut completed = 0;
@@ -716,8 +678,8 @@ fn sparse_summary_repair_does_not_walk_intervening_main_requests() {
     // Competing production index previously won over the summary-only index.
     db.execute_batch("CREATE INDEX catalog_model_boundaries ON event_log(invocation_id,kind,sequence)
         WHERE kind='model_requested' OR kind='model_completed' OR kind='model_interrupted' OR kind='executor_started';").unwrap();
-    db.execute_batch(MIGRATION).unwrap();
-    db.execute_batch(EXECUTION_MIGRATION).unwrap();
+    db.execute_batch(&obligation_schema()).unwrap();
+    db.execute_batch(&execution_schema()).unwrap();
     db.execute("INSERT INTO event_log(event_id,invocation_id,kind,operation_id,event_json)
         VALUES('summary','invocation','model_requested','summary',?)",[json!({"invocation":{"session_id":"session"},"fact":{"step_id":"summary","purpose":"summary","source_high_water":0}}).to_string()]).unwrap();
     db.execute("INSERT INTO event_log(event_id,invocation_id,kind,operation_id,event_json)

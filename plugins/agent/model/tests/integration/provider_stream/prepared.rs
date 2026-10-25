@@ -165,15 +165,15 @@ pub(crate) fn prepare_input(input: &mut ModelRequest) -> Reads {
         })
         .unwrap_or_default();
     let logical = Prompt::from_messages(messages.clone());
-    let wire = maka_model::prepare_wire_group(
-        messages,
+    let wire = maka_model::WireEncoding::new(
         input.language,
         &input.provider,
         &input.provider_options,
         &input.tools,
     )
-    .unwrap();
-    let identity = format!("fixture-wire-v3:{}:{}", logical.identity(), wire.codec);
+    .unwrap()
+    .prepare_group(messages, &maka_model::PreparationContext::default());
+    let identity = format!("fixture-wire-v1:{}:{}", logical.identity(), wire.codec);
     let chunks = wire.chunks.collect::<Result<Vec<_>, _>>().unwrap();
     let counters = Arc::new(Counters::default());
     let source = Arc::new(Source {

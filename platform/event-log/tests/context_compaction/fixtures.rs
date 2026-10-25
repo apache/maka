@@ -448,10 +448,10 @@ async fn adoption_markers_are_durable_timed_and_hidden_from_recall() {
                     .history_view(
                         "session",
                         through,
-                        maka_event_log::transcript::HistoryWindow {
-                            position: Position::Start,
-                            include_thinking: false,
-                            view,
+                        Position::Start,
+                        false,
+                        view,
+                        maka_event_log::transcript::HistoryLimits {
                             max_bytes: 128 * 1024,
                             max_chunks: None,
                             max_json_bytes: 1024 * 1024,
@@ -480,10 +480,10 @@ async fn adoption_markers_are_durable_timed_and_hidden_from_recall() {
                 .history_view(
                     "session",
                     through,
-                    maka_event_log::transcript::HistoryWindow {
-                        position: Position::Start,
-                        include_thinking: false,
-                        view: HistoryView::Conversation,
+                    Position::Start,
+                    false,
+                    HistoryView::Conversation,
+                    maka_event_log::transcript::HistoryLimits {
                         max_bytes: 128 * 1024,
                         max_chunks: None,
                         max_json_bytes: 1024 * 1024,

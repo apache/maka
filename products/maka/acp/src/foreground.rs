@@ -270,9 +270,7 @@ impl Foreground {
                             .parts
                             .get(&(step_id, part_id))
                             .ok_or("Agent stream delta has no original part")?;
-                        let updates =
-                            self.projection
-                                .append(&event.turn_id, message, kind, &text)?;
+                        let updates = self.projection.append(&event.turn_id, message, kind, &text);
                         self.publish(updates).await?;
                     }
                     DeliveryFact::TranscriptChanged

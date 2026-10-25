@@ -97,7 +97,7 @@ impl ToolCatalog {
             input.tools = selected.clone();
             // The embedding owns cancellation and actual cleanup of this work.
             let bound = group.binding.bind(input).await?;
-            if bound.keys().cloned().collect::<BTreeSet<_>>() != selected {
+            if !bound.keys().eq(selected.iter()) {
                 return Err(ToolError::Failed(
                     "request binding changed its registered tool names".into(),
                 ));
@@ -106,7 +106,7 @@ impl ToolCatalog {
                 let entries = Arc::make_mut(&mut self.entries);
                 let entry = entries.get(&name).expect("selected entry");
                 let mut projected = (**entry).clone();
-                let projection = match projection {
+                let handler = match projection {
                     BoundTool::Described {
                         handler,
                         description,
@@ -119,7 +119,7 @@ impl ToolCatalog {
                         if projected.definition.description != description {
                             Arc::make_mut(&mut projected.definition).description = description;
                         }
-                        BoundTool::Prepared(handler)
+                        Some(handler)
                     }
                     BoundTool::Input { handler, schema } => {
                         if schema != projected.definition.input_schema {
@@ -132,28 +132,12 @@ impl ToolCatalog {
                             );
                             Arc::make_mut(&mut projected.definition).input_schema = schema;
                         }
-                        BoundTool::Prepared(handler)
+                        Some(handler)
                     }
-                    projection => projection,
-                };
-                match projection {
-                    BoundTool::Described { .. } | BoundTool::Input { .. } => {
-                        unreachable!("projection already applied")
-                    }
+                    BoundTool::Prepared(handler) => Some(handler),
                     BoundTool::Unavailable => {
                         entries.remove(&name);
                         continue;
-                    }
-                    BoundTool::Prepared(handler) => {
-                        if !handler.names().contains(&name) {
-                            return Err(ToolError::Failed(
-                                "request handler does not own its tool".into(),
-                            ));
-                        }
-                        if projected.definition.provider.is_some() {
-                            Arc::make_mut(&mut projected.definition).provider = None;
-                        }
-                        projected.handler = ToolHandler::Prepared(handler);
                     }
                     BoundTool::Provider(provider) => {
                         provider
@@ -164,7 +148,19 @@ impl ToolCatalog {
                         }
                         projected.nesting = ToolNesting::DirectOnly;
                         projected.semantics = ToolSemantics::Parallel;
+                        None
                     }
+                };
+                if let Some(handler) = handler {
+                    if !handler.names().contains(&name) {
+                        return Err(ToolError::Failed(
+                            "request handler does not own its tool".into(),
+                        ));
+                    }
+                    if projected.definition.provider.is_some() {
+                        Arc::make_mut(&mut projected.definition).provider = None;
+                    }
+                    projected.handler = ToolHandler::Prepared(handler);
                 }
                 entries.insert(name, Arc::new(projected));
             }

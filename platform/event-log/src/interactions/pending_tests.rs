@@ -23,7 +23,9 @@ use super::{
 };
 use rusqlite::{Connection, StatementStatus, ToSql, params};
 
-const MIGRATION: &str = include_str!("../../migrations/0050_pending_interactions.sql");
+fn pending_schema() -> String {
+    crate::schema::fixture(|_, name| name.starts_with("interaction_pending"))
+}
 const OLD_PENDING: &str = "SELECT request_id FROM interaction_requests AS request
     WHERE session_id = ? AND NOT EXISTS (SELECT 1 FROM interaction_outcomes AS outcome
     WHERE outcome.request_id = request.request_id) ORDER BY created_at, request_id";
@@ -60,24 +62,6 @@ fn pending(db: &Connection, session: &str) -> Vec<String> {
         .collect::<Result<_, _>>()
         .unwrap()
 }
-fn canonical(db: &Connection) -> (Vec<String>, Vec<String>) {
-    let rows = |sql| {
-        db.prepare(sql)
-            .unwrap()
-            .query_map([], |row| row.get(0))
-            .unwrap()
-            .collect::<Result<Vec<String>, _>>()
-            .unwrap()
-    };
-    (
-        rows(
-            "SELECT json_array(request_id,session_id,created_at,record_json) FROM interaction_requests ORDER BY request_id",
-        ),
-        rows(
-            "SELECT json_array(request_id,outcome_json) FROM interaction_outcomes ORDER BY request_id",
-        ),
-    )
-}
 fn work(db: &Connection, sql: &str, parameters: &[&dyn ToSql]) -> (usize, i32) {
     let mut statement = db.prepare(sql).unwrap();
     let rows = statement
@@ -100,7 +84,7 @@ fn plan(db: &Connection, sql: &str, parameters: &[&dyn ToSql]) -> Vec<String> {
 fn pending_work_is_independent_of_completed_history() {
     let db = Connection::open_in_memory().unwrap();
     canonical_schema(&db);
-    db.execute_batch(MIGRATION).unwrap();
+    db.execute_batch(&pending_schema()).unwrap();
     request(&db, "active-b", "s", 2);
     request(&db, "active-a", "s", 2);
     request(&db, "active-first", "s", 1);
@@ -182,38 +166,10 @@ fn pending_work_is_independent_of_completed_history() {
 }
 
 #[test]
-fn migration_backfills_only_active_rows_and_survives_reopen() {
-    let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("interactions.sqlite");
-    let db = Connection::open(&path).unwrap();
-    canonical_schema(&db);
-    request(&db, "completed", "s", 0);
-    outcome(&db, "completed");
-    request(&db, "later-b", "s", 2);
-    request(&db, "later-a", "s", 2);
-    request(&db, "earlier", "s", 1);
-    request(&db, "foreign", "other", 0);
-    let before = canonical(&db);
-    db.execute_batch("BEGIN IMMEDIATE").unwrap();
-    db.execute_batch(MIGRATION).unwrap();
-    db.execute_batch("COMMIT").unwrap();
-    assert_eq!(canonical(&db), before);
-    assert_eq!(pending(&db, "s"), ["earlier", "later-a", "later-b"]);
-    drop(db);
-    let db = Connection::open(&path).unwrap();
-    db.execute_batch("PRAGMA foreign_keys=ON").unwrap();
-    assert_eq!(canonical(&db), before);
-    assert_eq!(pending(&db, "s"), ["earlier", "later-a", "later-b"]);
-    outcome(&db, "earlier");
-    assert_eq!(pending(&db, "s"), ["later-a", "later-b"]);
-    assert_eq!(pending(&db, "other"), ["foreign"]);
-}
-
-#[test]
 fn membership_is_atomic_for_retry_rollback_import_and_delete() {
     let db = Connection::open_in_memory().unwrap();
     canonical_schema(&db);
-    db.execute_batch(MIGRATION).unwrap();
+    db.execute_batch(&pending_schema()).unwrap();
     db.execute_batch("BEGIN IMMEDIATE").unwrap();
     request(&db, "rolled-back-request", "s", 0);
     assert_eq!(pending(&db, "s"), ["rolled-back-request"]);

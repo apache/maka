@@ -79,7 +79,6 @@ pub enum ModelLoadResult<'a> {
         relative_path: String,
         declared_tools: Vec<String>,
         declared_tools_truncated: bool,
-        truncated: bool,
         receipt: maka_skills::SkillInvocationReceipt,
     },
     Resource {

@@ -1122,7 +1122,7 @@ export function Conversation(props: ConversationProps) {
   const loadOlder = () => extendHistory('before');
   const loadNewer = () => extendHistory('after');
   const cancelNavigation = (turnId = navigatingTurn()) => {
-    if (!alive || navigation() === null || turnId !== navigatingTurn()) return;
+    if (!alive || turnId !== navigatingTurn()) return;
     navigation.set(null);
     if (windowTask !== null) {
       // A user scroll/focus change also revokes a pending replacement page.
@@ -2160,7 +2160,10 @@ export function Conversation(props: ConversationProps) {
             }}
             estimatedItemSize={96}
             maintainVisibleContentPosition={
-              atHistoryTail() && innerReader() === null && navigation() === null
+              atHistoryTail() &&
+              !awayFromLatest() &&
+              innerReader() === null &&
+              navigation() === null
                 ? { autoscrollToBottomThreshold: 32 }
                 : {}
             }

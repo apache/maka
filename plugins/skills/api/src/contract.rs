@@ -94,7 +94,6 @@ pub struct Entry {
     pub description: String,
     pub valid: bool,
     pub shadowed_by: Option<String>,
-    pub metadata_truncated: bool,
     pub issues: Vec<String>,
 }
 #[derive(Deserialize, Serialize, JsonSchema)]

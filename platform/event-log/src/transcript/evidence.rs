@@ -452,11 +452,9 @@ mod tests {
         // some rows intentionally omit fields or contain a numeric step ID.
         // Use the production ledger DDL and lookup indexes without writer triggers.
         let mut connection = SqliteConnection::connect("sqlite::memory:").await.unwrap();
-        sqlx::raw_sql(concat!(
-            include_str!("../../migrations/0001_runtime.sql"),
-            include_str!("../../migrations/0022_prune_lookup.sql"),
-            include_str!("../../migrations/0029_model_response_identity.sql"),
-        ))
+        sqlx::raw_sql(sqlx::AssertSqlSafe(crate::schema::fixture(|kind, _| {
+            kind != "trigger"
+        })))
         .execute(&mut connection)
         .await
         .unwrap();

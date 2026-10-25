@@ -23,7 +23,7 @@ mod activity;
 mod admission;
 mod catalog;
 pub(crate) use admission::retain;
-pub(crate) use catalog::RootCatalogPage;
+pub(crate) use catalog::Selection as CatalogQuery;
 pub(crate) mod copy;
 pub use copy::{AbandonRevision, SessionCopy, SessionCopyResult};
 mod execution;

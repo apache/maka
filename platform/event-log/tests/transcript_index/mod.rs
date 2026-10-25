@@ -812,15 +812,14 @@ async fn completion_fanout_positions_preserve_usage_fences_sources_and_cold_rebu
         ]
     );
     let first = log
-        .history_view(
+        .history_text(
             "fanout",
             through,
-            maka_event_log::transcript::HistoryWindow {
-                position: Position::Event {
-                    sequence: completion,
-                },
-                include_thinking: false,
-                view: maka_agent_ports::session::history::HistoryView::Text,
+            Position::Event {
+                sequence: completion,
+            },
+            false,
+            maka_event_log::transcript::HistoryLimits {
                 max_bytes: 8192,
                 max_chunks: Some(1),
                 max_json_bytes: 65536,
@@ -871,15 +870,15 @@ async fn completion_fanout_positions_preserve_usage_fences_sources_and_cold_rebu
                 .history_source(
                     "fanout",
                     through,
-                    maka_event_log::transcript::HistorySourceRead {
+                    maka_event_log::transcript::SourceSelection {
                         locator: position,
                         field,
                         path: None,
-                        position: SourcePosition::After {
-                            offset: text.len() as u64,
-                        },
-                        max_bytes: 4,
                     },
+                    SourcePosition::After {
+                        offset: text.len() as u64,
+                    },
+                    4,
                 )
                 .await
                 .unwrap();
@@ -903,13 +902,13 @@ async fn completion_fanout_positions_preserve_usage_fences_sources_and_cold_rebu
             log.history_source(
                 "fanout",
                 old_fence,
-                maka_event_log::transcript::HistorySourceRead {
+                maka_event_log::transcript::SourceSelection {
                     locator: position,
                     field: SourceField::Arguments,
-                    path: None,
-                    position: SourcePosition::Start,
-                    max_bytes: 8192
-                }
+                    path: None
+                },
+                SourcePosition::Start,
+                8192
             )
             .await
             .is_err()
@@ -919,16 +918,16 @@ async fn completion_fanout_positions_preserve_usage_fences_sources_and_cold_rebu
         log.history_source(
             "fanout",
             through,
-            maka_event_log::transcript::HistorySourceRead {
+            maka_event_log::transcript::SourceSelection {
                 locator: RowPosition {
                     source_sequence: completion,
                     item_index: 257
                 },
                 field: SourceField::Arguments,
-                path: None,
-                position: SourcePosition::Start,
-                max_bytes: 8192
-            }
+                path: None
+            },
+            SourcePosition::Start,
+            8192
         )
         .await
         .is_err()
@@ -947,13 +946,12 @@ async fn completion_fanout_positions_preserve_usage_fences_sources_and_cold_rebu
                 after,
                 ..
             } = log
-                .history_view(
+                .history_text(
                     "fanout",
                     through,
-                    maka_event_log::transcript::HistoryWindow {
-                        position,
-                        include_thinking: false,
-                        view: maka_agent_ports::session::history::HistoryView::Text,
+                    position,
+                    false,
+                    maka_event_log::transcript::HistoryLimits {
                         max_bytes: 8192,
                         max_chunks: Some(17),
                         max_json_bytes: 65536,
@@ -1036,13 +1034,13 @@ async fn completion_fanout_positions_preserve_usage_fences_sources_and_cold_rebu
             .history_source(
                 "fanout",
                 through,
-                maka_event_log::transcript::HistorySourceRead {
+                maka_event_log::transcript::SourceSelection {
                     locator: position,
                     field,
                     path: None,
-                    position: SourcePosition::Start,
-                    max_bytes: 8192,
                 },
+                SourcePosition::Start,
+                8192,
             )
             .await
             .unwrap();

@@ -160,11 +160,7 @@ impl Peers {
         }
         current.tickets = next;
     }
-    fn updated(
-        current: &Approvals,
-        peer: Option<Peer>,
-        retain: &BTreeSet<u64>,
-    ) -> Result<Vec<Peer>> {
+    fn updated(current: &Approvals, peer: Option<Peer>, retain: &BTreeSet<u64>) -> Vec<Peer> {
         let mut peers = current
             .tickets
             .values()
@@ -177,16 +173,16 @@ impl Peers {
             .map(|ticket| ticket.peer.clone())
             .collect::<Vec<_>>();
         peers.extend(peer);
-        Ok(peers)
+        peers
     }
     pub fn check_update(&self, peer: Option<Peer>, retain: &BTreeSet<u64>) -> Result<()> {
         let current = self.approved.lock().unwrap();
-        self.prepare(&current, Self::updated(&current, peer, retain)?)?;
+        self.prepare(&current, Self::updated(&current, peer, retain))?;
         Ok(())
     }
     pub fn update(&self, peer: Option<Peer>, retain: &BTreeSet<u64>) -> Result<()> {
         let mut current = self.approved.lock().unwrap();
-        let next = self.prepare(&current, Self::updated(&current, peer, retain)?)?;
+        let next = self.prepare(&current, Self::updated(&current, peer, retain))?;
         Self::publish(&mut current, next);
         Ok(())
     }
@@ -286,7 +282,7 @@ impl PeerPolicy {
     }
     pub(super) fn scope(
         &self,
-        peer: &Arc<Peers>,
+        peer: &Peers,
         source: Source,
         endpoint: Endpoint,
         cancel: CancellationToken,

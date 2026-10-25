@@ -512,7 +512,7 @@ pub(super) fn prepare_request<W>(
     }
     let route_identity = route_identity(input)?;
     let input_digest = digest(&Evidence {
-        projection: "maka.model-history.v2",
+        projection: "maka.model-history.v1",
         language: input.configuration.language,
         prompt_root: prompt.identity(),
         wire_codec: &wire.codec,

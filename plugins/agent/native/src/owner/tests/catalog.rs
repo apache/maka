@@ -30,6 +30,48 @@ async fn next(stream: &mut Subscription) -> Value {
 }
 
 #[tokio::test]
+async fn catalog_watch_rejects_stale_continuations_without_waiting_for_another_change() {
+    let fixture = Fixture::new("http://127.0.0.1:1/v1", None).await;
+    let session = fixture.create("Original catalog window").await;
+    let original = fixture
+        .query("list", json!({"filter":"all","position":{"kind":"start"}}))
+        .await
+        .unwrap();
+    fixture.create("Catalog changed before subscription").await;
+    for direction in ["after", "before"] {
+        let mut stream = fixture
+            .app
+            .client()
+            .subscribe(
+                fixture.binding(2).await,
+                "catalog".into(),
+                json!({"filter":"all","position":{
+                    "kind":direction,"revision":original["revision"],"cursor":session
+                }}),
+                scope(&fixture.issuer, true),
+                Attachments::new().into(),
+            )
+            .await
+            .unwrap();
+        let error = tokio::time::timeout(Duration::from_secs(5), async {
+            assert!(
+                stream.recv().await.is_none(),
+                "stale {direction} must not emit a page"
+            );
+            stream.completion().await.result.unwrap_err()
+        })
+        .await
+        .expect("stale continuation must fail without another catalog change");
+        assert!(
+            error.contains("agent_catalog_changed"),
+            "{direction}: {error}"
+        );
+    }
+    fixture.app.shutdown().await.unwrap();
+    fixture.config.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn catalog_observes_metadata_pending_and_removal_at_its_original_location() {
     let fixture = Fixture::new("http://127.0.0.1:1/v1", None).await;
     let mut bootstrap = fixture
@@ -96,26 +138,6 @@ async fn catalog_observes_metadata_pending_and_removal_at_its_original_location(
     assert!(
         unavailable.contains("agent_session_unavailable"),
         "{unavailable}"
-    );
-    assert_eq!(
-        fixture
-            .query(
-                "list",
-                json!({"filter":"all","position":{"kind":"start"},"titleQuery":"界".repeat(128)})
-            )
-            .await
-            .unwrap()["sessions"],
-        json!([])
-    );
-    assert_eq!(
-        fixture
-            .query(
-                "list",
-                json!({"filter":"all","position":{"kind":"start"},"titleQuery":"界".repeat(129)})
-            )
-            .await
-            .unwrap()["sessions"],
-        json!([])
     );
     let mut filtered = fixture.app.client().subscribe(
         fixture.binding(2).await, "catalog".into(),

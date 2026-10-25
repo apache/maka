@@ -151,9 +151,10 @@ impl EventLog {
                         (binding, Some(session))
                     } else { binding(&mut tx, &source).await? };
                     if let Some(expected) = expected_session.as_deref()
-                        && session_id.as_deref() != Some(expected) {
-                            return Err(invalid("foreign auxiliary Session"));
-                        }
+                        && session_id.as_deref() != Some(expected)
+                    {
+                        return Err(invalid("foreign auxiliary Session"));
+                    }
                     if let Some(quote) = &quote {
                         quote.validate(&binding.model).map_err(invalid)?;
                     }
@@ -417,17 +418,4 @@ async fn insert(
             .execute(connection)
             .await?;
     crate::sequence_number(inserted.last_insert_rowid())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn original_english_admission_keeps_canonical_bytes() {
-        let original = r#"{"source":{"kind":"host_effect","id":"00000000-0000-0000-0000-000000000001"},"binding":{"connection_id":"connection","connection_slug":"named","model":"chosen"},"session_id":null,"started_at":{"secs_since_epoch":1,"nanos_since_epoch":0}}"#;
-        let admission: Admission = serde_json::from_str(original).unwrap();
-        assert_eq!(admission.language, Language::En);
-        assert_eq!(serde_json::to_string(&admission).unwrap(), original);
-    }
 }

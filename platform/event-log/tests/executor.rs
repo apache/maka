@@ -237,13 +237,12 @@ async fn external_output_is_durable_observation_not_native_dispatch_and_rebuilds
     let log = EventLog::open(&path).await.unwrap();
 
     let maka_agent_ports::session::history::Page::Ready { chunks, .. } = log
-        .history_view(
+        .history_text(
             "session",
             through,
-            maka_event_log::transcript::HistoryWindow {
-                position: maka_agent_ports::session::history::Position::Start,
-                include_thinking: true,
-                view: maka_agent_ports::session::history::HistoryView::Text,
+            maka_agent_ports::session::history::Position::Start,
+            true,
+            maka_event_log::transcript::HistoryLimits {
                 max_bytes: 8192,
                 max_chunks: Some(32),
                 max_json_bytes: 64 * 1024,
@@ -268,13 +267,13 @@ async fn external_output_is_durable_observation_not_native_dispatch_and_rebuilds
         .history_source(
             "session",
             through,
-            maka_event_log::transcript::HistorySourceRead {
+            maka_event_log::transcript::SourceSelection {
                 locator: answer.position,
                 field: maka_agent_ports::session::history::SourceField::Body,
                 path: None,
-                position: maka_agent_ports::session::history::SourcePosition::After { offset: 6 },
-                max_bytes: 8192,
             },
+            maka_agent_ports::session::history::SourcePosition::After { offset: 6 },
+            8192,
         )
         .await
         .unwrap();

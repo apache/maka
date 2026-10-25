@@ -181,7 +181,6 @@ impl Library {
                         relative_path: loaded.relative_path.to_string_lossy().into_owned(),
                         declared_tools: hints.clone(),
                         declared_tools_truncated: hints_truncated,
-                        truncated: loaded.truncated,
                         receipt: loaded.receipt(SkillInvocationMode::ModelTool, &input.name),
                     };
                     if fits(&result) && (!instructions.is_empty() || remainder.is_empty()) {

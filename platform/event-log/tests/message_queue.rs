@@ -354,6 +354,28 @@ async fn queue_edits_cancel_or_deliver_once_with_atomic_revision_and_original_ow
         .await
         .unwrap();
     assert_eq!(updated.revision, 5);
+    let unchanged = log.message_queue("session").await.unwrap();
+    let entry = unchanged
+        .entries
+        .iter()
+        .find(|entry| entry.source.message.message_id == "two")
+        .unwrap();
+    let same = log
+        .edit_message_queue(
+            "session",
+            5,
+            QueueEdit::Update {
+                message_id: "two".into(),
+                content: Box::new(entry.source.message.content.clone()),
+                unprepared_content: Box::new(entry.source.unprepared_content.clone()),
+                required_tools: entry.required_tools.clone(),
+            },
+            command("same-update", Kind::Update),
+        )
+        .await
+        .unwrap();
+    assert_eq!(same.revision, 5);
+    assert_eq!(log.message_queue("session").await.unwrap(), unchanged);
     append(
         &log,
         &first,
@@ -399,7 +421,11 @@ async fn queue_edits_cancel_or_deliver_once_with_atomic_revision_and_original_ow
     let omitted_receipt = EventWrite::plain(RuntimeEvent::new(
         second.clone(),
         Fact::MessageSteered {
-            source: None,
+            source: Box::new({
+                let mut source = entry.source.clone();
+                source.message = omitted.clone();
+                source
+            }),
             message: Box::new(omitted),
         },
     ))
@@ -454,15 +480,21 @@ async fn queue_edits_cancel_or_deliver_once_with_atomic_revision_and_original_ow
         );
         assert!(
             log.append(
-                &EventWrite::plain(RuntimeEvent::new(
-                    second.clone(),
+                &EventWrite::plain(RuntimeEvent::new(second.clone(), {
+                    let message = admission(&second, id, Disposition::Steering).source.message;
+                    let mut unprepared_content = message.content.clone();
+                    unprepared_content.preparation.clear();
                     Fact::MessageSteered {
-                        source: None,
-                        message: Box::new(
-                            admission(&second, id, Disposition::Steering).source.message
-                        ),
+                        source: Box::new(maka_agent_facts::message::RootSourceMessage {
+                            message: message.clone(),
+                            unprepared_content,
+                            submitted_placement: maka_agent_facts::message::Placement::CurrentTurn,
+                            disposition: maka_agent_facts::message::MessageDisposition::Steering,
+                            submitted_intent: None,
+                        }),
+                        message: Box::new(message),
                     }
-                ))
+                }))
                 .unwrap()
             )
             .await

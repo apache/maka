@@ -61,9 +61,8 @@ impl Worker {
         let (sender, reply) = watch::channel(None);
         ticket.start();
         let owned = mailbox.clone();
-        let wake = resources.clone();
         scope.scheduler.clone().spawn(async move {
-            let result = run(store, scope, policy, budget, owned, sender, wake).await;
+            let result = run(store, scope, policy, budget, owned, sender).await;
             ticket.complete(result);
         });
         Ok(Self { mailbox, reply })
@@ -101,7 +100,6 @@ async fn run(
     budget: NativeBudget,
     mailbox: Arc<Mailbox>,
     reply: watch::Sender<Option<Reply>>,
-    wake: Arc<Resources>,
 ) -> Result<(), String> {
     let mut checkpoints = None;
     let mut loaded = false;
@@ -243,6 +241,5 @@ async fn run(
                 }
             }
         }
-        wake.notify();
     }
 }

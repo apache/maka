@@ -20,60 +20,43 @@
 use super::*;
 
 impl Projection {
-    pub(super) fn text(
+    pub(super) fn replace_text(
         &mut self,
         turn: &str,
         id: &str,
         kind: MessageKind,
         next: &str,
-        replace: bool,
         meta: acp::Meta,
-    ) -> Result<Vec<acp::SessionUpdate>, crate::Error> {
+    ) -> Vec<acp::SessionUpdate> {
         let key = (turn.to_owned(), id.to_owned(), kind);
         let previous = self.streams.get(&key);
         if previous.is_some_and(|p| p.text == next && p.meta == meta)
             || (previous.is_none() && next.is_empty() && kind != MessageKind::User)
         {
-            return Ok(vec![]);
+            return vec![];
         }
-        let current = previous.map_or("", |p| p.text.as_str());
         let message_id = match kind {
             MessageKind::Thinking => format!("thinking:{id}"),
             _ => id.to_owned(),
         };
-        let suffix = if replace {
-            None
-        } else {
-            next.strip_prefix(current)
-        };
-        let update = match (kind, suffix) {
-            (MessageKind::Text, Some(suffix)) => acp::SessionUpdate::AgentMessageChunk(
-                acp::ContentChunk::new(suffix.into(), message_id).meta(meta.clone()),
+        let content = MaybeUndefined::Value(vec![acp::ContentBlock::from(next)]);
+        let metadata = MaybeUndefined::Value(meta.clone());
+        let update = match kind {
+            MessageKind::User => acp::SessionUpdate::UserMessage(
+                acp::UserMessage::new(message_id)
+                    .content(content)
+                    .meta(metadata),
             ),
-            (MessageKind::Thinking, Some(suffix)) => acp::SessionUpdate::AgentThoughtChunk(
-                acp::ContentChunk::new(suffix.into(), message_id).meta(meta.clone()),
+            MessageKind::Text => acp::SessionUpdate::AgentMessage(
+                acp::AgentMessage::new(message_id)
+                    .content(content)
+                    .meta(metadata),
             ),
-            (kind, _) => {
-                let content = MaybeUndefined::Value(vec![acp::ContentBlock::from(next)]);
-                let metadata = MaybeUndefined::Value(meta.clone());
-                match kind {
-                    MessageKind::User => acp::SessionUpdate::UserMessage(
-                        acp::UserMessage::new(message_id)
-                            .content(content)
-                            .meta(metadata),
-                    ),
-                    MessageKind::Text => acp::SessionUpdate::AgentMessage(
-                        acp::AgentMessage::new(message_id)
-                            .content(content)
-                            .meta(metadata),
-                    ),
-                    MessageKind::Thinking => acp::SessionUpdate::AgentThought(
-                        acp::AgentThought::new(message_id)
-                            .content(content)
-                            .meta(metadata),
-                    ),
-                }
-            }
+            MessageKind::Thinking => acp::SessionUpdate::AgentThought(
+                acp::AgentThought::new(message_id)
+                    .content(content)
+                    .meta(metadata),
+            ),
         };
         self.streams.insert(
             key,
@@ -82,7 +65,7 @@ impl Projection {
                 meta,
             },
         );
-        Ok(vec![update])
+        vec![update]
     }
 }
 
@@ -94,31 +77,52 @@ mod tests {
         let mut projection = Projection::default();
         let text = "x".repeat(4096);
         for i in 0..4200 {
-            let updates = projection
-                .append("turn", &format!("message-{i}"), &ContentKind::Text, &text)
-                .unwrap();
+            let updates =
+                projection.append("turn", &format!("message-{i}"), &ContentKind::Text, &text);
             assert_eq!(updates.len(), 1);
+            let update = serde_json::to_value(&updates[0]).unwrap();
+            assert_eq!(update["sessionUpdate"], "agent_message_chunk");
+            assert_eq!(update["messageId"], format!("message-{i}"));
+            assert_eq!(update["content"]["text"], text);
         }
-        assert_eq!(projection.streams.len(), 4200);
-        assert_eq!(
-            projection
-                .streams
-                .values()
-                .map(|message| message.text.len())
-                .sum::<usize>(),
-            4200 * 4096
+        // Revisit an early message after the complete history has passed through.
+        let update = projection.append("turn", "message-0", &ContentKind::Text, "尾");
+        let update = serde_json::to_value(&update[0]).unwrap();
+        assert_eq!(update["messageId"], "message-0");
+        assert_eq!(update["content"]["text"], "尾");
+        let canonical = format!("{text}尾");
+        let chunk = HistoryChunk {
+            final_output: false,
+            model: None,
+            origin: None,
+            compaction: None,
+            attachments: Vec::new(),
+            timing: None,
+            field: HistoryField::Body,
+            message_id: "message-0".into(),
+            turn_id: "turn".into(),
+            timestamp: 0,
+            role: Role::Assistant,
+            position: maka_agent_ports::session::history::RowPosition {
+                source_sequence: 1,
+                item_index: 0,
+            },
+            offset: 0,
+            total_bytes: canonical.len() as u64,
+            text: canonical,
+            tool: None,
+        };
+        assert!(
+            projection.chunk(&chunk).unwrap().is_empty(),
+            "canonical replay must not duplicate the retained early message"
         );
     }
 
     #[test]
     fn unicode_stream_and_canonical_history_keep_the_same_message() {
         let mut projection = Projection::default();
-        projection
-            .append("t", "m", &ContentKind::Text, "🦀中")
-            .unwrap();
-        let update = projection
-            .append("t", "m", &ContentKind::Text, "!")
-            .unwrap();
+        projection.append("t", "m", &ContentKind::Text, "🦀中");
+        let update = projection.append("t", "m", &ContentKind::Text, "!");
         assert_eq!(
             serde_json::to_value(&update[0]).unwrap()["content"]["text"],
             "!"

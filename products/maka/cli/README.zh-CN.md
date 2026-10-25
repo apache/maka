@@ -37,6 +37,8 @@
 
 独立 Host 将 stderr 捕获到所属 Root 的私有控制缓存文件 `host.stderr.log`：按需启动在创建进程前接好捕获文件，前台服务在选定 Root 后开始捕获。使用 `maka host logs --root-id ID` 读取，添加 `--follow` 持续接收 NDJSON，添加 `--after CURSOR` 从游标续读。每页以 Base64 保留原始字节，并报告尚无捕获文件、文件替换或截断；清理控制缓存也会删除这些日志。读取不要求安装系统服务。
 
+使用 `maka inspect --root DIRECTORY --session SESSION_ID` 查看会话已提交的执行日志。
+
 ## 产品更新、恢复与 URL 安装
 
 组合命令读取完整的 JSON 来源和远程导出文件。插件组合编辑器按最多 64 KiB 的 UTF-8 分页加载指定来源版本，并基于该版本保存已确认的原生编辑器快照。整份文档没有独立字节上限；类型校验、包校验、Host 权限、版本冲突和实际资源准入仍然生效。已提交版本保留完整来源，供后续读取和重新打开 Root 使用。

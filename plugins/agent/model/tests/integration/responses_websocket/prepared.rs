@@ -138,14 +138,14 @@ fn prepared(
     counters: Arc<Counters>,
 ) -> Prompt {
     let breakdown = maka_agent_facts::context::measure::prompt_breakdown(&messages);
-    let group = maka_model::prepare_wire_group(
-        messages,
+    let group = maka_model::WireEncoding::new(
         request.language,
         &request.provider,
         &request.provider_options,
         &request.tools,
     )
-    .unwrap();
+    .unwrap()
+    .prepare_group(messages, &maka_model::PreparationContext::default());
     let count = group.message_count;
     let chunks = group.chunks.collect::<Result<Vec<_>, _>>().unwrap();
     // This fixture simulates the storage prefix index, prepared once. Production

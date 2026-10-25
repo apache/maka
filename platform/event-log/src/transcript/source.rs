@@ -31,15 +31,6 @@ use maka_agent_ports::session::history::SourceRole;
 use maka_agent_ports::session::history::SourceSegment;
 use sqlx::{Connection, Row};
 
-/// Exact canonical field selection and UTF-8 window for a source read.
-pub struct HistorySourceRead {
-    pub locator: RowPosition,
-    pub field: SourceField,
-    pub path: Option<Vec<SourceSegment>>,
-    pub position: SourcePosition,
-    pub max_bytes: usize,
-}
-
 fn source_sql() -> String {
     format!("WITH original AS (SELECT
     CASE ?4
@@ -114,15 +105,15 @@ impl EventLog {
         &self,
         session: &str,
         through: u64,
-        source: HistorySourceRead,
+        selection: crate::transcript::SourceSelection,
+        position: SourcePosition,
+        max_bytes: usize,
     ) -> Result<HistorySource, StoreError> {
-        let HistorySourceRead {
+        let crate::transcript::SourceSelection {
             locator,
             field,
             path,
-            position,
-            max_bytes,
-        } = source;
+        } = selection;
         self.validate_root()?;
         crate::sessions::validate_id(session)?;
         if !(4..=128 * 1024).contains(&max_bytes) {

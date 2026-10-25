@@ -298,7 +298,11 @@ async fn independent_public_agent_client_lists_and_watches_files_after_reconnect
         let session = fixture.session.clone();
         let directory = fixture.workspace.join("watched");
         std::fs::create_dir(&directory).unwrap();
-        let before = support::intent_count(&fixture.database).await;
+        let before = fixture.intent_count().await;
+        assert!(
+            before > 0,
+            "fixture session creation must have a durable caller intent"
+        );
         // Registration and its actual Ready precede every initial directory read.
         let (mut changes, identity) = subscribe(&fixture.native, &session).await;
         listing(&fixture.native, &session, &identity, json!([])).await;
@@ -380,7 +384,7 @@ async fn independent_public_agent_client_lists_and_watches_files_after_reconnect
         fresh.close().await.unwrap();
         assert!(fresh.cleanup_confirmed());
         assert_eq!(
-            support::intent_count(&fixture.database).await,
+            fixture.intent_count().await,
             before,
             "file queries and subscriptions must not create mutation intents"
         );
@@ -399,7 +403,11 @@ async fn independent_public_agent_client_lists_and_watches_files_after_reconnect
 async fn independent_public_agent_client_reads_context_without_own_model_request() {
     tokio::time::timeout(Duration::from_secs(40), async {
         let mut fixture = Fixture::open().await;
-        let before = support::intent_count(&fixture.database).await;
+        let before = fixture.intent_count().await;
+        assert!(
+            before > 0,
+            "fixture session creation must have a durable caller intent"
+        );
         let observed = support::query(
             &fixture.native,
             "agent",
@@ -509,14 +517,12 @@ async fn independent_public_agent_client_reads_context_without_own_model_request
             );
         }
         reconnected.quit().await.unwrap();
+        let after = fixture.intent_count().await;
         fixture.server.await.unwrap().unwrap();
-        {
-            let after = support::intent_count(&fixture.database).await;
-            assert_eq!(
-                after, before,
-                "context queries and rejections must not create caller intents"
-            );
-        }
+        assert_eq!(
+            after, before,
+            "context queries and rejections must not create caller intents"
+        );
         assert!(
             fixture.model_requests.try_recv().is_err(),
             "context reads must not request a model"
@@ -685,16 +691,14 @@ async fn independent_public_agent_client_finds_published_fork_after_uncertain_ho
         }),Default::default()).await.unwrap();
         call.start().await.unwrap();
         let Reply::Prepared { reference } = call.receive().await.unwrap() else { panic!("fork not prepared"); };
+        // Prepared has an identity but no stored operation yet. Install the
+        // operation-scoped failpoint in every runtime journal before dispatch;
+        // only its selected journal can execute the settlement UPDATE.
         let mut connections = Vec::new();
-        // The real copy transaction may commit; only this original operation's
-        // later Host settlement UPDATE is rejected, matching the existing Host
-        // uncertain_durable_settlement fixture. No receipt/outcome is fabricated.
-        // Only the typed UUID is interpolated; SQLite trigger definitions cannot bind it.
-        // Prepared has not dispatched yet. Install the operation-specific fault
-        // in the real runtime journals before confirmation chooses its partition.
-        for database in support::journal_databases(&fixture.database) {
-            let options = sqlx::sqlite::SqliteConnectOptions::new().filename(database);
+        for path in fixture.runtime_databases().await {
+            let options = sqlx::sqlite::SqliteConnectOptions::new().filename(path);
             let mut connection = sqlx::SqliteConnection::connect_with(&options).await.unwrap();
+            // SQLite trigger definitions cannot bind the typed operation UUID.
             sqlx::query(sqlx::AssertSqlSafe(format!("CREATE TRIGGER reject_fork_settlement BEFORE UPDATE OF outcome_json ON application_operations WHEN OLD.operation='{}' BEGIN SELECT RAISE(ABORT,'fork settlement fixture'); END;",reference.operation)))
                 .execute(&mut connection).await.unwrap();
             connections.push(connection);
@@ -706,6 +710,10 @@ async fn independent_public_agent_client_finds_published_fork_after_uncertain_ho
         assert!(diagnostic.contains("settlement outcome unknown"),"{diagnostic}");
         call.close().await.unwrap();
         assert!(call.cleanup_confirmed());
+        fixture.database_containing(
+            "SELECT EXISTS(SELECT 1 FROM application_operations WHERE deployment=? AND namespace=? AND operation=?)",
+            &[&reference.source.deployment.to_string(), &serde_json::to_string(&reference.namespace).unwrap(), &reference.operation.to_string()],
+        ).await;
         for mut connection in connections {
             sqlx::query("DROP TRIGGER reject_fork_settlement").execute(&mut connection).await.unwrap();
             connection.close().await.unwrap();

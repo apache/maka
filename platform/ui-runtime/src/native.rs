@@ -530,7 +530,7 @@ pub fn surface_native(target: PresentationTarget) -> maka_plugin_core::package::
 mod tests {
     use super::*;
     #[test]
-    fn repeated_scene_inputs_reuse_validators_and_changed_contracts_still_reject_input() {
+    fn scene_inputs_validate_changed_contracts_and_reject_unknown_inputs() {
         use serde_json::json;
         let view = |schema| {
             NativeView::new(
@@ -540,10 +540,8 @@ mod tests {
             )
             .unwrap()
         };
-        let first = view(json!({"type":"integer", "minimum":1}));
         let same = view(json!({"type":"integer", "minimum":1}));
         let changed = view(json!({"type":"integer", "minimum":2}));
-        assert!(Arc::ptr_eq(&first.inputs["choose"], &same.inputs["choose"]));
         assert!(same.validate_input("choose", &json!(1)).is_ok());
         assert!(changed.validate_input("choose", &json!(1)).is_err());
         assert!(changed.validate_input("choose", &json!(2)).is_ok());

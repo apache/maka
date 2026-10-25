@@ -42,13 +42,12 @@ use tokio_util::sync::CancellationToken;
 async fn tail(log: &SessionFixture, through: u64, turns: u64) -> (f64, usize) {
     let started = Instant::now();
     let page = log
-        .history_view(
+        .history_text(
             "session",
             through,
-            maka_event_log::transcript::HistoryWindow {
-                position: Position::Tail,
-                include_thinking: false,
-                view: maka_agent_ports::session::history::HistoryView::Text,
+            Position::Tail,
+            false,
+            maka_event_log::transcript::HistoryLimits {
                 max_bytes: 16 * 1024,
                 max_chunks: Some(32),
                 max_json_bytes: 64 * 1024,

@@ -146,7 +146,7 @@ impl WireSource for Small {
                 return Ok(None);
             }
             crate::runner::digest(&(
-                "maka.overlay-wire.v2",
+                "maka.overlay-wire.v1",
                 self.encoding.codec(),
                 &self.messages[..count],
             ))
@@ -276,7 +276,7 @@ impl WireSource for Composite {
             if remaining != 0 {
                 return Ok(None);
             }
-            crate::runner::digest(&("maka.request-wire-prefix.v2", &self.codec, count, roots))
+            crate::runner::digest(&("maka.request-wire-prefix.v1", &self.codec, count, roots))
                 .map(Some)
                 .map_err(|error| ModelError::Adapter(error.to_string()))
         })

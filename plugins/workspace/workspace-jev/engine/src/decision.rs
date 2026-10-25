@@ -504,15 +504,14 @@ mod tests {
     fn answer() -> Vec<u8> {
         serde_json::to_vec(&json!({"model":"custom","answers":{"done":{"type":"noul","noul":0.8}},"usage":{"input_tokens":15,"output_tokens":2}})).unwrap()
     }
-    async fn scope() -> call::Scope {
+    fn scope() -> call::Scope {
         call::Issuer::default()
-            .admit(
+            .issue(
                 call::Identity::Remote {
                     request_id: uuid::Uuid::new_v4(),
                 },
                 CancellationToken::new(),
             )
-            .await
             .unwrap()
     }
     fn backend() -> (Jev, Arc<Transport>, Arc<Privacy>) {
@@ -542,7 +541,7 @@ mod tests {
     #[tokio::test]
     async fn evaluation_preserves_headers_usage_and_child_scope_cleanup() {
         let (jev, t, _) = backend();
-        let parent = scope().await;
+        let parent = scope();
         let body = reply(&t, 200, answer());
         let output = jev.evaluate(&parent, input()).await.unwrap();
         assert_eq!(output.usage.input_tokens, 15);
@@ -578,7 +577,7 @@ mod tests {
     #[tokio::test]
     async fn network_is_bounded_cancelled_and_never_redirected_or_retried() {
         let (jev, t, privacy) = backend();
-        let parent = scope().await;
+        let parent = scope();
         privacy.0.store(true, Ordering::SeqCst);
         assert!(matches!(
             jev.evaluate(&parent, input()).await,
@@ -619,7 +618,7 @@ mod tests {
     #[tokio::test]
     async fn cancellation_and_timeout_preserve_uncertain_post_outcomes() {
         let (jev, transport, _) = backend();
-        let parent = scope().await;
+        let parent = scope();
         let request = jev.evaluate(&parent, input());
         let cancellation = async {
             transport.started.notified().await;
@@ -634,7 +633,7 @@ mod tests {
                 .is_cancelled()
         );
         parent.finish().await.unwrap();
-        let parent = scope().await;
+        let parent = scope();
         assert!(
             jev.evaluate(&parent, input())
                 .await

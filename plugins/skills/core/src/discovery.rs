@@ -19,20 +19,14 @@
 
 use crate::{InvalidDocument, SkillDocument};
 use crate::{SkillScope, SkillSource};
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    path::PathBuf,
-};
+use std::path::PathBuf;
 use tokio_util::sync::CancellationToken;
 
-pub(crate) mod origin;
+mod location;
+pub use location::LocationId;
 pub(crate) mod source;
 mod sources;
-pub use origin::{Origin, OriginFailure, OriginStatus};
-pub use sources::{
-    BundledSource, SourceCatalog, SourceCatalogError, governance_catalog, safe_source_id,
-    source_catalog,
-};
+pub use sources::safe_source_id;
 
 #[derive(Clone)]
 pub struct Source {
@@ -45,49 +39,6 @@ pub struct Source {
 }
 
 impl Source {
-    /// The Host supplies all roots, including home; the library never searches ambient home.
-    pub fn standard(
-        cwd: Option<&maka_capabilities::filesystem::ReadDirectory>,
-        workspace: &maka_capabilities::filesystem::ReadDirectory,
-        home: Option<&maka_capabilities::filesystem::ReadDirectory>,
-    ) -> Vec<Self> {
-        crate::api::LocationId::ALL
-            .into_iter()
-            .filter_map(|id| {
-                let root = match id.scope() {
-                    SkillScope::Project => cwd?,
-                    SkillScope::User => home?,
-                    SkillScope::Workspace => workspace,
-                    SkillScope::Custom => unreachable!("standard location"),
-                };
-                Some(Self::at(
-                    root,
-                    id.directory(),
-                    id.scope(),
-                    id.source(),
-                    id.reference(),
-                ))
-            })
-            .collect()
-    }
-
-    fn at(
-        access: &maka_capabilities::filesystem::ReadDirectory,
-        directory: &str,
-        scope: SkillScope,
-        source: SkillSource,
-        prefix: &str,
-    ) -> Self {
-        Self {
-            root: access.location(),
-            access: access.clone(),
-            directory: directory.into(),
-            scope,
-            source,
-            reference_prefix: prefix.into(),
-        }
-    }
-
     fn location(&self, id: String, precedence: usize) -> SkillLocation {
         SkillLocation {
             reference: format!("{}:{id}", self.reference_prefix),
@@ -166,33 +117,13 @@ pub struct DiscoverySnapshot {
     pub diagnostics: Vec<DiscoveryDiagnostic>,
 }
 
-/// Query-only facts; ordinary runtime discovery does not inspect installation locks.
-#[derive(Debug, Default)]
-pub struct QuerySnapshot {
-    pub discovery: DiscoverySnapshot,
-    /// Exact bytes belonging to this query's revision; never reopened by pathname.
-    pub(crate) contents: BTreeMap<String, Box<[u8]>>,
-    pub origins: BTreeMap<String, Origin>,
-    pub occupied: BTreeSet<String>,
-    pub empty: Vec<SkillLocation>,
-}
-
-async fn scan_with_origins(
-    sources: &[Source],
-    cancellation: &CancellationToken,
-) -> Result<QuerySnapshot, ScanError> {
-    let mut query = QuerySnapshot::default();
-    query.discovery = scan_impl(sources, cancellation, Some(&mut query), false).await?;
-    Ok(query)
-}
-
 /// Owned blocking I/O; callers must join it before releasing execution ownership.
 /// Preferences and capability gating are applied later, against this same snapshot.
 pub async fn scan(
     sources: &[Source],
     cancellation: &CancellationToken,
 ) -> Result<DiscoverySnapshot, ScanError> {
-    scan_impl(sources, cancellation, None, false).await
+    scan_impl(sources, cancellation, false).await
 }
 
 /// Include the immutable assets from this build after the selected filesystem sources.
@@ -201,7 +132,7 @@ pub async fn scan_with_bundled(
     sources: &[Source],
     cancellation: &CancellationToken,
 ) -> Result<DiscoverySnapshot, ScanError> {
-    scan_impl(sources, cancellation, None, true).await
+    scan_impl(sources, cancellation, true).await
 }
 
 /// Prepare immutable build assets during service activation, before requests
@@ -215,12 +146,10 @@ pub fn prepare_bundled() -> Result<(), ScanError> {
 async fn scan_impl(
     sources: &[Source],
     cancellation: &CancellationToken,
-    query: Option<&mut QuerySnapshot>,
     bundled: bool,
 ) -> Result<DiscoverySnapshot, ScanError> {
     let mut state = Scan {
         snapshot: DiscoverySnapshot::default(),
-        query: query.as_ref().map(|_| QuerySnapshot::default()),
     };
     for (precedence, source) in sources.iter().enumerate() {
         check_cancelled(cancellation)?;
@@ -261,15 +190,11 @@ async fn scan_impl(
         }
     }
     state.snapshot.resolve_precedence();
-    if let (Some(destination), Some(updated)) = (query, state.query) {
-        *destination = updated;
-    }
     Ok(state.snapshot)
 }
 
 struct Scan {
     snapshot: DiscoverySnapshot,
-    query: Option<QuerySnapshot>,
 }
 impl Scan {
     fn source(
@@ -279,7 +204,7 @@ impl Scan {
         precedence: usize,
         cancellation: &CancellationToken,
     ) -> Result<(), ScanError> {
-        let Self { snapshot, query } = self;
+        let Self { snapshot } = self;
         let mut captured = match source::Captured::open(source, reader) {
             Ok(captured) => captured,
             Err(reason) => {
@@ -305,15 +230,6 @@ impl Scan {
                 return Ok(());
             }
         };
-        let publication =
-            source.scope == SkillScope::Workspace && source.source == SkillSource::Legacy;
-        if publication && let Some(query) = query.as_mut() {
-            query.occupied.extend(
-                entries
-                    .iter()
-                    .filter_map(|name| name.to_str().map(str::to_lowercase)),
-            );
-        }
         for name in entries {
             check_cancelled(cancellation)?;
             let path = source.root.join(&source.directory).join(&name);
@@ -321,53 +237,33 @@ impl Scan {
                 snapshot.diagnostic(source, precedence, path, DiscoveryFailure::BlockedPath);
                 continue;
             };
-            let read =
-                match captured.read_skill(&name, publication && query.is_some(), cancellation) {
-                    Ok(Some(read)) => read,
-                    Ok(None) => continue,
-                    Err(source::ReadError::Cancelled) => return Err(ScanError::Cancelled),
-                    Err(source::ReadError::Failure(reason)) => {
-                        snapshot.diagnostic(source, precedence, path, reason);
-                        continue;
-                    }
-                };
-            let location = source.location(id.into(), precedence);
-            let source::SkillRead::Document { bytes, origin } = read else {
-                if publication && let Some(query) = query.as_mut() {
-                    query.empty.push(location);
+            let bytes = match captured.read_skill(&name, cancellation) {
+                Ok(Some(read)) => read,
+                Ok(None) => continue,
+                Err(source::ReadError::Cancelled) => return Err(ScanError::Cancelled),
+                Err(source::ReadError::Failure(reason)) => {
+                    snapshot.diagnostic(source, precedence, path, reason);
+                    continue;
                 }
-                continue;
             };
-            if let Some(origin) = origin
-                && let Some(query) = query.as_mut()
-            {
-                query.origins.insert(location.reference.clone(), origin);
-            }
-            let reference = location.reference.clone();
+            let location = source.location(id.into(), precedence);
             match crate::parse(&String::from_utf8_lossy(&bytes)) {
                 Ok(document) => snapshot.inventory.push(DiscoveredSkill {
                     location,
                     document,
                     content_sha256: maka_agent_facts::artifact::content_digest(&bytes),
                     shadowed_by: None,
-                    resources: if query.is_none() {
-                        crate::Resources::capture(
-                            reader,
-                            &source.directory.join(&name),
-                            cancellation,
-                        )?
-                    } else {
-                        Default::default()
-                    },
+                    resources: crate::Resources::capture(
+                        reader,
+                        &source.directory.join(&name),
+                        cancellation,
+                    )?,
                 }),
                 Err(document) => snapshot.rejected.push(RejectedSkill {
                     location,
                     document: *document,
                     content_sha256: maka_agent_facts::artifact::content_digest(&bytes),
                 }),
-            }
-            if let Some(query) = query.as_mut() {
-                query.contents.insert(reference, bytes.into_boxed_slice());
             }
         }
 

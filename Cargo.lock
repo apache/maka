@@ -8621,7 +8621,6 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tokio-util",
- "unicode-width",
  "uuid",
  "windows-sys 0.61.2",
 ]

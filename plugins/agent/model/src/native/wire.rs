@@ -62,19 +62,10 @@ pub(super) fn chat_options(
     ))
 }
 pub(super) fn chat_codec(language: Language, options: &chat::PromptOptions) -> String {
-    serde_json::json!({"codec":"maka.chat-items.v3","language":language,
+    serde_json::json!({"codec":"maka.chat-items.v1","language":language,
         "namespace":options.provider_namespace,"metadataNamespace":options.metadata_namespace,
         "multipartToolContent":options.multipart_tool_content})
     .to_string()
-}
-
-pub fn wire_codec(
-    language: Language,
-    provider: &ProviderConfig,
-    options: &Value,
-    tools: &[ToolDefinition],
-) -> Result<String, ModelError> {
-    Ok(WireEncoding::new(language, provider, options, tools)?.codec)
 }
 
 /// Immutable message encoding policy. Tool schemas belong to the request header;
@@ -218,34 +209,6 @@ pub fn wire_preparation_dependencies(messages: &[Message], provider: &ProviderKi
     }
     needed.into_iter().collect()
 }
-pub fn prepare_wire_group(
-    messages: Vec<Message>,
-    language: Language,
-    provider: &ProviderConfig,
-    options: &Value,
-    tools: &[ToolDefinition],
-) -> Result<WireGroup, ModelError> {
-    prepare_wire_group_with_context(
-        messages,
-        language,
-        provider,
-        options,
-        tools,
-        &PreparationContext::default(),
-    )
-}
-
-pub fn prepare_wire_group_with_context(
-    messages: Vec<Message>,
-    language: Language,
-    provider: &ProviderConfig,
-    options: &Value,
-    tools: &[ToolDefinition],
-    context: &PreparationContext,
-) -> Result<WireGroup, ModelError> {
-    Ok(WireEncoding::new(language, provider, options, tools)?.prepare_group(messages, context))
-}
-
 enum Encoder {
     Chat {
         options: chat::PromptOptions,
@@ -483,7 +446,7 @@ pub(super) fn anthropic_codec(
     language: Language,
     options: &maka_provider_protocol::anthropic::prompt::streaming::StreamOptions,
 ) -> String {
-    serde_json::json!({"codec":"maka.anthropic-blocks.v3","language":language,"sendReasoning":options.send_reasoning,
+    serde_json::json!({"codec":"maka.anthropic-blocks.v1","language":language,"sendReasoning":options.send_reasoning,
         "cacheNamespace":options.cache_namespace,"toolNames":options.tool_names,"toolsets":options.toolsets}).to_string()
 }
 

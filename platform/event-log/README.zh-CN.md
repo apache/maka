@@ -21,9 +21,11 @@
 
 [English](README.md)
 
+新建存储只安装当前初始 SQL schema；不升级旧内部布局或记录格式。规范数据与派生投影在同一事务中维护，可丢弃索引仍按当前恢复契约重建。
+
 管理 SQLite 事件存储和 State Root 租约，持久化应用配置与包、操作回执、会话、轮次及恢复记录。独占所有权见 `root`，已提交的组合见 `applications`，中断恢复见 `recovery`。服务激活前必须先取得 Root 的持久化所有权；业务策略属于插件，规范事实由这里记录。
 
-生产入口是持有唯一 `RootOwner` 的 `RootStore`。v2 布局使用一个 control 数据库和八个固定执行分区。Control 保存不可变应用来源、project/workspace binding 和持久化 Session 路由；Session 及其 revision/import family 共置一个分区。操作日志按 deployment、provider namespace 与 operation 身份定位，来源 revision 不改变分区。Session 范围的插件数据跟随 Session，其他插件命名空间和 caller journal 使用稳定的数据分区。数据写入器只读挂载 control；已有数据的旧单库 Root 会被拒绝，不会被静默拆分或遗弃。
+生产入口是持有唯一 `RootOwner` 的 `RootStore`。当前布局使用一个 control 数据库和八个固定执行分区。Control 保存不可变应用来源、project/workspace binding 和持久化 Session 路由；Session 及其 revision/import family 共置一个分区。操作日志按 deployment、provider namespace 与 operation 身份定位，来源 revision 不改变分区。Session 范围的插件数据跟随 Session，其他插件命名空间和 caller journal 使用稳定的数据分区。数据写入器只读挂载 control；已有数据的旧单库 Root 会被拒绝，不会被静默拆分或遗弃。
 
 `SessionStore` 和 `OperationStore` 只公开绑定身份的操作，不暴露原始日志。闲置句柄和已完成的 capability 只持有弱引用；已接受的 SQL 则保留实际 owner 和锁，直到物理事务清理结束。执行通过工具、Host child scope 传递捕获的权限 basis、binding pins 和 Session work lease；可能超出父调用生命周期的子 worker 从这份实际 custody 派生独立租约。Root 关闭先拒绝新工作，再等待已接受的实际工作，最后关闭全部 SQL owner。无法确认清理时保留原始所有权并报告失败；观察者消失不代表清理完成。
 
@@ -39,7 +41,7 @@ Prepared 发现过程通过持久化分页推进，完成后才允许渲染。�
 
 新运行时事件使用 UUIDv7 身份，让事件及派生消息的索引写入集中在相邻位置。导入和重放保留原身份，事件顺序仍由数据库序号决定。语义行的 event_id 索引只覆盖需要按身份归档的工具结果；增量修订读取使用变更目录，历史来源复制按来源位置主键直接定位。
 
-规范运行时事件入口逐条插入事件并取得序号，再在同一写连接、同一事务内，用独立语句记录来源和语义投影。当前事件投影完成后才开始下一条。投影存储错误使整个批次回滚，导入事件同样如此；通知仍只在提交成功后发布。历史安装和复制前缀投影继续使用各自的迁移与复制路径。
+规范运行时事件入口逐条插入事件并取得序号，再在同一写连接、同一事务内，用独立语句记录来源和语义投影。当前事件投影完成后才开始下一条。投影存储错误使整个批次回滚，导入事件同样如此；通知仍只在提交成功后发布。复制前缀投影由当前复制路径维护。
 
 语句失败会回滚整组，只有已由自身保存点隔离的领域拒绝例外。原先使用普通写入路径的请求，在确认回滚并重新校验所有权后，可以继续通过同一 owner 恢复；纯 observation 批次保留更严格的退出策略。提交失败始终返回结果未知，不产生执行凭据；此后复用原普通写入组，还要求确认清理完成且事务深度为零。保存点、所有权或无法确认的清理失败都会让写入器退出。单键与分页插件数据读取使用独立 reader，读取已提交的快照；依赖写入的读取仍需先等待相应回执。
 
@@ -55,9 +57,9 @@ Prepared 发现过程通过持久化分页推进，完成后才允许渲染。�
 
 来源消息、执行器工具调用与生成的工具结果共享 Session 的可见消息身份空间。无论哪一方先声明，准入都依据规范事实检查冲突，包括执行器完成或调用终止时为待完成工具补出的结果。只有实际结果身份被占用；仅后缀相同不会预留身份。
 
-规范事件写入在同一事务中维护 Session、Invocation 和分区序号前缀的固定大小 SHA-256 承诺。复制的前缀引用保留获准来源身份；Source v2 将 scope/cut 与这些前缀根绑定，lineage 使用持久化链式 ancestry root，普通读取无需在 Rust 中保留完整祖先向量。新边界在写入或导入时验证；普通请求信任已获准事实和 checkpoint，不重新扫描整段来源或递归认证历史 checkpoint。
+规范事件写入在同一事务中维护 Session、Invocation 和分区序号前缀的固定大小 SHA-256 承诺。复制的前缀引用保留获准来源身份；Source identity 将 scope/cut 与这些前缀根绑定，lineage 使用持久化链式 ancestry root，普通读取无需在 Rust 中保留完整祖先向量。新边界在写入或导入时验证；普通请求信任已获准事实和 checkpoint，不重新扫描整段来源或递归认证历史 checkpoint。
 
-`run_source` 读取持久化 Invocation 前缀和 opening/final 端点；v2 身份绑定 Run 内事件数、Invocation 身份和已提交的有序来源根。普通 lineage 读取使用 opening 时安装的不可变 descriptor。Continuation 准入仍校验所有权、workspace 身份、精确封口端点和未完成 effect；来源根本身不授予执行权限。
+`run_source` 读取持久化 Invocation 前缀和 opening/final 端点；身份绑定 Run 内事件数、Invocation 身份和已提交的有序来源根。普通 lineage 读取使用 opening 时安装的不可变 descriptor。Continuation 准入仍校验所有权、workspace 身份、精确封口端点和未完成 effect；来源根本身不授予执行权限。
 
 普通请求和正常重开信任受控写入或导入边界已接受的事实与 checkpoint，读取固定语义视图，不扫描规范尾部、不与 writer 握手确认、不保存进程内信任证明，也不重新认证历史 checkpoint。新 checkpoint 校验新增来源／前驱边及必要终态。直接改写 SQLite 不属于支持的编辑 API，普通读取不负责检测这种修改；显式有界历史导出继续保留事件数和字节预检。
 

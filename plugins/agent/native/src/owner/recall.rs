@@ -308,13 +308,12 @@ impl History for Recall {
             let page = self
                 .scoped_store(&call, &input.session_id)
                 .await?
-                .history_view(
+                .history_text(
                     &input.session_id,
                     through,
-                    maka_event_log::transcript::HistoryWindow {
-                        position: input.position,
-                        include_thinking: false,
-                        view: maka_agent_ports::session::history::HistoryView::Text,
+                    input.position,
+                    false,
+                    maka_event_log::transcript::HistoryLimits {
                         max_bytes: 8192,
                         max_chunks: Some(8),
                         max_json_bytes: 96 * 1024,

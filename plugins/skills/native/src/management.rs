@@ -363,14 +363,10 @@ impl Library {
                 } else {
                     source
                 };
-                publication::set_installation(
-                    &mut tree,
-                    &id,
-                    &id,
-                    maka_skills::api::InstallSource::Managed,
-                    content,
-                )
-                .map_err(store_error)?;
+                tree.insert("SKILL.md", content.clone())
+                    .map_err(store_error)?;
+                tree.insert(".maka/baseline/SKILL.md", content)
+                    .map_err(store_error)?;
                 Some(tree)
             }
             _ => unreachable!("installation source was captured"),

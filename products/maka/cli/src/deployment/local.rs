@@ -374,8 +374,8 @@ async fn observe_live(
     };
     let status = Client::status_stream(stream, Some(discovery.host_epoch)).await?;
     discovery.verify(&status)?;
-    // The namespace is explicit CLI ownership. Legacy/unmarked library Hosts,
-    // installed deployments and explicit generic selections retain their owners.
+    // The namespace is explicit CLI ownership. Library Hosts, installed
+    // deployments and explicit generic selections retain their owners.
     let cli_owned = status.generation.as_deref().is_some_and(|generation| {
         generation
             .strip_prefix("cli-sha256:")

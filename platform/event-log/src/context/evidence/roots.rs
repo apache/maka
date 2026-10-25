@@ -35,7 +35,7 @@ impl Prefix {
         Self {
             high: 0,
             count: 0,
-            hash: Sha256::digest(b"maka.source.empty.v2\0").to_vec(),
+            hash: Sha256::digest(b"maka.source.empty.v1\0").to_vec(),
         }
     }
 }
@@ -62,7 +62,7 @@ fn combine(base: Prefix, tail: Prefix) -> Prefix {
     Prefix {
         high: base.high.max(tail.high),
         count: base.count + tail.count,
-        hash: hash(b"maka.source.copy.v2\0", &[&base.hash, &tail.hash]),
+        hash: hash(b"maka.source.copy.v1\0", &[&base.hash, &tail.hash]),
     }
 }
 type CopyPrefixRow = (String, i64, Option<i64>, Option<Vec<u8>>);
@@ -116,7 +116,7 @@ fn append(
         ));
     }
     let next = hash(
-        b"maka.source.chain.v2\0",
+        b"maka.source.chain.v1\0",
         &[&previous.hash, &sequence.to_be_bytes(), leaf],
     );
     db.execute(
@@ -143,7 +143,7 @@ fn pin_copy(db: &Connection, owner: &str) -> rusqlite::Result<()> {
     // Copy membership has already been installed at this boundary. Prefixes
     // preserve its exact archive pins even for a later request at an old cut.
     let mut state = Sha256::new();
-    state.update(b"maka.archive.copy.v2\0");
+    state.update(b"maka.archive.copy.v1\0");
     let mut statement = db.prepare(
         "SELECT h.sequence,a.hash FROM session_history_members h
         JOIN context_archive_records a ON a.sequence=h.archive_sequence
@@ -191,14 +191,14 @@ fn ancestry(db: &Connection, invocation: &str, cut: i64) -> rusqlite::Result<Pre
     let mut rows = statement.query([invocation])?;
     let mut prefix = Prefix {
         high: 0,
-        hash: Sha256::digest(b"maka.source.lineage.empty.v2\0").to_vec(),
+        hash: Sha256::digest(b"maka.source.lineage.empty.v1\0").to_vec(),
         count: 0,
     };
     while let Some(row) = rows.next()? {
         let id: String = row.get(0)?;
         let part = native(db, "invocation", &id, cut)?;
         prefix.hash = hash(
-            b"maka.source.lineage.link.v2\0",
+            b"maka.source.lineage.link.v1\0",
             &[&prefix.hash, id.as_bytes(), &part.hash],
         );
         prefix.high = prefix.high.max(part.high);
@@ -246,7 +246,7 @@ fn identity(
     cut: i64,
 ) -> rusqlite::Result<String> {
     let mut state = Sha256::new();
-    state.update(b"maka.source.selection.v2\0");
+    state.update(b"maka.source.selection.v1\0");
     state.update((scope.len() as u64).to_be_bytes());
     state.update(scope);
     state.update(cut.to_be_bytes());
@@ -303,7 +303,7 @@ fn record_lineage(db: &Connection, sequence: i64, bytes: &str) -> rusqlite::Resu
             None,
             session_prefix(db, &event.invocation.session_id, sequence - 1)?.high,
             0,
-            Sha256::digest(b"maka.source.lineage.empty.v2\0").to_vec(),
+            Sha256::digest(b"maka.source.lineage.empty.v1\0").to_vec(),
         )
     } else if let Some(claim) = input.inherited_claim() {
         let parent = &claim.source.invocation.invocation_id;
@@ -314,7 +314,7 @@ fn record_lineage(db: &Connection, sequence: i64, bytes: &str) -> rusqlite::Resu
         )?;
         let part = native(db, "invocation", parent, sequence - 1)?;
         let root = hash(
-            b"maka.source.lineage.link.v2\0",
+            b"maka.source.lineage.link.v1\0",
             &[&prior, parent.as_bytes(), &part.hash],
         );
         (
@@ -408,7 +408,7 @@ pub(crate) fn register(db: &Connection) -> Result<(), StoreError> {
             let bytes = ctx.get_raw(3).as_str()?;
             let db = unsafe { ctx.get_connection() }?;
             let leaf = hash(
-                b"maka.source.leaf.v2\0",
+                b"maka.source.leaf.v1\0",
                 &[&sequence.to_be_bytes(), bytes.as_bytes()],
             );
             append(&db, "root", "", sequence, &leaf)?;

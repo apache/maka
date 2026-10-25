@@ -69,10 +69,10 @@ async fn complete_import_is_immediately_readable_and_exact_retry_keeps_original_
         .history_view(
             "imported",
             original.high_water,
-            maka_event_log::transcript::HistoryWindow {
-                position: Position::Tail,
-                include_thinking: false,
-                view: HistoryView::Text,
+            Position::Tail,
+            false,
+            HistoryView::Text,
+            maka_event_log::transcript::HistoryLimits {
                 max_bytes: 8192,
                 max_chunks: Some(8),
                 max_json_bytes: 65536,
@@ -98,10 +98,10 @@ async fn complete_import_is_immediately_readable_and_exact_retry_keeps_original_
         .history_view(
             "imported",
             original.high_water,
-            maka_event_log::transcript::HistoryWindow {
-                position: Position::Tail,
-                include_thinking: false,
-                view: HistoryView::Text,
+            Position::Tail,
+            false,
+            HistoryView::Text,
+            maka_event_log::transcript::HistoryLimits {
                 max_bytes: 8192,
                 max_chunks: Some(8),
                 max_json_bytes: 65536,

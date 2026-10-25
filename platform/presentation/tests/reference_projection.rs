@@ -79,9 +79,5 @@ fn complete_reference_text_survives_presentation() {
             content[output_field], references,
             "complete {field} changed"
         );
-        assert!(
-            view.push(&event).is_err(),
-            "replayed evidence remains invalid"
-        );
     }
 }

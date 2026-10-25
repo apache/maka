@@ -171,6 +171,21 @@ async fn auxiliary_accounting_requires_admission_and_preserves_usage_through_fai
     fixed.through = Some(log.model_attempts(query(), 0, 100).await.unwrap().through);
     log.close().await.unwrap();
     let log = EventLog::open(&path).await.unwrap();
+    let replayed = log
+        .host_effect(
+            maka_capabilities::storage::Namespace::new("external-model-client", Scope::Profile)
+                .unwrap(),
+            parent,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let Operation::Model { input, model, .. } = replayed.request.operation else {
+        panic!("reopened model effect changed operation");
+    };
+    assert_eq!(input.language, Language::En);
+    assert_eq!(input.prompt, "work");
+    assert_eq!(model.model, "chosen-model");
     log.recover_host_effects().await.unwrap();
     log.recover_auxiliary_models().await.unwrap();
     log.recover_auxiliary_models().await.unwrap();
@@ -370,17 +385,6 @@ async fn title_accounting_uses_first_opening_after_stop_and_never_replays_after_
         "frozen"
     );
     assert_eq!(page.attempts[0].usage.input_tokens, Some(17));
-}
-
-#[test]
-fn persisted_host_model_effect_replays_literal_english_input() {
-    let original = r#"{"kind":"model","input":{"input":{"prompt":"Original 用户 text","system":null,"maxOutputTokens":null},"model":{"connection_id":"connection","connection_slug":"named","model":"chosen"},"thinking_level":null}}"#;
-    let operation: Operation = serde_json::from_str(original).unwrap();
-    let Operation::Model { ref input, .. } = operation else {
-        panic!("model effect")
-    };
-    assert_eq!(input.language, Language::En);
-    assert_eq!(serde_json::to_string(&operation).unwrap(), original);
 }
 
 #[tokio::test]

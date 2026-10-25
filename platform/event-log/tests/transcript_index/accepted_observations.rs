@@ -162,13 +162,12 @@ fn canonical_bytes(db: &Connection) -> Vec<(i64, Vec<u8>)> {
 }
 async fn page(log: &EventLog, through: u64) -> Value {
     let page = log
-        .history_view(
+        .history_text(
             "a",
             through,
-            maka_event_log::transcript::HistoryWindow {
-                position: Position::Start,
-                include_thinking: false,
-                view: maka_agent_ports::session::history::HistoryView::Text,
+            Position::Start,
+            false,
+            maka_event_log::transcript::HistoryLimits {
                 max_bytes: 4096,
                 max_chunks: Some(16),
                 max_json_bytes: 16384,

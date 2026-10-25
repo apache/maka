@@ -34,9 +34,9 @@ fn database() -> Connection {
     CREATE TABLE imported_invocations(invocation_id TEXT PRIMARY KEY);
     CREATE VIEW local_runtime_events AS SELECT * FROM runtime_events e
         WHERE NOT EXISTS(SELECT 1 FROM imported_invocations i WHERE i.invocation_id=e.invocation_id);").unwrap();
-    db.execute_batch(include_str!(
-        "../../migrations/0042_context_obligations.sql"
-    ))
+    db.execute_batch(&crate::schema::fixture(|_, name| {
+        name.starts_with("context_obligations") || name.starts_with("context_safety_")
+    }))
     .unwrap();
     db
 }

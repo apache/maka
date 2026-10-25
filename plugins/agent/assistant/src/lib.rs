@@ -21,9 +21,3 @@ pub mod plan;
 pub mod prompt;
 pub mod recall;
 pub mod todo;
-
-pub fn input_files() -> std::collections::BTreeSet<String> {
-    ["AGENTS.md", "CLAUDE.md", "GEMINI.md"]
-        .map(str::to_owned)
-        .into()
-}

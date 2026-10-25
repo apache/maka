@@ -256,14 +256,14 @@ fn reference_digest(invocation: &Invocation, rows: &[(u64, &str)]) -> String {
         }
         hash.finalize().to_vec()
     }
-    let mut root = Sha256::digest(b"maka.source.empty.v2\0").to_vec();
+    let mut root = Sha256::digest(b"maka.source.empty.v1\0").to_vec();
     for (sequence, json) in rows {
         let sequence = sequence.to_be_bytes();
-        let leaf = framed(b"maka.source.leaf.v2\0", &[&sequence, json.as_bytes()]);
-        root = framed(b"maka.source.chain.v2\0", &[&root, &sequence, &leaf]);
+        let leaf = framed(b"maka.source.leaf.v1\0", &[&sequence, json.as_bytes()]);
+        root = framed(b"maka.source.chain.v1\0", &[&root, &sequence, &leaf]);
     }
     let mut digest = Sha256::new();
-    digest.update(b"maka.run-prefix.v2\0");
+    digest.update(b"maka.run-prefix.v1\0");
     digest.update((rows.len() as u64).to_be_bytes());
     let identity = serde_json::to_vec(invocation).unwrap();
     digest.update((identity.len() as u64).to_be_bytes());

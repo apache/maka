@@ -33,7 +33,7 @@ pub(crate) async fn digest_selected(
 ) -> Result<String, StoreError> {
     let session = selection.session.as_deref().ok_or(ArchiveError::Corrupt)?;
     let mut hash = Sha256::new();
-    hash.update(b"maka.effective-context.v2\0");
+    hash.update(b"maka.effective-context.v1\0");
     hash.update(source.digest.as_bytes());
     let copied: Option<Vec<u8>> = sqlx::query_scalar(
         "SELECT hash FROM context_archive_copy_prefixes
@@ -43,7 +43,10 @@ pub(crate) async fn digest_selected(
     .bind(source.high_water as i64)
     .fetch_optional(&mut *connection)
     .await?;
-    hash.update(copied.unwrap_or_else(|| Sha256::digest(b"maka.archive.copy.v2\0").to_vec()));
+    match copied {
+        Some(copied) => hash.update(copied),
+        None => hash.update(Sha256::digest(b"maka.archive.copy.v1\0")),
+    }
     // Source roots already bind every selected archive admitted at/before the
     // source cut. Only later overlays need their own identity here. This keeps
     // source.high_water independent of the exclusive archive fence.
@@ -58,7 +61,7 @@ pub(crate) async fn digest_selected(
     );
     let mut after = source.high_water as i64;
     loop {
-        let rows: Vec<(i64, Vec<u8>)> = sqlx::query_as(sqlx::AssertSqlSafe(query.clone()))
+        let rows: Vec<(i64, Vec<u8>)> = sqlx::query_as(sqlx::AssertSqlSafe(query.as_str()))
             .bind(session)
             .bind(source.high_water as i64)
             .bind(before as i64)

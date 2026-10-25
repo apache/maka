@@ -150,16 +150,24 @@ pub fn steering(session: &str, id: &str) -> EventWrite {
     let mut content = maka_agent_facts::input::MessageInput::from("same text");
     // Retain prepared model text and submitted display text as different projections.
     content.display_text = Some("visible correction".into());
-    write(
-        session,
+    write(session, {
+        let message = DeliveredMessage {
+            origin: None,
+            message_id: id.into(),
+            content,
+            submitted_content_digest: format!("sha256:{}", "a".repeat(64)),
+        };
+        let mut unprepared_content = message.content.clone();
+        unprepared_content.preparation.clear();
         Fact::MessageSteered {
-            source: None,
-            message: Box::new(DeliveredMessage {
-                origin: None,
-                message_id: id.into(),
-                content,
-                submitted_content_digest: format!("sha256:{}", "a".repeat(64)),
+            source: Box::new(maka_agent_facts::message::RootSourceMessage {
+                message: message.clone(),
+                unprepared_content,
+                submitted_placement: maka_agent_facts::message::Placement::CurrentTurn,
+                disposition: maka_agent_facts::message::MessageDisposition::Steering,
+                submitted_intent: None,
             }),
-        },
-    )
+            message: Box::new(message),
+        }
+    })
 }

@@ -18,7 +18,6 @@
  */
 
 use clap::{Args, Parser, Subcommand};
-use maka_event_log::EventLog;
 use maka_host_runtime::HostError;
 use std::{net::SocketAddr, path::PathBuf};
 
@@ -133,18 +132,10 @@ pub(super) struct Root {
 
 #[derive(Args)]
 struct Log {
-    /// Read an isolated legacy journal file.
-    #[arg(
-        long,
-        value_name = "FILE",
-        conflicts_with = "root",
-        required_unless_present = "root"
-    )]
-    log: Option<PathBuf>,
-    #[arg(long, value_name = "DIRECTORY", requires = "session")]
-    root: Option<PathBuf>,
-    #[arg(long, requires = "root")]
-    session: Option<String>,
+    #[arg(long, value_name = "DIRECTORY")]
+    root: PathBuf,
+    #[arg(long)]
+    session: String,
 }
 
 impl Cli {
@@ -274,32 +265,20 @@ impl Cli {
             Command::Code(args) => code::run(args).await,
             Command::Acp(args) => crate::acp::run(args).await,
             Command::Inspect(args) => {
-                let prefix = if let Some(root) = args.root {
-                    let store = crate::application::open_store(root).await?;
-                    let session = store
-                        .session(args.session.as_deref().expect("required session"))
-                        .await?;
-                    let prefix = session
-                        .scoped_prefix(
-                            maka_agent_facts::event::LogScope::Session {
-                                id: session.id().into(),
-                            },
-                            10_000,
-                            8 * 1024 * 1024,
-                        )
-                        .await;
-                    let closed = store.shutdown().await;
-                    let prefix = prefix?;
-                    closed?;
-                    prefix
-                } else {
-                    let log = EventLog::open(&args.log.expect("required legacy journal")).await?;
-                    let prefix = log.prefix(10_000, 8 * 1024 * 1024).await;
-                    let closed = log.shutdown().await;
-                    let prefix = prefix?;
-                    closed?;
-                    prefix
-                };
+                let store = crate::application::open_store(args.root).await?;
+                let session = store.session(&args.session).await?;
+                let prefix = session
+                    .scoped_prefix(
+                        maka_agent_facts::event::LogScope::Session {
+                            id: session.id().into(),
+                        },
+                        10_000,
+                        8 * 1024 * 1024,
+                    )
+                    .await;
+                let closed = store.shutdown().await;
+                let prefix = prefix?;
+                closed?;
                 println!("{}", serde_json::to_string(&prefix)?);
                 Ok(())
             }

@@ -21,7 +21,7 @@ use super::*;
 use serde_json::{Value, json};
 use sqlx::Connection;
 
-// Exercise the production migration and safety reader against minimal ledger
+// Exercise the current projection schema and safety reader against minimal ledger
 // storage. The bodies contain exactly the fields those queries consume; ingress
 // validation itself is covered by the canonical append/import tests.
 const LEDGER: &str = "CREATE TABLE event_log (
@@ -39,14 +39,32 @@ CREATE UNIQUE INDEX operation_fact ON event_log(operation_id,kind) WHERE operati
 CREATE UNIQUE INDEX invocation_boundary ON event_log(invocation_id,kind) WHERE kind='invocation_opened' OR kind='invocation_ended';
 CREATE INDEX model_observed_step ON event_log(invocation_id, CAST(json_extract(event_json,'$.fact.step_id') AS TEXT), sequence)
     WHERE kind='model_observed';";
-const MIGRATION: &str = include_str!("../../../migrations/0042_context_obligations.sql");
-const EXECUTION_MIGRATION: &str = include_str!("../../../migrations/0053_execution_intervals.sql");
+fn obligation_schema() -> String {
+    crate::schema::fixture(|_, name| {
+        name.starts_with("context_obligations") || name.starts_with("context_safety_")
+    })
+}
+fn execution_schema() -> String {
+    crate::schema::fixture(|_, name| {
+        [
+            "context_execution_",
+            "context_independent_",
+            "context_summary_",
+            "tool_call_identity",
+        ]
+        .iter()
+        .any(|prefix| name.starts_with(prefix))
+    })
+}
 
 async fn database() -> SqliteConnection {
     let mut db = SqliteConnection::connect("sqlite::memory:").await.unwrap();
     sqlx::raw_sql(LEDGER).execute(&mut db).await.unwrap();
-    sqlx::raw_sql(MIGRATION).execute(&mut db).await.unwrap();
-    sqlx::raw_sql(EXECUTION_MIGRATION)
+    sqlx::raw_sql(sqlx::AssertSqlSafe(obligation_schema()))
+        .execute(&mut db)
+        .await
+        .unwrap();
+    sqlx::raw_sql(sqlx::AssertSqlSafe(execution_schema()))
         .execute(&mut db)
         .await
         .unwrap();
@@ -232,18 +250,20 @@ async fn interrupted_provider_effect_requires_matching_result_before_interrupt()
 }
 
 #[tokio::test]
-async fn obligations_are_transactional_and_survive_reopen_with_migration_backfill() {
+async fn obligations_are_transactional_and_survive_reopen() {
     let directory = tempfile::tempdir().unwrap();
     let options = sqlx::sqlite::SqliteConnectOptions::new()
         .filename(directory.path().join("safety.db"))
         .create_if_missing(true);
     let mut db = SqliteConnection::connect_with(&options).await.unwrap();
     sqlx::raw_sql(LEDGER).execute(&mut db).await.unwrap();
+    sqlx::raw_sql(sqlx::AssertSqlSafe(obligation_schema()))
+        .execute(&mut db)
+        .await
+        .unwrap();
     append(&mut db, "invocation_opened", None, json!({})).await;
     append(&mut db, "tool_dispatched", Some("tool"), json!({})).await;
     ended(&mut db, "outcome_unknown").await;
-    // Older admitted facts get one migration backfill, then ordinary indexed reads.
-    sqlx::raw_sql(MIGRATION).execute(&mut db).await.unwrap();
     {
         let mut tx = db.begin().await.unwrap();
         append(

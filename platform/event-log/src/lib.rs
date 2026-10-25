@@ -363,8 +363,7 @@ impl EventLog {
                                 connection,
                                 initialize_control.as_ref(),
                             )
-                            .await?;
-                            transcript::directory::initialize(connection).await
+                            .await
                         }
                         OpenPurpose::RootControl => {
                             root_store::initialize_control(connection).await

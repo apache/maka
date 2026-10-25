@@ -58,7 +58,9 @@ use maka_agent_facts::model::prompt_source::{WireFormat, WireGroup};
 use maka_agent_facts::read::ResourceAddress;
 use maka_agent_facts::shell_run::{ShellPatch, ShellRun};
 use maka_agent_facts::workspace::PermissionBasis;
-use maka_agent_ports::session::history::{HistorySource, Page};
+use maka_agent_ports::session::history::{
+    HistorySource, HistoryView, Page, Position, SourcePosition,
+};
 use serde::de::DeserializeOwned;
 use uuid::Uuid;
 
@@ -813,12 +815,29 @@ impl SessionStore {
         &self,
         session: &str,
         through: u64,
-        source: crate::transcript::HistorySourceRead,
+        selection: crate::transcript::SourceSelection,
+        position: SourcePosition,
+        max_bytes: usize,
     ) -> Result<HistorySource, StoreError> {
         self.check_session(session)?;
         self.scoped()
             .await?
-            .history_source(session, through, source)
+            .history_source(session, through, selection, position, max_bytes)
+            .await
+    }
+
+    pub async fn history_text(
+        &self,
+        session: &str,
+        through: u64,
+        position: Position,
+        include_thinking: bool,
+        limits: crate::transcript::HistoryLimits,
+    ) -> Result<Page, StoreError> {
+        self.check_session(session)?;
+        self.scoped()
+            .await?
+            .history_text(session, through, position, include_thinking, limits)
             .await
     }
 
@@ -826,12 +845,15 @@ impl SessionStore {
         &self,
         session: &str,
         through: u64,
-        window: crate::transcript::HistoryWindow,
+        position: Position,
+        include_thinking: bool,
+        view: HistoryView,
+        limits: crate::transcript::HistoryLimits,
     ) -> Result<Page, StoreError> {
         self.check_session(session)?;
         self.scoped()
             .await?
-            .history_view(session, through, window)
+            .history_view(session, through, position, include_thinking, view, limits)
             .await
     }
 

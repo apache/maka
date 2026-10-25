@@ -142,13 +142,12 @@ async fn complete_structured_history_selectors_keep_deep_and_long_original_keys(
     .await
     .unwrap();
     let through = *log.subscribe_commits().borrow();
-    log.history_view(
+    log.history_text(
         "original",
         through,
-        maka_event_log::transcript::HistoryWindow {
-            position: Position::Start,
-            include_thinking: false,
-            view: maka_agent_ports::session::history::HistoryView::Text,
+        Position::Start,
+        false,
+        maka_event_log::transcript::HistoryLimits {
             max_bytes: 8192,
             max_chunks: Some(8),
             max_json_bytes: 65536,
@@ -168,13 +167,13 @@ async fn complete_structured_history_selectors_keep_deep_and_long_original_keys(
             log.history_source(
                 "original",
                 through,
-                maka_event_log::transcript::HistorySourceRead {
+                maka_event_log::transcript::SourceSelection {
                     locator,
                     field: SourceField::Arguments,
                     path: Some(selected),
-                    position: SourcePosition::Start,
-                    max_bytes: 4096,
                 },
+                SourcePosition::Start,
+                4096,
             )
             .await,
         );

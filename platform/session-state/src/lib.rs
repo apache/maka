@@ -427,54 +427,31 @@ mod tests {
     }
 
     #[test]
-    fn idle_state_is_on_disk_and_discovery_handles_share_authority() {
+    fn discovery_handles_share_authority_without_crossing_sessions() {
         let backend = Backend::temporary().unwrap();
-        for index in 0..256 {
-            let session = backend.session(&format!("s-{index}"));
-            let cell = session.snapshot().unwrap();
-            cell.store("answer", &json!(index)).unwrap();
-            cell.commit().unwrap();
-            session
-                .update_loaded(|names| {
-                    names.insert("search".into());
-                })
-                .unwrap();
-        }
-        let session = backend.session("s-100");
-        assert_eq!(
-            session.snapshot().unwrap().load("answer").unwrap(),
-            Some(json!(100))
-        );
+        backend
+            .session("first")
+            .update_loaded(|names| {
+                names.insert("search".into());
+            })
+            .unwrap();
+        backend
+            .session("second")
+            .update_loaded(|names| {
+                names.insert("read".into());
+            })
+            .unwrap();
+        let session = backend.session("first");
         assert_eq!(session.loaded().unwrap(), BTreeSet::from(["search".into()]));
         backend
-            .session("s-100")
+            .session("first")
             .update_loaded(BTreeSet::clear)
             .unwrap();
         assert!(session.loaded().unwrap().is_empty());
-        for partition in &backend.0.partitions {
-            let partition = partition.lock().unwrap();
-            assert_eq!(
-                partition
-                    .db
-                    .query_row("PRAGMA cache_size", [], |r| r.get::<_, i64>(0))
-                    .unwrap(),
-                -1024
-            );
-            assert_eq!(
-                partition
-                    .db
-                    .query_row("SELECT count(*) FROM snapshots", [], |r| r.get::<_, i64>(0))
-                    .unwrap(),
-                0
-            );
-            assert_eq!(
-                partition
-                    .db
-                    .query_row("SELECT count(*) FROM pending", [], |r| r.get::<_, i64>(0))
-                    .unwrap(),
-                0
-            );
-        }
+        assert_eq!(
+            backend.session("second").loaded().unwrap(),
+            BTreeSet::from(["read".into()])
+        );
     }
 
     #[test]

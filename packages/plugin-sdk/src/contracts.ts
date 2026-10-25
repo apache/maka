@@ -10374,7 +10374,7 @@ export const contracts = {
                   },
                   {
                     description:
-                      'Trusted ingress permits retry: legacy steps can discard observations;\nitem-accepting steps must retain completed items and settle their tools.\nThis records safety evidence, not an instruction to retry.',
+                      'Trusted ingress permits retry: completion-only steps can discard observations;\nitem-accepting steps must retain completed items and settle their tools.\nThis records safety evidence, not an instruction to retry.',
                     type: 'string',
                     const: 'retryable_failure',
                   },
@@ -11010,9 +11010,6 @@ export const contracts = {
                       source: {
                         $ref: '#/$defs/SkillSource',
                       },
-                      truncated: {
-                        type: 'boolean',
-                      },
                     },
                     additionalProperties: false,
                     required: [
@@ -11024,7 +11021,6 @@ export const contracts = {
                       'name',
                       'scope',
                       'source',
-                      'truncated',
                     ],
                   },
                   {
@@ -11058,7 +11054,7 @@ export const contracts = {
               },
               SkillSource: {
                 type: 'string',
-                enum: ['maka', 'agents', 'legacy', 'custom'],
+                enum: ['maka', 'agents', 'custom'],
               },
             },
           },
@@ -14292,17 +14288,6 @@ export const contracts = {
                 required: ['kind'],
                 additionalProperties: false,
               },
-              {
-                type: 'object',
-                properties: {
-                  kind: {
-                    type: 'string',
-                    const: 'limit',
-                  },
-                },
-                required: ['kind'],
-                additionalProperties: false,
-              },
             ],
             $defs: {
               AgentImportSource: {
@@ -15140,17 +15125,6 @@ export const contracts = {
                   kind: {
                     type: 'string',
                     const: 'invalid',
-                  },
-                },
-                required: ['kind'],
-                additionalProperties: false,
-              },
-              {
-                type: 'object',
-                properties: {
-                  kind: {
-                    type: 'string',
-                    const: 'limit',
                   },
                 },
                 required: ['kind'],
@@ -25252,9 +25226,6 @@ export const contracts = {
                       source: {
                         $ref: '#/$defs/SkillSource',
                       },
-                      truncated: {
-                        type: 'boolean',
-                      },
                     },
                     additionalProperties: false,
                     required: [
@@ -25266,7 +25237,6 @@ export const contracts = {
                       'name',
                       'scope',
                       'source',
-                      'truncated',
                     ],
                   },
                   {
@@ -25300,7 +25270,7 @@ export const contracts = {
               },
               SkillSource: {
                 type: 'string',
-                enum: ['maka', 'agents', 'legacy', 'custom'],
+                enum: ['maka', 'agents', 'custom'],
               },
             },
           },
@@ -34572,9 +34542,6 @@ export const contracts = {
                   shadowedBy: {
                     type: ['string', 'null'],
                   },
-                  metadataTruncated: {
-                    type: 'boolean',
-                  },
                   issues: {
                     type: 'array',
                     items: {
@@ -34592,7 +34559,6 @@ export const contracts = {
                   'name',
                   'description',
                   'valid',
-                  'metadataTruncated',
                   'issues',
                 ],
               },
@@ -34842,9 +34808,6 @@ export const contracts = {
                   declaredToolsTruncated: {
                     type: 'boolean',
                   },
-                  truncated: {
-                    type: 'boolean',
-                  },
                   receipt: {
                     $ref: '#/$defs/SkillInvocationReceipt',
                   },
@@ -34858,7 +34821,6 @@ export const contracts = {
                   'relativePath',
                   'declaredTools',
                   'declaredToolsTruncated',
-                  'truncated',
                   'receipt',
                 ],
                 description:
@@ -35012,7 +34974,7 @@ export const contracts = {
               },
               SkillSource: {
                 type: 'string',
-                enum: ['maka', 'agents', 'legacy', 'custom'],
+                enum: ['maka', 'agents', 'custom'],
               },
               SkillModelLoad: {
                 type: 'object',
@@ -35105,9 +35067,6 @@ export const contracts = {
                       source: {
                         $ref: '#/$defs/SkillSource',
                       },
-                      truncated: {
-                        type: 'boolean',
-                      },
                     },
                     required: [
                       'invocation',
@@ -35118,7 +35077,6 @@ export const contracts = {
                       'name',
                       'scope',
                       'source',
-                      'truncated',
                     ],
                   },
                   {
@@ -35452,9 +35410,6 @@ export const contracts = {
                       source: {
                         $ref: '#/$defs/SkillSource',
                       },
-                      truncated: {
-                        type: 'boolean',
-                      },
                     },
                     required: [
                       'invocation',
@@ -35465,7 +35420,6 @@ export const contracts = {
                       'name',
                       'scope',
                       'source',
-                      'truncated',
                     ],
                   },
                   {
@@ -35501,7 +35455,7 @@ export const contracts = {
               },
               SkillSource: {
                 type: 'string',
-                enum: ['maka', 'agents', 'legacy', 'custom'],
+                enum: ['maka', 'agents', 'custom'],
               },
             },
           },
@@ -36041,9 +35995,6 @@ export const contracts = {
                   shadowedBy: {
                     type: ['string', 'null'],
                   },
-                  metadataTruncated: {
-                    type: 'boolean',
-                  },
                   issues: {
                     type: 'array',
                     items: {
@@ -36061,7 +36012,6 @@ export const contracts = {
                   'name',
                   'description',
                   'valid',
-                  'metadataTruncated',
                   'issues',
                 ],
               },
@@ -36211,9 +36161,6 @@ export const contracts = {
               query: {
                 type: 'string',
               },
-              queryTruncated: {
-                type: 'boolean',
-              },
               matches: {
                 type: 'array',
                 items: {
@@ -36237,7 +36184,6 @@ export const contracts = {
             required: [
               'revision',
               'query',
-              'queryTruncated',
               'matches',
               'totalEligible',
               'matchedCount',
@@ -36293,7 +36239,7 @@ export const contracts = {
               },
               SkillSource: {
                 type: 'string',
-                enum: ['maka', 'agents', 'legacy', 'custom'],
+                enum: ['maka', 'agents', 'custom'],
               },
             },
           },

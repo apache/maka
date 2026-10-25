@@ -258,15 +258,14 @@ impl PinnedReader<'_> {
 mod tests {
     use super::*;
     use crate::filesystem::ReadRoot;
-    async fn scope() -> crate::call::Scope {
+    fn scope() -> crate::call::Scope {
         crate::call::Issuer::default()
-            .admit(
+            .issue(
                 crate::call::Identity::Remote {
                     request_id: uuid::Uuid::new_v4(),
                 },
                 CancellationToken::new(),
             )
-            .await
             .unwrap()
     }
 
@@ -278,7 +277,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("source");
         std::fs::write(&path, b"abcdef").unwrap();
-        let owner = scope().await;
+        let owner = scope();
         let root = ReadRoot::open(directory.path()).await.unwrap();
         let cancellation = owner.cancellation.clone();
         let view = root.bind_scope(&owner);
@@ -335,14 +334,14 @@ mod tests {
             files.push(view.open_file(open()).await.unwrap());
         }
         for _ in 0..3 {
-            let owner = scope().await;
+            let owner = scope();
             let view = root.bind_scope(&owner);
             for _ in 0..8 {
                 files.push(view.open_file(open()).await.unwrap());
             }
             owners.push(owner);
         }
-        let other_owner = scope().await;
+        let other_owner = scope();
         let other_view = root.bind_scope(&other_owner);
         assert!(other_view.open_file(open()).await.is_err());
         files.pop().unwrap().close().await.unwrap();

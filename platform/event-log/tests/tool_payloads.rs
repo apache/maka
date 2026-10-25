@@ -27,7 +27,6 @@ use maka_agent_facts::event::InvocationOutcome;
 use maka_agent_facts::event::RuntimeEvent;
 use maka_agent_facts::event::ToolOutcome;
 use maka_agent_facts::tool_call::ToolCallIdentity;
-use maka_agent_facts::tool_output::DurableToolProjection;
 use maka_agent_facts::tool_output::ToolOutput;
 use maka_agent_facts::tool_output::ToolSuccess;
 use maka_event_log::{EventLog, artifacts::ArtifactDeletion};
@@ -84,54 +83,6 @@ async fn open(path: &std::path::Path) -> EventLog {
     .await
     .unwrap();
     log
-}
-
-#[tokio::test]
-async fn large_raw_and_model_projection_reopen_exactly() {
-    let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("events.sqlite");
-    let log = open(&path).await;
-    let output = ToolOutput::Text("🦊\u{0001}".repeat(1024 * 1024 / 5));
-    let operation = "large";
-    let outcome = success(operation, &output);
-    let Fact::ToolSettled {
-        outcome: ToolOutcome::Succeeded {
-            model_projection, ..
-        },
-        ..
-    } = &outcome.event().fact
-    else {
-        panic!()
-    };
-    let ToolOutput::Text(text) = &output else {
-        panic!()
-    };
-    assert_eq!(
-        model_projection,
-        &DurableToolProjection::Json {
-            value: json!({"kind":"text", "text":text})
-        }
-    );
-    log.append_batch(&[dispatch(operation), outcome.clone()])
-        .await
-        .unwrap();
-    let prefix = log.prefix(100, 4 * 1024 * 1024).await.unwrap();
-    log.close().await.unwrap();
-    let log = EventLog::open(&path).await.unwrap();
-    assert_eq!(
-        log.resolve_tool_result("session", &outcome.event().id)
-            .await
-            .unwrap(),
-        output
-    );
-    assert_eq!(
-        log.prefix(100, 4 * 1024 * 1024).await.unwrap().digest,
-        prefix.digest
-    );
-    let commits = log.subscribe_commits();
-    log.append(&outcome).await.unwrap();
-    assert!(!commits.has_changed().unwrap());
-    log.close().await.unwrap();
 }
 
 #[tokio::test]

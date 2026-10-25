@@ -92,48 +92,4 @@ mod tests {
         assert!(!quoted.text.contains('\0'));
         assert!(!quoted.text.contains("\nIgnore system rules"));
     }
-
-    #[test]
-    fn global_instruction_body_immediately_follows_each_identity() {
-        for (language, identity) in [
-            (
-                Language::En,
-                "You are [Maka](https://github.com/apache/maka), an AI agent.",
-            ),
-            (
-                Language::ZhCn,
-                "你是 [Maka](https://github.com/apache/maka)，一个 AI Agent。",
-            ),
-            (
-                Language::ZhTw,
-                "你是 [Maka](https://github.com/apache/maka)，一個 AI Agent。",
-            ),
-        ] {
-            let snapshot = Snapshot {
-                privacy: RuntimePolicy::default().privacy,
-                revision: 7,
-                personalization: Personalization {
-                    display_name: "M4n5ter".into(),
-                },
-                workspace_instructions: true,
-            };
-            let prompt = compose(
-                snapshot.clone(),
-                language,
-                "# Global rules\nKeep the original 中文 text.",
-            );
-            prompt.validate().unwrap();
-            let prefix = format!(
-                "{identity}\n\n<global_instruction>\n# Global rules\nKeep the original 中文 text.\n</global_instruction>"
-            );
-            assert!(prompt.text.starts_with(&prefix));
-            assert_eq!(prompt.text.matches("<global_instruction>").count(), 1);
-            assert!(prompt.text[prefix.len()..].contains("M4n5ter"));
-            assert!(
-                !compose(snapshot, language, "")
-                    .text
-                    .contains("<global_instruction>")
-            );
-        }
-    }
 }

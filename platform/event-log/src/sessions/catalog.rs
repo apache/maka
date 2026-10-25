@@ -33,7 +33,8 @@ const PREDICATE: &str = "
     AND (?7 IS NULL OR EXISTS (SELECT 1 FROM workspace_bindings binding WHERE binding.id=json_extract(configuration,'$.workspace.id') AND json_extract(binding.workspace_json,'$.identity')=?7))
     AND instr(COALESCE(json_extract(configuration, '$.title'), ''), ?8) > 0";
 
-struct Selection {
+#[derive(Clone)]
+pub(crate) struct Selection {
     root_partition: Option<usize>,
     session: Option<String>,
     cwd: Option<String>,
@@ -44,7 +45,7 @@ struct Selection {
     filter: CatalogFilter,
 }
 impl Selection {
-    fn new(scope: &CatalogScope, filter: CatalogFilter) -> Result<Self, StoreError> {
+    pub(crate) fn new(scope: &CatalogScope, filter: CatalogFilter) -> Result<Self, StoreError> {
         let mut selection = Self {
             root_partition: None,
             session: None,
@@ -308,12 +309,6 @@ impl EventLog {
     }
 }
 
-pub(crate) struct RootCatalogPage<'a> {
-    pub position: SessionPosition<'a>,
-    pub limit: usize,
-    pub count_pending: bool,
-}
-
 impl EventLog {
     pub(crate) fn catalog_selection_valid(
         scope: &CatalogScope,
@@ -326,16 +321,12 @@ impl EventLog {
     pub(crate) async fn root_catalog_ids(
         &self,
         partition: usize,
-        scope: CatalogScope,
-        filter: CatalogFilter,
-        page: RootCatalogPage<'_>,
+        mut selection: Selection,
+        position: SessionPosition<'_>,
+        limit: usize,
         expected: (i64, i64),
+        count_pending: bool,
     ) -> Result<(Vec<String>, u64), StoreError> {
-        let RootCatalogPage {
-            position,
-            limit,
-            count_pending,
-        } = page;
         self.validate_root()?;
         if partition >= crate::root_store::PARTITION_COUNT
             || limit == 0
@@ -352,7 +343,6 @@ impl EventLog {
         if let Some(cursor) = &cursor {
             validate_id(cursor)?;
         }
-        let mut selection = Selection::new(&scope, filter)?;
         selection.root_partition = Some(partition);
         self.connection
             .read(move |connection| {

@@ -352,28 +352,6 @@ fn large_untracked_text_returns_complete_applicable_patch() {
 }
 
 #[test]
-fn json_escaping_does_not_discard_a_complete_text_patch() {
-    let f = Fixture::new();
-    fs::write(f.root.join("anchor"), "committed anchor\n").unwrap();
-    f.commit();
-    let content = "\"".repeat(262_154);
-    fs::write(f.root.join("quotes"), &content).unwrap();
-    let snapshot = ReadOnlySnapshot::capture(&f, &["anchor", "quotes"]);
-    let result = f.diff(GitArea::Untracked, b"quotes");
-    let serialized_bytes = serde_json::to_vec(&result).unwrap().len();
-    let patch = assert_patch_reconstructs(result, "quotes", None, content.as_bytes());
-    assert!(
-        patch.len() < 512 * 1024,
-        "raw patch fits the former output budget"
-    );
-    assert!(
-        serialized_bytes > 512 * 1024,
-        "JSON escaping alone crosses the former output budget"
-    );
-    snapshot.assert_unchanged(&f);
-}
-
-#[test]
 fn many_changed_lines_return_complete_applicable_patch() {
     let f = Fixture::new();
     let before = "old\n".repeat(100_000);

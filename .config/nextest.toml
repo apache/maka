@@ -19,6 +19,12 @@
 # https://github.com/nextest-rs/nextest/pull/3553
 nextest-version = "0.9.145"
 
+# Large image transfers and repeated real Host launches need the full runner
+# budget to keep their lifecycle checks independent of other test workloads.
+[[profile.default.overrides]]
+filter = 'test(reopened_images_preserve_complete_accepted_artifacts_and_copied_authority) | test(desktop_shell_owns_its_child_and_preserves_the_selected_host_and_other_clients)'
+threads-required = "num-test-threads"
+
 # These fixtures own multi-threaded Hosts, databases and child processes.
 # Account for that work instead of oversubscribing them as single-thread tests.
 [[profile.default.overrides]]

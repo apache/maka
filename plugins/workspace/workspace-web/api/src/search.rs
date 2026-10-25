@@ -54,5 +54,4 @@ pub struct Row {
     pub title: String,
     pub url: String,
     pub snippet: String,
-    pub truncated: bool,
 }

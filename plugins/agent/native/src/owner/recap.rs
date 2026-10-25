@@ -160,13 +160,12 @@ impl recap::History for Backend {
                 .scoped_store(&scope, &self.session)
                 .await
                 .map_err(failed)?
-                .history_view(
+                .history_text(
                     &self.session,
                     through,
-                    maka_event_log::transcript::HistoryWindow {
-                        position: input.position,
-                        include_thinking: false,
-                        view: maka_agent_ports::session::history::HistoryView::Text,
+                    input.position,
+                    false,
+                    maka_event_log::transcript::HistoryLimits {
                         max_bytes: 8192,
                         max_chunks: Some(8),
                         max_json_bytes: 96 * 1024,

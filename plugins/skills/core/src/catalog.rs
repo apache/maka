@@ -66,7 +66,6 @@ pub struct LoadedInstructions<'a> {
     pub skill: &'a DiscoveredSkill,
     pub relative_path: PathBuf,
     pub instructions: String,
-    pub truncated: bool,
 }
 
 impl Catalog<'_> {
@@ -170,7 +169,6 @@ impl Catalog<'_> {
             skill,
             relative_path,
             instructions,
-            truncated: false,
         })
     }
     fn enabled(&self, skill: &DiscoveredSkill) -> bool {

@@ -114,13 +114,12 @@ async fn actual_tool_images_are_immutable_scoped_and_reconstructed_without_paths
     let through = end(&log, "images", InvocationOutcome::Completed).await;
 
     let Page::Ready { chunks, .. } = log
-        .history_view(
+        .history_text(
             "images",
             through,
-            maka_event_log::transcript::HistoryWindow {
-                position: Position::Start,
-                include_thinking: false,
-                view: maka_agent_ports::session::history::HistoryView::Text,
+            Position::Start,
+            false,
+            maka_event_log::transcript::HistoryLimits {
                 max_bytes: 8192,
                 max_chunks: Some(8),
                 max_json_bytes: 64 * 1024,
@@ -228,13 +227,12 @@ async fn actual_tool_images_are_immutable_scoped_and_reconstructed_without_paths
         chunks: copy_chunks,
         ..
     } = log
-        .history_view(
+        .history_text(
             "copy",
             copy_fence,
-            maka_event_log::transcript::HistoryWindow {
-                position: Position::Start,
-                include_thinking: false,
-                view: maka_agent_ports::session::history::HistoryView::Text,
+            Position::Start,
+            false,
+            maka_event_log::transcript::HistoryLimits {
                 max_bytes: 8192,
                 max_chunks: Some(8),
                 max_json_bytes: 64 * 1024,
@@ -520,13 +518,12 @@ async fn borrowed_upload_is_frozen_at_settlement_before_any_history_copy() {
     .unwrap();
     for session in ["borrowed", "borrowed-copy"] {
         let Page::Ready { chunks, .. } = log
-            .history_view(
+            .history_text(
                 session,
                 through,
-                maka_event_log::transcript::HistoryWindow {
-                    position: Position::Start,
-                    include_thinking: false,
-                    view: maka_agent_ports::session::history::HistoryView::Text,
+                Position::Start,
+                false,
+                maka_event_log::transcript::HistoryLimits {
                     max_bytes: 8192,
                     max_chunks: Some(8),
                     max_json_bytes: 64 * 1024,

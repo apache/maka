@@ -21,12 +21,6 @@ use serde::{Deserialize, Serialize};
 
 pub const ATTACHMENT_RESOURCE_PREFIX: &str = "maka://runtime/attachments/";
 
-pub fn parse_resource_ref(value: &str) -> Option<&str> {
-    value
-        .strip_prefix(ATTACHMENT_RESOURCE_PREFIX)
-        .filter(|id| crate::interaction::entity_id(id).is_ok())
-}
-
 /// Image signatures are fixed-offset; PDF permits a bounded leading preamble.
 pub fn sniff_mime(bytes: &[u8]) -> Option<&'static str> {
     if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
@@ -64,17 +58,6 @@ pub fn sniff_binary_mime(bytes: &[u8]) -> Option<&'static str> {
 }
 fn js_whitespace(c: char) -> bool {
     (c.is_whitespace() && c != '\u{85}') || c == '\u{feff}'
-}
-
-pub fn canonical_relative_path(path: &str) -> bool {
-    !path.is_empty()
-        && !path.contains(['\0', '\\'])
-        && !path.starts_with('/')
-        && !(path.as_bytes().first().is_some_and(u8::is_ascii_alphabetic)
-            && path.as_bytes().get(1) == Some(&b':'))
-        && path
-            .split('/')
-            .all(|s| !s.is_empty() && s != "." && s != "..")
 }
 
 impl AttachmentKind {

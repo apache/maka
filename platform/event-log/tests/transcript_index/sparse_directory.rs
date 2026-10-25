@@ -115,13 +115,12 @@ async fn cold_windows_use_complete_directory_and_preserve_all_anchor_kinds_after
         })
         .await;
         let Page::Ready { chunks, .. } = log
-            .history_view(
+            .history_text(
                 "a",
                 through,
-                maka_event_log::transcript::HistoryWindow {
-                    position,
-                    include_thinking: false,
-                    view: maka_agent_ports::session::history::HistoryView::Text,
+                position,
+                false,
+                maka_event_log::transcript::HistoryLimits {
                     max_bytes: 8192,
                     max_chunks: Some(32),
                     max_json_bytes: 65536,
@@ -165,13 +164,12 @@ async fn cold_windows_use_complete_directory_and_preserve_all_anchor_kinds_after
         after,
         ..
     } = log
-        .history_view(
+        .history_text(
             "a",
             through,
-            maka_event_log::transcript::HistoryWindow {
-                position: Position::Tail,
-                include_thinking: false,
-                view: maka_agent_ports::session::history::HistoryView::Text,
+            Position::Tail,
+            false,
+            maka_event_log::transcript::HistoryLimits {
                 max_bytes: 8192,
                 max_chunks: Some(1),
                 max_json_bytes: 65536,
@@ -196,13 +194,12 @@ async fn cold_windows_use_complete_directory_and_preserve_all_anchor_kinds_after
         after,
         ..
     } = log
-        .history_view(
+        .history_text(
             "a",
             live,
-            maka_event_log::transcript::HistoryWindow {
-                position: Position::Start,
-                include_thinking: false,
-                view: maka_agent_ports::session::history::HistoryView::Text,
+            Position::Start,
+            false,
+            maka_event_log::transcript::HistoryLimits {
                 max_bytes: 8192,
                 max_chunks: Some(32),
                 max_json_bytes: 65536,

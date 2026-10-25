@@ -138,16 +138,4 @@ impl Operation {
             Self::Entries(operation) => operation.name(),
         }
     }
-    /// Reuse the native tool contract; schema and file-effect semantics have one owner.
-    pub fn into_tool_input(self, operation_id: &str) -> Value {
-        match self {
-            Self::Read(input) => json!(input),
-            Self::Write(input) => json!(input),
-            Self::Edit(input) => json!(input),
-            Self::Glob(input) => json!(input),
-            Self::Grep(input) => json!(input),
-            Self::Patch(operation) => json!({"callId":operation_id,"operation":operation}),
-            Self::Entries(operation) => json!(operation),
-        }
-    }
 }

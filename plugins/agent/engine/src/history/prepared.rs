@@ -20,7 +20,7 @@
 //! Incremental semantic groups and separately captured provider-wire groups.
 use crate::RunError;
 use maka_agent_facts::model::prompt_source::{
-    WireCursor, WireFormat, WireMetadata, WireMetadataCursor, WireSource,
+    WireCursor, WireMetadata, WireMetadataCursor, WireSource,
 };
 use maka_agent_facts::{context::measure, language::Language};
 use maka_event_log::context::{
@@ -61,7 +61,7 @@ pub(crate) async fn capture(
         provider: &'a ProviderKind,
     }
     let policy = crate::runner::digest(&Policy {
-        renderer: "maka.semantic-render.v2",
+        renderer: "maka.semantic-render.v1",
         language,
         vision,
         provider,
@@ -135,14 +135,9 @@ impl PreparedHistory {
         tools: &[ToolDefinition],
         cancellation: &CancellationToken,
     ) -> Result<Prompt, RunError> {
-        let codec = maka_model::wire_codec(self.language, provider, options, tools)?;
-        let format = match provider.kind {
-            ProviderKind::OpenaiChatCompletions | ProviderKind::OpenaiCompatible { .. } => {
-                WireFormat::ChatCompletions
-            }
-            ProviderKind::OpenaiResponses | ProviderKind::OpenResponses(_) => WireFormat::Responses,
-            ProviderKind::Anthropic => WireFormat::Anthropic,
-        };
+        let encoding = maka_model::WireEncoding::new(self.language, provider, options, tools)?;
+        let codec = encoding.codec().to_owned();
+        let format = encoding.format();
         let build = self
             .log
             .prepare_wire_view(&self.view, format, &codec)
@@ -187,14 +182,10 @@ impl PreparedHistory {
                         .prepared_prior_mcp_ids(&self.view, &group, &needed)
                         .await?
                 };
-                let wire = maka_model::prepare_wire_group_with_context(
+                let wire = encoding.prepare_group(
                     messages,
-                    self.language,
-                    provider,
-                    options,
-                    tools,
                     &maka_model::PreparationContext { anthropic_mcp_ids },
-                )?;
+                );
                 self.log
                     .put_prepared_wire_group(&build, &group, wire)
                     .await?;

@@ -123,11 +123,6 @@ impl<T> Runtime<T> {
         Ok(mount)
     }
 
-    pub fn mount_contract(&self, mount: &Mount) -> Result<&Contract, Error> {
-        let mounted = self.mounted(mount)?;
-        Ok(&self.owner(&mounted.capability.provider)?.exports[&mounted.capability.export].contract)
-    }
-
     /// Used for initialization and mounted callbacks. The embedding additionally
     /// checks callback/mount revisions and invocation authority before dispatch.
     pub fn admit_mount(&mut self, mount: &Mount) -> Result<Execution<T>, Error> {

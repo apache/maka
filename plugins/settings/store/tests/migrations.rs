@@ -121,11 +121,9 @@ async fn concurrent_plugin_owners_initialize_one_fresh_configuration_database() 
 }
 
 #[test]
-fn complete_configuration_migration_preserves_original_rows_and_authority_constraints() {
+fn current_configuration_enforces_authority_constraints_without_content_quotas() {
     let db = Connection::open_in_memory().unwrap();
     db.execute_batch(include_str!("../migrations/0001_configuration.sql"))
-        .unwrap();
-    db.execute_batch(include_str!("../migrations/0002_shell_titles.sql"))
         .unwrap();
     db.execute_batch(
         "INSERT INTO pricing_overrides VALUES('provider:model', X'0102', '{\"modelKey\":\"provider:model\"}');
@@ -143,61 +141,6 @@ fn complete_configuration_migration_preserves_original_rows_and_authority_constr
         [&access],
     )
     .unwrap();
-    db.execute_batch(include_str!(
-        "../migrations/0003_complete_configuration.sql"
-    ))
-    .unwrap();
-    assert_eq!(
-        db.query_row(
-            "SELECT document FROM access_credentials WHERE credential_id='access-original'",
-            [],
-            |row| row.get::<_, String>(0)
-        )
-        .unwrap(),
-        access
-    );
-    assert_eq!(
-        db.query_row("SELECT document FROM runtime_policy", [], |row| row
-            .get::<_, String>(0))
-            .unwrap(),
-        "{\"revision\":7}"
-    );
-    assert_eq!(
-        db.query_row(
-            "SELECT record_json FROM pricing_overrides WHERE model_key='provider:model'",
-            [],
-            |row| row.get::<_, String>(0)
-        )
-        .unwrap(),
-        "{\"modelKey\":\"provider:model\"}"
-    );
-    assert_eq!(
-        db.query_row(
-            "SELECT revision,secret FROM plugin_credentials",
-            [],
-            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<String>>(1)?))
-        )
-        .unwrap(),
-        (7, None)
-    );
-    assert_eq!(
-        db.query_row(
-            "SELECT document,revoked FROM plugin_authorizations WHERE id='original'",
-            [],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
-        )
-        .unwrap(),
-        ("{\"original\":true}".into(), 1)
-    );
-    assert_eq!(
-        db.query_row(
-            "SELECT completion_order FROM oauth_login_receipts WHERE attempt_id='original'",
-            [],
-            |row| row.get::<_, i64>(0)
-        )
-        .unwrap(),
-        42
-    );
     db.execute("INSERT INTO oauth_login_receipts(attempt_id,target,method,request_fingerprint,phase,connection) VALUES('next','{}','method','digest','{}','{}')",[]).unwrap();
     assert_eq!(db.last_insert_rowid(), 501);
     let large = serde_json::json!({"routingNotes":"route: east\n".repeat(12_000)}).to_string();

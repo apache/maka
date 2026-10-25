@@ -141,7 +141,7 @@ pub(crate) async fn read(
     }
     let identity = serde_json::to_vec(&opening.event.invocation)?;
     let mut digest = Sha256::new();
-    digest.update(b"maka.run-prefix.v2\0");
+    digest.update(b"maka.run-prefix.v1\0");
     digest.update(high_water.to_be_bytes());
     digest.update((identity.len() as u64).to_be_bytes());
     digest.update(identity);
@@ -177,7 +177,7 @@ pub(crate) async fn admitted_boundary(
     let bytes = serde_json::to_vec(&invocation)?;
     let count = sequence_number(count)?;
     let mut digest = Sha256::new();
-    digest.update(b"maka.run-prefix.v2\0");
+    digest.update(b"maka.run-prefix.v1\0");
     digest.update(count.to_be_bytes());
     digest.update((bytes.len() as u64).to_be_bytes());
     digest.update(bytes);

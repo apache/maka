@@ -1371,13 +1371,12 @@ async fn installed_javascript_service_is_a_real_model_tool_with_business_project
         let Page::Ready { chunks, .. } = fixture
             .session(&session)
             .await
-            .history_view(
+            .history_text(
                 &session,
                 through,
-                maka_event_log::transcript::HistoryWindow {
-                    position: Position::Start,
-                    include_thinking: false,
-                    view: maka_agent_ports::session::history::HistoryView::Text,
+                Position::Start,
+                false,
+                maka_event_log::transcript::HistoryLimits {
                     max_bytes: 8192,
                     max_chunks: Some(8),
                     max_json_bytes: 64 * 1024,
@@ -1417,13 +1416,13 @@ async fn installed_javascript_service_is_a_real_model_tool_with_business_project
                         .history_source(
                             &session,
                             through,
-                            maka_event_log::transcript::HistorySourceRead {
+                            maka_event_log::transcript::SourceSelection {
                                 locator: result.position,
                                 field,
                                 path: None,
-                                position,
-                                max_bytes: 13,
                             },
+                            position,
+                            13,
                         )
                         .await
                         .unwrap();
