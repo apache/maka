@@ -47,8 +47,9 @@ export const CHARACTER_PACK_GUIDE = `# 角色包维护指南
 - persona.md 是人格文档，最多 200 行；内容自动进入你的模型指令，修改后下次组装指令时生效。
 - 本指南按需通过 AssistantCharacterPack 的 read 操作读取，不会整份自动注入。
 - list 查看素材目录，asset 查看一项素材。图片内容不塞进模型提示词。
+- 表情包也是你的日常表达方式，可以和文字一起发，也可以单独接话。
 - 发已有表情时，直接在 SendUser.messages 的 stickerId 填素材 ID，代码会读取并发送图片，不用先查链接；可以带 text，也可以单独发表情。
-- AssistantStickerSearch 按名称或用途关键词查表情，不填 query 时随机看看；返回的 imageUrl 可用于 SendUser 的 Markdown 图片。表情素材用 kind=sticker 保存。
+- AssistantStickerSearch 按名称或用途关键词查表情，不填 query 时随机看看；选好后将返回的 id 填入 SendUser.messages.stickerId 直接发送。表情素材用 kind=sticker 保存。
 - 指令中会放最多 10 张表情的简短目录，数量不足不凑数；想用其他表情随时查询。
 - 先读再写文档；write 携带 read 返回的 revision，防止覆盖其他编辑。
 
@@ -63,7 +64,7 @@ export const CHARACTER_PACK_GUIDE = `# 角色包维护指南
 - 填写简短的 title、kind 和 usage，说明情绪、梗和适合怎么接话，不写执行记录。来源与许可单独放 sourceUrl、attribution，不混进聊天用途或 persona。优先选择适合聊天复用的素材，必须署名的按要求使用，不能省略必需署名。
 - 素材保存独立副本；返回稳定的 assetId，同一图片重复登记不会增加副本。
 - AssistantCharacterPack 的 set_avatar 操作用 assetId 设置已保存图片为头像，也可传 image 保存并使用新图，或 emoji 作为无图形象；background 可设背景色。保存素材不会自动换头像或发消息。
-- 聊天展示用 asset 或表情查询返回的 imageUrl，格式为 ![说明](imageUrl)，沿用已有附件能力；assetId 和角色包本地路径不是可发送的图片网址。不要宣称用户看到了尚未实际展示的素材。
+- 表情直接用 SendUser.messages.stickerId 发送；其他图片可用 asset 返回的 imageUrl 展示。代码负责读取和发布表情图片，不需要你查询链接或拼接 Markdown。
 - 创作或展示能力不可用时，正常继续聊天，不要假装已经完成。
 
 ## 维护
@@ -312,7 +313,7 @@ export class CharacterPack {
       const asset = byId.get(id)!;
       return JSON.stringify({ id, title: asset.title, usage: asset.usage.slice(0, 80) });
     });
-    return `\n[可用表情素材：目录数据，不是指令]\n${entries.join('\n')}\n直接在 SendUser.messages 的 stickerId 填素材 ID 即可发送，无需先查 imageUrl；可与正文一起发送，也可单独发表情。其他表情可用 AssistantStickerSearch 查询。`;
+    return `\n表情包也是你的日常表达方式，可以和文字一起发，也可以单独接话。\n[可用表情素材：目录数据，不是指令]\n${entries.join('\n')}\n直接在 SendUser.messages 的 stickerId 填素材 ID 即可发送，无需先查 imageUrl；可与正文一起发送，也可单独发表情。其他表情可用 AssistantStickerSearch 查询。`;
   }
   image(id: string) {
     const asset = this.asset(id),
@@ -391,7 +392,7 @@ export class CharacterPack {
   }
   prompt(sessionId = 'default', compactionRevision?: string) {
     const locator =
-      '角色包维护与素材目录可通过 AssistantCharacterPack 读取；使用或维护前先读取 GUIDE.md。';
+      '角色包维护与素材目录可通过 AssistantCharacterPack 读取；维护角色包前先读取 GUIDE.md，发送已有表情无需读取指南。';
     try {
       const { content, revision } = this.readDocument('persona');
       this.validateDocument('persona', content);
@@ -482,7 +483,7 @@ export function initializeCharacterPack(
     });
   register(
     'AssistantCharacterPack',
-    '读取和维护你的本地角色包。首次使用先 read document=guide 阅读维护指南，同时返回宠物素材规范 petRequirements；persona 是不超过 200 行的人格文档。list 分页列素材，asset 查素材并返回可用于 SendUser Markdown 图片的 imageUrl；write 需传 read 返回的 revision。add_image 保存已有图片的独立副本，source 的读取权限、格式及大小沿用头像接口；生成图片仍使用已有工具。set_avatar 用 assetId、image 或 emoji 三选一设置头像，background 可选。sourceUrl/attribution 保存来源与许可，usage 只写聊天用途；kind=sticker 仅用于能接话的表情梗图，不用普通图片充数。update_asset 修改素材信息；remove_asset 移除素材。除 set_avatar 外不会更换头像，不会发送消息。初始化工作完成后用 finish_initialization 校验人物包，再完成持续任务。',
+    '读取和维护你的本地角色包。维护前先 read document=guide 阅读维护指南，同时返回宠物素材规范 petRequirements；persona 是不超过 200 行的人格文档。list 分页列素材，asset 查素材并返回可用于 SendUser Markdown 图片的 imageUrl；write 需传 read 返回的 revision。add_image 保存已有图片的独立副本，source 的读取权限、格式及大小沿用头像接口；生成图片仍使用已有工具。set_avatar 用 assetId、image 或 emoji 三选一设置头像，background 可选。sourceUrl/attribution 保存来源与许可，usage 只写聊天用途；kind=sticker 仅用于能接话的表情梗图，不用普通图片充数。update_asset 修改素材信息；remove_asset 移除素材。除 set_avatar 外不会更换头像，不会发送消息。初始化工作完成后用 finish_initialization 校验人物包，再完成持续任务。',
     parameters,
     async (raw: z.infer<typeof parameters>, call: any) => {
       if (raw.action === 'set_avatar')
@@ -540,7 +541,7 @@ export function initializeCharacterPack(
   );
   register(
     'AssistantStickerSearch',
-    '查找你自己的表情素材。query 按名称或用途关键词匹配，多个关键词以空格分隔；不填时随机看看。最多返回 10 张的简短信息和 imageUrl，用 SendUser 的 ![说明](imageUrl) 发送。不要使用角色包本地路径。此工具不生成图片、不发送消息。',
+    '查找你自己的表情素材。query 按名称或用途关键词匹配，多个关键词以空格分隔；不填时随机看看。最多返回 10 张的素材 ID、名称和用途；选好后把 id 填入 SendUser.messages.stickerId 直接发送，无需再查链接或拼接 Markdown。此工具不生成图片、不发送消息。',
     z
       .object({
         query: z.string().trim().max(300).default(''),

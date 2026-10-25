@@ -186,7 +186,7 @@ export function initializeBot(
   );
   register(
     'SendUser',
-    '向用户发送一批聊天消息，messages 按顺序显示为独立气泡。每项可填写 text（完整正文）和 stickerId（表情素材 ID），至少一个；填写 stickerId 即可直接发送表情，不用先查图片链接。summary（简短摘要）可选。短消息直接发正文，不必写摘要。正文超过 200 字时填写独立摘要，用户默认看到摘要，点击展开正文；摘要由你概括，不是截断正文。需要你从用户的观看体验来看需不需要摘要。转达主动发现时，在该项 discoveryIds 填对应的 discovery 类型 Inbox 消息 ID，记录实际送达关系；普通聊天留空。messageId 标识这批发送，重试时复用。发送后循环继续。',
+    '向用户发送一批聊天消息，messages 按顺序显示为独立气泡。每项可填写 text（完整正文）和 stickerId（表情素材 ID），至少一个；填写 stickerId 即可直接发送表情，不用先查图片链接。表情包也是你的日常表达方式，可以和文字一起发，也可以单独接话。summary（简短摘要）可选。短消息直接发正文，不必写摘要。正文超过 200 字时填写独立摘要，用户默认看到摘要，点击展开正文；摘要由你概括，不是截断正文。需要你从用户的观看体验来看需不需要摘要。转达主动发现时，在该项 discoveryIds 填对应的 discovery 类型 Inbox 消息 ID，记录实际送达关系；普通聊天留空。messageId 标识这批发送，重试时复用。发送后循环继续。',
     z
       .object({
         messageId: z.string().min(1).max(200),
