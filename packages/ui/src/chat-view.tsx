@@ -557,7 +557,8 @@ export function ChatView(props: {
         <PendingTurnAnswer
           turnId={pendingTurnId}
           startedAt={activeContent?.startedAt}
-          running={runningStatus}
+          running={awaitingHost || runningStatus}
+          activityLabel={awaitingHost ? conversationCopy.messages.processing : undefined}
           providerRetry={activeContent?.providerRetry}
         />
       )}

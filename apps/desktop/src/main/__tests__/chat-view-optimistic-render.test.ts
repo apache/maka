@@ -111,6 +111,11 @@ test('a prompt on its way to the Host holds its Turn place beside a copy that di
   const document = render([failed, { ...OPTIMISTIC_BUBBLE, id: 'fresh' }]);
   const answer = document.querySelector('.maka-pending-turn[data-awaiting-host] .maka-assistant-answer');
   assert.ok(answer, 'the answer row is laid out ahead of the Host');
+  const processing = answer.querySelector('[role="status"]');
+  assert.equal(processing?.getAttribute('aria-label'), 'Working…');
+  assert.equal(processing?.textContent, 'Working…', 'submission is visibly processing before restoration or Host admission');
+  assert.equal(document.querySelectorAll('.maka-turn-processing').length, 1);
+  assert.equal(document.querySelector('.maka-turn-elapsed'), null, 'no execution clock is invented');
   assert.doesNotMatch(answer?.getAttribute('aria-label') ?? '', /1970/, 'no answer time is claimed before the Host starts one');
   assert.equal(render([failed]).querySelector('.maka-pending-turn'), null, 'nothing is on its way');
 });

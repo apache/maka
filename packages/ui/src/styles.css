@@ -250,8 +250,6 @@
 /* local: VStack owns the column and gap; this is only the flex-child floor
    that lets long diagnostics shrink inside the ChatMessage column. */
 .maka-assistant-answer-content { min-width: 0; }
-/* Holds the answer's place, unseen and unannounced, until the Host names the Turn. */
-.maka-pending-turn[data-awaiting-host] .maka-assistant-answer { visibility: hidden; }
 .maka-subagent-session-label,
 .maka-subagent-session-end {
   display: flex;

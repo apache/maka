@@ -3109,10 +3109,21 @@ async function verifySendKeepsPrompt(canvasElement: HTMLElement): Promise<void> 
   await userEvent.keyboard('{Enter}');
   await arrival;
   expect(canvasElement.querySelector('[data-transient-message-id="msg-tail-1"]')).not.toBeNull();
+  // Sending and external-session restoration must never leave a silent gap,
+  // even before a Host Turn or any assistant output has arrived.
+  const processing = () => canvasElement.querySelector('.maka-turn-processing')!;
+  await expect(processing()).toBeVisible();
+  await expect(processing()).toHaveAttribute('role', 'status');
+  await expect(canvasElement.querySelectorAll('.maka-turn-processing')).toHaveLength(1);
+  await expect(canvasElement.querySelector('.maka-turn-elapsed')).toBeNull();
   startHostTurn?.();
   await sample();
+  await expect(processing()).toBeVisible();
+  await expect(canvasElement.querySelectorAll('.maka-turn-processing')).toHaveLength(1);
   admitTailTurn?.();
   await sample();
+  await expect(processing()).toBeVisible();
+  await expect(canvasElement.querySelectorAll('.maka-turn-processing')).toHaveLength(1);
   expect(canvasElement.querySelector('[data-transient-message-id]')).toBeNull();
   expect(canvasElement.querySelector('[data-transcript-turn-id="turn-tail"] .maka-turn-processing')).not.toBeNull();
   expect(new Set(tops).size, JSON.stringify(tops)).toBe(1);
@@ -3132,6 +3143,7 @@ async function verifySendKeepsPrompt(canvasElement: HTMLElement): Promise<void> 
   await sample(1);
   settleTailTurn?.();
   await sample();
+  await expect(canvasElement.querySelector('.maka-turn-processing')).toBeNull();
   const reversal = Math.max(0, ...tops.slice(1).map((top, index) => top - tops[index]!));
   expect(reversal, JSON.stringify(tops)).toBe(0);
   expect(new Set(tops.slice(-13)).size, JSON.stringify(tops)).toBe(1);

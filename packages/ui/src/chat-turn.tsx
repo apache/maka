@@ -998,6 +998,8 @@ export function PendingTurnAnswer(props: {
   turnId?: string;
   startedAt?: number;
   running: boolean;
+  /** Local submission is already processing before the Host names its Turn. */
+  activityLabel?: string;
   providerRetry?: LiveProviderRetry;
 }) {
   const locale = useUiLocale();
@@ -1011,7 +1013,7 @@ export function PendingTurnAnswer(props: {
       className="maka-chat-message maka-assistant-answer"
     >
       <VStack gap={2} width="100%" className="maka-assistant-answer-content">
-        <TurnStatusBar status="running" running={props.running} startedAt={startedAt} providerRetry={props.providerRetry} />
+        <TurnStatusBar status="running" running={props.running} startedAt={startedAt} activityLabel={props.activityLabel} providerRetry={props.providerRetry} />
         {props.providerRetry && <ModelProviderRetryIndicator retry={props.providerRetry} />}
       </VStack>
       <TurnFooter turnId={props.turnId} actions={[]} live context={context} />

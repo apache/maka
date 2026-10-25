@@ -43,6 +43,11 @@ export type ExecutorReadiness =
   | 'restore_failed'
   | 'history_gap';
 
+/** Existing conversations restore their external connection as part of execution. */
+export function canExecuteExistingConversation(readiness: ExecutorReadiness | undefined): boolean {
+  return readiness === 'ready' || readiness === 'restorable' || readiness === 'restore_failed';
+}
+
 export interface ExecutorModelChoice {
   readonly id: string;
   readonly name: string;
