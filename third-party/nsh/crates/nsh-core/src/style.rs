@@ -944,6 +944,52 @@ impl TextStyle {
     }
 }
 
+/// What `fill` or `stroke` paints with (CSS's and SVG's `<paint>`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SvgPaint {
+    /// `none`: nothing.
+    None,
+    /// `currentColor`: the element's text color (`color`, inherited).
+    CurrentColor,
+    /// A color.
+    Color(Color),
+}
+
+/// SVG's paint properties, as CSS has them on any element and inherits
+/// them (`fill`, `stroke`, `strokeWidth`, `strokeDasharray`; `fill-*` /
+/// `stroke-*`): what the shapes a Rust component draws paint with (the
+/// marks of `nsh/base/plot`), read through a drawing's
+/// [`crate::canvas::ViewPaint`]s. Unset values inherit; at the root they
+/// are CSS's initial values, which the drawing names.
+#[derive(Debug, Clone, PartialEq, Default)]
+#[non_exhaustive]
+pub struct PaintStyle {
+    /// `fill`.
+    pub fill: Option<SvgPaint>,
+    /// `stroke`.
+    pub stroke: Option<SvgPaint>,
+    /// `strokeWidth`.
+    pub stroke_width: Option<Points>,
+    /// `strokeDasharray`: the dashes and gaps, empty for `none`.
+    pub stroke_dasharray: Option<Arc<[Points]>>,
+}
+
+impl PaintStyle {
+    /// These properties where set, `parent`'s (the inherited ones) where
+    /// not.
+    pub fn inherit(&self, parent: &PaintStyle) -> PaintStyle {
+        PaintStyle {
+            fill: self.fill.or(parent.fill),
+            stroke: self.stroke.or(parent.stroke),
+            stroke_width: self.stroke_width.or(parent.stroke_width),
+            stroke_dasharray: self
+                .stroke_dasharray
+                .clone()
+                .or_else(|| parent.stroke_dasharray.clone()),
+        }
+    }
+}
+
 /// A complete node style, split by consumer.
 #[derive(Debug, Clone)]
 pub struct Style {
@@ -953,6 +999,8 @@ pub struct Style {
     pub view: ViewStyle,
     /// Text properties.
     pub text: TextStyle,
+    /// SVG's paint properties (inherited, as text properties are).
+    pub paint: PaintStyle,
     /// Visual properties driven by native animation nodes; they override
     /// the static values while bound.
     pub animated: Vec<(crate::animation::AnimationProp, crate::animation::NodeId)>,
@@ -1179,6 +1227,7 @@ impl Default for Style {
             layout,
             view: ViewStyle::default(),
             text: TextStyle::default(),
+            paint: PaintStyle::default(),
             animated: Vec::new(),
             z_index: 0,
             vertical_align: VerticalAlign::Baseline,
@@ -1413,6 +1462,10 @@ style_keys! {
     TextAlign = "textAlign": Text "\"auto\" | \"left\" | \"center\" | \"right\" | \"justify\"",
     PlaceholderColor = "placeholderColor": Text "ColorValue" "An input's placeholder (`placeholder:text-*`).",
     SelectionColor = "selectionColor": Text "ColorValue" "An input's caret and selection, a selectable text's selection highlight (`selection:bg-*`).",
+    Fill = "fill": View "\"none\" | \"currentColor\" | ColorValue" "What the shapes a component draws are filled with (CSS's and SVG's `fill`, inherited; `fill-*`): a chart's areas.",
+    Stroke = "stroke": View "\"none\" | \"currentColor\" | ColorValue" "What the outlines of the shapes a component draws are painted with (CSS's and SVG's `stroke`, inherited; `stroke-<color>`): a chart's lines and grid lines.",
+    StrokeWidth = "strokeWidth": View "number | string" "The width of those outlines, a length (CSS's and SVG's `stroke-width`, inherited, 1 by default; `stroke-<number>`).",
+    StrokeDasharray = "strokeDasharray": View "number | string" "The dashes and gaps of those outlines, lengths separated by spaces or commas, an odd list repeated, or `none` (CSS's and SVG's `stroke-dasharray`, inherited).",
     VerticalAlign = "verticalAlign": View "\"baseline\" | \"text-top\" | \"text-bottom\" | \"middle\"" "Where a view or image inside a `<Text>` sits in its line (CSS `vertical-align`, `align-*`): its bottom on the baseline (the default), its top or bottom at the top or bottom of the text's font, or its middle half the font's x height above the baseline. The line grows to hold it.",
 }
 
@@ -1782,6 +1835,52 @@ fn color(v: StyleValue<'_>) -> Result<Option<Color>, StyleError> {
         StyleValue::Null => Ok(None),
         StyleValue::Number(_) => Err(StyleError::InvalidValue),
     }
+}
+
+/// A `fill` / `stroke` value; `inherit` is unset, since they inherit.
+fn svg_paint(v: StyleValue<'_>) -> Result<Option<SvgPaint>, StyleError> {
+    let StyleValue::Str(s) = v else {
+        return match v {
+            StyleValue::Null => Ok(None),
+            _ => Err(StyleError::InvalidValue),
+        };
+    };
+    let s = s.trim();
+    Ok(if s.eq_ignore_ascii_case("none") {
+        Some(SvgPaint::None)
+    } else if s.eq_ignore_ascii_case("currentcolor") {
+        Some(SvgPaint::CurrentColor)
+    } else if s.eq_ignore_ascii_case("inherit") {
+        None
+    } else {
+        Some(SvgPaint::Color(
+            Color::parse(s).ok_or(StyleError::InvalidValue)?,
+        ))
+    })
+}
+
+/// A `strokeDasharray` value: lengths (no negatives) separated by commas
+/// and / or spaces, or `none` (empty); one whose lengths add up to zero is
+/// a solid line, as in SVG.
+fn dasharray(v: StyleValue<'_>) -> Result<Option<Arc<[Points]>>, StyleError> {
+    let lengths: Vec<Points> = match v {
+        StyleValue::Null => return Ok(None),
+        StyleValue::Number(n) if n >= 0.0 => vec![px(n)],
+        StyleValue::Number(_) => return Err(StyleError::InvalidValue),
+        StyleValue::Str(s) if s.trim().eq_ignore_ascii_case("none") => Vec::new(),
+        StyleValue::Str(s) => s
+            .split(|c: char| c == ',' || c.is_whitespace())
+            .filter(|part| !part.is_empty())
+            .map(|part| match css::length(part) {
+                Some(n) if n >= 0.0 => Ok(px(n)),
+                _ => Err(StyleError::InvalidValue),
+            })
+            .collect::<Result<_, _>>()?,
+    };
+    if lengths.iter().all(|l| l.0 == 0.0) {
+        return Ok(Some(Arc::from([])));
+    }
+    Ok(Some(lengths.into()))
 }
 
 fn keyword<'a>(v: StyleValue<'a>) -> Result<Option<&'a str>, StyleError> {
@@ -2396,6 +2495,20 @@ impl Style {
 
             // Text
             StyleKey::Color => self.text.color = color(value)?,
+            StyleKey::Fill => self.paint.fill = svg_paint(value)?,
+            StyleKey::Stroke => self.paint.stroke = svg_paint(value)?,
+            StyleKey::StrokeWidth => {
+                self.paint.stroke_width = match value {
+                    StyleValue::Null => None,
+                    StyleValue::Number(n) if n >= 0.0 => Some(px(n)),
+                    StyleValue::Str(s) => match css::length(s) {
+                        Some(n) if n >= 0.0 => Some(px(n)),
+                        _ => return Err(StyleError::InvalidValue),
+                    },
+                    StyleValue::Number(_) => return Err(StyleError::InvalidValue),
+                }
+            }
+            StyleKey::StrokeDasharray => self.paint.stroke_dasharray = dasharray(value)?,
             StyleKey::FontSize => self.text.font_size = opt_points(value)?,
             StyleKey::FontWeight => self.text.font_weight = font_weight(value)?,
             StyleKey::LineHeight => {
@@ -2757,6 +2870,39 @@ impl Style {
 mod tests {
     use super::*;
     use crate::geometry::{relative, size};
+
+    /// `fill`, `stroke`, `strokeWidth` and `strokeDasharray` take what CSS
+    /// takes for them.
+    #[test]
+    fn svg_paint_properties() {
+        let mut s = Style::default();
+        s.set("fill", StyleValue::Str("#ff0000")).unwrap();
+        s.set("stroke", StyleValue::Str("currentColor")).unwrap();
+        s.set("strokeWidth", StyleValue::Str("2px")).unwrap();
+        s.set("strokeDasharray", StyleValue::Str("4, 2 1")).unwrap();
+        assert_eq!(s.paint.fill, Some(SvgPaint::Color(Color(0xff00_00ff))));
+        assert_eq!(s.paint.stroke, Some(SvgPaint::CurrentColor));
+        assert_eq!(s.paint.stroke_width, Some(px(2.0)));
+        assert_eq!(
+            s.paint.stroke_dasharray.as_deref(),
+            Some(&[px(4.0), px(2.0), px(1.0)][..])
+        );
+        s.set("strokeDasharray", StyleValue::Number(3.0)).unwrap();
+        assert_eq!(s.paint.stroke_dasharray.as_deref(), Some(&[px(3.0)][..]));
+        // `none`, and dashes that add up to nothing: a solid line.
+        for none in ["none", "0 0"] {
+            s.set("strokeDasharray", StyleValue::Str(none)).unwrap();
+            assert_eq!(s.paint.stroke_dasharray.as_deref(), Some(&[][..]));
+        }
+        s.set("fill", StyleValue::Str("none")).unwrap();
+        assert_eq!(s.paint.fill, Some(SvgPaint::None));
+        // Negative lengths are invalid, as in CSS.
+        assert!(s.set("strokeWidth", StyleValue::Number(-1.0)).is_err());
+        assert!(s.set("strokeDasharray", StyleValue::Str("4 -2")).is_err());
+        assert!(s.set("fill", StyleValue::Str("nope")).is_err());
+        s.set("stroke", StyleValue::Null).unwrap();
+        assert_eq!(s.paint.stroke, None);
+    }
 
     #[test]
     fn parse_colors() {

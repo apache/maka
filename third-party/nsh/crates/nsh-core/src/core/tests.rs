@@ -10667,6 +10667,72 @@ mod painter {
         assert!(!p.stroke_contains(&top, at(50.0, 5.0)));
     }
 
+    /// A drawing painting with its view's style: the stroke, width and
+    /// dashes of the canvas's own style, the fill `currentColor`, the text
+    /// color the canvas inherits.
+    #[component]
+    fn ViewPainted() -> impl IntoElement {
+        use crate::{PatchValue, StyleDecl, StyleKey, SvgPaint};
+        let set = |key, value: &str| StyleDecl::Set(key, PatchValue::Str(value.into()));
+        let p = Painter::new()
+            .fill_style_from_view(SvgPaint::CurrentColor)
+            .stroke_style_from_view(SvgPaint::None)
+            .line_width_from_view()
+            .line_dash_from_view()
+            .fill_rect(0.0, 0.0, 10.0, 10.0);
+        view()
+            .inline_style(crate::ui::Style::from_decls([set(
+                StyleKey::Color,
+                "#00ff00",
+            )]))
+            .child(canvas(p).inline_style(crate::ui::Style::from_decls([
+                set(StyleKey::Stroke, "#ff0000"),
+                set(StyleKey::StrokeWidth, "3"),
+                set(StyleKey::StrokeDasharray, "2 1"),
+            ])))
+            .child(canvas(
+                Painter::new()
+                    .fill_style_from_view(SvgPaint::None)
+                    .stroke_style_from_view(SvgPaint::CurrentColor)
+                    .line_width_from_view()
+                    .line_dash_from_view(),
+            ))
+    }
+
+    #[test]
+    fn drawings_paint_with_their_views_style() {
+        let mut c = core();
+        c.mount_root(&crate::ui::Root::new::<ViewPainted>(|| ()));
+        let batch = c.commit().unwrap();
+        let drawings: Vec<_> = batch
+            .items
+            .iter()
+            .filter_map(|i| match i {
+                MountItem::Canvas { drawing, .. } => Some(drawing.clone()),
+                _ => None,
+            })
+            .collect();
+        let [styled, plain] = &drawings[..] else {
+            panic!("{drawings:?}")
+        };
+        let green = crate::style::Color(0x00ff_00ff);
+        assert_eq!(styled.ops[0], CanvasOp::FillStyle(Paint::Color(green)));
+        assert_eq!(
+            styled.ops[1],
+            CanvasOp::StrokeStyle(Paint::Color(crate::style::Color(0xff00_00ff)))
+        );
+        assert_eq!(styled.ops[2], CanvasOp::LineWidth(Num::Const(3.0)));
+        assert_eq!(styled.ops[3], CanvasOp::LineDash([px(2.0), px(1.0)].into()));
+        // Nothing set: the drawing's initial paints, CSS's width of 1 and a
+        // solid line.
+        assert_eq!(
+            plain.ops[0],
+            CanvasOp::FillStyle(Paint::Color(crate::style::Color::TRANSPARENT))
+        );
+        assert_eq!(plain.ops[1], CanvasOp::StrokeStyle(Paint::Color(green)));
+        assert_eq!(plain.ops[2], CanvasOp::LineWidth(Num::Const(1.0)));
+        assert_eq!(plain.ops[3], CanvasOp::LineDash([].into()));
+    }
     /// A label placed by its measured width, gradients, a stroked SVG path
     /// and an operation built by hand reading an animated value.
     #[component]

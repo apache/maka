@@ -761,6 +761,30 @@ pub struct Drawing {
     /// assistive technologies and UI tests ([`CanvasNode`]), in reading
     /// order.
     pub nodes: Vec<CanvasNode>,
+    /// The operations whose value is the canvas view's style rather than
+    /// one of their own, by index in `ops`: the core gives them the
+    /// view's paint properties ([`crate::style::PaintStyle`], inherited
+    /// from the views around it) before a platform gets the drawing
+    /// ([`Drawing::painted`]), so what a Rust component draws follows the
+    /// app's `fill-*` / `stroke-*` classes and the appearance without
+    /// being recorded again.
+    pub view_paints: Vec<(u32, ViewPaint)>,
+}
+
+/// An operation of a [`Drawing`] that takes its value from the canvas
+/// view's paint properties ([`Drawing::view_paints`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ViewPaint {
+    /// `fillStyle` is the view's `fill`; where nothing sets one, this.
+    Fill(crate::style::SvgPaint),
+    /// `strokeStyle` is the view's `stroke`; where nothing sets one, this.
+    Stroke(crate::style::SvgPaint),
+    /// `lineWidth` is the view's `strokeWidth` (1 where nothing sets one,
+    /// CSS's initial value).
+    StrokeWidth,
+    /// The line dash is the view's `strokeDasharray` (solid where nothing
+    /// sets one).
+    StrokeDasharray,
 }
 
 /// A part of a canvas's drawing that assistive technologies and UI tests
@@ -814,6 +838,45 @@ impl CanvasNode {
 }
 
 impl Drawing {
+    /// The drawing as a platform replays it: its [`Drawing::view_paints`]
+    /// given the paint properties `paint` of its view, whose text color is
+    /// `current` (`currentColor`). `none` paints nothing (a transparent
+    /// paint).
+    pub fn painted(&self, paint: &crate::style::PaintStyle, current: Color) -> Drawing {
+        use crate::style::SvgPaint;
+        let color = |p: SvgPaint| {
+            Paint::Color(match p {
+                SvgPaint::None => Color::TRANSPARENT,
+                SvgPaint::CurrentColor => current,
+                SvgPaint::Color(c) => c,
+            })
+        };
+        let mut out = self.clone();
+        for &(at, view) in &self.view_paints {
+            let Some(op) = out.ops.get_mut(at as usize) else {
+                continue;
+            };
+            *op = match view {
+                ViewPaint::Fill(initial) => {
+                    CanvasOp::FillStyle(color(paint.fill.unwrap_or(initial)))
+                }
+                ViewPaint::Stroke(initial) => {
+                    CanvasOp::StrokeStyle(color(paint.stroke.unwrap_or(initial)))
+                }
+                ViewPaint::StrokeWidth => {
+                    CanvasOp::LineWidth(Num::Const(paint.stroke_width.map_or(1.0, |w| w.0)))
+                }
+                ViewPaint::StrokeDasharray => CanvasOp::LineDash(
+                    paint
+                        .stroke_dasharray
+                        .clone()
+                        .unwrap_or_else(|| Arc::from([])),
+                ),
+            };
+        }
+        out
+    }
+
     /// The slot of animated value `node`, adding it if new.
     pub fn slot(&mut self, node: crate::animation::NodeId) -> u16 {
         match self.slots.iter().position(|&n| n == node) {

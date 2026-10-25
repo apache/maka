@@ -37,7 +37,7 @@ use crate::{
         ROOT_ID, ResizeMode, ScreenAnimation, ScreenProp, ScrollProp, Tag,
     },
     props::{AccessibilityProp, EdgeInsets, GestureValues, LayoutAnimation, ViewProps},
-    style::{Color, EllipsizeMode, Style, StylePatch, TextAlign, TextStyle, ViewStyle},
+    style::{Color, EllipsizeMode, PaintStyle, Style, StylePatch, TextAlign, TextStyle, ViewStyle},
     tailwind::{ClassEnvironment, ClassList, ClassProps, Tailwind},
     text::{AttributedText, MeasureCache, ResolvedTextStyle, TextEngine, TextLayout},
     text_source::{SourceCollector, SourceGeometry, SourceMap},
@@ -401,6 +401,9 @@ struct Node {
     base_layout: Option<Box<taffy::Style>>,
     view_style: ViewStyle,
     text_style: TextStyle,
+    /// SVG's paint properties as written on the node (inherited by the
+    /// canvases inside it); `None` while it sets none.
+    paint: Option<Box<PaintStyle>>,
     animated: Vec<(AnimationProp, crate::animation::NodeId)>,
     /// What a canvas draws.
     drawing: Option<Arc<crate::canvas::Drawing>>,
@@ -632,6 +635,7 @@ impl Node {
             base_layout: None,
             view_style: ViewStyle::default(),
             text_style: TextStyle::default(),
+            paint: None,
             animated: Vec::new(),
             drawing: None,
             inline_style: StylePatch::default(),
@@ -2484,6 +2488,7 @@ impl<M: TextEngine> Core<M> {
             mut layout,
             mut view,
             text,
+            paint,
             animated,
             z_index,
             vertical_align,
@@ -2595,12 +2600,15 @@ impl<M: TextEngine> Core<M> {
         let passed_color = |node: &Node, text: &TextStyle| text.color.or(node.inherited_color);
         let color_passed = passed_color(node, &node.text_style) != passed_color(node, &text);
         let animation_changed = node.animated != animated;
+        let paint = (paint != PaintStyle::default()).then(|| Box::new(paint));
+        let paint_changed = node.paint != paint;
         let z_changed = node.z_index != z_index;
         // An attachment's place in its line is part of its block's text.
         let align_changed =
             node.vertical_align != vertical_align && node.inline && node.kind != Kind::Text;
         node.view_style = view;
         node.text_style = text;
+        node.paint = paint;
         node.animated = animated;
         node.z_index = z_index;
         node.vertical_align = vertical_align;
@@ -2672,6 +2680,11 @@ impl<M: TextEngine> Core<M> {
             let color = node.text_style.color.or(node.inherited_color);
             self.inherit_color(key, color);
         }
+        // A canvas painting with its view's style (`currentColor` too) sees
+        // the change, and so do the ones inside it, which inherit it.
+        if paint_changed || text_changed {
+            self.mark_view_painted(key);
+        }
         if flipped {
             self.update_children_direction(key);
             // Its own `direction` turned it: classes resolved for the other
@@ -2684,6 +2697,48 @@ impl<M: TextEngine> Core<M> {
             self.reproject_roots(key, false);
         }
         Ok(())
+    }
+
+    /// Marks the canvases at and inside `key` that paint with their view's
+    /// style ([`crate::canvas::Drawing::view_paints`]) to be sent again.
+    fn mark_view_painted(&mut self, key: Key) {
+        let mut stack = vec![key];
+        while let Some(k) = stack.pop() {
+            let node = &self.nodes[k as usize];
+            match node.kind {
+                Kind::Canvas => {
+                    if node
+                        .drawing
+                        .as_ref()
+                        .is_some_and(|d| !d.view_paints.is_empty())
+                    {
+                        self.mark(k, dirty::CANVAS);
+                    }
+                }
+                Kind::Text | Kind::RawText | Kind::Input => {}
+                _ => stack.extend_from_slice(&self.nodes[k as usize].children),
+            }
+        }
+    }
+
+    /// The paint properties canvas `key` paints with (its own over those
+    /// of the views around it, as CSS inherits them) and its text color,
+    /// for `currentColor`.
+    fn resolved_paint(&self, key: Key) -> (PaintStyle, crate::style::Color) {
+        let node = &self.nodes[key as usize];
+        let mut paint = node.paint.as_deref().cloned().unwrap_or_default();
+        let mut k = node.parent;
+        while k != NO_KEY {
+            if let Some(p) = self.nodes[k as usize].paint.as_deref() {
+                paint = paint.inherit(p);
+            }
+            k = self.nodes[k as usize].parent;
+        }
+        let color = node
+            .text_style
+            .color
+            .unwrap_or_else(|| self.inherited_text_style(key).color);
+        (paint, color)
     }
 
     /// The direction `key` lays out in: its own, else its parent's (the
@@ -4546,10 +4601,13 @@ impl<M: TextEngine> Core<M> {
             if flags & dirty::CANVAS != 0
                 && let Some(drawing) = &node.drawing
             {
-                self.mount.push(MountItem::Canvas {
-                    id,
-                    drawing: drawing.clone(),
-                });
+                let drawing = if drawing.view_paints.is_empty() {
+                    drawing.clone()
+                } else {
+                    let (paint, current) = self.resolved_paint(key);
+                    Arc::new(drawing.painted(&paint, current))
+                };
+                self.mount.push(MountItem::Canvas { id, drawing });
             }
             if flags & dirty::PAN != 0 {
                 let mut values = node.gestures;

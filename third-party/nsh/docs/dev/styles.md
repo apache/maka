@@ -121,6 +121,14 @@
   left / right property of a node right to left (`apply_direction`), so a class names the other side there
   (`utilities::directed`, applied with the node's resolved direction; such classes depend on `deps::RTL`), and the
   swap puts it back. `text-end` is React Native's `right`, which the swap makes the end.
+- **SVG paint** (`fill`, `stroke`, `strokeWidth`, `strokeDasharray`; Tailwind's `fill-*`, `stroke-<color>`,
+  `stroke-<number>`): CSS's properties of SVG shapes, which CSS lets any element set and inherits, so they mean what
+  they mean in a browser: a color, `none` or `currentColor` (the element's text color), a width that is a length, and
+  dashes and gaps as lengths separated by spaces or commas (an odd list repeated, `none`, or lengths adding up to 0
+  for a solid line). They style what Rust components draw on canvases (a chart's marks;
+  `Painter::*_from_view`, `canvas.md`), kept per node in `Style::paint` (`PaintStyle`) and resolved by the core when
+  it sends the drawing (`Core::resolved_paint`); views draw nothing with them. `fill-inherit` / `stroke-inherit` set
+  nothing (they inherit already).
 - **Text style inheritance** (CSS-like): a view's text properties (color, font, size, alignment, ...) pass to the texts and inputs
   inside it, so `class="text-white"` on a button styles its label. So do its `whitespace-*` / `text-wrap` / `text-nowrap`
   (and `truncate`'s no wrapping) and `select-*` classes, as CSS's `white-space` and `user-select: auto` (`Core::inherited_text_props`:

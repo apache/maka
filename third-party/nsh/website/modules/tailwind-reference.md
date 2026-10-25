@@ -415,6 +415,14 @@ Transitions run on the UI thread when a value changes, including when a variant 
 | `cursor-<name>`, `cursor-[<name>]` | `cursor`: `cursor-pointer`, `cursor-grab`, `cursor-not-allowed`, ... (every CSS cursor keyword) |
 | `select-none`, `select-text`, `select-auto` | text selection (see Typography) |
 
+## SVG
+
+| Class | Sets |
+|---|---|
+| `fill-<color>`, `fill-none`, `fill-current`, `fill-inherit` | `fill` (`fill-current` is `currentColor`) |
+| `stroke-<color>`, `stroke-none`, `stroke-current`, `stroke-inherit` | `stroke` |
+| `stroke-<number>`, `stroke-[<length>]` | `strokeWidth` |
+
 ## Images
 
 | Class | Sets |
