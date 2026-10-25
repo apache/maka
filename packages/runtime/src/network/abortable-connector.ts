@@ -19,7 +19,7 @@
 
 import { buildConnector } from 'undici';
 import type { Duplex } from 'node:stream';
-import { Socket } from 'node:net';
+import { isIP, Socket } from 'node:net';
 
 /** Unlike Node's socket signal option, release the listener on socket close. */
 export function abortSocket(signal: AbortSignal, socket: Duplex): () => void {
@@ -56,7 +56,13 @@ export function withSocketCancellation(
     let dispose = () => {};
     // Undici returns the socket immediately, although its TS signature is void.
     // Regression coverage exercises this boundary with real TCP/TLS sockets.
-    const socket = connect(options, (...args) => {
+    // SNI identifies DNS hosts, not IP literals. ProxyAgent supplies the proxy
+    // hostname as servername even for an IP, which Node 25 rejects before TCP.
+    const connectionOptions =
+      options.servername && isIP(options.servername)
+        ? { ...options, servername: undefined }
+        : options;
+    const socket = connect(connectionOptions, (...args) => {
       dispose();
       callback(...args);
     }) as unknown;

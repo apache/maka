@@ -36,6 +36,19 @@ import type { WorktreeName } from '../server/worktree-naming.js';
 const exec = promisify(execFile);
 import { createWorktree, fixture, testScript } from './worktree-fixture.js';
 
+test('draining keeps workspace validation available for admitted turns but rejects new bindings', async (t) => {
+  const f = await fixture(t, 'draining-readiness');
+  const worktree = await createWorktree(f.manager, f.project.id, 'draining-readiness');
+  await f.manager.bind('admitted-session', worktree.path);
+  f.manager.beginDrain();
+
+  await f.manager.assertReady('admitted-session', worktree.path);
+  await assert.rejects(f.manager.assertReady('admitted-session', f.repo), /binding has changed/);
+  await assert.rejects(f.manager.bind('new-session', worktree.path), /shutting down/);
+  await rm(worktree.path, { recursive: true });
+  await assert.rejects(f.manager.assertReady('admitted-session', worktree.path));
+});
+
 async function relinkFixture(t: TestContext) {
   const cleanup: Array<() => Promise<void>> = [];
   const f = await fixture({ after: (dispose) => cleanup.push(dispose) }, 'relinked-checkout');

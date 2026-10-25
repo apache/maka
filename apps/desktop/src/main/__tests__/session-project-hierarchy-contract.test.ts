@@ -54,16 +54,18 @@ describe('project-grouped session hierarchy', () => {
       'project sessions must not be inset from the project row',
     );
 
-    // What replaces the nest: the task title, which has no icon, is pushed past
-    // the project folder's 1rem box so titles still share one x.
-    const titleInsetRule = sidebarCss.match(
-      /\.maka-project-row\s+\.maka-session-row\s*>\s*div\s*>\s*\.astryx-side-nav-item\s*\{([^}]*)\}/,
+    // Every task reserves a leading icon slot, even without a worktree icon,
+    // matching the project folder's 1rem box without a second title inset.
+    const iconSlotRule = sidebarCss.match(
+      /\.maka-session-row-worktree-icon\s*\{([^}]*)\}/,
     );
-    assert.ok(titleInsetRule, 'project sessions must declare their title inset');
-    assert.match(
-      titleInsetRule[1] ?? '',
-      /padding-inline-start:\s*calc\(var\(--spacing-2\)\s*\+\s*1rem\s*\+\s*var\(--spacing-2\)\);/,
-      'the title inset must match the project row padding, folder icon and gap',
+    assert.ok(iconSlotRule, 'sessions must reserve a leading icon slot');
+    assert.match(iconSlotRule[1] ?? '', /width:\s*1rem;/);
+    assert.match(iconSlotRule[1] ?? '', /flex:\s*none;/);
+    assert.doesNotMatch(
+      sidebarCss,
+      /\.maka-project-row\s+\.maka-session-row\s*>\s*div\s*>\s*\.astryx-side-nav-item\s*\{[^}]*padding-inline-start:/,
+      'project sessions must not add another title inset on top of the icon slot',
     );
   });
 });

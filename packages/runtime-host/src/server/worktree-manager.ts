@@ -363,9 +363,17 @@ export class HostWorktreeManager {
     // Absolute-path Sessions can arrive after cleanup collected its Session
     // gates. Serialize admission with checkout mutations so those new Sessions
     // revalidate the directory after cleanup instead of running inside it.
-    return this.withWorkspaceCheckouts(cwd, () => this.assertCheckoutReady(sessionId, cwd));
+    // A durable follow-up can still need validation while the Host drains its
+    // root turns. Keep read-only checks alive without admitting new mutations.
+    return this.withWorkspaceCheckouts(cwd, () => this.assertCheckoutReady(sessionId, cwd), {
+      allowDuringDrain: true,
+    });
   }
-  private async withWorkspaceCheckouts<T>(cwd: string, operation: () => Promise<T>): Promise<T> {
+  private async withWorkspaceCheckouts<T>(
+    cwd: string,
+    operation: () => Promise<T>,
+    { allowDuringDrain = false }: { allowDuringDrain?: boolean } = {},
+  ): Promise<T> {
     const state = await this.read();
     // Folder projects and absolute-path Sessions can use any subdirectory.
     // Acquire ancestors first, including nested managed checkouts, so deletion
@@ -379,7 +387,9 @@ export class HostWorktreeManager {
     const acquire = (index: number): Promise<T> =>
       index === paths.length
         ? operation()
-        : this.run(`checkout:${paths[index]}`, () => acquire(index + 1));
+        : allowDuringDrain
+          ? this.queue(`checkout:${paths[index]}`, () => acquire(index + 1))
+          : this.run(`checkout:${paths[index]}`, () => acquire(index + 1));
     return acquire(0);
   }
   private async assertCheckoutReady(sessionId: string, cwd: string): Promise<void> {
