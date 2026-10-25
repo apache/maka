@@ -9,7 +9,9 @@
 //! are borderless, without a background or focus ring, with the config's
 //! font, colors and alignment. A single-line field shows its own
 //! placeholder (an attributed one); a text view has none, so a label under
-//! it shows the placeholder while the text is empty.
+//! it shows the placeholder while the text is empty. Single-line text
+//! and placeholders share the field editor's natural font metrics;
+//! multiline paragraphs use the configured line height.
 //!
 //! The fields are subclasses ([`define_field!`]) only to hear what AppKit
 //! tells a field's delegate's delegate: AppKit edits a field with the
@@ -1714,7 +1716,11 @@ fn placeholder(
     align: NSTextAlignment,
 ) -> Retained<NSAttributedString> {
     let color = placeholder_color(config);
-    let paragraph = paragraph(config, align);
+    // AppKit's single-line field editor uses the font's natural line
+    // height. A fixed paragraph height here would move only the
+    // placeholder's baseline, away from the text and caret.
+    let paragraph = NSMutableParagraphStyle::new();
+    paragraph.setAlignment(align);
     // SAFETY: immutable AppKit attribute keys with values of their
     // documented types (NSFont, NSColor, NSParagraphStyle).
     let keys = unsafe {
@@ -2032,6 +2038,42 @@ fn clip_utf16(s: &str, max: usize) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn single_line_placeholder_matches_native_editor_metrics() {
+        let font = objc2_app_kit::NSFont::systemFontOfSize(16.0);
+        for line_height in [0.0, 16.0, 24.0, 32.0] {
+            let mut config = InputConfig::default();
+            config.placeholder.push_str("Placeholder");
+            config.style.line_height = px(line_height);
+            for align in [
+                NSTextAlignment::Left,
+                NSTextAlignment::Center,
+                NSTextAlignment::Right,
+            ] {
+                let text = placeholder(&config, &font, align);
+                // SAFETY: index zero is in the nonempty attributed string;
+                // no effective range is requested.
+                let style = unsafe {
+                    text.attribute_atIndex_effectiveRange(
+                        NSParagraphStyleAttributeName,
+                        0,
+                        std::ptr::null_mut(),
+                    )
+                }
+                .unwrap()
+                .downcast::<objc2_app_kit::NSParagraphStyle>()
+                .unwrap();
+                assert_eq!(style.alignment(), align);
+                assert_eq!(style.minimumLineHeight(), 0.0);
+                assert_eq!(style.maximumLineHeight(), 0.0);
+            }
+            // Multiline editors keep the requested paragraph line height.
+            let style = paragraph(&config, NSTextAlignment::Left);
+            assert_eq!(style.minimumLineHeight(), line_height as CGFloat);
+            assert_eq!(style.maximumLineHeight(), line_height as CGFloat);
+        }
+    }
 
     #[test]
     fn max_length_clipping() {

@@ -203,6 +203,24 @@ fn mirror_native(native: &Native, rtl: bool) {
     }
 }
 
+/// Whether anything under `root` reaches past `limit` points from its left
+/// edge, in `root`'s space: what a scroll view's content legitimately
+/// reaches sideways. A scroll view inside scrolls on its own, so what it
+/// holds does not count. Stops at the first view that reaches.
+fn reaches_beyond(root: &UIView, limit: CGFloat) -> bool {
+    let mut pending: Vec<Retained<UIView>> = root.subviews().iter().collect();
+    while let Some(view) = pending.pop() {
+        let frame = view.convertRect_toView(view.bounds(), Some(root));
+        if frame.origin.x + frame.size.width > limit {
+            return true;
+        }
+        if view.downcast_ref::<UIScrollView>().is_none() {
+            pending.extend(view.subviews().iter());
+        }
+    }
+    false
+}
+
 /// The innermost visible subview of `view` at `point` (in `view`),
 /// interaction enabled or not, honoring `pointerEvents`.
 fn innermost(view: &UIView, point: CGPoint) -> Retained<UIView> {
@@ -1124,7 +1142,22 @@ impl Mounter {
                     },
                 ) = self.slot(id)
                 {
-                    let size = CGSize::new(size.width.0 as CGFloat, size.height.0 as CGFloat);
+                    let mut size = CGSize::new(size.width.0 as CGFloat, size.height.0 as CGFloat);
+                    // A vertical scroll view's content is laid out at the scroll
+                    // view's width (the module's contract). A content size wider
+                    // than that, with nothing inside reaching it, is a stale
+                    // extent from an earlier pass: the page would pan sideways
+                    // over nothing. What does reach it (an absolutely placed
+                    // row) keeps the size.
+                    let viewport = scroll.bounds().size.width;
+                    if !s.horizontal
+                        && s.zoom_view().is_none()
+                        && viewport > 0.0
+                        && size.width > viewport
+                        && !reaches_beyond(scroll, viewport + 0.5)
+                    {
+                        size = CGSize::new(viewport, size.height);
+                    }
                     match s.zoom_view() {
                         Some(zoom) => crate::zoom::layout(scroll, &zoom, size, s.centers()),
                         None => scroll.setContentSize(size),

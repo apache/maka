@@ -160,6 +160,10 @@ server client, log forwarding, the error overlay: `dev.rs`). The runtime needs m
 
 ## Keyboard
 
+Single-line fields center the native font's line in the input's content box. Their attributed placeholders use
+the same natural line height as the field editor, including when `text-base` supplies a larger `lineHeight` for
+layout. Multiline text views use the configured paragraph line height.
+
 A key goes to the window's first responder: a field's editor (the window's shared field editor, an `NSTextView`), a
 multiline input's `NshTextView`, a hosted view, or the surface's root. Menus' key equivalents (`app.rs`: Cmd+Q / H /
 Opt+Cmd+H, the Edit menu's Z / Shift+Z / X / C / V / A, Cmd+M, Ctrl+Cmd+F, Cmd+W) come first, matched by AppKit on
