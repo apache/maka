@@ -189,6 +189,9 @@ pub struct Environment {
     /// The backend supplies native keyboard-focus paths and matches scoped
     /// key bindings against them. This is a host capability, not a JS signal.
     pub native_focus_scopes: bool,
+    /// The backend matches fallback key bindings after native input handling.
+    /// This is a host capability, not a JS signal.
+    pub fallback_key_bindings: bool,
     /// The OS version: major and minor (iOS, desktops), Android's API level
     /// and 0.
     pub os_version: (u16, u16),
@@ -245,6 +248,7 @@ impl Default for Environment {
             os: Os::default(),
             renderer: Renderer::Native,
             native_focus_scopes: false,
+            fallback_key_bindings: false,
             os_version: (0, 0),
             idiom: Idiom::Phone,
             apple_keyboard: false,

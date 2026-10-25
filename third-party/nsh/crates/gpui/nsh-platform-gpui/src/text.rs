@@ -2878,6 +2878,8 @@ pub(crate) fn key(surface: &Rc<crate::surface::Surface>, event: &crate::input::K
         VK_C | VK_INSERT if command => {
             if let Some(text) = selected_text(&view) {
                 crate::system::set_clipboard_text(&text);
+            } else {
+                return crate::keymap::empty_copy_consumed(surface, event);
             }
         }
         VK_A if command => select_all(surface.key(), &view),

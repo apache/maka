@@ -63,7 +63,7 @@ pub(crate) fn set(surface: &Rc<Surface>, keymap: Arc<Keymap>) {
     let display = surface.root.display();
     for binding in keymap.bindings().iter().rev() {
         // Focus-scoped shortcuts are currently supported by the terminal.
-        if binding.within.is_some() {
+        if binding.within.is_some() || binding.fallback {
             continue;
         }
         // The dev host's Ctrl+R reloads, whatever the app binds.
@@ -134,7 +134,7 @@ pub(crate) fn press(surface: &Surface, stroke: Keystroke) -> bool {
         .bindings()
         .iter()
         .rev()
-        .find(|b| b.keystroke == stroke && fires(surface, b.in_text));
+        .find(|b| !b.fallback && b.keystroke == stroke && fires(surface, b.in_text));
     if let Some(binding) = fired {
         surface.event(
             ROOT_ID,

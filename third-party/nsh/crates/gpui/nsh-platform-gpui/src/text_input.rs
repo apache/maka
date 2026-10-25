@@ -2186,10 +2186,16 @@ pub(crate) fn key(surface: &Rc<Surface>, event: &KeyEvent) -> bool {
         _ if is_command(m, mac) => match vk {
             0x41 => moved(&|model| model.select_all()),
             0x43 => {
+                if !input.model.borrow().has_selection() {
+                    return crate::keymap::empty_copy_consumed(surface, event);
+                }
                 copy(&input, secure);
                 true
             }
             _ if vk == VK_INSERT && !m.shift => {
+                if !input.model.borrow().has_selection() {
+                    return crate::keymap::empty_copy_consumed(surface, event);
+                }
                 copy(&input, secure);
                 true
             }

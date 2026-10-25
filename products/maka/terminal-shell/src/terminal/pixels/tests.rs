@@ -531,7 +531,14 @@ fn native_editor_focus_and_text_do_not_wait_for_another_pixel_frame() {
                     ..EngineConfig::new(App::Js(Bundle::source(
                         r#"
                         import { mount } from 'nsh';
+                        import { Clipboard } from 'nsh/clipboard';
+                        import { keymap } from 'nsh/keymap';
                         import { element, prop, append } from 'nsh:rt';
+                        let fallbackCopies = 0;
+                        keymap.bind('ctrl+c', () => fallbackCopies++,
+                            { when: 'always', fallback: true });
+                        keymap.bind('f7', () => Clipboard.writeText(String(fallbackCopies)),
+                            { when: 'always' });
                         mount(() => {
                             const root = element('view');
                             prop(root, 'style', {flex: 1, paddingTop: 64, paddingLeft: 16});
@@ -595,6 +602,57 @@ fn native_editor_focus_and_text_do_not_wait_for_another_pixel_frame() {
     let restored = platform.input_caret_bounds().unwrap();
     assert!(restored.origin.y > px(64.0) && restored.bottom() <= px(112.0));
     assert_eq!(copied(), "hidden 你好😀");
+    assert_eq!(count.get(), initial_count.get());
+    let fallback_count = || {
+        stroke("f7", None, false);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            platform.pump_with_draw(false);
+            if let Some(text) = platform.take_clipboard_write().and_then(|item| item.text()) {
+                return text;
+            }
+            assert!(Instant::now() < deadline, "fallback count was not reported");
+        }
+    };
+    assert_eq!(
+        fallback_count(),
+        "0",
+        "native selection copy takes priority"
+    );
+    stroke("end", None, false);
+    stroke("c", None, true);
+    assert!(platform.take_clipboard_write().is_none());
+    assert_eq!(fallback_count(), "1", "empty copy reaches the fallback");
+    stroke("c", None, true);
+    stroke("c", None, true);
+    assert_eq!(fallback_count(), "3", "each physical press is independent");
+    let control_c = gpui::Keystroke {
+        key: "c".into(),
+        modifiers: gpui::Modifiers {
+            control: true,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    for is_held in [false, true, false] {
+        platform
+            .dispatch_input(PlatformInput::KeyDown(gpui::KeyDownEvent {
+                keystroke: control_c.clone(),
+                is_held,
+                prefer_character_input: false,
+            }))
+            .unwrap();
+    }
+    platform
+        .dispatch_input(PlatformInput::KeyUp(gpui::KeyUpEvent {
+            keystroke: control_c,
+        }))
+        .unwrap();
+    assert_eq!(
+        fallback_count(),
+        "4",
+        "held keys must not repeat the fallback"
+    );
     assert_eq!(count.get(), initial_count.get());
     application.update(|cx| {
         window

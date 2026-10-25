@@ -1411,25 +1411,8 @@ impl Surface {
                             .is_some_and(|(text, _, _)| text.is_selectable())
                 })
             });
-        if let Some(stroke) = keystroke(key) {
-            let focus_path = self.focus_path();
-            match self
-                .keymap
-                .find_with(stroke, editing, key.kind == KeyEventKind::Repeat, |node| {
-                    focus_path.contains(&node)
-                        && visible.get_or_init(|| self.visible_ids()).contains(&node)
-                }) {
-                KeyMatch::Fire(id) => {
-                    self.emit(
-                        ROOT_ID,
-                        EventKind::KeyCommand,
-                        EventPayload::Value(PayloadValue::Number(id as f64)),
-                    );
-                    return true;
-                }
-                KeyMatch::Held => return true,
-                KeyMatch::None => {}
-            }
+        if self.key_binding(key, editing, false, &visible) {
+            return true;
         }
         if let Some(id) = self.focus
             && self.node(id).is_some_and(|node| node.native.is_some())
@@ -1490,11 +1473,61 @@ impl Surface {
         if self.scroll_key(key) {
             return true;
         }
+        if self.key_binding(key, editing, true, &visible) {
+            return true;
+        }
         if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('c') {
             self.quit = true;
             return true;
         }
         false
+    }
+
+    fn key_binding(
+        &mut self,
+        key: KeyEvent,
+        editing: bool,
+        fallback: bool,
+        visible: &std::cell::OnceCell<Vec<NodeId>>,
+    ) -> bool {
+        let found = self.find_key_binding(key, editing, fallback, visible);
+        if let KeyMatch::Fire(id) = found {
+            self.emit(
+                ROOT_ID,
+                EventKind::KeyCommand,
+                EventPayload::Value(PayloadValue::Number(id as f64)),
+            );
+        }
+        found.consumed()
+    }
+
+    fn find_key_binding(
+        &self,
+        key: KeyEvent,
+        editing: bool,
+        fallback: bool,
+        visible: &std::cell::OnceCell<Vec<NodeId>>,
+    ) -> KeyMatch {
+        let Some(stroke) = keystroke(key) else {
+            return KeyMatch::None;
+        };
+        let focus_path = self.focus_path();
+        let within = |node| {
+            focus_path.contains(&node) && visible.get_or_init(|| self.visible_ids()).contains(&node)
+        };
+        let repeat = key.kind == KeyEventKind::Repeat;
+        if fallback {
+            self.keymap
+                .find_fallback_with(stroke, editing, repeat, within)
+        } else {
+            self.keymap.find_with(stroke, editing, repeat, within)
+        }
+    }
+
+    /// A copy with no selected range remains a native no-op unless the app
+    /// explicitly supplied a fallback for this keystroke.
+    pub(crate) fn empty_copy_consumed(&self, key: KeyEvent) -> bool {
+        self.find_key_binding(key, true, true, &std::cell::OnceCell::new()) == KeyMatch::None
     }
 
     fn input_key(&mut self, id: NodeId, key: KeyEvent) -> bool {
@@ -1524,6 +1557,9 @@ impl Surface {
                     false
                 }),
                 Some('c') => {
+                    if node.editor.selected_range().is_empty() {
+                        return self.empty_copy_consumed(key);
+                    }
                     if !config.secure {
                         self.write_clipboard(node.editor.selected().to_owned());
                     }
@@ -1662,7 +1698,13 @@ impl Surface {
                     editor.delete(key.code == KeyCode::Backspace, true, config)
                 }),
             KeyCode::Insert if command => {
-                if let Some(node) = self.node(id).filter(|n| !n.input.secure) {
+                let Some(node) = self.node(id) else {
+                    return false;
+                };
+                if node.editor.selected_range().is_empty() {
+                    return self.empty_copy_consumed(key);
+                }
+                if !node.input.secure {
                     self.write_clipboard(node.editor.selected().to_owned());
                 }
             }
@@ -1701,6 +1743,9 @@ impl Surface {
         let extend = key.modifiers.contains(KeyModifiers::SHIFT);
         match key.code {
             KeyCode::Char('c' | 'C') if command => {
+                if node.editor.selected_range().is_empty() {
+                    return self.empty_copy_consumed(key);
+                }
                 let text = node
                     .editor
                     .selected()
@@ -5325,6 +5370,85 @@ mod tests {
             items: vec![MountItem::Remove { id: 6 }],
         });
         assert_eq!(surface.focused(), Some(2));
+    }
+
+    #[test]
+    fn fallback_copy_keeps_native_selection_and_fires_once_for_an_empty_range() {
+        use nsh_core::keymap::{KeyBinding, Keymap, When};
+        use std::sync::Arc;
+
+        let mut surface = form();
+        surface.clipboard = "existing clipboard".into();
+        key(&mut surface, KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert_eq!(surface.clipboard, "existing clipboard");
+        assert!(!surface.should_quit());
+
+        let mut fallback = KeyBinding::new(
+            99,
+            Keystroke::parse_with("ctrl+c", false).unwrap(),
+            When::Always,
+            false,
+        );
+        fallback.fallback = true;
+        surface.keymap = Arc::new(Keymap::new(vec![fallback]));
+        surface.handle_event(Event::Paste("copy 你好".into()));
+        key(&mut surface, KeyCode::Char('a'), KeyModifiers::CONTROL);
+        surface.events.clear();
+        key(&mut surface, KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert_eq!(surface.clipboard, "copy 你好");
+        let commands = |surface: &Surface| {
+            surface
+                .events
+                .iter()
+                .filter_map(|event| match event {
+                    SurfaceEvent::Event(
+                        ROOT_ID,
+                        EventKind::KeyCommand,
+                        EventPayload::Value(PayloadValue::Number(id)),
+                    ) => Some(*id as u32),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(commands(&surface), Vec::<u32>::new());
+        key(&mut surface, KeyCode::Right, KeyModifiers::NONE);
+        surface.events.clear();
+        key(&mut surface, KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert_eq!(commands(&surface), [99]);
+        assert_eq!(surface.clipboard, "copy 你好");
+        surface.events.clear();
+        surface.handle_event(Event::Key(KeyEvent::new_with_kind(
+            KeyCode::Char('c'),
+            KeyModifiers::CONTROL,
+            KeyEventKind::Repeat,
+        )));
+        surface.handle_event(Event::Key(KeyEvent::new_with_kind(
+            KeyCode::Char('c'),
+            KeyModifiers::CONTROL,
+            KeyEventKind::Release,
+        )));
+        assert_eq!(commands(&surface), Vec::<u32>::new());
+        key(&mut surface, KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert_eq!(commands(&surface), [99]);
+
+        surface.events.clear();
+        let mut scoped = KeyBinding::new(88, fallback.keystroke, When::Always, false);
+        scoped.within = Some(2);
+        surface.keymap = Arc::new(Keymap::new(vec![scoped, fallback]));
+        key(&mut surface, KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert_eq!(commands(&surface), [88]);
+        assert_eq!(surface.clipboard, "copy 你好");
+
+        surface.keymap = Arc::new(Keymap::new(vec![fallback]));
+        surface.node_mut(2).unwrap().input.secure = true;
+        key(&mut surface, KeyCode::Char('a'), KeyModifiers::CONTROL);
+        surface.handle_event(Event::Paste("private".into()));
+        key(&mut surface, KeyCode::Char('a'), KeyModifiers::CONTROL);
+        surface.events.clear();
+        key(&mut surface, KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert_eq!(commands(&surface), Vec::<u32>::new());
+        assert_eq!(surface.clipboard, "copy 你好");
+        assert!(!surface.should_quit());
     }
 
     #[test]

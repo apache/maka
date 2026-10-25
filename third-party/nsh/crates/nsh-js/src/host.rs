@@ -1988,6 +1988,60 @@ const report = (v) => text(String(v));
     }
 
     #[test]
+    fn fallback_shortcuts_require_support_and_deliver_their_handler_after_native_input() {
+        use nsh_core::keymap::{KeyMatch, Keystroke};
+
+        let host = Host::new().unwrap();
+        host.eval_source(
+            r#"import { keymap } from "nsh/keymap";
+            globalThis.keymap = keymap;
+            globalThis.fallbackError = "";
+            globalThis.fallbackHits = 0;
+            try { keymap.bind("ctrl+c", () => {}, { when: "always", fallback: true }); }
+            catch (error) { fallbackError = `${error.name}: ${error.message}`; }"#,
+        )
+        .unwrap();
+        assert_eq!(
+            host.cx
+                .with(|cx| cx.globals().get::<_, String>("fallbackError").unwrap()),
+            "TypeError: keymap.bind fallback: requires native fallback keyboard shortcuts"
+        );
+        host.set_environment(&Environment {
+            fallback_key_bindings: true,
+            ..Environment::default()
+        });
+        host.eval_source(
+            r#"keymap.bind("ctrl+c", () => fallbackHits++, { when: "always", fallback: true });"#,
+        )
+        .unwrap();
+        let table = ops(&host)
+            .into_iter()
+            .find_map(|op| match op {
+                Op::SetProp {
+                    id: ROOT_ID,
+                    prop: Prop::Keymap(table),
+                } => Some(table),
+                _ => None,
+            })
+            .expect("mounted fallback keymap");
+        let stroke = Keystroke::parse("ctrl+c", nsh_core::platform::Os::Linux).unwrap();
+        assert_eq!(table.find(stroke, true, false), KeyMatch::None);
+        let KeyMatch::Fire(id) = table.find_fallback_with(stroke, true, false, |_| false) else {
+            panic!("fallback did not match the unhandled input key");
+        };
+        host.dispatch_event(
+            ROOT_ID,
+            EventKind::KeyCommand,
+            &EventPayload::Value(nsh_core::PayloadValue::Number(id as f64)),
+        );
+        assert_eq!(
+            host.cx
+                .with(|cx| cx.globals().get::<_, i32>("fallbackHits").unwrap()),
+            1
+        );
+    }
+
+    #[test]
     fn native_focus_support_is_available_before_the_first_render() {
         let host = Host::new().unwrap();
         host.set_environment(&Environment {

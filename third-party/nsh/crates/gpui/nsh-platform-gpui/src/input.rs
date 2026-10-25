@@ -1002,6 +1002,7 @@ pub(crate) fn key(surface: &Rc<Surface>, event: KeyEvent) -> bool {
         // it saw no other key: swallow the release once Alt + key was ours.
         return event.vk == VK_MENU && input.alt_combo.replace(false);
     }
+    let repeat = crate::keymap::pressed(surface, &event);
     // The window's shortcuts (full screen, the dev host's reload) work
     // wherever the focus is.
     let shortcut = crate::chrome::window_key(surface, &event)
@@ -1009,7 +1010,7 @@ pub(crate) fn key(surface: &Rc<Surface>, event: KeyEvent) -> bool {
     let editing = crate::text_input::focused(surface).is_some();
     let handled = shortcut
         || crate::system::key(surface, &event)
-        || crate::keymap::key(surface, &event, editing)
+        || crate::keymap::key(surface, &event, editing, repeat, false)
         || crate::chrome::shortcut(surface, &event)
         || crate::text_input::key(surface, &event)
         || crate::text::key(surface, &event)
@@ -1020,7 +1021,8 @@ pub(crate) fn key(surface: &Rc<Surface>, event: KeyEvent) -> bool {
             let (x, y) = input.last.get().unwrap_or((-1.0, -1.0));
             crate::scroll::key(surface, &event, x, y)
         }
-        || tab(surface, &event);
+        || tab(surface, &event)
+        || crate::keymap::key(surface, &event, editing, repeat, true);
     if handled && event.modifiers.alt {
         input.alt_combo.set(true);
     }
@@ -1039,10 +1041,12 @@ pub(crate) fn component_key(surface: &Rc<Surface>, event: KeyEvent) -> bool {
         crate::keymap::released(surface, &event);
         return event.vk == VK_MENU && surface.input.alt_combo.replace(false);
     }
+    let repeat = crate::keymap::pressed(surface, &event);
     let handled = crate::chrome::window_key(surface, &event)
         || surface.shortcuts.borrow().iter().any(|f| f(&event))
-        || crate::keymap::key(surface, &event, true)
-        || crate::chrome::shortcut(surface, &event);
+        || crate::keymap::key(surface, &event, true, repeat, false)
+        || crate::chrome::shortcut(surface, &event)
+        || crate::keymap::key(surface, &event, true, repeat, true);
     if handled && event.modifiers.alt {
         surface.input.alt_combo.set(true);
     }

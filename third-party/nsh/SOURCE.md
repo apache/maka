@@ -76,6 +76,13 @@ text/selection undo snapshots. Plain text remains authoritative, and IME
 preedit retains its existing separate display mapping. This is a local input
 capability, not a Maka-specific parser or a hidden rich-text document format.
 
+The terminal and GPUI backends support `keymap.bind(..., {fallback: true})`.
+These bindings run after native controls, text editing, selection and navigation
+have left a key unhandled, preserving native copy and earlier scoped bindings.
+The backends declare this capability through `Environment.fallback_key_bindings`;
+unsupported hosts reject fallback bindings. This local adaptation supplies a
+generic input phase; application interrupt and exit policy remains with Maka.
+
 Maka's workspace uses these local crates, including NSH's offscreen renderer and
 image codec; changing them here changes the code built and tested with Maka.
 

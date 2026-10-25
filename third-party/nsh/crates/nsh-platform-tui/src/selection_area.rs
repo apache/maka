@@ -277,8 +277,10 @@ impl Surface {
             KeyCode::Char('c' | 'C') | KeyCode::Insert if command => {
                 if !active.model.is_empty() {
                     copy = Some(active.model.text(&texts));
+                    true
+                } else {
+                    self.empty_copy_consumed(key)
                 }
-                true
             }
             KeyCode::Char('a' | 'A') if command => {
                 active.model.select_all(&texts);

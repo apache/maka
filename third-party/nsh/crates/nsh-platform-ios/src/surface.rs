@@ -333,6 +333,7 @@ impl RootView {
             os: nsh_engine::Os::Ios,
             renderer: nsh_engine::Renderer::Native,
             native_focus_scopes: false,
+            fallback_key_bindings: false,
             os_version: os_version(self.mtm()),
             idiom: match UIDevice::currentDevice(self.mtm()).userInterfaceIdiom() {
                 UIUserInterfaceIdiom::Pad => Idiom::Pad,

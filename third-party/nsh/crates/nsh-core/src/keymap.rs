@@ -695,6 +695,8 @@ pub struct KeyBinding {
     /// It fires again on the auto-repeats of a held key; else once until
     /// the key is released.
     pub repeat: bool,
+    /// Runs only after native controls leave the key unhandled.
+    pub fallback: bool,
     /// A terminal binding fires only while focus is on this node or one
     /// of its descendants. Platforms without native scope matching skip it.
     pub within: Option<NodeId>,
@@ -714,6 +716,7 @@ impl KeyBinding {
             keystroke,
             in_text,
             repeat,
+            fallback: false,
             within: None,
         }
     }
@@ -761,7 +764,8 @@ impl Keymap {
         &self.bindings
     }
 
-    /// What a key does: the newest binding of `keystroke` that fires while
+    /// What a key does before native controls: the newest ordinary binding of
+    /// `keystroke` that fires while
     /// `editing` (a text input or hosted native view has the keyboard
     /// focus) takes it; `repeat` is an auto-repeat of a held key, which only
     /// fires bindings that ask for it. Scoped bindings are skipped: a
@@ -779,8 +783,34 @@ impl Keymap {
         repeat: bool,
         within: impl Fn(NodeId) -> bool,
     ) -> KeyMatch {
+        self.find_in_phase(keystroke, editing, repeat, within, false)
+    }
+
+    /// Matches a fallback binding after the focused native control, editing,
+    /// selection and navigation have left the key unhandled.
+    pub fn find_fallback_with(
+        &self,
+        keystroke: Keystroke,
+        editing: bool,
+        repeat: bool,
+        within: impl Fn(NodeId) -> bool,
+    ) -> KeyMatch {
+        self.find_in_phase(keystroke, editing, repeat, within, true)
+    }
+
+    fn find_in_phase(
+        &self,
+        keystroke: Keystroke,
+        editing: bool,
+        repeat: bool,
+        within: impl Fn(NodeId) -> bool,
+        fallback: bool,
+    ) -> KeyMatch {
         let found = self.bindings.iter().rev().find(|b| {
-            b.keystroke == keystroke && (b.in_text || !editing) && b.within.is_none_or(&within)
+            b.fallback == fallback
+                && b.keystroke == keystroke
+                && (b.in_text || !editing)
+                && b.within.is_none_or(&within)
         });
         match found {
             None => KeyMatch::None,
@@ -1050,6 +1080,23 @@ mod tests {
         assert_eq!(map.find(e, true, false), KeyMatch::Fire(5));
         assert_eq!(
             Keymap::new(vec![scoped]).find(e, false, false),
+            KeyMatch::None
+        );
+
+        // A newer fallback cannot steal the ordinary binding's earlier phase.
+        scoped.fallback = true;
+        let map = Keymap::new(vec![KeyBinding::new(5, e, When::Always, true), scoped]);
+        assert_eq!(map.find_with(e, true, false, |_| true), KeyMatch::Fire(5));
+        assert_eq!(
+            map.find_fallback_with(e, true, false, |id| id == 10),
+            KeyMatch::Fire(6)
+        );
+        assert_eq!(
+            map.find_fallback_with(e, true, true, |id| id == 10),
+            KeyMatch::Held
+        );
+        assert_eq!(
+            map.find_fallback_with(e, true, false, |_| false),
             KeyMatch::None
         );
     }

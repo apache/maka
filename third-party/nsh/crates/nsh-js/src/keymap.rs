@@ -35,6 +35,7 @@ struct Binding {
     keystroke: Keystroke,
     when: When,
     repeat: bool,
+    fallback: bool,
     within: Option<NodeId>,
     handler: V,
 }
@@ -107,22 +108,31 @@ fn make(cx: Ctx) -> Raw {
 }
 
 /// The options: `when` (`undefined`, `"always"` or `"notEditing"`) and
-/// `repeat`, plus a host-supported native focus scope.
-fn parse_options(cx: Ctx, options: Raw) -> R<(When, bool, Option<NodeId>)> {
+/// `repeat`, a supported fallback phase and a native focus scope.
+fn parse_options(cx: Ctx, options: Raw) -> R<(When, bool, bool, Option<NodeId>)> {
     if js::is_nullish(options) {
-        return Ok((When::Auto, false, None));
+        return Ok((When::Auto, false, false, None));
     }
     if !js::is_object(options) {
         return Err(type_error(cx, "keymap.bind: options must be an object"));
     }
     let repeat = js::to_bool(cx, js::get(cx, options, "repeat")?.raw());
+    let fallback = js::to_bool(cx, js::get(cx, options, "fallback")?.raw());
+    let environment = crate::env::current(cx);
+    if fallback && !environment.fallback_key_bindings && environment.renderer != Renderer::Terminal
+    {
+        return Err(type_error(
+            cx,
+            "keymap.bind fallback: requires native fallback keyboard shortcuts",
+        ));
+    }
     let node = js::get(cx, options, "within")?;
     let within = (!node.is_undefined())
         .then(|| scoped_node(cx, node.raw(), "keymap.bind within"))
         .transpose()?;
     let value = js::get(cx, options, "when")?;
     if value.is_undefined() {
-        return Ok((When::Auto, repeat, within));
+        return Ok((When::Auto, repeat, fallback, within));
     }
     let when = match js::to_string(cx, value.raw())?.as_str() {
         "always" => When::Always,
@@ -134,7 +144,7 @@ fn parse_options(cx: Ctx, options: Raw) -> R<(When, bool, Option<NodeId>)> {
             ));
         }
     };
-    Ok((when, repeat, within))
+    Ok((when, repeat, fallback, within))
 }
 
 native! {
@@ -175,7 +185,7 @@ native! {
             };
             (vec![(text, V::dup(cx, args.get(1)))], args.get(2))
         };
-        let (when, repeat, within) = parse_options(cx, options)?;
+        let (when, repeat, fallback, within) = parse_options(cx, options)?;
         let (os, apple) = (os(cx), apple(cx));
         // A terminal uses the Control-based host shortcuts on every OS.
         let reserved_os = if crate::env::current(cx).uses_terminal_keyboard() {
@@ -214,6 +224,7 @@ native! {
                 keystroke,
                 when,
                 repeat,
+                fallback,
                 within,
                 handler,
             },
@@ -275,6 +286,7 @@ fn send(cx: Ctx) -> R<()> {
         .iter()
         .map(|b| {
             let mut binding = KeyBinding::new(b.id, b.keystroke, b.when, b.repeat);
+            binding.fallback = b.fallback;
             binding.within = b.within;
             binding
         })
@@ -335,6 +347,10 @@ pub(crate) const TYPES: &str = r#"export interface KeyBindingOptions {
   /** Fire again on the auto-repeats of a held key (default false: once until
    * the key is released). */
   repeat?: boolean;
+  /** Run only after native controls, editing, selection and navigation leave
+   * the key unhandled. Regular bindings keep their earlier priority.
+   * Supported by terminal and GPUI backends; throws without host support. */
+  fallback?: boolean;
   /** Fires while native keyboard focus is on this node or a descendant.
    * A nonmatching scope leaves older bindings and native defaults eligible.
    * Throws when the host does not support native focus scopes. */

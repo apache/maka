@@ -173,6 +173,7 @@ pub struct AppView {
     surface: Surface,
     options: AppOptions,
     environment: Environment,
+    host: nsh_engine::HostChannel,
     engine: Option<Engine>,
     receiver: Option<mpsc::Receiver<EngineEvent>>,
     network: Arc<dyn nsh_engine::Network>,
@@ -203,6 +204,7 @@ impl AppView {
         Self {
             surface,
             environment,
+            host: nsh_engine::HostChannel::new(),
             options,
             engine: None,
             receiver: None,
@@ -220,6 +222,13 @@ impl AppView {
             #[cfg(feature = "dev")]
             dev: None,
         }
+    }
+
+    /// The channel with the apps this view runs (`nsh/host`). Configure launch
+    /// parameters and call handlers before loading, or send events while an
+    /// app runs. Clones share this view's channel across subsequent loads.
+    pub fn host(&self) -> nsh_engine::HostChannel {
+        self.host.clone()
     }
 
     /// Runs `app`, replacing the current engine and retained views.
@@ -262,6 +271,7 @@ impl AppView {
             runtime: None,
             data_dir: self.options.data_dir.clone().or_else(nsh_engine::data_dir),
             storage: self.options.storage.clone(),
+            host: self.host.clone(),
             ..EngineConfig::new(app)
         };
         let (tx, rx) = mpsc::channel();
@@ -864,6 +874,7 @@ fn initial_environment(options: &AppOptions) -> Environment {
     Environment {
         window: viewport,
         renderer: Renderer::Terminal,
+        fallback_key_bindings: true,
         color_scheme: options.appearance.resolve(ColorScheme::Dark),
         os: if cfg!(target_os = "windows") {
             Os::Windows

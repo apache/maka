@@ -212,6 +212,7 @@ impl Surface {
     /// A surface with no app and no window yet.
     pub(crate) fn new(mut environment: Environment) -> Rc<Surface> {
         environment.native_focus_scopes = true;
+        environment.fallback_key_bindings = true;
         let key = NEXT_KEY.fetch_add(1, Ordering::Relaxed);
         let root = NshView::new(ROOT_ID, nsh_core::ViewKind::View);
         let mounter = Mounter::new(root.clone());
@@ -491,6 +492,7 @@ impl Surface {
     pub(crate) fn set_environment(&self, mut environment: Environment) {
         self.host_environment.get().apply(&mut environment);
         environment.native_focus_scopes = true;
+        environment.fallback_key_bindings = true;
         if self.environment.replace(environment) != environment {
             self.control(|c| {
                 c.set_focus_path(self.focus_path());
