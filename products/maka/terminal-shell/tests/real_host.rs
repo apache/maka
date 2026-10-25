@@ -1478,7 +1478,7 @@ async fn the_home_palette_creates_switches_models_and_stops_a_real_session_witho
         assert!(request.body["messages"].as_array().unwrap().iter().any(|message| message["role"] == "user" && message["content"].to_string().contains("Message B uses the selected model")));
         assert!(!request.body.to_string().contains("Draft A stays in its own conversation"));
         request.delta("REAL_WORKBENCH_RUN_TO_STOP").await;
-        let writing = wait_view(&mut view, |screen| screen.contains("REAL_WORKBENCH_RUN_TO_STOP") && screen.contains("Writing response")).await;
+        let writing = wait_view(&mut view, |screen| screen.contains("REAL_WORKBENCH_RUN_TO_STOP")).await;
         assert_eq!(writing.matches("REAL_WORKBENCH_RUN_TO_STOP").count(), 1);
         support::evidence_cells("workbench-streaming", &view);
         request.tool_prefix("todo_write", "{\"todos\":[").await;
@@ -2567,10 +2567,10 @@ async fn real_agent_history_and_live_stream_render_and_the_app_sends_once() {
         support::evidence_cells("real-tool-and-checklist", &view);
 
         request.delta("REAL_PROVIDER_STREAM_VISIBLE").await;
-        let streaming = wait_view(&mut view, |screen| screen.contains("REAL_PROVIDER_STREAM_VISIBLE") && screen.contains("Writing response")).await;
+        let streaming = wait_view(&mut view, |screen| screen.contains("REAL_PROVIDER_STREAM_VISIBLE")).await;
         evidence("streaming", &streaming);
         request.delta(" and committed.").await;
-        let appended = wait_view(&mut view, |screen| screen.contains("REAL_PROVIDER_STREAM_VISIBLE") && screen.contains("committed.") && screen.contains("Writing response")).await;
+        let appended = wait_view(&mut view, |screen| screen.contains("REAL_PROVIDER_STREAM_VISIBLE") && screen.contains("committed.")).await;
         evidence("streaming-second-fragment", &appended);
         request.finish().await;
         fixture.idle(&client, &fixture.session).await;
@@ -3433,7 +3433,6 @@ async fn immutable_tool_images_render_and_preview_without_stopping_the_running_t
         // Closing the preview preserves its opener's reading position. The
         // response is outside that reader; Ctrl+L explicitly returns to latest.
         terminal.send(b"\x0c");
-        terminal.wait_for("Writing response").await;
         terminal.wait_for("IMAGE_RUN_CONTINUES_AFTER_ESCAPE").await;
         request.finish().await;
         fixture.idle(&client, &fixture.session).await;

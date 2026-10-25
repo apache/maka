@@ -159,15 +159,6 @@ function stableActivityTitle(desiredTitle: () => string, active: () => boolean) 
   return stableTitle;
 }
 
-export function ActivityStatus(props: { title: () => string; active: () => boolean }) {
-  const title = stableActivityTitle(props.title, props.active);
-  return (
-    <Text numberOfLines={1} ellipsizeMode="tail" style={{ color: C.secondary }}>
-      {title()}
-    </Text>
-  );
-}
-
 function ActivityLog(props: {
   group: () => ProcessGroup;
   row(id: string): Row | undefined;

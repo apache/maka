@@ -548,7 +548,6 @@ export const conversationMessages = {
     '傳送訊息，或開始一項任務…',
   ],
   'Message queue': ['Message queue', '消息队列', '訊息佇列'],
-  'Message queued.': ['Message queued.', '消息已加入队列。', '訊息已加入佇列。'],
   'Messages waiting for a turn': [
     'Messages waiting for a turn',
     '等待处理的消息',
@@ -1285,7 +1284,6 @@ export const conversationMessages = {
   'Wrap code': ['Wrap code', '代码自动换行', '程式碼自動換行'],
   'Wrap long lines': ['Wrap long lines', '长行自动换行', '長行自動換行'],
   'Write file': msg_toolWriteAction,
-  'Writing response': ['Writing response', '正在撰写回复', '正在撰寫回覆'],
   'Your answer': ['Your answer', '你的答案', '你的答案'],
   bytes: msg_toolByteRange,
   'path and descendants': ['path and descendants', '此路径及其子路径', '此路徑及其子路徑'],

@@ -58,7 +58,7 @@ import { FinalActions } from './FinalActions';
 import type { SessionAction } from './sessionLifecycle';
 import { createProjectMcp } from './projectMcp';
 import { createSessionPermissions } from './sessionPermissions';
-import { TurnPanel, TurnSummary, ActivityStatus, turnOutcome } from './TurnPanel';
+import { TurnPanel, TurnSummary, turnOutcome } from './TurnPanel';
 import type { GroupViewState, LiveActivity, TurnViewState } from './TurnPanel';
 import {
   projectProcessGroups,
@@ -1485,11 +1485,7 @@ export function Conversation(props: ConversationProps) {
     if (text !== undefined && editEpoch === epoch && draft() === text) draft.set('');
     if (text !== undefined) attachments.sent(files.map((file) => file.id));
     notice.set(
-      accepted.kind === 'queued'
-        ? uiMessage('Message queued.')
-        : text === undefined
-          ? uiMessage('Message accepted.')
-          : '',
+      accepted.kind === 'started' && text === undefined ? uiMessage('Message accepted.') : '',
     );
     if (accepted.kind === 'queued') return;
     cancelNavigation();
@@ -2272,48 +2268,37 @@ export function Conversation(props: ConversationProps) {
                   if (!first) return <View />;
                   const row = () => currentRow(initial.rowId) ?? first;
                   return (
-                    <View>
-                      <If
-                        when={
-                          activity().kind === 'response' &&
-                          activity().rowId === initial.rowId &&
-                          !latestToolActivity(toolActivity(), invocation(), row().turnId ?? '')
-                        }
-                      >
-                        <ActivityStatus title={() => tr('Writing response')} active={() => true} />
-                      </If>
-                      <MessageRow
-                        item={row}
-                        toolMaxHeight={() => readingSize().height}
-                        ownerKey={() => initial.rowId}
-                        viewState={rowState(initial.rowId)}
-                        sessionId={sessionId}
-                        through={() => latestKnown}
-                        previewImage={props.previewImage}
-                        openLink={props.openLink}
-                        userScroll={() => cancelNavigation()}
-                        onExpand={reveal}
-                        onToolReading={(key) => {
-                          if (
-                            !alive ||
-                            key !== initial.rowId ||
-                            displayByKey().get(key)?.kind !== 'row' ||
-                            !rowStates.get(key)?.expanded()
-                          )
-                            return;
-                          innerReader.set(key);
-                        }}
-                        finalActions={(row, ownerKey) => (
-                          <FinalActions
-                            row={row}
-                            ownerKey={ownerKey}
-                            sessionId={sessionId}
-                            through={() => latestKnown}
-                            fork={props.fork}
-                          />
-                        )}
-                      />
-                    </View>
+                    <MessageRow
+                      item={row}
+                      toolMaxHeight={() => readingSize().height}
+                      ownerKey={() => initial.rowId}
+                      viewState={rowState(initial.rowId)}
+                      sessionId={sessionId}
+                      through={() => latestKnown}
+                      previewImage={props.previewImage}
+                      openLink={props.openLink}
+                      userScroll={() => cancelNavigation()}
+                      onExpand={reveal}
+                      onToolReading={(key) => {
+                        if (
+                          !alive ||
+                          key !== initial.rowId ||
+                          displayByKey().get(key)?.kind !== 'row' ||
+                          !rowStates.get(key)?.expanded()
+                        )
+                          return;
+                        innerReader.set(key);
+                      }}
+                      finalActions={(row, ownerKey) => (
+                        <FinalActions
+                          row={row}
+                          ownerKey={ownerKey}
+                          sessionId={sessionId}
+                          through={() => latestKnown}
+                          fork={props.fork}
+                        />
+                      )}
+                    />
                   );
                 }}
               </Each>
