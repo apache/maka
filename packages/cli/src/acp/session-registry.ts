@@ -105,8 +105,11 @@ import {
 import {
   AcpSessionConfigInputError,
   createAcpSessionConfigPatch,
+  isAcpModelConfigOption,
+  offerableModelChoices,
   projectAcpSessionConfigOptions,
   validateAcpSessionConfigOptionRequest,
+  type AcpSessionModelConfigContext,
 } from './session-configuration.js';
 import { AcpSessionEventMapper } from './session-event-mapper.js';
 import { mapAcpPromptContent, publishAcpPromptAttachments } from './prompt-content.js';
@@ -513,7 +516,11 @@ export class AcpSessionRegistry {
       );
     }
     try {
-      validateAcpSessionConfigOptionRequest(params);
+      // The model option is validated in #setConfigOption, where the session's
+      // own connection catalogue is available; here only the payload shape can
+      // be checked.
+      if (isAcpModelConfigOption(params.configId)) assertStringConfigValue(params);
+      else validateAcpSessionConfigOptionRequest(params);
     } catch (error) {
       throw requestErrorFromConfigInput(error);
     }
@@ -2430,12 +2437,17 @@ export class AcpSessionRegistry {
       committed = await updateRuntimeHostSession(
         connection,
         params.sessionId,
-        (current) =>
-          connection.request('session.configuration.update', {
+        async (current) => {
+          const modelContext =
+            params.configId === 'model'
+              ? await this.#modelConfigContext(connection, current)
+              : undefined;
+          return connection.request('session.configuration.update', {
             sessionId: params.sessionId,
             expectedRevision: current.revision,
-            patch: createAcpSessionConfigPatch(params),
-          }),
+            patch: createAcpSessionConfigPatch(params, modelContext),
+          });
+        },
         {
           operation: 'session.configuration.update',
           assertRequestAllowed: () => {
@@ -2445,6 +2457,11 @@ export class AcpSessionRegistry {
         },
       );
     } catch (error) {
+      // A rejected value is the client's fault, not the Host's: the patch
+      // builder throws `AcpSessionConfigInputError` from inside the update
+      // callback, where the entry-point mapping in `setConfigOption` does not
+      // run. Without this it reaches the client as `internal_failure`.
+      if (error instanceof AcpSessionConfigInputError) throw requestErrorFromConfigInput(error);
       throw requestErrorFromSessionUpdate(error, 'session.configuration.update');
     }
     const configOptions = await this.#projectConfigOptions(connection, committed);
@@ -2504,7 +2521,35 @@ export class AcpSessionRegistry {
       ({ connectionId }) => connectionId === session.llmConnectionId,
     );
     const selectedModel = selectedConnection?.catalogEntries.find(({ id }) => id === session.model);
-    return projectAcpSessionConfigOptions(session, selectedModel?.thinkingLevels ?? []);
+    return projectAcpSessionConfigOptions(
+      session,
+      selectedModel?.thinkingLevels ?? [],
+      offerableModelChoices(selectedConnection, session.model),
+    );
+  }
+
+  /**
+   * The session-scoped facts a model selection needs: which connection it runs
+   * on, and which of that connection's models it may select. The selection rule
+   * is shared with the picker (`offerableModelChoices`), so a value the client
+   * can see is a value this validates. Undefined means "cannot validate" — the
+   * request is rejected rather than guessed.
+   */
+  async #modelConfigContext(
+    connection: AcpSessionRegistryConnection,
+    session: SessionCatalogProjection,
+  ): Promise<AcpSessionModelConfigContext | undefined> {
+    if (session.llmConnectionId === null) return undefined;
+    const catalog = await readRuntimeHostConnectionCatalog(connection);
+    const entry = catalog.connections.find(
+      ({ connectionId }) => connectionId === session.llmConnectionId,
+    );
+    return {
+      connectionId: session.llmConnectionId,
+      connectionSlug: session.llmConnectionSlug,
+      currentModel: session.model,
+      models: offerableModelChoices(entry, session.model),
+    };
   }
 
   async #list(params: ListSessionsRequest): Promise<ListSessionsResponse> {
@@ -2723,6 +2768,14 @@ function validateNewSessionParams(
       { field: 'additionalDirectories', reason: 'unsupported' },
       'Additional directories are not supported by this ACP adapter yet',
     );
+  }
+}
+
+function assertStringConfigValue(
+  params: SetSessionConfigOptionRequest,
+): asserts params is SetSessionConfigOptionRequest & { readonly value: string } {
+  if (typeof params.value !== 'string') {
+    throw new AcpSessionConfigInputError('value', 'invalid_type');
   }
 }
 
