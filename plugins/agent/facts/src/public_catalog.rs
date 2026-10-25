@@ -33,9 +33,7 @@ pub struct PublicCatalogBody(Arc<RawValue>);
 impl PublicCatalogBody {
     /// Validate every value, including unknown and overwritten object members.
     pub fn from_json(json: String) -> Result<Self, serde_json::Error> {
-        let mut deserializer = serde_json::Deserializer::from_str(&json);
-        Validated::deserialize(&mut deserializer)?;
-        deserializer.end()?;
+        validate_json(&json)?;
         Ok(Self(Arc::from(RawValue::from_string(json)?)))
     }
 
@@ -48,6 +46,16 @@ impl PublicCatalogBody {
     pub fn same_content(&self, other: &Self) -> Result<bool, serde_json::Error> {
         equal(self.as_raw(), other.as_raw())
     }
+}
+
+/// Visit every JSON occurrence without building a tree, including ignored or
+/// overwritten members. Preserve the deserializer's numeric feature policy,
+/// string validation, recursion budget and complete-input checks; this does not
+/// reinterpret user objects as serde_json's private number representation.
+pub fn validate_json(json: &str) -> Result<(), serde_json::Error> {
+    let mut deserializer = serde_json::Deserializer::from_str(json);
+    Validated::deserialize(&mut deserializer)?;
+    deserializer.end()
 }
 
 // RawValue/IgnoredAny alone skip numeric conversion, surrogate validation and
