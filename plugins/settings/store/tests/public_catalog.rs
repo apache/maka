@@ -402,10 +402,10 @@ async fn raw_body_semantics_preserve_revisions_unknown_fields_and_original_json_
             .unwrap(),
         3
     );
-    // SQLite json_valid can accept numeric overflow even though Value cannot.
+    // SQLite json_valid accepts lone surrogates, but Value always rejects them.
     db.execute(
         "UPDATE public_catalog SET body = ?",
-        [r#"{"unknown":1e400,"unknown":null}"#],
+        [r#"{"unknown":"\ud800","unknown":null}"#],
     )
     .unwrap();
     assert!(store.public_catalog().await.is_err());
@@ -416,6 +416,67 @@ async fn raw_body_semantics_preserve_revisions_unknown_fields_and_original_json_
             .is_err()
     );
     assert_eq!(store.catalog().await.unwrap().revision, 3);
+    drop(db);
+    store.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn stored_numeric_overflow_follows_value_acceptance_and_preserves_atomicity() {
+    let temp = tempfile::tempdir().unwrap();
+    let owner = root(temp.path());
+    let store = ConfigurationStore::for_root(owner.clone()).await.unwrap();
+    let row = record(json!({"data":[],"unknown":null}), 10);
+    assert_eq!(
+        store
+            .put_public_catalog(PublicCatalogSource::OpenRouter, row.clone())
+            .await
+            .unwrap(),
+        1
+    );
+    let db = rusqlite::Connection::open(owner.canonical_path().join("configuration-rust.sqlite"))
+        .unwrap();
+    let raw = r#"{"data":[],"unknown":1e400,"unknown":null}"#;
+    db.execute("UPDATE public_catalog SET body = ?", [raw])
+        .unwrap();
+    let expected = serde_json::from_str::<Value>(raw);
+    let snapshot = store.public_catalog().await;
+    assert_eq!(snapshot.is_ok(), expected.is_ok());
+    let stored_raw = match snapshot {
+        Ok(snapshot) => {
+            assert_eq!(snapshot.catalog_revision, 1);
+            assert_eq!(snapshot.sources.len(), 1);
+            let body = &snapshot.sources[&PublicCatalogSource::OpenRouter].body;
+            assert_eq!(body.as_raw().get(), raw);
+            assert_eq!(
+                serde_json::from_str::<Value>(body.as_raw().get()).unwrap(),
+                expected.unwrap()
+            );
+            assert_eq!(
+                store
+                    .put_public_catalog(PublicCatalogSource::OpenRouter, row.clone())
+                    .await
+                    .unwrap(),
+                1
+            );
+            row.body.as_raw().get()
+        }
+        Err(_) => {
+            assert!(
+                store
+                    .put_public_catalog(PublicCatalogSource::OpenRouter, row.clone())
+                    .await
+                    .is_err()
+            );
+            raw
+        }
+    };
+    assert_eq!(
+        db.query_row("SELECT body FROM public_catalog", [], |row| row
+            .get::<_, String>(0))
+            .unwrap(),
+        stored_raw
+    );
+    assert_eq!(store.catalog().await.unwrap().revision, 1);
     drop(db);
     store.close().await.unwrap();
 }
