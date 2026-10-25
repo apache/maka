@@ -1377,7 +1377,7 @@
     "third-party/nsh/crates/nsh-core/src/ui/callback.rs": "29c43c5cd493bed789895a3971bf808603d52ce0f211640f385c0fd1fd6d921d",
     "third-party/nsh/crates/nsh-core/src/ui/class.rs": "08f3f36cc9d904cee6f49c3b33a3598dae8a478cc8bb8703f360f63c640ac5c4",
     "third-party/nsh/crates/nsh-core/src/ui/component.rs": "4c664492bc8c17e67db5142decbfa9f86fedb37006149b7d1dcfd93b21ba0ff8",
-    "third-party/nsh/crates/nsh-core/src/ui/description.rs": "b45848d583fe72fe79efb18aac23c88aadb30c14e6a5b33558243eb0f81367a2",
+    "third-party/nsh/crates/nsh-core/src/ui/description.rs": "482d40e4870a15a360018559516a175c42a2ea4dad77ecad8b8318697c3749da",
     "third-party/nsh/crates/nsh-core/src/ui/desktop.rs": "13b68e6510e3e920b882e83617fef21380da29627007f0b8501200e904dc79d7",
     "third-party/nsh/crates/nsh-core/src/ui/element.rs": "13034ef5a6e2f77563d2d1a205400479f956f160de1a69b913865c06f77c5c16",
     "third-party/nsh/crates/nsh-core/src/ui/element_ref.rs": "a5d76e512d5cd7837e9029cedb221ebfc00353b4524ba7626117a92ba3d7e5fd",
