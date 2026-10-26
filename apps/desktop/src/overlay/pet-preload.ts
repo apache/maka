@@ -27,6 +27,7 @@ contextBridge.exposeInMainWorld("pet", {
     if (
       [
         "ready",
+        "drag-start",
         "drag-end",
         "toggle",
         "open",
@@ -37,6 +38,7 @@ contextBridge.exposeInMainWorld("pet", {
     )
       ipcRenderer.send("pet-desktop:action", action);
   },
+  hitRegions: (regions: { x: number; y: number; width: number; height: number }[]) => ipcRenderer.send('pet-desktop:hit-regions', regions),
   layout: (height: number, petTop: number, below: boolean) => ipcRenderer.send('pet-desktop:layout', {height, petTop, below}),
   placement: (handler: (below: boolean) => void) => ipcRenderer.on('pet-desktop:placement', (_event, below) => handler(below)),
   move: (dx: number, dy: number) => ipcRenderer.send('pet-desktop:move', {dx,dy}),

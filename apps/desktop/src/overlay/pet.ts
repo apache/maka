@@ -32,6 +32,7 @@ declare global {
   interface Window {
     pet: {
       action(action: string): void;
+      hitRegions(regions: { x: number; y: number; width: number; height: number }[]): void;
       layout(height: number, petTop: number, below: boolean): void;
       placement(handler: (below: boolean) => void): void;
       move(dx: number, dy: number): void;
@@ -289,6 +290,7 @@ pet.addEventListener('dblclick', () => {
 });
 pet.addEventListener('pointerdown', event => {
   if (event.button !== 0) return;
+  window.pet.action('drag-start');
   if (event.detail > 1) cancelClick();
   suppressClick = false;
   dragging = {x:event.screenX,y:event.screenY,moved:false}; pet.setPointerCapture(event.pointerId);
@@ -398,11 +400,16 @@ const reportLayout = () => {
   const gap = bubble.hidden ? 0 : 7;
   const height = Math.ceil(24 + bubbleHeight + gap + pet.getBoundingClientRect().height + toolbar.getBoundingClientRect().height);
   const top = below ? 12 : 12 + bubbleHeight + gap;
+  window.pet.hitRegions([pet, toolbar, bubble].filter(element => !element.hidden).map(element => {
+    const { x, y, width, height } = element.getBoundingClientRect();
+    return { x, y, width, height };
+  }).filter(rect => rect.width > 0 && rect.height > 0));
   const key = `${height}:${top}:${below}`;
   if (key === lastLayout) return;
   lastLayout = key;
   window.pet.layout(height, top, below);
 };
+window.addEventListener('resize', reportLayout);
 const layoutObserver = new ResizeObserver(reportLayout);
 for (const element of [bubble, document.querySelector('#toolbar')!, document.querySelector('#pet')!]) layoutObserver.observe(element);
 window.pet.placement(value => {

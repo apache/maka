@@ -26,7 +26,7 @@ import { test } from 'node:test';
 import { build } from 'esbuild';
 import type { createPetDesktop } from '../pet-desktop.js';
 
-async function harness(selectedPetId: string | null = null) {
+async function harness(selectedPetId: string | null = null, platform = process.platform) {
   const source = new URL('../../../src/main/pet-desktop.ts', import.meta.url);
   const bundled = await build({ entryPoints:[fileURLToPath(source)], bundle:true, platform:'node', format:'cjs', write:false,
     external:['electron','@maka/storage/*'], define:{'import.meta.url':JSON.stringify(source.href)}, logLevel:'silent' });
@@ -70,13 +70,17 @@ async function harness(selectedPetId: string | null = null) {
   const ipc = new EventEmitter() as EventEmitter & { handle(name:string, handler:Function):void };
   const handlers = new Map<string, Function>();
   ipc.handle = (name, handler) => { handlers.set(name, handler); };
-  const screen = Object.assign(new EventEmitter(), { getDisplayMatching:()=>({workArea:{x:0,y:0,width:1400,height:900}}), getPrimaryDisplay:()=>({workArea:{x:0,y:0,width:1400,height:900}}) });
+  const pointer = { x: -100, y: -100 };
+  const timers = new Set<() => void>();
+  const screen = Object.assign(new EventEmitter(), { getCursorScreenPoint: () => pointer, getDisplayMatching:()=>({workArea:{x:0,y:0,width:1400,height:900}}), getPrimaryDisplay:()=>({workArea:{x:0,y:0,width:1400,height:900}}) });
   const electron = {app,ipcMain:ipc,screen,BrowserWindow:FakeWindow};
   let settings = {personalization:{selectedPetId,petMode:'session'}};
   const store = {get:async()=>settings, update:async(patch:any)=> { settings = { personalization:{...settings.personalization,...patch.personalization} }; return settings; }};
   const module = {exports:{} as {createPetDesktop: typeof createPetDesktop}};
   const require = createRequire(import.meta.url);
-  runInNewContext(bundled.outputFiles[0]!.text, { module,exports:module.exports,Buffer,console,process,
+  runInNewContext(bundled.outputFiles[0]!.text, { module,exports:module.exports,Buffer,console,process: { ...process, platform },
+    setInterval: (fn: () => void) => { timers.add(fn); return { unref() {}, fn }; },
+    clearInterval: (timer: { fn: () => void }) => { timers.delete(timer.fn); },
     require:(name:string)=> name==='electron' ? electron : name==='@maka/storage/pet-pack-store' ?
       {createPetPackStore:()=>({ get:async(id:string)=>({id}),readSpriteSheet:async()=>({format:'png',bytes:Buffer.from('test')}) })} : require(name) });
   let focuses=0;
@@ -86,7 +90,7 @@ async function harness(selectedPetId: string | null = null) {
     mainWindowController:{isMainRenderer:(sender:any)=>sender===main.webContents,browserWindow:()=>main,
       send:(...args:any[])=>main.webContents.send(...args),focus:()=>{focuses++;}} as any });
   await controller.refresh();
-  return {windows,main,app,ipc,store,controller,handlers,submitted,focuses:()=>focuses};
+  return {windows,main,app,ipc,store,controller,handlers,submitted,pointer,timers,poll: () => { for (const fn of timers) fn(); },focuses:()=>focuses};
 }
 
 test('disabled pets do not create a window; enabled pets use a sandboxed fullscreen companion', async()=>{
@@ -103,6 +107,7 @@ test('main close hides chat while pet is enabled; cancelled quit preserves the p
   const h=await harness('test'); let prevented=false;
   h.main.emit('close',{preventDefault:()=>{prevented=true}});assert.equal(prevented,true);
   h.app.emit('before-quit',{defaultPrevented:true});assert.equal(h.windows[0]!.destroyed,false);
+  prevented=false;h.main.emit('close',{preventDefault:()=>{prevented=true}});assert.equal(prevented,true);
   h.app.emit('before-quit',{defaultPrevented:false});assert.equal(h.windows[0]!.destroyed,true);
   prevented=false;h.main.emit('close',{preventDefault:()=>{prevented=true}});assert.equal(prevented,false);
 });
@@ -183,4 +188,52 @@ test('composer focuses native panel and renderer, retains mouse input until clos
   assert.equal(win.ignoring, true);
   h.ipc.emit('pet-desktop:action', {sender}, 'interactive');
   assert.equal(win.ignoring, false);
+});
+
+
+test('update preparation releases close interception before the macOS window sweep', async () => {
+  const h = await harness('test');
+  let prevented = false;
+  h.main.emit('close', { preventDefault: () => { prevented = true; } });
+  assert.equal(prevented, true, 'ordinary close must still hide chat');
+  (h.controller as unknown as { releaseForQuit?: () => void }).releaseForQuit?.();
+  prevented = false;
+  h.main.emit('close', { preventDefault: () => { prevented = true; } });
+  assert.equal(prevented, false, 'update window sweep must not wait for before-quit');
+  assert.equal(h.windows[0]!.destroyed, true);
+  await h.controller.refresh();
+  assert.equal(h.windows.length, 1, 'late settings refresh must not resurrect a quitting pet');
+});
+
+
+test('Linux native hover restores input over content, preserves padding pass-through, and stops on disable', async () => {
+  const h = await harness('test', 'linux');
+  const win = h.windows[0]!;
+  h.ipc.emit('pet-desktop:hit-regions', { sender: win.webContents }, [{ x: 96, y: 190, width: 148, height: 132 }]);
+  win.setPosition(200, 100);
+  h.pointer.x = 310; h.pointer.y = 310; h.poll();
+  assert.equal(win.ignoring, false, 'Linux cannot rely on forwarded mousemove');
+  h.ipc.emit('pet-desktop:action', { sender: win.webContents }, 'open');
+  assert.equal(h.focuses(), 1);
+  h.ipc.emit('pet-desktop:action', { sender: win.webContents }, 'drag-start');
+  h.pointer.x = 10; h.pointer.y = 10; h.poll();
+  assert.equal(win.ignoring, false, 'captured drags retain input outside the hit region');
+  h.ipc.emit('pet-desktop:action', { sender: win.webContents }, 'drag-end'); h.poll();
+  assert.equal(win.ignoring, true);
+  h.ipc.emit('pet-desktop:hit-regions', { sender: {} }, [{ x: 0, y: 0, width: 340, height: 390 }]);
+  h.poll(); assert.equal(win.ignoring, true, 'untrusted senders cannot enlarge input');
+  await h.handlers.get('pet-desktop:compose-open')!({ sender: win.webContents });
+  h.poll(); assert.equal(win.ignoring, false, 'composition keeps keyboard and pointer focus');
+  await h.store.update({ personalization: { selectedPetId: null } }); await h.controller.refresh();
+  assert.equal(h.timers.size, 0);
+});
+
+test('native Linux hit testing is not installed on macOS or Windows', async () => {
+  for (const platform of ['darwin', 'win32'] as const) {
+    const h = await harness('test', platform);
+    assert.equal(h.timers.size, 0);
+    h.ipc.emit('pet-desktop:action', { sender: h.windows[0]!.webContents }, 'interactive');
+    assert.equal(h.windows[0]!.ignoring, false);
+    h.app.emit('before-quit', { defaultPrevented: false });
+  }
 });

@@ -227,3 +227,18 @@ test('idle variants survive installation and service restart', async (t) => {
   const restarted = createAssistantPetPacks(f.state, f.readImage);
   assert.deepEqual((await restarted.list())[0].idleVariants, variants);
 });
+
+test('pet selection and a separate Desktop settings writer preserve both successful changes', async (t) => {
+  const f = await fixture(t);
+  await f.invoke({ action: 'create', manifest: manifest(), spriteSheetPath: f.path });
+  const desktop = createSettingsStore(f.state);
+  await desktop.get();
+  await Promise.all([
+    f.service.select('test.pet', new AbortController().signal),
+    desktop.update({ appearance: { theme: 'dark' } }),
+  ]);
+  const saved = await createSettingsStore(f.state).get();
+  assert.equal(saved.personalization.selectedPetId, 'test.pet');
+  assert.equal(saved.personalization.petMode, 'assistant');
+  assert.equal(saved.appearance.theme, 'dark');
+});

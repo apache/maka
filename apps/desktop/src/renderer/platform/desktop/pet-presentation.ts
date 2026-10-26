@@ -33,11 +33,15 @@ export function createDesktopPetPresentation(): NonNullable<
       let cancel: (() => void) | undefined;
       const range = new DesktopTranscriptRangeStore(sessionId);
       const seen = new Set<string>();
-      void window.maka.transcripts
+      let retry: ReturnType<typeof setTimeout> | undefined;
+      let generation = 0;
+      const open = () => {
+        const ticket = ++generation;
+        void window.maka.transcripts
         .open(
           sessionId,
           (batch) => {
-            if (!live || !range.accept(batch) || !range.snapshot().ready)
+            if (!live || ticket !== generation || !range.accept(batch) || !range.snapshot().ready)
               return;
             const messages = range
               .snapshot()
@@ -58,19 +62,32 @@ export function createDesktopPetPresentation(): NonNullable<
             initialized = true;
           },
           (fn) => {
-            cancel = fn;
+            if (!live || ticket !== generation) fn();
+            else cancel = fn;
           },
           "tail",
         )
         .then((result) => {
-          if (!live) void result.close();
-          else handle = result;
+          if (!live || ticket !== generation) void result.close();
+          else if (result.generation.startsWith('cached:')) {
+            // Preload's successful offline fallback owns no live IPC listener.
+            // Reopen here, rather than remounting the observer and losing seen IDs.
+            ++generation;
+            cancel?.();
+            cancel = undefined;
+            void result.close();
+            retry = setTimeout(() => { retry = undefined; if (live) open(); }, 1000);
+          } else handle = result;
         })
         .catch(() => {
-          if (live) failed();
+          if (live && ticket === generation) failed();
         });
+      };
+      open();
       return () => {
         live = false;
+        ++generation;
+        if (retry !== undefined) clearTimeout(retry);
         cancel?.();
         void handle?.close();
       };
