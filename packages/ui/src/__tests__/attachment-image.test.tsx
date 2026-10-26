@@ -175,14 +175,6 @@ test('explains unreadable assistant attachments and offers retry', async () => {
   const cases: Array<[string, ReadAttachmentBytes]> = [
     ['missing', async () => ({ ok: false, reason: 'not_found' })],
     ['document', async () => ({ ok: true, base64: 'cGRm', mimeType: 'application/pdf' })],
-    [
-      'large',
-      async () => ({
-        ok: true,
-        base64: 'a'.repeat(3 * 1024 * 1024),
-        mimeType: 'image/png',
-      }),
-    ],
   ];
   for (const [name, readBytes] of cases) {
     const { container } = await renderAttachmentMarkdown(
@@ -270,4 +262,65 @@ test('renders an attachment when a streaming Markdown image becomes complete', a
   const image = container.querySelector('img[alt="preview"]');
   assert.ok(image);
   assert.equal(image.getAttribute('src'), 'data:image/png;base64,c3RyZWFt');
+});
+
+test('saved large images show an original-file action instead of an unsaved or failed preview', async () => {
+  const { container, root } = domRoot();
+  const opened: string[] = [];
+  await act(async () => {
+    root.render(<LocaleProvider locale="en"><SessionAttachmentProvider sessionId="session-1"
+      readBytes={async () => ({ ok: false, reason: 'too_large' })}
+      openSavedImage={async (sessionId, artifactId) => { opened.push(`${sessionId}/${artifactId}`); return { ok: true }; }}>
+      <MarkdownBody text="![large](maka://runtime/attachments/large-image)" />
+    </SessionAttachmentProvider></LocaleProvider>);
+  });
+  assert.match(container.textContent ?? '', /Image saved.*preview size limit/);
+  assert.doesNotMatch(container.textContent ?? '', /not saved|loading failed/i);
+  assert.equal(container.querySelector('img'), null);
+  const button = Array.from(container.querySelectorAll('button')).find(node => node.textContent?.includes('Open saved image'));
+  assert.ok(button);
+  await act(async () => button.click());
+  assert.deepEqual(opened, ['session-1/large-image']);
+});
+
+test('message reception status clears only when the image is durably ready', async () => {
+  const { ImageDeliveryProvider, ImageMessageProvider } = await import('../image-delivery.js');
+  const { container, root } = domRoot();
+  let finish!: (result: { status: 'ready'; artifactId: string }) => void;
+  await act(async () => {
+    root.render(<LocaleProvider locale="en"><SessionAttachmentProvider sessionId="session-1"
+      readBytes={async () => ({ ok: true, mimeType: 'image/png', base64: 'c2F2ZWQ=' })}>
+      <ImageDeliveryProvider sessionId="session-1" resolve={() => new Promise(resolve => { finish = resolve; })}>
+        <ImageMessageProvider identity={{ turnId: 'turn-1', messageId: 'message-1' }}>
+          <MarkdownBody text={"Text has finished.\n\n![image](/tmp/image.png)"} />
+        </ImageMessageProvider>
+      </ImageDeliveryProvider>
+    </SessionAttachmentProvider></LocaleProvider>);
+  });
+  assert.match(container.textContent ?? '', /Text has finished/);
+  assert.ok(container.querySelector('[data-maka-image-reception="receiving"]'), container.innerHTML);
+  await act(async () => finish({ status: 'ready', artifactId: 'received-image' }));
+  assert.equal(container.querySelector('[data-maka-image-reception]'), null);
+  assert.ok(container.querySelector('img'));
+});
+
+test('duplicate references retain reception status when one instance unmounts', async () => {
+  const { ImageMessageProvider, useImageReceptionStatus } = await import('../image-delivery.js');
+  const { container, root } = domRoot();
+  function ImageState({ state }: { state: 'receiving' | 'saved' }) {
+    useImageReceptionStatus('/same.png', state);
+    return null;
+  }
+  const render = (duplicate: boolean, messageId = 'one') => root.render(
+    <LocaleProvider locale="en"><ImageMessageProvider identity={{ turnId: 'turn', messageId }}>
+      <ImageState key="pending" state="receiving" />
+      {duplicate && <ImageState key="saved" state="saved" />}
+    </ImageMessageProvider></LocaleProvider>,
+  );
+  await act(() => render(true));
+  assert.ok(container.querySelector('[data-maka-image-reception="receiving"]'));
+  await act(() => render(false));
+  assert.ok(container.querySelector('[data-maka-image-reception="receiving"]'));
+  await act(() => render(false, 'two'));
+  assert.ok(container.querySelector('[data-maka-image-reception="receiving"]'));
 });

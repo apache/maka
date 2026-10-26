@@ -49,3 +49,53 @@ for (const { name, oldText, newText, expected } of [
     );
   });
 }
+
+test('rich ACP content preserves text, SVG resource, image and diff order', async () => {
+  const { projectRichToolResult } = await import('../acp-projection.js');
+  const inputs: unknown[] = [];
+  const result = await projectRichToolResult(
+    [
+      { type: 'content', content: { type: 'text', text: 'before' } },
+      {
+        type: 'content',
+        content: {
+          type: 'resource',
+          resource: { uri: 'drawing.svg', mimeType: 'image/svg+xml', text: '<svg/>' },
+        },
+      },
+      { type: 'content', content: { type: 'image', mimeType: 'image/png', data: 'AAAA' } },
+      { type: 'diff', path: 'drawing.svg', oldText: '', newText: '<svg/>' },
+      { type: 'content', content: { type: 'text', text: 'after' } },
+    ],
+    undefined,
+    {
+      signal: new AbortController().signal,
+      emit() {},
+      requestPermission: async () => ({ outcome: 'cancelled' }),
+      publishMedia: async (input) => {
+        inputs.push(input);
+        return {
+          kind: 'image',
+          mimeType: input.kind === 'inline' ? input.mimeType : 'image/png',
+          ref: {
+            kind: 'session_file',
+            sessionId: 'session',
+            relativePath: `image-${inputs.length}`,
+          },
+        };
+      },
+    },
+  );
+  assert.equal(result.kind, 'content');
+  if (result.kind !== 'content') throw new Error('Expected content');
+  assert.deepEqual(
+    result.parts.map((part) => part.kind),
+    ['text', 'image', 'image', 'file_diff', 'text'],
+  );
+  assert.equal(inputs.length, 2);
+  assert.deepEqual(inputs[0], {
+    kind: 'inline',
+    mimeType: 'image/svg+xml',
+    base64: Buffer.from('<svg/>').toString('base64'),
+  });
+});

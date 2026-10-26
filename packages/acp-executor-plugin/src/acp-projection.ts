@@ -17,12 +17,20 @@
  * under the License.
  */
 
-import type { ToolCall, ToolCallContent } from '@agentclientprotocol/sdk';
+import type { ContentBlock, ToolCall, ToolCallContent } from '@agentclientprotocol/sdk';
 import type {
   PluginExecutorContext,
   PluginExecutorRequest,
   PluginExecutorToolResultContent,
 } from '@maka/runtime/plugin-executor-service';
+
+import {
+  type SessionContentPart,
+  type SessionMediaInput,
+  SESSION_CONTENT_MAX_PARTS,
+  SESSION_MEDIA_MAX_BYTES,
+  SESSION_MEDIA_MAX_BASE64,
+} from '@maka/core/session-media';
 
 const MAX_EVENT_TEXT = 8_192;
 const MAX_TOOL_RESULT_DIFF = 1024 * 1024;
@@ -165,4 +173,140 @@ export function activityKind(kind: ToolCall['kind'] | undefined) {
   if (kind === 'execute') return 'command' as const;
   if (kind === 'think') return 'explore' as const;
   return 'tool' as const;
+}
+
+/** Preserve protocol content order; only the Host can publish media bytes or read a source. */
+export async function projectContentBlock(
+  content: ContentBlock,
+  context: PluginExecutorContext,
+): Promise<Exclude<SessionContentPart, { kind: 'file_diff' }>> {
+  if (content.type === 'text') return { kind: 'text', text: boundedText(content.text) };
+  let input: SessionMediaInput | undefined;
+  if (content.type === 'image')
+    input = { kind: 'inline', mimeType: content.mimeType, base64: content.data };
+  if (content.type === 'resource_link') {
+    if (
+      content.mimeType?.startsWith('image/') ||
+      /\.(svg|png|jpe?g|webp|gif)(?:[?#]|$)/i.test(content.uri)
+    )
+      input = { kind: 'source', source: content.uri };
+    else return { kind: 'text', text: boundedText(`${content.name}: ${content.uri}`) };
+  }
+  if (content.type === 'resource') {
+    const resource = content.resource;
+    if ('text' in resource) {
+      if (resource.mimeType === 'image/svg+xml' || /\.svg(?:[?#]|$)/i.test(resource.uri)) {
+        if (resource.text.length > SESSION_MEDIA_MAX_BYTES)
+          return { kind: 'text', text: '[Media unavailable: too large]' };
+        input = {
+          kind: 'inline',
+          mimeType: 'image/svg+xml',
+          base64: Buffer.from(resource.text).toString('base64'),
+        };
+      } else return { kind: 'text', text: boundedText(resource.text) };
+    } else if (resource.mimeType?.startsWith('image/'))
+      input = { kind: 'inline', mimeType: resource.mimeType, base64: resource.blob };
+  }
+  if (!input || !context.publishMedia) return { kind: 'text', text: '[Media preview unavailable]' };
+  if (context.signal.aborted) return { kind: 'text', text: '[Media publication cancelled]' };
+  let onAbort!: () => void;
+  const cancelled = new Promise<SessionContentPart>((resolve) => {
+    onAbort = () => resolve({ kind: 'text', text: '[Media publication cancelled]' });
+    context.signal.addEventListener('abort', onAbort, { once: true });
+  });
+  try {
+    // The Host owns archival work. Stop waiting on cancellation, but keep observing late
+    // rejection through the race and never let late publication emit another ACP update.
+    const part = await Promise.race([context.publishMedia(input), cancelled]);
+    return part.kind === 'file_diff' ? { kind: 'text', text: '[Media preview unavailable]' } : part;
+  } catch {
+    return { kind: 'text', text: '[Media publication failed]' };
+  } finally {
+    context.signal.removeEventListener('abort', onAbort);
+  }
+}
+
+export async function projectRichToolResult(
+  content: readonly ToolCallContent[],
+  rawOutput: unknown,
+  context: PluginExecutorContext,
+  truncated = false,
+): Promise<PluginExecutorToolResultContent> {
+  // The queue already discarded the tail. Preserve its omission even when that
+  // tail contained the only media and the retained prefix is entirely text/diff.
+  if (truncated)
+    content = [
+      ...content,
+      {
+        type: 'content',
+        content: { type: 'text', text: '[Additional tool content omitted]' },
+      },
+    ];
+  if (
+    !truncated &&
+    !content.some((item) => item.type === 'content' && item.content.type !== 'text')
+  )
+    return projectToolResult(content, rawOutput);
+  const parts: SessionContentPart[] = [];
+  let budget = MAX_TOOL_RESULT_DIFF;
+  for (const item of content.slice(0, SESSION_CONTENT_MAX_PARTS)) {
+    const part =
+      item.type === 'content'
+        ? await projectContentBlock(item.content, context)
+        : item.type === 'diff'
+          ? projectToolResult([item], undefined)
+          : { kind: 'text' as const, text: boundedText(`Terminal ${item.terminalId}`) };
+    if (part.kind === 'content') continue;
+    const normalized: SessionContentPart =
+      part.kind === 'file_diff' ? { ...part, paths: [...part.paths] } : part;
+    budget -= Buffer.byteLength(JSON.stringify(normalized), 'utf8');
+    if (
+      budget < 1024 ||
+      (parts.length === SESSION_CONTENT_MAX_PARTS - 1 && content.length > SESSION_CONTENT_MAX_PARTS)
+    ) {
+      parts.push({ kind: 'text', text: '[Additional tool content omitted]' });
+      break;
+    }
+    parts.push(normalized);
+  }
+  return { kind: 'content', parts };
+}
+
+/** Retain only fields used by projection; provider metadata is never queue-owned. */
+export function normalizeQueuedContent(block: ContentBlock): ContentBlock {
+  const omitted: ContentBlock = {
+    type: 'text',
+    text: '[Media omitted: response media limit reached]',
+  };
+  if (block.type === 'text') return { type: 'text', text: block.text };
+  if (block.type === 'image' || block.type === 'audio') {
+    if (block.data.length > SESSION_MEDIA_MAX_BASE64 || block.mimeType.length > 128) return omitted;
+    return { type: block.type, data: block.data, mimeType: block.mimeType };
+  }
+  if (block.type === 'resource_link') {
+    if (
+      block.uri.length > 4096 ||
+      block.name.length > MAX_EVENT_TEXT ||
+      (block.mimeType?.length ?? 0) > 128
+    )
+      return omitted;
+    return {
+      type: 'resource_link',
+      uri: block.uri,
+      name: block.name,
+      ...(block.mimeType ? { mimeType: block.mimeType } : {}),
+    };
+  }
+  const resource = block.resource;
+  if (resource.uri.length > 4096 || (resource.mimeType?.length ?? 0) > 128) return omitted;
+  const payload = 'text' in resource ? resource.text : resource.blob;
+  if (payload.length > SESSION_MEDIA_MAX_BASE64) return omitted;
+  return {
+    type: 'resource',
+    resource: {
+      uri: resource.uri,
+      ...(resource.mimeType ? { mimeType: resource.mimeType } : {}),
+      ...('text' in resource ? { text: resource.text } : { blob: resource.blob }),
+    },
+  };
 }

@@ -3469,6 +3469,7 @@ export function deriveToolResultStatus(
     case 'file_diff':
     case 'file_write':
     case 'image':
+    case 'content':
     case 'summary':
     case 'archived_tool_result':
     case 'web_search':

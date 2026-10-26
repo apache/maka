@@ -40,7 +40,7 @@ const lookup = (
   i = identity,
 ) => store.findImageDelivery(i.sessionId, i.turnId, i.messageId, i.source);
 
-test('schema 3 upgrades directly to 4 without rewriting existing artifacts', async () => {
+test('schema 3 upgrades directly to 5 without rewriting existing artifacts', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-image-schema-'));
   let authority = createSqliteArtifactStoreWriteAuthority(root);
   try {
@@ -56,7 +56,7 @@ test('schema 3 upgrades directly to 4 without rewriting existing artifacts', asy
     authority.close();
     const db = new DatabaseSync(join(root, 'runtime.sqlite'));
     try {
-      db.exec(`DROP TABLE image_delivery_attempts; DROP INDEX artifact_image_delivery_lookup;
+      db.exec(`DROP TABLE image_delivery_jobs; DROP TABLE image_delivery_attempts; DROP INDEX artifact_image_delivery_lookup;
         UPDATE operational_schema_migrations SET version = 3 WHERE scope = 'artifact';`);
     } finally {
       db.close();
@@ -74,7 +74,7 @@ test('schema 3 upgrades directly to 4 without rewriting existing artifacts', asy
         reopened
           .prepare("SELECT version FROM operational_schema_migrations WHERE scope = 'artifact'")
           .get()?.version,
-        4,
+        5,
       );
       assert.equal(
         reopened.prepare('SELECT COUNT(*) AS n FROM image_delivery_attempts').get()?.n,
@@ -211,4 +211,171 @@ test('archive policy enforces defaults even when a caller omits its limits', () 
       imageDelivery: existing.imageDelivery,
     }),
   );
+});
+
+test('received bytes survive reopening, stay immutable, and retire atomically on publication', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-image-spool-'));
+  let authority = createSqliteArtifactStoreWriteAuthority(root);
+  const bytes = new Uint8Array([1, 2, 3]);
+  const job = {
+    ...identity,
+    id: 'durable-reception',
+    loadRemote: false,
+    attempts: 1,
+    nextAttemptAt: 0,
+  };
+  try {
+    await authority.store.putImageDeliveryJob({ job, bytes });
+    authority.close();
+    authority = createSqliteArtifactStoreWriteAuthority(root);
+    const staged = await authority.store.readImageDeliveryJob(job.id);
+    assert.deepEqual(staged?.job, job);
+    assert.deepEqual(staged?.bytes, bytes);
+    await assert.rejects(
+      authority.store.putImageDeliveryJob({ job, bytes: new Uint8Array([9]) }),
+      /immutable/,
+    );
+    await authority.store.create({
+      ...identity,
+      id: job.id,
+      name: 'image',
+      kind: 'image',
+      source: 'tool_result_projection',
+      content: bytes,
+      imageDelivery: {
+        messageId: identity.messageId,
+        source: identity.source,
+        status: 'ready',
+        contentSha256: createHash('sha256').update(bytes).digest('hex'),
+      },
+    });
+    assert.equal(await authority.store.readImageDeliveryJob(job.id), undefined);
+    assert.equal((await lookup(authority.store))?.status, 'ready');
+  } finally {
+    authority.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('deleting a Session also deletes pending and failed reception bytes', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-image-purge-'));
+  const authority = createSqliteArtifactStoreWriteAuthority(root);
+  try {
+    for (const failure of [undefined, 'quota_exceeded'] as const) {
+      await authority.store.putImageDeliveryJob({
+        job: {
+          ...identity,
+          id: failure ?? 'pending-image',
+          loadRemote: false,
+          attempts: 1,
+          nextAttemptAt: 0,
+          ...(failure ? { failure } : {}),
+        },
+        bytes: new Uint8Array([1]),
+      });
+    }
+    await authority.store.purgeSessionArtifacts(identity.sessionId);
+    assert.equal(await authority.store.readImageDeliveryJob('pending-image'), undefined);
+    assert.equal(await authority.store.readImageDeliveryJob('quota_exceeded'), undefined);
+  } finally {
+    authority.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('a process killed after spool commit leaves complete recoverable bytes', async () => {
+  const { spawnSync } = await import('node:child_process');
+  const root = await mkdtemp(join(tmpdir(), 'maka-image-killed-'));
+  const job = { ...identity, id: 'crash-image', loadRemote: false, attempts: 1, nextAttemptAt: 0 };
+  try {
+    const script = `import { createSqliteArtifactStoreWriteAuthority } from ${JSON.stringify(new URL('../artifact-store.js', import.meta.url).href)};
+      const owner = createSqliteArtifactStoreWriteAuthority(process.argv[1]);
+      await owner.store.putImageDeliveryJob({ job: JSON.parse(process.argv[2]), bytes: new Uint8Array([4, 5, 6]) });
+      process.kill(process.pid, 'SIGKILL');`;
+    const result = spawnSync(
+      process.execPath,
+      ['--input-type=module', '-e', script, root, JSON.stringify(job)],
+      { timeout: 10000, encoding: 'utf8' },
+    );
+    assert.equal(result.signal, 'SIGKILL', result.stderr);
+    const authority = createSqliteArtifactStoreWriteAuthority(root);
+    try {
+      const received = await authority.store.readImageDeliveryJob(job.id);
+      assert.deepEqual(received?.job, job);
+      assert.deepEqual(received?.bytes, new Uint8Array([4, 5, 6]));
+    } finally {
+      authority.close();
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('permanent reception failures do not consume the workspace queue', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-image-failures-'));
+  const authority = createSqliteArtifactStoreWriteAuthority(root);
+  try {
+    for (let i = 0; i < 520; i++) {
+      await authority.store.putImageDeliveryJob({
+        job: {
+          ...identity,
+          source: `/missing-${i}.png`,
+          id: `failed-${i}`,
+          loadRemote: false,
+          attempts: 1,
+          nextAttemptAt: 0,
+          failure: 'not_found',
+        },
+      });
+    }
+    const job = { ...identity, id: 'healthy', loadRemote: false, attempts: 1, nextAttemptAt: 0 };
+    await authority.store.putImageDeliveryJob({ job, bytes: new Uint8Array([1]) });
+    assert.equal((await authority.store.listImageDeliveryJobs(Date.now())).length, 1);
+    assert.equal((await authority.store.readImageDeliveryJob('healthy'))?.bytes?.length, 1);
+    assert.equal(await authority.store.readImageDeliveryJob('failed-0'), undefined);
+  } finally {
+    authority.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('quota-failed spools yield capacity to healthy work without erasing failure metadata', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-image-quota-spool-'));
+  const authority = createSqliteArtifactStoreWriteAuthority(root);
+  try {
+    for (let i = 0; i < 4; i++)
+      await authority.store.putImageDeliveryJob({
+        job: {
+          ...identity,
+          source: `/quota-${i}.png`,
+          id: `quota-${i}`,
+          loadRemote: false,
+          attempts: 1,
+          nextAttemptAt: 0,
+          failure: 'quota_exceeded',
+        },
+        bytes: new Uint8Array(8 * 1024 * 1024),
+      });
+    await authority.store.putImageDeliveryJob({
+      job: { ...identity, id: 'healthy', loadRemote: false, attempts: 1, nextAttemptAt: 0 },
+      bytes: new Uint8Array(8 * 1024 * 1024),
+    });
+    assert.equal(await authority.store.readImageDeliveryJob('quota-0'), undefined);
+    assert.deepEqual(
+      await authority.store.findImageDelivery(
+        identity.sessionId,
+        identity.turnId,
+        identity.messageId,
+        '/quota-0.png',
+      ),
+      { status: 'failed', reason: 'quota_exceeded' },
+    );
+    assert.equal(
+      (await authority.store.readImageDeliveryJob('healthy'))?.bytes?.byteLength,
+      8 * 1024 * 1024,
+    );
+  } finally {
+    authority.close();
+    await rm(root, { recursive: true, force: true });
+  }
 });

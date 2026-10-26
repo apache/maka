@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import { formatAttachmentResourceRef } from '@maka/core/attachments';
+import { MarkdownImage } from '../markdown-image.js';
 import { useEffect, useRef, type ReactNode } from 'react';
 import { isShellOutput, type ShellOutput } from '@maka/core/shell-run';
 import { normalizeSearchUrl } from '@maka/core/search';
@@ -151,6 +153,14 @@ export function ToolResultPreview(props: {
   const { content } = props;
   const locale = useUiLocale();
 
+  if (content.kind === 'content') {
+    return <div data-kind="content">{content.parts.map((part, index) =>
+      <ToolResultPreview key={index} content={part} actionIdentity={props.actionIdentity} />)}</div>;
+  }
+  if (content.kind === 'image') {
+    const source = formatAttachmentResourceRef(content.ref);
+    if (source) return <MarkdownImage src={source} alt="" />;
+  }
   if (content.kind === 'file_diff') {
     return (
       <FileDiffPreview

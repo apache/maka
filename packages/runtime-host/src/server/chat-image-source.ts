@@ -18,7 +18,7 @@
  */
 
 import { fileURLToPath } from 'node:url';
-import { ARTIFACT_IMAGE_PREVIEW_MAX_BYTES } from '@maka/core/artifacts';
+import { IMAGE_ARCHIVE_MAX_BYTES } from '@maka/core/image-delivery';
 import {
   ImageFileError,
   imageFileFailureReason,
@@ -94,7 +94,7 @@ export async function downloadChatImage(
         await response.body?.cancel();
         throw new ImageSourceError('download_failed');
       }
-      if (Number(response.headers.get('content-length')) > ARTIFACT_IMAGE_PREVIEW_MAX_BYTES) {
+      if (Number(response.headers.get('content-length')) > IMAGE_ARCHIVE_MAX_BYTES) {
         await response.body?.cancel();
         throw new ImageSourceError('too_large');
       }
@@ -107,7 +107,7 @@ export async function downloadChatImage(
             const chunk = await reader.read();
             if (chunk.done) break;
             size += chunk.value.length;
-            if (size > ARTIFACT_IMAGE_PREVIEW_MAX_BYTES) throw new ImageSourceError('too_large');
+            if (size > IMAGE_ARCHIVE_MAX_BYTES) throw new ImageSourceError('too_large');
             chunks.push(Buffer.from(chunk.value));
           }
         } finally {

@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import type { ImageDeliveryJob, StagedImageDeliveryJob } from './image-delivery-jobs.js';
 import { assertImageArchiveQuota, planImageArchive } from './artifact-image-storage.js';
 import {
   DEFAULT_IMAGE_ARCHIVE_LIMITS,
@@ -202,6 +203,10 @@ export interface ArtifactUpgradeCleanupResult {
 }
 
 export interface ArtifactAuthorityStore extends DurableArtifactAttachmentReader {
+  putImageDeliveryJob(input: StagedImageDeliveryJob): Promise<void>;
+  readImageDeliveryJob(id: string): Promise<StagedImageDeliveryJob | undefined>;
+  listImageDeliveryJobs(now: number): Promise<ImageDeliveryJob[]>;
+  deleteImageDeliveryJob(id: string): Promise<void>;
   create(input: CreateArtifactInput): Promise<ArtifactRecord>;
   findImageDelivery(
     sessionId: string,
@@ -291,6 +296,23 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
 
   close(): void {
     this.metadataRepository.close();
+  }
+
+  putImageDeliveryJob(input: StagedImageDeliveryJob): Promise<void> {
+    const accepted = {
+      job: { ...input.job },
+      ...(input.bytes ? { bytes: Uint8Array.from(input.bytes) } : {}),
+    };
+    return this.enqueueMutation(async () => this.metadataRepository.putImageDeliveryJob(accepted));
+  }
+  readImageDeliveryJob(id: string): Promise<StagedImageDeliveryJob | undefined> {
+    return this.enqueue(async () => this.metadataRepository.readImageDeliveryJob(id));
+  }
+  listImageDeliveryJobs(now: number): Promise<ImageDeliveryJob[]> {
+    return this.enqueue(async () => this.metadataRepository.listImageDeliveryJobs(now));
+  }
+  deleteImageDeliveryJob(id: string): Promise<void> {
+    return this.enqueueMutation(async () => this.metadataRepository.deleteImageDeliveryJob(id));
   }
 
   async findImageDelivery(

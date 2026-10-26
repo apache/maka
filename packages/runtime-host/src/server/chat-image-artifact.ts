@@ -29,6 +29,7 @@ export function readyChatImageArtifact(input: {
   turnId: string;
   name: string;
   messageId: string;
+  publicationRunId?: string;
   source: string;
   image: ChatImageBytes;
   summary?: string;
@@ -45,6 +46,7 @@ export function readyChatImageArtifact(input: {
     source: 'tool_result_projection',
     ...(input.summary !== undefined ? { summary: input.summary } : {}),
     imageDelivery: {
+      ...(input.publicationRunId ? { publicationRunId: input.publicationRunId } : {}),
       messageId: input.messageId,
       source: input.source,
       status: 'ready',

@@ -48,6 +48,12 @@ export {
   type ReadImageSnapshotPlan,
 } from './artifact-attachments.js';
 
+export {
+  ImageDeliveryCapacityError,
+  type ImageDeliveryJob,
+  type StagedImageDeliveryJob,
+} from './image-delivery-jobs.js';
+
 const writerBrand: unique symbol = Symbol('InteractiveArtifactStoreWriter');
 const writers = new WeakSet<object>();
 const writerByLease = new WeakMap<object, InteractiveArtifactStoreWriter>();
@@ -60,6 +66,10 @@ export interface InteractiveArtifactStoreWriter extends DurableArtifactAttachmen
   create(input: CreateArtifactInput): Promise<ArtifactRecord>;
   findImageDelivery: ArtifactAuthorityStore['findImageDelivery'];
   setImageDeliveryAttempt: ArtifactAuthorityStore['setImageDeliveryAttempt'];
+  putImageDeliveryJob: ArtifactAuthorityStore['putImageDeliveryJob'];
+  readImageDeliveryJob: ArtifactAuthorityStore['readImageDeliveryJob'];
+  listImageDeliveryJobs: ArtifactAuthorityStore['listImageDeliveryJobs'];
+  deleteImageDeliveryJob: ArtifactAuthorityStore['deleteImageDeliveryJob'];
   /**
    * Narrow system delete for one Session-owned artifact of a declared source.
    *
@@ -146,6 +156,16 @@ function createWriterFacade(
       const acceptedAttempt = Object.freeze({ ...attempt });
       return run(() => store.setImageDeliveryAttempt(acceptedIdentity, acceptedAttempt));
     },
+    putImageDeliveryJob: (input) => {
+      const accepted = {
+        job: { ...input.job },
+        ...(input.bytes ? { bytes: Uint8Array.from(input.bytes) } : {}),
+      };
+      return run(() => store.putImageDeliveryJob(accepted));
+    },
+    readImageDeliveryJob: (id) => run(() => store.readImageDeliveryJob(id)),
+    listImageDeliveryJobs: (now) => run(() => store.listImageDeliveryJobs(now)),
+    deleteImageDeliveryJob: (id) => run(() => store.deleteImageDeliveryJob(id)),
     listPage: (sessionId, options) => run(() => store.listPage(sessionId, options)),
     listTurnArtifacts: (sessionId, turnId) => run(() => store.listTurnArtifacts(sessionId, turnId)),
     getInSession: (sessionId, artifactId) => run(() => store.getInSession(sessionId, artifactId)),

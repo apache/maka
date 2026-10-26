@@ -80,6 +80,7 @@ import { SessionContextLayer, type SessionContextGoal } from './session-context-
 import {
   SessionAttachmentProvider,
   type ReadAttachmentBytes,
+  type OpenSavedImage,
 } from './attachment-image.js';
 import {
   MakaClientSessionScope,
@@ -305,6 +306,7 @@ export function ChatView(props: {
    * host-agnostic with no direct host-global access.
    */
   onReadAttachmentBytes?: ReadAttachmentBytes;
+  onOpenSavedImage?: OpenSavedImage;
   onResolveImageDelivery?: import('@maka/core/image-delivery').ResolveImageDelivery;
   /**
    * Open a linked subagent child session in the main chat column (option A).
@@ -955,6 +957,7 @@ export function ChatView(props: {
       <SessionAttachmentProvider
         sessionId={props.activeSession.id}
         readBytes={props.onReadAttachmentBytes}
+        openSavedImage={props.onOpenSavedImage}
       >
       <section
         className="maka-main agents-chat-panel agents-chat-view-root"

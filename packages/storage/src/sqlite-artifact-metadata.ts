@@ -28,6 +28,12 @@ import {
   writeImageDeliveryAttempt,
   removeImageDeliveryAttempt,
 } from './sqlite-image-delivery.js';
+import {
+  putImageDeliveryJob,
+  readImageDeliveryJob,
+  listImageDeliveryJobs,
+  type StagedImageDeliveryJob,
+} from './image-delivery-jobs.js';
 import type { ArtifactRecord } from '@maka/core/artifacts';
 import { decodeArtifactRecordJsons } from './artifact-metadata-codec.js';
 import {
@@ -50,6 +56,25 @@ class SqliteArtifactMetadataRepository {
 
   constructor(workspaceRoot: string) {
     this.#lease = acquireOperationalStateDatabase(resolve(workspaceRoot));
+  }
+
+  putImageDeliveryJob(input: StagedImageDeliveryJob): void {
+    this.assertOpen();
+    this.#lease.transaction('write', () => putImageDeliveryJob(this.#lease.database, input));
+  }
+  readImageDeliveryJob(id: string) {
+    this.assertOpen();
+    return readImageDeliveryJob(this.#lease.database, id);
+  }
+  listImageDeliveryJobs(now: number) {
+    this.assertOpen();
+    return listImageDeliveryJobs(this.#lease.database, now);
+  }
+  deleteImageDeliveryJob(id: string): void {
+    this.assertOpen();
+    this.#lease.transaction('write', () =>
+      this.#lease.database.prepare('DELETE FROM image_delivery_jobs WHERE id = ?').run(id),
+    );
   }
 
   findImageDelivery(
@@ -98,6 +123,9 @@ class SqliteArtifactMetadataRepository {
     this.assertOpen();
     this.#lease.transaction('write', () => {
       this.#lease.database
+        .prepare('DELETE FROM image_delivery_jobs WHERE session_id = ?')
+        .run(sessionId);
+      this.#lease.database
         .prepare('DELETE FROM image_delivery_attempts WHERE session_id = ?')
         .run(sessionId);
     });
@@ -142,6 +170,9 @@ class SqliteArtifactMetadataRepository {
            OR record_json IS NOT excluded.record_json
       `);
       for (const record of changes.upserts ?? []) {
+        this.#lease.database
+          .prepare('DELETE FROM image_delivery_jobs WHERE id = ? AND session_id = ?')
+          .run(record.id, record.sessionId);
         if (record.imageDelivery?.status === 'ready')
           removeImageDeliveryAttempt(this.#lease.database, {
             sessionId: record.sessionId,

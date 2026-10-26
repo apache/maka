@@ -4210,3 +4210,57 @@ function invocationOpenedEvent(run: SeededRun = {}): RuntimeEvent {
     opening: invocationOpening(run),
   });
 }
+
+test('conversation copies collect and rewrite every image in ordered media content', () => {
+  const message: StoredMessage = {
+    type: 'tool_result',
+    id: 'result-media',
+    turnId: 'turn-1',
+    ts: 1,
+    toolUseId: 'tool-media',
+    isError: false,
+    content: {
+      kind: 'content',
+      parts: [
+        { kind: 'text', text: 'before ![](maka://runtime/attachments/svg-original)' },
+        {
+          kind: 'image',
+          mimeType: 'image/svg+xml',
+          ref: { kind: 'session_file', sessionId: 'session-source', relativePath: 'svg-original' },
+        },
+        { kind: 'text', text: 'after' },
+      ],
+    },
+  };
+  assert.deepEqual(
+    [
+      ...collectConversationCopySessionFileRefs({
+        sourceSessionId: 'session-source',
+        messages: [message],
+        runtimeEvents: [],
+      }),
+    ],
+    ['svg-original'],
+  );
+  const copied = rewriteConversationCopyMessage(message, {
+    sourceSessionId: 'session-source',
+    targetSessionId: 'session-target',
+    artifactIds: new Map([['svg-original', 'svg-copy']]),
+    relativePaths: new Map(),
+    runtimeEventIds: new Map(),
+    runIds: new Map(),
+    providerTraceIds: new Map(),
+  });
+  assert.equal(copied.type, 'tool_result');
+  if (copied.type !== 'tool_result' || copied.content.kind !== 'content')
+    throw new Error('Expected media');
+  assert.deepEqual(copied.content.parts[1], {
+    kind: 'image',
+    mimeType: 'image/svg+xml',
+    ref: { kind: 'session_file', sessionId: 'session-target', relativePath: 'svg-copy' },
+  });
+  assert.deepEqual(copied.content.parts[0], {
+    kind: 'text',
+    text: 'before ![](maka://runtime/attachments/svg-copy)',
+  });
+});

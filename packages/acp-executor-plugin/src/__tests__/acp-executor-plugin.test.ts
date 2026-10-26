@@ -2971,6 +2971,689 @@ test('questions retain option identity and output updates retain arrival order',
   }
 });
 
+test('ACP waits for asynchronous media publication and preserves surrounding text', async () => {
+  const fixture = await executableFixture();
+  const protocol = fakeProtocol();
+  const executor = new AcpExecutor(
+    adapter,
+    { executable: fixture.executable },
+    { createConnection: protocol.factory },
+  );
+  const events: unknown[] = [];
+  try {
+    const result = await executor.execute(request('media'), {
+      ...executorContext(events),
+      requestPermission: async () => {
+        protocol.notifyUpdate({
+          sessionUpdate: 'agent_message_chunk',
+          content: { type: 'text', text: 'before' },
+        });
+        protocol.notifyUpdate({
+          sessionUpdate: 'agent_message_chunk',
+          content: { type: 'image', mimeType: 'image/png', data: 'AAAA' },
+        });
+        protocol.notifyUpdate({
+          sessionUpdate: 'agent_message_chunk',
+          content: { type: 'text', text: 'after' },
+        });
+        return { outcome: 'selected', optionId: 'allow_once' };
+      },
+      publishMedia: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        return {
+          kind: 'image',
+          mimeType: 'image/png',
+          ref: { kind: 'session_file', sessionId: 'session-a', relativePath: 'saved-image' },
+        };
+      },
+    });
+    assert.equal(result.status, 'completed');
+    if (result.status !== 'completed') throw new Error('Expected completion');
+    assert.equal(
+      result.text,
+      'before\n\n![](maka://runtime/attachments/saved-image)\n\nafterreply:media',
+    );
+    assert.equal(
+      events
+        .filter((e: any) => e.type === 'output_delta')
+        .map((e: any) => e.text)
+        .join(''),
+      result.text,
+    );
+  } finally {
+    await executor.dispose();
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+for (const placement of ['message', 'tool'] as const) {
+  test(`cancelling ACP drains ${placement} updates without waiting for media publication`, async () => {
+    const fixture = await executableFixture();
+    const protocol = fakeProtocol();
+    const storage = durableState();
+    const executor = new AcpExecutor(
+      adapter,
+      { executable: fixture.executable },
+      {
+        createConnection: protocol.factory,
+        state: storage.state,
+      },
+    );
+    const abort = new AbortController();
+    const media = deferred<import('@maka/core/session-media').SessionContentPart>();
+    const started = deferred<void>();
+    const events: import('@maka/runtime/plugin-executor-service').PluginExecutorOutputEvent[] = [];
+    let publications = 0;
+    const execution = executor.execute(request('cancel-media'), {
+      ...executorContext(events, abort.signal),
+      requestPermission: async () => {
+        const content = { type: 'image', mimeType: 'image/png', data: 'AAAA' };
+        protocol.notifyUpdate(
+          placement === 'message'
+            ? { sessionUpdate: 'agent_message_chunk', content }
+            : {
+                sessionUpdate: 'tool_call',
+                toolCallId: 'draw',
+                title: 'Draw',
+                status: 'completed',
+                content: [{ type: 'content', content }],
+              },
+        );
+        protocol.notifyUpdate({
+          sessionUpdate: 'agent_message_chunk',
+          content: { type: 'text', text: 'after image' },
+        });
+        protocol.notifyUpdate({ sessionUpdate: 'agent_message_chunk', content });
+        return { outcome: 'selected', optionId: 'allow_once' };
+      },
+      publishMedia: () => {
+        publications++;
+        started.resolve();
+        return media.promise;
+      },
+    });
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await started.promise;
+      abort.abort(new Error('user_stop'));
+      const result = await Promise.race([
+        execution,
+        new Promise<undefined>((resolve) => {
+          timeout = setTimeout(() => resolve(undefined), 1000);
+        }),
+      ]);
+      assert.equal(result?.status, 'cancelled', 'Cancellation must not wait for Host media');
+      assert.equal(publications, 1, 'Queued media must not start after cancellation');
+      assert.ok(
+        events.some((event) => event.type === 'output_delta' && event.text === 'after image'),
+      );
+      if (placement === 'tool')
+        assert.ok(
+          events.some((event) => event.type === 'tool_result' && event.toolCallId === 'draw'),
+        );
+      await executor.acknowledgeExecution('session-a', 'turn-cancel-media');
+      assert.equal(storage.record().phase, 'committed');
+      assert.equal(
+        (await executor.execute(request('next'), executorContext(events))).status,
+        'completed',
+      );
+      const settledEvents = structuredClone(events);
+      // A late Host failure must be observed without reopening the completed turn.
+      media.reject(new Error('late image failure'));
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.deepEqual(events, settledEvents);
+    } finally {
+      clearTimeout(timeout);
+      media.resolve({ kind: 'text', text: 'released' });
+      await execution;
+      await executor.dispose();
+      await rm(fixture.root, { recursive: true, force: true });
+    }
+  });
+}
+
+for (const placement of ['message', 'tool'] as const) {
+  for (const promptState of ['pending', 'returned'] as const) {
+    test(`ACP transport failure drains received ${placement} updates with ${promptState} prompt and rejects late updates`, async () => {
+      const fixture = await executableFixture();
+      const protocol = fakeProtocol();
+      const crashed = deferred<never>();
+      const prompt = deferred<{ stopReason: 'end_turn' }>();
+      const executor = new AcpExecutor(
+        adapter,
+        { executable: fixture.executable },
+        {
+          createConnection: (input) => {
+            const owner = protocol.factory(input);
+            const request = owner.connection.agent.request.bind(owner.connection.agent);
+            owner.connection.agent.request = (async (method: string, params: never) => {
+              if (method === methods.agent.session.prompt) {
+                const content = { type: 'image', mimeType: 'image/png', data: 'AAAA' };
+                protocol.notifyUpdate(
+                  placement === 'message'
+                    ? { sessionUpdate: 'agent_message_chunk', content }
+                    : {
+                        sessionUpdate: 'tool_call',
+                        toolCallId: 'draw',
+                        title: 'Draw',
+                        status: 'completed',
+                        content: [{ type: 'content', content }],
+                      },
+                );
+                protocol.notifyUpdate({
+                  sessionUpdate: 'agent_message_chunk',
+                  content: { type: 'text', text: 'after image' },
+                });
+                protocol.notifyUpdate({
+                  sessionUpdate: 'tool_call',
+                  toolCallId: 'after',
+                  title: 'After',
+                  status: 'completed',
+                  content: [
+                    { type: 'content', content: { type: 'text', text: 'received result' } },
+                  ],
+                });
+                return prompt.promise;
+              }
+              return request(method as never, params);
+            }) as typeof owner.connection.agent.request;
+            return {
+              ...owner,
+              failed: crashed.promise,
+              dispose: async () => {
+                protocol.notifyUpdate({
+                  sessionUpdate: 'agent_message_chunk',
+                  content: { type: 'text', text: 'late text' },
+                });
+                await owner.dispose();
+              },
+            };
+          },
+        },
+      );
+      const media = deferred<import('@maka/core/session-media').SessionContentPart>();
+      const started = deferred<void>();
+      const events: import('@maka/runtime/plugin-executor-service').PluginExecutorOutputEvent[] =
+        [];
+      const execution = executor.execute(request('crash-media'), {
+        ...executorContext(events),
+        publishMedia: () => {
+          started.resolve();
+          return media.promise;
+        },
+      });
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await started.promise;
+        if (promptState === 'returned') {
+          prompt.resolve({ stopReason: 'end_turn' });
+          await new Promise<void>((resolve) => setImmediate(resolve));
+        }
+        crashed.reject(new Error('ACP process exited'));
+        const result = await Promise.race([
+          execution,
+          new Promise<undefined>((resolve) => {
+            timeout = setTimeout(() => resolve(undefined), 1000);
+          }),
+        ]);
+        assert.equal(result?.status, 'failed', 'Transport failure must not wait for Host media');
+        assert.ok(
+          events.some((event) => event.type === 'output_delta' && event.text === 'after image'),
+          'Already-received text must survive transport failure',
+        );
+        assert.ok(
+          events.some((event) => event.type === 'tool_result' && event.toolCallId === 'after'),
+          'Already-received tool results must survive transport failure',
+        );
+        if (placement === 'tool')
+          assert.ok(
+            events.some((event) => event.type === 'tool_result' && event.toolCallId === 'draw'),
+          );
+        assert.ok(
+          !events.some((event) => event.type === 'output_delta' && event.text === 'late text'),
+        );
+        const settledEvents = structuredClone(events);
+        media.reject(new Error('late image failure'));
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        assert.deepEqual(events, settledEvents);
+      } finally {
+        clearTimeout(timeout);
+        media.resolve({ kind: 'text', text: 'released' });
+        prompt.resolve({ stopReason: 'end_turn' });
+        await execution;
+        await executor.dispose();
+        await rm(fixture.root, { recursive: true, force: true });
+      }
+    });
+  }
+}
+
+test('repeated ACP tool snapshots retain their image without exhausting the media budget', async () => {
+  const fixture = await executableFixture();
+  const protocol = fakeProtocol();
+  const executor = new AcpExecutor(
+    adapter,
+    { executable: fixture.executable },
+    { createConnection: protocol.factory },
+  );
+  const events: import('@maka/runtime/plugin-executor-service').PluginExecutorOutputEvent[] = [];
+  let publications = 0;
+  try {
+    const result = await executor.execute(request('repeated-image'), {
+      ...executorContext(events),
+      requestPermission: async () => {
+        // Each notification is a fresh protocol snapshot containing the same 1.5 MiB image.
+        for (let i = 0; i < 70; i++)
+          protocol.notifyUpdate({
+            sessionUpdate: i === 0 ? 'tool_call' : 'tool_call_update',
+            toolCallId: 'draw',
+            title: 'Draw',
+            status: i === 69 ? 'completed' : 'in_progress',
+            content: [
+              {
+                type: 'content',
+                content: {
+                  type: 'image',
+                  mimeType: 'image/png',
+                  data: 'A'.repeat(2 * 1024 * 1024),
+                },
+              },
+            ],
+          });
+        return { outcome: 'selected', optionId: 'allow_once' };
+      },
+      publishMedia: async () => {
+        publications++;
+        return {
+          kind: 'image',
+          mimeType: 'image/png',
+          ref: { kind: 'session_file', sessionId: 'session-a', relativePath: 'saved-image' },
+        };
+      },
+    });
+    assert.equal(result.status, 'completed');
+    assert.equal(publications, 1);
+    const output = events.find(
+      (event) => event.type === 'tool_result' && event.toolCallId === 'draw',
+    );
+    assert.ok(output?.type === 'tool_result' && output.content.kind === 'content');
+    assert.equal(output.content.parts[0]?.kind, 'image');
+  } finally {
+    await executor.dispose();
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+test('a seven MiB ACP image reaches Host publication', async () => {
+  const fixture = await executableFixture();
+  const protocol = fakeProtocol();
+  const executor = new AcpExecutor(
+    adapter,
+    { executable: fixture.executable },
+    { createConnection: protocol.factory },
+  );
+  const events: import('@maka/runtime/plugin-executor-service').PluginExecutorOutputEvent[] = [];
+  let publications = 0;
+  try {
+    const result = await executor.execute(request('repeated-image'), {
+      ...executorContext(events),
+      requestPermission: async () => {
+        // Base64 expansion must not make a valid original exceed the wire budget.
+        for (let i = 0; i < 1; i++)
+          protocol.notifyUpdate({
+            sessionUpdate: i === 0 ? 'tool_call' : 'tool_call_update',
+            toolCallId: 'draw',
+            title: 'Draw',
+            status: i === 0 ? 'completed' : 'in_progress',
+            content: [
+              {
+                type: 'content',
+                content: {
+                  type: 'image',
+                  mimeType: 'image/png',
+                  data: Buffer.alloc(7 * 1024 * 1024).toString('base64'),
+                },
+              },
+            ],
+          });
+        return { outcome: 'selected', optionId: 'allow_once' };
+      },
+      publishMedia: async () => {
+        publications++;
+        return {
+          kind: 'image',
+          mimeType: 'image/png',
+          ref: { kind: 'session_file', sessionId: 'session-a', relativePath: 'saved-image' },
+        };
+      },
+    });
+    assert.equal(result.status, 'completed');
+    assert.equal(publications, 1);
+    const output = events.find(
+      (event) => event.type === 'tool_result' && event.toolCallId === 'draw',
+    );
+    assert.ok(output?.type === 'tool_result' && output.content.kind === 'content');
+    assert.equal(output.content.parts[0]?.kind, 'image');
+  } finally {
+    await executor.dispose();
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+for (const type of ['image', 'audio'] as const) {
+  for (const placement of ['message', 'tool'] as const) {
+    for (const limit of ['count', 'bytes', 'single-block'] as const) {
+      test(`unique ACP ${type} ${placement} media still respects the ${limit} limit`, async () => {
+        const fixture = await executableFixture();
+        const protocol = fakeProtocol();
+        const executor = new AcpExecutor(
+          adapter,
+          { executable: fixture.executable },
+          { createConnection: protocol.factory },
+        );
+        let publications = 0;
+        const events: import('@maka/runtime/plugin-executor-service').PluginExecutorOutputEvent[] =
+          [];
+        try {
+          const result = await executor.execute(request('media-limit'), {
+            ...executorContext(events),
+            requestPermission: async () => {
+              const count = limit === 'count' ? 65 : limit === 'bytes' ? 7 : 1;
+              for (let i = 0; i < count; i++) {
+                const content = {
+                  type,
+                  mimeType: type === 'image' ? 'image/png' : 'audio/wav',
+                  data: Buffer.alloc(
+                    limit === 'count' ? 3 : limit === 'bytes' ? 1.5 * 1024 * 1024 : 9 * 1024 * 1024,
+                    i,
+                  ).toString('base64'),
+                };
+                protocol.notifyUpdate(
+                  placement === 'message'
+                    ? {
+                        sessionUpdate: 'agent_message_chunk',
+                        content,
+                      }
+                    : {
+                        sessionUpdate: 'tool_call',
+                        toolCallId: `media-${i}`,
+                        title: 'Media',
+                        status: 'completed',
+                        content: [{ type: 'content', content }],
+                      },
+                );
+              }
+              return { outcome: 'selected', optionId: 'allow_once' };
+            },
+            publishMedia: async () => {
+              publications++;
+              return { kind: 'text', text: 'saved' };
+            },
+          });
+          assert.equal(
+            publications,
+            type === 'audio' ? 0 : limit === 'count' ? 64 : limit === 'bytes' ? 5 : 0,
+          );
+          assert.ok(result.status === 'completed');
+          assert.match(
+            placement === 'message'
+              ? result.text
+              : JSON.stringify(events.filter((event) => event.type === 'tool_result')),
+            /Media omitted: response media limit reached/,
+          );
+        } finally {
+          await executor.dispose();
+          await rm(fixture.root, { recursive: true, force: true });
+        }
+      });
+    }
+  }
+}
+
+for (const kind of ['text', 'diff'] as const) {
+  test(`ACP preserves all small ${kind} blocks beyond the mixed-content part limit`, async () => {
+    const fixture = await executableFixture();
+    const protocol = fakeProtocol();
+    const executor = new AcpExecutor(
+      adapter,
+      { executable: fixture.executable },
+      { createConnection: protocol.factory },
+    );
+    const events: import('@maka/runtime/plugin-executor-service').PluginExecutorOutputEvent[] = [];
+    const values = Array.from({ length: 65 }, (_, i) => `result-${i}`);
+    try {
+      await executor.execute(request(`many-${kind}`), {
+        ...executorContext(events),
+        requestPermission: async () => {
+          protocol.notifyUpdate({
+            sessionUpdate: 'tool_call',
+            toolCallId: 'many',
+            title: 'Many results',
+            status: 'completed',
+            content:
+              kind === 'text'
+                ? values.map((text) => ({ type: 'content', content: { type: 'text', text } }))
+                : values.map((path) => ({ type: 'diff', path, oldText: '', newText: 'new' })),
+          });
+          return { outcome: 'selected', optionId: 'allow_once' };
+        },
+      });
+      const result = events.find((event) => event.type === 'tool_result');
+      assert.ok(result?.type === 'tool_result');
+      assert.deepEqual(result.content, {
+        kind: 'text',
+        text:
+          kind === 'text'
+            ? values.join('\n')
+            : `${values.map((path) => `Updated ${path}`).join('\n')}\nDiff omitted because it exceeds the executor event limit.`,
+      });
+    } finally {
+      await executor.dispose();
+      await rm(fixture.root, { recursive: true, force: true });
+    }
+  });
+}
+
+for (const placement of ['first', 'last', 'replacement', 'status-only'] as const) {
+  test(`ACP bounds mixed tool content and reports omissions with ${placement} media`, async () => {
+    const fixture = await executableFixture();
+    const protocol = fakeProtocol();
+    const executor = new AcpExecutor(
+      adapter,
+      { executable: fixture.executable },
+      {
+        createConnection: protocol.factory,
+      },
+    );
+    const events: import('@maka/runtime/plugin-executor-service').PluginExecutorOutputEvent[] = [];
+    let publications = 0;
+    try {
+      await executor.execute(request('many-parts'), {
+        ...executorContext(events),
+        requestPermission: async () => {
+          const image = {
+            type: 'content',
+            content: { type: 'image', mimeType: 'image/png', data: 'AAAA' },
+          };
+          const content = Array.from({ length: 65 }, (_, i) => ({
+            type: 'diff',
+            path: `file-${i}`,
+            oldText: '',
+            newText: 'new',
+          }));
+          protocol.notifyUpdate({
+            sessionUpdate: 'tool_call',
+            toolCallId: 'many',
+            title: 'Many parts',
+            status:
+              placement === 'replacement' || placement === 'status-only'
+                ? 'in_progress'
+                : 'completed',
+            content: placement === 'last' ? [...content, image] : [image, ...content],
+          });
+          if (placement === 'replacement')
+            protocol.notifyUpdate({
+              sessionUpdate: 'tool_call_update',
+              toolCallId: 'many',
+              status: 'completed',
+              content: [{ type: 'content', content: { type: 'text', text: 'replacement' } }],
+            });
+          if (placement === 'status-only')
+            protocol.notifyUpdate({
+              sessionUpdate: 'tool_call_update',
+              toolCallId: 'many',
+              status: 'completed',
+            });
+          return { outcome: 'selected', optionId: 'allow_once' };
+        },
+        publishMedia: async () => {
+          publications++;
+          return {
+            kind: 'image',
+            mimeType: 'image/png',
+            ref: {
+              kind: 'session_file',
+              sessionId: 'session-a',
+              relativePath: 'saved-image',
+            },
+          };
+        },
+      });
+      const result = events.find((event) => event.type === 'tool_result');
+      assert.ok(result?.type === 'tool_result');
+      if (placement === 'replacement') {
+        assert.deepEqual(result.content, { kind: 'text', text: 'replacement' });
+      } else {
+        assert.equal(result.content.kind, 'content');
+        if (result.content.kind !== 'content') throw new Error('Expected mixed result');
+        assert.equal(result.content.parts.length, 64);
+        assert.deepEqual(result.content.parts.at(-1), {
+          kind: 'text',
+          text: '[Additional tool content omitted]',
+        });
+        assert.equal(result.content.parts[0]?.kind, placement === 'last' ? 'file_diff' : 'image');
+      }
+      assert.equal(publications, placement === 'first' || placement === 'status-only' ? 1 : 0);
+    } finally {
+      await executor.dispose();
+      await rm(fixture.root, { recursive: true, force: true });
+    }
+  });
+}
+
+test('ACP discards ignored notifications and unused media metadata before the blocked publication queue', async () => {
+  if (!global.gc) {
+    const { execFile } = await import('node:child_process');
+    const { promisify } = await import('node:util');
+    const { fileURLToPath } = await import('node:url');
+    const env = { ...process.env };
+    delete env.NODE_TEST_CONTEXT;
+    const { stdout } = await promisify(execFile)(
+      process.execPath,
+      [
+        '--expose-gc',
+        '--test',
+        '--test-reporter=tap',
+        '--test-name-pattern=^ACP discards ignored notifications and unused media metadata before the blocked publication queue$',
+        fileURLToPath(import.meta.url),
+      ],
+      { timeout: 15_000, env },
+    );
+    assert.match(stdout, /^# pass 1$/m, 'The isolated GC regression must execute');
+    return;
+  }
+  const fixture = await executableFixture();
+  const protocol = fakeProtocol();
+  const executor = new AcpExecutor(
+    adapter,
+    { executable: fixture.executable },
+    {
+      createConnection: protocol.factory,
+    },
+  );
+  const started = deferred<void>();
+  const media = deferred<import('@maka/core/session-media').SessionContentPart>();
+  const events: import('@maka/runtime/plugin-executor-service').PluginExecutorOutputEvent[] = [];
+  const publications: import('@maka/core/session-media').SessionMediaInput[] = [];
+  const execution = executor.execute(request('thought-media'), {
+    ...executorContext(events),
+    requestPermission: async () => {
+      protocol.notifyUpdate({
+        sessionUpdate: 'agent_message_chunk',
+        content: {
+          type: 'image',
+          mimeType: 'image/png',
+          data: 'AAAA',
+        },
+      });
+      return { outcome: 'selected', optionId: 'allow_once' };
+    },
+    publishMedia: (input) => {
+      publications.push(input);
+      started.resolve();
+      return media.promise;
+    },
+  });
+  try {
+    await started.promise;
+    const refs: WeakRef<object>[] = Array.from({ length: 65 }, (_, i) => {
+      const content = {
+        type: 'audio',
+        mimeType: 'audio/wav',
+        data: Buffer.alloc(1024, i).toString('base64'),
+      };
+      protocol.notifyUpdate({ sessionUpdate: 'agent_thought_chunk', content });
+      return new WeakRef(content);
+    });
+    refs.push(
+      ...Array.from({ length: 4 }, (_, i) => {
+        const content = {
+          type: 'image',
+          mimeType: 'image/png',
+          data: Buffer.alloc(3 * 1024 * 1024, i).toString('base64'),
+        };
+        protocol.notifyUpdate({ sessionUpdate: 'user_message_chunk', content });
+        const metadata = { unused: 'x'.repeat(3 * 1024 * 1024) };
+        const link = {
+          type: 'resource_link',
+          uri: `/tmp/plot-${i}.png`,
+          name: 'plot',
+          mimeType: 'image/png',
+          _meta: metadata,
+          description: 'x'.repeat(3 * 1024 * 1024),
+        };
+        protocol.notifyUpdate({ sessionUpdate: 'agent_message_chunk', content: link });
+        return [new WeakRef(content), new WeakRef(link), new WeakRef(metadata)];
+      }).flat(),
+    );
+    let retained = refs.length;
+    for (let attempt = 0; attempt < 5 && retained; attempt++) {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      global.gc();
+      retained = refs.filter((ref) => ref.deref() !== undefined).length;
+    }
+    assert.equal(retained, 0, 'Ignored media must be collectible while publication is blocked');
+    protocol.notifyUpdate({
+      sessionUpdate: 'agent_thought_chunk',
+      content: { type: 'text', text: 'kept thought' },
+    });
+    media.resolve({ kind: 'text', text: 'published' });
+    assert.equal((await execution).status, 'completed');
+    assert.deepEqual(
+      publications.slice(1),
+      Array.from({ length: 4 }, (_, i) => ({ kind: 'source', source: `/tmp/plot-${i}.png` })),
+    );
+    assert.deepEqual(
+      events.filter((event) => event.type === 'thinking_delta'),
+      [{ type: 'thinking_delta', text: 'kept thought' }],
+    );
+  } finally {
+    media.resolve({ kind: 'text', text: 'released' });
+    await execution;
+    await executor.dispose();
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
 function request(text: string) {
   return {
     sessionId: 'session-a',
@@ -3534,11 +4217,13 @@ test('registered-style directory ownership covers Agent startup and cleanup', as
 });
 
 function deferred<T>() {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((done) => {
-    resolve = done;
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }
 
 test('restoration reasserts the saved mode even when the request only selects a model', async () => {

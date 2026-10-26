@@ -21,7 +21,7 @@ import type { MakaBridge } from '../../../preload/bridge-contract.js';
 import type { ComposerStagingServices } from '../../features/conversation/index.js';
 
 export function createDesktopComposerStagingServices(
-  bridge: Pick<MakaBridge, 'attachments'> = window.maka,
+  bridge: Pick<MakaBridge, 'attachments' | 'app'> = window.maka,
 ): ComposerStagingServices {
-  return bridge.attachments;
+  return { ...bridge.attachments, openSavedImage: (sessionId, artifactId) => bridge.app.openArtifactPath(sessionId, artifactId) };
 }

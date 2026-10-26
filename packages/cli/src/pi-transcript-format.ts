@@ -48,6 +48,8 @@ export function fitLine(line: string, width: number): string {
 
 export function formatToolResultContent(content: ToolResultContent): string {
   switch (content.kind) {
+    case 'content':
+      return content.parts.map(formatToolResultContent).join('\n\n');
     case 'text':
       return content.text;
     case 'json':

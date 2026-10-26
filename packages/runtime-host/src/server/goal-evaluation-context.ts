@@ -203,6 +203,11 @@ function formatToolEvidence({ call, result }: ToolEvidence, withholdResult: bool
 /** Only human-readable result fields; never raw provider replay or image data. */
 function projectResult(content: ToolResultContent, toolName: string | undefined): unknown {
   switch (content.kind) {
+    case 'content':
+      return {
+        kind: content.kind,
+        parts: content.parts.map((part) => projectResult(part, toolName)),
+      };
     case 'text':
       return { kind: content.kind, text: content.text, uncertainOutcome: content.uncertainOutcome };
     case 'json': {

@@ -946,6 +946,7 @@ type ShellRunToolResultContent =
       ));
 
 export type ToolResultContent =
+  | { kind: 'content'; parts: import('./session-media.js').SessionContentPart[] }
   | {
       kind: 'text';
       text: string;

@@ -86,7 +86,7 @@ export function QuoteCompanionPanel(props: {
   onPromptAccepted?: (panelId: string, prompt: string) => void;
   onActivityStateChange?: (panelId: string, active: boolean) => void;
 }) {
-  const { attachments } = useWorkbarServices();
+  const { attachments, artifacts } = useWorkbarServices();
   const mentions = useComposerMentionsContext();
   const locale = useUiLocale();
   const toast = useToast();
@@ -404,7 +404,7 @@ export function QuoteCompanionPanel(props: {
           liveTurns={companion.liveTurns}
           activeTurn={companion.activeTurn}
           activeSession={companion.companionSession}
-          onReadAttachmentBytes={attachments.readBytes} onResolveImageDelivery={attachments.resolveImageDelivery}
+          onOpenSavedImage={artifacts.openPath} onReadAttachmentBytes={attachments.readBytes} onResolveImageDelivery={attachments.resolveImageDelivery}
           deriveTurnPresentation={deriveTurnPresentation}
           onEditUserMessage={(turnId) => {
             const message = companion.messages.find(

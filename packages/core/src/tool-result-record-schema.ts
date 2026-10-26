@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { isSessionContentPart, SESSION_CONTENT_MAX_PARTS } from './session-media.js';
 import {
   decodeCanonicalShellToolResultContent,
   isSandboxDenialSignal,
@@ -259,6 +260,14 @@ function isNonShellToolResultContent(value: unknown): value is ToolResultContent
         (value.reason === 'tool_result_pruned' ||
           value.reason === 'stale_tool_result_pruned_before_compact' ||
           value.reason === 'active_current_turn_tool_result_pruned_before_next_step')
+      );
+    case 'content':
+      return (
+        Object.keys(value).length === 2 &&
+        Array.isArray(value.parts) &&
+        value.parts.length > 0 &&
+        value.parts.length <= SESSION_CONTENT_MAX_PARTS &&
+        value.parts.every(isSessionContentPart)
       );
     case 'image':
       return (

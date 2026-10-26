@@ -47,6 +47,7 @@ export function createDesktopWorkHubServices(
     | 'runtimeHostProfiles'
     | 'settings'
     | 'attachments'
+    | 'app'
   > = window.maka,
 ): WorkHubServices {
   return {
@@ -93,6 +94,7 @@ export function createDesktopWorkHubServices(
       bridge.connections.setDefaultModel({ slug: llmConnectionSlug, model }),
     attachments: bridge.attachments,
     readAttachmentBytes: bridge.attachments.readBytes,
+    openSavedImage: (sessionId, artifactId) => bridge.app.openArtifactPath(sessionId, artifactId),
     resolveImageDelivery: bridge.attachments.resolveImageDelivery,
     prepareAttachments: async (sessionId, items) => {
       const result = await bridge.workHub.prepareAttachments(sessionId, items);

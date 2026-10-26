@@ -116,18 +116,24 @@ async function fixture(
   const messages = new Map<string, string>();
   const localReader = createImageFileReader();
   let present = true;
-  const service = new ChatImageDeliveryService({
+  const ports: ChatImageDeliveryPorts = {
     artifacts: {
+      putImageDeliveryJob: authority.store.putImageDeliveryJob,
+      readImageDeliveryJob: authority.store.readImageDeliveryJob,
+      listImageDeliveryJobs: authority.store.listImageDeliveryJobs,
+      deleteImageDeliveryJob: authority.store.deleteImageDeliveryJob,
       create: async (input) => {
         beforeCreate?.(input);
         return authority.store.create(input);
       },
       findImageDelivery: authority.store.findImageDelivery,
+      getInSession: authority.store.getInSession,
       setImageDeliveryAttempt: authority.store.setImageDeliveryAttempt,
     },
     admission: new SessionAdmissionGate(),
     limits,
     sourceReadTimeoutMs: 1000,
+    retryDelayMs: 1,
     canLoadRemote: async () => remoteAllowed,
     download: download ?? downloadChatImage,
     isPresent: async () => present,
@@ -147,9 +153,11 @@ async function fixture(
     },
     persistenceFailed: (error) => errors.push(error),
     presentationFailed: (error) => presentationErrors.push(error),
-  });
+  };
+  const service = new ChatImageDeliveryService(ports);
   return {
     root,
+    ports,
     owner,
     authority,
     service,
@@ -183,8 +191,8 @@ test('Host drain releases both capture slots even when a source reader ignores c
 }, async () => {
   const f = await fixture(undefined, () => new Promise(() => {}));
   try {
-    observe(f.service, '/tmp/blocked-1.png');
-    observe(f.service, '/tmp/blocked-2.png', 'session-1', 'message-2');
+    await observe(f.service, '/tmp/blocked-1.png');
+    await observe(f.service, '/tmp/blocked-2.png', 'session-1', 'message-2');
     while (f.reads < 2) await new Promise((resolve) => setImmediate(resolve));
     await f.service.close();
     assert.equal(f.leases, 0);
@@ -193,7 +201,7 @@ test('Host drain releases both capture slots even when a source reader ignores c
     await f.close();
   }
 });
-test('a stalled local source expires within its read budget and can be retried', {
+test('a stalled local source automatically retries within a bounded attempt budget', {
   timeout: 15000,
 }, async () => {
   let reads = 0;
@@ -202,12 +210,10 @@ test('a stalled local source expires within its read budget and can be retried',
     return checkedChatImage(PNG);
   });
   try {
-    observe(f.service, REQUEST.source);
+    await observe(f.service, REQUEST.source);
     await f.service.waitForIdle();
-    assert.deepEqual(await f.service.resolve(REQUEST), { status: 'failed', reason: 'read_failed' });
+    assert.equal(reads, 2);
     assert.equal(f.leases, 0);
-    assert.equal((await f.service.resolve({ ...REQUEST, retry: true })).status, 'pending');
-    await f.service.waitForIdle();
     assert.equal((await f.service.resolve(REQUEST)).status, 'ready');
     assert.deepEqual(f.errors, []);
   } finally {
@@ -220,7 +226,7 @@ function observe(
   sessionId = REQUEST.sessionId,
   messageId = REQUEST.messageId,
 ) {
-  service.observe(sessionId, {
+  return service.observe(sessionId, {
     id: 'text-event',
     type: 'text_complete',
     turnId: REQUEST.turnId,
@@ -256,7 +262,7 @@ test('automatically saves a local delivery without any UI request; deletion and 
   try {
     const source = join(f.root, 'original.png');
     await writeFile(source, PNG);
-    observe(f.service, source);
+    await observe(f.service, source);
     await f.service.waitForIdle();
     assert.equal(f.reads, 1);
     assert.equal(f.leases, 0);
@@ -302,7 +308,7 @@ test('literal percent filenames retain precedence and file URLs are decoded only
       if (name.includes('%20')) await writeFile(path.replace('%20', ' '), 'wrong source');
       for (const source of [path, pathToFileURL(path).href]) {
         paths.length = 0;
-        observe(f.service, source);
+        await observe(f.service, source);
         await f.service.waitForIdle();
         assert.equal((await f.service.resolve({ ...REQUEST, source })).status, 'ready', source);
         assert.deepEqual(paths, [path]);
@@ -332,16 +338,9 @@ test('remote delivery is downloaded once, remains replayable after the origin se
   );
   try {
     f.messages.set(REQUEST.messageId, `![Screenshot](${source})`);
-    observe(f.service, source);
+    await observe(f.service, source);
     await f.service.waitForIdle();
-    assert.equal(requests, 0);
-    assert.deepEqual(await f.service.resolve({ ...REQUEST, source }), {
-      status: 'requires_confirmation',
-    });
-    assert.equal(
-      (await f.service.resolve({ ...REQUEST, source, loadRemote: true })).status,
-      'pending',
-    );
+    assert.equal(requests, 1);
     await f.service.waitForIdle();
     assert.deepEqual(f.errors, []);
     assert.equal((await f.service.resolve({ ...REQUEST, source })).status, 'ready');
@@ -370,7 +369,7 @@ test('transient failure is persisted and is retried only on an explicit request'
   const f = await fixture();
   try {
     const source = join(f.root, 'later.png');
-    observe(f.service, source);
+    await observe(f.service, source);
     await f.service.waitForIdle();
     assert.deepEqual(await f.service.resolve({ ...REQUEST, source }), {
       status: 'failed',
@@ -444,7 +443,7 @@ test('ready image retries retain the only saved copy after its source is deleted
   const source = join(f.root, 'temporary.png');
   try {
     await writeFile(source, PNG);
-    observe(f.service, source);
+    await observe(f.service, source);
     await f.service.waitForIdle();
     const identity = { ...REQUEST, source };
     const ready = await f.service.resolve(identity);
@@ -496,7 +495,7 @@ test('Worker read errors retain their image delivery reasons in persisted failur
       reader({ path, cwd: process.cwd(), abortSignal }),
     );
     try {
-      observe(f.service, REQUEST.source);
+      await observe(f.service, REQUEST.source);
       await f.service.waitForIdle();
       assert.deepEqual(await f.service.resolve(REQUEST), { status: 'failed', reason: expected });
       assert.deepEqual(f.errors, []);
@@ -517,7 +516,7 @@ test('pending capture survives persistence failure and is removed only after a d
     },
   );
   try {
-    observe(f.service, REQUEST.source);
+    await observe(f.service, REQUEST.source);
     await f.service.waitForIdle();
     const pending = await f.authority.store.listPage(REQUEST.sessionId, { offset: 0, limit: 10 });
     assert.equal(pending.total, 0, 'pending capture is not an artifact');
@@ -548,8 +547,8 @@ test('quota admission is atomic under concurrent jobs and identical content shar
   try {
     const source = join(f.root, 'same.png');
     await writeFile(source, PNG);
-    observe(f.service, source);
-    observe(f.service, source, 'session-2');
+    await observe(f.service, source);
+    await observe(f.service, source, 'session-2');
     await f.service.waitForIdle();
     const a = await f.service.resolve({ ...REQUEST, source });
     const b = await f.service.resolve({ ...REQUEST, sessionId: 'session-2', source });
@@ -564,7 +563,7 @@ test('quota admission is atomic under concurrent jobs and identical content shar
     );
     const different = join(f.root, 'different.png');
     await writeFile(different, Buffer.concat([PNG, Buffer.from('different')]));
-    observe(f.service, different, 'session-1', 'message-2');
+    await observe(f.service, different, 'session-1', 'message-2');
     await f.service.waitForIdle();
     assert.deepEqual(
       await f.service.resolve({ ...REQUEST, source: different, messageId: 'message-2' }),
@@ -582,7 +581,7 @@ test('copying a conversation carries delivery provenance and saved bytes; it doe
   try {
     const source = join(f.root, 'original.png');
     await writeFile(source, PNG);
-    observe(f.service, source);
+    await observe(f.service, source);
     await f.service.waitForIdle();
     await rm(source);
     await f.authority.store.copyConversationArtifacts({
@@ -633,11 +632,11 @@ test('source readers reject unsafe MIME and redirects to private networks', asyn
 test('HTTP download enforces header/stream limits, redirect budget and cancellation', async (t) => {
   const server = createServer((req, res) => {
     if (req.url === '/length') {
-      res.writeHead(200, { 'content-length': 2 * 1024 * 1024 + 1 });
+      res.writeHead(200, { 'content-length': 8 * 1024 * 1024 + 1 });
       res.end();
     } else if (req.url === '/stream') {
       res.writeHead(200);
-      res.write(Buffer.alloc(2 * 1024 * 1024 + 1));
+      res.write(Buffer.alloc(8 * 1024 * 1024 + 1));
       res.end();
     } else if (req.url === '/redirect') {
       res.writeHead(302, { location: '/redirect' });
@@ -722,8 +721,6 @@ test('remote capture requires client display authority and application network a
   const identity = { ...REQUEST, source };
   f.messages.set(REQUEST.messageId, `![](${source})`);
   try {
-    observe(f.service, source);
-    await f.service.waitForIdle();
     assert.equal(downloads, 0);
     assert.deepEqual(await f.service.resolve(identity), { status: 'requires_confirmation' });
     f.allowRemote(false);
@@ -764,7 +761,7 @@ test('remote capture requires client display authority and application network a
   }
 });
 
-test('failed remote downloads issue one request and require a client retry', async () => {
+test('remote downloads retry three times, then require an explicit authorized retry', async () => {
   let downloads = 0;
   const f = await fixture(undefined, undefined, undefined, async () => {
     downloads++;
@@ -776,14 +773,14 @@ test('failed remote downloads issue one request and require a client retry', asy
   try {
     await f.service.resolve({ ...identity, loadRemote: true });
     await f.service.waitForIdle();
-    assert.equal(downloads, 1);
+    assert.equal(downloads, 3);
     assert.deepEqual(await f.service.resolve({ ...identity, retry: true }), {
       status: 'requires_confirmation',
     });
-    assert.equal(downloads, 1);
+    assert.equal(downloads, 3);
     await f.service.resolve({ ...identity, retry: true, loadRemote: true });
     await f.service.waitForIdle();
-    assert.equal(downloads, 2);
+    assert.equal(downloads, 6);
   } finally {
     await f.close();
   }
@@ -792,7 +789,7 @@ test('failed remote downloads issue one request and require a client retry', asy
 test('a Markdown parser failure stays in presentation and subsequent images still capture', async () => {
   const f = await fixture(undefined, async () => checkedChatImage(PNG));
   try {
-    f.service.observe(REQUEST.sessionId, {
+    await f.service.observe(REQUEST.sessionId, {
       type: 'text_complete',
       id: 'deep-text',
       ts: 1,
@@ -803,7 +800,7 @@ test('a Markdown parser failure stays in presentation and subsequent images stil
     assert.equal(f.presentationErrors.length, 1);
     assert.ok(f.presentationErrors[0] instanceof RangeError);
     assert.deepEqual(f.errors, []);
-    observe(f.service, REQUEST.source);
+    await observe(f.service, REQUEST.source);
     await f.service.waitForIdle();
     assert.equal((await f.service.resolve(REQUEST)).status, 'ready');
   } finally {
@@ -885,7 +882,7 @@ test('local and downloaded invalid image bytes retain identical failure reasons'
   try {
     for (const [bytes, reason] of [
       [PNG.subarray(0, 8), 'unsupported_mime'],
-      [new Uint8Array(2 * 1024 * 1024 + 1), 'too_large'],
+      [new Uint8Array(8 * 1024 * 1024 + 1), 'too_large'],
     ] as const) {
       assert.throws(
         () => checkedChatImage(bytes),
@@ -915,11 +912,11 @@ test('a queued retry reports pending instead of replaying the previous failure',
     return checkedChatImage(PNG);
   });
   try {
-    observe(f.service, REQUEST.source);
+    await observe(f.service, REQUEST.source);
     await f.service.waitForIdle();
     assert.deepEqual(await f.service.resolve(REQUEST), { status: 'failed', reason: 'not_found' });
-    observe(f.service, '/tmp/blocker-one.png');
-    observe(f.service, '/tmp/blocker-two.png');
+    await observe(f.service, '/tmp/blocker-one.png');
+    await observe(f.service, '/tmp/blocker-two.png');
     while (f.reads < 3) await new Promise((resolve) => setImmediate(resolve));
     fail = false;
     assert.deepEqual(await f.service.resolve({ ...REQUEST, retry: true }), { status: 'pending' });
@@ -930,6 +927,545 @@ test('a queued retry reports pending instead of replaying the previous failure',
     assert.deepEqual(f.errors, []);
   } finally {
     release();
+    await f.close();
+  }
+});
+
+test('executor inline media and Markdown use the same archive, deduplicate and replay after source deletion', async () => {
+  let writes = 0;
+  const f = await fixture(undefined, undefined, () => {
+    writes++;
+  });
+  const owner = { sessionId: 'session-1', turnId: 'turn-1', messageId: 'message-1' };
+  try {
+    const input = {
+      kind: 'inline' as const,
+      mimeType: 'image/svg+xml',
+      base64: PNG.toString('base64'),
+    };
+    const [a, b] = await Promise.all([
+      f.service.publish(owner, input),
+      f.service.publish(owner, input),
+    ]);
+    assert.deepEqual(a, b);
+    assert.equal(a.kind, 'image');
+    assert.equal(writes, 1);
+    if (a.kind !== 'image') throw new Error('Image not published');
+    assert.equal(a.mimeType, 'image/png'); // Bytes, not the external MIME claim, are authoritative.
+    const read = await f.authority.store.readBinaryInSession(owner.sessionId, a.ref.relativePath);
+    assert.ok(read.ok);
+    if (read.ok) assert.equal(read.base64, PNG.toString('base64'));
+    const file = join(f.root, 'drawing.png');
+    await writeFile(file, PNG);
+    const saved = await f.service.publish(owner, { kind: 'source', source: file });
+    assert.equal(saved.kind, 'image');
+    if (saved.kind !== 'image') throw new Error('Image not published');
+    const imageRead = await f.authority.store.readBinaryInSession(
+      owner.sessionId,
+      saved.ref.relativePath,
+    );
+    assert.ok(imageRead.ok);
+    if (imageRead.ok) assert.equal(imageRead.mimeType, 'image/png');
+    await rm(file);
+    const replay = await f.authority.store.readBinaryInSession(
+      owner.sessionId,
+      saved.ref.relativePath,
+    );
+    assert.ok(replay.ok);
+    if (replay.ok) assert.equal(replay.base64, PNG.toString('base64'));
+    assert.equal(f.reads, 1);
+    assert.equal(f.leases, 0);
+  } finally {
+    await f.close();
+  }
+});
+
+test('executor publication keeps invalid bytes, quota and network failures out of image references', async () => {
+  const f = await fixture({ sessionBytes: 10, workspaceBytes: 10 });
+  const owner = { sessionId: 'session-1', turnId: 'turn-1', messageId: 'message-1' };
+  try {
+    const invalid = await f.service.publish(owner, {
+      kind: 'inline',
+      mimeType: 'image/png',
+      base64: Buffer.from('not an image').toString('base64'),
+    });
+    assert.equal(invalid.kind, 'text');
+    const quota = await f.service.publish(owner, {
+      kind: 'inline',
+      mimeType: 'image/png',
+      base64: PNG.toString('base64'),
+    });
+    assert.deepEqual(quota, { kind: 'text', text: '[Media unavailable: quota_exceeded]' });
+    f.allowRemote(false);
+    assert.deepEqual(
+      await f.service.publish(owner, { kind: 'source', source: 'https://example.com/image.svg' }),
+      { kind: 'text', text: '[Media unavailable: not_allowed]' },
+    );
+    assert.equal(f.leases, 0);
+  } finally {
+    await f.close();
+  }
+});
+
+test('separate source publications archive changed bytes in the same turn and keep both references readable', async () => {
+  const f = await fixture();
+  const owner = { sessionId: 'session-1', turnId: 'turn-1', messageId: 'message-1' };
+  const file = join(f.root, 'plot.png');
+  const updated = Buffer.concat([PNG, Buffer.from('second version')]);
+  try {
+    await writeFile(file, PNG);
+    const first = await f.service.publish(owner, { kind: 'source', source: file });
+    await writeFile(file, updated);
+    const second = await f.service.publish(owner, { kind: 'source', source: file });
+    assert.equal(first.kind, 'image');
+    assert.equal(second.kind, 'image');
+    if (first.kind !== 'image' || second.kind !== 'image') throw new Error('Image not published');
+    assert.notEqual(first.ref.relativePath, second.ref.relativePath);
+    assert.equal(f.reads, 2);
+    await rm(file);
+    for (const [part, bytes] of [
+      [first, PNG],
+      [second, updated],
+    ] as const) {
+      const replay = await f.authority.store.readBinaryInSession(
+        owner.sessionId,
+        part.ref.relativePath,
+      );
+      assert.ok(replay.ok);
+      if (replay.ok) assert.equal(replay.base64, bytes.toString('base64'));
+    }
+    assert.equal((await f.service.publish(owner, { kind: 'source', source: file })).kind, 'text');
+    assert.equal(f.leases, 0);
+    assert.deepEqual(f.errors, []);
+  } finally {
+    await f.close();
+  }
+});
+
+test('concurrent source publications return their own archive despite reversed capture order', {
+  timeout: 5000,
+}, async () => {
+  let release!: () => void;
+  let started!: () => void;
+  const firstStarted = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  const blocked = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const updated = Buffer.concat([PNG, Buffer.from('second version')]);
+  let reads = 0;
+  const f = await fixture(undefined, async () => {
+    if (++reads === 1) {
+      started();
+      await blocked;
+      return checkedChatImage(PNG);
+    }
+    return checkedChatImage(updated);
+  });
+  const owner = { sessionId: 'session-1', turnId: 'turn-1', messageId: 'message-1' };
+  try {
+    const firstPending = f.service.publish(owner, { kind: 'source', source: '/plot.png' });
+    await firstStarted;
+    const second = await f.service.publish(owner, { kind: 'source', source: '/plot.png' });
+    release();
+    const first = await firstPending;
+    assert.equal(first.kind, 'image');
+    assert.equal(second.kind, 'image');
+    if (first.kind !== 'image' || second.kind !== 'image') throw new Error('Image not published');
+    assert.notEqual(first.ref.relativePath, second.ref.relativePath);
+    for (const [part, bytes] of [
+      [first, PNG],
+      [second, updated],
+    ] as const) {
+      const saved = await f.authority.store.readBinaryInSession(
+        owner.sessionId,
+        part.ref.relativePath,
+      );
+      assert.ok(saved.ok);
+      if (saved.ok) assert.equal(saved.base64, bytes.toString('base64'));
+    }
+    assert.equal(reads, 2);
+    assert.equal(f.leases, 0);
+    assert.deepEqual(f.errors, []);
+  } finally {
+    release();
+    await f.close();
+  }
+});
+
+test('startup finishes a durably staged image after the source disappears and without a mounted client', async () => {
+  let failCommit = true;
+  const f = await fixture(
+    undefined,
+    async () => checkedChatImage(PNG),
+    () => {
+      if (failCommit) throw new Error('simulated process interruption before Artifact commit');
+    },
+  );
+  let resumed: ChatImageDeliveryService | undefined;
+  try {
+    await observe(f.service, REQUEST.source);
+    await f.service.waitForIdle();
+    assert.equal(f.errors.length, 1);
+    const pending = await f.authority.store.listImageDeliveryJobs(Date.now());
+    assert.equal(pending.length, 1);
+    const staged = await f.authority.store.readImageDeliveryJob(pending[0]!.id);
+    assert.deepEqual(Buffer.from(staged!.bytes!), PNG);
+    await f.service.close();
+    failCommit = false;
+    resumed = new ChatImageDeliveryService({
+      ...f.ports,
+      readLocalImage: async () => {
+        assert.fail('recovery must use received bytes, not the deleted source');
+      },
+    });
+    await resumed.start();
+    await resumed.waitForIdle();
+    const ready = await resumed.resolve(REQUEST);
+    assert.equal(ready.status, 'ready');
+    assert.deepEqual(await f.authority.store.listImageDeliveryJobs(Date.now()), []);
+    if (ready.status === 'ready') {
+      const bytes = await f.authority.store.readBinaryInSession(
+        REQUEST.sessionId,
+        ready.artifactId,
+      );
+      assert.ok(bytes.ok);
+      if (bytes.ok) assert.deepEqual(Buffer.from(bytes.base64, 'base64'), PNG);
+    }
+  } finally {
+    await resumed?.close();
+    await f.close();
+  }
+});
+
+test('startup resumes a queued authorized source without a viewport request', async () => {
+  const f = await fixture(undefined, async () => checkedChatImage(PNG));
+  try {
+    await f.authority.store.putImageDeliveryJob({
+      job: {
+        ...REQUEST,
+        id: 'recovered-image',
+        attempts: 0,
+        nextAttemptAt: 0,
+        loadRemote: false,
+      },
+    });
+    await f.service.start();
+    await f.service.waitForIdle();
+    assert.equal(f.reads, 1);
+    assert.equal((await f.service.resolve(REQUEST)).status, 'ready');
+  } finally {
+    await f.close();
+  }
+});
+
+test('Host captures allowed remote images without a viewport and does not fetch redacted or disallowed sources', async () => {
+  let downloads = 0;
+  const f = await fixture(undefined, undefined, undefined, async () => {
+    downloads++;
+    return checkedChatImage(PNG);
+  });
+  try {
+    await observe(f.service, 'https://example.invalid/image.png');
+    await f.service.waitForIdle();
+    assert.equal(downloads, 1);
+    assert.equal(
+      (await f.service.resolve({ ...REQUEST, source: 'https://example.invalid/image.png' })).status,
+      'ready',
+    );
+    await observe(f.service, 'https://example.invalid/image.png?api_key=secret-value');
+    f.allowRemote(false);
+    await observe(f.service, 'https://example.invalid/second.png');
+    await f.service.waitForIdle();
+    assert.equal(downloads, 1);
+  } finally {
+    await f.close();
+  }
+});
+
+test('a restarted Host never retries a terminal source failure or resurrects a removed Session', async () => {
+  const f = await fixture(undefined, async () => checkedChatImage(PNG));
+  try {
+    await f.authority.store.putImageDeliveryJob({
+      job: {
+        ...REQUEST,
+        id: 'failed-image',
+        attempts: 3,
+        nextAttemptAt: 0,
+        loadRemote: false,
+        failure: 'read_failed',
+      },
+    });
+    await f.service.start();
+    await f.service.waitForIdle();
+    assert.equal(f.reads, 0);
+    await f.authority.store.putImageDeliveryJob({
+      job: {
+        ...REQUEST,
+        id: 'deleted-session-image',
+        attempts: 0,
+        nextAttemptAt: 0,
+        loadRemote: false,
+      },
+    });
+    f.removeSession();
+    await f.service.close();
+    const resumed = new ChatImageDeliveryService(f.ports);
+    try {
+      await resumed.start();
+      await resumed.waitForIdle();
+      assert.equal(f.reads, 0);
+      assert.equal(
+        await f.authority.store.readImageDeliveryJob('deleted-session-image'),
+        undefined,
+      );
+    } finally {
+      await resumed.close();
+    }
+  } finally {
+    await f.close();
+  }
+});
+
+test('valid originals above the inline preview budget are archived byte-for-byte', async () => {
+  const f = await fixture();
+  const original = Buffer.concat([PNG, Buffer.alloc(2 * 1024 * 1024)]);
+  const path = join(f.root, 'large-original.png');
+  try {
+    await writeFile(path, original);
+    await observe(f.service, path);
+    await f.service.waitForIdle();
+    const saved = await f.service.resolve({ ...REQUEST, source: path });
+    assert.equal(saved.status, 'ready');
+    if (saved.status !== 'ready') return;
+    await rm(path);
+    const bytes = await f.authority.store.readBinaryInSession(REQUEST.sessionId, saved.artifactId, {
+      maxBytes: original.length,
+    });
+    assert.ok(bytes.ok);
+    if (bytes.ok) assert.deepEqual(Buffer.from(bytes.base64, 'base64'), original);
+  } finally {
+    await f.close();
+  }
+});
+
+test('inline publication accepts the exact archive byte limit with Base64 padding', async () => {
+  const f = await fixture();
+  try {
+    const bytes = Buffer.alloc(8 * 1024 * 1024);
+    PNG.copy(bytes);
+    const part = await f.service.publish(REQUEST, {
+      kind: 'inline',
+      mimeType: 'image/png',
+      base64: bytes.toString('base64'),
+    });
+    assert.equal(part.kind, 'image');
+    const tooLarge = await f.service.publish(REQUEST, {
+      kind: 'inline',
+      mimeType: 'image/png',
+      base64: Buffer.alloc(bytes.length + 1).toString('base64'),
+    });
+    assert.equal(tooLarge.kind, 'text');
+  } finally {
+    await f.close();
+  }
+});
+
+for (const crashPoint of ['spooled', 'archived'] as const) {
+  test(`startup reconnects ${crashPoint} executor images to the canonical transcript exactly once`, async () => {
+    const { createSqliteRuntimeStore } = await import('@maka/storage/sqlite-runtime-store');
+    const { seedInvocation } = await import('@maka/runtime/test-only/invocation-fixture');
+    const { projectRuntimeEventsToStoredMessages } = await import(
+      '@maka/runtime/runtime-event-read-model'
+    );
+    const { recoverChatImagePublications } = await import('../server/chat-image-recovery.js');
+    const f = await fixture(undefined, undefined, () => {
+      if (crashPoint === 'spooled') throw new Error('interrupted before Artifact commit');
+    });
+    const events = createSqliteRuntimeStore(join(f.root, 'recovery-runtime.sqlite'));
+    let recovery: ChatImageDeliveryService | undefined;
+    try {
+      await seedInvocation(events, { ...REQUEST, runId: 'run-1' });
+      await f.service.publish(
+        { ...REQUEST, runId: 'run-1' },
+        { kind: 'inline', mimeType: 'image/png', base64: PNG.toString('base64') },
+      );
+      await f.service.close();
+      recovery = new ChatImageDeliveryService({
+        ...f.ports,
+        artifacts: { ...f.ports.artifacts, create: f.authority.store.create },
+      });
+      const input = {
+        sessionIds: [REQUEST.sessionId],
+        events,
+        artifacts: f.authority.store,
+        delivery: recovery,
+      };
+      await recoverChatImagePublications(input);
+      await recoverChatImagePublications(input);
+      const invocation = await events.readRunInvocation(REQUEST.sessionId, 'run-1');
+      assert.ok(invocation);
+      const saved = await events.readImmutableRuntimeEvents(REQUEST.sessionId, 'run-1');
+      const recovered = saved.filter((event) => event.refs?.artifactId);
+      assert.equal(recovered.length, 1);
+      assert.equal(recovered[0]?.author, 'host');
+      assert.equal(recovered[0]?.modelVisibility, 'hidden');
+      const transcript = projectRuntimeEventsToStoredMessages(saved, { invocations: [invocation] });
+      const message = transcript.messages.find((message) => message.type === 'assistant');
+      assert.ok(message?.type === 'assistant');
+      assert.match(message.text, /Recovered image.*interruption/);
+      assert.match(message.text, /maka:\/\/runtime\/attachments\//);
+      const image = await f.authority.store.readDurableAttachmentBinary({
+        sessionId: REQUEST.sessionId,
+        artifactId: recovered[0]!.refs!.artifactId!,
+      });
+      assert.ok(image.ok);
+      assert.deepEqual(Buffer.from(image.base64, 'base64'), PNG);
+      await events.appendRuntimeEvent(REQUEST.sessionId, 'run-1', {
+        id: 'terminal',
+        sessionId: REQUEST.sessionId,
+        turnId: REQUEST.turnId,
+        runId: 'run-1',
+        invocationId: invocation.invocationId,
+        ts: Date.now(),
+        partial: false,
+        role: 'system',
+        author: 'host',
+        status: 'failed',
+      });
+      await recoverChatImagePublications(input);
+      assert.equal(
+        (await events.readImmutableRuntimeEvents(REQUEST.sessionId, 'run-1')).length,
+        saved.length + 1,
+      );
+    } finally {
+      await recovery?.close();
+      events.close();
+      await f.close();
+    }
+  });
+}
+
+for (const placement of ['body', 'tool'] as const) {
+  test(`startup preserves a committed ${placement} image and registers missing body reception work`, async () => {
+    const { createSqliteRuntimeStore } = await import('@maka/storage/sqlite-runtime-store');
+    const { seedInvocation } = await import('@maka/runtime/test-only/invocation-fixture');
+    const { recoverChatImagePublications } = await import('../server/chat-image-recovery.js');
+    const f = await fixture();
+    const events = createSqliteRuntimeStore(join(f.root, 'recovery-runtime.sqlite'));
+    try {
+      await seedInvocation(events, { ...REQUEST, runId: 'run-1' });
+      const part = await f.service.publish(
+        { ...REQUEST, runId: 'run-1' },
+        { kind: 'inline', mimeType: 'image/png', base64: PNG.toString('base64') },
+      );
+      assert.equal(part.kind, 'image');
+      assert.ok(part.kind === 'image');
+      const identity = {
+        sessionId: REQUEST.sessionId,
+        turnId: REQUEST.turnId,
+        runId: 'run-1',
+        invocationId: 'run-1',
+        partial: false,
+        ts: 2,
+      };
+      if (placement === 'tool')
+        await events.appendRuntimeEvent(REQUEST.sessionId, 'run-1', {
+          ...identity,
+          id: 'call',
+          role: 'model',
+          author: 'agent',
+          content: { kind: 'function_call', id: 'draw', name: 'Draw', args: {} },
+        });
+      await events.appendRuntimeEvent(REQUEST.sessionId, 'run-1', {
+        ...identity,
+        id: 'published',
+        role: placement === 'body' ? 'model' : 'tool',
+        author: placement === 'body' ? 'agent' : 'tool',
+        content:
+          placement === 'body'
+            ? {
+                kind: 'text',
+                text: `![saved](maka://runtime/attachments/${part.ref.relativePath})`,
+              }
+            : {
+                kind: 'function_response',
+                id: 'draw',
+                name: 'Draw',
+                result: { kind: 'content', parts: [part] },
+              },
+      });
+      const path = join(f.root, 'unobserved.png');
+      await writeFile(path, PNG);
+      await events.appendRuntimeEvent(REQUEST.sessionId, 'run-1', {
+        ...identity,
+        id: 'unobserved',
+        role: 'model',
+        author: 'agent',
+        content: { kind: 'text', text: `![image](${path})` },
+      });
+      await recoverChatImagePublications({
+        sessionIds: [REQUEST.sessionId],
+        events,
+        artifacts: f.authority.store,
+        delivery: f.service,
+      });
+      await f.service.waitForIdle();
+      const saved = await events.readImmutableRuntimeEvents(REQUEST.sessionId, 'run-1');
+      assert.equal(saved.filter((event) => event.id.startsWith('recovered_image_')).length, 0);
+      assert.equal(
+        (
+          await f.authority.store.findImageDelivery(
+            REQUEST.sessionId,
+            REQUEST.turnId,
+            'unobserved',
+            path,
+          )
+        )?.status,
+        'ready',
+      );
+    } finally {
+      events.close();
+      await f.close();
+    }
+  });
+}
+
+test('queue capacity failure cannot recreate attempts after Session deletion', async () => {
+  const { ImageDeliveryCapacityError } = await import('@maka/storage/artifact-stores');
+  const f = await fixture();
+  const service = new ChatImageDeliveryService({
+    ...f.ports,
+    artifacts: {
+      ...f.ports.artifacts,
+      putImageDeliveryJob: async () => {
+        f.removeSession();
+        await f.authority.store.purgeSessionArtifacts(REQUEST.sessionId);
+        throw new ImageDeliveryCapacityError('full');
+      },
+    },
+  });
+  try {
+    await service.observe(REQUEST.sessionId, {
+      type: 'text_complete',
+      id: 'body',
+      turnId: REQUEST.turnId,
+      messageId: REQUEST.messageId,
+      ts: 1,
+      text: `![image](${REQUEST.source})`,
+    });
+    assert.equal(
+      await f.authority.store.findImageDelivery(
+        REQUEST.sessionId,
+        REQUEST.turnId,
+        REQUEST.messageId,
+        REQUEST.source,
+      ),
+      undefined,
+    );
+  } finally {
+    await service.close();
     await f.close();
   }
 });

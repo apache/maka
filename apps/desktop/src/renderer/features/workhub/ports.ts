@@ -58,6 +58,7 @@ export interface WorkHubServices extends WorkHubWorkspaceServices {
     model: string;
   }): Promise<void>;
   readonly attachments: ComposerAttachmentService;
+  openSavedImage?: (sessionId: string, artifactId: string) => Promise<{ ok: boolean }>;
   readAttachmentBytes(sessionId: string, artifactId: string): Promise<ArtifactBinaryReadResult>;
   resolveImageDelivery?: ResolveImageDelivery;
   prepareAttachments(sessionId: string, items: Array<{ approvalId: string; name: string; mimeType?: string } | { file: File }>): Promise<AttachmentRef[]>;

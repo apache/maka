@@ -23,9 +23,10 @@ import {
   isSafeRelativeArtifactPath,
 } from './artifact-metadata-codec.js';
 
+import { createImageDeliveryJobTable } from './image-delivery-jobs.js';
 import { createImageDeliveryAttemptTable } from './sqlite-image-delivery.js';
 
-export const SQLITE_ARTIFACT_SCHEMA_VERSION = 4;
+export const SQLITE_ARTIFACT_SCHEMA_VERSION = 5;
 
 export function migrateSqliteArtifactDatabase(db: DatabaseSync): void {
   const columns = db.prepare('PRAGMA table_info(artifact_records)').all() as Array<{
@@ -110,4 +111,5 @@ export function migrateSqliteArtifactDatabase(db: DatabaseSync): void {
     );
   }
   createImageDeliveryAttemptTable(db);
+  createImageDeliveryJobTable(db);
 }

@@ -63,7 +63,7 @@ function decideImagePostLoad(input: {
 /** Reject raw IPC payloads before base64 can enter renderer state. */
 export function decideImageReadOutcome(readResult: ArtifactBinaryReadResult): ImagePostLoadOutcome {
   if (!readResult.ok) {
-    return { kind: 'unsupported', reason: 'read_failed' };
+    return { kind: 'unsupported', reason: readResult.reason === 'too_large' ? 'oversize' : 'read_failed' };
   }
   if (typeof readResult.base64 !== 'string' || typeof readResult.mimeType !== 'string') {
     return { kind: 'unsupported', reason: 'read_failed' };

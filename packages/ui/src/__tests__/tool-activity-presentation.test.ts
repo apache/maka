@@ -47,6 +47,22 @@ function outputPanelCount(markup: string): number {
 }
 
 describe('tool activity presentation', () => {
+  it('keeps mixed text, image and diff previews in protocol order', () => {
+    const markup = renderToStaticMarkup(createElement(ToolResultPreview, { content: {
+      kind: 'content', parts: [
+        { kind: 'text', text: 'Before the image' },
+        { kind: 'image', mimeType: 'image/png', ref: { kind: 'session_file', sessionId: 'session', relativePath: 'saved-image' } },
+        { kind: 'file_diff', paths: ['drawing.txt'], diff: '--- a/drawing.txt\n+++ b/drawing.txt\n@@ -1 +1 @@\n-old\n+new' },
+        { kind: 'text', text: 'After the diff' },
+      ],
+    } }), 'en');
+    const before = markup.indexOf('Before the image');
+    const image = markup.indexOf('maka-markdown-image-resource');
+    const diff = markup.indexOf('data-kind="file_diff"');
+    const after = markup.indexOf('After the diff');
+    assert.ok(before >= 0 && image > before && diff > image && after > diff, markup);
+  });
+
   it('localizes client capability boundary failures and offers recovery', () => {
     const item: ToolActivityItem = {
       toolUseId: 'client-capability-boundary',

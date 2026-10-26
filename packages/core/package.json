@@ -33,6 +33,7 @@
     "./provider-retry-countdown": "./dist/provider-retry-countdown.js",
     "./message-queue-order": "./dist/message-queue-order.js",
     "./interaction": "./dist/interaction.js",
+    "./session-media": "./dist/session-media.js",
     "./session": "./dist/session.js",
     "./turn-origin": "./dist/turn-origin.js",
     "./session-reference": "./dist/session-reference.js",

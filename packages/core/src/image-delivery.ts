@@ -18,6 +18,9 @@
  */
 
 /** Client-safe delivery contract. No filesystem or networking capabilities live here. */
+/** Original-file admission and renderer preview budgets are separate policies. */
+export const IMAGE_ARCHIVE_MAX_BYTES = 8 * 1024 * 1024;
+
 export const IMAGE_DELIVERY_IDENTITY_MAX_LENGTH = 512;
 export const IMAGE_DELIVERY_SOURCE_MAX_LENGTH = 4096;
 /** JavaScript string length, shared by stream capture and Markdown consumers. */
@@ -106,6 +109,8 @@ export type ResolveImageDelivery = (
 ) => Promise<ImageDeliveryResult>;
 /** Stored with its Artifact, so session copy/export carries both provenance and bytes. */
 export interface ImageDeliveryMetadata {
+  /** Executor publication owner, retained across a crash before transcript publication. */
+  readonly publicationRunId?: string;
   readonly messageId: string;
   readonly source: string;
   readonly status: 'ready';
@@ -123,7 +128,14 @@ export function isImageDeliveryMetadata(value: unknown): value is ImageDeliveryM
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const v = value as Record<string, unknown>;
   return (
-    Object.keys(v).every((k) => ['messageId', 'source', 'status', 'contentSha256'].includes(k)) &&
+    Object.keys(v).every((k) =>
+      ['messageId', 'source', 'status', 'contentSha256', 'publicationRunId'].includes(k),
+    ) &&
+    (v.publicationRunId === undefined ||
+      (typeof v.publicationRunId === 'string' &&
+        v.publicationRunId.length > 0 &&
+        v.publicationRunId.length <= 512 &&
+        !/[\x00-\x1f\x7f]/.test(v.publicationRunId))) &&
     typeof v.messageId === 'string' &&
     v.messageId.length > 0 &&
     v.messageId.length <= IMAGE_DELIVERY_IDENTITY_MAX_LENGTH &&

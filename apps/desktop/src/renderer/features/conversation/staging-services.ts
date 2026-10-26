@@ -25,6 +25,7 @@ import type { ResolveImageDelivery } from '@maka/core/image-delivery';
 /** One attachment port: the Composer stages through it and the transcript reads image bytes through it. */
 export interface ComposerStagingServices extends ComposerAttachmentService {
   readBytes(sessionId: string, artifactId: string): Promise<ArtifactBinaryReadResult>;
+  openSavedImage?: (sessionId: string, artifactId: string) => Promise<{ ok: boolean }>;
   resolveImageDelivery?: ResolveImageDelivery;
 }
 const context = createServicesContext<ComposerStagingServices>('ComposerStagingServicesProvider');

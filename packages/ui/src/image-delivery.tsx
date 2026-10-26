@@ -17,10 +17,19 @@
  * under the License.
  */
 
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { getSharedUiCopy } from './shared-ui-copy.js';
+import { useUiLocale } from './locale-context.js';
+import { createContext, useCallback, useContext, useEffect, useId, useMemo, useState, type ReactNode } from 'react';
 import type { ImageDeliveryRequest, ImageDeliveryResult, ResolveImageDelivery } from '@maka/core/image-delivery';
 import { isRemoteImageSource } from '@maka/core/image-delivery';
 export type { ResolveImageDelivery } from '@maka/core/image-delivery';
+type ReceptionState = 'receiving' | 'saved' | 'failed';
+const ImageReceptionScope = createContext<((token: string, source: string, state?: ReceptionState) => void) | undefined>(undefined);
+export function useImageReceptionStatus(source: string, state?: ReceptionState) {
+  const report = useContext(ImageReceptionScope);
+  const token = useId();
+  useEffect(() => { report?.(token, source, state); return () => report?.(token, source); }, [report, token, source, state]);
+}
 const ImageMessageScope = createContext<{ turnId: string; messageId: string; streaming?: boolean } | undefined>(undefined);
 /** Installed by assistant messages, outside the generic Markdown renderer. */
 export function ImageMessageProvider(props: {
@@ -31,7 +40,31 @@ export function ImageMessageProvider(props: {
   const value = useMemo(() => props.identity
     ? { turnId: props.identity.turnId, messageId: props.identity.messageId, streaming: props.streaming }
     : undefined, [props.identity?.turnId, props.identity?.messageId, props.streaming]);
-  return <ImageMessageScope.Provider value={value}>{props.children}</ImageMessageScope.Provider>;
+  const [states, setStates] = useState<ReadonlyMap<string, { source: string; state: ReceptionState; scope: string }>>(new Map());
+  const scope = JSON.stringify([props.identity?.turnId, props.identity?.messageId]);
+  const report = useCallback((token: string, source: string, state?: ReceptionState) => setStates(previous => {
+    const current = previous.get(token);
+    if (current?.state === state && current?.source === source && current?.scope === scope) return previous;
+    const next = new Map(previous);
+    if (state) next.set(token, { source, state, scope }); else next.delete(token);
+    return next;
+  }), [scope]);
+  const copy = getSharedUiCopy(useUiLocale()).markdown;
+  const sources = new Map<string, ReceptionState>();
+  for (const entry of states.values()) {
+    if (entry.scope !== scope) continue;
+    const previous = sources.get(entry.source);
+    if (!previous || entry.state === 'receiving' || entry.state === 'failed' && previous === 'saved') sources.set(entry.source, entry.state);
+  }
+  const receiving = [...sources.values()].filter(state => state === 'receiving').length;
+  const failed = [...sources.values()].filter(state => state === 'failed').length;
+  return <ImageMessageScope.Provider value={value}><ImageReceptionScope.Provider value={report}>
+    {props.children}
+    {(receiving > 0 || failed > 0) && <div role="status" data-maka-image-reception={failed ? 'failed' : 'receiving'}>
+      {receiving > 0 && copy.imagesReceiving(receiving)}
+      {failed > 0 && copy.imagesFailed(failed)}
+    </div>}
+  </ImageReceptionScope.Provider></ImageMessageScope.Provider>;
 }
 const DeliveryContext = createContext<{ resolve(request: ImageDeliveryRequest): Promise<ImageDeliveryResult> } | undefined>(undefined);
 export function ImageDeliveryProvider(props: { sessionId: string; resolve?: ResolveImageDelivery; children: ReactNode }) {

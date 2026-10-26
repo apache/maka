@@ -27,7 +27,7 @@ import { readWorkspaceFile, validateImageBytes } from '../image-file.js';
 import { LocalWorkspaceExecutor } from '../workspace-executor.js';
 import { executeFilesystemOperation } from '../filesystem-worker/operations.js';
 import { MAX_READ_IMAGE_BYTES } from '@maka/core/attachments';
-import { ARTIFACT_IMAGE_PREVIEW_MAX_BYTES } from '@maka/core/artifacts';
+import { IMAGE_ARCHIVE_MAX_BYTES } from '@maka/core/image-delivery';
 import { createImageFileReader, ImageFileReadError } from '../image-file-reader.js';
 import { FilesystemWorkerClientError } from '../filesystem-worker/client.js';
 import { executeFilesystemWorkerRequest } from '../filesystem-worker/operations.js';
@@ -103,7 +103,7 @@ test('Worker transports typed image validation failures instead of generic files
   const path = join(cwd, 'image.png');
   for (const [content, expected] of [
     [ONE_PIXEL_PNG.subarray(0, 8), 'invalid_image'],
-    [Buffer.alloc(ARTIFACT_IMAGE_PREVIEW_MAX_BYTES + 1), 'image_too_large'],
+    [Buffer.alloc(IMAGE_ARCHIVE_MAX_BYTES + 1), 'image_too_large'],
   ] as const) {
     await writeFile(path, content);
     const response = await executeFilesystemWorkerRequest({
@@ -152,8 +152,8 @@ for (const route of ['workspace', 'worker'] as const) {
       assert.ok('bytes' in result && result.bytes instanceof Uint8Array);
       assert.deepEqual(Buffer.from(result.bytes), WIDE_PNG);
     }
-    await truncate(path, ARTIFACT_IMAGE_PREVIEW_MAX_BYTES + 1);
-    await assert.rejects(read('chat'), /2 MiB/);
+    await truncate(path, IMAGE_ARCHIVE_MAX_BYTES + 1);
+    await assert.rejects(read('chat'), /8 MiB/);
     await writeFile(path, 'not an image');
     await assert.rejects(read('chat'), /not a supported/i);
   });

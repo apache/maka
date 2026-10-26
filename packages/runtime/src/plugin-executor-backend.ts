@@ -61,6 +61,10 @@ export interface PluginExecutorBackendInput {
   readonly model?: string;
   readonly thinkingLevel?: ThinkingLevel;
   readonly binding: PluginExecutorBinding;
+  readonly publishMedia?: (
+    owner: { sessionId: string; turnId: string; messageId: string; runId?: string },
+    input: import('@maka/core/session-media').SessionMediaInput,
+  ) => Promise<import('@maka/core/session-media').SessionContentPart>;
   readonly newId?: () => string;
   readonly now?: () => number;
 }
@@ -75,6 +79,7 @@ export class PluginExecutorBackend implements AgentBackend {
   readonly #model?: string;
   readonly #thinkingLevel?: ThinkingLevel;
   readonly #binding: PluginExecutorBinding;
+  readonly #publishMedia: PluginExecutorBackendInput['publishMedia'];
   readonly #newId: () => string;
   readonly #now: () => number;
   readonly #active = new Set<ActiveExecution>();
@@ -88,6 +93,7 @@ export class PluginExecutorBackend implements AgentBackend {
     this.#model = input.model;
     this.#thinkingLevel = input.thinkingLevel;
     this.#binding = input.binding;
+    this.#publishMedia = input.publishMedia;
     this.#newId = input.newId ?? randomUUID;
     this.#now = input.now ?? Date.now;
   }
@@ -209,6 +215,20 @@ export class PluginExecutorBackend implements AgentBackend {
         },
         {
           signal,
+          ...(this.#publishMedia
+            ? {
+                onPublishMedia: (media: import('@maka/core/session-media').SessionMediaInput) =>
+                  this.#publishMedia!(
+                    {
+                      sessionId: this.sessionId,
+                      turnId,
+                      messageId,
+                      ...(input.runId ? { runId: input.runId } : {}),
+                    },
+                    media,
+                  ),
+              }
+            : {}),
           onSettled: () => {
             settled = true;
           },
@@ -571,9 +591,11 @@ export class PluginExecutorBackend implements AgentBackend {
       providerExecuted: true,
       isError: event.isError ?? false,
       content:
-        event.content.kind === 'text'
-          ? event.content
-          : { kind: 'file_diff', paths: [...event.content.paths], diff: event.content.diff },
+        event.content.kind === 'content'
+          ? { kind: 'content', parts: [...event.content.parts] }
+          : event.content.kind === 'text'
+            ? event.content
+            : { kind: 'file_diff', paths: [...event.content.paths], diff: event.content.diff },
     });
   }
 

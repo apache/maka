@@ -730,3 +730,39 @@ test('separate form quota and massive Unicode payloads stay inside the complete 
     'excerpt boundaries must not split a paired surrogate',
   );
 });
+
+test('mixed tool evidence retains text and diffs while omitting images and redacting secrets', () => {
+  const context = buildGoalEvaluationContext([
+    call('verify'),
+    result('verify', {
+      kind: 'content',
+      parts: [
+        { kind: 'text', text: 'Verification failed: expected 5, got 3' },
+        {
+          kind: 'image',
+          mimeType: 'image/png',
+          ref: {
+            kind: 'session_file',
+            sessionId: 'private-session',
+            relativePath: 'private-image',
+          },
+        },
+        { kind: 'file_diff', paths: ['answer.txt'], diff: '-expected 5\n+actual 3' },
+        { kind: 'text', text: 'Authorization: Bearer secret-token-value' },
+      ],
+    }),
+  ]);
+  assert.match(context, /Verification failed: expected 5, got 3/);
+  assert.match(context, /answer.txt/);
+  assert.match(context, /actual 3/);
+  assert.match(context, /\[omitted\]/);
+  assert.doesNotMatch(context, /private-session|private-image|secret-token-value/);
+  const large = buildGoalEvaluationContext([
+    result('large', {
+      kind: 'content',
+      parts: [{ kind: 'text', text: '证'.repeat(8192) }],
+    }),
+  ]);
+  assert.ok(large.length < 1500);
+  assert.match(large, /truncated/);
+});

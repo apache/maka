@@ -361,16 +361,17 @@ test('a transient saved attachment read retries its bytes without invalidating a
   } finally { await page.close(); }
 });
 
-test('offscreen image performs no image request until it approaches the viewport', async () => {
+test('offscreen images start Host reception but defer archived preview bytes until visible', async () => {
   requests = [];
   const page = await pageFor('offscreen');
   try {
-    // Let React effects and the initial IntersectionObserver callback complete.
+    // Host reception is independent of viewport admission for rendering.
     await page.getByText('Loading image…').waitFor();
-    assert.deepEqual(requests, []);
+    await page.waitForFunction(() => window.deliveryQueries === 1);
     assert.equal(await page.locator('img').count(), 0);
     await page.locator('[data-maka-image-state]').scrollIntoViewIfNeeded();
     await loaded(page);
+    assert.equal(await page.evaluate(() => window.deliveryQueries), 1);
     assert.deepEqual(requests, [{ path: '/image.png', referer: undefined }]);
   } finally { await page.close(); }
 });

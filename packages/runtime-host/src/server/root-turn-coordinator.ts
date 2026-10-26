@@ -391,7 +391,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
     private readonly observeAssistantText?: (
       sessionId: string,
       event: import('@maka/core/events').TextCompleteEvent,
-    ) => void,
+    ) => void | Promise<void>,
   ) {
     this.stores = authenticateExecutionStoresWriter(stores, 'interactive');
     this.executionProjection = new HostedExecutionProjectionReader(this.stores);
@@ -3274,7 +3274,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
           }
           if (event.type === 'text_complete') {
             try {
-              this.observeAssistantText?.(input.sessionId, event);
+              await this.observeAssistantText?.(input.sessionId, event);
             } catch {
               // Image presentation must never interrupt canonical execution.
             }

@@ -21,10 +21,11 @@ import { useState } from 'react';
 import { parseAttachmentResourceRef } from '@maka/core/attachments';
 import { isRemoteImageSource, type ImageDeliveryFailure } from '@maka/core/image-delivery';
 import { useAttachmentImage } from './attachment-image.js';
-import { useImageDelivery } from './image-delivery.js';
+import { useImageDelivery, useImageReceptionStatus } from './image-delivery.js';
 
 export type ChatImagePresentation =
   | { readonly kind: 'loading' }
+  | { readonly kind: 'saved_without_preview' }
   | { readonly kind: 'ready'; readonly src: string }
   | { readonly kind: 'unavailable'; readonly reason: 'attachment' | 'remote' | 'redacted' | 'unsupported' }
   | { readonly kind: 'failed'; readonly reason: 'saved_bytes' | ImageDeliveryFailure };
@@ -32,7 +33,7 @@ export type ChatImagePresentation =
 /** Owns delivery, saved-byte and decode transitions. The component only renders this view. */
 export function useChatImageResource(input: { source: string; redacted: boolean; visible: boolean }) {
   const explicit = parseAttachmentResourceRef(input.source);
-  const delivery = useImageDelivery(input.source, input.visible && !explicit, !input.redacted);
+  const delivery = useImageDelivery(input.source, !explicit, !input.redacted);
   const artifactId = explicit?.artifactId ?? (delivery.status === 'ready' ? delivery.artifactId : undefined);
   const image = useAttachmentImage(input.visible && artifactId ? { artifactId } : undefined);
   const [failedSource, setFailedSource] = useState<string>();
@@ -42,7 +43,10 @@ export function useChatImageResource(input: { source: string; redacted: boolean;
   const hiddenRemote = remote && input.redacted;
   const remotePlaceholder = input.visible && remote && !artifactId;
   let presentation: ChatImagePresentation;
-  if ((source && failedSource === source) || (artifactId && image.status === 'failed'))
+  useImageReceptionStatus(input.source, artifactId ? 'saved' : delivery.available
+    ? delivery.status === 'pending' ? 'receiving' : delivery.status === 'failed' ? 'failed' : undefined : undefined);
+  if (artifactId && image.status === 'limited') presentation = { kind: 'saved_without_preview' };
+  else if ((source && failedSource === source) || (artifactId && image.status === 'failed'))
     presentation = { kind: 'failed', reason: 'saved_bytes' };
   else if (source) presentation = { kind: 'ready', src: source };
   else if (!input.visible) presentation = { kind: 'loading' };
@@ -64,7 +68,7 @@ export function useChatImageResource(input: { source: string; redacted: boolean;
   const openSource = remote && !hiddenRemote && (presentation.kind === 'failed' ||
     presentation.kind === 'unavailable' && presentation.reason === 'remote') ? input.source : undefined;
   return {
-    presentation, attempt, retry, openSource,
+    presentation, attempt, retry, openSource, openSaved: image.openSaved,
     onDecodeError: () => { if (source) setFailedSource(source); },
   };
 }

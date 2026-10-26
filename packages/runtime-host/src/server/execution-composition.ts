@@ -22,6 +22,7 @@ import { readMatterRuntimeEvents } from '../assistant/proactive-matters/settleme
 import { markAssistantBackgroundSessions } from '../assistant/background-sessions.js';
 import { PersonalAssistantService, ASSISTANT_LEGACY_PACKAGES } from '../assistant/service.js';
 import { assistantInputTurnId, legacyAssistantInputTurnId } from '../assistant/bot/turn-ids.js';
+import { recoverChatImagePublications } from './chat-image-recovery.js';
 import { createAssistantMessageReader } from './session-transcript-reader.js';
 import { createImageFileReader } from '@maka/runtime/image-file-reader';
 import { ChatImageDeliveryService } from './chat-image-delivery.js';
@@ -1494,6 +1495,7 @@ export async function createExecutionRuntimeHostComposition(
                 : {}),
               ...(factoryContext.systemPrompt ? { instructions: factoryContext.systemPrompt } : {}),
               binding,
+              publishMedia: (owner, media) => imageDelivery!.publish(owner, media),
             }),
         };
       },
@@ -3691,6 +3693,21 @@ export async function createExecutionRuntimeHostComposition(
         recovery: {
           executions: async () => {
             await coordinator.prepareRecovery();
+            if (imageDelivery) {
+              await recoverChatImagePublications({
+                sessionIds: recoverySessions
+                  .filter((session) => !session.isArchived)
+                  .map((session) => session.id),
+                events: stores.runtimeEventStore,
+                artifacts: openedArtifactStore!,
+                delivery: imageDelivery,
+                onLimited: () =>
+                  console.warn(
+                    '[runtime-host] Image publication recovery skipped an oversized event; archived bytes are retained',
+                  ),
+              });
+              await imageDelivery.start();
+            }
             await interactions.recoverPendingAfterHostRestart();
             await requireSessionManager(manager).recoverInterruptedSessionsStrict(stores);
             await requireSessionManager(manager).recoverChildWorkspacePatches(

@@ -31,6 +31,11 @@ export interface SharedUiCopy {
     invalidInternalLink: string;
     unsafeLink: string;
     imageLoading: string;
+    imagesReceiving: (count: number) => string;
+    imagesFailed: (count: number) => string;
+    imageSavedWithoutPreview: string;
+    imageOpenSaved: string;
+    imageOpenSavedFailed: string;
     imageRemoteRedacted: string;
     imageRemoteUnavailable: string;
     imageArchiveFailure: (reason: import('@maka/core/image-delivery').ImageDeliveryFailure) => string;
@@ -133,11 +138,16 @@ const sharedUiCopyZhCn: SharedUiCopy = {
       invalidInternalLink: '内部链接无效',
       unsafeLink: '链接不安全',
       imageLoading: '正在加载图片…',
+      imagesReceiving: (count) => `正在接收并保存 ${count} 张图片…`,
+      imagesFailed: (count) => `${count} 张图片接收未完成，请查看图片处的原因并重试。`,
+      imageSavedWithoutPreview: '图片已保存，超出内嵌预览大小限制。',
+      imageOpenSaved: '打开已保存图片',
+      imageOpenSavedFailed: '图片已保存，但打开失败，请重试。',
       imageRemoteRedacted: '图片地址含已隐藏的敏感信息，无法加载或在浏览器中打开。',
       imageRemoteUnavailable: '此处无法加载远程图片，可在浏览器中打开。',
       imageArchiveFailure: (reason) => ({
         quota_exceeded: '图片未保存：存储配额已满（每个会话 100 MiB，工作区 1 GiB）。删除不再需要的会话可释放空间，仅归档不会释放。',
-        too_large: '图片未保存：超过自动保存的大小或像素上限。',
+        too_large: '图片未保存：超过接收大小上限（8 MiB）或像素上限。',
         not_allowed: '图片未保存：当前权限、联网设置或来源地址不允许加载。',
         not_found: '图片未保存：原文件已不存在。',
         unsupported_mime: '图片未保存：不是支持的有效图片。',
@@ -231,11 +241,16 @@ const sharedUiCopyZhTw: SharedUiCopy = {
       invalidInternalLink: '內部連結無效',
       unsafeLink: '連結不安全',
       imageLoading: '正在載入圖片…',
+      imagesReceiving: (count) => `正在接收並儲存 ${count} 張圖片…`,
+      imagesFailed: (count) => `${count} 張圖片接收未完成，請查看圖片處的原因並重試。`,
+      imageSavedWithoutPreview: '圖片已儲存，超出內嵌預覽大小限制。',
+      imageOpenSaved: '開啟已儲存圖片',
+      imageOpenSavedFailed: '圖片已儲存，但開啟失敗，請重試。',
       imageRemoteRedacted: '圖片位址含已隱藏的敏感資訊，無法載入或在瀏覽器中開啟。',
       imageRemoteUnavailable: '此處無法載入遠端圖片，可在瀏覽器中開啟。',
       imageArchiveFailure: (reason) => ({
         quota_exceeded: '圖片未儲存：儲存配額已滿（每個對話 100 MiB，工作區 1 GiB）。刪除不再需要的對話可釋放空間，僅封存不會釋放。',
-        too_large: '圖片未儲存：超過自動儲存的大小或像素上限。',
+        too_large: '圖片未儲存：超過接收大小上限（8 MiB）或像素上限。',
         not_allowed: '圖片未儲存：目前權限、連線設定或來源位址不允許載入。',
         not_found: '圖片未儲存：原檔案已不存在。',
         unsupported_mime: '圖片未儲存：不是支援的有效圖片。',
@@ -329,11 +344,16 @@ const sharedUiCopyEn: SharedUiCopy = {
       invalidInternalLink: 'Invalid internal link',
       unsafeLink: 'Unsafe link',
       imageLoading: 'Loading image…',
+      imagesReceiving: (count) => `Receiving and saving ${count} image(s)…`,
+      imagesFailed: (count) => `${count} image(s) could not be received. Check the reason beside each image and retry.`,
+      imageSavedWithoutPreview: 'Image saved. It exceeds the inline preview size limit.',
+      imageOpenSaved: 'Open saved image',
+      imageOpenSavedFailed: 'Image saved, but opening failed. Try again.',
       imageRemoteRedacted: 'The image address contains hidden sensitive information. Loading and opening it are disabled.',
       imageRemoteUnavailable: 'Remote images cannot be loaded here. You can open this image in your browser.',
       imageArchiveFailure: (reason) => ({
         quota_exceeded: 'Image not saved: storage quota reached (100 MiB per session, 1 GiB per workspace). Delete unneeded sessions to free space; archiving does not free space.',
-        too_large: 'Image not saved: exceeds the automatic save size or pixel limit.',
+        too_large: 'Image not saved: exceeds the reception size limit (8 MiB) or pixel limit.',
         not_allowed: 'Image not saved: permissions, network settings, or the source address block loading.',
         not_found: 'Image not saved: the original file no longer exists.',
         unsupported_mime: 'Image not saved: not a supported valid image.',
