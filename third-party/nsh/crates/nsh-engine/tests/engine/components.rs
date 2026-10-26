@@ -3748,7 +3748,7 @@ mount(App);
 
 #[test]
 fn base_plot_refreshes_hover_geometry_without_new_pointer_events() {
-    use nsh_core::{Color, HoverEvent, animation::Animator, geometry::point};
+    use nsh_core::{Color, HoverEvent, TransformKind, animation::Animator, geometry::point};
 
     let (engine, rx) = start(BASE_PLOT_REFRESH);
     let mut all = until_drawn(&rx, |_| true);
@@ -3778,6 +3778,29 @@ fn base_plot_refreshes_hover_geometry_without_new_pointer_events() {
     };
     let cross = parent(&all, colored(&all, Color(0x0000_ffff)));
     let dot = parent(&all, colored(&all, Color(0xff00_00ff)));
+    // The dot's fixed half-size centering precedes its animated coordinates.
+    let dot_transform = all
+        .iter()
+        .flat_map(|batch| &batch.items)
+        .filter_map(|item| match item {
+            MountItem::ViewStyle { id, style } if *id == dot => Some(style.transform),
+            _ => None,
+        })
+        .next_back()
+        .expect("dot style");
+    assert_eq!(
+        dot_transform
+            .ops()
+            .iter()
+            .map(|op| (op.kind, op.value))
+            .collect::<Vec<_>>(),
+        vec![
+            (TransformKind::TranslateX, -4.0),
+            (TransformKind::TranslateY, -4.0),
+            (TransformKind::TranslateX, 0.0),
+            (TransformKind::TranslateY, 0.0),
+        ]
+    );
     let tip = test_view(&all, "tip");
     let tip_anchor = parent(&all, parent(&all, parent(&all, tip)));
     let animated = |batches: &[MountBatch], view: u32| {
@@ -3821,8 +3844,8 @@ fn base_plot_refreshes_hover_geometry_without_new_pointer_events() {
     all.extend(until(&rx, |_| false));
     assert_eq!(status(&all), "state=0 events=1 row=1");
     near(animated(&all, cross).transform[0], 100.0);
-    near(animated(&all, dot).transform[0], 100.0);
-    near(animated(&all, dot).transform[1], 50.0);
+    near(animated(&all, dot).transform[2], 100.0);
+    near(animated(&all, dot).transform[3], 50.0);
     near(animated(&all, tip_anchor).transform[0], 70.0);
 
     // No more pointer events: the selected row stays the same while its
@@ -3841,8 +3864,8 @@ fn base_plot_refreshes_hover_geometry_without_new_pointer_events() {
         all.extend(until(&rx, |_| false));
         assert_eq!(status(&all), expected_status);
         near(animated(&all, cross).transform[0], x);
-        near(animated(&all, dot).transform[0], x);
-        near(animated(&all, dot).transform[1], y);
+        near(animated(&all, dot).transform[2], x);
+        near(animated(&all, dot).transform[3], y);
         near(animated(&all, tip_anchor).transform[0], tip_x);
         near(animated(&all, cross).opacity, 1.0);
     }
