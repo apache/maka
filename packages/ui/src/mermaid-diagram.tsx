@@ -22,6 +22,7 @@ import { CodeBlock } from '@astryxdesign/core/CodeBlock';
 import { Collapsible } from '@astryxdesign/core/Collapsible';
 import { Dialog } from '@astryxdesign/core/Dialog';
 import { Toolbar } from '@astryxdesign/core/Toolbar';
+import type { RenderOptions, RenderResult } from 'pele';
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from 'react';
 import { ICON_SIZE, Check, Copy, Maximize2, Minimize2 } from './icons.js';
 import { useUiLocale } from './locale-context.js';
@@ -33,6 +34,8 @@ export const MAX_MERMAID_EDGES = 500;
 export const MERMAID_RENDER_CACHE_LIMIT = 24;
 export const MERMAID_RENDER_CACHE_MAX_CHARS = 4 * 1024 * 1024;
 export const MAX_MERMAID_ZOOM = 3;
+/** Lay diagrams out again only after the container stops resizing. */
+export const MERMAID_RESIZE_SETTLE_MS = 150;
 export const MERMAID_EXPORT_PIXEL_RATIO = 2;
 /** Leave a 2x margin below Chromium's canvas edge limit. */
 export const MERMAID_EXPORT_MAX_EDGE_PX = 32_767;
@@ -44,11 +47,15 @@ type MermaidLayout = { width: number; fontFamily: string; fontFamilyMono: string
 type MermaidRenderState =
   | { status: 'deferred' }
   | { status: 'loading' }
-  | { status: 'rendered'; renderKey: string; svg: string; naturalWidth: number; naturalHeight: number }
+  | { status: 'rendered'; template: MermaidRenderTemplate; svg: string }
   | { status: 'error'; reason: 'invalid' | 'too-large' };
 
 type MermaidRenderTemplate = {
-  renderKey: string;
+  code: string;
+  fonts: string;
+  intrinsicWidth: number;
+  adapts?: boolean;
+  maxWidth?: number;
   svg: string;
   namespace: string;
   naturalWidth: number;
@@ -84,8 +91,55 @@ function sanitizeRenderedMermaidSvg(svg: string): string {
   return new XMLSerializer().serializeToString(documentNode.documentElement);
 }
 
-function mermaidRenderKey(code: string, layout: MermaidLayout): string {
-  return `${layout.width}\0${layout.fontFamily}\0${layout.fontFamilyMono}\0${code}`;
+function mermaidFonts(layout: MermaidLayout): string {
+  return `${layout.fontFamily}\0${layout.fontFamilyMono}`;
+}
+
+function mermaidTemplateFits(template: MermaidRenderTemplate, code: string, layout: MermaidLayout): boolean {
+  if (template.code !== code || template.fonts !== mermaidFonts(layout)) return false;
+  const constrained = layout.width < template.intrinsicWidth && template.adapts !== false;
+  return template.maxWidth === (constrained ? layout.width : undefined);
+}
+
+// Like Pele's mount(): keep the unconstrained layout unless the container is
+// narrower and maxWidth actually changes this diagram's layout.
+function renderMermaidTemplate(
+  render: (code: string, options: RenderOptions) => RenderResult,
+  code: string,
+  layout: MermaidLayout,
+  previous: MermaidRenderTemplate | undefined,
+): MermaidRenderTemplate {
+  const namespace = nextMermaidRenderId('template', code);
+  const fonts = mermaidFonts(layout);
+  const options: RenderOptions = {
+    limit: MAX_MERMAID_SOURCE_LENGTH,
+    maxEdges: MAX_MERMAID_EDGES,
+    outputLimit: MERMAID_RENDER_CACHE_MAX_CHARS,
+    links: false,
+    images: false,
+    idPrefix: namespace,
+    fontFamily: layout.fontFamily,
+    fontFamilyMono: layout.fontFamilyMono,
+  };
+  let { intrinsicWidth, adapts } = previous?.fonts === fonts ? previous : { intrinsicWidth: Infinity, adapts: undefined };
+  const template = (result: RenderResult, maxWidth?: number): MermaidRenderTemplate => ({
+    code,
+    fonts,
+    intrinsicWidth,
+    adapts,
+    maxWidth,
+    namespace,
+    svg: sanitizeRenderedMermaidSvg(result.svg),
+    naturalWidth: result.width,
+    naturalHeight: result.height,
+  });
+  const constrained = () => template(render(code, { ...options, maxWidth: layout.width }), layout.width);
+  if (adapts && layout.width < intrinsicWidth) return constrained();
+  const natural = render(code, options);
+  intrinsicWidth = natural.width;
+  if (layout.width >= intrinsicWidth) return template(natural);
+  adapts ??= render(code, { ...options, maxWidth: 1 }).svg !== natural.svg;
+  return adapts ? constrained() : template(natural);
 }
 
 function touchMermaidRenderCacheEntry(key: string, entry: MermaidRenderTemplate): void {
@@ -236,10 +290,8 @@ async function mermaidSvgToPngBlob(
 function renderedMermaidState(template: MermaidRenderTemplate): MermaidRenderState {
   return {
     status: 'rendered',
-    renderKey: template.renderKey,
+    template,
     svg: instantiateMermaidSvg(template),
-    naturalWidth: template.naturalWidth,
-    naturalHeight: template.naturalHeight,
   };
 }
 
@@ -251,7 +303,6 @@ export function MermaidDiagram(props: {
   const copy = getSharedUiCopy(useUiLocale()).markdown;
   const autoRender = props.autoRender ?? true;
   const [layout, setLayout] = useState<MermaidLayout>({ width: 640, fontFamily: 'sans-serif', fontFamilyMono: 'monospace' });
-  const renderKey = mermaidRenderKey(props.code, layout);
   const [expanded, setExpanded] = useState(false);
   const [manualRenderRequested, setManualRenderRequested] = useState(false);
   const [state, setState] = useState<MermaidRenderState>(() => {
@@ -279,9 +330,16 @@ export function MermaidDiagram(props: {
         ? current : { width, fontFamily, fontFamilyMono });
     };
     measure();
-    const observer = new ResizeObserver(measure);
+    let settle: ReturnType<typeof setTimeout> | undefined;
+    const observer = new ResizeObserver(() => {
+      clearTimeout(settle);
+      settle = setTimeout(measure, MERMAID_RESIZE_SETTLE_MS);
+    });
     observer.observe(container);
-    return () => observer.disconnect();
+    return () => {
+      observer.disconnect();
+      clearTimeout(settle);
+    };
   }, [expanded, state.status]);
 
   useEffect(() => {
@@ -293,7 +351,7 @@ export function MermaidDiagram(props: {
       setState({ status: 'deferred' });
       return;
     }
-    if (state.status === 'rendered' && state.renderKey === renderKey) return;
+    if (state.status === 'rendered' && mermaidTemplateFits(state.template, props.code, layout)) return;
 
     let cancelled = false;
     setState((current) => current.status === 'rendered' ? current : { status: 'loading' });
@@ -303,28 +361,10 @@ export function MermaidDiagram(props: {
       if (cancelled) return;
       // Recheck after awaiting: another instance may have populated the cache.
       let template = mermaidRenderCache.get(props.code);
-      if (template?.renderKey === renderKey) {
+      if (template && mermaidTemplateFits(template, props.code, layout)) {
         touchMermaidRenderCacheEntry(props.code, template);
       } else {
-        const namespace = nextMermaidRenderId('template', props.code);
-        const result = render(props.code, {
-          limit: MAX_MERMAID_SOURCE_LENGTH,
-          maxEdges: MAX_MERMAID_EDGES,
-          outputLimit: MERMAID_RENDER_CACHE_MAX_CHARS,
-          links: false,
-          images: false,
-          idPrefix: namespace,
-          maxWidth: layout.width,
-          fontFamily: layout.fontFamily,
-          fontFamilyMono: layout.fontFamilyMono,
-        });
-        template = {
-          renderKey,
-          namespace,
-          svg: sanitizeRenderedMermaidSvg(result.svg),
-          naturalWidth: result.width,
-          naturalHeight: result.height,
-        };
+        template = renderMermaidTemplate(render, props.code, layout, template);
         writeMermaidRenderCache(props.code, template);
       }
       setState(renderedMermaidState(template));
@@ -355,20 +395,20 @@ export function MermaidDiagram(props: {
 
   const className = `maka-markdown-code maka-markdown-code-${props.density}`;
   if (state.status === 'rendered') {
+    const { naturalWidth, naturalHeight } = state.template;
     const diagramCopyPhase = copyFeedback.phaseFor(MERMAID_IMAGE_COPY_KEY);
     async function copyDiagramToClipboard(event: ReactMouseEvent<HTMLButtonElement>) {
-      if (state.status !== 'rendered') return;
       const figure = event.currentTarget.closest('figure');
       if (!figure) return;
       const svg = figure.querySelector<SVGSVGElement>('.maka-mermaid-svg > svg');
       if (!svg) return;
       const background = getComputedStyle(figure).backgroundColor;
       await copyFeedback.attempt(MERMAID_IMAGE_COPY_KEY, async () => {
-        const snapshot = await snapshotMermaidSvg(svg, state.naturalWidth, state.naturalHeight);
+        const snapshot = await snapshotMermaidSvg(svg, naturalWidth, naturalHeight);
         const blob = await mermaidSvgToPngBlob(
           snapshot,
-          state.naturalWidth,
-          state.naturalHeight,
+          naturalWidth,
+          naturalHeight,
           background,
         );
         await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
@@ -380,8 +420,8 @@ export function MermaidDiagram(props: {
         data-maka-contract="mermaid"
         data-maka-mermaid-state="rendered"
         style={{
-          '--maka-mermaid-natural-width': `${state.naturalWidth}px`,
-          '--maka-mermaid-ratio': state.naturalWidth / state.naturalHeight,
+          '--maka-mermaid-natural-width': `${naturalWidth}px`,
+          '--maka-mermaid-ratio': naturalWidth / naturalHeight,
         } as CSSProperties}
         ref={isExpanded === expanded ? (element) => { containerRef.current = element; } : undefined}
         aria-label={copy.mermaidDiagram}

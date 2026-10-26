@@ -23,7 +23,7 @@ import { act, Profiler } from 'react';
 import { createRoot } from 'react-dom/client';
 import { installDom, settleEffects } from './mermaid-test-dom.js';
 import { LocaleProvider } from '../locale-context.js';
-import { MERMAID_RENDER_CACHE_LIMIT, MermaidDiagram } from '../mermaid-diagram.js';
+import { MERMAID_RENDER_CACHE_LIMIT, MERMAID_RESIZE_SETTLE_MS, MermaidDiagram } from '../mermaid-diagram.js';
 
 test('renders Pele templates with isolated references and retains them across theme changes and remounts', async () => {
   const dom = installDom();
@@ -152,6 +152,85 @@ test('re-rendering one diagram at many widths keeps other cached diagrams', asyn
     }
     await show('a');
     assert.equal(commits[0], 'rendered', 'layout widths of one diagram must not evict other diagrams');
+  } finally {
+    await act(async () => root.unmount());
+    dom.restore();
+  }
+});
+
+function installResizableContainer(initialWidth: number) {
+  let width = initialWidth;
+  Object.defineProperty(HTMLElement.prototype, 'clientWidth', { configurable: true, get: () => width });
+  const resizeCallbacks = new Set<() => void>();
+  globalThis.ResizeObserver = class {
+    #callback: () => void;
+    constructor(callback: () => void) { this.#callback = callback; }
+    observe() { resizeCallbacks.add(this.#callback); }
+    unobserve() {}
+    disconnect() { resizeCallbacks.delete(this.#callback); }
+  } as unknown as typeof ResizeObserver;
+  const notify = async (next: number) => {
+    width = next;
+    await act(async () => { for (const callback of resizeCallbacks) callback(); });
+    await settleEffects();
+  };
+  const settle = async () => {
+    await act(() => new Promise((resolve) => setTimeout(resolve, MERMAID_RESIZE_SETTLE_MS + 20)));
+    await settleEffects();
+  };
+  return { notify, settle, resize: async (next: number) => { await notify(next); await settle(); } };
+}
+
+const relayoutCode = `flowchart LR\naccTitle: Relayout\n${Array.from({ length: 4 }, (_, index) => `n${index}[relayout ${index}] --> n${index + 1}[relayout ${index + 1}]`).join('\n')}`;
+
+test('re-lays out a diagram only when the container is narrower than it', async () => {
+  const dom = installDom();
+  const width = 1200;
+  const { resize } = installResizableContainer(width);
+  const root = createRoot(dom.document.querySelector('#root')!);
+  const svg = () => dom.document.querySelector('.maka-mermaid-svg > svg');
+  const code = relayoutCode;
+  try {
+    await act(async () => root.render(<LocaleProvider locale="en"><MermaidDiagram code={code} density="default" /></LocaleProvider>));
+    await settleEffects();
+    const natural = svg();
+    const naturalWidth = Number(natural?.getAttribute('width'));
+    assert.ok(naturalWidth > 0 && naturalWidth < width - 64, 'the diagram must fit the initial container');
+    await resize(naturalWidth + 64 + 100);
+    await resize(naturalWidth + 64 + 50);
+    assert.ok(svg() === natural, 'resizing a container that still fits the diagram must not re-render it');
+    await resize(320);
+    assert.ok(svg() !== natural, 'a container narrower than the diagram must re-lay it out');
+    assert.ok(Number(svg()?.getAttribute('width')) < naturalWidth);
+    await act(async () => root.render(<LocaleProvider locale="en"><MermaidDiagram code={'flowchart LR\nnext --> source'} density="default" /></LocaleProvider>));
+    await settleEffects();
+    assert.match(svg()?.textContent ?? '', /next/, 'a new source must replace the diagram');
+  } finally {
+    await act(async () => root.unmount());
+    dom.restore();
+  }
+});
+
+test('re-lays out once after a resize burst settles and keeps the diagram meanwhile', async () => {
+  const dom = installDom();
+  const { notify, settle } = installResizableContainer(1200);
+  const root = createRoot(dom.document.querySelector('#root')!);
+  const svg = () => dom.document.querySelector('.maka-mermaid-svg > svg');
+  try {
+    await act(async () => root.render(<LocaleProvider locale="en"><MermaidDiagram code={`${relayoutCode}\naccDescr: burst`} density="default" /></LocaleProvider>));
+    await settleEffects();
+    const natural = svg();
+    assert.ok(natural);
+    const seen = new Set<Element | null>([natural]);
+    for (let next = 700; next >= 300; next -= 25) {
+      await notify(next);
+      seen.add(svg());
+    }
+    assert.deepEqual([...seen], [natural], 'a resize burst must keep the mounted diagram instead of laying it out per event');
+    await settle();
+    seen.add(svg());
+    assert.equal(seen.size, 2, 'a settled resize must lay the diagram out exactly once');
+    assert.ok(Number(svg()?.getAttribute('width')) < Number(natural.getAttribute('width')));
   } finally {
     await act(async () => root.unmount());
     dom.restore();
