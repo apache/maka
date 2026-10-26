@@ -538,8 +538,19 @@ export function createRevisionActions<
         ? draft.draftSessionId
         : draft.copyId
       : undefined;
-    if (cleanupSessionId) await abandonRevisionCopy(draft);
-    else env.completeCopyAttempt(revisionCopyKey(draft.sourceSessionId, draft.sourceTurnId), draft.copyId);
+    if (cleanupSessionId) {
+      const abandonment = await abandonRevisionCopy(draft);
+      if (!abandonment.acknowledged) {
+        // An unacknowledged cleanup keeps the draft in its `abandoning`
+        // phase, where a retried cancel re-runs only the abandon (#6317) —
+        // the same acknowledgement contract the prepare path honors.
+        // Discarding the draft here would strand the attempt tracker and
+        // orphan the preparing copy with no retry path.
+        return;
+      }
+    } else {
+      env.completeCopyAttempt(revisionCopyKey(draft.sourceSessionId, draft.sourceTurnId), draft.copyId);
+    }
     commitRevisionDraft(null);
     // Unstage the edit's staged context under both draft keys (source before
     // the commit, branch child after); quotes the user added during the edit
