@@ -77,7 +77,11 @@
       "id": "native.select-text",
       "platforms": ["linux", "macos", "windows"],
       "scenario": "Select an exact substring and inspect selection/caret, or observe the platform's supported refusal.",
-      "static_expectation": {"linux": "The inspected unified facade refuses selectText.", "windows": "The inspected unified facade refuses selectText.", "macos": "Forwarded to the native helper; detailed selection behavior needs live evidence."},
+      "static_expectation": {
+        "linux": "The inspected unified facade refuses selectText.",
+        "windows": "The inspected unified facade refuses selectText.",
+        "macos": "Forwarded to the native helper; detailed selection behavior needs live evidence."
+      },
       "oracles": ["refusal", "selection", "caret", "exact_text"]
     },
     {
@@ -90,7 +94,7 @@
       "id": "native.set-value",
       "platforms": ["linux", "macos", "windows"],
       "scenario": "Set an indexed editable value and inspect change events, or observe the platform's supported refusal.",
-      "static_expectation": {"linux": "The inspected unified facade refuses setValue."},
+      "static_expectation": { "linux": "The inspected unified facade refuses setValue." },
       "oracles": ["refusal", "exact_text", "change_events"]
     },
     {
@@ -103,14 +107,23 @@
       "id": "native.paste-rich-formats",
       "platforms": ["linux", "macos", "windows"],
       "scenario": "Request HTML and Markdown paste, including default format, and inspect styling/text or an explicit platform refusal.",
-      "static_expectation": {"linux": "The inspected unified facade accepts text-only paste.", "windows": "The inspected unified facade accepts text-only paste."},
+      "static_expectation": {
+        "linux": "The inspected unified facade accepts text-only paste.",
+        "windows": "The inspected unified facade accepts text-only paste."
+      },
       "oracles": ["refusals", "exact_text", "formatting", "clipboard_payloads"]
     },
     {
       "id": "native.paste-identical-replacement",
       "platforms": ["linux", "macos", "windows"],
       "scenario": "Replace selected text with identical text; distinguish successful dispatch from a no-op or uncertainty without replay.",
-      "oracles": ["exact_text", "selection", "paste_events", "reported_effect", "clipboard_payloads"]
+      "oracles": [
+        "exact_text",
+        "selection",
+        "paste_events",
+        "reported_effect",
+        "clipboard_payloads"
+      ]
     },
     {
       "id": "native.clipboard-newer-copy",
@@ -122,15 +135,27 @@
       "id": "native.scroll-point-units",
       "platforms": ["linux", "macos", "windows"],
       "scenario": "Request page and pixel scrolling at a point; inspect actual scroll offsets and platform-specific refusals.",
-      "static_expectation": {"linux": "The inspected unified facade requires pixel distance and refuses page distance.", "macos": "The inspected unified facade accepts page distance and refuses pixel distance.", "windows": "The inspected unified facade requires point plus pixel distance."},
+      "static_expectation": {
+        "linux": "The inspected unified facade requires pixel distance and refuses page distance.",
+        "macos": "The inspected unified facade accepts page distance and refuses pixel distance.",
+        "windows": "The inspected unified facade requires point plus pixel distance."
+      },
       "oracles": ["refusals", "scroll_offsets", "scroll_events", "system_pointer", "focused_window"]
     },
     {
       "id": "native.scroll-indexed-and-stale",
       "platforms": ["linux", "macos", "windows"],
       "scenario": "Scroll an observed container, replace it without refreshing observation, then reuse the old index; inspect replacement and sibling offsets or platform refusal.",
-      "static_expectation": {"windows": "The inspected unified facade refuses indexed scrolling."},
-      "oracles": ["refusals", "target_offsets", "replacement_offsets", "sibling_offsets", "scroll_events"]
+      "static_expectation": {
+        "windows": "The inspected unified facade refuses indexed scrolling."
+      },
+      "oracles": [
+        "refusals",
+        "target_offsets",
+        "replacement_offsets",
+        "sibling_offsets",
+        "scroll_events"
+      ]
     },
     {
       "id": "native.drag-and-release",
