@@ -141,6 +141,7 @@ import {
   type ReconnectableReadIpcMain,
 } from "./ipc-reconnect-policy.js";
 import { auxiliaryWindowRegistry } from "./auxiliary-window-registry.js";
+import { createHostCredentialPresence } from "./runtime-host-credential-presence.js";
 import type { DesktopRuntimeHostProfileChangedEvent } from "../preload/bridge-contract.js";
 import {
   defaultRuntimeHostRecoveryDialog,
@@ -1899,22 +1900,7 @@ function registerHostClientIpc(
       (await settingsStore.get()).onboarding.milestones,
     upsertMilestone: (id, status) =>
       settingsStore.upsertOnboardingMilestone(id, status),
-    hasCredential: (connection) =>
-      readWithFallback(async () => {
-        if (!providerAuthRequiresSecret(connection.providerType)) return true;
-        const catalog = await client.loadConnectionCatalog();
-        const entry = catalog.connections.find(
-          ({ slug }) => slug === connection.slug,
-        );
-        if (!entry) return false;
-        const authKind = PROVIDER_REGISTRY[entry.providerType].authKind;
-        const status = await client.queryCredential({
-          scope: "connection",
-          connectionId: entry.connectionId,
-          kind: authKind === "oauth_token" ? "oauth_token" : "api_key",
-        });
-        return status?.configured === true;
-      }, false),
+    hasCredential: createHostCredentialPresence(client),
   });
   const taskSubmissionReadinessService = createDesktopTaskSubmissionReadinessService({
     workspaceRoot,
