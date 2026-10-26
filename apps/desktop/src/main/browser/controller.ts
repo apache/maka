@@ -17,9 +17,11 @@
  * under the License.
  */
 
+import { randomUUID } from 'node:crypto';
 import { BrowserWindow, type Session, shell, type View, WebContentsView } from 'electron';
 import { CdpBridge, type AutomationEndpoint } from './cdp-bridge.js';
 import type { BrowserActionLease, BrowserOriginLease } from './browser-host.js';
+import { BrowserDocumentLoad } from './document-load.js';
 import { BrowserOriginLeaseTracker } from './browser-origin-lease.js';
 import { browserViewWebPreferences } from './options.js';
 import {
@@ -62,6 +64,9 @@ export class BrowserViewController {
   private destroyed = false;
   private loadError: BrowserState['loadError'] = null;
   private navigationUrl: string | null = null;
+  private readonly viewId = randomUUID();
+  private httpStatus: number | null = null;
+  private readonly documentLoad = new BrowserDocumentLoad();
   /** True while the view holds real on-screen bounds (last setViewport painted it). */
   private shownWithBounds = false;
   private automation: CdpBridge | null = null;
@@ -118,22 +123,38 @@ export class BrowserViewController {
     wc.on('did-start-navigation', (details) => {
       if (!details.isMainFrame || details.isSameDocument) return;
       this.navigationUrl = details.url;
+      this.documentLoad.start(details.url);
+      this.httpStatus = null;
       this.emitState();
     });
     wc.on('did-redirect-navigation', (details) => {
-      if (details.isMainFrame) this.navigationUrl = details.url;
+      if (details.isMainFrame && !details.isSameDocument) {
+        this.navigationUrl = details.url;
+        this.documentLoad.redirect(details.url);
+      }
     });
     wc.on('did-start-loading', () => this.emitState());
     wc.on('did-stop-loading', () => this.emitState());
-    wc.on('did-navigate', () => {
+    wc.on('did-navigate', (_event, url, httpResponseCode) => {
+      this.documentLoad.commit(url);
       // Stop, downloads and 204 responses never commit a new document. Keep
       // the previous failed address actionable until navigation really commits.
       this.loadError = null;
+      this.httpStatus = httpResponseCode;
       this.recordNavigation();
     });
-    wc.on('did-navigate-in-page', () => this.recordNavigation());
+    wc.on('did-navigate-in-page', (_event, url, isMainFrame) => {
+      if (!isMainFrame) return;
+      this.documentLoad.inPage(url);
+      this.recordNavigation();
+    });
+    wc.on('did-finish-load', () => this.documentLoad.finish(wc.getURL()));
+    wc.on('did-fail-load', (_event, code, _description, url, isMainFrame) => {
+      if (isMainFrame) this.documentLoad.fail(url, code);
+    });
     wc.on('page-title-updated', () => this.emitState());
     wc.on('did-fail-provisional-load', (_event, code, _description, url, isMainFrame) => {
+      if (isMainFrame) this.documentLoad.fail(url, code);
       // A body transfer can fail after a usable document commits. Only a
       // provisional failure should replace the page with the retry UI.
       // Stop and superseding navigations report ERR_ABORTED (-3). A failed
@@ -221,7 +242,21 @@ export class BrowserViewController {
   }
 
   openOriginLease(approvedUrl: string, kind: BrowserActionKind): BrowserOriginLease {
-    return this.originLeases.open(approvedUrl, kind);
+    const lease = this.originLeases.open(approvedUrl, kind);
+    return {
+      ...lease,
+      snapshot: () => ({
+        ...lease.snapshot(),
+        document: {
+          viewId: this.viewId,
+          alive: !this.destroyed && !this.wc.isDestroyed(),
+          loading: !this.destroyed && !this.wc.isDestroyed() && this.wc.isLoading(),
+          loadError: this.loadError ? { code: this.loadError.code } : null,
+          httpStatus: this.httpStatus,
+          load: this.documentLoad.snapshot(),
+        },
+      }),
+    };
   }
 
   async navigate(input: string): Promise<void> {
@@ -249,6 +284,7 @@ export class BrowserViewController {
   }
 
   stop(): void {
+    this.documentLoad.stop();
     this.wc.stop();
   }
 
