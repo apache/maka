@@ -340,10 +340,13 @@ async fn connection_filter_preserves_model_search_focus_and_keyboard_selection()
         );
         shortcut(&mut view, 'a');
         view.handle_event(Event::Paste("fixture-model-alt".into()));
-        wait_view(&mut view, |screen| {
-            screen.contains("fixture-model-alt") && !screen.contains("Loading…")
-        })
-        .await;
+        // The editor shows pasted text before asynchronous model results arrive.
+        support::wait_enabled_button(&mut view, "Use fixture-model-alt · NSH fixture").await;
+        wait_focused_input(&mut view, "Search models").await;
+        assert_eq!(
+            view.surface().input_context().unwrap().text.as_deref(),
+            Some("fixture-model-alt")
+        );
         view.handle_event(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)));
         view.handle_event(Event::Key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)));
         view.handle_event(Event::Key(KeyEvent::new(
