@@ -28,7 +28,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-mod creation;
+pub(crate) mod creation;
 mod execution;
 mod family;
 mod gates;
@@ -58,6 +58,8 @@ mod projects;
 mod session_metadata;
 mod session_store;
 pub use creation::CreationRejection;
+#[cfg(test)]
+mod applications_tests;
 mod routes;
 #[cfg(test)]
 mod tests;
@@ -150,6 +152,17 @@ impl SessionStore {
 }
 
 impl RootStore {
+    /// Observe each original owner once: control first, then partition order.
+    pub async fn sqlite_resource_stats(
+        &self,
+    ) -> Result<Vec<crate::connection::ConnectionResourceStats>, StoreError> {
+        let mut stats = Vec::with_capacity(self.partitions.len() + 1);
+        for owner in std::iter::once(&self.control).chain(&self.partitions) {
+            stats.push(owner.sqlite_resource_stats().await?);
+        }
+        Ok(stats)
+    }
+
     pub async fn open(owner: Arc<root::RootOwner>) -> Result<Self, StoreError> {
         owner.validate_current()?;
         let control = Arc::new(

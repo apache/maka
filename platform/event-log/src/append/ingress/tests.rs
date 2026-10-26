@@ -147,7 +147,7 @@ async fn projection_faults_roll_back_canonical_and_prior_batch_events_before_reo
             db.query_row("SELECT COUNT(*) FROM context_source_prefixes", [], |r| r
                 .get::<_, i64>(0))
                 .unwrap(),
-            12
+            8
         );
         assert_eq!(
             db.query_row("SELECT COUNT(*) FROM context_semantic_frontiers", [], |r| r
@@ -178,5 +178,13 @@ async fn explicit_import_sequence_is_captured_before_projection_inserts() {
     let reopened = EventLog::open(&path).await.unwrap();
     reopened.close().await.unwrap();
     let db = rusqlite::Connection::open(&path).unwrap();
-    assert_eq!(db.query_row("SELECT through_sequence FROM context_semantic_frontiers WHERE invocation_id='imported'", [], |row| row.get::<_, i64>(0)).unwrap(), 42);
+    assert_eq!(
+        db.query_row(
+            "SELECT through_sequence FROM context_semantic_heads WHERE session_id='session'",
+            [],
+            |row| row.get::<_, i64>(0)
+        )
+        .unwrap(),
+        42
+    );
 }

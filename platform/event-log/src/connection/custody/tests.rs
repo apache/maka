@@ -18,7 +18,10 @@
  */
 
 use super::*;
-use crate::{EventLog, StoreError, connection::ReadEnvelope};
+use crate::{
+    EventLog, StoreError,
+    connection::{ReadEnvelope, ReadJob},
+};
 use sqlx::Connection;
 use std::{
     sync::{
@@ -479,9 +482,9 @@ async fn reader_task_panic_retains_envelope_outside_join_error() {
         .read_jobs
         .send(ReadEnvelope {
             custody: Some(custody),
-            job: Box::new(|_| {
+            job: ReadJob::Execute(Box::new(|_| {
                 Box::pin(async { panic!("reader actor job escaped callback boundary") })
-            }),
+            })),
         })
         .await
         .unwrap();

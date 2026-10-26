@@ -76,6 +76,7 @@ impl StagedBundle {
         // database whose lifetime belongs to the connection, including Drop.
         let mut database = SqliteConnection::connect_with(
             &SqliteConnectOptions::new()
+                .query_planner_stability(true)
                 .filename("")
                 .create_if_missing(true)
                 .pragma("temp_store", "FILE")
@@ -291,6 +292,7 @@ impl StagedBundle {
             .open(path)?;
         let path = path.to_owned();
         let options = SqliteConnectOptions::new()
+            .query_planner_stability(true)
             .filename(&path)
             .journal_mode(sqlx::sqlite::SqliteJournalMode::Delete)
             .synchronous(sqlx::sqlite::SqliteSynchronous::Full);
@@ -354,7 +356,10 @@ impl StagedBundle {
     ) -> Result<Self, StoreError> {
         let owner = root
             .open(
-                SqliteConnectOptions::new().filename(path).read_only(true),
+                SqliteConnectOptions::new()
+                    .query_planner_stability(true)
+                    .filename(path)
+                    .read_only(true),
                 |_| Box::pin(async { Ok(()) }),
             )
             .await?;
@@ -364,6 +369,7 @@ impl StagedBundle {
                     before_copy(source).await?;
                     let mut database = SqliteConnection::connect_with(
                         &SqliteConnectOptions::new()
+                            .query_planner_stability(true)
                             .filename("")
                             .create_if_missing(true)
                             .pragma("temp_store", "FILE")

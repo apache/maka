@@ -45,7 +45,7 @@ pub(super) fn title(method: &str, input: &Value) -> maka_agent_facts::display::T
 }
 
 pub(super) struct Binding {
-    pub service: Service,
+    pub services: Vec<Service>,
     pub workers: tokio_util::task::TaskTracker,
 }
 impl RequestBinding for Binding {
@@ -54,7 +54,16 @@ impl RequestBinding for Binding {
         input: BindingRequest,
     ) -> futures_util::future::BoxFuture<'static, Result<BTreeMap<String, BoundTool>, ToolError>>
     {
-        let service = self.service.clone();
+        let services: Vec<_> = self
+            .services
+            .iter()
+            .filter(|service| input.tools.contains(&service.selection.name))
+            .cloned()
+            .collect();
+        let service = services
+            .first()
+            .expect("selected request binding group")
+            .clone();
         let workers = self.workers.clone();
         Box::pin(async move {
             let request = service
@@ -111,15 +120,20 @@ impl RequestBinding for Binding {
                     "Current REPL state: reset_required. Call cua_reset and rebind targets. Dispatched input may already have taken effect."
                 }
             };
-            let name = service.selection.name.clone();
-            let description = format!("{}\n{}", service.selection.description, hint);
-            Ok(BTreeMap::from([(
-                name,
-                BoundTool::Described {
-                    handler: Arc::new(service),
-                    description,
-                },
-            )]))
+            Ok(services
+                .into_iter()
+                .map(|service| {
+                    let name = service.selection.name.clone();
+                    let description = format!("{}\n{}", service.selection.description, hint);
+                    (
+                        name,
+                        BoundTool::Described {
+                            handler: Arc::new(service),
+                            description,
+                        },
+                    )
+                })
+                .collect())
         })
     }
 }

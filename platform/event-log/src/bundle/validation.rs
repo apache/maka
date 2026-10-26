@@ -46,6 +46,7 @@ pub(super) async fn prepare(
 ) -> Result<SqliteConnection, StoreError> {
     let mut original = SqliteConnection::connect_with(
         &SqliteConnectOptions::new()
+            .query_planner_stability(true)
             .filename("")
             .create_if_missing(true)
             .pragma("temp_store", "FILE")

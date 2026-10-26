@@ -528,7 +528,7 @@ async fn projection_sql_fault_preserves_database_codes_and_rolls_back_all_neighb
         "CREATE TEMP TRIGGER projection_fault BEFORE INSERT ON context_source_prefixes
          WHEN NEW.sequence=5 AND NEW.kind='session'
          BEGIN SELECT RAISE(ABORT,'projection storage fault'); END;",
-        "CREATE TEMP TRIGGER projection_fault BEFORE UPDATE ON context_semantic_frontiers
+        "CREATE TEMP TRIGGER projection_fault BEFORE UPDATE ON context_semantic_heads
          WHEN NEW.through_sequence=5
          BEGIN SELECT RAISE(ABORT,'projection storage fault'); END;",
     ] {
@@ -607,7 +607,7 @@ fn assert_projection_positions(path: &std::path::Path) {
         .unwrap()
         .collect::<Result<_, _>>()
         .unwrap();
-    for kind in ["root", "session", "invocation"] {
+    for kind in ["session", "invocation"] {
         let projected: Vec<i64> = db
             .prepare("SELECT sequence FROM context_source_prefixes WHERE kind=? ORDER BY sequence")
             .unwrap()
@@ -628,4 +628,395 @@ fn assert_projection_positions(path: &std::path::Path) {
         )
         .unwrap();
     assert_eq!(Some(&semantic), canonical.last());
+}
+
+#[tokio::test]
+async fn observation_identity_checks_each_invocation_field_after_reopen() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("events.sqlite");
+    let log = open(&path).await;
+    log.shutdown().await.unwrap();
+    let log = EventLog::open(&path).await.unwrap();
+    for field in ["session", "turn", "run", "invocation"] {
+        let write = delta(&format!("bad-{field}"), "rejected");
+        let mut event = write.event().clone();
+        match field {
+            "session" => event.invocation.session_id = "changed".into(),
+            "turn" => event.invocation.turn_id = "changed".into(),
+            "run" => event.invocation.run_id = "changed".into(),
+            "invocation" => event.invocation.invocation_id = "changed".into(),
+            _ => unreachable!(),
+        }
+        assert!(
+            log.append(&EventWrite::plain(event).unwrap())
+                .await
+                .is_err(),
+            "{field}"
+        );
+    }
+    assert_eq!(log.append(&delta("valid", "accepted")).await.unwrap(), 4);
+    log.close().await.unwrap();
+    assert_eq!(ids(&path), ["opened", "requested", "part", "valid"]);
+}
+
+async fn cached_statement(log: &EventLog, prefix: &'static [u8]) -> (usize, i32, i32) {
+    log.connection
+        .run(move |db| {
+            Box::pin(async move {
+                let mut handle = db.lock_handle().await?;
+                let mut current = std::ptr::null_mut();
+                // SAFETY: the locked original connection owns every inspected statement;
+                // SQL and status are read before releasing the exclusive handle.
+                unsafe {
+                    loop {
+                        current = rusqlite::ffi::sqlite3_next_stmt(
+                            handle.as_raw_handle().as_ptr(),
+                            current,
+                        );
+                        if current.is_null() {
+                            panic!(
+                                "directory eligibility must remain in the writer's statement cache"
+                            );
+                        }
+                        let sql = rusqlite::ffi::sqlite3_sql(current);
+                        if !sql.is_null()
+                            && std::ffi::CStr::from_ptr(sql).to_bytes().starts_with(prefix)
+                        {
+                            return Ok((
+                                current as usize,
+                                rusqlite::ffi::sqlite3_stmt_status(
+                                    current,
+                                    rusqlite::ffi::SQLITE_STMTSTATUS_RUN,
+                                    0,
+                                ),
+                                rusqlite::ffi::sqlite3_stmt_status(
+                                    current,
+                                    rusqlite::ffi::SQLITE_STMTSTATUS_REPREPARE,
+                                    0,
+                                ),
+                            ));
+                        }
+                    }
+                }
+            })
+        })
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn deltas_skip_directory_work_and_boundaries_reuse_the_writer_statement() {
+    let dir = tempfile::tempdir().unwrap();
+    let log = open(&dir.path().join("events.sqlite")).await;
+    const DIRECTORY: &[u8] = b"SELECT e.invocation_id, CASE WHEN e.kind = 'model_observed'";
+    const INGRESS: &[u8] =
+        b"INSERT INTO event_log (event_id, invocation_id, kind, operation_id, event_json)";
+    let before = cached_statement(&log, DIRECTORY).await;
+    let ingress_before = cached_statement(&log, INGRESS).await;
+    for index in 0..128 {
+        log.append(&delta(&format!("delta-{index}"), "x"))
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        cached_statement(&log, DIRECTORY).await,
+        before,
+        "ordinary deltas must not run or reprepare transcript eligibility"
+    );
+    log.append(&event(
+        "interrupted",
+        Fact::ModelInterrupted {
+            step_id: "step".into(),
+            status: maka_agent_facts::event::ModelInterruption::Cancelled,
+            diagnostic: None,
+            model_failure: None,
+        },
+    ))
+    .await
+    .unwrap();
+    assert_eq!(
+        cached_statement(&log, DIRECTORY).await,
+        (before.0, before.1 + 1, before.2)
+    );
+    let text: String = log
+        .connection
+        .read(|db| {
+            Box::pin(async move {
+                Ok(sqlx::query_scalar(
+                    "SELECT preview FROM catalog_messages WHERE message_id='part'",
+                )
+                .fetch_one(db)
+                .await?)
+            })
+        })
+        .await
+        .unwrap();
+    assert_eq!(text, format!("{}…", "x".repeat(95)));
+    let ingress_after = cached_statement(&log, INGRESS).await;
+    assert_eq!(
+        ingress_after.2, ingress_before.2,
+        "changing stream identities must not recompile cached ingress"
+    );
+    let events = log.prefix(256, 1024 * 1024).await.unwrap();
+    let deltas: Vec<_> = events
+        .events
+        .iter()
+        .filter_map(|stored| match &stored.event.fact {
+            Fact::ModelObserved {
+                event: ModelEvent::PartDelta { text, .. },
+                ..
+            } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(deltas, vec!["x"; 128]);
+    log.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn tool_receipts_share_commit_without_losing_payload_or_rejection_boundaries() {
+    use maka_agent_facts::{
+        event::ToolOutcome, tool_call::ToolCallIdentity, tool_output::ToolOutput,
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("events.sqlite");
+    let log = open(&path).await;
+    let count = Arc::new(AtomicUsize::new(0));
+    let counter = count.clone();
+    hook(&log, move || {
+        counter.fetch_add(1, Ordering::SeqCst);
+        true
+    })
+    .await;
+    let dispatch = event(
+        "dispatch",
+        Fact::ToolDispatched {
+            presentation: None,
+            title: None,
+            operation_id: "tool".into(),
+            call: ToolCallIdentity::standalone("call".into()),
+            name: "Read".into(),
+            input: serde_json::json!({}),
+        },
+    );
+    let output = ToolOutput::Text("durable tool response".into());
+    let settlement = EventWrite::tool_success(
+        "settlement".into(),
+        std::time::UNIX_EPOCH,
+        dispatch.event().invocation.clone(),
+        "tool".into(),
+        output.clone().into(),
+    )
+    .unwrap()
+    .0;
+    let invalid = event(
+        "invalid",
+        Fact::ToolSettled {
+            operation_id: "missing".into(),
+            outcome: ToolOutcome::Failed {
+                message: "no dispatch".into(),
+            },
+        },
+    );
+    let (release, blocked) = gate(&log).await;
+    let mut admitted = Box::pin(log.append(&dispatch));
+    let mut rejected = Box::pin(log.append(&invalid));
+    let mut settled = Box::pin(log.append(&settlement));
+    assert!(futures_util::poll!(&mut admitted).is_pending());
+    assert!(futures_util::poll!(&mut rejected).is_pending());
+    assert!(futures_util::poll!(&mut settled).is_pending());
+    release.send(()).unwrap();
+    blocked.await.unwrap();
+    assert_eq!(admitted.await.unwrap(), 4);
+    assert!(matches!(rejected.await, Err(CommitError::Rejected(_))));
+    assert_eq!(settled.await.unwrap(), 5);
+    assert_eq!(count.load(Ordering::SeqCst), 1);
+    log.shutdown().await.unwrap();
+    let reopened = EventLog::open(&path).await.unwrap();
+    assert_eq!(
+        reopened
+            .resolve_tool_result("session", "settlement")
+            .await
+            .unwrap(),
+        output
+    );
+    assert_eq!(reopened.append(&settlement).await.unwrap(), 5);
+    reopened.close().await.unwrap();
+    assert_eq!(
+        ids(&path),
+        ["opened", "requested", "part", "dispatch", "settlement"]
+    );
+}
+
+#[tokio::test]
+async fn streamed_source_prefixes_reuse_prepared_queries_without_hidden_prepares() {
+    static PREFIX_PREPARES: AtomicUsize = AtomicUsize::new(0);
+    unsafe extern "C" fn count_prefix_compiles(
+        _: *mut std::ffi::c_void,
+        action: std::ffi::c_int,
+        table: *const std::ffi::c_char,
+        _: *const std::ffi::c_char,
+        _: *const std::ffi::c_char,
+        _: *const std::ffi::c_char,
+    ) -> std::ffi::c_int {
+        // SAFETY: SQLite supplies callback-local, NUL-terminated table names.
+        if matches!(
+            action,
+            rusqlite::ffi::SQLITE_READ | rusqlite::ffi::SQLITE_INSERT
+        ) && !table.is_null()
+            && unsafe { std::ffi::CStr::from_ptr(table) }.to_bytes() == b"context_source_prefixes"
+        {
+            PREFIX_PREPARES.fetch_add(1, Ordering::Relaxed);
+        }
+        rusqlite::ffi::SQLITE_OK
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("events.sqlite");
+    let log = open(&path).await;
+    log.connection
+        .run(|connection| {
+            Box::pin(async move {
+                let mut handle = connection.lock_handle().await?;
+                // SAFETY: this original handle is exclusively locked. The callback uses
+                // only static code/counter state, with no borrowed context to retain.
+                let code = unsafe {
+                    rusqlite::ffi::sqlite3_set_authorizer(
+                        handle.as_raw_handle().as_ptr(),
+                        Some(count_prefix_compiles),
+                        std::ptr::null_mut(),
+                    )
+                };
+                assert_eq!(code, rusqlite::ffi::SQLITE_OK);
+                Ok(())
+            })
+        })
+        .await
+        .unwrap();
+    log.append(&delta("warm", "warm")).await.unwrap();
+    const NATIVE: &[u8] = b"SELECT sequence,hash,ordinal FROM context_source_prefixes WHERE kind=? AND owner=? AND sequence<=? ORDER BY sequence DESC LIMIT 1";
+    const INSERT: &[u8] = b"INSERT INTO context_source_prefixes VALUES(?,?,?,?,?)";
+    let read_before = cached_statement(&log, NATIVE).await;
+    let write_before = cached_statement(&log, INSERT).await;
+    PREFIX_PREPARES.store(0, Ordering::Relaxed);
+    for index in 0..128 {
+        log.append(&delta(&format!("prefix-{index}"), "原文"))
+            .await
+            .unwrap();
+    }
+    let read_after = cached_statement(&log, NATIVE).await;
+    let write_after = cached_statement(&log, INSERT).await;
+    assert_eq!(
+        PREFIX_PREPARES.load(Ordering::Relaxed),
+        0,
+        "streamed prefixes must not compile temporary or cached SQL after warming"
+    );
+    for (before, after) in [(read_before, read_after), (write_before, write_after)] {
+        assert_eq!(after.0, before.0);
+        assert_eq!(after.1 - before.1, 2 * 128);
+        assert_eq!(after.2, before.2);
+    }
+    log.connection
+        .run(|connection| {
+            Box::pin(async move {
+                let mut handle = connection.lock_handle().await?;
+                // SAFETY: the original locked connection owns this authorizer; clearing
+                // it leaves no callback state or SQLite pointer in the test.
+                let code = unsafe {
+                    rusqlite::ffi::sqlite3_set_authorizer(
+                        handle.as_raw_handle().as_ptr(),
+                        None,
+                        std::ptr::null_mut(),
+                    )
+                };
+                assert_eq!(code, rusqlite::ffi::SQLITE_OK);
+                Ok(())
+            })
+        })
+        .await
+        .unwrap();
+    log.shutdown().await.unwrap();
+    let reopened = EventLog::open(&path).await.unwrap();
+    let events = reopened.prefix(256, 1024 * 1024).await.unwrap();
+    let text: Vec<_> = events
+        .events
+        .iter()
+        .filter_map(|stored| match &stored.event.fact {
+            Fact::ModelObserved {
+                event: ModelEvent::PartDelta { text, .. },
+                ..
+            } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        text,
+        std::iter::once("warm")
+            .chain(std::iter::repeat_n("原文", 128))
+            .collect::<Vec<_>>()
+    );
+    reopened.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn semantic_invariant_failure_rolls_back_neighbors_and_retires_observation_writer() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("events.sqlite");
+    let log = open(&path).await;
+    log.connection
+        .run(|connection| {
+            Box::pin(async move {
+                sqlx::raw_sql(
+                    "CREATE TEMP TRIGGER corrupt_semantic_head AFTER INSERT ON event_log
+                     WHEN NEW.event_id='poison'
+                     BEGIN UPDATE context_semantic_heads SET through_sequence=NEW.sequence+1000
+                       WHERE session_id='session'; END;",
+                )
+                .execute(connection)
+                .await?;
+                Ok(())
+            })
+        })
+        .await
+        .unwrap();
+    let (release, blocked) = gate(&log).await;
+    let first = delta("first", "before the invariant failure");
+    let poison = delta("poison", "must roll back");
+    let last = delta("last", "must never commit");
+    let mut a = Box::pin(log.append(&first));
+    let mut b = Box::pin(log.append(&poison));
+    let mut c = Box::pin(log.append(&last));
+    assert!(futures_util::poll!(&mut a).is_pending());
+    assert!(futures_util::poll!(&mut b).is_pending());
+    assert!(futures_util::poll!(&mut c).is_pending());
+    let calls = Arc::new(AtomicUsize::new(0));
+    let observed = calls.clone();
+    let mut control = Box::pin(log.connection.run(move |_| {
+        Box::pin(async move {
+            observed.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        })
+    }));
+    assert!(futures_util::poll!(&mut control).is_pending());
+    let mut commits = log.subscribe_commits();
+    commits.borrow_and_update();
+    release.send(()).unwrap();
+    blocked.await.unwrap();
+    for result in [a.await, b.await, c.await] {
+        let error = result.expect_err("projection invariants abort the shared transaction");
+        assert!(
+            error
+                .to_string()
+                .contains("semantic append is not monotonic")
+        );
+    }
+    assert!(matches!(control.await, Err(StoreError::OperationUnknown)));
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        0,
+        "failed observation owner must retire before pending control"
+    );
+    assert!(!commits.has_changed().unwrap());
+    log.connection.shutdown().await.unwrap();
+    assert_eq!(ids(&path), ["opened", "requested", "part"]);
+    assert_projection_positions(&path);
 }

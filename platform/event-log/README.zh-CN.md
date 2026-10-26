@@ -25,7 +25,7 @@
 
 管理 SQLite 事件存储和 State Root 租约，持久化应用配置与包、操作回执、会话、轮次及恢复记录。独占所有权见 `root`，已提交的组合见 `applications`，中断恢复见 `recovery`。服务激活前必须先取得 Root 的持久化所有权；业务策略属于插件，规范事实由这里记录。
 
-生产入口是持有唯一 `RootOwner` 的 `RootStore`。当前布局使用一个 control 数据库和八个固定执行分区。Control 保存不可变应用来源、project/workspace binding 和持久化 Session 路由；Session 及其 revision/import family 共置一个分区。操作日志按 deployment、provider namespace 与 operation 身份定位，来源 revision 不改变分区。Session 范围的插件数据跟随 Session，其他插件命名空间和 caller journal 使用稳定的数据分区。数据写入器只读挂载 control；已有数据的旧单库 Root 会被拒绝，不会被静默拆分或遗弃。
+生产入口是持有唯一 `RootOwner` 的 `RootStore`。当前布局使用一个 control 数据库和八个固定执行分区。Control 保存不可变应用来源、caller intent journal、project/workspace binding 和持久化 Session 路由；Session 及其 revision/import family 共置一个分区。操作日志按 deployment、provider namespace 与 operation 身份定位，来源 revision 不改变分区。Session 范围的插件数据跟随 Session，其他插件命名空间和 UI checkpoint 使用稳定的数据分区。数据写入器只读挂载 control；任何执行分区含 caller intent 记录的 Root，以及已有数据的旧单库 Root，都会被拒绝并保留原日志，不会静默忽略或移动 caller 记录。
 
 `SessionStore` 和 `OperationStore` 只公开绑定身份的操作，不暴露原始日志。闲置句柄和已完成的 capability 只持有弱引用；已接受的 SQL 则保留实际 owner 和锁，直到物理事务清理结束。执行通过工具、Host child scope 传递捕获的权限 basis、binding pins 和 Session work lease；可能超出父调用生命周期的子 worker 从这份实际 custody 派生独立租约。Root 关闭先拒绝新工作，再等待已接受的实际工作，最后关闭全部 SQL owner。无法确认清理时保留原始所有权并报告失败；观察者消失不代表清理完成。
 
@@ -37,7 +37,7 @@ Prepared model view 存在可丢弃的 owner 私有数据库中，使用有界 h
 
 Prepared 发现过程通过持久化分页推进，完成后才允许渲染。渲染暂存不可变的组内容；完成阶段在有界事务中构建最终树，复用未受影响的子树，不发布中间根。暂存组和未完成的树任务帧保留显式引用，直到结果挂接，或取消的构建由原 owner 回收。冷建为每个组写入一个最终节点；增量完成只写受影响路径，重复完成复用同一结果。
 
-在每个数据分区内部，调用意图、操作派发与结算、待处理消息以及符合条件的规范事件追加，共用一条有类型约束的写入队列。最多 32 个已经排队且相邻的请求共享一次 FULL 提交，不等待凑批，也不跨过普通写入或控制命令。每个请求保留独立校验，多请求批次为每个请求设置保存点。执行凭据与提交通知只在提交成功后返回。生产者的后续阶段仍需等待前一阶段的持久化回执。涉及能力、checkpoint、摘要和 lineage 的追加保留原有事务路径。
+Control 中的调用意图、项目登记、workspace attachment、Session 路由预留和发布，共用一条有类型约束的写入队列。调用意图保留既有 metadata 提交通知，还会唤醒 application-head 和 Session 观察者。各执行分区批量处理操作派发与结算、待处理消息以及符合条件的规范事件追加。每个写入器最多让 32 个已经排队且相邻的请求共享一次 FULL 提交，不等待凑批，也不跨过普通写入或控制命令。每个请求保留独立校验，多请求批次为每个请求设置保存点。执行凭据与提交通知只在提交成功后返回。生产者的后续阶段仍需等待前一阶段的持久化回执。涉及能力、checkpoint、摘要和 lineage 的追加保留原有事务路径。
 
 新运行时事件使用 UUIDv7 身份，让事件及派生消息的索引写入集中在相邻位置。导入和重放保留原身份，事件顺序仍由数据库序号决定。语义行的 event_id 索引只覆盖需要按身份归档的工具结果；增量修订读取使用变更目录，历史来源复制按来源位置主键直接定位。
 

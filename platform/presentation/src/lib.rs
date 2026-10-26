@@ -27,6 +27,7 @@ pub mod navigation;
 pub mod shell;
 mod step;
 mod tools;
+pub use tools::project_tool_boundary;
 mod user;
 use maka_agent_facts::event::Fact;
 use maka_agent_facts::event::Invocation;

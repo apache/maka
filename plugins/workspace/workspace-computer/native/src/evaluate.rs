@@ -111,8 +111,11 @@ impl Computer {
         .map_err(failed)?
         .map_err(|error| failed(error.message))?
         .with_image_deduplication();
-        let runtime =
-            repl.get_or_insert_with(|| Repl::new(maka_computer_use::facade_for(platform), limits));
+        if repl.is_none() {
+            *repl =
+                Some(Repl::new(maka_computer_use::facade_for(platform), limits).map_err(failed)?);
+        }
+        let runtime = repl.as_ref().expect("REPL initialized");
         let bridge = Arc::new(Bridge {
             owner: self.clone(),
             call: call.clone(),

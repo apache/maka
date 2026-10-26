@@ -47,6 +47,7 @@ use std::{
 use tokio::sync::oneshot;
 use uuid::Uuid;
 mod admissions;
+mod control;
 use admissions::{admission, forbid_rollback, gate, hook};
 
 async fn store() -> (tempfile::TempDir, Arc<EventLog>) {

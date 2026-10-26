@@ -38,6 +38,8 @@ mod todo_tests;
 #[path = "tests/computer.rs"]
 mod computer;
 
+#[path = "tests/request_capture.rs"]
+mod request_capture;
 #[path = "tests/service_tools.rs"]
 mod service_tools;
 #[path = "tests/skill_preparation.rs"]

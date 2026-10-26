@@ -191,7 +191,10 @@ impl EventLog {
                 .execute(&mut *tx).await?;
             // Freeze the parent's current projection: its own archives over raw
             // history, or an already inherited pin. Later pruning cannot change it.
-            sqlx::query(
+            let target = request.target_session_id.clone();
+            let source = request.source_session_id.clone();
+            crate::connection::worker_query(&mut tx, move |worker| Box::pin(async move {
+                sqlx::query(
                 "INSERT INTO session_history_members
                  SELECT ?1, e.sequence,
                      COALESCE((SELECT a.sequence FROM runtime_events a WHERE a.kind = 'tool_result_archived'
@@ -199,8 +202,22 @@ impl EventLog {
                       AND json_extract(a.event_json,'$.invocation.session_id') = e.owner_session_id
                       AND a.sequence < ?2), e.archive_sequence)
                  FROM session_history_events e WHERE e.owner_session_id = ?3 AND e.sequence <= ?4",
-            ).bind(&request.target_session_id).bind(observed.saturating_add(1))
-                .bind(&request.source_session_id).bind(through as i64).execute(&mut *tx).await?;
+            ).bind(&target).bind(observed.saturating_add(1))
+                .bind(&source).bind(through as i64).execute(&mut *worker).await?;
+                let mut after = 0i64;
+                loop {
+                    let members: Vec<(i64, Option<i64>)> = sqlx::query_as(
+                        "SELECT sequence,archive_sequence FROM session_history_members
+                         WHERE session_id=? AND sequence>? ORDER BY sequence LIMIT 128",
+                    ).bind(&target).bind(after).fetch_all(&mut *worker).await?;
+                    if members.is_empty() { break; }
+                    for (sequence, archive) in members {
+                        crate::context::semantic::copy_member(worker, &target, sequence, archive).await?;
+                        after = sequence;
+                    }
+                }
+                Ok(())
+            })).await?;
             sqlx::query("SELECT context_source_pin_copy(?)")
                 .bind(&request.target_session_id).execute(&mut *tx).await?;
             crate::artifacts::history::retain(&mut tx, &request.source_session_id, &request.target_session_id, now).await?;

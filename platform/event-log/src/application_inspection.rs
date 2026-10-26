@@ -41,7 +41,8 @@ pub(super) fn options(path: &Path) -> Result<SqliteConnectOptions, StoreError> {
     };
     let options = SqliteConnectOptions::new()
         .filename(path)
-        .create_if_missing(false);
+        .create_if_missing(false)
+        .query_planner_stability(true);
     Ok(if wal_present {
         // The native exclusive lock requires a write-capable descriptor. The
         // initializer enforces query_only before any database read.

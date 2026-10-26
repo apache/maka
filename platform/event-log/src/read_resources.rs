@@ -46,12 +46,16 @@ impl EventLog {
                 "id",
             ),
             ResourceAddress::ToolResult(_) => (
-                "SELECT t.event_id FROM session_history_events t
-                 JOIN runtime_events d ON d.invocation_id=t.invocation_id
-                   AND d.operation_id=t.operation_id AND d.kind='tool_dispatched'
-                 WHERE t.owner_session_id=?1 AND t.kind='tool_settled'
-                   AND json_extract(d.event_json,'$.fact.call.origin.kind')='provider'
-                   AND json_extract(t.event_json,'$.fact.outcome.kind') IN ('succeeded','failed')",
+                "SELECT t.event_id FROM runtime_events t
+                 WHERE t.kind='tool_settled'
+                   AND (t.event_session=?1 OR EXISTS(
+                       SELECT 1 FROM session_history_members h
+                       WHERE h.session_id=?1 AND h.sequence=t.sequence))
+                   AND json_extract(t.event_json,'$.fact.outcome.kind') IN ('succeeded','failed')
+                   AND EXISTS(SELECT 1 FROM runtime_events d
+                       WHERE d.invocation_id=t.invocation_id AND d.operation_id=t.operation_id
+                         AND d.kind='tool_dispatched'
+                         AND json_extract(d.event_json,'$.fact.call.origin.kind')='provider')",
                 "t.event_id",
             ),
         };
@@ -60,32 +64,25 @@ impl EventLog {
             .run(move |connection| {
                 Box::pin(async move {
                     let mut tx = connection.begin().await?;
-                    // GLOB is case sensitive. Escape its syntax so IDs are literal prefixes.
-                    let mut literal = String::new();
-                    for character in address.id().chars() {
-                        match character {
-                            '*' => literal.push_str("[*]"),
-                            '?' => literal.push_str("[?]"),
-                            '[' => literal.push_str("[[]"),
-                            _ => literal.push(character),
-                        }
-                    }
-                    for (operator, pattern) in [
-                        ("=", address.id().to_owned()),
-                        ("GLOB", format!("{literal}*")),
-                    ] {
-                        // SQLite's GLOB terminates at NUL; never broaden such a locator.
-                        if operator == "GLOB" && address.id().contains('\0') {
+                    for exact in [true, false] {
+                        if !exact && address.id().contains('\0') {
                             return Ok(None);
                         }
-                        let sql =
-                            format!("{query} AND {column} {operator} ?2 ORDER BY {column} LIMIT 2");
-                        let matches: Vec<String> =
-                            sqlx::query_scalar(sqlx::AssertSqlSafe(sql.as_str()))
+                        let upper = (!exact).then(|| prefix_upper(address.id())).flatten();
+                        let predicate = match (exact, upper.is_some()) {
+                            (true, _) => format!("{column} = ?2"),
+                            (false, true) => format!("{column} >= ?2 AND {column} < ?3"),
+                            (false, false) => format!("{column} >= ?2"),
+                        };
+                        let sql = format!("{query} AND {predicate} ORDER BY {column} LIMIT 2");
+                        let mut read =
+                            sqlx::query_scalar::<_, String>(sqlx::AssertSqlSafe(sql.as_str()))
                                 .bind(&session)
-                                .bind(pattern)
-                                .fetch_all(&mut *tx)
-                                .await?;
+                                .bind(address.id());
+                        if let Some(upper) = &upper {
+                            read = read.bind(upper);
+                        }
+                        let matches = read.fetch_all(&mut *tx).await?;
                         match matches.len() {
                             0 => {}
                             1 => {
@@ -102,3 +99,23 @@ impl EventLog {
             .await
     }
 }
+
+// UTF-8 byte order agrees with scalar order. Explicit bounds retain the prefix
+// index range with fixed query plans, including IDs containing GLOB metacharacters.
+fn prefix_upper(prefix: &str) -> Option<String> {
+    for (offset, character) in prefix.char_indices().rev() {
+        let next = match character {
+            '\u{10ffff}' => continue,
+            '\u{d7ff}' => '\u{e000}',
+            _ => char::from_u32(u32::from(character) + 1)
+                .expect("nonterminal Unicode scalar has a successor"),
+        };
+        let mut upper = prefix[..offset].to_owned();
+        upper.push(next);
+        return Some(upper);
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests;

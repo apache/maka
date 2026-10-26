@@ -23,7 +23,7 @@ use crate::{StoreError, sequence_number};
 use sqlx::SqliteConnection;
 
 mod roots;
-pub(crate) use roots::register;
+pub(crate) use roots::{RootDigest, record, register};
 
 /// The same scoped identity as complete prefix(), using committed source progress.
 pub(super) async fn evidence(
@@ -57,6 +57,9 @@ pub(super) async fn digests(
     selection: &Selection,
     throughs: &[u64],
 ) -> Result<Vec<String>, StoreError> {
+    if selection.session.is_none() {
+        return Err(invalid("context requires a Session"));
+    }
     let mut result = Vec::with_capacity(throughs.len());
     let scope = serde_json::to_vec(&selection.scope)?;
     for through in throughs {

@@ -217,8 +217,10 @@ impl Closure {
         }
         let filter = Selection::predicate("e", "?3");
         let collected: bool = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
-            "SELECT EXISTS(SELECT 1 FROM event_log e WHERE e.event_session=?1 AND e.invocation_id IS NOT NULL
-               AND e.sequence<=?2 AND e.event_json IS NULL AND {filter}
+            "SELECT EXISTS(SELECT 1 FROM context_source_prefixes p
+               CROSS JOIN event_log e ON e.sequence=p.sequence
+               WHERE p.kind='session' AND p.owner=?1 AND p.sequence<=?2
+               AND e.invocation_id IS NOT NULL AND e.event_json IS NULL AND {filter}
              UNION ALL SELECT 1 FROM session_history_members h JOIN event_log e ON e.sequence=h.sequence
              WHERE h.session_id=?1 AND e.sequence<=?2 AND e.event_json IS NULL AND {filter})"
         ))).bind(session).bind(through as i64).bind(&selection.lineage).fetch_one(&mut *db).await?;

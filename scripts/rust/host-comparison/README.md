@@ -199,3 +199,17 @@ Check the diagnostic encoder with:
 ```sh
 node --test scripts/rust/host-comparison/diagnostics.test.mjs
 ```
+
+
+The loopback provider accepts both Content-Length and chunked request bodies,
+including chunk extensions and trailers. `requestBytes` and `requestSha256` refer
+to decoded body bytes; `requestTransferEncoding` records the incoming framing.
+Framing does not change the prompts, response chunks, pacing or completion checks.
+Check the request parser without building either Host:
+
+```sh
+python3 -m unittest discover -s scripts/rust/host-comparison -p 'test_*.py'
+```
+
+See [profiling-plan.md](profiling-plan.md) for diagnostic quality gates and disk
+protection before a capacity or long-state profiling campaign.

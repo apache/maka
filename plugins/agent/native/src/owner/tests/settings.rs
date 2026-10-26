@@ -463,25 +463,20 @@ async fn root_settings_create_partial_edit_save_capture_and_stale_vault_basis_us
     );
     // Read the actual persisted operation/caller/enrollment rows, excluding the
     // vault table where storing the credential envelope is the intended effect.
-    for (database, sql) in [
+    for (paths, sql) in [
         (
-            "runtime-rust.sqlite",
+            fixture.runtime_databases(),
             "SELECT request_json || outcome_json || cleanup_json FROM application_operations",
         ),
         (
-            "runtime-rust.sqlite",
+            vec![fixture.root.join(maka_event_log::root::ROOT_DATABASE)],
             "SELECT reference_json FROM application_intents",
         ),
         (
-            "configuration-rust.sqlite",
+            vec![fixture.root.join("configuration-rust.sqlite")],
             "SELECT target || request_fingerprint || phase FROM oauth_login_receipts",
         ),
     ] {
-        let paths = if database == "runtime-rust.sqlite" {
-            fixture.runtime_databases()
-        } else {
-            vec![fixture.root.join(database)]
-        };
         let mut count = 0;
         for path in paths {
             let db = rusqlite::Connection::open_with_flags(

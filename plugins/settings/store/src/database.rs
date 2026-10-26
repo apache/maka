@@ -85,7 +85,8 @@ pub(super) async fn open(owner: Arc<RootOwner>) -> Result<OwnedConnection> {
     let connection = OwnedConnection::open(
         SqliteConnectOptions::new()
             .filename(path)
-            .create_if_missing(false),
+            .create_if_missing(false)
+            .query_planner_stability(true),
         ConnectionAuthority::Root(owner),
         |connection| Box::pin(initialize(connection)),
     )

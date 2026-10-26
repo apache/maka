@@ -24,8 +24,8 @@ use rusqlite::Connection as RawConnection;
 const COMPACTION: &str = r#"SELECT c.event_id, json_extract(c.event_json, '$.invocation.turn_id') AS turn_id,
            catalog_time(json_extract(c.event_json, '$.recorded_at')) AS adopted_at,
            (SELECT catalog_time(json_extract(r.event_json, '$.recorded_at'))
-            FROM runtime_events r
-            WHERE r.invocation_id = c.invocation_id AND r.kind = 'model_requested'
+            FROM event_log r INDEXED BY context_summary_round
+            WHERE r.event_json IS NOT NULL AND r.invocation_id = c.invocation_id AND r.kind = 'model_requested'
               AND json_extract(r.event_json, '$.fact.purpose') = 'summary'
               AND r.sequence <= adopted.sequence
               AND json_extract(r.event_json, '$.fact.source_high_water') = json_extract(adopted.event_json, '$.fact.source_high_water')
@@ -74,7 +74,7 @@ pub(super) fn project(db: &RawConnection, sequence: i64) -> Result<Row, StoreErr
 mod tests {
     use super::*;
     use serde_json::json;
-    use sqlx::{Connection, SqliteConnection};
+    use sqlx::{ConnectOptions, Connection, SqliteConnection};
     use std::time::{Duration, UNIX_EPOCH};
 
     #[tokio::test]
@@ -82,7 +82,12 @@ mod tests {
         for new_source in [false, true] {
             let mut db = SqliteConnection::connect(":memory:").await.unwrap();
             crate::sqlite_functions::register(&mut db).await.unwrap();
-            sqlx::query("CREATE TABLE runtime_events(sequence INTEGER, invocation_id TEXT, kind TEXT, operation_id TEXT, event_id TEXT, event_json TEXT)").execute(&mut db).await.unwrap();
+            sqlx::raw_sql(sqlx::AssertSqlSafe(crate::schema::fixture(|kind, _| {
+                kind != "trigger"
+            })))
+            .execute(&mut db)
+            .await
+            .unwrap();
             for (sequence, at, kind, step, fact) in [
                 (
                     1,
@@ -114,7 +119,7 @@ mod tests {
                 ),
             ] {
                 let value = json!({"invocation":{"turn_id":"turn"}, "recorded_at":UNIX_EPOCH + Duration::from_millis(at), "fact":fact});
-                sqlx::query("INSERT INTO runtime_events VALUES (?, 'invocation', ?, ?, ?, ?)")
+                sqlx::query("INSERT INTO event_log(sequence,invocation_id,kind,operation_id,event_id,event_json) VALUES (?, 'invocation', ?, ?, ?, ?)")
                     .bind(sequence)
                     .bind(kind)
                     .bind(step)
@@ -142,5 +147,145 @@ mod tests {
                 }
             );
         }
+    }
+
+    async fn projection_work(old_rounds: i64) -> usize {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+        let mut db = sqlx::sqlite::SqliteConnectOptions::new()
+            .in_memory(true)
+            .query_planner_stability(true)
+            .connect()
+            .await
+            .unwrap();
+        crate::sqlite_functions::register(&mut db).await.unwrap();
+        // The real ledger schema supplies competing indexes; reducers are not
+        // needed when measuring projection of already admitted history.
+        sqlx::raw_sql(sqlx::AssertSqlSafe(crate::schema::fixture(|kind, _| {
+            kind != "trigger"
+        })))
+        .execute(&mut db)
+        .await
+        .unwrap();
+        sqlx::query("WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<?1)
+            INSERT INTO event_log(sequence,event_id,invocation_id,kind,operation_id,event_json)
+            SELECT x*3-2,printf('summary-%08d',x),'invocation','model_requested',printf('summary-%08d',x),
+                json_object('invocation',json_object('session_id','session'),'fact',json_object(
+                    'purpose','summary','source_high_water',x*3-3,'source_digest',printf('source-%08d',x))) FROM n")
+            .bind(old_rounds).execute(&mut db).await.unwrap();
+        sqlx::query("WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<?1)
+            INSERT INTO event_log(sequence,event_id,invocation_id,kind,operation_id,event_json)
+            SELECT x*3-1,printf('main-%08d',x),'invocation','model_requested',printf('main-%08d',x),
+                json_object('invocation',json_object('session_id','session'),'fact',json_object('purpose','main')) FROM n")
+            .bind(old_rounds).execute(&mut db).await.unwrap();
+        sqlx::query("WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<?1)
+            INSERT INTO event_log(sequence,event_id,invocation_id,kind,event_json)
+            SELECT x*3,printf('checkpoint-%08d',x),'invocation','context_checkpoint_recorded',
+                json_object('invocation',json_object('session_id','session'),'fact',json_object('checkpoint',json_object(
+                    'summary_step_id',printf('summary-%08d',x)))) FROM n")
+            .bind(old_rounds).execute(&mut db).await.unwrap();
+        let base = old_rounds * 3;
+        sqlx::query("INSERT INTO event_log(sequence,event_id,invocation_id,kind,operation_id,event_json,retained_json,body_digest)
+            VALUES(?,'collected','invocation','model_requested','collected',NULL,'{}','collected')")
+            .bind(base+1).execute(&mut db).await.unwrap();
+        for (offset, at, kind, step, fact) in [
+            (
+                2,
+                500,
+                "model_requested",
+                "other-digest",
+                json!({"purpose":"summary","source_high_water":base,"source_digest":"other","source_scope":{"kind":"session","id":"session"}}),
+            ),
+            (
+                3,
+                1000,
+                "model_requested",
+                "old-matching",
+                json!({"purpose":"summary","source_high_water":base,"source_digest":"target","source_scope":{"kind":"root"}}),
+            ),
+            (
+                4,
+                1500,
+                "context_checkpoint_recorded",
+                "",
+                json!({"checkpoint":{"summary_step_id":"old-matching"}}),
+            ),
+            (
+                5,
+                2000,
+                "model_requested",
+                "first-target",
+                json!({"purpose":"summary","source_high_water":base,"source_digest":"target","source_scope":{"kind":"session","id":"session"}}),
+            ),
+            (
+                6,
+                2500,
+                "model_requested",
+                "concurrent-main",
+                json!({"purpose":"main","source_high_water":base,"source_digest":"target"}),
+            ),
+            (
+                7,
+                3000,
+                "model_requested",
+                "retry-target",
+                json!({"purpose":"summary","source_high_water":base,"source_digest":"target","source_scope":{"kind":"session","id":"session"}}),
+            ),
+            (
+                8,
+                5500,
+                "context_checkpoint_recorded",
+                "",
+                json!({"checkpoint":{"summary_step_id":"retry-target"}}),
+            ),
+        ] {
+            let value = json!({"invocation":{"session_id":"session","turn_id":"turn"},
+                "recorded_at":UNIX_EPOCH + Duration::from_millis(at),"fact":fact});
+            sqlx::query("INSERT INTO event_log(sequence,event_id,invocation_id,kind,operation_id,event_json)
+                VALUES(?,?,'invocation',?,?,?)")
+                .bind(base+offset).bind(format!("target-{offset}"))
+                .bind(kind).bind((!step.is_empty()).then_some(step)).bind(value.to_string())
+                .execute(&mut db).await.unwrap();
+        }
+        let steps = Arc::new(AtomicUsize::new(0));
+        let observed = steps.clone();
+        db.lock_handle()
+            .await
+            .unwrap()
+            .set_progress_handler(1, move || {
+                observed.fetch_add(1, Ordering::Relaxed);
+                true
+            });
+        let row = db
+            .run_on_worker(move |handle| {
+                // SAFETY: callback-local non-owning use; no SQLite-backed value escapes.
+                let borrowed = unsafe { RawConnection::from_handle(handle.as_ptr()) }?;
+                project(&borrowed, base + 8)
+            })
+            .await
+            .unwrap()
+            .unwrap();
+        db.lock_handle().await.unwrap().remove_progress_handler();
+        assert_eq!(row.message.id, "target-8");
+        assert_eq!(row.position.source_sequence, (base + 8) as u64);
+        assert_eq!(row.message.ts, 5500);
+        assert_eq!(
+            row.message.content,
+            Content::ContextCompacted { duration_ms: 3500 }
+        );
+        steps.load(Ordering::Relaxed)
+    }
+
+    #[tokio::test]
+    async fn adopted_summary_timing_seeks_its_round_instead_of_older_history() {
+        let small = projection_work(1000).await;
+        let large = projection_work(20_000).await;
+        eprintln!("compaction projection VM steps: rounds1000={small}, rounds20000={large}");
+        assert!(
+            small > 0 && large < small * 2,
+            "twenty times more old rounds must not cause a summary-history sweep: {small} -> {large}"
+        );
     }
 }

@@ -174,7 +174,7 @@ impl Tools {
         ts: u64,
         resolved: Option<&ToolOutput>,
     ) -> Result<Vec<Message>, ProjectionError> {
-        match &event.fact {
+        let metadata = match &event.fact {
             Fact::ToolDispatched {
                 operation_id,
                 call,
@@ -188,7 +188,6 @@ impl Tools {
                 ..
             } => {
                 let rejected = matches!(event.fact, Fact::ToolRejected { .. });
-                let mut rows = Vec::new();
                 if matches!(call.origin, ToolOrigin::Provider { .. }) {
                     let pending =
                         self.pending
@@ -212,19 +211,16 @@ impl Tools {
                             "dispatch differs from accepted call",
                         ));
                     }
-                    pending.state = if rejected {
-                        CallState::AwaitingDispatch
-                    } else {
-                        CallState::Dispatched
-                    };
+                    if !rejected {
+                        pending.state = CallState::Dispatched;
+                    }
                 } else {
                     let input = match &event.fact {
                         Fact::ToolDispatched { input, .. } => ToolInput::Json(input.clone()),
                         Fact::ToolRejected { input, .. } => input.clone(),
                         _ => unreachable!("tool admission fact"),
                     };
-                    let args = display_input(&input);
-                    let metadata = self.insert(
+                    self.insert(
                         operation_id,
                         call.clone(),
                         name,
@@ -236,26 +232,143 @@ impl Tools {
                         },
                         event,
                     )?;
-                    rows.push(message(
-                        event,
-                        ts,
-                        tool_message_id(&event.invocation.invocation_id, operation_id),
-                        Content::ToolCall {
-                            tool_name: name.clone(),
-                            args,
-                            step_id: None,
-                            provider_options: None,
-                            provider_executed: None,
-                            metadata,
-                        },
-                    ));
                 }
-                if let Fact::ToolDispatched {
+                if rejected {
+                    self.pending
+                        .remove(operation_id)
+                        .expect("admitted tool is pending")
+                        .metadata
+                } else {
+                    self.pending[operation_id].metadata.clone()
+                }
+            }
+            Fact::ToolSettled { operation_id, .. } => {
+                if !self
+                    .pending
+                    .get(operation_id)
+                    .is_some_and(|pending| pending.state == CallState::Dispatched)
+                {
+                    return Err(ProjectionError::Invalid("result without dispatch"));
+                }
+                self.pending
+                    .remove(operation_id)
+                    .expect("dispatched tool is pending")
+                    .metadata
+            }
+            _ => unreachable!("tool boundary fact"),
+        };
+        boundary_messages(event, ts, metadata, resolved)
+    }
+    fn result(
+        &mut self,
+        event: &RuntimeEvent,
+        ts: u64,
+        operation: &str,
+        id: String,
+        is_error: bool,
+        content: ToolContent,
+    ) -> Result<Message, ProjectionError> {
+        let pending = self
+            .pending
+            .remove(operation)
+            .ok_or(ProjectionError::Invalid("result without call"))?;
+        Ok(result_message(
+            event,
+            ts,
+            operation,
+            id,
+            is_error,
+            content,
+            pending.metadata,
+        ))
+    }
+}
+
+fn result_message(
+    event: &RuntimeEvent,
+    ts: u64,
+    operation: &str,
+    id: String,
+    is_error: bool,
+    content: ToolContent,
+    metadata: crate::ToolMetadata,
+) -> Message {
+    message(
+        event,
+        ts,
+        id,
+        Content::ToolResult {
+            tool_use_id: tool_message_id(&event.invocation.invocation_id, operation),
+            settlement: match &event.fact {
+                Fact::ToolRejected { .. } => {
+                    Some(maka_agent_facts::tool_call::ToolSettlement::Rejected)
+                }
+                Fact::ToolSettled { outcome, .. } => Some(match outcome {
+                    maka_agent_facts::event::ToolOutcome::Succeeded { .. } => {
+                        maka_agent_facts::tool_call::ToolSettlement::Returned
+                    }
+                    maka_agent_facts::event::ToolOutcome::Failed { .. } => {
+                        maka_agent_facts::tool_call::ToolSettlement::Failed
+                    }
+                    maka_agent_facts::event::ToolOutcome::Unknown { .. } => {
+                        maka_agent_facts::tool_call::ToolSettlement::Unknown
+                    }
+                }),
+                _ => None,
+            },
+            is_error,
+            content,
+            metadata,
+        },
+    )
+}
+
+fn boundary_messages(
+    event: &RuntimeEvent,
+    ts: u64,
+    metadata: crate::ToolMetadata,
+    resolved: Option<&ToolOutput>,
+) -> Result<Vec<Message>, ProjectionError> {
+    match &event.fact {
+        Fact::ToolDispatched {
+            operation_id,
+            call,
+            name,
+            ..
+        }
+        | Fact::ToolRejected {
+            operation_id,
+            call,
+            name,
+            ..
+        } => {
+            let mut rows = Vec::new();
+            if !matches!(call.origin, ToolOrigin::Provider { .. }) {
+                let args = match &event.fact {
+                    Fact::ToolDispatched { input, .. } => input.clone(),
+                    Fact::ToolRejected { input, .. } => display_input(input),
+                    _ => unreachable!("tool admission fact"),
+                };
+                rows.push(message(
+                    event,
+                    ts,
+                    tool_message_id(&event.invocation.invocation_id, operation_id),
+                    Content::ToolCall {
+                        tool_name: name.clone(),
+                        args,
+                        step_id: None,
+                        provider_options: None,
+                        provider_executed: None,
+                        metadata: metadata.clone(),
+                    },
+                ));
+            }
+            match &event.fact {
+                Fact::ToolDispatched {
                     title,
                     presentation,
                     ..
-                } = &event.fact
-                {
+                } => {
                     if let Some(title) = title {
                         title.validate().map_err(ProjectionError::Invalid)?;
                     }
@@ -278,103 +391,103 @@ impl Tools {
                         },
                     ));
                 }
-                if let Fact::ToolRejected { reason, .. } = &event.fact {
-                    rows.push(self.result(
-                        event,
-                        ts,
-                        operation_id,
-                        event.id.clone(),
-                        true,
-                        ToolContent::Text {
-                            text: reason.to_string(),
-                        },
-                    )?);
-                }
-                Ok(rows)
-            }
-            Fact::ToolSettled {
-                operation_id,
-                outcome,
-            } => {
-                if !self
-                    .pending
-                    .get(operation_id)
-                    .is_some_and(|pending| pending.state == CallState::Dispatched)
-                {
-                    return Err(ProjectionError::Invalid("result without dispatch"));
-                }
-                let (is_error, content) = ToolContent::from_outcome(outcome, resolved)?;
-                let mut rows = vec![self.result(
+                Fact::ToolRejected { reason, .. } => rows.push(result_message(
                     event,
                     ts,
                     operation_id,
                     event.id.clone(),
-                    is_error,
-                    content,
-                )?];
-                if let Some(ToolOutput::Model(result)) = resolved
-                    && let (Some(input), Some(output)) =
-                        (result.usage.input_tokens, result.usage.output_tokens)
-                {
-                    rows.push(message(
-                        event,
-                        ts,
-                        maka_agent_facts::tool_call::metered_usage_id(&event.id),
-                        Content::TokenUsage {
-                            input,
-                            output,
-                            cache_read: result.usage.cache_read_tokens,
-                            cache_creation: result.usage.cache_write_tokens,
-                            reasoning: result.usage.reasoning_tokens,
-                        },
-                    ));
-                }
-                Ok(rows)
+                    true,
+                    ToolContent::Text {
+                        text: reason.to_string(),
+                    },
+                    metadata,
+                )),
+                _ => unreachable!("tool admission fact"),
             }
-            _ => unreachable!(),
+            Ok(rows)
         }
-    }
-    fn result(
-        &mut self,
-        event: &RuntimeEvent,
-        ts: u64,
-        operation: &str,
-        id: String,
-        is_error: bool,
-        content: ToolContent,
-    ) -> Result<Message, ProjectionError> {
-        let pending = self
-            .pending
-            .remove(operation)
-            .ok_or(ProjectionError::Invalid("result without call"))?;
-        let row = message(
-            event,
-            ts,
-            id,
-            Content::ToolResult {
-                tool_use_id: tool_message_id(&event.invocation.invocation_id, operation),
-                settlement: match &event.fact {
-                    Fact::ToolRejected { .. } => {
-                        Some(maka_agent_facts::tool_call::ToolSettlement::Rejected)
-                    }
-                    Fact::ToolSettled { outcome, .. } => Some(match outcome {
-                        maka_agent_facts::event::ToolOutcome::Succeeded { .. } => {
-                            maka_agent_facts::tool_call::ToolSettlement::Returned
-                        }
-                        maka_agent_facts::event::ToolOutcome::Failed { .. } => {
-                            maka_agent_facts::tool_call::ToolSettlement::Failed
-                        }
-                        maka_agent_facts::event::ToolOutcome::Unknown { .. } => {
-                            maka_agent_facts::tool_call::ToolSettlement::Unknown
-                        }
-                    }),
-                    _ => None,
-                },
+        Fact::ToolSettled {
+            operation_id,
+            outcome,
+        } => {
+            let (is_error, content) = ToolContent::from_outcome(outcome, resolved)?;
+            let mut rows = vec![result_message(
+                event,
+                ts,
+                operation_id,
+                event.id.clone(),
                 is_error,
                 content,
-                metadata: pending.metadata,
-            },
-        );
-        Ok(row)
+                metadata,
+            )];
+            if let Some(ToolOutput::Model(result)) = resolved
+                && let (Some(input), Some(output)) =
+                    (result.usage.input_tokens, result.usage.output_tokens)
+            {
+                rows.push(message(
+                    event,
+                    ts,
+                    maka_agent_facts::tool_call::metered_usage_id(&event.id),
+                    Content::TokenUsage {
+                        input,
+                        output,
+                        cache_read: result.usage.cache_read_tokens,
+                        cache_creation: result.usage.cache_write_tokens,
+                        reasoning: result.usage.reasoning_tokens,
+                    },
+                ));
+            }
+            Ok(rows)
+        }
+        _ => unreachable!("tool boundary fact"),
     }
+}
+
+/// Project one admitted tool boundary using only its original dispatch provenance.
+/// The caller supplies the original T1 for a settlement and its verified raw result.
+/// Causal acceptance and ancestry admission belong to the canonical store.
+///
+/// # Errors
+/// Returns an error for missing dispatch identity, unsupported origin, invalid
+/// presentation metadata, or a result that differs from the boundary kind.
+pub fn project_tool_boundary(
+    stored: &maka_agent_facts::event::StoredEvent,
+    dispatch: Option<&RuntimeEvent>,
+    resolved: Option<&ToolOutput>,
+) -> Result<Vec<crate::Row>, ProjectionError> {
+    let event = &stored.event;
+    let succeeds = matches!(
+        event.fact,
+        Fact::ToolSettled {
+            outcome: maka_agent_facts::event::ToolOutcome::Succeeded { .. },
+            ..
+        }
+    );
+    if succeeds != resolved.is_some() {
+        return Err(ProjectionError::Invalid(
+            "tool payload does not match fact kind",
+        ));
+    }
+    let origin = match &event.fact {
+        Fact::ToolDispatched { call, .. } | Fact::ToolRejected { call, .. } => &call.origin,
+        Fact::ToolSettled { operation_id, .. } => match dispatch {
+            Some(RuntimeEvent {
+                invocation,
+                fact:
+                    Fact::ToolDispatched {
+                        operation_id: original,
+                        call,
+                        ..
+                    },
+                ..
+            }) if invocation == &event.invocation && original == operation_id => &call.origin,
+            _ => return Err(ProjectionError::Invalid("result without original dispatch")),
+        },
+        _ => return Err(ProjectionError::Invalid("expected tool boundary")),
+    };
+    let metadata = crate::ToolMetadata::from_origin(origin, &event.invocation.invocation_id)?;
+    crate::rows(
+        stored.sequence,
+        boundary_messages(event, crate::message::timestamp(event)?, metadata, resolved)?,
+    )
 }

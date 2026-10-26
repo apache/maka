@@ -31,23 +31,24 @@ use sqlx::Connection;
 
 // Walk only reverse references of one retired Session, including archive writers.
 // UNION deduplicates diamonds; active owners short-circuit the search.
+// CROSS JOIN keeps each recursive owner ahead of its indexed prefix lookup.
 const RETAINED: &str = "
 WITH RECURSIVE owners(id) AS (
     VALUES(?1)
     UNION
     SELECT h.session_id FROM owners o
-      JOIN event_log e ON e.event_session=o.id
-      JOIN session_history_members h ON h.sequence=e.sequence
+      CROSS JOIN context_source_prefixes p ON p.kind='session' AND p.owner=o.id
+      JOIN session_history_members h ON h.sequence=p.sequence
     UNION
     SELECT h.session_id FROM owners o
-      JOIN event_log e ON e.event_session=o.id
-      JOIN session_history_members h ON h.archive_sequence=e.sequence
+      CROSS JOIN context_source_prefixes p ON p.kind='session' AND p.owner=o.id
+      JOIN session_history_members h ON h.archive_sequence=p.sequence
     UNION
     SELECT h.session_id FROM owners o
-      JOIN event_log e ON e.event_session=o.id
-      JOIN session_revision_sources h ON h.sequence=e.sequence
+      CROSS JOIN context_source_prefixes p ON p.kind='session' AND p.owner=o.id
+      JOIN session_revision_sources h ON h.sequence=p.sequence
 )
-SELECT EXISTS(SELECT 1 FROM owners JOIN session_control ON session_control.id=owners.id)";
+SELECT EXISTS(SELECT 1 FROM owners CROSS JOIN session_control ON session_control.id=owners.id)";
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum MaterialCollection {
@@ -91,7 +92,9 @@ impl EventLog {
             // A previously collected body proves this owner set was already
             // released. All owners were removed, so none can publish new copies.
             let released: bool = sqlx::query_scalar(
-                "SELECT EXISTS(SELECT 1 FROM event_log WHERE event_session=? AND event_json IS NULL)"
+                "SELECT EXISTS(SELECT 1 FROM context_source_prefixes p
+                 JOIN event_log e ON e.sequence=p.sequence
+                 WHERE p.kind='session' AND p.owner=? AND e.event_json IS NULL)"
             ).bind(&session).fetch_one(&mut *tx).await?;
             if !released && sqlx::query_scalar::<_, bool>(RETAINED)
                 .bind(&session).fetch_one(&mut *tx).await?
@@ -313,6 +316,131 @@ mod cursor_tests {
                 .len(),
             0
         );
+        assert!(matches!(
+            log.prefix(100, 65536).await,
+            Err(StoreError::MaterialCollected)
+        ));
+        assert!(matches!(
+            log.scoped_prefix(
+                maka_agent_facts::event::LogScope::Session {
+                    id: "source".into()
+                },
+                100,
+                65536,
+            )
+            .await,
+            Err(StoreError::MaterialCollected)
+        ));
+        let other = RuntimeEvent::new(
+            Invocation {
+                session_id: "other".into(),
+                turn_id: "other-turn".into(),
+                run_id: "other-run".into(),
+                invocation_id: "other-invocation".into(),
+            },
+            Fact::InvocationOpened {
+                configuration: None,
+                input: InvocationInput::Message {
+                    content: "independent".into(),
+                    request_fingerprint: None,
+                    source_messages: vec![],
+                },
+            },
+        );
+        log.append(&EventWrite::plain(other.clone()).unwrap())
+            .await
+            .unwrap();
+        let prefix = log
+            .scoped_prefix(
+                maka_agent_facts::event::LogScope::Session { id: "other".into() },
+                100,
+                65536,
+            )
+            .await
+            .unwrap();
+        assert_eq!(prefix.events.len(), 1);
+        assert_eq!(prefix.events[0].event, other);
+
+        let collected_queries: Vec<_> = log
+            .sqlite_resource_stats()
+            .await
+            .unwrap()
+            .writer
+            .statements
+            .into_iter()
+            .filter_map(|statement| statement.sql)
+            .filter(|sql| {
+                (sql.contains("context_source_prefixes p") && sql.contains("e.event_json IS NULL"))
+                    || sql.contains("event_log INDEXED BY invocation_sequence")
+            })
+            .collect();
+        assert_eq!(
+            collected_queries.len(),
+            2,
+            "Global and Session use separate indexed predicates"
+        );
+        log.connection
+            .run(move |db| {
+                Box::pin(async move {
+                    for sql in collected_queries {
+                        let session = sql.contains("p.owner=?");
+                        let explain = format!("EXPLAIN QUERY PLAN {sql}");
+                        let mut query = sqlx::query(sqlx::AssertSqlSafe(explain.as_str()));
+                        if session {
+                            query = query.bind("source");
+                        }
+                        let plan: Vec<String> = query
+                            .fetch_all(&mut *db)
+                            .await?
+                            .into_iter()
+                            .map(|row| sqlx::Row::get(&row, 3))
+                            .collect();
+                        if session {
+                            assert!(
+                                plan.iter().any(|step| step
+                                    .contains("SEARCH p USING PRIMARY KEY (kind=? AND owner=?)")),
+                                "{plan:?}"
+                            );
+                            assert!(
+                                plan.iter().any(|step| step.contains("SEARCH e USING INTEGER PRIMARY KEY")),
+                                "{plan:?}"
+                            );
+                        } else {
+                            assert!(
+                                plan.iter().any(|step| step.contains("USING INDEX invocation_sequence")),
+                                "{plan:?}"
+                            );
+                        }
+                    }
+                    let explain = format!("EXPLAIN QUERY PLAN {RETAINED}");
+                    let plan: Vec<String> = sqlx::query(sqlx::AssertSqlSafe(explain.as_str()))
+                        .bind("source")
+                        .fetch_all(db)
+                        .await?
+                        .into_iter()
+                        .map(|row| sqlx::Row::get(&row, 3))
+                        .collect();
+                    for index in [
+                        "history_source_owners",
+                        "archive_source_owners",
+                        "revision_source_owners",
+                    ] {
+                        assert!(
+                            plan.iter().any(|step| step.contains(index)),
+                            "{index}: {plan:?}"
+                        );
+                    }
+                    assert!(
+                        plan.iter()
+                            .any(|step| step
+                                .contains("SEARCH p USING PRIMARY KEY (kind=? AND owner=?)")),
+                        "{plan:?}"
+                    );
+                    Ok(())
+                })
+            })
+            .await
+            .unwrap();
         log.close().await.unwrap();
     }
 }

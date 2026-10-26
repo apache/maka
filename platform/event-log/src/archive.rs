@@ -49,12 +49,16 @@ pub struct ToolResultResource {
 pub struct PruneCandidates {
     pub candidates: Vec<PruneCandidate>,
     pub next: Option<PruneCursor>,
+    /// Selected source fence, usable as progress only after all pages are inspected.
+    pub through: u64,
 }
 
 #[derive(Clone, Debug)]
-pub struct PruneCursor {
-    pub through: u64,
-    pub after_sequence: u64,
+pub enum PruneCursor {
+    /// Begin a scan after inspected immutable results in the same selection.
+    After(u64),
+    /// Continue a page without admitting results published after its fence.
+    Page { through: u64, after_sequence: u64 },
 }
 
 #[derive(Clone, Debug)]

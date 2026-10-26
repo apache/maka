@@ -66,6 +66,9 @@ fn number(name: &str, default: usize) -> usize {
 fn correctness_smoke() -> bool {
     std::env::var("MAKA_LONGEVITY_SMOKE").ok().as_deref() == Some("1")
 }
+fn sqlite_stats() -> bool {
+    std::env::var("MAKA_LONGEVITY_SQLITE_STATS").ok().as_deref() == Some("1")
+}
 fn retain_fixture() -> bool {
     std::env::var("MAKA_LONGEVITY_RETAIN_FIXTURE")
         .ok()
@@ -609,7 +612,12 @@ async fn same_run_steps() {
     let engine = fixture::engine();
     let effects = Arc::new(AtomicUsize::new(0));
     let start_gate = Arc::new(Barrier::new(w));
-    let sample_gate = StepGate::new(root_path.clone(), w);
+    let sqlite_stats = sqlite_stats();
+    let sample_gate = if sqlite_stats {
+        StepGate::with_sqlite_owner(root_path.clone(), w, root.store())
+    } else {
+        StepGate::new(root_path.clone(), w)
+    };
     let mut stores = Vec::new();
     for i in 0..w {
         stores.push(
@@ -620,7 +628,7 @@ async fn same_run_steps() {
     }
     let partition_groups = seed_routes(&root_path, &stores);
     emit(
-        json!({"phase":"configuration","harness_sha256":source_fingerprint(),"sampling_sha256":sampling_fingerprint(),"scenario":"same_run_steps","correctness_smoke":smoke,"root":root_path,"fixture_directory":dir.path(),"retain_fixture":retain,"fixture_state":"incomplete","provider_synchronization":"before_engine_run","sampling_boundary":"tool_after_model_completion","partition_groups":partition_groups,"w":w,"steps":steps,"held_build_leases":0}),
+        json!({"phase":"configuration","harness_sha256":source_fingerprint(),"sampling_sha256":sampling_fingerprint(),"scenario":"same_run_steps","correctness_smoke":smoke,"sqlite_stats":sqlite_stats,"root":root_path,"fixture_directory":dir.path(),"retain_fixture":retain,"fixture_state":"incomplete","provider_synchronization":"before_engine_run","sampling_boundary":"tool_after_model_completion","partition_groups":partition_groups,"w":w,"steps":steps,"held_build_leases":0}),
     );
     join_all(stores.iter().enumerate().map(|(index,store)| {
         let start_gate=start_gate.clone();let sample_gate=sample_gate.clone();let effects=effects.clone();let engine=&engine;
