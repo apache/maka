@@ -15,6 +15,19 @@ unsafe extern "C" {
         text: *const u8,
         text_len: usize,
     ) -> f64;
+    #[link_name = "text_cluster_boxes"]
+    fn js_text_cluster_boxes(
+        font: *const u8,
+        font_len: usize,
+        numeric: *const u8,
+        numeric_len: usize,
+        spacing: f32,
+        text: *const u8,
+        text_len: usize,
+        ranges: *const u32,
+        out: *mut f32,
+        count: usize,
+    );
     #[link_name = "font_ascent"]
     fn js_font_ascent(font: *const u8, font_len: usize) -> f64;
     #[link_name = "font_descent"]
@@ -134,6 +147,34 @@ pub(crate) fn measure_numeric_text(font: &str, numeric: &str, text: &str) -> f32
             text.as_ptr(),
             text.len(),
         ) as f32
+    }
+}
+
+/// Visual cluster bounds measured in the full DOM run, in logical order.
+pub(crate) fn text_cluster_boxes(
+    font: &str,
+    numeric: &str,
+    spacing: f32,
+    text: &str,
+    ranges: &[[u32; 2]],
+    out: &mut [[f32; 2]],
+) {
+    assert_eq!(ranges.len(), out.len());
+    // SAFETY: strings and flat two-number arrays remain valid for the call;
+    // JS reads the input and writes exactly two floats for each range.
+    unsafe {
+        js_text_cluster_boxes(
+            font.as_ptr(),
+            font.len(),
+            numeric.as_ptr(),
+            numeric.len(),
+            spacing,
+            text.as_ptr(),
+            text.len(),
+            ranges.as_ptr().cast(),
+            out.as_mut_ptr().cast(),
+            ranges.len(),
+        )
     }
 }
 

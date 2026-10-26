@@ -273,6 +273,12 @@ final class Native {
     static native float[] scroll(long handle, int id, float x, float y, int applied);
 
     /**
+     * How far (points) a vertical scroll view is pulled past its top.
+     * Returns bound values when a pull value changed, else null.
+     */
+    static native float[] pull(long handle, int id, float distance);
+
+    /**
      * A scroll view came to rest: the snapping animated values that follow it settle. Returns
      * bound values when one starts moving, else null.
      */

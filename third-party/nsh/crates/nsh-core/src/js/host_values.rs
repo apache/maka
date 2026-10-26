@@ -608,6 +608,11 @@ pub(crate) fn scroll_value<I: HostInput>(input: &I, _: &mut HostCx) -> Option<Pr
     Some(Prop::ScrollValue(input.animated_node()))
 }
 
+/// `pullValue`: an animated value.
+pub(crate) fn pull_value<I: HostInput>(input: &I, _: &mut HostCx) -> Option<Prop> {
+    Some(Prop::PullValue(input.animated_node()))
+}
+
 /// `stickyHeaderOffset`: a number, or an animated value.
 pub(crate) fn sticky_offset<I: HostInput>(input: &I, _: &mut HostCx) -> Option<Prop> {
     match input.as_number() {
@@ -690,6 +695,13 @@ pub(crate) fn visible_content<I: HostInput>(input: &I, _: &mut HostCx) -> Option
     ))
 }
 
+/// `refreshIndicator`: `{ height }`.
+pub(crate) fn refresh_indicator<I: HostInput>(input: &I, _: &mut HostCx) -> Option<ScrollProp> {
+    Some(ScrollProp::RefreshIndicator(
+        points(input, "height").map(|h| h.max(Points::ZERO)),
+    ))
+}
+
 /// `contentOffset`: `{ x, y }`.
 pub(crate) fn content_offset<I: HostInput>(input: &I, _: &mut HostCx) -> Option<ScrollProp> {
     let n = |key| points(input, key).unwrap_or_default();
@@ -728,9 +740,10 @@ pub(crate) fn orientations<I: HostInput>(input: &I, _: &mut HostCx) -> Option<Mo
 
 #[cfg(test)]
 mod content_style_tests {
+    use serde_json::json;
+
     use super::*;
     use crate::ui::json_host::JsonHost;
-    use serde_json::json;
 
     #[test]
     fn component_content_style_uses_list_shorthands_and_rejects_non_numeric_lengths() {

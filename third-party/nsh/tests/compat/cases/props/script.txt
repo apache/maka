@@ -263,6 +263,20 @@ covers [props] horizontal
 covers [props] scrollable
 covers [props] refreshing
 covers [props] scrollEventThrottle
+# props-refresh-indicator
+tap id:case-props-refresh-indicator
+expect Pull me
+# The app's indicator, 72 tall, takes the spinner's place; the pull feeds
+# the animated value the app made (created at 3).
+prop id:pull refreshIndicator height=72
+prop id:pull pullValue 3
+listens id:pull onRefresh
+# A list passes it to its scroll view.
+prop scroll:text:"Row 0" refreshIndicator height=60
+# Without a height there is no indicator: the platform's spinner stays.
+noprop id:none refreshIndicator
+covers [props] pullValue
+covers [props] refreshIndicator
 # props-scroll-zoom
 tap id:case-props-scroll-zoom
 expect Zoom

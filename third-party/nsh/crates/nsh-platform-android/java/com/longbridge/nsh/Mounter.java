@@ -416,10 +416,13 @@ final class Mounter {
                     boolean zooms = b.getInt() != 0;
                     float minZoom = b.getFloat(), maxZoom = b.getFloat();
                     boolean bouncesZoom = b.getInt() != 0, pinch = b.getInt() != 0, center = b.getInt() != 0;
+                    boolean ownIndicator = b.getInt() != 0;
+                    float indicatorHeight = b.getFloat();
                     if (v instanceof ScrollBox) {
                         ((ScrollBox) v).setBehavior(paging, interval, offsets, alignment, deceleration, enabled, bounces,
                                 top, right, bottom, left, taps, oneStep);
                         ((ScrollBox) v).setZoom(zooms, minZoom, maxZoom, bouncesZoom, pinch, center);
+                        ((ScrollBox) v).setRefresh(ownIndicator, indicatorHeight);
                     }
                     break;
                 }
@@ -2447,6 +2450,10 @@ final class Mounter {
 
     void scroll(int id, float x, float y, int applied) {
         outputs(Native.scroll(handle(), id, x, y, applied));
+    }
+
+    void pull(int id, float distance) {
+        outputs(Native.pull(handle(), id, distance));
     }
 
     /** Scroll view {@code id} came to rest: snapping animated values settle. */

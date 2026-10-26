@@ -5462,8 +5462,9 @@ mod tests {
 
     #[test]
     fn fallback_copy_keeps_native_selection_and_fires_once_for_an_empty_range() {
-        use nsh_core::keymap::{KeyBinding, Keymap, When};
         use std::sync::Arc;
+
+        use nsh_core::keymap::{KeyBinding, Keymap, When};
 
         let mut surface = form();
         surface.clipboard = "existing clipboard".into();
@@ -6300,6 +6301,7 @@ mod tests {
                     horizontal: true,
                     scrollbar_visible: false,
                     scroll_value: None,
+                    pull_value: None,
                     keyboard_dismiss: Default::default(),
                     mirrored: false,
                 },
@@ -7282,6 +7284,7 @@ mod tests {
             horizontal: false,
             scrollbar_visible: false,
             scroll_value: None,
+            pull_value: None,
             keyboard_dismiss: Default::default(),
             mirrored: false,
         });

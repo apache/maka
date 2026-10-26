@@ -162,15 +162,19 @@ struct PanScroll {
 }
 
 /// Pull-to-refresh. `UIRefreshControl` throws under Mac Catalyst's Mac
-/// idiom, so there the pull is detected in the scroll delegate and shown
-/// with a spinner revealed by a content inset.
+/// idiom, and cannot give way to the app's own indicator, so there (and
+/// when the app draws its own) the pull is detected in the scroll delegate
+/// and shown with a spinner (none for the app's indicator), revealed by a
+/// content inset.
 enum Refresh {
     Native(Retained<UIRefreshControl>),
     Custom {
-        spinner: Retained<UIActivityIndicatorView>,
+        spinner: Option<Retained<UIActivityIndicatorView>>,
         refreshing: bool,
         /// Qualification of the already-scheduled native reveal task.
         reveal_pending: Rc<Cell<bool>>,
+        /// Latest (resting inset, refresh room) for a queued reveal.
+        reveal_geometry: Rc<Cell<(CGFloat, CGFloat)>>,
     },
 }
 
@@ -419,13 +423,27 @@ fn set_bottom_inset(
     });
 }
 
-/// How far past the top a release must be to trigger a custom refresh.
-const REFRESH_PULL: CGFloat = 64.0;
-/// Space kept above the content while a custom refresh runs.
-const REFRESH_INSET: CGFloat = 56.0;
+fn place_spinner(spinner: &UIActivityIndicatorView, width: f32, inset: Points) {
+    spinner.setCenter(CGPoint::new(
+        width as CGFloat / 2.0,
+        -inset.0 as CGFloat / 2.0,
+    ));
+}
 
-fn place_spinner(spinner: &UIActivityIndicatorView, width: f32) {
-    spinner.setCenter(CGPoint::new(width as CGFloat / 2.0, -REFRESH_INSET / 2.0));
+/// Where the content of `scroll` rests below its top edge: the app's top
+/// inset `base` and what UIKit adds itself (a large title's bar), without
+/// the room a refresh keeps.
+fn rest_top(scroll: &UIScrollView, base: CGFloat) -> CGFloat {
+    scroll.adjustedContentInset().top - scroll.contentInset().top + base
+}
+
+/// The room a refreshing scroll view keeps above its content.
+fn refresh_inset(s: &Slot) -> Points {
+    s.behavior
+        .as_deref()
+        .cloned()
+        .unwrap_or_default()
+        .refresh_inset()
 }
 
 struct Slot {
@@ -448,6 +466,10 @@ struct Slot {
     /// A cell of such a list: mirrored back.
     in_mirrored: bool,
     scroll_value: Option<nsh_core::animation::NodeId>,
+    /// `pullValue` (vertical scroll views), with the distance it was last
+    /// fed.
+    pull_value: Option<nsh_core::animation::NodeId>,
+    pull: CGFloat,
     /// How a scroll view scrolls (scroll views only).
     behavior: Option<Box<nsh_core::ScrollBehavior>>,
     horizontal: bool,
@@ -502,6 +524,8 @@ impl Slot {
             mirrored: false,
             in_mirrored: false,
             scroll_value: None,
+            pull_value: None,
+            pull: 0.0,
             behavior: None,
             horizontal: false,
             image: None,
@@ -1123,8 +1147,12 @@ impl Mounter {
                         }
                         _ => set_frame(view, frame),
                     }
-                    if let Some(Refresh::Custom { spinner, .. }) = &s.gestures.refresh {
-                        place_spinner(spinner, frame.size.width.0);
+                    if let Some(Refresh::Custom {
+                        spinner: Some(spinner),
+                        ..
+                    }) = &s.gestures.refresh
+                    {
+                        place_spinner(spinner, frame.size.width.0, refresh_inset(s));
                     }
                     if let Native::Video(video) = &s.native {
                         video.layout();
@@ -1212,6 +1240,7 @@ impl Mounter {
                 horizontal,
                 scrollbar_visible,
                 scroll_value,
+                pull_value,
                 keyboard_dismiss,
                 mirrored,
             } => {
@@ -1258,6 +1287,7 @@ impl Mounter {
                     scroll.setShowsHorizontalScrollIndicator(scrollbar_visible && horizontal);
                     s.horizontal = horizontal;
                     s.scroll_value = scroll_value;
+                    s.pull_value = pull_value.filter(|_| !horizontal);
                 }
             }
             MountItem::ScrollContent { id, size } => {
@@ -1339,10 +1369,29 @@ impl Mounter {
                     let new = ui_insets(b.content_inset);
                     let mut inset = scroll.contentInset();
                     inset.top += new.top - old.top;
+                    if let Some(Refresh::Custom {
+                        refreshing: true, ..
+                    }) = s.gestures.refresh
+                    {
+                        inset.top += (b.refresh_inset().0 - refresh_inset(s).0) as CGFloat;
+                    }
                     inset.left += new.left - old.left;
                     inset.bottom += new.bottom - old.bottom;
                     inset.right += new.right - old.right;
                     scroll.setContentInset(inset);
+                    if let Some(Refresh::Custom {
+                        refreshing: true,
+                        reveal_geometry,
+                        ..
+                    }) = &s.gestures.refresh
+                    {
+                        let lead = if b.refresh_indicator.is_some() {
+                            rest_top(scroll, b.content_inset.top.0 as CGFloat)
+                        } else {
+                            0.0
+                        };
+                        reveal_geometry.set((lead, b.refresh_inset().0 as CGFloat));
+                    }
                     // Zooming (UIKit asks the delegate for the zoom view).
                     scroll.setMinimumZoomScale(b.min_zoom as CGFloat);
                     scroll.setMaximumZoomScale(b.max_zoom.max(b.min_zoom) as CGFloat);
@@ -1357,6 +1406,7 @@ impl Mounter {
                         crate::zoom::layout(scroll, &zoom, zoom.bounds().size, center);
                     }
                 }
+                self.sync_refresh(id);
             }
             MountItem::Refreshing { id, refreshing } => self.set_refreshing(id, refreshing),
             MountItem::Canvas { id, drawing } => self.set_drawing(id, drawing),
@@ -2970,7 +3020,7 @@ impl Mounter {
     fn set_view_events(&mut self, id: NodeId, events: EventMask) {
         let target = self.target.clone();
         let control = self.control.clone();
-        let (mtm, mac_idiom) = (self.mtm, self.mac_idiom);
+        let mtm = self.mtm;
         let Some(slot) = self.views.get_mut(id as usize).and_then(Option::as_mut) else {
             return;
         };
@@ -3093,45 +3143,100 @@ impl Mounter {
         if let Some(nsh) = slot.native.nsh() {
             nsh.set_pressable(events.contains(EventKind::Press), &control);
         }
-        if let Native::Scroll(scroll) = &slot.native {
-            let wants_refresh = events.contains(EventKind::Refresh);
-            match (&slot.gestures.refresh, wants_refresh) {
-                (None, true) if mac_idiom => {
+        self.sync_refresh(id);
+    }
+
+    /// Gives scroll view `id` the pull to refresh its events and behavior
+    /// ask for: `UIRefreshControl`, or a pull detected here (Mac idiom, or
+    /// the app's own indicator) with a spinner unless the app draws its
+    /// own. Swapping keeps a refresh that runs.
+    fn sync_refresh(&mut self, id: NodeId) {
+        let target = self.target.clone();
+        let (mtm, mac_idiom) = (self.mtm, self.mac_idiom);
+        let Some(slot) = self.views.get_mut(id as usize).and_then(Option::as_mut) else {
+            return;
+        };
+        let Native::Scroll(scroll) = &slot.native else {
+            return;
+        };
+        let behavior = slot.behavior.as_deref().cloned().unwrap_or_default();
+        // None: off; Some(None): UIRefreshControl; Some(Some(spinner)): custom.
+        let wanted = slot.events.contains(EventKind::Refresh).then(|| {
+            let own = behavior.refresh_indicator.is_some();
+            (mac_idiom || own).then_some(!own)
+        });
+        let current = slot.gestures.refresh.as_ref().map(|r| match r {
+            Refresh::Native(_) => None,
+            Refresh::Custom { spinner, .. } => Some(spinner.is_some()),
+        });
+        if wanted == current {
+            return;
+        }
+        let previous = slot.gestures.refresh.take();
+        let refreshing = match previous.as_ref() {
+            Some(Refresh::Native(control)) => {
+                let refreshing = control.isRefreshing();
+                scroll.setRefreshControl(None);
+                refreshing
+            }
+            Some(Refresh::Custom {
+                spinner,
+                refreshing,
+                ..
+            }) => {
+                if let Some(spinner) = spinner {
+                    spinner.removeFromSuperview();
+                }
+                if *refreshing {
+                    let mut inset = scroll.contentInset();
+                    inset.top = behavior.content_inset.top.0 as CGFloat;
+                    scroll.setContentInset(inset);
+                }
+                *refreshing
+            }
+            None => false,
+        };
+        drop(previous);
+        match wanted {
+            Some(Some(shows)) => {
+                let spinner = shows.then(|| {
                     let spinner = UIActivityIndicatorView::initWithActivityIndicatorStyle(
                         UIActivityIndicatorView::alloc(mtm),
                         UIActivityIndicatorViewStyle::Medium,
                     );
                     spinner.setHidesWhenStopped(true);
-                    place_spinner(&spinner, scroll.bounds().size.width as f32);
+                    place_spinner(
+                        &spinner,
+                        scroll.bounds().size.width as f32,
+                        behavior.refresh_inset(),
+                    );
                     scroll.addSubview(&spinner);
-                    slot.gestures.refresh = Some(Refresh::Custom {
-                        spinner,
-                        refreshing: false,
-                        reveal_pending: Rc::new(Cell::new(false)),
-                    });
-                }
-                (None, true) => {
-                    let control = UIRefreshControl::new(mtm);
-                    // SAFETY: `handleRefresh:` is implemented by the target.
-                    unsafe {
-                        control.addTarget_action_forControlEvents(
-                            Some(&target),
-                            sel!(handleRefresh:),
-                            UIControlEvents::ValueChanged,
-                        )
-                    };
-                    scroll.setRefreshControl(Some(&control));
-                    slot.gestures.refresh = Some(Refresh::Native(control));
-                }
-                (Some(refresh), false) => {
-                    match refresh {
-                        Refresh::Native(_) => scroll.setRefreshControl(None),
-                        Refresh::Custom { spinner, .. } => spinner.removeFromSuperview(),
-                    }
-                    slot.gestures.refresh = None;
-                }
-                _ => {}
+                    spinner
+                });
+                slot.gestures.refresh = Some(Refresh::Custom {
+                    spinner,
+                    refreshing: false,
+                    reveal_pending: Rc::new(Cell::new(false)),
+                    reveal_geometry: Rc::new(Cell::new((0.0, 0.0))),
+                });
             }
+            Some(None) => {
+                let control = UIRefreshControl::new(mtm);
+                // SAFETY: `handleRefresh:` is implemented by the target.
+                unsafe {
+                    control.addTarget_action_forControlEvents(
+                        Some(&target),
+                        sel!(handleRefresh:),
+                        UIControlEvents::ValueChanged,
+                    )
+                };
+                scroll.setRefreshControl(Some(&control));
+                slot.gestures.refresh = Some(Refresh::Native(control));
+            }
+            None => {}
+        }
+        if refreshing && wanted.is_some() {
+            self.set_refreshing(id, true);
         }
     }
 
@@ -4034,6 +4139,11 @@ impl Mounter {
         let Native::Scroll(scroll) = &s.native else {
             return;
         };
+        let room = refresh_inset(s).0 as CGFloat;
+        let own = s
+            .behavior
+            .as_ref()
+            .is_some_and(|b| b.refresh_indicator.is_some());
         match &mut s.gestures.refresh {
             Some(Refresh::Native(control)) if control.isRefreshing() != on => {
                 if on {
@@ -4046,6 +4156,7 @@ impl Mounter {
                 spinner,
                 refreshing,
                 reveal_pending,
+                reveal_geometry,
             }) if *refreshing != on => {
                 *refreshing = on;
                 reveal_pending.set(on);
@@ -4054,31 +4165,41 @@ impl Mounter {
                     .behavior
                     .as_ref()
                     .map_or(0.0, |b| b.content_inset.top.0 as CGFloat);
-                inset.top = base + if on { REFRESH_INSET } else { 0.0 };
+                // The app's indicator is revealed below what UIKit adds; the
+                // Mac idiom's spinner where it always was.
+                let lead = if own { rest_top(scroll, base) } else { 0.0 };
+                reveal_geometry.set((lead, room));
+                inset.top = base + if on { room } else { 0.0 };
                 if on {
-                    spinner.startAnimating();
+                    if let Some(spinner) = spinner {
+                        spinner.startAnimating();
+                    }
                     scroll.setContentInset(inset);
-                    // Reveal the spinner if the list is at the top. On the
+                    // Reveal the spinner if the list rests at its top. On the
                     // next turn: a release past the top has already started
                     // its bounce towards the old inset, which this replaces.
                     let scroll = MainThreadBound::new(scroll.clone(), mtm);
                     let pending = MainThreadBound::new(reveal_pending.clone(), mtm);
+                    let geometry = MainThreadBound::new(reveal_geometry.clone(), mtm);
                     DispatchQueue::main().exec_async(move || {
                         let mtm = MainThreadMarker::new().expect("main queue");
                         if !pending.get(mtm).replace(false) {
                             return;
                         }
                         let scroll = scroll.get(mtm);
+                        let (lead, room) = geometry.get(mtm).get();
                         let offset = scroll.contentOffset();
-                        if offset.y <= 0.0 && !scroll.isDragging() {
+                        if offset.y <= -lead && !scroll.isDragging() {
                             scroll.setContentOffset_animated(
-                                CGPoint::new(offset.x, -REFRESH_INSET),
+                                CGPoint::new(offset.x, -(lead + room)),
                                 true,
                             );
                         }
                     });
                 } else {
-                    spinner.stopAnimating();
+                    if let Some(spinner) = spinner {
+                        spinner.stopAnimating();
+                    }
                     let scroll = scroll.clone();
                     let block = block2::RcBlock::new(move || scroll.setContentInset(inset));
                     UIView::animateWithDuration_animations(0.25, &block, mtm);
@@ -4089,13 +4210,23 @@ impl Mounter {
     }
 
     /// The user released a drag: a far enough pull past the top starts a
-    /// custom (Mac idiom) refresh.
+    /// custom refresh (the app's indicator measures it from where the
+    /// content rests).
     pub(crate) fn drag_ended(&mut self, id: NodeId, offset: CGPoint) {
         let Some(s) = self.slot(id) else { return };
+        let Native::Scroll(scroll) = &s.native else {
+            return;
+        };
+        let behavior = s.behavior.as_deref().cloned().unwrap_or_default();
+        let pulled = if behavior.refresh_indicator.is_some() {
+            offset.y + rest_top(scroll, behavior.content_inset.top.0 as CGFloat)
+        } else {
+            offset.y
+        };
         if let Some(Refresh::Custom {
             refreshing: false, ..
         }) = s.gestures.refresh
-            && offset.y <= -REFRESH_PULL
+            && behavior.refreshes(Points(pulled as f32))
         {
             self.set_refreshing(id, true);
             self.control
@@ -4175,9 +4306,28 @@ impl Mounter {
             area.scrolled();
         }
         let Some(s) = self.slot(id) else { return };
+        let mut fed = false;
         if let Some(node) = s.scroll_value {
             let value = if s.horizontal { offset.x } else { offset.y };
             self.animator.set(node, value as f32);
+            fed = true;
+        }
+        if let Some(s) = self.slot_mut(id)
+            && let Some(node) = s.pull_value
+            && let Native::Scroll(scroll) = &s.native
+        {
+            let base = s
+                .behavior
+                .as_ref()
+                .map_or(0.0, |b| b.content_inset.top.0 as CGFloat);
+            let pull = (-offset.y - rest_top(scroll, base)).max(0.0);
+            if pull != s.pull {
+                s.pull = pull;
+                self.animator.set(node, pull as f32);
+                fed = true;
+            }
+        }
+        if fed {
             self.apply_animations();
             self.report_finished();
         }

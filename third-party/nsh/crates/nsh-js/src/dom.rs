@@ -1287,6 +1287,7 @@ fn set_prop(
         "pinch",
         "rotation",
         "scrollValue",
+        "pullValue",
         "stickyHeaderOffset",
         "tooltip",
     ]

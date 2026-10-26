@@ -425,7 +425,10 @@ impl Headless {
         self.send(view, EventKind::ScrollDragEnd, self.scroll_payload(view));
         if !self.scroll_horizontal(view)
             && self.screen.hears(view, EventKind::Refresh)
-            && nsh_core::scroll::refreshes(offset)
+            && self
+                .screen
+                .scroll(view)
+                .is_some_and(|s| s.behavior.refreshes(offset))
         {
             self.send(view, EventKind::Refresh, EventPayload::None);
         }
@@ -447,9 +450,12 @@ impl Headless {
         } else {
             scroll.y = offset;
         }
-        let (x, y, applied) = (scroll.x, scroll.y, scroll.applied);
+        let (x, y, applied, horizontal) = (scroll.x, scroll.y, scroll.applied, scroll.horizontal);
         self.engine.control().scroll(view, point(x, y), applied);
         self.animator.scrolled(view, point(x, y));
+        if !horizontal {
+            self.animator.pulled(view, Points((-y.0).max(0.0)));
+        }
     }
 
     /// The step `hover(<selector>)`: the mouse comes over the middle of the

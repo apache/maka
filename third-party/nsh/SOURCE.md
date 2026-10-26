@@ -26,7 +26,7 @@ at `de176695240d550f2b303643b8019146c7989e7f`. The upstream project is
 
 `upstream.json` keeps that initial `repository` and `revision`. Its
 `upstream_revision` records the latest integrated `longbridge/nsh` main revision:
-`6a7b56f8474c8bc9c0fc5a2ed5c46ee700471fa9`. The first upstream synchronization
+`5757911cf23d5a800fa1a353152bdbeeb5057d84`. The first upstream synchronization
 starts from `6bb0b7908043132067456e4a21dd57c90a0bdce5`, already included in the
 initial fork import.
 
@@ -61,6 +61,14 @@ input `focusable` behavior; headless keyboard focus coexists with the local
 native contact and input-result tracking. Editor scheduling and idle collection
 follow upstream's large-file work, without claiming its benchmark figures as
 Maka measurements. The terminal input and lifecycle adaptations remain intact.
+
+The pull-to-refresh import retains the terminal backend's existing physics and
+48-point default refresh inset. A custom indicator uses its supplied height,
+hides terminal spinner text, and receives pull distance through the existing
+native animation value path. The iOS refresh replacement keeps pending-reveal
+invalidation and the owned link-target representation. Shared text-engine hit
+testing does not replace terminal cell-aware selection, IME or focus handling;
+the new trait defaults estimate positions when a backend has no exact override.
 
 The local hint-observation integration retains an allocation lifetime separate
 from the upstream layout tree's reusable slab index. This prevents a delayed

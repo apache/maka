@@ -71,6 +71,7 @@ pub(crate) struct ScrollState {
     pub(crate) count: u32,
     pub(crate) sticky: Vec<StickyCell>,
     pub(crate) scroll_value: Option<nsh_core::animation::NodeId>,
+    pub(crate) pull_value: Option<nsh_core::animation::NodeId>,
     pub(crate) mirrored: bool,
     pub(crate) physics: crate::scroll::Physics,
 }
@@ -88,6 +89,7 @@ impl Default for ScrollState {
             count: 0,
             sticky: Vec::new(),
             scroll_value: None,
+            pull_value: None,
             mirrored: false,
             physics: crate::scroll::Physics::default(),
         }
@@ -1006,6 +1008,7 @@ impl Surface {
                     horizontal,
                     scrollbar_visible,
                     scroll_value,
+                    pull_value,
                     mirrored,
                     keyboard_dismiss,
                 } => {
@@ -1013,6 +1016,7 @@ impl Surface {
                         node.scroll.horizontal = horizontal;
                         node.scroll.shows_indicator = scrollbar_visible;
                         node.scroll.scroll_value = scroll_value;
+                        node.scroll.pull_value = pull_value.filter(|_| !horizontal);
                         node.scroll.mirrored = mirrored;
                     }
                     self.set_scroll_keyboard_dismiss(id, keyboard_dismiss);
@@ -1024,10 +1028,16 @@ impl Surface {
                     }
                 }
                 MountItem::ScrollBehavior { id, behavior } => {
+                    let mut refresh_changed = false;
                     if let Some(node) = self.node_mut(id) {
+                        refresh_changed =
+                            node.scroll.behavior.refresh_indicator != behavior.refresh_indicator;
                         node.scroll.enabled = behavior.enabled;
                         node.scroll.behavior = behavior;
                         scrolls.push(id);
+                    }
+                    if refresh_changed {
+                        self.refresh_inset_changed(id);
                     }
                 }
                 MountItem::ScrollBy { id, dx, dy } => self.adjust_scroll(id, dx, dy),

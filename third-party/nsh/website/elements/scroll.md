@@ -72,6 +72,8 @@ are methods of the `Scrollable` trait, which lists share.
 |---|---|---|---|
 | `refreshing` | `.refreshing(..)` | `boolean` | The refresh spinner shows. |
 | `onRefresh` | `.on_refresh(..)` | `() => void` | The user pulled to refresh: start loading and set `refreshing` until it ends. |
+| `refreshIndicator` | `.refresh_indicator(Some(height))` | `{ height: number }` | The app draws its own indicator, `height` points tall: the platform's spinner is hidden, a pull refreshes once it reaches `height`, and refreshing keeps `height` above the content. A height of 0 or less is none. |
+| `pullValue` | `.pull_value(&value)` | `AnimatedValue` | An animated value fed with how far the view is pulled past its top (0 at rest, growing with the pull; the room kept above the content while it refreshes: `height` with `refreshIndicator`), for the app's indicator. |
 
 ```rust tabs
 let refreshing = signal(false);

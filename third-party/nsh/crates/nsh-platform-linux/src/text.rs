@@ -23,8 +23,9 @@ use std::{
 
 use gtk4::{self as gtk, glib, glib::translate::ToGlibPtr, graphene, gsk, prelude::*};
 use nsh_core::{
-    ATTACHMENT_CHAR, AttributedText, Bounds, Color, DecorationStyle, EllipsizeMode, EventKind,
-    Points, ResolvedTextStyle, Size, TextAlign, TextEngine, TextLayout, TextLine, TextSpan,
+    ATTACHMENT_CHAR, Affinity, AttributedText, Bounds, Color, DecorationStyle, EllipsizeMode,
+    EventKind, Points, ResolvedTextStyle, Size, TextAlign, TextEngine, TextLayout, TextLine,
+    TextPosition, TextSpan,
 };
 use rustc_hash::FxHashMap;
 
@@ -39,6 +40,10 @@ const GLYPH_EMPTY: u32 = 0x0FFF_FFFF;
 /// The bits of `PangoGlyphVisAttr` (`is_cluster_start`, `is_color`); the
 /// rest of its word is padding.
 const VIS_ATTRS: u32 = 0b11;
+
+/// `PANGO_ANALYSIS_FLAG_IS_ELLIPSIS`: the run is the ellipsis standing in
+/// for the text a line cut off.
+const ANALYSIS_FLAG_IS_ELLIPSIS: u8 = 1 << 1;
 
 /// iOS's system blue: the selection's tint without `selectionColor`.
 const SYSTEM_BLUE: Color = Color(0x007a_ffff);
@@ -277,6 +282,9 @@ struct Run {
     baseline: f32,
     /// Set right to left: its glyphs go in decreasing text order.
     rtl: bool,
+    /// The run is the ellipsis of a cut off line: it stands for text that
+    /// is not shown, so it is never selected.
+    ellipsis: bool,
     glyphs: Vec<Glyph>,
 }
 
@@ -294,6 +302,38 @@ pub(crate) struct LinuxLayout {
     runs: Vec<Run>,
     lines: Vec<Line>,
     attachments: Vec<Option<(f32, f32)>>,
+    /// Per attachment, in order: its UTF-16 index in the text and its
+    /// width (points), for hit testing (the glyph runs hold no glyph for
+    /// it).
+    attachment_extents: Vec<(u32, f32)>,
+}
+
+/// A stretch of one line the caret moves over as a unit (content
+/// coordinates): the glyphs of one cluster, or an attachment.
+#[derive(Debug, Clone, Copy)]
+struct Cluster {
+    /// Left and right edge.
+    x0: f32,
+    x1: f32,
+    /// The UTF-16 offsets it starts and ends at (logical order).
+    start: u32,
+    end: u32,
+    /// Its glyphs run right to left: the start is at the right edge.
+    rtl: bool,
+    /// It is the ellipsis of a cut off line.
+    ellipsis: bool,
+}
+
+impl Cluster {
+    /// The text offset of the caret at its left edge.
+    fn left_offset(&self) -> u32 {
+        if self.rtl { self.end } else { self.start }
+    }
+
+    /// The text offset of the caret at its right edge.
+    fn right_offset(&self) -> u32 {
+        if self.rtl { self.start } else { self.end }
+    }
 }
 
 /// What [`PangoTextEngine::prepare`] makes.
@@ -305,6 +345,8 @@ pub(crate) struct Prepared {
     /// far the attachment's top is above the baseline
     /// (`TextAttachment::ascent`).
     attachments: Vec<(u32, f32)>,
+    /// Per attachment, in order: its UTF-16 index and width (points).
+    attachment_extents: Vec<(u32, f32)>,
     max_lines: u32,
     ellipsize: pango::EllipsizeMode,
     no_wrap: bool,
@@ -704,6 +746,7 @@ impl TextEngine for PangoTextEngine {
             }
         }
         let mut attachments = Vec::with_capacity(text.attachments.len());
+        let mut attachment_extents = Vec::with_capacity(text.attachments.len());
         let mut at = (0usize, 0u32);
         for a in &text.attachments {
             let start = utf16_to_byte(s, at, a.index);
@@ -736,6 +779,7 @@ impl TextEngine for PangoTextEngine {
             shape.set_end_index(end as u32);
             attrs.insert(shape);
             attachments.push((start as u32, top.0));
+            attachment_extents.push((a.index, a.width.0));
         }
         layout.set_attributes(Some(&attrs));
         natural_line_heights(&layout, &attrs, s, &natural, &placeholders);
@@ -748,6 +792,7 @@ impl TextEngine for PangoTextEngine {
             layout,
             utf16: utf16_offsets(s),
             attachments,
+            attachment_extents,
             max_lines: text.max_lines,
             ellipsize: match text.ellipsize {
                 EllipsizeMode::Head => pango::EllipsizeMode::Start,
@@ -811,6 +856,7 @@ impl TextEngine for PangoTextEngine {
         };
         let mut out = LinuxLayout {
             attachments: vec![None; prepared.attachments.len()],
+            attachment_extents: prepared.attachment_extents.clone(),
             ..LinuxLayout::default()
         };
         let mut iter = layout.iter();
@@ -857,6 +903,7 @@ impl TextEngine for PangoTextEngine {
                     .map_or(base_size, |&(_, size)| size);
                 let font = self.font_info(&item.analysis().font(), size);
                 let rtl = item.analysis().level() % 2 == 1;
+                let ellipsis = item.analysis().flags() & ANALYSIS_FLAG_IS_ELLIPSIS != 0;
                 if font.size > em {
                     em = font.size;
                     cap_x = Some(font.cap_x);
@@ -886,7 +933,8 @@ impl TextEngine for PangoTextEngine {
                         if Arc::ptr_eq(&last.font, &font)
                             && last.end == x
                             && last.baseline == baseline
-                            && last.rtl == rtl =>
+                            && last.rtl == rtl
+                            && last.ellipsis == ellipsis =>
                     {
                         last.glyphs.extend(glyphs);
                         last.end = x + width;
@@ -898,6 +946,7 @@ impl TextEngine for PangoTextEngine {
                         baseline,
                         rtl,
                         glyphs,
+                        ellipsis,
                     }),
                 }
                 x += width;
@@ -939,6 +988,31 @@ impl TextEngine for PangoTextEngine {
                 .map(|a| a.map(|(x, y)| nsh_core::geometry::point(Points(x), Points(y))))
                 .collect()
         })
+    }
+
+    fn hit_test(
+        &self,
+        layout: &TextLayout,
+        point: nsh_core::geometry::Point<Points>,
+    ) -> TextPosition {
+        layout
+            .downcast::<LinuxLayout>()
+            .map_or_else(TextPosition::default, |l| l.hit_test(point.x.0, point.y.0))
+    }
+
+    fn caret_rect(&self, layout: &TextLayout, position: TextPosition) -> Option<Bounds<Points>> {
+        layout.downcast::<LinuxLayout>()?.caret_rect(position)
+    }
+
+    fn range_rects(
+        &self,
+        layout: &TextLayout,
+        range: std::ops::Range<u32>,
+        out: &mut Vec<Bounds<Points>>,
+    ) {
+        if let Some(l) = layout.downcast::<LinuxLayout>() {
+            l.range_rects(range, out);
+        }
     }
 
     fn register_font(&self, data: &[u8]) -> Result<(), String> {
@@ -1099,6 +1173,8 @@ pub(crate) struct DrawnText {
     pub(crate) layout: TextLayout,
     /// The render node, built on first draw.
     node: OnceCell<Option<gsk::RenderNode>>,
+    /// Selection geometry reused across redraws, including selection areas.
+    selection_rects: RefCell<Vec<Bounds<Points>>>,
     /// The selection of `selectable` text, kept across new content.
     selection: Option<Rc<Selection>>,
 }
@@ -1130,6 +1206,7 @@ pub(crate) fn set(
         content,
         layout: layout.clone(),
         node: OnceCell::new(),
+        selection_rects: RefCell::new(Vec::new()),
         selection,
     });
     if was != text.is_selectable() {
@@ -1177,9 +1254,16 @@ pub(crate) fn draw(snapshot: &gtk::Snapshot, state: &ViewState) {
             color.alpha() * 0.3,
         );
         let (cx, cy) = (drawn.content.origin.x.0, drawn.content.origin.y.0);
-        layout.selection_rects(&drawn.text, range, |x, y, w, h| {
-            snapshot.append_color(&color, &graphene::Rect::new(cx + x, cy + y, w, h));
-        });
+        let mut rects = drawn.selection_rects.borrow_mut();
+        rects.clear();
+        layout.range_rects(range.0..range.1, &mut rects);
+        for r in rects.iter() {
+            let (x, y) = (cx + r.origin.x.0, cy + r.origin.y.0);
+            snapshot.append_color(
+                &color,
+                &graphene::Rect::new(x, y, r.size.width.0, r.size.height.0),
+            );
+        }
     }
     let node = drawn.node.get_or_init(|| {
         let layout = drawn.layout.downcast::<LinuxLayout>()?;
@@ -1402,11 +1486,16 @@ pub(crate) fn range_rect(state: &ViewState, start: u32, end: u32) -> Option<(f32
     let drawn = state.text.as_ref()?;
     let layout = drawn.layout.downcast::<LinuxLayout>()?;
     let (cx, cy) = (drawn.content.origin.x.0, drawn.content.origin.y.0);
-    let mut first = None;
-    layout.selection_rects(&drawn.text, (start, end), |x, y, w, h| {
-        first.get_or_insert((cx + x, cy + y, w, h));
-    });
-    first
+    let mut rects = Vec::new();
+    layout.range_rects(start..end, &mut rects);
+    rects.first().map(|r| {
+        (
+            cx + r.origin.x.0,
+            cy + r.origin.y.0,
+            r.size.width.0,
+            r.size.height.0,
+        )
+    })
 }
 
 /// The UTF-16 offset of the character at `(x, y)` (view coordinates), for
@@ -1686,7 +1775,7 @@ fn pressed(view: &NshView, n: i32, x: f32, y: f32, modifiers: gtk::gdk::Modifier
                 .and_then(|i| drawn.text.link_at(i))
                 .is_some_and(|l| press.iter().any(|&k| l.events.contains(k)));
         (
-            layout.caret_at(lx, ly),
+            layout.hit_test(lx, ly).offset,
             char_index,
             drawn.text.clone(),
             over_press,
@@ -1747,7 +1836,9 @@ fn dragged(view: &NshView, dx: f32, dy: f32, x: f32, y: f32) {
         let Some(layout) = drawn.layout.downcast::<LinuxLayout>() else {
             return;
         };
-        let caret = layout.caret_at(x - drawn.content.origin.x.0, y - drawn.content.origin.y.0);
+        let caret = layout
+            .hit_test(x - drawn.content.origin.x.0, y - drawn.content.origin.y.0)
+            .offset;
         extend(&drawn.text.text, s.anchor.get(), caret, s.unit.get())
     };
     select(view, Some(range));
@@ -1859,52 +1950,151 @@ fn unit_at(text: &str, index: u32, unit: Unit) -> (u32, u32) {
 }
 
 impl LinuxLayout {
-    /// The glyphs of `line`, in visual order, with their x and advance
-    /// (content coordinates) and whether their run is right to left.
-    fn line_glyphs<'a>(&'a self, line: &Line) -> impl Iterator<Item = (f32, f32, &'a Glyph, bool)> {
-        self.runs[line.runs.clone()].iter().flat_map(|run| {
+    /// Fills `out` with the clusters of `line` in visual order (left to
+    /// right), their `end`s not yet set (see [`Self::set_ends`]).
+    fn line_clusters(&self, line: &Line, out: &mut Vec<Cluster>) {
+        out.clear();
+        let Some(runs) = self.runs.get(line.runs.clone()) else {
+            return;
+        };
+        for run in runs {
             let mut gx = run.x;
-            run.glyphs.iter().map(move |g| {
-                let x = gx;
+            for g in &run.glyphs {
                 let w = from_pango(g.width);
+                match out.last_mut() {
+                    // Glyphs of one cluster (a ligature, a base and its
+                    // marks) are one stop for the caret.
+                    Some(c)
+                        if c.start == g.index && c.rtl == run.rtl && c.ellipsis == run.ellipsis =>
+                    {
+                        c.x1 = gx + w;
+                    }
+                    _ => out.push(Cluster {
+                        x0: gx,
+                        x1: gx + w,
+                        start: g.index,
+                        end: g.index,
+                        rtl: run.rtl,
+                        ellipsis: run.ellipsis,
+                    }),
+                }
                 gx += w;
-                (x, w, g, run.rtl)
-            })
-        })
+            }
+        }
+        // Attachments have no glyph: they stand where their placeholder
+        // was laid out, in the direction of the text next to them.
+        for (&(index, width), at) in self.attachment_extents.iter().zip(&self.attachments) {
+            let Some((x, _)) = *at else { continue };
+            if index < line.info.start || index >= line.info.end {
+                continue;
+            }
+            let at = out.partition_point(|c| c.x0 < x);
+            let rtl = at
+                .checked_sub(1)
+                .and_then(|i| out.get(i))
+                .or(out.get(at))
+                .is_some_and(|c| c.rtl);
+            out.insert(
+                at,
+                Cluster {
+                    x0: x,
+                    x1: x + width,
+                    start: index,
+                    end: index,
+                    rtl,
+                    ellipsis: false,
+                },
+            );
+        }
     }
 
-    /// The caret position (UTF-16 offset) nearest `(x, y)` in content
-    /// coordinates: on the line at that height (the first above the text,
-    /// the last below it), at the glyph edge nearest x.
-    pub(crate) fn caret_at(&self, x: f32, y: f32) -> u32 {
-        let Some(line) = self
+    /// Sets the end of each of `clusters` (those of `line`): where the next
+    /// cluster in the text starts, the line's end for the last.
+    fn set_ends(line: &Line, clusters: &mut [Cluster]) {
+        let mut starts: Vec<u32> = clusters.iter().map(|c| c.start).collect();
+        starts.sort_unstable();
+        starts.dedup();
+        for c in clusters {
+            let next = starts.get(starts.partition_point(|&s| s <= c.start));
+            c.end = next.copied().unwrap_or(line.info.end).max(c.start);
+        }
+    }
+
+    /// The caret position nearest `(x, y)` in content coordinates: on the
+    /// line at that height (the first above the text, the last below it), at
+    /// the cluster edge nearest x. The end of a wrapped line is
+    /// [`Affinity::Upstream`], which keeps the caret on that line rather
+    /// than at the start of the next.
+    pub(crate) fn hit_test(&self, x: f32, y: f32) -> TextPosition {
+        let Some(i) = self
             .lines
             .iter()
-            .find(|l| y < (l.info.y + l.info.height).0)
-            .or(self.lines.last())
+            .position(|l| y < (l.info.y + l.info.height).0)
+            .or(self.lines.len().checked_sub(1))
         else {
-            return 0;
+            return TextPosition::default();
         };
-        // Distance, the glyph's cluster, the caret goes after it.
-        let mut best: Option<(f32, u32, bool)> = None;
-        for (gx, w, g, rtl) in self.line_glyphs(line) {
-            for (edge, right) in [(gx, false), (gx + w, true)] {
+        let Some(line) = self.lines.get(i) else {
+            return TextPosition::default();
+        };
+        let mut clusters = Vec::new();
+        self.line_clusters(line, &mut clusters);
+        Self::set_ends(line, &mut clusters);
+        // Distance and offset of the nearest edge; a tie goes to the later
+        // edge, so that where a wrapped line's trailing space has no width
+        // the caret lands after it.
+        let mut best: Option<(f32, u32)> = None;
+        for c in &clusters {
+            for (edge, offset) in [(c.x0, c.left_offset()), (c.x1, c.right_offset())] {
                 let d = (x - edge).abs();
-                if best.is_none_or(|b| d < b.0) {
-                    best = Some((d, g.index, right != rtl));
+                if best.is_none_or(|b| d <= b.0) {
+                    best = Some((d, offset));
                 }
             }
         }
-        match best {
-            None => line.info.start,
-            Some((_, index, false)) => index,
-            Some((_, index, true)) => self
-                .line_glyphs(line)
-                .map(|(_, _, g, _)| g.index)
-                .filter(|&i| i > index)
-                .min()
-                .unwrap_or(line.info.end),
+        let offset = best.map_or(line.info.start, |b| b.1);
+        // A line that goes on in the next without a break between ended by
+        // wrapping.
+        let wrapped = i
+            .checked_add(1)
+            .and_then(|n| self.lines.get(n))
+            .is_some_and(|next| next.info.start == line.info.end);
+        let affinity = if wrapped && offset == line.info.end && offset > line.info.start {
+            Affinity::Upstream
+        } else {
+            Affinity::Downstream
+        };
+        TextPosition::new(offset, affinity)
+    }
+
+    /// The index of the line the caret at `position` is on (as
+    /// [`TextPosition::line`] says, without copying the lines out).
+    fn line_of(&self, position: TextPosition) -> Option<usize> {
+        position.line_in(self.lines.iter().map(|l| l.info.start..l.info.end))
+    }
+
+    /// The caret at `position` (content coordinates): no width, as high as
+    /// its line, at the cluster edge of that offset (the nearest, where the
+    /// offset is not an edge). `None` without lines.
+    pub(crate) fn caret_rect(&self, position: TextPosition) -> Option<Bounds<Points>> {
+        let line = self.lines.get(self.line_of(position)?)?;
+        let mut clusters = Vec::new();
+        self.line_clusters(line, &mut clusters);
+        Self::set_ends(line, &mut clusters);
+        let mut best: Option<(u32, f32)> = None;
+        for c in &clusters {
+            for (edge, offset) in [(c.x0, c.left_offset()), (c.x1, c.right_offset())] {
+                let d = offset.abs_diff(position.offset);
+                if best.is_none_or(|b| d < b.0) {
+                    best = Some((d, edge));
+                }
+            }
         }
+        let x = best.map_or(line.info.x.0, |b| b.1);
+        Some(Bounds::new(
+            nsh_core::geometry::point(Points(x), line.info.y),
+            nsh_core::geometry::size(Points(0.0), line.info.height),
+        ))
     }
 
     /// Calls `f(x, y, width, height, radius, color)` with the boxes
@@ -1949,45 +2139,101 @@ impl LinuxLayout {
         }
     }
 
-    /// Calls `f(x, y, width, height)` with the rectangles (content
-    /// coordinates) that highlight the characters of `range`: per line,
-    /// the spans of selected glyphs and attachments, line high.
-    fn selection_rects(
-        &self,
-        text: &AttributedText,
-        (a, b): (u32, u32),
-        mut f: impl FnMut(f32, f32, f32, f32),
-    ) {
-        for line in &self.lines {
-            let (y, h) = (line.info.y.0, line.info.height.0);
-            let mut span: Option<(f32, f32)> = None;
-            for (gx, w, g, _) in self.line_glyphs(line) {
-                if g.index >= a && g.index < b {
-                    span = match span {
-                        Some((x0, x1)) if (x1 - gx).abs() < 0.5 => Some((x0, gx + w)),
-                        Some((x0, x1)) => {
-                            f(x0, y, x1 - x0, h);
-                            Some((gx, gx + w))
+    /// Appends to `out` the rectangles (content coordinates) that
+    /// highlight the characters of `range`: per line, the spans of
+    /// selected glyphs and attachments, line high, through the line's end
+    /// where the range goes on past it.
+    pub(crate) fn range_rects(&self, range: std::ops::Range<u32>, out: &mut Vec<Bounds<Points>>) {
+        if range.start >= range.end {
+            return;
+        }
+        for line in self
+            .lines
+            .iter()
+            .filter(|l| l.info.start < range.end && range.start < l.info.end)
+        {
+            let (y, h) = (line.info.y, line.info.height);
+            let first = out.len();
+            // The piece of the last selected character in the text (index in
+            // `out`, offset, direction): the one a range going on past the
+            // line extends.
+            let mut last: Option<(usize, u32, bool)> = None;
+            let runs = self.runs.get(line.runs.clone()).unwrap_or_default();
+            for run in runs.iter().filter(|r| !r.ellipsis) {
+                let mut gx = run.x;
+                for g in &run.glyphs {
+                    let w = from_pango(g.width);
+                    if range.contains(&g.index) {
+                        if last.is_none_or(|l| g.index >= l.1) {
+                            last = Some((out.len(), g.index, run.rtl));
                         }
-                        None => Some((gx, gx + w)),
-                    };
-                } else if let Some((x0, x1)) = span.take() {
-                    f(x0, y, x1 - x0, h);
+                        out.push(Bounds::new(
+                            nsh_core::geometry::point(Points(gx), y),
+                            nsh_core::geometry::size(Points(w), h),
+                        ));
+                    }
+                    gx += w;
                 }
             }
-            if let Some((x0, x1)) = span {
-                f(x0, y, x1 - x0, h);
-            }
-            for (attachment, at) in text.attachments.iter().zip(&self.attachments) {
-                if let Some((x, _)) = at
-                    && attachment.index >= a
-                    && attachment.index < b
-                    && attachment.index >= line.info.start
-                    && attachment.index < line.info.end
+            let line_rtl = runs.first().is_some_and(|r| r.rtl);
+            for (&(index, width), at) in self.attachment_extents.iter().zip(&self.attachments) {
+                if let Some((x, _)) = *at
+                    && range.contains(&index)
+                    && index >= line.info.start
+                    && index < line.info.end
                 {
-                    f(*x, y, attachment.width.0, h);
+                    if last.is_none_or(|l| index >= l.1) {
+                        last = Some((out.len(), index, line_rtl));
+                    }
+                    out.push(Bounds::new(
+                        nsh_core::geometry::point(Points(x), y),
+                        nsh_core::geometry::size(Points(width), h),
+                    ));
                 }
             }
+            if range.end > line.info.end
+                && let Some((at, _, rtl)) = last
+                && let Some(piece) = out.get_mut(at)
+            {
+                let right = piece.origin.x.0 + piece.size.width.0;
+                if rtl {
+                    piece.origin.x = line.info.x;
+                    piece.size.width = Points(right - line.info.x.0);
+                } else {
+                    let edge = (line.info.x + line.info.width).0;
+                    piece.size.width = Points((edge - piece.origin.x.0).max(piece.size.width.0));
+                }
+            }
+            // Left to right, adjacent pieces joined.
+            let Some(pieces) = out.get_mut(first..) else {
+                continue;
+            };
+            pieces.sort_unstable_by(|a, b| a.origin.x.0.total_cmp(&b.origin.x.0));
+            let mut kept = first;
+            for read in first..out.len() {
+                let Some(piece) = out.get(read).copied() else {
+                    break;
+                };
+                let joined = kept
+                    .checked_sub(1)
+                    .filter(|&k| k >= first)
+                    .and_then(|k| out.get_mut(k))
+                    .filter(|p| piece.origin.x.0 <= p.origin.x.0 + p.size.width.0 + 0.5);
+                match joined {
+                    Some(p) => {
+                        let right = (piece.origin.x.0 + piece.size.width.0)
+                            .max(p.origin.x.0 + p.size.width.0);
+                        p.size.width = Points(right - p.origin.x.0);
+                    }
+                    None => {
+                        if let Some(slot) = out.get_mut(kept) {
+                            *slot = piece;
+                        }
+                        kept += 1;
+                    }
+                }
+            }
+            out.truncate(kept);
         }
     }
 }
@@ -2381,24 +2627,30 @@ mod tests {
         let layout = engine.layout(&prepared, size);
         let l = layout.downcast::<LinuxLayout>().unwrap();
         assert_eq!(l.lines.len(), 2);
-        assert_eq!(l.caret_at(-5.0, 2.0), 0);
-        assert_eq!(l.caret_at(size.width.0 + 20.0, 2.0), 15);
+        assert_eq!(l.hit_test(-5.0, 2.0).offset, 0);
+        // Past the end of a line that ends in a break: before the break.
+        let end = l.hit_test(size.width.0 + 20.0, 2.0);
+        assert_eq!(end, TextPosition::new(15, Affinity::Downstream));
         // Below the text: the last line.
-        assert_eq!(l.caret_at(size.width.0 + 20.0, size.height.0 + 50.0), 22);
-        let mid = l.caret_at((size.width / 2.0).0, 2.0);
+        let last = l.hit_test(size.width.0 + 20.0, size.height.0 + 50.0);
+        assert_eq!(last.offset, 22);
+        let mid = l.hit_test((size.width / 2.0).0, 2.0).offset;
         assert!(mid > 3 && mid < 12, "{mid}");
         // Nearest glyph edge: just right of a glyph's start is before it.
-        let (gx, w, g, _) = l.line_glyphs(&l.lines[0]).nth(2).unwrap();
-        assert_eq!(l.caret_at(gx + w * 0.2, 2.0), g.index);
-        assert_eq!(l.caret_at(gx + w * 0.8, 2.0), g.index + 1);
+        let mut clusters = Vec::new();
+        l.line_clusters(&l.lines[0], &mut clusters);
+        let c = clusters[2];
+        let (gx, w) = (c.x0, c.x1 - c.x0);
+        assert_eq!(l.hit_test(gx + w * 0.2, 2.0).offset, c.start);
+        assert_eq!(l.hit_test(gx + w * 0.8, 2.0).offset, c.start + 1);
 
         let mut rects = Vec::new();
-        l.selection_rects(&t, (6, 19), |x, y, w, h| rects.push((x, y, w, h)));
+        l.range_rects(6..19, &mut rects);
         // "line here" on the first line, "sec" on the second.
         assert_eq!(rects.len(), 2, "{rects:?}");
-        assert!(rects[0].0 > 0.0 && rects[0].1 == 0.0);
-        assert_eq!(rects[1].0, 0.0);
-        assert!(rects[1].1 >= rects[0].3);
+        assert!(rects[0].origin.x.0 > 0.0 && rects[0].origin.y.0 == 0.0);
+        assert_eq!(rects[1].origin.x.0, 0.0);
+        assert!(rects[1].origin.y.0 >= rects[0].size.height.0);
 
         let mut rtl = text(&[("שלום עולם", style)]);
         rtl.rtl = true;
@@ -2407,8 +2659,56 @@ mod tests {
         let layout = engine.layout(&prepared, size);
         let l = layout.downcast::<LinuxLayout>().unwrap();
         // Right to left: the right edge is the start.
-        assert_eq!(l.caret_at(size.width.0 + 5.0, 2.0), 0);
-        assert_eq!(l.caret_at(-5.0, 2.0), 9);
+        assert_eq!(l.hit_test(size.width.0 + 5.0, 2.0).offset, 0);
+        assert_eq!(l.hit_test(-5.0, 2.0).offset, 9);
+    }
+
+    #[test]
+    fn wrapped_lines_keep_their_end() {
+        let engine = PangoTextEngine::new("sans-serif".into());
+        let style = ResolvedTextStyle {
+            font_size: Points(15.0),
+            ..Default::default()
+        };
+        let t = text(&[("alpha beta gamma delta epsilon", style)]);
+        let prepared = engine.prepare(&t);
+        let size = engine.measure(&prepared, Some(Points(90.0)));
+        let layout = engine.layout(&prepared, size);
+        let l = layout.downcast::<LinuxLayout>().unwrap();
+        assert!(l.lines.len() >= 2, "{}", l.lines.len());
+        let end = l.lines[0].info.end;
+        assert_eq!(l.lines[1].info.start, end);
+        // Past the end of a wrapped line: its end, on that line.
+        let p = l.hit_test(size.width.0 + 20.0, 2.0);
+        assert_eq!(p, TextPosition::new(end, Affinity::Upstream));
+        let upstream = l.caret_rect(p).unwrap();
+        let downstream = l
+            .caret_rect(TextPosition::new(end, Affinity::Downstream))
+            .unwrap();
+        assert_eq!(upstream.origin.y, l.lines[0].info.y);
+        assert_eq!(upstream.size.height, l.lines[0].info.height);
+        assert_eq!(upstream.size.width, Points(0.0));
+        assert_eq!(downstream.origin.y, l.lines[1].info.y);
+        assert!(upstream.origin.x.0 > downstream.origin.x.0);
+        // The start of the next line is downstream.
+        let next = l.hit_test(-5.0, l.lines[1].info.y.0 + 2.0);
+        assert_eq!(next, TextPosition::new(end, Affinity::Downstream));
+
+        // A range going on past a line takes it through its end, and
+        // appends to what `out` holds.
+        let mut rects = vec![Bounds::new(
+            nsh_core::geometry::point(Points(-1.0), Points(-1.0)),
+            nsh_core::geometry::size(Points(1.0), Points(1.0)),
+        )];
+        l.range_rects(2..end + 3, &mut rects);
+        assert_eq!(rects.len(), 3, "{rects:?}");
+        assert_eq!(rects[0].origin.x, Points(-1.0));
+        let line = &l.lines[0].info;
+        let right = rects[1].origin.x.0 + rects[1].size.width.0;
+        assert!((right - (line.x + line.width).0).abs() < 0.01, "{right}");
+        assert_eq!(rects[2].origin.y, l.lines[1].info.y);
+        l.range_rects(4..4, &mut rects);
+        assert_eq!(rects.len(), 3);
     }
 }
 

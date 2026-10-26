@@ -21,6 +21,9 @@ pub(crate) struct Java {
     pub(crate) text_layout: JStaticMethodID,
     pub(crate) text_lines: JStaticMethodID,
     pub(crate) text_attachments: JStaticMethodID,
+    pub(crate) text_hit_test: JStaticMethodID,
+    pub(crate) text_caret_rect: JStaticMethodID,
+    pub(crate) text_range_rects: JStaticMethodID,
     pub(crate) text_register_font: JStaticMethodID,
     /// `com.longbridge.nsh.Net`: HTTP (any thread).
     pub(crate) net: GlobalRef,
@@ -84,6 +87,21 @@ pub(crate) fn init(vm: JavaVM) -> jni::errors::Result<()> {
             text_class,
             "attachments",
             "(Ljava/lang/Object;F)[F",
+        )?,
+        text_hit_test: env.get_static_method_id(
+            text_class,
+            "hitTest",
+            "(Ljava/lang/Object;FFF)J",
+        )?,
+        text_caret_rect: env.get_static_method_id(
+            text_class,
+            "caretRect",
+            "(Ljava/lang/Object;IZF)[F",
+        )?,
+        text_range_rects: env.get_static_method_id(
+            text_class,
+            "rangeRects",
+            "(Ljava/lang/Object;IIF)[F",
         )?,
         text_register_font: env.get_static_method_id(
             text_class,

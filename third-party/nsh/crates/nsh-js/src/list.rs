@@ -39,6 +39,8 @@ const FORWARDED: &[&str] = &[
     "scrollbar",
     "refreshing",
     "onRefresh",
+    "pullValue",
+    "refreshIndicator",
     "onLoadMore",
     "onLoadMoreAtStart",
     "onScrollEnd",

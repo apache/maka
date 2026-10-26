@@ -401,7 +401,75 @@ const reload = async () => {
 <Scroll style={{ flex: 1 }} refreshing={refreshing()} onRefresh={reload}>…</Scroll>
 ```
 
-On iOS the control is UIRefreshControl; in the Mac idiom of Mac Catalyst, NSH shows its own spinner with the same behavior. Lists take the same two props. On the desktop and in the browser the pull is a touchscreen's (or a macOS trackpad's, which pulls past the top) gesture, since the mouse scrolls without dragging; offer another way to refresh there, such as a button or a keyboard shortcut.
+On iOS the control is UIRefreshControl; in the Mac idiom of Mac Catalyst, NSH shows its own spinner with the same behavior. Lists take the same props. On the desktop and in the browser the pull is a touchscreen's (or a macOS trackpad's, which pulls past the top) gesture, since the mouse scrolls without dragging; offer another way to refresh there, such as a button or a keyboard shortcut.
+
+### An indicator of your own
+
+The look of the pull is the app's to choose. `refreshIndicator={{ height }}` says the app draws its own indicator, `height` points tall: the platform's spinner is hidden, a pull refreshes once it reaches `height`, and refreshing keeps `height` above the content for the indicator. `pullValue` feeds an animated value with how far the content is pulled past the top: 0 at rest, growing with the pull, and `height` while it refreshes. Draw the indicator over the top of the scroll view and interpolate its styles from the value: they follow the finger on the UI thread, with no JS per frame.
+
+```rust tabs
+let pull = animated_value(0.0);
+
+view()
+    .flex_1()
+    .child(
+        scroll()
+            .flex_1()
+            .refreshing(refreshing)
+            .on_refresh(reload)
+            .pull_value(&pull)
+            .refresh_indicator(Some(px(72.0)))
+            .child(content),
+    )
+    .child(
+        view()
+            .pointer_events(PointerEvents::None)
+            .absolute()
+            .top_0()
+            .left_0()
+            .right_0()
+            .h(px(72.0))
+            .items_center()
+            .justify_center()
+            .bind_opacity(&pull.interpolate(&[0.0, 36.0], &[0.0, 1.0]))
+            .bind_rotate(&pull.interpolate(&[36.0, 72.0], &[0.0, 180.0]))
+            .child(arrow()),
+    )
+```
+
+```tsx tabs
+const pull = createAnimatedValue(0);
+
+<View style={{ flex: 1 }}>
+  <Scroll
+    style={{ flex: 1 }}
+    refreshing={refreshing()}
+    onRefresh={reload}
+    pullValue={pull}
+    refreshIndicator={{ height: 72 }}
+  >
+    …
+  </Scroll>
+  <View
+    pointerEvents="none"
+    style={{
+      position: "absolute",
+      top: 0,
+      left: 0,
+      right: 0,
+      height: 72,
+      alignItems: "center",
+      justifyContent: "center",
+      opacity: pull.interpolate({ inputRange: [0, 36], outputRange: [0, 1] }),
+      transform: [{ rotate: pull.interpolate({ inputRange: [36, 72], outputRange: ["0deg", "180deg"] }) }],
+    }}
+  >
+    <Arrow />
+  </View>
+</View>;
+```
+
+Keep `height` within half the viewport: past the top the content resists the finger more the further it goes, and a height too far is never reached. On iOS, an indicator of the app's own replaces UIRefreshControl with the pull NSH detects itself, as in the Mac idiom.
 
 ## Zooming
 

@@ -3539,6 +3539,7 @@ dependencies = [
  "serde",
  "serde_json",
  "ttf-parser",
+ "unicode-bidi",
 ]
 
 [[package]]

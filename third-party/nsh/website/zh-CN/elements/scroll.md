@@ -67,6 +67,8 @@ scroll().flex_1().child(
 |---|---|---|---|
 | `refreshing` | `.refreshing(..)` | `boolean` | 显示刷新指示器。 |
 | `onRefresh` | `.on_refresh(..)` | `() => void` | 用户下拉刷新：开始加载，并在结束前保持 `refreshing` 为真。 |
+| `refreshIndicator` | `.refresh_indicator(Some(height))` | `{ height: number }` | 应用自己绘制指示器，高 `height` 点：平台的转圈隐藏，下拉到 `height` 即刷新，刷新中在内容上方留出 `height`。`height` 不大于 0 时视为未设。 |
+| `pullValue` | `.pull_value(&value)` | `AnimatedValue` | 一个动画值，写入视图被拉过顶部的距离（静止为 0，随下拉增大；刷新中为内容上方留出的空间，设了 `refreshIndicator` 时等于 `height`），用来绘制应用的指示器。 |
 
 ```rust tabs
 let refreshing = signal(false);

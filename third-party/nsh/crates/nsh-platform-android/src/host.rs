@@ -1611,6 +1611,26 @@ extern "system" fn Java_com_longbridge_nsh_Native_scroll(
     floats(&env, &ui.outputs())
 }
 
+/// A vertical scroll view is pulled `distance` (points) past its top: its
+/// pull value learns it. Returns bound values when one changed, else null.
+#[unsafe(no_mangle)]
+extern "system" fn Java_com_longbridge_nsh_Native_pull(
+    env: JNIEnv<'_>,
+    _: JClass<'_>,
+    handle: jlong,
+    id: jint,
+    distance: jfloat,
+) -> jfloatArray {
+    // SAFETY: Java passes its live handle.
+    let host = unsafe { host(handle) };
+    let mut ui = host.ui.lock().expect("ui");
+    if !ui.pulled(id as u32, distance) {
+        return std::ptr::null_mut();
+    }
+    finish(host, &mut ui);
+    floats(&env, &ui.outputs())
+}
+
 /// A scroll view came to rest: the snapping values that follow its scroll
 /// value settle. Returns bound values when one starts moving, else null.
 #[unsafe(no_mangle)]
