@@ -1280,10 +1280,6 @@ export class McpClientManager {
       if (initialRefresh.suppressed) {
         entry.refreshDiagnostic = errorMessage(this.toolRefreshFrequencyError(serverId));
       }
-      const authenticated =
-        !isMcpStdioConfig(entry.config) && this.oauthStorage
-          ? Boolean((await this.oauthStorage.get(serverId))?.tokens)
-          : undefined;
       this.update(entry, {
         serverId,
         state: 'connected',
@@ -1293,9 +1289,20 @@ export class McpClientManager {
         tools: initialRefresh.descriptors,
         error: projectConnectionDiagnostics(entry),
         stderrTail: entry.status.stderrTail,
-        ...(authenticated !== undefined ? { authenticated } : {}),
         updatedAt: this.now(),
       });
+      // The stored-credential lookup is real async I/O, so it must not sit
+      // between the tool publication and the connected transition above. Fold
+      // its result into a follow-up status instead: observers briefly see a
+      // connected server without the logout affordance, then the final value
+      // lands with the next update.
+      const authenticated =
+        !isMcpStdioConfig(entry.config) && this.oauthStorage
+          ? Boolean((await this.oauthStorage.get(serverId))?.tokens)
+          : undefined;
+      if (authenticated !== undefined) {
+        this.update(entry, { ...entry.status, authenticated, updatedAt: this.now() });
+      }
       if (
         signal.aborted ||
         entry.closing ||
