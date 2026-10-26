@@ -626,16 +626,6 @@ async fn second_record_projection_failure_leaves_no_partial_import_after_reopen(
                 .unwrap(),
             6
         );
-        assert_eq!(
-            inspect
-                .query_row(
-                    "SELECT through_sequence FROM context_semantic_heads WHERE session_id=?",
-                    [&claim.session_id],
-                    |r| r.get::<_, i64>(0)
-                )
-                .unwrap(),
-            3
-        );
         reopened.close().await.unwrap();
     }
 }

@@ -528,8 +528,8 @@ async fn projection_sql_fault_preserves_database_codes_and_rolls_back_all_neighb
         "CREATE TEMP TRIGGER projection_fault BEFORE INSERT ON context_source_prefixes
          WHEN NEW.sequence=5 AND NEW.kind='session'
          BEGIN SELECT RAISE(ABORT,'projection storage fault'); END;",
-        "CREATE TEMP TRIGGER projection_fault BEFORE UPDATE ON context_semantic_heads
-         WHEN NEW.through_sequence=5
+        "CREATE TEMP TRIGGER projection_fault BEFORE INSERT ON context_source_prefixes
+         WHEN NEW.sequence=5 AND NEW.kind='invocation'
          BEGIN SELECT RAISE(ABORT,'projection storage fault'); END;",
     ] {
         let dir = tempfile::tempdir().unwrap();
@@ -562,6 +562,15 @@ async fn projection_sql_fault_preserves_database_codes_and_rolls_back_all_neighb
         assert!(futures_util::poll!(&mut first).is_pending());
         assert!(futures_util::poll!(&mut poison).is_pending());
         assert!(futures_util::poll!(&mut last).is_pending());
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed = calls.clone();
+        let mut control = Box::pin(log.connection.run(move |_| {
+            Box::pin(async move {
+                observed.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            })
+        }));
+        assert!(futures_util::poll!(&mut control).is_pending());
         let mut commits = log.subscribe_commits();
         commits.borrow_and_update();
         release.send(()).unwrap();
@@ -581,6 +590,12 @@ async fn projection_sql_fault_preserves_database_codes_and_rolls_back_all_neighb
             assert_eq!(database.code(), sqlx::error::DatabaseError::code(original));
             assert_eq!(database.message(), "projection storage fault");
         }
+        assert!(matches!(control.await, Err(StoreError::OperationUnknown)));
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "failed observation owner must retire before pending control"
+        );
         assert!(!commits.has_changed().unwrap());
         log.connection.shutdown().await.unwrap();
         assert_eq!(ids(&path), ["opened", "requested", "part"]);
@@ -620,14 +635,6 @@ fn assert_projection_positions(path: &std::path::Path) {
             "{kind} projection retained rolled-back event"
         );
     }
-    let semantic: i64 = db
-        .query_row(
-            "SELECT through_sequence FROM context_semantic_heads WHERE session_id='session'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(Some(&semantic), canonical.last());
 }
 
 #[tokio::test]
@@ -955,68 +962,4 @@ async fn streamed_source_prefixes_reuse_prepared_queries_without_hidden_prepares
             .collect::<Vec<_>>()
     );
     reopened.close().await.unwrap();
-}
-
-#[tokio::test]
-async fn semantic_invariant_failure_rolls_back_neighbors_and_retires_observation_writer() {
-    let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("events.sqlite");
-    let log = open(&path).await;
-    log.connection
-        .run(|connection| {
-            Box::pin(async move {
-                sqlx::raw_sql(
-                    "CREATE TEMP TRIGGER corrupt_semantic_head AFTER INSERT ON event_log
-                     WHEN NEW.event_id='poison'
-                     BEGIN UPDATE context_semantic_heads SET through_sequence=NEW.sequence+1000
-                       WHERE session_id='session'; END;",
-                )
-                .execute(connection)
-                .await?;
-                Ok(())
-            })
-        })
-        .await
-        .unwrap();
-    let (release, blocked) = gate(&log).await;
-    let first = delta("first", "before the invariant failure");
-    let poison = delta("poison", "must roll back");
-    let last = delta("last", "must never commit");
-    let mut a = Box::pin(log.append(&first));
-    let mut b = Box::pin(log.append(&poison));
-    let mut c = Box::pin(log.append(&last));
-    assert!(futures_util::poll!(&mut a).is_pending());
-    assert!(futures_util::poll!(&mut b).is_pending());
-    assert!(futures_util::poll!(&mut c).is_pending());
-    let calls = Arc::new(AtomicUsize::new(0));
-    let observed = calls.clone();
-    let mut control = Box::pin(log.connection.run(move |_| {
-        Box::pin(async move {
-            observed.fetch_add(1, Ordering::SeqCst);
-            Ok(())
-        })
-    }));
-    assert!(futures_util::poll!(&mut control).is_pending());
-    let mut commits = log.subscribe_commits();
-    commits.borrow_and_update();
-    release.send(()).unwrap();
-    blocked.await.unwrap();
-    for result in [a.await, b.await, c.await] {
-        let error = result.expect_err("projection invariants abort the shared transaction");
-        assert!(
-            error
-                .to_string()
-                .contains("semantic append is not monotonic")
-        );
-    }
-    assert!(matches!(control.await, Err(StoreError::OperationUnknown)));
-    assert_eq!(
-        calls.load(Ordering::SeqCst),
-        0,
-        "failed observation owner must retire before pending control"
-    );
-    assert!(!commits.has_changed().unwrap());
-    log.connection.shutdown().await.unwrap();
-    assert_eq!(ids(&path), ["opened", "requested", "part"]);
-    assert_projection_positions(&path);
 }
