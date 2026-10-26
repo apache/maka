@@ -166,6 +166,8 @@ export {
 export {
   createRevisionAwareOnSend,
   createStagedFollowUp,
+  revisionAwareSend,
+  type RevisionDraftIdentity,
   type RevisionSendPorts,
 } from './controller/composer-submit.js';
 export { SessionLocalMessages } from './controller/session-local-messages.js';
