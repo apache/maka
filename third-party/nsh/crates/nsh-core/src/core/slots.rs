@@ -174,7 +174,7 @@ impl<M: TextEngine> Core<M> {
         };
         let node = &self.nodes[child as usize];
         let id = node.id;
-        if node.kind == Kind::RawText
+        if matches!(node.kind, Kind::RawText | Kind::List)
             || self.is_host(id)
             || self.components.slot_hosts.contains_key(&id)
             || self.is_render_holder(id)

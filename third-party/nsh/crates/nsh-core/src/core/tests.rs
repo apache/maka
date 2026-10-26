@@ -7960,6 +7960,72 @@ mod components {
         assert!(!c.component_event(6, EventKind::Press, &EventPayload::None));
     }
 
+    /// Reports the actual node named by its trigger's element ref when pressed.
+    #[component]
+    fn ListSlotProbe(props: DisclosureProps) -> impl IntoElement {
+        let anchor = element_ref();
+        let observed = signal(String::new());
+        view()
+            .child(props.trigger.place(move |trigger| {
+                trigger
+                    .px_2()
+                    .role(crate::AccessibilityRole::Button)
+                    .focusable(true)
+                    .disabled(props.disabled)
+                    .element_ref(&anchor)
+                    .on_press(move |_: &()| {
+                        observed.set(format!("anchor {:?}", anchor.node()));
+                    })
+            }))
+            .child(text(move || observed.get()))
+    }
+
+    #[test]
+    fn a_sole_raw_list_keeps_slot_props_listener_and_ref_on_the_holder() {
+        use crate::{AccessibilityProp, AccessibilityRole};
+
+        let mut c = mount_host::<ListSlotProbe>();
+        // The actual JS shape: a View componentSlot holder, containing a
+        // raw List node, not a Rust component host or an Items-slot holder.
+        let mut ops = fill_trigger();
+        for op in &mut ops {
+            if let Op::Create { id: 6, tag } = op {
+                *tag = Tag::List;
+            }
+        }
+        ops.extend([
+            Op::SetProp {
+                id: 6,
+                prop: Prop::Accessibility(AccessibilityProp::Role(AccessibilityRole::List)),
+            },
+            Op::Listen {
+                id: 6,
+                event: EventKind::Press,
+                enabled: false,
+            },
+        ]);
+        apply(&mut c, ops);
+        c.commit().unwrap();
+
+        let holder = props_of(&c, 4);
+        assert_eq!(holder.accessibility.role, AccessibilityRole::Button);
+        assert_eq!(holder.focusable, Some(true));
+        assert!(events_of(&c, 4).contains_listener(EventKind::Press));
+        let list = props_of(&c, 6);
+        assert_eq!(list.accessibility.role, AccessibilityRole::List);
+        assert_eq!(list.accessibility.label.as_deref(), Some("Open"));
+        assert_eq!(list.focusable, None);
+        assert!(!events_of(&c, 6).contains_listener(EventKind::Press));
+        let frame = c.nodes[c.key(6).unwrap() as usize].frame;
+        assert_eq!((frame.origin.x, frame.size.width), (px(8.0), px(40.0)));
+
+        // The holder still owns its padded hit area, and the component's
+        // real ref resolves to that same holder, not the List scroll view.
+        c.component_event(4, EventKind::Press, &EventPayload::None);
+        let pressed = c.commit().expect("the holder's listener ran");
+        assert_eq!(texts(&pressed), ["anchor Some(4)"]);
+    }
+
     #[test]
     fn adopted_slot_ownership_does_not_follow_released_or_reused_node_ids() {
         use crate::AccessibilityRole;
