@@ -1843,6 +1843,11 @@ impl<M: TextEngine> Core<M> {
                 if node.drawing.as_deref() == Some(&*drawing) {
                     return Ok(());
                 }
+                // An empty drawing on a canvas that has drawn nothing shows
+                // nothing new (a component's canvas before its first layout).
+                if node.drawing.is_none() && drawing.ops.is_empty() && drawing.nodes.is_empty() {
+                    return Ok(());
+                }
                 node.drawing = Some(Arc::from(drawing));
                 let flags = dirty::CANVAS | if slots_changed { dirty::ANIMATION } else { 0 };
                 self.mark(key, flags);

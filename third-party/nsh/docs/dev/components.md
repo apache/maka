@@ -200,10 +200,14 @@ reasons: `reactive-components.md`.
     holder or with the component (`core/renders.rs`; `nsh-js` `components.rs`). The decoded prop names its host, so a
     view may pass it on to a nested component's prop. Keys are unique among a component's renders of one prop.
   - `data: Prop<Rows>`: rows of data the component reads by key, `data: T[]` in TS with `#[props(generic)]` on the
-    props (the props generic over `T`, as a component with rows is; a field typed `Extract<keyof T, string>` names a
-    key TS checks against the rows' type, `nsh_base::plot::RowKey`). `Rows` reads each row's number fields once, when
-    JS sets the prop, into a column per key (`Rows::column(key)`, `NaN` where a row has no number), so the component
-    scales and draws them without calling into JS again (`nsh/base/plot`).
+    props (the props generic over `T = any`, as a component with rows is, the default for a component given no rows
+    of its own). `Rows` reads each row's number fields once, when JS sets the prop, into a column per key
+    (`Rows::column(key)`, `NaN` where a row has no number), so the component scales and draws them without calling
+    into JS again (`nsh/base/plot`). A `RowAccessor` prop reads a value of each row: a field name TS checks against
+    the rows' type (`Extract<keyof T, string>`), read natively, or the app's function `(d: T, index) => number`,
+    which `RowAccessor::values` calls once per row in the next JS turn whenever the rows or the function change
+    (`Rows` keeps the JS array for it, `JsHost::retain`; each call gets the app's own row object, `RowRef`), never
+    while the component draws; Rust passes `RowAccessor::key` or `RowAccessor::from_fn`.
   - `items: Items`: virtualized rows. In JS the component takes `List`'s data props (`each`, the row renderer as
     children, `keyExtractor`, `onLoadMore`, `header`, ... : `ListItemsProps<T>`, so the component is
     generic over the row type). `.list(props.items, |l| l.flex_1().estimated_item_size(px(48.0)), |row, at|

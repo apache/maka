@@ -1302,6 +1302,146 @@ impl Motion {
     }
 }
 
+/// A timing a component's prop takes (TS `{ duration?: number; easing?:
+/// Easing; delay?: number }`): the options of `AnimatedValue.timing` in
+/// `nsh/animated`, with its defaults (300 ms, ease in-out, no delay).
+impl super::JsValue for Timing {
+    fn ts_type(_types: &mut super::TsTypes) -> String {
+        "{ duration?: number; easing?: import(\"nsh/animated\").Easing; delay?: number }".into()
+    }
+
+    fn from_js(value: super::JsIn<'_>) -> Result<Self, super::PropError> {
+        let json = value.to_json()?;
+        let Some(object) = json.as_object() else {
+            return Err(value.expected("a timing: `{ duration, easing, delay }`"));
+        };
+        let num = |key: &str| object.get(key).and_then(|v| v.as_f64()).map(|v| v as f32);
+        let default = Timing::default();
+        Ok(Timing {
+            duration_ms: num("duration").unwrap_or(default.duration_ms).max(0.0),
+            easing: object
+                .get("easing")
+                .and_then(|e| crate::js::animation::easing(&JsonInput(Some(e))))
+                .unwrap_or(default.easing),
+            delay_ms: num("delay").unwrap_or(default.delay_ms).max(0.0),
+        })
+    }
+
+    fn to_js<'a>(
+        &self,
+        host: &'a dyn super::JsHost,
+    ) -> Result<super::JsOwned<'a>, super::PropError> {
+        let json = serde_json::json!({ "duration": self.duration_ms, "delay": self.delay_ms });
+        Ok(super::JsOwned::new(host, host.json(&json)?))
+    }
+}
+
+/// A spring a component's prop takes (TS `{ stiffness?: number; damping?:
+/// number; mass?: number; velocity?: number }`): the options of
+/// `AnimatedValue.spring` in `nsh/animated`, with its defaults.
+impl super::JsValue for Spring {
+    fn ts_type(_types: &mut super::TsTypes) -> String {
+        "{ stiffness?: number; damping?: number; mass?: number; velocity?: number }".into()
+    }
+
+    fn from_js(value: super::JsIn<'_>) -> Result<Self, super::PropError> {
+        let json = value.to_json()?;
+        let Some(object) = json.as_object() else {
+            return Err(value.expected("a spring: `{ stiffness, damping, mass }`"));
+        };
+        let num = |key: &str| object.get(key).and_then(|v| v.as_f64()).map(|v| v as f32);
+        let default = Spring::default();
+        Ok(Spring {
+            stiffness: num("stiffness").unwrap_or(default.stiffness),
+            damping: num("damping").unwrap_or(default.damping),
+            mass: num("mass").unwrap_or(default.mass),
+            velocity: num("velocity"),
+        })
+    }
+
+    fn to_js<'a>(
+        &self,
+        host: &'a dyn super::JsHost,
+    ) -> Result<super::JsOwned<'a>, super::PropError> {
+        let json = serde_json::json!({
+            "stiffness": self.stiffness,
+            "damping": self.damping,
+            "mass": self.mass,
+        });
+        Ok(super::JsOwned::new(host, host.json(&json)?))
+    }
+}
+
+/// A JSON value as the core's decoders read JS values (an easing).
+struct JsonInput<'a>(Option<&'a crate::JsonValue>);
+
+/// A JSON array, read by index.
+struct JsonList<'a>(&'a [crate::JsonValue]);
+
+impl<'a> crate::js::host::HostList for JsonList<'a> {
+    type Item = JsonInput<'a>;
+
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    fn item(&self, index: usize) -> Option<JsonInput<'a>> {
+        self.0.get(index).map(|v| JsonInput(Some(v)))
+    }
+}
+
+impl<'a> crate::js::host::HostInput for JsonInput<'a> {
+    type List = JsonList<'a>;
+
+    fn is_nullish(&self) -> bool {
+        self.0.is_none_or(|v| v.is_null())
+    }
+
+    fn is_object(&self) -> bool {
+        self.0.is_some_and(|v| v.is_object() || v.is_array())
+    }
+
+    fn as_bool(&self) -> Option<bool> {
+        self.0?.as_bool()
+    }
+
+    fn as_number(&self) -> Option<f64> {
+        self.0?.as_f64()
+    }
+
+    fn as_string(&self) -> Option<String> {
+        self.0?.as_str().map(str::to_owned)
+    }
+
+    fn field(&self, key: &str) -> Option<Self> {
+        self.0?.get(key).map(|v| JsonInput(Some(v)))
+    }
+
+    fn as_list(&self) -> Option<JsonList<'a>> {
+        self.0?.as_array().map(|a| JsonList(a))
+    }
+
+    fn entries(&self) -> Vec<(String, Self)> {
+        match self.0.and_then(|v| v.as_object()) {
+            Some(o) => o
+                .iter()
+                .map(|(k, v)| (k.clone(), JsonInput(Some(v))))
+                .collect(),
+            None => Vec::new(),
+        }
+    }
+
+    fn truthy(&self) -> bool {
+        match self.0 {
+            None | Some(crate::JsonValue::Null) => false,
+            Some(crate::JsonValue::Bool(b)) => *b,
+            Some(crate::JsonValue::Number(n)) => n.as_f64().is_some_and(|n| n != 0.0),
+            Some(crate::JsonValue::String(s)) => !s.is_empty(),
+            Some(_) => true,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

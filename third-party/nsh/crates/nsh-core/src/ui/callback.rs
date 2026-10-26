@@ -32,6 +32,11 @@ pub trait CallbackHandle: std::any::Any {
     fn call_now(&self, call: JsCall);
     /// Queues `call` for the next JS turn.
     fn post(&self, call: JsCall);
+    /// The value it keeps, as an owned value of `host` (a new reference the
+    /// caller frees); `None` once the VM is gone.
+    fn value(&self, _host: &dyn JsHost) -> Option<super::JsRaw> {
+        None
+    }
 }
 
 type ArgsFn = Box<dyn for<'a> FnOnce(&'a dyn JsHost) -> Result<Vec<JsOwned<'a>>, PropError>>;
@@ -167,6 +172,13 @@ impl<A, R> Clone for Callback<A, R> {
 impl<A, R> fmt::Debug for Callback<A, R> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("Callback")
+    }
+}
+
+impl<A, R> Callback<A, R> {
+    /// The JS function it keeps (two callbacks of one function share it).
+    pub(crate) fn handle(&self) -> &Rc<dyn CallbackHandle> {
+        &self.handle
     }
 }
 

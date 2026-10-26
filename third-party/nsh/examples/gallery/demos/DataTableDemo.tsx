@@ -284,9 +284,9 @@ export function DataTableDemo() {
   const describe = () => {
     const s = selection();
     if (!s) return "Nothing selected";
-    if (s.row !== undefined && s.column !== undefined) return `Cell row ${s.row + 1}, ${columns[s.column].title}`;
-    if (s.row !== undefined) return `Row ${s.row + 1}`;
-    return `Column ${columns[s.column!].title}`;
+    if (s.row != null && s.column != null) return `Cell row ${s.row + 1}, ${columns[s.column].title}`;
+    if (s.row != null) return `Row ${s.row + 1}`;
+    return `Column ${columns[s.column ?? 0].title}`;
   };
 
   return (

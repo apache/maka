@@ -26,7 +26,7 @@ at `de176695240d550f2b303643b8019146c7989e7f`. The upstream project is
 
 `upstream.json` keeps that initial `repository` and `revision`. Its
 `upstream_revision` records the latest integrated `longbridge/nsh` main revision:
-`5757911cf23d5a800fa1a353152bdbeeb5057d84`. The first upstream synchronization
+`e5fe48b4c70ff82b302bfa4883a87a73a6666526`. The first upstream synchronization
 starts from `6bb0b7908043132067456e4a21dd57c90a0bdce5`, already included in the
 initial fork import.
 
@@ -69,6 +69,15 @@ native animation value path. The iOS refresh replacement keeps pending-reveal
 invalidation and the owned link-target representation. Shared text-engine hit
 testing does not replace terminal cell-aware selection, IME or focus handling;
 the new trait defaults estimate positions when a backend has no exact override.
+
+The row-accessor import adds retained JS row values and typed key/function
+accessors, plus timing and spring props. Generic component props default to
+`any` when no rows infer their type; the local array/list-source overloads keep
+their existing inference behavior. Component methods mark trailing `Option`
+arguments optional in TypeScript. Their `Param` and `MethodSpec::params` tuples
+now include the optional flag; Maka's bindings use the deriving macros rather
+than constructing those tuples. Empty first canvas recordings are suppressed,
+while an empty recording still clears an existing drawing.
 
 The local hint-observation integration retains an allocation lifetime separate
 from the upstream layout tree's reusable slab index. This prevents a delayed

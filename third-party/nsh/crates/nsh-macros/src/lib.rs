@@ -1753,6 +1753,15 @@ fn methods_impl(mut item: ItemImpl) -> syn::Result<TokenStream2> {
                 FnArg::Receiver(r) => Err(syn::Error::new(r.span(), "one receiver")),
             })
             .collect::<syn::Result<_>>()?;
+        // An `Option` parameter is optional in TypeScript when every one
+        // after it is too (JS decodes a missing argument as `None`).
+        let mut optional = vec![false; typed.len()];
+        for i in (0..typed.len()).rev() {
+            if !matches!(last_segment(&typed[i].ty), Some((id, _)) if id == "Option") {
+                break;
+            }
+            optional[i] = true;
+        }
         for (i, arg) in typed.iter().enumerate() {
             let ty = &arg.ty;
             let Pat::Ident(name) = &*arg.pat else {
@@ -1764,7 +1773,8 @@ fn methods_impl(mut item: ItemImpl) -> syn::Result<TokenStream2> {
             let name = camel(&name.ident.to_string());
             let local = format_ident!("__arg{}", i);
             let ts = param_ts(ty, &arg.attrs)?;
-            params.push(quote!((#name, #ts)));
+            let is_optional = optional[i];
+            params.push(quote!((#name, #ts, #is_optional)));
             refs.push(quote!(#private::arg_classes::<#ty>(__out);));
             decode.push(quote! {
                 let #local: #ty = #private::arg::<#ty>(host, #i, #what, #name)?;

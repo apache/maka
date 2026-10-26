@@ -995,6 +995,12 @@ impl JsHost for CallHost<'_> {
         js::is_function(self.cx, v).then(|| new_callback(self.cx, v))
     }
 
+    fn retain(&self, v: JsRaw) -> Option<Rc<dyn CallbackHandle>> {
+        // The functions' table keeps any value; one that is no function is
+        // only ever handed back (`value`), never called.
+        Some(new_callback(self.cx, from_raw(v)))
+    }
+
     fn free(&self, v: JsRaw) {
         // SAFETY: an owned value.
         unsafe { qjs::JS_FreeValue(self.cx, from_raw(v)) };
@@ -1283,6 +1289,12 @@ impl JsCallback {
 }
 
 impl CallbackHandle for JsCallback {
+    fn value(&self, _host: &dyn nsh_core::ui::JsHost) -> Option<JsRaw> {
+        let (cx, v) = JsCallback::value(self)?;
+        // SAFETY: a new reference for the caller, of a value the table owns.
+        Some(to_raw(unsafe { qjs::JS_DupValue(cx, v) }))
+    }
+
     fn call_now(&self, call: JsCall) {
         let Some((cx, _)) = self.value() else {
             // The function or the VM is gone: the call is dropped (its

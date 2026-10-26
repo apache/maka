@@ -93,6 +93,13 @@ pub trait JsHost {
     fn instance(&self, v: JsRaw) -> Option<Rc<dyn ClassInstance>>;
     /// The JS function `v` is, as a callback Rust keeps.
     fn callback(&self, v: JsRaw) -> Option<Rc<dyn CallbackHandle>>;
+    /// Any value `v`, kept alive until the handle goes, to give back to JS
+    /// later ([`CallbackHandle::value`]): the rows a component reads, to
+    /// hand them to the app's functions one by one. `None` where the host
+    /// keeps no values.
+    fn retain(&self, _v: JsRaw) -> Option<Rc<dyn CallbackHandle>> {
+        None
+    }
 
     /// Frees owned value `v`.
     fn free(&self, v: JsRaw);

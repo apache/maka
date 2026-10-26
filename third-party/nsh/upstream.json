@@ -241,14 +241,14 @@
     "crates/nsh-core/src/core/layout_tree.rs": "767715a7dbbb6d28718cfea4b2893dddc7a0237d48057618738ea80616080c33",
     "crates/nsh-core/src/core/list.rs": "f6e6941a91909813e0ad573f40c9501890c5851cd0135ba976cb17a1f902f4ec",
     "crates/nsh-core/src/core/measure.rs": "aa766c86618cec531fb8e9d1f1c4061d0c6284abf3c40abfa011e2773220ec08",
-    "crates/nsh-core/src/core/mod.rs": "d44c3c59bf59df4beb3ec8abd3f9294d76b80af49577d227b7d4f203815d615b",
+    "crates/nsh-core/src/core/mod.rs": "be1e796da759c2362f88599ebd5bed2be405a1908c83b15e98a7a285715642b3",
     "crates/nsh-core/src/core/overlay.rs": "1acb55b9dce778d5bc855b02fa275e39a7bf332b7bf328739981fcc510372782",
     "crates/nsh-core/src/core/parent_viewport.rs": "67ed37b7b2ecd94dbb1b95d16a3dc203eecaea4e9a9b39d7d61eaf22b4e71c5f",
     "crates/nsh-core/src/core/reading.rs": "3bb3d25dc8b97f35eb73dcbaf2d6f1b5dff8cdbdd012a8edcef7fab6661f3d9f",
     "crates/nsh-core/src/core/renders.rs": "eba08379b95272762630258bba8c9d1908f8e8ec94d9518bfd59470edf49b5cd",
     "crates/nsh-core/src/core/services.rs": "8812eefd00661841ff2b1de5d4f8cf68dd667da4151b4c79ed966cc940934752",
     "crates/nsh-core/src/core/sticky.rs": "56aaa5e6de12b0bb3827cd4cceccd2a2993bea6dab110ab9974fb191b0c63a4a",
-    "crates/nsh-core/src/core/tests.rs": "64876a035e38779321d2e0d3442bd0378335ba8dcc6875df8b5b8a4a4cc4cfc4",
+    "crates/nsh-core/src/core/tests.rs": "68e7d3588058fd32df407ec290b683878261f4fb21cc5811ada472ac6d1cd7b0",
     "crates/nsh-core/src/core/touch.rs": "a8559c023a443a6defad135af2f319e60130e7df23af2a8353239b0862e494a8",
     "crates/nsh-core/src/core/views.rs": "c32c59533d5ee33bc16677b0459816f7670c224f3f8de3507c72029989660834",
     "crates/nsh-core/src/css.rs": "56760520c706f64505849d5a32a1eada2d9fd243a5c70e07f21bc8ed0105217f",
@@ -336,13 +336,13 @@
     "crates/nsh-core/src/transform.rs": "7a5fef9eb9b544d114ccf0f3c11e272aaed77eea1124da06bf247ef354e3b07c",
     "crates/nsh-core/src/transition.rs": "2a38525ac90caa266649b8f8542c56e8f58ee7b45c6d819de4f0941b44c167a9",
     "crates/nsh-core/src/ui/ambient.rs": "93887c53d738d6d5ab7aad1eb5c977fee38111a69e71113a74381df359af09c8",
-    "crates/nsh-core/src/ui/animated.rs": "0f1dc33d897c7a93d2819412bd0c0c7d1b6727a83dacb5b25c83637deba10ffb",
+    "crates/nsh-core/src/ui/animated.rs": "6dcb0ebec3e5a4f65091594aec197f420e9fca5cb1db3204db6483ea29491268",
     "crates/nsh-core/src/ui/asset.rs": "ecc4b40dbe52c239f69de438eab9444768bb5d7e4069aa15a51c3adc7477702e",
     "crates/nsh-core/src/ui/back.rs": "ef98d58af2314de48ec9fef54677a69d663a6fbd6fcbe90ba5f80f8c253bbce7",
     "crates/nsh-core/src/ui/call.rs": "28dca6e5f92875ed1d413d27fa83401aba3c759880a75866af964affca4d72d6",
-    "crates/nsh-core/src/ui/callback.rs": "29c43c5cd493bed789895a3971bf808603d52ce0f211640f385c0fd1fd6d921d",
+    "crates/nsh-core/src/ui/callback.rs": "3dd174c891fbec17b472634b1ea26edf818554bc9985e9ed2b12832b249e411a",
     "crates/nsh-core/src/ui/class.rs": "08f3f36cc9d904cee6f49c3b33a3598dae8a478cc8bb8703f360f63c640ac5c4",
-    "crates/nsh-core/src/ui/component.rs": "fe253b8564ed2b9ef0dea954eef6a54d99a709846b9531389a7364f55807cf76",
+    "crates/nsh-core/src/ui/component.rs": "a20a94fa689d79f17611c2b13039a25fdb14df4d8372cb96ad7c40f74d15bdf8",
     "crates/nsh-core/src/ui/description.rs": "b45848d583fe72fe79efb18aac23c88aadb30c14e6a5b33558243eb0f81367a2",
     "crates/nsh-core/src/ui/desktop.rs": "13b68e6510e3e920b882e83617fef21380da29627007f0b8501200e904dc79d7",
     "crates/nsh-core/src/ui/element.rs": "12faf57a9f1e3d1dc5df1714b2c696d4b643d201ae2c8e2cdea69dc5b1bd3ea3",
@@ -352,10 +352,10 @@
     "crates/nsh-core/src/ui/events.rs": "60ed9364146805c838b96c6b015fd9a316d7614968afaf6aefb45ba82705e592",
     "crates/nsh-core/src/ui/flow.rs": "3984b86ad1aaba5a1dd8fc32f93c139dcf3260d86500f6791ac8dd15d6de756d",
     "crates/nsh-core/src/ui/host.rs": "b7dce7a841fcd2de7cb18e0b07c8b93bff771d8a91cb20280e10b0eb401119e1",
-    "crates/nsh-core/src/ui/js.rs": "6a24391d44d9ad77211788d5d1838c5ce34db247af92cca6d1adb93b90598f9a",
+    "crates/nsh-core/src/ui/js.rs": "c4d728177377d21c535b998178ff2c6741596f19db76d3f01e424536c62d8b42",
     "crates/nsh-core/src/ui/json_host.rs": "19bb29fd8e68537ca2166a3072082ef3de95afc0a7a99bd2070d98d9e8150772",
     "crates/nsh-core/src/ui/keys.rs": "cea9dfabc574c0000bf6ef45383b9f77052dbd700bd694b5ce1107a11e2cef0d",
-    "crates/nsh-core/src/ui/mod.rs": "fcac92f619cf3bb73ffce87218878a0c40a13edcbf08fa559af428233445e604",
+    "crates/nsh-core/src/ui/mod.rs": "1d5b396a7d5e3121f3ebba7d111db2e4af10bfb374d4955a9ca0f0b57c7a527f",
     "crates/nsh-core/src/ui/module.rs": "a2aba178d7f33e35ec9a2b40b6517701f83eee236bae1f6e184cff7ded1d05da",
     "crates/nsh-core/src/ui/once.rs": "43c3c781c2b6d2622a569825e35b09ce9075af9b2fd5bc974dce6b5f4d303345",
     "crates/nsh-core/src/ui/palette.rs": "56a631d4e5bb3ffe02241618a7f16f999049946017de61a29606c12ca6b1c325",
@@ -365,7 +365,7 @@
     "crates/nsh-core/src/ui/renderer.rs": "05cc3b2ccea2a14b3ff34d6c4e88d872acb8b9d996e703102e45009b8c44b214",
     "crates/nsh-core/src/ui/resource.rs": "b991619994e566e792fe4c113af9a0970d764749b45ff183fb971ac8d70ac18b",
     "crates/nsh-core/src/ui/responder.rs": "b5e419ced70b1457743c4c9fd61e3cc51c93db348581cc9bd14b61fe695e0e43",
-    "crates/nsh-core/src/ui/rows.rs": "a5fd4db97517c39b1e4d898c19cb4a8e60429ffc6de1021527df0f2cd53bb365",
+    "crates/nsh-core/src/ui/rows.rs": "1e8f3513606280d9c0281d2762315c5f4070990fd541f2cc4ff66343a868c2c6",
     "crates/nsh-core/src/ui/scrollable.rs": "12bc42fe22022dc9d74eff41e1d48be2383b177e341764d29c0affd373c63043",
     "crates/nsh-core/src/ui/services.rs": "5dd378f9768dd18f4e97af3fb60ba0a5c35b92ec58e7242da4f41fbbb45add36",
     "crates/nsh-core/src/ui/status_bar.rs": "2fff306388c47bfee440e1042f9143251fe0b210cd57a370e5e8a8247c537acc",
@@ -377,7 +377,7 @@
     "crates/nsh-core/src/ui/virtual_list.rs": "59c4d24e0f0103ae38157c5951d17e93ef10b0722b08150e5207fb18bbdc7d3a",
     "crates/nsh-core/src/websocket.rs": "8438f7eb89366e83af5fb5795ae69010b0c1a9714531ebdade6284e4a5c146a8",
     "crates/nsh-core/tests/attachment_compat.rs": "a4411e6572830fe5ace913c6f081d9b52b022054d0f9ad688e52fab03e5a9d78",
-    "crates/nsh-core/unitless.txt": "eb39191494f709b891a7bf9562e935cfeeda2410a897ee609dec2e0445e873e8",
+    "crates/nsh-core/unitless.txt": "0a73997aadbb634853057141692a49187a881ca35315cb9517130306de0d61ab",
     "crates/nsh-core/untyped.txt": "2dbe1d080c08c33debbf4d4c27ae0a08996efa87dd072494b7d0ce712109d2d1",
     "crates/nsh-dev/Cargo.toml": "f6f8b7604f4e2bc8212779f46c74f568247f8d9f853eaef4417418ea8a6f4ab2",
     "crates/nsh-dev/src/client.rs": "541352e633968e5ff9dc3fa6d5f3ace8fef5cfb42465d623a2d19331b71d1edb",
@@ -462,7 +462,7 @@
     "crates/nsh-js/src/bytecode.rs": "59721147154608fb29fc583adcc9f6b8c3c1c9bf0cf1a0499d89173f36f6ebf9",
     "crates/nsh-js/src/canvas.rs": "64582fc7c63bcc552b1a46341f41a9b2975fa62d0f76942fb873497ff4d513e8",
     "crates/nsh-js/src/chunks.rs": "b3f7aa20c22eac8515ab0fff427e70725334beed9d4deb4361ae154da316e89f",
-    "crates/nsh-js/src/classes.rs": "cadd5a75093c56e26c0fe0b34eda9d584469c737bd582404794b2033fa5a4820",
+    "crates/nsh-js/src/classes.rs": "34b68e1f3898558c08394b94153a67d7570e2503334c6497148da6f4118bf96d",
     "crates/nsh-js/src/clock.rs": "06c083117a5eaa2d2deddcb41e52ab9e1a9f48efa72d6e9a0f27135bd237b161",
     "crates/nsh-js/src/components.rs": "aa4a0b251376f14fb6808f41318dbe6146f599f7cab69b26edb1bbc65e00a6e0",
     "crates/nsh-js/src/console.rs": "2bb26f43b5326680cbaf9ab1fcc58fa0ab049c349feff6dafd39c99d4240f6a3",
@@ -564,7 +564,7 @@
     "crates/nsh-macros/src/class.rs": "b2d92dc6f83f0715cbcdc0f197c1b244143cd23d983f8f9432e03cecb7655d6d",
     "crates/nsh-macros/src/host_props.rs": "2d1df7e31954c69cd0bdf09797b8dde35258a7d63821ecfb4da2ebe03a11df51",
     "crates/nsh-macros/src/js_ops.rs": "55d84e721ae03cdc08efbd7223929d9f615c615b46403f6dcb88a32b76d68f94",
-    "crates/nsh-macros/src/lib.rs": "bad1fcdf3a5c1412fbbb6d65509686a9c44cdd56d92d04a47316834844cc145f",
+    "crates/nsh-macros/src/lib.rs": "82a6235ec7f5874134addf0fcd752ad21416dcb4367504c61c80b742643247be",
     "crates/nsh-macros/src/native_module.rs": "0ce37bccd9668da0ca3c3d74ac0682ead536054caa48fd45dbe581f1423461d2",
     "crates/nsh-package/Cargo.toml": "1402055fce9ba79d288b562e2558626cce216deb3214ecafbf140485ca02ba05",
     "crates/nsh-package/src/keys.rs": "8c4e4c213f53b61815bc5b852deb3b0ffab2a6d83f72d3507b047b20de5d76b8",
@@ -913,7 +913,7 @@
     "docs/dev/architecture.md": "dd96d2a3ea5d26d23d17e0db36a1b280486be933eb83452f8fbb5d4c87023951",
     "docs/dev/canvas.md": "d89c2fe64a7199ac36212c0fd2f4ab3df3007cd76c3e2840bd389128705cc938",
     "docs/dev/compatibility.md": "26336d6349cbedd0a70990dd5a4d2e7e48c604242974ac164e68bbeb4ad1cddd",
-    "docs/dev/components.md": "56e3419f67430cbd82155552aeac07d13d4e99ca9efa811c8cf235b7a2d45855",
+    "docs/dev/components.md": "35fa926d0e5aaf2879bd070432a45f18990cd926f79cac9fb025e0c658fa4740",
     "docs/dev/dock.md": "51527992aeec0387fe7ebdb82b7d24ed4ab6f0dc19b3332e23236cb7a3ad1041",
     "docs/dev/elements.md": "2e4dffb9239e1cc5956c501b80afab740ab9e72d30735baafbb0300b53704e58",
     "docs/dev/embedding.md": "b31e01fc09490825b33245bffb1021785bef2e1622cccc226c3f1d3d57dc0742",
@@ -1850,7 +1850,7 @@
     "crates/nsh-base/src/data_table/view.rs": "2e491fabfe488165b08e5181a47e26e3eed1a3d485f0815c113c301c1a1be505",
     "crates/nsh-base/src/table.rs": "1f6b18cb05cfa82954a5a89d306058947187f96f58b26d328f51c9085dc817f2",
     "docs/dev/data-table.md": "e2b159befd29b7d40b1b8e33e9df4aadf7be809e3fc8c6420b68f4d52b256810",
-    "examples/gallery/demos/DataTableDemo.tsx": "a6b369fc497d62ad90cde596ea2df4f0b7c1897e4f53ae3a407b87837d8e2dad",
+    "examples/gallery/demos/DataTableDemo.tsx": "a457e3ace58482170254eb3ad25c9f98b73ac68c83eb422542925c33c724c9ee",
     "examples/gallery/tests/data-table-columns.test.tsx": "7448dde80a9227c08bcd128b4bb62ca1feb427d0089528ae2eb7ccdfe8ca38f1",
     "examples/gallery/tests/data-table-interactions.test.tsx": "ae445e5608a484fd351f390365120dc7580e36d638c3c7071ea3d31571e6aadd",
     "examples/gallery/tests/data-table.test.tsx": "d1a1b4a934d7fd57637453334ee8b00720fd538eb70f4ff1eeae914ee4927b33",
@@ -1869,7 +1869,7 @@
     "tests/compat/cases/props/props-refresh-indicator.tsx": "000712c8c53df18b63b0b8eb3a1b9785121bc2672e6e77cd30a3f5c633d6d90f"
   },
   "upstream_repository": "https://github.com/longbridge/nsh",
-  "upstream_revision": "5757911cf23d5a800fa1a353152bdbeeb5057d84",
+  "upstream_revision": "e5fe48b4c70ff82b302bfa4883a87a73a6666526",
   "file_sources": {
     ".github/workflows/rust-app.yml": {
       "repository": "https://github.com/longbridge/nsh",
@@ -2149,7 +2149,7 @@
     },
     "crates/nsh-core/src/core/mod.rs": {
       "repository": "https://github.com/longbridge/nsh",
-      "revision": "5757911cf23d5a800fa1a353152bdbeeb5057d84"
+      "revision": "e5fe48b4c70ff82b302bfa4883a87a73a6666526"
     },
     "crates/nsh-core/src/core/overlay.rs": {
       "repository": "https://github.com/longbridge/nsh",
@@ -2165,7 +2165,7 @@
     },
     "crates/nsh-core/src/core/tests.rs": {
       "repository": "https://github.com/longbridge/nsh",
-      "revision": "7e6170566cc838426df21c2f900765b65a1ca68c"
+      "revision": "e5fe48b4c70ff82b302bfa4883a87a73a6666526"
     },
     "crates/nsh-core/src/host_channel.rs": {
       "repository": "https://github.com/longbridge/nsh",
@@ -2281,7 +2281,7 @@
     },
     "crates/nsh-core/src/ui/animated.rs": {
       "repository": "https://github.com/longbridge/nsh",
-      "revision": "8ff7b9f627b9362e76ec83254f00b5658afa676b"
+      "revision": "e5fe48b4c70ff82b302bfa4883a87a73a6666526"
     },
     "crates/nsh-core/src/ui/element.rs": {
       "repository": "https://github.com/longbridge/nsh",
@@ -2301,11 +2301,11 @@
     },
     "crates/nsh-core/src/ui/js.rs": {
       "repository": "https://github.com/longbridge/nsh",
-      "revision": "c2f019e6d46cd1bdd191dd736d4443fe6fcb25b9"
+      "revision": "e5fe48b4c70ff82b302bfa4883a87a73a6666526"
     },
     "crates/nsh-core/src/ui/mod.rs": {
       "repository": "https://github.com/longbridge/nsh",
-      "revision": "dcc67ba3e11461ec4abd25162522a9818844adb0"
+      "revision": "e5fe48b4c70ff82b302bfa4883a87a73a6666526"
     },
     "crates/nsh-core/src/ui/services.rs": {
       "repository": "https://github.com/longbridge/nsh",
@@ -2329,7 +2329,7 @@
     },
     "crates/nsh-core/unitless.txt": {
       "repository": "https://github.com/longbridge/nsh",
-      "revision": "2c2a1767b2dce124905b911d92d30c490446e036"
+      "revision": "e5fe48b4c70ff82b302bfa4883a87a73a6666526"
     },
     "crates/nsh-dev/src/protocol.rs": {
       "repository": "https://github.com/longbridge/nsh",
@@ -2529,7 +2529,7 @@
     },
     "crates/nsh-js/src/classes.rs": {
       "repository": "https://github.com/longbridge/nsh",
-      "revision": "c2f019e6d46cd1bdd191dd736d4443fe6fcb25b9"
+      "revision": "e5fe48b4c70ff82b302bfa4883a87a73a6666526"
     },
     "crates/nsh-js/src/components.rs": {
       "repository": "https://github.com/longbridge/nsh",
@@ -3229,7 +3229,7 @@
     },
     "docs/dev/components.md": {
       "repository": "https://github.com/longbridge/nsh",
-      "revision": "6a7b56f8474c8bc9c0fc5a2ed5c46ee700471fa9"
+      "revision": "e5fe48b4c70ff82b302bfa4883a87a73a6666526"
     },
     "docs/dev/elements.md": {
       "repository": "https://github.com/longbridge/nsh",
@@ -4221,7 +4221,7 @@
     },
     "crates/nsh-core/src/ui/component.rs": {
       "repository": "https://github.com/longbridge/nsh",
-      "revision": "dcc67ba3e11461ec4abd25162522a9818844adb0"
+      "revision": "e5fe48b4c70ff82b302bfa4883a87a73a6666526"
     },
     "crates/nsh-core/src/ui/value.rs": {
       "repository": "https://github.com/longbridge/nsh",
@@ -4377,7 +4377,7 @@
     },
     "examples/gallery/demos/DataTableDemo.tsx": {
       "repository": "https://github.com/longbridge/nsh",
-      "revision": "6a7b56f8474c8bc9c0fc5a2ed5c46ee700471fa9"
+      "revision": "e5fe48b4c70ff82b302bfa4883a87a73a6666526"
     },
     "examples/gallery/tests/data-table-columns.test.tsx": {
       "repository": "https://github.com/longbridge/nsh",
@@ -4534,6 +4534,18 @@
     "website/zh-CN/elements/scroll.md": {
       "repository": "https://github.com/longbridge/nsh",
       "revision": "5757911cf23d5a800fa1a353152bdbeeb5057d84"
+    },
+    "crates/nsh-core/src/ui/callback.rs": {
+      "repository": "https://github.com/longbridge/nsh",
+      "revision": "e5fe48b4c70ff82b302bfa4883a87a73a6666526"
+    },
+    "crates/nsh-core/src/ui/rows.rs": {
+      "repository": "https://github.com/longbridge/nsh",
+      "revision": "e5fe48b4c70ff82b302bfa4883a87a73a6666526"
+    },
+    "crates/nsh-macros/src/lib.rs": {
+      "repository": "https://github.com/longbridge/nsh",
+      "revision": "e5fe48b4c70ff82b302bfa4883a87a73a6666526"
     }
   }
 }
