@@ -13477,20 +13477,80 @@ describe('SessionManager permission mode updates', () => {
     assert.strictEqual((await turnOf(activeDone.id, 'active-turn'))?.status, 'completed');
   });
 
-  test('startup recovery seals dispatched tools as unknown without inventing durable results', async () => {
+  test('startup recovery preserves unknown effects through a later user turn and manual compaction', async () => {
     const store = new MemorySessionStore();
     const runStore = new MemoryAgentRunStore();
     const backends = new BackendRegistry();
-    backends.register('ai-sdk', (ctx) => new TestBackend(ctx));
-    const manager = new SessionManager({
+    const summaryRequests: string[] = [];
+    const checkpoints: HistoryCompactCheckpoint[] = [];
+    backends.register('ai-sdk', (ctx) =>
+      createTestAiSdkBackend({
+        sessionId: ctx.sessionId,
+        header: ctx.header,
+        connection: { slug: 'mock-main', providerType: 'anthropic', defaultModel: 'mock-model-id' },
+        apiKey: 'sk-test',
+        modelId: 'mock-model-id',
+        tools: [],
+        modelFactory: () =>
+          new MockLanguageModelV4({
+            doStream: async () => ({
+              stream: simulateReadableStream({
+                chunks: [
+                  { type: 'stream-start', warnings: [] },
+                  { type: 'text-start', id: 'reply' },
+                  {
+                    type: 'text-delta',
+                    id: 'reply',
+                    delta: 'Inspect state before any retry. '.repeat(80),
+                  },
+                  { type: 'text-end', id: 'reply' },
+                  {
+                    type: 'finish',
+                    finishReason: { unified: 'stop', raw: 'stop' },
+                    usage: {
+                      inputTokens: { total: 100, noCache: 100, cacheRead: 0, cacheWrite: 0 },
+                      outputTokens: { total: 10, text: 10, reasoning: 0 },
+                    },
+                  },
+                ] as LanguageModelV4StreamPart[],
+                initialDelayInMs: null,
+                chunkDelayInMs: null,
+              }),
+            }),
+          }),
+        newId: nextId(),
+        now: nextNow(20_000),
+        contextBudget: { name: 'recovered-unknown', charsPerToken: 1 },
+        summarizeHistoryCompact: buildLlmHistorySummarizer({
+          resolveModel: () => ({}),
+          generateText: async ({ messages }) => {
+            summaryRequests.push(JSON.stringify(messages));
+            return {
+              text: sectionedSummary(
+                'Bash effect remains outcome_unknown; inspect before repeating.',
+              ),
+            };
+          },
+        }),
+        recordHistoryCompactCheckpoint: async (checkpoint, turnId) => {
+          await ctx.recordHistoryCompactCheckpoint?.(checkpoint, turnId);
+          checkpoints.push(checkpoint);
+        },
+        loadHistoryCompactCheckpoint: ctx.loadHistoryCompactCheckpoint,
+      }),
+    );
+    const managerDeps = {
       store,
       runStore,
       runtimeEventStore: runStore,
       backends,
       newId: nextId(),
       now: nextNow(12_825),
-    });
-    const session = await manager.createSession(makeInput({ status: 'running' }));
+    };
+    let manager = new SessionManager(managerDeps);
+    const session = await manager.createSession(
+      makeInput({ status: 'running', permissionMode: 'bypass' }),
+    );
     await seedRunningTurn(store, session.id, 'turn-1');
     await seedRun(
       runStore,
@@ -13558,6 +13618,8 @@ describe('SessionManager permission mode updates', () => {
       }),
     );
 
+    // A new Host observes only the durable invocation left at the crash boundary.
+    manager = new SessionManager(managerDeps);
     await manager.recoverInterruptedSessions();
 
     const runtimeEvents = await runStore.readRuntimeEvents(session.id, 'run-1');
@@ -13580,6 +13642,42 @@ describe('SessionManager permission mode updates', () => {
     assert.ok(invocation.terminalEvent);
     assert.equal(runtimeInvocationFailureClass(invocation), 'outcome_unknown');
     assert.equal(runtimeInvocationOutcome(invocation), 'failed');
+
+    await drain(
+      manager.sendMessage(session.id, {
+        turnId: 'after-restart',
+        text: 'Inspect current state before continuing. '.repeat(80),
+      }),
+    );
+    await drain(manager.compactSession(session.id, { turnId: 'compact-after-restart' }));
+    assert.equal(summaryRequests.length, 1);
+    assert.match(
+      summaryRequests[0]!,
+      /Host recovery sealed this invocation as failed \/ outcome_unknown/,
+    );
+    assert.match(summaryRequests[0]!, /effect may have happened/);
+    assert.match(summaryRequests[0]!, /do not automatically retry/);
+    assert.doesNotMatch(summaryRequests[0]!, /"type":"tool-call"/);
+    assert.equal(checkpoints.length, 1);
+    assert.ok('summary' in checkpoints[0]!);
+    assert.match(checkpoints[0]!.summary, /outcome_unknown/);
+    assert.ok(checkpoints[0]!.coverage.eventCount > 1);
+    assert.equal(checkpoints[0]!.coverage.through.turnId, 'after-restart');
+
+    await drain(manager.compactSession(session.id, { turnId: 'compact-again' }));
+    assert.equal(summaryRequests.length, 1, 'unchanged coverage does not dispatch another summary');
+    assert.equal(checkpoints.length, 1);
+    const rawAfterCompact = await runStore.readRuntimeEvents(session.id, 'run-1');
+    assert.deepEqual(
+      rawAfterCompact,
+      runtimeEvents,
+      'compaction does not rewrite the crashed invocation',
+    );
+    assert.equal(
+      rawAfterCompact.some((event) => event.content?.kind === 'function_response'),
+      false,
+    );
+    await manager.stopSession(session.id, { source: 'stop_button' });
   });
 
   test('startup recovery does not leave stale permission waits stuck', async () => {
