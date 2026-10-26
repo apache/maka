@@ -272,11 +272,12 @@ export class MatterController {
   async message(id: string, text: string, call: MakaToolContext) {
     this.assertReady();
     const m = this.store.get(id).matter;
-    if (['completed', 'cancelled'].includes(m.status)) throw new Error('Matter has ended');
+    if (m.status === 'cancelled')
+      throw new Error('Task was cancelled; resume it before continuing');
     if (call.sessionId !== m.sessionId) throw new Error('Wrong session');
     if (m.activation && m.activation.turnId !== call.turnId)
       throw new Error('Previous activation is still stopping; retry after it exits');
-    this.store.ingest(id, { key: randomUUID(), source: 'user', text });
+    this.store.ingest(id, { key: randomUUID(), source: 'user', text }, true);
     // A direct human turn adopts the matter; there is no writable Client bridge.
     if (m.activation?.turnId !== call.turnId) {
       if (m.status === 'paused') this.store.control(id, 'resume');

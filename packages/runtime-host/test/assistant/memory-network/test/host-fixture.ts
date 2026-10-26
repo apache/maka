@@ -47,6 +47,7 @@ export async function fixture(config: any = {}) {
     ['chat-a', [{ id: 'a', type: 'user', text: 'Need to contact the equipment vendor' }]],
     ['chat-b', [{ id: 'b', type: 'user', text: 'Delivery is due next week' }]],
   ]);
+  const sessionLabels = new Map<string, string[]>();
   let incognito = false;
   let historyError = false;
   const reads: string[] = [];
@@ -66,6 +67,7 @@ export async function fixture(config: any = {}) {
     if (incognito) throw Error('Incognito blocks history');
     return [...sessions.keys()].map((id) => ({
       id,
+      labels: sessionLabels.get(id),
       historyRevision: JSON.stringify(sessions.get(id)),
     }));
   };
@@ -211,6 +213,7 @@ export async function fixture(config: any = {}) {
     tools,
     systemPrompt,
     sessions,
+    sessionLabels,
     reads,
     llmCalls,
     setExtractRunner: (fn: typeof extractRunner) => {

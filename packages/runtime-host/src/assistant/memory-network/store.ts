@@ -140,7 +140,20 @@ export class NetworkStore {
       ...(local ? { local } : {}),
     };
     const existing = this.reference(ref);
-    if (existing) return existing;
+    if (existing) {
+      // Provenance can be supplied after ingestion; enrich metadata without changing cited bodies/IDs.
+      if (
+        object.evidenceKind &&
+        existing.object.evidenceKind !== 'test' &&
+        (object.evidenceKind === 'test' || !existing.object.evidenceKind)
+      ) {
+        existing.object.evidenceKind = object.evidenceKind;
+        this.db
+          .prepare('UPDATE memory_references SET payload=? WHERE ref=?')
+          .run(JSON.stringify(existing), ref);
+      }
+      return existing;
+    }
     this.db
       .prepare(
         'INSERT INTO memory_references(ref,source,object_id,revision,record_key,payload) VALUES(?,?,?,?,?,?)',

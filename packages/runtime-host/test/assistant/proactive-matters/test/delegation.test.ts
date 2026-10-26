@@ -82,6 +82,10 @@ test('delegate retries reuse child; wait and user amendment stay independent of 
           assert.match(JSON.stringify(inbox), /只验证测试环境/);
           assert.match(JSON.stringify(inbox), /coordinator/);
         }
+        if (runs === 3) {
+          assert.match(JSON.stringify(inbox), /再检查测试环境的权限配置/);
+          assert.match(readFileSync(v.files.draft, 'utf8'), /按新要求只验证了测试环境/);
+        }
         await f.invoke(
           'MatterWriteFile',
           {
@@ -152,6 +156,15 @@ test('delegate retries reuse child; wait and user amendment stay independent of 
     );
     if (failure) throw failure;
     assert.equal(runs, 2);
+    await until(async () => !(await f.remote('matters.list')).matters[0].activation);
+    await f.invoke('MatterTaskMessage', { id: a.id, text: '追加：再检查测试环境的权限配置。' });
+    await until(
+      async () =>
+        failure ||
+        (runs === 3 && (await f.invoke('MatterTasks', { id: a.id })).status === 'completed'),
+    );
+    if (failure) throw failure;
+    assert.equal(runs, 3);
     assert.equal(count(), 1);
     assert.ok(
       (await f.invoke('MatterTasks', { id: a.id })).updates.some(

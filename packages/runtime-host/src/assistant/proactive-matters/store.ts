@@ -494,6 +494,7 @@ class SqliteMatterStore implements MatterStore {
   ingest(
     id: string,
     input: { key: string; source: string; subject?: string; text: string },
+    reopenCompleted = false,
   ): boolean {
     return this.transaction(() => {
       const m = this.read(id);
@@ -505,9 +506,23 @@ class SqliteMatterStore implements MatterStore {
         throw new Error(
           'External event subscriptions are not supported; only user input, coordinator amendments, Bot clarification and scheduled time',
         );
-      if (terminal(m)) return false;
+      if (terminal(m) && !(reopenCompleted && m.status === 'completed')) return false;
+      if (m.status === 'completed' && m.activation)
+        throw Error('Task completion is still finishing; retry after it exits');
       // User input or coordinator clarification can interrupt retry backoff, never a user pause.
       const inserted = this.insertEvent(id, input);
+      if (inserted && m.status === 'completed') {
+        this.conditions.retire(m, 'New requirement reopens completed task');
+        m.status = 'active';
+        m.wakes = [];
+        m.waitingFor = null;
+        m.retryAt = null;
+        m.lastError = null;
+        m.lastFailure = null;
+        m.admissionFailures = 0;
+        m.executionFailures = 0;
+        this.write(m, 'reopened_by_input', { eventKey: input.key });
+      }
       if (inserted && m.conditionWaitId) {
         this.conditions.retire(m, 'New task input');
         this.write(m, 'condition_interrupted_by_input');
@@ -1015,7 +1030,8 @@ class SqliteMatterStore implements MatterStore {
       const m = this.read(id);
       if (!['pause', 'resume', 'cancel', 'check'].includes(action))
         throw new Error('Invalid action');
-      if (terminal(m)) throw new Error('This matter has ended');
+      if (terminal(m) && action !== 'resume')
+        throw new Error('This matter has ended; use resume to explicitly reopen it');
       this.conditions.retire(m, `User control: ${action}`);
       const interrupted = m.activation;
       if (action === 'pause' || action === 'cancel') {
