@@ -114,6 +114,7 @@ pub enum InteractionKind {
     Form,
     Permissions,
     ClientCapability,
+    ComputerApp,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

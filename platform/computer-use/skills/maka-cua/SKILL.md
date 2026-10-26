@@ -53,5 +53,5 @@ operation uses current Host permissions; retained objects do not retain grants.
 
 `cua.computer.target` identifies the desktop platform. In WSL it defaults to the
 Windows host while shell commands may run in Linux. Input automatically shows
-this Session's Maka cursor; `moveCursor(indexOrPoint)` points without acting.
+this Session's Maka cursor.
 `cua.cursor.configure` controls its display. Cursors do not isolate keyboard focus.

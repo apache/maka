@@ -27,6 +27,7 @@ mod assistant;
 mod attachments;
 mod auxiliary;
 mod compaction;
+mod computer_apps;
 mod context;
 mod execution;
 mod files;

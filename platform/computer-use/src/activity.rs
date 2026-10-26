@@ -47,6 +47,18 @@ pub(crate) fn command(command: &Command, bound_target: Option<&str>) -> Text {
             "查看電腦操作說明",
             None,
         ),
+        Command::StartAudioRecording { .. } => (
+            "Record computer audio",
+            "录制电脑声音",
+            "錄製電腦聲音",
+            None,
+        ),
+        Command::StopAudioRecording => (
+            "Finish computer audio recording",
+            "完成电脑声音录制",
+            "完成電腦聲音錄製",
+            None,
+        ),
         Command::ConfigureCursor { .. } => {
             ("Configure cursor", "设置操作光标", "設定操作游標", None)
         }
@@ -92,6 +104,52 @@ pub(crate) fn command(command: &Command, bound_target: Option<&str>) -> Text {
             options.id.as_deref(),
         ),
         Command::GetTab { .. } => ("Connect tab", "连接标签页", "連線分頁", None),
+        Command::BrowserTab {
+            browser_id,
+            reference,
+        } => match reference {
+            crate::protocol::BrowserTabReference::Existing(_) => (
+                "Connect tab",
+                "连接标签页",
+                "連線分頁",
+                Some(browser_id.as_str()),
+            ),
+            crate::protocol::BrowserTabReference::New => (
+                "Open tab",
+                "打开标签页",
+                "開啟分頁",
+                Some(browser_id.as_str()),
+            ),
+        },
+        Command::TabMetadata { .. } | Command::BrowserRead { .. } | Command::GetJsDialog { .. } => {
+            ("Inspect page", "查看网页", "查看網頁", bound_target)
+        }
+        Command::ClipboardRead { .. } | Command::ClipboardReadText { .. } => (
+            "Read browser clipboard",
+            "读取浏览器剪贴板",
+            "讀取瀏覽器剪貼簿",
+            bound_target,
+        ),
+        Command::ClipboardWrite { .. } | Command::ClipboardWriteText { .. } => (
+            "Write browser clipboard",
+            "写入浏览器剪贴板",
+            "寫入瀏覽器剪貼簿",
+            bound_target,
+        ),
+        Command::HandleJsDialog { action, .. } => match action {
+            DialogAction::Accept => (
+                "Accept browser dialog",
+                "确认浏览器对话框",
+                "確認瀏覽器對話框",
+                bound_target,
+            ),
+            DialogAction::Dismiss => (
+                "Dismiss browser dialog",
+                "关闭浏览器对话框",
+                "關閉瀏覽器對話框",
+                bound_target,
+            ),
+        },
         Command::CreateBrowserTab { browser_id, .. } => (
             "Open tab",
             "打开标签页",

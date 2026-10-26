@@ -105,6 +105,12 @@ when no paste listener is mounted, without inserting the paths as text.
 Maka's workspace uses these local crates, including NSH's offscreen renderer and
 image codec; changing them here changes the code built and tested with Maka.
 
+The bundler has a local Windows network-share adaptation: regular and hot entry
+paths use an ordinary UNC spelling only when re-canonicalizing it proves the
+same native file identity. This keeps entry, working-directory and plugin paths
+consistent for Rolldown without copying sources or changing the import baseline.
+The conversion preserves native path components, including non-Unicode names.
+
 Develop and verify changes in this tree together with their Maka callers. Send
 reusable changes to `longbridge/nsh`. When synchronizing the fork or upstream,
 review local differences against the recorded revision, use upstream APIs and

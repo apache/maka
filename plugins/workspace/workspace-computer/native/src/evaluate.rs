@@ -45,10 +45,10 @@ impl Computer {
         cancellation: CancellationToken,
     ) -> Result<ResultValue, ToolError> {
         let invocation = call.identity.agent().expect("checked invocation").clone();
-        let mut repl = tokio::select! {
+        let mut kernels = tokio::select! {
             biased;
             () = cancellation.cancelled() => return Err(failed("Computer Use cancelled while queued")),
-            repl = interaction.repl.lock() => repl,
+            kernels = interaction.kernel.lock() => kernels,
         };
         if interaction.retiring.is_cancelled() {
             return Err(failed("Computer Session is retiring"));
@@ -67,15 +67,7 @@ impl Computer {
             return Err(failed("Computer Use permissions changed while queued"));
         }
         if name == "reset" {
-            if let Some(runtime) = repl.take() {
-                runtime
-                    .close()
-                    .await
-                    .map_err(|e| ToolError::CleanupUnconfirmed(message(e)))?;
-            }
-            let mut native = interaction.native.lock().await;
-            native.close().await?;
-            *native = maka_computer_use::Session::new(self.sessions.driver.clone());
+            self.retire_kernel(&interaction, &mut kernels).await?;
             return self
                 .output(
                     &invocation,
@@ -87,9 +79,25 @@ impl Computer {
                 )
                 .await;
         }
+        if kernels
+            .as_ref()
+            .is_some_and(|kernel| kernel.repl.as_ref().is_some_and(Repl::is_closed))
+        {
+            if !interaction.supports_epoch_retirement() {
+                return Err(failed("Computer VM requires reset"));
+            }
+            self.retire_kernel(&interaction, &mut kernels).await?;
+        }
+        if kernels.is_none() {
+            *kernels = Some(interaction.fresh_kernel()?);
+        }
+        let kernel = kernels.as_mut().expect("current Computer kernel");
+        let epoch = kernel.epoch.clone();
         access::granted(self, &call, basis).await?;
+        sessions::drain_ended_turns(self, &interaction, &invocation.session_id, language).await?;
+        sessions::watch_turn(self, &interaction, &invocation, language).await?;
         let platform = {
-            let mut native = interaction.native.lock().await;
+            let mut native = epoch.native.lock().await;
             native.configure(
                 self.configuration.desktop,
                 self.configuration.browsers.clone(),
@@ -111,14 +119,24 @@ impl Computer {
         .map_err(failed)?
         .map_err(|error| failed(error.message))?
         .with_image_deduplication();
-        let runtime =
-            repl.get_or_insert_with(|| Repl::new(maka_computer_use::facade_for(platform), limits));
+        let admission = kernel.admission.clone();
+        let observed = interaction.supports_epoch_retirement();
+        let runtime = kernel.repl.get_or_insert_with(|| {
+            let bootstrap = maka_computer_use::facade_for(platform, self.configuration.audio);
+            if observed {
+                Repl::new_observed(bootstrap, limits, admission.clone())
+            } else {
+                Repl::new(bootstrap, limits)
+            }
+        });
         let bridge = Arc::new(Bridge {
             owner: self.clone(),
             call: call.clone(),
-            native: interaction.native.clone(),
+            epoch,
+            admission,
             basis,
             language,
+            cell: context.clone(),
         });
         let store = maka_agent_authority::permissions::execution(
             &self.store,
@@ -135,25 +153,41 @@ impl Computer {
             #[allow(unreachable_code)]
             Ok::<(), ToolError>(())
         };
-        let result = runtime.evaluate(
-            input.code,
-            bridge,
-            cancellation.clone(),
-            context.clone(),
-            Duration::from_millis(input.timeout_ms),
-        );
-        tokio::pin!(result);
-        let result = tokio::select! {
-            result = &mut result => result,
-            stopped = monitor => {
-                cancellation.cancel();
-                let settled = result.await;
-                match settled {
-                    Err(maka_code_runtime::CellAbort::Tool(error)) if !matches!(error, ToolError::Failed(_)) => return Err(partial(error, &context, runtime.is_closed(), language)),
-                    _ => return Err(partial(stopped.err().unwrap_or_else(|| failed("Computer permission monitor closed")), &context, runtime.is_closed(), language)),
-                }
-            },
+        let (result, denied) = {
+            let evaluation = runtime.evaluate(
+                input.code,
+                bridge,
+                cancellation.clone(),
+                context.clone(),
+                Duration::from_millis(input.timeout_ms),
+            );
+            tokio::pin!(evaluation);
+            tokio::select! {
+                result = &mut evaluation => (result, None),
+                stopped = monitor => {
+                    cancellation.cancel();
+                    (evaluation.await, Some(stopped.err().unwrap_or_else(|| failed("Computer permission monitor closed"))))
+                },
+            }
         };
+        let closed = runtime.is_closed();
+        let reset_required = closed && !observed;
+        if closed && observed {
+            // The old worker already confirmed durable admission before its
+            // observer returned. Retain that exact worker in the task owner.
+            self.retire_kernel(&interaction, &mut kernels).await?;
+        }
+        if let Some(reason) = denied {
+            let error = match result {
+                Err(maka_code_runtime::CellAbort::Tool(error))
+                    if !matches!(error, ToolError::Failed(_)) =>
+                {
+                    error
+                }
+                _ => reason,
+            };
+            return Err(partial(error, &context, reset_required, language));
+        }
         match result {
             Ok(CellResult::Failure { error, .. }) => {
                 return Err(partial(
@@ -163,20 +197,15 @@ impl Computer {
                         Language::ZhTw => format!("Cua JavaScript 錯誤：{}", error.message),
                     }),
                     &context,
-                    runtime.is_closed(),
+                    reset_required,
                     language,
                 ));
             }
             Err(maka_code_runtime::CellAbort::Tool(error)) => {
-                return Err(partial(error, &context, runtime.is_closed(), language));
+                return Err(partial(error, &context, reset_required, language));
             }
             Err(error) => {
-                return Err(partial(
-                    failed(error),
-                    &context,
-                    runtime.is_closed(),
-                    language,
-                ));
+                return Err(partial(failed(error), &context, reset_required, language));
             }
             Ok(_) => {}
         }
@@ -184,13 +213,43 @@ impl Computer {
             &invocation,
             &call,
             context.take_output(),
-            if runtime.is_closed() {
+            if reset_required {
                 ReplState::ResetRequired
+            } else if closed {
+                ReplState::Fresh
             } else {
                 ReplState::Ready
             },
         )
         .await
+    }
+    async fn retire_kernel(
+        self: &Arc<Self>,
+        interaction: &Arc<sessions::Interaction>,
+        current: &mut Option<sessions::Kernel>,
+    ) -> Result<(), ToolError> {
+        let Some(kernel) = current.take() else {
+            return Ok(());
+        };
+        if interaction.supports_epoch_retirement() {
+            let admission = kernel.admission.clone();
+            if let Err((error, kernel)) = interaction.retire_kernel(self, kernel) {
+                *current = Some(kernel);
+                return Err(error);
+            }
+            admission.seal().await
+        } else {
+            // The WSL helper still owns one serial native session. Confirm its
+            // cleanup before reusing that transport for an explicit reset.
+            let closing = match interaction.close_kernel(self, kernel) {
+                Ok(closing) => closing,
+                Err((error, kernel)) => {
+                    *current = Some(kernel);
+                    return Err(error);
+                }
+            };
+            closing.await
+        }
     }
     async fn output(
         &self,
@@ -228,36 +287,202 @@ impl Computer {
     }
     async fn operation(
         self: &Arc<Self>,
-        call: Scope,
+        bridge: &Bridge,
         input: Value,
-        native: Arc<tokio::sync::Mutex<maka_computer_use::Session>>,
-        basis: PermissionBasis,
-        language: Language,
         cancellation: CancellationToken,
+        receipt: admission::Receipt,
     ) -> Result<Value, ToolError> {
-        let command: maka_computer_use::protocol::Command =
+        let call = bridge.call.clone();
+        let basis = bridge.basis;
+        let language = bridge.language;
+        let cell = bridge.cell.clone();
+        let epoch = bridge.epoch.clone();
+        let mut command: maka_computer_use::protocol::Command =
             serde_json::from_value(input.clone()).map_err(failed)?;
+        let native = epoch.native.clone();
         let invocation = call.identity.agent().expect("checked invocation").clone();
-        let device = tokio::select! { biased;
-            () = cancellation.cancelled() => return Err(failed("Computer Use cancelled while queued")),
-            device = self.sessions.input.clone().lock_owned() => device,
+        let operation_id = Uuid::new_v4().to_string();
+        access::granted(self, &call, basis).await?;
+        let audio_operation = matches!(
+            command,
+            maka_computer_use::protocol::Command::StartAudioRecording { .. }
+                | maka_computer_use::protocol::Command::StopAudioRecording
+        );
+        let starts_audio = matches!(
+            command,
+            maka_computer_use::protocol::Command::StartAudioRecording { .. }
+        );
+        let stops_audio = matches!(
+            command,
+            maka_computer_use::protocol::Command::StopAudioRecording
+        );
+        if audio_operation && !self.configuration.audio {
+            return Err(failed(
+                "Computer audio recording is disabled in Host configuration",
+            ));
+        }
+        let audio_consent = if audio_operation {
+            audio_consent(&native, &cancellation).await?
+        } else {
+            false
+        };
+        let mut targets = vec![api::target()];
+        if audio_consent {
+            if matches!(
+                command,
+                maka_computer_use::protocol::Command::StartAudioRecording { .. }
+            ) {
+                let (configuration, _) = access::current(self, &call, "cua_repl").await?;
+                if configuration.permission_basis() != basis {
+                    return Err(failed("Computer Use permission boundary changed"));
+                }
+                access::approve_audio(self, &call, &configuration, &cancellation, &cell).await?;
+            } else {
+                access::audio_granted(self, &call, basis).await?;
+            }
+            targets.push(api::audio_target());
+        }
+        let subject = {
+            let mut desktop = tokio::select! { biased;
+                () = cancellation.cancelled() => return Err(failed("Computer Use cancelled before app resolution")),
+                desktop = native.lock() => desktop,
+            };
+            desktop
+                .permission_subject(&command, &invocation.session_id, &cancellation, language)
+                .await?
+        };
+        if let Some(subject) = &subject
+            && let maka_computer_use::protocol::Command::GetApp {
+                target: maka_computer_use::protocol::AppReference::Name(name),
+            } = &mut command
+        {
+            // Freeze the OS-resolved bundle path across consent. The original
+            // name cannot be resolved to a different app after approval.
+            *name = subject.display.app_path.clone();
+        }
+        let app = if let Some(subject) = &subject {
+            let target = app_access::approve(
+                self,
+                &call,
+                basis,
+                subject,
+                &operation_id,
+                &cancellation,
+                &cell,
+            )
+            .await?;
+            Some((target, subject.display.clone()))
+        } else {
+            None
+        };
+        let device = if browser_command(&command)
+            || matches!(
+                command,
+                maka_computer_use::protocol::Command::ListWindows { .. }
+                    | maka_computer_use::protocol::Command::Documentation
+            ) {
+            None
+        } else {
+            Some(tokio::select! { biased;
+                () = cancellation.cancelled() => return Err(failed("Computer Use cancelled while queued")),
+                device = self.sessions.input.clone().lock_owned() => device,
+            })
         };
         let mut native = tokio::select! { biased;
             () = cancellation.cancelled() => return Err(failed("Computer Use cancelled while queued")),
             native = native.lock_owned() => native,
         };
         access::granted(self, &call, basis).await?;
+        let current_subject = native
+            .permission_subject(&command, &invocation.session_id, &cancellation, language)
+            .await?;
+        let same_subject = match (&subject, &current_subject) {
+            (None, None) => true,
+            (Some(expected), Some(current)) => expected.matches_resolved(current),
+            _ => false,
+        };
+        if !same_subject {
+            return Err(failed(
+                "Computer Use app changed while access was being approved",
+            ));
+        }
         if cancellation.is_cancelled() {
             return Err(failed("Computer Use cancelled before admission"));
         }
+        // Keep mutation ordering through the canonical outcome. On a journal
+        // failure, close Host admission before another input waiter proceeds.
+        let _device = device;
         let title = native.activity(&command);
+        let pause_native =
+            matches!(native.platform(), "mac" | "windows") && !browser_command(&command);
         let session = invocation.session_id.clone();
-        let effect = PreparedEffect::new(move |cancellation| {
+        let turn = invocation.turn_id.clone();
+        let browser_access = browser_access::Access::new(
+            self.clone(),
+            call.clone(),
+            basis,
+            cell.clone(),
+            cancellation.clone(),
+            bridge.admission.clone(),
+        );
+        let lease = self
+            .store
+            .fork_invocation_effect(
+                call.execution()
+                    .ok_or_else(|| failed("Computer execution custody is missing"))?
+                    .as_ref(),
+                &invocation,
+            )
+            .map_err(|error| ToolError::Persistence(message(error)))?;
+        let (lease, effect_call) = lease.into_scope(&call)?;
+        let effect_owner = self.clone();
+        let effect_store = lease.store();
+        let journal_store = effect_store.clone();
+        let settlement = admission::Operation::new(self, lease)?;
+        let operation_settlement = settlement.handoff();
+        let host_effects = admission::host_effects(self, bridge.admission.clone());
+        let effect_targets = targets.clone();
+        let effect_invocation = invocation.clone();
+        let effect_app = app.clone();
+        let admitted = receipt.clone();
+        let effect = PreparedEffect::new(move |_producer_cancellation| {
             Box::pin(async move {
-                let _device = device;
-                let mut output = native
-                    .invoke(command, &session, &cancellation, language)
-                    .await?;
+                let mut output = access::settle(
+                    &effect_owner,
+                    &effect_call,
+                    basis,
+                    &effect_targets,
+                    move |operation_cancel| async move {
+                        app_access::settle(
+                            &effect_store,
+                            &effect_invocation,
+                            effect_app.as_ref(),
+                            operation_cancel,
+                            move |operation_cancel| async move {
+                                let mut context =
+                                    maka_computer_use::InvocationContext::new(&session, &turn)
+                                        .with_browser_authorization(browser_access)
+                                        .with_operation_settlement(operation_settlement)
+                                        .with_browser_host_effects(host_effects);
+                                if let Some(subject) = subject {
+                                    context = context.with_app_target(subject);
+                                }
+                                let _timeout = pause_native.then(|| cell.suspend_timeout());
+                                let result = native
+                                    .invoke(command, &context, &operation_cancel, language)
+                                    .await?;
+                                if starts_audio {
+                                    epoch.record_audio(basis, audio_consent);
+                                } else if stops_audio {
+                                    epoch.clear_audio();
+                                }
+                                Ok(result)
+                            },
+                        )
+                        .await
+                    },
+                )
+                .await?;
                 let content = output
                     .as_object_mut()
                     .and_then(|object| object.remove("image"))
@@ -273,28 +498,35 @@ impl Computer {
                 .into())
             })
         })
-        .titled(title);
+        .titled(title)
+        .on_admission(move |boundary| {
+            if matches!(
+                boundary,
+                maka_agent_facts::tools::EffectAdmission::Durable { .. }
+            ) {
+                admitted.agent_dispatched();
+            }
+        });
         let mut origin = self.origin.clone();
-        if let ToolOrigin::HostSdk {
-            parent_operation_id,
-            ..
-        } = &mut origin
-        {
-            *parent_operation_id = call.identity.operation_id().map(str::to_owned);
+        if let ToolOrigin::HostSdk { parent, .. } = &mut origin {
+            *parent = call.identity.operation_id().map(|operation_id| {
+                maka_agent_facts::tool_call::HostSdkParent::EvaluationObserver {
+                    operation_id: operation_id.into(),
+                    epoch: bridge.epoch.id.clone(),
+                }
+            });
         }
         let result = ToolJournal::new(
             Arc::new(access::Journal {
-                store: maka_agent_authority::permissions::execution(
-                    &self.store,
-                    &invocation,
-                    call.execution().map(|token| token.as_ref()),
-                )?,
+                store: journal_store,
                 basis,
+                targets,
+                app,
             }),
             invocation,
         )
         .invoke_prepared_output(
-            Uuid::new_v4().to_string(),
+            operation_id,
             ToolCallIdentity {
                 tool_call_id: Uuid::new_v4().to_string(),
                 origin,
@@ -305,12 +537,19 @@ impl Computer {
             effect,
         )
         .await;
-        if matches!(
-            result,
-            Err(ToolError::Persistence(_) | ToolError::CleanupUnconfirmed(_))
-        ) {
+        let journal_failure = if let Err(
+            error @ (ToolError::Persistence(_)
+            | ToolError::CleanupUnconfirmed(_)
+            | ToolError::OperationCleanupUnconfirmed { .. }),
+        ) = &result
+        {
+            receipt.fail(error.clone());
             self.stopping.cancel();
-        }
+            Some(message(error))
+        } else {
+            None
+        };
+        settlement.complete(journal_failure);
         match result? {
             ToolOutput::Mcp(result) => {
                 let mut value = result.structured_content.unwrap_or(Value::Null);
@@ -329,30 +568,84 @@ impl Computer {
         }
     }
 }
+#[derive(Clone)]
 struct Bridge {
     owner: Arc<Computer>,
     call: Scope,
-    native: Arc<tokio::sync::Mutex<maka_computer_use::Session>>,
+    epoch: Arc<sessions::Epoch>,
+    admission: Arc<admission::Gate>,
     basis: PermissionBasis,
     language: Language,
+    cell: CellContext,
+}
+
+async fn audio_consent(
+    native: &Arc<tokio::sync::Mutex<maka_computer_use::Session>>,
+    cancellation: &CancellationToken,
+) -> Result<bool, ToolError> {
+    let native = tokio::select! {
+        biased;
+        () = cancellation.cancelled() => return Err(failed("Computer audio cancelled before admission")),
+        native = native.lock() => native,
+    };
+    Ok(native.platform() == "mac")
+}
+
+fn browser_command(command: &maka_computer_use::protocol::Command) -> bool {
+    use maka_computer_use::protocol::{Command, Handle};
+    matches!(
+        command,
+        Command::ListBrowsers { .. }
+            | Command::GetJsDialog { .. }
+            | Command::HandleJsDialog { .. }
+            | Command::ListTabs { .. }
+            | Command::GetBrowser { .. }
+            | Command::BrowserTab { .. }
+            | Command::BrowserRead { .. }
+            | Command::TabMetadata { .. }
+            | Command::GetTab { .. }
+            | Command::CreateBrowserTab { .. }
+            | Command::Observe {
+                handle: Handle::Tab(_),
+                ..
+            }
+            | Command::Action {
+                handle: Handle::Tab(_),
+                ..
+            }
+    )
 }
 impl ToolExecutor for Bridge {
     fn names(&self) -> Vec<String> {
         vec!["cua".into()]
     }
     fn invoke(&self, name: String, input: Value, cancellation: CancellationToken) -> ToolFuture {
-        let owner = self.owner.clone();
-        let call = self.call.clone();
-        let native = self.native.clone();
-        let basis = self.basis;
-        let language = self.language;
+        // Register before returning the future: an unscheduled old VM task can
+        // never acquire admission after reset has sealed its producer.
+        let receipt = self.admission.register();
+        let bridge = self.clone();
         Box::pin(async move {
+            let receipt = receipt?;
             if name != "cua" {
+                receipt.complete_call();
                 return Err(failed("Computer operation unavailable"));
             }
-            owner
-                .operation(call, input, native, basis, language, cancellation)
-                .await
+            let result = bridge
+                .owner
+                .operation(&bridge, input, cancellation, receipt.clone())
+                .await;
+            match &result {
+                Err(
+                    error @ (ToolError::Persistence(_)
+                    | ToolError::CleanupUnconfirmed(_)
+                    | ToolError::OperationCleanupUnconfirmed { .. }),
+                ) => {
+                    receipt.fail(error.clone());
+                    bridge.owner.stopping.cancel();
+                }
+                _ => receipt.complete_call(),
+            }
+            result
         })
     }
 }
@@ -386,5 +679,71 @@ fn partial(error: ToolError, context: &CellContext, reset: bool, language: Langu
             message: message + &suffix,
         },
         error => error,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct QueuedAudio {
+        native: Arc<tokio::sync::Mutex<maka_computer_use::Session>>,
+        admission: Arc<admission::Gate>,
+        started: CancellationToken,
+    }
+    impl ToolExecutor for QueuedAudio {
+        fn names(&self) -> Vec<String> {
+            vec!["queued_audio".into()]
+        }
+        fn invoke(&self, _: String, _: Value, cancellation: CancellationToken) -> ToolFuture {
+            let receipt = self.admission.register();
+            let native = self.native.clone();
+            self.started.cancel();
+            Box::pin(async move {
+                let receipt = receipt?;
+                let result = audio_consent(&native, &cancellation).await;
+                receipt.complete_call();
+                result.map(Value::Bool)
+            })
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn vm_timeout_rejects_audio_queued_behind_an_accepted_native_operation() {
+        let native = Arc::new(tokio::sync::Mutex::new(maka_computer_use::Session::new(
+            Arc::new(tokio::sync::Mutex::new(maka_computer_use::Driver::default())),
+        )));
+        let accepted_native = native.clone().lock_owned().await;
+        let admission = Arc::new(admission::Gate::default());
+        let started = CancellationToken::new();
+        let runtime = Repl::new_observed(
+            "Object.defineProperty(globalThis,'audio',{value:()=>call('queued_audio',{})});",
+            CellLimits::default(),
+            admission.clone(),
+        );
+        let context =
+            CellContext::new(maka_code_runtime::CellStore::temporary().unwrap(), vec![]).unwrap();
+        let result = tokio::time::timeout(
+            Duration::from_secs(3),
+            runtime.evaluate(
+                "await audio()".into(),
+                Arc::new(QueuedAudio {
+                    native,
+                    admission,
+                    started: started.clone(),
+                }),
+                CancellationToken::new(),
+                context,
+                Duration::from_millis(100),
+            ),
+        )
+        .await
+        .expect("VM admission must not wait for the old native operation")
+        .unwrap();
+        assert!(started.is_cancelled());
+        assert!(matches!(result, CellResult::Failure { .. }));
+        runtime.close().await.unwrap();
+        // The accepted native operation has deliberately not released its lock.
+        drop(accepted_native);
     }
 }

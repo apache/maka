@@ -85,11 +85,7 @@ pub(super) fn selection(
         }
         match serde_json::from_str::<ToolOrigin>(&origin)? {
             ToolOrigin::Provider { step_id } => break Some(step_id),
-            ToolOrigin::Standalone
-            | ToolOrigin::HostSdk {
-                parent_operation_id: None,
-                ..
-            } => break None,
+            ToolOrigin::Standalone | ToolOrigin::HostSdk { parent: None, .. } => break None,
             ToolOrigin::CodeMode {
                 parent_operation_id,
                 ..
@@ -97,12 +93,16 @@ pub(super) fn selection(
             | ToolOrigin::CodeCell {
                 parent_operation_id,
                 ..
-            }
-            | ToolOrigin::HostSdk {
-                parent_operation_id: Some(parent_operation_id),
-                ..
             } => {
                 current = parent_operation_id;
+                before = sequence - 1;
+                rejected = false;
+            }
+            ToolOrigin::HostSdk {
+                parent: Some(parent),
+                ..
+            } => {
+                current = parent.operation_id().to_owned();
                 before = sequence - 1;
                 rejected = false;
             }

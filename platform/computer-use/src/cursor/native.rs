@@ -38,7 +38,8 @@ static HOST_EXECUTABLE: OnceLock<PathBuf> = OnceLock::new();
 static NEXT_COLOR: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// Call at the executable entry point, before starting runtime threads.
-/// The private child only renders cursors; it has no computer input operations.
+/// The private child hosts display surfaces and read-only AppKit metadata.
+/// It has no computer input operations.
 pub fn bootstrap() -> Option<ExitCode> {
     if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new(ENTRY)) {
         return Some(match helper::run() {
@@ -48,7 +49,10 @@ pub fn bootstrap() -> Option<ExitCode> {
                 let _ = writeln!(
                     std::io::stdout(),
                     "{}",
-                    serde_json::to_string(&RenderState::unavailable(&error)).unwrap()
+                    serde_json::to_string(&Response::Render {
+                        state: RenderState::unavailable(&error),
+                    })
+                    .unwrap()
                 );
                 let _ = writeln!(std::io::stderr(), "Maka cursor: {error}");
                 ExitCode::FAILURE
@@ -159,6 +163,31 @@ enum Request {
     Remove {
         id: String,
     },
+    #[cfg(target_os = "macos")]
+    Geometry {
+        expected_pid: i32,
+        window_id: u32,
+    },
+    #[cfg(target_os = "macos")]
+    MacMetadata {
+        query: crate::macos::page_scroll::metadata::Query,
+    },
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum Response {
+    Render {
+        state: RenderState,
+    },
+    #[cfg(target_os = "macos")]
+    Geometry {
+        result: Result<platform_macos::geometry::NativeWindowGeometry, String>,
+    },
+    #[cfg(target_os = "macos")]
+    MacMetadata {
+        result: Result<crate::macos::page_scroll::metadata::Observation, String>,
+    },
 }
 
 pub(crate) struct Host {
@@ -167,7 +196,7 @@ pub(crate) struct Host {
 }
 struct Job {
     command: Control,
-    reply: tokio::sync::oneshot::Sender<Result<RenderState, ToolError>>,
+    reply: tokio::sync::oneshot::Sender<Result<Response, ToolError>>,
 }
 enum Control {
     Call(Request),
@@ -205,84 +234,189 @@ impl Host {
                     while let Some(job) = receiver.recv().await {
                         let stopping = matches!(job.command, Control::Stop);
                         let result = match job.command {
-                            Control::Call(Request::State { id }) => Ok(transport.state(&id).await),
+                            Control::Call(Request::State { id }) => Ok(Response::Render {
+                                state: transport.state(&id).await,
+                            }),
                             Control::Call(Request::Remove { id }) => {
-                                transport.remove(&id).await;
-                                Ok(RenderState::default())
+                                transport.remove(&id).await.map(|()| Response::Render {
+                                    state: RenderState::default(),
+                                })
                             }
                             Control::Call(request) => transport.request(request).await,
-                            Control::Configure(cursor) => Ok(transport.configure(&cursor).await),
-                            Control::Stop => {
-                                transport.stop().await;
-                                Ok(RenderState::default())
-                            }
+                            Control::Configure(cursor) => Ok(Response::Render {
+                                state: transport.configure(&cursor).await,
+                            }),
+                            Control::Stop => transport.stop().await.map(|()| Response::Render {
+                                state: RenderState::default(),
+                            }),
                         };
+                        let stopped = stopping && result.is_ok();
                         let _ = job.reply.send(result);
-                        if stopping {
-                            break;
+                        if stopped {
+                            return;
                         }
                     }
-                    transport.stop().await;
+                    // No caller remains to receive a fallible close result.
+                    // Explicit Stop keeps this actor alive on failure instead.
+                    if let Err(error) = transport.stop().await {
+                        tracing::error!(%error, "cursor helper final cleanup was not confirmed");
+                    }
                 });
                 sender
             })
             .clone()
     }
-    async fn call(&mut self, command: Control) -> Result<RenderState, ToolError> {
-        if self
+    async fn call(&mut self, command: Control) -> Result<Response, ToolError> {
+        self.schedule(command).await
+    }
+
+    fn schedule(
+        &mut self,
+        command: Control,
+    ) -> impl std::future::Future<Output = Result<Response, ToolError>> + Send + 'static {
+        let sender = if self
             .sender
             .as_ref()
             .is_some_and(tokio::sync::mpsc::Sender::is_closed)
         {
-            self.sender = None;
-        }
+            Err(cleanup_unconfirmed(
+                "cursor renderer owner closed without a confirmed stop",
+            ))
+        } else {
+            Ok(self.sender())
+        };
         let (reply, receive) = tokio::sync::oneshot::channel();
-        self.sender()
-            .send(Job { command, reply })
-            .await
-            .map_err(|_| failed("cursor renderer owner closed"))?;
-        receive
-            .await
-            .map_err(|_| failed("cursor renderer owner stopped"))?
+        async move {
+            sender?.send(Job { command, reply }).await.map_err(|_| {
+                cleanup_unconfirmed("cursor renderer owner closed before accepting the request")
+            })?;
+            receive.await.map_err(|_| {
+                cleanup_unconfirmed("cursor renderer request acknowledgement was lost")
+            })?
+        }
     }
-    pub(crate) async fn update(
+    async fn render(&mut self, command: Control) -> Result<RenderState, ToolError> {
+        match self.call(command).await? {
+            Response::Render { state } => Ok(state),
+            #[cfg(target_os = "macos")]
+            Response::Geometry { .. } | Response::MacMetadata { .. } => {
+                Err(failed("display host returned an unexpected reply"))
+            }
+        }
+    }
+    #[cfg(target_os = "macos")]
+    pub(crate) fn window_geometry(
+        &mut self,
+        expected_pid: i32,
+        window_id: u32,
+    ) -> impl std::future::Future<
+        Output = Result<platform_macos::geometry::NativeWindowGeometry, ToolError>,
+    > + Send
+    + 'static {
+        let response = self.schedule(Control::Call(Request::Geometry {
+            expected_pid,
+            window_id,
+        }));
+        async move {
+            match response.await? {
+                Response::Geometry { result } => result.map_err(failed),
+                Response::Render { .. } | Response::MacMetadata { .. } => {
+                    Err(failed("display host returned an unexpected reply"))
+                }
+            }
+        }
+    }
+    #[cfg(target_os = "macos")]
+    pub(crate) fn mac_metadata(
+        &mut self,
+        query: crate::macos::page_scroll::metadata::Query,
+    ) -> impl std::future::Future<
+        Output = Result<crate::macos::page_scroll::metadata::Observation, ToolError>,
+    > + Send
+    + 'static {
+        let response = self.schedule(Control::Call(Request::MacMetadata { query }));
+        async move {
+            match response.await? {
+                Response::MacMetadata { result } => result.map_err(failed),
+                Response::Render { .. } | Response::Geometry { .. } => {
+                    Err(failed("display host returned an unexpected reply"))
+                }
+            }
+        }
+    }
+    pub(crate) fn update(
         &mut self,
         cursor: &Spec,
         point: Option<[f64; 2]>,
         action: cursor_overlay::CursorAction,
         window: Option<u64>,
-    ) -> Result<RenderState, ToolError> {
-        self.call(Control::Call(Request::Update {
+    ) -> impl std::future::Future<Output = Result<RenderState, ToolError>> + Send + 'static {
+        let response = self.schedule(Control::Call(Request::Update {
             cursor: cursor.clone(),
             point,
             action,
             window,
-        }))
-        .await
+        }));
+        async move {
+            match response.await? {
+                Response::Render { state } => Ok(state),
+                #[cfg(target_os = "macos")]
+                Response::Geometry { .. } | Response::MacMetadata { .. } => {
+                    Err(failed("display host returned an unexpected reply"))
+                }
+            }
+        }
     }
     pub(crate) async fn state(&mut self, cursor: &Spec) -> RenderState {
-        self.call(Control::Call(Request::State {
+        self.render(Control::Call(Request::State {
             id: cursor.id.clone(),
         }))
         .await
         .unwrap_or_else(RenderState::unavailable)
     }
     pub(crate) async fn configure(&mut self, cursor: &Spec) -> RenderState {
-        self.call(Control::Configure(cursor.clone()))
+        self.render(Control::Configure(cursor.clone()))
             .await
             .unwrap_or_else(RenderState::unavailable)
     }
-    pub(crate) async fn remove(&mut self, id: &str) {
+    /// Remove a logical cursor while preserving any helper cleanup uncertainty.
+    pub(crate) async fn remove(&mut self, id: &str) -> Result<(), ToolError> {
         if self.sender.is_some() {
-            let _ = self
-                .call(Control::Call(Request::Remove { id: id.into() }))
-                .await;
+            self.call(Control::Call(Request::Remove { id: id.into() }))
+                .await?;
         }
+        Ok(())
     }
-    pub(crate) async fn stop(&mut self) {
-        if self.sender.is_some() {
-            let _ = self.call(Control::Stop).await;
-            self.sender = None;
+    /// Retire the actor only after its original stop job confirms child exit.
+    ///
+    /// # Errors
+    /// Returns cleanup uncertainty with the original sender still retained.
+    pub(crate) async fn stop(&mut self) -> Result<(), ToolError> {
+        let Some(sender) = self.sender.as_ref() else {
+            return Ok(());
+        };
+        let (reply, receive) = tokio::sync::oneshot::channel();
+        sender
+            .send(Job {
+                command: Control::Stop,
+                reply,
+            })
+            .await
+            .map_err(|_| {
+                cleanup_unconfirmed("cursor renderer owner closed before stop was acknowledged")
+            })?;
+        let response = receive
+            .await
+            .map_err(|_| cleanup_unconfirmed("cursor renderer stop acknowledgement was lost"))??;
+        match response {
+            Response::Render { .. } => {
+                self.sender = None;
+                Ok(())
+            }
+            #[cfg(target_os = "macos")]
+            Response::Geometry { .. } | Response::MacMetadata { .. } => Err(cleanup_unconfirmed(
+                "cursor renderer returned an unexpected stop acknowledgement",
+            )),
         }
     }
 }
@@ -290,17 +424,41 @@ impl Host {
 struct Transport {
     executable: Option<PathBuf>,
     process: Option<Process>,
-    last_error: Option<String>,
+    last_error: Option<ToolError>,
 }
 struct Process {
     child: Child,
-    input: ChildStdin,
+    custody: ChildCustody,
+    input: Option<ChildStdin>,
     output: BufReader<ChildStdout>,
     _themes: tempfile::TempDir,
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ChildCustody {
+    Owned,
+    WaitUnconfirmed,
+}
+
+impl Drop for Process {
+    fn drop(&mut self) {
+        if self.custody == ChildCustody::Owned
+            && matches!(self.child.try_wait(), Ok(None))
+            && let Err(error) = self.child.start_kill()
+        {
+            tracing::error!(%error, "cursor helper best-effort termination failed");
+        }
+    }
+}
+
 impl Transport {
     async fn start(&mut self) -> Result<(), ToolError> {
-        if self.process.is_some() {
+        if let Some(process) = self.process.as_ref() {
+            if process.input.is_none() {
+                return Err(cleanup_unconfirmed(
+                    "cursor renderer cleanup has not been confirmed",
+                ));
+            }
             return Ok(());
         }
         let executable=self.executable.as_ref().ok_or_else(|| failed("cursor_unavailable: this executable did not register the native cursor entry point"))?;
@@ -315,7 +473,7 @@ impl Transport {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
-            .kill_on_drop(true)
+            .kill_on_drop(false)
             .env_clear();
         for name in [
             "HOME",
@@ -361,49 +519,109 @@ impl Transport {
         );
         self.process = Some(Process {
             child,
-            input,
+            custody: ChildCustody::Owned,
+            input: Some(input),
             output,
             _themes: themes,
         });
         Ok(())
     }
-    async fn request(&mut self, request: Request) -> Result<RenderState, ToolError> {
+    async fn request(&mut self, request: Request) -> Result<Response, ToolError> {
         if let Some(error) = &self.last_error {
-            return Err(failed(error));
+            return Err(error.clone());
         }
         let starting = self.process.is_none();
         if let Err(error) = self.start().await {
-            self.last_error = Some(error.to_string());
+            self.last_error = Some(error.clone());
             return Err(error);
         }
-        let process = self.process.as_mut().unwrap();
+        let process = self
+            .process
+            .as_mut()
+            .expect("successful renderer start retains its child");
+        #[cfg(target_os = "macos")]
+        let maximum_response = if matches!(request, Request::MacMetadata { .. }) {
+            // Native metadata is bounded by the actual WindowServer snapshot,
+            // not the much smaller cursor-state JSON envelope.
+            u64::MAX
+        } else {
+            MAX_MESSAGE
+        };
+        #[cfg(not(target_os = "macos"))]
+        let maximum_response = MAX_MESSAGE;
         let result =
             tokio::time::timeout(Duration::from_secs(if starting { 10 } else { 3 }), async {
                 let mut bytes = serde_json::to_vec(&request).map_err(failed)?;
                 bytes.push(b'\n');
-                process.input.write_all(&bytes).await.map_err(failed)?;
+                process
+                    .input
+                    .as_mut()
+                    .ok_or_else(|| {
+                        cleanup_unconfirmed(
+                            "cursor renderer input is closed before cleanup was confirmed",
+                        )
+                    })?
+                    .write_all(&bytes)
+                    .await
+                    .map_err(failed)?;
                 let mut line = String::new();
                 (&mut process.output)
-                    .take(MAX_MESSAGE + 1)
+                    .take(maximum_response.saturating_add(1))
                     .read_line(&mut line)
                     .await
                     .map_err(failed)?;
-                if line.is_empty() || line.len() as u64 > MAX_MESSAGE {
+                if line.is_empty() || line.len() as u64 > maximum_response {
                     return Err(failed("cursor renderer returned an invalid response"));
                 }
-                let value: RenderState = serde_json::from_str(&line).map_err(failed)?;
-                if let Some(error) = &value.error {
-                    return Err(failed(error));
+                let value: Response = serde_json::from_str(&line).map_err(failed)?;
+                match &value {
+                    Response::Render { state } => {
+                        if let Some(error) = &state.error {
+                            return Err(failed(error));
+                        }
+                    }
+                    #[cfg(target_os = "macos")]
+                    Response::Geometry { .. } | Response::MacMetadata { .. } => {}
+                }
+                #[cfg(target_os = "macos")]
+                if !matches!(
+                    (&request, &value),
+                    (Request::Geometry { .. }, Response::Geometry { .. })
+                        | (Request::MacMetadata { .. }, Response::MacMetadata { .. })
+                        | (
+                            Request::Update { .. } | Request::State { .. } | Request::Remove { .. },
+                            Response::Render { .. }
+                        )
+                ) {
+                    return Err(failed("display host returned an unexpected reply"));
                 }
                 Ok(value)
             })
             .await
             .unwrap_or_else(|_| Err(failed("cursor renderer did not respond")));
-        if let Err(error) = &result {
-            self.last_error = Some(error.to_string());
-            self.stop().await;
+        match result {
+            Ok(value) => Ok(value),
+            Err(error) => {
+                self.last_error = Some(error.clone());
+                match self.stop().await {
+                    Ok(()) => Err(error),
+                    Err(cleanup) => {
+                        let error = cleanup_unconfirmed(format!("{error}; {cleanup}"));
+                        self.last_error = Some(error.clone());
+                        Err(error)
+                    }
+                }
+            }
         }
-        result
+    }
+    async fn render(&mut self, request: Request) -> Result<RenderState, ToolError> {
+        match self.request(request).await? {
+            Response::Render { state } => Ok(state),
+            #[cfg(target_os = "macos")]
+            Response::Geometry { .. } | Response::MacMetadata { .. } => {
+                Err(failed("display host returned an unexpected reply"))
+            }
+        }
     }
     pub(crate) async fn update(
         &mut self,
@@ -412,7 +630,7 @@ impl Transport {
         action: cursor_overlay::CursorAction,
         window: Option<u64>,
     ) -> Result<RenderState, ToolError> {
-        self.request(Request::Update {
+        self.render(Request::Update {
             cursor: cursor.clone(),
             point,
             action,
@@ -430,12 +648,15 @@ impl Transport {
                 None => RenderState::default(),
             };
         }
-        match self.request(Request::State { id: id.into() }).await {
+        match self.render(Request::State { id: id.into() }).await {
             Ok(value) => value,
             Err(error) => RenderState::unavailable(error),
         }
     }
     pub(crate) async fn configure(&mut self, cursor: &Spec) -> RenderState {
+        if let Some(error @ ToolError::CleanupUnconfirmed(_)) = self.last_error.as_ref() {
+            return RenderState::unavailable(error);
+        }
         self.last_error = None;
         if self.process.is_some() {
             match self
@@ -449,27 +670,70 @@ impl Transport {
             self.state(&cursor.id).await
         }
     }
-    pub(crate) async fn remove(&mut self, id: &str) {
+    pub(crate) async fn remove(&mut self, id: &str) -> Result<(), ToolError> {
         if self.process.is_some() {
-            let _ = self.request(Request::Remove { id: id.into() }).await;
+            self.request(Request::Remove { id: id.into() }).await?;
         }
+        Ok(())
     }
-    pub(crate) async fn stop(&mut self) {
-        if let Some(mut process) = self.process.take() {
-            let _ = process.input.shutdown().await;
-            drop(process.input);
-            if tokio::time::timeout(Duration::from_secs(2), process.child.wait())
-                .await
-                .is_err()
-            {
-                let _ = process.child.kill().await;
-                let _ = process.child.wait().await;
+    pub(crate) async fn stop(&mut self) -> Result<(), ToolError> {
+        let Some(process) = self.process.as_mut() else {
+            return Ok(());
+        };
+        let mut failures = Vec::new();
+        if let Some(mut input) = process.input.take() {
+            if let Err(error) = input.shutdown().await {
+                failures.push(format!("closing cursor renderer input: {error}"));
             }
+            drop(input);
+        }
+        let exited = match tokio::time::timeout(Duration::from_secs(2), process.child.wait()).await
+        {
+            Ok(Ok(_)) => true,
+            Ok(Err(error)) => {
+                // A wait error can mean ownership of this PID was lost. Do
+                // not send a signal to a potentially reused PID after it.
+                failures.push(format!("waiting for cursor renderer exit: {error}"));
+                process.custody = ChildCustody::WaitUnconfirmed;
+                false
+            }
+            Err(_) if process.custody == ChildCustody::WaitUnconfirmed => {
+                failures.push("cursor renderer child ownership was already unconfirmed".into());
+                false
+            }
+            Err(_) => match process.child.start_kill() {
+                Ok(()) => match process.child.wait().await {
+                    Ok(_) => true,
+                    Err(error) => {
+                        failures.push(format!(
+                            "reaping cursor renderer after termination: {error}"
+                        ));
+                        process.custody = ChildCustody::WaitUnconfirmed;
+                        false
+                    }
+                },
+                Err(error) => {
+                    failures.push(format!("terminating cursor renderer: {error}"));
+                    false
+                }
+            },
+        };
+        if exited && failures.is_empty() {
+            self.process = None;
+            Ok(())
+        } else {
+            let error = cleanup_unconfirmed(failures.join("; "));
+            self.last_error = Some(error.clone());
+            Err(error)
         }
     }
 }
 fn failed(error: impl std::fmt::Display) -> ToolError {
     ToolError::Failed(error.to_string())
+}
+
+fn cleanup_unconfirmed(error: impl std::fmt::Display) -> ToolError {
+    ToolError::CleanupUnconfirmed(error.to_string())
 }
 
 impl crate::protocol::Action {
@@ -513,6 +777,276 @@ impl crate::protocol::Action {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn stop_failure_keeps_the_original_owner_until_a_confirmed_retry() {
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
+        let mut host = Host {
+            executable: None,
+            sender: Some(sender),
+        };
+        let (result, ()) = tokio::join!(host.stop(), async {
+            let job = receiver
+                .recv()
+                .await
+                .expect("the original actor receives stop");
+            assert!(matches!(job.command, Control::Stop));
+            assert!(
+                job.reply
+                    .send(Err(cleanup_unconfirmed("wait failed")))
+                    .is_ok()
+            );
+        });
+        assert!(matches!(result, Err(ToolError::CleanupUnconfirmed(_))));
+        assert!(
+            host.sender.is_some(),
+            "unconfirmed cleanup keeps the original actor"
+        );
+
+        let (result, ()) = tokio::join!(host.stop(), async {
+            let job = receiver
+                .recv()
+                .await
+                .expect("retry uses the original actor");
+            assert!(matches!(job.command, Control::Stop));
+            assert!(
+                job.reply
+                    .send(Ok(Response::Render {
+                        state: RenderState::default()
+                    }))
+                    .is_ok()
+            );
+        });
+        result.unwrap();
+        assert!(
+            host.sender.is_none(),
+            "only confirmed cleanup retires the actor"
+        );
+    }
+
+    #[tokio::test]
+    async fn stop_never_replaces_a_closed_owner_with_an_empty_actor() {
+        let (sender, receiver) = tokio::sync::mpsc::channel(1);
+        drop(receiver);
+        let mut host = Host {
+            executable: None,
+            sender: Some(sender),
+        };
+        assert!(matches!(
+            host.stop().await,
+            Err(ToolError::CleanupUnconfirmed(_))
+        ));
+        assert!(
+            host.sender
+                .as_ref()
+                .is_some_and(tokio::sync::mpsc::Sender::is_closed)
+        );
+        let cursor = Spec::default();
+        assert!(matches!(
+            host.update(&cursor, None, cursor_overlay::CursorAction::Idle, None)
+                .await,
+            Err(ToolError::CleanupUnconfirmed(_))
+        ));
+        assert!(
+            host.sender
+                .as_ref()
+                .is_some_and(tokio::sync::mpsc::Sender::is_closed)
+        );
+    }
+
+    #[tokio::test]
+    async fn lost_stop_acknowledgement_and_remove_cleanup_errors_are_not_success() {
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
+        let mut host = Host {
+            executable: None,
+            sender: Some(sender),
+        };
+        let (result, ()) = tokio::join!(host.stop(), async {
+            let job = receiver.recv().await.expect("stop was accepted");
+            assert!(matches!(job.command, Control::Stop));
+            drop(job.reply);
+        });
+        assert!(matches!(result, Err(ToolError::CleanupUnconfirmed(_))));
+        assert!(host.sender.is_some());
+
+        let (result, ()) = tokio::join!(host.remove("task-owned"), async {
+            let job = receiver.recv().await.expect("remove was accepted");
+            assert!(
+                matches!(job.command, Control::Call(Request::Remove { id }) if id == "task-owned")
+            );
+            assert!(
+                job.reply
+                    .send(Err(cleanup_unconfirmed(
+                        "helper termination was not confirmed"
+                    )))
+                    .is_ok()
+            );
+        });
+        assert!(matches!(result, Err(ToolError::CleanupUnconfirmed(_))));
+        assert!(host.sender.is_some());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn transport_stop_waits_for_the_real_pipe_child_to_exit() {
+        let mut child = tokio::process::Command::new("/bin/sh")
+            .args(["-c", "while IFS= read -r line; do :; done"])
+            .env_clear()
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .kill_on_drop(false)
+            .spawn()
+            .unwrap();
+        let pid = child.id().expect("the task-owned child is running");
+        let input = child.stdin.take().unwrap();
+        let output = BufReader::new(child.stdout.take().unwrap());
+        let mut transport = Transport {
+            executable: None,
+            process: Some(Process {
+                child,
+                custody: ChildCustody::Owned,
+                input: Some(input),
+                output,
+                _themes: tempfile::tempdir().unwrap(),
+            }),
+            last_error: None,
+        };
+        transport.stop().await.unwrap();
+        assert!(transport.process.is_none());
+        // SAFETY: signal zero only observes the task-owned child's PID.
+        assert_eq!(
+            unsafe { libc::kill(pid as i32, 0) },
+            -1,
+            "stop must reap the pipe child"
+        );
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::ESRCH)
+        );
+        transport.stop().await.unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_real_wait_error_preserves_the_child_and_blocks_unconfirmed_reuse() {
+        let mut child = tokio::process::Command::new("/bin/sh")
+            .args(["-c", "exit 0"])
+            .env_clear()
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .kill_on_drop(false)
+            .spawn()
+            .unwrap();
+        let pid = child.id().expect("the task-owned child has a PID");
+        let input = child.stdin.take().unwrap();
+        let output = BufReader::new(child.stdout.take().unwrap());
+        let reaped = tokio::task::spawn_blocking(move || {
+            let mut status = 0;
+            loop {
+                // SAFETY: this fixture alone owns the spawned child. External
+                // reaping deliberately makes Tokio's later wait return ECHILD.
+                let result = unsafe { libc::waitpid(pid as i32, &mut status, 0) };
+                if result != -1
+                    || std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR)
+                {
+                    return result;
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(reaped, pid as i32, "the fixture must reap its own child");
+        let mut transport = Transport {
+            executable: None,
+            process: Some(Process {
+                child,
+                custody: ChildCustody::Owned,
+                input: Some(input),
+                output,
+                _themes: tempfile::tempdir().unwrap(),
+            }),
+            last_error: None,
+        };
+        assert!(matches!(
+            transport.stop().await,
+            Err(ToolError::CleanupUnconfirmed(_))
+        ));
+        let retained = transport
+            .process
+            .as_ref()
+            .expect("wait failure retains the original child owner");
+        assert_eq!(retained.custody, ChildCustody::WaitUnconfirmed);
+        assert!(
+            retained.input.is_none(),
+            "EOF closure does not discard the child handle"
+        );
+        let configured = transport.configure(&Spec::default()).await;
+        assert!(matches!(configured.status, RenderStatus::Unavailable));
+        assert!(
+            transport.process.is_some(),
+            "configuration cannot replace an unconfirmed child"
+        );
+        assert!(matches!(
+            transport
+                .request(Request::State {
+                    id: "task-owned".into()
+                })
+                .await,
+            Err(ToolError::CleanupUnconfirmed(_))
+        ));
+        drop(transport);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    #[ignore = "requires a task-owned macOS desktop, MAKA_CUA_TEST_HOST, MAKA_CUA_GEOMETRY_PID and MAKA_CUA_GEOMETRY_WINDOW"]
+    async fn geometry_refusal_preserves_the_host_and_other_cursors() {
+        let executable =
+            std::env::var_os("MAKA_CUA_TEST_HOST").expect("set the built Maka executable");
+        let pid: i32 = std::env::var("MAKA_CUA_GEOMETRY_PID")
+            .expect("set the task-owned fixture PID")
+            .parse()
+            .unwrap();
+        let window_id: u32 = std::env::var("MAKA_CUA_GEOMETRY_WINDOW")
+            .expect("set the task-owned fixture window ID")
+            .parse()
+            .unwrap();
+        let mut host = Host::with_executable(executable.into());
+        let disabled = Spec {
+            enabled: false,
+            ..Default::default()
+        };
+        let geometry = host.window_geometry(pid, window_id).await.unwrap();
+        assert_eq!((geometry.pid, geometry.window_id), (pid, window_id));
+        let idle = host.state(&disabled).await;
+        assert!(!idle.visible);
+        assert!(idle.theme.is_none(), "metadata must not register a cursor");
+        let renderer_pid = idle.renderer_pid.unwrap();
+
+        let other = Spec::default();
+        host.update(
+            &other,
+            Some([geometry.bounds.x + 20.0, geometry.bounds.y + 20.0]),
+            cursor_overlay::CursorAction::Idle,
+            Some(u64::from(window_id)),
+        )
+        .await
+        .unwrap();
+        assert!(host.state(&other).await.visible);
+        let error = host.window_geometry(0, window_id).await.unwrap_err();
+        assert!(error.to_string().contains("window_owner_pid_mismatch"));
+        let state = host.state(&other).await;
+        assert_eq!(state.renderer_pid, Some(renderer_pid));
+        assert!(
+            state.visible,
+            "a metadata refusal must preserve other cursors"
+        );
+        host.window_geometry(pid, window_id).await.unwrap();
+        host.stop().await.unwrap();
+    }
+
     #[tokio::test]
     #[ignore = "requires MAKA_CUA_TEST_HOST; displays a native cursor without sending input"]
     async fn renderer_keeps_cursor_until_disabled_and_exits_with_its_channel() {
@@ -547,7 +1081,7 @@ mod tests {
         );
         cursor.enabled = false;
         assert!(!host.configure(&cursor).await.visible);
-        host.stop().await;
+        host.stop().await.unwrap();
         #[cfg(unix)]
         assert_ne!(
             unsafe { libc::kill(pid as i32, 0) },

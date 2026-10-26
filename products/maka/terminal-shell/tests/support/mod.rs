@@ -533,6 +533,8 @@ impl Fixture {
                                 "fork",
                                 "send",
                                 "stop",
+                                "computerApps",
+                                "stopComputerApp",
                                 "execution",
                                 "queue",
                                 "queueMessage",
@@ -1371,6 +1373,16 @@ impl ReplyGate {
     }
     pub fn respond(directory: &Path, target: PathBuf) -> Self {
         Self::for_method(directory, target, "respond", "mutation", false, None)
+    }
+    pub fn stop_computer_app(directory: &Path, target: PathBuf) -> Self {
+        Self::for_method(
+            directory,
+            target,
+            "stopComputerApp",
+            "mutation",
+            false,
+            None,
+        )
     }
     #[cfg(unix)]
     pub fn history(directory: &Path, target: PathBuf) -> Self {

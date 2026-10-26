@@ -22,14 +22,14 @@ use maka_agent_facts::interaction::InteractionRecord;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-#[derive(Serialize, JsonSchema, PartialEq, Deserialize)]
+#[derive(Clone, Serialize, JsonSchema, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentPendingInteractions")]
 pub struct PendingInteractions {
     pub revision: u64,
     pub entries: Vec<InteractionSummary>,
 }
-#[derive(Serialize, JsonSchema, PartialEq, Deserialize)]
+#[derive(Clone, Serialize, JsonSchema, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentInteractionSummary")]
 pub struct InteractionSummary {
@@ -38,7 +38,7 @@ pub struct InteractionSummary {
     #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<String>")]
     pub tool_use_id: Option<String>,
 }
-#[derive(Serialize, JsonSchema, PartialEq, Deserialize)]
+#[derive(Clone, Serialize, JsonSchema, PartialEq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[schemars(rename = "AgentInteractionKind")]
 pub enum InteractionKind {
@@ -47,6 +47,7 @@ pub enum InteractionKind {
     Permissions,
     Form,
     ClientCapability,
+    ComputerApp,
 }
 #[derive(Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

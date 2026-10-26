@@ -129,6 +129,93 @@ async fn materialize_all(log: &EventLog, fence: u64) {
 }
 
 #[tokio::test]
+async fn observer_tool_history_keeps_outer_ancestry_after_outer_settlement_and_reopen() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("observer-history.sqlite");
+    let log = EventLog::open(&path).await.unwrap();
+    log.append(&event(Fact::InvocationOpened {
+        configuration: None,
+        input: InvocationInput::Message {
+            source_messages: Vec::new(),
+            content: "observe".into(),
+            request_fingerprint: None,
+        },
+    }))
+    .await
+    .unwrap();
+    accepted(&log, "evaluate", "evaluate").await;
+    let outer = "evaluate:reused-provider-id";
+    log.append(&event(Fact::ToolDispatched {
+        operation_id: outer.into(),
+        call: ToolCallIdentity::provider("evaluate".into(), "reused-provider-id".into()),
+        name: "evaluate".into(),
+        input: json!({}),
+        title: None,
+        presentation: None,
+    }))
+    .await
+    .unwrap();
+    log.append(&event(Fact::ToolDispatched {
+        operation_id: "native".into(),
+        call: ToolCallIdentity {
+            tool_call_id: "native-call".into(),
+            origin: ToolOrigin::HostSdk {
+                package_id: "workspace.computer".into(),
+                entry_id: "computer".into(),
+                activation: "activation".into(),
+                parent: Some(
+                    maka_agent_facts::tool_call::HostSdkParent::EvaluationObserver {
+                        operation_id: outer.into(),
+                        epoch: "eb6a8d42-32e5-46d4-a1f7-bd11767a8c3f".into(),
+                    },
+                ),
+            },
+        },
+        name: "native".into(),
+        input: json!({}),
+        title: None,
+        presentation: None,
+    }))
+    .await
+    .unwrap();
+    let pending = log
+        .append(&success(outer, json!({"error":"TIMEOUT"})))
+        .await
+        .unwrap();
+    materialize_all(&log, pending).await;
+    let prefix = log.prefix(100, 65536).await.unwrap();
+    log.close().await.unwrap();
+    let log = EventLog::open(&path).await.unwrap();
+    assert_eq!(log.prefix(100, 65536).await.unwrap().digest, prefix.digest);
+    let through = log
+        .append(&success("native", json!({"actual":"completed"})))
+        .await
+        .unwrap();
+    materialize_all(&log, through).await;
+    let observer_rows: Vec<Value> = crate::test_store::inspect(&log, rows)
+        .await
+        .into_iter()
+        .map(|(_, bytes, _)| serde_json::from_slice::<Value>(&bytes).unwrap())
+        .filter(|row| row["origin"] == "host_sdk")
+        .collect();
+    assert_eq!(observer_rows.len(), 2);
+    for row in &observer_rows {
+        assert_eq!(row["modelVisibility"], "hidden");
+        assert_eq!(row["parentOperationId"], outer);
+        assert_eq!(
+            row["parentToolCallId"],
+            tool_message_id("invocation", outer)
+        );
+    }
+    assert_eq!(observer_rows[0]["type"], "tool_call");
+    assert_eq!(observer_rows[1]["type"], "tool_result");
+    assert_eq!(
+        observer_rows[1]["content"]["value"],
+        json!({"actual":"completed"})
+    );
+}
+
+#[tokio::test]
 async fn tool_boundaries_page_independently_and_rebuild_exact_ids_without_reading_sibling_results()
 {
     let directory = tempfile::tempdir().unwrap();

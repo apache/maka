@@ -34,6 +34,12 @@ async fn control(path: &Path) -> SqliteConnection {
     sqlx::raw_sql("PRAGMA journal_mode=WAL;
         CREATE TABLE application_sources(deployment TEXT NOT NULL,revision INTEGER NOT NULL,input_json TEXT NOT NULL,remote_exports_json TEXT NOT NULL,PRIMARY KEY(deployment,revision));
         CREATE TABLE workspace_bindings(id TEXT PRIMARY KEY,owner_scope TEXT,selection_digest TEXT,workspace_json TEXT,permission_epoch INTEGER,metadata_epoch INTEGER);
+        CREATE TABLE interaction_requests(request_id TEXT PRIMARY KEY,session_id TEXT NOT NULL,created_at INTEGER NOT NULL,record_json TEXT NOT NULL);
+        CREATE TABLE interaction_outcomes(request_id TEXT PRIMARY KEY,outcome_json TEXT NOT NULL);
+        CREATE TABLE interaction_pending(request_id TEXT PRIMARY KEY,session_id TEXT NOT NULL,created_at INTEGER NOT NULL);
+        CREATE INDEX interaction_pending_order ON interaction_pending(session_id,created_at,request_id);
+        CREATE TABLE session_catalog_revision(singleton INTEGER PRIMARY KEY,revision INTEGER NOT NULL);
+        INSERT INTO session_catalog_revision VALUES(1,0);
         CREATE INDEX workspace_bindings_path ON workspace_bindings(json_extract(workspace_json,'$.path'),id);
         CREATE INDEX workspace_bindings_project ON workspace_bindings(owner_scope,json_extract(workspace_json,'$.projectId'),id);
         INSERT INTO workspace_bindings VALUES('control-binding','owner','digest','{\"path\":\"/workspace\",\"projectId\":\"project\"}',1,2);")
@@ -174,6 +180,109 @@ async fn writer_and_both_readers_resolve_live_readonly_control_and_indexes() {
                         .fetch_one(connection)
                         .await?;
                 assert_eq!(epoch, 3);
+                Ok(())
+            })
+        })
+        .await
+        .unwrap();
+    owner.shutdown().await.unwrap();
+    control_connection.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn app_interactions_are_live_readonly_control_facts_without_partition_copies() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("control.sqlite");
+    let mut control_connection = control(&path).await;
+    let owner = partition(
+        &directory.path().join("partition.sqlite"),
+        ReadOnlyControl::new(&path).unwrap(),
+    )
+    .await;
+    let record = serde_json::json!({
+        "sessionId":"session","turnId":"turn","runId":"run",
+        "requestId":"app_request","createdAt":1,"outcome":null,
+        "request":{
+            "kind":"computer_app","toolUseId":"tool","nativeOperationId":"native",
+            "target":{
+                "providerId":"computer","contractId":"desktop","serverId":"computer",
+                "toolName":"cua","capability":"computer_use",
+                "scope":{"kind":"computer_app","platform":"macos","applicationId":"org.example.Fixture"}
+            },
+            "basis":{"boundaryRevision":0,"binding":{"id":"018f7c44-c332-7140-bef8-58a066669ab5","permissionEpoch":0}},
+            "display":{"name":"Fixture","appPath":"/Fixture.app","risk":null,"warning":null},
+            "allowAlways":false,"authorityRevision":0
+        }
+    });
+    let record: maka_agent_facts::interaction::InteractionRecord =
+        serde_json::from_value(record).unwrap();
+    record.validate().unwrap();
+    sqlx::query("INSERT INTO interaction_requests VALUES('app_request','session',1,?)")
+        .bind(serde_json::to_string(&record).unwrap())
+        .execute(&mut control_connection)
+        .await
+        .unwrap();
+    sqlx::raw_sql("INSERT INTO interaction_pending VALUES('app_request','session',1);
+        INSERT INTO interaction_requests VALUES('other_request','session',2,'{\"request\":{\"kind\":\"question\"}}');
+        INSERT INTO interaction_pending VALUES('other_request','session',2);
+        UPDATE session_catalog_revision SET revision=1;")
+        .execute(&mut control_connection).await.unwrap();
+    owner.read(|connection| Box::pin(async move {
+        let app = crate::interactions::records::read_scoped(connection,"app_request",Some("session")).await?.unwrap();
+        assert_eq!(app.request_id,"app_request");
+        assert!(app.outcome.is_none());
+        assert!(crate::interactions::records::read_scoped(connection,"app_request",Some("foreign")).await?.is_none());
+        assert!(crate::interactions::records::read_scoped(connection,"other_request",Some("session")).await?.is_none());
+        let pending:Vec<String> = sqlx::query_scalar("SELECT request_id FROM all_interaction_pending WHERE session_id='session'").fetch_all(&mut *connection).await?;
+        assert_eq!(pending,["app_request"]);
+        let local:(i64,i64,i64) = sqlx::query_as("SELECT (SELECT COUNT(*) FROM main.interaction_requests),(SELECT COUNT(*) FROM main.interaction_outcomes),(SELECT COUNT(*) FROM main.interaction_pending)").fetch_one(&mut *connection).await?;
+        assert_eq!(local,(0,0,0));
+        let revision:i64=sqlx::query_scalar("SELECT revision FROM root_app_revision").fetch_one(connection).await?;
+        assert_eq!(revision,1);
+        Ok(())
+    })).await.unwrap();
+    sqlx::raw_sql("INSERT INTO interaction_outcomes VALUES('app_request','{\"kind\":\"closure\",\"reason\":\"producer_cancelled\",\"committedAt\":2}');
+        DELETE FROM interaction_pending WHERE request_id='app_request';
+        UPDATE session_catalog_revision SET revision=2;")
+        .execute(&mut control_connection).await.unwrap();
+    owner
+        .read(|connection| {
+            Box::pin(async move {
+                let app = crate::interactions::records::read_scoped(
+                    connection,
+                    "app_request",
+                    Some("session"),
+                )
+                .await?
+                .unwrap();
+                assert!(matches!(
+                    app.outcome,
+                    Some(maka_agent_facts::interaction::InteractionOutcome::Closure {
+                        reason: maka_agent_facts::interaction::ClosureReason::ProducerCancelled,
+                        committed_at: 2
+                    })
+                ));
+                let pending: i64 =
+                    sqlx::query_scalar("SELECT COUNT(*) FROM all_interaction_pending")
+                        .fetch_one(&mut *connection)
+                        .await?;
+                assert_eq!(pending, 0);
+                let revision: i64 = sqlx::query_scalar("SELECT revision FROM root_app_revision")
+                    .fetch_one(&mut *connection)
+                    .await?;
+                assert_eq!(revision, 2);
+                assert!(
+                    sqlx::query("UPDATE root_control.interaction_outcomes SET outcome_json='{}'")
+                        .execute(&mut *connection)
+                        .await
+                        .is_err()
+                );
+                assert!(
+                    sqlx::query("UPDATE root_app_outcomes SET outcome_json='{}'")
+                        .execute(connection)
+                        .await
+                        .is_err()
+                );
                 Ok(())
             })
         })

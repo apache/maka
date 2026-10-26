@@ -78,6 +78,9 @@ pub use compaction::*;
 #[path = "contract_interactions.rs"]
 mod interaction;
 pub use interaction::*;
+#[path = "contract_computer_apps.rs"]
+mod computer_apps;
+pub use computer_apps::*;
 #[path = "contract_permissions.rs"]
 mod permissions;
 pub use maka_agent_facts::configuration::ModelSelection;
@@ -1051,6 +1054,9 @@ pub enum DeliveryPage {
     Interactions {
         pending: PendingInteractions,
     },
+    ComputerApps {
+        apps: ComputerApps,
+    },
 }
 
 #[derive(Serialize, JsonSchema, Deserialize)]
@@ -1800,6 +1806,14 @@ pub fn contract() -> Contract {
                     method::<Resume, ResumeResult>(MethodMode::Mutation),
                 ),
                 ("stop".into(), method::<Stop, Stopped>(MethodMode::Mutation)),
+                (
+                    "computerApps".into(),
+                    method::<SessionRead, ComputerApps>(MethodMode::Query),
+                ),
+                (
+                    "stopComputerApp".into(),
+                    method::<StopComputerApp, Stopped>(MethodMode::Mutation),
+                ),
                 (
                     "markRead".into(),
                     method::<MarkRead, MarkReadResult>(MethodMode::Mutation),

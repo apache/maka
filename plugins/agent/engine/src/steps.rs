@@ -33,6 +33,7 @@ pub(super) async fn run(
     continuation_base: Option<u64>,
     handoff: &crate::HandoffGate,
     prior_unknown: bool,
+    effects: &maka_event_log::root_store::InvocationEffects,
 ) -> Result<maka_agent_facts::event::InvocationOutcome, RunError> {
     let crate::runner::ModelWork {
         tools: catalog,
@@ -78,7 +79,7 @@ pub(super) async fn run(
                     }
                     // Live cells retain the current step's capabilities and effects.
                     // A handoff can seal only after those independent jobs settle.
-                    if !tools.code_idle() {
+                    if !tools.code_idle() || !effects.is_idle() {
                         return None;
                     }
                     let context = model_attempt::read_source(inner, input, false, cancellation)
@@ -144,6 +145,7 @@ pub(super) async fn run(
             }
             input.refresh_model(cancellation).await?;
             if tools.code_idle()
+                && effects.is_idle()
                 && pending
                     .as_ref()
                     .is_some_and(auto_context::Pending::is_finished)
@@ -169,6 +171,7 @@ pub(super) async fn run(
             .await?;
             let needs_compaction = crate::context_input::needs_compaction(input, &prompt);
             if tools.code_idle()
+                && effects.is_idle()
                 && compaction == CompactionBudget::Available
                 && pending.is_none()
                 && !prior_unknown
@@ -268,6 +271,7 @@ pub(super) async fn run(
                     }),
                 ) if (compaction == CompactionBudget::Available || pending.is_some())
                     && tools.code_idle()
+                    && effects.is_idle()
                     && !cancellation.is_cancelled() =>
                 {
                     let candidate = match pending.take() {
@@ -317,7 +321,7 @@ pub(super) async fn run(
             // Pruning/compaction require a settled boundary. A yielded cell is
             // still live work, not a corrupt boundary or a reason to cancel it.
             // Defer maintenance until it settles; the model can still call wait.
-            if tools.code_idle() && pending.is_none() && !prior_unknown {
+            if tools.code_idle() && effects.is_idle() && pending.is_none() && !prior_unknown {
                 prune::run(inner, input, cancellation).await?;
             }
             if request_tools.finished() {

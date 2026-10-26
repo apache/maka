@@ -53,7 +53,7 @@ async fn settle(engine: &Engine, root: &maka_event_log::root_store::RootStore, s
             Arc::default(),
             None,
             CancellationToken::new(),
-            move |_, admitted| async move {
+            move |_, admitted, _| async move {
                 admitted.send(()).unwrap();
                 Ok(invocation)
             },
@@ -244,7 +244,7 @@ async fn selected_stores_keep_one_active_admission_after_observer_drop() {
             Arc::default(),
             None,
             CancellationToken::new(),
-            move |_, admitted| async move {
+            move |_, admitted, _| async move {
                 admitted.send(()).unwrap();
                 wait.await.unwrap();
                 Ok(invocation("a", "first"))
@@ -262,7 +262,7 @@ async fn selected_stores_keep_one_active_admission_after_observer_drop() {
                 Arc::default(),
                 None,
                 CancellationToken::new(),
-                |_, _| async { panic!("same Session admitted twice") }
+                |_, _, _| async { panic!("same Session admitted twice") }
             )
             .await,
         Err(RunError::Busy)
@@ -274,7 +274,7 @@ async fn selected_stores_keep_one_active_admission_after_observer_drop() {
             Arc::default(),
             None,
             CancellationToken::new(),
-            |_, admitted| async move {
+            |_, admitted, _| async move {
                 admitted.send(()).unwrap();
                 Ok(invocation("b", "parallel"))
             },
@@ -321,7 +321,7 @@ async fn unconfirmed_worker_cleanup_keeps_original_root_authority_after_completi
                 Arc::default(),
                 None,
                 CancellationToken::new(),
-                move |_, admitted| async move {
+                move |_, admitted, _| async move {
                     admitted.send(()).unwrap();
                     assert!(!panics, "physical worker panic");
                     Err(RunError::CleanupUnconfirmed)
@@ -353,4 +353,135 @@ async fn unconfirmed_worker_cleanup_keeps_original_root_authority_after_completi
             std::io::ErrorKind::WouldBlock
         );
     }
+}
+
+#[tokio::test]
+async fn worker_completion_retains_admission_until_invocation_effect_settles() {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        for unconfirmed in [false, true] {
+            let (_directory, engine, root) = engine().await;
+            let root = Arc::new(root);
+            let store = crate::test_support::session(&root, "effect").await;
+            let execution = store.execution_scope(None).await.unwrap();
+            let selected = execution.store();
+            let effect_root = root.clone();
+            let (send_effect, effect) = tokio::sync::oneshot::channel();
+            let running = engine
+                .start_owned(
+                    execution,
+                    invocation("effect", "run"),
+                    Arc::default(),
+                    None,
+                    CancellationToken::new(),
+                    move |_, admitted, _| async move {
+                        let invocation = invocation("effect", "run");
+                        let custody = selected.execution_custody().unwrap();
+                        let effect = effect_root
+                            .fork_invocation_effect(custody.as_ref(), &invocation)
+                            .unwrap();
+                        send_effect
+                            .send(effect)
+                            .unwrap_or_else(|_| panic!("effect observer disappeared"));
+                        admitted.send(()).unwrap();
+                        Ok(invocation)
+                    },
+                )
+                .await
+                .unwrap();
+            let effect = effect.await.unwrap();
+            let mut completion = Box::pin(running.completion());
+            assert!(futures_util::poll!(completion.as_mut()).is_pending());
+            assert!(matches!(
+                engine
+                    .start_owned(
+                        store.execution_scope(None).await.unwrap(),
+                        invocation("effect", "collision"),
+                        Arc::default(),
+                        None,
+                        CancellationToken::new(),
+                        |_, _, _| async { panic!("pending effect lost Run admission") },
+                    )
+                    .await,
+                Err(RunError::Busy)
+            ));
+
+            if unconfirmed {
+                effect.retain_unconfirmed("late native cleanup is unconfirmed".into());
+            } else {
+                effect.finish(Ok(()));
+            }
+            let completed = completion.await;
+            if unconfirmed {
+                assert!(completed.cleanup.is_err());
+                assert!(
+                    completed
+                        .result
+                        .as_ref()
+                        .is_err_and(RunError::is_cleanup_unconfirmed)
+                );
+                assert!(root.shutdown().await.is_err());
+            } else {
+                assert!(completed.cleanup.is_ok());
+                assert_eq!(completed.result.unwrap().invocation_id, "run");
+                root.shutdown().await.unwrap();
+            }
+            engine.drain().await;
+            assert!(engine.0.active.lock().unwrap().is_empty());
+        }
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn worker_panic_cancels_and_drains_its_original_invocation_effect() {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let (_directory, engine, root) = engine().await;
+        let root = Arc::new(root);
+        let store = crate::test_support::session(&root, "panicking-effect").await;
+        let execution = store.execution_scope(None).await.unwrap();
+        let selected = execution.store();
+        let effect_root = root.clone();
+        let (send_effect, effect) = tokio::sync::oneshot::channel();
+        let running = engine
+            .start_owned(
+                execution,
+                invocation("panicking-effect", "run"),
+                Arc::default(),
+                None,
+                CancellationToken::new(),
+                move |_, admitted, _| async move {
+                    let invocation = invocation("panicking-effect", "run");
+                    let custody = selected.execution_custody().unwrap();
+                    let effect = effect_root
+                        .fork_invocation_effect(custody.as_ref(), &invocation)
+                        .unwrap();
+                    send_effect
+                        .send(effect)
+                        .unwrap_or_else(|_| panic!("effect observer disappeared"));
+                    admitted.send(()).unwrap();
+                    panic!("physical worker panic with an admitted effect");
+                },
+            )
+            .await
+            .unwrap();
+        let effect = effect.await.unwrap();
+        effect.cancellation().cancelled().await;
+        let mut completion = Box::pin(running.completion());
+        assert!(futures_util::poll!(completion.as_mut()).is_pending());
+        effect.finish(Ok(()));
+        let completed = completion.await;
+        assert!(completed.cleanup.is_err());
+        assert!(
+            completed
+                .result
+                .as_ref()
+                .is_err_and(RunError::is_cleanup_unconfirmed)
+        );
+        engine.drain().await;
+        assert!(engine.0.active.lock().unwrap().is_empty());
+        assert!(root.shutdown().await.is_err());
+    })
+    .await
+    .unwrap();
 }

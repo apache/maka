@@ -1,5 +1,6 @@
 //! Bundling an app (rolldown): release bundles and development bundles
 //! with hot module replacement.
+//! Windows network-share entries use an equivalent ordinary UNC path for rolldown.
 
 use std::{
     path::PathBuf,
@@ -342,10 +343,52 @@ pub fn bundle(options: &BundleOptions) -> Result<Bundle, BundleError> {
         .block_on(bundle_async(options))
 }
 
+fn canonical_bundler_entry(path: &std::path::Path) -> std::io::Result<PathBuf> {
+    let entry = dunce::canonicalize(path)?;
+    #[cfg(windows)]
+    if let Some(candidate) = ordinary_unc_candidate(&entry)
+        && std::fs::canonicalize(&candidate).is_ok_and(|actual| actual == entry)
+    {
+        // Rolldown cannot resolve the verbatim UNC spelling as an entry ID.
+        // Only change its representation after proving the same native file.
+        return Ok(candidate);
+    }
+    Ok(entry)
+}
+
+#[cfg(windows)]
+fn ordinary_unc_candidate(path: &std::path::Path) -> Option<PathBuf> {
+    use std::{
+        ffi::OsString,
+        path::{Component, Prefix},
+    };
+
+    let mut components = path.components();
+    let Component::Prefix(prefix) = components.next()? else {
+        return None;
+    };
+    let Prefix::VerbatimUNC(server, share) = prefix.kind() else {
+        return None;
+    };
+    let mut root = OsString::from(r"\\");
+    root.push(server);
+    root.push(r"\");
+    root.push(share);
+    let mut candidate = PathBuf::from(root);
+    for component in components {
+        match component {
+            Component::RootDir => {}
+            Component::Normal(name) => candidate.push(name),
+            _ => return None,
+        }
+    }
+    Some(candidate)
+}
+
 /// Bundles an app.
 pub async fn bundle_async(options: &BundleOptions) -> Result<Bundle, BundleError> {
     let start = Instant::now();
-    let entry = dunce::canonicalize(&options.entry).map_err(|e| {
+    let entry = canonical_bundler_entry(&options.entry).map_err(|e| {
         BundleError::other(format!("entry not found: {}: {e}", options.entry.display()))
     })?;
     let cwd = entry
@@ -645,7 +688,7 @@ pub async fn bundle_hot_async(
     ui_sets: &[nsh_core::ui::description::SetDescription],
 ) -> Result<HotBundle, BundleError> {
     let start = Instant::now();
-    let entry = dunce::canonicalize(entry)
+    let entry = canonical_bundler_entry(entry)
         .map_err(|e| BundleError::other(format!("entry not found: {}: {e}", entry.display())))?;
     let cwd = entry
         .parent()
@@ -742,6 +785,61 @@ pub async fn bundle_hot_async(
         capabilities,
         elapsed_ms: start.elapsed().as_secs_f64() * 1000.0,
     })
+}
+
+#[cfg(all(test, windows))]
+mod windows_bundler_path_tests {
+    use super::*;
+    use std::{
+        ffi::OsString,
+        os::windows::ffi::{OsStrExt, OsStringExt},
+        path::{Component, Path, Prefix},
+    };
+
+    #[test]
+    fn ordinary_unc_candidate_preserves_components_without_unicode_conversion() {
+        assert_eq!(
+            ordinary_unc_candidate(Path::new(r"\\?\UNC\server\share\目录\App.tsx")),
+            Some(PathBuf::from(r"\\server\share\目录\App.tsx"))
+        );
+        let name = OsString::from_wide(&[0xd800, b'.' as u16, b't' as u16, b's' as u16]);
+        let mut verbatim = PathBuf::from(r"\\?\UNC\server\share\");
+        verbatim.push(&name);
+        let mut ordinary = PathBuf::from(r"\\server\share\");
+        ordinary.push(name);
+        let candidate = ordinary_unc_candidate(&verbatim).unwrap();
+        assert_eq!(
+            candidate.as_os_str().encode_wide().collect::<Vec<_>>(),
+            ordinary.as_os_str().encode_wide().collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn other_path_namespaces_are_not_rewritten() {
+        for path in [
+            r"C:\app\App.tsx",
+            r"\\?\C:\app\App.tsx",
+            r"\\server\share\App.tsx",
+            r"\\.\pipe\fixture",
+            "/tmp/App.tsx",
+        ] {
+            assert!(ordinary_unc_candidate(Path::new(path)).is_none(), "{path}");
+        }
+    }
+
+    #[test]
+    fn canonical_bundler_entry_retains_the_existing_source_file_identity() {
+        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/bundle.rs");
+        let actual = std::fs::canonicalize(&source).unwrap();
+        let entry = canonical_bundler_entry(&source).unwrap();
+        assert_eq!(std::fs::canonicalize(&entry).unwrap(), actual);
+        if matches!(actual.components().next(), Some(Component::Prefix(prefix)) if matches!(prefix.kind(), Prefix::VerbatimUNC(..)))
+        {
+            assert!(
+                matches!(entry.components().next(), Some(Component::Prefix(prefix)) if matches!(prefix.kind(), Prefix::UNC(..)))
+            );
+        }
+    }
 }
 
 #[cfg(test)]

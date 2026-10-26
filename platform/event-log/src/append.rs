@@ -30,6 +30,15 @@ pub(crate) mod history;
 pub(crate) mod ingress;
 pub(crate) mod write;
 
+struct CapabilityAdmission {
+    targets: Vec<maka_agent_facts::interaction::GrantTarget>,
+    basis: maka_agent_facts::workspace::PermissionBasis,
+    app: Option<(
+        maka_agent_facts::interaction::GrantTarget,
+        maka_agent_facts::interaction::ComputerAppDisplay,
+    )>,
+}
+
 impl EventLog {
     /// Commit ordered facts atomically, validating each against the preceding
     /// facts in this transaction. Exact replays return their original sequence
@@ -60,33 +69,68 @@ impl EventLog {
             .map_err(commit_error)
     }
 
-    /// A selected native executor checks its original capability grant in the
+    /// A selected native executor checks all its original capability grants in the
     /// same transaction as T1. Revocation cannot race a separate grant read.
     /// This compares existing authority; it neither creates a grant nor runs effects.
     pub async fn append_capability_dispatch(
         &self,
         event: &EventWrite,
-        target: &maka_agent_facts::interaction::GrantTarget,
+        targets: &[maka_agent_facts::interaction::GrantTarget],
         basis: &maka_agent_facts::workspace::PermissionBasis,
+    ) -> Result<u64, CommitError> {
+        self.append_granted_dispatch(event, targets, basis, None)
+            .await
+    }
+
+    pub(crate) async fn append_computer_app_dispatch(
+        &self,
+        event: &EventWrite,
+        targets: &[maka_agent_facts::interaction::GrantTarget],
+        app: &maka_agent_facts::interaction::GrantTarget,
+        display: &maka_agent_facts::interaction::ComputerAppDisplay,
+        basis: &maka_agent_facts::workspace::PermissionBasis,
+    ) -> Result<u64, CommitError> {
+        self.append_granted_dispatch(event, targets, basis, Some((app.clone(), display.clone())))
+            .await
+    }
+
+    async fn append_granted_dispatch(
+        &self,
+        event: &EventWrite,
+        targets: &[maka_agent_facts::interaction::GrantTarget],
+        basis: &maka_agent_facts::workspace::PermissionBasis,
+        app: Option<(
+            maka_agent_facts::interaction::GrantTarget,
+            maka_agent_facts::interaction::ComputerAppDisplay,
+        )>,
     ) -> Result<u64, CommitError> {
         if !matches!(event.event().fact, Fact::ToolDispatched { .. }) {
             return Err(CommitError::Rejected(
                 "capability admission requires a tool dispatch".into(),
             ));
         }
-        self.append_batch_checked(std::slice::from_ref(event), Some((target.clone(), *basis)))
-            .await
-            .map(|sequences| sequences[0])
-            .map_err(commit_error)
+        if targets.is_empty() {
+            return Err(CommitError::Rejected(
+                "capability admission requires at least one grant target".into(),
+            ));
+        }
+        self.append_batch_checked(
+            std::slice::from_ref(event),
+            Some(CapabilityAdmission {
+                targets: targets.to_vec(),
+                basis: *basis,
+                app,
+            }),
+        )
+        .await
+        .map(|sequences| sequences[0])
+        .map_err(commit_error)
     }
 
     async fn append_batch_checked(
         &self,
         events: &[EventWrite],
-        capability: Option<(
-            maka_agent_facts::interaction::GrantTarget,
-            maka_agent_facts::workspace::PermissionBasis,
-        )>,
+        capability: Option<CapabilityAdmission>,
     ) -> Result<Vec<u64>, StoreError> {
         for event in events {
             self.check_bound_session(&event.event().invocation.session_id)?;
@@ -105,18 +149,48 @@ impl EventLog {
                     let mut sequences = Vec::with_capacity(events.len());
                     let mut last_inserted = None;
                     for event in &events {
-                        if let Some((target, basis)) = &capability
-                            && crate::interactions::capability_grant(
-                                &mut transaction,
-                                &event.event().invocation.session_id,
-                                target,
-                            )
-                            .await?
-                            .is_none_or(|grant| grant.basis != Some(*basis))
-                        {
-                            return Err(StoreError::PermissionRevoked);
+                        if let Some(admission) = &capability {
+                            let CapabilityAdmission {
+                                targets,
+                                basis,
+                                app,
+                            } = admission;
+                            for target in targets {
+                                if crate::interactions::capability_grant(
+                                    &mut transaction,
+                                    &event.event().invocation.session_id,
+                                    target,
+                                )
+                                .await?
+                                .is_none_or(|grant| grant.basis != Some(*basis))
+                                {
+                                    return Err(StoreError::PermissionRevoked);
+                                }
+                            }
+                            if let Some((target, display)) = app {
+                                crate::root_store::require_computer_app_running(
+                                    &mut transaction,
+                                    &event.event().invocation,
+                                    target,
+                                    display,
+                                )
+                                .await?;
+                            }
                         }
                         let result = Self::append_in_transaction(&mut transaction, event).await?;
+                        if let Some(CapabilityAdmission {
+                            app: Some((target, display)),
+                            ..
+                        }) = &capability
+                        {
+                            crate::root_store::record_computer_app_activity(
+                                &mut transaction,
+                                event.event(),
+                                target,
+                                display,
+                            )
+                            .await?;
+                        }
                         let sequence = match result {
                             AppendResult::Existing(sequence) => sequence,
                             AppendResult::Inserted(sequence) => {
@@ -217,6 +291,17 @@ impl EventLog {
         crate::composition::insert(transaction, write).await?;
         crate::usage::valuation::append(transaction, write).await?;
         crate::root_store::usage_meter::append(transaction, event).await?;
+        if matches!(&event.fact, Fact::InvocationEnded { outcome } if !matches!(outcome, maka_agent_facts::event::InvocationOutcome::HandoffPaused { .. }))
+        {
+            // App Stop owns the logical Turn, so physical handoffs retain its
+            // source selection. A terminal boundary releases the event FK and
+            // its dependent Stop state in this same canonical transaction.
+            sqlx::query("DELETE FROM computer_app_turn_activity WHERE session_id=? AND turn_id=?")
+                .bind(&event.invocation.session_id)
+                .bind(&event.invocation.turn_id)
+                .execute(&mut *transaction)
+                .await?;
+        }
         if matches!(event.fact, Fact::InvocationEnded { .. }) {
             crate::sessions::read_state::mark_unread(
                 transaction,

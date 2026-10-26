@@ -268,12 +268,10 @@ impl Authority for Access {
                 .await
                 .map_err(|e| ToolError::Failed(e.to_string()))?;
             let mut origin = owner.owner.origin.clone();
-            if let maka_agent_facts::tool_call::ToolOrigin::HostSdk {
-                parent_operation_id,
-                ..
-            } = &mut origin
-            {
-                *parent_operation_id = Some(owner.tool.operation_id.clone());
+            if let maka_agent_facts::tool_call::ToolOrigin::HostSdk { parent, .. } = &mut origin {
+                *parent = Some(maka_agent_facts::tool_call::HostSdkParent::NestedEffect {
+                    operation_id: owner.tool.operation_id.clone(),
+                });
             }
             let journal = ToolJournal::new(
                 Arc::new(maka_agent_authority::permissions::execution(

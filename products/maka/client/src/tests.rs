@@ -190,6 +190,7 @@ impl Fixture {
                 "send":{"mode":"mutation","input":{},"output":{},"progress":{},"resources":{}},
                 "selectBackend":{"mode":"mutation","input":{},"output":{},"resources":{}},
                 "stop":{"mode":"mutation","input":{},"output":{},"resources":{}},
+                "stopComputerApp":{"mode":"mutation","input":{},"output":{},"resources":{}},
                 "respond":{"mode":"mutation","input":{},"output":{},"resources":{}},
                 "editQueue":{"mode":"mutation","input":{},"output":{},"resources":{}},
                 "metadata":{"mode":"mutation","input":{},"output":{},"resources":{}},
@@ -333,6 +334,7 @@ impl Fixture {
                                     "selectBackend".into(),
                                     "updateGlobalInstructions".into(),
                                     "stop".into(),
+                                    "stopComputerApp".into(),
                                     "respond".into(),
                                     "editQueue".into(),
                                     "watch".into(),
@@ -471,8 +473,9 @@ async fn durable_original_receipt_survives_cancelled_observer_disconnect_and_res
         for (method, input, expected) in [
             ("stop", json!({"sessionId":"session-one","invocationId":"run-A"}), json!({"kind":"agent-control","invocationId":"run-A"})),
             ("respond", json!({"sessionId":"session-one","requestId":"interaction-A"}), json!({"kind":"agent-control","requestId":"interaction-A"})),
+            ("stopComputerApp", json!({"sessionId":"session-one","operationId":"native-effect-A"}), json!({"kind":"agent-control","operationId":"native-effect-A"})),
         ] {
-            assert_eq!(client.control(Uuid::new_v4(),method,json!({"sessionId":"session-one"})).await.err().unwrap(),"agent control requires a valid invocationId or requestId");
+            assert_eq!(client.control(Uuid::new_v4(),method,json!({"sessionId":"session-one"})).await.err().unwrap(), if method == "stopComputerApp" {"agent control requires a valid operationId"} else {"agent control requires a valid invocationId or requestId"});
             let control = client.control(Uuid::new_v4(),method,input).await.unwrap();
             let original = client.operation_for_control(control.id()).await.unwrap();
             assert_eq!(original.session_id.as_deref(),Some("session-one"));

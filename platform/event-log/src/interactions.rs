@@ -18,11 +18,12 @@
  */
 
 //! Append-only requests/outcomes and atomically derived Session grants.
+mod browser;
 pub(crate) mod lifecycle;
 #[cfg(test)]
 mod pending_tests;
 pub(crate) mod permissions;
-mod records;
+pub(crate) mod records;
 pub use permissions::PermissionGrant;
 
 use crate::{EventLog, StoreError};
@@ -33,7 +34,7 @@ use maka_agent_facts::interaction::InteractionRecord;
 use maka_agent_facts::interaction::InteractionRequest;
 use maka_agent_facts::interaction::SessionGrant;
 use maka_agent_facts::interaction::entity_id;
-use records::{invalid, read};
+use records::{invalid, read_local};
 use sqlx::Connection;
 
 /// A conflicting retry returns the actual canonical fact, never the candidate.
@@ -73,6 +74,9 @@ impl EventLog {
     ) -> Result<InteractionCommit, StoreError> {
         self.validate_root()?;
         request.validate().map_err(invalid)?;
+        if matches!(request.request, InteractionRequest::ComputerApp { .. }) {
+            return Err(invalid("computer application consent is owned by the Root"));
+        }
         if request.outcome.is_some() {
             return Err(invalid("request establishment cannot include an outcome"));
         }
@@ -85,7 +89,9 @@ impl EventLog {
             .run(move |connection| {
                 Box::pin(async move {
                     let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
-                    if let Some(mut record) = read(&mut tx, &request.request_id).await? {
+                    require_local_identity(&mut tx, &request.request_id, &request.session_id)
+                        .await?;
+                    if let Some(mut record) = read_local(&mut tx, &request.request_id).await? {
                         Self::require_session_scope(
                             expected_session.as_deref(),
                             &record.session_id,
@@ -137,6 +143,9 @@ impl EventLog {
         self.validate_root()?;
         entity_id(request_id).map_err(invalid)?;
         outcome.validate().map_err(invalid)?;
+        if matches!(outcome, InteractionOutcome::ComputerAppDecision { .. }) {
+            return Err(invalid("computer application consent is owned by the Root"));
+        }
         let expected_session = self.expected_session.clone();
         let request_id = request_id.to_owned();
         let commits = self.commits.notice();
@@ -144,10 +153,14 @@ impl EventLog {
             .run(move |connection| {
                 Box::pin(async move {
                     let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
-                    let mut record = read(&mut tx, &request_id)
+                    let mut record = read_local(&mut tx, &request_id)
                         .await?
                         .ok_or_else(|| invalid("interaction request not found"))?;
                     Self::require_session_scope(expected_session.as_deref(), &record.session_id)?;
+                    require_local_identity(&mut tx, &request_id, &record.session_id).await?;
+                    if matches!(record.request, InteractionRequest::ComputerApp { .. }) {
+                        return Err(invalid("computer application consent is owned by the Root"));
+                    }
                     outcome
                         .validate_for_request(&record.request)
                         .map_err(invalid)?;
@@ -278,6 +291,24 @@ impl EventLog {
     }
 }
 
+async fn require_local_identity(
+    connection: &mut sqlx::SqliteConnection,
+    request_id: &str,
+    session_id: &str,
+) -> Result<(), StoreError> {
+    let root: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM root_app_requests WHERE request_id=? AND session_id=?)",
+    )
+    .bind(request_id)
+    .bind(session_id)
+    .fetch_one(connection)
+    .await?;
+    if root {
+        return Err(invalid("interaction identity belongs to the Root"));
+    }
+    Ok(())
+}
+
 /// Original grant and current permission boundary observed in one transaction.
 pub(crate) async fn capability_grant(
     connection: &mut sqlx::SqliteConnection,
@@ -307,8 +338,10 @@ pub(crate) async fn capability_grant(
     Ok(Some(grant))
 }
 
-const PENDING_INTERACTIONS: &str = "SELECT request_id FROM interaction_pending
-    WHERE session_id = ? ORDER BY created_at, request_id";
+const PENDING_INTERACTIONS: &str = "SELECT request_id,created_at FROM interaction_pending
+    WHERE session_id=?1
+    UNION ALL SELECT request_id,created_at FROM root_app_pending WHERE session_id=?1
+    ORDER BY created_at,request_id";
 
 /// Read inside the caller's observation transaction for a coherent projection.
 pub(crate) async fn pending(
@@ -322,7 +355,7 @@ pub(crate) async fn pending(
     let mut records = Vec::with_capacity(ids.len());
     for id in ids {
         records.push(
-            read(connection, &id)
+            records::read_scoped(connection, &id, Some(session_id))
                 .await?
                 .ok_or_else(|| invalid("stored interaction disappeared"))?,
         );

@@ -91,6 +91,7 @@ import type {
   OperationReply,
   AgentPendingInteractions,
   AgentQueue,
+  AgentComputerApps,
 } from '../../../../packages/plugin-sdk/src/index.js';
 import {
   createAttachmentDraft,
@@ -109,6 +110,7 @@ export type Control = (method: string, input: any) => Promise<any>;
 export type ConversationHandle = ComposerSession & {
   compact(prompt?: string): Promise<void>;
   interactions(): AgentPendingInteractions;
+  computerApps(): AgentComputerApps;
   activeTurn(): string | null;
   activityTurn(): string | null;
   flushDraft(): Promise<boolean>;
@@ -200,6 +202,8 @@ export function Conversation(props: ConversationProps) {
   const runTurn = signal<string | null>(null);
   const backend = signal<any>(null);
   const interactions = signal<AgentPendingInteractions>({ revision: -1, entries: [] });
+  const computerApps = signal<AgentComputerApps>({ entries: [] });
+  let interactionsFromStream = false;
   const error = createText();
   const ready = signal(false);
   const transcriptStatus = signal<'loading' | 'live' | 'closing' | 'failed'>('loading');
@@ -841,7 +845,12 @@ export function Conversation(props: ConversationProps) {
       return;
     }
     if (page.kind === 'interactions') {
+      interactionsFromStream = true;
       if (page.pending.revision >= interactions().revision) interactions.set(page.pending);
+      return;
+    }
+    if (page.kind === 'computer_apps') {
+      computerApps.set(page.apps);
       return;
     }
     if (page.kind !== 'events') return;
@@ -1695,6 +1704,7 @@ export function Conversation(props: ConversationProps) {
     sessionId,
     queue: queueSession,
     interactions,
+    computerApps,
     draft,
     attachments,
     previewImage: props.previewImage,
@@ -1996,7 +2006,8 @@ export function Conversation(props: ConversationProps) {
       void host
         .query('agent', 'pendingInteractions', { sessionId })
         .then((pending) => {
-          if (alive && pending.revision >= interactions().revision) interactions.set(pending);
+          if (alive && !interactionsFromStream && pending.revision >= interactions().revision)
+            interactions.set(pending);
         })
         .catch(report);
       startTranscript();

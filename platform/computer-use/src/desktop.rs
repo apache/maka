@@ -33,6 +33,21 @@ use tokio_util::sync::CancellationToken;
 pub(crate) mod worker;
 pub use worker::bootstrap;
 
+pub(crate) type NativeCleanup = tokio::sync::watch::Receiver<Option<Result<(), ToolError>>>;
+
+pub(crate) async fn observe_retirement(mut pending: NativeCleanup) -> Result<(), ToolError> {
+    loop {
+        if let Some(result) = pending.borrow().clone() {
+            return result;
+        }
+        pending.changed().await.map_err(|error| {
+            ToolError::CleanupUnconfirmed(format!(
+                "native epoch close observation was lost: {error}"
+            ))
+        })?;
+    }
+}
+
 /// The embedding application owns distribution and version selection. Neither
 /// the model nor plugin configuration can provide a downloader or executable.
 pub type WindowsHelperResolver = fn() -> maka_agent_facts::tools::ToolFuture<PathBuf>;
@@ -68,28 +83,319 @@ fn use_windows(desktop: Desktop, platform: &str, wsl: bool) -> Result<bool, Tool
     }
 }
 
+/// Monotonically allocated process-local identity, never a wire capability.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct NativeEpochId(u64);
+
+impl NativeEpochId {
+    pub fn new() -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        Self(
+            NEXT.try_update(
+                std::sync::atomic::Ordering::Relaxed,
+                std::sync::atomic::Ordering::Relaxed,
+                |next| next.checked_add(1),
+            )
+            .expect("native epoch identity exhausted"),
+        )
+    }
+}
+
+impl Default for NativeEpochId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl std::fmt::Display for NativeEpochId {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
+/// Logical browser and cursor custody shared by replaceable native epochs.
+/// The Host closes this owner after joining the epochs it created.
+#[derive(Clone)]
+pub struct SessionOwner {
+    driver: Arc<Mutex<Driver>>,
+    state: Arc<std::sync::Mutex<OwnerState>>,
+    #[cfg(feature = "native-desktop")]
+    browser_owner: uuid::Uuid,
+    #[cfg(feature = "native-desktop")]
+    cursor: Arc<std::sync::Mutex<crate::cursor::Spec>>,
+}
+
+struct OwnerState {
+    closed: bool,
+    backend: OwnerBackend,
+}
+
+enum OwnerBackend {
+    Unselected,
+    Local,
+    Windows { active: Option<RemoteEpoch> },
+}
+
+struct RemoteEpoch {
+    epoch: NativeEpochId,
+    session: Option<String>,
+}
+
+impl SessionOwner {
+    pub fn new(driver: Arc<Mutex<Driver>>) -> Self {
+        Self {
+            driver,
+            state: Arc::new(std::sync::Mutex::new(OwnerState {
+                closed: false,
+                backend: OwnerBackend::Unselected,
+            })),
+            #[cfg(feature = "native-desktop")]
+            browser_owner: uuid::Uuid::new_v4(),
+            #[cfg(feature = "native-desktop")]
+            cursor: Arc::new(std::sync::Mutex::new(crate::cursor::Spec::default())),
+        }
+    }
+
+    /// Create fresh interpreter-facing caches without borrowing an older epoch.
+    pub fn new_epoch(&self) -> Result<Session, ToolError> {
+        let epoch = NativeEpochId::new();
+        let mut state = self.state.lock().unwrap();
+        if state.closed {
+            return Err(failed("Computer Use Session owner is closed"));
+        }
+        if let OwnerBackend::Windows { active } = &mut state.backend {
+            if active.is_some() {
+                return Err(failed(
+                    "unsupported: Windows desktop worker requires the previous native epoch to close before replacement",
+                ));
+            }
+            *active = Some(RemoteEpoch {
+                epoch,
+                session: None,
+            });
+        }
+        Ok(Session::from_owner(self.clone(), epoch))
+    }
+
+    pub fn supports_epoch_retirement(&self) -> bool {
+        !matches!(
+            self.state.lock().unwrap().backend,
+            OwnerBackend::Windows { .. }
+        )
+    }
+
+    pub(crate) fn ensure_open(&self) -> Result<(), ToolError> {
+        if self.state.lock().unwrap().closed {
+            Err(failed("Computer Use Session owner is closed"))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn select_backend(&self, epoch: NativeEpochId, windows: bool) -> Result<(), ToolError> {
+        let mut state = self.state.lock().unwrap();
+        if state.closed {
+            return Err(failed("Computer Use Session owner is closed"));
+        }
+        if let OwnerBackend::Windows {
+            active: Some(active),
+        } = &state.backend
+            && active.epoch != epoch
+        {
+            return Err(failed(
+                "unsupported: Windows desktop worker still owns the previous native epoch",
+            ));
+        }
+        if windows {
+            if !matches!(&state.backend, OwnerBackend::Windows { active: Some(_) }) {
+                state.backend = OwnerBackend::Windows {
+                    active: Some(RemoteEpoch {
+                        epoch,
+                        session: None,
+                    }),
+                };
+            }
+        } else {
+            state.backend = OwnerBackend::Local;
+        }
+        Ok(())
+    }
+
+    fn bind_remote(&self, epoch: NativeEpochId, session: &str) -> Result<(), ToolError> {
+        let mut state = self.state.lock().unwrap();
+        if state.closed {
+            return Err(failed("Computer Use Session owner is closed"));
+        }
+        let OwnerBackend::Windows {
+            active: Some(active),
+        } = &mut state.backend
+        else {
+            return Err(failed("Windows native epoch is unavailable"));
+        };
+        if active.epoch != epoch || active.session.as_deref().is_some_and(|id| id != session) {
+            return Err(failed("Computer Use Session identity mismatch"));
+        }
+        active.session.get_or_insert_with(|| session.to_owned());
+        Ok(())
+    }
+
+    fn remote_session(&self, epoch: NativeEpochId) -> Option<String> {
+        let state = self.state.lock().unwrap();
+        match &state.backend {
+            OwnerBackend::Windows {
+                active: Some(active),
+            } if active.epoch == epoch => active.session.clone(),
+            _ => None,
+        }
+    }
+
+    fn release_remote(&self, epoch: NativeEpochId) {
+        let mut state = self.state.lock().unwrap();
+        if let OwnerBackend::Windows { active } = &mut state.backend
+            && active.as_ref().is_some_and(|active| active.epoch == epoch)
+        {
+            *active = None;
+        }
+    }
+
+    #[cfg(feature = "native-desktop")]
+    pub(crate) fn browser_owner(&self) -> uuid::Uuid {
+        self.browser_owner
+    }
+
+    #[cfg(feature = "native-desktop")]
+    pub(crate) fn cursor(&self) -> crate::cursor::Spec {
+        self.cursor.lock().unwrap().clone()
+    }
+
+    #[cfg(feature = "native-desktop")]
+    pub(crate) fn cursor_handle(&self) -> Arc<std::sync::Mutex<crate::cursor::Spec>> {
+        self.cursor.clone()
+    }
+
+    #[cfg(feature = "native-desktop")]
+    pub(crate) fn configure_cursor(
+        &self,
+        options: crate::cursor::Options,
+    ) -> Result<crate::cursor::Spec, ToolError> {
+        self.ensure_open()?;
+        let mut cursor = self.cursor.lock().unwrap();
+        cursor.configure(options)?;
+        Ok(cursor.clone())
+    }
+
+    pub async fn finish_turn(&self, turn: &str, language: Language) -> Result<(), ToolError> {
+        let remote = {
+            let state = self.state.lock().unwrap();
+            match &state.backend {
+                OwnerBackend::Windows { active } => {
+                    Some(active.as_ref().and_then(|active| active.session.clone()))
+                }
+                _ => None,
+            }
+        };
+        if let Some(remote) = remote {
+            return match remote {
+                Some(session) => self
+                    .driver
+                    .lock()
+                    .await
+                    .windows
+                    .call(
+                        worker::Request::FinishTurn {
+                            session,
+                            turn: turn.to_owned(),
+                            language,
+                        },
+                        &CancellationToken::new(),
+                    )
+                    .await
+                    .map(|_| ()),
+                None => Ok(()),
+            };
+        }
+        #[cfg(feature = "native-desktop")]
+        return crate::browser::Browsers::with_owner(self.driver.clone(), self.browser_owner)
+            .finish_turn(turn, &self.cursor(), language)
+            .await;
+        #[cfg(not(feature = "native-desktop"))]
+        Ok(())
+    }
+
+    /// Finalize shared resources after joining every original epoch close.
+    /// A caller must preserve epoch failures; this result covers only shared cleanup.
+    pub async fn close(&self) -> Result<(), ToolError> {
+        let remote_live = {
+            let mut state = self.state.lock().unwrap();
+            state.closed = true;
+            matches!(&state.backend, OwnerBackend::Windows { active: Some(_) })
+        };
+        let mut failures = Vec::new();
+        if remote_live {
+            failures.push("Windows native epoch has not confirmed its cleanup".to_owned());
+        }
+        #[cfg(feature = "native-desktop")]
+        {
+            let cursor = self.cursor();
+            if let Err(error) =
+                crate::browser::Browsers::with_owner(self.driver.clone(), self.browser_owner)
+                    .close(&cursor)
+                    .await
+            {
+                failures.push(error.to_string());
+            }
+            if let Err(error) = self.driver.lock().await.cursors.remove(&cursor.id).await {
+                failures.push(error.to_string());
+            }
+        }
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(ToolError::CleanupUnconfirmed(failures.join("; ")))
+        }
+    }
+}
+
 /// The selected desktop owns all targets, including browser connections. The
 /// embedding Host still admits and journals every operation before invoking it.
 pub struct Session {
     driver: Arc<Mutex<Driver>>,
+    native_epoch: NativeEpochId,
+    owner: SessionOwner,
     backend: Option<Backend>,
-    closed: bool,
+    state: SessionState,
+    remote_cleanup: Option<NativeCleanup>,
+}
+enum SessionState {
+    Open,
+    Closing,
+    Closed,
 }
 enum Backend {
     #[cfg(feature = "native-desktop")]
     Local(session::Session),
     Windows {
-        id: Option<String>,
         browsers: Vec<BrowserConnection>,
     },
 }
 impl Session {
     pub fn new(driver: Arc<Mutex<Driver>>) -> Self {
+        Self::from_owner(SessionOwner::new(driver), NativeEpochId::new())
+    }
+
+    fn from_owner(owner: SessionOwner, native_epoch: NativeEpochId) -> Self {
         Self {
-            driver,
+            driver: owner.driver.clone(),
+            owner,
+            native_epoch,
             backend: None,
-            closed: false,
+            state: SessionState::Open,
+            remote_cleanup: None,
         }
+    }
+
+    pub fn native_epoch(&self) -> NativeEpochId {
+        self.native_epoch
     }
 
     /// Snapshot display metadata from the same target owner used for execution.
@@ -99,7 +405,15 @@ impl Session {
             #[cfg(feature = "native-desktop")]
             (
                 Some(Backend::Local(local)),
-                Command::Observe { handle, .. } | Command::Action { handle, .. },
+                Command::Observe { handle, .. }
+                | Command::Action { handle, .. }
+                | Command::BrowserRead { handle, .. }
+                | Command::ClipboardRead { handle }
+                | Command::ClipboardReadText { handle }
+                | Command::ClipboardWrite { handle, .. }
+                | Command::ClipboardWriteText { handle, .. }
+                | Command::GetJsDialog { handle, .. }
+                | Command::HandleJsDialog { handle, .. },
             ) => local.target_label(handle),
             _ => None,
         };
@@ -112,9 +426,10 @@ impl Session {
         browsers: Vec<BrowserConnection>,
         language: Language,
     ) -> Result<(), ToolError> {
-        if self.closed {
+        if !matches!(self.state, SessionState::Open) {
             return Err(failed("Computer Use Session is closed"));
         }
+        self.owner.ensure_open()?;
         validate_connections(&browsers)?;
         let windows = use_windows(desktop, local_platform(), is_wsl())?;
         if let Some(backend) = &self.backend
@@ -129,15 +444,19 @@ impl Session {
             }));
         }
         if self.backend.is_none() {
+            self.owner.select_backend(self.native_epoch, windows)?;
             self.backend = Some(if windows {
                 Backend::Windows {
-                    id: None,
                     browsers: Vec::new(),
                 }
             } else {
                 #[cfg(feature = "native-desktop")]
                 {
-                    Backend::Local(session::Session::new(self.driver.clone()))
+                    Backend::Local(session::Session::with_owner(
+                        self.driver.clone(),
+                        self.native_epoch,
+                        self.owner.clone(),
+                    ))
                 }
                 #[cfg(not(feature = "native-desktop"))]
                 return Err(native_unavailable());
@@ -181,9 +500,10 @@ impl Session {
         if cancellation.is_cancelled() {
             return Err(failed("Computer Use preparation cancelled"));
         }
-        if self.closed {
+        if !matches!(self.state, SessionState::Open) {
             return Err(failed("Computer Use Session is closed"));
         }
+        self.owner.ensure_open()?;
         if self.backend.is_none() {
             self.configure(Desktop::Auto, Vec::new(), language)?;
         }
@@ -198,43 +518,89 @@ impl Session {
         Ok(())
     }
 
-    pub async fn invoke(
+    pub async fn permission_subject(
         &mut self,
-        command: Command,
+        command: &Command,
         session: &str,
         cancellation: &CancellationToken,
         language: Language,
+    ) -> Result<Option<crate::ComputerAppTarget>, ToolError> {
+        if cancellation.is_cancelled() {
+            return Err(failed("Computer Use cancelled before app resolution"));
+        }
+        if !matches!(self.state, SessionState::Open) {
+            return Err(failed("Computer Use Session is closed"));
+        }
+        self.owner.ensure_open()?;
+        if self.backend.is_none() {
+            self.configure(Desktop::Auto, Vec::new(), language)?;
+        }
+        match self.backend.as_mut().unwrap() {
+            #[cfg(feature = "native-desktop")]
+            Backend::Local(local) => {
+                local
+                    .permission_subject(command, session, cancellation, language)
+                    .await
+            }
+            Backend::Windows { .. } => {
+                let _ = (command, session, language);
+                Ok(None)
+            }
+        }
+    }
+
+    pub async fn invoke(
+        &mut self,
+        command: Command,
+        invocation: &crate::InvocationContext<'_>,
+        cancellation: &CancellationToken,
+        language: Language,
     ) -> Result<Value, ToolError> {
+        let session = invocation.session();
+        let turn = invocation.turn();
         if cancellation.is_cancelled() {
             return Err(failed("Computer Use cancelled before dispatch"));
         }
-        if self.closed {
+        if !matches!(self.state, SessionState::Open) {
             return Err(failed("Computer Use Session is closed"));
+        }
+        self.owner.ensure_open()?;
+        if matches!(
+            command,
+            Command::StartAudioRecording { .. } | Command::StopAudioRecording
+        ) && !self.driver.lock().await.audio_enabled
+        {
+            return Err(failed(
+                "Computer audio recording is disabled in Host configuration",
+            ));
         }
         if self.backend.is_none() {
             self.configure(Desktop::Auto, Vec::new(), language)?;
         }
         match self.backend.as_mut().unwrap() {
             #[cfg(feature = "native-desktop")]
-            Backend::Local(local) => local.invoke(command, session, cancellation, language).await,
-            Backend::Windows { id, browsers } => {
-                if id.as_deref().is_some_and(|id| id != session) {
-                    return Err(failed("Computer Use Session identity mismatch"));
-                }
-                id.get_or_insert_with(|| session.into());
+            Backend::Local(local) => {
+                local
+                    .invoke(command, invocation, cancellation, language)
+                    .await
+            }
+            Backend::Windows { browsers } => {
+                self.owner.bind_remote(self.native_epoch, session)?;
                 let mut driver = self.driver.lock().await;
                 if cancellation.is_cancelled() {
                     return Err(failed("Computer Use cancelled before dispatch"));
                 }
                 driver
                     .windows
-                    .call(
+                    .invoke(
                         worker::Request::Invoke {
                             session: session.into(),
+                            turn: turn.into(),
                             browsers: browsers.clone(),
                             command,
                             language,
                         },
+                        invocation,
                         cancellation,
                     )
                     .await
@@ -242,17 +608,110 @@ impl Session {
         }
     }
 
-    pub async fn close(&mut self) -> Result<(), ToolError> {
-        self.closed = true;
+    /// Discard only this Session's owned audio; absence never initializes a backend.
+    pub async fn discard_audio(&mut self) -> Result<(), ToolError> {
+        match self.backend.as_mut() {
+            #[cfg(feature = "native-desktop")]
+            Some(Backend::Local(local)) => local.discard_audio().await,
+            Some(Backend::Windows { .. }) => match self.owner.remote_session(self.native_epoch) {
+                Some(id) => self.driver.lock().await.windows.discard_audio(&id).await,
+                None => Ok(()),
+            },
+            _ => Ok(()),
+        }
+    }
+
+    /// Observe this native epoch's recording completion without retaining the Session lock.
+    pub fn wait_audio_finished(
+        &self,
+    ) -> futures_util::future::BoxFuture<'static, Result<(), ToolError>> {
+        match self.backend.as_ref() {
+            #[cfg(feature = "native-desktop")]
+            Some(Backend::Local(local)) => local.wait_audio_finished(),
+            _ => Box::pin(async {
+                Err(failed(
+                    "Computer audio completion is unavailable for this desktop",
+                ))
+            }),
+        }
+    }
+
+    /// End resources owned by this trusted Host turn while retaining REPL bindings.
+    pub async fn finish_turn(
+        &mut self,
+        session: &str,
+        turn: &str,
+        language: Language,
+    ) -> Result<(), ToolError> {
         match &mut self.backend {
             #[cfg(feature = "native-desktop")]
-            Some(Backend::Local(local)) => local.close().await,
-            Some(Backend::Windows { id: Some(id), .. }) => {
-                self.driver.lock().await.windows.release_session(id).await?;
-                self.backend = None;
-                Ok(())
+            Some(Backend::Local(local)) => local.finish_turn(session, turn, language).await,
+            Some(Backend::Windows { .. }) => {
+                if self
+                    .owner
+                    .remote_session(self.native_epoch)
+                    .as_deref()
+                    .is_some_and(|id| id != session)
+                {
+                    return Err(failed("Computer Use Session identity mismatch"));
+                }
+                self.owner.finish_turn(turn, language).await
             }
             _ => Ok(()),
+        }
+    }
+
+    /// Release this epoch without ending the logical browser or cursor lifetime.
+    pub async fn close_native(&mut self) -> Result<(), ToolError> {
+        if matches!(self.state, SessionState::Closed) {
+            return Ok(());
+        }
+        self.state = SessionState::Closing;
+        let result = match &mut self.backend {
+            #[cfg(feature = "native-desktop")]
+            Some(Backend::Local(local)) => local.close_native().await,
+            Some(Backend::Windows { .. }) => {
+                let pending = self.remote_cleanup.get_or_insert_with(|| {
+                    let (reply, pending) = tokio::sync::watch::channel(None);
+                    let driver = self.driver.clone();
+                    let owner = self.owner.clone();
+                    let epoch = self.native_epoch;
+                    tokio::spawn(async move {
+                        let result = match owner.remote_session(epoch) {
+                            Some(id) => driver.lock().await.windows.release_session(&id).await,
+                            None => Ok(()),
+                        };
+                        if result.is_ok() {
+                            owner.release_remote(epoch);
+                        }
+                        let _ = reply.send(Some(result));
+                    });
+                    pending
+                });
+                observe_retirement(pending.clone()).await
+            }
+            None => {
+                self.owner.release_remote(self.native_epoch);
+                Ok(())
+            }
+        };
+        if result.is_ok() {
+            self.backend = None;
+            self.remote_cleanup = None;
+            self.state = SessionState::Closed;
+        }
+        result
+    }
+
+    pub async fn close(&mut self) -> Result<(), ToolError> {
+        let native = self.close_native().await;
+        let shared = self.owner.close().await;
+        match (native, shared) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+            (Err(native), Err(shared)) => Err(ToolError::CleanupUnconfirmed(format!(
+                "{native}; shared desktop cleanup: {shared}"
+            ))),
         }
     }
 }
@@ -301,6 +760,36 @@ fn failed(error: impl std::fmt::Display) -> ToolError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn closing_an_epoch_preserves_replacement_until_the_logical_owner_closes() {
+        let driver = Arc::new(Mutex::new(Driver::default()));
+        let owner = SessionOwner::new(driver.clone());
+        let mut first = owner.new_epoch().unwrap();
+        first.close_native().await.unwrap();
+        let mut second = owner.new_epoch().unwrap();
+        assert_ne!(first.native_epoch(), second.native_epoch());
+        second.close_native().await.unwrap();
+        owner.close().await.unwrap();
+        assert!(owner.new_epoch().is_err());
+        driver.lock().await.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn windows_worker_replacement_requires_the_previous_epoch_cleanup() {
+        let driver = Arc::new(Mutex::new(Driver::default()));
+        let owner = SessionOwner::new(driver.clone());
+        let mut first = owner.new_epoch().unwrap();
+        owner.select_backend(first.native_epoch(), true).unwrap();
+        assert!(!owner.supports_epoch_retirement());
+        assert!(owner.new_epoch().is_err());
+        first.close_native().await.unwrap();
+        let mut second = owner.new_epoch().unwrap();
+        assert_ne!(first.native_epoch(), second.native_epoch());
+        second.close_native().await.unwrap();
+        owner.close().await.unwrap();
+        driver.lock().await.close().await.unwrap();
+    }
 
     #[test]
     fn desktop_selection_never_falls_back_from_windows() {

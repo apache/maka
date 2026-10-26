@@ -21,34 +21,46 @@ Entry points (selection emits initial state):
   Select an exact window when names are ambiguous. Linux requires the app to be open already.
 - `await cua.listBrowsers({emit?})`, `await cua.listTabs({browser?, emit?})`.
 - `const browser = await cua.getBrowser({id? , url?})`: select without opening a tab.
+  A prospective URL need not be open already. Select an ID when multiple providers are configured.
 - `const tab = await cua.getTab("tab ID", {browser?})` or `getTab({url}, {browser?})`.
 - `await cua.createBrowserTab(browserId, url?)`: open in the configured profile.
+  Here and in getBrowser, URLs without a scheme use HTTPS.
+  Creation starts with an owned blank tab; an explicit URL then requests navigation.
+  Refused navigation leaves that blank tab for turn cleanup.
   Unavailable providers, tab mentions and unsupported creation options throw.
+- `await browser.tabs.list()`, `await browser.tabs.get(id)`, `await browser.tabs.new()`:
+  list, bind an exact tab, or create a blank temporary tab in that browser. These methods
+  return data without emitting it; get/new return Tab objects without an initial AX observation.
+  Call getAXState before using observed targets. `await tab.title()` and `await tab.url()`
+  return current metadata without changing the accessibility observation.
 
 App and Tab observations:
 - `getAXState({emit?, disableDiffing?})` returns text. Tabs and macOS apps use a diff by default;
   Windows and Linux apps return the complete state.
 - `getScreenshot({emit?})` returns Uint8Array and emits the image.
-- `getAXStateAndScreenshot(options?)` returns `{state, screenshot}` and emits both.
+- `getAXStateAndScreenshot(options?)` returns `{state, screenshot?}` and emits the available results.
 Discovery, selection and observations emit automatically. Call them directly;
 wrapping `getScreenshot()` in `nodeRepl.emitImage()` or `getAXState()` in
 `nodeRepl.write()` is redundant. Use `{emit:false}` when processing the result
-yourself; inventory errors still appear. Identical images emitted within one call
+yourself; inventory errors still appear. Native Windows screenshot methods reject
+`{emit:false}` before capture. Identical images emitted within one call
 are delivered once. A later call may emit the same image again.
 Observations include a bounded settling window for brief UI updates (200 ms for
 tabs, 400 ms for apps). This does not wait for arbitrary asynchronous work;
 continuous animation does not extend the window. Refresh to observe later updates.
-Screenshot-only observation clears accessibility indices.
+After a screenshot-only observation, read `getAXState()` before choosing new
+indices. Native Linux/Windows retain previously observed element identities
+while those exact elements remain valid.
 If a native AX observation fails while an app is busy, refresh the same bound object
 when the app responds again. Failed observations invalidate old indices and coordinates.
 
 App and Tab actions:
-- `moveCursor(index | [x,y])` indicates an observed location using a synthetic cursor.
-  Coordinates use the same current screenshot as `click`; this does not consume it.
-  The returned visibility is display feedback, not evidence of an input effect.
 - `click(index | [x,y], {mouseButton?, clickCount?})`, `drag([x,y], [x,y])`.
-- `scroll(index | [x,y], "up" | "down" | "left" | "right", pages?)`.
-- `setValue(index, string)`.
+- `scroll(index | [x,y], "up" | "down" | "left" | "right", distance?)`.
+- Native apps also accept mouse buttons `l/r/m` and directions `u/d/l/r`.
+  macOS trims and ignores case for these names and also accepts buttons `0/1/2`
+  for left/right/middle.
+- `setValue(index, string)`; unavailable for native Linux apps.
 - `selectText(index, text, {prefix?, suffix?, selectionType?})` where selectionType is
   `text`, `cursor_before` or `cursor_after`. Native selection is macOS-only.
   `text_not_found` means the text or supplied context is absent; read the current
@@ -61,23 +73,64 @@ Tab input: `typeText(index|null, text)`, `paste(index|null, text, {format?})`,
 `pressKey(index|null, key)`. A supplied index focuses the observed field first.
 Use `null` for current focus. Key examples: `Return`, `Tab`, `super+a`, `shift+Left`.
 Paste formats: `text` (default), `md` (Markdown source as plain text), and `html`.
+Native Linux and Windows apps support only `text`.
 Native HTML paste is macOS-only and needs a readable editable value and selection. It temporarily
 activates the exact window, preserves its selection, and restores the prior clipboard
 unless the user copied something newer. An unchanged value is reported as uncertain.
 Browser HTML paste requires an observed contenteditable element.
 
 Tab navigation: `goto(url)`, `back()`, `forward()`, `reload()`, `close()`.
+`tab.clipboard` provides `read()`, `readText()`, `write(items)` and `writeText(text)`.
+These methods return values without emitting them. A rich item has nonempty `entries`;
+each entry has `mimeType` and exactly one string field, `text` or `base64`. Optional
+`presentationStyle` is `unspecified`, `inline` or `attachment`. For example,
+`await tab.clipboard.write([{entries:[{mimeType:'text/plain',text:'Hello'}]}])`.
+The virtual data is shared by tabs using the same configured backend context;
+it does not read or change the OS clipboard. Authorized pages use the same data
+through their Clipboard API after installation. Agent `readText()` returns the
+first exact `text/plain` entry's text, or an empty string for a base64-only entry;
+the page's `readText()` decodes that entry through a Blob. Turn cleanup removes
+page bridges and preserves stored data. Reset creates a fresh empty context.
+
+`await tab.getJsDialog()` returns undefined or the current dialog object with
+`type` and `dismiss()`. Confirm dialogs also have `accept()`; prompt dialogs have
+`accept(text)`, including an empty string. Old dialog objects cannot act on a
+replacement dialog. Handle an active dialog before ordinary page reads or input.
+`getAXState()` shows its message and indexed controls; prompt controls support
+`setValue`, `typeText` and Return/Escape. Dialog controls have no page coordinates.
+Screenshots are unavailable while a dialog is open: screenshot-only calls throw,
+and combined observations return the dialog state without a screenshot property.
+An attached browser Host automatically accepts beforeunload dialogs while it owns
+current control. Turn cleanup detaches control without closing user tabs.
+
 Navigation supports HTTP(S) and about:blank and waits for an observable document.
 The main CDP target is covered; cross-process iframe accessibility is not complete.
-Native scrolling accepts page counts. macOS and CDP scrolling also accept
-`{pixels:500}` as input deltas; applications may clamp, animate or transform them.
-Windows/Linux native adapters currently refuse pixel-unit input. macOS/Windows
-indexed scrolling preserves the selected accessibility target. Native indexed clicks support one semantic
+CDP page distances accept finite numbers, including fractions, zero and negative
+values. One page uses the target's content width or height, with a minimum of
+100 CSS pixels; coordinate targets use the viewport. CDP's `{pixels:n}` extension
+accepts positive finite pixel deltas.
+Linux rejects numeric page counts. Linux X11 defaults to `{pixels:800}` and accepts integer pixel distances from 1 to
+65535. It sends `max(round(pixels/100),1)` wheel steps; the application determines
+the resulting content movement. Linux Wayland currently refuses pixel input.
+macOS scrolling takes positive finite numeric pages, defaulting to one, and rejects
+`{pixels}`. The current native adapter can deliver only integer page counts from
+1 to 50; fractional or larger page counts remain unsupported.
+Windows requires a coordinate point and a positive finite `{pixels:500}` distance;
+omitted distances and numeric page counts are rejected. Coordinates and direction-signed distances use JavaScript
+`Math.round`; rounded inputs must fit signed 32-bit integers. Native wheel deltas
+are bounded per axis to [-32768,32767], and the pointer stays at the target.
+The application determines content movement. Native indexed scrolling preserves the selected accessibility
+target. Native indexed clicks support one semantic
 click; use screenshot coordinates for multiple clicks when needed.
 
 A successful input dispatch does not establish the resulting application state.
-Coordinates belong to the latest screenshot. Moving/resizing, navigation, scrolling
-or any action consumes/invalidates the mapping; capture again before another point.
+Browser coordinates use the latest screenshot; capture again after an action.
+Linux window-local coordinates can be used without taking a screenshot. Native
+Linux/Windows screenshot mappings survive input actions until another observation
+replaces them; an AX-only observation clears the image mapping. Windows coordinate
+input then requires another screenshot. A window geometry change invalidates a
+stored mapping. macOS coordinate input currently requires a fresh screenshot after
+an action.
 Native semantic actions use retained accessibility elements. Application menus
 are scoped to their owning process and the exact bound window; closed menu
 contents are omitted until the menu is opened. Menu interaction may activate the
@@ -92,12 +145,23 @@ Unverified input effects are reported in the call output. There is no public
 {bytes, mimeType})` emits an image. File/HTTP image URLs, Node, arbitrary filesystem
 and network APIs are unavailable. `cua.rewriteDocumentation()` reprints this reference.
 
+When the Host enables output audio, `await cua.computer.start_audio_recording({max_duration_ms?})`
+starts recording and returns undefined while other calls can continue. The duration defaults
+to 60000 ms and accepts integers from 100 to 300000. `await cua.computer.stop_audio_recording()`
+returns `{filepath, bytes, data_url}` for the finalized stereo 24 kHz PCM16 WAV. Reaching the
+duration ends capture; call stop to retrieve it. `await nodeRepl.emitAudio(bytes | dataUrl |
+{bytes, mimeType})` emits audio explicitly. These methods are absent when audio is disabled.
+Reset and Session cleanup discard recordings and their local paths.
+
 Every operation uses current Host permissions; JS objects retain no grants.
 In Ask mode, Computer Use approval happens before the REPL execution timeout starts.
+App, browser-site and audio consent waits pause the remaining budget. Native
+macOS/Windows waits also pause it; ordinary asynchronous waits and Linux native
+operations consume it. Pausing never refills the budget or disables cancellation.
 Native macOS operations report `desktop_locked` while the screen is locked; connected
 CDP providers and pure REPL computations remain independently available.
-Each Session has its own Maka cursor. Input actions show it automatically; call
-`moveCursor` only to point without acting. `cua.cursor.configure({label?, color?,
+Each Session has its own Maka cursor. Input actions show it automatically.
+`cua.cursor.configure({label?, color?,
 enabled?, reducedMotion?})` changes this Session's display. Colors are `blue`, `mint`,
 `violet`, `amber`, `rose`, `cyan`; labels allow up to 48 characters. `cua.cursor.getState()`
 reports settings and native/browser visibility. A native renderer in `idle` state starts
@@ -107,4 +171,6 @@ Cursors share no input authority and do not move the system pointer. Multiple cu
 do not isolate the physical keyboard, application focus or input method.
 Cancelled, timed-out or heap-exhausted REPLs require `cua_reset`, then target rebinding. Admitted
 native work settles before returning; reset does not undo dispatched input.
-Reset clears only this Session's REPL and bindings, leaving user apps and tabs open.
+At turn end, this Session closes temporary tabs it created for that turn and releases its page observations.
+Preexisting user tabs remain open. Reset clears this Session's REPL and bindings and closes its temporary tabs;
+it leaves user apps and preexisting tabs open. An unconfirmed close retains ownership and is not replayed.

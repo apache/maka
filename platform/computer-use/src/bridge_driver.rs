@@ -22,10 +22,17 @@ use maka_agent_facts::tools::ToolError;
 
 #[derive(Default)]
 pub struct Driver {
+    pub(crate) audio_enabled: bool,
     pub(crate) windows: crate::desktop::worker::Worker,
 }
 
 impl Driver {
+    pub fn with_audio(audio_enabled: bool) -> Self {
+        Self {
+            audio_enabled,
+            windows: crate::desktop::worker::Worker::with_audio(audio_enabled),
+        }
+    }
     /// Host calls this after all Session resources retire.
     pub async fn close(&mut self) -> Result<(), ToolError> {
         self.windows.close().await

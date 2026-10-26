@@ -46,6 +46,7 @@ import { ModelSelect } from './ModelSelect';
 import { ModelSettings } from './ModelSettings';
 import type { ModelBackend } from './modelSelection';
 import { InteractionComposer, interactionOutcomeSummary } from './InteractionComposer';
+import { ComputerAppControls } from './ComputerAppControls';
 import type {
   AgentInteractionResult,
   ModelSelection,
@@ -191,9 +192,10 @@ function App() {
     return value;
   };
   const control: Control = async (method, input) => {
-    if (method !== 'stop' && !controlsKnown())
+    const urgent = method === 'stop' || method === 'stopComputerApp';
+    if (!urgent && !controlsKnown())
       throw new UiError('Checking earlier actions. Try again in a moment.');
-    const originals: any[] = method === 'stop' ? await host.pendingControls() : controls();
+    const originals: any[] = urgent ? await host.pendingControls() : controls();
     const pending = originals.find(
       (original) =>
         (original.method === method ||
@@ -201,15 +203,16 @@ function App() {
             ['metadata', 'changeSession', 'fork'].includes(original.method))) &&
         original.sessionId === (input.sessionId ?? null) &&
         (method !== 'stop' || original.correlation.invocationId === input.invocationId) &&
+        (method !== 'stopComputerApp' || original.correlation.operationId === input.operationId) &&
         (method !== 'respond' || original.correlation.requestId === input.requestId),
     );
     if (pending)
       throw new UiError(
         'This action has an unresolved original. Recover it below before trying again.',
       );
-    if (method !== 'stop' && busy())
+    if (!urgent && busy())
       throw new UiError('An action is being confirmed. Try again in a moment.');
-    if (method !== 'stop') busy.set(true);
+    if (!urgent) busy.set(true);
     try {
       const result = returned((await host.control(method, input)).reply);
       if (method === 'respond') presentInteraction(input, result);
@@ -222,7 +225,7 @@ function App() {
         controlsKnown.set(false);
         report(reason);
       });
-      if (method !== 'stop' && alive) busy.set(false);
+      if (!urgent && alive) busy.set(false);
     }
   };
   const closeOverlay = (instance: number) => {
@@ -848,20 +851,27 @@ function App() {
                 {(item) => {
                   const owner = item();
                   return (
-                    <Each
-                      of={owner.interactions().entries.slice(0, 1)}
-                      key={(entry) => entry.requestId}
-                    >
-                      {(entry) => (
-                        <InteractionComposer
-                          sessionId={owner.sessionId}
-                          requestId={entry().requestId}
-                          control={control}
-                          focusComposer={focusComposer}
-                          confirming={() => busy() || !controlsKnown()}
-                        />
-                      )}
-                    </Each>
+                    <View style={{ minHeight: 0, flexShrink: 1, gap: 8 }}>
+                      <ComputerAppControls
+                        sessionId={owner.sessionId}
+                        apps={owner.computerApps}
+                        control={control}
+                      />
+                      <Each
+                        of={owner.interactions().entries.slice(0, 1)}
+                        key={(entry) => entry.requestId}
+                      >
+                        {(entry) => (
+                          <InteractionComposer
+                            sessionId={owner.sessionId}
+                            requestId={entry().requestId}
+                            control={control}
+                            focusComposer={focusComposer}
+                            confirming={() => busy() || !controlsKnown()}
+                          />
+                        )}
+                      </Each>
+                    </View>
                   );
                 }}
               </Each>

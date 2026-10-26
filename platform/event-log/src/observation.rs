@@ -59,6 +59,7 @@ pub struct ObservationVersion {
     pub metadata: u64,
     pub queue: u64,
     pub event: u64,
+    pub root_control_revision: u64,
 }
 
 /// Observation pages are ordered delivery material, not model replay proofs.
@@ -107,19 +108,22 @@ impl EventLog {
         }
         let sessions = serde_json::to_string(sessions)?;
         self.connection.read(move |connection| Box::pin(async move {
-            let rows: Vec<(String, i64, i64, i64)> = sqlx::query_as(
+            let rows: Vec<(String, i64, i64, i64, i64)> = sqlx::query_as(
                 "SELECT session.id, session.revision,
                     COALESCE((SELECT revision FROM message_queue_state WHERE session_id = session.id), 0),
                     COALESCE((SELECT sequence FROM event_log INDEXED BY event_material_owner
                         WHERE invocation_id IS NOT NULL
                         AND (event_json IS NOT NULL AND event_session=session.id)
-                        ORDER BY sequence DESC LIMIT 1), 0)
-                 FROM session_control session WHERE session.id IN (SELECT value FROM json_each(?))"
+                        ORDER BY sequence DESC LIMIT 1), 0),
+                    control.revision
+                 FROM session_control session CROSS JOIN root_app_revision control
+                 WHERE session.id IN (SELECT value FROM json_each(?))"
             ).bind(sessions).fetch_all(connection).await?;
-            rows.into_iter().map(|(id, metadata, queue, event)| Ok((id, ObservationVersion {
+            rows.into_iter().map(|(id, metadata, queue, event, control)| Ok((id, ObservationVersion {
                 metadata: sequence_number(metadata)?,
                 queue: sequence_number(queue)?,
                 event: sequence_number(event)?,
+                root_control_revision: sequence_number(control)?,
             }))).collect()
         })).await
     }

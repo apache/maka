@@ -891,6 +891,18 @@ impl Handler for Agent {
                             .await?,
                     })
                 }
+                "computerApps" => {
+                    let input: SessionRead = decode(input)?;
+                    encode(owner.computer_apps(&input.session_id).await?)
+                }
+                "stopComputerApp" => {
+                    context.operation().ok_or("agent_mutation_required")?;
+                    encode(
+                        owner
+                            .stop_computer_app(decode(input)?, context.scope())
+                            .await?,
+                    )
+                }
                 "queue" => {
                     let input: SessionRead = decode(input)?;
                     encode(owner.queue(&input.session_id).await?)
@@ -930,7 +942,8 @@ impl Handler for Agent {
                         .map_err(|error| error.to_string())?;
                     let mut after = input.after;
                     let mut queue_revision = None;
-                    let mut interactions_revision = None;
+                    let mut interactions_delivered = None;
+                    let mut computer_apps_delivered = None;
                     loop {
                         if context.scope().cancellation.is_cancelled() {
                             return Err("agent_observation_cancelled".into());
@@ -952,11 +965,20 @@ impl Handler for Agent {
                             context.emit(update).await?;
                         }
                         let pending = owner.pending_interactions(&input.session_id).await?;
-                        if interactions_revision != Some(pending.revision) {
-                            interactions_revision = Some(pending.revision);
+                        if interactions_delivered.as_ref() != Some(&pending) {
                             context
-                                .emit(encode(DeliveryPage::Interactions { pending })?)
+                                .emit(encode(DeliveryPage::Interactions {
+                                    pending: pending.clone(),
+                                })?)
                                 .await?;
+                            interactions_delivered = Some(pending);
+                        }
+                        let apps = owner.computer_apps(&input.session_id).await?;
+                        if computer_apps_delivered.as_ref() != Some(&apps) {
+                            context
+                                .emit(encode(DeliveryPage::ComputerApps { apps: apps.clone() })?)
+                                .await?;
+                            computer_apps_delivered = Some(apps);
                         }
                         owner.require_session(&input.session_id).await?;
                         let through = *commits.borrow();

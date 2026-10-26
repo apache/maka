@@ -201,7 +201,18 @@ async fn computer_product_tools_preserve_approval_repl_media_and_revocation() {
         let events = service_tools::facts(&f, &session).await;
         scenario.set("media.facts.returned");
         step.set("returned_or_assertions");
-        assert!(events.iter().any(|event| matches!(event, Fact::ToolDispatched { name, call, .. } if name == "cua_operation" && matches!(&call.origin, maka_agent_facts::tool_call::ToolOrigin::HostSdk { parent_operation_id: Some(_), .. }))));
+        let media_epoch = events.iter().find_map(|event| match event {
+            Fact::ToolDispatched { operation_id: child, name, call, .. } if name == "cua_operation" => match &call.origin {
+                maka_agent_facts::tool_call::ToolOrigin::HostSdk {
+                    parent: Some(maka_agent_facts::tool_call::HostSdkParent::EvaluationObserver { operation_id: parent, epoch }), ..
+                } if parent != child && !epoch.is_empty() && events.iter().any(|event| matches!(event,
+                    Fact::ToolDispatched { operation_id, name, title: Some(title), .. }
+                        if operation_id == parent && name == "cua_repl" && title.fallback == "Inspect selected browsers"
+                )) => Some(epoch.clone()),
+                _ => None,
+            },
+            _ => None,
+        }).expect("native media call must retain its exact evaluation parent and VM epoch");
         assert!(events.iter().any(|event| matches!(event, Fact::ToolDispatched { name, title: Some(title), .. } if name == "cua_repl" && title.fallback == "Inspect selected browsers")));
         assert!(events.iter().any(|event| matches!(event, Fact::ToolSettled { outcome: ToolOutcome::Succeeded { model_projection: DurableToolProjection::Content { parts }, .. }, .. } if parts.iter().any(|part| part.media().is_some()))));
         assert!(through > 0);
@@ -292,8 +303,8 @@ async fn computer_product_tools_preserve_approval_repl_media_and_revocation() {
                     Fact::ToolDispatched { input, name, call, .. }
                         if name == "cua_operation" && input["method"] == "listBrowsers"
                             && matches!(&call.origin, maka_agent_facts::tool_call::ToolOrigin::HostSdk {
-                                parent_operation_id: Some(parent), ..
-                            } if parent == operation))) { break; }
+                                parent: Some(maka_agent_facts::tool_call::HostSdkParent::EvaluationObserver { operation_id: parent, epoch }), ..
+                            } if parent == operation && epoch == &media_epoch))) { break; }
                 assert!(!events.iter().any(|event| matches!(&event.event.fact, Fact::ToolSettled { operation_id, .. } if operation_id == operation)),
                     "revocation cell settled before its expected child dispatch: {}", revocation_trace.borrow());
             }
@@ -315,12 +326,13 @@ async fn computer_product_tools_preserve_approval_repl_media_and_revocation() {
         let cancelled = finish(&listener, &f, &step).await;
         scenario.set("revocation.finish.returned");
         step.set("returned_or_assertions");
-        let stopped = tool_text(&cancelled);
+        let stopped: String = serde_json::from_str(&tool_text(&cancelled))
+            .expect("revocation must return a textual tool result");
         assert!(stopped.contains("changed") || stopped.contains("revoked") || stopped.contains("cancelled"), "{stopped}");
-        assert!(stopped.contains("reset_required"), "{stopped}");
+        assert_eq!(stopped.lines().last(), Some(r#"REPL state: "fresh""#), "{stopped}");
         scenario.set("reset.start");
         step.set("direct.await");
-        start(&listener, &f, &session, "cua_reset", json!({}), "reset_required", &step).await;
+        start(&listener, &f, &session, "cua_reset", json!({}), "fresh", &step).await;
         scenario.set("reset.finish_assertion");
         step.set("direct.await");
         assert!(tool_text(&finish(&listener, &f, &step).await).contains("reset"));

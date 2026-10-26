@@ -46,7 +46,8 @@ pub fn request(
     match &snapshot.request {
         InteractionRequest::ServiceApproval { .. }
         | InteractionRequest::Permissions { .. }
-        | InteractionRequest::ClientCapability { .. } => permission::request(snapshot),
+        | InteractionRequest::ClientCapability { .. }
+        | InteractionRequest::ComputerApp { .. } => permission::request(snapshot),
         InteractionRequest::Form { .. } | InteractionRequest::Question { .. } => {
             form::request(snapshot, capabilities)
         }
@@ -64,7 +65,8 @@ pub fn answer(
         (
             InteractionRequest::ServiceApproval { .. }
             | InteractionRequest::Permissions { .. }
-            | InteractionRequest::ClientCapability { .. },
+            | InteractionRequest::ClientCapability { .. }
+            | InteractionRequest::ComputerApp { .. },
             Response::Permission(response),
         ) => permission::answer(snapshot, response)?,
         (

@@ -1651,6 +1651,11 @@ export const configurations = {
         },
         default: [],
       },
+      audio: {
+        type: 'boolean',
+        description: 'Explicit opt-in to recording computer output audio.',
+        default: false,
+      },
     },
     title: 'ComputerConfiguration',
     $schema: 'https://json-schema.org/draft/2020-12/schema',

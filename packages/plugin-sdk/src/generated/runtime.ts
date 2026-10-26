@@ -3933,7 +3933,8 @@ export type AgentInteractionKind =
   | 'question'
   | 'permissions'
   | 'form'
-  | 'client_capability';
+  | 'client_capability'
+  | 'computer_app';
 export type InteractionAnswer =
   | {
       kind: 'service_approval';
@@ -3970,6 +3971,13 @@ export type InteractionAnswer =
   | {
       kind: 'client_capability';
       decision: Decision;
+    }
+  | {
+      kind: 'computer_app';
+      decision: ComputerAppDecision;
+    }
+  | {
+      kind: 'computer_app_cancel';
     };
 export type Decision = 'allow' | 'deny';
 export type Decision2 =
@@ -3983,6 +3991,7 @@ export type Decision2 =
     };
 export type Scope2 = 'once' | 'turn' | 'session';
 export type FormValue = string | number | boolean | string[];
+export type ComputerAppDecision = 'once' | 'session' | 'always' | 'deny';
 export type AgentInteractionResult =
   | {
       kind: 'recorded';
@@ -4029,6 +4038,16 @@ export type InteractionRequest =
        * Unbound capabilities are explicit; Agent-owned capabilities capture a full binding stamp.
        */
       basis?: PermissionBasis | null;
+    }
+  | {
+      kind: 'computer_app';
+      toolUseId: string;
+      nativeOperationId: string;
+      target: GrantTarget;
+      basis: PermissionBasis;
+      display: ComputerAppDisplay;
+      allowAlways: boolean;
+      authorityRevision: number;
     };
 export type FormField = {
   name: string;
@@ -4080,7 +4099,7 @@ export type FormField1 =
       [k: string]: unknown | undefined;
     };
 export type FormFormat = 'email' | 'uri' | 'date' | 'date-time';
-export type GrantCapability = 'browser' | 'computer_use' | 'desktop_mcp' | 'mcp';
+export type GrantCapability = 'browser' | 'computer_use' | 'computer_audio' | 'desktop_mcp' | 'mcp';
 export type GrantScope =
   | {
       kind: 'browser_origin';
@@ -4093,7 +4112,14 @@ export type GrantScope =
       kind: 'mcp_tool';
       serverId: string;
       toolName: string;
+    }
+  | {
+      kind: 'computer_app';
+      platform: ComputerAppPlatform;
+      applicationId: string;
     };
+export type ComputerAppPlatform = 'macos';
+export type ComputerAppRisk = 'low' | 'high';
 export type InteractionOutcome =
   | {
       kind: 'service_approval_decision';
@@ -4134,6 +4160,11 @@ export type InteractionOutcome =
   | {
       kind: 'client_capability_decision';
       decision: Decision;
+      committedAt: number;
+    }
+  | {
+      kind: 'computer_app_decision';
+      decision: ComputerAppDecision;
       committedAt: number;
     }
   | {
@@ -4616,6 +4647,10 @@ export type AgentDeliveryPage =
   | {
       kind: 'interactions';
       pending: AgentPendingInteractions;
+    }
+  | {
+      kind: 'computer_apps';
+      apps: AgentComputerApps;
     };
 /**
  * Trusted producer attribution, preserved independently of editable content.
@@ -6802,6 +6837,10 @@ export interface ExecutorAuthenticationMethod {
 export interface ComputerConfiguration {
   desktop?: Desktop & string;
   browsers?: BrowserConnection[];
+  /**
+   * Explicit opt-in to recording computer output audio.
+   */
+  audio?: boolean;
 }
 /**
  * An explicitly configured browser provider. The REPL cannot supply endpoints,
@@ -6814,7 +6853,8 @@ export interface BrowserConnection {
 export interface ComputerEvaluate {
   code: string;
   /**
-   * Wall-clock limit including asynchronous waits. Interrupted REPLs require reset.
+   * Execution budget. Trusted consent and macOS/Windows native waits pause it.
+   * Ordinary asynchronous waits remain charged. Interrupted REPLs require reset.
    */
   timeout_ms?: number;
   /**
@@ -9206,6 +9246,12 @@ export interface GrantTarget {
   scope: GrantScope;
   [k: string]: unknown | undefined;
 }
+export interface ComputerAppDisplay {
+  name: string;
+  appPath: string;
+  risk?: ComputerAppRisk | null;
+  warning?: string | null;
+}
 export interface QuestionAsk {
   /**
    * @minItems 1
@@ -9633,6 +9679,19 @@ export interface AgentQueueEntry {
   messageId: string;
   kind: AgentQueueKind;
   preview: string;
+}
+export interface AgentComputerApps {
+  entries: AgentComputerAppActivityState[];
+}
+export interface AgentComputerAppActivityState {
+  activity: ComputerAppActivity;
+  stopped: boolean;
+}
+export interface ComputerAppActivity {
+  invocation: Invocation;
+  operationId: string;
+  target: GrantTarget;
+  display: ComputerAppDisplay;
 }
 export interface AgentQueueMessage {
   sessionId: string;

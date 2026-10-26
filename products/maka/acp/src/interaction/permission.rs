@@ -22,6 +22,9 @@ use maka_agent_facts::interaction::Decision;
 use maka_agent_facts::interaction::InteractionAnswer;
 use maka_agent_facts::interaction::InteractionRecord;
 use maka_agent_facts::interaction::InteractionRequest;
+use maka_agent_facts::interaction::{
+    ComputerAppDecision, ComputerAppRisk, GrantCapability, GrantScope,
+};
 use maka_sandbox::grant;
 
 pub(super) fn request(snapshot: &InteractionRecord) -> Result<Callback, crate::Error> {
@@ -112,12 +115,17 @@ pub(super) fn request(snapshot: &InteractionRecord) -> Result<Callback, crate::E
         } => {
             let tool_call = acp::ToolCallUpdate::new(acp::ToolCallId::new(tool_use_id.as_str()))
                 .raw_input(serde_json::to_value(target)?);
-            let params = acp::RequestPermissionRequest::new(
-                acp::SessionId::new(snapshot.session_id.as_str()),
+            let title = if target.capability == GrantCapability::ComputerAudio {
+                "Allow computer output audio for this session".to_owned()
+            } else {
                 format!(
                     "Allow {} / {} for this session",
                     target.server_id, target.tool_name
-                ),
+                )
+            };
+            let params = acp::RequestPermissionRequest::new(
+                acp::SessionId::new(snapshot.session_id.as_str()),
+                title,
                 vec![
                     acp::PermissionOption::new(
                         "allow_session",
@@ -134,6 +142,68 @@ pub(super) fn request(snapshot: &InteractionRecord) -> Result<Callback, crate::E
             .description(serde_json::to_string_pretty(target)?)
             .subject(acp::RequestPermissionSubject::from(tool_call));
             Ok(Callback::Permission(params))
+        }
+        InteractionRequest::ComputerApp {
+            tool_use_id,
+            target,
+            display,
+            allow_always,
+            ..
+        } => {
+            let GrantScope::ComputerApp { application_id, .. } = &target.scope else {
+                return Err(
+                    "Computer application permission requires an application target".into(),
+                );
+            };
+            let risk = match display.risk {
+                Some(ComputerAppRisk::Low) => "Low",
+                Some(ComputerAppRisk::High) => "High",
+                None => "Unknown; risk information is unavailable for this application.",
+            };
+            let mut description = format!(
+                "Application: {}\nPath: {}\nBundle ID: {}\nRisk: {}",
+                display.name, display.app_path, application_id, risk
+            );
+            if let Some(warning) = &display.warning {
+                description.push('\n');
+                description.push_str(warning);
+            }
+            let mut options = vec![
+                acp::PermissionOption::new(
+                    "allow_once",
+                    "Allow once",
+                    acp::PermissionOptionKind::AllowOnce,
+                ),
+                acp::PermissionOption::new(
+                    "allow_session",
+                    "Allow for this session",
+                    acp::PermissionOptionKind::AllowAlways,
+                ),
+            ];
+            if *allow_always {
+                options.push(acp::PermissionOption::new(
+                    "allow_always",
+                    "Always allow",
+                    acp::PermissionOptionKind::AllowAlways,
+                ));
+            }
+            options.push(acp::PermissionOption::new(
+                "reject_once",
+                "Deny",
+                acp::PermissionOptionKind::RejectOnce,
+            ));
+            Ok(Callback::Permission(
+                acp::RequestPermissionRequest::new(
+                    acp::SessionId::new(snapshot.session_id.as_str()),
+                    format!("Allow computer access to {}", display.name),
+                    options,
+                )
+                .description(description)
+                .subject(acp::RequestPermissionSubject::from(
+                    acp::ToolCallUpdate::new(acp::ToolCallId::new(tool_use_id.as_str()))
+                        .raw_input(serde_json::to_value(&snapshot.request)?),
+                )),
+            ))
         }
         _ => Err("Expected a permission interaction".into()),
     }
@@ -212,6 +282,29 @@ pub(super) fn answer(
             };
             InteractionAnswer::ClientCapability { decision }
         }
+        InteractionRequest::ComputerApp { allow_always, .. } => {
+            let decision = match response.outcome {
+                acp::RequestPermissionOutcome::Cancelled => {
+                    return Ok(InteractionAnswer::ComputerAppCancel {});
+                }
+                acp::RequestPermissionOutcome::Selected(selected) => {
+                    match selected.option_id.0.as_ref() {
+                        "allow_once" => ComputerAppDecision::Once,
+                        "allow_session" => ComputerAppDecision::Session,
+                        "allow_always" if *allow_always => ComputerAppDecision::Always,
+                        "reject_once" => ComputerAppDecision::Deny,
+                        _ => {
+                            return Err(
+                                "Client selected an unoffered computer application permission option"
+                                    .into(),
+                            );
+                        }
+                    }
+                }
+                _ => return Err("Unsupported ACP permission outcome".into()),
+            };
+            InteractionAnswer::ComputerApp { decision }
+        }
         _ => return Err("Expected a permission interaction".into()),
     })
 }
@@ -249,6 +342,186 @@ mod tests {
                 },
             },
         })
+    }
+
+    fn computer_app(allow_always: bool, risk: Option<ComputerAppRisk>) -> InteractionRecord {
+        use maka_agent_facts::interaction::{
+            ComputerAppDisplay, ComputerAppPlatform, GrantCapability, GrantTarget,
+        };
+        let InteractionRequest::Permissions { basis, .. } = permission(Some("tool")).request else {
+            panic!("permission basis");
+        };
+        snapshot(InteractionRequest::ComputerApp {
+            tool_use_id: "tool_application".into(),
+            native_operation_id: "native_operation".into(),
+            target: GrantTarget {
+                provider_id: "computer".into(),
+                contract_id: "desktop".into(),
+                server_id: "workspace_computer".into(),
+                tool_name: "cua".into(),
+                capability: GrantCapability::ComputerUse,
+                scope: GrantScope::ComputerApp {
+                    platform: ComputerAppPlatform::Macos,
+                    application_id: "org.example.Editor".into(),
+                },
+            },
+            basis,
+            display: ComputerAppDisplay {
+                name: "Example Editor".into(),
+                app_path: "/Volumes/Work/Example Editor.app".into(),
+                risk,
+                warning: Some("This application can read private documents.".into()),
+            },
+            allow_always,
+            authority_revision: 0,
+        })
+    }
+
+    #[test]
+    fn computer_app_prompt_discloses_trusted_identity_risk_and_offered_lifetimes() {
+        let record = computer_app(true, Some(ComputerAppRisk::High));
+        let Callback::Permission(callback) =
+            request(&record, &acp::ClientCapabilities::default()).unwrap()
+        else {
+            panic!("permission callback");
+        };
+        assert_eq!(callback.title, "Allow computer access to Example Editor");
+        assert_eq!(
+            callback.description.as_deref(),
+            Some(
+                "Application: Example Editor\nPath: /Volumes/Work/Example Editor.app\nBundle ID: org.example.Editor\nRisk: High\nThis application can read private documents."
+            )
+        );
+        assert_eq!(
+            serde_json::to_value(&callback.options).unwrap(),
+            json!([
+                {"optionId":"allow_once","name":"Allow once","kind":"allow_once"},
+                {"optionId":"allow_session","name":"Allow for this session","kind":"allow_always"},
+                {"optionId":"allow_always","name":"Always allow","kind":"allow_always"},
+                {"optionId":"reject_once","name":"Deny","kind":"reject_once"}
+            ])
+        );
+        let Some(acp::RequestPermissionSubject::ToolCall(subject)) = callback.subject else {
+            panic!("tool subject");
+        };
+        let subject = serde_json::to_value(subject).unwrap();
+        assert_eq!(subject["toolCall"]["toolCallId"], "tool_application");
+        assert_eq!(
+            subject["toolCall"]["rawInput"]["target"]["scope"],
+            json!({"kind":"computer_app","platform":"macos","applicationId":"org.example.Editor"})
+        );
+    }
+
+    #[test]
+    fn computer_app_unknown_risk_is_explicit_and_persistence_is_never_invented() {
+        let record = computer_app(false, None);
+        let Callback::Permission(callback) =
+            request(&record, &acp::ClientCapabilities::default()).unwrap()
+        else {
+            panic!("permission callback");
+        };
+        assert_eq!(
+            callback.description.as_deref(),
+            Some(
+                "Application: Example Editor\nPath: /Volumes/Work/Example Editor.app\nBundle ID: org.example.Editor\nRisk: Unknown; risk information is unavailable for this application.\nThis application can read private documents."
+            )
+        );
+        assert_eq!(
+            callback
+                .options
+                .iter()
+                .map(|option| option.option_id.to_string())
+                .collect::<Vec<_>>(),
+            ["allow_once", "allow_session", "reject_once"]
+        );
+        assert!(
+            answer(
+                &record,
+                json!({"outcome":{"outcome":"selected","optionId":"allow_always"}})
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn computer_app_answers_preserve_selected_scope_and_cancel_only_the_operation() {
+        let record = computer_app(true, Some(ComputerAppRisk::Low));
+        for (option, decision) in [
+            ("allow_once", ComputerAppDecision::Once),
+            ("allow_session", ComputerAppDecision::Session),
+            ("allow_always", ComputerAppDecision::Always),
+            ("reject_once", ComputerAppDecision::Deny),
+        ] {
+            assert_eq!(
+                answer(
+                    &record,
+                    json!({"outcome":{"outcome":"selected","optionId":option}})
+                )
+                .unwrap(),
+                InteractionAnswer::ComputerApp { decision }
+            );
+        }
+        assert_eq!(
+            answer(&record, json!({"outcome":{"outcome":"cancelled"}})).unwrap(),
+            InteractionAnswer::ComputerAppCancel {}
+        );
+        for response in [
+            json!({"outcome":{"outcome":"selected","optionId":"allow"}}),
+            json!({"outcome":{"outcome":"_future_approval"}}),
+        ] {
+            assert!(answer(&record, response).is_err());
+        }
+    }
+
+    #[test]
+    fn computer_output_audio_is_named_and_remains_a_session_capability() {
+        let InteractionRequest::ComputerApp {
+            mut target, basis, ..
+        } = computer_app(false, None).request
+        else {
+            panic!("application target");
+        };
+        target.capability = GrantCapability::ComputerAudio;
+        target.scope = GrantScope::Capability {};
+        let record = snapshot(InteractionRequest::ClientCapability {
+            tool_use_id: "tool_audio".into(),
+            target,
+            basis: Some(basis),
+        });
+        let Callback::Permission(callback) =
+            request(&record, &acp::ClientCapabilities::default()).unwrap()
+        else {
+            panic!("permission callback");
+        };
+        assert_eq!(
+            callback.title,
+            "Allow computer output audio for this session"
+        );
+        assert_eq!(
+            callback
+                .options
+                .iter()
+                .map(|option| option.option_id.to_string())
+                .collect::<Vec<_>>(),
+            ["allow_session", "reject_once"]
+        );
+        assert_eq!(
+            answer(
+                &record,
+                json!({"outcome":{"outcome":"selected","optionId":"allow_session"}})
+            )
+            .unwrap(),
+            InteractionAnswer::ClientCapability {
+                decision: Decision::Allow
+            }
+        );
+        assert!(
+            answer(
+                &record,
+                json!({"outcome":{"outcome":"selected","optionId":"allow_always"}})
+            )
+            .is_err()
+        );
     }
 
     #[test]
