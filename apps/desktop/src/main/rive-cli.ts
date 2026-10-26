@@ -20,6 +20,7 @@
 import { access } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { spawn } from 'node:child_process';
+import { isSensitiveKey, redactSecrets } from '@maka/core/redaction';
 
 export type RiveCliAction =
   | 'workflow_validate'
@@ -177,11 +178,7 @@ export async function runRiveCli(input: RiveCliToolArgs, options: RiveCliRunOpti
 }
 
 export function redactRiveText(input: string): string {
-  return input
-    .replace(/\b(Bearer\s+)[A-Za-z0-9._~+/-]+=*/gi, '$1[REDACTED]')
-    .replace(/\b(sk-[A-Za-z0-9][A-Za-z0-9_-]{8,})\b/g, '[REDACTED]')
-    .replace(/\b((?:api[_-]?key|token|secret|password)\s*[:=]\s*)("[^"]+"|'[^']+'|[^\s,;]+)/gi, '$1[REDACTED]')
-    .replace(/\b([A-Za-z0-9_-]*(?:token|secret|password|api[_-]?key)[A-Za-z0-9_-]*\s*[:=]\s*)("[^"]+"|'[^']+'|[^\s,;]+)/gi, '$1[REDACTED]');
+  return redactSecrets(input);
 }
 
 export function redactRiveValue(value: unknown, depth = 0): unknown {
@@ -191,7 +188,7 @@ export function redactRiveValue(value: unknown, depth = 0): unknown {
   if (!value || typeof value !== 'object') return value;
   const out: Record<string, unknown> = {};
   for (const [key, item] of Object.entries(value)) {
-    out[key] = redactRiveValue(item, depth + 1);
+    out[key] = isSensitiveKey(key) ? '[redacted]' : redactRiveValue(item, depth + 1);
   }
   return out;
 }
