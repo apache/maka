@@ -1894,7 +1894,15 @@ test('SendUser publishes sticker IDs atomically and replays the saved batch afte
     });
     request = {
       messageId: 'direct-sticker',
-      messages: [{ text: '正文保留', summary: '摘要保留', stickerId: id, card: { type: 'offer', title: 'Test card', items: [{ title: 'Test item' }] } }, { stickerId: id }],
+      messages: [
+        {
+          text: '正文保留',
+          summary: '摘要保留',
+          stickerId: id,
+          card: { type: 'offer', title: 'Test card', items: [{ title: 'Test item' }] },
+        },
+        { stickerId: id },
+      ],
     };
     await assert.rejects(
       invoke('SendUser', { messageId: 'empty', messages: [{}] }),

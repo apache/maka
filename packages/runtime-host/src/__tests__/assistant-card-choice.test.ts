@@ -92,7 +92,6 @@ test('invalid selection and failed transaction do not consume the card or create
   }
 });
 
-
 test('card choices coexist with durable notification decisions across store instances and restart', () => {
   const dir = mkdtempSync(join(tmpdir(), 'maka-card-decisions-'));
   let a = new BotStore(dir);
@@ -106,13 +105,16 @@ test('card choices coexist with durable notification decisions across store inst
     assert.equal(b.chooseCard('card', '1:0'), '1:0');
     b.recordNotNotified('operation-a', decisions);
     assert.deepEqual(a.read('discovery').notNotified, saved);
-    assert.throws(() => b.recordNotNotified('operation-a', [{ ...decisions[0]!, reason: 'changed' }]), /different reason/);
+    assert.throws(
+      () => b.recordNotNotified('operation-a', [{ ...decisions[0]!, reason: 'changed' }]),
+      /different reason/,
+    );
     a.close();
     a = new BotStore(dir);
     assert.equal(a.cardSelection('card'), '1:0');
     assert.equal(a.chooseCard('card', '0:0'), '1:0');
     assert.deepEqual(a.read('discovery').notNotified, saved);
-    assert.equal(a.pendingVisible().filter(m => m.type === 'user').length, 1);
+    assert.equal(a.pendingVisible().filter((m) => m.type === 'user').length, 1);
     b.recordNotNotified('operation-b', decisions);
     assert.equal(a.read('discovery').notNotified.length, 2);
   } finally {
