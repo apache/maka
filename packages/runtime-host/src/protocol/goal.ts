@@ -35,8 +35,7 @@ import {
 import { invalidProtocolFrame } from './errors.js';
 import { defineOperation } from './operation-spec.js';
 
-export const GOAL_RESULT_MAX_BYTES = 8 * 1024;
-
+export const GOAL_RESULT_MAX_BYTES = 16 * 1024;
 const QUERY_ERRORS = [
   'host_not_ready',
   'host_draining',

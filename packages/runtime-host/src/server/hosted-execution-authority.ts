@@ -78,6 +78,8 @@ export interface HostedExecutionAdmissionResult {
 }
 
 export interface HostedExecutionObserver {
+  /** Adopt a joint domain commit before releasing the Session admission gate. */
+  admitted?(input: HostedExecutionObservation): Promise<void>;
   begin(input: HostedExecutionObservation): HostedExecutionCompletionObserver | undefined;
 }
 

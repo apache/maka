@@ -17,15 +17,26 @@
  * under the License.
  */
 
+import {
+  conditionInput,
+  normalizeCondition,
+  type ConditionDefinition,
+  type ConditionResult,
+} from './condition.js';
 import { z } from 'zod';
 import { MatterReviewInvalidated } from './review.js';
 import type { ReviewVerdict } from './review.js';
+import { isPendingActivationTurnId } from './matter.js';
 import type { MatterReview, MatterStore } from './matter.js';
 import type { MakaTool, MakaToolContext } from './host-types.js';
 
 export interface MatterToolsDeps {
   store: MatterStore;
   changed(): void;
+  testCondition?(definition: ConditionDefinition, ctx: MakaToolContext): Promise<ConditionResult>;
+  deliveredInput?(
+    ctx: MakaToolContext,
+  ): Promise<{ activationId: string; basis: string; eventCursor: number } | undefined>;
   review(review: MatterReview): Promise<ReviewVerdict>;
   authorize?(ctx: MakaToolContext): void;
 }
@@ -47,11 +58,46 @@ export function buildMatterTools(deps: MatterToolsDeps): MakaTool[] {
     kind: z.literal('at'),
     at: z.number().describe('Future absolute Unix milliseconds'),
   });
+  const progressSummary = z
+    .string()
+    .trim()
+    .min(1)
+    .refine(
+      (value) => Array.from(value).length <= 30,
+      'Progress summary must be at most 30 characters',
+    )
+    .describe('用不超过30字概括当前进展，供用户在任务列表查看。由你概括，不要截断正文。');
   return [
     {
-      name: 'MatterRead',
+      name: 'MatterConditionTest',
+      discovery: 'direct',
       description:
-        'Refresh file paths, revision and current time. This writes observation state and may bind a queued activation; it is not read-only. Read request.md, state.md and inbox.json with MatterReadFile; their contents are not returned here. Call alone.',
+        'Test and save a read-only JavaScript condition checker against real data. Inspect the returned result and fix/retest until it matches the intended condition. Testing does not register a wait. Pass checkerId to MatterSettle wait with an absolute fallback time in wakes. Code/parameters are immutable for that ID; changed code must be tested again. Background checks use the same read-only capabilities and current source permissions, without a model. A trigger, repeated failure or fallback time wakes this task once.',
+      parameters: conditionInput,
+      categoryHint: 'file_write',
+      executionSemantics: 'exclusive_step',
+      impl: async (input, ctx) => {
+        const o = own(ctx);
+        deps.store.assertActive(o.id, o.activationId);
+        if (!deps.testCondition) throw new Error('Condition execution is unavailable');
+        const definition = normalizeCondition(input);
+        const result = await deps.testCondition(definition, ctx);
+        ctx.abortSignal.throwIfAborted();
+        deps.store.assertActive(o.id, o.activationId);
+        const saved = deps.store.conditions.saveTest(o.id, definition, result);
+        return {
+          checkerId: saved.id,
+          testedAt: saved.testedAt,
+          result: saved.result,
+          waiting: false,
+        };
+      },
+    },
+    {
+      name: 'MatterRead',
+      discovery: 'direct',
+      description:
+        'Refresh file paths, revision and current time. This writes observation state and may bind a queued activation; it is not read-only. Use only when you need task files/history; not required before settlement. Call alone.',
       parameters: z.object({
         activationId: z
           .string()
@@ -70,12 +116,18 @@ export function buildMatterTools(deps: MatterToolsDeps): MakaTool[] {
           m &&
           m.activation &&
           m.activation.id === input.activationId &&
-          m.activation.turnId.startsWith('pending:')
+          isPendingActivationTurnId(m.activation.turnId)
         )
           deps.store.bindTurn(m.id, input.activationId, ctx.turnId);
         const o = own(ctx);
         deps.store.observe(o.id, o.activationId);
-        return deps.store.workspace(o.id, o.activationId);
+        const snapshot = deps.store.get(o.id);
+        return {
+          ...deps.store.workspace(o.id, o.activationId),
+          request: snapshot.matter.request,
+          note: snapshot.matter.stateText,
+          events: snapshot.events,
+        };
       },
     },
     {
@@ -83,6 +135,7 @@ export function buildMatterTools(deps: MatterToolsDeps): MakaTool[] {
       description:
         'Save current working state after meaningful progress. Does not end this run or change the user objective.',
       parameters: z.object({
+        progressSummary,
         expectedRevision: z.number().int().positive(),
         stateFile: z
           .string()
@@ -92,7 +145,10 @@ export function buildMatterTools(deps: MatterToolsDeps): MakaTool[] {
       }),
       categoryHint: 'file_write',
       executionSemantics: 'exclusive_step',
-      impl: (input: { expectedRevision: number; stateFile: string }, ctx) => {
+      impl: (
+        input: { expectedRevision: number; stateFile: string; progressSummary: string },
+        ctx,
+      ) => {
         const o = own(ctx);
         const result = deps.store.checkpoint(
           o.id,
@@ -100,6 +156,7 @@ export function buildMatterTools(deps: MatterToolsDeps): MakaTool[] {
           input.expectedRevision,
           deps.store.readDraft(o.id, o.activationId, input.stateFile),
           operation(ctx),
+          input.progressSummary,
         );
         deps.changed();
         return deps.store.workspace(result.id, o.activationId);
@@ -107,17 +164,31 @@ export function buildMatterTools(deps: MatterToolsDeps): MakaTool[] {
     },
     {
       name: 'MatterSettle',
+      discovery: 'direct',
       description:
-        'Commit state and finish this activation: continue immediately, wait for a specific external condition, or complete the original objective. No business tools may execute after success.',
+        'Submit your result directly (optional note, no draft file required) and finish this activation: continue immediately, wait for a specific external condition, or complete the original objective. Continue commits without model review; wait and complete are reviewed for premature exit or missed requirements, not for reprinting historical evidence. No business tools may execute after success.',
       parameters: z.object({
-        expectedRevision: z.number().int().positive(),
-        stateFile: z
+        note: z
           .string()
+          .max(24000)
+          .optional()
           .describe(
-            'Absolute path to this activation’s draft.md, edited with MatterWriteFile before submitting',
+            'Optional working note to retain for future activations. Omit to keep the previous note; no draft file is needed.',
           ),
+        progressSummary,
         disposition: z.enum(['continue', 'wait', 'complete']),
         wakes: z.array(wake).max(10).optional(),
+        condition: z
+          .object({
+            checkerId: z
+              .string()
+              .describe('ID returned by a successful MatterConditionTest in this task'),
+            intervalMs: z.number().int().min(1000).max(86400000).default(60000),
+          })
+          .optional()
+          .describe(
+            'Optional tested condition for wait. wakes must still include an absolute fallback time; the first trigger or fallback wins. Testing alone does not wait.',
+          ),
         waitingFor: z
           .string()
           .trim()
@@ -127,21 +198,12 @@ export function buildMatterTools(deps: MatterToolsDeps): MakaTool[] {
           .describe(
             'For wait only: the concrete condition that prevents useful work now. A wake time is only when to check it.',
           ),
-        reason: z.string().min(1).max(2000),
         summary: z
           .string()
           .min(1)
           .max(4000)
           .describe(
-            'What this activation actually did and found. The host appends this to history with a timestamp.',
-          ),
-        next: z
-          .string()
-          .min(1)
-          .max(2000)
-          .optional()
-          .describe(
-            'Possible next actions, based on the current judgment; future activations must reassess them.',
+            'What you did and found, and why continuing, waiting or completing is appropriate. The host saves this with a timestamp.',
           ),
         update: z
           .string()
@@ -155,19 +217,41 @@ export function buildMatterTools(deps: MatterToolsDeps): MakaTool[] {
       executionSemantics: 'exclusive_step',
       impl: async (input, ctx) => {
         const o = own(ctx);
-        const { stateFile, ...commit } = input;
-        const submission = {
-          ...commit,
-          stateText: deps.store.readDraft(o.id, o.activationId, stateFile),
-        };
         try {
-          const review = deps.store.beginReview(
-            o.id,
-            o.activationId,
-            submission,
-            operation(ctx),
-            stateFile,
-          );
+          const { note, ...commit } = input;
+          const previous = deps.store.submittedInput(operation(ctx));
+          let revision: number;
+          let state: string;
+          if (previous) {
+            revision = previous.expectedRevision;
+            state = previous.stateText;
+          } else {
+            const delivered = await deps.deliveredInput?.(ctx);
+            if (!delivered || delivered.activationId !== o.activationId)
+              throw new MatterReviewInvalidated();
+            const m = deps.store.adoptDeliveredInput(
+              o.id,
+              o.activationId,
+              delivered.basis,
+              delivered.eventCursor,
+            );
+            revision = m.revision;
+            state = m.stateText;
+          }
+          const submission = {
+            ...commit,
+            expectedRevision: revision,
+            stateText: note ?? state,
+            reason: commit.summary.slice(0, 2000),
+          };
+          deps.store.saveSubmission(operation(ctx), submission);
+          if (submission.disposition === 'continue') {
+            ctx.abortSignal.throwIfAborted();
+            const result = deps.store.settle(o.id, o.activationId, submission, operation(ctx));
+            deps.changed();
+            return deps.store.workspace(result.id, o.activationId);
+          }
+          const review = deps.store.beginReview(o.id, o.activationId, submission, operation(ctx));
           const verdict = review.committed ? review.verdict! : await deps.review(review);
           ctx.abortSignal.throwIfAborted();
           if (!review.verdict) deps.store.recordReview(review, verdict);
@@ -207,7 +291,7 @@ export function buildMatterTools(deps: MatterToolsDeps): MakaTool[] {
     {
       name: 'MatterWriteFile',
       description:
-        'Write the entire draft.md file for this activation. This edits a working file only; publish it with MatterCheckpoint or MatterSettle. Other matter files are host-owned.',
+        'Optional legacy draft editor for this activation. Publish this file with MatterCheckpoint. MatterSettle accepts an inline note instead and does not read the draft. Other matter files are host-owned.',
       parameters: z.object({ path: z.string(), content: z.string() }),
       categoryHint: 'file_write',
       executionSemantics: 'exclusive_step',

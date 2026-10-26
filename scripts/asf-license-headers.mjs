@@ -212,6 +212,8 @@ export const exclusionRules = [
         'packages/runtime/src/model-protocol.ts',
         'packages/eval/harbor/deepseek-harness-profile/cordis.patch.yml',
         'packages/ui/src/astryx-chat-reasoning.tsx',
+        'apps/desktop/src/renderer/computer-use-overlay/engine/palette.ts',
+        'apps/desktop/src/renderer/computer-use-overlay/engine/cursor-engine.ts',
       )(path) ||
       isUnder('apps/desktop/src/renderer/assets/provider-brands', '.svg')(path) ||
       isUnder('patches', '.patch')(path),
@@ -353,6 +355,10 @@ const reviewedProvenance = new Map([
   [
     'scripts/generate-runtime-host-peer-notices.mjs',
     'Maka-authored generator that emits upstream copyright lines into the Runtime Host peer notices. The copyright it names is its output, not its own.',
+  ],
+  [
+    'scripts/source-legal-inventory.test.mjs',
+    'Legal inventory tests quote upstream copyright and license notices to check their preservation.',
   ],
   [
     'scripts/sync-model-metadata.mjs',

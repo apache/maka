@@ -19,7 +19,9 @@
 
 import type { DatabaseSync } from 'node:sqlite';
 
-export const SQLITE_WORKFLOW_SCHEMA_VERSION = 13;
+// v16 adds consumer-scoped waits and permits absence of a semantic deadline.
+// v17 retires PR3/PR4 Goal-owned waits while preserving execution history.
+export const SQLITE_WORKFLOW_SCHEMA_VERSION = 17;
 
 const RELEASED_WORKFLOW_PROJECTION_TABLES = [
   {
@@ -41,6 +43,29 @@ const RELEASED_WORKFLOW_PROJECTION_TABLES = [
 
 export function migrateSqliteWorkflowDatabase(db: DatabaseSync): void {
   retireReleasedWorkflowProjections(db);
+  const deadline = db
+    .prepare('PRAGMA table_info(workflow_event_waits)')
+    .all()
+    .find((column) => column.name === 'deadline_at');
+  if (deadline?.notnull === 1) {
+    db.exec(`CREATE TABLE workflow_event_waits_v16 AS SELECT * FROM workflow_event_waits;
+      DROP TABLE workflow_event_waits;
+      CREATE TABLE workflow_event_waits (
+        wait_id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        authority_revision INTEGER NOT NULL CHECK (authority_revision >= 0),
+        status TEXT NOT NULL CHECK (status IN ('waiting', 'resolved', 'cancelled', 'expired')),
+        delivery_key TEXT NOT NULL UNIQUE,
+        deadline_at INTEGER CHECK (deadline_at >= 0),
+        record_json TEXT NOT NULL,
+        FOREIGN KEY (session_id) REFERENCES session_metadata(session_id) ON DELETE CASCADE
+      );
+      INSERT INTO workflow_event_waits SELECT * FROM workflow_event_waits_v16;
+      DROP TABLE workflow_event_waits_v16;`);
+  }
+  db.exec(
+    'DROP INDEX IF EXISTS workflow_event_waits_one_active_session; DROP INDEX IF EXISTS workflow_event_waits_pending; DROP INDEX IF EXISTS workflow_event_waits_delivery',
+  );
   db.exec(`
     DROP INDEX IF EXISTS workflow_plan_reminders_order;
     DROP TABLE IF EXISTS workflow_plan_reminders;
@@ -152,16 +177,33 @@ export function migrateSqliteWorkflowDatabase(db: DatabaseSync): void {
       authority_revision INTEGER NOT NULL CHECK (authority_revision >= 0),
       status TEXT NOT NULL CHECK (status IN ('waiting', 'resolved', 'cancelled', 'expired')),
       delivery_key TEXT NOT NULL UNIQUE,
-      deadline_at INTEGER NOT NULL CHECK (deadline_at >= 0),
+      deadline_at INTEGER CHECK (deadline_at >= 0),
       record_json TEXT NOT NULL,
       FOREIGN KEY (session_id) REFERENCES session_metadata(session_id) ON DELETE CASCADE
     );
     CREATE INDEX IF NOT EXISTS workflow_event_waits_by_session
       ON workflow_event_waits(session_id, wait_id);
-    CREATE INDEX IF NOT EXISTS workflow_event_waits_pending
-      ON workflow_event_waits(wait_id) WHERE status IN ('waiting', 'resolved');
-    CREATE UNIQUE INDEX IF NOT EXISTS workflow_event_waits_one_active_session
-      ON workflow_event_waits(session_id) WHERE status IN ('waiting', 'resolved');
+    CREATE INDEX IF NOT EXISTS workflow_event_waits_by_status
+      ON workflow_event_waits(status, wait_id);
+    CREATE INDEX IF NOT EXISTS workflow_event_waits_observation_order
+      ON workflow_event_waits(COALESCE(json_extract(record_json, '$.observation.lastAttemptAt'), 0), wait_id)
+      WHERE status = 'waiting';
+    CREATE UNIQUE INDEX IF NOT EXISTS workflow_event_waits_by_operation
+      ON workflow_event_waits(session_id, json_extract(record_json, '$.consumer.operationId'))
+      WHERE json_extract(record_json, '$.consumer.kind') = 'tool_invocation';
+    CREATE UNIQUE INDEX IF NOT EXISTS workflow_event_waits_by_goal_checkpoint
+      ON workflow_event_waits(session_id, json_extract(record_json, '$.consumer.goalControlLease.goalId'),
+        json_extract(record_json, '$.consumer.goalControlLease.generation'), json_extract(record_json, '$.consumer.goalRevision'))
+      WHERE json_extract(record_json, '$.consumer.kind') = 'goal_waiting';
+
+    CREATE TABLE IF NOT EXISTS workflow_event_wait_source_cooldowns (
+      source_key TEXT PRIMARY KEY,
+      until_ms INTEGER NOT NULL CHECK (until_ms >= 0),
+      dispatch_token TEXT,
+      dispatch_until_ms INTEGER NOT NULL DEFAULT 0 CHECK (dispatch_until_ms >= 0)
+    );
+    CREATE INDEX IF NOT EXISTS workflow_event_wait_source_cooldowns_expiry
+      ON workflow_event_wait_source_cooldowns(MAX(until_ms, dispatch_until_ms), source_key);
 
     CREATE TABLE IF NOT EXISTS workflow_goal_authority (
       session_id TEXT PRIMARY KEY,

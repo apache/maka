@@ -21,14 +21,16 @@
  * Heavy Markdown rendering pipeline, loaded on demand by `markdown.tsx`.
  *
  * Astryx owns parsing, GFM, typography, tables, task lists, code rendering,
- * highlighting, and copy feedback. Maka's Markdown layer keeps only the
- * product trust boundaries that a design-system component cannot know about:
- * eager display-layer redaction and the closed-world URL policy.
+ * default highlighting, and copy feedback. Maka adds missing code languages
+ * through the existing tokenizer interface and keeps its product trust
+ * boundaries: eager display-layer redaction and the closed-world URL policy.
  *
  * Astryx owns stream pacing and incremental parsing. Maka keeps only the
  * product-specific trust boundaries around that renderer.
  */
 
+import { inspectMessageStickers, separateStickersPlugin } from './markdown-stickers.js';
+import { MessageSummary } from './message-summary.js';
 import { MarkdownImage, createMarkdownImagePlugins } from './markdown-image.js';
 import { useCallback, useContext, useMemo, useRef, type ReactNode } from 'react';
 import {
@@ -38,6 +40,7 @@ import {
 import { Link as AstryxLink } from '@astryxdesign/core/Link';
 import { CodeBlock } from '@astryxdesign/core/CodeBlock';
 import { useTranslator } from '@astryxdesign/core/i18n';
+import { markdownCodeLanguagePlugin, useMarkdownCodeTokenizer } from './markdown-code-highlighting.js';
 import {
   isMakaUriCandidate,
   isSafeExternalScheme,
@@ -145,6 +148,8 @@ const MARKDOWN_COMPONENTS = {
 export function MarkdownBody(props: {
   text: string;
   imageDisplay?: 'image' | 'link';
+  separateStickers?: boolean;
+  summary?: string;
   streaming?: boolean;
   settledText?: string;
   density?: 'default' | 'compact';
@@ -156,7 +161,13 @@ export function MarkdownBody(props: {
     }),
     [props.streaming],
   );
-  const plugins = useMemo(() => createMarkdownImagePlugins(props.imageDisplay), [props.imageDisplay]);
+  const separated = useMemo(() => props.separateStickers && props.imageDisplay !== 'link' && !props.streaming
+    ? inspectMessageStickers(props.text) : undefined, [props.separateStickers, props.imageDisplay, props.streaming, props.text]);
+  const plugins = useMemo(() => [
+    ...(separated ? [separateStickersPlugin] : []),
+    markdownCodeLanguagePlugin,
+    ...createMarkdownImagePlugins(props.imageDisplay),
+  ], [props.imageDisplay, !!separated]);
   const budgetedText = props.streaming ? props.text : applyMermaidRenderBudget(props.text);
   const density = props.density ?? 'default';
   const components = props.streaming
@@ -174,6 +185,8 @@ export function MarkdownBody(props: {
       // box or interfering with Astryx's document root.
       style={{ display: 'contents' }}
     >
+      <div className={separated ? 'maka-sticker-message-prose' : undefined} style={separated ? undefined : { display: 'contents' }} hidden={separated && !separated.document.children.length}>
+      <MessageSummary summary={props.streaming ? undefined : props.summary}>
       <AstryxMarkdown
         autolink="gfm"
         // Markdown holds no reading measure; the container it lands in does.
@@ -207,6 +220,11 @@ export function MarkdownBody(props: {
       >
         {budgetedText}
       </AstryxMarkdown>
+      </MessageSummary>
+      </div>
+      {separated && <div className="maka-message-stickers">
+        {separated.stickers.map((sticker, index) => <MarkdownImage key={`${sticker.src}:${index}`} {...sticker} />)}
+      </div>}
     </div>
   );
 }
@@ -220,11 +238,11 @@ function MarkdownCodeCompact(props: { code: string; language?: string }) {
 }
 
 function MarkdownCodeStreamingDefault(props: { code: string; language?: string }) {
-  return <MarkdownCode {...props} density="default" renderMermaid={false} />;
+  return <MarkdownCode {...props} density="default" renderMermaid={false} streaming />;
 }
 
 function MarkdownCodeStreamingCompact(props: { code: string; language?: string }) {
-  return <MarkdownCode {...props} density="compact" renderMermaid={false} />;
+  return <MarkdownCode {...props} density="compact" renderMermaid={false} streaming />;
 }
 
 function MarkdownCode(props: {
@@ -232,8 +250,10 @@ function MarkdownCode(props: {
   language?: string;
   density: 'default' | 'compact';
   renderMermaid: boolean;
+  streaming?: boolean;
 }) {
   const t = useTranslator();
+  const tokenizer = useMarkdownCodeTokenizer(props.code, props.language, props.streaming === true);
   const language = props.language?.trim().toLowerCase();
   if (props.renderMermaid && (language === 'mermaid' || language === DEFERRED_MERMAID_LANGUAGE)) {
     return (
@@ -258,6 +278,7 @@ function MarkdownCode(props: {
       <CodeBlock
         code={props.code}
         language={props.language}
+        tokenizer={tokenizer}
         // Span highlighting avoids the higher CSS Highlight paint cost during
         // transcript scrolling, including when virtualized code blocks remount.
         highlightMode="spans"

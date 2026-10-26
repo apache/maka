@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { MemoryOriginalHost, PersonalAssistantEntry, createInternalUriDispatcher } from './features/personal-assistant/index.js';
+import { PetDesktopBridge, PersonalAssistantTaskLayout, MemoryOriginalHost, PersonalAssistantEntry, createInternalUriDispatcher } from './features/personal-assistant/index.js';
 import { WorkHubControlOverlay, WorkHubDock, WorkHubMainNavigation } from './features/workhub';
 import { WorkHubEnablementWatch } from './application/contracts/workhub-workspace/workhub-enablement.js';
 import { RuntimeHostHandoffOverlay } from './features/runtime-host-management/index.js';
@@ -39,7 +39,6 @@ import { isLinkedSubagentSession } from '@maka/core/session';
 import { resolveUiLocale } from '@maka/core/ui-locale';
 import { hasSettledInitialOnboarding } from '@maka/core/onboarding-milestone';
 import {
-  ChatSurfaceLayout,
   type ComposerHandle,
   MakaUriContext,
   AstryxLocaleProvider,
@@ -109,7 +108,6 @@ import { AppShellDetailPanel } from './shell/detail-panel';
 import { appShellFrameStyle } from './shell/frame-style';
 import { AppShellOverlays } from './app-shell-overlays';
 import type { ArchivedTasksBridge } from './settings/tasks-settings-page';
-import { CustomPetCompanionForSession } from './custom-pet-companion';
 import { defaultRuntimeHostDiagnosticTarget } from './platform/desktop/default-runtime-host-operation.js';
 import { useAppShellProjectContext } from './use-project-context';
 import { createAppShellE2eFixtureActions } from './app-shell-e2e-fixture';
@@ -231,7 +229,7 @@ function AppShellContent({
 }) {
   const toastApi = useToast();
   const {
-    renderPublishedConversation,
+    renderCompleteConversation,
     refreshMessages,
     transcriptEmpty,
     transcriptHasHistory,
@@ -273,6 +271,7 @@ function AppShellContent({
     openProjectSettings,
     openProviderCatalog,
     openConnectionDetail,
+    openExternalAgentSettings,
     openProviderCreate,
     setSettingsProfileId,
   } = overlays.commands;
@@ -297,7 +296,7 @@ function AppShellContent({
   const composerStaging = useMemo(Conversation.createComposerStagingCommands, []);
   const composerSubmission = useMemo(Conversation.createComposerSubmissionCommands, []);
   const [petCompletionNonce, setPetCompletionNonce] = useState(0);
-  const [navigationState, setNavigationState] = useState(() => readNavigationState());
+  const [navigationState, setNavigationState] = useState(readNavigationState);
   const navSelection = navigationState.selection;
   const sessionsSelected = navSelection.section === 'sessions';
   const setNavSelection = useCallback<Dispatch<SetStateAction<NavSelection>>>((nextSelection) => {
@@ -1003,7 +1002,7 @@ function AppShellContent({
         : projectCapabilities.viewClientPath,
     connections: defaultHostConnections.snapshot.connections,
     defaultConnection: defaultHostConnections.snapshot.defaultConnection,
-    renderPublishedConversation,
+    renderCompleteConversation,
     newTaskProfileId: taskEntry.selectors.selectedProfileId,
     settingsOpen,
     settingsProfileId: overlays.selectors.settings.request.profileId,
@@ -1304,13 +1303,13 @@ function AppShellContent({
                 onOpenUsage={() => commands.toggleTool('inspector')} onToggleWorkbar={commands.toggleRightPanel}
                 onOpenWorkHub={openWorkHub} onOpenSession={(sessionId) => { closeSettings(); openSession(sessionId); }} />
               <WorkHubDock workbar={selectors} workbarTogglePosition={workbarTogglePosition} visible={workHubActive && sessionsSelected && !shellObscured} />
-              <ChatSurfaceLayout
-                data-session-history-surface="true"
+              <PersonalAssistantTaskLayout
+                session={activeSessionForView}
                 // ChatView positions this transcript: switching conversations,
                 // following the tail and the moves the reader asks for are one
                 // authority there, and the composer never remounts for any of
                 // them — its contenteditable DOM carries the live draft.
-                data-maka-onboarding={showOnboardingHero ? 'true' : undefined}
+                onboarding={showOnboardingHero}
                 scrollToBottomLabel={
                   desktopConversationCopy.actions.scrollMainToBottom
                 }
@@ -1362,7 +1361,7 @@ function AppShellContent({
                   onDeleteQueuedEntry={activeId ? queueSurface.deleteQueuedEntry : undefined}
                   onReorderQueuedEntries={activeId ? queueSurface.reorderQueuedEntries : undefined}
                   contextPickEnabled={canStageComposerContext}
-                  executorComposer={{ selection: executor, taskSubmissionHardBlocked, connectionCount: connections.length, onSetup: () => openSettingsSection('external-agents'), onNewTask: openNewTaskSurface }}
+                  executorComposer={{ selection: executor, taskSubmissionHardBlocked, connectionCount: connections.length, onSetup: openExternalAgentSettings, onNewTask: openNewTaskSurface }}
                   activeSession={activeSessionForView}
                   {...{ executorTarget, onExecutorTargetChange }}
                   usageModel={activeModel}
@@ -1474,7 +1473,7 @@ function AppShellContent({
                   />
 
                 ) : null}
-              </ChatSurfaceLayout>
+              </PersonalAssistantTaskLayout>
             </Conversation.ConversationHomeSurface>
             {/* Collapse hides the Workbar surface without unmounting its tools. */}
             <WorkbarHost togglePosition={workbarTogglePosition} />
@@ -1482,8 +1481,9 @@ function AppShellContent({
           </MakaUriContext.Provider>
         </AppShellDetailPanel>
       </AstryxAppShell>
-      {!shellObscured && (
-        <Conversation.ConversationActivityConsumer surface={CustomPetCompanionForSession}
+      {(
+        <Conversation.ConversationActivityConsumer surface={PetDesktopBridge}
+            openSession={openSession}
           hasActiveSession={activeSession !== undefined}
           sessionStatus={activeSession?.status}
           completionNonce={petCompletionNonce}

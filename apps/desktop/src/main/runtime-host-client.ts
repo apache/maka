@@ -1489,6 +1489,7 @@ export class DesktopRuntimeHostClient {
     return this.request("usage.query", input);
   }
 
+
   queryGoal(sessionId: string): Promise<OperationOutput<"goal.query">> {
     return this.request("goal.query", { sessionId });
   }
@@ -1869,6 +1870,11 @@ export class DesktopRuntimeHostClient {
 
   generatePromptSuggestion(sessionId: string) {
     return this.request('session.prompt-suggestion.generate', { sessionId }, 7000);
+  }
+
+  generateCheckin(input: OperationInput<'session.checkin.generate'>) {
+    // One bounded model call over several Sessions; the Host stops it at 60 s.
+    return this.request('session.checkin.generate', input, 75_000);
   }
 
   request<K extends DirectRequestOperationKey>(

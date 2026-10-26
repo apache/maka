@@ -42,7 +42,7 @@ export interface DesktopLocalMessage {
   readonly quotes?: readonly QuoteRef[];
   readonly inlineReferences: readonly InlineReference[];
   readonly turnId?: string;
-  readonly admission?: 'turn_started' | 'steering' | 'followup';
+  readonly admission?: 'turn_started' | 'steering' | 'followup' | 'inbox';
   readonly checking?: boolean;
   readonly retryScheduled?: boolean;
   readonly waitingForConnection?: boolean;

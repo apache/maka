@@ -116,6 +116,11 @@ export function createChatActions<Owner extends ComposerSurfaceOwner>(deps: {
   captureComposerImportOwner: () => Owner;
   captureSelection: () => () => boolean;
   checkTaskSubmissionReadiness: () => Promise<boolean>;
+  /**
+   * Waits for the Session's in-flight setting writes; false when one did not
+   * commit. Omitted only by tests that do not exercise mode changes.
+   */
+  awaitSessionSettings?: (sessionId: string) => Promise<boolean>;
   isNewChatSendSurfaceActive: (owner: Owner) => boolean;
   /** The shell's one answer to "is this owner still the surface the user is
    *  looking at". Both halves matter — the section AND the session id — which
@@ -176,6 +181,7 @@ export function createChatActions<Owner extends ComposerSurfaceOwner>(deps: {
     captureComposerImportOwner,
     captureSelection,
     checkTaskSubmissionReadiness,
+    awaitSessionSettings,
     isNewChatSendSurfaceActive,
     isShellSurfaceOwnerActive,
     refreshSessions,
@@ -246,7 +252,7 @@ export function createChatActions<Owner extends ComposerSurfaceOwner>(deps: {
       id: messageId,
       text: input.displayText ?? skillFeedback.skillInvocationDisplayText(input.command.text, result.skillInvocation),
       attachments: [...result.attachments],
-      transientPlacement: result.disposition !== 'turn_started' && placement === 'next_turn' ? 'follow_up' : 'transcript',
+      transientPlacement: result.disposition !== 'turn_started' && result.disposition !== 'inbox' && placement === 'next_turn' ? 'follow_up' : 'transcript',
       ...(result.turnId ? { hostTurnId: result.turnId } : {}),
       ...copiedArray('directoryReferences', directoryReferences),
       ...copiedArray('quotes', input.quotes ?? []),
@@ -266,7 +272,7 @@ export function createChatActions<Owner extends ComposerSurfaceOwner>(deps: {
   ): Promise<boolean> {
     const { directoryReferences, quotes } = options;
     const initialSessionId = options.targetSessionId ?? activeIdRef.current;
-    if (!canSubmitExecutor(deps, pending?.length ?? 0)) return false;
+    if (!canSubmitExecutor(deps, pending?.length ?? 0, !!initialSessionId)) return false;
     const sendOwner = captureComposerImportOwner();
     const selectionIsCurrent = captureSelection();
     if (!initialSessionId && !newTaskTarget) return false;
@@ -276,6 +282,19 @@ export function createChatActions<Owner extends ComposerSurfaceOwner>(deps: {
       (!initialSessionId && !isNewChatSendSurfaceActive(sendOwner))
     ) {
       return false;
+    }
+    // #4695: the Composer shows a Plan (or model, permission, orchestration)
+    // change as soon as it is requested, but the Host only admits the turn
+    // under the committed value. Wait for the write so the turn runs in the
+    // mode the user sees; if it failed, the write path has already rolled the
+    // control back and reported why, so keep the draft instead of sending.
+    if (initialSessionId && awaitSessionSettings) {
+      if (
+        !(await awaitSessionSettings(initialSessionId)) || !selectionIsCurrent() ||
+        !isShellSurfaceOwnerActive(sendOwner)
+      ) {
+        return false;
+      }
     }
     let optimisticSessionId: string | undefined;
     const messageId = crypto.randomUUID();

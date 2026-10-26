@@ -91,3 +91,52 @@ test('source failed activation restores the live predecessor and foreign owners 
   assert.equal((await list())[0]!.description, 'old');
   await root.fiber.dispose();
 });
+
+test('lightweight activity requires caller identity and preserves adapter failures without scanning', async () => {
+  const root = new Context();
+  const agents = new PluginAgentService(root);
+  const service = new PluginSourceService(root, agents);
+  const owner = root.extend({
+    maka: { rootId: 'profile' as const, packageId: 'activity', entryId: 'activity', generation: 1 },
+  });
+  let scans = 0;
+  let permitted = true;
+  owner.sources.register({
+    ...adapter('observed'),
+    activityToken: async (caller) => {
+      assert.equal(caller.invocation?.sessionId, 'test');
+      if (!permitted) throw Error('permission denied');
+      return 'published-42';
+    },
+    enumerate: async () => {
+      scans++;
+      return { items: [] };
+    },
+  });
+  owner.sources.register({ ...adapter('unsupported'), id: 'example.legacy' });
+  const invoke = <T>(fn: () => T) =>
+    agents.withInvocation(
+      {
+        sessionId: 'test',
+        turnId: 'turn',
+        cwd: '/tmp',
+        toolCallId: 'call',
+        abortSignal: new AbortController().signal,
+        emitOutput: () => undefined,
+      },
+      fn,
+    );
+  try {
+    await assert.rejects(service.activityToken('example.docs'));
+    assert.equal(await invoke(() => service.activityToken('example.docs')), 'published-42');
+    assert.equal(await invoke(() => service.activityToken('example.legacy')), null);
+    permitted = false;
+    await assert.rejects(
+      invoke(() => service.activityToken('example.docs')),
+      /permission denied/,
+    );
+    assert.equal(scans, 0);
+  } finally {
+    await root.fiber.dispose();
+  }
+});

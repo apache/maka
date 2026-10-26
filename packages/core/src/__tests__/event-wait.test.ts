@@ -32,7 +32,7 @@ function waiting(): Extract<EventWaitRecord, { status: 'waiting' }> {
     schemaVersion: 1,
     waitId: 'wait_1',
     sessionId: 'session_1',
-    goalControlLease: { goalId: 'goal_1', generation: 0 },
+
     sourceTurnId: 'turn_1',
     sourceToolCallId: 'call:1',
     resource: {
@@ -137,7 +137,7 @@ test('ASCII identifiers use their full strings and exported bounds', () => {
     ...waiting(),
     waitId: validId,
     sessionId: validId,
-    goalControlLease: { goalId: validId, generation: Number.MAX_SAFE_INTEGER },
+
     sourceTurnId: validId,
     deliveryKey: eventWaitDeliveryKey(validId),
     resource: {
@@ -171,7 +171,7 @@ test('fixed shapes require every field and reject extensions at every level', ()
     delete missing[key];
     assert.throws(() => decodeEventWaitRecord(missing), TypeError);
   }
-  for (const field of ['goalControlLease', 'resource', 'condition'] as const) {
+  for (const field of ['resource', 'condition'] as const) {
     for (const key of Object.keys(record[field])) {
       const missing: Record<string, unknown> = { ...record[field] };
       delete missing[key];
@@ -477,5 +477,218 @@ test('terminal records cannot replace results or reasons or cross terminal state
         { ...resolved(), updatedAt: 19, resolvedAt: 19, resolution: { ...result, observedAt: 19 } },
       ),
     TypeError,
+  );
+});
+
+test('observation checkpoints are bounded, optional for old records, and cannot reset consumed attempts', () => {
+  const observation = {
+    schemaVersion: 1 as const,
+    attempts: 1,
+    lastAttemptAt: 15,
+    lastObservedAt: null,
+    nextObserveAt: 25,
+    nextPollAt: 30,
+    consecutiveErrors: 0,
+    outcome: 'checking' as const,
+    cursor: null,
+    eventKey: null,
+    reason: null,
+  };
+  const checking = { ...waiting(), updatedAt: 15, observation };
+  const pending = {
+    ...checking,
+    updatedAt: 20,
+    observation: {
+      ...observation,
+      outcome: 'pending' as const,
+      lastObservedAt: 20,
+      cursor: 'cursor-1',
+      eventKey: 'event-1',
+    },
+  };
+  assert.deepEqual(decodeEventWaitRecord(waiting()), waiting());
+  assert.deepEqual(decodeEventWaitRecord(checking), checking);
+  assertEventWaitTransition(waiting(), checking);
+  assertEventWaitTransition(checking, pending);
+  assertEventWaitTransition(pending, {
+    ...pending,
+    updatedAt: 30,
+    observation: {
+      ...pending.observation,
+      attempts: 2,
+      lastAttemptAt: 30,
+      nextObserveAt: 40,
+      nextPollAt: 40,
+      outcome: 'checking',
+    },
+  });
+  for (const patch of [
+    { attempts: 0 },
+    { attempts: EVENT_WAIT_LIMITS.observationAttempts + 1 },
+    { attempts: 1.5 },
+    { schemaVersion: 2 },
+    { extra: true },
+    { nextObserveAt: 14 },
+    { nextPollAt: 24 },
+    { lastAttemptAt: 9 },
+    { lastObservedAt: 21 },
+    { consecutiveErrors: 2 },
+    { outcome: 'success' },
+    { outcome: ['pending'] },
+    { cursor: 'x'.repeat(EVENT_WAIT_LIMITS.cursorBytes + 1) },
+    { eventKey: '\n' },
+    { reason: 'x'.repeat(EVENT_WAIT_LIMITS.reasonBytes + 1) },
+  ])
+    assert.throws(
+      () =>
+        decodeEventWaitRecord({ ...pending, observation: { ...pending.observation, ...patch } }),
+      TypeError,
+    );
+  for (const next of [
+    { ...pending, observation: undefined },
+    { ...pending, observation: { ...pending.observation, attempts: 3 } },
+    { ...pending, observation: { ...pending.observation, lastAttemptAt: 14 } },
+    { ...pending, observation: { ...pending.observation, lastObservedAt: null } },
+    { ...pending, observation: { ...pending.observation, lastObservedAt: 19 } },
+  ])
+    assert.throws(() => assertEventWaitTransition(pending, next), TypeError);
+  assert.throws(() =>
+    assertEventWaitTransition(waiting(), {
+      ...checking,
+      observation: { ...observation, attempts: 2 },
+    }),
+  );
+  // Updating only a heartbeat still has no defined meaning.
+  assert.throws(() => assertEventWaitTransition(pending, { ...pending, updatedAt: 21 }));
+});
+
+test('maximum legal field combinations retain room for every terminal transition', () => {
+  const limit = EVENT_WAIT_LIMITS;
+  const maximum = Number.MAX_SAFE_INTEGER;
+  const identifier = 'i'.repeat(limit.idBytes);
+  const type = 't'.repeat(limit.typeIdBytes);
+  // Quotes reach the worst-case JSON expansion for text that forbids control characters.
+  const quoted = (bytes: number) => '"'.repeat(bytes);
+  const reason = quoted(limit.reasonBytes);
+  const parameters = { x: 'x'.repeat(limit.parameterBytes - 8) };
+  assert.equal(Buffer.byteLength(JSON.stringify(parameters)), limit.parameterBytes);
+  const checking: Extract<EventWaitRecord, { status: 'waiting' }> = {
+    schemaVersion: 1,
+    waitId: identifier,
+    sessionId: identifier,
+
+    sourceTurnId: identifier,
+    sourceToolCallId: quoted(limit.toolCallIdBytes),
+    resource: {
+      providerId: type,
+      connectionId: identifier,
+      resourceType: type,
+      resourceId: quoted(limit.resourceIdBytes),
+    },
+    condition: { typeId: type, version: maximum, parameters },
+    deliveryKey: eventWaitDeliveryKey(identifier),
+    createdAt: maximum - 3,
+    updatedAt: maximum - 1,
+    deadlineAt: maximum,
+    status: 'waiting',
+    observation: {
+      schemaVersion: 1,
+      attempts: limit.observationAttempts,
+      lastAttemptAt: maximum - 2,
+      lastObservedAt: maximum - 1,
+      nextObserveAt: maximum,
+      nextPollAt: maximum,
+      consecutiveErrors: limit.observationAttempts,
+      outcome: 'checking',
+      cursor: quoted(limit.cursorBytes),
+      eventKey: quoted(limit.receiptKeyBytes),
+      reason,
+    },
+  };
+  assert.deepEqual(decodeEventWaitRecord(checking), checking);
+  assertEventWaitTransition(checking, {
+    ...checking,
+    status: 'expired',
+    updatedAt: maximum,
+    expiredAt: maximum,
+  });
+  assertEventWaitTransition(checking, {
+    ...checking,
+    status: 'cancelled',
+    updatedAt: maximum,
+    cancelledAt: maximum,
+    reason,
+  });
+  for (const outcome of ['satisfied', 'invalidated', 'source_unavailable'] as const) {
+    const completed: Extract<EventWaitRecord, { status: 'resolved' }> = {
+      ...checking,
+      status: 'resolved',
+      resolvedAt: maximum - 1,
+      observation: { ...checking.observation!, outcome },
+      resolution: {
+        outcome,
+        receiptKey: quoted(limit.receiptKeyBytes),
+        observedAt: maximum - 1,
+        evidenceRefs: Array<string>(limit.evidenceRefs).fill(quoted(limit.evidenceRefBytes)),
+      },
+    };
+    assertEventWaitTransition(checking, completed);
+    const { resolvedAt, resolution, ...base } = completed;
+    const cancelled = {
+      ...base,
+      status: 'cancelled' as const,
+      updatedAt: maximum,
+      cancelledAt: maximum,
+      reason,
+      priorResolution: { resolvedAt, resolution },
+    };
+    assert.ok(Buffer.byteLength(JSON.stringify(cancelled)) > 32 * 1024);
+    assert.ok(Buffer.byteLength(JSON.stringify(cancelled)) <= limit.recordBytes);
+    assert.deepEqual(decodeEventWaitRecord(cancelled), cancelled);
+    assertEventWaitTransition(completed, cancelled);
+    assert.throws(() => decodeEventWaitRecord({ ...cancelled, reason: `${reason}x` }), /reason/);
+  }
+});
+
+test('the aggregate record budget still rejects oversized input before field decoding', () => {
+  assert.throws(
+    () =>
+      decodeEventWaitRecord({
+        ...waiting(),
+        sourceToolCallId: 'x'.repeat(EVENT_WAIT_LIMITS.recordBytes),
+      }),
+    /JSON bytes/,
+  );
+});
+
+test('new resolutions must precede the deadline; old stored v1 facts still decode', () => {
+  const late = { ...resolved(), updatedAt: 100, resolvedAt: 100 };
+  decodeEventWaitRecord(late);
+  assert.throws(() => assertEventWaitTransition(waiting(), late), /deadline/);
+  const observation = {
+    schemaVersion: 1 as const,
+    attempts: 1,
+    lastAttemptAt: 15,
+    lastObservedAt: 20,
+    nextObserveAt: 25,
+    nextPollAt: 30,
+    consecutiveErrors: 0,
+    outcome: 'satisfied' as const,
+    cursor: 'c',
+    eventKey: 'e',
+    reason: null,
+  };
+  const r = { ...resolved(), observation };
+  assertEventWaitTransition(r, {
+    ...cancelled(),
+    observation,
+    priorResolution: { resolvedAt: r.resolvedAt, resolution: r.resolution },
+  });
+  assert.throws(() =>
+    assertEventWaitTransition(r, {
+      ...cancelled(),
+      observation: { ...observation, cursor: 'changed' },
+      priorResolution: { resolvedAt: r.resolvedAt, resolution: r.resolution },
+    }),
   );
 });

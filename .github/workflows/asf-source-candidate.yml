@@ -60,7 +60,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '24'
+          node-version: '24.22.1'
           cache: npm
 
       - name: Select the repository npm toolchain
@@ -130,7 +130,9 @@ jobs:
 
       - name: Test the extracted source
         working-directory: candidate-source
-        run: npm test
+        # Each workspace already runs test files concurrently. Keep the real
+        # Host processes from competing with other suites for their startup budget.
+        run: npm test -- --concurrency=1
 
       - name: Upload the verified unsigned candidate
         id: candidate

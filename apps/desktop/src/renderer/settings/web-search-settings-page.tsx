@@ -151,7 +151,7 @@ export function WebSearchSettingsPage(props: {
   }
 
   async function saveDraftKey() {
-    if (usingEnvKey || draftKey.length === 0) return;
+    if (usingEnvKey || draftKey.trim().length === 0) return;
     await runCredentialAction('save', async () => {
       const saved = await updateWebSearch({ providers: { tavily: { apiKey: draftKey } } });
       if (!saved) return;
@@ -358,13 +358,13 @@ export function WebSearchSettingsPage(props: {
         <SettingsActions role="group" aria-label={copy.actions}>
           <Button
             variant="primary"
-            isDisabled={credentialActionBusy || usingEnvKey || draftKey.length === 0}
+            isDisabled={credentialActionBusy || usingEnvKey || draftKey.trim().length === 0}
             onClick={() => void saveDraftKey()}
             label={pendingCredentialAction === 'save' ? copy.saving : copy.saveKey}
           />
           <Button
             variant="secondary"
-            isDisabled={credentialActionBusy || (draftKey.length === 0 && !hasUsableKey)}
+            isDisabled={credentialActionBusy || (draftKey.trim().length === 0 && !hasUsableKey)}
             onClick={() => void runTest()}
             label={testing ? copy.testing : copy.testKey}
           />

@@ -410,6 +410,40 @@ describe('RuntimeKernel Interaction close cleanup', () => {
     );
   });
 
+  test('Run exit observation joins the exact live execution and cancellation does not stop it', async () => {
+    const backends = new BackendRegistry();
+    const backend = new BlockingBackend(SESSION_ID, {});
+    backends.register('ai-sdk', () => backend);
+    let id = 0;
+    const kernel = new RuntimeKernel({
+      store: memoryStore(),
+      backends,
+      newId: () => `join-${++id}`,
+      now: () => id,
+    });
+    const iterator = kernel
+      .startTurn(SESSION_ID, { turnId: 'turn-join', text: 'work' }, { runId: 'run-join' })
+      [Symbol.asyncIterator]();
+    await iterator.next();
+    let joined = false;
+    const join = kernel.waitForRunExit(SESSION_ID, 'run-join', 'turn-join').then(() => {
+      joined = true;
+    });
+    await kernel.waitForRunExit(SESSION_ID, 'another-run', 'turn-join');
+    assert.equal(joined, false);
+    const abort = new AbortController();
+    const cancelled = kernel.waitForRunExit(SESSION_ID, 'run-join', 'turn-join', abort.signal);
+    abort.abort(new Error('stop observing'));
+    await assert.rejects(cancelled, /stop observing/);
+    assert.equal(kernel.hasActiveRun(SESSION_ID, 'run-join', 'turn-join'), true);
+    assert.equal(backend.stopCalls.length, 0);
+    backend.releaseBlockedSend();
+    await drainIterator(iterator).catch(() => undefined);
+    await join;
+    assert.equal(joined, true);
+    await kernel.waitForRunExit(SESSION_ID, 'run-join', 'turn-join');
+  });
+
   test('each kernel gets its own host generation; epochs restart per process (#5713 review)', () => {
     const backends = new BackendRegistry();
     backends.register('ai-sdk', () => new BlockingBackend(SESSION_ID, {}));

@@ -108,6 +108,14 @@ function renderTurn(
   }) as unknown as Promise<void>;
 }
 
+async function openProcess(container: ReturnType<typeof domRoot>['container']) {
+  const process = container.querySelector('details.maka-processing-sequence');
+  const summary = process?.querySelector('summary');
+  if (summary && !process?.hasAttribute('open')) {
+    await act(() => { summary.dispatchEvent(new window.Event('click', { bubbles: true, cancelable: true })); });
+  }
+}
+
 const ANSWER: TurnTimelineItem = {
   kind: 'text',
   text: 'the answer',
@@ -199,6 +207,7 @@ test('keeps reasoning expanded when its last neighboring tool is projected away'
     kind: 'thinking', messageId: 'reason-1', text: 'First observation', live: false,
   };
   await renderTurn(root, turnWith([thinking, RUNNING_TOOL, ANSWER]));
+  await openProcess(container);
   const header = container.querySelector('[data-slot="activity-card-header"]');
   assert.ok(header);
   await act(() => { header.dispatchEvent(new window.Event('click', { bubbles: true })); });
@@ -273,7 +282,7 @@ test('redacts secrets before rendering a settled collapsed reasoning preview', a
       live: false,
     },
   ]));
-
+  await openProcess(container);
   const header = container.querySelector('[data-slot="activity-card-header"]');
   assert.ok(header);
   assert.match(header.textContent ?? '', /<redacted>/);
@@ -290,7 +299,7 @@ test('preserves currency in a settled collapsed reasoning preview', async () => 
       live: false,
     },
   ]));
-
+  await openProcess(container);
   const header = container.querySelector('[data-slot="activity-card-header"]');
   assert.ok(header);
   assert.match(header.textContent ?? '', /cost is \$5, not x \+ 1/);
@@ -304,6 +313,7 @@ test('expanded truncated reasoning shows the current tail without replaying its 
     text: thinking.text, truncated: thinking.truncated,
   }]));
   await renderThinking();
+  await openProcess(container);
   const header = container.querySelector('[data-slot="activity-card-header"]');
   assert.ok(header);
   await act(() => { header.dispatchEvent(new window.Event('click', { bubbles: true })); });
@@ -327,7 +337,7 @@ test('preserves a model-authored single newline in plain reasoning', async () =>
       live: false,
     },
   ]));
-
+  await openProcess(container);
   const header = container.querySelector('[data-slot="activity-card-header"]');
   assert.ok(header);
   await act(() => { header.dispatchEvent(new window.Event('click', { bubbles: true })); });
@@ -621,7 +631,7 @@ test('a user message with text still renders its bubble', async () => {
       role: 'user' as const,
       text: 'explain this',
       ts: 1,
-      quotes: [{ text: 'selected excerpt' }],
+      quotes: [{ text: 'selected excerpt', comment: 'explain this' }],
     },
   };
 
@@ -630,6 +640,10 @@ test('a user message with text still renders its bubble', async () => {
   const bubble = container.querySelector('.maka-chat-message-bubble-user');
   assert.ok(bubble, 'a text message keeps its bubble');
   assert.match(bubble?.textContent ?? '', /explain this/);
+  assert.doesNotMatch(bubble?.textContent ?? '', /selected excerpt/);
+  const quote = container.querySelector('.maka-quote-chip');
+  assert.match(quote?.textContent ?? '', /selected excerpt/);
+  assert.doesNotMatch(quote?.textContent ?? '', /explain this/);
 });
 
 test('keeps Astryx auto formatting live for user-message timestamps', async (context) => {
@@ -883,16 +897,21 @@ test('collapses the whole completed process and leaves the final answer outside'
   // The finish time lives in the footer as a semantic timestamp — the fact
   // that makes a transcript reviewable after the fact.
   assert.ok(container.querySelector('.maka-turn-footer time'));
-  assert.match(process.textContent ?? '', /Checking the login state/);
+  assert.doesNotMatch(process.textContent ?? '', /Checking the login state/, 'unopened history does not mount hidden work');
   assert.doesNotMatch(process.textContent ?? '', /the answer/);
-  const answer = container.querySelectorAll('.maka-chat-message-bubble-assistant')[1];
+  const answer = container.querySelector('.maka-assistant-answer');
   assert.ok(answer);
   await act(() => { summary.dispatchEvent(new window.Event('click', { bubbles: true, cancelable: true })); });
   assert.equal(process.hasAttribute('open'), true);
   assert.equal(summary.getAttribute('aria-expanded'), 'true');
+  assert.match(process.textContent ?? '', /Checking the login state/);
+  const mounted = process.querySelector('.maka-processing-body')?.firstElementChild;
+  assert.ok(mounted);
   await act(() => { summary.dispatchEvent(new window.Event('click', { bubbles: true, cancelable: true })); });
   assert.equal(process.hasAttribute('open'), false);
-  assert.equal(container.querySelectorAll('.maka-chat-message-bubble-assistant')[1]?.isSameNode(answer), true);
+  assert.equal(container.querySelector('.maka-assistant-answer')?.isSameNode(answer), true);
+  assert.equal(process.querySelector('.maka-processing-body')?.firstElementChild?.isSameNode(mounted), true,
+    'collapsing an opened process preserves its mounted detail');
 });
 
 test('moves the live clock into the process and settles it to recorded duration without remounting the answer', async (context) => {
@@ -965,6 +984,7 @@ test('keeps running work expanded and allows manual disclosure after settlement'
   assert.equal(process.hasAttribute('open'), true);
   await renderTurn(root, { ...turnWith([PROCESS_TEXT, COMPLETED_TOOL, { ...ANSWER, live: false }]), status: 'completed' });
   assert.equal(process.hasAttribute('open'), false);
+  assert.match(process.textContent ?? '', /Checking the login state/, 'settlement keeps previously displayed live work mounted');
   assert.equal(summary.hasAttribute('aria-disabled'), false);
   assert.equal(summary.getAttribute('tabindex'), '0');
   await click();
@@ -1028,4 +1048,35 @@ test('WorkHub feedback is a system notice without a user message bubble', async 
   assert.equal(container.querySelectorAll('.maka-user-message').length, 0);
   assert.ok(container.querySelector('[role="status"][aria-label="Task result update · Order summary"]'));
   assert.ok(container.textContent.includes('the answer'));
+});
+
+
+// Both the current dash-form id and the legacy colon-form id must be recognized:
+// receipts already in transcripts keep the legacy form.
+for (const turnId of ['assistant-input-3f9c2a8b1d0e4f6a9b7c5d3e1f2a4b6c', 'assistant-input:receipt-1']) {
+  test(`assistant Inbox receipt (${turnId}) renders the user message without a fake completed reply`, async () => {
+    const { container, root } = domRoot();
+    const turn = { ...turnWith([]), turnId,
+      status: 'completed' as const, statusSource: 'recorded' as const };
+    await act(() => root.render(<LocaleProvider locale="zh-CN"><TurnView turn={turn} /></LocaleProvider>));
+    assert.match(container.textContent ?? '', /ask/);
+    assert.doesNotMatch(container.textContent ?? '', /Completed|已完成|Copy answer/i);
+  });
+}
+
+
+test('host avatar appears on assistant messages and can change without changing the conversation', async () => {
+  const { container, root } = domRoot();
+  const turn = { ...turnWith([{ ...ANSWER, live: false }]), status: 'completed' as const };
+  const render = (emoji?: string) => act(() => root.render(<LocaleProvider locale="en"><TurnView
+    turn={turn} assistantAvatar={emoji ? <span role="img" aria-label="Assistant avatar">{emoji}</span> : undefined}
+  /></LocaleProvider>));
+  await render('🤖');
+  assert.equal(container.querySelector('.maka-assistant-answer [role="img"]')?.textContent, '🤖');
+  assert.equal(container.querySelector('.maka-user-message [role="img"]'), null);
+  await render('🦊');
+  assert.equal(container.querySelector('.maka-assistant-answer [role="img"]')?.textContent, '🦊');
+  assert.ok(container.textContent.includes('the answer'));
+  await render();
+  assert.equal(container.querySelector('[aria-label="Assistant avatar"]'), null);
 });

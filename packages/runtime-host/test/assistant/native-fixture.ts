@@ -25,6 +25,7 @@ export async function nativeFixture(
   root: string,
   configs: any = {},
   paths: any = {},
+  dependencies: any = {},
 ) {
   const data = new Main.HostPluginDataRuntime(join(root, 'control'));
   const platform = new Main.HostPluginPlatform(join(root, 'control'), {
@@ -53,8 +54,12 @@ export async function nativeFixture(
   }
   const directory = join(root, 'native');
   let service: any;
+  const runtimeEvents: any[] = [];
   const initialize = async () => {
     service = new Main.PersonalAssistantService(directory, {
+      readRuntimeEvents: async () => runtimeEvents,
+      prepareBotWake: async () => 'ready',
+      ...dependencies,
       stopSessions: async () => {},
       markBackgroundSessions: async () => {},
       agents: ctx.agents,
@@ -70,11 +75,43 @@ export async function nativeFixture(
   await initialize();
   return {
     platform,
+    filterTools: (sessionId: string, tools: any[]) => service.filterTools(sessionId, tools),
     tools: {
-      resolve: (id: string, core: any[] = []) => ctx.tools.resolve(id, [...core, ...service.tools]),
+      resolve: (id: string, core: any[] = []) => {
+        const resolved = ctx.tools.resolve(id, [...core, ...service.tools]);
+        return {
+          ...resolved,
+          tools: resolved.tools.map((tool: any) => ({
+            ...tool,
+            impl: async (input: any, call: any) => {
+              const prompt = await service.prompt({
+                sessionId: call.sessionId,
+                turnId: call.turnId,
+                cwd: call.cwd,
+              });
+              for (const context of prompt.contexts ?? [])
+                runtimeEvents.push({
+                  sessionId: call.sessionId,
+                  turnId: call.turnId,
+                  role: 'system',
+                  author: 'host',
+                  content: { kind: 'text', runtimeContextName: context.name, text: context.text },
+                });
+              runtimeEvents.push({
+                sessionId: call.sessionId,
+                turnId: call.turnId,
+                content: { kind: 'function_call', id: call.toolCallId },
+              });
+              return tool.impl(input, call);
+            },
+          })),
+        };
+      },
     },
     prompts: { assemble: (context: any, base?: string) => service.prompt(context, base) },
     turns: { evaluate: (context: any) => service.beforeFinish(context) },
+    send: (sessionId: string, id: string, content: any) =>
+      service.receiveUser(sessionId, id, content),
     remote: (method: string, input: any = {}) => service.call(method, input),
     restart: async (patch?: any) => {
       await service.close();

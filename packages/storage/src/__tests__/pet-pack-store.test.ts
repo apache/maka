@@ -232,3 +232,52 @@ async function withStore(
     await rm(root, { recursive: true, force: true });
   }
 }
+
+test('rejects expanded installed manifests before publishing any pack', async () => {
+  await withStore(async ({ root, store }) => {
+    const large = manifest({
+      idleVariants: Array.from({ length: 40 }, () => ({
+        frames: Array(256).fill(0),
+        fps: 2,
+        loop: true,
+      })),
+    });
+    assert.ok(Buffer.byteLength(JSON.stringify(large)) < 64 * 1024);
+    assert.ok(Buffer.byteLength(JSON.stringify(large, null, 2)) > 64 * 1024);
+    await assert.rejects(
+      store.install({ manifest: large, spriteSheet: pngHeader(64, 64) }),
+      /manifest.*(size|large|limit)/i,
+    );
+    assert.equal(await store.get('likun.maodie'), undefined);
+    assert.deepEqual(await store.list(), []);
+    const entries = await readdir(join(root, ...PET_PACK_DIRECTORY.split('/'))).catch(() => []);
+    assert.deepEqual(entries, []);
+  });
+});
+
+test('the final UTF-8 manifest limit is inclusive and counts the trailing newline', async () => {
+  await withStore(async ({ store }) => {
+    const idleVariants = Array.from({ length: 400 }, () => ({ frames: [0], fps: 2, loop: true }));
+    const candidate = manifest({ description: '', idleVariants });
+    const size = () => Buffer.byteLength(`${JSON.stringify(candidate, null, 2)}\n`);
+    while (size() < 64 * 1024 - 128) idleVariants.push({ frames: [0], fps: 2, loop: true });
+    const padding = 64 * 1024 - size();
+    assert.ok(padding >= 0 && padding < 256);
+    candidate.description = 'x'.repeat(padding);
+    assert.equal(size(), 64 * 1024);
+    await store.install({ manifest: candidate, spriteSheet: pngHeader(64, 64) });
+    assert.equal((await store.get('likun.maodie'))?.id, 'likun.maodie');
+    const oversized = {
+      ...candidate,
+      id: 'other.maodie',
+      description: `${candidate.description}x`,
+    };
+    assert.equal(Buffer.byteLength(`${JSON.stringify(oversized, null, 2)}\n`), 64 * 1024 + 1);
+    await assert.rejects(
+      store.install({ manifest: oversized, spriteSheet: pngHeader(64, 64) }),
+      /size limit/,
+    );
+    assert.equal(await store.get('other.maodie'), undefined);
+    assert.equal((await store.list()).length, 1);
+  });
+});

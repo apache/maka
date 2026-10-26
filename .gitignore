@@ -58,3 +58,5 @@ perf-results/
 /scripts/plugins/memory-network/
 /scripts/plugins/proactive-matters/
 artifacts/startup-correctness/
+
+apps/desktop/dist-assistant-web/

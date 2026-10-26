@@ -23,6 +23,7 @@ export const RENDERER_RUNTIME_HOST_QUERY_OPERATIONS = [
   // Read-only, session-scoped, and already the owner of "what is the context
   // made of" for `/context` (#1580, #2323). Admitted on the same terms as the
   // inspect query beside it: it reads a projection and writes nothing.
+  'session.event-waits.query',
   'context.diagnostics.query',
   'daily-review.query',
   'execution.inspect.query',
@@ -35,6 +36,7 @@ export const RENDERER_RUNTIME_HOST_QUERY_OPERATIONS = [
 ] as const satisfies readonly (keyof OperationSpecMap)[];
 
 export const RENDERER_RUNTIME_HOST_COMMAND_OPERATIONS = [
+  'session.event-wait.cancel',
   'daily-review.mutate',
   'personal-assistant.call',
   'scheduled-task.mutate',

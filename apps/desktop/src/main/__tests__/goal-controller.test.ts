@@ -265,3 +265,24 @@ describe('useGoalController', () => {
     assert.deepEqual(calls, ['resume:a', 'clear:a']);
   });
 });
+
+
+describe('Session event waits independent of Goal state', () => {
+  it('keeps parallel waits after clear and cancels the captured consumer only', async () => {
+    const { root } = installReactRenderer();
+    const fake = createFakeGoalServices();
+    const targets: unknown[] = [];
+    const waits: import('@maka/runtime-host/protocol').SessionEventWaitProjection[] = ['one', 'two'].map((id) => ({
+      sessionId: 's', waitId: id, sourceTurnId: 'turn', consumer: { kind: 'tool_invocation', runId: 'run', invocationId: 'invocation', operationId: `operation-${id}` },
+      resource: { providerId: 'test', resourceType: 'job', resourceId: id }, deadlineAt: null, phase: 'observing', observation: 'pending', reasonCode: null,
+    }));
+    fake.goal.getEventWaits = async () => waits;
+    fake.goal.cancelSessionEventWait = async (target) => { targets.push(target); return { sessionId: target.sessionId, outcome: 'cancelled' }; };
+    await act(async () => { renderController(root, fake, input('s')); });
+    assert.equal(controller().selectors.indicator, undefined);
+    assert.equal(controller().selectors.eventWaitIndicators?.length, 2);
+    await act(async () => { controller().selectors.eventWaitIndicators?.[1]?.onCancel(); });
+    assert.deepEqual(targets, [{ sessionId: 's', waitId: 'two', consumer: waits[1]!.consumer }]);
+    assert.equal(controller().selectors.active, false);
+  });
+});

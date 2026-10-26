@@ -46,6 +46,7 @@ const OPENAI_CODEX_EDGE_REJECTION_CODE = 'openai_codex_edge_rejection';
 
 // Node, TLS, and undici codes that identify transport failures before an HTTP response.
 const TRANSPORT_FAILURE_CODES: ReadonlySet<string> = new Set([
+  'ERR_HTTP2_STREAM_ERROR',
   'ECONNRESET',
   'ECONNREFUSED',
   'ETIMEDOUT',
@@ -61,6 +62,7 @@ const TRANSPORT_FAILURE_CODES: ReadonlySet<string> = new Set([
 // Unlike pre-response failures, require an explicit interruption code here:
 // neither SDK retryability nor arbitrary TLS/undici errors prove a transient cut.
 const RESPONSE_TRANSPORT_FAILURE_CODES: ReadonlySet<string> = new Set([
+  'ERR_HTTP2_STREAM_ERROR',
   'ECONNRESET',
   'EPIPE',
   'ETIMEDOUT',

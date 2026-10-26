@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import { readFileSync } from 'node:fs';
+
 import { randomUUID } from 'node:crypto';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -53,11 +55,33 @@ test('delegate retries reuse child; wait and user amendment stay independent of 
     d.onFollowup = async (id, prompt, turn) => {
       try {
         assert.notEqual(id, 'session-1');
+        const available = f.filterTools(id, [...f.tools.resolve(id, []).tools, { name: 'Bash' }]);
+        assert.ok(available.some((tool: any) => tool.name === 'Bash'));
+        assert.ok(
+          available.some(
+            (tool: any) => tool.name === 'MatterSettle' && tool.discovery === 'direct',
+          ),
+        );
+        assert.ok(
+          !available.some((tool: any) =>
+            ['MatterDelegate', 'MatterTaskMessage', 'MatterTaskControl', 'MatterReply'].includes(
+              tool.name,
+            ),
+          ),
+        );
+        assert.ok(
+          f
+            .filterTools('session-1', f.tools.resolve('session-1', []).tools)
+            .some((tool: any) => tool.name === 'MatterDelegate'),
+        );
         runs++;
         const m = (await f.remote('matters.list')).matters.find((m: any) => m.sessionId === id);
         const v = await f.invoke('MatterRead', { activationId: m.activation.id }, turn, id);
         const inbox = await f.invoke('MatterReadFile', { path: v.files.inbox }, turn, id);
-        if (runs === 2) assert.match(JSON.stringify(inbox), /只验证测试环境/);
+        if (runs === 2) {
+          assert.match(JSON.stringify(inbox), /只验证测试环境/);
+          assert.match(JSON.stringify(inbox), /coordinator/);
+        }
         await f.invoke(
           'MatterWriteFile',
           {
@@ -70,8 +94,7 @@ test('delegate retries reuse child; wait and user amendment stay independent of 
         await f.invoke(
           'MatterSettle',
           {
-            expectedRevision: v.revision,
-            stateFile: v.files.draft,
+            note: readFileSync(v.files.draft, 'utf8'),
             disposition: runs === 1 ? 'wait' : 'complete',
             ...(runs === 1
               ? { waitingFor: '等待供应商结果', wakes: [{ kind: 'at', at: Date.now() + 60000 }] }
@@ -120,6 +143,7 @@ test('delegate retries reuse child; wait and user amendment stay independent of 
       ).allow,
       true,
     );
+    await f.remote('matters.authorize-session', { sessionId: 'other' });
     await assert.rejects(f.invoke('MatterTasks', { id: a.id }, 'x', 'other'), /outside/);
     assert.deepEqual((await f.invoke('MatterTasks', {}, 'x', 'other')).items, []);
     await f.invoke('MatterTaskMessage', { id: a.id, text: '改为只验证测试环境，不用生产环境。' });
@@ -148,6 +172,7 @@ test('parent cancellation stops only its task and rejects late worker writes', a
   try {
     const a = await f.invoke('MatterDelegate', { taskKey: 'a', title: 'A', request: '只读跟进 A' });
     await until(() => d.calls.some((x: any) => x.op === 'followup'));
+    await f.remote('matters.authorize-session', { sessionId: 'other' });
     await assert.rejects(
       f.invoke('MatterTaskControl', { id: a.id, action: 'cancel' }, 'x', 'other'),
       /outside/,
@@ -214,8 +239,7 @@ test('completed task reaches its idle parent without heartbeat and is admitted o
         await f.invoke(
           'MatterSettle',
           {
-            expectedRevision: v.revision,
-            stateFile: v.files.draft,
+            note: readFileSync(v.files.draft, 'utf8'),
             disposition: 'complete',
             reason: '已验收',
             summary: '读取验收记录',
@@ -248,12 +272,47 @@ test('legacy task adoption is explicit and cannot steal another conversation tas
   const { d } = driver(),
     f = await fixture({ driver: d });
   try {
-    const v = await f.invoke('MatterStart', { title: '旧任务', request: '历史任务' });
+    const v = await f.invoke('MatterStart', { title: '旧任务', request: '历史委托'.repeat(1000) });
     const id = (await f.remote('matters.list')).matters[0].id;
+    await f.invoke('MatterWriteFile', {
+      path: v.files.draft,
+      content: '完整工作报告'.repeat(1000),
+    });
+    await f.invoke('MatterCheckpoint', {
+      expectedRevision: v.revision,
+      stateFile: v.files.draft,
+      progressSummary: '已完成资料核查',
+    });
+    await f.remote('matters.authorize-session', { sessionId: 'other' });
+    await f.remote('matters.authorize-session', { sessionId: 'assistant' });
     assert.equal((await f.invoke('MatterOverview', {}, 'read', 'assistant')).legacy.length, 1);
     await f.invoke('MatterAdopt', { id }, 'adopt', 'assistant');
     assert.equal((await f.invoke('MatterTasks', {}, 'read', 'assistant')).items.length, 1);
     assert.equal((await f.invoke('MatterOverview', {}, 'read', 'assistant')).legacy.length, 0);
+    const overview = await f.invoke('MatterOverview', {}, 'read', 'assistant');
+    assert.equal(overview.items[0].summary, '已完成资料核查');
+    assert.deepEqual(
+      Object.keys(overview.items[0]).sort(),
+      [
+        'id',
+        'sessionId',
+        'title',
+        'status',
+        'summary',
+        'updatedAt',
+        'retryAt',
+        'runtimeStatus',
+      ].sort(),
+    );
+    assert.ok(Buffer.byteLength(JSON.stringify(overview)) < 2000);
+    const details = await f.invoke('MatterTasks', { id }, 'read', 'assistant');
+    assert.ok(details.request.length > 3000);
+    assert.ok(details.state.length > 5000);
+    assert.ok(Buffer.byteLength(JSON.stringify({ items: Array(72).fill(details) })) > 480 * 1024);
+    assert.ok(
+      Buffer.byteLength(JSON.stringify({ items: Array(72).fill(overview.items[0]) })) < 32 * 1024,
+    );
+
     await assert.rejects(f.invoke('MatterAdopt', { id }, 'adopt', 'other'), /另一段对话/);
   } finally {
     await f.close();
@@ -293,8 +352,7 @@ for (const accepted of [false, true])
           await f.invoke(
             'MatterSettle',
             {
-              expectedRevision: v.revision,
-              stateFile: v.files.draft,
+              note: readFileSync(v.files.draft, 'utf8'),
               disposition: 'complete',
               reason: '已完成',
               summary: '已核对',
@@ -358,8 +416,7 @@ test('busy parent defers feedback; an accepted but missing reply survives restar
       await f.invoke(
         'MatterSettle',
         {
-          expectedRevision: v.revision,
-          stateFile: v.files.draft,
+          note: readFileSync(v.files.draft, 'utf8'),
           disposition: 'complete',
           reason: '证据完整',
           summary: '验收核对',
@@ -399,6 +456,7 @@ test('busy parent defers feedback; an accepted but missing reply survives restar
       (n: any) => n.phase === 'awaiting_reply',
     );
     assert.ok(notification);
+    await f.remote('matters.authorize-session', { sessionId: 'other' });
     await assert.rejects(
       f.invoke('MatterFeedbackRetry', { notificationId: notification.id }, 'retry', 'other'),
       /不属于/,
@@ -435,8 +493,7 @@ test('waiting for user approval remains active and is visible to the owner', asy
       await f.invoke(
         'MatterSettle',
         {
-          expectedRevision: v.revision,
-          stateFile: v.files.draft,
+          note: readFileSync(v.files.draft, 'utf8'),
           disposition: 'complete',
           reason: '已完成',
           summary: '已核对',
@@ -507,8 +564,7 @@ test('quiet interim progress is not an error or replayed for changed waiting det
       await f.invoke(
         'MatterSettle',
         {
-          expectedRevision: v.revision,
-          stateFile: v.files.draft,
+          note: readFileSync(v.files.draft, 'utf8'),
           disposition: runs < 3 ? 'wait' : 'complete',
           reason: '核对实际证据',
           summary: '只读检查',
@@ -613,8 +669,7 @@ test('legacy runTimeoutMs cannot cancel a live review or evidence repair before 
         id,
       );
       const submission = {
-        expectedRevision: v.revision,
-        stateFile: v.files.draft,
+        note: readFileSync(v.files.draft, 'utf8'),
         disposition: 'complete',
         reason: 'Work finished',
         summary: 'Report ready',

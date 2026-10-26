@@ -18,13 +18,14 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import type { DesktopGoal } from '../shared/goal-arm.js';
 import type { AgentGraphClientChangedEvent } from '@maka/runtime/stream-graph-coordinator';
 import type {
   AgentGraphClientSnapshot,
   AgentGraphClientSnapshotOptions,
   AgentGraphOperatorInspection,
 } from '@maka/runtime/stream-graph-read-model';
-import { DEFAULT_MAX_ITERATIONS, type GoalState } from '@maka/runtime/goal-state';
+import { DEFAULT_MAX_ITERATIONS } from '@maka/runtime/goal-state';
 import type { ShellRunPtyDataEvent } from '@maka/runtime/shell-run-contract';
 import type { PlanSessionState } from '@maka/core/plan';
 import {
@@ -476,7 +477,7 @@ function optionalCount(value: unknown, label: string): number | null {
   return value;
 }
 
-function toDesktopGoal(goal: GoalProjection): GoalState {
+function toDesktopGoal(goal: GoalProjection): DesktopGoal {
   return {
     id: goal.goalId,
     revision: goal.revision,

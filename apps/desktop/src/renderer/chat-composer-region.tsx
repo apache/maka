@@ -23,13 +23,13 @@ import {
   Button,
   ClientCapabilityPrompt,
   clearUserQuestionWizardState,
-  Composer,
   type ComposerInteraction,
   ComposerGoalProjectionConsumer,
   FormInteractionPrompt,
   SandboxBoundaryPrompt,
   UserQuestionPrompt,
 } from '@maka/ui';
+import { PersonalAssistantComposer as Composer } from './features/personal-assistant/index.js';
 import { StagedComposer, type ComposerStagingProp } from './features/conversation/index.js';
 import type { ComposerHandle } from '@maka/ui';
 import {

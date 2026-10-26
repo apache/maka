@@ -727,7 +727,10 @@ export class RuntimeHostSessionChannel {
       this.messages.length,
       ...messages.map((message) => structuredClone(message)),
     );
-    if (!sameGoalProjection(previousSnapshot.goal, nextSnapshot.goal)) {
+    if (
+      !sameGoalProjection(previousSnapshot.goal, nextSnapshot.goal) ||
+      JSON.stringify(previousSnapshot.eventWaits) !== JSON.stringify(nextSnapshot.eventWaits)
+    ) {
       this.#onGoalChanged(nextSnapshot.goal === null ? null : structuredClone(nextSnapshot.goal));
     }
     this.#projector = new RuntimeHostSessionProjector(
@@ -903,7 +906,10 @@ export class RuntimeHostSessionChannel {
     if (!update || !this.#projector) return;
     const snapshot = this.#projector.snapshot;
     this.#onSnapshotChanged?.(structuredClone(snapshot));
-    if (!sameGoalProjection(previousGoal, snapshot.goal)) {
+    if (
+      !sameGoalProjection(previousGoal, snapshot.goal) ||
+      JSON.stringify(previousSnapshot.eventWaits) !== JSON.stringify(snapshot.eventWaits)
+    ) {
       // Clone like the canonical-replacement path above: listeners receive
       // their own copy, so a mutating listener cannot corrupt the live
       // snapshot regardless of which path delivered the change.

@@ -31,7 +31,7 @@ import {
 import { ARTIFACT_IMAGE_PREVIEW_MAX_BYTES } from '@maka/core/artifacts';
 
 export interface WorkspaceFileReadOptions {
-  imagePurpose?: 'chat';
+  imagePurpose?: 'chat' | 'pet';
   abortSignal?: AbortSignal;
 }
 
@@ -65,15 +65,20 @@ export async function readWorkspaceFile(
   // Chat capture must never block opening a FIFO or read an unbounded text file.
   const file = await open(
     path,
-    options.imagePurpose === 'chat' ? constants.O_RDONLY | constants.O_NONBLOCK : 'r',
+    options.imagePurpose ? constants.O_RDONLY | constants.O_NONBLOCK : 'r',
   );
   try {
     options.abortSignal?.throwIfAborted();
-    if (options.imagePurpose === 'chat') {
+    if (options.imagePurpose) {
       const size = await file.stat();
       if (!size.isFile()) throw new Error('Image path is not a file.');
-      if (size.size > ARTIFACT_IMAGE_PREVIEW_MAX_BYTES) throw imageTooLargeError('chat');
-      return validateImageBytes(await file.readFile({ signal: options.abortSignal }), 'chat');
+      const limit =
+        options.imagePurpose === 'pet' ? 4 * 1024 * 1024 : ARTIFACT_IMAGE_PREVIEW_MAX_BYTES;
+      if (size.size > limit) throw imageTooLargeError(options.imagePurpose);
+      return validateImageBytes(
+        await file.readFile({ signal: options.abortSignal }),
+        options.imagePurpose,
+      );
     }
     const prefix = Buffer.alloc(ATTACHMENT_MIME_SNIFF_BYTES);
     // A positioned read leaves the descriptor's offset at zero for readFile.
@@ -92,12 +97,19 @@ export async function readWorkspaceFile(
 
 export function validateImageBytes(
   bytes: Uint8Array,
-  purpose: 'model' | 'chat' = 'model',
+  purpose: 'model' | 'chat' | 'pet' = 'model',
 ): {
   bytes: Uint8Array;
   mimeType: ImageMimeType;
 } {
-  if (bytes.length > (purpose === 'chat' ? ARTIFACT_IMAGE_PREVIEW_MAX_BYTES : MAX_READ_IMAGE_BYTES))
+  if (
+    bytes.length >
+    (purpose === 'pet'
+      ? 4 * 1024 * 1024
+      : purpose === 'chat'
+        ? ARTIFACT_IMAGE_PREVIEW_MAX_BYTES
+        : MAX_READ_IMAGE_BYTES)
+  )
     throw imageTooLargeError(purpose);
   const mimeType = sniffImageMime(bytes);
   if (!mimeType)
@@ -125,6 +137,16 @@ export function validateImageBytes(
       `Image dimensions ${dimensions.width}x${dimensions.height} exceed the ${MAX_MODEL_IMAGE_EDGE}px model input limit; downscale it and try again.`,
     );
   }
+  if (
+    purpose === 'pet' &&
+    (Math.max(dimensions.width, dimensions.height) > 8192 ||
+      !['image/png', 'image/webp'].includes(mimeType))
+  ) {
+    throw new ImageFileError(
+      'ERR_INVALID_IMAGE',
+      'Pet sprites require PNG or WebP, at most 8192px per edge.',
+    );
+  }
   // Compressed byte size does not bound renderer decoding memory. Permit large
   // screenshots while rejecting pathological headers before archival/preview.
   if (
@@ -137,12 +159,14 @@ export function validateImageBytes(
   return { bytes, mimeType };
 }
 
-function imageTooLargeError(purpose: 'model' | 'chat' = 'model'): Error {
+function imageTooLargeError(purpose: 'model' | 'chat' | 'pet' = 'model'): Error {
   return new ImageFileError(
     'ERR_IMAGE_TOO_LARGE',
-    purpose === 'chat'
-      ? 'Image exceeds a chat preview limit (2 MiB, 16384px per edge, or 32 megapixels); resize it before publishing.'
-      : READ_IMAGE_TOO_LARGE_MESSAGE,
+    purpose === 'pet'
+      ? 'Pet sprite sheet exceeds 4 MiB; optimize it before installing.'
+      : purpose === 'chat'
+        ? 'Image exceeds a chat preview limit (2 MiB, 16384px per edge, or 32 megapixels); resize it before publishing.'
+        : READ_IMAGE_TOO_LARGE_MESSAGE,
   );
 }
 

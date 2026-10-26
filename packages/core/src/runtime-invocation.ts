@@ -26,7 +26,13 @@
  * writer could set independently of the events.
  */
 
-import type { CloudActivationOrigin, WorkHubResultOrigin } from './turn-origin.js';
+import {
+  sameGoalWaitingProvenance,
+  sameLegacyEventWaitProvenance,
+  type LegacyEventWaitProvenance,
+  type GoalWaitingProvenance,
+} from './event-wait-delivery.js';
+import type { TurnOrigin, WorkHubResultOrigin } from './turn-origin.js';
 import type { AgentGraphIntentClaim } from './agent-graph-control.js';
 import type {
   RuntimeEvent,
@@ -247,7 +253,7 @@ export type RootExecutionDescriptor =
       inputDigest?: `sha256:${string}`;
       maxSteps?: number;
       /** Caller-authored trigger retained so recovery preserves its authority class. */
-      origin?: CloudActivationOrigin;
+      origin?: Extract<TurnOrigin, { kind: 'cloud_activation' | 'external_connector' }>;
     }
   | {
       /** Conversational execution admitted only by WorkHub authority. */
@@ -272,7 +278,13 @@ export type RootExecutionDescriptor =
       executionFingerprint?: `sha256:${string}`;
     }
   | { kind: 'legacy_automation'; automationId: string }
-  | { kind: 'goal'; goalId: string }
+  | {
+      kind: 'goal';
+      goalId: string;
+      goalWaiting?: GoalWaitingProvenance;
+      /** PR3/PR4 historical provenance; not a new execution authority. */
+      eventWait?: LegacyEventWaitProvenance;
+    }
   | {
       kind: 'agent_graph_supervisor_wake';
       graphId: string;
@@ -392,6 +404,8 @@ export function invocationMatchesHostedRootExecution(
       return (
         root.kind === 'goal' &&
         root.goalId === execution.goalId &&
+        sameGoalWaitingProvenance(root.goalWaiting, execution.goalWaiting) &&
+        sameLegacyEventWaitProvenance(root.eventWait, execution.eventWait) &&
         source.kind === 'fresh' &&
         lineageIsExactly(lineage, {})
       );

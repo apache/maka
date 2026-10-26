@@ -33,6 +33,7 @@ The root `DESIGN.md` owns shared product design intent. `docs/frontend-css-gover
 ## Audits
 
 - `maka-capability-audit-v1-2026-05.md` — a point-in-time capability and release-gate audit whose frontend authority references are no longer current.
+- [Deferred Goal wait integrations](./goal-wait-deferred-integrations-2026-10-24.en.md) ([中文](./goal-wait-deferred-integrations-2026-10-24.zh-CN.md)) — removed computer-observation and ACP-tool-bridge prototypes, their purpose and the scope that would justify separate introductions.
 
 ## Validation snapshots
 

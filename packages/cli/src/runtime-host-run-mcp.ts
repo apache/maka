@@ -152,6 +152,10 @@ export class RuntimeHostRunMcp {
     }
   }
 
+  get ownsServers(): boolean {
+    return this.#enabledServerIds.length > 0;
+  }
+
   close(): Promise<void> {
     this.#closeTask ??= this.#close(true);
     return this.#closeTask;

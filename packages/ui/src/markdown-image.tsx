@@ -18,7 +18,7 @@
  */
 
 import { useEffect, useRef, useState } from 'react';
-import { Button, IconButton, Spinner, Tooltip } from '@astryxdesign/core';
+import { Button, Dialog, DialogHeader, IconButton, Spinner, Tooltip } from '@astryxdesign/core';
 import { createMarkdownPlugin, type MarkdownExtensionNode } from '@astryxdesign/core/Markdown/plugins';
 import type { MarkdownAstNode, MarkdownAstRoot } from '@astryxdesign/core/Markdown';
 import { RotateCw, AlertTriangle } from './icons.js';
@@ -123,12 +123,20 @@ function ImageResource(props: { src: string; redacted: boolean; alt: string; inl
       {props.alt && <span className="maka-markdown-image-caption">{props.alt}</span>}
       <span role="status">{state.kind === 'loading' && <Spinner size="sm" shade="subtle" aria-hidden="true" />} {message}</span>
       {state.kind === 'failed' && actions}
-    </span> : state.kind === 'ready' && <DisplayImage key={`${state.src}\0${resource.attempt}`} src={state.src} alt={props.alt} onError={resource.onDecodeError} />}
+    </span> : state.kind === 'ready' && <DisplayImage key={`${state.src}\0${resource.attempt}`} src={state.src} alt={props.alt} sticker={resource.sticker} onError={resource.onDecodeError} />}
     {state.kind === 'unavailable' && resource.openSource && actions}
   </span>;
 }
 
-function DisplayImage(props: { src: string; alt: string; onError(): void }) {
-  return <img src={props.src} alt={props.alt} loading="lazy" decoding="async" referrerPolicy="no-referrer"
+function DisplayImage(props: { src: string; alt: string; sticker?: boolean; onError(): void }) {
+  const [expanded, setExpanded] = useState(false);
+  const image = <img src={props.src} alt={props.alt} loading="lazy" decoding="async" referrerPolicy="no-referrer"
     className="maka-markdown-attachment-image" onError={props.onError} />;
+  if (!props.sticker) return image;
+  return <>
+    <Button className="maka-chat-sticker" variant="ghost" label={props.alt || 'Sticker'} onClick={() => setExpanded(true)}>{image}</Button>
+    <Dialog isOpen={expanded} onOpenChange={setExpanded} purpose="info" width={640} aria-label={props.alt || 'Sticker'}>
+      {expanded && <><DialogHeader title={props.alt || 'Sticker'} onOpenChange={setExpanded} />{image}</>}
+    </Dialog>
+  </>;
 }

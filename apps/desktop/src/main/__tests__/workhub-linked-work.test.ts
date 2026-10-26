@@ -200,3 +200,39 @@ test('task result replies keep their source Work rail even without a new delegat
   assert.equal(rail.getAttribute('data-work-session-id'), target);
   assert.doesNotMatch(rail.getAttribute('aria-label') ?? '', /Task result received|result-turn/);
 });
+
+
+test('a later turn reusing the provider tool-call id cannot steal an earlier turn pairing', () => {
+  const target = JSON.stringify(['host-a', 'task-a']);
+  const first: ToolCallMessage = { type: 'tool_call', id: 'reused', turnId: 'turn-1', ts: 1, toolName: 'mcp__desktop_workhub__tasks', args: { request: { operation: 'create_new', title: 'Task A', text: 'Ship it' } } };
+  const receipt: ToolResultMessage = { type: 'tool_result', id: 'receipt', turnId: 'turn-1', ts: 2, toolUseId: first.id, isError: false, content: { kind: 'json', value: { disposition: 'create_new', targetSessionKey: target } } };
+  const reused: ToolCallMessage = { ...first, turnId: 'turn-2', ts: 3, args: { request: { operation: 'stop', targetSessionId: 'task-a' } } };
+  assert.equal(workHubTurnContexts([first, receipt, reused]).get('turn-1')?.handoffs.length, 1);
+});
+
+
+test('a reused id binds each stop and resume to its own turn result', () => {
+  const stopped = JSON.stringify(['host-a', 'task-a']);
+  const resumed = JSON.stringify(['host-a', 'task-b']);
+  const catalog = [{ id: stopped, name: 'Task A' }, { id: resumed, name: 'Task B' }];
+  const stop: ToolCallMessage = { type: 'tool_call', id: 'op', turnId: 'turn-1', ts: 1, toolName: 'mcp__desktop_workhub__tasks', args: { request: { operation: 'stop', targetSessionId: 'task-a' } } };
+  const stopResult: ToolResultMessage = { type: 'tool_result', id: 'stop-result', turnId: 'turn-1', ts: 2, toolUseId: stop.id, isError: false, content: { kind: 'json', value: { targetSessionKey: stopped } } };
+  const resume: ToolCallMessage = { ...stop, turnId: 'turn-2', ts: 3, args: { request: { operation: 'resume', targetSessionId: 'task-b' } } };
+  const resumeResult: ToolResultMessage = { ...stopResult, turnId: 'turn-2', ts: 4, content: { kind: 'json', value: { targetSessionKey: resumed } } };
+  const byTurn = new Map(workHubLinkedWork([stop, stopResult, resume, resumeResult], catalog, 'Work').map((link) => [link.coordinationTurnId, link.targetSessionId]));
+  assert.equal(byTurn.get('turn-1'), stopped);
+  assert.equal(byTurn.get('turn-2'), resumed);
+});
+
+
+test('a later turn reusing the association call id does not erase the earlier topic link', () => {
+  const first = JSON.stringify(['host-a', 'task-a']);
+  const second = JSON.stringify(['host-a', 'task-b']);
+  const catalog = [{ id: first, name: 'Task A' }, { id: second, name: 'Task B' }];
+  const associate = (turnId: string, ts: number, targetSessionId: string): ToolCallMessage => ({ type: 'tool_call', id: 'assoc', turnId, ts, toolName: 'mcp__desktop_workhub__tasks', args: { request: { operation: 'associate', targetSessionId } } });
+  const receipt = (turnId: string, ts: number, targetSessionId: string, targetSessionKey: string, targetSessionName: string): ToolResultMessage => ({ type: 'tool_result', id: `assoc-${turnId}`, turnId, ts, toolUseId: 'assoc', isError: false, content: { kind: 'json', value: { operation: 'associate', targetSessionId, targetSessionKey, targetSessionName } } });
+  const messages = [associate('turn-1', 1, 'task-a'), receipt('turn-1', 2, 'task-a', first, 'Task A'), associate('turn-2', 3, 'task-b'), receipt('turn-2', 4, 'task-b', second, 'Task B')];
+  const byTurn = new Map(workHubLinkedWork(messages, catalog, 'Work').map((link) => [link.coordinationTurnId, link.targetSessionId]));
+  assert.equal(byTurn.get('turn-1'), first);
+  assert.equal(byTurn.get('turn-2'), second);
+});

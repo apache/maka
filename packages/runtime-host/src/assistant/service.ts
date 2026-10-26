@@ -17,6 +17,13 @@
  * under the License.
  */
 
+import type { createAssistantPetPacks } from '../server/assistant-pet-packs.js';
+import type { RuntimeEvent } from '@maka/core/runtime-event';
+import type { TurnOrigin } from '@maka/core/turn-origin';
+import type { MessageContent } from '@maka/core/events';
+import type { StoredMessage } from '@maka/core/session';
+import { AssistantBotBridge } from './bot/bridge.js';
+import { BOT_TOOLS, BOT_DELEGATION_TOOLS } from './bot/capabilities.js';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { join, isAbsolute } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
@@ -48,10 +55,29 @@ type Dispose = () => void | Promise<void>;
 
 /** Shared Host capabilities retain invocation identity and source permissions. No plugin Fiber owns this service. */
 export interface AssistantDependencies {
+  petPacks?: ReturnType<typeof createAssistantPetPacks>;
+  allocateWorkspace?(): Promise<{ projectId: string }>;
+  readRuntimeEvents?(sessionId: string, runId?: string): Promise<readonly RuntimeEvent[]>;
+  /** Cheap durable checkpoint identity; used only to refresh the Bot's optional sticker shelf. */
+  readCompactionRevision?(sessionId: string): Promise<string | undefined>;
+  publishCharacterImage?(
+    sessionId: string,
+    assetId: string,
+    image: { bytes: Uint8Array; mimeType: string },
+    kind: 'image' | 'avatar' | 'sticker',
+  ): Promise<string>;
   agents: PluginAgentService;
   llm: PluginLlmService;
   sessionQuery: PluginSessionQueryService;
   sources: PluginSourceService;
+  readAvatarImage?(
+    sessionId: string,
+    source: string,
+    signal: AbortSignal,
+  ): Promise<{ bytes: Uint8Array; mimeType: string }>;
+  appendConversation?(sessionId: string, message: StoredMessage): Promise<void>;
+  /** Reconcile the selected model before admitting a new Bot wake. */
+  prepareBotWake(ownerId: string, workerId: string): Promise<'ready' | 'deferred'>;
   stopSessions(): Promise<void>;
   markBackgroundSessions(sessionIds: readonly string[]): Promise<void>;
   resolveTools(sessionId: string, core: readonly MakaTool[]): { tools: readonly MakaTool[] };
@@ -59,11 +85,14 @@ export interface AssistantDependencies {
 
 export interface AssistantModuleServices
   extends Omit<AssistantDependencies, 'resolveTools' | 'stopSessions'> {
+  bot: AssistantBotBridge;
   backgroundSessions: { register(read: () => readonly string[]): void };
   onClose(dispose: Dispose): void;
   onStart(start: () => Dispose): void;
   tools: {
     register(tool: MakaTool): void;
+    registerSessionAccess?(allows: (sessionId: string) => boolean): void;
+    filter?(filter: (sessionId: string, tools: readonly MakaTool[]) => readonly MakaTool[]): void;
     resolve(sessionId?: string, core?: readonly MakaTool[]): { tools: readonly MakaTool[] };
   };
   systemPrompt: {
@@ -76,6 +105,31 @@ export interface AssistantModuleServices
 
 class AssistantRuntime {
   readonly tools: MakaTool[] = [];
+  private readonly internalTools: MakaTool[] = [];
+  readonly toolFilters: ((sessionId: string, tools: readonly MakaTool[]) => readonly MakaTool[])[] =
+    [];
+  readonly bot = new AssistantBotBridge();
+  private readonly backgroundSessions: (() => readonly string[])[] = [];
+  private readonly sessionAccess: ((sessionId: string) => boolean)[] = [];
+  hasSessionAccess(sessionId: string) {
+    return (
+      this.bot.isConversation(sessionId) ||
+      this.bot.isWorker(sessionId) ||
+      this.backgroundSessions.some((read) => read().includes(sessionId)) ||
+      this.sessionAccess.some((allows) => allows(sessionId))
+    );
+  }
+  /**
+   * The only visibility policy. Catalogs and execution both use it, so a tool hidden
+   * from a Session cannot run in that Session either.
+   */
+  visibleTools(sessionId: string, tools: readonly MakaTool[]): readonly MakaTool[] {
+    const nativeNames = new Set(this.tools.map((tool) => tool.name));
+    const allowed = this.hasSessionAccess(sessionId)
+      ? tools
+      : tools.filter((tool) => !nativeNames.has(tool.name));
+    return this.toolFilters.reduce((current, filter) => filter(sessionId, current), allowed);
+  }
   private readonly sections: PluginSystemPromptSection[] = [];
   private readonly contexts: PluginSystemPromptSection[] = [];
   private readonly checks: TurnFinishCheck[] = [];
@@ -98,22 +152,27 @@ class AssistantRuntime {
   async recover(legacy: HostPluginDataRuntime, entries: readonly MakaCompositionEntryInspection[]) {
     if (this.initialized) throw Error('Personal assistant already initialized');
     const settings = await this.loadSettings(legacy, entries);
-    const backgroundSessions: (() => readonly string[])[] = [];
     const services: AssistantModuleServices = {
-      backgroundSessions: { register: (read) => backgroundSessions.push(read) },
+      bot: this.bot,
+      backgroundSessions: { register: (read) => this.backgroundSessions.push(read) },
       ...this.dependencies,
       onClose: (dispose: Dispose) => this.disposers.push(dispose),
       onStart: (start: () => Dispose) => this.starters.push(start),
       tools: {
+        filter: (filter) => this.toolFilters.push(filter),
+        registerSessionAccess: (allows) => this.sessionAccess.push(allows),
         register: (tool: MakaTool) => {
           if (this.tools.some((t) => t.name === tool.name))
             throw Error(`Duplicate assistant tool: ${tool.name}`);
-          this.tools.push({
+          const internalTool: MakaTool = {
             ...tool,
             impl: (input, call) => {
               if (this.closing) throw Error('Personal assistant is shutting down');
               const scoped = {
                 ...call,
+                ...(BOT_DELEGATION_TOOLS.has(tool.name) && this.bot.ownerFor(call.sessionId)
+                  ? { sessionId: this.bot.ownerFor(call.sessionId)! }
+                  : {}),
                 abortSignal: AbortSignal.any([
                   this.abort.signal,
                   ...(call.abortSignal ? [call.abortSignal] : []),
@@ -126,10 +185,26 @@ class AssistantRuntime {
                 );
               });
             },
+          };
+          this.internalTools.push(internalTool);
+          this.tools.push({
+            ...internalTool,
+            impl: (input, call) => {
+              if (this.closing) throw Error('Personal assistant is shutting down');
+              if (!this.hasSessionAccess(call.sessionId))
+                throw Error('Personal assistant tools are unavailable in this session');
+              if (!this.visibleTools(call.sessionId, [tool]).length)
+                throw Error('Personal assistant tool is unavailable in this session');
+              return internalTool.impl(input, call);
+            },
           });
         },
+        // Only Host module APIs use this resolver. They retain the caller's source
+        // permissions (e.g. ordinary-chat original links) without exposing model tools.
         resolve: (sessionId?: string) =>
-          sessionId ? this.dependencies.resolveTools(sessionId, this.tools) : { tools: this.tools },
+          sessionId
+            ? this.dependencies.resolveTools(sessionId, this.internalTools)
+            : { tools: this.internalTools },
       },
       systemPrompt: {
         section: (value: PluginSystemPromptSection) => this.sections.push(value),
@@ -157,7 +232,7 @@ class AssistantRuntime {
       ] as const)
         await initialize(services, settings[name].directory, settings[name].config);
       await this.dependencies.markBackgroundSessions([
-        ...new Set(backgroundSessions.flatMap((read) => read())),
+        ...new Set(this.backgroundSessions.flatMap((read) => read())),
       ]);
       this.initialized = true;
     } catch (error) {
@@ -312,7 +387,7 @@ class AssistantRuntime {
   }
 }
 
-/** Host-owned opt-in. Disabled Hosts do not load modules, open their databases or start timers. */
+/** Host-owned enablement, on by default. Disabled Hosts do not load modules, open their databases or start timers. */
 export class PersonalAssistantService {
   private runtime?: AssistantRuntime;
   private legacy?: HostPluginDataRuntime;
@@ -323,6 +398,7 @@ export class PersonalAssistantService {
   private transition: Promise<unknown> = Promise.resolve();
   private shutdown?: Promise<void>;
   private stoppingError?: unknown;
+  private initializationError?: string;
   constructor(
     readonly directory: string,
     readonly dependencies: AssistantDependencies,
@@ -339,15 +415,22 @@ export class PersonalAssistantService {
     if (this.recovered) throw Error('Personal assistant already initialized');
     this.legacy = legacy;
     this.entries = entries;
-    let enabled = false;
     try {
-      const saved = JSON.parse(await readFile(join(this.directory, 'enablement.json'), 'utf8'));
-      if (typeof saved.enabled !== 'boolean') throw Error('Invalid personal assistant enablement');
-      enabled = saved.enabled;
+      let enabled = true;
+      try {
+        const saved = JSON.parse(await readFile(join(this.directory, 'enablement.json'), 'utf8'));
+        if (typeof saved.enabled !== 'boolean')
+          throw Error('Invalid personal assistant enablement');
+        enabled = saved.enabled;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      }
+      if (enabled) this.runtime = await this.initialize();
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      // Optional assistant recovery must not prevent ordinary Host sessions from starting.
+      // Keep persisted preferences/data intact so Settings can retry after repair.
+      this.initializationError = error instanceof Error ? error.message : String(error);
     }
-    if (enabled) this.runtime = await this.initialize();
     this.recovered = true;
   }
   private async initialize() {
@@ -375,7 +458,11 @@ export class PersonalAssistantService {
   }
   async call(method: string, input: unknown): Promise<unknown> {
     if (!this.started || this.draining) throw Error('Personal assistant is not ready');
-    if (method === 'assistant.enablement') return { enabled: this.enabled };
+    if (method === 'assistant.enablement')
+      return {
+        enabled: this.enabled,
+        ...(this.initializationError ? { error: this.initializationError } : {}),
+      };
     if (method === 'assistant.set-enabled') {
       if (
         !input ||
@@ -400,6 +487,7 @@ export class PersonalAssistantService {
             if (this.draining) throw Error('Personal assistant is shutting down');
             this.runtime = runtime;
             runtime.start();
+            this.initializationError = undefined;
           } catch (error) {
             this.runtime = undefined;
             await this.persist(false);
@@ -429,6 +517,30 @@ export class PersonalAssistantService {
     return this.enabled
       ? this.runtime!.prompt(context, baseText)
       : { text: baseText, contexts: [], sourceRevision: undefined };
+  }
+  isConversation(sessionId: string) {
+    return this.enabled && this.runtime!.bot.isConversation(sessionId);
+  }
+  hasInboxMessage(sessionId: string, id: string) {
+    return this.enabled && this.runtime!.bot.hasUserMessage(sessionId, id);
+  }
+  filterTools(sessionId: string, tools: readonly MakaTool[]): readonly MakaTool[] {
+    if (!this.enabled) return tools;
+    return this.runtime!.visibleTools(sessionId, tools);
+  }
+  toolCeiling(sessionId: string): readonly MakaTool[] | undefined {
+    return this.enabled && this.runtime!.bot.isWorker(sessionId)
+      ? this.runtime!.tools.filter((tool) => BOT_TOOLS.has(tool.name))
+      : undefined;
+  }
+  async receiveUser(
+    sessionId: string,
+    id: string,
+    content: MessageContent,
+    origin?: Extract<TurnOrigin, { kind: 'external_connector' }>,
+  ) {
+    if (!this.enabled || this.draining) return false;
+    return this.runtime!.bot.receive(sessionId, id, content, origin);
   }
   async beforeFinish(context: TurnFinishContext): Promise<TurnFinishDecision> {
     return this.enabled ? this.runtime!.beforeFinish(context) : { allow: true };

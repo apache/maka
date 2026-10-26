@@ -22,39 +22,59 @@ import assert from 'node:assert/strict';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { copyFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import { PROACTIVE_TASK } from '../../../../src/assistant/index-initiative/prompt.js';
-import { fixture, until } from './fixture.js';
+import { output } from './notebook-output.js';
+import { DISCOVERY_TASK } from '../../../../src/assistant/index-initiative/prompt.js';
+import { fixture as unboundFixture, until } from './fixture.js';
 
-test('heartbeat uses the human Session and exits normally without checkpoint or notebook', async () => {
+// Configuration tools do not choose the conversation anymore. Resolve the
+// native assistant explicitly, just as opening the assistant does in the UI.
+async function fixture(options: any = {}) {
+  const f = await unboundFixture(options);
+  await f.remote('assistant.bind', { sessionId: 'owner' });
+  const setRunner = f.setRunner;
+  f.setRunner = (fn: any) =>
+    setRunner(async (call: any) => {
+      if (call.prompt.includes('Phase: judgement')) {
+        await output(call.prompt);
+        return;
+      } // Controlled judgement elects silence.
+      await fn(call);
+      await output(call.prompt);
+    });
+  return f;
+}
+
+test('heartbeat uses an independent exploration Session and exits normally without a candidate-report finish hook', async () => {
   const f = await fixture();
   let checks = 0;
   try {
-    f.setRunner(async ({ id, prompt, finish }: any) => {
-      assert.equal(id, 'owner');
+    f.setRunner(async ({ id, prompt, finish, invoke }: any) => {
+      assert.notEqual(id, 'owner');
       assert.match(prompt, /Runtime heartbeat/);
-      assert.ok(prompt.includes(PROACTIVE_TASK), 'default instructions reach the actual heartbeat');
+      assert.ok(prompt.includes(DISCOVERY_TASK), 'default instructions reach the actual heartbeat');
       assert.equal((await finish()).allow, true);
       checks++;
     });
-    await f.invoke('InitiativeEnable', { intervalMinutes: 1 });
+    await f.invoke('InitiativeConfigure', { intervalMinutes: 1 });
+    await f.invoke('InitiativeEnable', {});
     assert.equal(checks, 0); // enabling is not another unsolicited turn
     const names = f.tools.resolve('owner', []).tools.map((t: any) => t.name);
     assert.ok(!names.includes('InitiativeCheckpoint'));
     assert.ok(!names.includes('InitiativeRead'));
     await f.invoke('InitiativeControl', { action: 'check' });
     await until(async () => checks === 1 && !(await f.invoke('InitiativeStatus')).active);
-    assert.equal(f.workers.size, 1);
+    assert.equal(f.workers.size, 3);
     assert.equal((await f.invoke('InitiativeStatus')).lastError, null);
     assert.ok((await f.invoke('InitiativeStatus')).nextAt > Date.now());
     await assert.rejects(
       f.invokeAs('other', 'InitiativeControl', { action: 'check' }),
-      /conversation/,
+      /unavailable in this session/,
     );
   } finally {
     await f.close();
   }
 });
-test('busy conversation defers heartbeat; pause never cancels the user turn', async () => {
+test('busy conversation does not block independent exploration; pause never cancels the user turn', async () => {
   const f = await fixture();
   let checks = 0;
   try {
@@ -65,12 +85,12 @@ test('busy conversation defers heartbeat; pause never cancels the user turn', as
     f.workers.get('owner').status = 'running';
     await f.invoke('InitiativeControl', { action: 'check' });
     await new Promise((r) => setTimeout(r, 50));
-    assert.equal(checks, 0);
+    assert.equal(checks, 1);
     await f.invoke('InitiativeControl', { action: 'pause' });
     assert.equal(f.cancels(), 0);
     f.workers.get('owner').status = 'idle';
     await new Promise((r) => setTimeout(r, 30));
-    assert.equal(checks, 0);
+    assert.equal(checks, 1);
   } finally {
     await f.close();
   }
@@ -117,8 +137,9 @@ test('native heartbeat uses ordinary finish; failures retain cadence without can
 test('aborted runtime completion retains cadence without cancelling a concurrent user turn', async () => {
   const f = await fixture();
   try {
-    f.workers.get('owner').endStatus = 'aborted';
-    f.setRunner(async () => {});
+    f.setRunner(async ({ id }: any) => {
+      f.workers.get(id).endStatus = 'aborted';
+    });
     await f.invoke('InitiativeEnable', {});
     await f.invoke('InitiativeControl', { action: 'check' });
     await until(async () => (await f.invoke('InitiativeStatus')).lastError);
@@ -142,7 +163,7 @@ test('heartbeat carries UTC time and instructions without copying native convers
     }));
     f.workers.get('owner').transcript = [...history];
     f.setRunner(async (call: any) => {
-      assert.equal(call.id, 'owner');
+      assert.notEqual(call.id, 'owner');
       prompt = call.prompt;
     });
     await f.invoke('InitiativeEnable', {});
@@ -151,15 +172,17 @@ test('heartbeat carries UTC time and instructions without copying native convers
       const started = Date.now();
       await f.invoke('InitiativeControl', { action: 'check' });
       await until(async () => !!prompt && !(await f.invoke('InitiativeStatus')).active);
-      assert.ok(prompt.includes(PROACTIVE_TASK));
+      assert.equal(prompt.includes(DISCOVERY_TASK), round === 0);
       assert.match(prompt, /Heartbeat ID:/);
-      const now = /Now \(UTC\): (.+)/.exec(prompt)![1];
+      const now = /当前 UTC 时间：(.+)/.exec(prompt)![1];
       assert.match(now, /Z$/);
       assert.ok(Date.parse(now) >= started && Date.parse(now) <= Date.now());
       assert.doesNotMatch(prompt, /最近的历史交流|previous-message-|visible-message-/);
       const transcript = f.workers.get('owner').transcript;
       assert.deepEqual(transcript.slice(0, history.length), history);
-      assert.equal(transcript.length, history.length + round + 1);
+      assert.equal(transcript.length, history.length);
+      const discovery = (await f.invoke('InitiativeStatus')).discoverySession;
+      assert.equal(f.workers.get(discovery).transcript.length, round + 1);
     }
   } finally {
     await f.close();
@@ -213,7 +236,10 @@ test('failed blocked Session can check again, but actual pending user input defe
       checks++;
     });
     await f.invoke('InitiativeEnable', {});
-    const worker = f.workers.get('owner');
+    await f.invoke('InitiativeControl', { action: 'check' });
+    await until(async () => checks === 1 && !(await f.invoke('InitiativeStatus')).active);
+    checks = 0;
+    const worker = f.workers.get((await f.invoke('InitiativeStatus')).discoverySession);
     worker.status = 'blocked';
     worker.pendingInteractions = 1;
     await f.invoke('InitiativeControl', { action: 'check' });
@@ -264,7 +290,10 @@ test('master disable stops an active heartbeat and removes tools until explicitl
     await f.remote('assistant.bind', { sessionId: 'owner' });
     f.setRunner(async () => hold);
     await f.remote('assistant.control', { action: 'enable', intervalMinutes: 30 });
-    await until(() => f.workers.get('owner')?.status === 'running');
+    await until(
+      async () =>
+        f.workers.get((await f.invoke('InitiativeStatus')).discoverySession)?.status === 'running',
+    );
     await f.remote('assistant.set-enabled', { enabled: false });
     assert.ok(f.cancels() >= 1, 'the runtime heartbeat is cancelled, not merely its observer');
     assert.equal(f.workers.get('owner').status, 'idle');
@@ -275,6 +304,44 @@ test('master disable stops an active heartbeat and removes tools until explicitl
     assert.equal((await f.remote('assistant.binding')).state.sessionId, 'owner');
   } finally {
     release();
+    await f.close();
+  }
+});
+
+test('discovery enabling preserves cadence; explicit configuration preserves paused state and reports scope', async () => {
+  const f = await fixture();
+  try {
+    await f.remote('assistant.bind', { sessionId: 'owner' });
+    const configured = await f.invoke('InitiativeConfigure', { intervalMinutes: 360 });
+    assert.equal(configured.enabled, false);
+    assert.equal(configured.intervalMs, 21600000);
+    assert.equal(configured.nextAt, null);
+    assert.equal(configured.effect.target, 'assistant_proactive_discovery');
+    assert.equal(configured.effect.taskCreated, false);
+    const enabled = await f.invoke('InitiativeEnable', {});
+    assert.equal(enabled.enabled, true);
+    assert.equal(enabled.intervalMs, 21600000);
+    const again = await f.invoke('InitiativeEnable', {});
+    assert.equal(again.nextAt, enabled.nextAt, 'repeated enable must not postpone the next round');
+    assert.equal(again.revision, enabled.revision);
+    await assert.rejects(f.invoke('InitiativeEnable', { intervalMinutes: 30 }));
+    assert.equal((await f.invoke('InitiativeStatus')).intervalMs, 21600000);
+    await f.invoke('InitiativeControl', { action: 'pause' });
+    const changed = await f.invoke('InitiativeConfigure', { intervalMinutes: 30 });
+    assert.equal(changed.enabled, false);
+    assert.equal(changed.effect.before.intervalMs, 21600000);
+    assert.equal(changed.effect.after.intervalMs, 1800000);
+    assert.equal(changed.nextAt, null);
+    await assert.rejects(
+      f.invokeAs('unrelated-session', 'InitiativeConfigure', { intervalMinutes: 1 }),
+    );
+    const resumed = await f.invoke('InitiativeControl', { action: 'resume' });
+    assert.equal(resumed.intervalMs, 1800000);
+    assert.equal(resumed.enabled, true);
+    assert.equal(f.workers.size, 1, 'schedule operations do not start a task or exploration');
+    await assert.rejects(f.invoke('InitiativeConfigure', {}));
+    await assert.rejects(f.invoke('InitiativeConfigure', { intervalMinutes: 0 }));
+  } finally {
     await f.close();
   }
 });

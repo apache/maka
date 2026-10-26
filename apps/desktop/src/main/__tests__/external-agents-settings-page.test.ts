@@ -61,6 +61,7 @@ async function mount(
   input: {
     locale?: UiLocale;
     list?: boolean;
+    initialExecutorId?: string;
     executable?: string;
     remote?: boolean;
     selectExecutable?: () => Promise<string | undefined>;
@@ -145,6 +146,7 @@ async function mount(
               children: createElement(ExternalAgentSettingsServicesProvider, {
                 services,
                 children: createElement(ExternalAgentsSettingsPage, {
+                  initialExecutorId: input.initialExecutorId,
                   settings: { ...settings, externalAgents: { antigravity: { executable } } },
                   onUpdate: async (
                     patch: import('@maka/core/settings').UpdateAppSettingsInput,
@@ -164,7 +166,7 @@ async function mount(
     );
   };
   await render('generation-1');
-  if (!input.list)
+  if (!input.list && !input.initialExecutorId)
     await act(async () => {
       const entry = [...document.querySelectorAll<HTMLButtonElement>('button')].find((button) =>
         button.textContent?.includes('Antigravity'),
@@ -188,6 +190,16 @@ async function mount(
     },
   };
 }
+test('sign-in navigation opens the agent detail directly and can return to the catalog', async () => {
+  const page = await mount({ initialExecutorId: 'antigravity-acp' });
+  assert.equal(page.button('Sign in with Google').disabled, false);
+  assert.equal(page.starts.length, 0, 'opening settings does not start authentication');
+  const back = page.document.querySelector<HTMLButtonElement>('button[aria-label="Back to external agents"]');
+  assert.ok(back);
+  await act(async () => back.click());
+  assert.match(page.document.body.textContent ?? '', /Available agents/);
+});
+
 for (const [locale, label] of [
   ['en', 'Check connection'],
   ['zh-CN', '检查连接'],

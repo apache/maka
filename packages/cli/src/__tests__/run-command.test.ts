@@ -22,6 +22,7 @@ import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { describe, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { RuntimeHostOperationError } from '@maka/runtime-host/client';
 import type { UserMessageInput } from '@maka/core/runtime-inputs';
 import type { SessionSummary } from '@maka/core/session';
 import { parseMakaRunArgs, runMakaTextCliCore, type MakaRunAdapter } from '../run-command-core.js';
@@ -37,6 +38,488 @@ describe('maka run argument parsing', () => {
     });
     assert.equal(parseMakaRunArgs(['x', '--timeout', '0']).kind, 'error');
     assert.equal(parseMakaRunArgs(['x', '--max-steps', '1.5']).kind, 'error');
+  });
+
+  test('parses session controls while preserving the legacy resume selector', () => {
+    const parsed = parseMakaRunArgs(['--session', 'session-1', '--resume', '--wait', '--json']);
+    assert.equal(parsed.kind, 'run');
+    if (parsed.kind !== 'run') return;
+    assert.equal(parsed.options.sessionId, 'session-1');
+    assert.equal(parsed.options.resumeExecution, true);
+    assert.equal(parsed.options.resumeId, undefined);
+    assert.deepEqual(parseMakaRunArgs(['--session', 'session-1', '--answer', '["Yes",null]']), {
+      kind: 'run',
+      options: { stdinPrompt: false, sessionId: 'session-1', answers: ['Yes', null] },
+    });
+    for (const [flag, decision] of [
+      ['--approve', 'allow'],
+      ['--deny', 'deny'],
+    ] as const) {
+      const parsedDecision = parseMakaRunArgs(['--session', 's', flag, '--wait', '--json']);
+      assert.equal(parsedDecision.kind, 'run');
+      if (parsedDecision.kind === 'run')
+        assert.equal(parsedDecision.options.sandboxDecision, decision);
+    }
+    for (const args of [
+      ['--status'],
+      ['--stop'],
+      ['--approve'],
+      ['--deny'],
+      ['--session', 's', '--approve', '--deny'],
+      ['--session', 's', '--approve', '--answer', '["Yes"]'],
+      ['--session', 's', '--approve', '--yolo'],
+      ['--session', 's', '--deny', '--yolo'],
+      ['--session', 's', '--approve', 'prompt'],
+      ['--session', 's', '--stop', '--wait'],
+      ['--session', 's', '--stop', '--no-wait'],
+      ['--session', 's', '--stop', '--answer', '["Yes"]'],
+      ['--session', 's', '--answer', 'yes'],
+      ['--session', 's', '--answer', '[1]'],
+      ['--session', 's', '--status', '--result'],
+      ['--session', 's', 'x', '--queue', '--steer'],
+      ['x', '--wait', '--no-wait'],
+      ['--session', 's', '--queue'],
+      ['--session', 's', '--resume', 'extra'],
+      ['x', '--graph', '--no-wait'],
+    ])
+      assert.equal(parseMakaRunArgs(args).kind, 'error', args.join(' '));
+  });
+
+  test('session queries bypass prompt/stdin and model execution preparation', async () => {
+    const stdout: string[] = [];
+    const exit = await runMakaTextCliCore(
+      ['--session', 's', '--status'],
+      {
+        listSessions: async () => {
+          throw new Error('must not list model-compatible Sessions');
+        },
+        createContext: async () => {
+          throw new Error('provider is out of quota');
+        },
+        runSession: async (options) => ({ sessionId: options.sessionId!, status: 'running' }),
+      },
+      {
+        stdinIsTTY: () => false,
+        readStdin: async () => {
+          throw new Error('must not read stdin');
+        },
+        writeStdout: (text) => stdout.push(text),
+      },
+    );
+    assert.equal(exit, 0);
+    assert.deepEqual(JSON.parse(stdout.join('')), { sessionId: 's', status: 'running' });
+  });
+
+  test('rejects unsupported Session overrides before connecting while preserving legacy selectors', () => {
+    for (const setting of [['--cwd', '/tmp'], ['--timeout', '10'], ['--graph']]) {
+      assert.equal(parseMakaRunArgs(['--session', 's', 'check', ...setting]).kind, 'error');
+      assert.equal(parseMakaRunArgs(['check', '--resume', 's', ...setting]).kind, 'run');
+    }
+    assert.equal(parseMakaRunArgs(['--session', 's', 'check', '--max-steps', '2']).kind, 'run');
+    for (const extra of [
+      [],
+      ['--status'],
+      ['--resume'],
+      ['--queue', 'check'],
+      ['--steer', 'check'],
+    ])
+      assert.equal(
+        parseMakaRunArgs(['--session', 's', '--max-steps', '2', ...extra]).kind,
+        'error',
+        extra.join(' '),
+      );
+  });
+
+  test('Session model settings persist independently of explicit resume or a new prompt', () => {
+    for (const settings of [
+      ['--model', 'other-model'],
+      ['--connection', 'other-account', '--model', 'other-model'],
+      ['--thinking', 'high'],
+    ]) {
+      const change = parseMakaRunArgs(['--session', 's', ...settings]);
+      assert.equal(change.kind, 'run');
+      if (change.kind !== 'run') return;
+      assert.equal(change.options.resumeExecution, undefined);
+      assert.equal(change.options.prompt, undefined);
+      const resume = parseMakaRunArgs(['--session', 's', ...settings, '--resume']);
+      assert.equal(resume.kind, 'run');
+      if (resume.kind === 'run') assert.equal(resume.options.resumeExecution, true);
+      const prompt = parseMakaRunArgs(['--session', 's', ...settings, 'continue']);
+      assert.equal(prompt.kind, 'run');
+      if (prompt.kind === 'run') {
+        assert.equal(prompt.options.prompt, 'continue');
+        assert.equal(prompt.options.resumeExecution, undefined);
+      }
+    }
+  });
+
+  test('invalid Session options return a short usage error without opening the Host or reading stdin', async () => {
+    for (const args of [
+      ['--session', 's', '--status', '--cwd', '/tmp'],
+      ['--session', 's', '--wait', '--max-steps', '2'],
+      ['--unknown'],
+    ]) {
+      const stdout: string[] = [];
+      const stderr: string[] = [];
+      const exit = await runMakaTextCliCore(
+        args,
+        {
+          createContext: async () => assert.fail('must not prepare execution'),
+          listSessions: async () => assert.fail('must not select a Session'),
+          runSession: async () => assert.fail('must not connect to Host'),
+        },
+        {
+          cliCommand: () => 'npm run cli:dev --',
+          stdinIsTTY: () => false,
+          readStdin: async () => assert.fail('must not read stdin'),
+          writeStdout: (text) => stdout.push(text),
+          writeStderr: (text) => stderr.push(text),
+        },
+      );
+      assert.equal(exit, 2);
+      assert.deepEqual(stdout, []);
+      assert.equal(stderr.join('').trim().split('\n').length, 2);
+      assert.match(stderr.join(''), /npm run cli:dev -- run --help/);
+      assert.doesNotMatch(stderr.join(''), /Usage:/);
+    }
+  });
+
+  test('recap selects one Session action and rejects execution and wait combinations', () => {
+    assert.deepEqual(parseMakaRunArgs(['--session', 's', '--recap', '--json']), {
+      kind: 'run',
+      options: { sessionId: 's', recap: true, json: true, stdinPrompt: false },
+    });
+    assert.equal(parseMakaRunArgs(['--recap']).kind, 'error');
+    for (const extra of [
+      ['prompt'],
+      ['-'],
+      ['--result'],
+      ['--stop'],
+      ['--resume'],
+      ['--approve'],
+      ['--deny'],
+      ['--answer', '["Yes"]'],
+      ['--steer', 'prompt'],
+      ['--queue', 'prompt'],
+      ['--wait'],
+      ['--no-wait'],
+    ])
+      assert.equal(
+        parseMakaRunArgs(['--session', 's', '--recap', ...extra]).kind,
+        'error',
+        extra.join(' '),
+      );
+  });
+
+  test('accepts equivalent repeated flags and combines status with recap without discarding either', () => {
+    assert.deepEqual(
+      parseMakaRunArgs([
+        '--session',
+        's',
+        '--session',
+        's',
+        '--status',
+        '--recap',
+        '--json',
+        '--json',
+      ]),
+      {
+        kind: 'run',
+        options: { sessionId: 's', status: true, recap: true, json: true, stdinPrompt: false },
+      },
+    );
+    assert.deepEqual(
+      parseMakaRunArgs(['check', '--no-wait', '--no-wait', '--model', 'm', '--model', 'm']),
+      {
+        kind: 'run',
+        options: { prompt: 'check', noWait: true, model: 'm', stdinPrompt: false },
+      },
+    );
+    for (const extra of [['--answer', '["Yes"]'], ['--result'], ['--stop']])
+      assert.equal(
+        parseMakaRunArgs(['--session', 's', '--status', '--recap', ...extra]).kind,
+        'error',
+      );
+    assert.equal(parseMakaRunArgs(['--session', 's', '--session', 'other']).kind, 'error');
+    assert.equal(parseMakaRunArgs(['check', '--model', 'm', '--model', 'other']).kind, 'error');
+  });
+
+  test('usage errors honor explicit --json but not a literal prompt after --', async () => {
+    for (const [args, json] of [
+      [['--bogus', '--json'], true],
+      [['--bogus', '--', '--json'], false],
+    ] as const) {
+      const stdout: string[] = [];
+      const stderr: string[] = [];
+      const exit = await runMakaTextCliCore(
+        args,
+        {
+          listSessions: async () => assert.fail('no Host calls'),
+          createContext: async () => assert.fail('no execution'),
+        },
+        { writeStdout: (text) => stdout.push(text), writeStderr: (text) => stderr.push(text) },
+      );
+      assert.equal(exit, 2);
+      if (json) {
+        assert.deepEqual(JSON.parse(stdout.join('')), { error: 'unknown option: --bogus' });
+        assert.deepEqual(stderr, []);
+      } else {
+        assert.deepEqual(stdout, []);
+        assert.match(stderr.join(''), /unknown option: --bogus/);
+      }
+    }
+  });
+
+  test('recap prints text or JSON without reading stdin or returning the Turn failure code', async () => {
+    for (const json of [false, true]) {
+      const stdout: string[] = [];
+      const result = {
+        sessionId: 's',
+        status: 'failed' as const,
+        recap: 'The review found a bug.',
+      };
+      const exit = await runMakaTextCliCore(
+        ['--session', 's', '--recap', ...(json ? ['--json'] : [])],
+        {
+          listSessions: async () => assert.fail('must not select a Session'),
+          createContext: async () => assert.fail('must not prepare execution'),
+          runSession: async (options) => {
+            assert.equal(options.recap, true);
+            return result;
+          },
+        },
+        {
+          stdinIsTTY: () => false,
+          readStdin: async () => assert.fail('recap must not read stdin'),
+          writeStdout: (text) => stdout.push(text),
+        },
+      );
+      assert.equal(exit, 0);
+      assert.equal(stdout.join(''), json ? `${JSON.stringify(result)}\n` : `${result.recap}\n`);
+    }
+  });
+
+  test('recap generation errors exit nonzero without printing a task result', async () => {
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const exit = await runMakaTextCliCore(
+      ['--session', 's', '--recap', '--json'],
+      {
+        listSessions: async () => [],
+        createContext: async () => assert.fail('must not prepare execution'),
+        runSession: async () => {
+          throw new Error('Session recap failed: provider');
+        },
+      },
+      { writeStdout: (text) => stdout.push(text), writeStderr: (text) => stderr.push(text) },
+    );
+    assert.equal(exit, 1);
+    assert.deepEqual(JSON.parse(stdout.join('')), {
+      sessionId: 's',
+      error: 'Session recap failed: provider',
+    });
+    assert.deepEqual(stderr, []);
+  });
+
+  test('operation errors use JSON only when explicitly requested and never invent Turn state', async () => {
+    for (const flags of [[], ['--status'], ['--no-wait', 'hello'], ['--json']]) {
+      const stdout: string[] = [];
+      const stderr: string[] = [];
+      const exit = await runMakaTextCliCore(
+        ['--session', 's', ...flags],
+        {
+          listSessions: async () => [],
+          createContext: async () => assert.fail('must not start execution'),
+          runSession: async () => {
+            throw new RuntimeHostOperationError(
+              'session.configuration.update',
+              'operation_conflict',
+              'Session is busy',
+            );
+          },
+        },
+        {
+          stdinIsTTY: () => true,
+          writeStdout: (text) => stdout.push(text),
+          writeStderr: (text) => stderr.push(text),
+        },
+      );
+      assert.equal(exit, 1);
+      if (flags.includes('--json')) {
+        assert.deepEqual(JSON.parse(stdout.join('')), {
+          sessionId: 's',
+          error: 'Session is busy',
+          code: 'operation_conflict',
+        });
+        assert.deepEqual(stderr, []);
+      } else {
+        assert.deepEqual(stdout, []);
+        assert.equal(stderr.join(''), 'maka run: Session is busy\n');
+      }
+    }
+  });
+
+  test('terminal errors use text by default and JSON only with --json', async () => {
+    for (const json of [false, true]) {
+      const stdout: string[] = [];
+      const stderr: string[] = [];
+      const result = { sessionId: 's', status: 'failed' as const, error: 'Insufficient credits' };
+      const exit = await runMakaTextCliCore(
+        ['--session', 's', '--wait', ...(json ? ['--json'] : [])],
+        {
+          listSessions: async () => [],
+          createContext: async () => assert.fail('no execution'),
+          runSession: async () => result,
+        },
+        { writeStdout: (text) => stdout.push(text), writeStderr: (text) => stderr.push(text) },
+      );
+      assert.equal(exit, 1);
+      if (json) {
+        assert.deepEqual(JSON.parse(stdout.join('')), result);
+        assert.deepEqual(stderr, []);
+      } else {
+        assert.deepEqual(stdout, []);
+        assert.equal(stderr.join(''), 'maka run: Insufficient credits\n');
+      }
+    }
+  });
+
+  test('JSON startup errors preserve Host codes without a fabricated Session status', async () => {
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const exit = await runMakaTextCliCore(
+      ['hello', '--json'],
+      {
+        listSessions: async () => [],
+        createContext: async () => {
+          throw new RuntimeHostOperationError(
+            'session.create',
+            'operation_unavailable',
+            'No default model',
+          );
+        },
+      },
+      {
+        stdinIsTTY: () => true,
+        writeStdout: (text) => stdout.push(text),
+        writeStderr: (text) => stderr.push(text),
+      },
+    );
+    assert.equal(exit, 2);
+    assert.deepEqual(JSON.parse(stdout.join('')), {
+      error: 'No default model',
+      code: 'operation_unavailable',
+    });
+    assert.deepEqual(stderr, []);
+  });
+
+  test('blocking stream errors retain the created Session identity and original Host error', async () => {
+    for (const json of [false, true]) {
+      const stdout: string[] = [];
+      const stderr: string[] = [];
+      let closed = false;
+      const session = sessionSummary();
+      const exit = await runMakaTextCliCore(
+        ['hello', ...(json ? ['--json'] : [])],
+        {
+          listSessions: async () => [],
+          createContext: async () => ({
+            runtime: {
+              createSession: async () => session,
+              readExecutionBoundary: async () => ({
+                kind: 'managed',
+                access: 'writable',
+                revision: 0,
+              }),
+              sendMessage: async function* () {
+                throw new RuntimeHostOperationError(
+                  'turn.start',
+                  'operation_unavailable',
+                  'Stream disconnected',
+                );
+              },
+              respondToSandboxBoundary: async () => {},
+              stopSession: async () => {},
+              setExecutionBoundaryKind: async () => {},
+            },
+            target: { connection: { slug: 'test' }, model: 'test' },
+            close: async () => {
+              closed = true;
+            },
+          }),
+        },
+        {
+          stdinIsTTY: () => true,
+          writeStdout: (text) => stdout.push(text),
+          writeStderr: (text) => stderr.push(text),
+        },
+      );
+      assert.equal(exit, 1);
+      assert.equal(closed, true);
+      if (json) {
+        assert.deepEqual(JSON.parse(stdout.join('')), {
+          sessionId: session.id,
+          error: 'Stream disconnected',
+          code: 'operation_unavailable',
+        });
+        assert.deepEqual(stderr, []);
+      } else {
+        assert.deepEqual(stdout, []);
+        assert.equal(stderr.join(''), 'maka run: Stream disconnected\n');
+      }
+    }
+  });
+
+  test('completed status and stop receipts remain visible without --json', async () => {
+    for (const flags of [[], ['--status'], ['--stop']]) {
+      const stdout: string[] = [];
+      const receipt = { sessionId: 's', status: 'completed' as const, queued: 0 };
+      const exit = await runMakaTextCliCore(
+        ['--session', 's', ...flags],
+        {
+          createContext: async () => {
+            throw new Error('unexpected execution');
+          },
+          listSessions: async () => [],
+          runSession: async () => receipt,
+        },
+        { writeStdout: (text) => stdout.push(text) },
+      );
+      assert.equal(exit, 0);
+      assert.deepEqual(JSON.parse(stdout.join('')), receipt);
+    }
+  });
+
+  test('successful status and stop operations do not inherit the child failure exit code', async () => {
+    for (const [flags, expected] of [
+      [[], 0],
+      [['--status'], 0],
+      [['--stop'], 0],
+      [['--result'], 1],
+      [['--wait'], 1],
+      [['--approve'], 1],
+      [['--deny'], 1],
+    ] as const) {
+      const exit = await runMakaTextCliCore(
+        ['--session', 's', ...flags],
+        {
+          createContext: async () => {
+            throw new Error('must not prepare execution');
+          },
+          listSessions: async () => [],
+          runSession: async () => ({ sessionId: 's', status: 'failed' }),
+        },
+        {
+          stdinIsTTY: () => false,
+          readStdin: async () => {
+            throw new Error('must not read stdin');
+          },
+          writeStdout: () => {},
+          writeStderr: () => {},
+        },
+      );
+      assert.equal(exit, expected, flags.join(' '));
+    }
   });
 
   test('accepts only the explicit non-interactive sandbox bypass flag', () => {
@@ -168,6 +651,13 @@ describe('maka run process contract', () => {
     assert.match(result.stderr, /sandbox boundary expansion is unavailable/);
     assert.doesNotMatch(result.stderr, /not denied/);
     assert.equal(result.stdout, '');
+  });
+
+  test('a failed tool does not override a completed blocking Turn', async () => {
+    const result = await runFixture(['hello'], { scenario: 'sandbox-tool-error' });
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.stdout, 'prompt=hello\n');
+    assert.equal(result.stderr, '');
   });
 
   test('returns exit 130 on SIGINT', async () => {

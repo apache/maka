@@ -27,3 +27,162 @@
 .personal-assistant-settings button:disabled { opacity: .5; cursor: default; }
 .personal-assistant-settings button:hover:not(:disabled) { background: var(--muted); }
 .pa-controls { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
+
+/* A conversational surface on the existing transcript and composer. */
+.personal-assistant-chat {
+  --maka-reading-measure: 720px;
+  --maka-turn-gap: 10px;
+  --chat-user-bg: color-mix(in srgb, var(--accent) 20%, var(--background));
+}
+.personal-assistant-chat .maka-prompt-rail-host { display: none; }
+.personal-assistant-chat .maka-turn { gap: 8px; }
+.personal-assistant-chat .maka-chat-message-bubble {
+  border-radius: 8px;
+  position: relative;
+  overflow: visible;
+  padding: 8px 12px;
+  line-height: 1.5;
+}
+.personal-assistant-chat .maka-chat-message-bubble-assistant {
+  width: fit-content;
+  max-width: 84%;
+  background: var(--muted);
+}
+.personal-assistant-chat .maka-assistant-answer-content { max-width: 100%; }
+.personal-assistant-chat .maka-turn[data-turn-id^="assistant-output"] .maka-turn-statusbar[data-turn-status="completed"] { display: none; }
+.personal-assistant-chat .maka-turn-footer { margin-top: 0; }
+/* Hover actions float in the row instead of reserving an empty line per message.
+   Touch keeps the visible controls in flow; keyboard focus also reveals them. */
+@media (hover: hover) {
+  .personal-assistant-chat .maka-chat-message { position: relative; }
+  .personal-assistant-chat .maka-user-message:not(:has(.maka-message-delivery, .maka-message-status-time)) > div > div > div:has(> .maka-message-meta),
+  .personal-assistant-chat .maka-assistant-answer .maka-turn-footer {
+    position: absolute;
+    bottom: 0;
+    width: auto;
+    margin: 0;
+    padding: 2px 6px;
+    border-radius: 10px;
+    background: var(--background);
+    z-index: 1;
+  }
+  .personal-assistant-chat .maka-user-message:not(:has(.maka-message-delivery, .maka-message-status-time)) > div > div > div:has(> .maka-message-meta) { left: 0; }
+  .personal-assistant-chat .maka-assistant-answer .maka-turn-footer { right: 0; }
+  .personal-assistant-chat .maka-message-meta { margin-top: 0; }
+}
+.personal-assistant-chat .maka-composer-astryx { --_chat-composer-radius: 24px; }
+.personal-assistant-chat .maka-composer-configuration { position: relative; }
+.personal-assistant-chat .maka-composer-configuration > summary {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  list-style: none;
+}
+.personal-assistant-chat .maka-composer-configuration > summary::-webkit-details-marker { display: none; }
+.personal-assistant-chat .maka-composer-configuration > summary:hover,
+.personal-assistant-chat .maka-composer-configuration[open] > summary { background: var(--muted); }
+.personal-assistant-chat .maka-composer-configuration > summary:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.personal-assistant-chat .maka-composer-configuration-panel {
+  position: absolute;
+  bottom: calc(100% + 12px);
+  left: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--background);
+  box-shadow: 0 8px 28px color-mix(in srgb, var(--foreground) 10%, transparent);
+  z-index: var(--z-popover, 50);
+  max-width: min(520px, calc(100vw - 100px));
+  flex-wrap: wrap;
+}
+
+.personal-assistant-avatar {
+  display: inline-grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 30px;
+  border-radius: 7px;
+  overflow: hidden;
+  font-size: 19px;
+  line-height: 1;
+  user-select: none;
+}
+/* Match the SideNav icon slot; full avatar styling belongs to conversation. */
+.personal-assistant-avatar[data-variant="navigation"] {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  border-radius: 4px;
+  font-size: 16px;
+  background: transparent;
+}
+.personal-assistant-chat .maka-assistant-answer { align-items: flex-start; }
+.personal-assistant-chat .maka-assistant-answer .personal-assistant-avatar { margin-top: 3px; }
+
+/* More specific than the shared transcript paint containment. */
+.personal-assistant-chat .maka-chat-message-bubble[data-maka-transcript-boundary] { contain: layout style; }
+.personal-assistant-avatar img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.personal-assistant-chat .maka-chat-message-bubble::before {
+  content: "";
+  position: absolute;
+  top: 13px;
+  width: 6px;
+  height: 10px;
+  background: inherit;
+  pointer-events: none;
+}
+.personal-assistant-chat .maka-chat-message-bubble-assistant::before { left: -6px; clip-path: polygon(100% 0, 100% 100%, 0 50%); }
+.personal-assistant-chat .maka-chat-message-bubble-user::before { right: -6px; clip-path: polygon(0 0, 100% 50%, 0 100%); }
+
+.personal-assistant-typing {
+  display: flex; align-items: flex-start; gap: 12px;
+  width: 100%; max-width: var(--maka-reading-measure);
+  box-sizing: border-box; margin: 12px auto;
+}
+.personal-assistant-typing-bubble {
+  position: relative; display: flex; align-items: center; gap: 5px;
+  height: 36px; padding: 0 15px; border-radius: 4px 14px 14px 14px;
+  background: var(--muted); color: var(--muted-foreground);
+}
+.personal-assistant-typing-bubble::before {
+  content: ''; position: absolute; left: -5px; top: 10px;
+  border-right: 6px solid var(--muted); border-top: 5px solid transparent; border-bottom: 5px solid transparent;
+}
+.personal-assistant-typing-bubble > span {
+  width: 5px; height: 5px; border-radius: 50%; background: currentColor;
+  animation: assistant-typing-dot 1.2s ease-in-out infinite;
+}
+.personal-assistant-typing-bubble > span:nth-child(2) { animation-delay: .15s; }
+.personal-assistant-typing-bubble > span:nth-child(3) { animation-delay: .3s; }
+@keyframes assistant-typing-dot {
+  0%, 60%, 100% { transform: translateY(0); opacity: .4; }
+  30% { transform: translateY(-3px); opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .personal-assistant-typing-bubble > span { animation: none; opacity: .7; }
+}
+
+/* Keep the text bubble, but give stickers their own transparent area. */
+.personal-assistant-chat .maka-chat-message-bubble-assistant:has(.maka-message-stickers) {
+  padding: 0;
+  background: transparent;
+}
+.personal-assistant-chat .maka-chat-message-bubble-assistant:has(.maka-message-stickers)::before { display: none; }
+.personal-assistant-chat .maka-sticker-message-prose:not([hidden]) {
+  position: relative;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--muted);
+}
+.personal-assistant-chat .maka-sticker-message-prose:not([hidden])::before {
+  content: ""; position: absolute; left: -6px; top: 13px; width: 6px; height: 10px;
+  background: inherit; clip-path: polygon(100% 0, 100% 100%, 0 50%);
+}

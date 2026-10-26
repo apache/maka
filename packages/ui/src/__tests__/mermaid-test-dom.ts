@@ -35,6 +35,7 @@ const GLOBAL_KEYS = [
   'cancelAnimationFrame',
   'document',
   'getComputedStyle',
+  'matchMedia',
   'navigator',
   'requestAnimationFrame',
   'scrollTo',
@@ -91,12 +92,14 @@ export function installDom() {
     cancelAnimationFrame: () => {},
     document,
     getComputedStyle: () => ({
+      getPropertyValue: () => '',
       paddingBottom: '0',
       paddingLeft: '0',
       paddingRight: '0',
       paddingTop: '0',
     }),
     navigator: window.navigator ?? { userAgent: 'node' },
+    matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }),
     requestAnimationFrame: (callback: FrameRequestCallback) => {
       queueMicrotask(() => callback(0));
       return 1;
@@ -116,6 +119,7 @@ export function installDom() {
     CSSStyleSheet,
     cancelAnimationFrame: globals.cancelAnimationFrame,
     getComputedStyle: globals.getComputedStyle,
+    matchMedia: globals.matchMedia,
     innerHeight: 800,
     requestAnimationFrame: globals.requestAnimationFrame,
     scrollTo: globals.scrollTo,

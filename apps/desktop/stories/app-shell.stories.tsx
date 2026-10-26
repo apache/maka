@@ -741,6 +741,40 @@ export const RunningStatusDuringToolRun: Story = {
   },
 };
 
+function ReconnectedRunningToolScene() {
+  // Like QueuedMessageLifecycle, start this active scene at mount: the user
+  // attaches ten seconds after the command began, rather than months after a
+  // fixed catalog timestamp. The clock is real; no output is fabricated.
+  const [attachedAt] = useState(Date.now);
+  return (
+    <ComposedShell
+      session={{ status: 'running', streaming: true, lastMessageAt: attachedAt - 10_000 }}
+      chat={{
+        activeTurn: { turnId: 'turn-reconnect' },
+        messages: [
+          { ...user('reconnect-user', 'turn-reconnect', 2, '等待这个命令执行完毕。'), ts: attachedAt - 10_000 },
+          { type: 'tool_call', id: 'reconnect-tool', turnId: 'turn-reconnect', ts: attachedAt - 9_000,
+            toolName: 'Bash', activityKind: 'command', args: { command: 'sleep 10' } },
+        ],
+      }}
+    />
+  );
+}
+
+// Real path: open a conversation while its Host Turn is still running; a
+// reconnect seed supplies continuity but no live tool buffer for this legacy
+// transcript. This fixture supplies production ChatView props, not a native
+// Electron reproduction. Keep process details visible for before/after evidence.
+export const ReconnectedRunningTool: Story = {
+  render: () => <ReconnectedRunningToolScene />,
+  play: async ({ canvasElement }) => {
+    await waitFor(() => expect(canvasElement.querySelector('.maka-processing-sequence')).not.toBeNull());
+    const process = canvasElement.querySelector<HTMLDetailsElement>('.maka-processing-sequence')!;
+    if (!process.open) await userEvent.click(process.querySelector('summary')!);
+    await waitFor(() => expect(within(canvasElement).getByText('sleep 10')).toBeVisible());
+  },
+};
+
 // A real prefix of `npm test` stdout, copied verbatim from an actual run killed
 // mid-build (the full suite runs for minutes, so a cancel here is genuinely
 // reachable). Kept short by cutting inside the build phase — no test-runner
@@ -1712,6 +1746,26 @@ export const EmptyHome: Story = {
     await waitFor(() => expect(emptyComposerSend).toHaveBeenCalledWith('send and clear', undefined));
     await waitFor(() => expect(editor.textContent).toBe(''));
     assertLineBox();
+
+    const layout = canvasElement.querySelector<HTMLElement>('.maka-chat-layout')!;
+    const columns = canvasElement.querySelectorAll<HTMLElement>('.maka-chatContent, .maka-composer-astryx');
+    expect(columns).toHaveLength(2);
+    // Native scrollbars appearing and disappearing must keep both columns centered.
+    for (const messages of [[], longConversation, []]) {
+      await transition({ messages });
+      await waitFor(() => {
+        expect(layout.scrollHeight > layout.clientHeight).toBe(messages.length > 0);
+        if (messages.length > 0) {
+          expect(layout.offsetWidth - layout.clientWidth).toBeGreaterThan(0);
+        }
+        const box = layout.getBoundingClientRect();
+        for (const column of columns) {
+          const content = column.getBoundingClientRect();
+          expect(Math.abs(content.left + content.width / 2 - (box.left + box.width / 2)))
+            .toBeLessThanOrEqual(1);
+        }
+      });
+    }
   },
 };
 
@@ -1720,19 +1774,20 @@ type EmptyComposerState = {
   chatHidden: boolean;
   draftKey: string;
   disabled: boolean;
+  messages: StoredMessage[];
 };
 let setEmptyComposerState: ((next: Partial<EmptyComposerState>) => void) | undefined;
 const emptyComposerSend = fn();
 function EmptyComposerLifecycle() {
   const [state, setState] = useState<EmptyComposerState>({
-    switchingSession: false, chatHidden: false, draftKey: 'session:caret-a', disabled: false,
+    switchingSession: false, chatHidden: false, draftKey: 'session:caret-a', disabled: false, messages: [],
   });
   useEffect(() => {
     emptyComposerSend.mockClear();
     setEmptyComposerState = (next) => setState((current) => ({ ...current, ...next }));
     return () => { setEmptyComposerState = undefined; };
   }, []);
-  return <ComposedShell chat={{ messages: [] }} switchingSession={state.switchingSession}
+  return <ComposedShell chat={{ messages: state.messages }} switchingSession={state.switchingSession}
     chatHidden={state.chatHidden} composer={{ draftKey: state.draftKey, disabled: state.disabled, onSend: emptyComposerSend }} />;
 }
 
@@ -1785,7 +1840,7 @@ export const NewChatComposer: Story = {
     await expect(card.getBoundingClientRect().height).toBe(initialCardHeight);
 
     const projectPicker = canvasElement.querySelector<HTMLElement>('.maka-workspace-picker')!;
-    const modelPicker = canvasElement.querySelector<HTMLElement>('.maka-new-chat-model-selector')!;
+    const modelPicker = canvasElement.querySelector<HTMLElement>('.maka-model-switcher-trigger')!;
     await expect(getComputedStyle(projectPicker).borderRadius).toBe(getComputedStyle(modelPicker).borderRadius);
     await expect(projectPicker.querySelector('.maka-workspace-picker-chevron svg')).not.toBeNull();
 
@@ -1812,6 +1867,63 @@ export const NewChatComposer: Story = {
       });
     } finally {
       card.style.maxWidth = originalMaxWidth;
+    }
+  },
+};
+
+function DraftCatalogRefreshFailure() {
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshFailed, setRefreshFailed] = useState(false);
+  return <ToastProvider><ComposedShell session={null} chat={{ messages: [] }} composer={{
+    executorPicker: {
+      catalog: [{
+        id: 'antigravity', displayName: 'Antigravity', readiness: 'ready', refreshFailed,
+        models: [
+          { id: 'flash-low', name: 'Gemini 3.8 Flash (Low)', providerType: 'google' },
+          { id: 'flash-high', name: 'Gemini 3.8 Flash (High)', providerType: 'google' },
+        ],
+        modelGroups: [{ id: 'flash', name: 'Gemini 3.8 Flash', variants: [
+          { modelId: 'flash-low', level: 'low' }, { modelId: 'flash-high', level: 'high' },
+        ] }],
+        currentModel: 'flash-high', supportsModelChange: true, supportsAttachments: true,
+      }],
+      selection: { executorId: 'antigravity', configuration: { model: 'flash-high' } },
+      loadingIds: refreshing ? ['antigravity'] : [],
+      onSelect: noop, onSetup: noop, onNewTask: noop,
+      onRetry: () => {
+        setRefreshing(true);
+        window.setTimeout(() => { setRefreshFailed(true); setRefreshing(false); }, 300);
+      },
+    },
+  }} /></ToastProvider>;
+}
+
+// Real path: 新任务 → select an ACP model → Refresh models fails; the global toast appears outside the unchanged Composer.
+export const NewChatCatalogRefreshFailure: Story = {
+  render: () => <DraftCatalogRefreshFailure />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const page = within(canvasElement.ownerDocument.body);
+    const refresh = canvas.getByRole('button', { name: /Antigravity: (Refresh models|刷新模型|重新整理模型)/ });
+    const composer = canvasElement.querySelector<HTMLElement>('.maka-composer')!;
+    const model = canvasElement.querySelector<HTMLElement>('.maka-model-switcher-trigger')!;
+    const before = composer.getBoundingClientRect();
+    const controlsBefore = [refresh, model].map(control => ({ control, box: control.getBoundingClientRect() }));
+    await userEvent.click(refresh);
+    const notice = await page.findByText(/Could not refresh models|模型列表刷新失败|模型清單重新整理失敗/);
+    await waitFor(() => expect(notice).toBeVisible());
+    await expect(composer.contains(notice)).toBe(false);
+    await expect(refresh).toBeEnabled();
+    await expect(within(composer).queryByRole('button', { name: /^(Retry|重试|重試)$/ })).not.toBeInTheDocument();
+    await expect(composer.querySelector('.maka-executor-notice')).toBeNull();
+    await expect(model).toHaveTextContent('Gemini 3.8 Flash');
+    const after = composer.getBoundingClientRect();
+    await expect(after.height).toBe(before.height);
+    // Controls may already wrap on narrow screens; the toast must preserve their positions within the Composer.
+    for (const { control, box } of controlsBefore) {
+      const current = control.getBoundingClientRect();
+      await expect(Math.abs((current.x - after.x) - (box.x - before.x))).toBeLessThanOrEqual(2);
+      await expect(Math.abs((current.y - after.y) - (box.y - before.y))).toBeLessThanOrEqual(2);
     }
   },
 };
@@ -2997,10 +3109,21 @@ async function verifySendKeepsPrompt(canvasElement: HTMLElement): Promise<void> 
   await userEvent.keyboard('{Enter}');
   await arrival;
   expect(canvasElement.querySelector('[data-transient-message-id="msg-tail-1"]')).not.toBeNull();
+  // Sending and external-session restoration must never leave a silent gap,
+  // even before a Host Turn or any assistant output has arrived.
+  const processing = () => canvasElement.querySelector('.maka-turn-processing')!;
+  await expect(processing()).toBeVisible();
+  await expect(processing()).toHaveAttribute('role', 'status');
+  await expect(canvasElement.querySelectorAll('.maka-turn-processing')).toHaveLength(1);
+  await expect(canvasElement.querySelector('.maka-turn-elapsed')).toBeNull();
   startHostTurn?.();
   await sample();
+  await expect(processing()).toBeVisible();
+  await expect(canvasElement.querySelectorAll('.maka-turn-processing')).toHaveLength(1);
   admitTailTurn?.();
   await sample();
+  await expect(processing()).toBeVisible();
+  await expect(canvasElement.querySelectorAll('.maka-turn-processing')).toHaveLength(1);
   expect(canvasElement.querySelector('[data-transient-message-id]')).toBeNull();
   expect(canvasElement.querySelector('[data-transcript-turn-id="turn-tail"] .maka-turn-processing')).not.toBeNull();
   expect(new Set(tops).size, JSON.stringify(tops)).toBe(1);
@@ -3020,6 +3143,7 @@ async function verifySendKeepsPrompt(canvasElement: HTMLElement): Promise<void> 
   await sample(1);
   settleTailTurn?.();
   await sample();
+  await expect(canvasElement.querySelector('.maka-turn-processing')).toBeNull();
   const reversal = Math.max(0, ...tops.slice(1).map((top, index) => top - tops[index]!));
   expect(reversal, JSON.stringify(tops)).toBe(0);
   expect(new Set(tops.slice(-13)).size, JSON.stringify(tops)).toBe(1);
@@ -3074,14 +3198,18 @@ function SettledTranscriptHarness({
  * `HISTORY_BATCH` Turns. The loader settles a frame later, the way an answer
  * delivered over IPC does.
  */
+let releaseHistoryPage: (() => void) | undefined;
+
 function HistoryHarness({
   turns,
   olderTurns = 0,
   mixed = false,
-}: { turns: number; olderTurns?: number; mixed?: boolean }) {
+  holdFirstPage = false,
+}: { turns: number; olderTurns?: number; mixed?: boolean; holdFirstPage?: boolean }) {
   const [from, setFrom] = useState(0);
   useEffect(() => {
     historyLoads.length = 0;
+    releaseHistoryPage = undefined;
   }, []);
   return (
     <ComposedShell
@@ -3090,6 +3218,11 @@ function HistoryHarness({
         hasEarlierHistory: from > -olderTurns,
         onLoadEarlierHistory: async () => {
           historyLoads.push(firstResidentTurnId() ?? '(none)');
+          // A pending remote page lets the story measure the reading anchor
+          // before delivering the same production history update.
+          if (holdFirstPage && historyLoads.length === 1) {
+            await new Promise<void>((resolve) => { releaseHistoryPage = resolve; });
+          }
           setFrom((current) => Math.max(-olderTurns, current - HISTORY_BATCH));
           await painted(2);
         },
@@ -3232,21 +3365,39 @@ export const DockAffordanceReturnsToTail: Story = {
   },
 };
 
+// Real path: scroll a tool's nested output near the beginning of loaded conversation history.
 export const NestedScrollerNearHistoryBoundaryAsksForNothing: Story = {
   render: () => <HistoryHarness turns={7} olderTurns={HISTORY_BATCH} />,
   play: async () => {
     await tailSettled();
 
     const nested = injectNestedScroller(messageList());
-    scrollAsReader(tailScroller(), 0);
+    const root = tailScroller();
+    // End the setup's real scroll before moving the viewport without reader
+    // input. An early synthetic scrollend can precede its queued scroll event
+    // and leave that upward gesture active during the boundary setup.
+    const setupScrollEnded = new Promise<void>((resolve) => {
+      const onEnd = (event: Event) => {
+        if (event.target !== root) return;
+        root.removeEventListener('scrollend', onEnd);
+        resolve();
+      };
+      root.addEventListener('scrollend', onEnd);
+    });
+    expect(scrollAsReader(root, root.clientHeight * 2)).not.toBe(0);
+    await setupScrollEnded;
+    await painted(2);
+    root.scrollTop = 0;
+    root.dispatchEvent(new Event('scroll'));
     await painted(6);
+    expect(historyLoads, 'preparing the boundary without reader input must not load history').toEqual([]);
 
     wheelUp(nested);
-    wheelUp(tailScroller());
     await painted(6);
-    // Scrolling never loads history; only the explicit control does.
     expect(historyLoads).toEqual([]);
     expect(nested.scrollTop).toBe(600);
+    wheelUp(root);
+    await waitFor(() => expect(historyLoads).toHaveLength(1));
   },
 };
 
@@ -3579,8 +3730,9 @@ export const UpwardTraversalHoldsTurnGeometry: Story = {
   },
 };
 
+// Real path: open a long conversation, scroll upward, and receive an older history page.
 export const HistoryAtTheTopStillLandsAboveTheReader: Story = {
-  render: () => <HistoryHarness turns={16} olderTurns={HISTORY_BATCH} />,
+  render: () => <HistoryHarness turns={16} olderTurns={HISTORY_BATCH} holdFirstPage />,
   play: async () => {
     const root = tailScroller();
     // Measure history publication against rendered content, not the cold
@@ -3594,8 +3746,8 @@ export const HistoryAtTheTopStillLandsAboveTheReader: Story = {
       expect(settled.scrollTop, JSON.stringify(settled)).toBeGreaterThan(0);
       expect(settled.distance, JSON.stringify(settled)).toBeLessThanOrEqual(4);
     });
-    // The one position where the browser declines to anchor, and the one the
-    // load-earlier control sits at. Rows mounted by the scroll still carry the
+    expect(historyLoads).toEqual([]);
+    // The one position where the browser declines to anchor. Rows mounted by the scroll still carry the
     // cold Markdown layout — measure the anchor only after they settle, the
     // same rule as the tail state above.
     scrollAsReader(root, 0);
@@ -3603,13 +3755,16 @@ export const HistoryAtTheTopStillLandsAboveTheReader: Story = {
     await painted(4);
     const before = firstResidentTurnId();
     const reading = anchorInView();
-    within(document.body).getByRole('button', { name: '载入更早的记录' }).click();
+    await waitFor(() => expect(releaseHistoryPage).toBeDefined());
+    releaseHistoryPage!();
 
     await waitFor(() => expect(firstResidentTurnId()).not.toBe(before));
     await waitFor(() => expect(document.querySelector('.maka-markdown-pending')).toBeNull());
     await painted(6);
 
-    expect(historyLoads).toEqual([before]);
+    // The request can precede the virtualizer mounting the rows at the new
+    // scroll offset; its previous first DOM row is not the history boundary.
+    expect(historyLoads).toHaveLength(1);
     expect(Math.abs(turnTop(reading.turnId) - reading.top)).toBeLessThanOrEqual(1);
     expect(within(document.body).queryByRole('button', { name: '载入更早的记录' })).toBeNull();
   },
@@ -3658,11 +3813,12 @@ async function measureEveryRow(): Promise<void> {
  * batch along: the document's extent goes wrong, and rows the reader has
  * already been past push them when they come back.
  */
+// Real path: scroll into older history, then revisit already measured Turns in both directions.
 export const PrependedHistoryKeepsMeasuredHeights: Story = {
   // Shallower than the other history stories: this one walks the whole
   // transcript twice, and a slid measurement shows on the first row past the
   // prepend as well as on the hundredth.
-  render: () => <HistoryHarness turns={10} olderTurns={HISTORY_BATCH} mixed />,
+  render: () => <HistoryHarness turns={10} olderTurns={HISTORY_BATCH} mixed holdFirstPage />,
   play: async () => {
     const root = tailScroller();
     await document.fonts.ready;
@@ -3674,7 +3830,8 @@ export const PrependedHistoryKeepsMeasuredHeights: Story = {
     await measureEveryRow();
     const before = firstResidentTurnId();
 
-    within(document.body).getByRole('button', { name: '载入更早的记录' }).click();
+    await waitFor(() => expect(releaseHistoryPage).toBeDefined());
+    releaseHistoryPage!();
     await waitFor(() => expect(firstResidentTurnId()).not.toBe(before));
     await waitFor(() => expect(document.querySelector('.maka-markdown-pending')).toBeNull());
     await painted(6);
@@ -4573,7 +4730,7 @@ export const NarrowComposerFooter: Story = {
 
     const send = within(card).getByRole('button', { name: '发送' });
     const contextGauge = within(card).queryByRole('button', { name: '打开用量追踪' });
-    const modelMenu = card.querySelector<HTMLElement>('.maka-composer-options-trigger');
+    const modelMenu = card.querySelector<HTMLElement>('.maka-model-switcher-trigger');
     if (!modelMenu) throw new Error('composer model menu is missing');
     await waitFor(() => {
       const cardBox = card.getBoundingClientRect();
@@ -4812,7 +4969,9 @@ export const CompletedProcessCollapsed: Story = {
     await expect(process!.open).toBe(false);
     const answer = await within(canvasElement).findByText('已修复登录状态恢复。');
     await expect(answer).toBeVisible();
-    await expect(await within(canvasElement).findByText('我先检查登录状态的存储和恢复逻辑。')).not.toBeVisible();
+    // A completed process that has never been opened does not mount its body.
+    await expect(within(canvasElement).queryByText('我先检查登录状态的存储和恢复逻辑。')).toBeNull();
+    await expect(process!.querySelector('.maka-processing-body')!.childElementCount).toBe(0);
     const summary = process!.querySelector('summary')!;
     await expect(getComputedStyle(process!).borderTopWidth).toBe('0px');
     await expect(getComputedStyle(process!).backgroundColor).toBe('rgba(0, 0, 0, 0)');
@@ -4902,5 +5061,41 @@ export const CompletedProcessExpanded: Story = {
     summary.click();
     await waitFor(() => expect(process.open).toBe(true));
     selection.removeAllRanges();
+  },
+};
+
+
+const PARALLEL_EVENT_WAIT_IDS = ['a', 'b'].map((value) => `wait_${value.repeat(64)}`);
+
+function ParallelEventWaitsStory() {
+  const [waits, setWaits] = useState(PARALLEL_EVENT_WAIT_IDS);
+  return <ComposedShell session={{ streaming: true }} chat={{
+    eventWaitIndicators: waits.map((id) => ({
+      id, label: 'Waiting for external event', detail: 'Background build process',
+      cancelLabel: 'Cancel wait', cancelDescription: 'Cancel this wait. The underlying work keeps running.',
+      onCancel: () => setWaits((current) => current.filter((wait) => wait !== id)),
+    })),
+  }} />;
+}
+
+// Real path: an admitted Goal Turn opens two waits for the same ShellRun, then the user clears the Goal.
+// The fixture supplies the remaining Session projections to the production ChatView frame.
+export const ParallelEventWaitsAfterGoalClear: Story = {
+  render: () => <ParallelEventWaitsStory />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    for (const id of PARALLEL_EVENT_WAIT_IDS) {
+      await expect(canvas.getByRole('button', { name: `Cancel wait ${id}` })).toBeVisible();
+      await expect(canvas.getByText(id)).toBeVisible();
+    }
+    await expect(canvas.getAllByText('Background build process')).toHaveLength(2);
+    const rows = canvasElement.querySelectorAll('.maka-session-context__wait');
+    expect(rows).toHaveLength(2);
+    for (const row of rows) {
+      const cancel = row.querySelector('button')!.getBoundingClientRect();
+      const frame = row.getBoundingClientRect();
+      expect(cancel.left).toBeGreaterThanOrEqual(frame.left);
+      expect(cancel.right).toBeLessThanOrEqual(frame.right);
+    }
   },
 };

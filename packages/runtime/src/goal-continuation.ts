@@ -48,12 +48,16 @@ import { GoalTaskGatePolicy, type GoalTaskGateDeps } from './goal-task-gate-poli
 import type { GoalTurnOutcome } from './goal-turn-lifecycle.js';
 import {
   GOAL_PENDING_PROMPT_TEXT_LIMIT,
+  GOAL_REASON_TEXT_LIMIT,
   isDrivingGoal,
   sameGoalControlLease,
   type GoalCurrentExecution,
   type GoalExecutionRef,
   type GoalPendingContinuation,
+  type GoalWaitingObservation,
+  type GoalWaitingContinuation,
 } from '@maka/core/goal';
+import type { EventWaitConditionSpec } from '@maka/core/event-wait';
 
 export type { GoalTurnOutcome } from './goal-turn-lifecycle.js';
 export type { GoalSessionCloseOperation } from './goal-session-close-fence.js';
@@ -69,7 +73,7 @@ export type GoalTurnAdmission =
       turnId: string;
       execution: GoalExecutionRef;
       /** Start the synchronously reserved turn after coordinator ownership is registered. */
-      start: () => Promise<GoalTurnOutcome>;
+      start: () => Promise<GoalTurnOutcome | { kind: 'deferred' }>;
     }
   | { kind: 'busy'; whenIdle: Promise<void> }
   | { kind: 'unavailable'; reason: string };
@@ -108,13 +112,33 @@ export interface GoalContinuationDeps {
   /** Current cumulative token count for the session (for budget tracking). */
   getTokenCount?: (sessionId: string) => number;
   durability: GoalDurabilityPort;
+  /** Serialize Goal state and its outbox with Host authority. Do not hold this
+   * scope while awaiting an evaluator or starting a working Turn. */
+  mutateGoal?: <T>(
+    operation: (durability: Pick<GoalDurabilityPort, 'recordPendingContinuation'>) => Promise<T>,
+  ) => Promise<T>;
   /** Synchronously prepare, defer, or reject a Goal-owned turn. */
   admitTurn: (
     sessionId: string,
     text: string,
     checkpoint: GoalCheckpoint,
     controlLease: GoalControlLease,
+    goalWaiting?: GoalWaitingContinuation,
   ) => GoalTurnAdmission;
+  observedWaiting?: {
+    /** Runs outside Goal mutation serialization. No observation starts before the outbox commits. */
+    prepare(input: {
+      sessionId: string;
+      turnId: string;
+      checkpoint: GoalCheckpoint;
+      controlLease: GoalControlLease;
+      condition: EventWaitConditionSpec;
+      signal: AbortSignal;
+    }): Promise<
+      | { observation: GoalWaitingObservation; observationPreparation?: 'pending' }
+      | { reason: string }
+    >;
+  };
   taskGate?: GoalTaskGateDeps;
   scheduler?: GoalContinuationScheduler;
 }
@@ -140,6 +164,8 @@ interface ContinuationIntent {
   triggeringTurnId?: string;
   evaluation: GoalEvaluation;
   recoveredPrompt?: string;
+  observation?: GoalWaitingObservation;
+  goalWaiting?: GoalWaitingContinuation;
 }
 
 interface WaitingTimer {
@@ -487,12 +513,19 @@ export class GoalContinuationCoordinator {
       return;
     }
     const lane = this.laneFor(sessionId);
-    if (lane.intent || lane.turns.size > 0) return;
+    if (lane.turns.size > 0) return;
+    const replacesObservation =
+      lane.intent?.observation &&
+      pending.triggeringTurnId === lane.intent.triggeringTurnId &&
+      sameGoalControlLease(pending.controlLease, lane.intent.controlLease);
+    if (lane.intent && !replacesObservation) return;
     lane.intent = {
       checkpoint: pending.checkpoint,
       controlLease: pending.controlLease,
       ...(pending.triggeringTurnId ? { triggeringTurnId: pending.triggeringTurnId } : {}),
       recoveredPrompt: pending.prompt,
+      ...(pending.observation ? { observation: pending.observation } : {}),
+      ...(pending.goalWaiting ? { goalWaiting: pending.goalWaiting } : {}),
       evaluation: {
         met: false,
         impossible: false,
@@ -661,10 +694,12 @@ export class GoalContinuationCoordinator {
         try {
           await this.processQueuedTurn(lane, item);
         } catch (error) {
-          this.pauseCurrentGoal(
-            lane,
-            `Goal continuation coordinator failed: ${errorMessage(error)}`,
-          );
+          if (this.deps.goalManager.matchesControlLease(lane.sessionId, item.controlLease)) {
+            this.pauseCurrentGoal(
+              lane,
+              `Goal continuation coordinator failed: ${errorMessage(error)}`,
+            );
+          }
         } finally {
           if (lane.processing === item) lane.processing = undefined;
         }
@@ -730,6 +765,12 @@ export class GoalContinuationCoordinator {
     await this.processCompletion(lane, item.controlLease, goal, item.turnId);
   }
 
+  private commitGoalMutation<T>(
+    operation: (durability: Pick<GoalDurabilityPort, 'recordPendingContinuation'>) => Promise<T>,
+  ): Promise<T> {
+    return this.deps.mutateGoal ? this.deps.mutateGoal(operation) : operation(this.deps.durability);
+  }
+
   private async processCompletion(
     lane: SessionLane,
     controlLease: GoalControlLease,
@@ -737,122 +778,153 @@ export class GoalContinuationCoordinator {
     turnId: string,
   ): Promise<void> {
     let goal = initialGoal;
-    if (goal.status === 'waiting') {
-      const woken = this.deps.goalManager.wakeWaiting(lane.sessionId, goalCheckpoint(goal));
-      if (!woken) return;
-      goal = woken;
-    }
+    await this.commitGoalMutation(async () => {
+      if (goal.status === 'waiting') {
+        const woken = this.deps.goalManager.wakeWaiting(lane.sessionId, goalCheckpoint(goal));
+        if (woken) goal = woken;
+      }
+    });
     if (goal.status !== 'active') return;
-
     const checkpoint = goalCheckpoint(goal);
     let context: string;
     try {
       context = await this.deps.getRecentContext(lane.sessionId);
     } catch (error) {
-      this.pauseAtCheckpoint(
-        lane,
-        checkpoint,
-        `Unable to read Goal evaluation context: ${errorMessage(error)}`,
+      await this.commitGoalMutation(async () =>
+        this.pauseAtCheckpoint(
+          lane,
+          checkpoint,
+          `Unable to read Goal evaluation context: ${errorMessage(error)}`,
+        ),
       );
       return;
     }
-    if (!this.isCurrent(lane) || !this.deps.goalManager.matchesActive(lane.sessionId, checkpoint)) {
-      return;
-    }
-
+    // Ordinary evaluator settlement uses this context read's usage snapshot.
+    const tokensNow = this.deps.getTokenCount?.(lane.sessionId);
     const evaluationAbort = new AbortController();
-    lane.evaluationAbort = evaluationAbort;
-    let evaluation: GoalEvaluation;
-    try {
-      evaluation = await evaluateGoal(
+    let evaluationTask: Promise<GoalEvaluation> | undefined;
+    await this.commitGoalMutation(async () => {
+      if (!this.isCurrent(lane) || !this.deps.goalManager.matchesActive(lane.sessionId, checkpoint))
+        return;
+      lane.evaluationAbort = evaluationAbort;
+      evaluationTask = evaluateGoal(
         this.deps.evaluator,
         goal.condition,
         context,
         lane.sessionId,
         evaluationAbort.signal,
       );
+    });
+    if (!evaluationTask) return;
+    let evaluation: GoalEvaluation;
+    let observation: GoalWaitingObservation | undefined;
+    let observationPreparation: 'pending' | undefined;
+    try {
+      evaluation = await evaluationTask;
+      if (evaluation.waitingCondition && this.deps.observedWaiting) {
+        const prepared = await this.deps.observedWaiting.prepare({
+          sessionId: lane.sessionId,
+          turnId,
+          checkpoint,
+          controlLease,
+          condition: evaluation.waitingCondition,
+          signal: evaluationAbort.signal,
+        });
+        if ('observation' in prepared) {
+          observation = prepared.observation;
+          observationPreparation = prepared.observationPreparation;
+        } else
+          evaluation = {
+            ...evaluation,
+            reason: truncateGoalText(
+              `${evaluation.reason} Host observation unavailable: ${prepared.reason}`,
+              GOAL_REASON_TEXT_LIMIT,
+            ),
+          };
+      }
     } finally {
       if (lane.evaluationAbort === evaluationAbort) lane.evaluationAbort = undefined;
     }
-    if (!this.isCurrent(lane) || !this.deps.goalManager.matchesActive(lane.sessionId, checkpoint)) {
-      return;
-    }
+    await this.commitGoalMutation(async (durability) => {
+      if (!this.isCurrent(lane) || !this.deps.goalManager.matchesActive(lane.sessionId, checkpoint))
+        return;
+      const settlementBase = {
+        checkpoint,
+        reason: evaluation.reason,
+      };
+      let settled: GoalState | undefined;
+      if (evaluation.met || evaluation.impossible) {
+        settled = this.deps.goalManager.settleTurn(lane.sessionId, {
+          ...settlementBase,
+          verdict: evaluation.met ? 'achieved' : 'impossible',
+        });
+      } else if (evaluation.waiting) {
+        settled = this.deps.goalManager.settleTurn(lane.sessionId, {
+          ...settlementBase,
+          verdict: 'continue',
+          waiting: true,
+          ...(tokensNow !== undefined ? { tokensNow } : {}),
+        });
+      } else {
+        settled = this.deps.goalManager.settleTurn(lane.sessionId, {
+          ...settlementBase,
+          verdict: 'continue',
+          ...(!evaluation.evaluatorFailed ? { madeProgress: evaluation.progress } : {}),
+          ...(tokensNow !== undefined ? { tokensNow } : {}),
+        });
+      }
+      if (!settled) return;
+      if (settled.status === 'achieved' || settled.status === 'impossible') {
+        lane.intent = undefined;
+        this.resetWaitingBackoff(lane);
+        this.taskGatePolicy.record({
+          sessionId: lane.sessionId,
+          turnId,
+          goalId: goal.id,
+          decision: 'evaluator_terminal',
+          taskKeys: [],
+        });
+        return;
+      }
+      if (settled.status !== 'active' && settled.status !== 'waiting') {
+        lane.intent = undefined;
+        this.resetWaitingBackoff(lane);
+        const taskKeys = await this.taskGatePolicy.listActionable(lane.sessionId);
+        this.taskGatePolicy.record({
+          sessionId: lane.sessionId,
+          turnId,
+          goalId: goal.id,
+          decision: 'goal_stopped',
+          taskKeys,
+        });
+        return;
+      }
 
-    const tokensNow = this.deps.getTokenCount?.(lane.sessionId);
-
-    const settlementBase = {
-      checkpoint,
-      reason: evaluation.reason,
-    };
-    let settled: GoalState | undefined;
-    if (evaluation.met || evaluation.impossible) {
-      settled = this.deps.goalManager.settleTurn(lane.sessionId, {
-        ...settlementBase,
-        verdict: evaluation.met ? 'achieved' : 'impossible',
+      lane.intent = {
+        checkpoint: goalCheckpoint(settled),
+        controlLease,
+        triggeringTurnId: turnId,
+        evaluation,
+        ...(observation ? { observation } : {}),
+      };
+      const pendingPrompt = truncateGoalText(
+        buildContinuationPrompt(settled, evaluation, undefined),
+        GOAL_PENDING_PROMPT_TEXT_LIMIT,
+      );
+      await durability.recordPendingContinuation({
+        checkpoint: lane.intent.checkpoint,
+        controlLease,
+        prompt: pendingPrompt,
+        triggeringTurnId: turnId,
+        ...(observation ? { observation } : {}),
+        ...(observationPreparation ? { observationPreparation } : {}),
       });
-    } else if (evaluation.waiting) {
-      settled = this.deps.goalManager.settleTurn(lane.sessionId, {
-        ...settlementBase,
-        verdict: 'continue',
-        waiting: true,
-        ...(tokensNow !== undefined ? { tokensNow } : {}),
-      });
-    } else {
-      settled = this.deps.goalManager.settleTurn(lane.sessionId, {
-        ...settlementBase,
-        verdict: 'continue',
-        ...(!evaluation.evaluatorFailed ? { madeProgress: evaluation.progress } : {}),
-        ...(tokensNow !== undefined ? { tokensNow } : {}),
-      });
-    }
-    if (!settled) return;
-    if (settled.status === 'achieved' || settled.status === 'impossible') {
-      lane.intent = undefined;
+      if (settled.status === 'waiting') {
+        lane.consecutiveWaits++;
+        return;
+      }
       this.resetWaitingBackoff(lane);
-      this.taskGatePolicy.record({
-        sessionId: lane.sessionId,
-        turnId,
-        goalId: goal.id,
-        decision: 'evaluator_terminal',
-        taskKeys: [],
-      });
-      return;
-    }
-    if (settled.status !== 'active' && settled.status !== 'waiting') {
-      lane.intent = undefined;
-      this.resetWaitingBackoff(lane);
-      const taskKeys = await this.taskGatePolicy.listActionable(lane.sessionId);
-      this.taskGatePolicy.record({
-        sessionId: lane.sessionId,
-        turnId,
-        goalId: goal.id,
-        decision: 'goal_stopped',
-        taskKeys,
-      });
-      return;
-    }
-
-    lane.intent = {
-      checkpoint: goalCheckpoint(settled),
-      controlLease,
-      triggeringTurnId: turnId,
-      evaluation,
-    };
-    const pendingPrompt = truncateGoalText(
-      buildContinuationPrompt(settled, evaluation, undefined),
-      GOAL_PENDING_PROMPT_TEXT_LIMIT,
-    );
-    await this.deps.durability.recordPendingContinuation({
-      checkpoint: lane.intent.checkpoint,
-      controlLease,
-      prompt: pendingPrompt,
-      triggeringTurnId: turnId,
     });
-    if (settled.status === 'waiting') {
-      lane.consecutiveWaits++;
-      return;
-    }
-    this.resetWaitingBackoff(lane);
   }
 
   private async tryAdmitIntent(lane: SessionLane, intent: ContinuationIntent): Promise<void> {
@@ -887,14 +959,18 @@ export class GoalContinuationCoordinator {
       return;
     }
 
-    const prompt = intent.recoveredPrompt
-      ? attachTaskReminder(intent.recoveredPrompt, taskPlan.reminder)
-      : buildContinuationPrompt(goal, intent.evaluation, taskPlan.reminder);
+    const prompt =
+      intent.goalWaiting && intent.recoveredPrompt
+        ? intent.recoveredPrompt
+        : intent.recoveredPrompt
+          ? attachTaskReminder(intent.recoveredPrompt, taskPlan.reminder)
+          : buildContinuationPrompt(goal, intent.evaluation, taskPlan.reminder);
     const admission = this.deps.admitTurn(
       lane.sessionId,
       prompt,
       intent.checkpoint,
       intent.controlLease,
+      intent.goalWaiting,
     );
 
     if (admission.kind === 'busy') {
@@ -916,13 +992,14 @@ export class GoalContinuationCoordinator {
     };
     lane.turns.set(admission.turnId, registration);
 
-    await this.deps.durability.recordCurrentExecution({
-      execution: admission.execution,
-      checkpoint: intent.checkpoint,
-      controlLease: intent.controlLease,
-    });
+    if (!intent.goalWaiting)
+      await this.deps.durability.recordCurrentExecution({
+        execution: admission.execution,
+        checkpoint: intent.checkpoint,
+        controlLease: intent.controlLease,
+      });
 
-    let completion: Promise<GoalTurnOutcome>;
+    let completion: Promise<GoalTurnOutcome | { kind: 'deferred' }>;
     try {
       completion = admission.start();
     } catch (error) {
@@ -935,6 +1012,12 @@ export class GoalContinuationCoordinator {
     }
     void completion.then(
       (outcome) => {
+        if (outcome.kind === 'deferred') {
+          // No Root was admitted. The durable event outbox owns the retry;
+          // authorization waiting must not settle or charge a work Turn.
+          this.consumeTurnRegistration(registration);
+          return;
+        }
         void this.settleRegisteredTurn(registration, outcome).catch(() => undefined);
       },
       (error) => {
@@ -981,7 +1064,14 @@ export class GoalContinuationCoordinator {
   }
 
   private scheduleWaitingRetry(lane: SessionLane, goal: GoalState): void {
-    if (this.handoffHeld || !this.isCurrent(lane) || lane.waitingTimer || !lane.intent) return;
+    if (
+      this.handoffHeld ||
+      !this.isCurrent(lane) ||
+      lane.waitingTimer ||
+      !lane.intent ||
+      lane.intent.observation !== undefined
+    )
+      return;
     if (!this.deps.goalManager.matches(lane.sessionId, lane.intent.checkpoint)) {
       lane.intent = undefined;
       this.resetWaitingBackoff(lane);
@@ -991,16 +1081,16 @@ export class GoalContinuationCoordinator {
     const delayMs = waitBackoffMs(lane.consecutiveWaits);
     const handle = this.scheduler.setTimeout(() => {
       lane.waitingTimer = undefined;
-      if (!this.isCurrent(lane)) return;
-      if (lane.queue.length > 0) {
-        this.scheduleDrain(lane);
-        return;
-      }
-      const woken = this.deps.goalManager.wakeWaiting(lane.sessionId, checkpoint);
-      if (!woken || !lane.intent) return;
-      lane.intent = { ...lane.intent, checkpoint: goalCheckpoint(woken) };
-      void this.deps.durability
-        .recordPendingContinuation({
+      void this.commitGoalMutation(async (durability) => {
+        if (!this.isCurrent(lane)) return;
+        if (lane.queue.length > 0) {
+          this.scheduleDrain(lane);
+          return;
+        }
+        const woken = this.deps.goalManager.wakeWaiting(lane.sessionId, checkpoint);
+        if (!woken || !lane.intent) return;
+        lane.intent = { ...lane.intent, checkpoint: goalCheckpoint(woken) };
+        await durability.recordPendingContinuation({
           checkpoint: lane.intent.checkpoint,
           controlLease: lane.intent.controlLease,
           prompt:
@@ -1009,7 +1099,8 @@ export class GoalContinuationCoordinator {
           ...(lane.intent.triggeringTurnId
             ? { triggeringTurnId: lane.intent.triggeringTurnId }
             : {}),
-        })
+        });
+      })
         .then(() => this.deps.durability.flush(lane.sessionId))
         .then(() => this.scheduleDrain(lane))
         .catch(() => undefined);

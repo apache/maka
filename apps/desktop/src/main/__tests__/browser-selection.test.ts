@@ -39,7 +39,7 @@ describe('browser selection ordering', () => {
     pending.resolve({ scope: 'host-a', sessionId: 'runtime-a' });
     await flush();
 
-    assert.deepEqual(events, ['hide:2']);
+    assert.deepEqual(events, ['hide:1', 'hide:3']);
   });
 
   it('binds capture and viewport delivery to the newest resolved selection generation', async () => {
@@ -75,6 +75,30 @@ describe('browser selection ordering', () => {
 
     assert.equal(await staleCapture, undefined);
     assert.equal(await currentCapture, 'backdrop');
-    assert.deepEqual(events, ['show:2:runtime-b', 'capture:runtime-b', 'viewport:2:runtime-b']);
+    assert.deepEqual(events, ['hide:1', 'hide:3', 'show:4:runtime-b', 'capture:runtime-b', 'viewport:4:runtime-b']);
   });
+});
+
+it('revokes the previous selection before resolving the replacement and stays revoked on failure', async () => {
+  const pending = deferred<{ scope: string; sessionId: string }>();
+  let selected: string | undefined;
+  const events: number[] = [];
+  const coordinator = createBrowserSelectionCoordinator(
+    (id) => id === 'a' ? Promise.resolve({ scope: 'host', sessionId: 'a' }) : pending.promise,
+    {
+      show: (_, generation, session) => { events.push(generation); selected = session.sessionId; },
+      hide: (_, generation) => { events.push(generation); selected = undefined; },
+      capturePage: async () => undefined,
+      setViewport: () => {},
+    },
+  );
+  coordinator.setActiveSession('a');
+  await flush();
+  assert.equal(selected, 'a');
+  coordinator.setActiveSession('b');
+  assert.equal(selected, undefined, 'A must lose access while B is unresolved');
+  pending.reject(Error('Host unavailable'));
+  await flush();
+  assert.equal(selected, undefined);
+  assert.deepEqual(events, [1, 2, 3, 4]);
 });

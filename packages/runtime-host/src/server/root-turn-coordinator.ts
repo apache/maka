@@ -2909,6 +2909,14 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
         'Root Turn admission payload does not match its input',
       );
     }
+    if (admission.execution.kind === 'goal' && admission.execution.goalWaiting) {
+      await this.resolveExecutionObserver().admitted?.({
+        sessionId: admission.sessionId,
+        turnId: admission.turnId,
+        runId: admission.runId,
+        descriptor: admission.execution,
+      });
+    }
     const session = await this.stores.sessionStore.readHeaderSnapshot(input.sessionId);
     const unavailableReason =
       admission.execution.kind === 'safe_boundary_continuation'

@@ -54,6 +54,54 @@ only after an explicit HTTP(S) probe succeeds; an omitted probe is
 `not_checked`, and a failed or policy-blocked probe is `unknown`. Consumers must
 not infer HTTP readiness from the process status alone.
 
+## Explicit event waits
+
+`WaitForEvent` is an ordinary asynchronous tool for Goal-enabled Runs. It keeps
+its original Turn, Run, invocation and tool operation pending while the Host
+observes a supported condition. One normal tool result resumes the same model
+loop. Waiting does not settle the Goal, yield the Turn, reserve a successor,
+refund an iteration or reset an execution budget. AI SDK direct tools and nested
+Code Mode calls use the same durable tool boundary. ACP executors retain their
+existing tool surface; this change adds no Host tool bridge.
+
+The Host latches the capability to the admitted Run. Pausing, clearing or
+replacing its Goal does not revoke an admitted ordinary tool, and another wait
+in that Run remains available. New ordinary Session Runs do not receive the
+capability. `current_turn` input interrupts the wait at the existing steering
+boundary; `next_turn` input remains queued. Code Mode drains already-dispatched
+siblings before returning to that boundary.
+
+The source registry supports managed same-Session background ShellRuns.
+Computer text waits retain their existing native implementation. Source notifications are hints:
+the Host rereads authority and shares concurrency, Retry-After and cooldown
+budgets. Sources without push support use bounded Host polling. A nullable
+absolute deadline and rolling observation checkpoints keep scheduler limits
+separate from business outcomes. A terminal ShellRun may have failed; inspect
+its original reference with `Read`. Observation never restarts or takes ownership
+of a source process.
+
+The Runtime event log is the authority for tool completion. Registration proves
+the original T1 dispatch; the original T2 response proves consumption. A lost
+consumption acknowledgement is reconstructed from T2 without repeating the tool
+or blocking the model loop. The wait record is not a persisted JavaScript Promise:
+Host restart follows existing Runtime recovery and never creates a successor
+from an in-turn wait alone.
+
+A Turn that ends naturally may separately produce a structured Goal waiting
+condition. Host observation replaces that waiting timer while preserving the
+existing evaluation, settlement and single continuation admission.
+
+Session continuity exposes independently identified waits, including after Goal
+clear. `session.event-wait.cancel` validates the exact consumer identity. For a
+tool wait it returns cancellation to that tool without pausing the Goal or
+stopping the source. Stop still cancels the Run. A natural Goal waiting consumer
+uses its Goal generation/revision and existing Goal cancellation semantics.
+Portable Session copies omit wait authority; same-root checkpoints retain it
+without granting execution or duplicate-delivery authority.
+
+See the [Host observation contract](../../docs/goal-event-wait-consumers.md) for
+consumer identities and lifecycle boundaries.
+
 ## Extension rules
 
 - Add backend behavior behind `AgentBackend` and register it through the existing registry.

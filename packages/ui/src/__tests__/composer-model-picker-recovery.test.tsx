@@ -19,373 +19,445 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { act, createRef } from 'react';
-import { createRoot } from 'react-dom/client';
-import { renderToStaticMarkup } from 'react-dom/server';
-import { parseHTML } from 'linkedom';
-import type { ChatModelChoice } from '@maka/core/chat-model-choice';
-import type { SessionSummary } from '@maka/core/session';
+import { act, createRef, useState } from 'react';
+import type { ExecutorSelection } from '@maka/core/executor-catalog';
 import { Composer, type ComposerHandle } from '../composer.js';
-import { ThinkingLevelSelector } from '../chat-model-switcher.js';
-import { MakaClientSlotCore, MakaClientSlotProvider } from '../client-plugin-slots.js';
-import { deriveComposerModelSwitchAvailability } from '../composer-helpers.js';
+import { ComposerModelPicker } from '../composer-model-picker.js';
+import { highestExecutorModelVariant } from '../executor-model-presentation.js';
 import { LocaleProvider } from '../locale-context.js';
+import { ToastProvider } from '../toast.js';
+import { installTranscriptDom } from './transcript-test-dom.js';
+import { deriveComposerModelSwitchAvailability } from '../composer-helpers.js';
+import { actions, catalog, choices, session } from './composer-model-picker-fixture.js';
 
-test('the native model pair remains the model-selection slot fallback', () => {
-  const session = {
-    id: 'codex-session',
-    llmConnectionSlug: 'executor:codex.app-server',
-    model: 'gpt-6-astra',
-  } as SessionSummary;
-  const choice: ChatModelChoice = {
-    connectionId: 'native-connection',
-    connectionSlug: 'native',
-    connectionName: 'Native',
-    providerType: 'openai',
-    providerLabel: 'OpenAI',
-    model: 'native-model',
-    label: 'Native model',
-    isDefault: true,
-    thinkingLevels: ['low', 'high'],
-  };
-  const render = (executor: boolean) => renderToStaticMarkup(
-    <LocaleProvider locale="en">
-      <Composer
-        activeSession={session}
-        activeModelConnectionId={choice.connectionId}
-        activeModelConnectionSlug={choice.connectionSlug}
-        activeModel={choice.model}
-        activeModelLabel={choice.label}
-        activeThinkingLevels={choice.thinkingLevels}
-        modelChoices={[choice]}
-        {...(executor
-          ? { executorTarget: { executorId: 'codex.app-server', model: 'gpt-6-astra', thinkingLevel: 'high' } }
-          : {})}
-        onModelChange={() => undefined}
-        onThinkingLevelChange={() => undefined}
-        onSend={() => undefined}
-        onStop={() => undefined}
-      />
-    </LocaleProvider>,
-  );
-
-  const native = render(false);
-  assert.match(native, /maka-composer-options-trigger/u);
-  assert.doesNotMatch(native, /maka-thinking-level-selector/u);
-
-  const detailed = renderToStaticMarkup(
-    <LocaleProvider locale="en">
-      <Composer
-        activeSession={session}
-        activeModelConnectionId={choice.connectionId}
-        activeModelConnectionSlug={choice.connectionSlug}
-        activeModel={choice.model}
-        activeModelLabel={choice.label}
-        activeThinkingLevels={choice.thinkingLevels}
-        activeThinkingLevel="high"
-        modelChoices={[{ ...choice, contextWindow: 1_048_576 }]}
-        onModelChange={() => undefined}
-        onThinkingLevelChange={() => undefined}
-        onSend={() => undefined}
-        onStop={() => undefined}
-      />
-    </LocaleProvider>,
-  );
-  assert.match(detailed, /maka-composer-model-label" dir="ltr" title="Native model">Native model</u);
-  assert.match(detailed, /maka-composer-options-details">1M High</u);
-
-  const pluginExecutorWithoutClientContribution = render(true);
-  assert.match(pluginExecutorWithoutClientContribution, /maka-model-switcher-trigger/u);
-  assert.match(pluginExecutorWithoutClientContribution, /maka-thinking-level-selector/u);
-  assert.match(pluginExecutorWithoutClientContribution, /conversation\.composer\.model-selection/u);
-});
-
-test('a client model contribution remains inside the unified executor picker', () => {
-  const core = new MakaClientSlotCore();
-  core.register(
-    { name: 'conversation.composer.model-selection', select: () => ({}) },
-    () => <span>Client model control</span>,
-  );
-  const markup = renderToStaticMarkup(
-    <MakaClientSlotProvider core={core}>
-      <LocaleProvider locale="en">
-        <Composer
-          executorPicker={{
-            catalog: [
-              {
-                id: 'antigravity',
-                displayName: 'Antigravity',
-                readiness: 'ready',
-                models: [{ id: 'fast', name: 'Fast' }],
-                supportsAttachments: false,
-                supportsModelChange: true,
-              },
-            ],
-            onSelect: () => undefined,
-            onSetup: () => undefined,
-            onRetry: () => undefined,
-            onNewTask: () => undefined,
-          }}
-          onSend={() => undefined}
-          onStop={() => undefined}
-        />
-      </LocaleProvider>
-    </MakaClientSlotProvider>,
-  );
-
-  assert.match(markup, /maka-executor-selector/u);
-});
-
-test('model switch availability has one priority-ordered contract', () => {
-  assert.deepEqual(
-    deriveComposerModelSwitchAvailability({ streaming: true, sessionStatus: 'running', pending: true }),
-    { available: false, pending: true, reason: 'streaming' },
-  );
-  assert.deepEqual(
-    deriveComposerModelSwitchAvailability({ sessionStatus: 'running', pending: true }),
-    { available: false, pending: true, reason: 'running' },
-  );
-  assert.deepEqual(
-    deriveComposerModelSwitchAvailability({ sessionStatus: 'waiting_for_user', pending: true }),
-    { available: false, pending: true, reason: 'permission' },
-  );
-  assert.deepEqual(
-    deriveComposerModelSwitchAvailability({ pending: true }),
-    { available: false, pending: true, reason: 'pending' },
-  );
-  assert.deepEqual(
-    deriveComposerModelSwitchAvailability({}),
-    { available: true, pending: false },
-  );
-});
-
-test('the recovery handle opens the existing exact account-and-model picker', async () => {
-  const original = {
-    document: globalThis.document,
-    window: globalThis.window,
-    Element: globalThis.Element,
-    HTMLElement: globalThis.HTMLElement,
-    HTMLBRElement: globalThis.HTMLBRElement,
-    Node: globalThis.Node,
-    matchMedia: globalThis.matchMedia,
-    requestAnimationFrame: globalThis.requestAnimationFrame,
-    cancelAnimationFrame: globalThis.cancelAnimationFrame,
-    IS_REACT_ACT_ENVIRONMENT: (globalThis as typeof globalThis & {
-      IS_REACT_ACT_ENVIRONMENT?: boolean;
-    }).IS_REACT_ACT_ENVIRONMENT,
-  };
-  const { document, window } = parseHTML('<div id="root"></div>');
-  window.getComputedStyle = () =>
-    new Proxy(
-      { direction: 'ltr', writingMode: 'horizontal-tb', getPropertyValue: () => '' },
-      { get: (target, key) => (key in target ? target[key as keyof typeof target] : '') },
-    ) as unknown as CSSStyleDeclaration;
-  window.matchMedia = () =>
-    ({ matches: false, addEventListener() {}, removeEventListener() {} }) as unknown as MediaQueryList;
-  window.scrollTo = () => {};
-  window.scrollBy = () => {};
-  window.getSelection = () =>
-    ({
-      rangeCount: 0,
-      isCollapsed: true,
-      anchorNode: null,
-      focusNode: null,
-      removeAllRanges() {},
-      addRange() {},
-      getRangeAt: () => {
-        throw new Error('no range');
-      },
-    }) as unknown as Selection;
-  document.createRange = () =>
-    ({
-      selectNodeContents() {},
-      collapse() {},
-      cloneRange() {
-        return this;
-      },
-    }) as unknown as Range;
-  // linkedom has no <dialog> behavior: the bottom sheet needs showModal/close
-  // to mount its panel, so the stubs only toggle the `open` attribute.
-  Object.assign(window.HTMLElement.prototype, {
-    showModal(this: HTMLElement) { this.setAttribute('open', ''); },
-    show(this: HTMLElement) { this.setAttribute('open', ''); },
-    close(this: HTMLElement) { this.removeAttribute('open'); },
-  });
-  Object.assign(globalThis, {
-    document,
-    window,
-    Element: window.Element,
-    HTMLElement: window.HTMLElement,
-    HTMLBRElement: window.HTMLBRElement,
-    Node: window.Node,
-    matchMedia: window.matchMedia,
-    requestAnimationFrame: () => 1,
-    cancelAnimationFrame() {},
-    IS_REACT_ACT_ENVIRONMENT: true,
-  });
-  const container = document.querySelector('#root');
-  assert.ok(container);
-  const root = createRoot(container);
-  const composer = createRef<ComposerHandle>();
-  let selected: {
-    llmConnectionId: string;
-    llmConnectionSlug: string;
-    model: string;
-  } | undefined;
-  const choice: ChatModelChoice = {
-    connectionId: 'connection-openrouter',
-    connectionSlug: 'openrouter',
-    connectionName: 'OpenRouter',
-    providerType: 'openrouter',
-    providerLabel: 'OpenRouter',
-    model: 'openai/gpt-5',
-    label: 'GPT-5',
-    isDefault: true,
-    thinkingLevels: [],
-  };
-
+test('new tasks can recover another Agent without changing their selection', async () => {
+  const dom = installTranscriptDom();
+  const setup: string[] = [];
+  let retries = 0;
+  let selectionWrites = 0;
   try {
-    await act(() => root.render(
-      <LocaleProvider locale="en">
-        <Composer
-          ref={composer}
-          activeSession={{
-            id: 'legacy-session',
-            llmConnectionSlug: 'openrouter',
-            model: 'openai/gpt-5',
-          } as SessionSummary}
-          modelChoices={[choice]}
-          hideUnavailableCurrentModel
-          onModelChange={(input) => {
-            selected = input;
-          }}
-          onSend={() => undefined}
-          onStop={() => undefined}
-        />
-      </LocaleProvider>,
-    ));
-    assert.equal(
-      document.querySelector('.maka-composer-options-trigger')?.getAttribute('aria-expanded'),
-      'false',
-    );
-
-    await act(() => composer.current?.openModelPicker());
-
-    assert.equal(
-      document.querySelector('.maka-composer-options-trigger')?.getAttribute('aria-expanded'),
-      'true',
-    );
-    const openModel = () => {
-      const row = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')]
-        .find((candidate) => candidate.textContent?.includes('Model'));
-      assert.ok(row);
-      return act(() => row.dispatchEvent(new window.Event('click', { bubbles: true })));
-    };
-    await openModel();
-    const items = [...document.querySelectorAll<HTMLElement>('[role="menuitemradio"]')];
-    const gpt = items.find((row) => row.textContent?.includes('GPT-5'));
-    assert.ok(gpt, 'the stale legacy target is not a selectable current row');
-    assert.equal(items.some((row) => row.textContent?.includes('legacy')), false);
-
-    await act(() => gpt.dispatchEvent(new window.Event('click', { bubbles: true })));
-
-    assert.deepEqual(selected, {
-      llmConnectionId: 'connection-openrouter',
-      llmConnectionSlug: 'openrouter',
-      model: 'openai/gpt-5',
-    });
-    assert.equal(
-      document.querySelector('.maka-composer-options-trigger')?.getAttribute('aria-expanded'),
-      'false',
-    );
-
-    await act(() => root.render(
-      <LocaleProvider locale="en">
-        <Composer
-          ref={composer}
-          activeSession={{
-            id: 'legacy-session',
-            llmConnectionSlug: 'legacy-openrouter',
-            model: 'legacy-model',
-          } as SessionSummary}
-          activeModelConnectionId={choice.connectionId}
-          activeModelConnectionSlug={choice.connectionSlug}
-          activeModel={choice.model}
-          activeModelLabel={choice.label}
-          modelChoices={[choice]}
-          onModelChange={() => undefined}
-          onSend={() => undefined}
-          onStop={() => undefined}
-        />
-      </LocaleProvider>,
-    ));
-    await act(() => composer.current?.openModelPicker());
-    const modelRow = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')]
-      .find((candidate) => candidate.textContent?.includes('Model'));
-    assert.ok(modelRow);
-    await act(() => modelRow.dispatchEvent(new window.Event('click', { bubbles: true })));
-
-    const selectedOption = document.querySelector<HTMLElement>(
-      '[role="menuitemradio"][aria-checked="true"]',
-    );
-    assert.equal(selectedOption?.textContent?.includes('GPT-5'), true);
-    assert.match(
-      document.querySelector<HTMLElement>('.maka-composer-options-trigger')?.textContent ?? '',
-      /GPT-5/,
-    );
-
-    selected = undefined;
-    let sends = 0;
-    const second = { ...choice, connectionId: 'connection-second', connectionSlug: 'second', connectionName: 'Second account' };
-    await act(() => root.render(
-      <LocaleProvider locale="en"><Composer ref={composer}
-        activeSession={{ id: 'wheel-session', llmConnectionId: choice.connectionId, llmConnectionSlug: choice.connectionSlug, model: choice.model } as SessionSummary}
-        pickerPresentation="bottom-sheet" modelChoices={[choice, second]}
-        onModelChange={(input) => { selected = input; }} onSend={() => { sends++; }} onStop={() => undefined} />
-      </LocaleProvider>,
-    ));
-    await act(() => composer.current?.openModelPicker());
-    const sheetOptions = [...document.querySelectorAll<HTMLElement>('[role="option"]')];
-    assert.equal(sheetOptions.length, 2, 'the sheet lists both accounts');
-    const secondOption = sheetOptions[1];
-    await act(() => secondOption.dispatchEvent(new window.Event('click', { bubbles: true })));
-    assert.deepEqual(selected, { llmConnectionId: second.connectionId, llmConnectionSlug: second.connectionSlug, model: second.model });
-    assert.equal(sends, 0, 'closing the picker must not send the composer draft');
-  } finally {
-    await act(() => root.unmount());
-    Object.assign(globalThis, original);
-  }
+    for (const readiness of ['authentication_required', 'unavailable'] as const) {
+      for (const selected of [false, true]) {
+        await dom.render(<LocaleProvider locale="en"><ComposerModelPicker label="Native" choices={choices}
+          executor={{ catalog: [{ ...catalog[0]!, readiness }, { ...catalog[0]!, id: 'ready', displayName: 'Ready Agent' }],
+            selection: selected ? { executorId: 'ready', configuration: { model: 'opaque-high' } } : undefined,
+            onSelect() { selectionWrites++; },
+            onSetup: id => { setup.push(id!); }, onRetry: () => { retries++; }, onNewTask() {} }}
+        /></LocaleProvider>);
+        const { click, trigger } = actions(dom);
+        await click([...dom.document.querySelectorAll('button')].find(el => el.textContent === (readiness === 'unavailable' ? 'Retry' : 'Go to sign in')));
+        assert.equal(trigger()?.textContent, selected ? 'Family' : 'Native');
+      }
+    }
+    assert.deepEqual(setup, ['agent', 'agent']);
+    assert.equal(retries, 2);
+    assert.equal(selectionWrites, 0);
+  } finally { await dom.cleanup(); }
 });
 
-test('the thinking picker survives levels arriving after mount', async () => {
-  // Thinking levels resolve asynchronously; a picker that mounts variantless
-  // must not change its hook count when they land.
-  const { document, window } = parseHTML('<div id="root"></div>');
-  window.matchMedia = () =>
-    ({ matches: false, addEventListener() {}, removeEventListener() {} }) as unknown as MediaQueryList;
-  Object.assign(globalThis, {
-    document,
-    window,
-    Element: window.Element,
-    HTMLElement: window.HTMLElement,
-    IS_REACT_ACT_ENVIRONMENT: true,
-  });
-  const container = document.querySelector('#root');
-  assert.ok(container);
-  const root = createRoot(container);
+test('recovery opens the grouped Selector and commits the exact connection identity', async () => {
+  const dom = installTranscriptDom();
+  dom.window.getSelection = () => null;
+  const ref = createRef<ComposerHandle>();
+  const writes: unknown[] = [];
   try {
-    const render = (levels: ('low' | 'high')[]) =>
-      act(() => root.render(
-        <LocaleProvider locale="en"><ThinkingLevelSelector levels={levels} onChange={() => undefined} /></LocaleProvider>,
-      ));
-    await render([]);
-    await render(['low', 'high']);
-    assert.equal(
-      document.querySelector('.maka-thinking-level-selector') !== null,
-      true,
-      'the selector mounts once variants exist',
-    );
-  } finally {
-    await act(() => root.unmount());
+    await dom.render(<LocaleProvider locale="en"><Composer ref={ref}
+      activeSession={session('a')} modelChoices={choices} activeModelLabel="GPT-6.1 Sol"
+      onModelChange={target => { writes.push(target); }} onSend={() => undefined} onStop={() => undefined}
+    /></LocaleProvider>);
+    const { click, trigger } = actions(dom);
+    assert.equal(trigger()?.textContent, 'GPT-6.1 Sol');
+    assert.equal(dom.document.querySelector('[role="menuitemradio"]'), null);
+    await act(async () => { ref.current?.openModelPicker(); });
+    assert.equal(trigger()?.getAttribute('aria-expanded'), 'true');
+    const secondGroup = dom.document.querySelector('[role="group"][aria-label="second"]');
+    assert.ok(secondGroup);
+    await click(secondGroup.querySelector('[role="option"]'));
+    assert.deepEqual(writes, [{ llmConnectionId: 'second', llmConnectionSlug: 'second', model: 'gpt-6.1-sol' }]);
+    assert.doesNotMatch(trigger()?.textContent ?? '', /1M/);
+  } finally { await dom.cleanup(); }
+});
+
+test('the cache notice is acknowledged without switching or losing the open model list', async () => {
+  const dom = installTranscriptDom();
+  let writes = 0;
+  try {
+    await dom.render(<LocaleProvider locale="en"><ComposerModelPicker label="GPT-6.1 Sol"
+      choices={choices} value="first:first:gpt-6.1-sol" sessionId="a" hasConversationHistory
+      onNativeChange={() => { writes++; }}
+    /></LocaleProvider>);
+    const { click, trigger } = actions(dom);
+    await click(trigger());
+    const notice = [...dom.document.querySelectorAll('[role="option"]')].find(el => el.textContent?.includes('prompt cache'));
+    await click(notice);
+    assert.equal(writes, 0);
+    assert.equal(trigger()?.getAttribute('aria-expanded'), 'true');
+    assert.equal([...dom.document.querySelectorAll('[role="option"]')].some(el => el.textContent?.includes('prompt cache')), false);
+  } finally { await dom.cleanup(); }
+});
+
+test('native effort defaults clear the override and pending state stays scoped to its Session', async () => {
+  const dom = installTranscriptDom();
+  const picked: unknown[] = [];
+  let finish!: () => void;
+  const render = (id: string) => dom.render(<LocaleProvider locale="en"><Composer
+    activeSession={session(id)} modelChoices={choices} activeModelLabel="GPT-6.1 Sol"
+    activeThinkingLevels={['low', 'high']} activeThinkingLevel="high"
+    onThinkingLevelChange={level => { picked.push(level); return new Promise<void>(resolve => { finish = resolve; }); }}
+    onModelChange={() => undefined} onSend={() => undefined} onStop={() => undefined}
+  /></LocaleProvider>);
+  try {
+    await render('a');
+    const { click, option, trigger } = actions(dom);
+    await click(trigger('.maka-thinking-level-selector'));
+    await click(option('Default'));
+    assert.deepEqual(picked, [undefined]);
+    assert.equal(trigger('.maka-thinking-level-selector')?.textContent, 'Default');
+    await render('b');
+    assert.equal(trigger('.maka-thinking-level-selector')?.textContent, 'High');
+    await act(async () => { finish(); });
+    assert.equal(trigger('.maka-thinking-level-selector')?.textContent, 'High');
+  } finally { await dom.cleanup(); }
+});
+
+test('external model families preserve opaque IDs, reset model-bound modes and report pending admission', async () => {
+  const dom = installTranscriptDom();
+  const writes: ExecutorSelection[] = [];
+  const pending: boolean[] = [];
+  let finish!: () => void;
+  function Frame() {
+    const [selected, setSelected] = useState<ExecutorSelection>({ executorId: 'agent', configuration: { model: 'opaque-high', mode: 'plan' } });
+    return <LocaleProvider locale="en"><ComposerModelPicker label="Native" choices={choices}
+      executor={{ catalog, selection: selected, onSelect: async next => {
+        assert.ok(next); writes.push(next);
+        await new Promise<void>(resolve => { finish = resolve; });
+        setSelected(next);
+      }, onSetup() {}, onRetry() {}, onNewTask() {} }}
+      onNativeChange={() => undefined} onPendingChange={value => pending.push(value)}
+    /></LocaleProvider>;
   }
+  try {
+    await dom.render(<Frame />);
+    const { click, option, trigger } = actions(dom);
+    await click(trigger('.maka-thinking-level-selector'));
+    await click(option('Low'));
+    assert.deepEqual(writes, [{ executorId: 'agent', configuration: { model: 'opaque-low' } }]);
+    assert.equal(pending.at(-1), true);
+    await act(async () => { finish(); });
+    assert.equal(pending.at(-1), false);
+    assert.equal(trigger()?.textContent, 'Family');
+    await click(trigger());
+    await click(option('Other'));
+    assert.deepEqual(writes.at(-1), { executorId: 'agent', configuration: { model: 'other' } });
+    await dom.render(<div />);
+    assert.equal(pending.at(-1), false);
+    await act(async () => { finish(); });
+  } finally { await dom.cleanup(); }
+});
+
+test('fixed external sessions show only their executor and failed writes retain the confirmed model', async () => {
+  const dom = installTranscriptDom();
+  try {
+    await dom.render(<LocaleProvider locale="en"><ComposerModelPicker label="Native" choices={choices}
+      executor={{ catalog: [...catalog, { ...catalog[0]!, id: 'other', displayName: 'Other Agent', readiness: 'authentication_required' }], selection: { executorId: 'agent', configuration: { model: 'opaque-high' } }, fixed: true,
+        onSelect: async () => { throw Error('offline'); }, onSetup() {}, onRetry() {}, onNewTask() {} }}
+    /></LocaleProvider>);
+    const { click, option, trigger } = actions(dom);
+    await click(trigger());
+    assert.deepEqual([...dom.document.querySelectorAll('[role="group"]')].map(element => element.getAttribute('aria-label')), ['Agent']);
+    assert.equal([...dom.document.querySelectorAll('button')].some(element => element.textContent === 'Go to sign in'), false);
+    await click(option('Other'));
+    assert.equal(trigger()?.textContent, 'Family');
+    assert.match(dom.document.querySelector('[role="status"]')?.textContent ?? '', /failed/);
+    await click(trigger());
+    assert.ok(option('Other'));
+  } finally { await dom.cleanup(); }
+});
+
+test('existing Sessions keep authentication and history recovery actions in the Composer', async () => {
+  const dom = installTranscriptDom();
+  const setup: string[] = [];
+  let newTasks = 0;
+  try {
+    for (const readiness of ['authentication_required', 'history_only', 'history_gap'] as const) {
+      await dom.render(<LocaleProvider locale="en"><Composer activeSession={session('external')}
+        executorPicker={{ catalog: [{ ...catalog[0]!, readiness }], fixed: true,
+          selection: { executorId: 'agent', configuration: { model: 'opaque-high' } },
+          onSelect() { assert.fail('unavailable model must never commit'); },
+          onSetup: id => { setup.push(id!); }, onRetry() {}, onNewTask() { newTasks++; } }}
+        onSend={() => undefined} onStop={() => undefined}
+      /></LocaleProvider>);
+      const recovery = dom.document.querySelector('.maka-executor-recovery');
+      assert.ok(recovery);
+      await actions(dom).click(recovery.querySelector('button'));
+    }
+    assert.deepEqual(setup, ['agent']);
+    assert.equal(newTasks, 2);
+  } finally { await dom.cleanup(); }
+});
+
+test('Composer blocks sending while an external configuration write is unsettled', async () => {
+  const dom = installTranscriptDom();
+  dom.window.getSelection = () => null;
+  dom.document.getSelection = () => null;
+  const ref = createRef<ComposerHandle>();
+  let finish!: () => void;
+  try {
+    await dom.render(<LocaleProvider locale="en"><Composer ref={ref}
+      activeSession={session('external')} modelChoices={choices}
+      executorPicker={{ catalog, fixed: true, selection: { executorId: 'agent', configuration: { model: 'opaque-high' } },
+        onSelect: () => new Promise<void>(resolve => { finish = resolve; }), onSetup() {}, onRetry() {}, onNewTask() {} }}
+      onSend={() => undefined} onStop={() => undefined}
+    /></LocaleProvider>);
+    await act(async () => { ref.current?.setText('Continue the task'); });
+    const send = () => dom.document.querySelector<HTMLButtonElement>('button[aria-label="Send"]')!;
+    assert.equal(send().disabled, false);
+    const { click, option, trigger } = actions(dom);
+    await click(trigger());
+    await click(option('Other'));
+    assert.equal(send().getAttribute('aria-disabled'), 'true');
+    await act(async () => { finish(); });
+    assert.notEqual(send().getAttribute('aria-disabled'), 'true');
+  } finally { await dom.cleanup(); }
+});
+
+test('model switching availability retains its priority and opaque family levels keep catalog order independent', () => {
+  assert.deepEqual(deriveComposerModelSwitchAvailability({ streaming: true, sessionStatus: 'running', pending: true }), { available: false, pending: true, reason: 'streaming' });
+  assert.deepEqual(deriveComposerModelSwitchAvailability({ sessionStatus: 'running', pending: true }), { available: false, pending: true, reason: 'running' });
+  assert.deepEqual(deriveComposerModelSwitchAvailability({ sessionStatus: 'waiting_for_user' }), { available: false, pending: false, reason: 'permission' });
+  assert.equal(deriveComposerModelSwitchAvailability({}).available, true);
+  assert.equal(highestExecutorModelVariant(catalog[0]!.modelGroups![0]!), 'opaque-high');
+});
+
+test('external session recovery preserves the draft and releases pending state after failure', async () => {
+  const dom = installTranscriptDom();
+  dom.window.getSelection = () => null;
+  dom.document.getSelection = () => null;
+  const ref = createRef<ComposerHandle>();
+  let rejectRestore!: (error: Error) => void;
+  let restores = 0;
+  try {
+    await dom.render(<LocaleProvider locale="en"><Composer ref={ref}
+      activeSession={session('external')} sendBlocked
+      executorPicker={{ catalog: [{ ...catalog[0]!, readiness: 'restore_failed' }], fixed: true,
+        selection: { executorId: 'agent', configuration: { model: 'opaque-high' } },
+        onRestore: () => { restores++; return new Promise<void>((_resolve, reject) => { rejectRestore = reject; }); },
+        onSelect() {}, onSetup() {}, onRetry() {}, onNewTask() {} }}
+      onSend={() => undefined} onStop={() => undefined}
+    /></LocaleProvider>);
+    await act(async () => { ref.current?.setText('Keep this draft'); });
+    const { click } = actions(dom);
+    const restoreButton = () => [...dom.document.querySelectorAll('button')].find(el => el.textContent === 'Restore Session')!;
+    await click(restoreButton());
+    assert.equal(restoreButton().disabled, true);
+    await click(restoreButton());
+    assert.equal(restores, 1);
+    assert.match(dom.document.querySelector('.maka-executor-recovery')!.textContent!, /Restoring/);
+    await act(async () => { rejectRestore(new Error('Agent offline')); });
+    assert.match(dom.document.querySelector('.maka-executor-recovery')!.textContent!, /Restoration failed/);
+    assert.equal(restoreButton().disabled, false);
+    assert.equal(ref.current?.getText(), 'Keep this draft');
+    assert.equal(dom.document.querySelector('button[aria-label="Send"]')!.getAttribute('aria-disabled'), 'true');
+  } finally { await dom.cleanup(); }
+});
+
+test('typing never restores; automatic recovery submits once and preserves a refused draft', async () => {
+  const dom = installTranscriptDom();
+  dom.window.getSelection = () => null;
+  dom.document.getSelection = () => null;
+  const setAttribute = dom.window.Element.prototype.setAttribute;
+  dom.window.Element.prototype.setAttribute = function normalized(name: string, value: string) {
+    return setAttribute.call(this, name === 'contentEditable' ? 'contenteditable' : name, value);
+  };
+  const ref = createRef<ComposerHandle>();
+  let restores = 0;
+  const sent: string[] = [];
+  let finish!: (sent: boolean) => void;
+  try {
+    await dom.render(<LocaleProvider locale="en"><Composer ref={ref}
+      activeSession={session('external')}
+      executorPicker={{ catalog: [{ ...catalog[0]!, readiness: 'restorable' }], fixed: true,
+        selection: { executorId: 'agent', configuration: { model: 'opaque-high' } },
+        onRestore() { restores++; }, onSelect() { assert.fail('typing must not configure the Agent'); }, onSetup() {}, onRetry() {}, onNewTask() {} }}
+      onSend={text => { sent.push(text); return new Promise<boolean>(resolve => { finish = resolve; }); }} onStop={() => undefined}
+    /></LocaleProvider>);
+    const editor = dom.document.querySelector<HTMLElement>('[contenteditable="true"]')!;
+    await act(async () => { editor.focus(); });
+    assert.equal(restores, 0);
+    await act(async () => { editor.textContent = ' '; editor.dispatchEvent(new dom.window.Event('input', { bubbles: true })); });
+    assert.equal(restores, 0);
+    await act(async () => { editor.textContent = 'Continue this task'; editor.dispatchEvent(new dom.window.Event('input', { bubbles: true })); });
+    assert.equal(restores, 0);
+    assert.equal(ref.current?.getText(), 'Continue this task');
+    assert.equal(dom.document.querySelector('.maka-executor-recovery'), null);
+    const submit = () => dom.document.querySelector('form')!.dispatchEvent(new dom.window.Event('submit', { bubbles: true, cancelable: true }));
+    await act(async () => { submit(); submit(); });
+    assert.deepEqual(sent, ['Continue this task']);
+    assert.equal(restores, 0, 'sending delegates recovery to the Host');
+    await act(async () => { finish(false); });
+    assert.equal(ref.current?.getText(), 'Continue this task');
+    await act(async () => { submit(); });
+    await act(async () => { finish(true); });
+    assert.equal(ref.current?.getText(), '');
+  } finally { await dom.cleanup(); dom.window.Element.prototype.setAttribute = setAttribute; }
+});
+
+test('agent loading stays in its section and failed refresh keeps the selected agent refresh button', async () => {
+  const dom = installTranscriptDom();
+  const retried: Array<string | undefined> = [];
+  try {
+    for (const selection of [undefined, { executorId: 'ready', configuration: { model: 'opaque-high' } }]) {
+      await dom.render(<LocaleProvider locale="en"><ToastProvider><ComposerModelPicker label="Native" choices={choices}
+        executor={{ catalog: [{ ...catalog[0]!, readiness: 'unavailable', models: [] }, { ...catalog[0]!, id: 'ready', displayName: 'Ready Agent', refreshFailed: true }],
+          selection, loading: true, loadingIds: ['agent'],
+          onSelect() {}, onSetup() {}, onRetry: id => { retried.push(id); }, onNewTask() {} }}
+      /></ToastProvider></LocaleProvider>);
+      const { click, trigger } = actions(dom);
+      assert.notEqual(trigger()?.getAttribute('aria-busy'), 'true', 'another agent never makes the current model busy');
+      assert.equal(dom.document.querySelector('.maka-executor-notice'), null);
+      assert.equal([...dom.document.querySelectorAll('button')].some(el => el.textContent === 'Retry'), false);
+      const refresh = dom.document.querySelector<HTMLButtonElement>('button[aria-label="Ready Agent: Refresh models"]');
+      if (selection) { assert.ok(refresh); await click(refresh); }
+      else assert.equal(refresh, null);
+      await click(trigger());
+      const pending = dom.document.querySelector('[role="group"][aria-label="Agent"]');
+      assert.match(pending?.textContent ?? '', /Loading models/);
+      const ready = dom.document.querySelector('[role="group"][aria-label="Ready Agent"]');
+      assert.match(ready?.textContent ?? '', /Family/);
+      await click(trigger());
+    }
+    assert.deepEqual(retried, ['ready']);
+  } finally { await dom.cleanup(); }
+});
+
+test('draft refresh appears only for the selected external agent and preserves its selection', async () => {
+  const dom = installTranscriptDom();
+  const retried: Array<string | undefined> = [];
+  let selectionWrites = 0;
+  try {
+    for (const executorId of [undefined, 'agent', 'other', undefined]) {
+      const selection = executorId ? { executorId, configuration: { model: 'opaque-high' } } : undefined;
+      const render = (loadingIds: string[] = []) => dom.render(<LocaleProvider locale="en"><ComposerModelPicker label="Native" choices={choices}
+        executor={{ catalog: [catalog[0]!, { ...catalog[0]!, id: 'other', displayName: 'Other Agent' }],
+          selection, loadingIds,
+          onSelect() { selectionWrites++; }, onSetup() {}, onRetry: id => { retried.push(id); }, onNewTask() {} }}
+      /></LocaleProvider>);
+      await render();
+      const { click, trigger } = actions(dom);
+      const refresh = (name: string) => dom.document.querySelector<HTMLButtonElement>(`button[aria-label="${name}: Refresh models"]`);
+      if (!executorId) {
+        assert.equal(refresh('Agent'), null);
+        assert.equal(refresh('Other Agent'), null);
+        continue;
+      }
+      const name = executorId === 'agent' ? 'Agent' : 'Other Agent';
+      const otherName = executorId === 'agent' ? 'Other Agent' : 'Agent';
+      assert.ok(refresh(name));
+      assert.equal(refresh(otherName), null);
+      await click(refresh(name));
+      assert.equal(trigger()?.textContent, 'Family');
+      await render([executorId === 'agent' ? 'other' : 'agent']);
+      assert.notEqual(refresh(name)?.getAttribute('aria-disabled'), 'true');
+      await render([executorId]);
+      assert.equal(refresh(name)?.getAttribute('aria-disabled'), 'true');
+      await click(refresh(name));
+    }
+    assert.deepEqual(retried, ['agent', 'other']);
+    assert.equal(selectionWrites, 0);
+  } finally { await dom.cleanup(); }
+});
+
+for (const readiness of ['restore_failed', 'authentication_required', 'history_only', 'history_gap'] as const)
+test(`${readiness} keeps inspection failures actionable alongside the cached recovery action`, async () => {
+  const dom = installTranscriptDom();
+  const retried: Array<string | undefined> = [];
+  const recovered: string[] = [];
+  const render = (error?: string) => dom.render(<LocaleProvider locale="en"><Composer
+    activeSession={session('external')}
+    executorPicker={{ catalog: [{ ...catalog[0]!, readiness, supportsModelChange: false, supportsModeChange: false }],
+      fixed: true,
+      selection: { executorId: 'agent', configuration: { model: 'opaque-high', mode: 'plan' } }, error,
+      onSelect() { assert.fail('inspection retry must not configure the Agent'); },
+      onRestore() { recovered.push('restore'); }, onSetup() { recovered.push('setup'); },
+      onRetry: id => { retried.push(id); }, onNewTask() { recovered.push('new'); } }}
+    onSend={() => { assert.fail('inspection retry must not send a message'); }} onStop={() => undefined}
+  /></LocaleProvider>);
+  const recovery = () => dom.document.querySelector('.maka-executor-recovery');
+  try {
+    await render();
+    assert.equal(recovery()?.getAttribute('data-state'), readiness);
+    const recoveryText = recovery()?.textContent;
+    assert.equal(dom.document.querySelector('.maka-executor-notice'), null);
+    await render('Host inspection disconnected');
+    const notice = dom.document.querySelector('.maka-executor-notice');
+    assert.ok(notice, 'a failed inspection must not be hidden by the cached readiness');
+    assert.match(notice.textContent ?? '', /failed/);
+    await actions(dom).click(notice.querySelector('button'));
+    assert.deepEqual(retried, [undefined], 'retry only re-inspects the Session');
+    assert.deepEqual(recovered, [], 'inspection retry must not invoke the cached recovery action');
+    assert.equal(actions(dom).trigger()?.textContent, 'Family');
+    assert.equal(recovery()?.textContent, recoveryText);
+    await actions(dom).click(recovery()?.querySelector('button'));
+    assert.deepEqual(recovered, [readiness === 'restore_failed' ? 'restore' : readiness === 'authentication_required' ? 'setup' : 'new']);
+    await render();
+    assert.equal(dom.document.querySelector('.maka-executor-notice'), null, 'successful inspection clears only the read error');
+    assert.equal(recovery()?.textContent, recoveryText, 'the independent recovery action stays available');
+  } finally { await dom.cleanup(); }
+});
+
+for (const readiness of ['ready', 'restorable', 'restoring'] as const)
+test(`${readiness} inspections keep errors actionable without exposing automatic recovery`, async () => {
+  const dom = installTranscriptDom();
+  const retried: Array<string | undefined> = [];
+  const render = (error?: string) => dom.render(<LocaleProvider locale="en"><Composer
+    activeSession={readiness === 'ready' ? undefined : session('external')}
+    executorPicker={{ catalog: [{ ...catalog[0]!, readiness, supportsModelChange: false, supportsModeChange: false }],
+      fixed: readiness !== 'ready',
+      selection: { executorId: 'agent', configuration: { model: 'opaque-high', mode: 'plan' } }, error,
+      onSelect() { assert.fail('inspection retry must not configure the Agent'); },
+      onRestore() { assert.fail('inspection retry must not restore the Agent'); },
+      onSetup() {}, onRetry: id => { retried.push(id); }, onNewTask() {} }}
+    onSend={() => undefined} onStop={() => undefined}
+  /></LocaleProvider>);
+  try {
+    await render();
+    assert.equal(dom.document.querySelector('.maka-executor-recovery'), null);
+    assert.equal(dom.document.querySelector('.maka-executor-notice'), null);
+    await render('Host inspection disconnected');
+    assert.equal(dom.document.querySelector('.maka-executor-recovery'), null);
+    assert.match(dom.document.querySelector('.maka-executor-notice')?.textContent ?? '', /failed/);
+    await actions(dom).click([...dom.document.querySelectorAll('button')].find(el => el.textContent === 'Retry'));
+    assert.deepEqual(retried, [undefined]);
+    assert.equal(actions(dom).trigger()?.textContent, 'Family', 'a failed read preserves the cached model label');
+    await render();
+    assert.equal(dom.document.querySelector('.maka-executor-notice'), null, 'successful inspection clears the error');
+    assert.equal(dom.document.querySelector('.maka-executor-recovery'), null);
+  } finally { await dom.cleanup(); }
+});
+
+test('saved model, effort and mode controls retain their labels through restoration without permitting edits', async () => {
+  const dom = installTranscriptDom();
+  try {
+    let labels: string[] | undefined;
+    for (const readiness of ['restorable', 'restoring', 'restore_failed', 'ready'] as const) {
+      await dom.render(<LocaleProvider locale="en"><ComposerModelPicker label="Native" choices={choices}
+        executor={{ catalog: [{ ...catalog[0]!, readiness,
+          supportsModelChange: readiness === 'ready', supportsModeChange: readiness === 'ready' }],
+          fixed: true,
+          selection: { executorId: 'agent', configuration: { model: 'opaque-high', mode: 'plan' } },
+          onSelect() { assert.fail('restoration must not change saved configuration'); },
+          onSetup() {}, onRetry() {}, onNewTask() {}, onRestore() {} }}
+      /></LocaleProvider>);
+      const selectors = ['.maka-model-switcher-trigger', '.maka-thinking-level-selector', '.maka-executor-mode-selector'];
+      const buttons = selectors.map(selector => dom.document.querySelector<HTMLButtonElement>(selector + ' button'));
+      assert.ok(buttons.every(Boolean), `all three controls exist in ${readiness}`);
+      const current = buttons.map(button => button!.textContent!);
+      labels ??= current;
+      assert.deepEqual(current, labels);
+      for (const button of buttons) {
+        assert.equal(button!.getAttribute('aria-disabled') === 'true' || button!.disabled,
+          readiness !== 'ready', `only live capabilities allow changes in ${readiness}`);
+      }
+    }
+  } finally { await dom.cleanup(); }
 });

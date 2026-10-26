@@ -18,3 +18,10 @@
  */
 
 export { createAssistantNavigation, originalHost } from './navigation.js';
+
+export { disconnectedAvatarState, dismissComposerConfiguration, hasPendingAssistantReply } from './chat-behavior.js';
+export { getPersonalAssistantChatCopy } from './chat-copy.js';
+export { projectTasks, visibleFloatTasks } from './task-float-model.js';
+export { readFloatTasks, watchFloatTasks } from './task-float-source.js';
+
+export { projectAssistantPet } from './pet-model.js';

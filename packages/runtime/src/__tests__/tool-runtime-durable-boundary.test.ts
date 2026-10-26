@@ -33,6 +33,59 @@ import type {
 import { ToolRuntime, type MakaTool } from '../tool-runtime.js';
 
 describe('ToolRuntime durable boundary', () => {
+  for (const mode of ['ok', 'throw', 'reject', 'pending'] as const)
+    it(`notifies consumption only after T2 without gating settlement (${mode})`, async () => {
+      const order: string[] = [];
+      const outcomes: ToolOutcomeCommit[] = [];
+      const harness = makeHarness(
+        {
+          commitToolPrepared: async () => ({ created: true, runtimeEventSeq: 1 }),
+          commitToolOutcome: async (input) => {
+            order.push('T2');
+            outcomes.push(input);
+            return { created: true, runtimeEventSeq: 2 };
+          },
+        },
+        order,
+      );
+      const target = tool((_args, context) => {
+        assert.equal(context.invocationId, 'run-1');
+        return { waitId: 'wait-1', outcome: 'satisfied' };
+      });
+      target.onDurableOutcomeCommitted = (outcome) => {
+        order.push('ACK');
+        assert.equal(outcome.operationId, outcomes[0]!.operationId);
+        assert.equal(outcome.resultEventId, outcomes[0]!.runtimeEvent.id);
+        assert.equal(outcome.toolCallId, 'provider-call-1');
+        assert.deepEqual(outcome.result, {
+          kind: 'json',
+          value: { waitId: 'wait-1', outcome: 'satisfied' },
+        });
+        if (mode === 'throw') throw new Error('local acknowledgement failed');
+        if (mode === 'reject') return Promise.reject(new Error('local acknowledgement failed'));
+        if (mode === 'pending') return new Promise<void>(() => {});
+      };
+      assert.deepEqual(await harness.execute(target), { waitId: 'wait-1', outcome: 'satisfied' });
+      assert.deepEqual(order, ['T2', 'ACK', 'published-result']);
+      assert.equal(outcomes.length, 1);
+    });
+
+  it('does not acknowledge a rejected T2', async () => {
+    let acknowledged = false;
+    const harness = makeHarness({
+      commitToolPrepared: async () => ({ created: true, runtimeEventSeq: 1 }),
+      commitToolOutcome: async () => {
+        throw new Error('T2 rejected');
+      },
+    });
+    const target = tool(() => ({ waitId: 'wait' }));
+    target.onDurableOutcomeCommitted = () => {
+      acknowledged = true;
+    };
+    await assert.rejects(harness.execute(target), /T2 rejected/);
+    assert.equal(acknowledged, false);
+  });
+
   it('commits declared outcomes once and leaves ordinary business status alone', async () => {
     const outcomes: ToolOutcomeCommit[] = [];
     const telemetry: string[] = [];
@@ -119,6 +172,44 @@ describe('ToolRuntime durable boundary', () => {
     const failed = outcomes[1]?.runtimeEvent.content;
     assert.equal(failed?.kind === 'function_response' && failed.outcome, 'error');
     assert.deepEqual(telemetry, ['aborted', 'error']);
+  });
+
+  it('records only unknown-reporting policies even for historical tool declarations', async () => {
+    for (const mode of [
+      undefined,
+      'never_auto_retry',
+      'outcome_unknown',
+      'replay_safe',
+      'idempotent',
+      'reconcile',
+      'reattach',
+    ]) {
+      const prepared: ToolPreparedCommit[] = [];
+      let executions = 0;
+      const harness = makeHarness({
+        commitToolPrepared: async (input) => {
+          prepared.push(input);
+          return { created: true, runtimeEventSeq: 1 };
+        },
+        commitToolOutcome: async () => ({ created: true, runtimeEventSeq: 2 }),
+      });
+      const target = {
+        ...tool(() => {
+          executions += 1;
+          return 'ok';
+        }),
+        recoveryMode: mode,
+      } as unknown as MakaTool;
+      await harness.execute(target);
+      const expected = mode === 'outcome_unknown' ? 'outcome_unknown' : 'never_auto_retry';
+      assert.equal(prepared[0]?.recoveryMode, expected, String(mode));
+      assert.equal(
+        prepared[0]?.dispatchRuntimeEvent.actions?.toolDispatch?.recoveryMode,
+        expected,
+        String(mode),
+      );
+      assert.equal(executions, 1);
+    }
   });
 
   it('does not invoke the tool or publish a result when T1 fails', async () => {
@@ -882,7 +973,7 @@ function tool(impl: MakaTool['impl']): MakaTool {
     name: 'Read',
     description: 'read',
     parameters: {},
-    recoveryMode: 'replay_safe',
+    recoveryMode: 'never_auto_retry',
     impl,
   };
 }

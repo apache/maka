@@ -19,17 +19,42 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
 import {
-  ASSISTANT_ROLE,
-  PROACTIVE_TASK,
+  DISCOVERY_TASK,
+  JUDGEMENT_TASK,
+  NOTEBOOK_RULES,
+  wakeInput,
 } from '../../../../src/assistant/index-initiative/prompt.js';
+import { BOT_ROLE } from '../../../../src/assistant/bot/host.js';
 test('proactive instructions match the approved text verbatim and retain the assistant contract', () => {
-  assert.equal(
-    createHash('sha256').update(PROACTIVE_TASK).digest('hex'),
-    '73b4559e6c2d37ff6638938e54cc22759cfbcb44cf5dc02a1ab511a9c609bd22',
-  );
-  assert.match(ASSISTANT_ROLE, /没有索引也正常交流/);
-  assert.match(ASSISTANT_ROLE, /只有转交工具成功后/);
-  assert.match(ASSISTANT_ROLE, /另写记事本（用户明确要求的本地诊断记录除外）/);
+  assert.match(DISCOVERY_TASK, /从生活和工作等多个方面出发，结合时间线索，探索不同方向/);
+  assert.match(JUDGEMENT_TASK, /记事本保存的是可能有用的线索，不是需要推进的任务/);
+  assert.match(JUDGEMENT_TASK, /判断它现在能给用户带来什么价值，再决定是否深入调查和交流/);
+  assert.match(NOTEBOOK_RULES, /只有明确用户反馈可以关闭/);
+  const input = wakeInput({
+    role: 'exploration',
+    now: '2026-10-22T00:00:00Z',
+    viewPath: '/private/notebook.md',
+    outputPath: '/private/operations.json',
+    first: true,
+  });
+  assert.ok(input.includes(DISCOVERY_TASK));
+  assert.ok(input.includes(NOTEBOOK_RULES));
+  assert.doesNotMatch(input, /10 个|六个|3 个发散|DiscoveryCandidates/);
+  assert.match(BOT_ROLE, /SendUser/);
+  assert.match(BOT_ROLE, /Sleep/);
+  assert.match(BOT_ROLE, /MatterDelegate/);
+});
+
+test('every judgement wake asks for autonomous investigation of the whole notebook', () => {
+  for (const first of [true, false]) {
+    const input = wakeInput({
+      role: 'judgement',
+      now: '2026-10-23T00:00:00Z',
+      viewPath: '/private/notebook.md',
+      outputPath: '/private/operations.json',
+      first,
+    });
+    assert.match(input, /基于用户的全局信息和整份记事本自主调查并判断，不只看新内容或本轮增量/);
+  }
 });

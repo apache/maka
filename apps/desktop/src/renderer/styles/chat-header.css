@@ -107,6 +107,17 @@
   min-width: 0;
 }
 
+.maka-session-context__wait .maka-session-context__lead {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  overflow-wrap: anywhere;
+}
+
+.maka-session-context__wait {
+  overflow-wrap: anywhere;
+}
+
 .maka-session-context__goal-description {
   display: block;
   min-width: 0;
@@ -169,6 +180,10 @@
 
 .maka-chat-layout {
   overscroll-behavior: contain;
+  /* Classic Windows/Linux scrollbars consume inline space. Reserve matching
+     gutters so the transcript and composer stay centered as content grows.
+     Platforms with overlay scrollbars do not reserve either gutter. */
+  scrollbar-gutter: stable both-edges;
 }
 
 .maka-chat-shell {

@@ -43,6 +43,7 @@ import { projectSessionInteractions } from './interaction-projection.js';
 import type { RootAdmissionOwner } from './root-admission-owner.js';
 import { worstCaseGoalProjection } from './goal-projection.js';
 
+import type { SessionEventWaitsProjection } from '../protocol/event-wait.js';
 type CanonicalSessionProjectionStores = Pick<
   ExecutionStoresWriter<'interactive'>,
   'sessionStore' | 'agentRunStore' | 'runtimeEventStore' | 'interactionStore'
@@ -52,6 +53,7 @@ export interface CanonicalSessionProjection {
   readonly session: SessionContinuityIdentity;
   readonly rootTurn: TurnSnapshot | null;
   readonly goal: GoalProjection | null;
+  readonly eventWaits?: SessionEventWaitsProjection;
   readonly queue: SessionMessageQueueProjection;
   readonly interactions: SessionInteractionProjection;
 }
@@ -65,17 +67,20 @@ export interface CanonicalSessionProjectionReaderOptions {
   readonly stores: CanonicalSessionProjectionStores;
   readonly rootAdmissions: RootAdmissionOwner;
   readonly messages: Pick<HostMessageCoordinator, 'projection'>;
-  readonly readGoal?: (sessionId: string) => GoalProjection | null;
+  readonly readEventWaits?: (sessionId: string) => Promise<SessionEventWaitsProjection>;
+  readonly readGoal?: (sessionId: string) => GoalProjection | null | Promise<GoalProjection | null>;
 }
 
 export class CanonicalSessionProjectionReader {
   readonly #stores: CanonicalSessionProjectionStores;
   readonly #rootAdmissions: RootAdmissionOwner;
   readonly #messages: Pick<HostMessageCoordinator, 'projection'>;
-  readonly #readGoal: (sessionId: string) => GoalProjection | null;
+  readonly #readEventWaits: CanonicalSessionProjectionReaderOptions['readEventWaits'];
+  readonly #readGoal: (sessionId: string) => GoalProjection | null | Promise<GoalProjection | null>;
 
   constructor(options: CanonicalSessionProjectionReaderOptions) {
     this.#stores = options.stores;
+    this.#readEventWaits = options.readEventWaits;
     this.#rootAdmissions = options.rootAdmissions;
     this.#messages = options.messages;
     this.#readGoal = options.readGoal ?? (() => null);
@@ -114,9 +119,10 @@ export class CanonicalSessionProjectionReader {
       await this.#stores.interactionStore.listSessionPending(sessionId),
       await this.#stores.sessionStore.listPendingSandboxBoundaryRequests(sessionId),
     );
-    // The Session lane barrier must remain held through this final synchronous read.
+    // Keep the Session lane across the asynchronous Goal/wait read and the
+    // final queue projection; neither read can authorize a second admission.
+    const goal = await this.#readGoal(sessionId);
     const queue = this.#messages.projection(sessionId);
-    const goal = this.#readGoal(sessionId);
     const session: SessionContinuityIdentity = {
       sessionId: header.id,
       metadataRevision,
@@ -124,7 +130,8 @@ export class CanonicalSessionProjectionReader {
       createdAt: header.createdAt,
       isArchived: header.isArchived,
     };
-    return { session, rootTurn, goal, queue, interactions };
+    const eventWaits = await this.#readEventWaits?.(sessionId);
+    return { session, rootTurn, goal, queue, interactions, ...(eventWaits ? { eventWaits } : {}) };
   }
 
   async fitsCandidate(
@@ -184,15 +191,27 @@ function sessionContinuitySnapshotInput(
   canonical: CanonicalSessionProjection,
   projectionRevision: number,
 ): SessionContinuitySnapshot {
-  return {
+  const snapshot: SessionContinuitySnapshot = {
     schemaVersion: SESSION_CONTINUITY_SCHEMA_VERSION,
     session: canonical.session,
     projectionRevision,
     rootTurn: canonical.rootTurn,
     goal: canonical.goal,
+    ...(canonical.eventWaits ? { eventWaits: canonical.eventWaits } : {}),
     queue: canonical.queue,
     interactions: canonical.interactions,
   };
+  // Waits are independently paginated and invalidated. Their optional preview
+  // must not consume capacity already promised to admitted messages, interactions,
+  // or a later terminal Root/Goal projection. Keep the required facts strict.
+  if (
+    snapshot.eventWaits &&
+    Buffer.byteLength(JSON.stringify(snapshot), 'utf8') > SESSION_CONTINUITY_SNAPSHOT_MAX_BYTES
+  ) {
+    const { eventWaits: _preview, ...required } = snapshot;
+    return required;
+  }
+  return snapshot;
 }
 
 function deepFreeze<T>(value: T): T {

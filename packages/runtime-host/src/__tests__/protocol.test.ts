@@ -137,6 +137,10 @@ describe('Runtime Host bootstrap protocol', () => {
     assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 220);
   });
 
+  test('rejects epoch-224 peers predating event-wait transcript origins', () => {
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 224);
+  });
+
   test('publishes a new compatibility epoch for Artifact invalidation frames', () => {
     assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 196);
   });
@@ -467,6 +471,29 @@ describe('Runtime Host bootstrap protocol', () => {
     });
     assert.throws(() => decode({ ...catalogQuery, refresh: 'true' }), isInvalidFrame);
     assert.throws(() => decode({ ...catalogQuery, unknown: true }), isInvalidFrame);
+    assert.deepEqual(decode({ ...catalogQuery, executorId: 'antigravity-acp', listOnly: true }), {
+      ...catalogQuery,
+      executorId: 'antigravity-acp',
+      listOnly: true,
+    });
+    assert.throws(() => decode({ ...catalogQuery, executorId: '' }), isInvalidFrame);
+    assert.throws(() => decode({ ...catalogQuery, listOnly: 'yes' }), isInvalidFrame);
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 225);
+    const decodeResult = HOST_OPERATION_SPECS['plugin.executor.query'].decodeOutput;
+    const cached = {
+      id: 'antigravity-acp',
+      displayName: 'Antigravity',
+      readiness: 'ready',
+      models: [{ id: 'cached', name: 'Cached' }],
+      supportsModelChange: true,
+      supportsAttachments: false,
+      refreshFailed: true,
+    };
+    assert.deepEqual(decodeResult({ items: [cached] }), { items: [cached] });
+    assert.throws(
+      () => decodeResult({ items: [{ ...cached, refreshFailed: 'yes' }] }),
+      isInvalidFrame,
+    );
   });
 
   test('publishes a new compatibility epoch for the optional conversation-copy sourceTurnId', () => {
@@ -1715,7 +1742,7 @@ describe('Runtime Host bootstrap protocol', () => {
     });
   });
 
-  test('allows only cloud activation as an external-message origin on turn.start', () => {
+  test('allows only cloud activation and external connector origins on turn.start', () => {
     const start = {
       requestId: 'activation-start',
       operation: 'turn.start' as const,
@@ -1736,6 +1763,16 @@ describe('Runtime Host bootstrap protocol', () => {
       isInvalidFrame,
     );
     for (const origin of [
+      { kind: 'external_connector', connectorId: 'telegram' },
+      { kind: 'external_connector', connectorId: 'telegram', senderId: 'sender-1' },
+    ]) {
+      const frame = { ...start, input: { ...start.input, origin } };
+      assert.deepEqual(decodeClientFrame(frame), frame);
+    }
+    for (const origin of [
+      { kind: 'external_connector', connectorId: '' },
+      { kind: 'external_connector', connectorId: 'telegram', senderId: '' },
+      { kind: 'external_connector', connectorId: 'telegram', extra: true },
       { kind: 'goal', goalId: 'goal-1' },
       { kind: 'scheduled_task', scheduledTaskId: 'task-1' },
       { kind: 'agent_graph', graphId: 'graph-1', wakeId: 'wake-1', attemptId: 'attempt-1' },

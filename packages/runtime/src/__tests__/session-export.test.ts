@@ -401,7 +401,6 @@ test(
             schemaVersion: 1,
             waitId,
             sessionId,
-            goalControlLease: { goalId: 'goal-1', generation: 0 },
             sourceTurnId: 'turn-1',
             sourceToolCallId: 'call-1',
             resource: {
@@ -481,7 +480,14 @@ test(
         const { sessionId, waitId } = snapshot.record;
         assert.deepEqual(await waits.read({ sessionId, waitId }), snapshot);
       }
-      assert.deepEqual((await waits.listPending({ limit: 200 })).items, snapshots);
+      const observations = [
+        ...(await waits.listByStatus({ status: 'waiting', limit: 200 })).items,
+        ...(await waits.listByStatus({ status: 'resolved', limit: 200 })).items,
+      ];
+      assert.deepEqual(
+        observations.sort((a, b) => a.record.waitId.localeCompare(b.record.waitId)),
+        [...snapshots].sort((a, b) => a.record.waitId.localeCompare(b.record.waitId)),
+      );
     } finally {
       try {
         await stores?.sessionStore.close?.();

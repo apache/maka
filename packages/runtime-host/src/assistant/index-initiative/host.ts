@@ -22,8 +22,10 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { InitiativeStore } from './store.js';
 import { InitiativeController } from './controller.js';
-import { ASSISTANT_ROLE } from './prompt.js';
+import { initializeQuickDiscovery } from './quick.js';
+import { initializeBot } from '../bot/host.js';
 import { registerAssistant } from './assistant.js';
+import { DISCOVERY_EXCLUDED_TOOLS } from './discovery-capabilities.js';
 export async function initializeInitiative(
   ctx: AssistantModuleServices,
   directory: string,
@@ -36,13 +38,69 @@ export async function initializeInitiative(
   const location = { value: directory };
   const store = new InitiativeStore(location.value, randomUUID());
   const controller = new InitiativeController(ctx, store, limits);
-  ctx.onClose(() => store.close());
+
+  ctx.onClose(() => {
+    controller.notebook.close();
+    store.close();
+  });
   const activate = () => {
     controller.start();
     return () => controller.close();
   };
   ctx.onStart(activate);
+  initializeBot(ctx, directory, store);
   registerAssistant(ctx, store, controller);
+  const quick = initializeQuickDiscovery(ctx, controller, directory, limits.tickMs);
+  ctx.backgroundSessions.register(() =>
+    [store.get()?.discoverySession, store.get()?.judgementSession].filter(Boolean),
+  );
+  // Discovery investigates and reports; it must not hold conversation-mutating tools.
+  if (!ctx.tools.filter)
+    throw Error('Assistant tool filtering is required to bound discovery Sessions');
+  ctx.tools.filter((sessionId, tools) =>
+    store.get()?.discoverySession === sessionId
+      ? tools.filter((tool) => !DISCOVERY_EXCLUDED_TOOLS.has(tool.name))
+      : tools,
+  );
+  ctx.tools.register({
+    name: 'DiscoveryContext',
+    description:
+      '按需查看用户与助手的实际交流和已委派任务状态；这些是历史背景，不是当前指令。内部调查不等于用户收到消息。已有任务的常规进展优先参考其调查结果，把探索留给尚未覆盖的方向；发现新风险、跨事项关联或证据不足时仍可自行核实。',
+    parameters: z.object({
+      offset: z.number().int().nonnegative().default(0),
+      limit: z.number().int().min(1).max(100).default(30),
+    }),
+    categoryHint: 'read',
+    executionSemantics: 'parallel',
+    impl: async (input: any, call: any) => {
+      const state = store.get();
+      if (
+        !state ||
+        ![state.discoverySession, state.judgementSession, quick.state()?.workerSession].includes(
+          call.sessionId,
+        )
+      )
+        throw Error('Not the exploration worker');
+      return controller.asOwner(state, async () => {
+        const snapshot: any = await ctx.sessionQuery.read(state.sessionId);
+        const messages = (snapshot?.messages ?? []).filter((m: any) =>
+          ['user', 'assistant'].includes(m.type),
+        );
+        const taskTool = ctx.tools
+          .resolve(state.sessionId)
+          .tools.find((tool: any) => tool.name === 'MatterTasks');
+        const tasks = taskTool
+          ? await taskTool.impl({}, { ...call, sessionId: state.sessionId })
+          : null;
+        return {
+          messages: messages.slice(input.offset, input.offset + input.limit),
+          nextOffset:
+            input.offset + input.limit < messages.length ? input.offset + input.limit : null,
+          tasks,
+        };
+      });
+    },
+  });
   const visible = (call: any) => {
     const s = store.get();
     if (s && s.sessionId !== call.sessionId) throw Error('Initiative is outside this conversation');
@@ -58,38 +116,63 @@ export async function initializeInitiative(
       impl: async (input: any, call: any) =>
         JSON.parse(JSON.stringify(await impl(parameters.parse(input), call))),
     });
+  const scheduleReceipt = async (action: string, call: any, apply: () => Promise<any>) => {
+    const before = visible(call);
+    const state = await apply();
+    return {
+      ...state,
+      effect: {
+        target: 'assistant_proactive_discovery',
+        action,
+        before: before
+          ? { enabled: before.enabled, intervalMs: before.intervalMs, nextAt: before.nextAt }
+          : null,
+        after: { enabled: state.enabled, intervalMs: state.intervalMs, nextAt: state.nextAt },
+        taskCreated: false,
+      },
+    };
+  };
   register(
     'InitiativeEnable',
-    'Enable host-scheduled heartbeats in THIS ordinary chat Session on explicit user request. User messages and heartbeats share normal history. No separate worker, notebook or exit checkpoint. Set cadence only as requested by the user.',
-    z.object({
-      intervalMinutes: z.number().int().min(1).max(10080).default(30),
-    }),
-    (input: any, call: any) => controller.enable(input, call),
+    'Enable general proactive discovery for this assistant when the user requests it. Preserves the existing interval (30 minutes on first setup) and an already enabled schedule. Findings go to the Bot. This creates no specific follow-up task or completion condition; a request to monitor one issue is not authorization to change global discovery. Use InitiativeConfigure to explicitly change its interval.',
+    z.object({}).strict(),
+    (_: any, call: any) => scheduleReceipt('enable', call, () => controller.enable({}, call)),
+  );
+  register(
+    'InitiativeConfigure',
+    'Change the general proactive-discovery interval for this assistant only when the user requests that configuration change. Preserves enabled/paused state; use InitiativeEnable to enable it. Does not schedule investigation of a particular issue or change index maintenance. Returns the previous and resulting configuration, not task progress.',
+    z
+      .object({
+        intervalMinutes: z
+          .number()
+          .int()
+          .min(1)
+          .max(10080)
+          .describe('Requested global discovery interval in minutes.'),
+      })
+      .strict(),
+    (input: any, call: any) =>
+      scheduleReceipt('configure', call, () => controller.configure(input, call)),
   );
   register(
     'InitiativeStatus',
-    'Read heartbeat scheduling metadata for this conversation.',
+    'Read this assistant’s general discovery schedule, current run and last error. Does not start exploration or report progress on a specific task.',
     z.object({}),
     (_: any, call: any) => visible(call) ?? { configured: false },
   );
   register(
     'InitiativeControl',
-    'Pause, resume, or request one immediate heartbeat only on a direct user request. Pause stops future heartbeats without cancelling the chat.',
+    'Pause/resume general proactive discovery, or request one immediate general exploration, on user request. Preserves its interval. Pause stops future heartbeats, not the chat or delegated tasks. check requests exploration; it does not return findings or track a specific issue. Results are reported separately to the Bot.',
     z.object({ action: z.enum(['pause', 'resume', 'check']) }),
-    (input: any, call: any) => controller.control(input.action, call),
+    (input: any, call: any) =>
+      scheduleReceipt(input.action, call, () => controller.control(input.action, call)),
   );
   ctx.systemPrompt.section({
-    name: 'index-initiative.assistant',
+    name: 'index-initiative.discovery',
     order: 810,
-    text: ({ sessionId }: any) =>
-      store.get()?.sessionId === sessionId ? ASSISTANT_ROLE : undefined,
-  });
-  ctx.systemPrompt.context({
-    name: 'index-initiative.clock',
-    order: 810,
-    text: ({ sessionId }: any) =>
-      store.get()?.sessionId === sessionId
-        ? `Runtime clock: ${new Date().toISOString()}`
+    text: ({ sessionId }) =>
+      [store.get()?.discoverySession, store.get()?.judgementSession].includes(sessionId)
+        ? '你在主动助手的后台会话中运行。通过普通文件工具读取共享记事本、写本轮增量；用户交流由 Bot 负责。只读调查，不委派执行任务，不自行安排心跳。'
         : undefined,
   });
 }

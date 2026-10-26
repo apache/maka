@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { failureClassFromCompleteStopReason, type SessionEvent } from '@maka/core/events';
+import { type SessionEvent } from '@maka/core/events';
 import { findProjectByIdentity } from '@maka/core/project';
 import { type StoredMessage } from '@maka/core/session';
 import type { UserMessageInput } from '@maka/core/runtime-inputs';
@@ -49,6 +49,7 @@ import {
 } from './run-command-core.js';
 import {
   connectRuntimeHostCli,
+  connectRuntimeHostCliConnection,
   resolveRuntimeHostCliTarget,
   type RuntimeHostCliConnectionContext,
 } from './runtime-host-cli-context.js';
@@ -64,6 +65,17 @@ import {
   readRuntimeHostCliTaskReadiness,
 } from './runtime-host-task-readiness.js';
 import { resolveMakaClientDataRoot } from './workspace-root.js';
+
+import {
+  TurnOutcomeClassifier,
+  observationFromSessionEvent,
+  outcomeFromStoredTurn,
+  classifierFromStoredTurn,
+  acceptStoredTurn,
+} from './run-turn-outcome.js';
+import { RunQuestionAvailable } from './run-session-result.js';
+import { isTemporaryNpxInstallation } from './runtime-host-cli-installation.js';
+import { runMakaSessionCommand } from './run-session-command.js';
 
 const GRAPH_POLL_INTERVAL_MS = 25;
 
@@ -115,6 +127,23 @@ export async function runRuntimeHostTextCli(
     return await commandDeps.run(
       argv,
       {
+        runSession: async (sessionOptions, env) => {
+          const context = await connectRuntimeHostCliConnection({
+            rootPath: env.workspaceRoot(),
+            ...(sessionOptions.hostProfileId ? { profileId: sessionOptions.hostProfileId } : {}),
+            clientDataRoot: options.clientDataRoot,
+          });
+          try {
+            return await runMakaSessionCommand(
+              context.connection,
+              sessionOptions,
+              env,
+              context.profile.kind !== 'local' || !(await isTemporaryNpxInstallation()),
+            );
+          } finally {
+            await context.close();
+          }
+        },
         listSessions: async (rootPath, hostProfileId) =>
           runtimeHostSessionSummaries(
             await readRuntimeHostSessions((await connect(rootPath, hostProfileId)).connection),
@@ -197,6 +226,8 @@ export function createRuntimeHostRunContext(
     input.enableAgentGraph === true,
     input.sessionCwdOverride,
     input.maxSteps,
+    input.noWait === true,
+    input.allowDetach !== false,
   );
   return {
     runtime,
@@ -249,7 +280,11 @@ async function prepareRuntimeHostRunInput(
       `Task is not ready:\n${formatRuntimeHostCliTaskBlockers(snapshot, cliCommand)}`,
     );
   }
-  return preparedInput;
+  return {
+    ...preparedInput,
+    allowDetach:
+      runtimeHostProfileUsesHostWorkspace(profile.kind) || !(await isTemporaryNpxInstallation()),
+  };
 }
 
 type ActiveRuntimeHostTurn = {
@@ -267,6 +302,8 @@ class RuntimeHostRunRuntime implements MakaRunRuntime {
   readonly #graphEnabled: boolean;
   readonly #sessionCwdOverride: MakaRunContextInput['sessionCwdOverride'];
   readonly #maxSteps: number | undefined;
+  readonly #noWait: boolean;
+  readonly #allowDetach: boolean;
   readonly #unsubscribeTranscriptReplacements: () => void;
   #sessionId: string | undefined;
   #activeTurn: ActiveRuntimeHostTurn | undefined;
@@ -292,6 +329,8 @@ class RuntimeHostRunRuntime implements MakaRunRuntime {
     graphEnabled: boolean,
     sessionCwdOverride: MakaRunContextInput['sessionCwdOverride'],
     maxSteps: number | undefined,
+    noWait = false,
+    allowDetach = true,
   ) {
     this.#connection = connection;
     this.#driver = driver;
@@ -300,8 +339,13 @@ class RuntimeHostRunRuntime implements MakaRunRuntime {
     this.#graphEnabled = graphEnabled;
     this.#sessionCwdOverride = sessionCwdOverride;
     this.#maxSteps = maxSteps;
-    this.#interactions = new NonInteractiveInteractionController(driver, (pending) =>
-      this.#stopForInteraction(pending),
+    this.#noWait = noWait;
+    this.#allowDetach = allowDetach;
+    this.#interactions = new NonInteractiveInteractionController(
+      driver,
+      (pending) => this.#stopForInteraction(pending),
+      () => this.#allowDetach && !this.#graphEnabled && !this.#mcp?.ownsServers,
+      () => this.#noWait,
     );
     this.#unsubscribeTranscriptReplacements = driver.subscribeTranscriptReplacements(
       (sessionId, turnId, messages) => {
@@ -326,6 +370,14 @@ class RuntimeHostRunRuntime implements MakaRunRuntime {
     await this.#attach(sessionId);
     await this.#mcp?.ready();
     if (this.#stopRequested) throw new Error('Turn was cancelled before start');
+    if (this.#noWait && !this.#allowDetach)
+      throw new Error(
+        '--no-wait requires a persistent installation; temporary npx invocations may own the Host lifetime',
+      );
+    if (this.#noWait && this.#mcp?.ownsServers)
+      throw new Error(
+        '--no-wait cannot detach client-owned MCP servers; use the blocking run path',
+      );
     if (input.turnOrchestration?.mode === 'graph') {
       this.#graphAdmissionTurnIds = graphSupervisorTurnIds(await this.#driver.readMessages());
     }
@@ -488,6 +540,14 @@ class RuntimeHostRunRuntime implements MakaRunRuntime {
     turn: MakaPreparedSessionTurn,
     active: ActiveRuntimeHostTurn,
   ): AsyncIterable<SessionEvent> {
+    if (this.#noWait) {
+      await this.#observer?.({
+        outcomeId: active.runId,
+        status: 'running',
+        sandboxBoundary: 'none',
+      });
+      return;
+    }
     const events = turn.events[Symbol.asyncIterator]();
     for (;;) {
       const next = await this.#interactions.race(events.next());
@@ -604,184 +664,6 @@ function runtimeHostSessionSummaries(items: readonly SessionCatalogItem[]): Sess
   return items.flatMap((item) => ('kind' in item ? [] : [projectSessionCatalogSummary(item)]));
 }
 
-type TurnOutcomeObservation =
-  | { readonly kind: 'output'; readonly text: string; readonly source: 'live' | 'stored' }
-  | {
-      readonly kind: 'terminal';
-      readonly update: 'replace' | 'if_unset';
-      readonly status: 'completed';
-    }
-  | {
-      readonly kind: 'terminal';
-      readonly update: 'replace' | 'if_unset';
-      readonly status: 'failed';
-      readonly failure: NonNullable<MakaRunOutcome['failure']>;
-    }
-  | {
-      readonly kind: 'tool_result';
-      readonly toolUseId: string;
-      readonly outcome: 'sandbox_failure' | 'success';
-    };
-
-type TerminalOutcomeObservation = Extract<TurnOutcomeObservation, { kind: 'terminal' }>;
-
-class TurnOutcomeClassifier {
-  readonly #outcomeId: string;
-  readonly #unresolvedSandboxFailures = new Set<string>();
-  #finalOutput: string | undefined;
-  #finalOutputFromLive = false;
-  #terminal: TerminalOutcomeObservation | undefined;
-
-  constructor(outcomeId: string) {
-    this.#outcomeId = outcomeId;
-  }
-
-  accept(observation: TurnOutcomeObservation | undefined): void {
-    switch (observation?.kind) {
-      case undefined:
-        return;
-      case 'output':
-        // A subscriber is delivered in Host order, so the stream's last answer
-        // is the Turn's last answer. A transcript read stops wherever the Host
-        // had committed, so it can supply an answer the stream never carried
-        // but can never overrule one it did.
-        if (observation.source === 'stored' && this.#finalOutputFromLive) return;
-        this.#finalOutput = observation.text;
-        this.#finalOutputFromLive = observation.source === 'live';
-        return;
-      case 'terminal':
-        if (observation.update === 'replace' || this.#terminal === undefined) {
-          this.#terminal = observation;
-        }
-        return;
-      case 'tool_result': {
-        if (observation.outcome === 'sandbox_failure') {
-          this.#unresolvedSandboxFailures.add(observation.toolUseId);
-        }
-        // No clearing path: `maka run` denies every widening request, so the
-        // boundary cannot move mid-Turn and a later success cannot prove that
-        // a blocked call recovered. The failure stays unresolved to the end.
-        return;
-      }
-    }
-  }
-
-  outcome(incomplete: 'fail'): MakaRunOutcome;
-  outcome(incomplete: 'pending'): MakaRunOutcome | undefined;
-  outcome(incomplete: 'fail' | 'pending'): MakaRunOutcome | undefined {
-    const terminal = this.#terminal;
-    if (!terminal && incomplete === 'pending') return undefined;
-    const completed = terminal?.status === 'completed';
-    const sandboxBoundary = this.#unresolvedSandboxFailures.size > 0 ? 'unresolved' : 'none';
-    const failure =
-      terminal?.status === 'failed'
-        ? terminal.failure
-        : {
-            class: 'missing_terminal_event',
-            message: 'Turn ended unexpectedly',
-          };
-    return {
-      outcomeId: this.#outcomeId,
-      status: completed ? 'completed' : 'failed',
-      ...(completed && this.#finalOutput !== undefined ? { finalOutput: this.#finalOutput } : {}),
-      ...(!completed ? { failure } : {}),
-      sandboxBoundary,
-    };
-  }
-}
-
-function observationFromSessionEvent(event: SessionEvent): TurnOutcomeObservation | undefined {
-  if (event.type === 'text_complete' && event.text.trim().length > 0) {
-    return { kind: 'output', text: event.text, source: 'live' };
-  }
-  if (event.type === 'error') {
-    return {
-      kind: 'terminal',
-      update: 'replace',
-      status: 'failed',
-      failure: { class: event.reason ?? event.code ?? 'runtime_error', message: event.message },
-    };
-  }
-  if (event.type === 'abort') {
-    return {
-      kind: 'terminal',
-      update: 'replace',
-      status: 'failed',
-      failure: { class: 'aborted', message: 'Turn was cancelled' },
-    };
-  }
-  if (event.type === 'complete') {
-    return observationFromCompleteEvent(event);
-  }
-  return event.type === 'tool_result' ? observationFromToolResult(event) : undefined;
-}
-
-function observationFromStoredMessage(message: StoredMessage): TurnOutcomeObservation | undefined {
-  if (message.type === 'assistant' && message.text.trim().length > 0) {
-    return { kind: 'output', text: message.text, source: 'stored' };
-  }
-  if (message.type === 'turn_state' && message.status === 'completed') {
-    return { kind: 'terminal', update: 'replace', status: 'completed' };
-  }
-  if (message.type === 'turn_state' && message.status === 'aborted') {
-    return {
-      kind: 'terminal',
-      update: 'replace',
-      status: 'failed',
-      failure: { class: 'aborted', message: 'Turn was cancelled' },
-    };
-  }
-  if (message.type === 'turn_state' && message.status === 'failed') {
-    return {
-      kind: 'terminal',
-      update: 'replace',
-      status: 'failed',
-      failure: {
-        class: message.errorClass ?? 'runtime_error',
-        message: 'Agent Graph final Turn failed',
-      },
-    };
-  }
-  return message.type === 'tool_result' ? observationFromToolResult(message) : undefined;
-}
-
-function observationFromCompleteEvent(
-  event: Extract<SessionEvent, { type: 'complete' }>,
-): TerminalOutcomeObservation {
-  if (event.stopReason === 'user_stop') {
-    return {
-      kind: 'terminal',
-      update: 'if_unset',
-      status: 'failed',
-      failure: { class: 'aborted', message: 'Turn was cancelled' },
-    };
-  }
-  const failureClass = failureClassFromCompleteStopReason(event.stopReason);
-  return failureClass
-    ? {
-        kind: 'terminal',
-        update: 'if_unset',
-        status: 'failed',
-        failure: { class: failureClass },
-      }
-    : { kind: 'terminal', update: 'if_unset', status: 'completed' };
-}
-
-function observationFromToolResult(
-  result: Pick<Extract<SessionEvent, { type: 'tool_result' }>, 'content' | 'isError' | 'toolUseId'>,
-): TurnOutcomeObservation | undefined {
-  if (result.isError && result.content.kind === 'text' && result.content.sandboxFailure) {
-    return {
-      kind: 'tool_result',
-      toolUseId: result.toolUseId,
-      outcome: 'sandbox_failure',
-    };
-  }
-  return result.isError
-    ? undefined
-    : { kind: 'tool_result', toolUseId: result.toolUseId, outcome: 'success' };
-}
-
 function graphSupervisorTurnIds(messages: readonly StoredMessage[]): Set<string> {
   return new Set(
     messages.flatMap((message) =>
@@ -804,36 +686,11 @@ function lastNewGraphSupervisorTurnId(
     )?.turnId;
 }
 
-function outcomeFromStoredTurn(
-  messages: readonly StoredMessage[],
-  turnId: string,
-): MakaRunOutcome | undefined {
-  return classifierFromStoredTurn(messages, turnId, turnId).outcome('pending');
-}
-
-function classifierFromStoredTurn(
-  messages: readonly StoredMessage[],
-  turnId: string,
-  outcomeId: string,
-): TurnOutcomeClassifier {
-  const classifier = new TurnOutcomeClassifier(outcomeId);
-  acceptStoredTurn(classifier, messages, turnId);
-  return classifier;
-}
-
-function acceptStoredTurn(
-  classifier: TurnOutcomeClassifier,
-  messages: readonly StoredMessage[],
-  turnId: string,
-): void {
-  for (const message of messages) {
-    if (message.turnId === turnId) classifier.accept(observationFromStoredMessage(message));
-  }
-}
-
 class NonInteractiveInteractionController {
   readonly #driver: RuntimeHostMakaSessionDriver;
   readonly #stop: (pending: InteractionPendingSnapshot) => Promise<void>;
+  readonly #canReturnQuestion: () => boolean;
+  readonly #detached: () => boolean;
   readonly #handled = new Set<string>();
   readonly #tasks = new Set<Promise<void>>();
   readonly #unsubscribe: () => void;
@@ -843,9 +700,13 @@ class NonInteractiveInteractionController {
   constructor(
     driver: RuntimeHostMakaSessionDriver,
     stop: (pending: InteractionPendingSnapshot) => Promise<void>,
+    canReturnQuestion: () => boolean,
+    detached: () => boolean,
   ) {
     this.#driver = driver;
     this.#stop = stop;
+    this.#canReturnQuestion = canReturnQuestion;
+    this.#detached = detached;
     this.#unsubscribe = driver.subscribePendingInteractions((pending) => this.#accept(pending));
   }
 
@@ -881,6 +742,9 @@ class NonInteractiveInteractionController {
   }
 
   #accept(pending: InteractionPendingSnapshot): void {
+    // Admission can publish interactions before its response arrives. A detached
+    // launcher never decides or stops them; later Session commands own handoff.
+    if (this.#detached()) return;
     if (this.#handled.has(pending.interactionId)) return;
     this.#handled.add(pending.interactionId);
     const task = this.#handle(pending).catch((error) => {
@@ -897,6 +761,9 @@ class NonInteractiveInteractionController {
         decision: 'deny',
       });
       return;
+    }
+    if (pending.request.kind === 'question' && this.#canReturnQuestion()) {
+      throw new RunQuestionAvailable(pending);
     }
     await this.#stop(pending);
     throw new Error(

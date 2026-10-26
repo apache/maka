@@ -1145,6 +1145,54 @@ test('reclaimFreePages returns garbage-collected pages to the file in bounded ba
   });
 });
 
+test('reclaimFreePages retries an unfinished checkpoint on the next idle tick', async (t) => {
+  const fixture = await createFixture(t);
+  const bytes = new Uint8Array(1_000_000).fill(1);
+  const stored = await fixture.store.put(putInput('session-1', 'tool-1', bytes));
+  assert.equal(stored.ok, true);
+  if (!stored.ok) return;
+  await fixture.store.releaseReference({ sessionId: 'session-1', refId: stored.record.refId });
+  await fixture.store.collectGarbage({ olderThan: 1_001, maxBlobs: 64, maxBytes: bytes.length });
+
+  const reader = new DatabaseSync(fixture.path);
+  t.after(() => reader.close());
+  reader.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+  const beforeBytes = (await stat(fixture.path)).size;
+  reader.exec('BEGIN');
+  const freePages = pragmaNumber(reader, 'freelist_count');
+  assert.ok(freePages > 64);
+
+  let reclaimedPages = 0;
+  for (;;) {
+    const batch = await fixture.store.reclaimFreePages({ maxPages: 64 });
+    reclaimedPages += batch.reclaimedPages;
+    if (!batch.hasMore) break;
+  }
+  assert.equal(reclaimedPages, freePages);
+  assert.equal((await stat(fixture.path)).size, beforeBytes, 'reader pins the unshrunk main file');
+  // An incomplete checkpoint must not keep the maintenance lane spinning.
+  assert.deepEqual(await fixture.store.reclaimFreePages({ maxPages: 64 }), {
+    reclaimedPages: 0,
+    hasMore: false,
+  });
+  reader.exec('COMMIT');
+
+  // Even a pending checkpoint cannot wait for or take a writer's lock.
+  reader.exec('BEGIN IMMEDIATE');
+  assert.deepEqual(await fixture.store.reclaimFreePages({ maxPages: 64 }), {
+    reclaimedPages: 0,
+    hasMore: false,
+  });
+  reader.exec('COMMIT');
+  assert.deepEqual(await fixture.store.reclaimFreePages({ maxPages: 64 }), {
+    reclaimedPages: 0,
+    hasMore: false,
+  });
+  assert.ok((await stat(fixture.path)).size < beforeBytes, 'idle retry shrinks the main file');
+  assert.equal(pragmaNumber(reader, 'freelist_count'), 0);
+  assert.equal(pragmaText(reader, 'quick_check'), 'ok');
+});
+
 function putInput(sessionId: string, ownerId: string, bytes: Uint8Array) {
   return {
     sessionId,

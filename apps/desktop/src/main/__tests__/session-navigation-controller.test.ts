@@ -316,7 +316,7 @@ describe('useSessionNavigationController', () => {
     );
     assert.deepEqual(
       controller().selectors.groups.map(({ label }) => label),
-      ['Project · Local', 'Project · Remote Mac', 'Project · Ubuntu'],
+      ['Project', 'Project', 'Project'],
     );
     assert.equal(
       controller().selectors.sessionMeta(linkedCatalog[2]!),

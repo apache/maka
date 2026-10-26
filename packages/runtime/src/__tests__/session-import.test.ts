@@ -928,99 +928,46 @@ async function seedContext(
   workspaceRoot: string,
   sessionId: string,
   bytes: string,
-): Promise<{ relativePath: string; blobId: Buffer }> {
-  // The offline context authority only works on a marked Storage Root, so a
-  // workspace holding context has to be one.
-  const { resolveStorageRoot } = await import('@maka/storage/root-authority');
-  await resolveStorageRoot({ path: workspaceRoot, kind: 'interactive' });
-  const { createHash } = await import('node:crypto');
-  const digest = createHash('sha256').update(bytes).digest();
-  const hex = digest.toString('hex');
-  // The layout the context store uses: a payload is addressed by its content.
-  const relativePath = `sha256/${hex.slice(0, 2)}/${hex}`;
-  const values = join(workspaceRoot, 'context-offload-values');
-  await mkdir(join(values, 'sha256', hex.slice(0, 2)), { recursive: true });
-  await writeFile(join(values, relativePath), bytes);
-
-  const db = new DatabaseSync(join(workspaceRoot, 'context-offload.sqlite'));
+): Promise<{ relativePath: string; blobId: Buffer; refId: string }> {
+  const { resolveStorageRoot, tryAcquireInteractiveRootOwner } = await import(
+    '@maka/storage/root-authority'
+  );
+  const { openInteractiveContextOffloadStoreForWrite } = await import(
+    '@maka/storage/context-offload-store'
+  );
+  const capability = await resolveStorageRoot({ path: workspaceRoot, kind: 'interactive' });
+  const owner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(owner);
   try {
-    // The real v3 shape, not an approximation: `reference_count`, an owner kind
-    // the CHECK accepts, and the columns the store actually writes. A fixture
-    // that only resembles it proves the SQL runs, not that the imported store
-    // is usable by the store that has to read it.
-    db.exec(`
-      PRAGMA user_version = 3;
-      CREATE TABLE context_blobs (
-        blob_id BLOB PRIMARY KEY CHECK(length(blob_id) = 32),
-        storage_kind TEXT NOT NULL CHECK(storage_kind IN ('inline', 'managed_file')),
-        payload BLOB NOT NULL,
-        size_bytes INTEGER NOT NULL CHECK(size_bytes >= 0),
-        created_at INTEGER NOT NULL CHECK(created_at >= 0),
-        CHECK(
-          (storage_kind = 'inline' AND length(payload) = size_bytes) OR
-          (storage_kind = 'managed_file' AND length(payload) BETWEEN 1 AND 512)
-        )
-      );
-      CREATE TABLE context_refs (
-        ref_id TEXT PRIMARY KEY,
-        session_id TEXT NOT NULL,
-        owner_kind TEXT NOT NULL CHECK(
-          owner_kind IN ('read_image_snapshot', 'tool_result_archive')
-        ),
-        owner_id TEXT NOT NULL,
-        blob_id BLOB NOT NULL REFERENCES context_blobs(blob_id) ON DELETE RESTRICT,
-        media_type TEXT NOT NULL,
-        created_at INTEGER NOT NULL CHECK(created_at >= 0),
-        UNIQUE(session_id, owner_kind, owner_id)
-      );
-      CREATE TABLE context_gc_candidates (
-        blob_id BLOB PRIMARY KEY REFERENCES context_blobs(blob_id) ON DELETE CASCADE,
-        unreferenced_at INTEGER NOT NULL CHECK(unreferenced_at >= 0)
-      );
-      CREATE TABLE context_file_deletions (
-        locator BLOB PRIMARY KEY CHECK(length(locator) BETWEEN 1 AND 512),
-        size_bytes INTEGER NOT NULL CHECK(size_bytes >= 0),
-        enqueued_at INTEGER NOT NULL CHECK(enqueued_at >= 0)
-      );
-      CREATE TABLE context_session_usage (
-        session_id TEXT PRIMARY KEY,
-        reference_count INTEGER NOT NULL CHECK(reference_count >= 0),
-        logical_bytes INTEGER NOT NULL CHECK(logical_bytes >= 0)
-      );
-      CREATE TABLE context_store_usage (
-        singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
-        blob_count INTEGER NOT NULL CHECK(blob_count >= 0),
-        physical_bytes INTEGER NOT NULL CHECK(physical_bytes >= 0)
-      );
-      INSERT INTO context_store_usage VALUES (1, 0, 0);
-    `);
-    db.prepare('INSERT INTO context_blobs VALUES (?, ?, ?, ?, 0)').run(
-      digest,
-      'managed_file',
-      Buffer.from(relativePath, 'utf8'),
-      bytes.length,
-    );
-    db.prepare('INSERT INTO context_refs VALUES (?, ?, ?, ?, ?, ?, 0)').run(
-      `ref-${sessionId}`,
-      sessionId,
-      'read_image_snapshot',
-      `owner-${sessionId}`,
-      digest,
-      'image/png',
-    );
-    db.exec(`
-      INSERT INTO context_session_usage
-        SELECT r.session_id, count(*), sum(b.size_bytes)
-        FROM context_refs r JOIN context_blobs b USING(blob_id) GROUP BY r.session_id;
-      UPDATE context_store_usage SET
-        blob_count = (SELECT count(*) FROM context_blobs),
-        physical_bytes = (SELECT coalesce(sum(size_bytes), 0) FROM context_blobs)
-      WHERE singleton = 1;
-    `);
+    const payload = Buffer.from(bytes);
+    const writer = await openInteractiveContextOffloadStoreForWrite(owner.lease, {
+      limits: {
+        ownerMaxBytes: { read_image_snapshot: payload.length, tool_result_archive: 0 },
+        sessionLogicalBytes: payload.length,
+        workspacePhysicalBytes: payload.length,
+      },
+    });
+    try {
+      const stored = await writer.put({
+        sessionId,
+        owner: { kind: 'read_image_snapshot', ownerId: `owner-${sessionId}` },
+        bytes: payload,
+        mediaType: 'image/png',
+      });
+      assert.equal(stored.ok, true);
+      if (!stored.ok) throw new Error('Unable to seed context');
+      const hex = stored.record.blobId;
+      return {
+        relativePath: `sha256/${hex.slice(0, 2)}/${hex}`,
+        blobId: Buffer.from(hex, 'hex'),
+        refId: stored.record.refId,
+      };
+    } finally {
+      await writer.close();
+    }
   } finally {
-    db.close();
+    await owner.close();
   }
-  return { relativePath, blobId: digest };
 }
 
 function readContextUsage(workspaceRoot: string): {
@@ -1152,7 +1099,7 @@ test('a failed context merge leaves nothing published and the retry then succeed
     // failure would do; this one needs no injection point in the code.
     const collide = new DatabaseSync(join(target.workspaceRoot, 'context-offload.sqlite'));
     try {
-      collide.prepare('UPDATE context_refs SET ref_id = ?').run(`ref-${sessionId}`);
+      collide.prepare('UPDATE context_refs SET ref_id = ?').run(seeded.refId);
     } finally {
       collide.close();
     }
@@ -1177,7 +1124,7 @@ test('a failed context merge leaves nothing published and the retry then succeed
     // import reported a conflict against itself, forever.
     const repair = new DatabaseSync(join(target.workspaceRoot, 'context-offload.sqlite'));
     try {
-      repair.prepare('UPDATE context_refs SET ref_id = ?').run(`ref-${targetSession}`);
+      repair.prepare('UPDATE context_refs SET ref_id = ?').run(kept.refId);
     } finally {
       repair.close();
     }
@@ -1227,9 +1174,8 @@ test('a failure after the context commit is still retryable', async () => {
       clear.close();
     }
 
-    // Context rows survived the failure, so the retry re-inserts rows that are
-    // already there. A plain INSERT makes that second attempt fail on its own
-    // predecessor.
+    // Cleanup retires the unpublished references. The retry must also adopt
+    // any blobs awaiting GC without leaving them queued while referenced.
     const retried = await importState(target.workspaceRoot, source.workspaceRoot);
     assert.deepEqual([...retried.sessionIds], [sessionId]);
     const { readFile } = await import('node:fs/promises');

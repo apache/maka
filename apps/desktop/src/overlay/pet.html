@@ -1,0 +1,55 @@
+<!--
+  Licensed to the Apache Software Foundation (ASF) under one
+  or more contributor license agreements.  See the NOTICE file
+  distributed with this work for additional information
+  regarding copyright ownership.  The ASF licenses this file
+  to you under the Apache License, Version 2.0 (the
+  "License"); you may not use this file except in compliance
+  with the License.  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing,
+  software distributed under the License is distributed on an
+  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+  KIND, either express or implied.  See the License for the
+  specific language governing permissions and limitations
+  under the License.
+-->
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src data:;" />
+  <title>Maka 宠物</title><link rel="stylesheet" href="pet.css" />
+</head>
+<body>
+  <section id="bubble" data-kind="status" aria-live="polite">
+    <div class="bubble-heading"><span id="indicator" aria-hidden="true"><svg class="message-mark" viewBox="0 0 24 24"><path d="M20 11a7 7 0 0 1-7 7H6l-3 3V11a7 7 0 0 1 7-7h3a7 7 0 0 1 7 7Z"/><path d="M8 10h7m-7 4h4"/></svg><svg class="activity-mark" viewBox="0 0 24 24"><path d="m12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5Z"/></svg></span><span id="caption">准备好了</span></div>
+    <div id="task-counts" hidden>
+      <span class="task-stat running"><span class="status-dot" aria-hidden="true"></span><strong id="running-count">0</strong><span>运行</span></span>
+      <span class="task-stat waiting"><span class="status-dot" aria-hidden="true"></span><strong id="waiting-count">0</strong><span>等待</span></span>
+    </div>
+    <div id="content-row"><span id="task-state" hidden>运行中</span><button id="content" title="打开完整对话"></button></div>
+    <nav id="pagination" hidden><span id="read-hint">双击切换状态</span><span class="pager"><button id="previous" aria-label="上一条"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14 7-5 5 5 5"/></svg></button><span id="count"></span><button id="next" aria-label="下一条"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m10 7 5 5-5 5"/></svg></button></span></nav>
+  </section>
+  <button id="pet" title="拖动调整位置 · 双击打开 Maka" aria-label="宠物，双击打开 Maka"><canvas></canvas><span id="notification" hidden aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/></svg><span id="unread-count"></span></span></button>
+  <div id="toolbar">
+    <div id="actions">
+      <button id="mode" title="助手模式 · 切换为会话宠物" aria-label="助手模式，切换为会话宠物" data-mode="assistant">
+        <svg class="assistant-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5Z"/></svg>
+        <svg class="session-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5" width="16" height="14" rx="3"/><path d="m8 10 2 2-2 2m5 0h3"/></svg>
+      </button>
+      <span class="divider"></span>
+      <button id="open" title="给助手发消息" aria-label="给助手发消息"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11.5a7.5 7.5 0 0 1-7.5 7.5H5l-3 2V11.5A7.5 7.5 0 0 1 9.5 4h3a7.5 7.5 0 0 1 7.5 7.5Z"/><path d="M7 10h8M7 14h5"/></svg></button>
+    </div>
+    <form id="composer" hidden>
+      <button id="collapse" type="button" aria-label="收起输入" title="收起输入"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 10 5 5 5-5"/></svg></button>
+      <textarea id="draft" aria-label="给助手发消息" placeholder="说点什么…" maxlength="20000" rows="1"></textarea>
+      <button id="send" type="submit" aria-label="发送消息" title="Enter 发送 · Shift+Enter 换行"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5m-5 5 5-5 5 5"/></svg></button>
+    </form>
+    <span id="send-status" role="status" hidden></span>
+  </div>
+  <script src="pet.js"></script>
+</body>
+</html>

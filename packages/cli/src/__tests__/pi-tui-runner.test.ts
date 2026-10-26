@@ -47,7 +47,12 @@ import type {
 } from '@maka/runtime-host/protocol';
 import { SessionActivityRegistry } from '@maka/runtime/goal-turn-lifecycle';
 import { type ContextDiagnostics } from '@maka/runtime/context-diagnostics';
-import type { GoalProjection, TurnResumeParkReason } from '@maka/runtime-host/protocol';
+import type {
+  GoalProjection,
+  SessionEventWaitProjection,
+  SessionEventWaitCancelInput,
+  TurnResumeParkReason,
+} from '@maka/runtime-host/protocol';
 import type {
   MakaPreparePromptOptions,
   MakaPreparedSessionTurn,
@@ -11450,6 +11455,93 @@ Slug openai-work<cursor>
       terminal.input('/exit');
       terminal.input('\r');
       await run;
+    });
+
+    test('/goal lists parallel waits after clear and cancels one while the original Turn runs', async () => {
+      const terminal = new FakeTerminal(200, 40);
+      const waits: SessionEventWaitProjection[] = ['a', 'b'].map((id) => ({
+        sessionId: 'session-1',
+        waitId: `wait-${id}`,
+        sourceTurnId: 'turn-1',
+        consumer: {
+          kind: 'tool_invocation',
+          runId: 'run-1',
+          invocationId: 'invocation-1',
+          operationId: `operation-${id}`,
+        },
+        resource: { providerId: 'test', resourceType: 'job', resourceId: `job-${id}` },
+        deadlineAt: id === 'a' ? null : Number.MAX_SAFE_INTEGER,
+        phase: 'observing',
+        observation: 'pending',
+        reasonCode: null,
+      }));
+      const cancelled: SessionEventWaitCancelInput[] = [];
+      class WaitDriver extends SteeringTurnDriver {
+        getEventWaits() {
+          // Continuity only caches the first page; status must query the full collection.
+          return waits.slice(0, 1);
+        }
+        async queryEventWaits() {
+          return waits;
+        }
+        async cancelSessionEventWait(target: SessionEventWaitCancelInput) {
+          cancelled.push(target);
+          waits.splice(
+            waits.findIndex((wait) => wait.waitId === target.waitId),
+            1,
+          );
+          return { sessionId: target.sessionId, outcome: 'cancelled' as const };
+        }
+      }
+      const driver = new WaitDriver();
+      const run = runMakaPiTui({
+        title: 'Maka',
+        driver,
+        cwd: '/repo',
+        model: 'm',
+        connectionSlug: 'c',
+        permissionMode: 'bypass',
+        terminal,
+      });
+      try {
+        terminal.input('start work');
+        terminal.input('\r');
+        await waitFor(() => terminal.progressStates.at(-1) === true);
+        terminal.input('/goal');
+        terminal.input('\r');
+        await waitFor(() => plainTerminalOutput(terminal.output()).includes('wait-b: pending'));
+        assert.match(plainTerminalOutput(terminal.output()), /No goal set/);
+        assert.doesNotMatch(plainTerminalOutput(terminal.output()), /1970-01-01/);
+        terminal.input('/goal cancel-wait');
+        terminal.input('\r');
+        await waitFor(() => plainTerminalOutput(terminal.output()).includes('Choose one wait'));
+        assert.deepEqual(cancelled, []);
+        terminal.input('/goal cancel-wait wait-b');
+        terminal.input('\r');
+        await waitFor(() => cancelled.length === 1);
+        assert.deepEqual(cancelled[0], {
+          sessionId: 'session-1',
+          waitId: 'wait-b',
+          consumer: {
+            kind: 'tool_invocation',
+            runId: 'run-1',
+            invocationId: 'invocation-1',
+            operationId: 'operation-b',
+          },
+        });
+        assert.equal(driver.stopCalls, 0);
+        assert.deepEqual(driver.steered, []);
+        assert.equal(waits[0]?.waitId, 'wait-a');
+        assert.equal(terminal.progressStates.at(-1), true);
+      } finally {
+        terminal.input('\x1b');
+        terminal.input('\x1b');
+        await waitFor(() => terminal.progressStates.at(-1) === false);
+        terminal.input('\x03');
+        terminal.input('/exit');
+        terminal.input('\r');
+        await run;
+      }
     });
 
     test('/goal pause during a running turn refuses with a clear message instead of steering', async () => {

@@ -22,6 +22,7 @@ import {
   type InteractiveEventWaitAuthorityWriter,
 } from './event-wait-authority.js';
 import type { AgentRunEvent, AgentRunEventType, AgentRunProjectionKey } from '@maka/core/agent-run';
+import { SnapshotOperationGate } from './snapshot-operation-gate.js';
 import type { RuntimeEvent, ToolBoundaryProtocol } from '@maka/core/runtime-event';
 import type {
   RuntimeContinuationAuthorityStore,
@@ -219,6 +220,14 @@ interface ExecutionStoresWriterBase<K extends StorageRootKind> {
 }
 
 export interface InteractiveExecutionStoresWriter extends ExecutionStoresWriterBase<'interactive'> {
+  /** Trusted composition only. Holds the selected backend stable for a complete private copy. */
+  readonly snapshot?: {
+    runExclusive<T>(
+      operation: (
+        state: import('./quiescent-session-snapshot.js').SessionSnapshotStatePreparer,
+      ) => Promise<T>,
+    ): Promise<T>;
+  };
   readonly graphControlStore: ExecutionGraphStore;
   readonly eventWaitStore: InteractiveEventWaitAuthorityWriter;
   readonly goalStore: InteractiveGoalAuthorityWriter;
@@ -290,6 +299,13 @@ export interface ExecutionRuntimeEventReader {
   ): Promise<RuntimeInvocationPageResult>;
   readInvocation(sessionId: string, invocationId: string): Promise<RuntimeInvocationRecord>;
   readRuntimeEvents(sessionId: string, runId: string): Promise<RuntimeEvent[]>;
+  /** Immutable facts for one tool call, bounded independently of unrelated Run history. */
+  readToolProvenanceEvents(
+    sessionId: string,
+    runId: string,
+    toolCallId: string,
+    budget: EvidenceReadBudget,
+  ): Promise<BoundedEvidenceReadResult<RuntimeEvent>>;
   readRuntimeEventsBounded(
     sessionId: string,
     runId: string,
@@ -414,12 +430,13 @@ async function createExecutionStoresForWrite(
   let closed = false;
   let closeTask: Promise<void> | undefined;
   const active = new Set<Promise<unknown>>();
+  const snapshotGate = new SnapshotOperationGate();
   const subscriptions = new Set<() => void>();
   const run = <T>(operation: () => Promise<T>): Promise<T> => {
     if (closed) return Promise.reject(invalidExecutionStores(kind, 'write'));
     const pending = runWithStorageRootLease(lease, kind, 'write', () => {
       if (closed) throw invalidExecutionStores(kind, 'write');
-      return operation();
+      return snapshotGate.run(operation);
     });
     active.add(pending);
     void pending.finally(() => active.delete(pending)).catch(() => undefined);
@@ -458,16 +475,60 @@ async function createExecutionStoresForWrite(
     );
     if (
       !persistence.eventWaitStore ||
-      ['read', 'listSession', 'listPending', 'commit', 'close'].some(
-        (name) => typeof Reflect.get(persistence.eventWaitStore, name) !== 'function',
-      )
+      [
+        'readAny',
+        'listAny',
+        'listAnyForObservation',
+        'commitAny',
+        'registerInvocationWait',
+        'acknowledgeInvocationWaitResult',
+        'retireInvocationWait',
+        'registerGoalWaitingWait',
+        'acknowledgeGoalWaitingAdmission',
+        'read',
+        'listSession',
+        'listByStatus',
+        'listForObservation',
+        'readSourceCooldown',
+        'extendSourceCooldown',
+        'reserveSourceDispatch',
+        'completeSourceDispatch',
+        'commit',
+        'close',
+      ].some((name) => typeof Reflect.get(persistence.eventWaitStore, name) !== 'function')
     ) {
       throw new TypeError('Execution persistence requires an eventWaitStore');
     }
     eventWaitStore = await openInteractiveEventWaitAuthorityForWrite(lease, {
+      readAny: (input) => run(async () => persistence.eventWaitStore.readAny(input)),
+      listAny: (input) => run(async () => persistence.eventWaitStore.listAny(input)),
+      listAnyForObservation: (input) =>
+        run(async () => persistence.eventWaitStore.listAnyForObservation(input)),
+      commitAny: (input) => run(async () => persistence.eventWaitStore.commitAny(input)),
+      registerInvocationWait: (input) =>
+        run(async () => persistence.eventWaitStore.registerInvocationWait(input)),
+      acknowledgeInvocationWaitResult: (input) =>
+        run(async () => persistence.eventWaitStore.acknowledgeInvocationWaitResult(input)),
+      retireInvocationWait: (input) =>
+        run(async () => persistence.eventWaitStore.retireInvocationWait(input)),
+      registerGoalWaitingWait: (input) =>
+        run(async () => persistence.eventWaitStore.registerGoalWaitingWait(input)),
+      acknowledgeGoalWaitingAdmission: (input) =>
+        run(async () => persistence.eventWaitStore.acknowledgeGoalWaitingAdmission(input)),
+
       read: (input) => run(async () => persistence.eventWaitStore.read(input)),
       listSession: (input) => run(async () => persistence.eventWaitStore.listSession(input)),
-      listPending: (input) => run(async () => persistence.eventWaitStore.listPending(input)),
+      listByStatus: (input) => run(async () => persistence.eventWaitStore.listByStatus(input)),
+      listForObservation: (input) =>
+        run(async () => persistence.eventWaitStore.listForObservation(input)),
+      readSourceCooldown: (input) =>
+        run(async () => persistence.eventWaitStore.readSourceCooldown(input)),
+      extendSourceCooldown: (input) =>
+        run(async () => persistence.eventWaitStore.extendSourceCooldown(input)),
+      reserveSourceDispatch: (input) =>
+        run(async () => persistence.eventWaitStore.reserveSourceDispatch(input)),
+      completeSourceDispatch: (input) =>
+        run(async () => persistence.eventWaitStore.completeSourceDispatch(input)),
       commit: (input) => run(async () => persistence.eventWaitStore.commit(input)),
       close: () => {},
     });
@@ -576,6 +637,40 @@ async function createExecutionStoresForWrite(
   });
 
   const stores: InteractiveExecutionStoresWriter = {
+    ...(persistence.createSnapshotStatePreparer
+      ? {
+          snapshot: Object.freeze({
+            runExclusive<T>(
+              operation: (
+                state: import('./quiescent-session-snapshot.js').SessionSnapshotStatePreparer,
+              ) => Promise<T>,
+            ): Promise<T> {
+              if (closed) return Promise.reject(invalidExecutionStores(kind, 'write'));
+              const pending = snapshotGate.exclusive(() =>
+                runWithStorageRootLease(lease, kind, 'write', async () => {
+                  if (closed) throw invalidExecutionStores(kind, 'write');
+                  const state = persistence.createSnapshotStatePreparer!(lease);
+                  let scopeActive = true;
+                  try {
+                    return await operation({
+                      prepareState: (input) => {
+                        if (!scopeActive || closed)
+                          return Promise.reject(invalidExecutionStores(kind, 'write'));
+                        return state.prepareState(input);
+                      },
+                    });
+                  } finally {
+                    scopeActive = false;
+                  }
+                }),
+              );
+              active.add(pending);
+              void pending.finally(() => active.delete(pending)).catch(() => {});
+              return pending;
+            },
+          }),
+        }
+      : {}),
     interactionStore,
     graphControlStore,
     goalStore,
@@ -809,6 +904,8 @@ async function createExecutionStoresForWrite(
         : {}),
       scanRuntimeEvents: (sessionId, runId, budget, visit) =>
         run(() => runtimeEventStore.scanRuntimeEvents(sessionId, runId, budget, visit)),
+      readToolProvenanceEvents: (sessionId, runId, toolCallId, budget) =>
+        run(() => runtimeEventStore.readToolProvenanceEvents(sessionId, runId, toolCallId, budget)),
       readRuntimeEventsBounded: (sessionId, runId, budget) =>
         run(() => runtimeEventStore.readRuntimeEventsBounded(sessionId, runId, budget)),
       readImmutableRuntimeEvents: (sessionId, runId) =>
@@ -980,6 +1077,8 @@ async function openExecutionStoresForRead<K extends StorageRootKind, E extends o
               run(() => runtimeEventStore.readSessionRuntimeSnapshot!(sessionId)),
           }
         : {}),
+      readToolProvenanceEvents: (sessionId, runId, toolCallId, budget) =>
+        run(() => runtimeEventStore.readToolProvenanceEvents(sessionId, runId, toolCallId, budget)),
       readRuntimeEventsBounded: (sessionId, runId, budget) =>
         run(() => runtimeEventStore.readRuntimeEventsBounded(sessionId, runId, budget)),
       readImmutableRuntimeEvents: (sessionId, runId) =>

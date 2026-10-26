@@ -32,6 +32,7 @@ import { invalidProtocolFrame } from './errors.js';
 import { HOST_BOOTSTRAP_OPERATION_SPECS } from './host-status.js';
 import { HOST_RESOURCE_OPERATION_SPECS } from './host-resources.js';
 import { HOSTED_EXECUTION_OPERATION_SPECS } from './hosted-execution.js';
+import { SESSION_EVENT_WAIT_OPERATION_SPECS } from './event-wait.js';
 import { GOAL_OPERATION_SPECS } from './goal.js';
 import { INTERACTION_OPERATION_SPECS } from './interaction.js';
 import { MESSAGE_OPERATION_SPECS } from './message.js';
@@ -63,6 +64,7 @@ import { SESSION_REVISION_OPERATION_SPECS } from './session-revision.js';
 import { SESSION_BUNDLE_OPERATION_SPECS } from './session-bundle.js';
 import { SESSION_RETIREMENT_OPERATION_SPECS } from './session-retirement.js';
 import { PROMPT_SUGGESTION_OPERATION_SPECS } from './prompt-suggestions.js';
+import { SESSION_CHECKIN_OPERATION_SPECS } from './session-checkin.js';
 import { SESSION_EFFECT_OPERATION_SPECS } from './session-effects.js';
 import { SKILL_CATALOG_OPERATION_SPECS } from './skill-catalog.js';
 import { STORAGE_RETENTION_OPERATION_SPECS } from './storage-retention.js';
@@ -193,6 +195,7 @@ export * from './session-turns.js';
 export * from './session-todo.js';
 export * from './session-effects.js';
 export * from './prompt-suggestions.js';
+export * from './session-checkin.js';
 export * from './skill-catalog.js';
 export * from './storage-retention.js';
 export * from './storage-usage.js';
@@ -209,7 +212,7 @@ export const HOST_OPERATION_SPECS = composeOperationSpecMaps(
   ACCESS_AUTHORITY_OPERATION_SPECS,
   SESSION_COLLABORATION_OPERATION_SPECS,
   AGENT_GRAPH_OPERATION_SPECS,
-  GOAL_OPERATION_SPECS,
+  composeOperationSpecMaps(GOAL_OPERATION_SPECS, SESSION_EVENT_WAIT_OPERATION_SPECS),
   TURN_OPERATION_SPECS,
   CONTEXT_OPERATION_SPECS,
   CONNECTION_EFFECT_OPERATION_SPECS,
@@ -229,7 +232,9 @@ export const HOST_OPERATION_SPECS = composeOperationSpecMaps(
   SESSION_TURNS_OPERATION_SPECS,
   SESSION_CATALOG_OPERATION_SPECS,
   SESSION_EFFECT_OPERATION_SPECS,
-  PROMPT_SUGGESTION_OPERATION_SPECS,
+  // One argument for both: the disjoint-key check across every map passed here
+  // already sits at TypeScript's type instantiation depth limit.
+  { ...PROMPT_SUGGESTION_OPERATION_SPECS, ...SESSION_CHECKIN_OPERATION_SPECS },
   SESSION_REVISION_OPERATION_SPECS,
   SESSION_BUNDLE_OPERATION_SPECS,
   SESSION_RETIREMENT_OPERATION_SPECS,
@@ -342,8 +347,11 @@ export const REMOTE_OWNER_OPERATION_GRANTS = Object.freeze([
   'runtime.resource.stop',
   'scheduled-task.mutate',
   'scheduled-task.query',
+  'session.event-wait.cancel',
+  'session.event-waits.query',
   'session.branch.create',
   'session.catalog.query',
+  'session.checkin.generate',
   'session.configuration.update',
   'session.create',
   'session.execution_boundary.query',

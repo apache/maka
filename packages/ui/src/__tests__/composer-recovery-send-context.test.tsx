@@ -30,6 +30,7 @@ const originalNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator
 const originalGlobals = {
   document: globalThis.document,
   window: globalThis.window,
+  matchMedia: globalThis.matchMedia,
   KeyboardEvent: globalThis.KeyboardEvent,
   Node: globalThis.Node,
   HTMLElement: globalThis.HTMLElement,
@@ -56,6 +57,7 @@ const recoveryId = 'local-recovery:waiting-send';
 
 async function harness(path: SendPath = 'submit') {
   const { document, window } = parseHTML('<div id="root"></div>');
+  window.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} }) as unknown as MediaQueryList;
   window.getComputedStyle = () => ({ direction: 'ltr', writingMode: 'horizontal-tb', getPropertyValue: () => '' }) as unknown as CSSStyleDeclaration;
   window.getSelection = () => null;
   document.getSelection = () => null;

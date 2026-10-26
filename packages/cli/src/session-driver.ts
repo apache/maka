@@ -232,6 +232,13 @@ export interface MakaSessionDriver {
    * authority leave goal UI hidden.
    */
   getGoal?(): GoalProjection | null;
+  getEventWaits?(): readonly import('@maka/runtime-host/protocol').SessionEventWaitProjection[];
+  queryEventWaits?(): Promise<
+    readonly import('@maka/runtime-host/protocol').SessionEventWaitProjection[]
+  >;
+  cancelSessionEventWait?(
+    input: import('@maka/runtime-host/protocol').SessionEventWaitCancelInput,
+  ): Promise<import('@maka/runtime-host/protocol').SessionEventWaitCancelResult>;
   /**
    * Fires when the session's goal projection changes — set, settled, paused,
    * resumed, cleared, or when the attached session changes.

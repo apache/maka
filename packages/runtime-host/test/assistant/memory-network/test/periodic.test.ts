@@ -46,10 +46,25 @@ async function setup(t: any, config: any = {}) {
   });
   const worker = () =>
     JSON.parse(String(db.prepare('select payload from workers where index_id=?').get(id)!.payload));
-  const patch = (x: any) =>
-    db
-      .prepare('update workers set payload=? where index_id=?')
-      .run(JSON.stringify({ ...worker(), ...x }), id);
+  const patch = (x: any) => {
+    if ('nextCheckAt' in x) {
+      const row = db
+        .prepare("select value from memory_meta where key='maintenance-schedule'")
+        .get()!;
+      const schedule = JSON.parse(String(row.value));
+      db.prepare("update memory_meta set value=? where key='maintenance-schedule'").run(
+        JSON.stringify({
+          ...schedule,
+          nextCheckAt: schedule.remainingIds?.length ? schedule.nextCheckAt : x.nextCheckAt,
+          retryAt: null,
+        }),
+      );
+    }
+    db.prepare('update workers set payload=? where index_id=?').run(
+      JSON.stringify({ ...worker(), ...x }),
+      id,
+    );
+  };
   const read = () => f.invoke('MemoryIndexRead', { indexId: id });
   return { f, first, id, db, worker, patch, read };
 }
@@ -279,7 +294,7 @@ test('failed source scan preserves coverage and last observation; retry then org
 test('pause and interval survive plugin reload; explicit one-shot maintain does not unpause; resume restores scheduling', async (t) => {
   const { f, id, worker, patch, read } = await setup(t);
   await f.invoke('MemoryIndexControl', { indexId: id, action: 'pause', intervalMs: 123456 });
-  const due = worker().nextCheckAt;
+  const due = (await read()).freshness.nextCheckAt;
   assert.equal(due, null);
   const result = await f.restart({
     'memory-network': { tickMs: 10, intervalMs: 43200000, retryMs: 999999 },
@@ -318,7 +333,7 @@ test('unfinished failed model round resumes the same range after reload, without
   });
   const failed = await read();
   assert.equal(failed.freshness.status, 'maintenance_failed');
-  assert.match(failed.freshness.lastMaintenanceError, /without completing/);
+  assert.match(failed.freshness.lastMaintenanceError, /without checkpoint/);
   assert.equal(failed.coverage.cursor, first.coverage.cursor);
   f.sessions.get('chat-b')!.push({ id: 'later', type: 'user', text: 'Arrived after failure' });
   await f.restart({ 'memory-network': { tickMs: 10, intervalMs: 43200000, retryMs: 999999 } });
@@ -403,7 +418,7 @@ test('repeated maintenance failure backs off without changing coverage and reset
   await f.invoke('MemoryIndexMaintain', { indexId: id });
   const second = worker();
   assert.equal(second.failures, 2);
-  assert.ok(second.nextCheckAt > firstRetry.nextCheckAt + 99000);
+  assert.ok(second.retryAt > firstRetry.retryAt + 99000);
   assert.equal(
     (await f.invoke('MemoryIndexRead', { indexId: id })).freshness.coveredCursor,
     first.coverage.cursor,

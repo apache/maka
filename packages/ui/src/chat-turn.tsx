@@ -24,6 +24,7 @@ import { TranscriptDisclosure } from './transcript-disclosure.js';
 import { Markdown } from './markdown.js';
 import { formatTurnDuration } from './chat-display-helpers.js';
 import { formatAbsoluteTimestamp } from '@maka/core/relative-time';
+import { isAssistantInputTurnId } from '@maka/core/assistant-turn-ids';
 import { isTimeDrivenMotionEnabled, isProgressiveStreamingEnabled } from './streaming-presentation.js';
 import { ImageMessageProvider } from './image-delivery.js';
 import { computerRunningLabel } from './tool-activity/computer-action-label.js';
@@ -417,6 +418,7 @@ export const TurnView = memo(function TurnView(props: {
   turn: TurnViewModel;
   /** Optional identity shown once above the turn's root prompt. */
   messageHeader?: ReactNode;
+  assistantAvatar?: ReactNode;
   /** Durable clarification and handoff context after the root prompt. */
   turnContext?: ReactNode;
   /** Optional accessible action on each message edge. */
@@ -535,7 +537,9 @@ export const TurnView = memo(function TurnView(props: {
   const showAssistantMessage =
     turn.timeline.length > 0 ||
     !!props.liveStreaming ||
-    (turn.user !== undefined && turn.statusSource === 'recorded' && turn.status !== 'running');
+    (turn.user !== undefined &&
+      !isAssistantInputTurnId(turn.turnId) &&
+      turn.statusSource === 'recorded' && turn.status !== 'running');
   const runningToolLabel = computerRunningLabel(turn.tools, locale);
   const conversationSegments = useMemo(
     () => splitTimelineAtUserMessages(foldedTimeline, showAssistantMessage),
@@ -751,6 +755,7 @@ export const TurnView = memo(function TurnView(props: {
             <LocalizedChatMessage
               accessibleLabel={`${copy.assistantAriaLabel} · ${answerContext}`}
               sender="assistant"
+              avatar={props.assistantAvatar}
               className="maka-chat-message maka-assistant-answer"
             >
             <VStack gap={2} width="100%" className="maka-assistant-answer-content">
@@ -992,6 +997,8 @@ export function PendingTurnAnswer(props: {
   turnId?: string;
   startedAt?: number;
   running: boolean;
+  /** Local submission is already processing before the Host names its Turn. */
+  activityLabel?: string;
   providerRetry?: LiveProviderRetry;
 }) {
   const locale = useUiLocale();
@@ -1005,7 +1012,7 @@ export function PendingTurnAnswer(props: {
       className="maka-chat-message maka-assistant-answer"
     >
       <VStack gap={2} width="100%" className="maka-assistant-answer-content">
-        <TurnStatusBar status="running" running={props.running} startedAt={startedAt} providerRetry={props.providerRetry} />
+        <TurnStatusBar status="running" running={props.running} startedAt={startedAt} activityLabel={props.activityLabel} providerRetry={props.providerRetry} />
         {props.providerRetry && <ModelProviderRetryIndicator retry={props.providerRetry} />}
       </VStack>
       <TurnFooter turnId={props.turnId} actions={[]} live context={context} />
@@ -1308,7 +1315,7 @@ export function ModelProviderRetryIndicator(props: { retry: LiveProviderRetry })
  */
 type AssistantAnswerPhase = 'historical' | 'streaming' | 'settled';
 
-type AssistantAnswerBubbleProps = { imageIdentity?: { turnId: string; messageId: string }; imageDisplay?: 'image' | 'link' } & (
+type AssistantAnswerBubbleProps = { summary?: string; imageIdentity?: { turnId: string; messageId: string }; imageDisplay?: 'image' | 'link' } & (
   | { text: string; phase: 'historical'; interrupted?: true }
   | {
       text: string;
@@ -1367,6 +1374,8 @@ const AssistantAnswerBubble = memo(function AssistantAnswerBubble(props: Assista
       <ImageMessageProvider identity={props.imageIdentity} streaming={isProgressiveStreamingEnabled(props.phase === 'streaming')}>
         <Markdown
           text={props.text}
+          summary={props.summary}
+          separateStickers
           imageDisplay={props.imageDisplay}
           streaming={props.phase === 'streaming'}
           settledText={settledText}
@@ -1451,7 +1460,7 @@ const TurnTimelineEntry = memo(function TurnTimelineEntry(props: {
     );
   }
   // Same component either way — a type swap here would remount the answer.
-  if (item.live !== true) return <AssistantAnswerBubble imageIdentity={props.turnId ? { turnId: props.turnId, messageId: item.messageId } : undefined} imageDisplay={props.imageDisplay} text={item.text} interrupted={item.interrupted} phase="historical" />;
+  if (item.live !== true) return <AssistantAnswerBubble imageIdentity={props.turnId ? { turnId: props.turnId, messageId: item.messageId } : undefined} imageDisplay={props.imageDisplay} text={item.text} summary={item.summary} interrupted={item.interrupted} phase="historical" />;
   return (
     <AssistantAnswerBubble
       imageIdentity={props.turnId ? { turnId: props.turnId, messageId: item.messageId } : undefined}
@@ -1489,7 +1498,7 @@ const ProcessingBlock = memo(function ProcessingBlock(props: {
 }) {
   const copy = getConversationCopy(useUiLocale()).messages;
   return (
-    <TranscriptDisclosure running={props.running} statusBar={Boolean(props.statusRow)} status={props.statusRow?.status}
+    <TranscriptDisclosure deferMount running={props.running} statusBar={Boolean(props.statusRow)} status={props.statusRow?.status}
       label={props.statusRow ? <TurnStatusRow {...props.statusRow} /> : copy.processDetails}>
       {(open) => <>
         {props.entries.map((entry, index) => (

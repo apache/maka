@@ -1283,6 +1283,33 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     return this.#channel?.snapshot.goal ?? null;
   }
 
+  getEventWaits(): readonly import('@maka/runtime-host/protocol').SessionEventWaitProjection[] {
+    return this.#channel?.snapshot.eventWaits?.items ?? [];
+  }
+  async queryEventWaits(): Promise<
+    readonly import('@maka/runtime-host/protocol').SessionEventWaitProjection[]
+  > {
+    const sessionId = this.#sessionId;
+    if (!sessionId) return [];
+    const items: import('@maka/runtime-host/protocol').SessionEventWaitProjection[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = await this.#request('session.event-waits.query', {
+        sessionId,
+        ...(cursor ? { afterWaitId: cursor } : {}),
+      });
+      items.push(...page.items);
+      cursor = page.nextCursor ?? undefined;
+    } while (cursor);
+    return items;
+  }
+  async cancelSessionEventWait(
+    input: import('@maka/runtime-host/protocol').SessionEventWaitCancelInput,
+  ): Promise<import('@maka/runtime-host/protocol').SessionEventWaitCancelResult> {
+    if (input.sessionId !== this.#sessionId) throw new Error('Wait belongs to another Session');
+    return this.#request('session.event-wait.cancel', input);
+  }
+
   subscribeGoalChanges(listener: (goal: GoalProjection | null) => void): () => void {
     this.#goalListeners.add(listener);
     return () => this.#goalListeners.delete(listener);

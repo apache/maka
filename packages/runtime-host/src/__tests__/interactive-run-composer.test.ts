@@ -269,6 +269,62 @@ test('scoped Plugin Skill contributions join the canonical model inventory', asy
   assert.match(prompt.text ?? '', /Scoped skill for session-skill/u);
 });
 
+test('main-session prompts name the Host Skill directory even with an empty catalog', async () => {
+  const workspaceSkillDirectory = '/maka-dev/workspaces/default/skills';
+  const composer = createFixtureComposer({
+    skills: {
+      readCanonicalModelInventory: async ({ projectRoot }: { projectRoot: string }) => ({
+        revision: 'base-revision',
+        projectRoot,
+        workspaceSkillDirectory,
+        inventory: [],
+        diagnostics: [],
+        discoveryDiagnostics: [],
+      }),
+    } as unknown as HostSkillCatalogCoordinator,
+  });
+
+  const prompt = await composer.resolveSystemPrompt({
+    sessionId: 'skill-creation-session',
+    turnId: 'skill-creation-turn',
+    cwd: '/maka-dev/workspaces/default',
+  });
+  assert.match(prompt.text ?? '', new RegExp(workspaceSkillDirectory, 'u'));
+  assert.match(prompt.text ?? '', /<skill-id>[\\/]SKILL\.md/u);
+  assert.match(prompt.text ?? '', /read .*SKILL\.md back/iu);
+  assert.match(prompt.text ?? '', /project-level, user-level, or managed-source/iu);
+  assert.match(prompt.text ?? '', /<project>[\\/]\.maka[\\/]skills/u);
+  assert.match(prompt.text ?? '', /<project>[\\/]\.agents[\\/]skills/u);
+  assert.match(prompt.text ?? '', /~[\\/]\.maka[\\/]skills/u);
+  assert.match(prompt.text ?? '', /~[\\/]\.agents[\\/]skills/u);
+});
+
+test('child-agent prompts carry the Skill creation guidance', async () => {
+  const workspaceSkillDirectory = '/maka-dev/workspaces/default/skills';
+  const composer = createFixtureComposer({
+    childInstruction: 'CHILD_ROLE_INSTRUCTION',
+    skills: {
+      readCanonicalModelInventory: async ({ projectRoot }: { projectRoot: string }) => ({
+        revision: 'base-revision',
+        projectRoot,
+        workspaceSkillDirectory,
+        inventory: [],
+        diagnostics: [],
+        discoveryDiagnostics: [],
+      }),
+    } as unknown as HostSkillCatalogCoordinator,
+  });
+
+  const prompt = await composer.resolveSystemPrompt({
+    sessionId: 'child-session',
+    turnId: 'child-turn',
+    cwd: '/maka-dev/workspaces/default',
+  });
+  assert.match(prompt.text ?? '', /CHILD_ROLE_INSTRUCTION/u);
+  assert.match(prompt.text ?? '', new RegExp(workspaceSkillDirectory, 'u'));
+  assert.match(prompt.text ?? '', /<skill-id>[\\/]SKILL\.md/u);
+});
+
 function tool(name: string): MakaTool {
   return {
     name,
@@ -607,4 +663,25 @@ test('WorkHub prepared capability execution also enforces and settles topic asso
     undefined,
   );
   await browser.prepareExecution!({}, context as never);
+});
+
+test('WaitForEvent catalog follows current Goal availability and defaults closed', () => {
+  let available = false;
+  const hostTools = [tool('WaitForEvent')];
+  assert.ok(
+    !createFixtureComposer({ hostTools }).tools.some((tool) => tool.name === 'WaitForEvent'),
+  );
+  const composer = createFixtureComposer({
+    hostTools,
+    eventWaitAvailable: () => available,
+    resolveAdditionalTools: () => [tool('WaitForEvent')],
+  });
+  assert.ok(!composer.resolveTools!().some((tool) => tool.name === 'WaitForEvent'));
+  available = true;
+  assert.equal(
+    composer.resolveTools!().find((tool) => tool.name === 'WaitForEvent'),
+    hostTools[0],
+  );
+  available = false;
+  assert.ok(!composer.resolveTools!().some((tool) => tool.name === 'WaitForEvent'));
 });

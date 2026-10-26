@@ -47,6 +47,8 @@
 @import "./styles/onboarding.css" layer(components);
 @import "./styles/module-pages.css" layer(components);
 @import "./features/personal-assistant/personal-assistant.css" layer(components);
+@import "./features/personal-assistant/original-reader.css";
+@import "./features/personal-assistant/task-float.css" layer(components);
 @import "./styles/settings/select.css" layer(components);
 @import "./styles/model-switcher.css" layer(components);
 @import "./styles/chat-header.css" layer(components);
@@ -57,6 +59,7 @@
 @import "./styles/help.css" layer(components);
 @import "./styles/palette.css" layer(components);
 @import "./styles/hero.css" layer(components);
+@import "./styles/checkin.css" layer(components);
 @import "./styles/chat-message.css" layer(components);
 @import "./styles/composer.css" layer(components);
 @import "./styles/message-queue.css" layer(components);

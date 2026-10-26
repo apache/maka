@@ -77,6 +77,7 @@ export * from './client-capability.js';
 export * from './configuration-change.js';
 export * from './connection-catalog-change.js';
 export * from './goal.js';
+export * from './event-wait.js';
 export * from './hosted-execution.js';
 export * from './host-resources.js';
 export * from './plan.js';
@@ -107,7 +108,32 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 222 as const;
+// Re-check against main before merging; sibling PRs may use the same next epoch.
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 236 as const;
+// 236: Goal event wait consumers include the assistant character and pet operations from main.
+// 235: Goal event wait consumers include the quick-discovery operations from main.
+// 233: Goal event wait consumers include the Session check-in operations from main.
+// 232: event_wait domain invalidations refresh paginated Session wait collections,
+// including changes beyond the first continuity page and durable consumption.
+// 231: Session wait projections identify each live tool or naturally completed Goal consumer;
+// cancellation targets exact consumer identity. The PR3 Goal wait projection, cancellation
+// operation and yielded-continuation provenance are removed.
+// The superseded computer-observation prototype frames are also removed.
+// Older strict peers cannot decode the current fields and operations.
+// 231 (main): Assistant character packs, appearance onboarding and desktop pet capabilities.
+// 230: Separate quick-discovery control/status operations for the personal assistant.
+// 229: Session check-in proposes cards for unfinished work across Sessions.
+// 228: Executor catalog queries support per-agent filtering and process-free inventory.
+// Older peers reject the executorId and listOnly fields in the strict query decoder.
+// 227: Goal projections carry eventWait and support goal.event-wait.cancel.
+// Older peers cannot decode the wait summary or cancel a specific wait.
+// 226: assistant.allocate-workspace allocates a Host-owned fallback for projectless assistants.
+// 225: Goal successor transcript origins carry typed event-wait provenance.
+// Older peers reject the additional field in the strict stored-message decoder.
+// 224: Assistant conversation admission supports Inbox receipts without a model Turn,
+// inbox execution-query resolutions, external connector provenance and message summaries.
+// Existing bot turn.start producers also carry strict external_connector provenance.
+// Also adds assistant.avatar/assistant.avatar-image and the bot block on assistant.binding.
 // 222: Built-in personal assistant operations and the Host-owned default-off
 // master switch require matching Client and Host support.
 // 221: Epoch-220 peers do not support `artifact.image.resolve` or its image
@@ -908,3 +934,5 @@ function requireReplacement(value: unknown): HostIncompatible['replacement'] {
   if (value === 'blocked_by_residency' || value === 'wait_for_idle_exit') return value;
   throw invalidProtocolFrame('Invalid replacement disposition');
 }
+
+export type {} from './goal.js';

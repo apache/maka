@@ -31,6 +31,7 @@ import { openInteractiveExecutionStoresForWrite } from '@maka/storage/execution-
 import { openInteractiveGoalAuthorityForWrite } from '@maka/storage/goal-authority';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
 import { HostGoalCoordinator } from '../server/goal-coordinator.js';
+import { readGoalFormEvidence, type GoalFormAnswer } from '../server/goal-form-evidence.js';
 import { HostedExecutionProjectionReader } from '../server/hosted-execution-projection.js';
 import { SessionAdmissionGate } from '../server/session-admission-gate.js';
 import { deferred, waitFor as pollFor, withTimeout } from '@maka/core/test-only/async-primitives';
@@ -65,7 +66,9 @@ test('one Host Goal is shared across clients with CAS control and crash-clear re
     const coordinator = new HostGoalCoordinator({
       store: goalStore,
       stores,
-      readSessionMessages: (sessionId) => stores.sessionStore.readMessagesSnapshot(sessionId),
+      readSessionContext: async (sessionId) => ({
+        messages: await stores.sessionStore.readMessagesSnapshot(sessionId),
+      }),
       executions: {
         reconcile: async () => assert.fail('No Goal execution recovery is expected'),
         subscribe: () => () => undefined,
@@ -198,14 +201,16 @@ test('one Host Goal is shared across clients with CAS control and crash-clear re
     assert.equal(acquired, 2);
     coordinator.beginDrain();
     assert.equal(released, 2);
-    assert.equal(coordinator.readProjection(session.id), null);
+    assert.equal(await coordinator.readProjection(session.id), null);
     await coordinator.close();
     assert.equal(released, 2, 'close must not release Goal residency twice');
 
     const recovered = new HostGoalCoordinator({
       store: goalStore,
       stores,
-      readSessionMessages: (sessionId) => stores.sessionStore.readMessagesSnapshot(sessionId),
+      readSessionContext: async (sessionId) => ({
+        messages: await stores.sessionStore.readMessagesSnapshot(sessionId),
+      }),
       executions: {
         reconcile: async () => assert.fail('Recovered Goal has no current execution'),
         subscribe: () => () => undefined,
@@ -282,7 +287,9 @@ test('session retirement forgets a terminal Goal without recreating deleted auth
     const coordinator = new HostGoalCoordinator({
       store: goalStore,
       stores,
-      readSessionMessages: (sessionId) => stores.sessionStore.readMessagesSnapshot(sessionId),
+      readSessionContext: async (sessionId) => ({
+        messages: await stores.sessionStore.readMessagesSnapshot(sessionId),
+      }),
       executions: {
         reconcile: async () => assert.fail('A terminal Goal has no execution to recover'),
         subscribe: () => () => undefined,
@@ -302,10 +309,10 @@ test('session retirement forgets a terminal Goal without recreating deleted auth
     });
     await coordinator.prepareRecovery();
 
-    const beforeRetirement = coordinator.readProjection(session.id);
+    const beforeRetirement = await coordinator.readProjection(session.id);
     const rolledBack = await coordinator.beginSessionRetirement([session.id], 'archive');
     rolledBack.rollback();
-    assert.deepEqual(coordinator.readProjection(session.id), beforeRetirement);
+    assert.deepEqual(await coordinator.readProjection(session.id), beforeRetirement);
     assert.ok(await goalStore.read(session.id), 'rollback preserves durable Goal authority');
 
     const retirement = await coordinator.beginSessionRetirement([session.id], 'archive');
@@ -316,7 +323,7 @@ test('session retirement forgets a terminal Goal without recreating deleted auth
     );
     retirement.commit();
 
-    assert.equal(coordinator.readProjection(session.id), null);
+    assert.equal(await coordinator.readProjection(session.id), null);
     assert.equal(await goalStore.read(session.id), null);
     await coordinator.close();
     assert.equal(drainRequests, 0);
@@ -345,14 +352,14 @@ test('a retired context read cannot replace the new Goal token baseline', async 
     store: goalStore,
     stores,
     sessionAdmission: new SessionAdmissionGate(),
-    readSessionMessages: async (sessionId) => {
+    readSessionContext: async (sessionId) => {
       const messages = await stores.sessionStore.readMessagesSnapshot(sessionId);
       if (firstRead) {
         firstRead = false;
         readStarted.resolve();
         await releaseOldRead.promise;
       }
-      return messages;
+      return { messages };
     },
     executions: {
       reconcile: async () => assert.fail('No recovery expected'),
@@ -457,7 +464,9 @@ test('the Goal evaluator reads what the last steps said, not empty thinking rows
     store: goalStore,
     stores,
     sessionAdmission: new SessionAdmissionGate(),
-    readSessionMessages: (sessionId) => stores.sessionStore.readMessagesSnapshot(sessionId),
+    readSessionContext: async (sessionId) => ({
+      messages: await stores.sessionStore.readMessagesSnapshot(sessionId),
+    }),
     executions: {
       reconcile: async () => assert.fail('No recovery expected'),
       subscribe: () => () => {},
@@ -553,6 +562,386 @@ test('the Goal evaluator reads what the last steps said, not empty thinking rows
   assert.ok(excerpt.length <= 500, 'within the budget one row always had');
 });
 
+test('the Host Goal evaluator receives tool results and human card answers from the transcript', async (t) => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-host-goal-tool-context-'));
+  const capability = await resolveStorageRoot({ path: join(base, 'root'), kind: 'interactive' });
+  const owner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(owner);
+  const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+  const goalStore = await openInteractiveGoalAuthorityForWrite(owner.lease);
+  const prompts: string[] = [];
+  const formAnswers = new Map<string, readonly GoalFormAnswer[]>();
+  const coordinator = new HostGoalCoordinator({
+    store: goalStore,
+    stores,
+    sessionAdmission: new SessionAdmissionGate(),
+    readSessionContext: async (sessionId) => ({
+      messages: await stores.sessionStore.readMessagesSnapshot(sessionId),
+      formAnswers: formAnswers.get(sessionId),
+    }),
+    executions: {
+      reconcile: async () => assert.fail('No recovery expected'),
+      subscribe: () => () => {},
+    },
+    evaluator: {
+      evaluate: async (prompt) => {
+        prompts.push(prompt);
+        return '{"met":false,"impossible":false,"progress":true,"waiting":false,"reason":"continue"}';
+      },
+      close: async () => {},
+    },
+    admitTurn: () => assert.fail('The one-iteration Goal must stop after evaluation'),
+    acquireResidency: () => ({ release() {} }),
+    onProjectionChanged: () => {},
+    requestDrain: () => assert.fail('No drain expected'),
+  });
+  t.after(async () => {
+    await coordinator.close();
+    await goalStore.close();
+    await stores.sessionStore.close?.();
+    await owner.close();
+    await rm(base, { recursive: true, force: true });
+  });
+  await coordinator.prepareRecovery();
+
+  const evaluate = async (
+    toolName: string,
+    args: unknown,
+    result: StoredMessage,
+    formAnswer?: GoalFormAnswer,
+  ) => {
+    const session = await stores.sessionStore.create({
+      cwd: capability.canonicalPath,
+      llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+      llmConnectionSlug: 'fake',
+      model: 'fake-model',
+      permissionMode: 'ask',
+    });
+    const append = (message: StoredMessage) =>
+      stores.sessionStore.appendMessage(session.id, message);
+    const turnId = 'goal-tool-context-turn';
+    if (formAnswer) {
+      const runId = `form-run-${session.id}`;
+      const requestId = `${formAnswer.requestId}-${session.id}`;
+      const established = await stores.interactionStore.establishRequest({
+        sessionId: session.id,
+        turnId: formAnswer.turnId,
+        runId,
+        requestId,
+        createdAt: 1,
+        request: {
+          kind: 'form',
+          toolUseId: formAnswer.toolUseId,
+          message: formAnswer.message,
+          requester: { name: toolName },
+          fields: formAnswer.fields.map(({ name, label }) => ({
+            kind: 'string',
+            name,
+            label,
+            required: true,
+            maxLength: 64,
+          })),
+        },
+      });
+      assert.equal(established.status, 'stable');
+      assert.notEqual(formAnswer.action, 'unavailable');
+      const action = formAnswer.action;
+      if (action === 'unavailable') assert.fail('This fixture must have a canonical form answer');
+      const values = Object.fromEntries(
+        Object.entries(formAnswer.values ?? {}).map(([name, value]) => {
+          assert.ok(typeof value === 'string', 'This fixture uses string form fields');
+          return [name, value];
+        }),
+      );
+      const committed = await stores.interactionStore.commitOutcome(requestId, {
+        kind: 'form_answer',
+        ...(action === 'accept' ? { action, values } : { action }),
+        committedAt: 2,
+      });
+      assert.equal(committed.status, 'stable');
+      formAnswers.set(
+        session.id,
+        await readGoalFormEvidence(
+          session.id,
+          [
+            {
+              sessionId: session.id,
+              turnId: formAnswer.turnId,
+              runId,
+              invocationId: runId,
+              id: `ack-${requestId}`,
+              ts: 3,
+              partial: false,
+              role: 'system',
+              author: 'user',
+              actions: { formAnswerAccepted: { requestId } },
+              refs: { toolCallId: formAnswer.toolUseId },
+            },
+          ],
+          (id) => stores.interactionStore.readInteraction(id),
+        ),
+      );
+    }
+    await append({
+      type: 'user',
+      id: 'ask',
+      turnId,
+      ts: 1,
+      text: 'Run the tests and get my approval before publishing.',
+    });
+    await append({ type: 'tool_call', id: 'call', turnId, ts: 2, toolName, args });
+    await append(result);
+    await append({
+      type: 'assistant',
+      id: 'report',
+      turnId,
+      ts: 4,
+      text: 'Tests passed; publishing approved; task complete.',
+      modelId: 'fake-model',
+    });
+    coordinator.manager.create(session.id, 'Run the tests and get approval', { maxIterations: 1 });
+    const turn = coordinator.beginObservedTurn(session.id, turnId);
+    assert.equal(turn.kind, 'registered');
+    if (turn.kind !== 'registered') assert.fail('The Goal turn must be registered');
+    const previousPromptCount = prompts.length;
+    await withTimeout(
+      turn.settle({ kind: 'completed', turnId }),
+      5_000,
+      'Goal turn did not settle',
+    );
+    assert.equal(prompts.length, previousPromptCount + 1);
+    return prompts
+      .at(-1)!
+      .split('--- RECENT CONVERSATION CONTEXT ---\n')[1]!
+      .split('\n\n--- YOUR JUDGMENT')[0]!;
+  };
+  const result = (
+    content: Extract<StoredMessage, { type: 'tool_result' }>['content'],
+    isError = false,
+  ): StoredMessage => ({
+    type: 'tool_result',
+    id: 'result',
+    turnId: 'goal-tool-context-turn',
+    ts: 3,
+    toolUseId: 'call',
+    isError,
+    outcome: isError ? 'error' : 'success',
+    content,
+  });
+
+  await t.test(
+    'a failed command differs from a passing result despite identical prose',
+    async () => {
+      const passed = await evaluate(
+        'Bash',
+        { command: 'npm test' },
+        result({ kind: 'text', text: 'exit_code=0\nPASS 42 tests' }),
+      );
+      const failed = await evaluate(
+        'Bash',
+        { command: 'npm test' },
+        result({ kind: 'text', text: 'exit_code=1\nFAIL 3 tests' }, true),
+      );
+      assert.notEqual(
+        failed,
+        passed,
+        'a failed tool result must not look identical to a successful one',
+      );
+      assert.match(failed, /npm test/);
+      assert.match(failed, /FAIL 3 tests/);
+      assert.match(failed, /error/);
+      assert.match(
+        failed,
+        /Tests passed; publishing approved; task complete\./,
+        'the contradictory report stays visible',
+      );
+      assert.match(passed, /PASS 42 tests/);
+    },
+  );
+
+  await t.test(
+    'AskUserQuestion answers differ even when the offered options are identical',
+    async () => {
+      // The answer acknowledgement contains only identity. The actual human answer
+      // is returned through the tool's JSON result, not a separate user-text row.
+      const question = 'May I publish?';
+      const args = { questions: [{ question, options: [{ label: 'Yes' }, { label: 'No' }] }] };
+      const yes = await evaluate(
+        'AskUserQuestion',
+        args,
+        result({ kind: 'json', value: { answers: [{ question, answer: 'Yes' }] } }),
+      );
+      const no = await evaluate(
+        'AskUserQuestion',
+        args,
+        result({ kind: 'json', value: { answers: [{ question, answer: 'No' }] } }),
+      );
+      assert.notEqual(
+        no,
+        yes,
+        'the same offered options must not hide which answer the human chose',
+      );
+      assert.match(no, /answer[\s\S]*No/);
+      assert.match(yes, /answer[\s\S]*Yes/);
+    },
+  );
+
+  await t.test(
+    'a tool-emitted form response preserves accepted values and cancellation',
+    async () => {
+      const accepted = await evaluate(
+        'SyntheticForm',
+        {},
+        result({ kind: 'json', value: { action: 'accept', values: { target: 'staging' } } }),
+      );
+      const cancelled = await evaluate(
+        'SyntheticForm',
+        {},
+        result({ kind: 'json', value: { action: 'cancel' } }),
+      );
+      assert.notEqual(
+        cancelled,
+        accepted,
+        'a cancelled tool-emitted form response must remain distinct from accepted values',
+      );
+      assert.match(accepted, /staging/);
+      assert.match(cancelled, /cancel/);
+    },
+  );
+
+  await t.test(
+    'a human form answer reaches the judge when the tool result does not echo it',
+    async () => {
+      const answer: GoalFormAnswer = {
+        turnId: 'goal-tool-context-turn',
+        toolUseId: 'call',
+        requestId: 'form-request',
+        action: 'accept',
+        message: 'Choose the deployment target',
+        fields: [{ name: 'target', label: 'Deployment target' }],
+        values: { target: 'staging' },
+      };
+      const accepted = await evaluate(
+        'SyntheticForm',
+        {},
+        result({ kind: 'text', text: 'Tool finished' }),
+        answer,
+      );
+      const declined = await evaluate(
+        'SyntheticForm',
+        {},
+        result({ kind: 'text', text: 'Tool finished' }),
+        { ...answer, action: 'decline', values: undefined },
+      );
+      assert.notEqual(
+        declined,
+        accepted,
+        'a generic tool reply must not erase the actual form answer',
+      );
+      assert.match(accepted, /staging/);
+      assert.match(declined, /decline/);
+      assert.doesNotMatch(declined, /staging/);
+    },
+  );
+
+  await t.test(
+    'canonical credential labels protect the final judge prompt from a generic tool echo',
+    async () => {
+      const secret = 'short-unpatterned-secret';
+      const answer: GoalFormAnswer = {
+        turnId: 'goal-tool-context-turn',
+        toolUseId: 'call',
+        requestId: 'credential-form-request',
+        action: 'accept',
+        message: 'Enter the account credential',
+        fields: [{ name: 'value', label: 'Password (required)' }],
+        values: { value: secret },
+      };
+      const echo = await evaluate(
+        'SyntheticForm',
+        { operation: 'authenticate' },
+        result({ kind: 'json', value: { action: 'accept', values: { value: secret } } }),
+        answer,
+      );
+      assert.match(echo, /\[tool\]:/);
+      assert.match(echo, /\[form answer\]:/);
+      assert.match(echo, /"outcome":"success"/);
+      assert.match(echo, /Password \(required\)/);
+      assert.match(echo, /\[redacted\]/);
+      assert.doesNotMatch(echo, new RegExp(secret));
+
+      const noEcho = await evaluate(
+        'SyntheticForm',
+        {},
+        result({ kind: 'text', text: 'Authentication finished' }),
+        answer,
+      );
+      assert.match(noEcho, /\[form answer\]:/);
+      assert.match(noEcho, /Password \(required\)/);
+      assert.match(noEcho, /\[redacted\]/);
+      assert.doesNotMatch(noEcho, new RegExp(secret));
+    },
+  );
+
+  await t.test('canonical ordinary form values remain visible in both evidence rows', async () => {
+    const value = 'ordinary-human-choice';
+    const context = await evaluate(
+      'SyntheticForm',
+      {},
+      result({ kind: 'json', value: { action: 'accept', values: { value } } }),
+      {
+        turnId: 'goal-tool-context-turn',
+        toolUseId: 'call',
+        requestId: 'ordinary-form-request',
+        action: 'accept',
+        message: 'Choose the deployment target',
+        fields: [{ name: 'value', label: 'Deployment target' }],
+        values: { value },
+      },
+    );
+    for (const prefix of ['[tool]:', '[form answer]:']) {
+      const row = context.split('\n').find((entry) => entry.startsWith(prefix));
+      assert.ok(row, `${prefix} evidence reaches the final judge prompt`);
+      assert.match(row, new RegExp(value));
+    }
+  });
+
+  await t.test(
+    'decorated canonical credential labels protect JSON and text tool echoes',
+    async (t) => {
+      const secret = 'quiet-answer-4829';
+      for (const label of ['Credentials', 'SSH key', 'API token', 'Bearer token']) {
+        for (const content of [
+          { kind: 'json', value: { action: 'accept', values: { value: secret } } },
+          { kind: 'text', text: `Received the submitted value: ${secret}` },
+        ] satisfies Extract<StoredMessage, { type: 'tool_result' }>['content'][]) {
+          await t.test(`${label}, ${content.kind}`, async () => {
+            const context = await evaluate(
+              'SyntheticForm',
+              { operation: 'authenticate' },
+              result(content),
+              {
+                turnId: 'goal-tool-context-turn',
+                toolUseId: 'call',
+                requestId: 'decorated-credential-form-request',
+                action: 'accept',
+                message: 'Enter the account details',
+                fields: [{ name: 'value', label: `${label} (required)` }],
+                values: { value: secret },
+              },
+            );
+            assert.match(context, /\[tool\]:/);
+            assert.match(context, /\[form answer\]:/);
+            assert.match(context, /"outcome":"success"/);
+            assert.match(context, /\[redacted\]/);
+            assert.doesNotMatch(context, new RegExp(secret));
+          });
+        }
+      }
+    },
+  );
+});
+
 test('restart settles the durable current Goal execution through Hosted Execution authority', async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-host-goal-recovery-'));
   const capability = await resolveStorageRoot({
@@ -641,7 +1030,9 @@ test('restart settles the durable current Goal execution through Hosted Executio
     const coordinator = new HostGoalCoordinator({
       store: goalStore,
       stores,
-      readSessionMessages: (sessionId) => stores.sessionStore.readMessagesSnapshot(sessionId),
+      readSessionContext: async (sessionId) => ({
+        messages: await stores.sessionStore.readMessagesSnapshot(sessionId),
+      }),
       executions: {
         reconcile: (requested) => executionProjection.read(requested),
         subscribe: () => () => undefined,
@@ -729,7 +1120,9 @@ test('restart replaces a stale current execution with the current durable Goal i
     const coordinator = new HostGoalCoordinator({
       store: goalStore,
       stores,
-      readSessionMessages: (sessionId) => stores.sessionStore.readMessagesSnapshot(sessionId),
+      readSessionContext: async (sessionId) => ({
+        messages: await stores.sessionStore.readMessagesSnapshot(sessionId),
+      }),
       executions: {
         reconcile: async () => assert.fail('A stale execution must not be reconciled'),
         subscribe: () => () => undefined,
@@ -811,7 +1204,9 @@ test('new user evidence replaces the pending continuation in one authority commi
     const host = new HostGoalCoordinator({
       store: goalStore,
       stores,
-      readSessionMessages: (sessionId) => stores.sessionStore.readMessagesSnapshot(sessionId),
+      readSessionContext: async (sessionId) => ({
+        messages: await stores.sessionStore.readMessagesSnapshot(sessionId),
+      }),
       executions: {
         reconcile: async () => assert.fail('A pending continuation has no execution to recover'),
         subscribe: () => () => undefined,
@@ -919,7 +1314,9 @@ test('goal.arm creates one Goal per Session and refuses a second while it is unf
     const coordinator = new HostGoalCoordinator({
       store: goalStore,
       stores,
-      readSessionMessages: (sessionId) => stores.sessionStore.readMessagesSnapshot(sessionId),
+      readSessionContext: async (sessionId) => ({
+        messages: await stores.sessionStore.readMessagesSnapshot(sessionId),
+      }),
       executions: {
         reconcile: async () => assert.fail('Arming alone has no execution to recover'),
         subscribe: () => () => undefined,
@@ -1035,7 +1432,9 @@ test('a Goal armed but never carried by a Turn does not start itself after a res
     const armingHost = new HostGoalCoordinator({
       store: goalStore,
       stores,
-      readSessionMessages: (sessionId) => stores.sessionStore.readMessagesSnapshot(sessionId),
+      readSessionContext: async (sessionId) => ({
+        messages: await stores.sessionStore.readMessagesSnapshot(sessionId),
+      }),
       executions: {
         reconcile: async () => assert.fail('Arming alone has no execution to recover'),
         subscribe: () => () => undefined,
@@ -1075,7 +1474,9 @@ test('a Goal armed but never carried by a Turn does not start itself after a res
     const restarted = new HostGoalCoordinator({
       store: goalStore,
       stores,
-      readSessionMessages: (sessionId) => stores.sessionStore.readMessagesSnapshot(sessionId),
+      readSessionContext: async (sessionId) => ({
+        messages: await stores.sessionStore.readMessagesSnapshot(sessionId),
+      }),
       executions: {
         reconcile: async () => assert.fail('An armed Goal has no execution to recover'),
         subscribe: () => () => undefined,
@@ -1103,7 +1504,7 @@ test('a Goal armed but never carried by a Turn does not start itself after a res
 
     assert.equal(admitted, false, 'the restart admitted a Turn for a Goal no Turn had carried');
     assert.equal(evaluated, false, 'the restart evaluated a Goal no Turn had carried');
-    const goal = restarted.readProjection(session.id);
+    const goal = await restarted.readProjection(session.id);
     assert.equal(goal?.status, 'active', 'the armed Goal survives the restart untouched');
     assert.equal(goal?.iterations, 0, 'and no Turn ran for it');
     await restarted.close();
@@ -1140,7 +1541,9 @@ test('resuming an armed Goal drives it, and a restart puts that drive back', asy
     const host = new HostGoalCoordinator({
       store: goalStore,
       stores,
-      readSessionMessages: (sessionId) => stores.sessionStore.readMessagesSnapshot(sessionId),
+      readSessionContext: async (sessionId) => ({
+        messages: await stores.sessionStore.readMessagesSnapshot(sessionId),
+      }),
       executions: {
         reconcile: async () => assert.fail('Arming alone has no execution to recover'),
         subscribe: () => () => undefined,
@@ -1227,7 +1630,9 @@ test('resuming an armed Goal drives it, and a restart puts that drive back', asy
     const restarted = new HostGoalCoordinator({
       store: goalStore,
       stores,
-      readSessionMessages: (sessionId) => stores.sessionStore.readMessagesSnapshot(sessionId),
+      readSessionContext: async (sessionId) => ({
+        messages: await stores.sessionStore.readMessagesSnapshot(sessionId),
+      }),
       executions: {
         reconcile: async () => assert.fail('A busy admission left no execution to recover'),
         subscribe: () => () => undefined,
@@ -1286,7 +1691,9 @@ test('an arm admitted before the drain creates no Goal after it', async () => {
     const host = new HostGoalCoordinator({
       store: goalStore,
       stores,
-      readSessionMessages: (sessionId) => stores.sessionStore.readMessagesSnapshot(sessionId),
+      readSessionContext: async (sessionId) => ({
+        messages: await stores.sessionStore.readMessagesSnapshot(sessionId),
+      }),
       executions: {
         reconcile: async () => assert.fail('A refused arm has no execution'),
         subscribe: () => () => undefined,
@@ -1332,7 +1739,7 @@ test('an arm admitted before the drain creates no Goal after it', async () => {
     const outcome = await arming;
     assert.equal(outcome.ok, false, 'a draining Host answered an arm with success');
     assert.equal(outcome.ok === false && outcome.error.code, 'host_draining');
-    assert.equal(host.readProjection(session.id), null, 'the drained Host holds a new Goal');
+    assert.equal(await host.readProjection(session.id), null, 'the drained Host holds a new Goal');
     for (let tick = 0; tick < 20; tick += 1) await new Promise((r) => setImmediate(r));
     assert.equal(await goalStore.read(session.id), null, 'the drain persisted a new Goal');
     await host.close();

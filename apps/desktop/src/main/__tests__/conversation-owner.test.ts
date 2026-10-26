@@ -19,13 +19,14 @@
 
 import assert from 'node:assert/strict';
 import { afterEach, describe, it } from 'node:test';
-import { act, createElement, Fragment, Profiler, useEffect, useState } from 'react';
-import { LocaleProvider, ToastProvider, type TransientUserMessageProjection } from '@maka/ui';
+import { act, createElement, Fragment, Profiler, useEffect, useState, type ComponentProps } from 'react';
+import { LocaleProvider, ToastProvider, type ChatView, type TransientUserMessageProjection, type TurnViewModel } from '@maka/ui';
 import type { StoredMessage } from '@maka/core/session';
 import type { UiLocale } from '@maka/core/ui-locale';
 import type { DesktopSessionSummary } from '../../shared/desktop-session-projection.js';
 import { createSessionCatalogController, SessionCatalogContext } from '../../renderer/application/contracts/session-catalog/session-catalog-state.js';
-import { ConversationProvider, ConversationServicesProvider, ConversationLifecycle, ConversationTranscriptRegion, ConversationComposerRegion, useAppShellSessionUiState, type ConversationObservationServices, type ConversationServices } from '../../renderer/features/conversation/index.js';
+import { ConversationProvider, ConversationServicesProvider, ConversationLifecycle, ConversationTranscriptRegion, ConversationComposerRegion, useAppShellSessionUiState, useExecutorSelection, type ConversationObservationServices, type ConversationServices } from '../../renderer/features/conversation/index.js';
+import type { ExecutorCatalogEntry } from '@maka/core/executor-catalog';
 import { renderConversationMarkdown, stubComposerGateInputs, stubConversationServices, useConversationOwner } from '../../renderer/features/conversation/testing.js';
 import type { LatestRequestUsage } from '../../renderer/application/contracts/session-inspector/latest-request-usage.js';
 import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
@@ -42,40 +43,51 @@ const message = (id: string): StoredMessage => ({ type: 'user', id, text: id, tu
 function harness(options: {
   locale?: UiLocale;
   hasOlder?: boolean;
+  hasNewer?: boolean;
+  completeMessages?: readonly StoredMessage[];
+  searchTarget?: ComponentProps<typeof ConversationLifecycle>['searchTarget'];
   listTurnLandmarks?: ConversationServices['sessions']['listTurnLandmarks'];
+  executorSessions?: Partial<ConversationServices['sessions']>;
 } = {}) {
   const { root } = installReactRenderer();
   const catalog = createSessionCatalogController();
   catalog.commitSessions(['A', 'B', 'C'].map(row));
   const opened: Array<{
     sessionId: string; closed: boolean; listeners: Set<() => void>;
+    initialTurnId?: string; calls: string[];
     publish(messages: StoredMessage[]): void; error(error: unknown): void;
   }> = [];
   const observations: Array<{ sessionId: string; closed: boolean; phase: Parameters<ConversationObservationServices['subscribeEvents']>[2]; fail: () => void }> = [];
   const services = stubConversationServices(
-    options.listTurnLandmarks ? { sessions: { listTurnLandmarks: options.listTurnLandmarks } } : {},
+    { sessions: { ...options.executorSessions,
+      ...(options.listTurnLandmarks ? { listTurnLandmarks: options.listTurnLandmarks } : {}) } },
   );
-  services.observation.openTranscript = (sessionId, error) => {
+  services.observation.openTranscript = (sessionId, error, initialTurnId) => {
     let messages: StoredMessage[] = [];
     let ready = false;
     const listeners = new Set<() => void>();
     const resource = {
-      sessionId, closed: false, listeners, error,
+      sessionId, closed: false, listeners, error, initialTurnId, calls: [] as string[],
       publish(next: StoredMessage[]) { messages = next; ready = true; for (const listener of listeners) listener(); },
     };
     opened.push(resource);
     return {
       store: {
-        range: () => ({ sessionId, hasOlder: options.hasOlder ?? false, ready, generation: 'range' }),
+        range: () => ({ sessionId, hasOlder: options.hasOlder ?? false, hasNewer: options.hasNewer ?? false, ready, generation: 'range' }),
         snapshot: () => {
           if (!ready) throw new Error('Desktop transcript range is not initialized');
-          return { sessionId, messages, ready };
+          return { sessionId, messages, ready, hasNewer: options.hasNewer ?? false };
         },
         subscribe(listener) { listeners.add(listener); return () => { listeners.delete(listener); }; },
         hasDurableMessage: (id) => messages.some((message) => message.id === id),
       },
       ready: async () => {}, waitForDurableMessage: async () => true,
-      reload: async () => {}, holdsCachedTranscript: () => false, loadEarlier: async () => {}, observationChanged: () => {},
+      reload: async () => {}, holdsCachedTranscript: () => false, observationChanged: () => {},
+      loadEarlier: async () => { resource.calls.push('earlier'); },
+      loadNewer: async () => { resource.calls.push('newer'); },
+      seek: async (sequence) => { resource.calls.push(`seek:${sequence}`); },
+      showLatest: async () => { resource.calls.push('latest'); },
+      readComplete: async () => { resource.calls.push('complete'); return options.completeMessages ?? messages; },
       close: async () => { resource.closed = true; },
     };
   };
@@ -88,7 +100,8 @@ function harness(options: {
   };
   let owner!: ReturnType<typeof useConversationOwner>;
   let target!: ReturnType<typeof useAppShellSessionUiState>;
-  let transcript: { activeSessionId: string | undefined; messages: StoredMessage[]; liveContentSeedGeneration: number; onReadingAnchorChange?: (turnId?: string) => void } | undefined;
+  let transcript: ({ activeSessionId: string | undefined; messages: StoredMessage[]; liveContentSeedGeneration: number }
+    & Pick<ComponentProps<typeof ChatView>, 'activeSession' | 'deriveTurnPresentation' | 'hasEarlierHistory' | 'hasLaterHistory' | 'onLoadEarlierHistory' | 'onLoadLaterHistory' | 'onLoadLatestHistory' | 'onLoadTranscriptTurn' | 'onReadingAnchorChange'>) | undefined;
   let shellRenders = 0;
   let transcriptRenders = 0;
   let composerRenders = 0;
@@ -97,6 +110,12 @@ function harness(options: {
   let lifecycleCommits = 0;
   let setVisible!: (visible: boolean) => void;
   let setCovered!: (covered: boolean) => void;
+  const executorFrames: Array<{ id?: string; picker: ReturnType<typeof useExecutorSelection> }> = [];
+  function ExecutorProbe({ session }: { session?: DesktopSessionSummary }) {
+    const picker = useExecutorSelection({ key: session?.id ?? 'draft', session });
+    executorFrames.push({ id: session?.id, picker });
+    return null;
+  }
   function Transcript(props: NonNullable<typeof transcript>) { transcript = props; transcriptRenders += 1; return null; }
   function Composer(_props: { processing: boolean; pendingMessages?: readonly TransientUserMessageProjection[]; latestRequestUsage?: LatestRequestUsage }) {
     composerRenders += 1;
@@ -112,12 +131,13 @@ function harness(options: {
     const [covered, updateCovered] = useState(false);
     setCovered = updateCovered;
     return createElement(Fragment, null,
+      options.executorSessions ? createElement(ExecutorProbe, { session: target.activeCatalogSession }) : null,
       createElement(Profiler, { id: 'conversation-lifecycle', onRender: () => { lifecycleCommits += 1; } }, createElement(ConversationLifecycle, {
         refreshSessions: async () => [], onExecutionBoundaryChanged() {},
         showModelSetupToast() {}, onTurnCompleted() {},
-        searchTarget: null, clearSearchTarget() {},
+        searchTarget: options.searchTarget ?? null, clearSearchTarget() {},
       })),
-      visible ? createElement(ConversationTranscriptRegion<Parameters<typeof Transcript>[0]>, { surface: Transcript, localInteractionAvailable: true, visible: !covered }) : null,
+      visible ? createElement(ConversationTranscriptRegion<Parameters<typeof Transcript>[0]>, { surface: Transcript, activeSession: target.activeCatalogSession, localInteractionAvailable: true, visible: !covered }) : null,
       createElement(ConversationComposerRegion<Parameters<typeof Composer>[0]>, { surface: Composer, ...stubComposerGateInputs() }),
     );
   }
@@ -131,7 +151,7 @@ function harness(options: {
     }),
   })));
   return {
-    root, catalog, opened, observations,
+    root, catalog, opened, observations, executorFrames,
     get owner() { return owner; }, get target() { return target; }, get transcript() { return transcript; },
     get counts() { return { shellRenders, transcriptRenders, composerRenders, composerMounts, composerUnmounts, lifecycleCommits }; },
     showTranscript(visible: boolean) { setVisible(visible); },
@@ -141,6 +161,144 @@ function harness(options: {
 
 describe('Conversation ownership', () => {
   afterEach(cleanupFakeDom);
+  for (const readiness of ['ready', 'restorable'] as const) for (const metadataFirst of [false, true]) {
+    it(`publishes ${readiness} ACP Sessions with their model snapshot on the first frame (metadata first: ${metadataFirst})`, async () => {
+      const cached = new Map<string, readonly ExecutorCatalogEntry[]>();
+      const reads: Array<{ id: string; finish(value: readonly ExecutorCatalogEntry[]): void }> = [];
+      const catalog: ExecutorCatalogEntry[] = [{
+        id: 'agent', displayName: 'Agent', readiness, supportsAttachments: false,
+        supportsModelChange: readiness === 'ready', supportsModeChange: readiness === 'ready',
+        models: [{ id: 'high', name: 'Gemini (High)' }, { id: 'low', name: 'Gemini (Low)' }],
+        modelGroups: [{ id: 'family', name: 'Gemini', variants: [{ modelId: 'high', level: 'high' }, { modelId: 'low', level: 'low' }] }],
+        modes: [{ id: 'default', name: 'Default' }], currentModel: 'high', currentMode: 'default',
+      }];
+      const h = harness({ executorSessions: {
+        readCachedExecutorState: id => cached.get(id),
+        getExecutorState: id => new Promise(resolve => { reads.push({ id, finish(value) { cached.set(id, value); resolve(value); } }); }),
+        setExecutorModelConfiguration: async () => { assert.fail('opening must not restore or configure the Agent'); },
+      } });
+      h.catalog.commitSessions([row('A'), ...['B', 'C'].map(id => ({ ...row(id), executorId: 'agent', executorConfig: { model: 'high', mode: 'default' } }))]);
+      await act(async () => h.target.setActiveId('A'));
+      await act(async () => h.opened.at(-1)!.publish([message('a')]));
+      assert.equal(reads.length, 0, 'native Sessions do not inspect external Agents');
+      await act(async () => h.target.setActiveId('B'));
+      if (metadataFirst) {
+        await act(async () => reads[0]!.finish(catalog));
+        assert.equal(h.target.activeId, 'A', 'metadata alone cannot publish an unread transcript');
+      }
+      await act(async () => h.opened.at(-1)!.publish([message('b')]));
+      if (!metadataFirst) {
+        assert.equal(h.target.activeId, 'A', 'retain the current conversation until both next reads settle');
+        assert.equal(h.target.switchingSession, true);
+        await act(async () => reads[0]!.finish(catalog));
+      }
+      assert.equal(h.target.activeId, 'B');
+      const assertFrames = () => {
+        const frames = h.executorFrames.filter(frame => frame.id === 'B');
+        assert.ok(frames.length);
+        for (const { picker } of frames) {
+          assert.deepEqual(picker.entry, catalog[0]);
+          assert.equal(picker.loading, false, 'neither activation nor revalidation flashes loading');
+          assert.deepEqual(picker.loadingIds, []);
+        }
+      };
+      assertFrames();
+      await act(async () => h.target.setActiveId('A'));
+      await act(async () => h.opened.at(-1)!.publish([message('a-again')]));
+      await act(async () => h.target.setActiveId('B'));
+      await act(async () => h.opened.at(-1)!.publish([message('b-again')]));
+      assert.equal(h.target.activeId, 'B', 'a cached Session publishes without waiting for revalidation');
+      assertFrames();
+      await act(async () => h.target.setActiveId('C'));
+      await act(async () => h.opened.at(-1)!.publish([message('c')]));
+      assert.equal(h.target.activeId, 'B', 'another Session using the same Agent cannot borrow B metadata');
+      await act(async () => h.target.setActiveId('A'));
+      await act(async () => h.opened.at(-1)!.publish([message('a-last')]));
+      await act(async () => reads.find(read => read.id === 'C')!.finish(catalog));
+      assert.equal(h.target.activeId, 'A', 'a late preparation cannot navigate back to a superseded Session');
+      await act(async () => h.root.unmount());
+    });
+  }
+
+  it('keeps an ACP conversation readable when display metadata fails', async () => {
+    let reject!: (error: Error) => void;
+    const h = harness({ executorSessions: {
+      getExecutorState: () => new Promise((_resolve, fail) => { reject = fail; }),
+    } });
+    h.catalog.commitSessions([row('A'), { ...row('B'), executorId: 'agent' }]);
+    await act(async () => h.target.setActiveId('A'));
+    await act(async () => h.opened.at(-1)!.publish([message('a')]));
+    await act(async () => h.target.setActiveId('B'));
+    await act(async () => h.opened.at(-1)!.publish([message('b')]));
+    await act(async () => reject(new Error('Host unavailable')));
+    assert.equal(h.target.activeId, 'B');
+    assert.equal(h.transcript?.messages[0]?.id, 'b');
+    await act(async () => h.root.unmount());
+  });
+
+  it('hides Branch only for the Personal Assistant and keeps Copy across Session switches', async () => {
+    const h = harness();
+    h.catalog.commitSessions([
+      row('A'),
+      { ...row('B'), labels: ['personal-assistant'] },
+      { ...row('C'), name: '个人助手' },
+    ]);
+    const turns: TurnViewModel[] = [{
+      turnId: 'assistant-output-reply', status: 'completed', tools: [], notes: [], startedAt: 1,
+      timeline: [{ kind: 'text', text: 'Reply to copy', messageId: 'reply', complete: true }],
+    }];
+    for (const id of ['A', 'B', 'C', 'B', 'A']) {
+      await act(async () => h.target.setActiveId(id));
+      await act(async () => h.opened.at(-1)!.publish([message(id)]));
+      assert.equal(h.transcript?.activeSession?.id, id);
+      const actions = h.transcript?.deriveTurnPresentation?.(turns).footerActionsByTurn[turns[0]!.turnId];
+      assert.deepEqual(actions?.map((action) => action.id), id === 'B' ? ['copy'] : ['branch', 'copy']);
+      assert.equal(actions?.find((action) => action.id === 'copy')?.enabled, true);
+    }
+  });
+
+  for (const [searchTarget, expected] of [
+    [null, 'bookmark'],
+    [{ sessionId: 'A', turnId: 'search' }, 'search'],
+    [{ sessionId: 'B', turnId: 'other-session' }, 'bookmark'],
+  ] as const) {
+    it(`opens the initial window at ${expected} with search target ${searchTarget?.sessionId ?? 'none'}`, async () => {
+      const h = harness({ hasOlder: true, hasNewer: true, searchTarget });
+      await act(async () => {
+        h.owner.workspace.ui.setTranscriptReadingAnchor('A', { turnId: 'bookmark' });
+        h.target.setActiveId('A');
+      });
+      assert.equal(h.opened[0]!.initialTurnId, expected);
+      await act(async () => h.opened[0]!.publish([message(expected)]));
+      await act(async () => h.owner.readingCommands.current?.captureAnchor('next-reading-position'));
+      assert.equal(h.opened.length, 1, 'recording a reading position retains the observation owner');
+      await act(async () => h.root.unmount());
+    });
+  }
+
+  it('owns paging and complete export without replacing a historical publication', async () => {
+    const complete = [message('oldest'), message('middle'), message('latest')];
+    const h = harness({ hasOlder: true, hasNewer: true, completeMessages: complete });
+    await act(async () => h.target.setActiveId('A'));
+    await act(async () => h.opened[0]!.publish([complete[1]!]));
+    assert.equal(h.transcript?.hasEarlierHistory, true);
+    assert.equal(h.transcript?.hasLaterHistory, true);
+    const before = h.counts;
+    assert.equal(await h.target.renderCompleteConversation('A', 'Task A', 'en'), renderConversationMarkdown('Task A', complete, 'en'));
+    assert.deepEqual(h.transcript?.messages, [complete[1]!]);
+    assert.deepEqual(h.counts, before, 'export leaves the displayed window and its readers unchanged');
+    await act(async () => {
+      await h.transcript?.onLoadEarlierHistory?.();
+      await h.transcript?.onLoadLaterHistory?.();
+      await h.transcript?.onLoadTranscriptTurn?.({ turnId: 'oldest', sequence: 2 });
+      await h.transcript?.onLoadLatestHistory?.();
+    });
+    assert.deepEqual(h.opened[0]!.calls, ['complete', 'earlier', 'newer', 'seek:2', 'latest']);
+    assert.equal(h.opened.length, 1);
+    assert.equal(h.observations.length, 1);
+    await act(async () => h.root.unmount());
+  });
+
   it('ignores catalog bookkeeping for both requested and displayed rows while retaining lifecycle updates', async () => {
     const h = harness();
     const patchRow = (id: string, patch: Partial<DesktopSessionSummary>) => h.catalog.commitSessions(
@@ -188,13 +346,13 @@ describe('Conversation ownership', () => {
     });
   }
 
-  it('exports the published range for Copy and Save without handing the shell its messages', async () => {
+  it('exports complete history for Copy and Save without handing the shell its messages', async () => {
     const h = harness();
     await act(async () => h.target.setActiveId('A'));
     const published = [message('first'), message('second')];
     await act(async () => h.opened[0]!.publish(published));
     assert.equal(
-      h.target.renderPublishedConversation('Task A', 'en'),
+      await h.target.renderCompleteConversation('A', 'Task A', 'en'),
       renderConversationMarkdown('Task A', published, 'en'),
     );
     assert.equal('readMessages' in h.target, false, 'the shell has no invocation-time message read');

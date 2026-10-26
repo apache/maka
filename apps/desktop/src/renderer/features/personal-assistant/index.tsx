@@ -24,7 +24,7 @@ import {
   useShowAssistantBackgroundSessions,
 } from '../../application/contracts/session-catalog/assistant-session-visibility.js';
 import { SideNavItem } from '@astryxdesign/core/SideNav';
-import { Sparkles } from '@maka/ui/icons';
+import { PersonalAssistantAvatar, useAssistantAvatar } from './avatar.js';
 import { Switch } from '@maka/ui';
 import { usePersonalAssistantServices, type AssistantHost as DesktopRuntimeHostRef } from './services.js';
 export { createPersonalAssistantServices, PersonalAssistantServicesProvider, type PersonalAssistantPort } from './services.js';
@@ -52,7 +52,7 @@ function useAssistantEnablement(host?: DesktopRuntimeHostRef) {
         const target = host ?? (await assistantDesktop.defaultHost());
         const result = await assistantCall('assistant.enablement', {}, target);
         if (live && version === revision.current)
-          setState({ enabled: result.enabled === true, ready: true, error: '' });
+          setState({ enabled: result.enabled === true, ready: true, error: typeof result.error === 'string' ? result.error : '' });
       } catch (e) {
         if (live && version === revision.current)
           setState({ enabled: false, ready: false, error: String(e) });
@@ -86,6 +86,7 @@ export function PersonalAssistantEntry({
   const enablement = useAssistantEnablement();
   const [bound, setBound] = useState<string>();
   const [error, setError] = useState('');
+  const avatar = useAssistantAvatar(enablement.enabled, bound);
   useEffect(() => {
     if (!enablement.enabled) {
       setBound(undefined);
@@ -117,7 +118,7 @@ export function PersonalAssistantEntry({
   return (
     <SideNavItem
       label="个人助手"
-      icon={Sparkles}
+      icon={<PersonalAssistantAvatar avatar={avatar} variant="navigation" />}
       size="md"
       isSelected={!!bound && bound === activeSessionId}
       aria-label={error ? '个人助手：' + error : '个人助手'}
@@ -297,6 +298,7 @@ function PersonalAssistantStatusSettings({
   return (
     <div className="personal-assistant-settings">
       {error && <p role="alert">{error}</p>}
+      {data.bot?.error && <p role="alert">助手消息处理暂时停止：{data.bot.error}。发送新消息可重试，Inbox 中的消息会保留。</p>}
       {!state ? (
         <p>请先从侧栏打开个人助手，创建专属会话。</p>
       ) : (
@@ -459,3 +461,8 @@ function PersonalAssistantStatusSettings({
 }
 
 export { createInternalUriDispatcher } from './internal-uri.js';
+
+export { PersonalAssistantChatPresentation, PersonalAssistantComposer } from './chat-presentation.js';
+export { PersonalAssistantTaskLayout } from './task-layout.js';
+
+export { PetDesktopBridge } from './pet-bridge.js';

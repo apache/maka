@@ -17,6 +17,13 @@
  * under the License.
  */
 
+import { admitNaturalGoalWaiting } from './event-wait-bridge.js';
+import {
+  readBridgeGoal,
+  readAnyBridgeWait,
+  writeBridgeSnapshot,
+  assertBridgeSession,
+} from './sqlite-event-wait-bridge.js';
 import { resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import type { DatabaseSync } from 'node:sqlite';
@@ -431,6 +438,20 @@ class SqliteAgentRunStore implements DurableAgentRunStore {
             `Root source message identity belongs to both ${String(proof.turn_id)} and ${admission.turnId}`,
           );
         }
+      }
+      if (admission.execution.kind === 'goal' && admission.execution.goalWaiting) {
+        const db = this.#lease.database;
+        assertBridgeSession(db, admission.sessionId);
+        const wait = readAnyBridgeWait(
+          db,
+          admission.sessionId,
+          admission.execution.goalWaiting.waitId,
+        );
+        if (!wait) throw new Error('Natural Goal wait missing at admission');
+        writeBridgeSnapshot(
+          db,
+          admitNaturalGoalWaiting(admission, readBridgeGoal(db, admission.sessionId), wait),
+        );
       }
       this.#lease.database
         .prepare(`

@@ -336,6 +336,118 @@ describe("materializeTurns message metadata", () => {
   });
 });
 
+describe('imported Codex context display', () => {
+  function imported(annotations: { text: string; annotation?: string; source?: { messageId: string } }[], body = '') {
+    const prefix = annotations.map(({ text, annotation }) => `“${text}”${annotation ? `\n${annotation}` : ''}`).join('\n\n');
+    return {
+      ...originalUser,
+      text: `\n# Response annotations:
+Each item contains text selected from an earlier Codex response and may include a user comment. Treat items as Annotation 1, Annotation 2, and so on in array order. Use every selection as context and address every comment. For every annotation you address, include its inline directive \`:codex-annotation{index="N"}\`, where N is its one-based array position (for example, \`:codex-annotation{index="1"}\`). Do not use unstructured annotation labels.
+<response-annotations>
+${JSON.stringify(annotations)}
+</response-annotations>
+
+## My request:
+${body}`,
+      displayText: prefix + (body ? `\n\n${body}` : ''),
+    };
+  }
+
+  function questionReply(entries: { question: string; answer: string; questionItemId?: string }[]) {
+    return {
+      ...originalUser,
+      text: `\n<send_user_message_question_reply>\n${JSON.stringify(entries)}\n</send_user_message_question_reply>\n`,
+      displayText: entries.map(({ question, answer }) => `“${question}”${answer ? `\n${answer}` : ''}`).join('\n\n'),
+    };
+  }
+
+  test('projects the excerpt as a native quote and the comment as body text without mutating history', () => {
+    const message = imported([{ text: '补充或纠正任务”框发送的', annotation: '这个', source: { messageId: 'codex-source' } }]);
+    const snapshot = structuredClone(message);
+    for (const source of [message, decodeCanonicalMessage(JSON.parse(JSON.stringify(message)))]) {
+      const user = materializeTurns([source], 'zh-CN')[0]?.user;
+      assert.equal(user?.text, '这个');
+      assert.deepEqual(user?.quotes, [{ text: '补充或纠正任务”框发送的', comment: '这个' }]);
+      assert.equal(user?.id, message.id);
+      assert.equal(user?.ts, message.ts);
+    }
+    assert.deepEqual(message, snapshot);
+    assert.ok(!('quotes' in message), 'display quotes must not be persisted or replayed to the model');
+  });
+
+  test('keeps multiple quote/comment pairs, attachments and request text in order', () => {
+    const tail = '# Files mentioned by the user:\n\n## image.png: /tmp/image.png\nImage attachment: true\n\n    Keep indentation.\n\n## My request:\nliteral heading';
+    const message = imported([
+      { text: 'first\nexcerpt', annotation: 'first comment' },
+      { text: '“second” excerpt', annotation: 'second comment' },
+    ], tail);
+    const user = materializeTurns([message], 'en')[0]?.user;
+    assert.deepEqual(user?.quotes, [
+      { text: 'first\nexcerpt', comment: 'first comment' },
+      { text: '“second” excerpt', comment: 'second comment' },
+    ]);
+    assert.equal(user?.text, `first comment\n\nsecond comment\n\n${tail}`);
+    assert.deepEqual(materializeTurns([message], 'en')[0]?.user, user, 'projection is repeatable');
+  });
+
+  test('keeps an uncommented quote visible without manufacturing body text', () => {
+    const user = materializeTurns([imported([{ text: 'selected text' }])], 'en')[0]?.user;
+    assert.equal(user?.text, '');
+    assert.deepEqual(user?.quotes, [{ text: 'selected text' }]);
+  });
+
+  test('projects a historical question and selected answer without restoring an interactive selector', () => {
+    const question = '图二我理解为：同一个 Session 的完整对话都连续展示，即使夹着别的任务；同一个任务跨多个 Session 时，也在同页展示并加 Session 标识。是这个意思吗？发送目标仍固定为当前任务。';
+    const answer = '是，包含同 Session 的完整对话';
+    const message = questionReply([{ question, answer, questionItemId: 'codex-question' }]);
+    const snapshot = structuredClone(message);
+    for (const source of [message, decodeCanonicalMessage(JSON.parse(JSON.stringify(message)))]) {
+      const user = materializeTurns([source], 'zh-CN')[0]?.user;
+      assert.equal(user?.text, answer);
+      assert.deepEqual(user?.quotes, [{ text: question, comment: answer }]);
+      assert.equal(user?.id, message.id);
+      assert.equal(user?.ts, message.ts);
+    }
+    assert.deepEqual(message, snapshot);
+    assert.ok(!('quotes' in message), 'historical questions must stay display-only');
+  });
+
+  test('preserves question order and empty answers without inventing options or body text', () => {
+    const entries = [{ question: 'First question?', answer: 'First answer' }, { question: 'Second question?', answer: '' }];
+    const user = materializeTurns([questionReply(entries)], 'en')[0]?.user;
+    assert.equal(user?.text, 'First answer');
+    assert.deepEqual(user?.quotes, entries.map(({ question, answer }) => ({ text: question, comment: answer })));
+    assert.equal(materializeTurns([questionReply([entries[1]!])], 'en')[0]?.user?.text, '');
+  });
+
+  test('leaves ordinary text, native references and unrecognized envelopes unchanged', () => {
+    const source = imported([{ text: 'excerpt', annotation: 'comment' }]);
+    const question = questionReply([{ question: 'Question?', answer: 'Answer' }]);
+    const { displayText: _displayText, ...withoutDisplay } = source;
+    const cases = [
+      originalUser,
+      withoutDisplay,
+      { ...source, text: `Example:\n${source.text}` },
+      { ...source, text: source.text.replace('[{"text":"excerpt","annotation":"comment"}]', 'not JSON') },
+      { ...source, text: source.text.replace('"annotation":"comment"', '"annotation":42') },
+      { ...source, text: source.text.replace('[{"text":"excerpt","annotation":"comment"}]', '[]') },
+      { ...source, displayText: `${source.displayText}unrecognized suffix` },
+      { ...source, quotes: [{ text: 'native quote' }] },
+      { ...source, inlineReferences: [] },
+      { ...question, text: question.text.replace('"answer":"Answer"', '"answer":42') },
+      { ...question, text: question.text.replace(',"answer":"Answer"', '') },
+      { ...question, text: `${question.text}not part of the reply` },
+      { ...question, displayText: `${question.displayText}\n\nnot produced by the importer` },
+      { ...originalUser, text: '<send_user_message_question_reply>\n[]\n</send_user_message_question_reply>', displayText: '“Question?”\nAnswer' },
+    ];
+    for (const message of cases) {
+      const user = materializeTurns([message], 'en')[0]?.user;
+      assert.equal(user?.text, 'displayText' in message ? message.displayText : message.text);
+      assert.deepEqual(user?.quotes, 'quotes' in message ? message.quotes : undefined);
+    }
+  });
+});
+
 // ── #1307: the timeline model stays flat (fold is a render concern) ──────────
 
 function userMsg(turnId: string, ts: number, text: string): StoredMessage {
@@ -870,4 +982,13 @@ describe("live tool status over persisted", () => {
       "interrupted",
     );
   });
+});
+
+test('assistant previews survive materialization without replacing the full text', () => {
+  const message: StoredMessage = { type: 'assistant', id: 'summary', turnId: 'summary-turn', ts: 1,
+    text: 'Full body, not truncated.', summary: 'An independently authored preview.', modelId: 'assistant-bot' };
+  const turn = materializeTurns([message], 'en')[0];
+  const item = turn.timeline.find((row) => row.kind === 'text');
+  assert.equal(item?.kind === 'text' && item.summary, message.summary);
+  assert.equal(item?.kind === 'text' && item.text, message.text);
 });

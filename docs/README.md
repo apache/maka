@@ -51,6 +51,7 @@ This page is the authority map for Maka documentation. Code and contract tests r
 
 ### Runtime and Eval
 
+- [Goal event wait consumers](./goal-event-wait-consumers.md) ([中文](./goal-event-wait-consumers.zh-CN.md))
 - [SessionTodo lifecycle](./session-todo-lifecycle.md)
 - [Desktop message queue](./desktop-message-queue.md)
 - [Work Board contract](./work-board-contract.md)
@@ -85,6 +86,7 @@ This page is the authority map for Maka documentation. Code and contract tests r
 - [Product design](../DESIGN.md)
 - [Frontend CSS governance](./frontend-css-governance.md) ([中文](./frontend-css-governance.zh-CN.md))
 - [Windows support baseline](./windows-support.md)
+- [Linux support baseline](./linux-support.md)
 
 ### Release operations
 

@@ -25,7 +25,8 @@
     "benchmark:redaction": "npm run build && node scripts/benchmark-streaming-redaction.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test:dist": "node --test \"dist/**/*.test.js\"",
-    "test:images:browser": "npm run build && node --test scripts/markdown-images.browser.test.mjs"
+    "test:images:browser": "npm run build && node --test scripts/markdown-images.browser.test.mjs",
+    "test:code:browser": "node --test scripts/markdown-code-highlighting.browser.test.mjs"
   },
   "dependencies": {
     "@astryxdesign/core": "0.6.3",
@@ -33,9 +34,10 @@
     "clsx": "^2.1.1",
     "katex": "0.18.9",
     "lucide-react": "^1.48.0",
-    "mermaid": "^11.17.2",
+    "pele": "1.9.0",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
+    "refractor": "5.0.0",
     "virtua": "0.52.7"
   },
   "devDependencies": {

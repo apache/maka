@@ -19,6 +19,9 @@
 
 # ADR：RuntimeEvent 唯一事实源与 RecoveryResolver 唯一判定权威
 
+> **2026-10-16 退役说明：** 本文涉及工具专属 reconciliation、recovery bundle 写入及其后续 PR 的内容保留为历史设计，不再是当前实施要求。没有生产工具提供完整的 reconciliation 合同，公开 bundle writer 和预设工具恢复能力已清理。已有 recovery facts 仍保留读取、复制与投影重建兼容。当前合同是结束旧执行、保留未知事实、禁止自动重放，由新的明确用户轮检查现状；详见[当前恢复架构](./runtime-resume-architecture.zh-CN.md#未知结果与历史-recovery-bundle)。
+
+
 - 状态：Accepted，Phase 2.5 开始实施
 - 日期：2026-07-17
 - 范围：Runtime Resume Phase 2.5–3

@@ -18,7 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, realpath, rm, stat } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
@@ -32,8 +32,132 @@ import {
   type ExternalSessionImportTarget,
 } from '../external-session-importer.js';
 import { createSessionStore, type SessionAuthorityStore } from '../session-store.js';
+import { createSqliteArtifactStoreWriteAuthority } from '../artifact-store.js';
+import { createAttachmentByteReader } from '../artifact-attachments.js';
+import { MAX_ATTACHMENT_BYTES } from '@maka/core/attachments';
 
 describe('ExternalSessionImporter', () => {
+  test('persists explicit images in the destination Session and survives source removal', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-import-images-'));
+    const source = join(root, 'original.png');
+    const png = Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==',
+      'base64',
+    );
+    await writeFile(source, png);
+    const sessions = createSessionStore(root);
+    const authority = createSqliteArtifactStoreWriteAuthority(root);
+    try {
+      const adapter = fakeAdapter({
+        metadata: { name: 'Images', cwd: root },
+        messages: [
+          {
+            type: 'user',
+            id: 'user-1',
+            turnId: 'turn-1',
+            ts: 1,
+            text: `Compare this image; ordinary path: ${join(root, 'not-an-attachment.png')}`,
+          },
+        ],
+        sourceImages: [{ messageId: 'user-1', path: source }],
+      });
+      const importer = new ExternalSessionImporter(
+        new ExternalSessionAdapterRegistry([adapter]),
+        sessions,
+        authority.store,
+      );
+      const header = await importer.import({
+        adapterId: 'fake',
+        sourceSessionId: 'source-1',
+        target: target(),
+      });
+      await rm(source);
+      const messages = await sessions.readMessages(header.id);
+      const user = messages[0];
+      assert.equal(user?.type, 'user');
+      if (user?.type !== 'user') throw new Error('Missing user');
+      assert.equal(
+        user.text,
+        `Compare this image; ordinary path: ${join(root, 'not-an-attachment.png')}`,
+      );
+      assert.equal(user.attachments?.length, 1);
+      const attachment = user.attachments![0]!;
+      assert.equal(attachment.ref.kind, 'session_file');
+      assert.equal(attachment.bytes, png.byteLength);
+      assert.deepEqual(
+        await createAttachmentByteReader({ artifactStore: authority.store, sessionId: header.id })(
+          attachment.ref,
+        ),
+        { ok: true, bytes: png },
+      );
+      assert.deepEqual(
+        await createAttachmentByteReader({
+          artifactStore: authority.store,
+          sessionId: 'different-session',
+        })(attachment.ref),
+        { ok: false, reason: 'session_mismatch' },
+      );
+      assert.equal(JSON.stringify(messages).includes(source), false);
+    } finally {
+      await sessions.close?.();
+      authority.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('bounds attempts even for missing images and reports unavailable originals', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-import-missing-images-'));
+    const invalid = join(root, 'invalid.png');
+    const large = join(root, 'large.png');
+    await writeFile(invalid, 'not an image');
+    const beyondAttemptLimit = join(root, 'ninth.png');
+    await writeFile(
+      beyondAttemptLimit,
+      Buffer.from(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==',
+        'base64',
+      ),
+    );
+    const { open } = await import('node:fs/promises');
+    const handle = await open(large, 'w');
+    await handle.truncate(MAX_ATTACHMENT_BYTES + 1);
+    await handle.close();
+    const sessions = createSessionStore(root);
+    const authority = createSqliteArtifactStoreWriteAuthority(root);
+    try {
+      const adapter = fakeAdapter({
+        metadata: { name: 'Missing images', cwd: root },
+        messages: [message()],
+        sourceImages: [
+          join(root, 'missing.png'),
+          invalid,
+          large,
+          ...Array.from({ length: 5 }, (_, index) => join(root, `missing-${index}.png`)),
+          beyondAttemptLimit,
+        ].map((path) => ({
+          messageId: 'user-1',
+          path,
+        })),
+      });
+      const header = await new ExternalSessionImporter(
+        new ExternalSessionAdapterRegistry([adapter]),
+        sessions,
+        authority.store,
+      ).import({ adapterId: 'fake', sourceSessionId: 'source-1', target: target() });
+      const user = (await sessions.readMessages(header.id))[0];
+      assert.equal(user?.type, 'user');
+      if (user?.type !== 'user') throw new Error('Missing user');
+      assert.match(user.text, /^hello/);
+      assert.match(user.text, /9 imported image attachment\(s\) unavailable/);
+      assert.equal(user.attachments, undefined);
+      assert.equal((await authority.store.listPage(header.id, { offset: 0, limit: 10 })).total, 0);
+    } finally {
+      await sessions.close?.();
+      authority.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('forwards the exact external Session origin to imported persistence', async () => {
     const calls: SessionExternalOrigin[] = [];
     const adapter = fakeAdapter({
@@ -60,7 +184,14 @@ describe('ExternalSessionImporter', () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-external-session-import-'));
     const sessions = createSessionStore(root);
     const messages: StoredMessage[] = [
-      { type: 'user', id: 'user-1', turnId: 'turn-1', ts: 10, text: 'fix the parser' },
+      {
+        type: 'user',
+        id: 'user-1',
+        turnId: 'turn-1',
+        ts: 10,
+        text: 'fix the parser',
+        displayText: 'Fix the parser (display)',
+      },
       {
         type: 'assistant',
         id: 'assistant-1',
@@ -346,7 +477,7 @@ function message(): StoredMessage {
 function fakeAdapter(
   session: Pick<
     Awaited<ReturnType<ExternalSessionAdapter['readSession']>>,
-    'metadata' | 'messages'
+    'metadata' | 'messages' | 'sourceImages'
   >,
 ): ExternalSessionAdapter {
   return {

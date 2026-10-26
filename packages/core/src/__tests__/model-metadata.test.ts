@@ -31,6 +31,23 @@ import { PROVIDER_REGISTRY, providerFallbackModelIds } from '../provider-registr
 import { isThinkingLevel, type ThinkingLevel } from '../model-thinking.js';
 import type { ModelInfo, ProviderType } from '../llm-connections.js';
 
+describe('Inception chat metadata', () => {
+  it('ships documented capacities and tool support without inventing an off switch', () => {
+    for (const [id, contextWindow, maxOutputTokens] of [
+      ['mercury-3', 1_000_000, 131_072],
+      ['mercury-2.5', 260_000, 65_536],
+      ['mercury-2', 128_000, 50_000],
+    ] as const) {
+      const metadata = lookupModelMetadata('inception', id);
+      assert.equal(metadata.contextWindow, contextWindow);
+      assert.equal(metadata.maxOutputTokens, maxOutputTokens);
+      assert.equal(metadata.capabilities?.functionCalling, true);
+      assert.equal(metadata.capabilities?.vision, false);
+      assert.deepEqual(metadata.thinkingOptions?.efforts, ['low', 'medium', 'high']);
+    }
+  });
+});
+
 describe('provider model-catalog completeness', () => {
   it('treats only GitHub Copilot discovery as a complete account catalog', () => {
     assert.equal(providerReportsCompleteModelCatalog('github-copilot'), true);

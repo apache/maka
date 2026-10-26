@@ -75,6 +75,16 @@ test('the committed snapshot generates both TypeScript modules offline', async (
     ]);
 
     assert.ok(Object.keys(metadataModule.GENERATED_MODELS_DEV_METADATA).length > 0);
+    for (const provider of ['MiniMax', 'MiniMax-cn']) {
+      const models = metadataModule.GENERATED_MODELS_DEV_METADATA[provider];
+      assert.deepEqual(Object.keys(models), ['MiniMax-M3.1-Flash', 'MiniMax-M3']);
+      assert.equal(models['MiniMax-M3.1-Flash'].contextWindow, 1_000_000);
+      assert.equal(models['MiniMax-M3.1-Flash'].maxOutputTokens, 524_288);
+    }
+    assert.equal(
+      metadataModule.GENERATED_MODELS_DEV_METADATA['minimax-coding-plan']['MiniMax-M3.1-Flash'],
+      undefined,
+    );
     assert.ok(Array.isArray(pricingModule.GENERATED_MODEL_PRICING));
     assert.ok(pricingModule.GENERATED_MODEL_PRICING.length > 0);
   } finally {

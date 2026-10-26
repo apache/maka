@@ -52,6 +52,31 @@ describe('provider connection slug derivation contract', () => {
   });
 });
 
+describe('Inception provider', () => {
+  it('offers API-key chat access and discovers only chat models', () => {
+    assert.ok(CATALOG_PROVIDER_TYPES.includes('inception'));
+    const provider = PROVIDER_REGISTRY.inception;
+    assert.equal(provider.baseUrl, 'https://api.inceptionlabs.ai/v1');
+    assert.equal(provider.authKind, 'api_key');
+    assert.deepEqual(provider.runtimeAdapter, { kind: 'openai-compatible' });
+    assert.deepEqual(provider.modelDiscovery, {
+      kind: 'protocol',
+      path: 'chat/completions/models',
+    });
+    assert.deepEqual(providerFallbackModelIds(provider), ['mercury-3', 'mercury-2.5', 'mercury-2']);
+    const entries = buildConnectionModelCatalogEntries({
+      connection: {
+        slug: 'inception',
+        providerType: 'inception',
+        defaultModel: 'mercury-3',
+        enabledModelIds: ['mercury-3'],
+      },
+    });
+    assert.equal(entries.length, 3);
+    assert.equal(entries.find((entry) => entry.id === 'mercury-3')?.canUseAsChatDefault, true);
+  });
+});
+
 describe('Moonshot provider regions', () => {
   it('offers the international API as its own provider', () => {
     const global = PROVIDER_REGISTRY['moonshot-global'];

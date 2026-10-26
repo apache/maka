@@ -37,7 +37,6 @@ import {
 } from './recall-candidates.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
-import { setTimeout as delay } from 'node:timers/promises';
 import type {
   ActiveInteractionRequestEvent,
   SessionEvent,
@@ -1422,6 +1421,12 @@ export class SessionManager {
     if (!shellRuns) return [];
 
     const ownUpdates = await shellRuns.listSessionUpdates(sessionId);
+    // Only a branched or revised Session can inherit resources from its history.
+    // Ordinary Sessions already have their complete answer in the ShellRun store.
+    const inheritedFrom = await this.deps.store.readHeader(sessionId);
+    const parentSessionId = inheritedFrom.revisionParentSessionId ?? inheritedFrom.parentSessionId;
+    if (!parentSessionId) return ownUpdates;
+
     const ownToolCalls = new Set(ownUpdates.map((update) => update.sourceToolCallId));
     const messages = await this.readShellRunProjectionMessages(sessionId);
     if (!messages) return ownUpdates;
@@ -1454,9 +1459,6 @@ export class SessionManager {
     }
     if (inherited.size === 0) return ownUpdates;
 
-    const inheritedFrom = await this.deps.store.readHeader(sessionId);
-    const parentSessionId = inheritedFrom.revisionParentSessionId ?? inheritedFrom.parentSessionId;
-    if (!parentSessionId) return ownUpdates;
     const inheritedUpdates = await Promise.all(
       [...inherited.values()].map(async (candidate) => {
         const owner = await this.resolveShellRunOwner(parentSessionId, candidate.ref);
@@ -1484,6 +1486,10 @@ export class SessionManager {
     const own = await shellRuns.getSessionUpdate(sessionId, ref);
     if (own) return own;
 
+    const inheritedFrom = await this.deps.store.readHeader(sessionId);
+    const parentSessionId = inheritedFrom.revisionParentSessionId ?? inheritedFrom.parentSessionId;
+    if (!parentSessionId) return null;
+
     const messages = await this.readShellRunProjectionMessages(sessionId);
     if (!messages) return null;
     const bashToolCalls = shellRunBashToolCallIds(messages);
@@ -1508,9 +1514,6 @@ export class SessionManager {
     }
     if (!candidate) return null;
 
-    const inheritedFrom = await this.deps.store.readHeader(sessionId);
-    const parentSessionId = inheritedFrom.revisionParentSessionId ?? inheritedFrom.parentSessionId;
-    if (!parentSessionId) return null;
     const owner = await this.resolveShellRunOwner(parentSessionId, ref);
     return {
       sessionId,
@@ -3189,11 +3192,13 @@ export class SessionManager {
       }
       await this.assertClaimedAgentGraphPrompt(child.id, claim.targetTurnId, input.prompt);
       await notifyReady();
-      while (
+      if (
         !run.terminalEvent &&
         this.runtimeKernel.hasActiveRun?.(child.id, run.runId, run.turnId)
       ) {
-        await delay(25, undefined, input.abortSignal ? { signal: input.abortSignal } : undefined);
+        if (!this.runtimeKernel.waitForRunExit)
+          throw new Error('Runtime Run observation is unavailable');
+        await this.runtimeKernel.waitForRunExit(child.id, run.runId, run.turnId, input.abortSignal);
         run = await this.readInvocation(child.id, claim.targetRunId);
       }
       if (!run.terminalEvent) {
@@ -3715,11 +3720,10 @@ export class SessionManager {
     if (!run) return undefined;
     await notifyReady();
 
-    while (
-      !run.terminalEvent &&
-      this.runtimeKernel.hasActiveRun?.(child.id, run.runId, run.turnId)
-    ) {
-      await delay(25, undefined, input.abortSignal ? { signal: input.abortSignal } : undefined);
+    if (!run.terminalEvent && this.runtimeKernel.hasActiveRun?.(child.id, run.runId, run.turnId)) {
+      if (!this.runtimeKernel.waitForRunExit)
+        throw new Error('Runtime Run observation is unavailable');
+      await this.runtimeKernel.waitForRunExit(child.id, run.runId, run.turnId, input.abortSignal);
       run = await this.readInvocation(child.id, spawn.initialRunId);
     }
     if (!run.terminalEvent) {
@@ -4190,7 +4194,12 @@ export class SessionManager {
     let diagnostic: Record<string, unknown>;
     let workspaceIdentity: string | undefined;
     if (input.execution.kind === 'goal') {
-      root = { kind: 'goal', goalId: input.execution.goalId };
+      root = {
+        kind: 'goal',
+        goalId: input.execution.goalId,
+        ...(input.execution.goalWaiting ? { goalWaiting: input.execution.goalWaiting } : {}),
+        ...(input.execution.eventWait ? { eventWait: input.execution.eventWait } : {}),
+      };
       recoveryReason = 'goal_internal_admission_without_run';
       diagnostic = {
         executionKind: input.execution.kind,

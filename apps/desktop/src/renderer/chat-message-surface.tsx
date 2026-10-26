@@ -24,14 +24,16 @@ import { type SettingsSection } from '@maka/core/settings';
 import {
   ChatView,
   ChatViewGoalProjectionConsumer,
+  EmptyChatHero,
   useUiLocale,
   type LiveTurnProjection,
 } from '@maka/ui';
+import { PersonalAssistantChatPresentation } from './features/personal-assistant/index.js';
 import { OnboardingHero } from './onboarding-hero';
 import type { SessionHealthNoticeView, SessionUiReads } from './features/conversation/index.js';
 import type { WorkspaceReadinessRecovery } from './workspace-readiness-recovery';
 import { getShellCopy } from './locales/shell-copy';
-import { StagedQuoteChatView, TaskReadinessNoticeConsumer } from './features/conversation/index.js';
+import { CheckinHome, StagedQuoteChatView, TaskReadinessNoticeConsumer } from './features/conversation/index.js';
 import { useExternalStoreSelector } from './application/contracts/session-catalog/use-external-store-selector.js';
 import { ChatRecoveryNotice, SessionHealthRecoveryNotice } from './chat-recovery-notice';
 
@@ -53,6 +55,7 @@ interface ChatMessageSurfaceProps extends Omit<
   | 'liveTurns'
   | 'shellRunUpdates'
   | 'goalIndicator'
+  | 'eventWaitIndicators'
   | 'conversationItems'
   | 'handleRef'
   | 'pendingQuotes'
@@ -196,14 +199,29 @@ export function ChatMessageSurface({
           onSkip={onSkip}
         />
       </div>
+    ) : activeSessionId === undefined ? (
+      // The new-task screen is where a returning user lands; check-in cards
+      // join the greeting there and nowhere else.
+      <CheckinHome
+        hero={
+          <EmptyChatHero
+            onPromptSuggestion={chatViewRest.onPromptSuggestion}
+            userLabel={chatViewRest.userLabel}
+          />
+        }
+      />
     ) : undefined;
 
   return (
     <>
       <ChatViewGoalProjectionConsumer>
         {(goalProjection) => (
-          <StagedQuoteChatView
+          <PersonalAssistantChatPresentation session={chatViewRest.activeSession} visible={visible}
+            messages={chatViewRest.messages} hasLaterHistory={chatViewRest.hasLaterHistory}
+            pendingSend={chatViewRest.transientMessages?.some((message) => message.transientPlacement === 'transcript')}>
+            {(presentation) => <StagedQuoteChatView
             {...chatViewRest}
+            {...presentation}
             liveTurns={seededLiveTurns}
               // Every branch above reseeds `sessionId` to `activeSessionId`, and a
             // render-phase setState re-runs this body before anything commits, so
@@ -212,7 +230,9 @@ export function ChatMessageSurface({
             shellRunUpdates={shellRunUpdates}
             emptyOverride={emptyOverride}
             goalIndicator={goalProjection.goalIndicator}
-          />
+            eventWaitIndicators={goalProjection.eventWaitIndicators}
+          />}
+          </PersonalAssistantChatPresentation>
         )}
       </ChatViewGoalProjectionConsumer>
       <TaskReadinessNoticeConsumer surface={ChatRecoveryNotice} />

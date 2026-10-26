@@ -44,6 +44,7 @@ export function createDesktopRuntimeHostLocalManagement(input: {
 }): DesktopRuntimeHostManagementProvider {
   return {
     profileId: LOCAL_RUNTIME_HOST_PROFILE.id,
+    platform: process.platform === 'win32' ? 'win32' : 'posix',
     accessManagementAvailable: false,
     run: (action, allowInterruptActiveTasks) => {
       const execute = (target: DesktopRuntimeHostLocalManagementTarget) =>

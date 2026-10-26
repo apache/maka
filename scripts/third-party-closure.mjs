@@ -25,18 +25,26 @@
 // definition — this module is that single definition.
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { join, relative, resolve, sep } from 'node:path';
 import { npmSpawnOptions } from './npm-spawn.mjs';
 
 const repoRoot = resolve(import.meta.dirname, '..');
 
 export const WORKSPACE_PREFIX = '@maka/';
 
-export function npmWorkspaceTree(workspaceName, omitDev) {
+export function npmWorkspaceTree(workspaceName, omitDev, { long = false } = {}) {
   const tree = JSON.parse(
     execFileSync(
       'npm',
-      ['ls', '--workspace', workspaceName, ...(omitDev ? ['--omit=dev'] : []), '--all', '--json'],
+      [
+        'ls',
+        '--workspace',
+        workspaceName,
+        ...(omitDev ? ['--omit=dev'] : []),
+        '--all',
+        '--json',
+        ...(long ? ['--long'] : []),
+      ],
       npmSpawnOptions({
         cwd: repoRoot,
         encoding: 'utf8',
@@ -158,6 +166,38 @@ export function collectProductionClosure(workspaceName) {
   };
   walk(npmWorkspaceTree(workspaceName, true).dependencies);
   return closure;
+}
+
+/**
+ * The production closure as installed instances, `<path>@<version>` with the
+ * path relative to `root`, sorted. This is the same tree as
+ * `collectProductionClosure`, read at the granularity electron-builder copies
+ * it: a nested `node_modules` copy is its own entry, so a second copy or a
+ * version replacement shows up even when the name was already shipping.
+ *
+ * Workspace packages are included at their `node_modules` link, where npm
+ * reports them; their own nested dependencies stay under `packages/<name>/`.
+ * They ship in `app.asar` too. An entry with no `path` was not installed (an
+ * optional peer nothing provided) and so ships nothing.
+ */
+export function installedInstances(dependencies, root = repoRoot) {
+  const instances = new Set();
+  const walk = (entries) => {
+    for (const dependency of Object.values(entries ?? {})) {
+      if (!dependency || typeof dependency !== 'object' || typeof dependency.path !== 'string') {
+        continue;
+      }
+      const path = relative(root, dependency.path).split(sep).join('/');
+      instances.add(`${path}@${dependency.version ?? 'unknown'}`);
+      walk(dependency.dependencies);
+    }
+  };
+  walk(dependencies);
+  return [...instances].sort();
+}
+
+export function collectProductionInstances(workspaceName) {
+  return installedInstances(npmWorkspaceTree(workspaceName, true, { long: true }).dependencies);
 }
 
 /**
