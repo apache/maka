@@ -731,20 +731,22 @@ pub(crate) fn component_animated(
     }
 }
 
-/// Queues bound prop `name`'s new value, replacing one still queued: a
-/// component that is not drawn for a while gets the latest value once, and
-/// the queue does not grow meanwhile.
+/// Coalesces bound props within the trailing animated segment. Static
+/// props and commands are ordering barriers: they must observe the values
+/// that preceded them, not a later animation frame.
 fn queue_animated(
     pending: &mut Vec<Pending>,
     name: Arc<str>,
     value: nsh_core::animation::AnimatedPropValue,
 ) {
-    for p in pending.iter_mut() {
-        if let Pending::Animated(queued, v) = p
-            && *queued == name
-        {
-            *v = value;
-            return;
+    for p in pending.iter_mut().rev() {
+        match p {
+            Pending::Animated(queued, v) if *queued == name => {
+                *v = value;
+                return;
+            }
+            Pending::Animated(..) => {}
+            Pending::Prop(..) | Pending::Command(..) => break,
         }
     }
     pending.push(Pending::Animated(name, value));
@@ -1068,6 +1070,68 @@ mod tests {
             ]
         );
         assert_eq!(pending.len(), 3, "the command stays");
+    }
+
+    #[test]
+    fn animated_props_preserve_static_prop_barriers() {
+        use nsh_core::animation::AnimatedPropValue;
+        let mut pending = Vec::new();
+        queue_animated(
+            &mut pending,
+            "progress".into(),
+            AnimatedPropValue::Number(1.0),
+        );
+        pending.push(Pending::Prop("progress".into(), Some(JsonValue::from(2))));
+        queue_animated(
+            &mut pending,
+            "progress".into(),
+            AnimatedPropValue::Number(3.0),
+        );
+        queue_animated(
+            &mut pending,
+            "progress".into(),
+            AnimatedPropValue::Number(4.0),
+        );
+        assert!(matches!(pending.as_slice(), [
+            Pending::Animated(first, AnimatedPropValue::Number(1.0)),
+            Pending::Prop(middle, Some(value)),
+            Pending::Animated(last, AnimatedPropValue::Number(4.0)),
+        ] if &**first == "progress" && &**middle == "progress"
+            && value == &JsonValue::from(2) && &**last == "progress"));
+    }
+
+    #[test]
+    fn animated_props_preserve_command_observation_order() {
+        use nsh_core::animation::AnimatedPropValue;
+        let mut pending = Vec::new();
+        queue_animated(
+            &mut pending,
+            "progress".into(),
+            AnimatedPropValue::Number(1.0),
+        );
+        pending.push(Pending::Command("snapshot".into(), JsonValue::Null));
+        queue_animated(
+            &mut pending,
+            "progress".into(),
+            AnimatedPropValue::Number(3.0),
+        );
+        queue_animated(
+            &mut pending,
+            "tint".into(),
+            AnimatedPropValue::Color(0xff00_00ff),
+        );
+        queue_animated(
+            &mut pending,
+            "progress".into(),
+            AnimatedPropValue::Number(4.0),
+        );
+        assert!(matches!(pending.as_slice(), [
+            Pending::Animated(first, AnimatedPropValue::Number(1.0)),
+            Pending::Command(command, JsonValue::Null),
+            Pending::Animated(last, AnimatedPropValue::Number(4.0)),
+            Pending::Animated(tint, AnimatedPropValue::Color(0xff00_00ff)),
+        ] if &**first == "progress" && &**command == "snapshot"
+            && &**last == "progress" && &**tint == "tint"));
     }
 
     #[test]

@@ -1050,7 +1050,7 @@
     "third-party/nsh/crates/gpui/nsh-platform-gpui/src/keys.rs": "588934210e4de9cfc849f0a66d48af29e3637a33f019a084db8961db0df46561",
     "third-party/nsh/crates/gpui/nsh-platform-gpui/src/lib.rs": "9f68a36188d46af9e8b7d2d0f54744963418318071f746930d5a076ac922b08a",
     "third-party/nsh/crates/gpui/nsh-platform-gpui/src/mount.rs": "1575b1d557a06bb37513a693add814577899fa311c5d46e0de71f5f387d57e01",
-    "third-party/nsh/crates/gpui/nsh-platform-gpui/src/native.rs": "e933e0715539de25f68cdc67a67c82e0465fd0c27deb2d646f08da6ee20790c6",
+    "third-party/nsh/crates/gpui/nsh-platform-gpui/src/native.rs": "039b7ee43931045daee513e8c9df4b2339a0064f36bca9ed915283c6745b05cf",
     "third-party/nsh/crates/gpui/nsh-platform-gpui/src/native/video.rs": "e1a61eee03f49428c3860c2c732baa88709ac07fb8e837e0b09ba387f3473049",
     "third-party/nsh/crates/gpui/nsh-platform-gpui/src/native/web.rs": "47b3c35e9e8654c485cd90b7e72d2ca5fba13a136868c8681e0e41be5a32baf4",
     "third-party/nsh/crates/gpui/nsh-platform-gpui/src/navigation.rs": "905af629d6df4d3143fb52ad40c78fa11281dfd7b9b6b73de4751915e1e04128",
