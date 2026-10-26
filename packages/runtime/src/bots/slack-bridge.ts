@@ -61,9 +61,15 @@ export function slackMessageToEvent(event: SlackMessageEvent, receivedAt: number
     chatId: event.channel,
     isGroup: event.channel_type !== 'im',
     text: event.text ?? '',
-    // Slack replies must stay on the existing thread. A top-level message uses
-    // its own ts as the thread root; a thread reply carries the root in thread_ts.
-    sourceMessageId: event.thread_ts ?? event.ts,
+    // #6322: `sourceMessageId` is the idempotency identity of THIS message
+    // (botSourceEventKey / assistant inbox id), so it must be unique per
+    // message — thread_ts is constant inside a thread and would collapse
+    // every reply into one key. Slack replies must still stay on the
+    // existing thread, so the routing target (thread root ts; a top-level
+    // message roots the thread at its own ts) travels separately in
+    // `replyTargetId`.
+    sourceMessageId: event.ts,
+    replyTargetId: event.thread_ts ?? event.ts,
     receivedAt,
   };
 }
