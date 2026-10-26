@@ -24,7 +24,11 @@ import { tmpdir } from 'node:os';
 import { AdmissionLimiter } from '@maka/runtime/admission-limiter';
 import { AcpCatalog } from './acp-catalog.js';
 import { createAcpCatalogStore, type AcpCatalogPersistence } from './acp-catalog-store.js';
-import type { ExecutorCatalogEntry, ExecutorConfiguration } from '@maka/core/executor-catalog';
+import {
+  normalizeCatalogEntry,
+  type ExecutorCatalogEntry,
+  type ExecutorConfiguration,
+} from '@maka/core/executor-catalog';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import {
   methods,
@@ -115,6 +119,13 @@ export interface AcpConversationStateStore {
   write?(conversationKey: string, state: AcpContinuityRecord): Promise<void>;
 }
 
+interface AcpSessionPresentation {
+  readonly version: 1;
+  readonly models: ExecutorCatalogEntry['models'];
+  readonly modelGroups?: ExecutorCatalogEntry['modelGroups'];
+  readonly modes?: ExecutorCatalogEntry['modes'];
+}
+
 export interface AcpContinuityRecord {
   readonly version: 2;
   readonly cwd: string;
@@ -126,6 +137,8 @@ export interface AcpContinuityRecord {
   readonly pendingTurnId?: string;
   readonly confirmedModel?: string;
   readonly confirmedMode?: string;
+  /** Last confirmed labels for this Session only; never used to authorize execution or configuration. */
+  readonly presentation?: AcpSessionPresentation;
   readonly gapEvidence?: {
     readonly replayedUpdates: number;
     readonly replayedUserChunks: number;
@@ -348,10 +361,19 @@ export class AcpExecutor implements PluginExecutorProvider {
     if (this.#disposed) return this.#catalogEntry('unavailable');
     if (session && session.cwd !== resolve(input.cwd))
       return this.#catalogEntry('history_only', [], input.configuration);
-    if (session?.restoring)
-      return this.#catalogEntry('restoring', session.configOptions, input.configuration);
-    if (session?.restoreFailed)
-      return this.#catalogEntry('restore_failed', session.configOptions, input.configuration);
+    if (session?.restoring || session?.restoreFailed) {
+      const entry = this.#catalogEntry(
+        session.restoring ? 'restoring' : 'restore_failed',
+        session.configOptions,
+        {
+          model: input.configuration?.model ?? session.record?.confirmedModel,
+          mode: input.configuration?.mode ?? session.record?.confirmedMode,
+        },
+      );
+      return session.configOptions.length
+        ? entry
+        : this.#withSavedPresentation(entry, session.record?.presentation);
+    }
     if (session?.historyGap)
       return this.#catalogEntry('history_gap', session.configOptions, input.configuration);
     if (session && !session.lost)
@@ -368,16 +390,62 @@ export class AcpExecutor implements PluginExecutorProvider {
       return this.#catalogEntry('history_only', [], input.configuration);
     if (stored.phase === 'reserved')
       return this.#catalogEntry('history_only', [], input.configuration);
-    return this.#catalogEntry(
-      stored.phase === 'prompt_pending' || stored.phase === 'history_gap'
-        ? 'history_gap'
-        : 'restorable',
-      [],
-      {
-        model: input.configuration?.model ?? stored.confirmedModel,
-        mode: input.configuration?.mode ?? stored.confirmedMode,
-      },
+    return this.#withSavedPresentation(
+      this.#catalogEntry(
+        stored.phase === 'prompt_pending' || stored.phase === 'history_gap'
+          ? 'history_gap'
+          : 'restorable',
+        [],
+        {
+          model: input.configuration?.model ?? stored.confirmedModel,
+          mode: input.configuration?.mode ?? stored.confirmedMode,
+        },
+      ),
+      stored.presentation,
     );
+  }
+
+  #readPresentation(value: unknown): AcpSessionPresentation | undefined {
+    if (!value || typeof value !== 'object' || (value as { version?: unknown }).version !== 1)
+      return;
+    try {
+      // Normalize optional display metadata separately: a corrupt cache must not invalidate continuity.
+      const input = value as AcpSessionPresentation;
+      const entry = normalizeCatalogEntry(
+        {
+          ...this.#catalogEntry('restorable'),
+          models: input.models,
+          modelGroups: input.modelGroups,
+          modes: input.modes,
+        },
+        this.id,
+      );
+      return {
+        version: 1,
+        models: entry.models,
+        modelGroups: entry.modelGroups,
+        modes: entry.modes,
+      };
+    } catch {
+      return;
+    }
+  }
+
+  async #withSavedPresentation(
+    entry: ExecutorCatalogEntry,
+    saved?: AcpSessionPresentation,
+  ): Promise<ExecutorCatalogEntry> {
+    const presentation = this.#readPresentation(saved) ?? (await this.#catalog.readCached());
+    if (!presentation) return entry;
+    return {
+      ...entry,
+      ...(entry.currentModel && presentation.models.some((model) => model.id === entry.currentModel)
+        ? { models: presentation.models, modelGroups: presentation.modelGroups }
+        : {}),
+      ...(entry.currentMode && presentation.modes?.some((mode) => mode.id === entry.currentMode)
+        ? { modes: presentation.modes }
+        : {}),
+    };
   }
 
   async configureConversation(
@@ -1048,7 +1116,16 @@ export class AcpExecutor implements PluginExecutorProvider {
     configOptions: readonly SessionConfigOption[] = session.configOptions,
   ): Promise<void> {
     if (!session.record) return;
-    const record = withConfirmedConfiguration(session.record, configOptions);
+    let record = withConfirmedConfiguration(session.record, configOptions);
+    const observed = this.#catalogEntry('ready', configOptions);
+    const presentation = this.#readPresentation({
+      version: 1,
+      models: observed.models,
+      modelGroups: observed.modelGroups,
+      modes: observed.modes,
+    });
+    if (presentation && JSON.stringify(record.presentation) !== JSON.stringify(presentation))
+      record = { ...record, presentation };
     if (record === session.record) return;
     await this.#state?.write?.(session.conversationKey, record);
     session.record = record;

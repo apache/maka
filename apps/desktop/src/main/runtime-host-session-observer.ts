@@ -837,6 +837,10 @@ export class RuntimeHostSessionObserver {
       return;
     }
     if (frame.kind === "subscription.session_domain_changed") {
+      if (frame.domain === "event_wait") {
+        this.#emitSessionsChanged("goal-change", frame.sessionId);
+        return;
+      }
       this.#emitSessionDomainChanged(
         frame.domain === "runtime_resource"
           ? {
@@ -877,7 +881,7 @@ export class RuntimeHostSessionObserver {
     if (!samePendingInteractions(previous, state.snapshot)) {
       this.#emitActiveInteractions(state);
     }
-    if (!sameGoal(previous.goal, state.snapshot.goal)) {
+    if (!sameGoal(previous.goal, state.snapshot.goal) || JSON.stringify(previous.eventWaits) !== JSON.stringify(state.snapshot.eventWaits)) {
       this.#emitSessionsChanged("goal-change", state.sessionId);
     }
     const root = state.snapshot.rootTurn;
@@ -1102,9 +1106,11 @@ export class RuntimeHostSessionObserver {
             recordedTurns,
           )
         : undefined;
-    const goalChanged = previousSnapshot
-      ? !sameGoal(previousSnapshot.goal, subscription.snapshot.goal)
-      : false;
+    // A replacement cannot replay domain hints lost while disconnected, and its
+    // bounded first page cannot prove the rest of the wait collection is unchanged.
+    const goalChanged = recovered || (previousSnapshot
+      ? !sameGoal(previousSnapshot.goal, subscription.snapshot.goal) || JSON.stringify(previousSnapshot.eventWaits) !== JSON.stringify(subscription.snapshot.eventWaits)
+      : false);
 
     return () => {
       if (
@@ -1140,9 +1146,6 @@ export class RuntimeHostSessionObserver {
           });
         }
         this.#emitActiveInteractions(state);
-        if (goalChanged) {
-          this.#emitSessionsChanged("goal-change", state.sessionId);
-        }
         const root = state.snapshot.rootTurn;
         this.#emitSessionsChanged(
           "status-change",
@@ -1165,6 +1168,7 @@ export class RuntimeHostSessionObserver {
         recordedTurns,
       );
 
+      if (goalChanged) this.#emitSessionsChanged("goal-change", state.sessionId);
       if (recovered) this.#emitSubscriptionRecovered(state.sessionId);
     };
   }
@@ -1952,8 +1956,7 @@ function sameGoal(
   return (
     next !== null &&
     previous.goalId === next.goalId &&
-    previous.revision === next.revision &&
-    JSON.stringify(previous.eventWait) === JSON.stringify(next.eventWait)
+    previous.revision === next.revision
   );
 }
 

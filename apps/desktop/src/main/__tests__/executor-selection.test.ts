@@ -29,7 +29,8 @@ import { executorComposerProps, executorSubmissionError, newTaskConfiguration } 
 
 const entry: ExecutorCatalogEntry = { id: 'external', displayName: 'External', readiness: 'ready', models: [{ id: 'selected', name: 'Selected' }], supportsAttachments: false, supportsModelChange: true };
 
-test('ready Session polling and events refresh silently while initial reads and retries show loading', async (context) => {
+for (const readiness of ['ready', 'restorable'] as const)
+test(`${readiness} Session polling and events refresh silently while initial reads and retries show loading`, async (context) => {
   const { document, window } = parseHTML('<html><body><div id="root"></div></body></html>');
   const values = { document, window, HTMLElement: window.HTMLElement, Node: window.Node, IS_REACT_ACT_ENVIRONMENT: true };
   const originals = new Map(Object.keys(values).map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
@@ -58,14 +59,14 @@ test('ready Session polling and events refresh silently while initial reads and 
     await act(async () => root.render(createElement(ConversationServicesProvider, { services, children: createElement(Probe) })));
     assert.equal(latest.loading, true);
     assert.deepEqual(latest.loadingIds, ['external']);
-    await settle([entry]);
+    await settle([{ ...entry, readiness }]);
     const selected = latest.selection;
     await act(async () => { context.mock.timers.tick(3000); });
     assert.equal(reads.length, 1, 'the periodic inspection still runs');
     assert.equal(latest.loading, false, 'background polling must not flash the picker');
     assert.deepEqual(latest.loadingIds, []);
     assert.deepEqual(latest.selection, selected);
-    const updated = { ...entry, models: [...entry.models, { id: 'new', name: 'New model' }] };
+    const updated = { ...entry, readiness, models: [...entry.models, { id: 'new', name: 'New model' }] };
     await settle([updated]);
     assert.deepEqual(latest.entry?.models, updated.models, 'silent inspection still updates model choices');
     await act(async () => { changed(session.id); });
@@ -329,10 +330,30 @@ test('explicit restore confirms the saved model while preserving the current tas
   try {
     await act(async () => root.render(createElement(ConversationServicesProvider, { services, children: createElement(Probe) })));
     assert.equal(latest.entry?.readiness, 'restorable');
-    let restoring!: Promise<void>;
+    const gates = executorComposerProps(latest, { activeId: 'saved', turnActive: false, taskSubmissionHardBlocked: false, connectionCount: 0, onSetup() {}, onNewTask() {} });
+    assert.equal(gates.sendBlocked, false, 'a recoverable Session can submit directly');
+    for (const readiness of ['ready', 'restorable', 'restore_failed', 'restoring', 'history_only', 'history_gap', 'unavailable', 'authentication_required'] as const) {
+      const input = { activeId: 'saved', turnActive: false, taskSubmissionHardBlocked: false, connectionCount: 0, onSetup() {}, onNewTask() {} };
+      const selected = { ...latest, entry: { ...entry, readiness } };
+      assert.equal(executorComposerProps(selected, input).sendBlocked,
+        !['ready', 'restorable', 'restore_failed', 'restoring'].includes(readiness));
+      assert.equal(executorComposerProps(selected, { ...input, activeId: undefined }).sendBlocked,
+        readiness !== 'ready', 'new tasks still require a ready Agent');
+      const submission = { executorSelection: latest.selection, executorEntry: { ...entry, readiness, models: [] } };
+      if (readiness !== 'ready') {
+        assert.equal(executorSubmissionError(submission, 0, 'en', true) === undefined,
+          ['restorable', 'restore_failed', 'restoring'].includes(readiness));
+        assert.ok(executorSubmissionError(submission, 0, 'en'), 'new tasks require discovery');
+      }
+      assert.ok(executorSubmissionError({ ...submission, executorEntry: { ...submission.executorEntry, supportsAttachments: false } }, 1, 'en', true));
+    }
+    let restoring!: Promise<unknown>;
     await act(async () => { restoring = latest.restore(); });
     assert.equal(latest.entry?.readiness, 'restoring');
-    await act(async () => { finishRestore(); await restoring; });
+    await act(async () => {
+      finishRestore();
+      await restoring;
+    });
     assert.deepEqual(writes, [{ sessionId: 'saved', model: 'selected' }]);
     assert.equal(latest.entry?.readiness, 'ready');
     assert.equal(latest.selection?.executorId, 'external');

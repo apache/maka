@@ -55,6 +55,7 @@ interface ChatMessageSurfaceProps extends Omit<
   | 'liveTurns'
   | 'shellRunUpdates'
   | 'goalIndicator'
+  | 'eventWaitIndicators'
   | 'conversationItems'
   | 'handleRef'
   | 'pendingQuotes'
@@ -229,6 +230,7 @@ export function ChatMessageSurface({
             shellRunUpdates={shellRunUpdates}
             emptyOverride={emptyOverride}
             goalIndicator={goalProjection.goalIndicator}
+            eventWaitIndicators={goalProjection.eventWaitIndicators}
           />}
           </PersonalAssistantChatPresentation>
         )}

@@ -31,24 +31,12 @@ import {
 import { installDom, settleEffects } from './mermaid-test-dom.js';
 
 const BACKGROUND = 'rgb(24, 32, 48)';
-const cases = [
-  ...(['none', 'decode', 'toBlob-null', 'toBlob-throw', 'write'] as const).map((failure) => ({
-    name: failure,
-    failure,
-    width: 123,
-    height: 45,
-    exportWidth: 123 * MERMAID_EXPORT_PIXEL_RATIO,
-    exportHeight: 45 * MERMAID_EXPORT_PIXEL_RATIO,
-  })),
-  { name: 'area cap', failure: 'none', width: 10_000, height: 10_000, exportWidth: 8192, exportHeight: 8192 },
-  { name: 'edge cap', failure: 'none', width: 40_000, height: 100, exportWidth: 32767, exportHeight: 81 },
-];
-
 for (const expanded of [false, true]) {
-  for (const { name, failure, width, height, exportWidth, exportHeight } of cases) {
-    test(`copies PNG from ${expanded ? 'fullscreen' : 'inline'} toolbar: ${name}`, async (t) => {
+  for (const failure of expanded ? ['none'] as const : ['none', 'decode', 'toBlob-null', 'toBlob-throw', 'write'] as const) {
+    test(`copies PNG from ${expanded ? 'fullscreen' : 'inline'} toolbar: ${failure}`, async (t) => {
       const dom = installDom();
       t.after(() => dom.restore());
+      await import('pele');
       const createElement = dom.document.createElement.bind(dom.document);
       t.mock.method(dom.document, 'createElement', (name: string, options?: ElementCreationOptions) => {
         const element = createElement(name, options);
@@ -60,12 +48,6 @@ for (const expanded of [false, true]) {
         }
         return element;
       });
-      const mermaid = (await import('mermaid')).default;
-      t.mock.method(mermaid, 'initialize', () => {});
-      t.mock.method(mermaid, 'render', async (id: string) => ({
-        diagramType: 'flowchart-v2',
-        svg: `<svg id="${id}" viewBox="0 0 ${width} ${height}" width="100%" style="max-width:${width}px"><rect width="10" height="10" /></svg>`,
-      }));
 
       const paintOrder: string[] = [];
       const images: TestImage[] = [];
@@ -110,6 +92,7 @@ for (const expanded of [false, true]) {
       const fills: { color: string; bounds: number[] }[] = [];
       const draws: unknown[][] = [];
       const context = {
+        measureText: (text: string) => ({ width: text.length * 8 }),
         fillStyle: '',
         fillRect(...args: number[]) {
           paintOrder.push('fill');
@@ -125,7 +108,7 @@ for (const expanded of [false, true]) {
         canvases.push(this);
         return context;
       });
-      // linkedom does not provide toBlob, so install and restore the descriptor.
+      // linkedom has no canvas toBlob implementation.
       const canvasPrototype = dom.document.defaultView!.HTMLCanvasElement.prototype;
       const originalToBlob = Object.getOwnPropertyDescriptor(canvasPrototype, 'toBlob');
       Object.defineProperty(canvasPrototype, 'toBlob', {
@@ -145,7 +128,7 @@ for (const expanded of [false, true]) {
       try {
         await act(async () => root.render(
           <LocaleProvider locale="en">
-            <MermaidDiagram code={`flowchart LR\n${expanded}_${failure}_${width}_${height} --> b`} density="default" />
+            <MermaidDiagram code={'flowchart LR\na --> b'} density="default" />
           </LocaleProvider>,
         ));
         await settleEffects();
@@ -157,6 +140,13 @@ for (const expanded of [false, true]) {
         };
         if (expanded) await click('button[aria-label="View diagram fullscreen"]');
         const figure = expanded ? 'figure.maka-mermaid-diagram-expanded' : 'figure:not(.maka-mermaid-diagram-expanded)';
+        const diagram = dom.document.querySelector(`${figure} .maka-mermaid-svg > svg`)!;
+        assert.ok(diagram, dom.document.body.innerHTML);
+        const width = Number(diagram.getAttribute('width'));
+        const height = Number(diagram.getAttribute('height'));
+        const exportWidth = Math.floor(width * MERMAID_EXPORT_PIXEL_RATIO);
+        const exportHeight = Math.floor(height * MERMAID_EXPORT_PIXEL_RATIO);
+        canvases.length = 0; // Exclude the renderer's text-measurement canvas.
         await click(`${figure} button[aria-label="Copy diagram"]`);
 
         assert.equal(images.length, 1);

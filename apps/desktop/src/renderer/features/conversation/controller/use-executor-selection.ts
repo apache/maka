@@ -119,13 +119,14 @@ export function useExecutorSelection(input: {
         return;
       }
       if (!sessionId && (!input.target || !input.cwd)) return;
-      const inherited = handoff.current?.key === key ? handoff.current : undefined;
+      const cached = sessionId ? services.sessions.readCachedExecutorState?.(sessionId) : undefined;
+      const inherited = handoff.current?.key === key ? handoff.current
+        : cached ? { key, catalog: cached, loading: false } : undefined;
       setSnapshot((previous) => {
         const seed = previous?.key === key ? previous : inherited;
-        // Polling and Session events revalidate an already usable picker in the
-        // background. Do not flash its loading indicator on every inspection.
-        if (sessionId && !force && !input.sessionPending && seed && !seed.loading &&
-          seed.catalog.some(entry => entry.id === executorId && entry.readiness === 'ready'))
+        // Polling and Session events revalidate every settled state silently,
+        // including disconnected Sessions. Only initial reads and explicit retries load.
+        if (sessionId && !force && !input.sessionPending && seed && !seed.loading)
           return seed;
         return { key, catalog: seed?.catalog ?? [], loading: true };
       });
@@ -173,7 +174,7 @@ export function useExecutorSelection(input: {
         if (current.current === key && revision.current === attempt)
           setSnapshot(previous => ({
             key,
-            catalog: previous?.key === key ? previous.catalog : [],
+            catalog: previous?.key === key ? previous.catalog : inherited?.catalog ?? [],
             loading: false,
             loadingIds: [],
             error: error instanceof Error ? error.message : 'Executor unavailable',
@@ -250,7 +251,9 @@ export function useExecutorSelection(input: {
       confirmed.configuration.mode === input.session?.executorConfig?.mode)
       setConfirmed(undefined);
   }, [key, confirmed, input.session?.executorConfig?.model, input.session?.executorConfig?.mode]);
-  const currentSnapshot = snapshot?.key === key ? snapshot : handoff.current?.key === key ? handoff.current : undefined;
+  const cached = sessionId ? services.sessions.readCachedExecutorState?.(sessionId) : undefined;
+  const currentSnapshot = snapshot?.key === key ? snapshot : handoff.current?.key === key ? handoff.current
+    : cached ? { key, catalog: cached, loading: false } : undefined;
   const catalog = currentSnapshot?.catalog ?? [];
   const inspected = catalog.find(candidate => candidate.id === executorId);
   // The catalog describes observed Agent state. The saved Session config is the
@@ -364,7 +367,17 @@ export function useExecutorSelection(input: {
           }
         : previous,
     );
-    await select({ executorId, configuration });
+    try {
+      await select({ executorId, configuration });
+    } catch (error) {
+      if (current.current === key) setSnapshot(previous => previous?.key === key ? {
+        ...previous,
+        catalog: previous.catalog.map(entry => entry.id === executorId &&
+          (entry.readiness === 'restoring' || entry.readiness === 'restorable')
+          ? { ...entry, readiness: 'restore_failed' } : entry),
+      } : previous);
+      throw error;
+    }
   };
   return {
     selection,

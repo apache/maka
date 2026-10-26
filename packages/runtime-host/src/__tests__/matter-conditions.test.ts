@@ -33,7 +33,7 @@ import {
 } from '../assistant/proactive-matters/condition.js';
 import { buildMatterTools } from '../assistant/proactive-matters/tools.js';
 import type { MatterSettleInput } from '../assistant/proactive-matters/matter.js';
-import { decodeEventWaitRecord, decodeObservedEventWaitRecord } from '@maka/core/event-wait';
+import { decodeEventWaitRecord } from '@maka/core/event-wait';
 
 const definition = {
   code: `const facts = await tools.SourceQuery({source:"test",query:{}});
@@ -392,12 +392,11 @@ test('approved wait whose fallback passed during review is accepted then expires
   assert.equal(f.store.get(f.m.id).events.length, 1);
 });
 
-test('Goal decoder stays strict; owner-neutral waits cannot impersonate Goal authority', (t) => {
+test('Matter conditions produce neutral observation records', (t) => {
   const f = fixture(t),
     w = f.settle(),
     record = f.store.conditions.read(w.id)!.record;
-  assert.deepEqual(decodeObservedEventWaitRecord(record), record);
-  assert.throws(() => decodeEventWaitRecord(record));
+  assert.deepEqual(decodeEventWaitRecord(record), record);
 });
 
 test('unapproved or stale review cannot install a checker; rejected settlement is atomic', (t) => {

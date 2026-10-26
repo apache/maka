@@ -68,7 +68,7 @@ import {
   isTurnOrchestrationSource,
   type TurnOrchestration,
 } from '@maka/core/orchestration';
-import { decodeEventWaitProvenance } from '@maka/core/event-wait-delivery';
+import { decodeGoalEventProvenance } from '@maka/core/event-wait-delivery';
 import { validateGenericToolLedgerAppend } from '@maka/core/tool-ledger-scanner';
 
 export const SAFE_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
@@ -400,6 +400,9 @@ export function normalizeAdmitRootTurnInput(input: AdmitRootTurnInput): RootTurn
       : decodeSkillInvocationResult(input.skillInvocation);
   const authorization = normalizeRootTurnAdmissionAuthorization(input.authorization);
   const execution = normalizeRootExecutionDescriptor(input.execution);
+  if (execution.kind === 'goal' && execution.eventWait) {
+    throw new Error('New root admission cannot use retired Goal event wait authority');
+  }
   if (execution.kind === 'legacy_automation') {
     throw new Error('New root admission cannot use removed Automation authority');
   }
@@ -1254,6 +1257,7 @@ export function normalizeRootExecutionDescriptor(value: unknown): RootExecutionD
       !hasExactKeys(value, [
         'kind',
         'goalId',
+        ...(value.goalWaiting === undefined ? [] : ['goalWaiting']),
         ...(value.eventWait === undefined ? [] : ['eventWait']),
       ]) ||
       typeof value.goalId !== 'string' ||
@@ -1264,9 +1268,7 @@ export function normalizeRootExecutionDescriptor(value: unknown): RootExecutionD
     return Object.freeze({
       kind: 'goal',
       goalId: value.goalId,
-      ...(value.eventWait === undefined
-        ? {}
-        : { eventWait: decodeEventWaitProvenance(value.eventWait) }),
+      ...decodeGoalEventProvenance(value),
     });
   }
   if (value.kind === 'agent_graph_supervisor_wake') {

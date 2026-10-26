@@ -26,15 +26,18 @@ import { useUiLocale } from './locale-context.js';
 
 /** Short and legacy messages stay plain; only authored summaries are collapsible. */
 export function MessageSummary({ summary, children }: { summary?: string; children: ReactNode }) {
+  return summary ? <CollapsibleMessageSummary summary={summary}>{children}</CollapsibleMessageSummary> : <>{children}</>;
+}
+
+function CollapsibleMessageSummary({ summary, children }: { summary: string; children: ReactNode }) {
   const [expanded, setExpanded] = useState(false);
   const bodyId = useId();
   const locale = useUiLocale();
-  if (!summary) return <>{children}</>;
   const labels = assistantChatCopy(locale);
   return (
     <div className="maka-message-summary">
+      <div className="maka-message-summary-header">
       <div className="maka-message-summary-preview"><Markdown text={summary} density="compact" /></div>
-      <div id={bodyId} className="maka-message-summary-body" hidden={!expanded}>{children}</div>
       <Button
         type="button"
         label={expanded ? labels.collapse : labels.expand}
@@ -45,9 +48,10 @@ export function MessageSummary({ summary, children }: { summary?: string; childr
         aria-controls={bodyId}
         onClick={() => setExpanded((value) => !value)}
       >
-        {expanded ? labels.collapse : labels.expand}
         <ChevronDown size={14} aria-hidden="true" />
       </Button>
+      </div>
+      <div id={bodyId} className="maka-message-summary-body" hidden={!expanded}>{children}</div>
     </div>
   );
 }

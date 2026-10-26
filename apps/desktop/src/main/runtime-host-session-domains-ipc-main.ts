@@ -30,7 +30,6 @@ import type { ShellRunPtyDataEvent } from '@maka/runtime/shell-run-contract';
 import type { PlanSessionState } from '@maka/core/plan';
 import {
   type GoalProjection,
-  HOST_OPERATION_SPECS,
   type OperationOutput,
   type PlanControlErrorCode,
   type SessionDomainChange,
@@ -60,7 +59,6 @@ type RuntimeHostSessionDomainClient = RuntimeHostShellRunsClient &
   Pick<
     DesktopRuntimeHostClient,
     | 'armGoal'
-    | 'cancelGoalEventWait'
     | 'clearGoal'
   | 'controlGoalWithRetry'
   | 'controlPlan'
@@ -128,11 +126,6 @@ export function registerRuntimeHostSessionDomainsIpc(
   handleReconnectableRead(ipcMain, 'goal:get', async (_event, sessionId: unknown) => {
     const result = await deps.client.queryGoal(requiredId(sessionId, 'Session'));
     return result.goal === null ? null : toDesktopGoal(result.goal);
-  });
-  ipcMain.handle('goal:cancel-event-wait', async (_event, sessionId: unknown, value: unknown) => {
-    const input = HOST_OPERATION_SPECS['goal.event-wait.cancel'].decodeInput(value);
-    if (input.sessionId !== requiredId(sessionId, 'Session')) throw new Error('Wait cancellation Session mismatch');
-    return deps.client.cancelGoalEventWait(input);
   });
   ipcMain.handle('goal:clear', async (_event, sessionId: unknown) => {
     await deps.client.clearGoal(requiredId(sessionId, 'Session'));
@@ -487,7 +480,6 @@ function optionalCount(value: unknown, label: string): number | null {
 function toDesktopGoal(goal: GoalProjection): DesktopGoal {
   return {
     id: goal.goalId,
-    eventWait: goal.eventWait,
     revision: goal.revision,
     sessionId: goal.sessionId,
     condition: goal.condition,

@@ -195,7 +195,7 @@ test('real Host publishes a verified Bundle/Manifest and provider fence covers t
       schemaVersion: 1,
       waitId: 'wait-checkpoint',
       sessionId: f.session.id,
-      goalControlLease: { goalId: 'goal-1', generation: 0 },
+
       sourceTurnId: 'turn-before',
       sourceToolCallId: 'call-1',
       resource: {

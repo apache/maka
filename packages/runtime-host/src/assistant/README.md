@@ -23,7 +23,7 @@ The Runtime Host owns three built-in services: memory indexes, durable Matters, 
 
 `service.ts` owns tools, prompt contributions, the Matter finish check, the fixed desktop API, scheduler startup and shutdown. `execution-composition.ts` recovers its state after source plugins, and starts schedulers after execution recovery. Shared Host agent, model, history and source adapters retain invocation identity and permissions; using these adapters does not install a plugin.
 
-The feature defaults **off**, including installations with existing assistant data. Enable **通用 → 启用个人助手** in Settings, beside the WorkHub switch, to expose the sidebar entry and start the three services on that Host. The switch is shared by clients of the same Host, not a desktop-only visibility preference. Its labeled conversation is excluded from the ordinary Session rail and palette. WorkHub remains separate. Opening the assistant does not import history, create indexes, enable discovery or call a model.
+The feature defaults **off**, including installations with existing assistant data. Enable **通用 → 启用个人助手** in Settings, beside the WorkHub switch, to expose the sidebar entry and start the three services on that Host. The switch is shared by clients of the same Host, not a desktop-only visibility preference. Its labeled conversation is excluded from the ordinary Session rail and palette. WorkHub remains separate. Opening the assistant does not import history, create indexes or enable discovery. Once its conversation is bound, missing appearance settings can trigger a one-time Bot question; asset creation waits for the user’s choice.
 
 ## Conversation workspace
 
@@ -55,6 +55,9 @@ Memory defaults remain 12-hour maintenance and at most 5 concurrent indexing job
 
 Index reads expose shared usage guidance. `MemoryIndexContent` defaults to directory navigation; `key`, `keys` and `view=full` read bodies. `MemoryIndexLinks` navigates saved references to originals and accessible related entries, preserving exact versions and paginating expanded paths. Its shared-object count is not a recommendation score. It neither retrieves remote bodies nor runs maintenance.
 
+`MemorySourceQuery` supports `view=content` to return compact original bodies with stable refs, or `queries` to query several sources concurrently. Legacy single-source metadata reads remain available. `MemoryOriginal` accepts `refs` for batched reads and `view=content` for compact output. Content reads budget complete records with `maxChars` (default 6,000) and the runtime UTF-8 byte threshold, including pagination metadata; `nextPage` continues the same persisted, session-bound batch after a restart. After finishing a batch, `sources[].next` is the native source query continuation. Each continuation rechecks source scope and permissions. Source failures remain explicit. Oversized individual bodies return `truncated`, `totalChars` and `nextOffsetChars`; use a single `MemoryOriginal` content read with `offsetChars` to continue. These reads neither organize indexes nor advance coverage. External `MemoryHistory` offsets skip earlier bodies when selection only depends on metadata; body-dependent keyword/conversation filters retain their semantics.
+
+
 ## Proactive instructions
 
 Heartbeats use the discovery and judgement instructions from code; configuration only changes cadence. Two persistent background Sessions share an append-only notebook, rather than handing off a fixed candidate list. Each worker reads the notebook from a private Markdown file and writes only its new observations (and, for judgement, feedback interpretations and proposed messages) to a per-wake JSON file. The Host persists those operations atomically; empty results are allowed. Only genuine user feedback may close, defer or reopen a topic, and newer feedback invalidates stale drafts. These are provenance and consistency checks, not a model/keyword review of recommendation quality. Judgement chooses directions from the entire notebook, considering occurrence time and current user value. Its messages go through the Bot inbox; acceptance is recorded as “reported”, never as confirmed delivery. Actual assistant conversation is shown separately. A failed judgement resumes from the notebook without repeating discovery. Both worker histories, the notebook and the configured cadence survive restart. New prompt versions reach existing Sessions once; obsolete saved custom instructions do not override them. Source history and indexes are unchanged. Existing pre-upgrade reports remain readable as historical context for the pending judgement.
@@ -69,6 +72,8 @@ Run `npm run build --workspace @maka/runtime-host`, `npm run test:assistant --wo
 
 ## Assistant Bot
 
+The Bot offers concrete help or follow-up based on the user’s situation, while distinguishing a proposal from work already arranged. Backend results inform its own conversation with the user. Backend findings, updates, offers of help and questions intended for the user must be conveyed in the current turn unless there is a concrete reason to filter them. Non-urgency, message count or a vague plan to wait for natural conversation is not sufficient. When it filters all or part of an Inbox message, it records a short reason with `Sleep.notNotified: [{inboxId, reason}]`. These timestamped, append-only decisions survive restart and are returned by `InboxRead`; tool retries do not duplicate them. They are an audit trail, not a processed-message state or a ban on future notification. They are saved even if new mail prevents sleep.
+
 The visible assistant Session is a conversation transport. User messages enter a durable Inbox and are projected to its transcript without starting a model Turn there. A separate background Bot Session owns the ordinary Agent loop. All ordinary model text and tool activity stay in that worker; only `SendUser` publishes assistant chat messages. The existing WorkHub is unchanged.
 
 `InboxCheck` delivers new message bodies in batches (default 50 messages, at most 100 and 24,000 content characters). Long bodies carry an explicit `nextOffset` for `InboxRead`; `hasMore` describes further messages. `InboxList` and `InboxRead` remain optional, non-consuming history reads. There is no pending/processed state or `InboxUpdate`: receiving mail does not mean completing a task or notifying the user. `SendUser({messageId, messages: [...]})` sends an ordered batch of independent chat bubbles in one tool call, without ending the loop. The whole batch is registered atomically before delivery; retries reuse `messageId` and identical content, skip delivered bubbles, and resume the remainder in order. Changing or extending a committed batch is rejected. The model chooses natural conversational boundaries; there is no punctuation splitter or artificial typing delay. `Sleep` explicitly requests suspension, with no requirement to respond or act on received mail. A finish check prevents sleeping past undelivered messages, including arrivals during execution or between Sleep and completion. Normal final text alone does not end the Bot loop. There is no added round timeout or wake-count limit.
@@ -82,14 +87,14 @@ Sleep/wake metadata, the worker Session identity, Inbox and outgoing messages su
 The message protocol has an explicit `inbox` admission receipt without a fabricated model Turn ID. Direct `turn.start` on a bound conversation is rejected. Attachment ownership is checked before admission. Explicit turn orchestration / skill selection belongs to a delegated execution, and is rejected at this conversation transport rather than silently discarded.
 
 
-The Bot can change its local identity with `AssistantSetAvatar({emoji, background?})`.
+The Bot can change its local identity with `AssistantCharacterPack({action: 'set_avatar', emoji, background?})`.
 The avatar can be one emoji or an image, plus an optional `#RRGGBB` background.
-`AssistantSetAvatar({image: "/path/to/avatar.png"})` also accepts HTTP(S) image URLs.
+`AssistantCharacterPack({action: 'set_avatar', image: "/path/to/avatar.png"})` also accepts HTTP(S) image URLs.
 Generated and found images use the same setter; generation/search uses existing tools or delegated tasks.
 PNG, JPEG, WebP and GIF are accepted up to 2 MiB, through the existing Session filesystem
 boundary or Host public-network image loader. Markup and arbitrary URI schemes are rejected.
 Validated bytes and metadata are saved atomically in the Bot database, independent of the
-original file or URL. Only the Bot worker can write it. Reads never wake a model.
+original file or URL. The Bot and its designated initialization Matter can write it. Reads never wake a model.
 `assistant.avatar` returns lightweight metadata; `assistant.avatar-image` transfers bounded
 chunks only when the image changes. Image bytes never appear in tool results/model context.
 The desktop entry and assistant messages share the avatar, displayed as a rounded square.
@@ -97,6 +102,37 @@ This tool changes appearance only and does not send a message.
 
 运行中的持续任务在每次模型请求前获得当前任务 Inbox 的动态上下文（用户追加要求和 Bot 澄清），同时刷新任务文件，不依赖 Recall。渲染上下文不会确认或消费输入；仍由 MatterRead 和提交检查维护观察边界，收尾时才消费已处理事件。已发出的模型请求或已执行的工具不会被追溯撤销；取消仍使用任务控制接口。
 
+
+### Local character pack
+
+The Host keeps one active `character-pack/` directory beside the Bot's component data:
+
+- `persona.md`: editable identity and expression, up to 200 lines / 24 KiB. Only this
+  document is loaded into the Bot's system instructions on each prompt assembly.
+- `GUIDE.md`: on-demand maintenance and creative-use instructions, not automatically
+  injected. The Bot role itself is unchanged.
+- `manifest.json` and `assets/`: versioned catalog and independent image copies.
+
+`AssistantCharacterPack` is directly available to the Bot worker. `read` reads `persona`
+or `guide`; `write` uses the previous `revision` to detect conflicting edits. `list`
+paginates metadata, `asset` resolves an ID, and `add_image` copies a generated or found
+image using the existing avatar loader and its Session-file / public-network checks.
+`update_asset` changes the title, kind or usage without replacing the image; `remove_asset`
+removes an asset without withdrawing previously sent content or clearing the current avatar.
+The guide explicitly permits autonomous changes to identity, style, the guide itself and
+asset organization, respecting the user's stated preferences.
+Use `AssistantCharacterPack({action: 'set_avatar', assetId})` to apply a saved image to the existing desktop and
+chat avatar. Registration alone neither changes the avatar nor sends a message.
+Generation and search still use the existing tools or delegated work; there is no new
+image generator or execution permission. Images never enter model context as base64.
+
+PNG, JPEG, WebP and GIF share the existing 2 MiB avatar limit. Images deduplicate by
+content hash; documents and metadata use atomic replacement. Restart preserves edits
+and assets, including when their original source disappears. Invalid persona content
+is omitted with a repair notice rather than blocking the Bot; corrupt assets/catalogs
+are reported, not silently reset. The guide contains creative suggestions and usage
+rules. This initial framework does not add a desktop pet overlay, notification UI,
+audio playback or an asset gallery.
 
 ### Bot operation boundaries
 
@@ -123,3 +159,105 @@ Mutation receipts identify their target and action. Discovery receipts also retu
 before/after schedule values. The desktop settings API retains its existing combined
 enable-and-configure operation; the model-facing tools separate these intents.
 The discovery exploration prompt and Inbox/Sleep loop are unchanged.
+
+
+### Sticker shelf and chat bubbles
+
+The Bot prompt includes up to 10 textual sticker entries (title, short usage, ID),
+never image bytes. The random selection is persisted separately from persona.md and
+stays stable across model calls and restart. A persona revision or a new durable
+compaction checkpoint refreshes it, favoring other available stickers; deleted or
+reclassified entries are removed and vacancies filled without padding the catalog.
+`AssistantStickerSearch` is immediately available to the Bot, accepts optional name/use
+keywords and returns up to 10 matching imageUrl attachment references; an empty query samples the library.
+Saved images are published as durable owner-conversation attachments, with stable IDs and
+existing image archive quotas. Chat does not read the private character-pack cache path;
+removing the source asset does not remove already published chat images.
+Sticker assets receive a Host-generated attachment identity carrying their presentation
+kind. Chat caps their thumbnail at 128 × 128 CSS pixels without enlarging small images;
+clicking opens a larger preview. Normal images and avatars keep their existing layout.
+`SendUser.messages[].stickerId` accepts a saved sticker ID directly, alongside optional
+`text` and `summary`, or alone for a sticker-only bubble. The Host publishes the image
+and adds the attachment reference without another model lookup. All images resolve
+before any message is queued; failed resolution sends no partial batch. A durable receipt
+keeps retries identical even after the source sticker is removed or the Host restarts.
+Existing Markdown imageUrl messages remain supported; byte reads and sizing are handled by code.
+A failed checkpoint lookup preserves the selection and does not block conversation.
+
+SendUser's tool description asks for an independent summary for text longer than
+200 characters. It does not require splitting long sentences or paragraphs into bubbles. These are model-facing instructions, not a new send rejection or automatic
+truncation. Newlines within one item still render within one bubble. The Bot role prompt
+is unchanged.
+
+
+### First-run character creation
+
+On enabled Host startup, after the assistant conversation/model is bound, a missing
+persona starts one normal Matter with a durable task key. No default persona is
+injected. A previously customized persona is adopted without replacement or greeting.
+The initializer briefly checks available preferences, freely invents a distinctive
+coherent identity when history is insufficient, and uses the same character-pack API.
+Downloaded images are preferred to repeated generation; offline creation can finish
+with an emoji avatar and no stickers. It never blocks the Bot loop.
+
+Initialization identity, worker permission, preparation and introduction mode live in
+Bot SQLite. Delegation publishes the worker identity before admitting its first run.
+Startup retries reuse the same task key; normal Matter recovery and failure feedback
+remain in charge after admission. `finish_initialization` validates a non-default
+persona and a saved avatar; completion feedback uses the existing durable Inbox
+message, adding first-person introduction guidance. A new user gets an introduction;
+an existing conversation gets a short explanation of the new appearance. Retries keep
+the same envelope, and restart neither creates another Matter nor repeats the greeting.
+`assistant.character-status` exposes setup state and startup errors. Disabled assistants
+do not initialize. A new installation without a conversation waits for first binding.
+
+The standalone `AssistantSetAvatar` model tool is removed. `set_avatar` in
+`AssistantCharacterPack` is the single write interface; existing avatar API reads and
+stored avatars remain compatible. New image avatars are saved in the pack before
+being applied to the existing UI cache.
+
+Character creation starts from the user's characters, communities and humor, rather
+than a generic assistant mascot. Stickers are reaction/meme images, not arbitrary
+illustrations. Optional asset `sourceUrl` and `attribution` preserve provenance separately
+from the short chat `usage` and the injected sticker shelf. Existing custom packs are
+not overwritten by changes to the creation brief.
+
+System instructions define responsibilities and work mechanisms; the character defines
+speaking style. Initialization first checks user history and interests, then uses
+current internet memes if no clear interests are found. It looks for suitable existing
+chat stickers online and leaves the collection empty if none are available.
+Authored summaries remain optional and collapsible regardless of length; the 200-character
+guidance refers to visible prose, excluding image/link destinations. Stickers are rendered
+outside the text disclosure and remain visible when it is collapsed.
+
+On first character initialization, a short setup message is sent through the durable
+conversation outbox without a model turn. Retries reuse its message identity. The
+completion envelope snapshots the actual discovery toggle: enabled means explaining
+token usage and pause/frequency options; disabled means offering to enable it, without
+changing settings. If the pack contains stickers, the Bot is asked to include one with
+its first introduction using a published asset URL. These onboarding instructions are
+only delivered on initialization completion, not added to every Bot turn.
+
+
+## Appearance onboarding and desktop pet
+
+On a bound assistant, first-run onboarding posts one durable Inbox question for a missing character pack. `AssistantSetup` starts the existing Matter-based initializer only after the user chooses a style or accepts a random interesting character; declining is persisted. After character setup or a decline, the pet is checked separately. Existing selected pets and customized personas are preserved. A pet can match the character or be independent; changing the character does not recreate the pet. Pending delegation retries reuse their task identity across restarts.
+
+`AssistantPetPack` exposes requirements, list, status, create and select. Creation validates and installs local assets without selecting them. Selection updates the current Host's desktop settings; the local desktop watches those settings and loads the selected pet without a restart. A remote Host selection does not activate a pet on the local machine. The floating window fits its visible contents and moves the bubble below the pet at the top edge.
+
+## Quick proactive help
+
+`QuickDiscoveryControl` enables a separate ordinary discovery Session. It defaults to off; enabling it does not enable or change the broad discovery schedule. `intervalMinutes` defaults to 15 and `idleMinutes` to 60. The native API exposes `assistant.quick-discovery` and `assistant.quick-discovery-status` (compatibility epoch 229). `check` requests one run; `pause` stops future admission without cancelling an in-flight run. The assistant master switch still owns shutdown and disables all background work.
+
+`quietHours: {start: "01:00", end: "08:30", timeZone: "Asia/Shanghai"}` optionally suppresses idle fallback wakes during that daily window (start inclusive, end exclusive, including cross-midnight windows). New observed activity and explicit `check` requests still run; an already running check is not cancelled. Pending failed work can retry inside the window after its retry deadline, while still respecting pause, worker execution and user-interaction admission guards. Lightweight source observations continue without model calls. Sources without lightweight observation also wait until outside this window for their idle fallback. Skipping a wake never advances the successful-check watermark. The window persists across restarts; omitting it preserves the setting, and `quietHours: null` disables it. No window is enabled implicitly for existing installations. The next scheduler tick after the window ends can resume an overdue idle check.
+
+The scheduler checks permitted Session revision metadata and optional source `activityToken` observations, batching changes at the activity cadence. This is **not source synchronization**: the Feishu CLI source observes published local-cache versions, so discovery cannot see remote messages before Feishu synchronization publishes them. Adapters without a lightweight observation retain the idle fallback; status exposes unsupported/failed observations. No enumeration, index maintenance or model call is performed just to check activity. Index reads retain their existing refresh semantics.
+
+The worker keeps one Session, receives UTC and a last-successful-check/start-of-this-run time boundary, and chooses how much recent and historical information to investigate. The boundary is a discovery checkpoint, not an index coverage declaration. New arrivals during execution remain for a later wake; failures retain the pending window and never advance it. Restart recovery reuses the worker and durable submission identities.
+
+`QuickDiscoveryReport` durably hands user-facing discoveries, concrete offers of help and questions to the Bot with retry-safe inbox identities. Its messages contain the actual conversational text, not instructions to the Bot about wording, filtering or timing. Acceptance means delivery to the Bot inbox, not user notification or task delegation. The worker cannot delegate Matters or change schedules; it can read the existing notebook through `QuickDiscoveryNotebook` but cannot maintain it. There is no separate quick-discovery notebook and no whole-turn time limit.
+
+
+The shared notebook also retains actual quick-discovery message deliveries and explicitly linked `DiscoveryFeedback` replies. Receipt synchronization runs before each quick or two-stage wake and before `QuickDiscoveryNotebook` reads. It replays the Bot's durable receipts with stable IDs, so a crash or worker Session replacement does not lose delivery memory or duplicate entries. Unsent reports, filtered candidates and ordinary conversation are excluded. Quick receipts without a notebook topic appear separately, without inventing research topics; feedback may establish rules for future related topics. The quick worker remains read-only.
+
+The quick-discovery, exploration and judgement Sessions use native history compaction, not timed Session replacement. Their default proactive threshold is 70% of the model input window, without a fixed token cap (no fallback threshold is inferred if the window is unknown). An explicit model compaction threshold takes precedence. Runtime usage triggers compaction at a safe request boundary, retaining a durable summary and current work; this is not a time or execution limit. Bot, Matter and ordinary Session policies are unchanged. Notebook receipts and user feedback live outside compacted history and are available on later wakes. Controlled tests verify the plumbing, not a guarantee that compaction improves discovery quality.

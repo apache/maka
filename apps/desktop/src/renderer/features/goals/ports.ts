@@ -18,7 +18,6 @@
  */
 
 import type { DesktopGoal } from '../../../shared/goal-arm.js';
-import type { GoalEventWaitCancelInput, GoalEventWaitCancelResult } from '@maka/runtime-host/protocol';
 import type { GoalArmOutcome } from '../../../shared/goal-arm.js';
 
 export type { GoalArmOutcome } from '../../../shared/goal-arm.js';
@@ -33,9 +32,10 @@ export interface GoalArmInput {
 
 /** The minimum environment capability needed by the Goals feature. */
 export interface GoalService {
+  getEventWaits?(sessionId: string): Promise<import('@maka/runtime-host/protocol').SessionEventWaitProjection[]>;
+  cancelSessionEventWait?(input: import('@maka/runtime-host/protocol').SessionEventWaitCancelInput): Promise<import('@maka/runtime-host/protocol').SessionEventWaitCancelResult>;
   get(sessionId: string): Promise<DesktopGoal | null>;
   arm(sessionId: string, goal: GoalArmInput): Promise<GoalArmOutcome>;
-  cancelEventWait(input: GoalEventWaitCancelInput): Promise<GoalEventWaitCancelResult>;
   clear(sessionId: string): Promise<void>;
   pause(sessionId: string): Promise<void>;
   resume(sessionId: string): Promise<void>;

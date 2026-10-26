@@ -17,21 +17,26 @@
  * under the License.
  */
 
-import type { ObservedEventWaitRecord } from '@maka/core/event-wait';
+import {
+  decodeAnyEventWaitRecord,
+  type AnyEventWaitRecord,
+  type EventWaitRecord,
+} from '@maka/core/event-wait';
+import { authenticateInteractiveEventWaitAuthorityWriter } from '@maka/storage/event-wait-authority';
 import type {
   InteractiveEventWaitAuthorityWriter,
   CommitEventWaitResult,
 } from '@maka/storage/event-wait-authority';
 
-export interface ObservationWaitSnapshot {
+export interface ObservationWaitSnapshot<Record extends AnyEventWaitRecord = EventWaitRecord> {
   readonly authorityRevision: number;
-  readonly record: ObservedEventWaitRecord;
+  readonly record: Record;
 }
-export type ObservationCommitResult =
-  | { readonly kind: 'committed'; readonly snapshot: ObservationWaitSnapshot }
+export type ObservationCommitResult<Record extends AnyEventWaitRecord = EventWaitRecord> =
+  | { readonly kind: 'committed'; readonly snapshot: ObservationWaitSnapshot<Record> }
   | Exclude<CommitEventWaitResult, { kind: 'committed' }>;
 /** Internal composition port. The owner must enforce its lease, revision and lifecycle on writes. */
-export interface EventWaitObservationStore
+export interface EventWaitObservationStore<Record extends AnyEventWaitRecord = EventWaitRecord>
   extends Pick<
     InteractiveEventWaitAuthorityWriter,
     | 'readSourceCooldown'
@@ -41,17 +46,35 @@ export interface EventWaitObservationStore
   > {
   read(
     input: Parameters<InteractiveEventWaitAuthorityWriter['read']>[0],
-  ): Promise<ObservationWaitSnapshot | null>;
+  ): Promise<ObservationWaitSnapshot<Record> | null>;
   listByStatus(
     input: Parameters<InteractiveEventWaitAuthorityWriter['listByStatus']>[0],
-  ): Promise<{ items: readonly ObservationWaitSnapshot[]; nextCursor: string | null }>;
+  ): Promise<{ items: readonly ObservationWaitSnapshot<Record>[]; nextCursor: string | null }>;
   listForObservation(
     input: Parameters<InteractiveEventWaitAuthorityWriter['listForObservation']>[0],
-  ): Promise<readonly ObservationWaitSnapshot[]>;
+  ): Promise<readonly ObservationWaitSnapshot<Record>[]>;
   commit(input: {
     sessionId: string;
     waitId: string;
     expectedAuthorityRevision: number | null;
-    record: ObservedEventWaitRecord;
-  }): Promise<ObservationCommitResult>;
+    record: Record;
+  }): Promise<ObservationCommitResult<Record>>;
+}
+
+/** One scheduler and source budget for all durable interactive consumers. */
+export function interactiveEventWaitObservationStore(
+  authority: InteractiveEventWaitAuthorityWriter,
+): EventWaitObservationStore<AnyEventWaitRecord> {
+  const store = authenticateInteractiveEventWaitAuthorityWriter(authority);
+  return {
+    read: (input) => store.readAny(input),
+    listByStatus: (input) => store.listAny(input),
+    listForObservation: (input) => store.listAnyForObservation(input),
+    readSourceCooldown: (input) => store.readSourceCooldown(input),
+    extendSourceCooldown: (input) => store.extendSourceCooldown(input),
+    reserveSourceDispatch: (input) => store.reserveSourceDispatch(input),
+    completeSourceDispatch: (input) => store.completeSourceDispatch(input),
+    commit: (input) =>
+      store.commitAny({ ...input, record: decodeAnyEventWaitRecord(input.record) }),
+  };
 }

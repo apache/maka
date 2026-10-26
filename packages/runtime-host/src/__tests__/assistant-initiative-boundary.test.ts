@@ -297,3 +297,23 @@ test('assistant.bind recovers from startup lookup failure without a Host restart
   assert.deepEqual(await bind({ sessionId: 'assistant' }), result);
   assert.equal(attempts, 2);
 });
+
+test('discovery finish records quiet, reported and failure explicitly for presentation', async (t) => {
+  const dir = await directory(t),
+    store = new InitiativeStore(dir, 'host');
+  store.lease();
+  store.bind({ sessionId: 'owner', cwd: dir });
+  try {
+    for (const outcome of ['quiet', 'reported', 'error']) {
+      store.control('check');
+      store.claim();
+      const id = store.get().active.id;
+      if (outcome === 'reported') store.reported(id);
+      store.finish(id, outcome === 'error' ? 'offline' : undefined);
+      assert.equal(store.get().lastRun.outcome, outcome);
+      assert.equal(store.get().lastRun.id, id);
+    }
+  } finally {
+    store.close();
+  }
+});

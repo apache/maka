@@ -188,7 +188,11 @@ export const UnselectedUnavailableAgentNarrow: Story = {
     await userEvent.click(page.getByRole('option', { name: /Gemini 3.8 Flash/ }));
     await waitFor(() => expect(canvasElement.querySelector('.maka-model-switcher-trigger')).toHaveTextContent(/^Gemini 3\.8 Flash$/));
     await expect(canvas.getByRole('button', { name: /Go to sign in|前往登录/ })).toBeVisible();
-    await expect(canvasElement.querySelector('.maka-executor-notice')).toHaveTextContent('Claude Agent');
+    const recovery = canvasElement.querySelector<HTMLElement>('.maka-executor-recovery')!;
+    await expect(recovery).toBeVisible();
+    await expect(recovery).toHaveAttribute('data-state', 'authentication_required');
+    await expect(recovery).toHaveTextContent('Claude Agent');
+    await expect(within(recovery).getByRole('button', { name: /Go to sign in|前往登录/ })).toBeVisible();
     await openModels(canvasElement);
   },
 };

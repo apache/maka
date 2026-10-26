@@ -23,3 +23,5 @@ export { disconnectedAvatarState, dismissComposerConfiguration, hasPendingAssist
 export { getPersonalAssistantChatCopy } from './chat-copy.js';
 export { projectTasks, visibleFloatTasks } from './task-float-model.js';
 export { readFloatTasks, watchFloatTasks } from './task-float-source.js';
+
+export { projectAssistantPet } from './pet-model.js';

@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { suppressPreviousBridgeWait } from './sqlite-event-wait-bridge.js';
+import { retirePreviousSqliteGoalWaiting } from './sqlite-event-wait-bridge.js';
 import { decodeGoalAuthorityRecord, type GoalAuthorityRecord } from '@maka/core/goal';
 import {
   acquireOperationalStateDatabase,
@@ -255,7 +255,7 @@ class SqliteGoalAuthority {
       if (current !== input.expectedAuthorityRevision) {
         return { kind: 'revision_conflict', actualAuthorityRevision: current };
       }
-      suppressPreviousBridgeWait(this.#database.database, input.sessionId, input.record);
+      retirePreviousSqliteGoalWaiting(this.#database.database, input.sessionId, input.record);
       if (input.record === null) {
         this.#database.database
           .prepare('DELETE FROM workflow_goal_authority WHERE session_id = ?')

@@ -272,7 +272,7 @@ export function createChatActions<Owner extends ComposerSurfaceOwner>(deps: {
   ): Promise<boolean> {
     const { directoryReferences, quotes } = options;
     const initialSessionId = options.targetSessionId ?? activeIdRef.current;
-    if (!canSubmitExecutor(deps, pending?.length ?? 0)) return false;
+    if (!canSubmitExecutor(deps, pending?.length ?? 0, !!initialSessionId)) return false;
     const sendOwner = captureComposerImportOwner();
     const selectionIsCurrent = captureSelection();
     if (!initialSessionId && !newTaskTarget) return false;

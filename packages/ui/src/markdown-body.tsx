@@ -29,6 +29,8 @@
  * product-specific trust boundaries around that renderer.
  */
 
+import { inspectMessageStickers, separateStickersPlugin } from './markdown-stickers.js';
+import { MessageSummary } from './message-summary.js';
 import { MarkdownImage, createMarkdownImagePlugins } from './markdown-image.js';
 import { useCallback, useContext, useMemo, useRef, type ReactNode } from 'react';
 import {
@@ -145,6 +147,8 @@ const MARKDOWN_COMPONENTS = {
 export function MarkdownBody(props: {
   text: string;
   imageDisplay?: 'image' | 'link';
+  separateStickers?: boolean;
+  summary?: string;
   streaming?: boolean;
   settledText?: string;
   density?: 'default' | 'compact';
@@ -154,10 +158,13 @@ export function MarkdownBody(props: {
     (source: string) => prepareMarkdownMath(source, mathCache.current),
     [],
   );
+  const separated = useMemo(() => props.separateStickers && props.imageDisplay !== 'link' && !props.streaming
+    ? inspectMessageStickers(props.text) : undefined, [props.separateStickers, props.imageDisplay, props.streaming, props.text]);
   const plugins = useMemo(() => [
+    ...(separated ? [separateStickersPlugin] : []),
     markdownCodeLanguagePlugin,
     ...createMarkdownImagePlugins(props.imageDisplay),
-  ], [props.imageDisplay]);
+  ], [props.imageDisplay, !!separated]);
   const budgetedText = props.streaming ? props.text : applyMermaidRenderBudget(props.text);
   const density = props.density ?? 'default';
   const components = props.streaming
@@ -175,6 +182,8 @@ export function MarkdownBody(props: {
       // box or interfering with Astryx's document root.
       style={{ display: 'contents' }}
     >
+      <div className={separated ? 'maka-sticker-message-prose' : undefined} style={separated ? undefined : { display: 'contents' }} hidden={separated && !separated.document.children.length}>
+      <MessageSummary summary={props.streaming ? undefined : props.summary}>
       <AstryxMarkdown
         autolink="gfm"
         // Markdown holds no reading measure; the container it lands in does.
@@ -207,6 +216,11 @@ export function MarkdownBody(props: {
       >
         {budgetedText}
       </AstryxMarkdown>
+      </MessageSummary>
+      </div>
+      {separated && <div className="maka-message-stickers">
+        {separated.stickers.map((sticker, index) => <MarkdownImage key={`${sticker.src}:${index}`} {...sticker} />)}
+      </div>}
     </div>
   );
 }

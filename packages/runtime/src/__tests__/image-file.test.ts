@@ -270,3 +270,37 @@ test('readWorkspaceFile rejects images whose dimensions exceed the model input l
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test('pet image reads allow sprite sheets beyond chat limits without changing chat or model reads', async (t) => {
+  const cwd = await realpath(await mkdtemp(join(tmpdir(), 'maka-pet-read-')));
+  t.after(() => rm(cwd, { recursive: true, force: true }));
+  const bytes = Buffer.concat([WIDE_PNG, Buffer.alloc(3 * 1024 * 1024)]);
+  const path = join(cwd, 'sprites.png');
+  await writeFile(path, bytes);
+  const reader = createImageFileReader();
+  assert.equal((await reader({ cwd, path, imagePurpose: 'pet' })).bytes.length, bytes.length);
+  await assert.rejects(reader({ cwd, path }), /chat preview/);
+  assert.throws(() => validateImageBytes(WIDE_PNG), /model input limit/);
+  const response = await executeFilesystemWorkerRequest({
+    version: FILESYSTEM_WORKER_PROTOCOL_VERSION,
+    requestId: 'pet-sprite',
+    operation: { kind: 'read', cwd, path, imagePurpose: 'pet' },
+    expectedTarget: {
+      enforcementPath: path,
+      access: 'read',
+      scope: 'exact',
+      targetType: 'file',
+      identity: 'unchecked',
+    },
+    operationBoundary: {
+      filesystem: {
+        entries: [{ path: cwd, access: 'read', scope: 'subtree' }],
+      },
+    },
+  });
+  assert.equal(response.ok, true);
+  const invalid = Buffer.from(ONE_PIXEL_PNG);
+  invalid.writeUInt32BE(8193, 16);
+  assert.throws(() => validateImageBytes(invalid, 'pet'), /8192/);
+  assert.throws(() => validateImageBytes(Buffer.alloc(4 * 1024 * 1024 + 1), 'pet'), /4 MiB/);
+});

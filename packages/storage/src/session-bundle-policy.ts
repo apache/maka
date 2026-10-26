@@ -1826,11 +1826,11 @@ function stripPortableGoalWaits(database: DatabaseSync, importedOnly = false): v
     : '';
   for (const row of database
     .prepare(
-      `SELECT session_id, record_json FROM workflow_goal_authority WHERE (json_type(record_json, '$.activeEventWait') IS NOT NULL OR json_type(record_json, '$.pendingContinuation.eventWait') IS NOT NULL) ${scope}`,
+      `SELECT session_id, record_json FROM workflow_goal_authority WHERE (json_type(record_json, '$.pendingContinuation.observation') IS NOT NULL OR json_type(record_json, '$.pendingContinuation.goalWaiting') IS NOT NULL OR json_type(record_json, '$.legacyEventWaitSettlement') IS NOT NULL) ${scope}`,
     )
     .all()) {
     const old = decodeGoalAuthorityRecord(JSON.parse(String(row.record_json)));
-    const { activeEventWait: _gate, ...base } = old;
+    const { legacyEventWaitSettlement: _settlement, ...base } = old;
     const record = decodeGoalAuthorityRecord({
       ...base,
       currentExecution: null,

@@ -32,6 +32,7 @@ import { invalidProtocolFrame } from './errors.js';
 import { HOST_BOOTSTRAP_OPERATION_SPECS } from './host-status.js';
 import { HOST_RESOURCE_OPERATION_SPECS } from './host-resources.js';
 import { HOSTED_EXECUTION_OPERATION_SPECS } from './hosted-execution.js';
+import { SESSION_EVENT_WAIT_OPERATION_SPECS } from './event-wait.js';
 import { GOAL_OPERATION_SPECS } from './goal.js';
 import { INTERACTION_OPERATION_SPECS } from './interaction.js';
 import { MESSAGE_OPERATION_SPECS } from './message.js';
@@ -211,7 +212,7 @@ export const HOST_OPERATION_SPECS = composeOperationSpecMaps(
   ACCESS_AUTHORITY_OPERATION_SPECS,
   SESSION_COLLABORATION_OPERATION_SPECS,
   AGENT_GRAPH_OPERATION_SPECS,
-  GOAL_OPERATION_SPECS,
+  composeOperationSpecMaps(GOAL_OPERATION_SPECS, SESSION_EVENT_WAIT_OPERATION_SPECS),
   TURN_OPERATION_SPECS,
   CONTEXT_OPERATION_SPECS,
   CONNECTION_EFFECT_OPERATION_SPECS,
@@ -303,7 +304,6 @@ export const REMOTE_OWNER_OPERATION_GRANTS = Object.freeze([
   'external-session.source.query',
   'goal.arm',
   'goal.control',
-  'goal.event-wait.cancel',
   'goal.query',
   'host.diagnostics.query',
   'host.resources.query',
@@ -347,6 +347,8 @@ export const REMOTE_OWNER_OPERATION_GRANTS = Object.freeze([
   'runtime.resource.stop',
   'scheduled-task.mutate',
   'scheduled-task.query',
+  'session.event-wait.cancel',
+  'session.event-waits.query',
   'session.branch.create',
   'session.catalog.query',
   'session.checkin.generate',

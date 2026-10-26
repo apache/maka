@@ -55,6 +55,6 @@ test('every judgement wake asks for autonomous investigation of the whole notebo
       outputPath: '/private/operations.json',
       first,
     });
-    assert.match(input, /基于整份记事本自主调查并判断，不只看本轮新增内容/);
+    assert.match(input, /基于用户的全局信息和整份记事本自主调查并判断，不只看新内容或本轮增量/);
   }
 });

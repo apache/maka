@@ -188,9 +188,19 @@ export class InitiativeStore {
       this.log('heartbeat', { id: s.active.id });
     });
   }
+  reported(id: string) {
+    this.update((s) => {
+      if (s?.active?.id === id) s.active.reported = true;
+    });
+  }
   finish(id: string, error?: string) {
     return this.update((s) => {
       if (s?.active?.id !== id) return;
+      s.lastRun = {
+        id,
+        finishedAt: Date.now(),
+        outcome: error ? 'error' : s.active.reported ? 'reported' : 'quiet',
+      };
       s.active = null;
       if (!error) {
         delete s.candidateReport;

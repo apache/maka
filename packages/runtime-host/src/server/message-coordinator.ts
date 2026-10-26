@@ -492,6 +492,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
   readonly #createId: () => string;
   readonly #preflightSessionSnapshot: CandidateSnapshotPreflight;
   readonly #sessions = new Map<string, SessionState>();
+  readonly #steeringWaiters = new Map<string, Set<() => void>>();
   readonly #pendingSubmits = new Map<string, PendingSubmit>();
   readonly #completedOperations = new Map<string, CompletedOperation>();
   readonly #queueMutations: QueuedMutationExecutor;
@@ -788,6 +789,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     return Object.freeze({
       ...identity,
       pull: () => this.#pull(run),
+      waitForSteering: (signal: AbortSignal) => this.#waitForSteering(run, signal),
       ack: (leaseIds: readonly string[]) => this.#ack(run, leaseIds),
       nack: (leaseIds: readonly string[]) => this.#nack(run, leaseIds),
       release: () => this.#releaseRun(run),
@@ -990,6 +992,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
 
   beginDrain(): void {
     this.#draining = true;
+    for (const waiters of this.#steeringWaiters.values()) for (const changed of waiters) changed();
   }
 
   /**
@@ -2317,20 +2320,82 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     }
   }
 
-  async #pull(run: BoundRun): Promise<readonly SteeringLease[]> {
+  async #waitForSteering(run: BoundRun, signal: AbortSignal): Promise<void> {
+    // Subscribe before checking durable admissions. Notifications are hints, never
+    // consumption: the ordinary provider boundary still pulls and acknowledges input.
+    return new Promise<void>((resolve, reject) => {
+      let settled = false;
+      let checking = false;
+      let dirty = false;
+      const waiters = this.#steeringWaiters.get(run.sessionId) ?? new Set<() => void>();
+      this.#steeringWaiters.set(run.sessionId, waiters);
+      const finish = (error?: unknown) => {
+        if (settled) return;
+        settled = true;
+        signal.removeEventListener('abort', abort);
+        waiters.delete(changed);
+        if (waiters.size === 0) this.#steeringWaiters.delete(run.sessionId);
+        if (error !== undefined) reject(error);
+        else resolve();
+      };
+      const abort = () => finish(signal.reason ?? new Error('Steering wait cancelled'));
+      const check = async () => {
+        if (checking || settled) return;
+        checking = true;
+        try {
+          do {
+            dirty = false;
+            await this.#awaitSteeringMutations(run.sessionId);
+            if (settled) return;
+            const state = this.#sessions.get(run.sessionId);
+            if (
+              !state ||
+              run.released ||
+              state.run !== run ||
+              this.#draining ||
+              state.phase !== 'open' ||
+              run.generation !== state.generation
+            )
+              throw new DOMException('Steering owner is no longer active', 'AbortError');
+            if (state.steering.length > 0) {
+              finish();
+              return;
+            }
+          } while (dirty);
+        } catch (error) {
+          finish(error);
+        } finally {
+          checking = false;
+        }
+      };
+      const changed = () => {
+        dirty = true;
+        void check();
+      };
+      waiters.add(changed);
+      signal.addEventListener('abort', abort, { once: true });
+      if (signal.aborted) abort();
+      else changed();
+    });
+  }
+
+  async #awaitSteeringMutations(sessionId: string): Promise<void> {
     // A provider boundary must observe steering admission and queue mutations,
     // not mistake an unfinished durable write for an empty queue.
     for (;;) {
       const pending = [
         ...[...this.#pendingSubmits.values()].filter(
-          ({ payload }) =>
-            payload.sessionId === run.sessionId && payload.placement === 'current_turn',
+          ({ payload }) => payload.sessionId === sessionId && payload.placement === 'current_turn',
         ),
-        ...this.#queueMutations.pendingResults(run.sessionId).map((result) => ({ result })),
+        ...this.#queueMutations.pendingResults(sessionId).map((result) => ({ result })),
       ];
       if (pending.length === 0) break;
       await Promise.all(pending.map(({ result }) => result));
     }
+  }
+
+  async #pull(run: BoundRun): Promise<readonly SteeringLease[]> {
+    await this.#awaitSteeringMutations(run.sessionId);
     this.#assertRun(run);
     const state = this.#requireState(run.sessionId);
     if (state.phase !== 'open' || run.generation !== state.generation) return [];
@@ -2401,6 +2466,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
       );
     }
     run.released = true;
+    for (const changed of this.#steeringWaiters.get(run.sessionId) ?? []) changed();
   }
 
   #commitQueueFence(identity: RuntimeMessageRunIdentity): QueueFenceResult {
@@ -2517,6 +2583,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
 
   #mutated(state: SessionState): void {
     state.revision += 1;
+    for (const changed of this.#steeringWaiters.get(state.sessionId) ?? []) changed();
     this.#onProjectionChanged(state.sessionId);
   }
 

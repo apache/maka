@@ -211,12 +211,11 @@ test('workflow 12 upgrade adds wait storage atomically and preserves every relea
           .filter(({ tbl_name }) => tbl_name === 'workflow_event_waits')
           .map(({ name }) => name),
         [
+          'workflow_event_waits_by_goal_checkpoint',
+          'workflow_event_waits_by_operation',
           'workflow_event_waits_by_session',
           'workflow_event_waits_by_status',
-          'workflow_event_waits_delivery',
           'workflow_event_waits_observation_order',
-          'workflow_event_waits_one_active_session',
-          'workflow_event_waits_pending',
           'workflow_event_waits',
         ],
       );

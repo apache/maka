@@ -19,7 +19,16 @@
 
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
-import { copyFile, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import {
+  copyFile,
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  rm,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { after, before, describe, test } from 'node:test';
@@ -186,6 +195,127 @@ describe('Windows filesystem worker smoke', { skip: !enabled }, () => {
       (error: unknown) =>
         error instanceof FilesystemWorkerClientError && error.reason === 'grep_unavailable',
     );
+  });
+
+  test('runs Glob beside a nested junction without granting or traversing its target', async () => {
+    const project = join(workspace, 'junction-project');
+    const sourceDirectory = join(project, 'src');
+    const junctionParent = join(project, 'node_modules', '@sunrioa');
+    await mkdir(sourceDirectory, { recursive: true });
+    await mkdir(junctionParent, { recursive: true });
+    await writeFile(join(project, 'root.ts'), 'export const root = true;\n');
+    await writeFile(join(sourceDirectory, 'main.ts'), 'export const main = true;\n');
+    await writeFile(join(outside, 'secret.ts'), 'export const secret = true;\n');
+    await symlink(outside, join(junctionParent, 'rin-sdk'), 'junction');
+
+    const result = await client.execute({
+      operation: { kind: 'glob', path: project, pattern: '**/*.ts' },
+      cwd: workspace,
+      mode: 'ask',
+      expectedIdentity: 'unchecked',
+    });
+
+    assert.equal(result.kind, 'glob');
+    if (result.kind === 'glob') {
+      assert.equal(result.truncated, false);
+      assert.deepEqual(result.files.map((file) => file.replaceAll('\\', '/')).sort(), [
+        'root.ts',
+        'src/main.ts',
+      ]);
+    }
+
+    const explicit = await client.execute({
+      operation: {
+        kind: 'glob',
+        path: project,
+        pattern: 'node_modules/@sunrioa/rin-sdk/**/*',
+      },
+      cwd: workspace,
+      mode: 'ask',
+      expectedIdentity: 'unchecked',
+    });
+    assert.deepEqual(explicit, { kind: 'glob', files: [], truncated: false });
+
+    const broad = await client.execute({
+      operation: { kind: 'glob', path: project, pattern: '**/*' },
+      cwd: workspace,
+      mode: 'ask',
+      expectedIdentity: 'unchecked',
+    });
+    assert.equal(broad.kind, 'glob');
+    if (broad.kind === 'glob') {
+      assert.equal(broad.truncated, false);
+      const files = broad.files.map((file) => file.replaceAll('\\', '/'));
+      assert.ok(files.includes('root.ts'));
+      assert.ok(files.includes('src/main.ts'));
+      assert.equal(
+        files.some(
+          (file) =>
+            file === 'node_modules/@sunrioa/rin-sdk' ||
+            file.startsWith('node_modules/@sunrioa/rin-sdk/'),
+        ),
+        false,
+      );
+    }
+    assert.equal(
+      await readFile(join(outside, 'secret.ts'), 'utf8'),
+      'export const secret = true;\n',
+    );
+  });
+
+  test('preserves dot and hidden-directory matching through the Windows broker', async () => {
+    const project = join(workspace, 'glob-dot-components');
+    await mkdir(join(project, 'visible'), { recursive: true });
+    await mkdir(join(project, '.hidden', '.nested'), { recursive: true });
+    await writeFile(join(project, 'file.txt'), 'fixture');
+    for (const [pattern, files] of [
+      ['.', ['.']],
+      ['./.', ['.']],
+      ['**/.', ['.', 'visible']],
+      ['**/.*', ['.hidden']],
+      ['**/.*/.*', ['.hidden/.nested']],
+    ] as const) {
+      const result = await client.execute({
+        operation: { kind: 'glob', path: project, pattern, limit: files.length },
+        cwd: workspace,
+        mode: 'ask',
+        expectedIdentity: 'unchecked',
+      });
+      assert.equal(result.kind, 'glob');
+      if (result.kind !== 'glob') return;
+      assert.deepEqual(
+        result.files.map((file) => file.replaceAll('\\', '/')).sort(),
+        [...files].sort(),
+        pattern,
+      );
+      assert.equal(result.truncated, false, pattern);
+    }
+  });
+
+  test('reports exact and overflowing Glob caps through the Windows broker', async () => {
+    const project = join(workspace, 'glob-completeness');
+    await mkdir(project);
+    for (const name of ['a.txt', 'b.txt']) await writeFile(join(project, name), 'fixture');
+    const search = () =>
+      client.execute({
+        operation: { kind: 'glob', path: project, pattern: '*.txt', limit: 2 },
+        cwd: workspace,
+        mode: 'ask',
+        expectedIdentity: 'unchecked',
+      });
+
+    const exact = await search();
+    assert.equal(exact.kind, 'glob');
+    if (exact.kind !== 'glob') return;
+    assert.equal(exact.files.length, 2);
+    assert.equal(exact.truncated, false);
+
+    await writeFile(join(project, 'c.txt'), 'fixture');
+    const overflowing = await search();
+    assert.equal(overflowing.kind, 'glob');
+    if (overflowing.kind !== 'glob') return;
+    assert.equal(overflowing.files.length, 2);
+    assert.equal(overflowing.truncated, true);
   });
 
   test('fails closed for unapproved outside paths', async () => {
