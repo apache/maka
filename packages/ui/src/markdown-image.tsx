@@ -17,17 +17,12 @@
  * under the License.
  */
 
-import { useEffect, useRef, useState } from 'react';
-import { Button, IconButton, Spinner, Tooltip } from '@astryxdesign/core';
 import { createMarkdownPlugin, type MarkdownExtensionNode } from '@astryxdesign/core/Markdown/plugins';
 import type { MarkdownAstNode, MarkdownAstRoot } from '@astryxdesign/core/Markdown';
-import { RotateCw, AlertTriangle } from './icons.js';
-import { Link } from '@astryxdesign/core/Link';
-import { useChatImageResource } from './chat-image-resource.js';
-import { getSharedUiCopy } from './shared-ui-copy.js';
-import { useUiLocale } from './locale-context.js';
 import { createMarkdownImageSourceResolver } from './markdown-image-source.js';
 import { redactSecrets } from './redact.js';
+
+import { SessionMediaImage as MarkdownImage } from './session-media-image.js';
 
 type PlacedImage = MarkdownExtensionNode<'maka-images', 'image', { src: string; alt: string; inline: boolean; redacted: boolean }>;
 // Markdown structure determines inline/block placement; decoded images supply
@@ -78,54 +73,5 @@ function isSingleImage(nodes: readonly MarkdownAstNode[]): boolean {
   return node.type === 'image' || (['link', 'strong', 'emphasis', 'delete'].includes(node.type)
     && 'children' in node && isSingleImage(node.children));
 }
-/** Presentation only: Host resolves local addresses and archives; UI receives artifact identities. */
-export function MarkdownImage(props: { src: string; alt: string; inline?: boolean; redacted?: boolean }) {
-  return <ImageResource key={props.src} {...props} redacted={props.redacted === true} />;
-}
-function ImageResource(props: { src: string; redacted: boolean; alt: string; inline?: boolean }) {
-  const copy = getSharedUiCopy(useUiLocale()).markdown;
-  const anchor = useRef<HTMLSpanElement>(null);
-  const [visible, setVisible] = useState(typeof IntersectionObserver === 'undefined');
-  useEffect(() => {
-    if (visible || !anchor.current) return;
-    const observer = new IntersectionObserver(entries => {
-      if (entries.some(entry => entry.isIntersecting)) { setVisible(true); observer.disconnect(); }
-    }, { rootMargin: '300px' });
-    observer.observe(anchor.current); return () => observer.disconnect();
-  }, [visible]);
-  const resource = useChatImageResource({ source: props.src, redacted: props.redacted, visible });
-  const state = resource.presentation;
-  const message = state.kind === 'loading' ? copy.imageLoading
-    : state.kind === 'failed' ? state.reason === 'saved_bytes' ? copy.imageLoadFailed : copy.imageArchiveFailure(state.reason)
-    : state.kind === 'unavailable' ? {
-      attachment: copy.imageUnavailable,
-      remote: copy.imageRemoteUnavailable,
-      redacted: copy.imageRemoteRedacted,
-      unsupported: copy.imageUnsupported,
-    }[state.reason] : undefined;
-  const actions = <span className="maka-markdown-image-actions">
-    {resource.retry && <Button variant="ghost" size="sm" label={copy.imageRetry} onClick={resource.retry} />}
-    {resource.openSource && <Link href={resource.openSource} isExternalLink type="inherit" hasUnderline>{copy.imageOpen}</Link>}
-  </span>;
-  return <span ref={anchor} className={`maka-markdown-image-resource ${props.inline ? 'maka-markdown-image-inline' : 'maka-markdown-image-block'}`}
-    data-maka-image-state={state.kind === 'failed' ? 'failed' : state.kind === 'ready' ? 'ready' : 'loading'}>
-    {message && props.inline ? <Tooltip content={message}>
-      <span className="maka-markdown-image-placeholder" role="status" aria-label={message}>
-        {resource.retry
-          ? <IconButton icon={<RotateCw size={14} />} size="sm" label={copy.imageRetry} onClick={resource.retry} />
-          : state.kind === 'unavailable'
-            ? <AlertTriangle size={14} aria-hidden="true" /> : <Spinner size="sm" shade="subtle" aria-hidden="true" />}
-      </span>
-    </Tooltip> : message ? <span className="maka-markdown-image-placeholder">
-      {props.alt && <span className="maka-markdown-image-caption">{props.alt}</span>}
-      <span role="status">{state.kind === 'loading' && <Spinner size="sm" shade="subtle" aria-hidden="true" />} {message}</span>
-      {state.kind === 'failed' && actions}
-    </span> : state.kind === 'ready' && <DisplayImage key={`${state.src}\0${resource.attempt}`} src={state.src} alt={props.alt} onError={resource.onDecodeError} />}
-    {state.kind === 'unavailable' && resource.openSource && actions}
-  </span>;
-}
-
-function DisplayImage(props: { src: string; alt: string; onError(): void }) {
-  return <img src={props.src} alt={props.alt} loading="lazy" decoding="async" referrerPolicy="no-referrer"
-    className="maka-markdown-attachment-image" onError={props.onError} />;
-}
+/** Markdown is one adapter to the shared session-media presentation. */
+export { SessionMediaImage as MarkdownImage } from './session-media-image.js';

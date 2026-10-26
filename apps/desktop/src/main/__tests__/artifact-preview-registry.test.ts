@@ -31,7 +31,7 @@ import {
 describe('artifact preview registry', () => {
   it('treats present MIME metadata as authoritative and rejects unsafe formats', () => {
     assert.deepEqual(
-      resolvePreviewKind({ name: 'tricky.png', kind: 'image', mimeType: 'image/svg+xml' }),
+      resolvePreviewKind({ name: 'tricky.png', kind: 'image', mimeType: 'text/html' }),
       { kind: 'unsupported', reason: 'mime_disallowed' },
     );
   });
@@ -77,11 +77,11 @@ describe('artifact preview registry', () => {
         {
           ok: true,
           base64: 'A'.repeat(3 * 1024 * 1024),
-          mimeType: 'image/svg+xml',
+          mimeType: 'text/html',
         },
         'oversize',
       ],
-      [{ ok: true, base64: 'AAAA', mimeType: 'image/svg+xml' }, 'mime_disallowed'],
+      [{ ok: true, base64: 'AAAA', mimeType: 'text/html' }, 'mime_disallowed'],
     ];
     for (const [result, reason] of rejected) {
       const outcome = decideImageReadOutcome(result);

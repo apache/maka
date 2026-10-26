@@ -49,7 +49,7 @@ export async function readAvatarImageSource(
     // (each hop is checked), streamed byte limits and its outbound proxy policy.
     const image = await ports.download(source, boundedSignal);
     boundedSignal.throwIfAborted();
-    return checkedChatImage(image.bytes);
+    return checkedChatImage(image.bytes, 'avatar');
   }
   const cwd = await ports.workspace();
   if (!isAbsolute(cwd)) throw new ImageSourceError('not_allowed');
@@ -76,5 +76,5 @@ export async function readAvatarImageSource(
     before.mtimeMs !== after.mtimeMs
   )
     throw new ImageSourceError('not_allowed');
-  return checkedChatImage(image.bytes);
+  return checkedChatImage(image.bytes, 'avatar');
 }

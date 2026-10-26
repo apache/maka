@@ -327,6 +327,7 @@ packages/ui/src/search-modal.tsx
 packages/ui/src/session-context-layer.tsx
 packages/ui/src/session-history-list.tsx
 packages/ui/src/session-list-panel.tsx
+packages/ui/src/session-media-image.tsx
 packages/ui/src/session-rail-context.tsx
 packages/ui/src/session-rename-dialog.tsx
 packages/ui/src/session-sidebar-nav.tsx
@@ -334,6 +335,8 @@ packages/ui/src/skill-detail.tsx
 packages/ui/src/skills-panel.tsx
 packages/ui/src/status-label.tsx
 packages/ui/src/styles.css
+packages/ui/src/svg-code-preview.tsx
+packages/ui/src/svg-code-source.tsx
 packages/ui/src/titlebar-session-identity.tsx
 packages/ui/src/toast.tsx
 packages/ui/src/tool-activity.tsx

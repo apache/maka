@@ -28,7 +28,9 @@ import {
   READ_IMAGE_TOO_LARGE_MESSAGE,
   sniffAttachmentMimeType,
 } from '@maka/core/attachments';
+import { prepareSvgPreview, isSvgPreviewCandidate } from '@maka/core/svg-preview';
 import { ARTIFACT_IMAGE_PREVIEW_MAX_BYTES } from '@maka/core/artifacts';
+import { IMAGE_ARCHIVE_MAX_BYTES } from '@maka/core/image-delivery';
 
 export interface WorkspaceFileReadOptions {
   imagePurpose?: 'chat';
@@ -36,7 +38,12 @@ export interface WorkspaceFileReadOptions {
 }
 
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp']);
-export type ImageMimeType = 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp';
+export type ImageMimeType =
+  | 'image/png'
+  | 'image/jpeg'
+  | 'image/gif'
+  | 'image/webp'
+  | 'image/svg+xml';
 
 export class ImageFileError extends Error {
   constructor(
@@ -72,7 +79,7 @@ export async function readWorkspaceFile(
     if (options.imagePurpose === 'chat') {
       const size = await file.stat();
       if (!size.isFile()) throw new Error('Image path is not a file.');
-      if (size.size > ARTIFACT_IMAGE_PREVIEW_MAX_BYTES) throw imageTooLargeError('chat');
+      if (size.size > IMAGE_ARCHIVE_MAX_BYTES) throw imageTooLargeError('chat');
       return validateImageBytes(await file.readFile({ signal: options.abortSignal }), 'chat');
     }
     const prefix = Buffer.alloc(ATTACHMENT_MIME_SNIFF_BYTES);
@@ -92,14 +99,29 @@ export async function readWorkspaceFile(
 
 export function validateImageBytes(
   bytes: Uint8Array,
-  purpose: 'model' | 'chat' = 'model',
+  purpose: 'model' | 'chat' | 'avatar' = 'model',
 ): {
   bytes: Uint8Array;
   mimeType: ImageMimeType;
 } {
-  if (bytes.length > (purpose === 'chat' ? ARTIFACT_IMAGE_PREVIEW_MAX_BYTES : MAX_READ_IMAGE_BYTES))
+  if (
+    bytes.length >
+    (purpose === 'chat'
+      ? IMAGE_ARCHIVE_MAX_BYTES
+      : purpose === 'avatar'
+        ? ARTIFACT_IMAGE_PREVIEW_MAX_BYTES
+        : MAX_READ_IMAGE_BYTES)
+  )
     throw imageTooLargeError(purpose);
   const mimeType = sniffImageMime(bytes);
+  if (!mimeType && purpose === 'chat' && isSvgPreviewCandidate(bytes)) {
+    try {
+      prepareSvgPreview(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
+      return { bytes, mimeType: 'image/svg+xml' };
+    } catch {
+      /* Continue to the common unsupported-image failure. */
+    }
+  }
   if (!mimeType)
     throw new ImageFileError(
       'ERR_INVALID_IMAGE',
@@ -128,7 +150,7 @@ export function validateImageBytes(
   // Compressed byte size does not bound renderer decoding memory. Permit large
   // screenshots while rejecting pathological headers before archival/preview.
   if (
-    purpose === 'chat' &&
+    purpose !== 'model' &&
     (Math.max(dimensions.width, dimensions.height) > 16_384 ||
       dimensions.width * dimensions.height > 32 * 1024 * 1024)
   ) {
@@ -137,12 +159,14 @@ export function validateImageBytes(
   return { bytes, mimeType };
 }
 
-function imageTooLargeError(purpose: 'model' | 'chat' = 'model'): Error {
+function imageTooLargeError(purpose: 'model' | 'chat' | 'avatar' = 'model'): Error {
   return new ImageFileError(
     'ERR_IMAGE_TOO_LARGE',
-    purpose === 'chat'
-      ? 'Image exceeds a chat preview limit (2 MiB, 16384px per edge, or 32 megapixels); resize it before publishing.'
-      : READ_IMAGE_TOO_LARGE_MESSAGE,
+    purpose === 'avatar'
+      ? 'Avatar exceeds a preview limit (2 MiB, 16384px per edge, or 32 megapixels).'
+      : purpose === 'chat'
+        ? `Image exceeds a chat archive limit (${IMAGE_ARCHIVE_MAX_BYTES / (1024 * 1024)} MiB, 16384px per edge, or 32 megapixels); resize it before publishing.`
+        : READ_IMAGE_TOO_LARGE_MESSAGE,
   );
 }
 

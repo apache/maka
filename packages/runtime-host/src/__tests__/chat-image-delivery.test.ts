@@ -614,7 +614,7 @@ test('copying a conversation carries delivery provenance and saved bytes; it doe
   }
 });
 test('source readers reject unsafe MIME and redirects to private networks', async (t) => {
-  assert.throws(() => checkedChatImage(Buffer.from('<svg/>')), /unsupported_mime/);
+  assert.throws(() => checkedChatImage(Buffer.from('<svg><broken')), /unsupported_mime/);
   const server = createServer((_req, res) => {
     res.writeHead(302, { location: 'http://169.254.169.254/latest/meta-data/' });
     res.end();

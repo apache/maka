@@ -173,7 +173,8 @@
     "./maka-wordmark": "./dist/maka-wordmark.js",
     "./test-only/async-primitives": "./dist/test-only/async-primitives.js",
     "./workhub-action-result": "./dist/workhub-action-result.js",
-    "./workhub-routing": "./dist/workhub-routing.js"
+    "./workhub-routing": "./dist/workhub-routing.js",
+    "./svg-preview": "./dist/svg-preview.js"
   },
   "scripts": {
     "clean": "node ../../scripts/clean-paths.mjs dist tsconfig.tsbuildinfo src/model-metadata.generated.ts",
@@ -184,6 +185,7 @@
     "test:dist": "node --test \"dist/**/*.test.js\""
   },
   "dependencies": {
+    "@xmldom/xmldom": "^0.8.15",
     "intl-messageformat": "11.2.15",
     "marked": "18.0.11"
   }

@@ -90,7 +90,7 @@ export function initializeAvatar(
         bot.ready();
         if (bot.worker() !== worker || bot.owner() !== owner)
           throw Error('Assistant binding changed');
-        const image = validateImageBytes(result.bytes, 'chat');
+        const image = validateImageBytes(result.bytes, 'avatar');
         const bytes = Buffer.from(image.bytes);
         const imageData = bytes.toString('base64');
         saved = {

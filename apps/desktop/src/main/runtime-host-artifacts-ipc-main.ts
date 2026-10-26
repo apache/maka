@@ -25,7 +25,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
   ARTIFACT_IMAGE_PREVIEW_MAX_BYTES,
-  normalizeArtifactImagePreviewMime,
+  normalizeMediaPreviewMime,
   resolveArtifactImagePreview,
   type ArtifactSaveResult,
 } from '@maka/core/artifacts';
@@ -208,7 +208,7 @@ export function registerRuntimeHostAttachmentPreviewIpc(
           reason: preview.reason === "oversize" ? "too_large" : "unsupported_mime",
         };
       }
-      const mimeType = normalizeArtifactImagePreviewMime(artifact.mimeType, artifact.name);
+      const mimeType = normalizeMediaPreviewMime(artifact.mimeType, artifact.name);
       if (!mimeType) return { ok: false as const, reason: "unsupported_mime" };
       const chunks: Buffer[] = [];
       let received = 0;

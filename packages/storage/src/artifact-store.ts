@@ -28,6 +28,7 @@ import {
   type ImageArchiveLimits,
 } from '@maka/core/image-delivery';
 import { createHash, randomUUID } from 'node:crypto';
+import { prepareSvgPreview, isSvgPreviewCandidate } from '@maka/core/svg-preview';
 import { isDeepStrictEqual } from 'node:util';
 import { type BigIntStats, constants as fsConstants } from 'node:fs';
 import {
@@ -1415,16 +1416,17 @@ function isNotFound(error: unknown): boolean {
 }
 
 function sniffAllowedBinaryMime(bytes: Uint8Array): string | null {
-  // Core owns the binary signatures, shared with the attachment and image-read
-  // paths so the three cannot drift. SVG needs a wider text scan than a fixed
-  // prefix, so it stays local to this reader.
   const sniffed = sniffAttachmentMimeType(bytes);
   if (sniffed) return sniffed;
-  const leading = new TextDecoder('utf-8', { fatal: false })
-    .decode(bytes.slice(0, Math.min(bytes.length, 512)))
-    .trimStart();
-  if (/^<svg[\s>]/i.test(leading) || /^<\?xml[\s\S]*<svg[\s>]/i.test(leading))
-    return 'image/svg+xml';
+  // Share SVG validation with capture and display, including XML declarations/comments.
+  if (isSvgPreviewCandidate(bytes)) {
+    try {
+      prepareSvgPreview(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
+      return 'image/svg+xml';
+    } catch {
+      /* Unknown or unsupported file content. */
+    }
+  }
   return null;
 }
 

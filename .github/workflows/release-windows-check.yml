@@ -95,6 +95,7 @@ on:
       - 'packages/core/src/permission-profile-compiler.ts'
       - 'packages/core/src/sandbox-boundary.ts'
       - 'packages/core/src/serialized-byte-length.ts'
+      - 'packages/core/src/svg-preview.ts'
       - 'packages/core/src/windows-path.ts'
       - 'experiments/windows-sandbox/launcher/**'
       - 'experiments/windows-sandbox/*.ps1'

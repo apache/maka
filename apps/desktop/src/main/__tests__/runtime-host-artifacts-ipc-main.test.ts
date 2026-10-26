@@ -494,7 +494,7 @@ test("HTML Artifact does not invoke an opener when materialization fails", async
 test("Attachment byte IPC rejects preview-ineligible metadata before streaming", async () => {
   for (const [overrides, reason] of [
     [{ id: "artifact-large", sizeBytes: 2 * 1024 * 1024 + 1 }, "too_large"],
-    [{ id: "artifact-svg", name: "vector.svg", mimeType: "image/svg+xml" }, "unsupported_mime"],
+    [{ id: "artifact-html", name: "page.html", mimeType: "text/html" }, "unsupported_mime"],
   ] as const) {
     let streamCalls = 0;
     const read = attachmentReadHandler(previewArtifact(overrides), async () => {
@@ -520,3 +520,22 @@ test("Attachment byte IPC stops a stream that exceeds its preview admission", as
     { ok: false, reason: "too_large" },
   );
 });
+
+for (const mimeType of ["image/svg+xml", undefined]) {
+  test(`Attachment byte IPC serves archived SVG with MIME ${mimeType ?? "extension fallback"}`, async () => {
+    const content = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><rect width="10" height="10"/></svg>');
+    const read = attachmentReadHandler(
+      previewArtifact({ name: "vector.svg", mimeType, sizeBytes: content.length }),
+      async (_sessionId, _artifactId, writeChunk) => {
+        await writeChunk(content.subarray(0, 20));
+        await writeChunk(content.subarray(20));
+        return content.length;
+      },
+    );
+    assert.deepEqual(await read({}, "session-1", "artifact-1"), {
+      ok: true,
+      base64: content.toString("base64"),
+      mimeType: "image/svg+xml",
+    });
+  });
+}

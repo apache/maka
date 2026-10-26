@@ -27,6 +27,7 @@ import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
 import { chromium } from '@playwright/test';
+import { antigravitySvg } from './fixtures/antigravity-core.mjs';
 
 const root = fileURLToPath(new URL('../../../', import.meta.url));
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==', 'base64');
@@ -45,7 +46,21 @@ before(async () => {
   });
   await new Promise(resolve => imageServer.listen(0, '127.0.0.1', resolve));
   imageUrl = `http://127.0.0.1:${imageServer.address().port}`;
+  const fence = (language, code) => ['```' + language, code, '```'].join('\n');
+  const tinySvg = '<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20"><rect width="40" height="20" fill="blue"/></svg>';
+  const nestedSvg = [fence('svg', tinySvg), fence('xml', tinySvg), fence('svg', tinySvg), fence('xml', tinySvg)].join('\n\n');
   const destinations = {
+    'svg-budget-update': fence('svg', tinySvg),
+    'xml-antigravity-streaming': fence('xml', antigravitySvg),
+    'xml-ordinary': fence('xml', '<document><title>Keep XML source</title></document>'),
+    'svg-only-quoted-budget': Array.from({length:4}, () => fence('svg', tinySvg)).join('\n\n').split('\n').map(line => '> ' + line).join('\n'),
+    'svg-quoted-budget': nestedSvg.split('\n').map(line => '> ' + line).join('\n'),
+    'svg-list-budget': nestedSvg.split('\n\n').map(fence => '- ' + fence.replaceAll('\n', '\n  ')).join('\n'),
+    'svg-saved': '![SVG](maka://runtime/attachments/svg-image)',
+    "svg-fence": "```svg\n<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"240\" height=\"120\" viewBox=\"0 0 240 120\" onload=\"window.svgExecuted=true\"><script>window.svgExecuted=true</script><rect width=\"240\" height=\"120\" rx=\"12\" fill=\"#4355d9\"/><text x=\"20\" y=\"70\" fill=\"white\" font-size=\"28\">Maka SVG</text></svg>\n```",
+    "svg-fence-offscreen": "```svg\n<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"240\" height=\"120\" viewBox=\"0 0 240 120\" onload=\"window.svgExecuted=true\"><script>window.svgExecuted=true</script><rect width=\"240\" height=\"120\" rx=\"12\" fill=\"#4355d9\"/><text x=\"20\" y=\"70\" fill=\"white\" font-size=\"28\">Maka SVG</text></svg>\n```",
+    "svg-fence-streaming": "```svg\n<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"240\" height=\"120\" viewBox=\"0 0 240 120\" onload=\"window.svgExecuted=true\"><script>window.svgExecuted=true</script><rect width=\"240\" height=\"120\" rx=\"12\" fill=\"#4355d9\"/><text x=\"20\" y=\"70\" fill=\"white\" font-size=\"28\">Maka SVG</text></svg>\n```",
+
     'links-formats': [
       `![Screenshot](${imageUrl}/image.png)`,
       `![Title](${imageUrl}/title.png "Screenshot title")`,
@@ -71,6 +86,7 @@ before(async () => {
     'signed-failed': `![Screenshot](${imageUrl}/image.png?token=failed-secret)`,
     'signed-preview': `![Screenshot](${imageUrl}/image.png?token=preview-secret)`,
   };
+  destinations['xml-untrusted'] = destinations['svg-fence'].replace('```svg', '```xml');
   const canonicalSources = {
     'angle-saved': ['/tmp/my image.png'],
     'title-saved': [`${imageUrl}/image.png`],
@@ -100,6 +116,7 @@ before(async () => {
         '![Screenshot](${imageUrl}/'+(mode==='retry' ? 'retry.png' : 'image.png')+')');
       const root=createRoot(document.getElementById('root'));
       const readBytes=async(_session,artifactId)=>{
+        if(mode==='svg-saved') { window.imageReads++; return {ok:true,mimeType:'image/svg+xml',base64:'PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNDAiIGhlaWdodD0iMTIwIiB2aWV3Qm94PSIwIDAgMjQwIDEyMCIgb25sb2FkPSJ3aW5kb3cuc3ZnRXhlY3V0ZWQ9dHJ1ZSI+PHNjcmlwdD53aW5kb3cuc3ZnRXhlY3V0ZWQ9dHJ1ZTwvc2NyaXB0PjxyZWN0IHdpZHRoPSIyNDAiIGhlaWdodD0iMTIwIiByeD0iMTIiIGZpbGw9IiM0MzU1ZDkiLz48dGV4dCB4PSIyMCIgeT0iNzAiIGZpbGw9IndoaXRlIiBmb250LXNpemU9IjI4Ij5NYWthIFNWRzwvdGV4dD48L3N2Zz4='}; }
         if(captured.has(artifactId)) return captured.get(artifactId);
         reads++; window.imageReads=reads; return (mode==='attachment' || mode==='read-retry-saved') && reads===1 ? {ok:false,reason:'read_failed'} :
           {ok:true,base64:mode.endsWith('corrupt-saved') && reads===1 ? 'iVBORw0KGgo=' : '${png.toString('base64')}',mimeType:'image/png'};
@@ -128,15 +145,16 @@ before(async () => {
       };
       const markdown=(streaming)=>React.createElement(ImageMessageProvider,{identity:{turnId:'turn',messageId},streaming},
         React.createElement(Markdown,{text,streaming,settledText:race ? text : undefined,density:'compact',imageDisplay:mode.startsWith('links-') ? 'link' : undefined}));
-      const render=(streaming=race || mode==='links-streaming')=>root.render(
+      const render=(streaming=race || mode==='links-streaming' || mode==='svg-fence-streaming' || mode==='xml-antigravity-streaming')=>root.render(
         React.createElement(Theme,{theme:makaTheme,mode:'light'},
           React.createElement(LocaleProvider,{locale:'en'},
             React.createElement(SessionAttachmentProvider,{sessionId:'session',readBytes},
               React.createElement(ImageDeliveryProvider,{sessionId:'session',resolve:resolveDelivery},
-              React.createElement('div',{style:mode==='offscreen' ? {paddingTop:'2500px'} : {}},
+              React.createElement('div',{style:(mode==='offscreen' || mode==='svg-fence-offscreen') ? {paddingTop:'2500px'} : {}},
                 markdown(streaming)))))));
       window.nextMessage=()=>{messageId='next-message'; render(false);};
       window.finishStream=()=>render(false);
+      window.replaceText=value=>{text=value; render(false);};
       window.appendText=value=>{text+=value; render(true);};
       render();
     `, resolveDir: root, loader: 'js' },
@@ -165,7 +183,7 @@ before(async () => {
   });
   await new Promise(resolve => appServer.listen(0, '127.0.0.1', resolve));
   appUrl = `http://127.0.0.1:${appServer.address().port}`;
-  browser = await chromium.launch({ headless: true });
+  browser = await chromium.launch({ headless: true, ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH } : {}) });
 });
 
 after(async () => {
@@ -423,3 +441,121 @@ for (const scenario of ['angle-saved', 'title-saved', 'escaped-saved', 'referenc
     } finally { await page.close(); }
   });
 }
+
+
+for (const mode of ['svg-saved', 'svg-fence', 'xml-untrusted']) {
+  test(`SVG ${mode} displays through static image context and strips executable content`, async () => {
+    const page = await pageFor(mode);
+    try {
+      await page.waitForFunction(() => { const img = document.querySelector('#root img'); return img?.complete && img.naturalWidth === 240; });
+      assert.equal(await page.evaluate(() => window.svgExecuted), undefined);
+      const source = await page.locator('#root img').getAttribute('src');
+      assert.doesNotMatch(decodeURIComponent(source), /<script|onload/);
+      assert.equal(await page.locator('#root svg script').count(), 0);
+      if (mode === 'svg-fence') {
+        await page.getByRole('button', { name: 'View source', exact: true }).click();
+        assert.equal(await page.locator('#root img').count(), 0);
+        await page.getByRole('button', { name: 'Preview SVG', exact: true }).click();
+        await page.locator('#root img').waitFor();
+        assert.equal(await page.getByRole('link', { name: 'Download SVG' }).getAttribute('download'), 'image.svg');
+      }
+    } finally { await page.close(); }
+  });
+}
+
+test('SVG code preview waits for settlement and viewport visibility', async () => {
+  const streaming = await pageFor('svg-fence-streaming');
+  const offscreen = await pageFor('svg-fence-offscreen');
+  try {
+    await streaming.locator('[data-maka-contract="markdown"]').waitFor();
+    assert.equal(await streaming.locator('[data-kind="svg-preview"]').count(), 0);
+    await streaming.evaluate(() => window.finishStream());
+    await streaming.locator('[data-kind="svg-preview"] img').waitFor();
+    await offscreen.locator('[data-kind="svg-preview"]').waitFor({state:'attached'});
+    assert.equal(await offscreen.locator('#root img').count(), 0);
+    await offscreen.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+    await offscreen.locator('#root img').waitFor();
+  } finally { await streaming.close(); await offscreen.close(); }
+});
+
+
+test('Antigravity XML SVG replies preview after settlement with source and sanitized download', async () => {
+  const page = await pageFor('xml-antigravity-streaming');
+  try {
+    await page.locator('[data-maka-code-layout]').waitFor();
+    assert.equal(await page.locator('[data-kind="svg-preview"]').count(), 0);
+    await page.evaluate(() => window.finishStream());
+    await page.waitForFunction(() => { const img = document.querySelector('[data-kind="svg-preview"] img'); return img?.complete && img.naturalWidth > 0; });
+    const source = await page.locator('[data-kind="svg-preview"] img').getAttribute('src');
+    const svg = decodeURIComponent(source);
+    assert.match(svg, /ANTIGRAVITY/);
+    if (process.env.MAKA_MEDIA_SCREENSHOT_PATH) await page.screenshot({path:process.env.MAKA_MEDIA_SCREENSHOT_PATH,fullPage:true});
+    assert.doesNotMatch(svg, /<filter|feGaussianBlur|\bfilter=/);
+    await page.getByRole('button', {name:'View source', exact:true}).click();
+    assert.equal(await page.locator('[data-kind="svg-preview"] img').count(), 0);
+    await page.getByRole('button', {name:'Preview SVG', exact:true}).click();
+    await page.locator('[data-kind="svg-preview"] img').waitFor();
+    assert.equal(await page.getByRole('link', {name:'Download SVG'}).getAttribute('href'), source);
+  } finally { await page.close(); }
+});
+
+for (const mode of ['svg-only-quoted-budget', 'svg-quoted-budget', 'svg-list-budget']) {
+  test(`${mode}: SVG and XML share the document preview budget inside containers`, async () => {
+    const page = await pageFor(mode);
+    try {
+      await page.waitForFunction(() => document.querySelectorAll('[data-kind="svg-preview"]').length === 4);
+      await page.waitForFunction(() => [...document.querySelectorAll('[data-kind="svg-preview"] img')].filter(img => img.complete && img.naturalWidth > 0).length === 3);
+      const deferred = page.locator('[data-kind="svg-preview"]').nth(3);
+      assert.equal(await deferred.locator('img').count(), 0);
+      await deferred.getByRole('button', {name:'Preview SVG', exact:true}).click();
+      await deferred.locator('img').waitFor();
+    } finally { await page.close(); }
+  });
+}
+
+test('ordinary XML stays source code', async () => {
+  const page = await pageFor('xml-ordinary');
+  try {
+    await page.locator('[data-maka-code-layout]').waitFor();
+    assert.equal(await page.locator('[data-kind="svg-preview"]').count(), 0);
+    assert.equal(await page.locator('#root img').count(), 0);
+  } finally { await page.close(); }
+});
+
+test('SVG input complexity falls back to source and a later valid preview recovers', async () => {
+  const page = await pageFor('svg-budget-update');
+  const dense = '<svg>' + '<a/>'.repeat(16000) + '</svg>';
+  assert.ok(dense.length < 64 * 1024, 'exercise the automatic preview path');
+  const replace = code => page.evaluate(value => window.replaceText(value), ['```svg', code, '```'].join('\n'));
+  try {
+    await page.locator('[data-kind="svg-preview"] img').waitFor();
+    await replace(dense);
+    await page.getByRole('status').filter({hasText: 'Could not load the image. Try again.'}).waitFor({timeout: 5000});
+    assert.equal(await page.locator('[data-kind="svg-preview"] img').count(), 0);
+    assert.equal(await page.getByRole('link', {name:'Download SVG'}).count(), 0);
+    assert.ok((await page.locator('[data-kind="svg-preview"]').textContent()).includes(dense), 'Original SVG source remains available');
+    assert.ok(await page.locator('[data-kind="svg-preview"] pre span').count() < 100, 'Large fallback source must not expand into thousands of syntax nodes');
+    await replace('<svg width="40" height="20"><rect width="40" height="20" fill="blue"/></svg>');
+    await page.waitForFunction(() => document.querySelector('[data-kind="svg-preview"] img')?.naturalWidth === 40);
+    assert.equal(await page.getByRole('status').filter({hasText: 'Could not load the image. Try again.'}).count(), 0);
+  } finally { await page.close(); }
+});
+
+
+test('a changed SVG block rechecks its budget and does not reuse manual admission', async () => {
+  const page = await pageFor('svg-budget-update');
+  const oversized = '<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20">' + ' '.repeat(65536) + '<rect width="40" height="20" fill="blue"/></svg>';
+  try {
+    await page.locator('[data-kind="svg-preview"] img').waitFor();
+    const replace = code => page.evaluate(value => window.replaceText(value), ['```xml', code, '```'].join('\n'));
+    await replace(oversized);
+    const preview = page.getByRole('button', {name:'Preview SVG', exact:true});
+    await preview.waitFor();
+    assert.equal(await page.locator('[data-kind="svg-preview"] img').count(), 0);
+    await preview.click();
+    await page.locator('[data-kind="svg-preview"] img').waitFor();
+    await replace(oversized.replace('blue', 'red'));
+    await preview.waitFor();
+    assert.equal(await page.locator('[data-kind="svg-preview"] img').count(), 0);
+  } finally { await page.close(); }
+});
