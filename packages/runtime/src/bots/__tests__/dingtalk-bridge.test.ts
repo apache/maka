@@ -141,6 +141,7 @@ describe('dingTalkPayloadToEvent', () => {
         text: { content: 'hello' },
         robotCode: 'app-key-1',
       },
+      'frame-msg-1',
       1_700_000_000_000,
     );
     assert.ok(event);
@@ -150,7 +151,7 @@ describe('dingTalkPayloadToEvent', () => {
     assert.equal(event!.chatId, `oto:${SENDER_STAFF_ID}`);
     assert.equal(event!.isGroup, false);
     assert.equal(event!.text, 'hello');
-    assert.equal(event!.sourceMessageId, `${SINGLE_CONVERSATION_ID}:1700000000000`);
+    assert.equal(event!.sourceMessageId, 'frame-msg-1');
   });
 
   it('addresses a group chat by conversation id', () => {
@@ -162,6 +163,7 @@ describe('dingTalkPayloadToEvent', () => {
         conversationType: '2',
         text: { content: 'hi' },
       },
+      'frame-msg-2',
       1,
     );
     assert.ok(groupEvent);
@@ -182,6 +184,7 @@ describe('dingTalkPayloadToEvent', () => {
         conversationType: '1',
         text: { content: 'ping' },
       },
+      'frame-msg-3',
       1,
     );
     const route = pickDingTalkSendRoute(event!.chatId, 'app-key-1', 'pong');
@@ -198,6 +201,7 @@ describe('dingTalkPayloadToEvent', () => {
         conversationType: '2',
         text: { content: 'ping' },
       },
+      'frame-msg-4',
       1,
     );
     const route = pickDingTalkSendRoute(event!.chatId, 'app-key-1', 'pong');
@@ -215,6 +219,7 @@ describe('dingTalkPayloadToEvent', () => {
         conversationType: '1',
         text: { content: 'hello' },
       },
+      'frame-msg-5',
       1,
     );
     assert.ok(event);
@@ -223,9 +228,45 @@ describe('dingTalkPayloadToEvent', () => {
   });
 
   it('drops payloads missing text or routing identity', () => {
-    assert.equal(dingTalkPayloadToEvent({ senderId: 'u', conversationId: 'c' }, 1), null);
-    assert.equal(dingTalkPayloadToEvent({ conversationId: 'c', text: { content: 'x' } }, 1), null);
-    assert.equal(dingTalkPayloadToEvent({ senderId: 'u', text: { content: 'x' } }, 1), null);
+    assert.equal(
+      dingTalkPayloadToEvent({ senderId: 'u', conversationId: 'c' }, 'frame-msg-6', 1),
+      null,
+    );
+    assert.equal(
+      dingTalkPayloadToEvent({ conversationId: 'c', text: { content: 'x' } }, 'frame-msg-6', 1),
+      null,
+    );
+    assert.equal(
+      dingTalkPayloadToEvent({ senderId: 'u', text: { content: 'x' } }, 'frame-msg-6', 1),
+      null,
+    );
+  });
+});
+
+describe('dingTalkPayloadToEvent frame retransmission stability (issue #6325)', () => {
+  it('maps a retransmitted frame onto the same sourceMessageId', () => {
+    // An unacked CALLBACK frame is retransmitted by the Stream gateway
+    // with the same headers.messageId (the ack echoes that id). The
+    // dedupe contract (botSourceEventKey) requires the retransmission
+    // to map onto the same sourceMessageId; deriving it from Date.now()
+    // handed every redelivery a fresh key and produced duplicate turns.
+    const payload = {
+      senderId: SENDER_ID,
+      senderStaffId: SENDER_STAFF_ID,
+      conversationId: SINGLE_CONVERSATION_ID,
+      conversationType: '1' as const,
+      text: { content: 'hello' },
+    };
+    const first = dingTalkPayloadToEvent(payload, 'frame-msg-42', 1_700_000_000_000);
+    const retransmitted = dingTalkPayloadToEvent(payload, 'frame-msg-42', 1_700_000_000_500);
+    assert.ok(first && retransmitted);
+    assert.equal(first.sourceMessageId, 'frame-msg-42');
+    assert.equal(retransmitted.sourceMessageId, 'frame-msg-42');
+
+    // Distinct frames must not collide, even within the same chat.
+    const other = dingTalkPayloadToEvent(payload, 'frame-msg-43', 1_700_000_000_000);
+    assert.ok(other);
+    assert.notEqual(other.sourceMessageId, first.sourceMessageId);
   });
 });
 

@@ -253,9 +253,16 @@ export function classifyDingTalkSendResponse(
  * Pure helper: map a DingTalk Stream `/v1.0/im/bot/messages/get`
  * callback payload to BotMessageEvent. Returns `null` for payloads
  * that aren't text messages we can act on.
+ *
+ * `frameMessageId` is the CALLBACK frame's `headers.messageId`: the
+ * Stream gateway retransmits an unacked frame with the same id (the
+ * ack echoes it), so it is the stable identity that lets a
+ * retransmission map onto the same `sourceMessageId` — the key the
+ * downstream `botSourceEventKey` dedupe contract needs.
  */
 export function dingTalkPayloadToEvent(
   payload: DingTalkBotMessagePayload,
+  frameMessageId: string,
   receivedAt: number,
 ): {
   platform: 'dingtalk';
@@ -298,10 +305,11 @@ export function dingTalkPayloadToEvent(
     chatId,
     isGroup,
     text: content,
-    // DingTalk Stream callbacks do not carry the original message id;
-    // use a synthetic key so downstream contracts that key off
-    // `sourceMessageId` still get a unique value.
-    sourceMessageId: `${conversationId}:${receivedAt}`,
+    // The callback payload does not carry the chat message's own id,
+    // but the frame headers do carry a delivery id that is stable
+    // across gateway retransmissions — exactly what idempotency needs.
+    // One frame is one message: distinct frames carry distinct ids.
+    sourceMessageId: frameMessageId,
     receivedAt,
   };
 }
@@ -431,7 +439,10 @@ export class DingTalkBotBridge extends WsBridgeBase implements SendCapable {
         payload = null;
       }
       if (payload) {
-        const event = dingTalkPayloadToEvent(payload, Date.now());
+        // `messageId` is guaranteed non-empty above (frames without it
+        // are dropped before dispatch), so every emitted event keys off
+        // the same id the ack carries.
+        const event = dingTalkPayloadToEvent(payload, messageId, Date.now());
         if (event && this.emitIncomingMessage(event)) {
           this.emitStatusChange();
         }
