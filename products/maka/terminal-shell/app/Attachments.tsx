@@ -291,7 +291,9 @@ export function HistoryAttachments(props: {
                 when={image(original.mimeType) && props.position !== undefined}
                 else={
                   <View
-                    tooltip={textTooltip(() => `${original.name}\n${size(original.bytes)} · ${original.kind}`)}
+                    tooltip={textTooltip(
+                      () => `${original.name}\n${size(original.bytes)} · ${original.kind}`,
+                    )}
                     style={fileTileStyle}
                   >
                     <Icon name={image(original.mimeType) ? 'image' : 'file'} color={C.secondary} />

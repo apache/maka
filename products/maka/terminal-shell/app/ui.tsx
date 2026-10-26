@@ -25,7 +25,6 @@ import { platform, windowSize } from 'nsh';
 import { Icon } from './Icon';
 import { sessionStatusCaption } from './sessionStatus';
 
-
 export function textTooltip(text: () => string | undefined): YNode {
   return (
     <Tooltip disabled={!text()} class="rounded-md border border-border bg-popover px-2 py-1">
@@ -118,7 +117,9 @@ export function Header(props: {
         accessibilityLabel={
           props.browser.expanded ? tr('Collapse session browser') : tr('Expand session browser')
         }
-        tooltip={textTooltip(() => props.browser.expanded ? tr('Collapse session browser') : tr('Expand session browser'))}
+        tooltip={textTooltip(() =>
+          props.browser.expanded ? tr('Collapse session browser') : tr('Expand session browser'),
+        )}
         selected={props.browser.expanded}
         style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
         hoverStyle={{ backgroundColor: C.surface }}

@@ -437,7 +437,9 @@ export function Composer(props: {
             </If>
             <Button
               accessibilityLabel={primaryStops() ? tr('Stop response') : sendLabel()}
-              tooltip={textTooltip(() => primaryStops() ? tr('Stop response · Esc') : `${sendLabel()} · Enter`)}
+              tooltip={textTooltip(() =>
+                primaryStops() ? tr('Stop response · Esc') : `${sendLabel()} · Enter`,
+              )}
               disabled={primaryStops() ? props.session()!.stopping() : cannotSend()}
               onPress={
                 primaryStops()

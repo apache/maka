@@ -147,7 +147,9 @@ export function FinalActions(props: {
         <Button
           style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
           accessibilityLabel={tr('Fork from this turn')}
-          tooltip={textTooltip(() => pending() ? tr('Creating fork…') : tr('Fork from this turn'))}
+          tooltip={textTooltip(() =>
+            pending() ? tr('Creating fork…') : tr('Fork from this turn'),
+          )}
           disabled={pending() || target() === null}
           onPress={inputAction(fork, target())}
           hoverStyle={{ backgroundColor: C.surface }}

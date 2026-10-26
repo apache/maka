@@ -328,9 +328,11 @@ export function QueueDock(props: { session: QueueSession }) {
                     accessibilityLabel={tr('Steer queued message {number} now', {
                       number: number(),
                     })}
-                    tooltip={textTooltip(() => row().kind === 'steering'
+                    tooltip={textTooltip(() =>
+                      row().kind === 'steering'
                         ? tr('Waiting for the next step')
-                        : tr('Steer now · use in the current turn'))}
+                        : tr('Steer now · use in the current turn'),
+                    )}
                     disabled={
                       busy() !== null ||
                       editing() !== null ||

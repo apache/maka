@@ -21,7 +21,7 @@ import { textTooltip } from './ui';
 import { createText, errorText, renderText, UiError, type UiText } from './text';
 import { tr } from './locale';
 import { cleanup, computed, inputAction, Scroll, signal, Text, View, Image, List } from 'nsh';
-import { Button, } from 'nsh/base';
+import { Button } from 'nsh/base';
 import { Clipboard } from 'nsh';
 import { host, type FileView } from './host';
 import type { AgentFileChange } from '../../../../packages/plugin-sdk/src/index.js';
@@ -349,13 +349,15 @@ export function CurrentFile(props: { model: CurrentFileModel; openImageViewer: O
           accessibilityLabel={tr('Copy captured file')}
           disabled={textCapture() === null}
           onPress={copyAction()}
-          tooltip={textTooltip(() => copying()
+          tooltip={textTooltip(() =>
+            copying()
               ? tr('Copying captured file…')
               : copied()
                 ? copied()!.failed
                   ? renderText(copied()!.message)
                   : tr('File copied')
-                : tr('Copy captured file'))}
+                : tr('Copy captured file'),
+          )}
           style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
           hoverStyle={controlHoverStyle}
           focusStyle={controlFocusStyle}
@@ -370,7 +372,9 @@ export function CurrentFile(props: { model: CurrentFileModel; openImageViewer: O
           disabled={model.state().kind === 'loading'}
           accessibilityLabel={tr('Refresh current file')}
           onPress={inputAction(model.refresh, null)}
-          tooltip={textTooltip(() => model.state().kind === 'error' ? tr('Retry current file') : tr('Refresh current file'))}
+          tooltip={textTooltip(() =>
+            model.state().kind === 'error' ? tr('Retry current file') : tr('Refresh current file'),
+          )}
           style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
           hoverStyle={controlHoverStyle}
           focusStyle={controlFocusStyle}
@@ -404,7 +408,9 @@ export function CurrentFile(props: { model: CurrentFileModel; openImageViewer: O
               accessibilityLabel={
                 copied()!.failed ? renderText(copied()!.message) : tr('File copied')
               }
-              tooltip={textTooltip(() => copied()!.failed ? renderText(copied()!.message) : tr('File copied'))}
+              tooltip={textTooltip(() =>
+                copied()!.failed ? renderText(copied()!.message) : tr('File copied'),
+              )}
               style={{
                 ...captionTextStyle,
                 flexShrink: 0,

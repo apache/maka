@@ -178,7 +178,9 @@ export function MessageRow({
                           accessibilityLabel={
                             sourceMode() ? tr('Show formatted message') : tr('Show message source')
                           }
-                          tooltip={textTooltip(() => sourceMode() ? tr('Show formatted message') : tr('Show message source'))}
+                          tooltip={textTooltip(() =>
+                            sourceMode() ? tr('Show formatted message') : tr('Show message source'),
+                          )}
                           selected={sourceMode()}
                           onPress={inputAction(setSourceMode, {
                             sessionId,
@@ -241,9 +243,11 @@ export function MessageRow({
                                   ? tr('Show formatted thinking')
                                   : tr('Show thinking source')
                               }
-                              tooltip={textTooltip(() => sourceMode()
+                              tooltip={textTooltip(() =>
+                                sourceMode()
                                   ? tr('Show formatted thinking')
-                                  : tr('Show thinking source'))}
+                                  : tr('Show thinking source'),
+                              )}
                               selected={sourceMode()}
                               onPress={inputAction(setSourceMode, {
                                 sessionId,

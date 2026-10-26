@@ -65,7 +65,7 @@ function Copy(props: { text(): string; label: string; source: ToolSource }) {
         </Text>
         <Button
           accessibilityLabel={props.label}
-          tooltip={textTooltip(() => copied() ? tr('Copied') : props.label)}
+          tooltip={textTooltip(() => (copied() ? tr('Copied') : props.label))}
           onPress={action()}
           style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
           hoverStyle={{ backgroundColor: C.line }}

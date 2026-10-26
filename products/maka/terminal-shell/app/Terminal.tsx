@@ -19,7 +19,18 @@
 
 import { textTooltip } from './ui';
 import { createText, errorText } from './text';
-import { cleanup, computed, effect, inputAction, Scroll, signal, Text, View, type GestureResponderEvent, type YNode } from 'nsh';
+import {
+  cleanup,
+  computed,
+  effect,
+  inputAction,
+  Scroll,
+  signal,
+  Text,
+  View,
+  type GestureResponderEvent,
+  type YNode,
+} from 'nsh';
 import { Input } from 'nsh/base';
 import { Button, Dialog } from 'nsh/base';
 import { Clipboard } from 'nsh';
@@ -342,7 +353,11 @@ export function Terminal(props: { model: TerminalModel }) {
             input?.focus();
           }}
           accessibilityLabel={tr('Focus terminal input')}
-          tooltip={textTooltip(() => model.control() === 'held' ? tr('Terminal input is active') : tr('Focus terminal input'))}
+          tooltip={textTooltip(() =>
+            model.control() === 'held'
+              ? tr('Terminal input is active')
+              : tr('Focus terminal input'),
+          )}
           selected={model.control() === 'held'}
           style={{ ...controlStyle, flexDirection: 'row', alignItems: 'center', gap: 8 }}
           selectedStyle={{ backgroundColor: C.raised }}
@@ -380,7 +395,9 @@ export function Terminal(props: { model: TerminalModel }) {
             disabled={model.stopping()}
             onPress={() => confirmation.set(true)}
             accessibilityLabel={tr('Stop terminal process')}
-            tooltip={textTooltip(() => model.stopping() ? tr('Stopping process…') : tr('Stop terminal process'))}
+            tooltip={textTooltip(() =>
+              model.stopping() ? tr('Stopping process…') : tr('Stop terminal process'),
+            )}
             style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
             hoverStyle={controlHoverStyle}
             focusStyle={controlFocusStyle}

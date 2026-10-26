@@ -110,7 +110,9 @@ export function WorkspaceChanges(props: {
         <Button
           accessibilityLabel={tr('Refresh current changes')}
           onPress={inputAction(refresh, props.sessionId)}
-          tooltip={textTooltip(() => state().kind === 'error' ? tr('Retry current changes') : tr('Refresh current changes'))}
+          tooltip={textTooltip(() =>
+            state().kind === 'error' ? tr('Retry current changes') : tr('Refresh current changes'),
+          )}
           style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
           hoverStyle={controlHoverStyle}
           focusStyle={controlFocusStyle}

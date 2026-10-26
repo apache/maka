@@ -18,7 +18,18 @@
  */
 
 import { textTooltip } from './ui';
-import { batch, cleanup, computed, effect, inputAction, Scroll, signal, Text, View, List } from 'nsh';
+import {
+  batch,
+  cleanup,
+  computed,
+  effect,
+  inputAction,
+  Scroll,
+  signal,
+  Text,
+  View,
+  List,
+} from 'nsh';
 import { Input } from 'nsh/base';
 import type { YNode } from 'nsh';
 import type {
@@ -516,7 +527,7 @@ function ModelMenu(props: {
                 ? inputAction(close, { instance: props.instance, from: pane() })
                 : inputAction(changePane, { instance: props.instance, from: pane(), to: 'root' })
           }
-          tooltip={textTooltip(() => pane() === 'root' ? tr('Close') : tr('Back'))}
+          tooltip={textTooltip(() => (pane() === 'root' ? tr('Close') : tr('Back')))}
           style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
           hoverStyle={controlHoverStyle}
           focusStyle={controlFocusStyle}

@@ -155,11 +155,13 @@ export function MessageCopy(props: {
         accessibilityLabel={
           props.row().role === 'user' ? tr('Copy user message') : tr('Copy message')
         }
-        tooltip={textTooltip(() => busy()
+        tooltip={textTooltip(() =>
+          busy()
             ? tr('Reading original message…')
             : props.row().role === 'user'
               ? tr('Copy user message')
-              : tr('Copy message'))}
+              : tr('Copy message'),
+        )}
         disabled={target() === null}
         onPress={inputAction(copy, target())}
         style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}

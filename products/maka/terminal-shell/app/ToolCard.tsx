@@ -20,7 +20,7 @@
 import { textTooltip } from './ui';
 import { displayText, tr } from './locale';
 import { computed, inputAction, Scroll, Text, View } from 'nsh';
-import { Button, } from 'nsh/base';
+import { Button } from 'nsh/base';
 import type { HistoryTool } from '../../../../packages/plugin-sdk/src/index.js';
 import type { Row } from './history';
 import type { ImagePreview } from './ImageThumbnail';
@@ -312,7 +312,9 @@ export function ToolCard(props: {
         <If when={props.expanded()}>
           <Button
             accessibilityLabel={tr('Toggle original tool details')}
-            tooltip={textTooltip(() => props.original() ? tr('Show readable tool details') : tr('Show original tool data'))}
+            tooltip={textTooltip(() =>
+              props.original() ? tr('Show readable tool details') : tr('Show original tool data'),
+            )}
             selected={props.original()}
             onPress={inputAction(props.showOriginal, {
               sessionId: props.sessionId,

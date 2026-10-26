@@ -118,7 +118,9 @@ function PermissionsMenu(props: { owner: SessionPermissions }) {
         <Button
           disabled={disabled()}
           accessibilityLabel={tr('Sandbox and approvals')}
-          tooltip={textTooltip(() => owner.snapshot() ? tr('Sandbox and approvals') : tr('Loading sandbox settings…'))}
+          tooltip={textTooltip(() =>
+            owner.snapshot() ? tr('Sandbox and approvals') : tr('Loading sandbox settings…'),
+          )}
           onPress={inputAction(changeOpen, !open())}
           style={{
             ...controlStyle,

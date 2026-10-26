@@ -99,7 +99,8 @@ export function ImageThumbnail(props: {
           button = node;
         }}
         accessibilityLabel={props.label ?? tr('Open image preview')}
-        tooltip={textTooltip(() => props.compact
+        tooltip={textTooltip(() =>
+          props.compact
             ? `${props.tooltip ?? props.label ?? tr('Open image preview')}\n${
                 size()
                   ? `${size()!.width} × ${size()!.height}`
@@ -107,7 +108,8 @@ export function ImageThumbnail(props: {
                     ? tr('Image unavailable')
                     : tr('Loading image…')
               }`
-            : undefined)}
+            : undefined,
+        )}
         disabled={!size()}
         onPress={inputAction(preview, action)}
         style={
