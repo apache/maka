@@ -551,9 +551,14 @@ const TUI_COPY_RESOURCES_TODO_EN = {
 };
 
 const TUI_COPY_RESOURCES_GOAL_EN = {
-  cancelWaitBusy: 'Wait for the current action to finish, then cancel the wait.',
+  waitResultReady: 'result ready',
+  waitObserving: 'waiting',
+  waitChecking: 'checking',
+  waitPending: 'pending',
+  waitUnknown: 'temporarily unavailable',
+  sessionWaitCancelled: 'Wait cancelled. The underlying work keeps running.',
+  chooseWait: 'Choose one wait: /goal cancel-wait <waitId>',
   noCancellableWait: 'No cancellable event wait.',
-  waitCancelled: 'Wait cancelled. Goal paused; the background task keeps running.',
   waitChanged:
     'The wait changed or its continuation was admitted. Use /goal to inspect the current state.',
   usage: 'Usage: /goal [pause|resume|clear|cancel-wait]',
@@ -564,16 +569,26 @@ export const TUI_COPY_RESOURCES = {
     defineShippedUiMessageCatalog<UiMessageShape<typeof TUI_COPY_RESOURCES_GOAL_EN>>()({
       en: TUI_COPY_RESOURCES_GOAL_EN,
       'zh-CN': {
-        cancelWaitBusy: '请等待当前操作完成，再取消等待。',
+        waitResultReady: '结果已就绪',
+        waitObserving: '等待中',
+        waitChecking: '检查中',
+        waitPending: '条件尚未满足',
+        waitUnknown: '暂时不可用',
+        sessionWaitCancelled: '等待已取消；原任务继续运行。',
+        chooseWait: '选择一个等待：/goal cancel-wait <waitId>',
         noCancellableWait: '没有可取消的事件等待。',
-        waitCancelled: '等待已取消，目标已暂停；后台任务继续运行。',
         waitChanged: '等待状态已变化，或后续执行已获准启动。请使用 /goal 查看当前状态。',
         usage: '用法：/goal [pause|resume|clear|cancel-wait]',
       },
       'zh-TW': {
-        cancelWaitBusy: '請等待目前操作完成，再取消等待。',
+        waitResultReady: '結果已就緒',
+        waitObserving: '等待中',
+        waitChecking: '檢查中',
+        waitPending: '條件尚未滿足',
+        waitUnknown: '暫時無法使用',
+        sessionWaitCancelled: '等待已取消；原工作繼續執行。',
+        chooseWait: '選擇一個等待：/goal cancel-wait <waitId>',
         noCancellableWait: '沒有可取消的事件等待。',
-        waitCancelled: '等待已取消，目標已暫停；背景任務繼續執行。',
         waitChanged: '等待狀態已變更，或後續執行已獲准啟動。請使用 /goal 檢視目前狀態。',
         usage: '用法：/goal [pause|resume|clear|cancel-wait]',
       },

@@ -134,7 +134,12 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
   /** Canonical-named tools available this session. */
   tools: MakaTool[];
   /** Trusted scoped catalog sampled before each logical model step. */
-  resolveTools?: () => readonly MakaTool[];
+  resolveTools?: (identity: {
+    readonly sessionId: string;
+    readonly turnId: string;
+    readonly runId?: string;
+    readonly invocationId?: string;
+  }) => readonly MakaTool[];
   /** Diagnostic-only Plan Mode/execution identity snapshot. */
   planTraceContext?: {
     mode: 'agent' | 'plan';
@@ -443,11 +448,18 @@ export class AiSdkBackend implements AgentBackend {
       : [];
   }
 
-  private snapshotToolAvailability(): {
+  private snapshotToolAvailability(identity: BackendSendInput): {
     hostTools: readonly MakaTool[];
     runtime: ToolAvailabilityRuntime;
   } {
-    const hostTools = Object.freeze([...(this.input.resolveTools?.() ?? this.input.tools)]);
+    const hostTools = Object.freeze([
+      ...(this.input.resolveTools?.({
+        sessionId: this.sessionId,
+        turnId: identity.turnId,
+        ...(identity.runId ? { runId: identity.runId } : {}),
+        ...(identity.invocationId ? { invocationId: identity.invocationId } : {}),
+      }) ?? this.input.tools),
+    ]);
     if (
       hostTools.some(
         (tool) => tool.name === MEMORY_REMEMBER_TOOL_NAME || tool.name === MEMORY_EXTRACT_TOOL_NAME,
@@ -496,6 +508,7 @@ export class AiSdkBackend implements AgentBackend {
     runId: string | undefined;
     invocationId: string | undefined;
     hostedInteraction: HostedInteractionBridge | undefined;
+    waitForSteering: BackendSendInput['waitForSteering'];
     orchestrationMode: EffectiveOrchestration['mode'];
     scope: () => AiSdkTurn;
   }): ToolRuntime {
@@ -515,6 +528,7 @@ export class AiSdkBackend implements AgentBackend {
       getPermissionPauseTarget: () => identity.scope().watchdog,
       turnId: identity.turnId,
       ...(identity.hostedInteraction ? { hostedInteraction: identity.hostedInteraction } : {}),
+      ...(identity.waitForSteering ? { waitForSteering: identity.waitForSteering } : {}),
       ...(identity.runId ? { runId: identity.runId } : {}),
       orchestrationMode: identity.orchestrationMode,
       ...(identity.invocationId ? { invocationId: identity.invocationId } : {}),
@@ -556,7 +570,7 @@ export class AiSdkBackend implements AgentBackend {
         messageProjection: this.messageProjection,
         providerTelemetry: this.providerTelemetry,
         compaction: this.compaction,
-        snapshotToolAvailability: () => this.snapshotToolAvailability(),
+        snapshotToolAvailability: () => this.snapshotToolAvailability(input),
         sessionActiveTools: this.sessionActiveTools,
         codeCellAdmission: this.codeCellAdmission,
         resolvedProviderOptions: this.resolvedProviderOptions,
@@ -572,6 +586,7 @@ export class AiSdkBackend implements AgentBackend {
             runId: owner.runId,
             invocationId: input.invocationId ?? input.runId,
             hostedInteraction: input.hostedInteraction,
+            waitForSteering: input.waitForSteering,
             orchestrationMode: owner.orchestration.mode,
             scope: () => owner,
           }),

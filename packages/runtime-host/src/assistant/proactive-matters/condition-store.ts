@@ -20,10 +20,10 @@
 import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import {
-  assertObservedEventWaitTransition,
-  decodeObservedEventWaitRecord,
+  assertEventWaitTransition,
+  decodeEventWaitRecord,
   eventWaitDeliveryKey,
-  type ObservedEventWaitRecord,
+  type EventWaitRecord,
 } from '@maka/core/event-wait';
 import type {
   EventWaitObservationStore,
@@ -46,7 +46,7 @@ export class MatterConditions {
     private now: () => number,
     private transaction: <T>(fn: () => T) => T,
     private matter: (id: string) => Matter,
-    private deliver: (matter: Matter, wait: ObservedEventWaitRecord) => void,
+    private deliver: (matter: Matter, wait: EventWaitRecord) => void,
   ) {
     db.exec(`CREATE TABLE IF NOT EXISTS matter_checkers(id TEXT PRIMARY KEY, matter_id TEXT NOT NULL, payload TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS matter_conditions(id TEXT PRIMARY KEY, matter_id TEXT NOT NULL, revision INTEGER NOT NULL, payload TEXT NOT NULL);
@@ -87,7 +87,7 @@ export class MatterConditions {
       throw new Error('Condition intervalMs must be 1000–86400000');
     this.checker(checkerId, m.id);
     const id = randomUUID();
-    const record = decodeObservedEventWaitRecord({
+    const record = decodeEventWaitRecord({
       schemaVersion: 1,
       waitId: id,
       sessionId: m.sessionId,
@@ -118,7 +118,7 @@ export class MatterConditions {
     return row
       ? {
           authorityRevision: Number(row.revision),
-          record: decodeObservedEventWaitRecord(JSON.parse(String(row.payload))),
+          record: decodeEventWaitRecord(JSON.parse(String(row.payload))),
         }
       : null;
   }
@@ -144,7 +144,7 @@ export class MatterConditions {
     if (!m.conditionWaitId) return false;
     const snapshot = this.read(m.conditionWaitId);
     if (snapshot?.record.status === 'waiting' && this.now() >= snapshot.record.deadlineAt) {
-      const record: ObservedEventWaitRecord = {
+      const record: EventWaitRecord = {
         ...snapshot.record,
         status: 'expired',
         expiredAt: this.now(),
@@ -155,18 +155,15 @@ export class MatterConditions {
     }
     return true;
   }
-  private write(
-    before: ObservationWaitSnapshot,
-    record: ObservedEventWaitRecord,
-  ): ObservationWaitSnapshot {
-    assertObservedEventWaitTransition(before.record, record);
+  private write(before: ObservationWaitSnapshot, record: EventWaitRecord): ObservationWaitSnapshot {
+    assertEventWaitTransition(before.record, record);
     const snapshot = { authorityRevision: before.authorityRevision + 1, record };
     this.db
       .prepare('UPDATE matter_conditions SET revision=?,payload=? WHERE id=?')
       .run(snapshot.authorityRevision, JSON.stringify(record), record.waitId);
     return snapshot;
   }
-  private eligible(r: ObservedEventWaitRecord): boolean {
+  private eligible(r: EventWaitRecord): boolean {
     const m = this.matter(r.resource.resourceId);
     return m.conditionWaitId === r.waitId && m.status === 'waiting' && !m.activation;
   }
@@ -241,7 +238,7 @@ export class MatterConditions {
             };
           if (before.record.sessionId !== input.sessionId || !this.eligible(before.record))
             return { kind: 'session_unavailable' };
-          let record = decodeObservedEventWaitRecord(input.record);
+          let record = decodeEventWaitRecord(input.record);
           if (record.status === 'waiting' && record.observation?.outcome === 'pending') {
             const next =
               (record.observation.lastObservedAt ?? record.observation.lastAttemptAt) +

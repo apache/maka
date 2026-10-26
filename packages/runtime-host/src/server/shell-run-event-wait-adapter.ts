@@ -19,7 +19,7 @@
 
 import { createHash } from 'node:crypto';
 import { isTerminalShellRunStatus } from '@maka/core/shell-run';
-import type { ObservedEventWaitRecord } from '@maka/core/event-wait';
+import type { AnyEventWaitRecord } from '@maka/core/event-wait';
 import type { ShellRunProcessManager } from '@maka/runtime/shell-run-manager';
 import type {
   EventWaitSourceAdapter,
@@ -42,7 +42,7 @@ export class ShellRunEventWaitAdapter implements EventWaitSourceAdapter {
     private readonly access: ShellRunEventWaitAccess,
     private readonly manager: Pick<ShellRunProcessManager, 'subscribeChanges'>,
   ) {}
-  validate(wait: ObservedEventWaitRecord): void {
+  validate(wait: AnyEventWaitRecord): void {
     validateShellRunWait(wait);
   }
   async read(input: EventWaitReadContext): Promise<EventWaitObservationResult> {

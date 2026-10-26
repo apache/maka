@@ -232,6 +232,13 @@ export interface MakaSessionDriver {
    * authority leave goal UI hidden.
    */
   getGoal?(): GoalProjection | null;
+  getEventWaits?(): readonly import('@maka/runtime-host/protocol').SessionEventWaitProjection[];
+  queryEventWaits?(): Promise<
+    readonly import('@maka/runtime-host/protocol').SessionEventWaitProjection[]
+  >;
+  cancelSessionEventWait?(
+    input: import('@maka/runtime-host/protocol').SessionEventWaitCancelInput,
+  ): Promise<import('@maka/runtime-host/protocol').SessionEventWaitCancelResult>;
   /**
    * Fires when the session's goal projection changes — set, settled, paused,
    * resumed, cleared, or when the attached session changes.
@@ -239,10 +246,6 @@ export interface MakaSessionDriver {
   subscribeGoalChanges?(listener: (goal: GoalProjection | null) => void): () => void;
   /** Fires when the attached Session's committed Todo projection is invalidated. */
   subscribeTodoChanges?(listener: (sessionId: string) => void): () => void;
-  /** Cancels the specified wait and pauses its Goal without stopping the background task. */
-  cancelGoalEventWait?(
-    input: import('@maka/runtime-host/protocol').GoalEventWaitCancelInput,
-  ): Promise<import('@maka/runtime-host/protocol').GoalEventWaitCancelResult>;
   /**
    * Applies a goal control action (pause/resume/clear) with optimistic
    * revision retry, mirroring the desktop client. Resolves with the resulting

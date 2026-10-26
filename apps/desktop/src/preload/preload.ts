@@ -1248,11 +1248,21 @@ function subscribeSelectedRuntimeHostEvent<T extends readonly unknown[]>(
 
 const runtimeHost: MakaBridge['runtimeHost'] = {
   query(operation, input) {
-    return invokeActiveRuntimeHost('runtime-host:query', operation, input) as Promise<
-      OperationOutput<typeof operation>
-    >;
+    if (operation === 'session.event-waits.query') return (async () => {
+      const request = input as import('@maka/runtime-host/protocol').SessionEventWaitQueryInput;
+      const session = await runtimeHostSessionRef(request.sessionId);
+      const result = await invokeWhenReady('runtime-host:query', session.scope, operation, { ...request, sessionId: session.sessionId });
+      return projectProtocolSessionIds(session.scope.hostId, result);
+    })() as Promise<OperationOutput<typeof operation>>;
+    return invokeActiveRuntimeHost('runtime-host:query', operation, input) as Promise<OperationOutput<typeof operation>>;
   },
   command(operation, input, host) {
+    if (operation === 'session.event-wait.cancel') return (async () => {
+      const request = input as import('@maka/runtime-host/protocol').SessionEventWaitCancelInput;
+      const session = await runtimeHostSessionRef(request.sessionId);
+      const result = await invokeWhenReady('runtime-host:command', session.scope, operation, { ...request, sessionId: session.sessionId });
+      return projectProtocolSessionIds(session.scope.hostId, result);
+    })() as Promise<OperationOutput<typeof operation>>;
     return (host ? invokeSelectedRuntimeHost(host, 'runtime-host:command', operation, input) : invokeActiveRuntimeHost('runtime-host:command', operation, input)) as Promise<
       OperationOutput<typeof operation>
     >;
@@ -3257,17 +3267,6 @@ const makaBridge = {
     },
     arm(sessionId: string, goal: GoalArmRequest): Promise<GoalArmOutcome> {
       return invokeProjectedSessionRuntimeHost('goal:arm', sessionId, goal);
-    },
-    async cancelEventWait(input: import('@maka/runtime-host/protocol').GoalEventWaitCancelInput): Promise<import('@maka/runtime-host/protocol').GoalEventWaitCancelResult> {
-      const target = { ...input };
-      const session = await runtimeHostSessionRef(target.sessionId);
-      const result = await invokeWhenReady(
-        'goal:cancel-event-wait',
-        session.scope,
-        session.sessionId,
-        { ...target, sessionId: session.sessionId },
-      ) as import('@maka/runtime-host/protocol').GoalEventWaitCancelResult;
-      return projectProtocolSessionIds(session.scope.hostId, result);
     },
     clear(sessionId: string): Promise<void> {
       return invokeSessionRuntimeHost('goal:clear', sessionId);

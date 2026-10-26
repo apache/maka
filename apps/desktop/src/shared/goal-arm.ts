@@ -18,10 +18,9 @@
  */
 
 import type { GoalState } from '@maka/core/goal';
-import type { GoalEventWaitProjection } from '@maka/runtime-host/protocol';
 
 /** Desktop view only; wait presentation is not persisted into core GoalState. */
-export type DesktopGoal = GoalState & { readonly eventWait?: GoalEventWaitProjection | null };
+export type DesktopGoal = GoalState;
 
 /**
  * What the renderer sends to arm a Goal.

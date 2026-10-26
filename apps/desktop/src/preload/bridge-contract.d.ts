@@ -1610,7 +1610,6 @@ export interface MakaBridge {
   goal: {
     /** The session's current goal (null when none is set). */
     get(sessionId: string): Promise<import('../shared/goal-arm').DesktopGoal | null>;
-    cancelEventWait(input: import('@maka/runtime-host/protocol').GoalEventWaitCancelInput): Promise<import('@maka/runtime-host/protocol').GoalEventWaitCancelResult>;
     /**
      * Arm a goal for this session. It drives the session from the next turn
      * on; arming alone starts nothing. Rejects when the session already has an

@@ -706,7 +706,9 @@ test('coalesces typed domain invalidations without publishing continuity project
   coordinator.enqueueSessionDomainChanged(SESSION_ID, 'todo');
   coordinator.enqueueSessionDomainChanged(SESSION_ID, 'plan');
   coordinator.enqueueSessionDomainChanged(SESSION_ID, 'usage');
-  await waitFor(() => sink.frames.length === 3);
+  coordinator.enqueueSessionDomainChanged(SESSION_ID, 'event_wait');
+  coordinator.enqueueSessionDomainChanged(SESSION_ID, 'event_wait');
+  await waitFor(() => sink.frames.length === 4);
 
   assert.deepEqual(
     sink.frames.map((frame) =>
@@ -718,6 +720,7 @@ test('coalesces typed domain invalidations without publishing continuity project
       { kind: 'subscription.session_domain_changed', sequence: 1, domain: 'todo' },
       { kind: 'subscription.session_domain_changed', sequence: 2, domain: 'plan' },
       { kind: 'subscription.session_domain_changed', sequence: 3, domain: 'usage' },
+      { kind: 'subscription.session_domain_changed', sequence: 4, domain: 'event_wait' },
     ],
   );
   coordinator.close();

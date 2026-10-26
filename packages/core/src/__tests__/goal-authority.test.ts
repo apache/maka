@@ -29,6 +29,7 @@ test('Goal authority decoder rejects cross-authority execution state', () => {
 
   for (const candidate of [
     { ...valid, extra: true },
+    { ...valid, activeEventWait: { waitId: 'removed-yield-gate' } },
     {
       ...valid,
       currentExecution: {
@@ -72,6 +73,69 @@ test('Goal authority decoder normalizes pre-outbox records', () => {
   assert.equal(decodeGoalAuthorityRecord(withoutOutbox).pendingContinuation, null);
 });
 
+test('Goal authority rejects removed yielded continuation fields', () => {
+  const base = goalAuthorityRecord();
+  assert.throws(
+    () =>
+      decodeGoalAuthorityRecord({
+        ...base,
+        currentExecution: null,
+        pendingContinuation: {
+          checkpoint: { goalId: base.goal.id, revision: base.goal.revision },
+          controlLease: base.controlLease,
+          prompt: 'continue',
+          eventWait: {},
+        },
+      }),
+    TypeError,
+  );
+});
+
+test('natural observation preparation is durable only with its original pending observation', () => {
+  const base = goalAuthorityRecord();
+  const pending = {
+    checkpoint: { goalId: base.goal.id, revision: base.goal.revision },
+    controlLease: base.controlLease,
+    prompt: 'Wait for an external fact',
+    triggeringTurnId: 'turn_1',
+    observation: {
+      waitId: 'wait_1',
+      sourceRunId: 'run_1',
+      completionEventId: 'completed_1',
+      resource: {
+        providerId: 'test',
+        connectionId: null,
+        resourceType: 'job',
+        resourceId: 'job_1',
+      },
+      condition: { typeId: 'done', version: 1, parameters: {} },
+      deadlineAt: null,
+    },
+    observationPreparation: 'pending',
+  };
+  const record = { ...base, currentExecution: null, pendingContinuation: pending };
+  assert.equal(
+    decodeGoalAuthorityRecord(record).pendingContinuation?.observationPreparation,
+    'pending',
+  );
+  assert.throws(
+    () =>
+      decodeGoalAuthorityRecord({
+        ...record,
+        pendingContinuation: { ...pending, observation: undefined },
+      }),
+    TypeError,
+  );
+  assert.throws(
+    () =>
+      decodeGoalAuthorityRecord({
+        ...record,
+        pendingContinuation: { ...pending, observationPreparation: 'ready' },
+      }),
+    TypeError,
+  );
+});
+
 function goalAuthorityRecord(): GoalAuthorityRecord {
   const goalId = 'goal_1';
   const sessionId = 'session_1';
@@ -102,3 +166,26 @@ function goalAuthorityRecord(): GoalAuthorityRecord {
     pendingContinuation: null,
   };
 }
+
+test('retired wait settlement belongs only to the paused original Goal Turn', () => {
+  const base = goalAuthorityRecord();
+  const record = {
+    ...base,
+    goal: { ...base.goal, status: 'paused', pausedAt: 5 },
+    legacyEventWaitSettlement: base.currentExecution!.execution,
+  };
+  assert.deepEqual(decodeGoalAuthorityRecord(record), record);
+  for (const invalid of [
+    { ...record, goal: { ...record.goal, status: 'active' } },
+    { ...record, currentExecution: null },
+    {
+      ...record,
+      legacyEventWaitSettlement: { ...record.legacyEventWaitSettlement, turnId: 'other' },
+    },
+    {
+      ...record,
+      legacyEventWaitSettlement: { ...record.legacyEventWaitSettlement, sessionId: 'other' },
+    },
+  ])
+    assert.throws(() => decodeGoalAuthorityRecord(invalid));
+});

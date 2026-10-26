@@ -26,7 +26,7 @@ import type { ModelCallAttempt } from '@maka/core/model-call-attempt';
 import type { ModelCallCommit } from '@maka/core/agent-run';
 import type { PermissionMode } from '@maka/core/permission';
 import { resolveCollaborationPermissionMode } from '@maka/core/collaboration';
-import { AiSdkBackend } from '@maka/runtime/ai-sdk-backend';
+import { AiSdkBackend, type AiSdkBackendInput } from '@maka/runtime/ai-sdk-backend';
 import {
   buildDefaultContextBudgetPolicy,
   resolveSelectedModelContextWindow,
@@ -319,8 +319,8 @@ async function buildHostAiSdkBackend(
   };
   const recordRunComposition = input.context.recordRunComposition;
   const recordRequestComposition = input.context.recordRequestComposition;
-  const resolveModelTools = (): readonly MakaTool[] =>
-    modelComposition.resolveTools?.() ?? modelComposition.tools;
+  const resolveModelTools: NonNullable<AiSdkBackendInput['resolveTools']> = (identity) =>
+    modelComposition.resolveTools?.(identity) ?? modelComposition.tools;
   // RunComposition remains the immutable C0 baseline. Dynamic Tool changes
   // belong exclusively to RequestComposition epochs, so never re-sample them
   // while committing the baseline immediately before provider dispatch.
@@ -397,7 +397,7 @@ async function buildHostAiSdkBackend(
         apiKey,
         modelId: target.model,
         modelFactory,
-        tools: [...resolveModelTools()],
+        tools: [...initialModelTools],
         resolveTools: resolveModelTools,
         toolAvailability: modelComposition.toolAvailability,
         ...(modelComposition.planTraceContext

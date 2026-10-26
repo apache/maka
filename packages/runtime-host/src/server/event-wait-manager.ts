@@ -19,25 +19,22 @@
 
 import { randomUUID } from 'node:crypto';
 import {
-  decodeEventWaitRecord,
-  decodeObservedEventWaitRecord,
+  decodeAnyEventWaitRecord,
   EVENT_WAIT_LIMITS,
-  type ObservedEventWaitRecord as EventWaitRecord,
-  type EventWaitRecord as GoalEventWaitRecord,
+  type AnyEventWaitRecord as EventWaitRecord,
   type EventWaitObservation,
+  type ConsumerEventWaitObservation,
 } from '@maka/core/event-wait';
 import {
-  authenticateInteractiveEventWaitAuthorityWriter,
   EVENT_WAIT_OBSERVATION_HINT_LIMIT,
   EVENT_WAIT_PAGE_LIMIT,
   eventWaitSourceKey,
   type ExtendEventWaitSourceCooldownInput,
-  type InteractiveEventWaitAuthorityWriter,
   type ReadEventWaitInput,
 } from '@maka/storage/event-wait-authority';
 import type {
   EventWaitObservationStore,
-  ObservationWaitSnapshot as EventWaitSnapshot,
+  ObservationWaitSnapshot,
 } from './event-wait-observation-store.js';
 import { StorageRootAuthorityError } from '@maka/storage/root-authority';
 import {
@@ -47,6 +44,8 @@ import {
   type EventWaitSourceAdapter,
   type EventWaitSubscription,
 } from './event-wait-adapter.js';
+
+type EventWaitSnapshot = ObservationWaitSnapshot<EventWaitRecord>;
 
 export interface EventWaitClock {
   now(): number;
@@ -108,7 +107,7 @@ export const DEFAULT_EVENT_WAIT_OBSERVATION_POLICY: EventWaitObservationPolicy =
 export interface HostEventWaitObserverOptions {
   /** Semantic projection hint only; pending polling does not broadcast activity. */
   readonly onChanged?: (wait: EventWaitRecord) => void;
-  readonly store: EventWaitObservationStore;
+  readonly store: EventWaitObservationStore<EventWaitRecord>;
   readonly decodeRecord?: (value: unknown) => EventWaitRecord;
   readonly adapters: EventWaitAdapterRegistry;
   /** Trusted composition must check current Session/Goal identity and source access. */
@@ -123,6 +122,7 @@ export interface HostEventWaitObserverOptions {
   readonly onError: (error: unknown) => void;
 }
 type Flight = {
+  readonly readTimeoutMs: number;
   readonly controller: AbortController;
   readonly source: string;
   readonly sessionId: string;
@@ -160,6 +160,7 @@ const identity = (r: EventWaitRecord): ReadEventWaitInput => ({
   sessionId: r.sessionId,
   waitId: r.waitId,
 });
+const deadlineOf = (r: EventWaitRecord): number => r.deadlineAt ?? Number.MAX_SAFE_INTEGER;
 const sourceKey = (r: EventWaitRecord): string =>
   JSON.stringify([r.resource.providerId, r.resource.connectionId]);
 const addTime = (now: number, delay: number): number =>
@@ -172,7 +173,7 @@ const addTime = (now: number, delay: number): number =>
  * traversal by immutable ID, so neither failed writes nor cache capacity can pin selection.
  */
 export class HostEventWaitObserver {
-  readonly #store: EventWaitObservationStore;
+  readonly #store: EventWaitObservationStore<EventWaitRecord>;
   readonly #options: HostEventWaitObserverOptions;
   readonly #clock: EventWaitClock;
   readonly #policy: EventWaitObservationPolicy;
@@ -230,13 +231,16 @@ export class HostEventWaitObserver {
   }
 
   #decode(value: unknown): EventWaitRecord {
-    return (this.#options.decodeRecord ?? decodeObservedEventWaitRecord)(value);
+    return (this.#options.decodeRecord ?? decodeAnyEventWaitRecord)(value);
   }
 
-  /** Validates the supported template only; PR3 owns registration authorization and yield. */
+  /** Validate source templates; neutral v1 observations have a bounded lifetime. */
   validate(wait: EventWaitRecord): void {
     const record = this.#decode(wait);
-    if (record.deadlineAt - record.createdAt > this.#policy.maxLifetimeMs)
+    if (
+      record.schemaVersion === 1 &&
+      record.deadlineAt - record.createdAt > this.#policy.maxLifetimeMs
+    )
       throw new TypeError('Event wait exceeds maximum lifetime');
     this.#options.adapters.validate(record);
   }
@@ -246,6 +250,7 @@ export class HostEventWaitObserver {
     wait: EventWaitRecord,
     parent: AbortSignal,
     authorize: HostEventWaitObserverOptions['authorize'],
+    onTimeout?: () => Exclude<EventWaitObservationAccess, { kind: 'allowed' }>,
   ): Promise<EventWaitObservationAccess> {
     const unknown = { kind: 'unknown' as const, reason: 'authorization_unavailable' };
     const source = sourceKey(wait);
@@ -260,6 +265,7 @@ export class HostEventWaitObserver {
     )
       return unknown;
     const flight: Flight = {
+      readTimeoutMs: this.#options.adapters.get(wait)?.readTimeoutMs ?? this.#policy.readTimeoutMs,
       controller: new AbortController(),
       source,
       sessionId: wait.sessionId,
@@ -283,16 +289,38 @@ export class HostEventWaitObserver {
         Math.max(cooldown ?? 0, this.#sourceCooldown(source)) > this.#clock.now()
       )
         return unknown;
+      let started = false;
       try {
         // Expired waits still need delivery authorization, so the source deadline
         // does not bound this separate request. #call retains the request timeout.
         return (
-          (await this.#tryAuthorize(wait, flight, Number.MAX_SAFE_INTEGER, authorize))?.access ??
-          unknown
+          (
+            await this.#tryAuthorize(wait, flight, Number.MAX_SAFE_INTEGER, (record, signal) => {
+              started = true;
+              return authorize(record, signal);
+            })
+          )?.access ?? unknown
         );
       } catch (error) {
         if (error instanceof SourceCooldownWriteError || error instanceof StorageRootAuthorityError)
           throw error;
+        if (
+          error instanceof ObservationTimeout &&
+          started &&
+          onTimeout &&
+          !this.#closed &&
+          !parent.aborted
+        ) {
+          const access = onTimeout();
+          if (access.kind !== 'unknown' && access.kind !== 'revoked')
+            throw new TypeError('Timeout cannot authorize access');
+          this.#validateAccess(access);
+          if (access.kind === 'unknown') {
+            this.#validateResult(access, wait);
+            await this.#recordSourceCooldown(wait, access);
+          }
+          return access;
+        }
         return unknown;
       }
     })();
@@ -401,7 +429,7 @@ export class HostEventWaitObserver {
     });
     for (const snapshot of page.items) {
       if (this.#closed) return;
-      if (this.#clock.now() >= snapshot.record.deadlineAt) {
+      if (this.#clock.now() >= deadlineOf(snapshot.record)) {
         try {
           await this.#expire(snapshot);
         } catch (error) {
@@ -477,7 +505,7 @@ export class HostEventWaitObserver {
       seenWaitIds.add(snapshot.record.waitId);
       const r = snapshot.record;
       const dispatchAt = this.#clock.now();
-      if (dispatchAt >= r.deadlineAt) {
+      if (dispatchAt >= deadlineOf(r)) {
         try {
           await this.#expire(snapshot);
         } catch (error) {
@@ -502,6 +530,7 @@ export class HostEventWaitObserver {
         continue;
       // Reserve capacity before asynchronous setup; rate limits apply at read dispatch.
       const flight: Flight = {
+        readTimeoutMs: this.#options.adapters.get(r)?.readTimeoutMs ?? this.#policy.readTimeoutMs,
         controller: new AbortController(),
         source,
         sessionId: r.sessionId,
@@ -536,7 +565,7 @@ export class HostEventWaitObserver {
       return;
     }
     const previous = r.observation;
-    if ((previous?.attempts ?? 0) >= this.#policy.maxAttempts) {
+    if (r.schemaVersion === 1 && (previous?.attempts ?? 0) >= this.#policy.maxAttempts) {
       const finished = await this.#finish(
         snapshot,
         { kind: 'source_unavailable', receiptKey: `${r.deliveryKey}/budget`, evidenceRefs: [] },
@@ -561,24 +590,32 @@ export class HostEventWaitObserver {
       return;
     }
     const now = Math.max(r.updatedAt, this.#clock.now());
-    if (now >= r.deadlineAt) {
+    if (now >= deadlineOf(r)) {
       await this.#expire(snapshot);
       return;
     }
-    const reserved: EventWaitObservation = {
-      schemaVersion: 1,
-      attempts: (previous?.attempts ?? 0) + 1,
+    const rolls =
+      r.schemaVersion === 2 && previous?.attempts === EVENT_WAIT_LIMITS.observationAttempts;
+    const reserved: EventWaitObservation | ConsumerEventWaitObservation = {
+      ...(r.schemaVersion === 2
+        ? { schemaVersion: 2 as const, window: (r.observation?.window ?? 0) + (rolls ? 1 : 0) }
+        : { schemaVersion: 1 as const }),
+      attempts: rolls ? 1 : (previous?.attempts ?? 0) + 1,
       lastAttemptAt: now,
       lastObservedAt: previous?.lastObservedAt ?? null,
       nextObserveAt: Math.min(
-        r.deadlineAt,
-        addTime(now, Math.max(this.#policy.readTimeoutMs, this.#policy.minIntervalMs)),
+        deadlineOf(r),
+        addTime(now, Math.max(flight.readTimeoutMs, this.#policy.minIntervalMs)),
       ),
       nextPollAt: Math.min(
-        r.deadlineAt,
-        addTime(now, Math.max(this.#policy.readTimeoutMs, this.#policy.minIntervalMs)),
+        deadlineOf(r),
+        addTime(now, Math.max(flight.readTimeoutMs, this.#policy.minIntervalMs)),
       ),
-      consecutiveErrors: previous?.consecutiveErrors ?? 0,
+      // The bounded counter also preserves the last unknown during checking.
+      // Rolling may shrink its count, but cannot turn that observation into pending.
+      consecutiveErrors: rolls
+        ? Math.min(1, previous.consecutiveErrors)
+        : (previous?.consecutiveErrors ?? 0),
       outcome: 'checking',
       cursor: previous?.cursor ?? null,
       eventKey: previous?.eventKey ?? null,
@@ -586,7 +623,10 @@ export class HostEventWaitObserver {
       // diagnostic while this reservation's source request is in flight.
       reason: previous?.reason ?? null,
     };
-    const claim = await this.#commit(snapshot, { ...r, updatedAt: now, observation: reserved });
+    const claim = await this.#commit(
+      snapshot,
+      this.#decode({ ...r, updatedAt: now, observation: reserved }),
+    );
     if (this.#closed || flight.controller.signal.aborted) return;
     if (!claim) {
       // Conflict responses also need progress if a backend keeps returning the same
@@ -686,7 +726,7 @@ export class HostEventWaitObserver {
       // or extend Retry-After during any earlier await, including the source read.
       // Intentional throttling stays outside the request timeout and attempt budget.
       if (flight.retryAfterUntil > this.#clock.now())
-        await this.#waitForCooldown(flight, Math.min(flight.retryAfterUntil, r.deadlineAt));
+        await this.#waitForCooldown(flight, Math.min(flight.retryAfterUntil, deadlineOf(r)));
       const checked = await this.#tryAuthorize(r, flight);
       if (checked) return checked.access;
     }
@@ -696,7 +736,7 @@ export class HostEventWaitObserver {
   async #tryAuthorize(
     r: EventWaitRecord,
     flight: Flight,
-    deadline = r.deadlineAt,
+    deadline = deadlineOf(r),
     authorize = this.#options.authorize,
   ): Promise<{ access: EventWaitObservationAccess } | null> {
     const recordCooldown = async (checked: { access: EventWaitObservationAccess } | null) => {
@@ -736,11 +776,11 @@ export class HostEventWaitObserver {
     for (;;) {
       if (this.#closed || flight.controller.signal.aborted)
         throw new Error('Observation cancelled');
-      if (this.#clock.now() >= r.deadlineAt)
+      if (this.#clock.now() >= deadlineOf(r))
         throw new ObservationTimeout('Observation deadline reached');
       const preparing = this.#dispatching.get(flight.source);
       if (preparing) {
-        await this.#waitForPreparation(flight, r.deadlineAt, preparing);
+        await this.#waitForPreparation(flight, deadlineOf(r), preparing);
         continue;
       }
       const preparation: DispatchPreparation = { waiters: new Set() };
@@ -772,7 +812,7 @@ export class HostEventWaitObserver {
         });
         if (this.#closed || flight.controller.signal.aborted)
           throw new Error('Observation cancelled');
-        if (this.#clock.now() >= r.deadlineAt)
+        if (this.#clock.now() >= deadlineOf(r))
           throw new ObservationTimeout('Observation deadline reached');
         const until = Math.max(
           persisted ?? 0,
@@ -781,14 +821,14 @@ export class HostEventWaitObserver {
         );
         if (until > this.#clock.now()) {
           unlock();
-          await this.#waitForCooldown(flight, Math.min(until, r.deadlineAt));
+          await this.#waitForCooldown(flight, Math.min(until, deadlineOf(r)));
           continue;
         }
         const now = this.#clock.now();
         // Persist a bounded preparation window before any source request. It survives
         // a crash before actual dispatch timing is committed, without permanently
         // extending the ordinary minimum interval after a successful dispatch.
-        const dispatchBy = addTime(now, this.#policy.readTimeoutMs);
+        const dispatchBy = addTime(now, flight.readTimeoutMs);
         reserved = await this.#reserveDispatch(
           r,
           token,
@@ -804,10 +844,10 @@ export class HostEventWaitObserver {
         if (access.kind !== 'allowed') return { access };
         const read = await this.#call(
           flight,
-          r.deadlineAt,
+          deadlineOf(r),
           (signal) => {
             const at = this.#clock.now();
-            if (at > dispatchBy || at >= r.deadlineAt)
+            if (at > dispatchBy || at >= deadlineOf(r))
               throw new ObservationTimeout('Dispatch reservation elapsed');
             if (at < flight.cooldownUntil || at < this.#sourceCooldown(flight.source))
               return Promise.resolve(null);
@@ -971,7 +1011,9 @@ export class HostEventWaitObserver {
     // Registration and delivery authorization may have no observation checkpoint.
     // Validate the prospective fields without writing an attempt or changing the wait.
     const observation = r.observation ?? {
-      schemaVersion: 1,
+      ...(r.schemaVersion === 2
+        ? { schemaVersion: 2 as const, window: 0 }
+        : { schemaVersion: 1 as const }),
       attempts: 1,
       lastAttemptAt: now,
       lastObservedAt: now,
@@ -992,7 +1034,7 @@ export class HostEventWaitObserver {
         lastObservedAt: now,
         cursor: result.cursor ?? observation.cursor,
         eventKey: result.eventKey ?? observation.eventKey,
-        reason: result.kind === 'unknown' ? result.reason : null,
+        reason: result.reason ?? null,
       },
       ...(result.kind === 'pending' || result.kind === 'unknown'
         ? {}
@@ -1079,27 +1121,26 @@ export class HostEventWaitObserver {
     // Source reads and authorization already recorded their shared facts. Finishing
     // this wait must neither discard those facts nor restart their absolute cooldown.
     const now = Math.max(r.updatedAt, this.#clock.now());
-    if (now >= r.deadlineAt) {
+    if (now >= deadlineOf(r)) {
       await this.#expire(snapshot);
       return null;
     }
     const previous = r.observation;
     let observation = previous;
     if (previous) {
-      const errors = result.kind === 'unknown' ? previous.consecutiveErrors + 1 : 0;
+      const errors =
+        result.kind === 'unknown' ? Math.min(previous.attempts, previous.consecutiveErrors + 1) : 0;
+      const interval = this.#options.adapters.get(r)?.pollIntervalMs ?? this.#policy.pollIntervalMs;
       const backoff =
         result.kind === 'unknown'
-          ? Math.min(
-              this.#policy.maxBackoffMs,
-              this.#policy.pollIntervalMs * 2 ** Math.min(errors - 1, 20),
-            )
-          : this.#policy.pollIntervalMs;
+          ? Math.min(this.#policy.maxBackoffMs, interval * 2 ** Math.min(errors - 1, 20))
+          : interval;
       const random = this.#options.random?.() ?? Math.random();
       if (!Number.isFinite(random) || random < 0 || random > 1)
         throw new TypeError('Invalid wait randomness');
       const delay = Math.ceil(backoff * (1 + this.#policy.jitterRatio * random));
       const nextObserveAt = Math.min(
-        r.deadlineAt,
+        deadlineOf(r),
         Math.max(
           options.retryAfterUntil ?? 0,
           addTime(
@@ -1114,17 +1155,17 @@ export class HostEventWaitObserver {
         ...previous,
         lastObservedAt: now,
         nextObserveAt,
-        nextPollAt: Math.min(r.deadlineAt, Math.max(nextObserveAt, addTime(now, delay))),
+        nextPollAt: Math.min(deadlineOf(r), Math.max(nextObserveAt, addTime(now, delay))),
         consecutiveErrors: errors,
         outcome: result.kind,
         // Failed reads never advance a replay checkpoint.
         cursor: result.kind === 'unknown' ? previous.cursor : (result.cursor ?? previous.cursor),
         eventKey:
           result.kind === 'unknown' ? previous.eventKey : (result.eventKey ?? previous.eventKey),
-        reason: result.kind === 'unknown' ? result.reason : (options.reason ?? null),
+        reason: result.reason ?? options.reason ?? null,
       };
     }
-    let record: EventWaitRecord = { ...r, updatedAt: now, ...(observation ? { observation } : {}) };
+    let record = this.#decode({ ...r, updatedAt: now, ...(observation ? { observation } : {}) });
     if (result.kind !== 'pending' && result.kind !== 'unknown') {
       record = {
         ...record,
@@ -1163,7 +1204,7 @@ export class HostEventWaitObserver {
     };
     this.#subscriptions.set(r.waitId, subscription);
     try {
-      const subscribed = await this.#call(flight, r.deadlineAt, async (signal) => {
+      const subscribed = await this.#call(flight, deadlineOf(r), async (signal) => {
         // Check at the side-effect boundary too: #call dispatches in a microtask.
         if (flight.retryAfterUntil > this.#clock.now()) return false;
         const abort = () => subscription.controller.abort();
@@ -1245,7 +1286,7 @@ export class HostEventWaitObserver {
     flight.controller.signal.addEventListener('abort', abort, { once: true });
     const cancelTimer = this.#clock.schedule(
       () => interrupt(new ObservationTimeout('Observation timed out', () => !settled)),
-      Math.max(0, Math.min(this.#policy.readTimeoutMs, deadline - this.#clock.now())),
+      Math.max(0, Math.min(flight.readTimeoutMs, deadline - this.#clock.now())),
     );
     void task
       .then(
@@ -1320,7 +1361,7 @@ export class HostEventWaitObserver {
     if (this.#closed || snapshot.record.status !== 'waiting') return;
     const r = snapshot.record;
     const now = Math.max(r.updatedAt, this.#clock.now());
-    if (now < r.deadlineAt) return;
+    if (r.deadlineAt === null || now < deadlineOf(r)) return;
     // The immutable deadline already forbids more observation, even if recording
     // expiry fails or its acknowledgement is lost. The store still owns the status.
     this.#stopObservation(identity(r));
@@ -1332,12 +1373,16 @@ export class HostEventWaitObserver {
     });
   }
 
-  /** Trusted internal control entry point; PR3 is responsible for authenticating the caller. */
+  /** Trusted internal control entry point; the consumer authenticates the caller. */
   async cancel(input: ReadEventWaitInput, reason: string): Promise<void> {
     if (this.#closed) throw new Error('Event wait manager is closed');
     for (let attempt = 0; attempt < 4 && !this.#closed; attempt++) {
       const snapshot = await this.#store.read(input);
-      if (!snapshot || ['cancelled', 'expired'].includes(snapshot.record.status)) {
+      if (
+        !snapshot ||
+        snapshot.record.delivery ||
+        ['cancelled', 'expired'].includes(snapshot.record.status)
+      ) {
         this.#stopObservation(input);
         return;
       }
@@ -1444,14 +1489,20 @@ export class HostEventWaitObserver {
     }
   }
 
-  close(): Promise<void> {
-    if (this.#close) return this.#close;
+  /** Stop observation synchronously while final close still owns cleanup waits. */
+  beginDrain(): void {
+    if (this.#closed) return;
     this.#closed = true;
     this.#timer?.();
     this.#timer = undefined;
     for (const flight of this.#flights.values()) flight.controller.abort();
     for (const flight of this.#accessFlights) flight.controller.abort();
     for (const waitId of this.#subscriptions.keys()) this.#detach(waitId);
+  }
+
+  close(): Promise<void> {
+    if (this.#close) return this.#close;
+    this.beginDrain();
     this.#close = (async () => {
       let cancelTimer: (() => void) | undefined;
       try {
@@ -1472,46 +1523,5 @@ export class HostEventWaitObserver {
       }
     })();
     return this.#close;
-  }
-}
-
-/** Existing Goal entry point retains authenticated storage and strict Goal record validation. */
-export interface HostEventWaitManagerOptions
-  extends Omit<HostEventWaitObserverOptions, 'store' | 'decodeRecord' | 'authorize' | 'onChanged'> {
-  readonly store: InteractiveEventWaitAuthorityWriter;
-  readonly onChanged?: (wait: GoalEventWaitRecord) => void;
-  readonly authorize: (
-    wait: GoalEventWaitRecord,
-    signal: AbortSignal,
-  ) => Promise<EventWaitObservationAccess>;
-}
-export class HostEventWaitManager extends HostEventWaitObserver {
-  override checkSourceAccess(
-    wait: GoalEventWaitRecord,
-    signal: AbortSignal,
-    authorize: HostEventWaitManagerOptions['authorize'],
-  ): Promise<EventWaitObservationAccess> {
-    return super.checkSourceAccess(wait, signal, (record, signal) =>
-      authorize(decodeEventWaitRecord(record), signal),
-    );
-  }
-  constructor(options: HostEventWaitManagerOptions) {
-    const store = authenticateInteractiveEventWaitAuthorityWriter(options.store);
-    super({
-      ...options,
-      decodeRecord: decodeEventWaitRecord,
-      authorize: (wait, signal) => options.authorize(decodeEventWaitRecord(wait), signal),
-      onChanged: (wait) => options.onChanged?.(decodeEventWaitRecord(wait)),
-      store: {
-        read: (input) => store.read(input),
-        listByStatus: (input) => store.listByStatus(input),
-        listForObservation: (input) => store.listForObservation(input),
-        readSourceCooldown: (input) => store.readSourceCooldown(input),
-        extendSourceCooldown: (input) => store.extendSourceCooldown(input),
-        reserveSourceDispatch: (input) => store.reserveSourceDispatch(input),
-        completeSourceDispatch: (input) => store.completeSourceDispatch(input),
-        commit: (input) => store.commit({ ...input, record: decodeEventWaitRecord(input.record) }),
-      },
-    });
   }
 }

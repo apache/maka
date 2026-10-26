@@ -89,6 +89,9 @@ const PERSISTED_GRANT_MIGRATIONS: ReadonlyMap<string, PersistedGrantMigration> =
   // authorize actFromTurn, which requires the active coordination Turn.
   ['workhub.coordination.act', { kind: 'release' }],
   ['workhub.coordination.record', { kind: 'release' }],
+  // Retired with PR3 Goal-yield waits. This grant does not authorize the broader
+  // Session wait query or cancellation of active tool-invocation waits.
+  ['goal.event-wait.cancel', { kind: 'release' }],
 ]);
 
 export const ACCESS_FILE_NAME = 'runtime-host-access.json';

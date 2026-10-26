@@ -77,6 +77,7 @@ export * from './client-capability.js';
 export * from './configuration-change.js';
 export * from './connection-catalog-change.js';
 export * from './goal.js';
+export * from './event-wait.js';
 export * from './hosted-execution.js';
 export * from './host-resources.js';
 export * from './plan.js';
@@ -108,10 +109,20 @@ export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
 // Re-check against main before merging; sibling PRs may use the same next epoch.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 232 as const;
-// 232: Assistant cards and durable single-choice reply/status operations.
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 237 as const;
+// 237: Assistant cards and durable single-choice reply/status operations.
 // Older peers cannot display cards or submit and synchronize their choices safely.
-// 231: Assistant character packs, appearance onboarding and desktop pet capabilities.
+// 236: Goal event wait consumers include the assistant character and pet operations from main.
+// 235: Goal event wait consumers include the quick-discovery operations from main.
+// 233: Goal event wait consumers include the Session check-in operations from main.
+// 232: event_wait domain invalidations refresh paginated Session wait collections,
+// including changes beyond the first continuity page and durable consumption.
+// 231: Session wait projections identify each live tool or naturally completed Goal consumer;
+// cancellation targets exact consumer identity. The PR3 Goal wait projection, cancellation
+// operation and yielded-continuation provenance are removed.
+// The superseded computer-observation prototype frames are also removed.
+// Older strict peers cannot decode the current fields and operations.
+// 231 (main): Assistant character packs, appearance onboarding and desktop pet capabilities.
 // 230: Separate quick-discovery control/status operations for the personal assistant.
 // 229: Session check-in proposes cards for unfinished work across Sessions.
 // 228: Executor catalog queries support per-agent filtering and process-free inventory.
@@ -926,8 +937,4 @@ function requireReplacement(value: unknown): HostIncompatible['replacement'] {
   throw invalidProtocolFrame('Invalid replacement disposition');
 }
 
-export type {
-  GoalEventWaitProjection,
-  GoalEventWaitCancelInput,
-  GoalEventWaitCancelResult,
-} from './goal.js';
+export type {} from './goal.js';

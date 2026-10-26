@@ -25,7 +25,9 @@ import { test, type TestContext } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 import {
   EVENT_WAIT_LIMITS,
+  decodeEventWaitRecord,
   eventWaitDeliveryKey,
+  type AnyEventWaitRecord,
   type EventWaitRecord,
 } from '@maka/core/event-wait';
 import { openInteractiveExecutionStoresForWrite } from '@maka/storage/execution-stores';
@@ -45,9 +47,9 @@ import {
   type EventWaitReadContext,
 } from '../server/event-wait-adapter.js';
 import {
-  HostEventWaitManager,
+  HostEventWaitObserver,
   type EventWaitClock,
-  type HostEventWaitManagerOptions,
+  type HostEventWaitObserverOptions,
 } from '../server/event-wait-manager.js';
 
 async function settle() {
@@ -138,7 +140,7 @@ class Source implements EventWaitSourceAdapter {
   behavior: (input: EventWaitReadContext) => Promise<EventWaitObservationResult> = async () => ({
     kind: 'pending',
   });
-  validate(wait: import('@maka/core/event-wait').ObservedEventWaitRecord) {
+  validate(wait: import('@maka/core/event-wait').AnyEventWaitRecord) {
     if (wait.condition.parameters.invalid) throw new Error('Invalid parameters');
   }
   async read(input: EventWaitReadContext) {
@@ -188,7 +190,7 @@ async function fixture(
   let stores = await openInteractiveExecutionStoresForWrite(owner.lease, provider);
   const clock = new Clock();
   const errors: unknown[] = [];
-  const managers: HostEventWaitManager[] = [];
+  const managers: HostEventWaitObserver[] = [];
   t.after(async () => {
     for (const manager of managers) await manager.close();
     await stores.sessionStore.close?.();
@@ -227,7 +229,7 @@ async function fixture(
         schemaVersion: 1,
         waitId,
         sessionId: session.id,
-        goalControlLease: { goalId: 'goal-1', generation: 0 },
+
         sourceTurnId: 'turn-1',
         sourceToolCallId: 'call-1',
         resource: {
@@ -252,9 +254,10 @@ async function fixture(
       });
       return record;
     },
-    manager(source: EventWaitSourceAdapter, overrides: Partial<HostEventWaitManagerOptions> = {}) {
-      const manager = new HostEventWaitManager({
+    manager(source: EventWaitSourceAdapter, overrides: Partial<HostEventWaitObserverOptions> = {}) {
+      const manager = new HostEventWaitObserver({
         store: stores.eventWaitStore,
+        decodeRecord: decodeEventWaitRecord,
         adapters: new EventWaitAdapterRegistry([source]),
         clock,
         policy,
@@ -314,7 +317,10 @@ for (const backend of ['Local', 'Memory'] as const) {
       (await f.stores.eventWaitStore.listByStatus({ status: 'expired', limit: 10 })).items.length,
       1,
     );
-    assert.equal((await f.stores.eventWaitStore.listPending({ limit: 10 })).items.length, 0);
+    assert.equal(
+      (await f.stores.eventWaitStore.listByStatus({ status: 'waiting', limit: 10 })).items.length,
+      0,
+    );
     assert.equal(source.callbacks.size, 0);
     assert.deepEqual(f.errors, []);
   });
@@ -1425,6 +1431,33 @@ test('close aborts source work, discards late results and cleans a late subscrip
   assert.deepEqual(f.errors, []);
 });
 
+for (const backend of ['Local', 'Memory'] as const)
+  test(`${backend}: drain stops source work and subscriptions before final close`, async (t) => {
+    const f = await fixture(t, backend);
+    const wait = await f.wait();
+    const source = new Source();
+    const result = deferred<EventWaitObservationResult>();
+    source.behavior = () => result.promise;
+    const manager = f.manager(source);
+    await manager.start();
+    await eventually(() => source.calls.length === 1);
+    assert.equal(source.callbacks.size, 1);
+    manager.beginDrain();
+    assert.equal(source.calls[0]!.signal.aborted, true);
+    assert.equal(source.callbacks.size, 0);
+    assert.equal(source.closes, 1);
+    manager.beginDrain();
+    assert.equal(source.closes, 1, 'repeated drain is idempotent');
+    await manager.reconcile();
+    result.resolve(satisfied('late-after-drain'));
+    await manager.close();
+    assert.equal(source.calls.length, 1);
+    assert.equal((await f.read(wait))?.status, 'waiting');
+    assert.equal(f.clock.timers.size, 0);
+    await assert.rejects(manager.start(), /closed/);
+    assert.deepEqual(f.errors, []);
+  });
+
 test('bounded pages, subscription capacity and source lanes eventually observe every wait', async (t) => {
   const f = await fixture(t);
   const waits = await Promise.all(Array.from({ length: 6 }, (_, n) => f.wait(`wait-${n}`)));
@@ -2483,7 +2516,7 @@ for (const backend of ['Local', 'Memory'] as const) {
       retryAfterMs: 500,
     });
     const checks: { waitId: string; at: number }[] = [];
-    const authorize = async (wait: EventWaitRecord): Promise<EventWaitObservationAccess> => {
+    const authorize = async (wait: AnyEventWaitRecord): Promise<EventWaitObservationAccess> => {
       checks.push({ waitId: wait.waitId, at: f.clock.now() });
       return { kind: 'allowed', context: null };
     };
@@ -4963,7 +4996,7 @@ for (const backend of ['Local', 'Memory'] as const) {
     const f = await fixture(t, backend);
     const r = await f.wait('wait-1', { deadlineAt: 10_000 });
     const source = new Source();
-    const hints: EventWaitRecord[] = [];
+    const hints: AnyEventWaitRecord[] = [];
     let now = f.clock.now();
     const manager = f.manager(source, {
       clock: { now: () => now, schedule: () => () => {} },

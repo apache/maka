@@ -28,7 +28,6 @@ import {
   ShellRunEventWaitAccess,
   validateShellRunWait,
 } from '../server/shell-run-event-wait-access.js';
-import { eventWaitContinuationPrompt } from '../server/goal-event-waits.js';
 import { ShellRunEventWaitAdapter } from '../server/shell-run-event-wait-adapter.js';
 
 function fixture() {
@@ -58,7 +57,7 @@ function fixture() {
     schemaVersion: 1,
     sessionId: 'session',
     waitId: 'wait',
-    goalControlLease: { goalId: 'goal', generation: 1 },
+
     sourceTurnId: 'later-turn',
     sourceToolCallId: 'wait-call',
     resource: {
@@ -281,25 +280,4 @@ test('missing is revoked, transient reads throw for manager unknown handling, an
     kind: 'revoked',
     reason: 'shell_run_access_revoked',
   });
-});
-
-test('continuation context stays bounded after JSON escaping without losing normal references', () => {
-  const f = fixture();
-  const normal = eventWaitContinuationPrompt(
-    { ...f.wait, status: 'expired', expiredAt: 10000 },
-    'Inspect task output',
-  );
-  assert.ok(normal.includes(f.wait.resource.resourceId));
-  const large = eventWaitContinuationPrompt(
-    {
-      ...f.wait,
-      resource: { ...f.wait.resource, resourceId: '\u0000'.repeat(2048) },
-      status: 'expired',
-      expiredAt: 10000,
-    },
-    '\u0000'.repeat(500),
-  );
-  assert.ok(large.length <= 4000);
-  assert.ok(Buffer.byteLength(large) <= 12000);
-  assert.ok(large.includes('"contextTruncated":true'));
 });
