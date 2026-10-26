@@ -489,7 +489,7 @@ function App() {
             trigger: 'reset-scale',
             title: tr('Reset interface scale to 100%'),
             detail: tr('Interface scale'),
-            hint: 'Ctrl+Alt+0',
+            hint: keymap.label('mod+alt+0'),
             run: inputAction(commandResetScale, context),
           },
         ]

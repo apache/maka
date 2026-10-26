@@ -297,7 +297,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
       </Button>
       <Button
         accessibilityLabel={tr('Search conversations')}
-        tooltip={`${tr('Search conversations')} · Ctrl+O`}
+        tooltip={`${tr('Search conversations')} · ${keymap.label('mod+o')}`}
         onPress={inputAction(props.search, props.selected())}
         style={{
           ...controlStyle,

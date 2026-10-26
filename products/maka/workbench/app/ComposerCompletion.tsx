@@ -225,7 +225,7 @@ export function createComposerCompletion(options: Options) {
           get title() {
             return tr('Attach files');
           },
-          detail: 'Ctrl+U',
+          detail: keymap.label('mod+u'),
           icon: 'paperclip',
           disabled: read.owner.attachments.restoring(),
         }),
