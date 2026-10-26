@@ -247,6 +247,10 @@ function SlashMenuHarness({
 }): React.ReactElement {
   return (
     <div style={{ display: 'flex', alignItems: 'flex-end', height: 520, padding: 24 }}>
+      {/* Full-width frame, same as SkillDraftHarness: without it the row-flex
+          harness shrink-wraps the composer form to its padding and the card's
+          min(800px, 100%) width collapses to zero. */}
+      <div style={{ width: '100%' }}>
       <ConversationServicesProvider services={conversationServices}>
         <SessionCatalogContext.Provider value={sessionCatalog}>
           <StagingScope hasSession={hasSession}>
@@ -265,6 +269,7 @@ function SlashMenuHarness({
           </StagingScope>
         </SessionCatalogContext.Provider>
       </ConversationServicesProvider>
+      </div>
     </div>
   );
 }
@@ -283,6 +288,10 @@ function ContextSwitchHarness(): React.ReactElement {
         Switch to new task
       </button>
       <div style={{ display: 'flex', flex: 1, alignItems: 'flex-end' }}>
+        {/* Full-width frame, same as SkillDraftHarness: without it this row-flex
+            box shrink-wraps the composer form to its padding and the card's
+            min(800px, 100%) width collapses to zero. */}
+        <div style={{ width: '100%' }}>
         <ConversationServicesProvider services={conversationServices}>
           <SessionCatalogContext.Provider value={sessionCatalog}>
             <StagingScope hasSession={hasSession}>
@@ -299,6 +308,7 @@ function ContextSwitchHarness(): React.ReactElement {
             </StagingScope>
           </SessionCatalogContext.Provider>
         </ConversationServicesProvider>
+        </div>
       </div>
     </div>
   );
