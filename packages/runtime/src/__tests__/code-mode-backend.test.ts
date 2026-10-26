@@ -87,6 +87,210 @@ test('replaces direct tool schemas with exec in code_mode', async () => {
   assert.deepEqual(codeSurface[0], ['exec']);
 });
 
+test('code_mode preserves a direct-only finish control and repairs its name', async () => {
+  const surfaces: string[][] = [];
+  const prompts: string[] = [];
+  let finished = false;
+  let modelCalls = 0;
+  const model = new MockLanguageModelV4({
+    doStream: async ({ tools, prompt }) => {
+      modelCalls++;
+      surfaces.push((tools ?? []).map((tool) => tool.name).sort());
+      prompts.push(
+        prompt
+          .filter((message) => message.role === 'system')
+          .map((message) => message.content)
+          .join('\n'),
+      );
+      return {
+        stream: convertArrayToReadableStream<LanguageModelV4StreamPart>([
+          { type: 'stream-start', warnings: [] },
+          { type: 'tool-call', toolCallId: 'finish', toolName: 'finishcontrol', input: '{}' },
+          {
+            type: 'finish',
+            finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+            usage: ZERO_USAGE,
+          },
+        ]),
+      };
+    },
+  });
+  const events = await collect(
+    backend(model, [], undefined, {
+      tools: [
+        {
+          name: 'FinishControl',
+          description: 'End this turn',
+          parameters: z.object({}),
+          nesting: 'direct_only',
+          executionSemantics: 'exclusive_step',
+          finishTurnOnSuccess: true,
+          impl: () => {
+            finished = true;
+            return { finished: true };
+          },
+        },
+        {
+          name: 'lookup',
+          description: 'Look up a node',
+          parameters: z.object({}),
+          impl: () => null,
+        },
+      ],
+      beforeTurnFinish: async () =>
+        finished ? { allow: true } : { allow: false, feedback: 'Call FinishControl' },
+    }).send({ turnId: 'finish-code', text: 'finish', context: [], toolMode: 'code_mode' }),
+  );
+
+  assert.deepEqual(surfaces, [['FinishControl', 'exec']]);
+  assert.equal(finished, true);
+  assert.equal(modelCalls, 1, 'a successful control needs no final model request');
+  assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'end_turn');
+  assert.match(prompts[0]!, /FinishControl/);
+  assert.doesNotMatch(prompts[0]!, /exec is the only callable tool/);
+  assert.doesNotMatch(prompts[0]!, /"name":"FinishControl"/, 'the control is not a nested tool');
+  assert.match(prompts[0]!, /"name":"lookup"/);
+});
+
+test('code_mode keeps direct-only controls deferred until tool search activates them', async () => {
+  const ledger: RuntimeEvent[] = [
+    {
+      id: 'control-user',
+      sessionId: 'session-1',
+      turnId: 'discover-control',
+      runId: 'run-1',
+      invocationId: 'invocation-1',
+      ts: 1,
+      partial: false,
+      role: 'user',
+      author: 'user',
+      content: { kind: 'text', text: 'find the finish control' },
+    },
+  ];
+  const memory = createSessionEventMapMemory();
+  const surfaces: string[][] = [];
+  let finished = false;
+  const model = new MockLanguageModelV4({
+    doStream: async ({ tools }) => {
+      surfaces.push((tools ?? []).map((tool) => tool.name).sort());
+      const first = surfaces.length === 1;
+      return {
+        stream: convertArrayToReadableStream<LanguageModelV4StreamPart>([
+          { type: 'stream-start', warnings: [] },
+          {
+            type: 'tool-call',
+            toolCallId: `control-${surfaces.length}`,
+            toolName: first ? 'exec' : 'FinishControl',
+            input: first
+              ? JSON.stringify({ code: 'return await tools.tool_search({query: "FinishControl"})' })
+              : '{}',
+          },
+          {
+            type: 'finish',
+            finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+            usage: ZERO_USAGE,
+          },
+        ]),
+      };
+    },
+  });
+  const events: SessionEvent[] = [];
+  for await (const event of backend(model, [], undefined, {
+    tools: [
+      {
+        name: 'FinishControl',
+        description: 'End this turn',
+        parameters: z.object({}),
+        nesting: 'direct_only',
+        executionSemantics: 'exclusive_step',
+        finishTurnOnSuccess: true,
+        impl: () => {
+          finished = true;
+          return { finished: true };
+        },
+      },
+    ],
+    toolAvailability: {},
+    maxSteps: 4,
+    loadTurnRuntimeEvents: async () => ledger,
+  }).send({
+    turnId: 'discover-control',
+    text: 'find the finish control',
+    context: [],
+    toolMode: 'code_mode',
+  })) {
+    events.push(event);
+    const mapped = mapSessionEventToRuntimeEvent(
+      event,
+      {
+        sessionId: 'session-1',
+        turnId: 'discover-control',
+        runId: 'run-1',
+        invocationId: 'invocation-1',
+        now: () => 1,
+      },
+      memory,
+    );
+    if (!mapped.partial && mapped.content?.kind !== 'error') ledger.push(mapped);
+  }
+  assert.deepEqual(surfaces, [['exec'], ['FinishControl', 'exec']]);
+  assert.equal(finished, true);
+  assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'end_turn');
+});
+
+test('code_mode does not admit a finish control alongside exec in the same step', async () => {
+  let finishCalls = 0;
+  const model = new MockLanguageModelV4({
+    doStream: async () => ({
+      stream: convertArrayToReadableStream<LanguageModelV4StreamPart>([
+        { type: 'stream-start', warnings: [] },
+        {
+          type: 'tool-call',
+          toolCallId: 'cell',
+          toolName: 'exec',
+          input: JSON.stringify({ code: 'return await tools.lookup({})' }),
+        },
+        { type: 'tool-call', toolCallId: 'finish', toolName: 'FinishControl', input: '{}' },
+        {
+          type: 'finish',
+          finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+          usage: ZERO_USAGE,
+        },
+      ]),
+    }),
+  });
+  const events = await collect(
+    backend(model, [], undefined, {
+      tools: [
+        {
+          name: 'lookup',
+          description: 'Look up a node',
+          parameters: z.object({}),
+          impl: () => 'ok',
+        },
+        {
+          name: 'FinishControl',
+          description: 'End this turn',
+          parameters: z.object({}),
+          nesting: 'direct_only',
+          executionSemantics: 'exclusive_step',
+          finishTurnOnSuccess: true,
+          impl: () => {
+            finishCalls++;
+            return null;
+          },
+        },
+      ],
+    }).send({ turnId: 'mixed-control', text: 'run both', context: [], toolMode: 'code_mode' }),
+  );
+  const refused = events.find(
+    (event) => event.type === 'tool_result' && event.toolUseId === 'finish',
+  );
+  assert.equal(finishCalls, 0);
+  assert.equal(refused?.type === 'tool_result' && refused.isError, true);
+  assert.match(JSON.stringify(refused), /cannot share an assistant step/);
+});
+
 test('uses the persisted task mode without a per-turn override', async () => {
   const surface: string[][] = [];
   const calls: unknown[] = [];
@@ -1271,6 +1475,7 @@ function backend(
       | 'readAttachmentBytes'
       | 'maxProviderImageRequestBytes'
       | 'recordRequestComposition'
+      | 'beforeTurnFinish'
     >
   > = {},
 ) {
