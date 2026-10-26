@@ -20,7 +20,7 @@ colors, borders and selection feedback through `classes` and `styles`. Rust make
 
 ```rust tabs
 use nsh_base::{DataTableColumn, data_table};
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 fn column(key: &str, title: &str) -> DataTableColumn {
     let mut column = DataTableColumn::default();

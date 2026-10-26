@@ -48,7 +48,7 @@ mod navigation;
 mod render;
 mod rt;
 mod scroll;
-mod selection_area;
+mod selectable_view;
 mod stats;
 mod surface;
 #[cfg(feature = "dev")]
@@ -66,8 +66,8 @@ mod tests;
 pub use gpui;
 pub use nsh_base::{Theme, ThemeError};
 pub use nsh_core::{
+    element::{AdaptiveColor, Color, Hsla, Rgba},
     platform::{Appearance, Locale},
-    ui::{AdaptiveColor, Color, Hsla, Rgba},
 };
 pub use nsh_engine::{
     App, AppError, AppErrorKind, Bundle, ByteSize, CacheLocation, CacheOptions, CachePolicy,

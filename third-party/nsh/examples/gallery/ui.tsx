@@ -2,7 +2,7 @@
 // in the repository's internal nsh-gallery-ui layer.
 import type { JSX, ScrollProps } from "nsh";
 import { computed, Image, Scroll, signal, Text, View } from "nsh";
-import { platform, setColorScheme, windowSize } from "nsh/device";
+import { platform, setColorScheme, windowSize } from "nsh";
 import { Appear, colors, Icon, isDark, Press, radius, RoundButton } from "../nsh-gallery-ui";
 import { nav } from "./nav";
 import logoDark from "./logo-dark.svg";

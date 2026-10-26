@@ -14,7 +14,7 @@ demo: el-data-table
 
 ```rust tabs
 use nsh_base::{DataTableColumn, data_table};
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 fn column(key: &str, title: &str) -> DataTableColumn {
     let mut column = DataTableColumn::default();

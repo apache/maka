@@ -23,7 +23,7 @@ import BaseTable from "./base-table";
 import BaseRadio from "./base-radio";
 import BaseResizable from "./base-resizable";
 import BaseSafeAreaKeyboard from "./base-safe-area-keyboard";
-import BaseSelectionArea from "./base-selection-area";
+import BaseSelectableView from "./base-selectable-view";
 import BaseSwitch from "./base-switch";
 import BaseTabs from "./base-tabs";
 import BaseTextView from "./base-text-view";
@@ -45,7 +45,7 @@ const cases: Record<string, () => JSX.Element> = {
   "base-popups": BasePopups,
   "base-safe-area-keyboard": BaseSafeAreaKeyboard,
   "base-text-view": BaseTextView,
-  "base-selection-area": BaseSelectionArea,
+  "base-selectable-view": BaseSelectableView,
   "base-switch": BaseSwitch,
   "base-checkbox": BaseCheckbox,
   "base-radio": BaseRadio,

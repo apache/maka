@@ -1,5 +1,5 @@
 import { Image, mount, signal, Text, View } from "nsh";
-import { windowSize } from "nsh/device";
+import { windowSize } from "nsh";
 import { button, buttonText, focusRing, ui } from "./palette";
 
 // The pictures are SVG `data:` URIs, so the demo needs no network. An app

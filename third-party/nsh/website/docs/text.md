@@ -251,7 +251,7 @@ Text follows the user's text size setting (Dynamic Type on iOS, font size on And
 | `allowFontScaling` | `.allow_font_scaling(false)` | `false` keeps the size fixed. Default `true` |
 | `maxFontSizeMultiplier` | `.max_font_size_multiplier(1.5)` | The largest scale applied, e.g. `1.5`. `0` is no limit |
 
-`font_scale()` in Rust and `fontScale()` from [`nsh/device`](../modules/nsh-device.md) in TSX are the current scale, and change when the user changes the setting. Inputs take `allowFontScaling` and `maxFontSizeMultiplier` too.
+`font_scale()` in Rust and `fontScale()` from [`nsh`](../modules/nsh.md#device) in TSX are the current scale, and change when the user changes the setting. Inputs take `allowFontScaling` and `maxFontSizeMultiplier` too.
 
 ```rust tabs
 text("Tab label").max_font_size_multiplier(1.3).text_size(px(13.0))
@@ -277,7 +277,7 @@ text(order_number).selectable(true).selection_color(rgb(0x7c3aed))
 <Text selectable style={{ selectionColor: "#7c3aed" }}>{orderNumber}</Text>
 ```
 
-To copy from code (a Copy button), use `set_clipboard(..)` in Rust or [`nsh/clipboard`](../modules/nsh-clipboard.md) in TSX.
+To copy from code (a Copy button), use `set_clipboard(..)` in Rust or [`Clipboard`](../modules/nsh.md#clipboard) in TSX.
 
 ## onTextLayout
 

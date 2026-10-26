@@ -18,7 +18,7 @@
  */
 
 import { Canvas, Text } from 'nsh';
-import { platform } from 'nsh/device';
+import { platform } from 'nsh';
 import { C } from './ui';
 
 // Decoration only: the enclosing control keeps its original native action.

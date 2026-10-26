@@ -68,8 +68,8 @@ pub(crate) struct ViewState {
     pub(crate) scroll: Option<ScrollState>,
     /// Text content (text views).
     pub(crate) text: Option<crate::text::DrawnText>,
-    /// The part of its selection area's selection its text draws (UTF-16,
-    /// `start < end`; [`crate::selection_area`]).
+    /// The part of its selectable view's selection its text draws (UTF-16,
+    /// `start < end`; [`crate::selectable_view`]).
     pub(crate) area_selection: Option<(u32, u32)>,
     /// Image content (image views).
     pub(crate) image: Option<crate::image::ImageState>,

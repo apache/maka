@@ -1,9 +1,9 @@
-// A case of the API's test suite (docs/dev/compatibility.md): `nsh/storage`
+// A case of the API's test suite (docs/dev/compatibility.md): `nsh`
 // (in memory on the headless runtime): values set, read back, listed in
 // order, removed and cleared, each call seeing the ones before it. Its script
 // checks each.
 import { Text, View, signal } from "nsh";
-import { Storage } from "nsh/storage";
+import { Storage } from "nsh";
 
 function App() {
   const state = signal("empty");

@@ -135,9 +135,9 @@ pub(crate) struct Surface {
     pub(crate) keymap: crate::keymap::KeymapState,
     /// The window's chrome: title bar, menus ([`crate::chrome`]).
     pub(crate) chrome: crate::chrome::Chrome,
-    /// Selections across the texts of selection areas
-    /// ([`crate::selection_area`]).
-    pub(crate) selection: crate::selection_area::State,
+    /// Selections across the texts of selectable views
+    /// ([`crate::selectable_view`]).
+    pub(crate) selection: crate::selectable_view::State,
     /// The performance monitor, while it measures ([`crate::fps`]).
     fps: RefCell<Option<Rc<crate::fps::Fps>>>,
 }
@@ -304,7 +304,7 @@ impl Surface {
         *self.anim.borrow_mut() = UiAnimation::default();
         self.nav.borrow_mut().reset();
         crate::input::reset(self);
-        crate::selection_area::reset(self);
+        crate::selectable_view::reset(self);
         crate::keymap::clear(self);
         self.js_frame.set(false);
     }

@@ -3,7 +3,8 @@
 // (the scripts' default platform): paint styles, the text keys of a nested
 // span, a host prop, an `ios={{…}}` prop, an event the platform reports and
 // a console line.
-import { Input, Text, View } from "nsh";
+import { Text, View } from "nsh";
+import { Input } from "nsh/base";
 
 function App() {
   console.log("steps: mounted");

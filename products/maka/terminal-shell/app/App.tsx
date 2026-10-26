@@ -24,7 +24,7 @@ import { cleanup, effect, inputAction, mount, signal, Scroll, Text, View } from 
 import type { YNode } from 'nsh';
 import { Button, Dialog } from 'nsh/base';
 import { host } from './host';
-import { keymap } from 'nsh/keymap';
+import { keymap } from 'nsh';
 import {
   bodyTextStyle,
   C,

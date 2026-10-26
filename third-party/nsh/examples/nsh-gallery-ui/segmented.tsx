@@ -1,5 +1,5 @@
 import { effect, signal, Text, View } from "nsh";
-import { createAnimatedValue } from "nsh/animated";
+import { createAnimatedValue } from "nsh";
 import { Tab, Tabs } from "nsh/base";
 import { colors, finish, motion } from "./theme";
 

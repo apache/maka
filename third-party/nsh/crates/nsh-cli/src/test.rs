@@ -30,7 +30,7 @@ use std::{
 
 use anyhow::{Context as _, bail};
 use nsh_bundler::BundleOptions;
-use nsh_core::ui::description::SetDescription;
+use nsh_core::element::description::SetDescription;
 use nsh_engine::Bundle;
 use nsh_testing::{
     Built, Entry, Reply, RunnerMessage, TestRequest, TestResult, TestRun, TestStatus,
@@ -457,7 +457,7 @@ fn test_file_bytecode(entry: &Path) -> anyhow::Result<Compiled> {
     sets.extend(
         nsh_testing::test_sets()
             .iter()
-            .flat_map(nsh_core::ui::Registry::sets)
+            .flat_map(nsh_core::element::Registry::sets)
             .map(SetDescription::from),
     );
     bytecode_of(entry, &sets, false)

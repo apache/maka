@@ -7,8 +7,11 @@
 
 use std::{rc::Rc, time::Duration};
 
-use nsh_base::keyboard_avoiding_view;
-use nsh_core::ui::{LayoutAnimation, SubmitBehavior, prelude::*};
+use nsh_base::input;
+use nsh_core::{
+    element::{LayoutAnimation, SubmitBehavior},
+    prelude::*,
+};
 
 use crate::ui::{
     Badge, Button, ButtonVariant, Finish, Finished, IconName, IconTile, MONO, Meter, PressRole,
@@ -628,7 +631,8 @@ fn Chat(cx: Scope<NoEvent>) -> impl IntoElement {
             move |_: &()| send(),
         ));
     view().flex_1().child(
-        keyboard_avoiding_view()
+        view()
+            .pb_keyboard()
             .flex_1()
             .child(room)
             .child(list)

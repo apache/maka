@@ -1,5 +1,5 @@
 //! `resource(source, fetcher)`: a value loaded asynchronously, its JS face
-//! (Rust components' is `nsh_core::ui::resource`). The bookkeeping of its
+//! (Rust components' is `nsh_core::element::resource`). The bookkeeping of its
 //! loads is [`nsh_core::resource::Runs`], shared with the Rust face.
 //!
 //! A resource is a callable object (`user()` reads the latest value, as a

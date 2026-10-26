@@ -8,10 +8,10 @@ demo: el-control-flow
 
 # If / Each
 
-`If` 和 `Each` 决定哪些元素存在：条件内容和重复内容。它们自身不创建原生视图。原生渲染器只更新发生变化的部分：`If` 在条件翻转时切换分支，`Each` 按 key 增加、移动和删除行，而不是重建整个列表。Rust 在 `nsh_core::ui::prelude` 中提供 `when(..)`、`each(..)` 和 `dynamic(..)`；TSX 提供 `<If>` 和 `<Each>`，它们是无需导入的全局组件。
+`If` 和 `Each` 决定哪些元素存在：条件内容和重复内容。它们自身不创建原生视图。原生渲染器只更新发生变化的部分：`If` 在条件翻转时切换分支，`Each` 按 key 增加、移动和删除行，而不是重建整个列表。Rust 在 `nsh_core::prelude` 中提供 `when(..)`、`each(..)` 和 `dynamic(..)`；TSX 提供 `<If>` 和 `<Each>`，它们是无需导入的全局组件。
 
 ```rust tabs
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 view()
     .child(

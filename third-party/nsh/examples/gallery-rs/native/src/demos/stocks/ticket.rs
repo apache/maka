@@ -4,8 +4,7 @@
 //! placing reports [`TicketEvent::Placed`]. Nothing is sent anywhere.
 
 use nsh_core::{
-    LayoutAnimation, LayoutCurve, LayoutProperty, LayoutTransition,
-    ui::{PropEnum, prelude::*},
+    LayoutAnimation, LayoutCurve, LayoutProperty, LayoutTransition, element::PropEnum, prelude::*,
 };
 
 use super::market::{grouped, price};

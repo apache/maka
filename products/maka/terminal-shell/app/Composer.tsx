@@ -17,14 +17,16 @@
  * under the License.
  */
 
+import { textTooltip } from './ui';
 import { ProjectMcp } from './ProjectMcpConsent';
 import type { ProjectMcp as ProjectMcpOwner } from './projectMcp';
 import { tr } from './locale';
-import { cleanup, effect, Input, inputAction, signal, Text, View, Image } from 'nsh';
+import { cleanup, effect, inputAction, signal, Text, View, Image } from 'nsh';
+import { Input } from 'nsh/base';
 import type { JSX, YNode } from 'nsh';
 import { Button } from 'nsh/base';
-import { platform, windowSize } from 'nsh/device';
-import { keymap } from 'nsh/keymap';
+import { platform, windowSize } from 'nsh';
+import { keymap } from 'nsh';
 import { DraftAttachments } from './Attachments';
 import type { AttachmentDraft } from './attachmentDraft';
 import type { ImagePreview } from './ImageThumbnail';
@@ -195,7 +197,7 @@ export function Composer(props: {
             >
               <Button
                 accessibilityLabel={tr('Choose composer workspace')}
-                tooltip={props.session()?.workspace() || tr('Choose workspace')}
+                tooltip={textTooltip(() => props.session()?.workspace() || tr('Choose workspace'))}
                 onPress={props.chooseWorkspace}
                 style={{
                   ...controlStyle,
@@ -409,7 +411,7 @@ export function Composer(props: {
                 sessionId: props.session()?.sessionId ?? null,
               })}
               accessibilityLabel={tr('Add to message')}
-              tooltip={tr('Add to message')}
+              tooltip={textTooltip(() => tr('Add to message'))}
               disabled={!props.session()?.editable() || completion.composing()}
               style={{
                 width: 32,
@@ -435,7 +437,7 @@ export function Composer(props: {
             </If>
             <Button
               accessibilityLabel={primaryStops() ? tr('Stop response') : sendLabel()}
-              tooltip={primaryStops() ? tr('Stop response · Esc') : `${sendLabel()} · Enter`}
+              tooltip={textTooltip(() => primaryStops() ? tr('Stop response · Esc') : `${sendLabel()} · Enter`)}
               disabled={primaryStops() ? props.session()!.stopping() : cannotSend()}
               onPress={
                 primaryStops()

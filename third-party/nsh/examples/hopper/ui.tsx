@@ -1,5 +1,5 @@
 import { effect, type GestureResponderEvent, type JSX, signal, Text, View, type YNode } from "nsh";
-import { createAnimatedValue, Easing } from "nsh/animated";
+import { createAnimatedValue, Easing } from "nsh";
 import { Button, Tab, Tabs } from "nsh/base";
 import { Icon, type IconName } from "./icons";
 import { color, mono, radius } from "./theme";

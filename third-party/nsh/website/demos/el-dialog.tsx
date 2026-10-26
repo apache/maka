@@ -1,5 +1,5 @@
 import { mount, signal, Text, View } from "nsh";
-import { Button, Dialog, SafeAreaView, Switch } from "nsh/base";
+import { Button, Dialog, Switch } from "nsh/base";
 import { button, buttonText, desktop, Inspector, Panel, Stage, tint, ui, wide } from "./palette";
 
 const track = `${desktop ? "w-9" : "w-12"} rounded-full p-0.5 transition-colors motion-reduce:transition-none`;
@@ -144,7 +144,7 @@ function App() {
           borderTopRightRadius: 16,
         }}
       >
-        <SafeAreaView style={{ flex: 1, padding: 20, gap: 12 }}>
+        <View style={{ flex: 1, padding: 20, paddingTop: "calc(env(safe-area-inset-top) + 20px)", paddingRight: "calc(env(safe-area-inset-right) + 20px)", paddingBottom: "calc(env(safe-area-inset-bottom) + 20px)", paddingLeft: "calc(env(safe-area-inset-left) + 20px)", gap: 12 }}>
           <Text style={{ color: ui().text, fontSize: 22, fontWeight: "700" }}>A sheet</Text>
           <Text style={{ color: ui().muted }}>
             presentation="pageSheet": a system sheet on iOS that follows the finger when swiped down. Elsewhere the
@@ -153,7 +153,7 @@ function App() {
           <Button onPress={() => sheet.set(false)} {...button("primary", { align: "flex-end" })}>
             <Text style={buttonText("primary")}>Close</Text>
           </Button>
-        </SafeAreaView>
+        </View>
       </Dialog>
     </View>
   );

@@ -26,7 +26,7 @@ at `de176695240d550f2b303643b8019146c7989e7f`. The upstream project is
 
 `upstream.json` keeps that initial `repository` and `revision`. Its
 `upstream_revision` records the latest integrated `longbridge/nsh` main revision:
-`5359c07ff7b5728e67957c24322373309c90666b`. The first upstream synchronization
+`76fa8a7fed47ea51aea01fa85bb40960be15d984`. The first upstream synchronization
 starts from `6bb0b7908043132067456e4a21dd57c90a0bdce5`, already included in the
 initial fork import.
 
@@ -38,6 +38,20 @@ the README retains the terminal backend description). This is a mixed-source
 vendor tree, not a claim that one upstream revision contains the fork features.
 The source, tests, resources, original licenses and independent workspaces are
 retained. `SOURCE.md` and `upstream.json` are Maka's provenance files.
+
+The 0.3 API-home migration uses `nsh_core::element` and the root Rust prelude;
+JavaScript host services live in `nsh`, mobile services in `nsh/mobile`, and
+Input in `nsh/base`. Legacy external module names are not aliases. Selectable
+views replace SelectionArea while retaining terminal cell-aware selection and
+popup scope behavior. Application-owned Tooltip elements retain Maka's prior
+bubble styling and reactive text; the obsolete string tooltip constructor is
+not retained. Removal of the legacy Toast command does not remove terminal
+`Surface::announce` visual accessibility announcements. Local retained-host,
+focus-return and root-retirement safety, native keymap support, input editing,
+and all fork-only resources remain part of the mixed-source tree. Deleted
+selection, device, keymap and native-service pages move their local contracts
+into the corresponding canonical documentation pages.
+
 The trailing-whitespace measurement integration preserves `TextEngine::measure_canvas`
 for platform-specific advances (including the terminal font catalog), while
 using upstream whitespace-inclusive measurement when that hook is absent.

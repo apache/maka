@@ -15,6 +15,13 @@ export type DimensionValue = number | `${number}%` | "auto";
 /** Points or a percentage of the parent. */
 export type LengthValue = number | `${number}%`;
 
+/** A length from a CSS environment variable, on padding and margin:
+ * `env(safe-area-inset-top)` (`-right`, `-bottom`, `-left`: the insets of
+ * the root view the element renders in), `env(keyboard-inset-height)` (the
+ * software keyboard's height, 0 while hidden), with an optional fallback
+ * (`env(name, 8px)`), or one of them plus a length (`calc(env(name) + 8px)`). */
+export type EnvValue = `env(${string})` | `calc(${string})`;
+
 /** One transform step; angles are degrees (`"45deg"`, `"0.5rad"` or a
  * number). Animated values (and nodes derived from them) animate a step
  * natively. */

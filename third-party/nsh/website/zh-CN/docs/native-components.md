@@ -8,7 +8,7 @@ group: platforms
 # 原生组件
 
 原生组件是由**嵌入方应用**按名称注册的视图：地图、相机预览、图表库，或者 iOS 上任意的 `UIView`、Android 上任意的
-`android.view.View`、macOS 上任意的 `NSView`、Linux 上任意的 `gtk::Widget`，或者 Windows 上的 Direct2D 绘制或子 `HWND`。NSH 应用像使用其他元素一样使用它：Rust 应用用 `nsh_core::ui::prelude` 的 `native(name)` 创建它，TSX 应用用 [`nsh/native`](../modules/nsh-native.md) 提供的 `nativeComponent()` 声明它。NSH
+`android.view.View`、macOS 上任意的 `NSView`、Linux 上任意的 `gtk::Widget`，或者 Windows 上的 Direct2D 绘制或子 `HWND`。NSH 应用像使用其他元素一样使用它：Rust 应用用 `nsh_core::prelude` 的 `native(name)` 创建它，TSX 应用用 [`nativeComponent`](../modules/nsh.md#nativecomponent-and-nativemodule) 提供的 `nativeComponent()` 声明它。NSH
 会把它和应用的其余部分一起布局，向它发送 props，把它的事件交给对应的处理函数，并转发通过 `ref` 发出的命令。
 
 NSH 本身就用系统原生视图渲染，所以原生组件只是同一视图层级里多出来的一个子视图：不存在层级叠放问题，它会像 `<View>`
@@ -34,8 +34,7 @@ NSH 本身就用系统原生视图渲染，所以原生组件只是同一视图�
 在 TSX 中，`nativeComponent()` 为这个名称声明一个组件，列出它用到的 props 和事件。
 
 ```rust tabs
-use nsh_base::safe_area_view;
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 use serde_json::json;
 
 const COLORS: [&str; 4] = ["#8250df", "#0969da", "#1a7f37", "#cf222e"];
@@ -44,9 +43,11 @@ const COLORS: [&str; 4] = ["#8250df", "#0969da", "#1a7f37", "#cf222e"];
 pub fn App() -> impl IntoElement {
     let taps = signal(0_u64);
     let badge = element_ref();
-    safe_area_view()
+    view()
         .flex_1()
         .p(px(20.0))
+        .pt_safe_area_plus(px(20.0))
+        .pb_safe_area_plus(px(20.0))
         .gap(px(16.0))
         .bg(rgb(0xf6f8fa))
         .child(text("Rendered by nsh").text_size(px(22.0)).font_weight(FontWeight::BOLD))
@@ -74,9 +75,8 @@ pub fn App() -> impl IntoElement {
 ```
 
 ```tsx tabs
-import { mount, signal, Text, type YNode } from "nsh";
-import { nativeComponent } from "nsh/native";
-import { SafeAreaView } from "nsh/base";
+import { mount, signal, Text, type YNode, View } from "nsh";
+import { nativeComponent } from "nsh";
 
 /** The host app's badge: a label it draws, sized to its text. */
 const Badge = nativeComponent<{ text: string; color?: string }, { tap: { count: number } }>("embed.badge", {
@@ -90,7 +90,7 @@ function App() {
   const taps = signal(0);
   let badge: YNode | undefined;
   return (
-    <SafeAreaView style={{ flex: 1, padding: 20, gap: 16, backgroundColor: "#f6f8fa" }}>
+    <View style={{ flex: 1, padding: 20, paddingTop: "calc(env(safe-area-inset-top) + 20px)", paddingBottom: "calc(env(safe-area-inset-bottom) + 20px)", gap: 16, backgroundColor: "#f6f8fa" }}>
       <Text style={{ fontSize: 22, fontWeight: "700" }}>Rendered by nsh</Text>
       <Badge
         ref={(node) => (badge = node)}
@@ -103,7 +103,7 @@ function App() {
         style={{ alignSelf: "flex-start", borderRadius: 8, overflow: "hidden" }}
       />
       <Text>{`JS saw ${taps()} taps`}</Text>
-    </SafeAreaView>
+    </View>
   );
 }
 
@@ -594,6 +594,6 @@ fn register(app: &AppView) {
 
 ## 另请参阅
 
-- [`nsh/native` 参考](../modules/nsh-native.md)
+- [`nativeComponent` 参考](../modules/nsh.md#nativecomponent-and-nativemodule)
 - [嵌入 iOS 应用](./ios.md)和[嵌入 Android 应用](./android.md)
 - [架构](./architecture.md)：props 和事件如何跨线程传递

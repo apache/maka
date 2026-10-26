@@ -1,6 +1,6 @@
 import type { JSX as __JSX } from "nsh";
 import { Text as __Text, View as __View } from "nsh";
-import { platform as __platform, windowSize as __windowSize } from "nsh/device";
+import { platform as __platform, windowSize as __windowSize } from "nsh";
 import { Segmented as GallerySegmented } from "./segmented";
 import { ui, tint } from "./palette";
 import { focusRing } from "./theme";

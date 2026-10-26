@@ -26,7 +26,7 @@ built on `gpui-base`'s toasts.
 ```rust tabs
 use std::time::Duration;
 
-use nsh_core::{time::now, ui::prelude::*};
+use nsh_core::{time::now, prelude::*};
 
 use nsh_base::{
     Anchor, ToastManager, ToastMotion, ToastOptions, ToastStackState, theme, toast, toast_stack,
@@ -88,8 +88,8 @@ fn toasts() -> impl IntoElement {
 ```
 
 ```tsx tabs
-import { Overlay, signal, Text } from "nsh";
-import { safeArea, Toast, type ToastEntry, ToastManager, ToastStack } from "nsh/base";
+import { Overlay, signal, Text, safeArea } from "nsh";
+import { Toast, type ToastEntry, ToastManager, ToastStack } from "nsh/base";
 
 const manager = new ToastManager();
 const shown = signal<ToastEntry[]>([]);
@@ -132,8 +132,8 @@ export function Toaster() {
 }
 ```
 
-`Toast`, `ToastStack` and `ToastManager` come from [`nsh/base`](../modules/nsh-base.md). In Rust import `toast` by
-name: the prelude's `toast` is Android's system toast (`Toast.show` of [`nsh/android`](../modules/nsh-android.md)).
+`Toast`, `ToastStack` and `ToastManager` come from [`nsh/base`](../modules/nsh-base.md). In Rust they are
+`nsh_base`'s `toast`, `toast_stack` and `ToastManager`.
 
 ## ToastManager
 

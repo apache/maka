@@ -63,7 +63,7 @@ pub(crate) fn expand(specifier: LitStr, item: ItemFn) -> syn::Result<TokenStream
     // there.
     let span = Span::call_site();
     let entry = syn::Ident::new(ENTRY, span);
-    let ui = quote!(::nsh_core::ui);
+    let ui = quote!(::nsh_core::element);
     // The generated workspace calls `app_<package>::__nsh_native_module`,
     // so the entry has to be at the crate's root. A glob in a block shadows
     // the names of the module around it: in a module of its own,

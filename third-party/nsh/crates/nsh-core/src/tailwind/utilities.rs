@@ -989,10 +989,48 @@ fn length_value(theme: &Theme, v: &str, neg: bool, auto: bool) -> Option<PatchVa
 /// [`length_value`] of a utility Tailwind CSS takes no fractions or
 /// `full` for (padding, margin, gaps).
 fn spacing_value(theme: &Theme, v: &str, neg: bool, auto: bool) -> Option<PatchValue> {
+    if let Some(env) = env_value(v) {
+        // `-pb-[env(...)]`: Tailwind's negation is a `calc(... * -1)`,
+        // which NSH does not take with `env()`.
+        return if neg { None } else { env };
+    }
     if v == "full" || v.contains('/') && !v.starts_with('[') {
         return None;
     }
     length_value(theme, v, neg, auto)
+}
+
+/// An arbitrary padding or margin using `env()` (`[env(safe-area-inset-top)]`,
+/// `[calc(env(keyboard-inset-height)+8px)]`), as the style takes it: `None`
+/// when `v` uses no `env()`, `Some(None)` when it is not a value NSH
+/// supports. Operators get white space around them, as Tailwind CSS
+/// writes them.
+fn env_value(v: &str) -> Option<Option<PatchValue>> {
+    let a = arbitrary(v).filter(|a| a.contains("env("))?;
+    let mut out = String::with_capacity(a.len() + 4);
+    let mut chars = a.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '+' {
+            out.truncate(out.trim_end().len());
+            out.push_str(" + ");
+            while chars.next_if(|c| c.is_whitespace()).is_some() {}
+        } else {
+            out.push(c);
+        }
+    }
+    Some(match crate::style::env_length(&out) {
+        Some(Ok(_)) => Some(PatchValue::Str(out.into())),
+        _ => None,
+    })
+}
+
+/// [`spacing_value`] of a start / end utility: `env()`'s insets are
+/// physical, so they take none.
+fn logical_spacing_value(theme: &Theme, v: &str, neg: bool, auto: bool) -> Option<PatchValue> {
+    if v.contains("env(") {
+        return None;
+    }
+    spacing_value(theme, v, neg, auto)
 }
 
 /// A length in points (no percentages).
@@ -1895,10 +1933,10 @@ static PREFIXES: &[(&str, Handler)] = &[
         one(set(K::PaddingLeft, spacing_value(t, v, n, false)?))
     }),
     ("ps", |t, v, n| {
-        one(set(K::PaddingStart, spacing_value(t, v, n, false)?))
+        one(set(K::PaddingStart, logical_spacing_value(t, v, n, false)?))
     }),
     ("pe", |t, v, n| {
-        one(set(K::PaddingEnd, spacing_value(t, v, n, false)?))
+        one(set(K::PaddingEnd, logical_spacing_value(t, v, n, false)?))
     }),
     ("p", |t, v, n| {
         one(set(K::Padding, spacing_value(t, v, n, false)?))
@@ -1922,10 +1960,10 @@ static PREFIXES: &[(&str, Handler)] = &[
         one(set(K::MarginLeft, spacing_value(t, v, n, true)?))
     }),
     ("ms", |t, v, n| {
-        one(set(K::MarginStart, spacing_value(t, v, n, true)?))
+        one(set(K::MarginStart, logical_spacing_value(t, v, n, true)?))
     }),
     ("me", |t, v, n| {
-        one(set(K::MarginEnd, spacing_value(t, v, n, true)?))
+        one(set(K::MarginEnd, logical_spacing_value(t, v, n, true)?))
     }),
     ("m", |t, v, n| {
         one(set(K::Margin, spacing_value(t, v, n, true)?))

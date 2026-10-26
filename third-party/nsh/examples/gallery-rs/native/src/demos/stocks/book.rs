@@ -4,7 +4,7 @@
 use nsh_core::{
     Bounds, LayoutAnimation, LayoutCurve, LayoutProperty, LayoutTransition, Points,
     canvas::{CanvasTextAlign, CanvasTextBaseline},
-    ui::prelude::*,
+    prelude::*,
 };
 
 use super::{

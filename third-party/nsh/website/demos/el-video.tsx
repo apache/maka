@@ -1,5 +1,5 @@
 import { mount, signal, Text, Video, View, type YNode } from "nsh";
-import { windowSize } from "nsh/device";
+import { windowSize } from "nsh";
 import { button, buttonText, ui } from "./palette";
 
 // A short CC0 clip from MDN's examples.

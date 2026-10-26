@@ -369,7 +369,7 @@ pub(crate) const NODE_METHODS: &[(&str, c_int, &str, &str)] = &[
         2,
         decl!("(name: string, args?: unknown): void"),
         decl!(
-            "Calls command `name` of a registered native component (`nsh/native`) with `args` (any JSON value)."
+            "Calls command `name` of a registered native component (`nativeComponent` of `nsh`) with `args` (any JSON value)."
         ),
     ),
     (
@@ -4237,7 +4237,7 @@ mod tests {
         host.eval_source(
             r#"
             import { element, prop } from "nsh:rt";
-            import { AnimatedValue } from "nsh/animated";
+            import { AnimatedValue } from "nsh";
             const n = element("native");
             prop(n, "component", "com.example.thing");
             prop(n, "$progress", new AnimatedValue(0));
@@ -4281,7 +4281,7 @@ mod tests {
         host.eval_source(
             r#"
             import { element, prop } from "nsh:rt";
-            import { AnimatedValue } from "nsh/animated";
+            import { AnimatedValue } from "nsh";
             globalThis.keep = (() => {
                 const n = element("native");
                 prop(n, "component", "com.example.thing");

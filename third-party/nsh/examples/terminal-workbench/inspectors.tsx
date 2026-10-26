@@ -1,9 +1,9 @@
 import { signal, View, type YNode } from "nsh";
-import { Canvas } from "nsh/canvas";
-import { windowSize } from "nsh/device";
+import { Canvas } from "nsh";
+import { windowSize } from "nsh";
 import { Menu } from "nsh/desktop";
-import { Image } from "nsh/image";
-import { WebView } from "nsh/webview";
+import { Image } from "nsh";
+import { WebView } from "nsh";
 import Pacifico from "./assets/Pacifico-Regular.ttf";
 import runtimeImage from "./assets/runtime.png";
 import { Action, Label, palette as p } from "./ui";

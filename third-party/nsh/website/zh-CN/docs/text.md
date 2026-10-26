@@ -243,7 +243,7 @@ Tailwind 类 `truncate` 和 `line-clamp-*` 效果相同；同时设置时以属�
 | `allowFontScaling` | `.allow_font_scaling(false)` | 设为 `false` 时字号固定。默认 `true` |
 | `maxFontSizeMultiplier` | `.max_font_size_multiplier(1.5)` | 允许的最大缩放比例，例如 `1.5`。`0` 表示不限 |
 
-Rust 中的 `font_scale()` 和 TSX 中 [`nsh/device`](../modules/nsh-device.md) 的 `fontScale()` 是当前的缩放比例，会在用户修改设置时变化。输入框同样支持 `allowFontScaling` 和 `maxFontSizeMultiplier`。
+Rust 中的 `font_scale()` 和 TSX 中 [`nsh` 的设备 API](../modules/nsh.md#device) 的 `fontScale()` 是当前的缩放比例，会在用户修改设置时变化。输入框同样支持 `allowFontScaling` 和 `maxFontSizeMultiplier`。
 
 ```rust tabs
 text("Tab label").max_font_size_multiplier(1.3).text_size(px(13.0))
@@ -269,7 +269,7 @@ text(order_number).selectable(true).selection_color(rgb(0x7c3aed))
 <Text selectable style={{ selectionColor: "#7c3aed" }}>{orderNumber}</Text>
 ```
 
-要在代码中复制（比如“复制”按钮），在 Rust 中使用 `set_clipboard(..)`，在 TSX 中使用 [`nsh/clipboard`](../modules/nsh-clipboard.md)。
+要在代码中复制（比如“复制”按钮），在 Rust 中使用 `set_clipboard(..)`，在 TSX 中使用 [`Clipboard`](../modules/nsh.md#clipboard)。
 
 ## onTextLayout
 

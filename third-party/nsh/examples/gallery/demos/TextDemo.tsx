@@ -1,5 +1,5 @@
 import { Image, type JSX, signal, Text, View } from "nsh";
-import { fontScale } from "nsh/device";
+import { fontScale } from "nsh";
 import pacifico from "../fonts/Pacifico-Regular.ttf";
 import logo from "../logo@2x.png";
 import { alpha, Caption, Card, colors, DemoPage, finish, isDark, mono, Press, radius, tints } from "../ui";

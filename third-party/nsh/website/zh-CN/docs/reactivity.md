@@ -13,7 +13,7 @@ NSH 用 **signal** 更新界面：signal 是知道谁在读取自己的值。sig
 Rust 组件从 prelude 中取得本页的所有内容；TSX 从 `nsh` 导入：
 
 ```rust tabs
-use nsh_core::ui::prelude::*;   // signal, computed, effect, resource, batch, untracked, cleanup, provide_context, use_context
+use nsh_core::prelude::*;   // signal, computed, effect, resource, batch, untracked, cleanup, provide_context, use_context
 ```
 
 ```tsx tabs
@@ -501,7 +501,7 @@ function ProfileCard(props: { user: User | undefined }) {
 | `when(cond, ..)` / `<If when>` | 创建时 | 条件是否成立发生变化时 |
 | `each(..)` / `<Each of>` 的行 | 它的 key 第一次出现时 | 从不；改为由条目和索引的 signal 变化 |
 
-环境同样是响应式的：Rust 中的 `window()`、`dark()`、`font_scale()`、`safe_area()` 和 `keyboard_height()`，TSX 中 [`nsh/device`](../modules/nsh-device.md) 的 `windowSize()`、`colorScheme()`、`fontScale()` 以及 [`nsh/base`](../modules/nsh-base.md) 的 `safeArea()` 和 `keyboardFrame()`，读取它们的绑定会跟随屏幕旋转、深色模式或键盘变化。
+环境同样是响应式的：Rust 中的 `window()`、`dark()`、`font_scale()`、`safe_area()` 和 `keyboard_height()`，TSX 中 [`nsh` 的设备 API](../modules/nsh.md#device) 的 `windowSize()`、`colorScheme()`、`fontScale()` 以及 [`nsh`](../modules/nsh.md) 的 `safeArea()` 和 `keyboardFrame()`，读取它们的绑定会跟随屏幕旋转、深色模式或键盘变化。
 
 ## 常见错误
 

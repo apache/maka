@@ -462,7 +462,7 @@ final class TextLayouts {
     // Hit testing of a final layout: the caret at a point, a caret's box and the
     // boxes of a range (`TextEngine::hit_test`, `caret_rect` and `range_rects`).
     // The engine thread asks through JNI in dp; the UI thread (TextBox,
-    // SelectionArea, TestAgent) asks the same methods in px (`density` 1), so one
+    // SelectableView, TestAgent) asks the same methods in px (`density` 1), so one
     // implementation answers both. Coordinates are the layout's own, which is the
     // content box: the layouts are made without padding and TextBox draws them
     // translated to the box's corner.

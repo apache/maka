@@ -11,7 +11,8 @@ use crossbeam_channel::Receiver;
 use nsh_core::{
     ApproxTextEngine, EventKind, EventPayload, MountBatch, MountItem, NodeId, Size,
     animation::{AnimationOp, AnimationProp, Driver, Finished, Graph},
-    ui::{Root, prelude::*},
+    element::Root,
+    prelude::*,
 };
 use nsh_engine::{App, Engine, EngineConfig, Environment};
 

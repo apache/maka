@@ -6,10 +6,7 @@
 use std::{sync::LazyLock, time::Duration};
 
 use crossbeam_channel::Receiver;
-use nsh_core::{
-    ApproxTextEngine, MountBatch, Size,
-    ui::{Registry, prelude::*},
-};
+use nsh_core::{ApproxTextEngine, MountBatch, Size, element::Registry, prelude::*};
 use nsh_engine::{Bundle, Engine, EngineConfig, EngineContext, Environment};
 use tokio::sync::watch;
 
@@ -155,7 +152,7 @@ fn start(
 }
 
 const CALLS: &str = r#"import { mount, signal, Text } from "nsh";
-import { nativeModule } from "nsh/native";
+import { nativeModule } from "nsh";
 
 interface HostApi {
   quote(symbol: string): number;
@@ -171,7 +168,7 @@ setTimeout(async () => {
   lines.push(String(await Host.later(21)));
   lines.push(String(nativeModule("host/test") === nativeModule("host/test")));
   try { nativeModule("host/none"); } catch (e) { lines.push(`${e.name}: ${e.message}`); }
-  try { nativeModule("nsh/device"); } catch (e) { lines.push(e.name); }
+  try { nativeModule("nsh/mobile"); } catch (e) { lines.push(e.name); }
   shown.set(`done ${lines.join("|")}`);
 }, 0);
 
@@ -190,7 +187,7 @@ fn an_app_calls_the_functions_its_host_registered_by_name() {
 }
 
 const ALONE: &str = r#"import { mount, Text } from "nsh";
-import { nativeModule } from "nsh/native";
+import { nativeModule } from "nsh";
 
 let shown = "done";
 try { nativeModule("host/test"); } catch (e) { shown = `done ${e.message}`; }
@@ -208,7 +205,7 @@ fn an_app_whose_host_registered_nothing_hears_which_specifier_is_missing() {
 }
 
 const SYNC: &str = r#"import { mount, signal, Text } from "nsh";
-import { nativeModule } from "nsh/native";
+import { nativeModule } from "nsh";
 
 interface HostApi {
   publish(note: string): void;
@@ -246,7 +243,7 @@ fn the_host_pushes_its_data_to_every_app_that_subscribed() {
 }
 
 const WHOSE: &str = r#"import { mount, signal, Text } from "nsh";
-import { nativeModule } from "nsh/native";
+import { nativeModule } from "nsh";
 
 interface WhoseApi {
   now(): string;

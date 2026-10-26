@@ -17,11 +17,12 @@
  * under the License.
  */
 
+import { textTooltip } from './ui';
 import { createText, UiError, errorText, message as uiMessage } from './text';
 import { tr } from './locale';
 import { cleanup, computed, inputAction, signal, Text, View } from 'nsh';
 import { Button } from 'nsh/base';
-import { Clipboard } from 'nsh/clipboard';
+import { Clipboard } from 'nsh';
 import { host } from './host';
 import { messageBytes, type Position, type Row } from './history';
 import { C, controlStyle, controlDisabledStyle } from './ui';
@@ -154,13 +155,11 @@ export function MessageCopy(props: {
         accessibilityLabel={
           props.row().role === 'user' ? tr('Copy user message') : tr('Copy message')
         }
-        tooltip={
-          busy()
+        tooltip={textTooltip(() => busy()
             ? tr('Reading original message…')
             : props.row().role === 'user'
               ? tr('Copy user message')
-              : tr('Copy message')
-        }
+              : tr('Copy message'))}
         disabled={target() === null}
         onPress={inputAction(copy, target())}
         style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}

@@ -101,7 +101,7 @@ fn run(
 }
 
 const APP: &str = r#"import { mount, signal, Text } from "nsh";
-import { openUrl } from "nsh/device";
+import { openUrl } from "nsh";
 
 const log = signal<string[]>([]);
 const say = (s: string) => log.set([...log(), s]);
@@ -219,7 +219,7 @@ fn a_text_view_opens_its_links_when_asked() {
 }
 
 const GUARDED: &str = r#"import { mount, signal, Text } from "nsh";
-import { openUrl } from "nsh/device";
+import { openUrl } from "nsh";
 
 const log = signal("start");
 try {

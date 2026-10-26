@@ -1,9 +1,9 @@
 import { type JSX, Scroll, signal, Text, View } from "nsh";
 import { ContextMenu, Menu, MenuItem, MenuSeparator, type OpenChangeReason, Submenu } from "nsh/base";
-import { platform } from "nsh/device";
-import { keymap } from "nsh/keymap";
+import { platform } from "nsh";
+import { keymap } from "nsh";
 import { Icon } from "../icons";
-import { Badge, Button, Caption, Card, colors, DemoPage, finish, isDark, mono, radius, Row, Segmented } from "../ui";
+import { Badge, Button, Caption, Card, colors, DemoPage, finish, isDark, mono, radius, Row, Segmented, Tip } from "../ui";
 
 // The look of every menu here is the gallery's: `nsh/base` draws none.
 
@@ -289,7 +289,7 @@ export function Menus() {
                     <Icon name={file().starred ? "star" : "text"} size={16} tint={file().starred ? colors.accent : colors.muted} />
                     <Text numberOfLines={1} style={{ flex: 1, fontSize: 14, color: colors.text }}>{file().name}</Text>
                     <Menu align="end" offset={4} margin={8} popupStyle={surface()} backdropStyle={backdrop} trigger={
-                      <View accessibilityLabel={`Actions for ${file().name}`} tooltip="More actions" hitSlop={8} activeStyle={{ opacity: 0.5 }} style={{ paddingHorizontal: 8, height: 28, justifyContent: "center" }}>
+                      <View accessibilityLabel={`Actions for ${file().name}`} tooltip={<Tip label="More actions" />} hitSlop={8} activeStyle={{ opacity: 0.5 }} style={{ paddingHorizontal: 8, height: 28, justifyContent: "center" }}>
                         <Text style={{ fontSize: 18, color: colors.muted }}>⋯</Text>
                       </View>
                     }>

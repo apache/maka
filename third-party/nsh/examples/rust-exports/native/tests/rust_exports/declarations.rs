@@ -3,7 +3,7 @@
 
 /// The declarations of the crate's set.
 fn declarations() -> String {
-    nsh_core::ui::declarations(&rust_exports_native::registry(), &[])
+    nsh_core::element::declarations(&rust_exports_native::registry(), &[])
 }
 
 #[test]

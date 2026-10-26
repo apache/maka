@@ -128,11 +128,11 @@ clipboard helpers, with OSC 52 as a copy fallback. Embedded views and scripts st
 an embedding host can connect its own clipboard through `HostServices`. NSH transfers the complete text;
 the operating system helper or terminal handles clipboard acceptance.
 
-The app's [`nsh/keymap`](../modules/nsh-keymap.md) bindings run before default handling. Terminal emulators decide
+The app's [`keymap`](../modules/nsh.md#keymap) bindings run before default handling. Terminal emulators decide
 which keys and modifiers reach an app; choose shortcuts that your supported terminal forwards.
 
 Selectable text supports mouse selection, and inline text links activate through pointer hit testing.
-[`SelectionArea`](../elements/selection-area.md) extends a selection across text nodes, lines and `TextView`
+[`View selectable`](../elements/text-selection.md) extends a selection across text nodes, lines and `TextView`
 blocks. Drag or Shift+click to extend it; dragging beyond a Scroll edge scrolls while held. Ctrl+A selects the
 area, Ctrl+C or Ctrl+Insert copies, and Escape clears a nonempty selection. Text marked `selectable={false}`
 stays out, so labels and control captions need not enter a copy. Copy uses the underlying text, including its
@@ -162,7 +162,7 @@ presentations.
 
 ## App data
 
-[`nsh/storage`](../modules/nsh-storage.md) keeps string values across launches and development reloads. Each
+[`nsh`](../modules/nsh-storage.md) keeps string values across launches and development reloads. Each
 application's `nsh.json` `id` names its own `storage.json` directory under the system data directory: Application
 Support on macOS, `%APPDATA%` on Windows and `$XDG_DATA_HOME` (or `~/.local/share`) on Linux. Bundles and Rust roots
 carry the same app identity, so both entries use the same data. Releases declare their own `id` in `nsh.json`.
@@ -255,7 +255,7 @@ Supply native modules for one view with `AppOptions::ui_sets`. A registry's `val
 the host's scoped client and expose a Rust class instance to TSX:
 
 ```rust
-use nsh_core::ui::{Instance, Registry};
+use nsh_core::element::{Instance, Registry};
 
 let mut native = Registry::ui_set("my-app/native");
 native.value("service", move || Instance::new(Service::from(client.clone())));
@@ -267,7 +267,7 @@ let options = AppOptions {
 
 Here `Service` is the host's `#[class]` wrapper. Its methods, including async methods, generate TypeScript
 declarations; TSX uses `import { service } from "my-app/native"`. A class without a constructor keeps
-client creation in the host. The first import or [`nativeModule`](../modules/nsh-native.md#nativemodule) lookup
+client creation in the host. The first import or [`nativeModule`](../modules/nsh.md#nativemodule) lookup
 runs the factory once per VM, and both paths share its value; reloads create new values. The host retains
 cancellation, subscription cleanup and service-operation receipts.
 `None` uses the process's default modules, while `Some(vec![])` selects an empty set.

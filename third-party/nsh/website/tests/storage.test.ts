@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, mkdirSync, rmSync, statSync, writeFileSync } f
 import { tmpdir } from 'node:os';
 import { join, normalize } from 'node:path';
 
-// `nsh/storage` on the web, end to end: the built site's player runs demo
+// `nsh`'s `Storage` on the web, end to end: the built site's player runs demo
 // `mod-storage` (a launch counter) in headless Chrome. Needs `bun run build`
 // (website/dist with the player) and Chrome or Chromium (`CHROME`, or one on
 // PATH); without either the tests are skipped with the reason.
@@ -115,7 +115,7 @@ async function dumpDom(url: string, profile: string): Promise<string> {
 /** The demo's counter text in a dumped player page ("Opened N times"). */
 const counter = (dom: string) => dom.match(/Opened \d+ times/)?.[0] ?? `no counter in: ${dom.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').slice(0, 300)}`;
 
-describe.skipIf(!!missing)('nsh/storage in the browser', () => {
+describe.skipIf(!!missing)('Storage in the browser', () => {
   let profiles: string;
   const profile = (name: string) => join(profiles, name);
 
@@ -171,7 +171,7 @@ const packageMissing = !existsSync(NSH)
 if (packageMissing) console.warn(`[storage.test] packaged app skipped: ${packageMissing}`);
 
 const KEPT_APP = `import { mount, signal, Text } from "nsh";
-import { Storage } from "nsh/storage";
+import { Storage } from "nsh";
 
 function App() {
   const opened = signal<number | null>(null);
@@ -203,7 +203,7 @@ const KEPT_CHECK = `<!doctype html>
   })();
 </script>`;
 
-describe.skipIf(!!packageMissing)('nsh/storage in a packaged web app', () => {
+describe.skipIf(!!packageMissing)('Storage in a packaged web app', () => {
   let work: string;
 
   beforeAll(() => {

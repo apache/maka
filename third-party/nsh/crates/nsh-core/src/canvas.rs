@@ -15,6 +15,7 @@ pub use self::{
     hit::{point_in_path, point_in_stroke},
 };
 use crate::{
+    element::{PropEnum, TsTypes},
     geometry::{Bounds, Corners, Percentage, Point, Points, Radians, ScaledPixels, Size, px},
     js::{
         canvas::*,
@@ -22,7 +23,6 @@ use crate::{
         ops::{JsOps, OpArg, OpReader, OpsError},
     },
     style::{Color, FontVariant},
-    ui::{PropEnum, TsTypes},
 };
 
 /// A number of a drawing: a constant or the value of animated value slot
@@ -1596,7 +1596,7 @@ mod tests {
     fn a_drawing_fills_with_its_views_background() {
         use crate::geometry::{bounds, point, size};
         let area = bounds(point(px(0.0), px(0.0)), size(px(10.0), px(10.0)));
-        let drawing = crate::ui::Painter::new()
+        let drawing = crate::element::Painter::new()
             .begin_path()
             .fill_background_from_view(area)
             .finish();

@@ -4,8 +4,9 @@
 
 use nsh_core::{
     Cursor,
+    element::Style,
     geometry::{Along, Axis, Edges, radians},
-    ui::{Style, prelude::*},
+    prelude::*,
 };
 
 /// How far a handle's band reaches on either side of the line it is

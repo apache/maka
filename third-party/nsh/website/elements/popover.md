@@ -15,7 +15,7 @@ trigger as it scrolls. It draws nothing of its own: the popup and its content ar
 
 ```rust tabs
 use nsh_base::{OpenChangeReason, PopoverEvent, popover};
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 fn details() -> impl IntoElement {
     popover()

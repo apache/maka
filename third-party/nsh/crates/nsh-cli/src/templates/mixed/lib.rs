@@ -3,7 +3,7 @@
 //! `.nsh/types/__SPECIFIER__.d.ts`.
 
 use nsh_base::theme;
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 /// The crate's UI set (`nsh.json` `"rust"`).
 #[native_module("__SPECIFIER__")]

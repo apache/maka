@@ -1,5 +1,5 @@
 import { mount, signal, Text, View } from "nsh";
-import { colorScheme, fontScale, pixelRatio, platform, windowSize } from "nsh/device";
+import { colorScheme, fontScale, pixelRatio, platform, windowSize } from "nsh";
 
 function Row(props: { label: string; value: string }) {
   return (

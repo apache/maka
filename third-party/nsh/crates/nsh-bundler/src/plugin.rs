@@ -575,7 +575,7 @@ mod tests {
         std::fs::write(
             dir.join("App.tsx"),
             format!(
-                "import {{ mount }} from \"nsh\";\nimport {{ Image }} from \"nsh/image\";\nimport icon from \"./img/{import}\";\nmount(() => <Image src={{icon}} />);\n"
+                "import {{ Image, mount }} from \"nsh\";\nimport icon from \"./img/{import}\";\nmount(() => <Image src={{icon}} />);\n"
             ),
         )
         .unwrap();

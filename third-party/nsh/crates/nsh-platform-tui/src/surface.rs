@@ -207,7 +207,7 @@ pub struct Surface {
     pub(crate) hovered_path: Vec<NodeId>,
     pub(crate) autofocus_seen: Vec<NodeId>,
     pub(crate) drag_input: Option<NodeId>,
-    pub(crate) area_selection: Option<crate::selection_area::SelectionArea>,
+    pub(crate) area_selection: Option<crate::selectable_view::SelectableView>,
     pub(crate) pointer: Option<crate::input::Pointer>,
     pub(crate) focus_history: Vec<NodeId>,
     pub(crate) focus_returns: Vec<crate::input::FocusReturn>,
@@ -1236,7 +1236,7 @@ impl Surface {
         for id in tracked {
             self.refresh_input_states(id);
         }
-        self.selection_area_sync();
+        self.selectable_view_sync();
         self.update_component_props();
         self.update_canvas_args();
         self.schedule_graphics();
@@ -1280,9 +1280,6 @@ impl Surface {
             Command::Dialog(dialog) => {
                 self.dialog = Some(*dialog);
                 self.dialog_selection = 0;
-            }
-            Command::Toast { text, long } => {
-                self.toast = Some((text, self.now + if long { 5.0 } else { 2.5 }))
             }
             Command::Announce(text) => self.announce(text),
             Command::SetClipboard(text) => self.write_clipboard(text),

@@ -31,8 +31,8 @@ export const SECTIONS: Section[] = [
     id: 'modules',
     label: { en: 'API', 'zh-CN': 'API' },
     blurb: {
-      en: 'The modules apps import: nsh, nsh/animated, navigation, storage, the platform modules and the global APIs.',
-      'zh-CN': '应用导入的模块：nsh、nsh/animated、导航、存储、平台模块与全局 API。',
+      en: 'The modules apps import: nsh, nsh/base, navigation, storage, the platform modules and the global APIs.',
+      'zh-CN': '应用导入的模块：nsh、nsh/base、导航、存储、平台模块与全局 API。',
     },
   },
 ];

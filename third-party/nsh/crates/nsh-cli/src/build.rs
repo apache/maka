@@ -365,7 +365,7 @@ mod tests {
 
     #[test]
     fn hosts_must_serve_the_ui_sets_an_app_imports() {
-        let natives = ["nsh", "nsh/list", "nsh/base"].map(String::from);
+        let natives = ["nsh", "nsh/mobile", "nsh/base"].map(String::from);
         assert_eq!(super::imported_sets(&natives), ["nsh/base"]);
     }
 

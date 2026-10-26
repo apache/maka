@@ -26,7 +26,8 @@ use std::sync::Arc;
 
 use nsh_core::{
     AccessibilityValue,
-    ui::{Registry, RowAccessor, Rows, Spring, Style, Timing, prelude::*},
+    element::{Registry, RowAccessor, Rows, Spring, Style, Timing},
+    prelude::*,
 };
 
 pub use self::{

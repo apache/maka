@@ -17,7 +17,7 @@ columns, [`DataTable`](./data-table.md) is the table.
 
 ```rust tabs
 use nsh_base::{table, table_body, table_cell, table_head, table_header, table_row, theme};
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 fn invoices() -> impl IntoElement {
     let cell = |label: &'static str| table_cell().w(px(120.0)).px_3().py_2().child(text(label));

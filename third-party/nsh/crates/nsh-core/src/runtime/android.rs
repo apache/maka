@@ -2,20 +2,8 @@
 
 use crate::{
     Command, ROOT_ID,
-    ui::{ModuleCx, ToastDuration, module, task::Action},
+    element::{ModuleCx, module, task::Action},
 };
-
-/// Short messages at the bottom of the screen (Android's toasts).
-#[module]
-pub(crate) struct Toast;
-
-#[module]
-impl Toast {
-    /// Shows `message` (`"short"` by default).
-    pub(crate) fn show(message: String, duration: Option<ToastDuration>, cx: &mut ModuleCx) {
-        cx.toast(message, duration.unwrap_or_default());
-    }
-}
 
 /// The Android back button: its listeners run after modals and before
 /// stacks.

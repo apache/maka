@@ -1,10 +1,7 @@
 //! `Checkbox`: a checked / unchecked / indeterminate control with no look
 //! of its own.
 
-use nsh_core::{
-    AccessibilityState, Checked,
-    ui::{Style, prelude::*},
-};
+use nsh_core::{AccessibilityState, Checked, element::Style, prelude::*};
 
 /// The props of [`Checkbox`].
 #[derive(Debug, Clone, PartialEq, Props)]

@@ -1,7 +1,7 @@
 //! `Sheet`: a panel at an edge of the screen, over a backdrop, in
 //! overlays.
 
-use nsh_core::ui::{Style, prelude::*};
+use nsh_core::{element::Style, prelude::*};
 
 use crate::popup::{OpenChangeReason, OpenState, SheetMotion, lifecycle};
 

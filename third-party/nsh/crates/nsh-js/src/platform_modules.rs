@@ -106,7 +106,7 @@ unsafe extern "C" fn nothing(
 /// `BackHandler`: the registry's module (`exitApp`) with listeners of the
 /// hardware back button.
 fn back_handler(cx: *mut JsContext) -> JsValue {
-    let handler = crate::components::runtime_module(cx, "nsh/android", "BackHandler")
+    let handler = crate::components::runtime_module(cx, "nsh/mobile", "BackHandler")
         // SAFETY: a new object when the runtime has none.
         .unwrap_or_else(|| unsafe { qjs::JS_NewObject(cx) });
     let add = reactive::new_function(cx, c"onBackPress", add_back_listener, 1);
@@ -239,21 +239,14 @@ unsafe extern "C" fn on_back_press(
 }
 
 /// The hand-written exports of `nsh/android` (with the registry's).
-pub(crate) const ANDROID_EXPORTS: &[Item] = &[
-    (
-        "isAvailable",
-        Export::Value(|cx| boolean(os(cx) == Os::Android)),
-        Ts::value("True on Android.", "boolean"),
+pub(crate) const ANDROID_EXPORTS: &[Item] = &[(
+    "BackHandler",
+    Export::Value(back_handler),
+    Ts::value(
+        "The Android back button: its listeners run after modals and before\nstacks.",
+        "BackHandlerModule & BackListeners",
     ),
-    (
-        "BackHandler",
-        Export::Value(back_handler),
-        Ts::value(
-            "The Android back button: its listeners run after modals and before\nstacks.",
-            "BackHandlerModule & BackListeners",
-        ),
-    ),
-];
+)];
 
 /// `nsh/android`'s types (with the runtime registry's modules).
 pub(crate) const ANDROID_TYPES: &str = r#"/** The back button's listeners. */
@@ -272,7 +265,7 @@ export interface BackListeners {
 /// `host`: the registry's module (`call`) with `available()` and the
 /// listeners of the host's events.
 fn host_module(ctx: *mut JsContext) -> JsValue {
-    let host = crate::components::runtime_module(ctx, "nsh/host", "host")
+    let host = crate::components::runtime_module(ctx, "nsh", "host")
         // SAFETY: a new object when the runtime has none.
         .unwrap_or_else(|| unsafe { qjs::JS_NewObject(ctx) });
     let natives: [(&CStr, reactive::Native, c_int); 2] = [
@@ -467,27 +460,20 @@ pub(crate) const MOBILE_EXPORTS: &[Item] = &[(
 )];
 
 /// `nsh/ios`.
-pub(crate) const IOS_EXPORTS: &[Item] = &[
-    (
-        "isAvailable",
-        Export::Value(|cx| boolean(os(cx) == Os::Ios)),
-        Ts::value("True on iOS (and Mac Catalyst).", "boolean"),
+pub(crate) const IOS_EXPORTS: &[Item] = &[(
+    "InputAccessoryView",
+    Export::Value(|cx| {
+        if os(cx) == Os::Ios {
+            dom::host_component(cx, "inputaccessory", true)
+        } else {
+            reactive::new_function(cx, c"InputAccessoryView", nothing, 1)
+        }
+    }),
+    Ts::function(
+        "A bar over the keyboard of the inputs whose `inputAccessoryViewID` is its\n`nativeID` (iOS's `inputAccessoryView`): as wide as the window and as tall\nas its content, moving with the keyboard natively. It renders nothing where\nit is placed in the tree, and nothing at all on Android.",
+        &["(props: InputAccessoryViewProps): YNode | null"],
     ),
-    (
-        "InputAccessoryView",
-        Export::Value(|cx| {
-            if os(cx) == Os::Ios {
-                dom::host_component(cx, "inputaccessory", true)
-            } else {
-                reactive::new_function(cx, c"InputAccessoryView", nothing, 1)
-            }
-        }),
-        Ts::function(
-            "A bar over the keyboard of the inputs whose `inputAccessoryViewID` is its\n`nativeID` (iOS's `inputAccessoryView`): as wide as the window and as tall\nas its content, moving with the keyboard natively. It renders nothing where\nit is placed in the tree, and nothing at all on Android.",
-            &["(props: InputAccessoryViewProps): YNode | null"],
-        ),
-    ),
-];
+)];
 
 /// `nsh/ios`'s types.
 pub(crate) const IOS_TYPES: &str = r#"export interface InputAccessoryViewProps {

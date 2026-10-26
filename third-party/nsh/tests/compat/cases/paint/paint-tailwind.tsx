@@ -11,7 +11,8 @@
 // layers' colors at the size's alpha (`shadow-sm/20`); `-current` takes the
 // text color; `perspective-none` clears a perspective; Tailwind 4.3's
 // palettes (`mauve`, ...).
-import { Input, Text, View } from "nsh";
+import { Text, View } from "nsh";
+import { Input } from "nsh/base";
 
 function App() {
   return (

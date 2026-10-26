@@ -7,12 +7,12 @@ group: ui
 
 # 网络
 
-NSH 应用用 `fetch` 发起 HTTP 请求：在 Rust 中是 `nsh_core::ui::prelude` 的函数，在任务中 await；在 TSX 中是标准的全局函数。两者都运行在平台的网络栈上（iOS 上是 NSURLSession，Android 上是 HttpURLConnection，[在 Web 上](./web.md#带-rust-组件的应用)是浏览器的），因此请求使用系统的 TLS、代理和 HTTP/2，并经过相同的[能力检查](#能力声明应用可以访问哪些主机)。Rust 的 `fetch` 接受 URL 或 `HttpRequest`，返回完整的响应（`HttpResponse`：`status()`、`ok()`、`header(name)`、`text()`、`body`）。TSX 的 `fetch` 双向流式传输：响应体随网络栈的交付以流的形式到达，请求体也可以是一个边生成边发送的流。TSX 还具备 Fetch API 的配套对象：`Headers`、`Request`、`Response`、`AbortController`、`FormData`、`Blob`、`File`、`URL`、`URLSearchParams`、`TextEncoder` / `TextDecoder` 以及 Web Streams。
+NSH 应用用 `fetch` 发起 HTTP 请求：在 Rust 中是 `nsh_core::prelude` 的函数，在任务中 await；在 TSX 中是标准的全局函数。两者都运行在平台的网络栈上（iOS 上是 NSURLSession，Android 上是 HttpURLConnection，[在 Web 上](./web.md#带-rust-组件的应用)是浏览器的），因此请求使用系统的 TLS、代理和 HTTP/2，并经过相同的[能力检查](#能力声明应用可以访问哪些主机)。Rust 的 `fetch` 接受 URL 或 `HttpRequest`，返回完整的响应（`HttpResponse`：`status()`、`ok()`、`header(name)`、`text()`、`body`）。TSX 的 `fetch` 双向流式传输：响应体随网络栈的交付以流的形式到达，请求体也可以是一个边生成边发送的流。TSX 还具备 Fetch API 的配套对象：`Headers`、`Request`、`Response`、`AbortController`、`FormData`、`Blob`、`File`、`URL`、`URLSearchParams`、`TextEncoder` / `TextDecoder` 以及 Web Streams。
 
 ## 获取 JSON
 
 ```rust tabs
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 #[derive(Clone, PartialEq)]
 struct Post {
@@ -95,7 +95,7 @@ mount(App);
 ## 发送数据
 
 ```rust tabs
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 // JSON
 let body = serde_json::json!({ "title": "Groceries", "items": ["milk", "eggs"] });
@@ -154,13 +154,13 @@ const response = await fetch("https://api.example.com/photos", { method: "POST",
 
 ### 上传用户选中的照片
 
-[`nsh/picker`](../modules/nsh-picker.md) 把用户选中的照片交给应用，它们是字节留在原生侧的文件，已经缩小并转成服务器认的格式；
+[`Picker`](../modules/nsh.md#picker) 把用户选中的照片交给应用，它们是字节留在原生侧的文件，已经缩小并转成服务器认的格式；
 Rust 直接发送字节，TSX 把 `File` 加进 `FormData`：
 
 ```rust tabs
 use nsh_core::geometry::DevicePixels;
 use nsh_core::picker::PickRequest;
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 let mut request = PickRequest::new(false, 1);
 request.max_dimension = Some(DevicePixels(2048));
@@ -175,7 +175,7 @@ spawn(async move {
 ```
 
 ```tsx tabs
-import { Picker } from "nsh/picker";
+import { Picker } from "nsh";
 
 const [photo] = await Picker.pickImages({ maxDimension: 2048 });
 if (photo) {
@@ -278,7 +278,7 @@ const response = await fetch(url, { signal: AbortSignal.timeout(10_000) });
 加载数据的组件应该在销毁时取消请求：Rust 任务会自动取消，TSX 在 [`cleanup`](./reactivity.md) 中中止：
 
 ```rust tabs
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 fn weather(city: String) -> impl IntoElement {
     let data = signal(String::new());

@@ -13,8 +13,8 @@ fn themed() -> Theme {
     theme
 }
 
-fn ui_theme() -> crate::ui::Tokens {
-    crate::ui::tokens::sample()
+fn ui_theme() -> crate::element::Tokens {
+    crate::element::tokens::sample()
 }
 
 fn cx(states: u8) -> (ClassEnvironment, u8) {
@@ -396,15 +396,15 @@ fn theme_tokens() {
 #[test]
 fn tailwind_colors_win_over_tokens_and_tokens_come_from_the_theme() {
     let mut theme = Theme::from_json(r##"{ "colors": { "primary": "#ff0000" } }"##).unwrap();
-    let mut ui = crate::ui::Tokens::default();
+    let mut ui = crate::element::Tokens::default();
     ui.set_number("radius-card", 10.0);
     ui.set_color(
         "chart-up",
-        crate::ui::AdaptiveColor::rgb(0x00ff00, 0x008800),
+        crate::element::AdaptiveColor::rgb(0x00ff00, 0x008800),
     );
     ui.set_color(
         "chart-grid",
-        crate::ui::AdaptiveColor::rgb(0x0000ff, 0x0000ff),
+        crate::element::AdaptiveColor::rgb(0x0000ff, 0x0000ff),
     );
     theme.set_tokens(&ui);
     let group = |_: &str| 0;
@@ -1331,9 +1331,9 @@ fn font_tokens_are_tailwinds_sans_and_mono() {
         styled_in(&theme, "font-mono").text.font_family,
         Some(FontFamily::new("monospace"))
     );
-    let mut ui = crate::ui::Tokens::default();
-    ui.set_font(crate::ui::FONT_SANS, "Inter");
-    ui.set_font(crate::ui::FONT_MONO, "JetBrains Mono");
+    let mut ui = crate::element::Tokens::default();
+    ui.set_font(crate::element::FONT_SANS, "Inter");
+    ui.set_font(crate::element::FONT_MONO, "JetBrains Mono");
     theme.set_tokens(&ui);
     assert_eq!(
         styled_in(&theme, "font-sans").text.font_family,
@@ -1698,4 +1698,52 @@ fn svg_paint_utilities_follow_tailwind_css() {
             ui.color("primary").unwrap().light
         )))
     );
+}
+
+#[test]
+fn env_in_arbitrary_spacing() {
+    use crate::style::EnvVar::*;
+    let s = styled(
+        "pb-[env(safe-area-inset-bottom)] pt-[calc(env(safe-area-inset-top)+8px)] \
+         mb-[env(keyboard-inset-height)] ml-[calc(4px_+_env(safe-area-inset-left))] \
+         px-[env(safe-area-inset-right,_4px)]",
+    );
+    assert_eq!(
+        s.pending.env.padding,
+        [
+            Some(SafeAreaInsetTop),
+            Some(SafeAreaInsetRight),
+            Some(SafeAreaInsetBottom),
+            Some(SafeAreaInsetRight)
+        ]
+    );
+    assert_eq!(s.layout.padding.top, taffy::LengthPercentage::length(8.0));
+    assert_eq!(
+        s.pending.env.margin,
+        [
+            None,
+            None,
+            Some(KeyboardInsetHeight),
+            Some(SafeAreaInsetLeft)
+        ]
+    );
+    assert_eq!(
+        s.layout.margin.left,
+        taffy::LengthPercentageAuto::length(4.0)
+    );
+    // A later utility wins, as in CSS.
+    assert_eq!(
+        styled("pb-[env(keyboard-inset-height)] pb-2")
+            .pending
+            .env
+            .padding[2],
+        None
+    );
+    // Unsupported: unknown classes.
+    let list = parse(
+        &themed(),
+        "ps-[env(safe-area-inset-left)] -mb-[env(keyboard-inset-height)] pb-[env(nope)] \
+         pb-[calc(env(safe-area-inset-top)*2)] w-[env(safe-area-inset-top)]",
+    );
+    assert_eq!(list.unknown().len(), 5, "{:?}", list.unknown());
 }

@@ -536,11 +536,11 @@ fn cursor_name(cursor: Cursor) -> Option<&'static str> {
 fn update_cursor(view: &NshView) {
     let name = {
         let s = view.state();
-        // Selectable text and the texts of selection areas show the
+        // Selectable text and the texts of selectable views show the
         // I-beam (a press target its pointer).
         cursor_name(s.style.cursor).or_else(|| {
             let selects = crate::text::selectable(&s)
-                || (s.text.is_some() && crate::selection_area::takes_part(view));
+                || (s.text.is_some() && crate::selectable_view::takes_part(view));
             selects.then_some("text")
         })
     };
@@ -1105,9 +1105,9 @@ fn down(surface: &Rc<Surface>, key: Key, x: f32, y: f32, time: f64, modifiers: g
         return;
     }
     // A press clears a selection anywhere else; the mouse selects in the
-    // selection area it presses in (`selection_area.rs`).
-    let area = crate::selection_area::pressed(surface, &hit.view, !touch, native);
-    // Mouse drags over selectable text or in a selection area select it
+    // selectable view it presses in (`selectable_view.rs`).
+    let area = crate::selectable_view::pressed(surface, &hit.view, !touch, native);
+    // Mouse drags over selectable text or in a selectable view select it
     // (`text.rs`) rather than pan.
     let selects =
         area.is_some() || (!touch && !native && crate::text::selectable(&hit.view.state()));
@@ -1153,7 +1153,7 @@ fn down(surface: &Rc<Surface>, key: Key, x: f32, y: f32, time: f64, modifiers: g
         let over_press = press
             .as_ref()
             .is_some_and(|p| p.view == *area || p.view.is_ancestor(area));
-        crate::selection_area::begin(surface, area, (x, y), time, modifiers, over_press);
+        crate::selectable_view::begin(surface, area, (x, y), time, modifiers, over_press);
     }
     let id = input.next_id.get();
     input.next_id.set(id.wrapping_add(1));
@@ -1234,7 +1234,7 @@ fn motion(surface: &Rc<Surface>, key: Key, x: f32, y: f32, time: f64) {
     p.time = time;
     p.velocity.add(time, point(Points(x), Points(y)));
     let moved = std::mem::replace(&mut p.moved, true);
-    if key == Key::Mouse && crate::selection_area::dragged(surface, x, y) {
+    if key == Key::Mouse && crate::selectable_view::dragged(surface, x, y) {
         cancel_press(surface, &mut p);
         release_pressed(surface, &mut p);
     }
@@ -1330,7 +1330,7 @@ fn finish(surface: &Rc<Surface>, mut p: Pointer, cancelled: bool) {
     }
     release_pressed(surface, &mut p);
     if p.key == Key::Mouse {
-        crate::selection_area::released(surface);
+        crate::selectable_view::released(surface);
     }
     let mode = std::mem::replace(&mut p.mode, Mode::Free);
     match mode {

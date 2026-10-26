@@ -16,7 +16,7 @@ menus, tooltips and sheets are built on it; [`nsh/base`](../modules/nsh-base.md)
 use to build your own.
 
 ```rust tabs
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 fn more_button() -> impl IntoElement {
     let open = signal(false);
@@ -78,7 +78,7 @@ function MoreButton() {
 }
 ```
 
-`Overlay` comes from `nsh` in TSX and `overlay()` from `nsh_core::ui::prelude` in Rust. It is shown while it is in the
+`Overlay` comes from `nsh` in TSX and `overlay()` from `nsh_core::prelude` in Rust. It is shown while it is in the
 view: put it in an `If` (Rust: `when(..)`) to open and close it. Overlays shown later are on top of earlier ones, and
 an overlay inside another is on top of it.
 

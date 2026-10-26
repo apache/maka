@@ -136,10 +136,10 @@ final class Mounter {
     final java.util.ArrayList<TouchTracker> touchTrackers = new java.util.ArrayList<>();
     /** The text with a selection (one at a time, as in TextView). */
     TextBox selectedText;
-    /** The selection area with a selection (one per surface, a text's or an area's). */
-    SelectionArea selectedArea;
-    /** Selection areas (`ViewProps.selection_area`), by view. */
-    private final SparseArray<SelectionArea> selectionAreas = new SparseArray<>();
+    /** The selectable view with a selection (one per surface, a text's or an area's). */
+    SelectableView selectedArea;
+    /** Selectable views (`ViewProps.selectable_view`), by view. */
+    private final SparseArray<SelectableView> selectableViews = new SparseArray<>();
 
     /** A finger went down at the screen point: a selection elsewhere ends. */
     void touchDown(float rawX, float rawY) {
@@ -147,13 +147,13 @@ final class Mounter {
         if (selectedArea != null && !selectedArea.selectionContains(rawX, rawY)) selectedArea.clear();
     }
 
-    /** The outermost selection area {@code text} is in (an area inside another is part of it), or null. */
-    SelectionArea selectionAreaOf(TextBox text) {
-        if (selectionAreas.size() == 0) return null;
-        SelectionArea outer = null;
+    /** The outermost selectable view {@code text} is in (an area inside another is part of it), or null. */
+    SelectableView selectableViewOf(TextBox text) {
+        if (selectableViews.size() == 0) return null;
+        SelectableView outer = null;
         for (Object v = text; v instanceof View; v = ((View) v).getParent()) {
             if (!(v instanceof Node)) continue;
-            SelectionArea area = selectionAreas.get(((Node) v).nodeId());
+            SelectableView area = selectableViews.get(((Node) v).nodeId());
             if (area != null && area.view == v) outer = area;
         }
         return outer;
@@ -953,10 +953,10 @@ final class Mounter {
         }
         View v = views.get(id);
         if (v instanceof StackBox) stacks.remove(v);
-        SelectionArea area = selectionAreas.get(id);
+        SelectableView area = selectableViews.get(id);
         if (area != null) {
             area.clear();
-            selectionAreas.remove(id);
+            selectableViews.remove(id);
         }
         screenOptions.remove(id);
         Animator running = layoutAnimators.get(id);
@@ -1554,15 +1554,15 @@ final class Mounter {
         } else {
             panActivations.remove(id);
         }
-        boolean selectionArea = b.getInt() != 0;
+        boolean selectableView = b.getInt() != 0;
         if (v == null) return;
-        SelectionArea area = selectionAreas.get(id);
-        if (selectionArea && (area == null || area.view != v)) {
+        SelectableView area = selectableViews.get(id);
+        if (selectableView && (area == null || area.view != v)) {
             if (area != null) area.clear();
-            selectionAreas.put(id, new SelectionArea(this, v));
-        } else if (!selectionArea && area != null) {
+            selectableViews.put(id, new SelectableView(this, v));
+        } else if (!selectableView && area != null) {
             area.clear();
-            selectionAreas.remove(id);
+            selectableViews.remove(id);
         }
         Feedback f = feedback.get(id);
         if (f == null) feedback.put(id, f = new Feedback());
@@ -2120,11 +2120,6 @@ final class Mounter {
                     styles[i] = b.getInt();
                 }
                 SystemUi.dialog(this, dialog, title, message, cancelable, sheet, texts, styles);
-                break;
-            }
-            case 13: {
-                String text = (String) objects[b.getInt()];
-                SystemUi.toast(context, text, b.getInt() != 0);
                 break;
             }
             case 14: {

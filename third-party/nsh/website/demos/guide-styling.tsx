@@ -1,5 +1,5 @@
 import { mount, Scroll, signal, Text, View } from "nsh";
-import { reduceMotion } from "nsh/accessibility";
+import { reduceMotion } from "nsh";
 import { desktop, focusRing, size, tint, ui, wide } from "./palette";
 
 // A function, so the styles follow the page's theme.

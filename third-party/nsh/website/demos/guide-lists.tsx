@@ -1,5 +1,5 @@
 import { effect, List, mount, signal, Text, View, type YNode } from "nsh";
-import { windowSize } from "nsh/device";
+import { windowSize } from "nsh";
 import { focusRing, hoverFill, size, tint, ui, wide } from "./palette";
 
 /** In a wide window the lists sit in one centered region, 760 points across. */

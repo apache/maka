@@ -5,7 +5,10 @@
 
 use std::sync::Arc;
 
-use nsh_core::ui::{RowAccessor, Rows, Style, prelude::*};
+use nsh_core::{
+    element::{RowAccessor, Rows, Style},
+    prelude::*,
+};
 
 use super::{PlotContext, scale::extent};
 

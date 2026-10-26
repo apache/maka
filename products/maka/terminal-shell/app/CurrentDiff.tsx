@@ -17,10 +17,11 @@
  * under the License.
  */
 
+import { textTooltip } from './ui';
 import { errorText, renderText, type UiText } from './text';
 import { tr } from './locale';
 import { cleanup, computed, inputAction, signal, Text, View, List } from 'nsh';
-import { Button, SelectionArea } from 'nsh/base';
+import { Button, } from 'nsh/base';
 import { host } from './host';
 import type { GitArea, GitDiff, WorkspacePath } from '../../../../packages/plugin-sdk/src/index.js';
 import { parsePatch } from '../../desktop-shell/app/patch.js';
@@ -174,9 +175,7 @@ export function CurrentDiff(props: { model: CurrentDiffModel }) {
         <Button
           accessibilityLabel={tr('Refresh current diff')}
           onPress={inputAction(model.refresh, null)}
-          tooltip={
-            model.state().kind === 'error' ? tr('Retry current diff') : tr('Refresh current diff')
-          }
+          tooltip={textTooltip(() => model.state().kind === 'error' ? tr('Retry current diff') : tr('Refresh current diff'))}
           style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
           hoverStyle={controlHoverStyle}
           focusStyle={controlFocusStyle}
@@ -222,7 +221,7 @@ function DiffRows(props: { model: CurrentDiffModel }) {
     return width;
   });
   return (
-    <SelectionArea style={{ flex: 1, minHeight: 0 }}>
+    <View selectable style={{ flex: 1, minHeight: 0 }}>
       <List
         accessibilityLabel={tr('Current file diff')}
         each={rows()}
@@ -318,6 +317,6 @@ function DiffRows(props: { model: CurrentDiffModel }) {
           </View>
         )}
       </List>
-    </SelectionArea>
+    </View>
   );
 }

@@ -1,5 +1,5 @@
 import { mount, signal, Text, View, WebView, type WebViewNavigation, type YNode } from "nsh";
-import { platform, windowSize } from "nsh/device";
+import { platform, windowSize } from "nsh";
 import { button, buttonText, ui } from "./palette";
 
 // The page: a button that posts to the app, and a line that shows what the

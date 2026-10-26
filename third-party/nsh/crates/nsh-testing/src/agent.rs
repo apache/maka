@@ -1825,8 +1825,9 @@ mod tests {
 
     use nsh_core::{
         EventKind, EventPayload,
+        element::Root,
         geometry::{Size, point},
-        ui::{Root, prelude::*},
+        prelude::*,
     };
     use nsh_engine::{EngineConfig, EngineControl};
 

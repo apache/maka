@@ -2,7 +2,7 @@
 //! ([`DiffViewClasses`]) and inline styles ([`DiffViewStyles`]) by part,
 //! over the view's defaults (the theme's tokens, green and red tints).
 
-use nsh_core::ui::{Style, prelude::*};
+use nsh_core::{element::Style, prelude::*};
 
 use crate::text_view::PartStyle;
 

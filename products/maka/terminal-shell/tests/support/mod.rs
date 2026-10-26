@@ -848,7 +848,7 @@ impl Fixture {
             std::fs::create_dir_all(&directory).unwrap();
             std::fs::write(
                 directory.join("host.d.ts"),
-                nsh_core::ui::declarations(&registry, &[]),
+                nsh_core::element::declarations(&registry, &[]),
             )
             .unwrap();
         }

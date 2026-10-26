@@ -1,5 +1,5 @@
 import { Canvas, mount, Path2D, signal, Text, View } from "nsh";
-import { createAnimatedValue, Easing } from "nsh/animated";
+import { createAnimatedValue, Easing } from "nsh";
 import { button, buttonText, Panel, Split, tint, ui, wide } from "./palette";
 
 const TAU = Math.PI * 2;

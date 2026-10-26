@@ -25,7 +25,7 @@ the look of the UI nsh draws.
    prose; `nsh` stays as it is in code, commands and URLs.
 3. **Specifics over adjectives.** Every capability card names something a
    reader can check in the repository: a crate, an element, a module, a
-   command (`Taffy`, `<List>`, `nsh/animated`, `nsh publish`). Claims track
+   command (`Taffy`, `<List>`, `Animated`, `nsh publish`). Claims track
    `README.md` and `AGENTS.md`; update the copy when they change.
 4. **Restraint carries the design.** Hierarchy comes from type scale, weight,
    hairlines and surface depth (card, inset, raised), not colour fills. The
@@ -145,7 +145,7 @@ chrome) and follows the page's theme (the player's `?theme=`, then a
 message on every change); the gallery's palette has both. The caption says
 what runs; Replay reloads it, which plays the scenario again. Entrance
 motion only, 620ms `cubic-bezier(.16, 1, .3, 1)`. The copied chat imports
-`./clipboard`, a no-op, because this runtime has no `nsh/clipboard` yet;
+`./clipboard`, a no-op, because this runtime has no `Clipboard` yet;
 the playground lists every demo but this one (it compiles single files).
 
 Behind the hero, `HeroField.astro` draws the dot grid on a 2D canvas, mostly

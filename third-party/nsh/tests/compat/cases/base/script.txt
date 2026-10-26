@@ -432,16 +432,10 @@ frame id:avoid-padding-inner 0 0 390 30
 frame id:avoid-off 0 185 390 30
 tap text:Dismiss the keyboard
 expect Dismiss: called
-covers [nsh/base] safeArea
-covers [nsh/base] safeAreaInsets
-covers [nsh/base] SafeAreaView
-covers [nsh/base] keyboardFrame
-covers [nsh/base] Keyboard
-covers [nsh/base] KeyboardAvoidingView
-covers [props] SafeAreaView.edges
-covers [props] KeyboardAvoidingView.enabled
-covers [props] KeyboardAvoidingView.behavior
-covers [props] KeyboardAvoidingView.offset
+covers [nsh] safeArea
+covers [nsh] safeAreaInsets
+covers [nsh] keyboardFrame
+covers [nsh] Keyboard
 # base-text-view
 tap id:case-base-text-view
 # Markdown: a heading, a link, a list, a table with the app's actions
@@ -530,8 +524,8 @@ covers [props] TextView.renderImage
 covers [events] TextView.onLinkPress
 covers [events] TextView.onCodeBlockAction
 covers [events] TextView.onImagePress
-# base-selection-area
-tap id:case-base-selection-area
+# base-selectable-view
+tap id:case-base-selectable-view
 # One area around a text, a TextView, a label kept out and an inner
 # area; a selectable TextView an area of its own; a text outside.
 expect Area first text
@@ -541,10 +535,10 @@ expect Area label
 expect Inner text
 expect Own selection
 expect Outside text
-prop id:area selectionArea true
-prop id:inner selectionArea true
-prop id:own selectionArea true
-noprop id:area-doc selectionArea
+prop id:area selectableView true
+prop id:inner selectableView true
+prop id:own selectableView true
+noprop id:area-doc selectableView
 # Texts join the area unless they say `selectable={false}`.
 noprop text:"Area first text" selectable
 noprop text:"Area item" selectable
@@ -552,7 +546,6 @@ prop text:"Area label" selectable false
 noprop text:"Inner text" selectable
 prop text:"Own selection" selectable true
 noprop text:"Outside text" selectable
-covers [nsh/base] SelectionArea
 # base-popups
 tap id:case-base-popups
 # Shown at first: a controlled popover, one with `defaultOpen`, a tooltip

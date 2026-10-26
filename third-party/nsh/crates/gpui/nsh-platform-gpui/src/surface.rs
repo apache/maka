@@ -696,7 +696,7 @@ impl Surface {
             model.apply(batch);
         }
         crate::access::batch_applied(self);
-        crate::selection_area::batch_applied(self);
+        crate::selectable_view::batch_applied(self);
     }
 
     /// Writes the animated values to the views and reports finished
@@ -981,7 +981,7 @@ mod tests {
 
         const APP: &str = r#"
             import { mount, signal, View, Text, List } from 'nsh';
-            import { LayoutAnimation } from 'nsh/animated';
+            import { LayoutAnimation } from 'nsh';
             const rows = signal(Array.from({length: 40}, (_, i) => `row ${i}`));
             const phase = signal('initial');
             let list;

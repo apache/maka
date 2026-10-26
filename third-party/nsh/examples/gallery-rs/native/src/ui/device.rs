@@ -1,7 +1,7 @@
 //! What depends on the device's input (as the TSX gallery's `hint`):
 //! phones and tablets are touched, desktops pointed at.
 
-use nsh_core::{platform::Os, ui::prelude::*};
+use nsh_core::{platform::Os, prelude::*};
 
 /// Instructions for the device's input: `touch` on phones and tablets,
 /// `pointer` on desktops (a mouse, a touchpad, a keyboard).

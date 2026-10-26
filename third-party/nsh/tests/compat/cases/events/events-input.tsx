@@ -9,7 +9,8 @@
 // that inserts nothing itself (`pasteBehavior`). Each handler shows what it gets as
 // text. Its
 // script checks each.
-import { Input, Text, View, signal } from "nsh";
+import { Text, View, signal } from "nsh";
+import { Input } from "nsh/base";
 
 function App() {
   const focus = signal("none");

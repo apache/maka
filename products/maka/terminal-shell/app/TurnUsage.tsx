@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { textTooltip } from './ui';
 import { UiError, errorText, renderText, type UiText } from './text';
 import { tr } from './locale';
 import { cleanup, inputAction, Scroll, signal, Text, View } from 'nsh';
@@ -194,7 +195,7 @@ export function TurnUsage(props: {
           <Button
             ref={(node) => node.focus()}
             accessibilityLabel={tr('Close turn usage')}
-            tooltip={tr('Close')}
+            tooltip={textTooltip(() => tr('Close'))}
             onPress={props.close}
             style={{ ...controlStyle, flexDirection: 'row', alignItems: 'center', gap: 8 }}
             hoverStyle={controlHoverStyle}

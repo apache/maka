@@ -2,7 +2,7 @@
 //! ([`EditorClasses`]) and inline styles ([`EditorStyles`]) by part, over
 //! the editor's defaults (the theme's tokens).
 
-use nsh_core::ui::{Style, prelude::*};
+use nsh_core::{element::Style, prelude::*};
 
 use crate::text_view::PartStyle;
 

@@ -76,8 +76,8 @@ The two templates make the same app, a counter:
 
 ```rust tabs
 // src/lib.rs
-use nsh_base::{safe_area_view, theme};
-use nsh_core::ui::prelude::*;
+use nsh_base::theme;
+use nsh_core::prelude::*;
 
 /// The crate's UI set: what a TSX entry may import from `my-app/native`.
 #[native_module("my-app/native")]
@@ -94,8 +94,9 @@ pub fn App() -> impl IntoElement {
         .bg(move || theme().background)
         .text_color(move || theme().foreground)
         .child(
-            safe_area_view()
+            view()
                 .flex_1()
+                .p_safe_area()
                 .child(
                     view()
                         .flex_1()
@@ -125,12 +126,11 @@ pub fn App() -> impl IntoElement {
 ```tsx tabs
 // App.tsx
 import { mount, signal, Text, View } from "nsh";
-import { SafeAreaView } from "nsh/base";
 
 function App() {
   const count = signal(0);
   return (
-    <SafeAreaView class="flex-1 items-center justify-center gap-4 bg-background">
+    <View class="flex-1 items-center justify-center gap-4 bg-background pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]">
       <Text class="text-3xl font-semibold text-foreground">{count()}</Text>
       <View
         onPress={() => count.update((c) => c + 1)}
@@ -139,7 +139,7 @@ function App() {
       >
         <Text class="text-lg text-primary-foreground">Tap</Text>
       </View>
-    </SafeAreaView>
+    </View>
   );
 }
 
@@ -148,9 +148,9 @@ mount(App);
 
 In Rust:
 
-- **`use nsh_core::ui::prelude::*`** brings the primitives (`view()`, `text()`, `scroll()`, `input()`, `image()`, ...),
-  [signals](./reactivity.md) and the typed style methods; **`nsh_base`** has the unstyled base components
-  ([`safe_area_view()`](../modules/nsh-base.md#safeareaview), `button()`, the keyboard, dialogs) and `theme()`, the colors and
+- **`use nsh_core::prelude::*`** brings the primitives (`view()`, `text()`, `scroll()`, `input()`, `image()`, ...),
+  [signals](./reactivity.md) and the typed style methods (`.p_safe_area()` pads a view by the [safe area](../elements/safe-area.md)); **`nsh_base`** has the unstyled base components
+  (`button()`, the keyboard, dialogs) and `theme()`, the colors and
   radii the app's components draw with ([Theme](./rust.md#theme)).
 - **`#[component] pub fn App()`** is a component: a function that runs **once** and returns its elements.
   `nsh.json`'s `"root": "App"` names it, and `nsh run` mounts it. `signal(0_u32)` makes a value that changes over time.
@@ -173,7 +173,7 @@ In TSX:
 - **`function App()`** is a component that runs **once**. **`{count()}`** reads the signal inside JSX: the compiler
   sees a call and makes this text follow the signal.
 - **`<View onPress>`** is a native view that reacts to presses; `active:` classes are its style while pressed. `View`,
-  `Text`, `Image`, `Scroll`, `Input` and the other [host elements](../elements/index.md) are imported from `nsh`; only
+  `Text`, `Image`, `Scroll` and the other [host elements](../elements/index.md) are imported from `nsh` (`Input` from `nsh/base`); only
   `If` and `Each` need no import.
 - **`class`** takes [Tailwind](./tailwind.md) classes; `style={{ … }}` takes an object of camelCase style
   properties, with numbers in points. `bg-background`, `bg-primary`, `text-primary-foreground` and

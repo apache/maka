@@ -439,7 +439,7 @@ pub fn blur_radius(filters: &[Filter]) -> Points {
 ///
 /// Read on iOS, where it picks the material; the blur's radius still sets
 /// how strongly it is applied, as an approximation rather than a Gaussian radius.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, crate::ui::PropEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, crate::element::PropEnum)]
 pub enum BackdropMaterial {
     /// The thinnest material, the most of what is behind coming through.
     #[default]

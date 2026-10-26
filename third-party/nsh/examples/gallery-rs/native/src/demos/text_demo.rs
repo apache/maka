@@ -3,7 +3,10 @@
 //! truncation, Chinese and Japanese, right-to-left text and alignment, each
 //! on a card (as the TSX gallery's `demos/TextDemo.tsx`).
 
-use nsh_core::ui::{EllipsizeMode, WritingDirection, prelude::*};
+use nsh_core::{
+    element::{EllipsizeMode, WritingDirection},
+    prelude::*,
+};
 
 use crate::{
     assets::{LOGO, PACIFICO},

@@ -9,8 +9,9 @@ use nsh_core::{
     ApproxTextEngine, Command, EventKind, EventPayload, MountBatch, MountItem, ROOT_ID, Size,
     TouchEvent, TouchPhase, TouchPoint,
     canvas::{CanvasOp, Num, PathOp},
+    element::Root,
     geometry::px,
-    ui::{Root, prelude::*},
+    prelude::*,
 };
 use nsh_engine::{App, Engine, EngineConfig, Environment};
 

@@ -15,7 +15,7 @@ use nsh_base::{
     plot::{area, grid, line, plot},
     theme,
 };
-use nsh_core::ui::{RowAccessor, Rows, prelude::*};
+use nsh_core::element::{RowAccessor, Rows, prelude::*};
 
 fn week(visitors: Vec<f64>, hovered: Signal<Option<u32>>) -> impl IntoElement {
     let rows = Rows::from_columns(visitors.len(), [("visitors".into(), visitors)]);
@@ -132,7 +132,7 @@ plot 没有设置定义域时，`Line` 和 `Area` 绘制的数值（包括 area 
 
 ## 动效
 
-动效由应用决定，默认没有：一切立即显示。`motion` 使用 [`nsh/animated`](../modules/nsh-animated.md) 的时间参数（`{ duration, easing, delay }` 和 `{ stiffness, damping, mass }`）：
+动效由应用决定，默认没有：一切立即显示。`motion` 使用 [`animated`](../modules/nsh.md#animated) 的时间参数（`{ duration, easing, delay }` 和 `{ stiffness, damping, mass }`）：
 
 | 键 | 类型 | 作用 |
 |---|---|---|
@@ -143,7 +143,7 @@ plot 没有设置定义域时，`Line` 和 `Area` 绘制的数值（包括 area 
 
 动效在平台的动画器上运行，不需要每帧运行 JS；对偏好减少动态效果的用户立即完成。列表为回到视野的行重新创建 plot 时，图形会再绘出一次；可以把行的键名作为它的 `appearGeneration`。
 
-这是 plot 自己的动效，用来设置图表里动的部分（图形的裁剪区域和悬停部件）的时间参数。视图的入场、离场和强调效果使用 [`createMotion`](../modules/nsh-animated.md#createmotion) 的预设和关键帧，应用仍然可以把它们用在 plot 的视图或周围的元素上。
+这是 plot 自己的动效，用来设置图表里动的部分（图形的裁剪区域和悬停部件）的时间参数。视图的入场、离场和强调效果使用 [`createMotion`](../modules/nsh.md#createmotion) 的预设和关键帧，应用仍然可以把它们用在 plot 的视图或周围的元素上。
 
 ## 构建图表
 

@@ -15,7 +15,7 @@ use nsh_base::{
     dock::{DockAreaLayout, DockLayout, DockPanel, DockPlacement, DockRegion, DockTab},
     dock_area, theme,
 };
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 fn workspace() -> impl IntoElement {
     let layout = signal(
@@ -239,7 +239,7 @@ const terminalOpen = signal(true);
 
 ## 保存与恢复
 
-报告的布局是普通数据，所以保存它就是把 `JSON.stringify(layout)` 写进[存储](../modules/nsh-storage.md)，恢复它就是把解析出的值作为 `layout` 传入。`onLayoutChange` 报告每个改动，包括调整大小和选中标签页，所以等改动稳定后再写入存储（每次报告时重置一个短计时器）。
+报告的布局是普通数据，所以保存它就是把 `JSON.stringify(layout)` 写进[存储](../modules/nsh.md#storage)，恢复它就是把解析出的值作为 `layout` 传入。`onLayoutChange` 报告每个改动，包括调整大小和选中标签页，所以等改动稳定后再写入存储（每次报告时重置一个短计时器）。
 
 在 Rust 中，`DockAreaLayout::to_state` 和 `from_state` 读写 `DockAreaState`，也就是 `gpui-base` 的停靠区使用的布局文件格式。
 

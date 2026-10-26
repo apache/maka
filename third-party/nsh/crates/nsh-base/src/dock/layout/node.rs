@@ -1,8 +1,8 @@
 use std::{cmp::Ordering, fmt};
 
 use nsh_core::{
+    element::{JsHost, JsIn, JsOwned, JsValue, PropError, SharedString, TsTypes},
     geometry::{Axis, Points},
-    ui::{JsHost, JsIn, JsOwned, JsValue, PropError, SharedString, TsTypes},
 };
 
 /// Stable container identity. Survives structural edits and normalization so

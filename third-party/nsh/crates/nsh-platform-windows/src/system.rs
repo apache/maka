@@ -1,8 +1,8 @@
-//! Surface-wide commands and the environment: dialogs, toasts, the
-//! clipboard, exiting; the system's settings followed into
+//! Surface-wide commands and the environment: dialogs, the clipboard,
+//! exiting; the system's settings followed into
 //! [`Environment`].
 //!
-//! Dialogs and toasts are drawn inside the surface, as items the root view
+//! Dialogs are drawn inside the surface, as items the root view
 //! hosts over the app's views ([`Hosted`]), rather than as separate
 //! windows (`MessageBox`, `TaskDialog`): they stay with the surface when it
 //! is embedded in another app's window, never run a modal message loop of
@@ -47,7 +47,6 @@
 use std::{
     cell::{Cell, RefCell},
     rc::Rc,
-    time::Duration,
 };
 
 use nsh_core::{
@@ -100,9 +99,6 @@ use crate::{
     view::{Hosted, ItemPointer},
 };
 
-/// How long a toast shows (Android's short and long durations).
-const TOAST_SHORT: Duration = Duration::from_millis(2000);
-const TOAST_LONG: Duration = Duration::from_millis(3500);
 /// Fades of overlays, in seconds.
 const FADE_IN: f64 = 0.167;
 const FADE_OUT: f64 = 0.12;
@@ -120,7 +116,7 @@ const VK_DOWN: u16 = 0x28;
 thread_local! {
     /// The system appearance a test switched to (`nsh test --target`).
     static SIMULATED: Cell<Option<bool>> = const { Cell::new(None) };
-    /// The dialogs and toasts of this thread's surfaces.
+    /// The dialogs of this thread's surfaces.
     static OVERLAYS: RefCell<Vec<Overlay>> = const { RefCell::new(Vec::new()) };
     /// The accent colors of the system's palette (light and dark).
     static ACCENT: Cell<Option<(Color, Color)>> = const { Cell::new(None) };
@@ -458,7 +454,6 @@ pub(crate) fn open_url(url: &str) -> bool {
 pub(crate) fn command(surface: &Rc<Surface>, _id: NodeId, command: &Command) {
     match command {
         Command::Dialog(dialog) => show_dialog(surface, dialog),
-        Command::Toast { text, long } => show_toast(surface, text, *long),
         Command::SetClipboard(text) => {
             if !set_clipboard_text(text) {
                 log::debug!("windows: cannot set the clipboard");
@@ -560,7 +555,7 @@ fn dialog_answer(id: u32, index: i32) -> EventPayload {
 // ---------------------------------------------------------------------------
 // Overlays
 
-/// A dialog or toast over a surface.
+/// A dialog over a surface.
 struct Overlay {
     /// The surface's key.
     key: u64,
@@ -571,21 +566,18 @@ struct Overlay {
 #[derive(Clone)]
 enum OverlayKind {
     Dialog(Rc<DialogItem>),
-    Toast(Rc<ToastItem>),
 }
 
 impl OverlayKind {
     fn item(&self) -> Rc<dyn Hosted> {
         match self {
             OverlayKind::Dialog(d) => d.clone(),
-            OverlayKind::Toast(t) => t.clone(),
         }
     }
 
     fn opacity(&self) -> &Cell<f32> {
         match self {
             OverlayKind::Dialog(d) => &d.opacity,
-            OverlayKind::Toast(t) => &t.opacity,
         }
     }
 }
@@ -655,7 +647,7 @@ pub(crate) fn surface_resized(surface: &Surface, width: f32, height: f32) {
     }
 }
 
-/// The app stopped: its dialogs and toasts go too.
+/// The app stopped: its dialogs go too.
 pub(crate) fn clear(surface: &Surface) {
     let removed: Vec<Overlay> = OVERLAYS.with(|o| {
         let mut o = o.borrow_mut();
@@ -674,15 +666,6 @@ pub(crate) fn clear(surface: &Surface) {
 fn place(surface: &Surface, kind: &OverlayKind, width: f32, height: f32) {
     let r = match kind {
         OverlayKind::Dialog(_) => rect(0.0, 0.0, width, height),
-        OverlayKind::Toast(toast) => {
-            let (w, h) = toast.size(width);
-            rect(
-                ((width - w) / 2.0).round(),
-                (height - 64.0 - h).round(),
-                w,
-                h,
-            )
-        }
     };
     surface.root.set_native(&kind.item(), r);
 }
@@ -715,9 +698,8 @@ fn remove_overlay(surface: &Rc<Surface>, serial: u64) {
     let Some((_, kind)) = find(serial) else {
         return;
     };
-    if let OverlayKind::Dialog(d) = &kind {
-        d.closing.set(true);
-    }
+    let OverlayKind::Dialog(d) = &kind;
+    d.closing.set(true);
     if surface.environment.get().reduce_motion {
         drop_overlay(surface, serial);
     } else {
@@ -1787,93 +1769,6 @@ pub(crate) fn key(surface: &Rc<Surface>, event: &KeyEvent) -> bool {
         }
         None => false,
     }
-}
-
-// ---------------------------------------------------------------------------
-// Toasts
-
-/// A short message at the bottom of the surface; never takes the pointer.
-struct ToastItem {
-    label: Label,
-    opacity: Cell<f32>,
-}
-
-impl ToastItem {
-    const PAD_X: f32 = 16.0;
-    const PAD_Y: f32 = 9.0;
-    const MAX_WIDTH: f32 = 420.0;
-
-    /// Its size in a surface `width` wide.
-    fn size(&self, width: f32) -> (f32, f32) {
-        let max = (width - 48.0).min(Self::MAX_WIDTH) - 2.0 * Self::PAD_X;
-        let (w, h) = self.label.measure(max.max(1.0));
-        self.label.fit(w, h);
-        (w + 2.0 * Self::PAD_X, h + 2.0 * Self::PAD_Y)
-    }
-}
-
-impl Hosted for ToastItem {
-    fn draw(&self, cx: &mut DrawCx<'_>, size: (f32, f32)) {
-        let opacity = self.opacity.get();
-        if opacity <= 0.0 {
-            return;
-        }
-        if opacity < 1.0 {
-            cx.push_opacity(opacity);
-        }
-        let (fill, text) = if cx.dark {
-            (Color(0xfafa_faeb), Color(0x0a0a_0aff))
-        } else {
-            (Color(0x1717_17eb), Color(0xfafa_faff))
-        };
-        let r = rect(0.0, 0.0, size.0, size.1);
-        draw_shadow(cx, r, 18.0_f32.min(size.1 / 2.0), 2.0, 0.12);
-        fill_rounded(cx, r, 18.0_f32.min(size.1 / 2.0), fill);
-        self.label.draw(cx, Self::PAD_X, Self::PAD_Y, text);
-        if opacity < 1.0 {
-            cx.pop();
-        }
-    }
-
-    fn hit(&self, _x: f32, _y: f32, _size: (f32, f32)) -> bool {
-        false
-    }
-}
-
-/// Shows `text` at the bottom of the surface for a while (one at a time:
-/// a new toast replaces the one showing).
-fn show_toast(surface: &Rc<Surface>, text: &str, long: bool) {
-    let showing: Vec<u64> = OVERLAYS.with(|o| {
-        o.borrow()
-            .iter()
-            .filter(|o| o.key == surface.key() && matches!(o.kind, OverlayKind::Toast(_)))
-            .map(|o| o.serial)
-            .collect()
-    });
-    for serial in showing {
-        remove_overlay(surface, serial);
-    }
-    let fs = surface.environment.get().font_scale;
-    let Some(label) = Label::new(text, 14.0 * fs, 400, DWRITE_TEXT_ALIGNMENT_CENTER, true) else {
-        return;
-    };
-    let serial = next_serial();
-    let item = Rc::new(ToastItem {
-        label,
-        opacity: Cell::new(0.0),
-    });
-    add_overlay(surface, serial, OverlayKind::Toast(item));
-    crate::access::announce(surface, text);
-    let key = surface.key();
-    let duration = if long { TOAST_LONG } else { TOAST_SHORT };
-    std::thread::spawn(move || {
-        std::thread::sleep(duration);
-        crate::window::invoke(move || {
-            if let Some(surface) = Surface::by_key(key) {
-                remove_overlay(&surface, serial);
-            }
-        });
-    });
 }
 
 // ---------------------------------------------------------------------------

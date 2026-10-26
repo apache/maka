@@ -2,7 +2,7 @@
 //! `plot::scale` (d3-scale's): the app names the kind and the domain, the
 //! plot's size is the range.
 
-use nsh_core::ui::{JsHost, JsIn, JsOwned, JsValue, PropError, TsTypes};
+use nsh_core::element::{JsHost, JsIn, JsOwned, JsValue, PropError, TsTypes};
 
 /// How an axis of a [`Plot`](super::Plot) places values (TS `Scale`), as
 /// `gpui-base`'s scales: `{ type: "point" }` places the rows in order,

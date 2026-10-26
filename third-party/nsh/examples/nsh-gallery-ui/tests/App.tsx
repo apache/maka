@@ -1,5 +1,5 @@
 import { mount, signal, Text, View } from "nsh";
-import { colorScheme, setColorScheme } from "nsh/device";
+import { colorScheme, setColorScheme } from "nsh";
 import { Button, Card, colors, Segmented, Toggle } from "..";
 
 function App() {

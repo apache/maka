@@ -12,10 +12,10 @@ use std::{
 use nsh_core::{
     Bounds, Points,
     canvas::{CanvasTextAlign, CanvasTextBaseline, LineJoin},
-    ui::{
-        Animation, LayoutAnimation, LayoutCurve, LayoutTransition, prelude::*, sample_easing,
-        sample_spring,
+    element::{
+        Animation, LayoutAnimation, LayoutCurve, LayoutTransition, sample_easing, sample_spring,
     },
+    prelude::*,
 };
 
 use crate::ui::{

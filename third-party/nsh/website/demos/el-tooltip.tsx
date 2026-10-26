@@ -56,10 +56,14 @@ function App() {
       <Tool icon="✕" label="Delete" hint="Move to the trash" placement="top" pinned={pinned()} onPress={() => pressed.set("Delete")} onOpenChange={log("Delete")} />
     </>
   );
-  // The `tooltip` prop of any element: a text in the theme's bubble.
+  // The `tooltip` prop of any element: a `Tooltip` with the app's look.
   const pin = () => (
     <View
-      tooltip="Shows every tooltip without a pointer"
+      tooltip={
+        <Tooltip style={{ backgroundColor: ui().text, borderRadius: 7, paddingHorizontal: 10, paddingVertical: 6 }}>
+          <Text style={{ fontSize: 13, color: ui().page }}>Shows every tooltip without a pointer</Text>
+        </Tooltip>
+      }
       onPress={() => pinned.set(!pinned())}
       {...button("secondary", { align: "center", style: wide() ? {} : { flex: 1 } })}
     >

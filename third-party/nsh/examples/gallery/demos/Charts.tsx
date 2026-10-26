@@ -1,6 +1,6 @@
 import { List, signal, Text, View } from "nsh";
 import { Area, Grid, Line, Plot } from "nsh/base/plot";
-import { platform } from "nsh/device";
+import { platform } from "nsh";
 import { alpha, Button, Caption, Card, colors, DemoPage, finish, mono, toneColor } from "../ui";
 
 const pointer = platform.idiom === "desktop";

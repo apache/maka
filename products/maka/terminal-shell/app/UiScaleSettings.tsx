@@ -17,7 +17,8 @@
  * under the License.
  */
 
-import { cleanup, Input, Text, View } from 'nsh';
+import { cleanup, Text, View } from 'nsh';
+import { Input } from 'nsh/base';
 import { Button } from 'nsh/base';
 import { tr } from './locale';
 import { uiScale } from './uiScale';

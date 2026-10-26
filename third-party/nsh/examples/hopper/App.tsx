@@ -1,5 +1,6 @@
 import { type JSX, mount, Scroll, signal, Text, View } from "nsh";
-import { createNavStack, NavPage, NavStack, safeAreaInsets } from "nsh/base";
+import { createNavStack, NavPage, NavStack } from "nsh/base";
+import { safeAreaInsets } from "nsh";
 import { FlightPlan } from "./cards/FlightPlan";
 import { HopLog } from "./cards/HopLog";
 import { Mass } from "./cards/Mass";

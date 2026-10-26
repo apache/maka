@@ -1,5 +1,5 @@
 import { mount, Scroll, signal, Text, View, type YNode } from "nsh";
-import { createAnimatedValue } from "nsh/animated";
+import { createAnimatedValue } from "nsh";
 import { button, buttonText, desktop, size, tint, ui, wide } from "./palette";
 
 // Tints of the info, violet, danger, warn and up colours under the text colour.

@@ -1,5 +1,5 @@
 import { mount, signal, Text, View } from "nsh";
-import { Animated, createAnimatedValue, Easing } from "nsh/animated";
+import { Animated, createAnimatedValue, Easing } from "nsh";
 import { button, buttonText, desktop, Panel, Split, ui, wide } from "./palette";
 
 const TRACK = 240;

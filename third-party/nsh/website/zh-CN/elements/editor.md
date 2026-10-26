@@ -14,7 +14,7 @@ demo: el-editor
 
 ```rust tabs
 use nsh_base::editor;
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 const MAIN: &str = "fn main() {\n    println!(\"Hello, world!\");\n}\n";
 
@@ -78,7 +78,7 @@ Rust 代码可以让应用的编辑器认识更多语言，并用应用自己的
 
 ```rust
 use nsh_base::editor::{EditorLanguage, register_highlighter, register_language};
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 static NIMBLE: EditorLanguage = EditorLanguage::new("Nimble")
     .extensions(&["nb"])
@@ -119,7 +119,7 @@ fn native(registry: &mut Registry) {
 
 ## 按键
 
-编辑器的按键在它拥有焦点时生效；其他输入框保留各自的按键。`mod` 在 macOS 和 iOS 上是 Command，在其他平台上是 Control（`nsh/keymap` 的按键写法）。
+编辑器的按键在它拥有焦点时生效；其他输入框保留各自的按键。`mod` 在 macOS 和 iOS 上是 Command，在其他平台上是 Control（`keymap` 的按键写法）。
 
 | 按键（macOS） | 按键（Windows、Linux） | 命令 |
 |---|---|---|
@@ -160,10 +160,10 @@ fn native(registry: &mut Registry) {
 
 macOS 和 iOS 还有 Cocoa 的文本按键：`ctrl+b` / `ctrl+f` / `ctrl+p` / `ctrl+n` 移动，`ctrl+h` / `ctrl+d` 删除。
 
-没有默认按键的命令和应用自己的命令，使用应用通过 [`nsh/keymap`](../modules/nsh-keymap.md) 绑定的按键，经由 ref 的 `run` 执行：
+没有默认按键的命令和应用自己的命令，使用应用通过 [`keymap`](../modules/nsh.md#keymap) 绑定的按键，经由 ref 的 `run` 执行：
 
 ```tsx
-import { keymap } from "nsh/keymap";
+import { keymap } from "nsh";
 
 let editor!: EditorRef;
 
@@ -186,8 +186,8 @@ keymap.bind({
 查找栏由应用自己实现：
 
 ```tsx
-import { Input, signal, Text, View } from "nsh";
-import { Button, Editor, type EditorRef, type EditorSearchResult } from "nsh/base";
+import { signal, Text, View } from "nsh";
+import { Button, Editor, type EditorRef, type EditorSearchResult, Input } from "nsh/base";
 
 function Find(props: { source: string; onChange: (value: string) => void }) {
   let editor!: EditorRef;
@@ -690,5 +690,5 @@ let editor!: EditorRef;
 - [TextView](./text-view.md)：Markdown 和 HTML 文档，其代码块与编辑器使用相同的语法颜色。
 - [DiffView](./diff-view.md)：两段文本之间的改动，使用编辑器的语法颜色。
 - [Input](./input.md)：单行和多行文本框，使用平台自己的编辑。
-- [`nsh/keymap`](../modules/nsh-keymap.md)：应用为编辑器命令绑定的按键。
+- [`keymap`](../modules/nsh.md#keymap)：应用为编辑器命令绑定的按键。
 - [`nsh/base`](../modules/nsh-base.md)：其他基础组件。

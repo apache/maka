@@ -1,4 +1,5 @@
-import { Input, mount, signal, Text, View } from "nsh";
+import { mount, signal, Text, View } from "nsh";
+import { Input } from "nsh/base";
 import { Editor, type EditorDiagnostic, type EditorRef, type EditorSearchResult } from "nsh/base";
 import { button, buttonText, desktop, field, Log, Panel, Segmented, size, Split, ui, wide } from "./palette";
 

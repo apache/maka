@@ -163,13 +163,13 @@ setContentView(column);
 | `setLocale(Locale locale)` | 代替用户设置的语言和地区：`Intl`、`locale()` 和组件立即跟随，此后加载的应用也从它开始。`null` 跟随系统。 |
 | `setFontScale(float scale)` | 代替系统字体大小的文字大小（1 为默认）：文字和输入框按它重新排版，`fontScale()` 读到它，立即生效，此后加载的应用也一样；长度保持原样。`0` 跟随系统。 |
 | `setThemeOverrides(String json)` | 把宿主的品牌加在应用的[主题](./tailwind.md#主题-token)之上：格式与 `nsh.json` 的 `"theme"` 相同的主题文件。其中的 token 在浅色和深色模式下都覆盖应用的同名 token，应用的其他 token 保持不变。立即生效，并作用于之后加载的应用；`null` 恢复应用自己的主题。文件无法解析时抛出 `IllegalArgumentException`。 |
-| `setStorageDirectory(File dir)` | 接下来加载的应用保存其[存储](../modules/nsh-storage.md)的目录；`null`：应用私有目录内的 `files/nsh/<app id>`，按应用自己的 id。 |
+| `setStorageDirectory(File dir)` | 接下来加载的应用保存其[存储](../modules/nsh.md#storage)的目录；`null`：应用私有目录内的 `files/nsh/<app id>`，按应用自己的 id。 |
 | `setCacheOptions(NshCacheOptions options)` | 接下来加载的应用保存缓存（[下载的图片](./images-and-assets.md#磁盘缓存)）的位置和每种缓存的大小。用 `NshCacheOptions.builder()` 构建：`location(File)`、`systemLocation()`（默认：缓存目录中的 `nsh`，每个应用在 `<app id>`）或 `noDiskCache()`；`imagesMaxMegabytes(int)`（默认 256）或 `imagesOff()`。 |
 | `loadAssetBundle(String dir)` | 运行 APK assets 中的 `dir/bundle.nshc`；应用资源取自 `dir/assets/`。无法读取时返回 `false`（也会报告给错误监听器）。 |
 | `loadBundleFile(File file)` | 运行一个 `bundle.js` 文件；资源取自同目录下的 `assets/`。拒绝 `.nshc` 文件。 |
 | `runPackage(NshPackage pkg)` | 运行一个已验证的签名包，替换正在运行的应用。一个包只能运行一次。 |
 | `registerComponent(String name, NshComponent.Factory factory)` | 注册一个[原生组件](./native-components.md)。 |
-| `setParams(Object params)` | 之后加载的应用的启动参数（`Map` 或 `JSONObject`）：应用在启动时以 `host.params` 读取（[`nsh/host`](../modules/nsh-host.md)）。不是 JSON 对象时返回 `false`。 |
+| `setParams(Object params)` | 之后加载的应用的启动参数（`Map` 或 `JSONObject`）：应用在启动时以 `host.params` 读取（[`host`](../modules/nsh.md#host)）。不是 JSON 对象时返回 `false`。 |
 | `send(String name, Object data)` | 向应用发送一个事件（`host.on(name, …)`）；应用开始监听前会一直保留，没有应用运行时留给下一个应用。可在任意线程调用；`destroy()` 后返回 `false`。 |
 | `handle(String name, HostHandler handler)` | 在 UI 线程处理应用对 `name` 的调用（`host.call`）和投递（`host.post`）；传 `null` 移除处理函数。处理函数通过它的 `NshHostReply` 在任意线程回答一次。 |
 | `connectDevServer(String url)` | 开发用：从 `nsh dev` 服务器加载，每次修改后重新加载。使用 release 版 AAR 时返回 `false`。 |
@@ -191,7 +191,7 @@ nsh.loadAssetBundle("orders");
 
 ## 与应用通信
 
-视图与它运行的应用通过一条专属通道通信（[`nsh/host`](../modules/nsh-host.md)）：应用在启动时读取的启动参数、宿主应用发来的事件，以及应用发出的调用和投递，数据都是 JSON（在这一侧是 map、list、字符串、数字和布尔值）。应用里不需要任何视图，也不需要原生组件。
+视图与它运行的应用通过一条专属通道通信（[`host`](../modules/nsh.md#host)）：应用在启动时读取的启动参数、宿主应用发来的事件，以及应用发出的调用和投递，数据都是 JSON（在这一侧是 map、list、字符串、数字和布尔值）。应用里不需要任何视图，也不需要原生组件。
 
 ```java
 // 加载之前：应用首先打开的内容（TSX 中的 `host.params`）。
@@ -242,7 +242,7 @@ nsh.loadAssetBundle("orders");
 
 ## 应用打开的链接
 
-应用打开的 URL（[`openUrl`](../modules/nsh-device.md#openurl)，以及 `links="open"` 的 `TextView` 中的链接）先交给视图的 `OpenUrlHandler`，在 UI 线程调用：宿主应用自己处理了这个 URL（例如交给自己的路由）时返回 `true`，返回 `false` 则由系统用 `ACTION_VIEW` Intent 打开。没有设置处理函数时，所有 URL 都由系统打开。到达这里的 URL 都已通过应用的 `openUrl` 能力检查。
+应用打开的 URL（[`openUrl`](../modules/nsh.md#openurl)，以及 `links="open"` 的 `TextView` 中的链接）先交给视图的 `OpenUrlHandler`，在 UI 线程调用：宿主应用自己处理了这个 URL（例如交给自己的路由）时返回 `true`，返回 `false` 则由系统用 `ACTION_VIEW` Intent 打开。没有设置处理函数时，所有 URL 都由系统打开。到达这里的 URL 都已通过应用的 `openUrl` 能力检查。
 
 ```java
 nsh.setOpenUrlHandler(url -> {
@@ -338,7 +338,7 @@ adb reverse tcp:8790 tcp:8790
 - **键盘。** `NshView` 会自行滚动，让获得焦点的输入框不被键盘遮挡。请不要设置 `android:windowSoftInputMode`，或使用
   `adjustResize`；若使用 `adjustPan`，系统会改为平移整个窗口。
 - **安全区域。** 视图只把与它重叠的系统栏和键盘部分作为 insets 上报，所以位于工具栏下方的 `NshView` 不会有顶部
-  inset。如需全面屏（edge-to-edge）内容，请在系统栏后方绘制，并让应用使用 `SafeAreaView` / `safeAreaInsets()`（Rust 中是 `safe_area()`）。
+  inset。如需全面屏（edge-to-edge）内容，请在系统栏后方绘制，并让应用使用 `env(safe-area-inset-*)` 内边距 / `safeAreaInsets()`（Rust 中是 `safe_area()`）。
 - **配置变更。** 旋转屏幕或切换主题时，Activity 被重建会销毁该视图，应用随之从头启动。若要让它保持运行，请声明由
   Activity 自行处理的配置变更；打包出的 NSH 应用使用的是：
 

@@ -1,4 +1,4 @@
-use nsh_core::ui::description::SetDescription;
+use nsh_core::element::description::SetDescription;
 use rquickjs::{
     CatchResultExt, Context, Module, Runtime,
     module::{WriteOptions, WriteOptionsEndianness},

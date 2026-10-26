@@ -10,7 +10,7 @@ group: platforms
 A native component is a view the **embedding app** registers by name: a map, a camera preview, a chart library, any
 `UIView` on iOS, `android.view.View` on Android, `NSView` on macOS, `gtk::Widget` on Linux, or Direct2D drawing or a
 child `HWND` on Windows. The NSH app uses it like any other element: a Rust app makes it with `native(name)` from
-`nsh_core::ui::prelude`, a TSX app declares it with `nativeComponent()` from [`nsh/native`](../modules/nsh-native.md). NSH lays it out with the rest of the
+`nsh_core::prelude`, a TSX app declares it with `nativeComponent()` from [`nsh`](../modules/nsh.md#nativecomponent-and-nativemodule). NSH lays it out with the rest of the
 app, sends it props, delivers its events to handlers and forwards commands from a `ref`.
 
 Because NSH renders with the system's own views, a native component is just one more subview in the same hierarchy:
@@ -41,8 +41,7 @@ closure of one, sent again when it changes), `.on_native_event(..)` hears its ev
 for the name with the props and events it uses.
 
 ```rust tabs
-use nsh_base::safe_area_view;
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 use serde_json::json;
 
 const COLORS: [&str; 4] = ["#8250df", "#0969da", "#1a7f37", "#cf222e"];
@@ -51,9 +50,11 @@ const COLORS: [&str; 4] = ["#8250df", "#0969da", "#1a7f37", "#cf222e"];
 pub fn App() -> impl IntoElement {
     let taps = signal(0_u64);
     let badge = element_ref();
-    safe_area_view()
+    view()
         .flex_1()
         .p(px(20.0))
+        .pt_safe_area_plus(px(20.0))
+        .pb_safe_area_plus(px(20.0))
         .gap(px(16.0))
         .bg(rgb(0xf6f8fa))
         .child(text("Rendered by nsh").text_size(px(22.0)).font_weight(FontWeight::BOLD))
@@ -81,9 +82,8 @@ pub fn App() -> impl IntoElement {
 ```
 
 ```tsx tabs
-import { mount, signal, Text, type YNode } from "nsh";
-import { nativeComponent } from "nsh/native";
-import { SafeAreaView } from "nsh/base";
+import { mount, signal, Text, type YNode, View } from "nsh";
+import { nativeComponent } from "nsh";
 
 /** The host app's badge: a label it draws, sized to its text. */
 const Badge = nativeComponent<{ text: string; color?: string }, { tap: { count: number } }>("embed.badge", {
@@ -97,7 +97,7 @@ function App() {
   const taps = signal(0);
   let badge: YNode | undefined;
   return (
-    <SafeAreaView style={{ flex: 1, padding: 20, gap: 16, backgroundColor: "#f6f8fa" }}>
+    <View style={{ flex: 1, padding: 20, paddingTop: "calc(env(safe-area-inset-top) + 20px)", paddingBottom: "calc(env(safe-area-inset-bottom) + 20px)", gap: 16, backgroundColor: "#f6f8fa" }}>
       <Text style={{ fontSize: 22, fontWeight: "700" }}>Rendered by nsh</Text>
       <Badge
         ref={(node) => (badge = node)}
@@ -110,7 +110,7 @@ function App() {
         style={{ alignSelf: "flex-start", borderRadius: 8, overflow: "hidden" }}
       />
       <Text>{`JS saw ${taps()} taps`}</Text>
-    </SafeAreaView>
+    </View>
   );
 }
 
@@ -622,6 +622,6 @@ with web views). `ComponentContext::emit`, `set_size` (points) and `redraw` work
 
 ## See also
 
-- [`nsh/native` reference](../modules/nsh-native.md)
+- [`nativeComponent` reference](../modules/nsh.md#nativecomponent-and-nativemodule)
 - [Embedding in iOS apps](./ios.md) and [in Android apps](./android.md)
 - [Architecture](./architecture.md): how props and events cross threads

@@ -22,12 +22,14 @@ use std::{
 };
 
 use nsh_base::{
-    MarkdownPlugin, MarkdownPlugins, text_view,
+    MarkdownPlugin, MarkdownPlugins, TextViewClasses, TextViewPart, TextViewParts, TextViewStyles,
+    text_view,
     text_view::{Block, ParseContext, mdast},
 };
 use nsh_core::{
-    ListContentStyle, MountItem, NodeId, Size,
-    ui::{EngineContext, Root, engine_context, prelude::*},
+    ListContentStyle, MountItem, NodeId, PatchValue, Size, StyleKey,
+    element::{EngineContext, Root, Style, engine_context},
+    prelude::*,
 };
 use nsh_engine::EngineConfig;
 use nsh_testing::Headless;
@@ -450,7 +452,8 @@ mod typed_root_parts {
     use nsh_base::{TextViewClasses, TextViewPart, TextViewParts, TextViewStyles, text_view};
     use nsh_core::{
         PatchValue, StyleKey,
-        ui::{Root, Style, prelude::*},
+        element::{Root, Style},
+        prelude::*,
     };
     use nsh_engine::EngineConfig;
     use nsh_testing::Headless;

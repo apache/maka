@@ -2,7 +2,7 @@
 //! ([`DataTableClasses`]) and inline styles ([`DataTableStyles`]) by part,
 //! supplying the table's appearance.
 
-use nsh_core::ui::{Style, prelude::*};
+use nsh_core::{element::Style, prelude::*};
 
 use crate::text_view::PartStyle;
 

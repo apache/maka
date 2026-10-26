@@ -3,7 +3,8 @@
 // as `onCompositionChange` reports it: started, changed, ended. The handler
 // shows what it gets as text, and the text the composition committed
 // arrives through `onChange`. Its script checks each.
-import { Input, Text, View, signal } from "nsh";
+import { Text, View, signal } from "nsh";
+import { Input } from "nsh/base";
 
 function App() {
   const composition = signal("none");

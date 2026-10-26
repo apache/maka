@@ -17,10 +17,11 @@
  * under the License.
  */
 
+import { textTooltip } from './ui';
 import { createText } from './text';
 import { cleanup, inputAction, signal, Text, View, Image } from 'nsh';
 import { Button } from 'nsh/base';
-import { windowSize } from 'nsh/device';
+import { windowSize } from 'nsh';
 import type { YNode } from 'nsh';
 import { C, captionTextStyle, controlStyle } from './ui';
 import { Icon } from './Icon';
@@ -98,8 +99,7 @@ export function ImageThumbnail(props: {
           button = node;
         }}
         accessibilityLabel={props.label ?? tr('Open image preview')}
-        tooltip={
-          props.compact
+        tooltip={textTooltip(() => props.compact
             ? `${props.tooltip ?? props.label ?? tr('Open image preview')}\n${
                 size()
                   ? `${size()!.width} × ${size()!.height}`
@@ -107,8 +107,7 @@ export function ImageThumbnail(props: {
                     ? tr('Image unavailable')
                     : tr('Loading image…')
               }`
-            : undefined
-        }
+            : undefined)}
         disabled={!size()}
         onPress={inputAction(preview, action)}
         style={

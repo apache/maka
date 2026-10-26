@@ -1,12 +1,5 @@
 import { cleanup, signal, Text, View } from "nsh";
-import {
-  Button,
-  DataTable,
-  type DataTableColumn,
-  type DataTableRef,
-  type DataTableSelection,
-  type DataTableSort,
-} from "nsh/base";
+import { Button, DataTable, type DataTableColumn, type DataTableRef, type DataTableSelection, type DataTableSort } from "nsh/base";
 import { dataTableClasses, dataTableFitPadding, Segmented } from "../ui";
 
 // `nsh/base`'s `DataTable` over a million stocks of sixty columns the app
@@ -196,7 +189,7 @@ function Tool(props: { label: string; name: string; onPress: () => void }) {
 }
 
 /**
- * Data table: a million stocks of sixty columns whose quotes in view tick
+ * DataTable: a million stocks of sixty columns whose quotes in view tick
  * every 33 ms, the ID and Symbol columns fixed at the left, the ID column
  * sortable, rows, cells or columns selected, columns resized and moved.
  */

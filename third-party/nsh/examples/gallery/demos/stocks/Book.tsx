@@ -1,5 +1,5 @@
 import { Canvas, computed, effect, signal, Text, untracked, View } from "nsh";
-import { LayoutAnimation } from "nsh/animated";
+import { LayoutAnimation } from "nsh";
 import { colors, Legend, Press, radius } from "../../ui";
 import { compact, type Level, LEVELS, type Market, price, type Stock, toneOf } from "./market";
 import { alpha, Block, calm, grid, Head, hatch, SpringBar } from "./parts";

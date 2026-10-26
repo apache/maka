@@ -306,7 +306,7 @@ pub fn App() -> impl IntoElement {
 
 ```tsx tabs
 import { mount, Scroll, Text, View } from "nsh";
-import { createAnimatedValue } from "nsh/animated";
+import { createAnimatedValue } from "nsh";
 
 function App() {
   const offset = createAnimatedValue(0);
@@ -562,7 +562,7 @@ let scroll!: YNode;
 
 ## 滚动视图与键盘
 
-NSH 会自动让获得焦点的输入框保持可见：键盘出现时，输入框所在的滚动视图会得到与键盘等高的底部 inset，并把输入框滚动到可见位置。这是原生完成的，应用中不需要任何代码。滚动视图之外的内容（例如固定在底部的消息栏）使用 [`KeyboardAvoidingView`](./forms-and-keyboard.md#滚动视图之外的内容keyboardavoidingview)。
+NSH 会自动让获得焦点的输入框保持可见：键盘出现时，输入框所在的滚动视图会得到与键盘等高的底部 inset，并把输入框滚动到可见位置。这是原生完成的，应用中不需要任何代码。滚动视图之外的内容（例如固定在底部的消息栏）以 `env(keyboard-inset-height)` 作为底部内边距（见[滚动视图之外的内容](./forms-and-keyboard.md#滚动视图之外的内容)）。
 
 有两个属性决定滚动和点击如何与键盘交互：
 
@@ -577,7 +577,7 @@ NSH 会自动让获得焦点的输入框保持可见：键盘出现时，输入�
 - `"handled"`：点在会处理它的东西（按钮）上时，点击照常传递，键盘保持；点在空白处则收起键盘。表单通常应选它。
 - `"always"`：键盘在每次点击后都保持显示。
 
-两者都在点击或拖动发生时由原生决定，无需等待你的代码。要从代码收起键盘，在 Rust 中调用 `dismiss_keyboard()`，在 TSX 中调用 [`nsh/base`](../modules/nsh-base.md#keyboard) 的 `Keyboard.dismiss()`。
+两者都在点击或拖动发生时由原生决定，无需等待你的代码。要从代码收起键盘，在 Rust 中调用 `dismiss_keyboard()`，在 TSX 中调用 [`nsh`](../modules/nsh.md#keyboard-and-keyboardframe) 的 `Keyboard.dismiss()`。
 
 ## 嵌套滚动视图
 

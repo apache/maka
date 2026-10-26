@@ -561,7 +561,7 @@ function SelectAll(props: { selected: number; total: number; onChange: (all: boo
 ```
 
 Disable submission while an operation is in flight, keep the user's input, and show the result near the action. Keep
-inputs above the software keyboard (`KeyboardAvoidingView`). Reserve dialogs for short, focused decisions; use a full
+inputs above the software keyboard (`env(keyboard-inset-height)`). Reserve dialogs for short, focused decisions; use a full
 page or sheet for workflows that need exploration or many fields.
 
 A loading treatment must represent actual waiting. Switching between settings panels whose content is already
@@ -670,7 +670,7 @@ Every interactive control should be designed for:
 | Loading | | Preserve context, prevent duplicate action, explain long waits |
 | Error | | State what happened and how to recover |
 
-Bind commands that should work from the keyboard with [`nsh/keymap`](../modules/nsh-keymap.md) on the desktops and
+Bind commands that should work from the keyboard with [`keymap`](../modules/nsh.md#keymap) on the desktops and
 the web. Match familiar platform shortcuts (`"mod+k"` is Command on macOS, Control elsewhere), expose shortcuts in
 menus or tooltips, and keep focus in a logical place after opening or dismissing an overlay.
 
@@ -745,7 +745,7 @@ Use command frequency and scope to choose where an action lives:
 - put secondary actions for the current region behind a visible [`Menu`](../elements/menu.md) trigger;
 - put commands that act on the object under the pointer or finger in a `ContextMenu`: a right click on the desktops,
   a held finger on touch screens;
-- expose the same important command through a keyboard shortcut ([`nsh/keymap`](../modules/nsh-keymap.md)) when it has
+- expose the same important command through a keyboard shortcut ([`keymap`](../modules/nsh.md#keymap)) when it has
   a natural keyboard form, and in the application menu (`Menu.setApplicationMenu` from
   [`nsh/desktop`](../modules/nsh-desktop.md));
 - use a hover-revealed icon only as a shortcut to a command that remains reachable elsewhere.
@@ -757,7 +757,7 @@ and is invisible to touch, keyboard-only, and many assistive technology workflow
 
 ```rust tabs
 use nsh_base::{menu, menu_item, menu_separator, theme};
-use nsh_core::{color::black, ui::StyleRefinement};
+use nsh_core::{color::black, element::StyleRefinement};
 
 /// The app's popup surface, shared by its menus, popovers and tooltips.
 fn popup(s: StyleRefinement) -> StyleRefinement {
@@ -1097,8 +1097,8 @@ NSH apps run on phones, tablets, desktops, and the web, and often inside a host 
   page or dialog on top (`statusBar`).
 - **The host's theme.** An embedded app can be given its host's theme; classes and Rust bindings that read tokens
   follow it natively ([Theme tokens](./tailwind.md#theme-tokens)).
-- **Safe areas and the keyboard.** Keep content inside the safe area (`SafeAreaView`, `safeAreaInsets()`) and inputs
-  above the software keyboard (`KeyboardAvoidingView`) ([Device and environment](./device-and-environment.md)).
+- **Safe areas and the keyboard.** Keep content inside the safe area (`env(safe-area-inset-*)`, `safeAreaInsets()`) and inputs
+  above the software keyboard (`env(keyboard-inset-height)`) ([Device and environment](./device-and-environment.md)).
 - **Appearance, text size, and motion.** Every surface works in light and dark (`dark:`, `colorScheme()`), at the
   user's text size, and with reduced motion (`motion-reduce:`, `reduceMotion()`).
 - **Right to left.** The layout direction follows the locale, and the `direction` style sets it for a view and its

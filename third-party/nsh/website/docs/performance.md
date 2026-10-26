@@ -66,7 +66,7 @@ changes: a text, a style property, a branch of `when` (`<If>`), the rows of `eac
 subtree to find out what changed.
 
 ```rust tabs
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 #[derive(Clone, PartialEq)]
 struct Quote {
@@ -132,10 +132,10 @@ item. You can see this in `nsh test --trace` output (below).
 
 An animation driven from the engine thread (a signal written on every frame) costs a commit per frame, and a JS call
 in TSX, and stutters when the engine thread is busy. Animated values ([Animation](./animation.md): `animated_value` in
-Rust, [`nsh/animated`](../modules/nsh-animated.md) in TSX) run animations natively instead:
+Rust, [`nsh`'s animation API](../modules/nsh.md#animation) in TSX) run animations natively instead:
 
 ```rust tabs
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 let scroll_y = animated_value(0.0);
 
@@ -150,7 +150,7 @@ virtual_list(move || photos.with(Vec::len), move |at| photo_row(photos, at))
 
 ```tsx tabs
 import { List, View } from "nsh";
-import { createAnimatedValue } from "nsh/animated";
+import { createAnimatedValue } from "nsh";
 
 const scrollY = createAnimatedValue(0);
 

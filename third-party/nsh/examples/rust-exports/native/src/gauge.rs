@@ -1,7 +1,7 @@
 //! A component: `<Gauge value={…} max={…} label="…" onChange={…}>…</Gauge>`.
 
 use nsh_base::theme;
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 /// The props of [`Gauge`].
 #[derive(Debug, Clone, PartialEq, Props)]

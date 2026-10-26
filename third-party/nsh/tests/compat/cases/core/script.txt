@@ -16,7 +16,7 @@ covers [nsh] mount
 covers [nsh] signal
 covers [nsh] Text
 covers [nsh] View
-covers [nsh/device] locale
+covers [nsh] locale
 covers [nsh:rt] append
 covers [nsh:rt] component
 covers [nsh:rt] element
@@ -55,22 +55,22 @@ frame id:faded 0 302 40 40
 frame id:box 0 359 50 20
 tap id:grow
 frame id:box 0 359 150 20
-covers [nsh/animated] Animated
-covers [nsh/animated] AnimatedNode
-covers [nsh/animated] AnimatedValue
-covers [nsh/animated] Easing
-covers [nsh/animated] LayoutAnimation
-covers [nsh/animated] createAnimatedValue
+covers [nsh] Animated
+covers [nsh] AnimatedNode
+covers [nsh] AnimatedValue
+covers [nsh] Easing
+covers [nsh] LayoutAnimation
+covers [nsh] createAnimatedValue
 # core-canvas
 tap id:case-core-canvas
 frame id:canvas 0 64 200 100
 expect Not checked
 tap id:check
 expect size 200x100 canvas 200x100 drawn true context true gradient true in true out false added true current true stroke true dash 3,1 measured true
-covers [nsh/canvas] Canvas
-covers [nsh/canvas] CanvasGradient
-covers [nsh/canvas] CanvasRenderingContext2D
-covers [nsh/canvas] Path2D
+covers [nsh] Canvas
+covers [nsh] CanvasGradient
+covers [nsh] CanvasRenderingContext2D
+covers [nsh] Path2D
 covers [props] Canvas.draw
 # core-elements
 tap id:case-core-elements
@@ -90,13 +90,13 @@ expect Same object: true
 expect Pan handlers: some
 expect Pan start: true
 covers [nsh] Scroll
-covers [nsh] Input
-covers [nsh/image] Image
-covers [nsh/video] Video
-covers [nsh/webview] WebView
-covers [nsh/native] nativeComponent
-covers [nsh/native] nativeModule
-covers [nsh/gesture] PanResponder
+covers [nsh/base] Input
+covers [nsh] Image
+covers [nsh] Video
+covers [nsh] WebView
+covers [nsh] nativeComponent
+covers [nsh] nativeModule
+covers [nsh] PanResponder
 # core-list
 tap id:case-core-list
 expect Fruits
@@ -125,7 +125,7 @@ tap id:add
 expect 4. Item 4
 expect 3. Cherry
 expect Updated plum
-covers [nsh/list] List
+covers [nsh] List
 covers [nsh:rt] list
 covers [props] contentStyle
 covers [props] contentClass
@@ -288,7 +288,7 @@ style text:"Plain bold" color #ff0000ff
 prop id:field placeholder Name
 prop id:field ios.keyboardAppearance dark
 covers [globals] console
-covers [nsh] Input
+covers [nsh/base] Input
 covers [props] role
 covers [props] ios
 covers [props] ios.keyboardAppearance
@@ -331,8 +331,8 @@ expect Transform steps: 7
 expect Bound: true
 expect Started: yes
 expect Staggered: function function
-covers [nsh/animated] createMotion
-covers [nsh/animated] motions
+covers [nsh] createMotion
+covers [nsh] motions
 # core-overlay
 tap id:case-core-overlay
 expect OverlayContent

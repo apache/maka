@@ -29,7 +29,7 @@ pub struct BundleOptions {
     pub split: bool,
     /// The UI sets the hosts serve, described (`nsh_base::registry()`
     /// and an app's own, as `SetDescription`s): their modules stay imports.
-    pub ui_sets: Vec<nsh_core::ui::description::SetDescription>,
+    pub ui_sets: Vec<nsh_core::element::description::SetDescription>,
 }
 
 /// A failed build, formatted for people.
@@ -261,7 +261,7 @@ impl ResolveSetup {
 
 /// The design tokens of the app in `dir`: its `nsh.json` `"theme"` over
 /// the default's (`nsh_base::Theme`), or the default's when it has none.
-pub fn theme_tokens(dir: &std::path::Path) -> Result<nsh_core::ui::Tokens, BundleError> {
+pub fn theme_tokens(dir: &std::path::Path) -> Result<nsh_core::element::Tokens, BundleError> {
     let Ok(text) = std::fs::read_to_string(dir.join("nsh.json")) else {
         return Ok(nsh_base::Theme::default().into_tokens());
     };
@@ -449,7 +449,8 @@ pub async fn bundle_async(options: &BundleOptions) -> Result<Bundle, BundleError
     assets.sort();
     assets.dedup();
     let natives = std::mem::take(&mut *natives.lock().expect("natives lock"));
-    if let Some(warning) = ungranted_host(&natives, capabilities.as_ref()) {
+    let codes = std::iter::once(code.as_str()).chain(chunks.iter().map(|c| c.code.as_str()));
+    if let Some(warning) = ungranted_host(codes, capabilities.as_ref()) {
         log::warn!(target: "nsh::build", "{warning}");
     }
     Ok(Bundle {
@@ -499,19 +500,39 @@ fn watch_files(bundler: &rolldown::Bundler, dir: &std::path::Path) -> Vec<PathBu
     files
 }
 
-/// The warning for an app that imports `nsh/host` and grants itself none
-/// of the host's functions (`capabilities.host`): each of its calls is
+/// The warning for an app that imports `host` from `nsh` (in the bundle's
+/// `codes`, where native imports stay imports) and grants itself none of
+/// the host's functions (`capabilities.host`): each of its calls is
 /// refused, as the host's functions are never granted by default.
 fn ungranted_host<'a>(
-    natives: impl IntoIterator<Item = &'a String>,
+    codes: impl IntoIterator<Item = &'a str>,
     capabilities: Option<&nsh_core::access::Capabilities>,
 ) -> Option<String> {
-    let imports = natives.into_iter().any(|n| n == "nsh/host");
+    let imports = codes.into_iter().any(imports_host);
     let granted = capabilities.is_some_and(|c| !c.host.is_empty());
     (imports && !granted).then(|| {
-        "the app imports nsh/host and nsh.json declares no `capabilities.host`: every `host.call` is refused \
+        "the app imports `host` from nsh and nsh.json declares no `capabilities.host`: every `host.call` is refused \
          (list the host's functions it calls, prefixes ending in `*`, or `true`)"
             .to_owned()
+    })
+}
+
+/// Whether `code` imports `host` from `nsh` (`import { host } from "nsh"`,
+/// renamed or not).
+fn imports_host(code: &str) -> bool {
+    code.match_indices("from \"nsh\"").any(|(at, _)| {
+        let head = &code[..at];
+        let Some(open) = head.rfind('{') else {
+            return false;
+        };
+        head[open + 1..]
+            .trim_end()
+            .strip_suffix('}')
+            .is_some_and(|names| {
+                names
+                    .split(',')
+                    .any(|n| n.split_whitespace().next() == Some("host"))
+            })
     })
 }
 
@@ -679,7 +700,7 @@ fn append_module(
 /// the current thread (`ui_sets` as in [`BundleOptions::ui_sets`]).
 pub fn bundle_hot(
     entry: &std::path::Path,
-    ui_sets: &[nsh_core::ui::description::SetDescription],
+    ui_sets: &[nsh_core::element::description::SetDescription],
 ) -> Result<HotBundle, BundleError> {
     tokio::runtime::Builder::new_current_thread()
         .build()
@@ -690,7 +711,7 @@ pub fn bundle_hot(
 /// Bundles an app for development with hot module replacement.
 pub async fn bundle_hot_async(
     entry: &std::path::Path,
-    ui_sets: &[nsh_core::ui::description::SetDescription],
+    ui_sets: &[nsh_core::element::description::SetDescription],
 ) -> Result<HotBundle, BundleError> {
     let start = Instant::now();
     let entry = dunce::canonicalize(entry)
@@ -776,7 +797,10 @@ pub async fn bundle_hot_async(
     assets.sort();
     assets.dedup();
     let natives = std::mem::take(&mut *natives.lock().expect("natives lock"));
-    if let Some(warning) = ungranted_host(&natives, capabilities.as_ref()) {
+    if let Some(warning) = ungranted_host(
+        modules.iter().map(|m| m.code.as_str()),
+        capabilities.as_ref(),
+    ) {
         log::warn!(target: "nsh::build", "{warning}");
     }
     Ok(HotBundle {
@@ -798,19 +822,18 @@ mod tests {
     #[test]
     fn apps_calling_the_host_without_a_grant_are_warned() {
         use nsh_core::access::Capabilities;
-        let natives = |names: &[&str]| names.iter().map(|n| n.to_string()).collect::<Vec<_>>();
         let caps = |json| Capabilities::from_json(&serde_json::from_str(json).unwrap()).unwrap();
-        let host = natives(&["nsh", "nsh/host"]);
+        let host = ["import { View, host as h } from \"nsh\";"];
         assert!(
-            super::ungranted_host(&host, None)
+            super::ungranted_host(host, None)
                 .unwrap()
                 .contains("capabilities.host")
         );
-        assert!(super::ungranted_host(&host, Some(&caps("{}"))).is_some());
-        assert!(super::ungranted_host(&host, Some(&caps(r#"{"host": false}"#))).is_some());
-        assert!(super::ungranted_host(&host, Some(&caps(r#"{"host": ["a"]}"#))).is_none());
-        assert!(super::ungranted_host(&host, Some(&caps(r#"{"host": true}"#))).is_none());
-        assert!(super::ungranted_host(&natives(&["nsh"]), None).is_none());
+        assert!(super::ungranted_host(host, Some(&caps("{}"))).is_some());
+        assert!(super::ungranted_host(host, Some(&caps(r#"{"host": false}"#))).is_some());
+        assert!(super::ungranted_host(host, Some(&caps(r#"{"host": ["a"]}"#))).is_none());
+        assert!(super::ungranted_host(host, Some(&caps(r#"{"host": true}"#))).is_none());
+        assert!(super::ungranted_host(["import { View } from \"nsh\";"], None).is_none());
     }
 
     use super::*;
@@ -987,9 +1010,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("nsh-svg-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let mut app = String::from(
-            "import { mount, View } from \"nsh\";\nimport { Image } from \"nsh/image\";\n",
-        );
+        let mut app = String::from("import { Image, mount, View } from \"nsh\";\n");
         for (i, (file, svg)) in files.iter().enumerate() {
             std::fs::write(dir.join(file), svg).unwrap();
             app.push_str(&format!(
@@ -1287,13 +1308,13 @@ mod tests {
         let dir = single(
             "missing",
             "import { mount, Text } from \"nsh\";\n\
-             import { AnimatedValu } from \"nsh/animated\";\n\
+             import { AnimatedValu } from \"nsh\";\n\
              mount(() => <Text>{String(AnimatedValu)}</Text>);\n",
         );
         let error = bundling(&dir).unwrap_err().plain;
         assert!(error.contains("App.tsx"), "{error}");
         assert!(
-            error.contains("`nsh/animated` has no export `AnimatedValu`"),
+            error.contains("`nsh` has no export `AnimatedValu`"),
             "{error}"
         );
         assert!(error.contains("2:"), "{error}");
@@ -1307,9 +1328,9 @@ mod tests {
             "present",
             "import { mount, Text, type NoSuchType, NoSuchProps } from \"nsh\";\n\
              let props: NoSuchProps | NoSuchType | undefined;\n\
-             import { AnimatedValue as V } from \"nsh/animated\";\n\
-             import type { Gone } from \"nsh/animated\";\n\
-             import * as animated from \"nsh/animated\";\n\
+             import { AnimatedValue as V } from \"nsh\";\n\
+             import type { Gone } from \"nsh\";\n\
+             import * as animated from \"nsh\";\n\
              mount(() => <Text>{String(V)}{String(animated)}</Text>);\n",
         );
         bundling(&dir).unwrap();

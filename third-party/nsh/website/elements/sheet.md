@@ -14,7 +14,7 @@ window, the same on every device, and draws nothing of its own: the panel and th
 
 ```rust tabs
 use nsh_base::{SheetEvent, sheet};
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 fn filters(open: Signal<bool>) -> impl IntoElement {
     sheet()

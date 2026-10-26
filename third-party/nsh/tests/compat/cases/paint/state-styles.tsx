@@ -5,7 +5,8 @@
 // also takes the element's presses away (a press goes to the pressable
 // around it). Its script reports the states as a platform does and checks the styles
 // mounted before, during and after each.
-import { Input, Text, View, signal } from "nsh";
+import { Text, View, signal } from "nsh";
+import { Input } from "nsh/base";
 
 function App() {
   const presses = signal(0);

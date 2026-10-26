@@ -4,9 +4,9 @@
 
 - Every command that builds an app writes `.nsh/types` next to its entry (only changed files; files NSH no longer writes
   are removed). None of it is checked in, and nothing in it depends on the app's code: `nsh_js::type_definitions(ui_sets)`
-  (the UI sets as data: `nsh_core::ui::description::SetDescription`, each with its generated declarations)
+  (the UI sets as data: `nsh_core::element::description::SetDescription`, each with its generated declarations)
   makes the declarations of everything NSH serves (`nsh-js` `declarations.rs`), and `nsh_bundler::type_definitions()`
-  the asset imports. The files: `nsh/index.d.ts` (`nsh`), one per module (`nsh/list.d.ts`, `nsh/base.d.ts`,
+  the asset imports. The files: `nsh/index.d.ts` (`nsh`), one per module (`nsh/base.d.ts`, `nsh/mobile.d.ts`,
   an app's set's `app/native.d.ts`, ...), `nsh/types.d.ts` (the styles, the elements' props and events, `YNode`, the JSX namespace; `nsh` exports them),
   `nsh/jsx-runtime.d.ts` (where `jsxImportSource` finds `JSX`: no intrinsic elements, so every tag is checked as the
   component it names and generic ones are inferred: `native-pipeline.md`), `nsh/globals.d.ts` (console, timers,
@@ -28,7 +28,7 @@
 - Where each declaration comes from:
   - a native module's export: the `Ts` next to it in its table (`modules::Item`; the module's own interfaces in its
     `types`);
-  - a registry's components and modules: their specs (`nsh_core::ui::declarations`; a module object's type is
+  - a registry's components and modules: their specs (`nsh_core::element::declarations`; a module object's type is
     `<Name>Module`, which a native module can build on: `BackHandlerModule & BackListeners`);
   - the styles, host props, events, easings and canvas methods: the core's tables (`nsh_core::js::{style, host, animation,
     canvas}::declarations`; an event's handler type is its row in `host::EVENTS`, an event no element declares is in
@@ -36,7 +36,7 @@
   - a web class: its spec's `ClassTs` (members as in a class body; the constants come from the spec's table), the
     types its file declares in `TYPES`, a global function's `web::Function`, the other globals `host::GLOBALS`.
 - The text of declarations (documentation, TypeScript) is only in builds that can write them: the WebAssembly runtime
-  (`nsh_core::ui::DECLARATIONS` is false there) leaves it out, as pages download it. The tables keep their shape and
+  (`nsh_core::element::DECLARATIONS` is false there) leaves it out, as pages download it. The tables keep their shape and
   wrap the text: `Ts::function` / `value` / `class`, `ClassTs { … }.declared()`, `decl!("…")` (a constant's text is
   then not in the binary at all), and generated code calls `ts_of::<T>()` instead of `T::ts_type`. New tables do
   the same; nothing the runtime needs (names, lengths, whether a method returns) goes through them.
@@ -93,15 +93,15 @@ and has a manual GitHub Actions workflow. It is separate from the platform check
 The CLI's terminal output is `crates/nsh-cli/src/ui.rs` (`website/docs/cli.md`, "Output", shows it): one line per
 step, the details only when something fails. Every command prints through it:
 
-- `✓` a step that finished (`ui::done`, or `ui::Step`, which shows a spinner while the step runs, on a terminal only,
+- `✓` a step that finished (`element::done`, or `element::Step`, which shows a spinner while the step runs, on a terminal only,
   and adds its time), `→` where to find something, `•` what a device did, `warn` / `error` (wrapped under their first
   word on a terminal), plain lines for the app's own output. Paths are relative to the current directory when inside
   it. Colors on terminals unless `NO_COLOR` is set; redirected, only the result lines, no ANSI. All of it is stderr:
   stdout is the commands' results (`nsh test --trace`'s mount items, the signing commands' lines).
-- Tools run captured: `ui::cargo` (every cargo build: the app's crate, the hosts, `cargo xtask android`) shows the
+- Tools run captured: `element::cargo` (every cargo build: the app's crate, the hosts, `cargo xtask android`) shows the
   crate being compiled in its spinner, counts cargo's warnings into the `✓` line and, when the build fails, returns a
-  `ui::failure` whose details are cargo's whole output; `ui::report` prints `error <message>` and those details (the
-  commands' errors all end there, `main.rs` `main`). `ui::quiet` keeps the desktop hosts' own output (AppKit's notes,
+  `element::failure` whose details are cargo's whole output; `element::report` prints `error <message>` and those details (the
+  commands' errors all end there, `main.rs` `main`). `element::quiet` keeps the desktop hosts' own output (AppKit's notes,
   GTK's) and shows it if the host fails. simctl, adb, codesign and the SDK's tools were captured already.
 - Log lines (`logger.rs`): the library crates and the devices log through `log`; normally warnings and errors are shown
   without targets (a device's after its name: `warn iOS Simulator: …`), `js` lines and a device's lines from other
@@ -159,7 +159,7 @@ before every `cargo run`): `✓` lines for its builds, cargo's and the tools' ou
   `android::Reverse`) and removes that rule, and only that one (`adb reverse --remove tcp:<port>`), however the run
   ends: normally, by an error, by Ctrl-C or SIGTERM, or for a restart of an app with a Rust crate (`rust_app::Restart`;
   the next run sets it again). Otherwise a host left on the device keeps reaching whatever dev server listens on that port
-  next, of any app. Ctrl-C reaches the run through `ui::Stoppable`: while one is held, the signal handler records
+  next, of any app. Ctrl-C reaches the run through `element::Stoppable`: while one is held, the signal handler records
   SIGINT / SIGTERM instead of ending the process, the dev session's watch loop returns, the command undoes what it set
   up, and `main` then ends the process by the same signal; a second signal ends it at once. `nsh dev --server-only` serves hosts started separately. Mobile targets
   use an explicit `--target ios` or `--target android`.
@@ -299,7 +299,7 @@ report it:
   `DesktopCommand::PopupMenu`) is the model's (`Screen::menu`, read through `menu.rs`: its actions by label, a
   submenu's as `"Share > Mail"`) until it is chosen from (the root hears `Menu` with the action's id, then
   `Menu { closed }`) or closed;
-- `press_key` (`headless/keyboard.rs`, `app.keyboard.press`): the keystroke as `nsh/keymap` parses it for the
+- `press_key` (`headless/keyboard.rs`, `app.keyboard.press`): the keystroke as `nsh`'s `keymap` parses it for the
   environment's OS; on every environment (a hardware keyboard: phones and tablets have one too) the root's keymap
   (`MountItem::Keymap`, `Screen::keymap`) finds the binding that fires where the focus is (`Keymap::find`) and the
   root hears `KeyCommand`; else, on macOS and the web, Tab / Shift+Tab move the keyboard focus between the stops
@@ -347,7 +347,7 @@ Headless runs play the platform's part NSH's protocol defines, and refuse what o
 - the clipboard holds text (`SetClipboard`, `ReadClipboard` answered with `onClipboard`), modals get `onShow` when
   inserted;
 - with `TestRun::page_host` (`nsh test`'s `--web-host`, else `nsh.json` `web.host`; `TestRequest::page_host` for an
-  app's runner) the web page's host answers `nsh/host` (`page_host.rs`, feature `js`): each app `open` starts
+  app's runner) the web page's host answers `nsh`'s `host` (`page_host.rs`, feature `js`): each app `open` starts
   headless gets a host of its own, started before the engine (`createHost(player)` in a QuickJS context of its own on
   its own thread: timers on the app's clock, woken by its alarms (`Clock::at`), `console` to the `js` log, no imports), `Environment::host` set, and the
   driver hands the root's `Command::HostCall`s to it as their batches are applied (`Headless::on_host_call`); it
@@ -584,7 +584,7 @@ Playwright does), so the page measures as a browser with a mouse: the desktop id
 ## New apps (`nsh init --template`)
 
 `nsh init <dir> --template ts|rust|mixed` (`init.rs`) writes one of three apps; without `--template` it asks with a
-menu (`ui::choose`) when stdin and stdout are a terminal (`ui::interactive`; Enter picks `ts`) and takes `ts`
+menu (`element::choose`) when stdin and stdout are a terminal (`element::interactive`; Enter picks `ts`) and takes `ts`
 otherwise, so scripts and CI never wait for an answer.
 
 - **`ts`**: `App.tsx`, `nsh.json`, `tsconfig.json` (`nsh_bundler::TSCONFIG`), `.gitignore` and `.nsh/types`. Files
@@ -619,7 +619,7 @@ that specifier (`examples/rust-exports`: `import { Account, Gauge, Ledger } from
 (`import { Chart } from "app/charts"`, `import { Store } from "app/storage"`; `docs/dev/rust-modules.md`):
 
 ```rust
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 #[native_module("rust-exports/native")]
 fn native(registry: &mut Registry) {
@@ -639,7 +639,7 @@ fails as that name defined twice; one outside the crate's root fails at the attr
 block finds the entry or a stand-in whose bound reports where it goes: `#[diagnostic::on_unimplemented]`). The
 generated code links each listed crate under a name of its own (`app_<package>`, `-` as `_`: `app_gallery_native`)
 and makes its set in a function of its own (`set_app_gallery_native()`), whose body glob-imports that crate, which
-shadows the file's one import of NSH's stand-in (`nsh_core::ui::__private`): a crate without an entry fails the
+shadows the file's one import of NSH's stand-in (`nsh_core::element::__private`): a crate without an entry fails the
 generated workspace's build with what to add, on the line of that crate (it names the package). The prebuilt `nsh`
 does not link the sets, and does not need to: the toolchain reads a UI set as data. It writes a workspace with a
 program that describes them, builds the hosts and runners with them, and does everything else itself
@@ -654,7 +654,7 @@ program that describes them, builds the hosts and runners with them, and does ev
 - A Cargo workspace in `<app>/.nsh/rust`, written on every command (files only when they change; the `cli` crate and
   `app.json` earlier versions wrote are removed), each member depending on every listed crate:
   - `describe` (nsh-core and the app's crates, nothing else): calls each crate's entry and prints one JSON document,
-    `nsh_core::ui::description::Description` (format `FORMAT`, the nsh-core version that wrote it, then per crate in
+    `nsh_core::element::description::Description` (format `FORMAT`, the nsh-core version that wrote it, then per crate in
     `"rust"`'s order its specifier, exports with their kinds, TypeScript declarations, re-exported runtime values and
     types, the values nsh-js makes for it, the files it ships and the exports TS sees without a doc comment, which
     `nsh` warns of as it writes `.nsh/types`);

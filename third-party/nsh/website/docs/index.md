@@ -65,7 +65,7 @@ NSH is built in Rust, and Rust is a first-class language for writing apps with i
 The same counter, in Rust and in TSX:
 
 ```rust tabs
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 #[component]
 pub fn Counter() -> impl IntoElement {

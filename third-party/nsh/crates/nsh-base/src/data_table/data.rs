@@ -8,7 +8,7 @@
 
 use std::{collections::HashMap, sync::Arc};
 
-use nsh_core::ui::{JsHost, JsIn, JsKind, JsOwned, JsValue, PropError, SharedString, TsTypes};
+use nsh_core::element::{JsHost, JsIn, JsKind, JsOwned, JsValue, PropError, SharedString, TsTypes};
 
 /// What a cell holds.
 #[derive(Debug, Clone, PartialEq, Default)]

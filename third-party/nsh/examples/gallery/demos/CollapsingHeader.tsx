@@ -1,5 +1,5 @@
 import { List, Scroll, Text, View } from "nsh";
-import { createAnimatedValue } from "nsh/animated";
+import { createAnimatedValue } from "nsh";
 import { colors } from "../ui";
 
 /** How tall the header is open, and the bar it collapses to. */

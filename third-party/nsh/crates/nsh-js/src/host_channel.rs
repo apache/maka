@@ -538,7 +538,7 @@ mod tests {
     }
 
     const REPORT: &str = r#"import { text } from "nsh:rt";
-import { host } from "nsh/host";
+import { host } from "nsh";
 const report = (v) => text(String(v));
 "#;
 

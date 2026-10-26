@@ -191,7 +191,7 @@ server greets it; the dev session publishes no bundles (`DevSession::rust_root`)
 `nsh_app_<package>_rust_web.wasm`, copied to `.nsh/rust/web-runtime/nsh-rust.wasm`.
 
 Rust code meant for the web too uses the engine's services rather than threads and the standard clock: `fetch`
-(`nsh_core::ui::ambient::fetch`, below), the executor's timers, `nsh_core::time`. `examples/gallery-rs` does. As a
+(`nsh_core::element::ambient::fetch`, below), the executor's timers, `nsh_core::time`. `examples/gallery-rs` does. As a
 Rust app (2026-10) its `nsh.wasm` is 3.31 MB (1.06 MB gzipped, 0.75 MB with brotli): no QuickJS, so smaller than the
 prebuilt runtime, which a TSX entry (QuickJS) needs: the gallery under one was 5.26 MB (1.75 / 1.27 MB).
 
@@ -261,7 +261,7 @@ the end, so tasks woken only there (timers, fetch replies) request no pump of th
   `nsh_core::time::Instant` (std's elsewhere; `performance.now()` through the `nsh.now_ms` import there) and
   `nsh_core::time::unix_ms`. Rust components' `cx.timer()` returns `nsh_core::time::Sleep` there, whose wakers the
   driver fires (`next_timer`, `fire_timers`); `background` / `blocking` do not exist. Rust components' HTTP goes
-  through the engine (`nsh_core::ui::fetch`: `Action::Fetch`, `Core::take_fetches` / `fetch_event`, the engine's
+  through the engine (`nsh_core::element::fetch`: `Action::Fetch`, `Core::take_fetches` / `fetch_event`, the engine's
   `Net` with `Requester::Task`), so it is the browser's `fetch` here (`net.rs`) and the platforms' stacks elsewhere,
   under the same capability checks as JS's.
 - **QuickJS** uses rquickjs' pregenerated bindings (its bindgen run misses `JS_ToCStringLen2` for wasm32) and its
@@ -331,7 +331,7 @@ batch is being applied (a batch arrives inside a wasm call).
 A commit becomes one JSON array (`src/encode.rs`): `["c", id, kind]`, `["f", id, x, y, w, h]`, `["s", id, class,
 borderClass, tint]`, `["t", id, ...content, runs, styles, selectable, selectionClass]` (`styles`: a class per run
 style; `selectable` `null` when unset), `["vp", id, props]` (the view props as an object: `pointerEvents`, `hitSlop`,
-the accessibility props, `testID`, `focusable` when false, `selectionArea` when true), `["in", id, config, class]`, `["css", class, text]`, and so on; `nsh.js` has one `op_<name>` method per
+the accessibility props, `testID`, `focusable` when false, `selectableView` when true), `["in", id, config, class]`, `["css", class, text]`, and so on; `nsh.js` has one `op_<name>` method per
 item. Views are absolutely positioned at the core's frames; borders are an overlay element (as UIKit draws layer
 borders) so they never move the content the core placed. Native animation items stay in Rust (`src/animation.rs`, a port
 of the Android animator); bound properties go out as `["a", id, prop, value]` after each batch and each
@@ -488,13 +488,13 @@ browsers' touches into what phones report:
   horizontal ones always, have one. A mouse press within 12 px of the edge on the thumb, faded or not, drags it
   (`grabBar`: `onScrollDragStart` / `EndDrag`, snapping off while it is held, a snapping view then settles on the
   nearest snap point). Phones and tablets keep the browser's own overlay scroll bars.
-- **Keys** (`keyDown`), in this order: the app's shortcuts (`nsh/keymap`: the mounted `MountItem::Keymap` stays in
+- **Keys** (`keyDown`), in this order: the app's shortcuts (`nsh`'s `keymap`: the mounted `MountItem::Keymap` stays in
   Rust, `nsh_key` matches a key on the spot with `Keymap::find` and `nsh_key_command` reports the binding.
   Its `f64` result preserves the full `u32` ID range, including Rust shortcuts and overlay Escape, apart from
   the `-1` (unmatched) and `-2` (held repeat) sentinels. Keys are passed as the character they type without
   modifiers, else the US layout's character of their `code`; `mod` was resolved by the browser's platform,
   `appleKeyboard` in the environment JSON); an open dialog (Escape presses its
-  cancel button); a focused field (Escape leaves it); selectable text with a selection (select all, in a selection area the whole area; Escape); a focused
+  cancel button); a focused field (Escape leaves it); selectable text with a selection (select all, in a selectable view the whole area; Escape); a focused
   pressable (Return presses it, Space when released); going back (Escape, Alt+Left, Cmd+[, BrowserBack); scrolling the
   scroll view around the focus or under the mouse (arrows by 40 points, Page Up / Down and Space by 0.875 of a page,
   Home / End).
@@ -502,7 +502,7 @@ browsers' touches into what phones report:
   `focusable={false}` (a focused one that stops being a stop is blurred), so Tab and Shift+Tab reach them in DOM order; `focus:` states follow the keyboard focus (`:focus-visible`), which
   draws a ring inside the view; a popped page gives the focus back to what had it when the page was pushed
   (`screenGone`). A click never moves the focus (`mousedown` is prevented outside fields, selectable
-  text, selection areas and hosted pages), as in native apps; it focuses the app's window in an iframe. The views under the newest
+  text, selectable views and hosted pages), as in native apps; it focuses the app's window in an iframe. The views under the newest
   `Dialog` or alert are `inert`; the focus one took comes back when it closes.
 - **Accessibility**: `op_vp` sets ARIA from the accessibility props (roles mapped by `ARIA_ROLES`, `aria-disabled`,
   `-selected`, `-checked`, `-busy`, `-expanded`, `-value*`, `-live`, `-hidden`, the hint as `aria-description`);
@@ -534,8 +534,8 @@ browsers' touches into what phones report:
   DOM order, each followed by its line's break when its end is selected (`Run::after`, the run tuple's fifth element:
   a newline, or the spaces a wrap dropped) and a newline between texts: the browser would run the absolutely placed
   runs together.
-- **Selection areas** (`SelectionArea`, `ViewProps::selection_area`): `op_vp` marks a view whose props have
-  `selectionArea` `nsh-area`, and the browser's own selection spans its texts (handles and long presses on phones
+- **Selectable views** (`<View selectable>`, `ViewProps::selectable_view`): `op_vp` marks a view whose props have
+  `selectableView` `nsh-area`, and the browser's own selection spans its texts (handles and long presses on phones
   included). The area and everything in it is `user-select: text` in every idiom, inside views that take presses too,
   except texts set off (`selectable={false}`: `nsh-noselect`, set by `op_t`), images and videos; an area inside
   another is part of the outer one (`areaOf`). `textAt` takes the area's texts and `areaGap` its other places outside
@@ -604,7 +604,7 @@ scroll events postpone it, and the browser's `scrollend` cancels it.
 
 ## Platform services
 
-- **Storage** (`nsh/storage`, `src/storage.rs`): `localStorage`, each entry under `nsh:<app id>:<key>`
+- **Storage** (`nsh`'s `Storage`, `src/storage.rs`): `localStorage`, each entry under `nsh:<app id>:<key>`
   (`nsh_engine::local_storage_prefix`; the id `nsh.json` gives, which published sites, the dev host and Rust apps
   carry), so an app keeps its data wherever its page is and apps of one origin keep theirs apart. An app without an id
   (the demo player's, the playground's) keeps its entries under `nsh:<page directory>:<key>` (the directory of
@@ -614,8 +614,6 @@ scroll events postpone it, and the browser's `scrollend` cancels it.
   macOS backends' alerts (up to three buttons in a row, the last regular one the default), otherwise as iOS's alert
   and action sheet; their keys and focus are under Input. Only clicks pressed inside the dialog count: a tap's
   compatibility click, which lands after the press that opened it, must not dismiss it.
-- **Toasts** (`Toast.show` from `nsh/android`, which the desktop backends also show) are a pill at the bottom of the
-  root for 2 or 3.5 s, also read out through the live region `Command::Announce` writes into.
 - **The clipboard**: `navigator.clipboard`, with a copy command as the fallback for writes. Reading (also for
   `hasText`, since browsers cannot tell without reading) needs a secure context and may ask the user.
 - **Images**: `<img>` with `object-fit` (`center` is `scale-down`; SVG files too: the browser draws them, so the
@@ -636,7 +634,7 @@ scroll events postpone it, and the browser's `scrollend` cancels it.
   deleted video is stopped (a detached media element plays on). Browsers only start a video with sound after a user
   gesture (a warning says so).
 - **Registered native components** are the native apps' own: their view stays empty, with a warning once per name.
-- **The host** (`nsh/host`): the page answers the app's calls with `createPlayer`'s `host` option, an object whose
+- **The host** (`nsh`'s `host`): the page answers the app's calls with `createPlayer`'s `host` option, an object whose
   `call(name, args)` returns the result or a promise of it. `Command::HostCall` is the command `hostCall` (`encode.rs`;
   the id written whole, not rounded as `num` would), and `nsh.js` `hostCall` answers every one with `onHost`
   `{ type: "reply", id, ok, value?, error? }` (`EventPayload::Json`, `nsh_event`): `ok: false` with the error's message when the page has no host, `call` throws or
@@ -663,6 +661,6 @@ scroll events postpone it, and the browser's `scrollend` cancels it.
 
 ## Not implemented
 
-Platform services other than the theme color, toasts, dialogs, the clipboard and the host; image download progress; a web
+Platform services other than the theme color, dialogs, the clipboard and the host; image download progress; a web
 view's events and commands for pages of other sites (beyond `postMessage` and loads), user agents. A published app
 ships no source map.

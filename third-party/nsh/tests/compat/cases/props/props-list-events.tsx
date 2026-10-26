@@ -7,7 +7,7 @@
 // `keyExtractor` gives the items `onViewableItemsChange` reports. Its
 // script checks each.
 import { Text, View, signal } from "nsh";
-import { List } from "nsh/list";
+import { List } from "nsh";
 
 const range = (n: number) => Array.from({ length: n }, (_, i) => i);
 

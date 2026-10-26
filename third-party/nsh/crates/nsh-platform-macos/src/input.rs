@@ -439,7 +439,7 @@ fn cursor_at(hit: &Hit) -> Cursor {
             cursor_of(s.style.cursor)
                 .or_else(|| crate::text::selectable(&s).then_some(Cursor::Text))
                 .or_else(|| {
-                    (v == &hit.view && crate::selection_area::is_area_text(v, &s))
+                    (v == &hit.view && crate::selectable_view::is_area_text(v, &s))
                         .then_some(Cursor::Text)
                 })
         })
@@ -1102,10 +1102,10 @@ fn down(
         finish(surface, stale, true);
     }
     let hit = pick(&surface.root, x, y);
-    // A selection area around the view selects across its texts; else a
+    // A selectable view around the view selects across its texts; else a
     // selectable text selects alone.
     let selecting = hit.as_ref().filter(|h| !h.native).and_then(|h| {
-        crate::selection_area::target(&h.view)
+        crate::selectable_view::target(&h.view)
             .or_else(|| crate::text::selectable(&h.view.state()).then(|| h.view.clone()))
     });
     let Some(hit) = hit else {
@@ -1197,8 +1197,8 @@ fn down(
             .map(|p| p.clicked(modifiers(flags), clicks as u32))
     };
     match &selecting {
-        Some(area) if crate::selection_area::is_area(area) => {
-            crate::selection_area::down(surface, area, x, y, clicks, shift, press.is_some());
+        Some(area) if crate::selectable_view::is_area(area) => {
+            crate::selectable_view::down(surface, area, x, y, clicks, shift, press.is_some());
         }
         Some(view) => {
             let (lx, ly) = local(surface, view, x, y);
@@ -1276,8 +1276,8 @@ fn motion(surface: &Rc<Surface>, x: f32, y: f32, time: f64) {
     let (tx, ty) = (x - p.start.0, y - p.start.1);
     if let Mode::Select(view) = &p.mode {
         let view = view.clone();
-        let selects = if crate::selection_area::is_area(&view) {
-            crate::selection_area::drag(surface, &view, tx, ty, x, y)
+        let selects = if crate::selectable_view::is_area(&view) {
+            crate::selectable_view::drag(surface, &view, tx, ty, x, y)
         } else {
             let (lx, ly) = local(surface, &view, x, y);
             crate::text::selection_drag(&view, tx, ty, lx, ly)
@@ -1522,8 +1522,8 @@ fn finish(surface: &Rc<Surface>, mut p: Pointer, cancelled: bool) {
 /// The button pressed on selecting `view` (an area's or a text's) went
 /// up. True if it ended a selecting drag.
 fn selection_up(surface: &Surface, view: &NshView) -> bool {
-    if crate::selection_area::is_area(view) {
-        crate::selection_area::up(surface)
+    if crate::selectable_view::is_area(view) {
+        crate::selectable_view::up(surface)
     } else {
         crate::text::selection_up(view)
     }

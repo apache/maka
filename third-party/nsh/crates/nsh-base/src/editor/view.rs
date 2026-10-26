@@ -5,14 +5,17 @@
 //! carets, the composition and the sink. Only the rows in view (and a few
 //! around them) are made, each a text whose spans are highlighted tokens.
 
-use nsh_core::ui::{ContextMenuEvent, Cursor, EventKind, EventPayload, Style, prelude::*};
+use nsh_core::{
+    element::{ContextMenuEvent, Cursor, EventKind, EventPayload, Style},
+    prelude::*,
+};
 
 use super::{
     EditorDiagnosticSeverity, EditorPart, EditorProps,
     controller::Ed,
     state::{RowContent, SpanTags},
 };
-use crate::theme;
+use crate::{input, theme};
 
 /// The width of a caret.
 pub(crate) const CARET_WIDTH: f32 = 2.0;

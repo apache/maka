@@ -17,12 +17,13 @@
  * under the License.
  */
 
+import { textTooltip } from './ui';
 import { createText } from './text';
 import { cleanup, inputAction, signal, Text, View, Image } from 'nsh';
 import type { YNode } from 'nsh';
-import { createAnimatedValue } from 'nsh/animated';
+import { createAnimatedValue } from 'nsh';
 import { Button, Dialog } from 'nsh/base';
-import { keymap } from 'nsh/keymap';
+import { keymap } from 'nsh';
 import { Icon } from './Icon';
 import { tr } from './locale';
 import { C, captionTextStyle, controlStyle, controlHoverStyle, controlFocusStyle } from './ui';
@@ -55,7 +56,7 @@ export function ImageViewerButton(props: { image: ViewerImage; open: OpenImageVi
         button = node;
       }}
       accessibilityLabel={tr('Open image full screen')}
-      tooltip={tr('Open full screen')}
+      tooltip={textTooltip(() => tr('Open full screen'))}
       onPress={inputAction(show, image)}
       style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
       hoverStyle={controlHoverStyle}
@@ -191,7 +192,7 @@ export function ImageViewer(props: { image: ViewerImage; close(): void }) {
           </View>
           <Button
             accessibilityLabel={tr('Close full screen image')}
-            tooltip={tr('Close · Esc')}
+            tooltip={textTooltip(() => tr('Close · Esc'))}
             onPress={props.close}
             style={{
               ...controlStyle,
@@ -251,7 +252,7 @@ export function ImageViewer(props: { image: ViewerImage; close(): void }) {
               {(item) => (
                 <Button
                   accessibilityLabel={item().label()}
-                  tooltip={item().label()}
+                  tooltip={textTooltip(() => item().label())}
                   onPress={inputAction(control, { uri: image.uri, kind: item().kind })}
                   style={{
                     ...controlStyle,

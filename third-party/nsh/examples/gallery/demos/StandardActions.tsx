@@ -1,5 +1,5 @@
 import { cleanup, signal, Text } from "nsh";
-import { platform } from "nsh/device";
+import { platform } from "nsh";
 import { Buffer } from "buffer";
 import console from "console";
 import { createHash, randomUUID } from "crypto";

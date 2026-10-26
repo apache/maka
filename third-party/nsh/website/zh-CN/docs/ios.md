@@ -195,14 +195,14 @@ final class EmbedController: UIViewController {
 | `locale: Locale?` | 代替用户设置的语言和地区：`Intl`、`locale()` 和组件立即跟随，此后加载的应用也从它开始。`nil` 跟随系统。 |
 | `fontScale: CGFloat?` | 代替动态字体的文字大小（1 为默认）：文字和输入框按它重新排版，`fontScale()` 读到它，立即生效，此后加载的应用也一样；长度保持原样。`nil` 跟随系统。 |
 | `setThemeOverrides(_ json: String?) throws` | 把宿主的品牌加在应用的[主题](./tailwind.md#主题-token)之上：格式与 `nsh.json` 的 `"theme"` 相同的主题文件。其中的 token 在浅色和深色模式下都覆盖应用的同名 token，应用的其他 token 保持不变。立即生效，并作用于之后加载的应用；`nil` 恢复应用自己的主题。文件无法解析时抛出 `NshError`。 |
-| `storageDirectory: URL?` | 此后加载的应用保存其[存储](../modules/nsh-storage.md)的目录；`nil`：`Library/Application Support/nsh/<app id>`，按应用自己的 id。 |
+| `storageDirectory: URL?` | 此后加载的应用保存其[存储](../modules/nsh.md#storage)的目录；`nil`：`Library/Application Support/nsh/<app id>`，按应用自己的 id。 |
 | `cacheOptions: NshCacheOptions` | 此后加载的应用保存缓存（[下载的图片](./images-and-assets.md#磁盘缓存)）的位置和每种缓存的大小：`location` 为 `.system`（`Library/Caches/nsh`，每个应用在 `<app id>`）、`.directory(URL)` 或 `.off`；`images` 为 `.default`（256 MB）、`.maxSize(megabytes:)` 或 `.off`。 |
 | `loadBundle(at url: URL) throws` | 运行 `nsh build` 写出的 bundle。资源取自同目录下的 `assets/`；同目录下的 `bundle.js.map` 和 `capabilities.json` 也会被读取。 |
 | `run(_ package: NshPackage)` | 运行一个已验证的签名包（见下文）。一个包只能运行一次。 |
 | `loadPackage(at:trust:) async throws -> NshPackage.Info` | 在主线程之外验证指定 URL 的包，然后运行它。被拒绝时抛出原因；正在运行的应用保持不变。 |
 | `connectDevServer(_ url: URL) throws` | 开发用：从 `nsh dev` 服务器加载，每次修改后重新加载。使用不含开发支持的 `NativeShell.xcframework` 时会抛出错误。 |
 | `register(component:_:)` | 注册一个[原生组件](./native-components.md)。 |
-| `params: [String: Any]` | 之后加载的应用的启动参数：应用在启动时以 `host.params` 读取（[`nsh/host`](../modules/nsh-host.md)）。 |
+| `params: [String: Any]` | 之后加载的应用的启动参数：应用在启动时以 `host.params` 读取（[`host`](../modules/nsh.md#host)）。 |
 | `send(_ name: String, _ data: Any? = nil)` | 向应用发送一个事件（`host.on(name, …)`）；应用开始监听前会一直保留，没有应用运行时留给下一个应用。 |
 | `handle(_ name: String, _ handler:)` | 在主线程处理应用对 `name` 的调用（`host.call`）和投递（`host.post`）：`{ data, reply in … }`，或一个 `async throws` 函数 `{ data in … }`，其结果即调用的回答。 |
 | `removeHandler(_ name: String)` | 移除 `name` 的处理函数：应用对它的调用随即失败。 |
@@ -225,7 +225,7 @@ try app.loadBundle(at: url)
 
 ## 与应用通信
 
-视图与它运行的应用通过一条专属通道通信（[`nsh/host`](../modules/nsh-host.md)）：应用在启动时读取的启动参数、宿主应用发来的事件，以及应用发出的调用和投递，数据都是 JSON（在这一侧是 Foundation 对象）。应用里不需要任何视图，也不需要原生组件。
+视图与它运行的应用通过一条专属通道通信（[`host`](../modules/nsh.md#host)）：应用在启动时读取的启动参数、宿主应用发来的事件，以及应用发出的调用和投递，数据都是 JSON（在这一侧是 Foundation 对象）。应用里不需要任何视图，也不需要原生组件。
 
 ```swift
 // 加载之前：应用首先打开的内容（TSX 中的 `host.params`）。
@@ -273,7 +273,7 @@ try app.loadBundle(at: url)
 
 ## 应用打开的链接
 
-应用打开的 URL（[`openUrl`](../modules/nsh-device.md#openurl)，以及 `links="open"` 的 `TextView` 中的链接）先交给 `onOpenURL`，在主线程调用：宿主应用自己处理了这个 URL（例如交给自己的路由）时返回 `true`，返回 `false` 则由系统用 `UIApplication.open` 打开。没有设置 `onOpenURL` 时，所有 URL 都由系统打开。到达这里的 URL 都已通过应用的 `openUrl` 能力检查。
+应用打开的 URL（[`openUrl`](../modules/nsh.md#openurl)，以及 `links="open"` 的 `TextView` 中的链接）先交给 `onOpenURL`，在主线程调用：宿主应用自己处理了这个 URL（例如交给自己的路由）时返回 `true`，返回 `false` 则由系统用 `UIApplication.open` 打开。没有设置 `onOpenURL` 时，所有 URL 都由系统打开。到达这里的 URL 都已通过应用的 `openUrl` 能力检查。
 
 ```swift
 app.onOpenURL = { url in
@@ -380,8 +380,8 @@ try app.loadBundle(at: bundledURL)
 - **线程。** `NshAppView` 隔离在 main actor 上。`NshTrust`、`NshPackage` 和 `NshComponentContext` 是线程安全的。JS
   引擎运行在自己的线程上；主线程从不等待它。
 - **状态栏。** 嵌入应用的页面和对话框（`statusBar`）会改变 `NshAppView.preferredStatusBarStyle` 等属性的返回值；宿主视图控制器必须像上面的示例那样转发它们。
-- **安全区域。** 应用照常在 Rust 中使用 `safe_area()`，在 TSX 中使用 [`nsh/base`](../modules/nsh-base.md#safeareaview) 中的
-  `SafeAreaView` 或 `safeAreaInsets()`。放在你自己标题栏下方的 `NshAppView` 拿到的是适用于它自身的 insets，而不是整个窗口的。
+- **安全区域。** 应用照常在 Rust 中使用 `safe_area()`，在 TSX 中在内边距里使用
+  `env(safe-area-inset-*)` 或 [`nsh`](../modules/nsh.md#safe-area-and-keyboard) 的 `safeAreaInsets()`。放在你自己标题栏下方的 `NshAppView` 拿到的是适用于它自身的 insets，而不是整个窗口的。
 - **Mac Catalyst。** 同一个 framework 也可用于 Catalyst 应用。
 
 ## 另请参阅

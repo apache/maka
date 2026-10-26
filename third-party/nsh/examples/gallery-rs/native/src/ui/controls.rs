@@ -3,7 +3,8 @@
 
 use nsh_core::{
     Bounds, Points,
-    ui::{JsObject, PropEnum, prelude::*},
+    element::{JsObject, PropEnum},
+    prelude::*,
 };
 
 use super::theme::{Finish, Finished, colors, inset_shadow, motion, rgb_a};

@@ -26,7 +26,7 @@ user-facing page is `website/elements/editor.md`; how each module works inside i
 | `movement.rs` | Graphemes, words and their parts (camelCase, snake_case), paragraphs, smart Home / End, vertical moves keeping their x, matching and enclosing brackets |
 | `commands.rs` | `Command`, `Editing`: every editing command at every selection, typing (auto-close, step-over, outdent), paste, copy, cut; `commands/selecting.rs` (the previous occurrence, splitting into lines) and `commands/transforms.rs` (sorting lines, case, trailing whitespace, block comments) |
 | `select.rs` | The selection history (`undoSelection`), expanding and shrinking selections, block selections, the scope of a search in the selection |
-| `keymap.rs` | The default key bindings as data, in `nsh/keymap`'s keystroke syntax, Apple's and the others' |
+| `keymap.rs` | The default key bindings as data, in `nsh`'s keystroke syntax, Apple's and the others' |
 | `language.rs` | `LanguageConfig`: per-language comments, brackets, auto-close pairs, word characters, indentation, tab size and the syntax hint; the lookup by name, alias, extension or file name |
 | `display.rs` | `DisplayMap`: tabs, measured widths, soft wrap and folds as display rows |
 | `fold.rs` | Where folds can start, by indentation |
@@ -277,7 +277,7 @@ first time a language needs them. Without feature `highlight` the built-in langu
 highlighters still run.
 
 The app's highlighters and languages (`highlighter.rs`, `languages.rs`) are kept per engine, in a value of the
-surface (`nsh_core::ui::global`), never process-wide. `register_language` adds an `EditorLanguage` (a
+surface (`nsh_core::element::global`), never process-wide. `register_language` adds an `EditorLanguage` (a
 `LanguageConfig` built with `const` methods, so a `static`); `register_highlighter` binds a factory of
 `EditorHighlighter`s to a language name (resolved when registered: `"rs"` binds Rust). `languages::resolve` finds a
 name among the registered languages (latest first: name, alias, extension, then as a path) before the built-in table,
@@ -418,7 +418,7 @@ The sink carries `accessibilityLabel`; the rows are real texts, read in order.
 | `CompletionHighlighter` (`highlight_prefix`, `highlight_characters`, ...) | One subsequence match, in Rust, highlighted as `completionMatch` |
 | `lsp` providers (hover, definition, code actions) | `onHover` / `onHoverEnd`, `onTextPress`, `caretBounds` / `rangeBounds`: the app asks its language server and draws the popups |
 | `DefinitionProvider`, `HoverDefinition` (the Cmd-hover underline), `GoToDefinition`, `ToggleCodeActions` | `onDefinitionRequest` (`hover`, `press`, `key`) / `presentDefinitionLink` / `hideDefinitionLink`, the `definitionLink` part, `goToDefinition` (F12), `showCodeActions` (Mod+.) / `onCodeActionRequest`: the editor underlines, the app finds the definitions and shows the actions |
-| Key bindings as GPUI actions | `keymap.rs` data on `nsh/keymap`, bound while focused; `run(command)` |
+| Key bindings as GPUI actions | `keymap.rs` data on `nsh`'s `keymap`, bound while focused; `run(command)` |
 | `show_whitespaces`, `auto_grow(min, max)`, `scroll_beyond_last_line(rows)`, `cursor_surrounding_lines`, `AutoScroll` | `showWhitespaces`, `minRows` / `maxRows`, `scrollBeyondLastLine` (also `true` / `false`), `cursorSurroundingLines`; dragging scrolls past the edges the same way (`layout.rs`) |
 
 ## Limits

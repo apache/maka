@@ -1,6 +1,6 @@
 import { Canvas, mount, signal, Text, View } from "nsh";
-import { createAnimatedValue, Easing } from "nsh/animated";
-import { platform, windowSize } from "nsh/device";
+import { createAnimatedValue, Easing } from "nsh";
+import { platform, windowSize } from "nsh";
 import { button, buttonText, tint, ui } from "./palette";
 
 const TAU = Math.PI * 2;

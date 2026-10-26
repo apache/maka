@@ -20,7 +20,7 @@ by the secondary button (a right click) at the pointer, or by a finger held on i
 
 ```rust tabs
 use nsh_base::{menu, menu_item, menu_separator, submenu};
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 fn item(label: &'static str, on_select: impl Fn() + 'static) -> impl IntoElement {
     menu_item()
@@ -85,7 +85,7 @@ function FileMenu() {
 
 All five come from [`nsh/base`](../modules/nsh-base.md). The items reach their menu on their own, so you arrange them
 freely: groups in views, labels, items that come and go with `If`. `popupClass` styles the popup on desktops and the
-sheet on phones; a style that differs between them can compare `platform.idiom` (`nsh/device`) with `"desktop"`.
+sheet on phones; a style that differs between them can compare `platform.idiom` (`nsh`) with `"desktop"`.
 
 ## Context menus
 

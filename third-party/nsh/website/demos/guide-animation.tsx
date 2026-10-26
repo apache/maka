@@ -1,6 +1,6 @@
 import { mount, signal, Text, View } from "nsh";
-import { reduceMotion } from "nsh/accessibility";
-import { Animated, createAnimatedValue, Easing, LayoutAnimation } from "nsh/animated";
+import { reduceMotion } from "nsh";
+import { Animated, createAnimatedValue, Easing, LayoutAnimation } from "nsh";
 import { button, buttonText, desktop, focusRing, Inspector, Panel, size, Stage, ui, wide } from "./palette";
 
 const TRACK = 250;

@@ -13,7 +13,7 @@ NSH updates the UI with **signals**: values that know who reads them. When a sig
 Rust components take everything on this page from the prelude; TSX imports it from `nsh`:
 
 ```rust tabs
-use nsh_core::ui::prelude::*;   // signal, computed, effect, resource, batch, untracked, cleanup, provide_context, use_context
+use nsh_core::prelude::*;   // signal, computed, effect, resource, batch, untracked, cleanup, provide_context, use_context
 ```
 
 ```tsx tabs
@@ -502,7 +502,7 @@ A failure goes to the nearest boundary above where it happened, and one in a fal
 | `when(cond, ..)` / `<If when>` | When created | Whether the condition holds changes |
 | `each(..)` / `<Each of>` row | When its key first appears | Never; its item and index signals change instead |
 
-The environment is reactive the same way: `window()`, `dark()`, `font_scale()`, `safe_area()` and `keyboard_height()` in Rust, `windowSize()`, `colorScheme()` and `fontScale()` from [`nsh/device`](../modules/nsh-device.md) and `safeArea()` and `keyboardFrame()` from [`nsh/base`](../modules/nsh-base.md) in TSX, so bindings that read them follow rotation, dark mode or the keyboard.
+The environment is reactive the same way: `window()`, `dark()`, `font_scale()`, `safe_area()` and `keyboard_height()` in Rust, `windowSize()`, `colorScheme()` and `fontScale()` from [`nsh`](../modules/nsh.md#device) and `safeArea()` and `keyboardFrame()` from [`nsh`](../modules/nsh.md) in TSX, so bindings that read them follow rotation, dark mode or the keyboard.
 
 ## Common mistakes
 

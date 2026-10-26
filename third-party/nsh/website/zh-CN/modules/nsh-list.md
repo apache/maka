@@ -140,7 +140,7 @@ interface ViewabilityConfig {
 | `keyboardShouldPersistTaps` | `"never" \| "always" \| "handled" \| boolean` | `"never"` | 点击是否收起键盘（`"never"`：这次点击只用来收起键盘）。 |
 | `keyboardDismissMode` | `"none" \| "on-drag" \| "interactive"` | `"none"` | 拖动时是否收起键盘。 |
 | `scrollEventThrottle` | `number` | | `onScroll` 事件之间的最小间隔毫秒数（无论如何每帧最多一次）。 |
-| `scrollValue` | `AnimatedValue` | | 在 UI 线程上接收滚动偏移（主轴方向）的[动画值](./nsh-animated.md)，用于与滚动联动的效果。 |
+| `scrollValue` | `AnimatedValue` | | 在 UI 线程上接收滚动偏移（主轴方向）的[动画值](./nsh.md#animation)，用于与滚动联动的效果。 |
 
 ### 滚动事件
 

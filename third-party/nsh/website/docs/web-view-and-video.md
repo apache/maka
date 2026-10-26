@@ -7,7 +7,7 @@ group: ui
 
 # Web view and video
 
-The web view and the video player embed the platform's own web engine and media player as ordinary views: `web_view` and `video` in Rust (`nsh_core::ui::prelude`), `WebView` and `Video` from `nsh` in TSX. Because NSH renders with native views, they sit in your layout like any other element: they scroll with their parent, take rounded corners and clipping, and other views can overlap them without layering problems.
+The web view and the video player embed the platform's own web engine and media player as ordinary views: `web_view` and `video` in Rust (`nsh_core::prelude`), `WebView` and `Video` from `nsh` in TSX. Because NSH renders with native views, they sit in your layout like any other element: they scroll with their parent, take rounded corners and clipping, and other views can overlap them without layering problems.
 
 | Component | iOS | Android | macOS | Linux | Windows |
 |---|---|---|---|---|---|
@@ -37,7 +37,7 @@ codecs decode; `rate` works, there is no poster, and the control bar always show
 ## WebView
 
 ```rust tabs
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 #[component]
 pub fn App() -> impl IntoElement {
@@ -101,7 +101,7 @@ Events:
 The web view's ref (an `element_ref()` put on it with `.element_ref(&web)` in Rust, `ref` in TSX) has `reload`, `go_back` / `goBack`, `go_forward` / `goForward`, `stop_loading` / `stopLoading`, `inject_java_script` / `injectJavaScript(script)` and `post_message` / `postMessage(data)`:
 
 ```rust tabs
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 pub fn browser() -> impl IntoElement {
     let web = element_ref();
@@ -187,7 +187,7 @@ mount(Browser);
 Pages talk to the app with `window.nsh.postMessage(string)`, which arrives as `on_message` (`onMessage`). The app talks to the page with the ref's `post_message` (`postMessage(string)`), which arrives in the page as a `message` event on `window`. Messages are strings; send JSON for structured data.
 
 ```rust tabs
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 const PAGE: &str = r#"<!doctype html>
 <html><head><meta name="viewport" content="width=device-width"></head>
@@ -304,7 +304,7 @@ The check covers the web view's `src` and every top-level navigation the page ma
 ## Video
 
 ```rust tabs
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 pub fn player() -> impl IntoElement {
     let player = element_ref();

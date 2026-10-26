@@ -10,7 +10,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::ui::{
+use crate::element::{
     ClassDef, Held, Instance, JsError, JsHost, JsIn, JsKind, JsObject, JsOwned, JsValue, Later,
     PropError, Quotas, Ret, System, TsTypes, class, module,
 };
@@ -530,7 +530,7 @@ pub(crate) struct Grant {
 struct Roots(std::cell::RefCell<rustc_hash::FxHashMap<PathBuf, Option<PathBuf>>>);
 
 #[cfg(not(target_arch = "wasm32"))]
-impl crate::ui::Local for Roots {}
+impl crate::element::Local for Roots {}
 
 #[cfg(not(target_arch = "wasm32"))]
 impl Roots {
@@ -816,7 +816,7 @@ impl Grant {
     /// I/O error `error` of `syscall` as Node's: the message names the
     /// entry, `code`, `syscall` and `path` tell it apart.
     fn error(&self, verb: &str, syscall: &'static str, error: std::io::Error) -> JsError {
-        let code = crate::ui::io_code(&error);
+        let code = crate::element::io_code(&error);
         let thrown = JsError::Error(format!("cannot {verb} `{}`: {error}", self.name));
         match code {
             Some(code) => thrown.with_code(code),
@@ -1472,8 +1472,8 @@ mod tests {
         use std::{future::Future, pin::Pin, sync::Arc};
 
         use crate::{
+            element::{JsError, Quotas},
             filesystem::*,
-            ui::{JsError, Quotas},
         };
         struct Fake;
         impl FileSystem for Fake {
@@ -1535,7 +1535,7 @@ mod tests {
 
         use crate::{
             access::{Access, Capabilities},
-            ui::System,
+            element::System,
         };
         let mut declared = Capabilities::all();
         declared.fs.read = vec!["${dataDir}".into()];
@@ -1587,7 +1587,7 @@ mod tests {
         assert_eq!(check(&sys, "notes/allowed/a.txt", false), None);
     }
 
-    use crate::ui::{Registry, declarations};
+    use crate::element::{Registry, declarations};
 
     #[test]
     fn the_declarations_keep_node_s_overloads_and_shapes() {

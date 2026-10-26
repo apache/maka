@@ -19,8 +19,8 @@
 
 import { cleanup, effect, signal, Text, View } from 'nsh';
 import { Button, Dialog } from 'nsh/base';
-import { host } from 'nsh/host';
-import { keymap } from 'nsh/keymap';
+import { host } from 'nsh';
+import { keymap } from 'nsh';
 import type { ComposerSession } from './Composer';
 import { tr } from './locale';
 import { bodyTextStyle, C, controlFocusStyle, controlHoverStyle, controlStyle } from './ui';

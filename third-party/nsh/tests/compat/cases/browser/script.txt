@@ -69,8 +69,8 @@ covers [props] Tooltip.delay
 covers [events] Tooltip.onOpenChange
 covers [events] Tooltip.onOpen
 covers [events] Tooltip.onClose
-# An element's `tooltip`: a text after half a second, gone on a press; an
-# element, gone when the pointer leaves.
+# An element's `tooltip`: shown after half a second, gone on a press, and
+# gone when the pointer leaves.
 event id:prop-tip onHoverIn
 wait 700
 expect PropTip

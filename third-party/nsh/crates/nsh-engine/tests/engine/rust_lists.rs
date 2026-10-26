@@ -8,7 +8,7 @@ use std::{collections::HashMap, time::Duration};
 use crossbeam_channel::Receiver;
 use nsh_core::{
     ApproxTextEngine, EventKind, EventPayload, MountBatch, MountItem, PayloadValue, Size,
-    ui::{Root, prelude::*},
+    element::Root, prelude::*,
 };
 use nsh_engine::{App, Engine, EngineConfig, EngineControl, Environment};
 

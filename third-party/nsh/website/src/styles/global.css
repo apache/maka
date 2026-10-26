@@ -330,8 +330,6 @@ html[lang^="zh"] :is(h1, h2, h3, h4) { letter-spacing: -0.01em; }
   align-items: center;
   gap: 0.5rem;
   flex-shrink: 0;
-  padding-right: 1.5rem;
-  border-right: 1px solid var(--line);
   color: var(--foreground);
   font-size: 0.9rem;
   font-weight: 640;
@@ -447,7 +445,6 @@ html[lang^="zh"] :is(h1, h2, h3, h4) { letter-spacing: -0.01em; }
 
 @media (max-width: 860px) {
   .site-nav__inner { gap: 1rem; }
-  .site-nav__brand { padding-right: 0; border-right: 0; }
   .site-nav__projects { margin-left: -0.5rem; }
   .site-nav__burger { display: inline-flex; }
   .site-nav__links {

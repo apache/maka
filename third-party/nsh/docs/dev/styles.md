@@ -36,10 +36,10 @@
   shown: the app's own when it set one (`nsh.json` `"appearance"`, `setColorScheme`; `Core::set_appearance`), else the
   system's. The theme is Tailwind 4's
   extended by `nsh.json` `"tailwind"` (`colors`, `spacing`, `breakpoints`, `fontSize`, `radius`, `shadow`, ...; unknown
-  keys are build errors). Rust components do not use classes: their typed styles (`ui/style.rs`, every utility group has its
+  keys are build errors). Rust components do not use classes: their typed styles (`element/style.rs`, every utility group has its
   methods, tested against the classes) lower into the same rules and their
   colors come from `nsh/base`'s theme, `nsh.json` `"theme"` (`docs/dev/components.md`); the Tailwind theme only
-  shapes the app's own classes. The app's classes name the design tokens (`ui::Tokens`: shadcn/ui's and the app's
+  shapes the app's own classes. The app's classes name the design tokens (`element::Tokens`: shadcn/ui's and the app's
   own, `nsh.json` `"theme"`, by the names of `tailwind/theme.rs` `ClassTokens`) as Tailwind 4 names the variables of
   `@theme`: a color is a color utility's name (`bg-primary`, `text-muted-foreground/70`, `bg-up/30`) when the
   Tailwind palette has no color of that name (a palette color of the same name wins), and every token is a variable
@@ -133,7 +133,7 @@
   inside it, so `class="text-white"` on a button styles its label. So do its `whitespace-*` / `text-wrap` / `text-nowrap`
   (and `truncate`'s no wrapping) and `select-*` classes, as CSS's `white-space` and `user-select: auto` (`Core::inherited_text_props`:
   the text's own, else the nearest view's that says; `select-auto` says none, so it takes the view's). Inset padding / margin (set by Rust
-  components: `SafeAreaView`, `KeyboardAvoidingView`) are added to the resolved padding / margin, so classes and
+  components with `.inset_padding(..)` / `.inset_margin(..)`) and `env()` terms ("Environment variables") are added to the resolved padding / margin, so classes and
   styles keep their own.
 - **Effects** (styles and classes; `effects.rs`): `boxShadow` (CSS syntax, several, `inset`; also `shadow-*` / `ring-*`),
   `backgroundImage` (linear / radial / conic gradients and their `repeating-` forms,
@@ -213,6 +213,37 @@
   and `writingDirection`.
   On Apple everything is drawn by Core Animation, escalating only as needed (`crates/nsh-platform-ios/src/decor.rs`
   describes the paths and their limits); Android draws in `Decor.java`.
+
+## Environment variables
+
+CSS's `env()` keeps content clear of system UI and the software keyboard, in place of wrapper components:
+
+| Variable | Value |
+|---|---|
+| `safe-area-inset-top` / `-right` / `-bottom` / `-left` | the insets of the root view the node renders in: the surface's safe area, a dialog's, or a page's below its header (in a browser the page is the root, so the definitions agree) |
+| `keyboard-inset-height` | the VirtualKeyboard API's: the software keyboard's height over the surface, 0 while it is hidden |
+
+Supported on the physical padding and margin properties and their shorthands only (`padding`, `paddingTop`, ...,
+`paddingHorizontal` / `paddingVertical`, the same for `margin`; Tailwind's `p*` / `m*` arbitrary values), with the
+values `env(name)`, `env(name, <length>)` (the fallback stands in for an unknown name, as in CSS), `calc(env(name) +
+<length>)` and `calc(<length> + env(name))` (white space around `+`, as CSS requires; Tailwind's arbitrary values may
+leave it out, `pt-[calc(env(safe-area-inset-top)+8px)]`, as Tailwind CSS adds it). A padding's length is not
+negative. Anything else with `env()` is rejected with a warning (unknown names without a fallback, other operators,
+two variables, percentages, start / end properties, other properties) and its Tailwind class is unknown.
+Rust components: `Styled`'s `.p_safe_area()`, `.px_safe_area()`, `.pt_safe_area()`, ..., the `m*` ones,
+`.pt_safe_area_plus(px(8.0))`, `.pb_keyboard()`, `.pb_keyboard_plus(px(49.0))`, `.mb_keyboard()`,
+`.mb_keyboard_plus(…)`.
+
+How it works: `Style::set_key` splits a declaration into its length (the ordinary padding / margin) and its variable
+(`Style::pending.env`, `EnvEdges`, by physical edge; a later plain value on the edge clears it; in right-to-left
+layouts the term follows its declaration's left / right swap). The core keeps the nodes with terms
+(`Core::env_styled`): `set_style` adds what the terms come to (`Core::env_insets`, from `insets_of` and the
+environment's keyboard) to the padding and margin, on top of the inset padding / margin components set
+(`Prop::InsetPadding` / `InsetMargin`), and each commit (`Core::sync_env`) restyles those whose value changed (a safe
+area, a page's reported insets, the keyboard, a move to another root view). When the keyboard's height moves one and
+the keyboard reports a duration, the commit leads with a `LayoutAnimation` on `LayoutCurve::Keyboard`, so the frames
+animate natively with the keyboard; no JS runs. Nodes without `env()` cost nothing (`sync_env` returns at once with
+none).
 
 ## Colors
 

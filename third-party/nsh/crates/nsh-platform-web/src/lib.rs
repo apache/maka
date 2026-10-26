@@ -90,16 +90,16 @@ thread_local! {
     /// so that matching never needs the engine.
     static KEYMAP: RefCell<Option<std::sync::Arc<Keymap>>> = const { RefCell::new(None) };
     /// The UI sets apps import ([`set_ui_sets`]; by default `nsh/base`).
-    static UI_SETS: RefCell<Option<Vec<nsh_core::ui::Registry>>> = const { RefCell::new(None) };
+    static UI_SETS: RefCell<Option<Vec<nsh_core::element::Registry>>> = const { RefCell::new(None) };
     /// What makes the Rust app's root ([`set_root`]), for [`nsh_start_rust`].
-    static ROOT: RefCell<Option<Box<dyn Fn() -> nsh_core::ui::Root>>> = const { RefCell::new(None) };
+    static ROOT: RefCell<Option<Box<dyn Fn() -> nsh_core::element::Root>>> = const { RefCell::new(None) };
     /// What the last [`nsh_compile`] made: the module or the error.
     #[cfg(feature = "compiler")]
     static COMPILED: RefCell<String> = const { RefCell::new(String::new()) };
 }
 
 /// What [`ui_sets!`] gives.
-pub use nsh_core::ui::Registry;
+pub use nsh_core::element::Registry;
 
 /// Sets the UI sets the apps started from now on serve: `nsh/base` and
 /// an app's own Rust components (`nsh.json` `"rust"`). A runtime built for
@@ -133,14 +133,14 @@ macro_rules! ui_sets {
 
 /// Sets the Rust app [`nsh_start_rust`] runs: `root` makes its root
 /// component (with its theme), each time the page starts it.
-pub fn set_root(root: impl Fn() -> nsh_core::ui::Root + 'static) {
+pub fn set_root(root: impl Fn() -> nsh_core::element::Root + 'static) {
     ROOT.with(|r| *r.borrow_mut() = Some(Box::new(root)));
 }
 
 /// Makes this module the web runtime of a Rust app (`nsh.json` `"root"`):
 /// it serves `$sets` (`nsh/base` and the app's own set) and runs the
 /// root component `$root` makes (an expression giving a
-/// [`nsh_core::ui::Root`]) when the page calls [`nsh_start_rust`]. Built
+/// [`nsh_core::element::Root`]) when the page calls [`nsh_start_rust`]. Built
 /// without the feature `js`, the module has no QuickJS: the app is Rust
 /// and the browser's own JS from start to end. Exports `nsh_app_init`, as
 /// [`ui_sets!`].
@@ -815,10 +815,10 @@ pub unsafe extern "C" fn nsh_compile(
 ) -> u32 {
     // SAFETY: guaranteed by the caller.
     let (name, source) = unsafe { (string(name, name_len), string(ptr, len)) };
-    let sets: Vec<nsh_core::ui::description::SetDescription> = ui_sets()
+    let sets: Vec<nsh_core::element::description::SetDescription> = ui_sets()
         .iter()
-        .flat_map(nsh_core::ui::Registry::sets)
-        .filter_map(nsh_core::ui::description::SetDescription::of)
+        .flat_map(nsh_core::element::Registry::sets)
+        .filter_map(nsh_core::element::description::SetDescription::of)
         .collect();
     let result = nsh_bundler::compile_module(&name, &source, &sets);
     let ok = result.is_ok();

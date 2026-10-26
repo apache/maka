@@ -1,5 +1,6 @@
 import { mount, Overlay, signal, Text, View } from "nsh";
-import { safeArea, Toast, type ToastEntry, ToastManager, ToastStack } from "nsh/base";
+import { Toast, type ToastEntry, ToastManager, ToastStack } from "nsh/base";
+import { safeArea } from "nsh";
 import { button, buttonText, desktop, Log, size, ui, wide } from "./palette";
 
 /** What the demo's toasts show. */

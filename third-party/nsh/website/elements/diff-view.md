@@ -24,7 +24,7 @@ the app's styles over these defaults (`classes` and `styles`). Rust makes one wi
 
 ```rust tabs
 use nsh_base::diff_view;
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 const OLD: &str = "fn total(prices: &[u32]) -> u32 {\n    prices.iter().sum()\n}\n";
 const NEW: &str = "fn total(prices: &[u64]) -> u64 {\n    prices.iter().copied().sum()\n}\n";

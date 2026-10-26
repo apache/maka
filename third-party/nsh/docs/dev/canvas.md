@@ -24,7 +24,7 @@
   platform redraws on its own while they animate, without JS (only what they change on iOS and macOS: "Partial
   redraws" below). Deriving a node again (`interpolate`, `mul`, ... in a `draw`
   that runs again) gets the live node made by the same operation (`nsh-js` `animated.rs` `derived`, keyed by the
-  decoded `AnimationOp`, as `nsh_core::ui` does for Rust components): a redraw sends no new graph nodes and keeps its slots. A drawing travels in its own op (`Op::Draw`), recorded into
+  decoded `AnimationOp`, as `nsh_core::element` does for Rust components): a redraw sends no new graph nodes and keeps its slots. A drawing travels in its own op (`Op::Draw`), recorded into
   a Rust list of its own (`nsh-js` `canvas.rs`): creating animated values while drawing pushes ops of its own. Each
   operation is one variant of `CanvasOp` / `PathOp` with `#[derive(JsOps)]` (`nsh_core::js::ops`): `#[op(code = CV_…)]` reads its fields in order
   (`OpArg`: numbers or animated values, paints, `Path2D` lists, string unions; an invalid color or font drops the
@@ -68,7 +68,7 @@ included, with tiny-skia into a pixmap in device pixels: `nsh-platform-gpui` `ca
 whole canvas. Numbers:
 `docs/dev/performance.md`.
 
-Rust components record drawings with `ui::Painter` (the same operations; `docs/dev/components.md`), paint with the
+Rust components record drawings with `element::Painter` (the same operations; `docs/dev/components.md`), paint with the
 canvas view's paint properties (`Painter::fill_style_from_view` and the like: `Drawing::view_paints` names the
 operations whose value is the view's `fill` / `stroke` / `strokeWidth` / `strokeDasharray`, which the core resolves,
 inherited from the views around as CSS inherits them and `currentColor` the view's text color, and sets into the

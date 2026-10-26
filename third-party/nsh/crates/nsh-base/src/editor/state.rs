@@ -30,7 +30,7 @@ pub(crate) const MATCH_LIMIT: usize = 10_000;
 /// The font the text is drawn and measured in.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Font {
-    pub(crate) family: nsh_core::ui::SharedString,
+    pub(crate) family: nsh_core::element::SharedString,
     pub(crate) size: Points,
     pub(crate) line_height: Points,
 }
@@ -183,7 +183,7 @@ pub(crate) struct State {
     /// The text last reported to the app (`onChange`) or set by it, and
     /// the buffer's version then: an unchanged version is an unchanged
     /// text, with no need to make or compare the whole text.
-    pub(crate) reported: Option<(u64, nsh_core::ui::SharedString)>,
+    pub(crate) reported: Option<(u64, nsh_core::element::SharedString)>,
     /// The selections last reported (`onSelectionChange`).
     pub(crate) reported_selections: Vec<EditorSelection>,
     /// What a search in the selection searches, carried through edits

@@ -11,10 +11,10 @@ demo: el-control-flow
 `If` and `Each` decide which elements exist: conditional and repeated content. They make no native view of their own.
 The native renderer updates only what changed: `If` swaps a branch when its condition flips, `Each` adds, moves and
 removes rows by key instead of rebuilding the list. Rust has `when(..)`, `each(..)` and `dynamic(..)` in
-`nsh_core::ui::prelude`; TSX has `<If>` and `<Each>`, globals that need no import.
+`nsh_core::prelude`; TSX has `<If>` and `<Each>`, globals that need no import.
 
 ```rust tabs
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 view()
     .child(

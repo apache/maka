@@ -3765,7 +3765,7 @@ kurbo@0.11.3 (Apache-2.0 OR MIT); authors declared by package: Raph Levien <raph
 kurbo@0.13.1 (Apache-2.0 OR MIT)
 lru-slab@0.1.3 (MIT OR Apache-2.0 OR Zlib); authors declared by package: Benjamin Saunders <ben.e.saunders@gmail.com>
 nohash-hasher@0.2.0 (Apache-2.0 OR MIT); authors declared by package: Parity Technologies <admin@parity.io>
-nsh-js@0.2.0 (Apache-2.0)
+nsh-js@0.3.0 (Apache-2.0)
 ntapi@0.4.3 (Apache-2.0 OR MIT); authors declared by package: MSxDOS <melcodos@gmail.com>
 numtoa@0.2.4 (MIT OR Apache-2.0); authors declared by package: Michael Aaron Murphy <mmstickman@gmail.com>
 polycool@0.4.0 (MIT OR Apache-2.0)
@@ -28832,15 +28832,15 @@ For these and/or other purposes and motivations, and without any expectation of 
 
 ================================================================================
 
-nsh-base@0.2.0 (Apache-2.0)
-nsh-bundler@0.2.0 (Apache-2.0)
-nsh-core@0.2.0 (Apache-2.0)
-nsh-engine@0.2.0 (Apache-2.0)
-nsh-gpui-terminal@0.2.0 (Apache-2.0)
-nsh-macros@0.2.0 (Apache-2.0)
-nsh-package@0.2.0 (Apache-2.0)
-nsh-platform-gpui@0.2.0 (Apache-2.0)
-nsh-platform-tui@0.2.0 (Apache-2.0)
+nsh-base@0.3.0 (Apache-2.0)
+nsh-bundler@0.3.0 (Apache-2.0)
+nsh-core@0.3.0 (Apache-2.0)
+nsh-engine@0.3.0 (Apache-2.0)
+nsh-gpui-terminal@0.3.0 (Apache-2.0)
+nsh-macros@0.3.0 (Apache-2.0)
+nsh-package@0.3.0 (Apache-2.0)
+nsh-platform-gpui@0.3.0 (Apache-2.0)
+nsh-platform-tui@0.3.0 (Apache-2.0)
 
 https://raw.githubusercontent.com/M4n5ter/nsh/de176695240d550f2b303643b8019146c7989e7f/LICENSE-APACHE
 

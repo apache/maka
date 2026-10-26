@@ -7,7 +7,7 @@ demo: mod-canvas
 
 # Canvas
 
-`Canvas` 提供与 HTML Canvas 2D 风格一致的绘图上下文。你的 `draw` 函数**记录**绘图操作，平台随后以屏幕分辨率在原生侧回放（iOS 上是 Core Graphics，Android 上是 `android.graphics.Canvas`）。绘图中的数字和颜色可以是[动画值](./nsh-animated.md)：它们做动画时，平台会自行重绘，无需再次运行 `draw`。
+`Canvas` 提供与 HTML Canvas 2D 风格一致的绘图上下文。你的 `draw` 函数**记录**绘图操作，平台随后以屏幕分辨率在原生侧回放（iOS 上是 Core Graphics，Android 上是 `android.graphics.Canvas`）。绘图中的数字和颜色可以是[动画值](./nsh.md#animation)：它们做动画时，平台会自行重绘，无需再次运行 `draw`。
 
 ```ts
 import { Canvas, CanvasGradient, CanvasRenderingContext2D, Path2D } from "nsh";
@@ -71,7 +71,7 @@ mount(App);
 所有类型为 `CanvasNumber` 的参数和所有填充/描边样式（`fillStyle`、`strokeStyle`）都接受 `AnimatedNode`。画布在绘制时读取该节点，并在其动画的每一帧在原生侧重绘：
 
 ```tsx
-import { createAnimatedValue, Easing } from "nsh/animated";
+import { createAnimatedValue, Easing } from "nsh";
 import { Canvas } from "nsh";
 
 const progress = createAnimatedValue(0);

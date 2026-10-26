@@ -127,7 +127,7 @@ function App() {
       <View style={{ height: 30 }} tooltip={<Tooltip defaultOpen><Text>ShownTip</Text></Tooltip>}>
         <Text>ShownTrigger</Text>
       </View>
-      <View style={{ height: 30 }} tooltip="PropTip">
+      <View style={{ height: 30 }} tooltip={<Text>PropTip</Text>}>
         <Text>PropTrigger</Text>
       </View>
       <View onPress={() => sheet.set(true)}><Text>OpenSheet</Text></View>

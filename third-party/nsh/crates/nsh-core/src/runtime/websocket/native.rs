@@ -21,7 +21,7 @@ use super::{
     super::{MAX_WEBSOCKETS, WEBSOCKETS},
     ConnectOptions, Data,
 };
-use crate::ui::{
+use crate::element::{
     Held, JsError, Later, System,
     ambient::{Spawned, spawn},
 };

@@ -1,4 +1,5 @@
-import { Input, signal, Text, View } from "nsh";
+import { signal, Text, View } from "nsh";
+import { Input } from "nsh/base";
 import { ceiling, flyHop, flying, type Hop, hoverThrottle, plan, resetPlan, segments } from "../store";
 import { color, mono, radius } from "../theme";
 import { Action, Caption, Counter, Line, Panel, Segmented, Slider, Switch } from "../ui";

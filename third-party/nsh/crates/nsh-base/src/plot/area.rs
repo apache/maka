@@ -2,7 +2,8 @@
 
 use nsh_core::{
     SvgPaint,
-    ui::{RowAccessor, Rows, Style, prelude::*},
+    element::{RowAccessor, Rows, Style},
+    prelude::*,
 };
 
 use super::{

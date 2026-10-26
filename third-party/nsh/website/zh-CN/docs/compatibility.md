@@ -64,7 +64,7 @@ NSH 的每个 PR 都会用当前代码跑 `nsh-compat` 的检查（**Compat** wo
 第一项检查测试开发中的 API，另外两项守住每个已记录的版本。重命名一个已发布的 API 会这样失败：
 
 ```
-v0.2.0: runtime [nsh/device] Platform: removed
+v0.2.0: runtime [nsh] Platform: removed
 Keep it: a rename keeps the old name as a @deprecated alias of the new one, a type only widens.
 ```
 

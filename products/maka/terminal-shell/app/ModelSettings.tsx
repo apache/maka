@@ -17,9 +17,10 @@
  * under the License.
  */
 
+import { textTooltip } from './ui';
 import { cleanup, inputAction, signal, Text, View } from 'nsh';
 import { Button, Dialog } from 'nsh/base';
-import { windowSize } from 'nsh/device';
+import { windowSize } from 'nsh';
 import { createSettingsOperations } from './settingsOperations';
 import { createModelSettings } from './settings';
 import { createGeneralSettings } from './generalSettings.ts';
@@ -181,7 +182,7 @@ export function ModelSettings(props: { close(): void; changed(): void; model?: M
                     ? tr('Back from general settings')
                     : tr('Back from plugins settings')
               }
-              tooltip={tr('Back')}
+              tooltip={textTooltip(() => tr('Back'))}
               onPress={inputAction(back, backAction())}
               style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
               hoverStyle={controlHoverStyle}
@@ -197,7 +198,7 @@ export function ModelSettings(props: { close(): void; changed(): void; model?: M
           <Button
             disabled={operations.busy()}
             accessibilityLabel={tr('Close settings')}
-            tooltip={tr('Close settings')}
+            tooltip={textTooltip(() => tr('Close settings'))}
             onPress={inputAction(close, null)}
             style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
             hoverStyle={controlHoverStyle}

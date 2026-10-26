@@ -1,4 +1,4 @@
-//! Rust components in the core ([`crate::ui`]): creating instances,
+//! Rust components in the core ([`crate::element`]): creating instances,
 //! expanding their views into nodes (once: what changes later comes as
 //! patches, [`super::views`]), placing JS children and slots, and routing
 //! events.
@@ -19,9 +19,7 @@ use super::{Core, Kind, NO_KEY, views::Anchor};
 use crate::{
     ApplyError, Command, EdgeInsets, EventKind, EventMask, EventPayload, NodeId, Op, Prop, ROOT_ID,
     Tag, TextEngine,
-    geometry::Points,
-    tailwind::ClassList,
-    ui::{
+    element::{
         Action, AnswerSlot, AnyInstance, AnyValue, Attrs, Child, ClipboardRead, ComponentError,
         ComponentSpec, ElKind, ElNode, Environment, Executor, ImageSize, IntoElement, JsEvent,
         JsResult, ListConfig, Listener, ModuleCx, ParentElement, PlaceFn, Position, Posts,
@@ -31,6 +29,8 @@ use crate::{
         view,
         virtual_list::{self, RowFn, SeparatorFn, VirtualListEl},
     },
+    geometry::Points,
+    tailwind::ClassList,
 };
 
 /// Lowered styles kept for reuse (many elements have the same styles);
@@ -51,7 +51,7 @@ enum Inner {
         place: PlaceFn,
         index: usize,
     },
-    /// A cell of a component's own list ([`crate::ui::virtual_list`]): it
+    /// A cell of a component's own list ([`crate::element::virtual_list`]): it
     /// renders row `index` with the list's row function.
     VirtualRow {
         list: NodeId,
@@ -64,7 +64,8 @@ type Rows = (u32, Option<Rc<[u64]>>);
 
 /// The parts of a view's list cells that show rows: the index each one's
 /// content reads, and the content's owner.
-type CellRows = Rc<RefCell<FxHashMap<NodeId, (crate::ui::Signal<usize>, crate::ui::Owner)>>>;
+type CellRows =
+    Rc<RefCell<FxHashMap<NodeId, (crate::element::Signal<usize>, crate::element::Owner)>>>;
 
 /// A component's own list.
 struct VirtualListState {
@@ -80,7 +81,7 @@ struct VirtualListState {
     /// index their content reads and its owner, for its rows' binding.
     rows: CellRows,
     /// The rows of another component's `Items` prop
-    /// ([`crate::ui::ComponentElement::items`]): each cell is that
+    /// ([`crate::element::ComponentElement::items`]): each cell is that
     /// component's wrapper (`place`, its row function: an [`Inner::Row`])
     /// around a node rendering the row (an [`Inner::VirtualRow`], in
     /// `contents` by slot), so each part's handlers run with its own
@@ -148,18 +149,18 @@ pub(super) struct Instance {
     /// The nodes of its view with bindings: what was applied last.
     pub(super) bound: FxHashMap<NodeId, super::views::BoundNode>,
     /// In a view placing its JS children one by one: them, as a signal.
-    pub(super) js_kids: Option<crate::ui::Signal<Vec<NodeId>>>,
+    pub(super) js_kids: Option<crate::element::Signal<Vec<NodeId>>>,
     /// A cell of a view's list: the owner of the row it shows.
-    cell_owner: Option<crate::ui::Owner>,
+    cell_owner: Option<crate::element::Owner>,
     /// ... and the index its content reads (its [`Position`]): a cell
     /// that shows another row sets it instead of being built again.
-    row_index: Option<crate::ui::Signal<usize>>,
+    row_index: Option<crate::element::Signal<usize>>,
     /// Lazy children a view passes: whether it places them, which what
     /// passes them reads.
-    lazy_wanted: Option<crate::ui::Signal<bool>>,
+    lazy_wanted: Option<crate::element::Signal<bool>>,
     /// In a view: the owner where it places its JS children (a region's),
     /// which the components JS made among them are under.
-    children_owner: Option<crate::ui::Owner>,
+    children_owner: Option<crate::element::Owner>,
     /// The component its view's root is, made on this host (its alias,
     /// [`Core::alias`]): its view makes the host's node.
     rooted: Option<NodeId>,
@@ -362,7 +363,7 @@ fn is_plain(el: &ElNode) -> bool {
 enum Awaited {
     /// An animation's end: whether it finished.
     End(AnswerSlot<bool>),
-    /// A value read ([`crate::ui::AnimatedValue::value`]).
+    /// A value read ([`crate::element::AnimatedValue::value`]).
     Value(AnswerSlot<f32>),
 }
 
@@ -375,7 +376,7 @@ pub(super) struct ClipboardAnswer {
     /// The text, for a text read.
     pub(super) text: Option<String>,
     /// The image, for an image read.
-    pub(super) image: Option<crate::ui::ClipboardImage>,
+    pub(super) image: Option<crate::element::ClipboardImage>,
     /// The files' `file:` URLs, for a files read.
     pub(super) files: Vec<String>,
 }
@@ -408,7 +409,7 @@ impl ClipboardAnswer {
         // can hold (the web's player encodes its own).
         answer.image = uri
             .filter(|u| u.starts_with("data:") && crate::platform::clipboard::uri_within_limit(u))
-            .map(|url| crate::ui::ClipboardImage {
+            .map(|url| crate::element::ClipboardImage {
                 url,
                 size: crate::geometry::Size::new(pixels(width), pixels(height)),
             });
@@ -419,8 +420,8 @@ impl ClipboardAnswer {
 /// An HTTP request of a task in flight ([`Core::fetch_event`]).
 struct PendingFetch {
     /// What arrived so far.
-    response: crate::ui::HttpResponse,
-    answer: AnswerSlot<Result<crate::ui::HttpResponse, String>>,
+    response: crate::element::HttpResponse,
+    answer: AnswerSlot<Result<crate::element::HttpResponse, String>>,
 }
 
 /// The core's component state.
@@ -461,7 +462,7 @@ pub(super) struct Components {
     /// Runs the components' async tasks and timers.
     pub(super) executor: Rc<Executor>,
     /// The status bar's settings, shared by components, modules and tasks.
-    pub(super) status_bars: crate::ui::status_bar::StatusBars,
+    pub(super) status_bars: crate::element::status_bar::StatusBars,
     /// Dialogs components show, by id: their answers.
     dialogs: FxHashMap<u32, AnswerSlot<i32>>,
     next_dialog: u32,
@@ -501,7 +502,7 @@ pub(super) struct Components {
     /// read, by id.
     animations: FxHashMap<crate::animation::AnimationId, Awaited>,
     /// Elements to measure once this commit is laid out
-    /// ([`crate::ui::ElementRef::measure`]).
+    /// ([`crate::element::ElementRef::measure`]).
     pub(super) measures: Vec<(NodeId, AnswerSlot<Option<crate::Measurement>>)>,
     /// The components' own lists, by node.
     virtual_lists: FxHashMap<NodeId, VirtualListState>,
@@ -509,7 +510,7 @@ pub(super) struct Components {
     waiting: Vec<NodeId>,
     /// The row counts the cells of views' lists read (their positions), by
     /// list, each under a root of its own that goes with the list.
-    list_counts: FxHashMap<NodeId, (crate::ui::Owner, crate::ui::Signal<usize>)>,
+    list_counts: FxHashMap<NodeId, (crate::element::Owner, crate::element::Signal<usize>)>,
     /// The layouts of views' lists with bound parts, as applied last.
     pub(super) list_layouts: FxHashMap<NodeId, ListConfig>,
     /// The insets screens and modals reported (`onInsets`).
@@ -530,7 +531,7 @@ pub(super) struct Components {
     /// A reused buffer.
     props: Vec<Prop>,
     /// The reactive graph of the components that run once.
-    pub(super) runtime: crate::ui::Runtime,
+    pub(super) runtime: crate::element::Runtime,
     /// What their bindings queued.
     pub(super) patches: super::views::Patches,
     /// Their views' regions, by id.
@@ -541,7 +542,7 @@ pub(super) struct Components {
     /// its op ([`RustCall::Post`]).
     posts: Posts,
     /// What the app's JS functions render for the views
-    /// ([`crate::ui::Renderer`]).
+    /// ([`crate::element::Renderer`]).
     pub(super) renders: super::renders::Renders,
     /// Nodes of views with the app's classes (`Element::app_class`): their
     /// own rules, the classes and what goes after them, resolved again
@@ -600,7 +601,7 @@ impl Default for Components {
             next_id: 3,
             dirty: Vec::new(),
             props: Vec::new(),
-            runtime: crate::ui::Runtime::default(),
+            runtime: crate::element::Runtime::default(),
             patches: super::views::Patches::default(),
             regions: FxHashMap::default(),
             next_region: 1,
@@ -666,7 +667,7 @@ impl Components {
 fn inline_style(
     id: NodeId,
     inline: Option<&crate::StylePatch>,
-    animated: &[(crate::StyleDecl, crate::ui::LiveNode)],
+    animated: &[(crate::StyleDecl, crate::element::LiveNode)],
     app: Option<&crate::StylePatch>,
 ) -> Op {
     let mut style = Box::<crate::Style>::default();
@@ -734,8 +735,8 @@ impl<M: TextEngine> Core<M> {
     /// What [`Core::tokens`] become when the root's `uiTheme` (the app's
     /// theme file) is set, with the embedding app's tokens of now: JS reads
     /// them in the turn that sends the theme, before it reaches the core.
-    pub fn theme_tokens(&self) -> crate::ui::ThemeTokens {
-        crate::ui::ThemeTokens::new(
+    pub fn theme_tokens(&self) -> crate::element::ThemeTokens {
+        crate::element::ThemeTokens::new(
             self.components.registry.token_source(),
             self.components.host_tokens.clone(),
         )
@@ -769,7 +770,7 @@ impl<M: TextEngine> Core<M> {
         let font = self
             .components
             .tokens
-            .font(crate::ui::FONT_SANS)
+            .font(crate::element::FONT_SANS)
             .map(|f| crate::style::FontFamily::new(f));
         self.set_default_font(font);
         self.class_tokens_changed();
@@ -802,7 +803,7 @@ impl<M: TextEngine> Core<M> {
         self.own_direction();
     }
 
-    /// The environment components read ([`crate::ui::ambient::window`]
+    /// The environment components read ([`crate::element::ambient::window`]
     /// and the like), as the platform reports it: what read a part that
     /// changed runs again. `dark` is the system's: the app's
     /// appearance wins over it ([`Core::set_appearance`]).
@@ -871,7 +872,7 @@ impl<M: TextEngine> Core<M> {
         self.components.executor.set_runtime(runtime);
     }
 
-    /// When the components' soonest timer is due ([`crate::ui::timer`]):
+    /// When the components' soonest timer is due ([`crate::element::timer`]):
     /// the engine wakes then and runs their tasks.
     pub fn next_task_timer(&self) -> Option<crate::time::Instant> {
         self.components.executor.next_timer()
@@ -1294,11 +1295,11 @@ impl<M: TextEngine> Core<M> {
                 Ok(future) => {
                     let executor = Rc::downgrade(&self.components.executor);
                     // A task of the root: it never goes away.
-                    crate::ui::task::spawn_raw(
+                    crate::element::task::spawn_raw(
                         &self.components.executor,
                         ROOT_ID,
                         Box::pin(async move {
-                            let result = crate::ui::module::catching(future).await;
+                            let result = crate::element::module::catching(future).await;
                             match executor.upgrade() {
                                 Some(executor) if call != 0 => {
                                     executor.act(Action::Return(call, result));
@@ -1450,7 +1451,7 @@ impl<M: TextEngine> Core<M> {
             .filter(|p| !p.is_empty());
         // A component is made where it is (its context comes from there).
         if let Inner::Component(c) = &mut inner {
-            c.place(host, crate::ui::Owner::current());
+            c.place(host, crate::element::Owner::current());
         }
         let instance = Instance::new(inner, spec, Vec::new(), app_style);
         self.components.instances.insert(host, Box::new(instance));
@@ -1524,7 +1525,7 @@ impl<M: TextEngine> Core<M> {
                     _ => None,
                 })
                 .unwrap_or("a binding");
-            if let Some(boundary) = crate::ui::reactive::boundary_of(owner) {
+            if let Some(boundary) = crate::element::reactive::boundary_of(owner) {
                 boundary.set(Some(ComponentError { component, message }));
                 continue;
             }
@@ -1692,7 +1693,7 @@ impl<M: TextEngine> Core<M> {
 
     /// The owner of the nearest component above `host` in the tree (its
     /// view's, or a list cell's row), else none.
-    fn owner_above(&self, host: NodeId) -> crate::ui::Owner {
+    fn owner_above(&self, host: NodeId) -> crate::element::Owner {
         let mut key = self.key(host).ok();
         while let Some(k) = key {
             let parent = self.nodes[k as usize].parent;
@@ -1720,12 +1721,12 @@ impl<M: TextEngine> Core<M> {
                 return owner;
             }
         }
-        crate::ui::Owner::detached()
+        crate::element::Owner::detached()
     }
 
     /// The host of the component that runs once whose owner is `owner`, or
     /// whose view made it (a binding's own owner is under the component's).
-    fn host_of_owner(&self, owner: crate::ui::Owner) -> Option<NodeId> {
+    fn host_of_owner(&self, owner: crate::element::Owner) -> Option<NodeId> {
         let mut at = Some(owner);
         while let Some(owner) = at {
             let host =
@@ -1844,7 +1845,8 @@ impl<M: TextEngine> Core<M> {
                             // Between rows: after each but the last (before
                             // it, inverted), while it is not.
                             let separator = separator.map(|s| {
-                                crate::ui::when(move || !at.is_last(), move || s()).into_element()
+                                crate::element::when(move || !at.is_last(), move || s())
+                                    .into_element()
                             });
                             match separator {
                                 Some(s) if inverted => view().child(s).child(row),
@@ -1897,13 +1899,13 @@ impl<M: TextEngine> Core<M> {
             owner.dispose();
         }
         let parent = self.cell_parent_owner(cell);
-        let (owner, el) = parent.run(|| crate::ui::create_root(|| caught(build)));
+        let (owner, el) = parent.run(|| crate::element::create_root(|| caught(build)));
         inst.cell_owner = Some(owner);
         el
     }
 
     /// The owner of the component whose list cell `cell` is in.
-    fn cell_parent_owner(&self, cell: NodeId) -> crate::ui::Owner {
+    fn cell_parent_owner(&self, cell: NodeId) -> crate::element::Owner {
         let component = self
             .list_of(cell)
             .and_then(|list| {
@@ -1918,7 +1920,7 @@ impl<M: TextEngine> Core<M> {
                 Inner::Component(inner) => inner.owner(),
                 _ => None,
             });
-        component.unwrap_or_else(crate::ui::Owner::detached)
+        component.unwrap_or_else(crate::element::Owner::detached)
     }
 
     /// The text content `new` of node `id` (of `host`'s view), its raw
@@ -2302,13 +2304,13 @@ impl<M: TextEngine> Core<M> {
     /// The signal of whether the component hosted by `nested` places its
     /// lazy children, made under the current owner (the view passing them)
     /// the first time.
-    fn children_wanted_signal(&mut self, nested: NodeId) -> crate::ui::Signal<bool> {
+    fn children_wanted_signal(&mut self, nested: NodeId) -> crate::element::Signal<bool> {
         let Some(inst) = self.components.instances.get_mut(&nested) else {
-            return crate::ui::signal(false);
+            return crate::element::signal(false);
         };
         *inst
             .lazy_wanted
-            .get_or_insert_with(|| crate::ui::signal(inst.children_wanted))
+            .get_or_insert_with(|| crate::element::signal(inst.children_wanted))
     }
 
     /// JS child `child`, placed at `place`, leaves the tree (and the
@@ -2409,7 +2411,7 @@ impl<M: TextEngine> Core<M> {
     }
 
     /// [`Self::apply_styles`] for an element of a view: the app's classes
-    /// it carries (`class`, [`crate::ui::Element::app_class`]) go after its
+    /// it carries (`class`, [`crate::element::Element::app_class`]) go after its
     /// own styles, then `outer` (a root's: what the views and the app give
     /// its host).
     pub(super) fn apply_el_styles(
@@ -2589,7 +2591,7 @@ impl<M: TextEngine> Core<M> {
         &mut self,
         parent: NodeId,
         old: Vec<Expanded>,
-        new: Vec<(Option<crate::ui::Owner>, ElNode)>,
+        new: Vec<(Option<crate::element::Owner>, ElNode)>,
         host: NodeId,
         inst: &mut Instance,
     ) -> (Vec<Expanded>, Option<usize>) {
@@ -2612,16 +2614,16 @@ impl<M: TextEngine> Core<M> {
                 inst.children_at = Placement::Each;
                 {
                     let children = *inst.js_kids.get_or_insert_with(|| {
-                        crate::ui::signal_with(
+                        crate::element::signal_with(
                             inst.js_children.clone(),
-                            crate::ui::SignalEquals::Never,
+                            crate::element::SignalEquals::Never,
                         )
                     });
                     // A wrapper per child, kept while the child stays; its
                     // position follows it.
                     let place = place.clone();
-                    let count = crate::ui::computed(move || children.with(Vec::len));
-                    let region = crate::ui::each(
+                    let count = crate::element::computed(move || children.with(Vec::len));
+                    let region = crate::element::each(
                         children,
                         |&child: &NodeId| child,
                         move |child, index| {
@@ -2777,7 +2779,7 @@ impl<M: TextEngine> Core<M> {
                     old[j] = None;
                 }
                 *placeholder = Some(out.len());
-                inst.children_owner = Some(crate::ui::Owner::current());
+                inst.children_owner = Some(crate::element::Owner::current());
                 out.push(Expanded::js(0, Part::Children));
             }
             ElKind::JsChild(id) => {
@@ -3598,10 +3600,10 @@ impl<M: TextEngine> Core<M> {
                 content = slots;
                 if !kids.is_empty() {
                     let wanted = self.children_wanted_signal(id);
-                    let shown = crate::ui::when(wanted, move || {
+                    let shown = crate::element::when(wanted, move || {
                         kids.iter()
                             .cloned()
-                            .map(crate::ui::AnyElement)
+                            .map(crate::element::AnyElement)
                             .collect::<Vec<_>>()
                     });
                     content.push(shown.into_element().0);
@@ -3769,10 +3771,10 @@ impl<M: TextEngine> Core<M> {
             let slot = first.clone();
             let last: RefCell<Option<Rc<[u64]>>> = RefCell::new(None);
             let made = std::cell::Cell::new(false);
-            crate::ui::computed(move || {
+            crate::element::computed(move || {
                 let (count, keys) = rows();
                 let splice = match (&*last.borrow(), &keys) {
-                    (Some(old), Some(new)) => crate::ui::virtual_list::splice(old, new),
+                    (Some(old), Some(new)) => crate::element::virtual_list::splice(old, new),
                     _ => None,
                 };
                 last.replace(keys.clone());
@@ -3791,7 +3793,7 @@ impl<M: TextEngine> Core<M> {
             });
             first.take().expect("a memo runs when it is made")
         } else {
-            let (count, keys) = crate::ui::untracked(rows);
+            let (count, keys) = crate::element::untracked(rows);
             // What the cells of a view (or a view's wrappers) read.
             {
                 self.list_count(id, count as usize).set(count as usize);
@@ -3841,7 +3843,7 @@ impl<M: TextEngine> Core<M> {
         keys: Option<&Rc<[u64]>>,
     ) {
         if let (Some((_, Some(old))), Some(new)) = (before, keys)
-            && let Some((at, removed, inserted)) = crate::ui::virtual_list::splice(old, new)
+            && let Some((at, removed, inserted)) = crate::element::virtual_list::splice(old, new)
         {
             let _ = self.apply_op(Op::SetProp {
                 id,
@@ -3899,12 +3901,12 @@ impl<M: TextEngine> Core<M> {
 
     /// The row count the cells of list `list` read, made with `count` the
     /// first time.
-    fn list_count(&mut self, list: NodeId, count: usize) -> crate::ui::Signal<usize> {
+    fn list_count(&mut self, list: NodeId, count: usize) -> crate::element::Signal<usize> {
         if let Some(&(_, signal)) = self.components.list_counts.get(&list) {
             return signal;
         }
-        let made = crate::ui::Owner::detached()
-            .run(|| crate::ui::create_root(|| crate::ui::signal(count)));
+        let made = crate::element::Owner::detached()
+            .run(|| crate::element::create_root(|| crate::element::signal(count)));
         self.components.list_counts.insert(list, made);
         made.1
     }
@@ -4044,7 +4046,7 @@ impl<M: TextEngine> Core<M> {
         state.latest = virtual_list::viewable_range(payload, "first", "last");
         match state.min_view {
             Some(delay) => {
-                state.report = Some(crate::ui::task::act_after(
+                state.report = Some(crate::element::task::act_after(
                     &executor,
                     state.owner,
                     delay,
@@ -4380,7 +4382,7 @@ impl<M: TextEngine> Core<M> {
     }
 
     /// The code of `host`'s component panicked: the nearest error boundary
-    /// above it shows it ([`crate::ui::catch_error`]); else it is reported.
+    /// above it shows it ([`crate::element::catch_error`]); else it is reported.
     pub(super) fn component_failed(&mut self, host: NodeId, message: String) {
         let component = match self.components.instances.get(&host).map(|i| &i.inner) {
             Some(Inner::Component(inner)) => inner.name(),
@@ -4397,7 +4399,7 @@ impl<M: TextEngine> Core<M> {
                 _ => inst.cell_owner,
             });
         let _entered = self.components.runtime.enter();
-        match owner.and_then(crate::ui::reactive::boundary_of) {
+        match owner.and_then(crate::element::reactive::boundary_of) {
             Some(boundary) => boundary.set(Some(error)),
             None => log::error!(target: "js", "{error}"),
         }
@@ -4465,7 +4467,7 @@ impl<M: TextEngine> Core<M> {
                 self.components.fetches.insert(
                     id,
                     PendingFetch {
-                        response: crate::ui::HttpResponse::default(),
+                        response: crate::element::HttpResponse::default(),
                         answer,
                     },
                 );
@@ -4482,7 +4484,7 @@ impl<M: TextEngine> Core<M> {
                 }
                 if let Some(picker) = self.picker.clone() {
                     let picked = picker.pick_images(request);
-                    crate::ui::task::spawn_raw(
+                    crate::element::task::spawn_raw(
                         &self.components.executor,
                         crate::ROOT_ID,
                         Box::pin(async move {
@@ -4566,7 +4568,7 @@ impl<M: TextEngine> Core<M> {
     }
 
     /// Native animations that ended: the components' resolve their
-    /// [`crate::ui::AnimationEnd`]s; JS's stay in `finished`.
+    /// [`crate::element::AnimationEnd`]s; JS's stay in `finished`.
     pub fn animations_finished(&mut self, finished: &mut Vec<crate::animation::Finished>) {
         finished.retain(|f| match self.components.animations.remove(&f.animation) {
             Some(Awaited::End(end)) => {
@@ -4589,7 +4591,7 @@ impl<M: TextEngine> Core<M> {
         }
     }
 
-    /// Moves the URLs the app asked to open (`openUrl`, [`crate::ui::open_url`])
+    /// Moves the URLs the app asked to open (`openUrl`, [`crate::element::open_url`])
     /// since the last call to `out`, by request id, checked and granted
     /// ([`crate::open_url`]). The engine asks the embedding app first, then
     /// answers each with [`Core::answer_open_url`] (the embedding app took
@@ -4740,7 +4742,7 @@ impl<M: TextEngine> Core<M> {
                     return false;
                 };
                 let binding = *binding as u32;
-                if binding < crate::ui::keys::FIRST_ID {
+                if binding < crate::element::keys::FIRST_ID {
                     return false;
                 }
                 if binding == super::overlay::ESCAPE_BINDING {
@@ -4886,7 +4888,7 @@ impl<M: TextEngine> Core<M> {
     }
 
     /// Runs a back listener: whether it handled the press.
-    fn back_pressed(&mut self, listener: &crate::ui::BackListener) -> bool {
+    fn back_pressed(&mut self, listener: &crate::element::BackListener) -> bool {
         let result = caught(|| listener());
         self.apply_actions();
         result.unwrap_or_else(|message| {
@@ -4980,6 +4982,103 @@ impl<M: TextEngine> Core<M> {
         safe
     }
 
+    /// What `env` (a node's `env()` terms) comes to for `key` now: the
+    /// insets of the root view it renders in ([`Self::insets_of`]) and the
+    /// software keyboard's height.
+    pub(super) fn env_insets(
+        &self,
+        key: super::Key,
+        env: &crate::style::EnvEdges,
+    ) -> [EdgeInsets; 2] {
+        use crate::style::EnvVar;
+        let mut root = None;
+        let mut value = |var: Option<EnvVar>| {
+            let Some(var) = var else {
+                return Points::ZERO;
+            };
+            if var == EnvVar::KeyboardInsetHeight {
+                return self
+                    .components
+                    .environment
+                    .keyboard_height
+                    .max(Points::ZERO);
+            }
+            let insets = *root.get_or_insert_with(|| self.insets_of(self.nodes[key as usize].id));
+            match var {
+                EnvVar::SafeAreaInsetTop => insets.top,
+                EnvVar::SafeAreaInsetRight => insets.right,
+                EnvVar::SafeAreaInsetBottom => insets.bottom,
+                _ => insets.left,
+            }
+        };
+        let mut edges = |vars: &[Option<EnvVar>; 4]| EdgeInsets {
+            top: value(vars[0]),
+            right: value(vars[1]),
+            bottom: value(vars[2]),
+            left: value(vars[3]),
+        };
+        [edges(&env.padding), edges(&env.margin)]
+    }
+
+    /// The nodes whose padding or margin uses `env()` follow the
+    /// environment: restyled where what their terms come to changed (a
+    /// safe area, a page's insets, the keyboard, a move to another root
+    /// view). A change of the keyboard's height animates with the
+    /// keyboard, natively. Nothing to do without such nodes.
+    pub(super) fn sync_env(&mut self) {
+        if self.env_styled.is_empty() {
+            return;
+        }
+        let mut ids = std::mem::take(&mut self.env_scratch);
+        ids.extend(self.env_styled.iter().copied());
+        let mut keyboard_moved = false;
+        for &id in &ids {
+            let node = self.key(id).ok().and_then(|key| {
+                let env = self.nodes[key as usize].env.as_deref().copied()?;
+                Some((key, env))
+            });
+            let Some((key, (env, applied))) = node else {
+                self.env_styled.remove(&id);
+                continue;
+            };
+            let now = self.env_insets(key, &env);
+            if now == applied {
+                continue;
+            }
+            // The edges the keyboard moves.
+            let keyboard = |vars: &[Option<crate::style::EnvVar>; 4],
+                            was: &EdgeInsets,
+                            now: &EdgeInsets| {
+                let (was, now) = (
+                    [was.top, was.right, was.bottom, was.left],
+                    [now.top, now.right, now.bottom, now.left],
+                );
+                (0..4).any(|i| {
+                    vars[i] == Some(crate::style::EnvVar::KeyboardInsetHeight) && was[i] != now[i]
+                })
+            };
+            keyboard_moved |= keyboard(&env.padding, &applied[0], &now[0])
+                || keyboard(&env.margin, &applied[1], &now[1]);
+            self.restyle(key);
+        }
+        ids.clear();
+        self.env_scratch = ids;
+        let duration = self.components.environment.keyboard_duration;
+        if keyboard_moved && duration > 0.0 && self.layout_animation.is_none() {
+            use crate::props::{LayoutAnimation, LayoutCurve, LayoutProperty, LayoutTransition};
+            self.layout_animation = Some(LayoutAnimation {
+                create: None,
+                update: Some(LayoutTransition {
+                    curve: LayoutCurve::Keyboard,
+                    property: LayoutProperty::Opacity,
+                    duration_ms: duration * 1000.0,
+                    delay_ms: 0.0,
+                }),
+                delete: None,
+            });
+        }
+    }
+
     /// Applies what handlers, handles (element refs, animated values) and
     /// services asked for, in order.
     pub(super) fn apply_actions(&mut self) {
@@ -4994,7 +5093,7 @@ impl<M: TextEngine> Core<M> {
     pub(super) fn route_emit(
         &mut self,
         host: NodeId,
-        event: Box<dyn crate::ui::element::AnyEvent>,
+        event: Box<dyn crate::element::builder::AnyEvent>,
     ) {
         match self.components.owners.get(&host).copied() {
             Some(parent) => {
@@ -5080,12 +5179,12 @@ fn move_rows(cells: &CellRows, splice: Option<(u32, u32, u32)>, count: u32) {
 fn row_position(
     index: usize,
     count: usize,
-    count_signal: Option<crate::ui::Signal<usize>>,
-    made: &std::cell::Cell<Option<crate::ui::Signal<usize>>>,
+    count_signal: Option<crate::element::Signal<usize>>,
+    made: &std::cell::Cell<Option<crate::element::Signal<usize>>>,
 ) -> Position {
     match count_signal {
         Some(count) => {
-            let index = crate::ui::signal(index);
+            let index = crate::element::signal(index);
             made.set(Some(index));
             Position::of(index.node(), count.node())
         }

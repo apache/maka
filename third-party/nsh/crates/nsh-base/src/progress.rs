@@ -1,9 +1,6 @@
 //! `Progress`: a linear progress bar with no look of its own.
 
-use nsh_core::{
-    AccessibilityValue,
-    ui::{Style, prelude::*},
-};
+use nsh_core::{AccessibilityValue, element::Style, prelude::*};
 
 /// The range of [`ProgressProps::value`], as `gpui-base`'s: a percentage.
 const MAX: f32 = 100.0;

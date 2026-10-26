@@ -1,4 +1,5 @@
-import { Input, type JSX, mount, Scroll, signal, Text, View, type YNode } from "nsh";
+import { type JSX, mount, Scroll, signal, Text, View, type YNode } from "nsh";
+import { Input } from "nsh/base";
 import { button, buttonText, desktop, field, Inspector, Panel, Stage, ui, wide } from "./palette";
 
 const label = () => ({ fontSize: 13, color: ui().muted });

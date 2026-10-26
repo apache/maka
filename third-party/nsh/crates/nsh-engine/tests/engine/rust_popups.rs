@@ -8,8 +8,8 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::Receiver;
 use nsh_base::{Anchor, ToastStackState, ToastTransitionStatus, popover, toast, toast_stack};
 use nsh_core::{
-    ApproxTextEngine, Bounds, MountBatch, MountItem, NodeId, Points, ROOT_ID, Size,
-    ui::{Root, prelude::*},
+    ApproxTextEngine, Bounds, MountBatch, MountItem, NodeId, Points, ROOT_ID, Size, element::Root,
+    prelude::*,
 };
 use nsh_engine::{App, Engine, EngineConfig, Environment};
 

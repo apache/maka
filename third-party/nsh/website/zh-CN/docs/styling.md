@@ -120,7 +120,7 @@ NSH 的默认值与 Web 不同：
 
 ## 颜色
 
-在 Rust 中，颜色是类型化的值：`rgb(0x0099ff)`、`rgba(0x0099ffcc)`、`hsla(..)`、`white()`、`black()`，以及 `nsh_core::ui::palette` 中的 Tailwind 调色板（`BLUE.shade(500)`）。颜色方法接受 `AdaptiveColor`，即一个浅色值和一个深色值：`AdaptiveColor::rgb(0xffffff, 0x0d1117)` 以原生方式随系统外观切换，无需重新渲染。来自应用主题的颜色（`nsh_base` 的 `theme().primary`）同样会自适应（[Rust](./rust.md#主题)）。
+在 Rust 中，颜色是类型化的值：`rgb(0x0099ff)`、`rgba(0x0099ffcc)`、`hsla(..)`、`white()`、`black()`，以及 `nsh_core::element::palette` 中的 Tailwind 调色板（`BLUE.shade(500)`）。颜色方法接受 `AdaptiveColor`，即一个浅色值和一个深色值：`AdaptiveColor::rgb(0xffffff, 0x0d1117)` 以原生方式随系统外观切换，无需重新渲染。来自应用主题的颜色（`nsh_base` 的 `theme().primary`）同样会自适应（[Rust](./rust.md#主题)）。
 
 在 TSX 中，颜色属性接受 CSS 颜色字符串：
 
@@ -132,7 +132,7 @@ NSH 的默认值与 Web 不同：
 | `oklch()` / `oklab()` | `"oklch(62.3% 0.214 259.8)"` |
 | 颜色名 | `"white"`、`"black"`、`"transparent"`、`"rebeccapurple"` 等 |
 
-在 TSX 中要支持深色模式，可以读取 `nsh/device` 中的 [`colorScheme()`](../modules/nsh-device.md)（一个跟随系统外观的访问器），或使用 Tailwind 的 `dark:` 变体：
+在 TSX 中要支持深色模式，可以读取 `nsh` 中的 [`colorScheme()`](../modules/nsh.md#device)（一个跟随系统外观的访问器），或使用 Tailwind 的 `dark:` 变体：
 
 ```rust tabs
 view()
@@ -143,7 +143,7 @@ view()
 
 ```tsx tabs
 import { Text, View } from "nsh";
-import { colorScheme } from "nsh/device";
+import { colorScheme } from "nsh";
 
 const palette = () =>
   colorScheme() === "dark"

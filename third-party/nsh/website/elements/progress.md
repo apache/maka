@@ -16,7 +16,7 @@ inside it, then its children (a label, the value as text), and the app styles ea
 
 ```rust tabs
 use nsh_base::{progress, theme};
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 fn upload(sent: Signal<f32>) -> impl IntoElement {
     progress()

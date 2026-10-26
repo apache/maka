@@ -6,8 +6,9 @@ use std::time::Duration;
 
 use nsh_core::{
     JsonValue, Points,
+    element::{JsHost, JsIn, JsOwned, JsValue, PropError, TsTypes},
+    prelude::*,
     time::now,
-    ui::{JsHost, JsIn, JsOwned, JsValue, PropError, TsTypes, prelude::*},
 };
 
 use super::{ToastMotion as Motion, ToastOptions as Options, ToastTransitionStatus};

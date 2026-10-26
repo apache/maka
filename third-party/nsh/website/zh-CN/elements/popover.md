@@ -12,7 +12,7 @@ demo: el-popover
 
 ```rust tabs
 use nsh_base::{OpenChangeReason, PopoverEvent, popover};
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 fn details() -> impl IntoElement {
     popover()

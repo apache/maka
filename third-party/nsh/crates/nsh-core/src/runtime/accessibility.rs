@@ -2,7 +2,7 @@
 
 use crate::{
     Command,
-    ui::{ModuleCx, NodeRef, module, task::Action},
+    element::{ModuleCx, NodeRef, module, task::Action},
 };
 
 /// The screen reader's commands.

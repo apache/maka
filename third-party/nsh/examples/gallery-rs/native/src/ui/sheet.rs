@@ -3,7 +3,7 @@
 //! follows the finger with no engine work per frame.
 
 use nsh_base::{dialog, theme};
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 use super::colors;
 

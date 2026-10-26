@@ -65,11 +65,11 @@ final class TextBox extends android.view.ViewGroup implements Node {
 
     /** `selectable`. */
     private boolean selectable;
-    /** `selectable={false}`: out of selection areas too. */
+    /** `selectable={false}`: out of selectable views too. */
     boolean excluded;
-    /** The selection area whose gesture this touch is ({@link SelectionArea}), if any. */
-    private SelectionArea areaGesture;
-    /** What a selection area has selected here (UTF-16 offsets), or -1. */
+    /** The selectable view whose gesture this touch is ({@link SelectableView}), if any. */
+    private SelectableView areaGesture;
+    /** What a selectable view has selected here (UTF-16 offsets), or -1. */
     private int areaStart = -1, areaEnd = -1;
     /** `selectionColor`: the highlight and the handles' tint; null: the theme's. */
     private Integer selectionColor;
@@ -128,7 +128,7 @@ final class TextBox extends android.view.ViewGroup implements Node {
         return selectionColor;
     }
 
-    /** What a selection area selected here: [{@code start}, {@code end}), or -1, -1. */
+    /** What a selectable view selected here: [{@code start}, {@code end}), or -1, -1. */
     void setAreaSelection(int start, int end) {
         if (start == areaStart && end == areaEnd) return;
         areaStart = start;
@@ -153,9 +153,9 @@ final class TextBox extends android.view.ViewGroup implements Node {
     @android.annotation.SuppressLint("ClickableViewAccessibility")
     @Override
     public boolean onTouchEvent(android.view.MotionEvent e) {
-        // In a selection area, the area selects (across its texts), not the text.
+        // In a selectable view, the area selects (across its texts), not the text.
         if (e.getActionMasked() == android.view.MotionEvent.ACTION_DOWN) {
-            areaGesture = excluded ? null : mounter.selectionAreaOf(this);
+            areaGesture = excluded ? null : mounter.selectableViewOf(this);
         }
         if (areaGesture != null) {
             forwardPress(e, areaGesture.selecting());

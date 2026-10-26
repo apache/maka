@@ -3,7 +3,7 @@
 //! cards, the error row and the avatar. Builders a list row makes once;
 //! what changes in them (a tool's state, a button's tint) is bound.
 
-use nsh_core::ui::{AnyElement, prelude::*};
+use nsh_core::{element::AnyElement, prelude::*};
 
 use super::{
     glyphs::{GlyphName, glyph},

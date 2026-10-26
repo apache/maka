@@ -1,8 +1,8 @@
 // Internal design tokens and finishes shared by gallery and website demos.
 import type { Tokens, ViewStyle } from "nsh";
 import { token } from "nsh";
-import { Easing } from "nsh/animated";
-import { colorScheme } from "nsh/device";
+import { Easing } from "nsh";
+import { colorScheme } from "nsh";
 import finishes from "./finishes.json";
 
 /** Whether the shared example UI shows its dark palette (reactive: reading it subscribes). */

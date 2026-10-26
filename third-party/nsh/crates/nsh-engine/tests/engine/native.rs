@@ -14,7 +14,7 @@ use serde_json::json;
 use crate::ChannelSink;
 
 const APP: &str = r#"import { mount, signal, Text, View } from "nsh";
-import { nativeComponent } from "nsh/native";
+import { nativeComponent } from "nsh";
 
 const Map = nativeComponent<
   { center: { lat: number; lng: number }; zoom?: number; title?: string },
@@ -162,8 +162,8 @@ fn cross_as_json((engine, rx): (Engine, Receiver<MountBatch>)) {
 }
 
 const ANIMATED_APP: &str = r#"import { mount, signal, View } from "nsh";
-import { createAnimatedValue } from "nsh/animated";
-import { nativeComponent } from "nsh/native";
+import { createAnimatedValue } from "nsh";
+import { nativeComponent } from "nsh";
 
 const Thing = nativeComponent<{ progress?: number }, { mode: { animated: boolean; tick: number } }>(
   "com.example.thing",

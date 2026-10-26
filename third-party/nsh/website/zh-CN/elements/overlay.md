@@ -11,7 +11,7 @@ demo: el-overlay
 浮层把它的子元素显示在所在根视图中一切内容之上：窗口，或包住它的对话框。父元素的尺寸、`overflow: hidden` 和滚动视图都不会裁剪它。除此之外，它就待在你写它的地方：它读取周围的 context，它的处理函数属于它所在的组件，并随父元素一起移除。弹出框、菜单、工具提示和 sheet 都建立在它之上；[`nsh/base`](../modules/nsh-base.md) 已经提供了它们（[Popover](./popover.md)、[Menu](./menu.md)、[Tooltip](./tooltip.md)、[Sheet](./sheet.md)），要构建你自己的弹出层，就用浮层。
 
 ```rust tabs
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 fn more_button() -> impl IntoElement {
     let open = signal(false);
@@ -73,7 +73,7 @@ function MoreButton() {
 }
 ```
 
-`Overlay` 在 TSX 中来自 `nsh`，在 Rust 中 `overlay()` 来自 `nsh_core::ui::prelude`。它在视图中时就会显示：把它放进 `If`（Rust 中为 `when(..)`）来打开和关闭它。后显示的浮层位于先显示的浮层之上，嵌套在另一个浮层里的浮层位于外层之上。
+`Overlay` 在 TSX 中来自 `nsh`，在 Rust 中 `overlay()` 来自 `nsh_core::prelude`。它在视图中时就会显示：把它放进 `If`（Rust 中为 `when(..)`）来打开和关闭它。后显示的浮层位于先显示的浮层之上，嵌套在另一个浮层里的浮层位于外层之上。
 
 <a id="placement"></a>
 

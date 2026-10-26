@@ -5,11 +5,7 @@
 use std::time::Duration;
 
 use crossbeam_channel::Receiver;
-use nsh_core::{
-    ApproxTextEngine, MountBatch, MountItem,
-    time::Clock,
-    ui::{Root, prelude::*},
-};
+use nsh_core::{ApproxTextEngine, MountBatch, MountItem, element::Root, prelude::*, time::Clock};
 use nsh_engine::{App, Bundle, Engine, EngineConfig};
 
 /// Sends the batches, and fails on the app's errors.

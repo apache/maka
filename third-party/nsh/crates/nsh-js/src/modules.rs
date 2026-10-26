@@ -23,7 +23,7 @@ use std::{
 
 use nsh_core::{
     decl,
-    ui::{ComponentSpec, DECLARATIONS, ModuleSpec, Registry, description::SetDescription},
+    element::{ComponentSpec, DECLARATIONS, ModuleSpec, Registry, description::SetDescription},
 };
 use rquickjs::{Ctx, JsLifetime, Module, qjs};
 
@@ -62,7 +62,7 @@ pub(crate) enum Ts {
 
 impl Ts {
     // Constructors for the tables: the text is left out of builds without
-    // declarations (`nsh_core::ui::DECLARATIONS`).
+    // declarations (`nsh_core::element::DECLARATIONS`).
 
     /// [`Ts::Function`].
     pub(crate) const fn function(doc: &'static str, signatures: &'static [&'static str]) -> Ts {
@@ -103,8 +103,8 @@ pub(crate) struct NativeModule {
     /// per VM): `nsh` serves the primitives `nsh/image`, `nsh/list`, ...
     /// exported first.
     pub(crate) also: &'static [&'static str],
-    /// The module apps import this one's exports from now (`nsh`): they
-    /// stay, declared `@deprecated`.
+    /// The module that serves this one's exports (`nsh`): it is no module
+    /// apps import, only the source of those exports and their types.
     pub(crate) moved_to: Option<&'static str>,
     /// The module's own TypeScript types (interfaces, type aliases), next to
     /// the declarations of its exports.
@@ -247,14 +247,6 @@ const NSH: &[Item] = &[
         ),
     ),
     (
-        "Input",
-        Export::Value(|cx| dom::host_component(cx, "input", true)),
-        Ts::function(
-            "A native text input (UITextField / UITextView, EditText); `ref` has\n`focus()`, `blur()` and `setSelection(start, end)`.",
-            &["(props: InputProps): YNode"],
-        ),
-    ),
-    (
         "Overlay",
         Export::Value(|cx| dom::host_component(cx, "overlay", true)),
         Ts::function(
@@ -337,21 +329,31 @@ export type Component<P = {}> = (props: P) => JSX.Element;
 export interface Tokens {}
 "#;
 
-/// The modules that exported primitives before `nsh` did: `nsh` serves
-/// their exports, and they keep serving them (deprecated).
-const PRIMITIVE_MODULES: &[&str] = &[
+/// The sources of what `nsh` serves (`NativeModule::moved_to`), kept by
+/// area.
+const NSH_SOURCES: &[&str] = &[
     "nsh/image",
     "nsh/list",
     "nsh/canvas",
     "nsh/webview",
     "nsh/video",
+    "nsh/device",
+    "nsh/accessibility",
+    "nsh/native",
+    "nsh/gesture",
+    "nsh/animated",
+    "nsh/host",
+    "nsh/keymap",
 ];
+
+/// The sources of what `nsh/mobile` serves, by platform.
+const MOBILE_SOURCES: &[&str] = &["nsh/ios", "nsh/android"];
 
 pub(crate) const MODULES: &[NativeModule] = &[
     NativeModule {
         name: "nsh",
         exports: NSH,
-        also: PRIMITIVE_MODULES,
+        also: NSH_SOURCES,
         moved_to: None,
         types: decl!(NSH_TYPES),
     },
@@ -366,28 +368,28 @@ pub(crate) const MODULES: &[NativeModule] = &[
         name: "nsh/device",
         exports: env::DEVICE_EXPORTS,
         also: &[],
-        moved_to: None,
+        moved_to: Some("nsh"),
         types: decl!(env::DEVICE_TYPES),
     },
     NativeModule {
         name: "nsh/accessibility",
         exports: env::ACCESSIBILITY_EXPORTS,
         also: &[],
-        moved_to: None,
+        moved_to: Some("nsh"),
         types: "",
     },
     NativeModule {
         name: "nsh/android",
         exports: platform_modules::ANDROID_EXPORTS,
         also: &[],
-        moved_to: None,
+        moved_to: Some("nsh/mobile"),
         types: decl!(platform_modules::ANDROID_TYPES),
     },
     NativeModule {
         name: "nsh/ios",
         exports: platform_modules::IOS_EXPORTS,
         also: &[],
-        moved_to: None,
+        moved_to: Some("nsh/mobile"),
         types: decl!(platform_modules::IOS_TYPES),
     },
     NativeModule {
@@ -400,7 +402,7 @@ pub(crate) const MODULES: &[NativeModule] = &[
     NativeModule {
         name: "nsh/mobile",
         exports: platform_modules::MOBILE_EXPORTS,
-        also: &[],
+        also: MOBILE_SOURCES,
         moved_to: None,
         types: "",
     },
@@ -422,21 +424,21 @@ pub(crate) const MODULES: &[NativeModule] = &[
         name: "nsh/native",
         exports: platform_modules::NATIVE_EXPORTS,
         also: &[],
-        moved_to: None,
+        moved_to: Some("nsh"),
         types: decl!(platform_modules::NATIVE_TYPES),
     },
     NativeModule {
         name: "nsh/gesture",
         exports: touch::GESTURE_EXPORTS,
         also: &[],
-        moved_to: None,
+        moved_to: Some("nsh"),
         types: decl!(touch::GESTURE_TYPES),
     },
     NativeModule {
         name: "nsh/animated",
         exports: animated::EXPORTS,
         also: &[],
-        moved_to: None,
+        moved_to: Some("nsh"),
         types: decl!(animated::TYPES),
     },
     NativeModule {
@@ -464,14 +466,14 @@ pub(crate) const MODULES: &[NativeModule] = &[
         name: "nsh/host",
         exports: platform_modules::HOST_EXPORTS,
         also: &[],
-        moved_to: None,
+        moved_to: Some("nsh"),
         types: decl!(crate::host_channel::TYPES),
     },
     NativeModule {
         name: "nsh/keymap",
         exports: keymap::EXPORTS,
         also: &[],
-        moved_to: None,
+        moved_to: Some("nsh"),
         types: decl!(keymap::TYPES),
     },
 ];
@@ -482,7 +484,7 @@ const IMAGE_EXPORTS: &[Item] = &[(
     "Image",
     Export::Value(|cx| {
         let image = dom::host_component(cx, "image", true);
-        components::add_runtime_functions(cx, image, "nsh/image", "Image");
+        components::add_runtime_functions(cx, image, "nsh", "Image");
         image
     }),
     Ts::value(
@@ -510,9 +512,9 @@ enum Made {
     /// The generated module object itself.
     Default(Arc<ModuleSpec>),
     /// A Rust class (`#[class]`).
-    Class(&'static nsh_core::ui::ClassDef),
+    Class(&'static nsh_core::element::ClassDef),
     /// A value supplied by this VM's embedding host.
-    Value(nsh_core::ui::ValueSpec),
+    Value(nsh_core::element::ValueSpec),
     /// Conflicting host bindings must fail instead of choosing an authority.
     DuplicateValue,
     /// A runtime value a registry exports as it is (`safeArea`).
@@ -766,7 +768,10 @@ impl ModuleTable {
             let own = crate::hot::EXPORTS.iter();
             return Some(own.map(|&(n, e, _)| (n.to_owned(), Made::Own(e))).collect());
         }
-        if let Some(m) = MODULES.iter().find(|m| m.name == name) {
+        if let Some(m) = MODULES
+            .iter()
+            .find(|m| m.name == name && m.moved_to.is_none())
+        {
             found = true;
             let shared = m.moved_to.is_some();
             out.extend(m.exports.iter().map(|&(n, e, _)| {
@@ -810,7 +815,10 @@ impl ModuleTable {
     /// (`nativeModule`): only the host's sets, never nsh's own modules or
     /// the runtime's.
     fn host_exports(&self, specifier: &str) -> Option<Vec<(String, Made)>> {
-        if MODULES.iter().any(|m| m.name == specifier) {
+        // Runtime registry extensions now share the canonical root module.
+        // Only explicit host registrations contribute to the facade below;
+        // this does not expose built-ins or revive moved module names.
+        if specifier != "nsh" && MODULES.iter().any(|m| m.name == specifier) {
             return None;
         }
         let mut out = Vec::new();
@@ -1395,7 +1403,7 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
     };
 
-    use nsh_core::ui::{JsHost, JsOwned, PropError, Registry, Ret, TsTypes};
+    use nsh_core::element::{JsHost, JsOwned, PropError, Registry, Ret, TsTypes};
 
     use crate::{Host, HostOptions};
 
@@ -1442,12 +1450,12 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 
-    #[nsh_core::ui::class]
+    #[nsh_core::element::class]
     struct BoundHost {
         identity: u32,
     }
 
-    #[nsh_core::ui::class]
+    #[nsh_core::element::class]
     impl BoundHost {
         pub(crate) fn identity(&self) -> u32 {
             self.identity
@@ -1461,7 +1469,7 @@ mod tests {
             let called = calls.clone();
             let mut registry = Registry::ui_set("test/host");
             registry.value("host", move || {
-                nsh_core::ui::Instance::new(BoundHost {
+                nsh_core::element::Instance::new(BoundHost {
                     identity: called.fetch_add(1, Ordering::SeqCst) as u32,
                 })
             });
@@ -1471,7 +1479,7 @@ mod tests {
             })
             .unwrap();
             let access = r#"
-                import { nativeModule } from 'nsh/native';
+                import { nativeModule } from 'nsh';
                 const module = nativeModule('test/host');
                 globalThis.original = module.host;
                 globalThis.constructor = module.BoundHost;
@@ -1495,7 +1503,14 @@ mod tests {
 
     #[test]
     fn host_exports_can_extend_a_runtime_registry_without_hiding_its_exports() {
-        let mut registry = Registry::ui_set("nsh/clipboard");
+        // A canonical import is not host authority by itself.
+        let error = Host::new()
+            .unwrap()
+            .eval_source("import { nativeModule } from 'nsh'; nativeModule('nsh');")
+            .unwrap_err();
+        assert!(error.message.contains("nothing is registered"), "{error}");
+
+        let mut registry = Registry::ui_set("nsh");
         registry.value("extra", || 42u32);
         let host = Host::with_options(HostOptions {
             ui_sets: vec![registry],
@@ -1504,14 +1519,14 @@ mod tests {
         .unwrap();
         host.eval_source(
             r#"
-            import { nativeModule } from 'nsh/native';
-            const host = nativeModule('nsh/clipboard');
+            import { nativeModule } from 'nsh';
+            const host = nativeModule('nsh');
             if (host.extra !== 42 || 'Clipboard' in host) throw Error('wrong host facade');
         "#,
         )
         .unwrap();
         host.eval_source(r#"
-            import { Clipboard, extra } from 'nsh/clipboard';
+            import { Clipboard, extra } from 'nsh';
             if (typeof Clipboard.readText !== 'function' || extra !== 42) throw Error('runtime export hidden');
         "#).unwrap();
 
@@ -1525,7 +1540,7 @@ mod tests {
         host.eval_source(
             r#"
             import process, { extra, nextTick } from 'process';
-            import { nativeModule } from 'nsh/native';
+            import { nativeModule } from 'nsh';
             const host = nativeModule('process');
             if (host.extra !== 42 || extra !== 42 || 'default' in host || 'nextTick' in host)
                 throw Error('wrong host facade');
@@ -1535,7 +1550,7 @@ mod tests {
         )
         .unwrap();
 
-        let mut registry = Registry::ui_set("nsh/clipboard");
+        let mut registry = Registry::ui_set("nsh");
         registry.value("Clipboard", || -> u32 {
             panic!("ambiguous factory must not execute")
         });
@@ -1545,9 +1560,7 @@ mod tests {
         })
         .unwrap();
         let error = host
-            .eval_source(
-                "import { nativeModule } from 'nsh/native'; nativeModule('nsh/clipboard');",
-            )
+            .eval_source("import { nativeModule } from 'nsh'; nativeModule('nsh');")
             .unwrap_err();
         assert!(
             error
@@ -1611,9 +1624,7 @@ mod tests {
         .unwrap();
         for _ in 0..2 {
             let error = host
-                .eval_source(
-                    "import { nativeModule } from 'nsh/native'; nativeModule('test/bad-host');",
-                )
+                .eval_source("import { nativeModule } from 'nsh'; nativeModule('test/bad-host');")
                 .unwrap_err();
             assert!(error.message.contains("invalid host value"), "{error}");
         }
@@ -1651,46 +1662,39 @@ mod tests {
 
     #[test]
     fn nshs_own_modules_are_the_ones_the_bundler_knows() {
-        let names: Vec<&str> = super::MODULES.iter().map(|m| m.name).collect();
+        let names: Vec<&str> = super::MODULES
+            .iter()
+            .filter(|m| m.moved_to.is_none())
+            .map(|m| m.name)
+            .collect();
         assert_eq!(names, nsh_core::js::NATIVE_MODULES);
     }
 
-    /// `nsh` exports the primitives the modules before it exported, the
-    /// same values, whichever module is imported first; those modules
-    /// keep exporting them.
+    /// `Image` carries its functions; the areas the primitives come from
+    /// are no modules of their own.
     #[test]
-    fn nsh_and_the_older_modules_export_the_same_primitives() {
+    fn nsh_serves_the_primitives() {
         let source = r#"
-            import * as old from "nsh/canvas";
-            import { Image as OldImage } from "nsh/image";
             import * as nsh from "nsh";
-            import { List as OldList } from "nsh/list";
-            import { WebView as OldWebView } from "nsh/webview";
-            import { Video as OldVideo } from "nsh/video";
-            const same = [
-                [nsh.Canvas, old.Canvas],
-                [nsh.Path2D, old.Path2D],
-                [nsh.CanvasGradient, old.CanvasGradient],
-                [nsh.CanvasRenderingContext2D, old.CanvasRenderingContext2D],
-                [nsh.Image, OldImage],
-                [nsh.List, OldList],
-                [nsh.WebView, OldWebView],
-                [nsh.Video, OldVideo],
-            ];
-            for (const [a, b] of same) {
-                if (typeof a !== "function" || a !== b) throw Error(`not the same: ${a && a.name}`);
-            }
             if (typeof nsh.Image.getSize !== "function" || typeof nsh.Image.prefetch !== "function") {
                 throw Error("Image carries its functions");
             }
-            if (!(new nsh.Path2D("M0 0 L1 1") instanceof old.Path2D)) throw Error("one Path2D");
+            if (!(new nsh.Path2D("M0 0 L1 1") instanceof nsh.Path2D)) throw Error("Path2D");
         "#;
         crate::Host::new().unwrap().eval_source(source).unwrap();
-        let bytecode = crate::compile_bytecode(source, false).unwrap();
-        crate::Host::new()
-            .unwrap()
-            .eval_bytecode(&bytecode)
-            .unwrap();
+        for old in [
+            "nsh/image",
+            "nsh/list",
+            "nsh/canvas",
+            "nsh/webview",
+            "nsh/video",
+        ] {
+            let source = format!("import * as old from \"{old}\";");
+            assert!(
+                crate::Host::new().unwrap().eval_source(&source).is_err(),
+                "{old}"
+            );
+        }
     }
 
     /// The bytecode compiler, which knows a UI set by its description,

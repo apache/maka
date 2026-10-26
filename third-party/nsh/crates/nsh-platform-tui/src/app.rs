@@ -47,15 +47,15 @@ use crate::{
     services::{HostServices, ServiceManager, ServiceOutput, ServiceRequest},
 };
 
-static UI_SETS: RwLock<Option<Vec<nsh_core::ui::Registry>>> = RwLock::new(None);
+static UI_SETS: RwLock<Option<Vec<nsh_core::element::Registry>>> = RwLock::new(None);
 
 /// Sets the UI sets served by subsequently loaded apps. The default is
 /// `nsh/base`; app-specific hosts call this before creating views.
-pub fn set_ui_sets(sets: Vec<nsh_core::ui::Registry>) {
+pub fn set_ui_sets(sets: Vec<nsh_core::element::Registry>) {
     *UI_SETS.write().unwrap_or_else(|e| e.into_inner()) = Some(sets);
 }
 
-fn ui_sets() -> Vec<nsh_core::ui::Registry> {
+fn ui_sets() -> Vec<nsh_core::element::Registry> {
     UI_SETS
         .read()
         .unwrap_or_else(|e| e.into_inner())
@@ -99,7 +99,7 @@ pub struct AppOptions {
     /// Native modules and UI sets available to this view's JS VMs. `None`
     /// uses [`set_ui_sets`]'s process default; `Some(Vec::new())` serves none.
     /// Reloads construct new values from the same registry factories.
-    pub ui_sets: Option<Vec<nsh_core::ui::Registry>>,
+    pub ui_sets: Option<Vec<nsh_core::element::Registry>>,
     /// Virtual point dimensions of one terminal cell.
     pub metrics: CellMetrics,
     /// Native terminal components available through `nsh/native`, scoped
@@ -321,7 +321,7 @@ impl AppView {
                 .clone()
                 .unwrap_or_else(ui_sets)
                 .iter()
-                .flat_map(nsh_core::ui::Registry::sets)
+                .flat_map(nsh_core::element::Registry::sets)
                 .filter_map(|set| set.specifier().map(str::to_owned))
                 .collect(),
         };
@@ -1604,7 +1604,8 @@ fn take_logs() -> Vec<LogRecord> {
 
 #[cfg(test)]
 mod tests {
-    use nsh_core::ui::prelude::*;
+    use nsh_base::input;
+    use nsh_core::prelude::*;
 
     use super::*;
 
@@ -1640,7 +1641,7 @@ mod tests {
         let closed = Arc::new(AtomicBool::new(false));
         let options = |label: &str| {
             let (label, created, closed) = (label.to_owned(), created.clone(), closed.clone());
-            let mut registry = nsh_core::ui::Registry::ui_set("test/host");
+            let mut registry = nsh_core::element::Registry::ui_set("test/host");
             registry.value("host", move || {
                 created.send(std::thread::current().id()).unwrap();
                 Instance::new(ScopedHost {
@@ -1649,7 +1650,7 @@ mod tests {
                     closed: closed.clone(),
                 })
             });
-            let declarations = nsh_core::ui::declarations(&registry, &[]);
+            let declarations = nsh_core::element::declarations(&registry, &[]);
             assert!(declarations.contains("export declare const host: ScopedHost;"));
             assert!(declarations.contains("private constructor();"));
             AppOptions {
@@ -1662,7 +1663,7 @@ mod tests {
                 r#"
             import { host, ScopedHost } from 'test/host';
             import { mount, Text, signal } from 'nsh';
-            import { keymap } from 'nsh/keymap';
+            import { keymap } from 'nsh';
             let result = signal('loading');
             try { new ScopedHost(); throw Error('constructor exposed'); } catch(e) {
                 if (e.message === 'constructor exposed') throw e;
@@ -1922,7 +1923,7 @@ mod tests {
 
         const APP: &str = r#"
             import { mount, signal, View, Text, List } from 'nsh';
-            import { LayoutAnimation } from 'nsh/animated';
+            import { LayoutAnimation } from 'nsh';
             const rows = signal(Array.from({length: 40}, (_, i) => `row ${i}`));
             const phase = signal('initial');
             const presses = signal(0);
@@ -2300,9 +2301,10 @@ mod tests {
 
         let mut view = AppView::new(AppOptions::default());
         view.load(App::Js(Bundle::source(r#"
-            import { mount, signal, effect, View, Input, Text } from 'nsh';
-            import { windowSize } from 'nsh/device';
-            import { keymap } from 'nsh/keymap';
+            import { mount, signal, effect, View, Text } from 'nsh';
+import { Input } from 'nsh/base';
+            import { windowSize } from 'nsh';
+            import { keymap } from 'nsh';
             const result = signal('starting');
             let reads = 0;
             const search = Input({autoFocus: true, style: {height: 32}});
@@ -2541,7 +2543,7 @@ mod tests {
             session: 1,
             version,
             format: BundleFormat::Source,
-            bytes: br#"import { Storage } from "nsh/storage";
+            bytes: br#"import { Storage } from "nsh";
                 Storage.getItem("launches").then(value =>
                     Storage.setItem("launches", String(Number(value ?? "0") + 1)));"#
                 .to_vec(),

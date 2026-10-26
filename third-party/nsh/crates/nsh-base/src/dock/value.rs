@@ -11,8 +11,8 @@
 use std::collections::HashSet;
 
 use nsh_core::{
+    element::{JsHost, JsIn, JsKind, JsObject, JsOwned, JsValue, PropError, TsTypes},
     geometry::{Axis, Points},
-    ui::{JsHost, JsIn, JsKind, JsObject, JsOwned, JsValue, PropError, TsTypes},
 };
 
 use super::{

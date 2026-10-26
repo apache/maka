@@ -3,7 +3,7 @@
 //! lines and UTF-16 columns from 0, as a language server's (LSP's
 //! `Position`), so its diagnostics pass through as they come.
 
-use nsh_core::ui::{Style, prelude::*};
+use nsh_core::{element::Style, prelude::*};
 
 /// A position in an editor's text: a line and a column, both from 0. The
 /// column counts UTF-16 code units, as JS strings and language servers do.

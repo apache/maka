@@ -17,23 +17,13 @@
  * under the License.
  */
 
+import { textTooltip } from './ui';
 import { createText, errorText } from './text';
-import {
-  cleanup,
-  computed,
-  effect,
-  Input,
-  inputAction,
-  Scroll,
-  signal,
-  Text,
-  View,
-  type GestureResponderEvent,
-  type YNode,
-} from 'nsh';
+import { cleanup, computed, effect, inputAction, Scroll, signal, Text, View, type GestureResponderEvent, type YNode } from 'nsh';
+import { Input } from 'nsh/base';
 import { Button, Dialog } from 'nsh/base';
-import { Clipboard } from 'nsh/clipboard';
-import { keymap } from 'nsh/keymap';
+import { Clipboard } from 'nsh';
+import { keymap } from 'nsh';
 import type {
   RawAction,
   TerminalModifiers,
@@ -352,9 +342,7 @@ export function Terminal(props: { model: TerminalModel }) {
             input?.focus();
           }}
           accessibilityLabel={tr('Focus terminal input')}
-          tooltip={
-            model.control() === 'held' ? tr('Terminal input is active') : tr('Focus terminal input')
-          }
+          tooltip={textTooltip(() => model.control() === 'held' ? tr('Terminal input is active') : tr('Focus terminal input'))}
           selected={model.control() === 'held'}
           style={{ ...controlStyle, flexDirection: 'row', alignItems: 'center', gap: 8 }}
           selectedStyle={{ backgroundColor: C.raised }}
@@ -368,7 +356,7 @@ export function Terminal(props: { model: TerminalModel }) {
         <If when={model.control() === 'held'}>
           <Button
             onPress={inputAction(model.release, null)}
-            tooltip={tr('Release terminal input · Ctrl+Shift+Space')}
+            tooltip={textTooltip(() => tr('Release terminal input · Ctrl+Shift+Space'))}
             style={controlStyle}
             hoverStyle={controlHoverStyle}
             focusStyle={controlFocusStyle}
@@ -380,7 +368,7 @@ export function Terminal(props: { model: TerminalModel }) {
         <Button
           onPress={() => void copy()}
           accessibilityLabel={tr('Copy visible terminal')}
-          tooltip={tr('Copy visible terminal · Ctrl+Shift+C')}
+          tooltip={textTooltip(() => tr('Copy visible terminal · Ctrl+Shift+C'))}
           style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
           hoverStyle={controlHoverStyle}
           focusStyle={controlFocusStyle}
@@ -392,7 +380,7 @@ export function Terminal(props: { model: TerminalModel }) {
             disabled={model.stopping()}
             onPress={() => confirmation.set(true)}
             accessibilityLabel={tr('Stop terminal process')}
-            tooltip={model.stopping() ? tr('Stopping process…') : tr('Stop terminal process')}
+            tooltip={textTooltip(() => model.stopping() ? tr('Stopping process…') : tr('Stop terminal process'))}
             style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
             hoverStyle={controlHoverStyle}
             focusStyle={controlFocusStyle}
@@ -403,7 +391,7 @@ export function Terminal(props: { model: TerminalModel }) {
         </If>
       </View>
       <Text
-        tooltip={tr('Terminal history · Shift+PageUp / Shift+PageDown')}
+        tooltip={textTooltip(() => tr('Terminal history · Shift+PageUp / Shift+PageDown'))}
         style={{ ...captionTextStyle, color: C.muted }}
       >
         {terminalStatus(model.entry().result.status)} ·{' '}

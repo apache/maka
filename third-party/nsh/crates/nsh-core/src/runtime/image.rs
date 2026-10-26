@@ -3,8 +3,8 @@
 
 use crate::{
     ImageScales, ImageSource,
+    element::{ImageSize, JsHost, JsIn, JsKind, JsOwned, JsValue, PropError, TsTypes, module},
     geometry::DevicePixels,
-    ui::{ImageSize, JsHost, JsIn, JsKind, JsOwned, JsValue, PropError, TsTypes, module},
 };
 
 /// Image information and loading ahead.
@@ -30,7 +30,7 @@ impl ImageUrl {
             scales: self.scales,
             data: None,
         };
-        let ratio = crate::ui::prelude::pixel_ratio();
+        let ratio = crate::prelude::pixel_ratio();
         let scale = source.variant(ratio).unwrap_or(1.0);
         (source.uri_for(ratio).to_string(), scale)
     }
@@ -103,7 +103,7 @@ impl Image {
     pub(crate) async fn get_size(src: ImageUrl) -> Result<ImageSize, String> {
         let imported_size = src.size;
         let (url, scale) = src.pick();
-        let size = crate::ui::prelude::image_size(url).await?;
+        let size = crate::prelude::image_size(url).await?;
         if let Some(size) = imported_size {
             return Ok(size);
         }
@@ -118,6 +118,6 @@ impl Image {
     /// memory. An imported image with variants loads the variant the views
     /// load at the screen's pixel ratio.
     pub(crate) async fn prefetch(src: ImageUrl) -> bool {
-        crate::ui::prelude::prefetch_image(src.pick().0).await
+        crate::prelude::prefetch_image(src.pick().0).await
     }
 }

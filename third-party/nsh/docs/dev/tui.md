@@ -78,7 +78,7 @@ platform's default feature is `js`; `--no-default-features` supports a
 native Rust root without linking QuickJS. The backend belongs to the main
 workspace; its dependencies are in the root `Cargo.toml`.
 
-The engine's `nsh/storage` uses `<data_dir>/<app id>/storage.json`, with
+The engine's `nsh` uses `<data_dir>/<app id>/storage.json`, with
 the system data directory by default. `AppOptions::data_dir` selects the
 embedding host's directory; `AppOptions::storage` supplies a backend of
 its own and takes precedence. The app id travels with JS bundles (build
@@ -96,11 +96,11 @@ its engine thread; the embedding host separately closes external subscriptions a
 
 ## Renderer type names
 
-`nsh_core::ui::Renderer<T>` is the component render callback used by
+`nsh_core::element::Renderer<T>` is the component render callback used by
 `TextView`. The platform identity enum remains
-`nsh_core::platform::Renderer`; `ui` and `ui::prelude` re-export it as
+`nsh_core::platform::Renderer`; `element` and `prelude` re-export it as
 `PlatformRenderer`. Code that previously used the terminal branch's
-`ui::Renderer::Terminal` should use `ui::PlatformRenderer::Terminal`
+`ui::Renderer::Terminal` should use `nsh_core::element::PlatformRenderer::Terminal`
 or the unchanged `platform::Renderer::Terminal`.
 
 ## Coordinates and typography
@@ -218,7 +218,7 @@ zoomable Scroll on its pointer path takes the input. Each delivery pairs
 Hover entry and exit are reported, but continuous `onHoverMove` and
 `onMouseMove` callbacks are not emitted by this backend. The scripted
 `hover` step moves the pointer; it does not add those callbacks.
-`SelectionArea` shares one `nsh_core::selection::SelectionModel` across
+`View selectable` shares one `nsh_core::selection::SelectionModel` across
 its text nodes, including multiline text and `TextView` blocks. It uses
 the shaped text's UTF-16 hit positions and text values, rather than copying
 terminal cells; `selectable={false}` labels and control captions stay out. Mouse
@@ -338,7 +338,7 @@ contains controls. Sources are bounded to 64 MiB, 8192 pixels per side,
 remain reserved until IO stops. HTTP loads have a total 15 s deadline
 across redirects, and a stalled FFmpeg pipe is killed after 15 s. An
 embedding asset callback owns its own timeout. Audio output and a full
-browser context can be supplied through `nsh/native` host components.
+browser context can be supplied through `nsh` host components.
 
 System dialogs and application/popup menus are terminal overlays. F10
 opens the app menu; arrows, Enter/Space and Escape handle selection,

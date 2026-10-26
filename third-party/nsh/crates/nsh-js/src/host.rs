@@ -59,13 +59,13 @@ pub(crate) struct Shared {
     pub(crate) system_paths: RefCell<nsh_core::access::TrustedPaths>,
     /// The VM's counts of limited resources for Rust modules (`net`'s
     /// sockets), handed to their calls' `System`.
-    pub(crate) system_quotas: nsh_core::ui::Quotas,
+    pub(crate) system_quotas: nsh_core::element::Quotas,
     /// The VM's scheduler, for native transports that start its I/O runtime.
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub(crate) scheduler: std::rc::Weak<Scheduler>,
     /// The VM's state of the runtime's Rust modules (`process`'s
     /// children), closed when the VM goes.
-    pub(crate) system_locals: nsh_core::ui::Locals,
+    pub(crate) system_locals: nsh_core::element::Locals,
     /// The lazy standard globals installed so far (bits of `standard::LAZY`).
     pub(crate) lazy_globals: Cell<u8>,
     /// Worker completion wakes the owning engine without polling.
@@ -178,12 +178,12 @@ pub struct HostOptions {
     pub harden_bytecode: Option<std::sync::Arc<Vec<u8>>>,
     /// The UI sets apps import as native modules
     /// (`nsh_base::registry()`, served as `nsh/base`, and an app's own).
-    pub ui_sets: Vec<nsh_core::ui::Registry>,
+    pub ui_sets: Vec<nsh_core::element::Registry>,
     /// The queue of the JS calls Rust posts (`Callback::post`,
     /// `call_async`): the engine hands the core the same one
     /// ([`nsh_core::Core::set_posts`]), which releases the calls posted
     /// during a synchronous call in order with the ops.
-    pub posts: nsh_core::ui::Posts,
+    pub posts: nsh_core::element::Posts,
     /// The URL relative request URLs (`fetch("/api")`, `new Request("x")`)
     /// resolve against: the page's on the web. `None` (native hosts):
     /// they are invalid, as there is no document they belong to.
@@ -580,8 +580,8 @@ impl Host {
     /// ([`nsh_core::Core::take_events`]): a node's event to its handler, a
     /// Rust component's event to its `on<Event>` prop, a call's result to
     /// its promise (converted now).
-    pub fn deliver(&self, event: nsh_core::ui::JsEvent) {
-        if let nsh_core::ui::JsEvent::Event(id, kind, payload) = &event {
+    pub fn deliver(&self, event: nsh_core::element::JsEvent) {
+        if let nsh_core::element::JsEvent::Event(id, kind, payload) = &event {
             self.dispatch_event(*id, *kind, payload);
             return;
         }
@@ -1034,8 +1034,8 @@ impl Host {
         ops.retain(|op| {
             !matches!(
                 op,
-                Op::Rust(nsh_core::ui::RustOp {
-                    run: nsh_core::ui::RustCall::Post(_),
+                Op::Rust(nsh_core::element::RustOp {
+                    run: nsh_core::element::RustCall::Post(_),
                     ..
                 })
             )
@@ -1094,7 +1094,7 @@ impl Host {
 
     /// Publishes the design tokens the app is drawn with to JS (`token()`
     /// of `nsh`). Call before evaluating the bundle, then on every change.
-    pub fn set_tokens(&self, tokens: std::sync::Arc<nsh_core::ui::Tokens>) {
+    pub fn set_tokens(&self, tokens: std::sync::Arc<nsh_core::element::Tokens>) {
         self.guarded(Phase::Call, || {
             self.cx.with(|cx| {
                 crate::env::set_tokens(cx.as_raw().as_ptr(), tokens);
@@ -1108,7 +1108,7 @@ impl Host {
     /// entry's first statement on, before the theme reaches the core. Call
     /// before evaluating the bundle, then when the embedding app's tokens
     /// change.
-    pub fn set_theme_tokens(&self, theme: nsh_core::ui::ThemeTokens) {
+    pub fn set_theme_tokens(&self, theme: nsh_core::element::ThemeTokens) {
         self.cx.with(|cx| {
             crate::env::set_theme_tokens(cx.as_raw().as_ptr(), theme);
         });
@@ -1899,7 +1899,7 @@ const report = (v) => text(String(v));
         host.eval_source(
             r#"import { effect, mount, signal } from "nsh";
             import { append, element } from "nsh:rt";
-            import { keymap } from "nsh/keymap";
+            import { keymap } from "nsh";
             globalThis.keymap = keymap;
             globalThis.surface = element("view");
             globalThis.panel = element("view");
@@ -2007,7 +2007,7 @@ const report = (v) => text(String(v));
 
         let host = Host::new().unwrap();
         host.eval_source(
-            r#"import { keymap } from "nsh/keymap";
+            r#"import { keymap } from "nsh";
             globalThis.keymap = keymap;
             globalThis.fallbackError = "";
             globalThis.fallbackHits = 0;
@@ -2065,7 +2065,7 @@ const report = (v) => text(String(v));
         host.eval_source(
             r#"import { mount } from "nsh";
             import { element } from "nsh:rt";
-            import { keymap } from "nsh/keymap";
+            import { keymap } from "nsh";
             globalThis.scope = element("view");
             globalThis.keymap = keymap;
             mount(() => scope);
@@ -2091,7 +2091,7 @@ const report = (v) => text(String(v));
 
     #[test]
     fn input_actions_capture_immutable_args_and_follow_component_dispatch() {
-        use nsh_core::ui::JsEvent;
+        use nsh_core::element::JsEvent;
 
         let host = Host::with_options(HostOptions {
             ui_sets: vec![nsh_base::registry()],

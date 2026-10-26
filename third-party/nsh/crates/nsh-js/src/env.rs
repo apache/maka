@@ -15,8 +15,8 @@ use std::{
 };
 
 use nsh_core::{
+    element::{ThemeTokens, Token, Tokens},
     platform::{Appearance, ColorScheme, Environment, Idiom, Os, Renderer},
-    ui::{ThemeTokens, Token, Tokens},
 };
 use rquickjs::qjs;
 
@@ -468,11 +468,24 @@ pub(crate) const REEXPORTS: &[Item] = &[
     ),
 ];
 
+/// The host elements a UI set exports (`Registry::native_values`):
+/// `nsh/base`'s `Input`, a base component the platforms make natively.
+pub(crate) const ELEMENTS: &[Item] = &[(
+    "Input",
+    Export::Value(|cx| crate::dom::host_component(cx, "input", true)),
+    Ts::function(
+        "A native text input (UITextField / UITextView, EditText); `ref` has\n`focus()`, `blur()` and `setSelection(start, end)`.",
+        &["(props: InputProps): YNode"],
+    ),
+)];
+
 /// Value `name` a registry re-exports or names as native
-/// (`Registry::native_values`): [`REEXPORTS`] and navigation's.
+/// (`Registry::native_values`): [`REEXPORTS`], [`ELEMENTS`] and
+/// navigation's.
 pub(crate) fn reexport(cx: *mut JsContext, name: &str) -> JsValue {
     let item = REEXPORTS
         .iter()
+        .chain(ELEMENTS)
         .chain(crate::navigation::EXPORTS)
         .find(|(n, ..)| *n == name);
     match item {

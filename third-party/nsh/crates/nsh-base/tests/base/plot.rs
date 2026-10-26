@@ -4,8 +4,9 @@
 use nsh_base::plot::{Curve, area, grid, line, plot};
 use nsh_core::{
     Size,
+    element::{Root, RowAccessor, Rows},
     platform::{Idiom, Os},
-    ui::{Root, RowAccessor, Rows, prelude::*},
+    prelude::*,
 };
 use nsh_engine::EngineConfig;
 use nsh_testing::Headless;

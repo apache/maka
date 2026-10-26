@@ -1,5 +1,5 @@
-import { Input, mount, signal, Text, View } from "nsh";
-import { createNavStack, NavPage, NavStack } from "nsh/base";
+import { mount, signal, Text, View } from "nsh";
+import { createNavStack, NavPage, NavStack, Input } from "nsh/base";
 
 interface Route {
   name: string;

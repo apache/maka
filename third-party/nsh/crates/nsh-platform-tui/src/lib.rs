@@ -23,7 +23,7 @@ mod protocol;
 mod render;
 mod script;
 mod scroll;
-mod selection_area;
+mod selectable_view;
 mod services;
 mod surface;
 mod text;

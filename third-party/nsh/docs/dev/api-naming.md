@@ -17,11 +17,10 @@ Each part of the API takes its names from one source, so an app's code never mix
 | Components and their behavior (`nsh/base`, the interaction props of elements) | `gpui-base`, then GPUI, `gpui-component` (this page) |
 | What primitives show and the web APIs (`src`, `html`, styles, Tailwind, `fetch`, `window`'s events, the clipboard, storage) | HTML, the DOM and CSS, as a browser has them |
 | The standard modules (`process`, `os`, `fs/promises`, ...) | Node's names; values as Rust's `std::env::consts` gives them (`process.platform` is `"macos"`, `arch` `"aarch64"`; decided by the user, 2026-10-21), documented on each |
-| The environment (`nsh` / `nsh/<module>` accessors) | NSH's rules below: a lowercase accessor per value, `set<Value>` beside it |
+| The environment (`nsh`'s accessors) | NSH's rules below: a lowercase accessor per value, `set<Value>` beside it |
 | React Native | none: a reference for which capabilities exist; the RN-shaped modules frozen as they are (below) |
 
-**Frozen RN-shaped modules.** `nsh/animated` (`Animated`, `Easing`, `LayoutAnimation`), `nsh/gesture`
-(`PanResponder`) and the responder props (`onTouch*`, `on*ShouldSetResponder*`, `onResponder*`) keep React Native's
+**Frozen RN-shaped APIs.** `nsh`'s animation API (`Animated`, `Easing`, `LayoutAnimation`) and `PanResponder` and the responder props (`onTouch*`, `on*ShouldSetResponder*`, `onResponder*`) keep React Native's
 names and semantics as a whole, as they shipped (decided by the user, 2026-10-21): they are consistent in themselves
 and ported from React Native code as they are. The rules of this page do not apply inside them, and new capabilities
 go elsewhere under these rules rather than into them.
@@ -196,7 +195,7 @@ them yet (`compatibility.md`). The frozen RN-shaped modules keep their names. A 
 | `codeBlockScrollIndicator`, `tableScrollIndicator` | `codeBlockScrollbar`, `tableScrollbar` (default `true`) | States | As `scrollbar`. Rust `code_block_scrollbar`, `table_scrollbar` |
 | **`nsh/desktop`** | | | |
 | `MenuItem.enabled` | `MenuItem.disabled` | States | |
-| **`nsh/device`** | | | |
+| **`nsh`: the environment** | | | |
 | `Platform.OS`, `Platform.Version`, `Platform.constants` | `platform.os`, `platform.version: string` | Environment | A constant object; Android's version is its API level as a string (`"35"`) |
 | `Platform.isPad`, `isTV`, `isDesktop`, `isMacCatalyst`, `constants.interfaceIdiom` | `platform.idiom: "phone" \| "pad" \| "mac" \| "tv" \| "desktop"`, `platform.catalyst` | Environment | `isDesktop` becomes `platform.idiom === "desktop" && !platform.isTerminal` for graphical desktop behavior; `platform.renderer` and `platform.isTerminal` distinguish terminal presentation |
 | `Platform.select(spec)` | `platform.select(spec)` | Environment | Same spec |
@@ -205,17 +204,17 @@ them yet (`compatibility.md`). The frozen RN-shaped modules keep their names. A 
 | `PixelRatio.getPixelSizeForLayoutSize`, `roundToNearestPixel` | (dropped) | | `Math.round(x * pixelRatio()) / pixelRatio()` |
 | `I18nManager` (`isRTL`, `allowRTL`, `forceRTL`, `doLeftAndRightSwapInRTL`, `getConstants`) | (dropped) | Where names come from | Decided by the user: the layout direction follows the locale, a view's `direction` style overrides it (Rust: `.direction(LayoutDirection::..)`; Rust's `rtl()`, `force_rtl` and `allow_rtl` are dropped too); translations, when NSH has them, come from rust-i18n |
 | `OS` (type) | unchanged | | `platform.os`'s type |
-| **`nsh/accessibility`** | | | |
+| **`nsh`: accessibility** | | | |
 | `AccessibilityInfo.isScreenReaderEnabled()`, `isReduceMotionEnabled()`, `addEventListener` | (dropped) | Listening | `screenReaderEnabled()`, `reduceMotion()` |
 | `AccessibilityInfo.announceForAccessibility(message)` | `announce(message)` | Environment | A function of the module |
 | `AccessibilityInfo.setAccessibilityFocus(node)` | `setAccessibilityFocus(node)` | Environment | A function of the module; `focus()` is the keyboard's |
-| **`nsh/android`** | | | |
+| **`nsh/mobile`: `BackHandler`** | | | |
 | `BackHandler.addEventListener("hardwareBackPress", l)` → `{ remove() }` | `BackHandler.onBackPress(l)` → `() => void` | Listening | Removed with the component it was added in; `l` returns `true` when it handled the press. As `NavPage`'s `onBackPress` |
-| **`nsh/clipboard`** | | | |
+| **`nsh`: `Clipboard`** | | | |
 | `getString`, `setString`, `hasString` | `readText()`, `writeText(text): Promise<void>`, `hasText()` | Where names come from | The DOM's `navigator.clipboard`; GPUI's `read_from_clipboard` / `write_to_clipboard` |
 | `getImage`, `setImage`, `hasImage`, `getFiles` | `readImage()`, `writeImage(src)`, `hasImage()`, `readFiles()` | Where names come from | |
 | `ClipboardImage.uri` | `ClipboardImage.url` | Addresses | |
-| **`nsh/storage`** | | | |
+| **`nsh`: `Storage`** | | | |
 | `Storage.getAllKeys()` | `Storage.keys()` | Where names come from | `getItem` / `setItem` / `removeItem` / `clear` are the DOM's `Storage`'s |
 | **Styles** | | | |
 | `experimental_backgroundImage` | (dropped) | Where names come from | React Native's name of `backgroundImage` |
@@ -249,7 +248,7 @@ and `Input`'s React Native names follow the rules as well.
 | `ios` / `desktop` `headerBackTitle` | `headerBackTitle` | none | Top-level |
 | `onDismiss` | unchanged | `NavStackEvent::Popped` (not followed) | The user popped it (back button, swipe). Decided by the user: a page leaving the stack is dismissed, as UIKit says |
 | `preventBack` | `popOnBack` (default `true`; `false` = `preventBack`) | `Dialog::close_on_escape` | By analogy: `popOn<Trigger>` as `closeOn<Trigger>`; covers every back (header, Android back, swipe) |
-| `onBackRequest` | `onBackPress` | `DialogChangeReason::*Press`; `nsh/android` `"hardwareBackPress"` | Fires on every back press, before the pop when `popOnBack` allows it |
+| `onBackRequest` | `onBackPress` | `DialogChangeReason::*Press`; `BackHandler`'s `"hardwareBackPress"` | Fires on every back press, before the pop when `popOnBack` allows it |
 | `gestureEnabled` | `popOnSwipe` (default `true`) | `Dialog::close_on_backdrop_press` | By analogy; the interactive gesture only, the buttons still pop |
 | `animation` | unchanged | | As Dialog's |
 | (new, desktop / web header) | `header` | *guides* named slots (`header`, `footer`) | Top-level slot: the whole bar where NSH draws it |
@@ -272,11 +271,7 @@ and `Input`'s React Native names follow the rules as well.
 | `foreground: "auto" \| "light" \| "dark"` (`Foreground`) | `foreground` of `StatusBar` (`StatusBarForeground`) | none; `gpui-kit` theme `foreground` (the content's color) | Not `style` (the inline style every component takes); `"light"` is light content, for dark backgrounds |
 | `hidden`, `animated` | fields of `StatusBar` | `NavMotion::Animated` (UIKit `animated:`) | `nsh.json` takes `foreground` and `hidden` |
 | `StatusBar.setBarStyle`, `StatusBar.setHidden`, `BarAnimation` | (dropped) | | The pages and dialogs are the API |
-| `android.backgroundColor`; `nsh/android` `setStatusBarBackgroundColor` | (dropped) | | Edge-to-edge (API 35) has no bar color |
-| **KeyboardAvoidingView** | | | |
-| `behavior="position"`, `contentContainerStyle` | (dropped) | | `behavior: "padding" \| "height"` |
-| `keyboardVerticalOffset` | `offset` | `popup.rs` `Popup::offset` | The enclosing name says keyboard and vertical |
-| `enabled` | unchanged | *guides* "Name predicates positively" | `disabled` means no presses on a view |
+| `android.backgroundColor`; Android's `setStatusBarBackgroundColor` | (dropped) | | Edge-to-edge (API 35) has no bar color |
 | **Keyboard** | | | |
 | `keyboard` (accessor) | `keyboardFrame` | none (UIKit's `keyboardFrameEndUserInfoKey` and animation duration arrive together) | Differed from `Keyboard` by case only; `Keyboard.dismiss()` unchanged |
 | **List, Scroll** | | | |
@@ -355,7 +350,7 @@ and `Input`'s React Native names follow the rules as well.
 | `TooltipState::dots`, one per series, each painted in its series' color (`gpui-component`'s `Dot::fill(color(i))`, as `Line::dot_fill` / `dot_stroke` paint a line's own dots) | a mark's `hoverDot` part: `hoverDotClass` / `hoverDotStyle` on `Line` and `Area`, each replacing the plot's `dotClass` / `dotStyle` (the default of the marks that set none) for that mark's dot; `hidden` shows none | `hover.rs:25`; `shape/line.rs:103-114`; `gpui-component` `chart/area_chart.rs:575-581`, `plot/tooltip.rs:191` `Dot` | Each series' dot differs (its color), so the mark styles it, where its stroke is set. Not `Line`'s `dotClass`: those are the dots on every point (`dot`), sized for a line at rest, and an `Area` has none; the hover's dot is a part of its own (`hoverDot`), the plot's `dot` part its default. The class and the style replace the plot's separately (a mark's color over the plot's size and ring); a class list is not merged, as Tailwind gives two `bg-*` of one list no order |
 | `Plot::tooltip` | `tooltipContent` (a slot) | `plot/mod.rs:215` | Every view has a `tooltip` prop (the platform's tooltip text), so the slot takes the next name |
 | `Plot::tooltip(state, cursor, bounds)` placing the box (`gpui-component`'s `Tooltip::new(cursor, within)`: beside the cursor, flipped toward the middle near each edge; `Tooltip::gap`) | `tooltipPlacement: "top" \| "pointer"` (`TooltipPlacement`, default `"top"`: at the top, centered on the cross line) and `tooltipOffset` (points, default 0); `"top"` kept between the plot's left and right edges (its offset from the top the app's, a tag under the plot too), `"pointer"` inside the plot | `plot/mod.rs:205-224`; `gpui-component` `plot/tooltip.rs:290-294`, `:585-605`; `positioner.rs:145` `Positioner::offset` | `placement` and `offset` are the positioner's words (`Popover`, `Tooltip`); the values are where the tooltip goes, not a side (`Placement`'s `"top"` is the plot's top edge here, `"pointer"` the cursor's place). Placed natively: the layout puts it on its side of a point, the animator moves the point with the cross line's glide and clamps it from the plot's and the tooltip's sizes, so no JS runs as the pointer moves |
-| `PlotMotion { pointer, enter, exit, appear }` (`with_pointer`, ...), installed in the theme (`PlotTheme::with_motion`) | `motion: { pointer?: Spring, enter?: Timing, exit?: Timing, appear?: Timing }` on `Plot`, the timings of `nsh/animated` | `plot/mod.rs:45-105`, `theme.rs:95-117` | The same four, none by default (gpui-base's zero durations); reduced motion completes them at once. A prop rather than a theme value: `nsh-base`'s theme holds design tokens and no motion, `ToastStack` takes its motion as a prop the same way, and a chart and a sparkline on one page can differ (a theme default can come later, the prop overriding it). Not `createMotion`: that plays presets and keyframes on one view's opacity and transform; a plot moves its clip and its hover's parts, so it takes timings |
+| `PlotMotion { pointer, enter, exit, appear }` (`with_pointer`, ...), installed in the theme (`PlotTheme::with_motion`) | `motion: { pointer?: Spring, enter?: Timing, exit?: Timing, appear?: Timing }` on `Plot`, the timings of `nsh` | `plot/mod.rs:45-105`, `theme.rs:95-117` | The same four, none by default (gpui-base's zero durations); reduced motion completes them at once. A prop rather than a theme value: `nsh-base`'s theme holds design tokens and no motion, `ToastStack` takes its motion as a prop the same way, and a chart and a sparkline on one page can differ (a theme default can come later, the prop overriding it). Not `createMotion`: that plays presets and keyframes on one view's opacity and transform; a plot moves its clip and its hover's parts, so it takes timings |
 | `PlotHover` (`progress`, `glide`, `is_entering`) | the parts fade by `enter` / `exit` and glide on `pointer`, taking the first row at once | `hover.rs:46` | Run on the platform's animator, no JS per frame |
 | `Plot::appear_generation` (`None`: no appear), `PlotAppear::progress` | `appearGeneration`; the marks clip to the appear's progress from the leading edge | `plot/mod.rs:167`, `appear.rs`; `gpui-component`'s `reveal_mask` (`line_chart.rs:465`) | `PlotAppear::staggered` is for marks that grow one by one (bars), which come later |
 | `PlotAppearScope` | (later) | `appear.rs` | A plot made again by a list for a row that comes back draws in again; its `appearGeneration` can be the row's key |

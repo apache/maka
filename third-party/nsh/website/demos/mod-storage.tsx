@@ -1,7 +1,7 @@
 // Storage: a launch counter kept across reloads, the stored keys and a reset.
 import { mount, signal, Text, View } from "nsh";
 import { Button } from "nsh/base";
-import { Storage } from "nsh/storage";
+import { Storage } from "nsh";
 import { button, buttonText, ui, wide } from "./palette";
 
 function App() {

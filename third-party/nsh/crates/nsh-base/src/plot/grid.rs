@@ -1,6 +1,6 @@
 //! `Grid`: lines across a plot at values of its scales.
 
-use nsh_core::{SvgPaint, ui::prelude::*};
+use nsh_core::{SvgPaint, prelude::*};
 
 use super::{PlotContext, STROKE_ROOM, layer, mark_canvas};
 

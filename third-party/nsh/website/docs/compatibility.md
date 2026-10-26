@@ -77,7 +77,7 @@ The first check tests the API being written; the other two hold every release th
 released API fails like this:
 
 ```
-v0.2.0: runtime [nsh/device] Platform: removed
+v0.2.0: runtime [nsh] Platform: removed
 Keep it: a rename keeps the old name as a @deprecated alias of the new one, a type only widens.
 ```
 
