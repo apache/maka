@@ -163,8 +163,14 @@ This separate runner starts after Maka's test job, even if that job fails;
 root workspace tests alone do not select these suites. A final, capacity-guarded
 step selects the three animated-prop queue tests in the owning GPUI workspace,
 verifies their discovery and runs them without opening a native window. That
-workspace uses its own lock and patches, not Maka's root dependency graph;
-sharing a target directory does not imply equivalent cached artifacts.
+workspace uses its own lock and patches, not Maka's complete root dependency
+graph; sharing a target directory does not imply equivalent cached artifacts.
+Both vendored GPUI owning workspaces (`crates/gpui` and `examples/embed-gpui`)
+explicitly reuse Maka's existing GPUI core, native platform, scheduler and
+`async-io` path patches. The preserved input-target admission and cancellation
+wake contracts depend on those adaptations; registry GPUI alone does not expose
+them. These workspaces therefore require the containing Maka checkout, without
+changing the root shipped dependency graph or disabling the local IME support.
 The portable Web test does not validate browser rendering, and these selected
 tests do not validate native platform runtimes or the `bundle`-gated testing
 suite. A storage guard or timeout leaves the GPUI coverage incomplete.

@@ -113,6 +113,14 @@ opt-level = 3
 
 # The terminal renderer exposes its own production API, without a core fork.
 [patch.crates-io]
+# Match Maka's existing GPUI input-admission and cancellation-wake contracts.
+# A nested workspace does not inherit the root workspace's patches.
+gpui-fast = { path = "../../../gpui-fast/crates/gpui" }
+gpui-fast-macos = { path = "../../../gpui-fast/crates/gpui_macos" }
+gpui-fast-windows = { path = "../../../gpui-fast/crates/gpui_windows" }
+gpui-fast-linux = { path = "../../../gpui-fast/crates/gpui_linux" }
+gpui-pre-scheduler = { path = "../../../gpui-fast/crates/scheduler" }
+async-io = { path = "../../../async-io" }
 gpui-fast-wgpu = { path = "../../third-party/gpui-wgpu" }
 # Same codec as ratatui-image; only its output sink is made fallible.
 icy_sixel = { path = "../../third-party/icy_sixel" }

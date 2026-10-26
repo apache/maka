@@ -358,8 +358,6 @@ dependencies = [
 [[package]]
 name = "async-io"
 version = "2.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "456b8a8feb6f42d237746d4b3e9a178494627745c3c56c6ea55d92ba50d026fc"
 dependencies = [
  "autocfg",
  "cfg-if",
@@ -3104,12 +3102,11 @@ dependencies = [
 [[package]]
 name = "gpui-fast"
 version = "0.1.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f539554aee0e994d84014d99e85f3923db613a62a94f248a6559e628bbb0b0be"
 dependencies = [
  "accesskit",
  "anyhow",
  "async-channel",
+ "async-io",
  "async-task",
  "backtrace",
  "bitflags 2.13.2",
@@ -3215,8 +3212,6 @@ dependencies = [
 [[package]]
 name = "gpui-fast-linux"
 version = "0.1.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f41024ac6447667ddb55d23dd897acc714f1d4ed74214b34144f320458de879f"
 dependencies = [
  "accesskit",
  "accesskit_unix",
@@ -3260,8 +3255,6 @@ dependencies = [
 [[package]]
 name = "gpui-fast-macos"
 version = "0.1.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0c9656cc924a624ebbc44bb9f8149f5206fe6e94b262349f662efe692e03d900"
 dependencies = [
  "accesskit",
  "accesskit_macos",
@@ -3385,8 +3378,6 @@ dependencies = [
 [[package]]
 name = "gpui-fast-windows"
 version = "0.1.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f034e131f83ff84b67f009cde41e0cbecb3be09d7ebba7c548ea78fe0fdee5b0"
 dependencies = [
  "accesskit",
  "accesskit_windows",
@@ -3605,8 +3596,6 @@ dependencies = [
 [[package]]
 name = "gpui-pre-scheduler"
 version = "0.3.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "83f342555282a59ed8dd58dd7e0a920524fa8ef6aa8c8f30e2edb7019a8f72cb"
 dependencies = [
  "async-task",
  "backtrace",
