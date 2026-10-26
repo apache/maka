@@ -869,17 +869,78 @@ export async function cloneConversationRuntimeLedger(
   };
 }
 
-function rewriteLedgerArchiveText(
+/** Every mapped reference below carries the scheme, so text without it can never match. */
+const REFERENCE_REWRITE_SCHEME = 'maka://';
+const TOOL_RESULT_EVENT_ADDRESS_PREFIX = 'maka://runtime/tool-results/';
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+interface LedgerReferenceRewritePlan {
+  /** Map sizes the pattern was compiled from; ledgerArchives keeps growing while cloning. */
+  readonly signature: string;
+  readonly pattern: RegExp;
+  readonly replacements: Map<string, string>;
+}
+
+const ledgerReferenceRewritePlans = new WeakMap<
+  ConversationCopyMessageReferenceMap,
+  LedgerReferenceRewritePlan
+>();
+
+function ledgerReferenceRewritePlan(
+  references: ConversationCopyMessageReferenceMap,
+): LedgerReferenceRewritePlan | null {
+  const archiveCount = references.ledgerArchives?.size ?? 0;
+  if (archiveCount === 0 && references.runtimeEventIds.size === 0) return null;
+  const signature = `${archiveCount}:${references.runtimeEventIds.size}`;
+  const cached = ledgerReferenceRewritePlans.get(references);
+  if (cached && cached.signature === signature) return cached;
+  const replacements = new Map<string, string>();
+  const alternatives: string[] = [];
+  for (const [source, target] of references.ledgerArchives ?? []) {
+    alternatives.push(escapeRegExp(source));
+    replacements.set(source, target.resourceRef!);
+  }
+  for (const [source, target] of references.runtimeEventIds) {
+    const sourceAddress = `${TOOL_RESULT_EVENT_ADDRESS_PREFIX}${encodeURIComponent(source)}`;
+    // An address both maps claim was already replaced by the archive entry;
+    // the old two-pass loop never rescanned a replacement, so the archive
+    // target must win here too.
+    if (replacements.has(sourceAddress)) continue;
+    alternatives.push(escapeRegExp(sourceAddress));
+    replacements.set(
+      sourceAddress,
+      `${TOOL_RESULT_EVENT_ADDRESS_PREFIX}${encodeURIComponent(target)}`,
+    );
+  }
+  const plan: LedgerReferenceRewritePlan = {
+    signature,
+    pattern: new RegExp(alternatives.join('|'), 'g'),
+    replacements,
+  };
+  ledgerReferenceRewritePlans.set(references, plan);
+  return plan;
+}
+
+/**
+ * Rewrites ledger archive refs and runtime event addresses in one copied text.
+ *
+ * The pre-#6311 loop rescanned the text once per mapped id, so copying N texts
+ * over N mapped ids performed O(N²) synchronous scans that could starve the
+ * Host liveness probe. One compiled alternation now replaces every mapped
+ * source in a single pass, and the plan is memoized per reference map and
+ * rebuilt only when one of the maps' sizes moves.
+ */
+export function rewriteLedgerArchiveText(
   text: string,
   references: ConversationCopyMessageReferenceMap,
 ): string {
-  for (const [source, target] of references.ledgerArchives ?? [])
-    text = text.split(source).join(target.resourceRef!);
-  for (const [source, target] of references.runtimeEventIds)
-    text = text
-      .split(`maka://runtime/tool-results/${encodeURIComponent(source)}`)
-      .join(`maka://runtime/tool-results/${encodeURIComponent(target)}`);
-  return text;
+  if (!text.includes(REFERENCE_REWRITE_SCHEME)) return text;
+  const plan = ledgerReferenceRewritePlan(references);
+  if (!plan) return text;
+  return text.replace(plan.pattern, (matched) => plan.replacements.get(matched)!);
 }
 
 /** Text identifies generated addresses; the structured Read rewriter owns their semantics. */
