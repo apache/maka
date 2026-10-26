@@ -418,25 +418,37 @@ pub fn Plot(props: PlotProps, cx: Scope<PlotEvent>) -> impl IntoElement {
     // The hover: where its parts are and how far they have faded in.
     let cross_x = animated_value(0.0);
     let fade = animated_value(0.0);
-    let hovered = stored(None::<u32>);
+    let hovered = signal(None::<u32>);
+    let placed = stored(None::<u32>);
     let place = TooltipPlace::new(cross_x, props.tooltip_placement, props.tooltip_offset);
     let follow = move |index: Option<u32>| {
-        let was = hovered.get();
-        if was == index {
-            return;
+        if hovered.get_untracked() != index {
+            hovered.set(index);
+            cx.emit(PlotEvent::HoverChange(index));
         }
-        hovered.replace(index);
-        cx.emit(PlotEvent::HoverChange(index));
+    };
+    // Geometry can change under a stationary pointer. Only row selection
+    // notifies the app; the anchors also follow the current scales/marks.
+    effect(move || {
+        let selected = hovered.get();
+        let x = selected
+            .and_then(|index| xs.with(|xs| xs.get(index as usize).copied()))
+            .filter(|x| x.is_finite());
+        let index = selected.filter(|_| x.is_some());
+        if selected != index {
+            follow(index);
+        }
+        let was = placed.get();
+        placed.replace(index);
         let m = motion.get_untracked().unwrap_or_default();
         let still = reduce_motion();
-        let Some(index) = index else {
-            match m.exit.filter(|_| !still) {
-                Some(exit) => drop(fade.timing_with(0.0, exit)),
-                None => fade.set(0.0),
+        let Some(x) = x else {
+            if was.is_some() {
+                match m.exit.filter(|_| !still) {
+                    Some(exit) => drop(fade.timing_with(0.0, exit)),
+                    None => fade.set(0.0),
+                }
             }
-            return;
-        };
-        let Some(x) = xs.with_untracked(|xs| xs.get(index as usize).copied()) else {
             return;
         };
         place.row_at(x);
@@ -450,7 +462,7 @@ pub fn Plot(props: PlotProps, cx: Scope<PlotEvent>) -> impl IntoElement {
             None => value.set(target),
         };
         to(cross_x, x);
-        marks.with_untracked(|all| {
+        marks.with(|all| {
             for mark in all {
                 if let Some(p) = mark.near(x) {
                     to(mark.dot_x, p.x.0);
@@ -464,7 +476,7 @@ pub fn Plot(props: PlotProps, cx: Scope<PlotEvent>) -> impl IntoElement {
                 None => fade.set(1.0),
             }
         }
-    };
+    });
     let interactive = props.interactive;
     let (cross_class, cross_style) = (props.cross_line_class, props.cross_line_style);
     let (dot_class, dot_style) = (props.dot_class, props.dot_style);
@@ -486,8 +498,8 @@ pub fn Plot(props: PlotProps, cx: Scope<PlotEvent>) -> impl IntoElement {
             })
         })
         .on_layout(move |b: &Bounds<Points>| {
-            size.set(b.size);
             place.plot_is(b.size);
+            size.set(b.size);
         })
         .on_hover_move(move |e: &HoverEvent| {
             if !interactive.get_untracked() {

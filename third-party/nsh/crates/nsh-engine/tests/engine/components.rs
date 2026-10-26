@@ -3716,3 +3716,145 @@ fn base_plot_marks_have_parts_of_their_own_and_the_tooltip_stays_inside() {
     near(at, (8.0, 8.0));
     near(moved, (0.0, 10.0));
 }
+
+const BASE_PLOT_REFRESH: &str = r##"import { mount, signal, View, Text } from "nsh";
+import { Line, Plot } from "nsh/base/plot";
+function App() {
+  const width = signal(200);
+  const rows = signal([{ v: 10 }, { v: 20 }, { v: 30 }]);
+  const maximum = signal(40);
+  const hovered = signal<number | null>(null);
+  const events = signal(0);
+  const step = signal(0);
+  return <View>
+    <Plot testID="plot" data={rows()} y="v"
+      yScale={{ type: "linear", domain: [0, maximum()] }}
+      crossLineStyle={{ width: 1, backgroundColor: "#0000ff" }}
+      dotStyle={{ width: 8, height: 8, backgroundColor: "#ff0000" }}
+      tooltipContent={<View testID="tip" style={{ width: 60, height: 20 }} />}
+      onHoverChange={(index) => { hovered.set(index); events.update(n => n + 1); }}
+      style={{ width: width(), height: 100 }}>
+      <Line curve="linear" />
+    </Plot>
+    <Text>{`state=${step()} events=${events()} row=${hovered()}`}</Text>
+    <View testID="resize" onPress={() => { width.set(400); step.set(1); }} />
+    <View testID="data" onPress={() => { rows.set([{ v: 10 }, { v: 30 }, { v: 30 }]); step.set(2); }} />
+    <View testID="scale" onPress={() => { maximum.set(60); step.set(3); }} />
+    <View testID="shrink" onPress={() => { rows.set([{ v: 10 }]); step.set(4); }} />
+  </View>;
+}
+mount(App);
+"##;
+
+#[test]
+fn base_plot_refreshes_hover_geometry_without_new_pointer_events() {
+    use nsh_core::{Color, HoverEvent, animation::Animator, geometry::point};
+
+    let (engine, rx) = start(BASE_PLOT_REFRESH);
+    let mut all = until_drawn(&rx, |_| true);
+    all.extend(until(&rx, |_| false));
+    let plot = test_view(&all, "plot");
+    let parent = |batches: &[MountBatch], child: u32| {
+        batches
+            .iter()
+            .flat_map(|batch| &batch.items)
+            .find_map(|item| match item {
+                MountItem::Insert {
+                    parent, child: id, ..
+                } if *id == child => Some(*parent),
+                _ => None,
+            })
+            .expect("mounted parent")
+    };
+    let colored = |batches: &[MountBatch], color: Color| {
+        batches
+            .iter()
+            .flat_map(|batch| &batch.items)
+            .find_map(|item| match item {
+                MountItem::ViewStyle { id, style } if style.background_color == color => Some(*id),
+                _ => None,
+            })
+            .expect("styled hover part")
+    };
+    let cross = parent(&all, colored(&all, Color(0x0000_ffff)));
+    let dot = parent(&all, colored(&all, Color(0xff00_00ff)));
+    let tip = test_view(&all, "tip");
+    let tip_anchor = parent(&all, parent(&all, parent(&all, tip)));
+    let animated = |batches: &[MountBatch], view: u32| {
+        let mut animator = Animator::default();
+        for item in batches.iter().flat_map(|batch| &batch.items) {
+            animator.apply(item);
+        }
+        let mut out = None;
+        animator.write(
+            |id| (id == view).then_some(id),
+            |_, values, _| out = Some(values),
+        );
+        out.expect("the hover part has animation bindings")
+    };
+    let near = |actual: Option<f32>, expected: f32| {
+        let actual = actual.expect("bound coordinate");
+        assert!((actual - expected).abs() < 0.01, "{actual} != {expected}");
+    };
+    let status = |batches: &[MountBatch]| {
+        batches
+            .iter()
+            .flat_map(|batch| &batch.items)
+            .filter_map(|item| match item {
+                MountItem::Text { text, .. } if text.text.starts_with("state=") => {
+                    Some(text.text.clone())
+                }
+                _ => None,
+            })
+            .next_back()
+            .expect("status text")
+    };
+    engine.control().dispatch_event(
+        plot,
+        EventKind::HoverMove,
+        EventPayload::Hover(HoverEvent {
+            position: point(px(100.0), px(50.0)),
+            ..Default::default()
+        }),
+    );
+    all.extend(until(&rx, |b| shows(b, "state=0 events=1 row=1")));
+    all.extend(until(&rx, |_| false));
+    assert_eq!(status(&all), "state=0 events=1 row=1");
+    near(animated(&all, cross).transform[0], 100.0);
+    near(animated(&all, dot).transform[0], 100.0);
+    near(animated(&all, dot).transform[1], 50.0);
+    near(animated(&all, tip_anchor).transform[0], 70.0);
+
+    // No more pointer events: the selected row stays the same while its
+    // layout, data and scale change. Notifications remain row changes only.
+    for (action, expected_status, x, y, tip_x) in [
+        ("resize", "state=1 events=1 row=1", 200.0, 50.0, 170.0),
+        ("data", "state=2 events=1 row=1", 200.0, 25.0, 170.0),
+        ("scale", "state=3 events=1 row=1", 200.0, 50.0, 170.0),
+    ] {
+        engine.control().dispatch_event(
+            test_view(&all, action),
+            EventKind::Press,
+            EventPayload::None,
+        );
+        all.extend(until(&rx, |b| shows(b, expected_status)));
+        all.extend(until(&rx, |_| false));
+        assert_eq!(status(&all), expected_status);
+        near(animated(&all, cross).transform[0], x);
+        near(animated(&all, dot).transform[0], x);
+        near(animated(&all, dot).transform[1], y);
+        near(animated(&all, tip_anchor).transform[0], tip_x);
+        near(animated(&all, cross).opacity, 1.0);
+    }
+    engine.control().dispatch_event(
+        test_view(&all, "shrink"),
+        EventKind::Press,
+        EventPayload::None,
+    );
+    all.extend(until(&rx, |b| shows(b, "state=4 events=2 row=null")));
+    all.extend(until(&rx, |_| false));
+    assert_eq!(status(&all), "state=4 events=2 row=null");
+    for id in [cross, dot, tip_anchor] {
+        near(animated(&all, id).opacity, 0.0);
+    }
+}
