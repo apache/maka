@@ -656,8 +656,13 @@ async fn classified_reducer_failure_preserves_fact_and_rejects_current_projectio
         }),
     )
     .await;
-    let state:(i64,i64)=sqlx::query_as("SELECT through_sequence,unavailable_at FROM context_semantic_heads WHERE session_id='session'").fetch_one(&mut db).await.unwrap();
-    assert_eq!(state, (2, 3));
+    let unavailable: i64 = sqlx::query_scalar(
+        "SELECT unavailable_at FROM context_semantic_heads WHERE session_id='session'",
+    )
+    .fetch_one(&mut db)
+    .await
+    .unwrap();
+    assert_eq!(unavailable, 3);
     assert!(rows(&mut db, &selection(3), None, 20, None).await.is_err());
     assert_eq!(
         rows(&mut db, &frozen, None, 20, None)
@@ -1019,16 +1024,6 @@ async fn streaming_fragments_do_not_rewrite_relationship_frontier() {
     let resolved = resolve(&mut db, page.rows).await.unwrap();
     assert!(resolved.iter().any(|row| matches!(&row.payload,
         Some(Payload::Part(ModelPart::Text { text, .. })) if text == &body)));
-    let through: i64 = sqlx::query_scalar(
-        "SELECT through_sequence FROM context_semantic_heads WHERE session_id='session'",
-    )
-    .fetch_one(&mut db)
-    .await
-    .unwrap();
-    assert_eq!(
-        through, 133,
-        "source progress includes unchanged relationships"
-    );
 }
 
 #[tokio::test]
@@ -1101,9 +1096,8 @@ async fn semantic_stream_reuses_original_worker_prepared_statements() {
     for (prefix, table) in [
         ("INSERT INTO", "context_semantic_fragment_pieces"),
         ("INSERT INTO", "context_semantic_fragments"),
-        ("INSERT INTO", "context_semantic_heads"),
         ("SELECT", "context_semantic_frontiers"),
-        ("SELECT through_sequence", "context_semantic_heads"),
+        ("SELECT unavailable_at", "context_semantic_heads"),
     ] {
         let (sql, first) = before
             .iter()
@@ -1115,17 +1109,20 @@ async fn semantic_stream_reuses_original_worker_prepared_statements() {
         assert_eq!(next.2, first.2, "{table} does not reprepare between deltas");
     }
     for (prefix, table) in [
+        ("INSERT INTO", "context_semantic_heads"),
         ("SELECT EXISTS", "context_semantic_copies"),
         ("SELECT source_session_id", "session_history_copies"),
     ] {
         let (sql, first) = before
             .iter()
             .find(|(sql, _)| sql.starts_with(prefix) && sql.contains(table))
-            .unwrap_or_else(|| panic!("first use must prepare the {table} hydration lookup"));
+            .unwrap_or_else(|| {
+                panic!("first use must prepare the {table} initialization or hydration statement")
+            });
         assert_eq!(
             after.get(sql).unwrap(),
             first,
-            "a healthy semantic head must not repeat the {table} hydration lookup"
+            "a healthy semantic head must not repeat {table} initialization or hydration"
         );
     }
     assert_eq!(
@@ -1243,48 +1240,6 @@ async fn stable_changes_page_latest_revisions_from_the_current_source_cursor() {
     assert_eq!(
         changed, expected,
         "cross-page projection uses each latest row once and preserves both source boundaries"
-    );
-}
-
-#[tokio::test]
-async fn corrupt_semantic_head_preserves_storage_fatal_invariant_error() {
-    let mut db = database().await;
-    opening(&mut db).await;
-    sqlx::query(
-        "UPDATE context_semantic_heads SET through_sequence=1000 WHERE session_id='session'",
-    )
-    .execute(&mut db)
-    .await
-    .unwrap();
-    let event = RuntimeEvent::new(
-        invocation(),
-        observed(ModelEvent::PartStarted {
-            id: "text".into(),
-            text_kind: TextKind::Text,
-            provider_options: None,
-        }),
-    );
-    let result = append_event(&mut db, 3, &event).await;
-    assert!(
-        matches!(result, Err(StoreError::Sqlite(rusqlite::Error::InvalidParameterName(ref reason)))
-        if reason == "semantic append is not monotonic"),
-        "an internal projection invariant must remain a storage failure: {result:?}"
-    );
-    let canonical: bool =
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM event_log WHERE sequence=3)")
-            .fetch_one(&mut db)
-            .await
-            .unwrap();
-    assert!(
-        !canonical,
-        "the original transaction must roll back the canonical event"
-    );
-    let state: (i64,Option<i64>) = sqlx::query_as("SELECT through_sequence,unavailable_at FROM context_semantic_heads WHERE session_id='session'")
-        .fetch_one(&mut db).await.unwrap();
-    assert_eq!(
-        state,
-        (1000, None),
-        "only classified reducer failures mark projection unavailable"
     );
 }
 

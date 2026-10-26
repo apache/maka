@@ -540,7 +540,6 @@ CREATE TABLE context_archive_copy_prefixes (
 
 CREATE TABLE context_semantic_heads (
     session_id TEXT PRIMARY KEY,
-    through_sequence INTEGER NOT NULL,
     unavailable_at INTEGER,
     unavailable_reason TEXT
 ) WITHOUT ROWID;
