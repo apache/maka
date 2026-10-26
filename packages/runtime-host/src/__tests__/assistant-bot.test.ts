@@ -106,7 +106,7 @@ async function fixture(
       }
     },
   };
-  const invoke = async (id: string, name: string, raw: any, turnId: string) => {
+  const invoke = async (id: string, name: string, raw: any, turnId: string, identity: any = {}) => {
     const tool = service.tools.find((tool) => tool.name === name)!;
     assert.ok(tool, name);
     const toolCallId = randomUUID();
@@ -141,6 +141,8 @@ async function fixture(
       turnId,
       cwd: directory,
       toolCallId,
+      operationId: randomUUID(),
+      ...identity,
       abortSignal: new AbortController().signal,
       emitOutput() {},
     });
@@ -193,7 +195,8 @@ async function fixture(
             id,
             turnId,
             prompt: String(message),
-            invoke: (name: string, raw: any = {}) => invoke(id, name, raw, turnId),
+            invoke: (name: string, raw: any = {}, identity: any = {}) =>
+              invoke(id, name, raw, turnId, identity),
             finish: () =>
               service.beforeFinish({ sessionId: id, turnId, signal: new AbortController().signal }),
           };
@@ -1891,7 +1894,7 @@ test('SendUser publishes sticker IDs atomically and replays the saved batch afte
     });
     request = {
       messageId: 'direct-sticker',
-      messages: [{ text: '正文保留', summary: '摘要保留', stickerId: id }, { stickerId: id }],
+      messages: [{ text: '正文保留', summary: '摘要保留', stickerId: id, card: { type: 'offer', title: 'Test card', items: [{ title: 'Test item' }] } }, { stickerId: id }],
     };
     await assert.rejects(
       invoke('SendUser', { messageId: 'empty', messages: [{}] }),
@@ -1911,6 +1914,7 @@ test('SendUser publishes sticker IDs atomically and replays the saved batch afte
     assert.equal(sent.messageIds.length, 2);
     const output = f.visible.filter((m) => m.type === 'assistant');
     assert.equal(output[0].summary, '摘要保留');
+    assert.equal(output[0].card?.title, 'Test card');
     assert.equal(output[0].text, `正文保留\n\n![表情](maka://runtime/attachments/sticker-${id})`);
     assert.equal(output[1].text, `![表情](maka://runtime/attachments/sticker-${id})`);
     await invoke('AssistantCharacterPack', { action: 'remove_asset', assetId: id });
@@ -2072,6 +2076,136 @@ for (const userHasSpoken of [false, true])
       1,
     );
   });
+
+test('notification omissions persist, retries are idempotent and later delivery remains possible', async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'bot-notification-decisions-'));
+  let store = new BotStore(dir);
+  t.after(async () => {
+    store.close();
+    await rm(dir, { recursive: true, force: true });
+  });
+  store.post({ id: 'd', type: 'discovery', source: 'judge', content: '是否暂停用车询问' });
+  const decisions = [{ inboxId: 'd', reason: '用车询问已按用户要求停用，无需重复询问。' }];
+  const head = store.head();
+  store.recordNotNotified('call-1', decisions);
+  const saved = store.read('d').notNotified;
+  assert.equal(saved.length, 1);
+  assert.ok(Number(saved[0].at) > 0);
+  store.recordNotNotified('call-1', decisions);
+  assert.deepEqual(store.read('d').notNotified, saved);
+  assert.throws(
+    () => store.recordNotNotified('call-1', [{ inboxId: 'd', reason: '不同理由' }]),
+    /different reason/,
+  );
+  assert.throws(
+    () =>
+      store.recordNotNotified('call-bad', [
+        ...decisions,
+        { inboxId: 'missing', reason: '未知消息' },
+      ]),
+    /Unknown inbox/,
+  );
+  assert.deepEqual(store.read('d').notNotified, saved);
+  assert.equal(store.head(), head);
+  assert.equal(store.batch(0).items.length, 1);
+  store.close();
+  store = new BotStore(dir);
+  assert.deepEqual(store.read('d').notNotified, saved);
+  store.recordNotNotified('call-2', [{ inboxId: 'd', reason: '复核后暂未变化。' }]);
+  assert.equal(store.read('d').notNotified.length, 2);
+  assert.deepEqual(store.read('d').notNotified[0], saved[0]);
+  const [messageId] = store.queueVisibleBatch('later', [
+    { text: '有了新情况。', discoveryIds: ['d'] },
+  ]);
+  store.delivered(messageId);
+  assert.equal(store.discoveryDeliveries().length, 1);
+  assert.equal(store.read('d').notNotified.length, 2);
+});
+
+test('Sleep records omissions without sending; unread arrivals still prevent sleep', async (t) => {
+  const f = await fixture();
+  t.after(f.close);
+  let done = false;
+  f.runner(async ({ invoke, finish }) => {
+    await invoke('InboxCheck');
+    await assert.rejects(
+      invoke('Sleep', {
+        notNotified: [{ inboxId: 'missing', reason: '不存在的消息' }],
+      }),
+      /Unknown inbox/,
+    );
+    await f.send('new-input', '还有一件事');
+    const result = await invoke('Sleep', {
+      notNotified: [{ inboxId: 'first-input', reason: '用户告知已经处理，不需要重复建议。' }],
+    });
+    assert.equal(result.sleeping, false);
+    const original = await invoke('InboxRead', { id: 'first-input' });
+    assert.equal(original.notNotified.length, 1);
+    assert.equal(original.notNotified[0].reason, '用户告知已经处理，不需要重复建议。');
+    const next = await invoke('InboxCheck');
+    assert.deepEqual(
+      next.items.map((m: any) => m.id),
+      ['new-input'],
+    );
+    assert.equal((await invoke('Sleep')).sleeping, true);
+    assert.equal((await finish()).allow, true);
+    done = true;
+  });
+  await f.send('first-input', '这件事我已经处理了');
+  await until(() => done);
+  assert.equal(f.visible.filter((m) => m.type === 'assistant').length, 0);
+  await assert.rejects(f.invoke('Sleep', { notNotified: [] }), /belongs/);
+});
+
+test('Sleep decisions use durable operation identity, not reused provider call IDs', async (t) => {
+  const f = await fixture();
+  t.after(f.close);
+  let done = false;
+  let failure: unknown;
+  f.runner(async ({ invoke, finish }) => {
+    try {
+      await invoke('InboxCheck');
+      await f.send('later-input', '还有新消息');
+      const decision = (reason: string) => ({
+        notNotified: [{ inboxId: 'decision-input', reason }],
+      });
+      const identity = (operationId: string) => ({ toolCallId: 'provider-reused', operationId });
+      const read = async () => (await invoke('InboxRead', { id: 'decision-input' })).notNotified;
+      assert.equal((await invoke('Sleep', decision('已处理'), identity('op-a'))).sleeping, false);
+      const first = await read();
+      await invoke('Sleep', decision('已处理'), {
+        ...identity('op-a'),
+        toolCallId: 'retry-provider',
+      });
+      assert.deepEqual(await read(), first, 'same durable operation is an idempotent retry');
+      await invoke('Sleep', decision('已处理'), identity('op-b'));
+      assert.equal((await read()).length, 2, 'another operation may reuse the provider call ID');
+      await invoke('Sleep', decision('复核后仍无变化'), identity('op-c'));
+      const saved = await read();
+      assert.equal(saved.length, 3);
+      await assert.rejects(
+        invoke('Sleep', decision('不同的重试理由'), identity('op-c')),
+        /different reason/,
+      );
+      assert.deepEqual(
+        await read(),
+        saved,
+        'conflicting retry cannot append or replace a decision',
+      );
+      assert.equal((await finish()).allow, false, 'unread input still prevents finish');
+      await invoke('InboxCheck');
+      assert.equal((await invoke('Sleep')).sleeping, true);
+      assert.equal((await finish()).allow, true);
+      done = true;
+    } catch (error) {
+      failure = error;
+      throw error;
+    }
+  });
+  await f.send('decision-input', '这件事处理好了');
+  await until(() => done || !!failure);
+  if (failure) throw failure;
+});
 
 test('SendUser card batch validates before delivery and retries identically after restart', async (t) => {
   const f = await fixture();

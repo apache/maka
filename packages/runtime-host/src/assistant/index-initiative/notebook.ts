@@ -408,6 +408,17 @@ export class Notebook {
         );
       for (const r of s.receipts) lines.push(`- 已发送 ${r.at}〔${r.id}〕：${r.payload.text}`);
     }
+    const quickDeliveries = this.events('delivery').filter(
+      (e) => e.payload.origin === 'quick-discovery' && !e.payload.topicIds.length,
+    );
+    if (quickDeliveries.length) {
+      lines.push(
+        '',
+        '## 高频发现已发送的消息',
+        '以下是用户实际收到的正文，不代表待办；对应反馈见上方。',
+      );
+      for (const e of quickDeliveries) lines.push(`- ${e.at}〔${e.id}〕：${e.payload.text}`);
+    }
     lines.push('', '## 已交给 Bot 的文案（不代表已送达）');
     for (const e of this.events('reported')) lines.push(`- ${e.at}：${e.payload.text}`);
     return lines.join('\n') + '\n';

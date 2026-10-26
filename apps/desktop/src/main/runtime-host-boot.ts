@@ -2195,6 +2195,11 @@ function wireLifecycle(): void {
   // does not go through, the next Desktop window brings WorkHub back.
   nativeAutoUpdater.on("before-quit-for-update", () => {
     try {
+      petDesktop.releaseForQuit();
+    } catch (error) {
+      console.error("[update] Pet release before install failed:", error);
+    }
+    try {
       workHubPresentation.releaseForQuit();
     } catch (error) {
       console.error("[update] WorkHub release before install failed:", error);

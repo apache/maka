@@ -108,6 +108,9 @@ export async function importPetPackFromDirectory(input: {
       if (error.code === 'already_installed') {
         throw new PetPackImportError('already_installed', error.message, { cause: error });
       }
+      if (error.code === 'invalid_manifest') {
+        throw new PetPackImportError('invalid_manifest', error.message, { cause: error });
+      }
       if (error.code === 'invalid_asset') {
         throw new PetPackImportError('invalid_asset', error.message, { cause: error });
       }

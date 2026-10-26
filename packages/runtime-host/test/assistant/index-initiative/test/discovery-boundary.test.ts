@@ -53,7 +53,7 @@ test('discovery Session cannot delegate a Matter the conversation cannot see (#6
   }
 });
 
-test('discovery catalog omits conversation-mutating tools and keeps read tools with file-based reporting (#6250)', async () => {
+test('discovery catalog omits conversation-mutating tools and keeps context reads (#6250)', async () => {
   const { f, discovery } = await setup();
   try {
     const visible = f
@@ -68,8 +68,8 @@ test('discovery catalog omits conversation-mutating tools and keeps read tools w
       'SendUser',
     ])
       assert.ok(!visible.includes(name), `catalog still exposes ${name}`);
-    // Discovery now reports through its output file, not the removed DiscoveryReport tool.
-    assert.ok(!visible.includes('DiscoveryReport'), 'catalog still exposes legacy DiscoveryReport');
+    // The two-stage worker submits a notebook draft, not the retired DiscoveryReport tool.
+    assert.ok(!visible.includes('DiscoveryReport'));
     for (const name of ['DiscoveryContext', 'MemoryIndexRead', 'MatterOverview'])
       assert.ok(visible.includes(name), `catalog lost ${name}`);
   } finally {

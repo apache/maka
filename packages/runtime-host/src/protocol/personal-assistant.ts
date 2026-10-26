@@ -74,6 +74,8 @@ const request = z
       'assistant.memory-activity',
       'assistant.bind',
       'assistant.control',
+      'assistant.quick-discovery',
+      'assistant.quick-discovery-status',
       'assistant.recover',
       'assistant.adopt-task',
     ]),

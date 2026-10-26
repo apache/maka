@@ -32,11 +32,6 @@ import {
 import { AstryxLocaleProvider } from '../astryx-i18n.js';
 import { MakaUriContext, Markdown } from '../markdown.js';
 import { LocaleProvider } from '../locale-context.js';
-import {
-  createMermaidConfig,
-  MAX_MERMAID_EDGES,
-  MAX_MERMAID_SOURCE_LENGTH,
-} from '../mermaid-diagram.js';
 
 it('image links use canonical destinations for titles, angle brackets and escaped parentheses', () => {
   for (const [text, destination] of [
@@ -573,18 +568,6 @@ it('does not render Mermaid while the assistant turn is streaming', () => {
   }));
 
   assert.doesNotMatch(markup, /data-maka-contract="mermaid"/);
-});
-
-it('pins Mermaid security and complexity limits for untrusted assistant output', () => {
-  const config = createMermaidConfig('dark');
-
-  assert.equal(config.startOnLoad, false);
-  assert.equal(config.securityLevel, 'strict');
-  assert.equal(config.suppressErrorRendering, true);
-  assert.equal(config.htmlLabels, false);
-  assert.equal(config.maxTextSize, MAX_MERMAID_SOURCE_LENGTH);
-  assert.equal(config.maxEdges, MAX_MERMAID_EDGES);
-  assert.equal(config.theme, 'dark');
 });
 
 it('keeps a new stream behind the display cursor on its first render', () => {

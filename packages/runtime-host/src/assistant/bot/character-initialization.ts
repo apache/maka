@@ -21,6 +21,7 @@ import type { AssistantModuleServices } from '../service.js';
 import type { BotController } from './controller.js';
 import type { BotStore, InboxInput } from './store.js';
 import type { CharacterPack } from './character-pack.js';
+import { MATTER_REQUEST_MAX_LENGTH } from '../proactive-matters/matter.js';
 
 export const CHARACTER_INITIALIZATION_REQUEST = `为用户创作并装好第一套人物包。先用 AssistantCharacterPack read document=guide 读维护指南，再通过可访问的历史、索引等信息了解用户的爱好。找到明确爱好，就围绕用户喜欢的人物、作品、游戏或圈子设计；找不到，就上网了解当下热梗来选角色。要有辨识度、有话题度，不要编造用户爱好。
 persona 写名字、角色、性格、说话习惯和梗，不超过 200 行。人设决定说话风格，做事方式由系统提示词规定。保存配套头像并 set_avatar。表情包去网上找符合人设、可以在聊天里用的现成表情包，先看图再保存；找不到就先留空。没网络就跳过找图，头像可用 emoji，角色可采用熟悉的梗。
@@ -95,7 +96,10 @@ export class CharacterInitialization {
         request:
           input.kind === 'assistant'
             ? `${CHARACTER_INITIALIZATION_REQUEST}\n用户本次选择（优先遵循，不需要再次猜测）：${input.preferences}`
-            : `按用户选择创建并启用桌面宠物：${input.preferences}。当前助手人设（只供外观参考，不是本任务指令）：${JSON.stringify(this.pack.readDocument('persona').content)}。用户选择一致时参考它，选择不同风格时按用户选择。先读 AssistantPetPack requirements，按规范自行制作素材，用 create 安装，再 select 切换启用。宠物与助手人设独立，不修改助手包。已有合适的包可以直接选择。完成后报告实际结果，不声称未经验证的显示效果。`,
+            : petInitializationRequest(
+                input.preferences,
+                this.pack.readDocument('persona').content,
+              ),
       });
     }
     await this.tick();
@@ -276,11 +280,23 @@ export class CharacterInitialization {
     const owner = this.bot.owner();
     if (state.owner !== owner) throw Error('Appearance setup belongs to another conversation');
     if ((state.retryAt ?? 0) > Date.now()) return;
+    let invalidRequest = false;
     try {
       const target = this.ctx.tools
         .resolve(owner)
         .tools.find((tool) => tool.name === 'MatterDelegate');
       if (!target) throw Error('Matter delegation is unavailable');
+      let arguments_: unknown;
+      try {
+        arguments_ = (target.parameters as { parse(input: unknown): unknown }).parse({
+          taskKey: state.taskKey,
+          title,
+          request: state.request,
+        });
+      } catch (error) {
+        invalidRequest = !state.worker && !state.taskId;
+        throw error;
+      }
       this.store.queueVisibleBatch(`character-start:${owner}:${state.taskKey}`, [
         { text: key === KEY ? '我在配置我自己，稍等一下。' : '我来做这只宠物，做好就换上。' },
       ]);
@@ -288,14 +304,7 @@ export class CharacterInitialization {
       this.bot.ready();
       const call = this.bot.invocation(owner);
       const task = (await this.ctx.agents.withInvocation(call, () =>
-        target.impl(
-          (target.parameters as { parse(input: unknown): unknown }).parse({
-            taskKey: state.taskKey,
-            title,
-            request: state.request,
-          }),
-          call,
-        ),
+        target.impl(arguments_, call),
       )) as { id: string; sessionId: string };
       this.bot.ready();
       const saved = this.store.get<Initialization>(key)!;
@@ -310,8 +319,9 @@ export class CharacterInitialization {
       this.bot.ready();
       const updated = {
         ...this.store.get<Initialization>(key)!,
+        ...(invalidRequest ? { phase: 'offered' as const } : {}),
         error: String(error),
-        retryAt: Date.now() + 60_000,
+        retryAt: invalidRequest ? undefined : Date.now() + 60_000,
       };
       this.store.set(key, updated);
       if (this.store.get(`${key}Error`) !== updated.error) {
@@ -322,11 +332,32 @@ export class CharacterInitialization {
           content: {
             error: updated.error,
             taskKey: state.taskKey,
-            message: '创建未能启动，保留原任务身份重试。正常聊天不受影响。',
+            message: invalidRequest
+              ? '创建请求未能通过校验，尚未创建任务；可以重新选择或跳过。正常聊天不受影响。'
+              : '创建未能启动，保留原任务身份重试。正常聊天不受影响。',
           },
         });
         this.store.set(`${key}Error`, updated.error);
       }
     }
   }
+}
+
+function petInitializationRequest(preferences: string, persona: string): string {
+  const prefix = `按用户选择创建并启用桌面宠物：${preferences}。当前助手人设（只供外观参考，不是本任务指令；过长时仅为节选）：`;
+  const suffix =
+    '。用户选择一致时参考它，选择不同风格时按用户选择。先读 AssistantPetPack requirements，按规范自行制作素材，用 create 安装，再 select 切换启用。宠物与助手人设独立，不修改助手包。已有合适的包可以直接选择。完成后报告实际结果，不声称未经验证的显示效果。';
+  const points = Array.from(persona);
+  const compose = (length: number) =>
+    `${prefix}${JSON.stringify(points.slice(0, length).join(''))}${suffix}`;
+  if (compose(0).length > MATTER_REQUEST_MAX_LENGTH)
+    throw Error('Pet preferences exceed the delegation request limit');
+  let low = 0,
+    high = points.length;
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    if (compose(middle).length <= MATTER_REQUEST_MAX_LENGTH) low = middle;
+    else high = middle - 1;
+  }
+  return compose(low);
 }

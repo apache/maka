@@ -28,6 +28,7 @@ import { createAcpConnection, type AcpConnectionOwner } from '../acp-process.js'
 import { Context } from '@maka/runtime/plugin-kernel';
 import { PluginExecutorService } from '@maka/runtime/plugin-executor-service';
 import { PluginExecutorBackend } from '@maka/runtime/plugin-executor-backend';
+import { terminateProcessTree } from '@maka/runtime/process-tree-terminator';
 import type {
   PluginExecutorContext,
   PluginExecutorOutputEvent,
@@ -168,6 +169,39 @@ test('file read rejects invalid ranges and honors a zero limit', async () => {
     await rm(cwd, { recursive: true, force: true });
   }
 });
+
+for (const closing of ['conversation', 'executor'] as const) {
+  test(`real stdio startup cannot outlive ${closing} disposal`, async () => {
+    const f = await fixture();
+    const started = join(f.root, 'started.pid');
+    await writeFile(
+      f.script,
+      `require('node:fs').writeFileSync(${JSON.stringify(started)}, String(process.pid));\n${program}`,
+    );
+    const pending = f.executor.execute(f.request('one'), f.context());
+    try {
+      // Initialization yields to real filesystem checks; closing immediately
+      // must fence the later spawn without a mocked connection or delayed I/O.
+      if (closing === 'conversation') await f.executor.disposeConversation('task');
+      else await f.executor.dispose();
+      const result = await pending;
+      assert.equal(result.status, 'failed');
+      if (result.status === 'failed') assert.equal(result.code, 'acp_unavailable');
+      assert.deepEqual(await readdir(f.root), ['agent.cjs']);
+    } finally {
+      await pending;
+      // A regression must fail without leaving its real Agent process behind.
+      try {
+        const pid = Number(await readFile(started, 'utf8'));
+        await terminateProcessTree({ pid, signal: 'SIGKILL' });
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      } finally {
+        await f.dispose();
+      }
+    }
+  });
+}
 
 test('real stdio discovery keeps Agent startup history out of the selected project', async () => {
   const f = await fixture();

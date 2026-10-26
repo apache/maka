@@ -51,6 +51,23 @@ export function createPetDesktop(input: {
   let selectedId: string | null | undefined;
   let quitting = false;
   let composing = false;
+  let dragging = false;
+  let hoverTimer: ReturnType<typeof setInterval> | undefined;
+  let hitRegions: { x: number; y: number; width: number; height: number }[] = [];
+  const stopHover = () => {
+    if (hoverTimer !== undefined) clearInterval(hoverTimer);
+    hoverTimer = undefined;
+    hitRegions = [];
+  };
+  const ignoreMouse = (ignore: boolean) => window?.setIgnoreMouseEvents(ignore,
+    process.platform === 'linux' ? undefined : { forward: true });
+  const pollHover = () => {
+    if (!window || window.isDestroyed()) return;
+    const point = screen.getCursorScreenPoint(), bounds = window.getBounds();
+    const x = point.x - bounds.x, y = point.y - bounds.y;
+    ignoreMouse(!composing && !dragging && !hitRegions.some(region =>
+      x >= region.x && x < region.x + region.width && y >= region.y && y < region.y + region.height));
+  };
   let petTop = 190;
   let bubbleBelow = false;
   let aboveSpace = 110;
@@ -98,6 +115,7 @@ export function createPetDesktop(input: {
     );
   };
   const refresh = async () => {
+    if (quitting) return;
     const ticket = ++revision;
     const settings = await input.settingsStore.get();
     const id = settings.personalization.selectedPetId;
@@ -109,7 +127,7 @@ export function createPetDesktop(input: {
     const asset = manifest
       ? await packs.readSpriteSheet(manifest.id)
       : undefined;
-    if (ticket !== revision) return;
+    if (quitting || ticket !== revision) return;
     mode = nextMode;
     const resolvedId = manifest && asset ? manifest.id : null;
     if (selectedId !== resolvedId) {
@@ -118,6 +136,7 @@ export function createPetDesktop(input: {
     }
     if (!manifest || !asset) {
       state = undefined;
+      stopHover();
       auxiliaryWindowRegistry.destroy(window);
       window = undefined;
       syncHostWindow();
@@ -161,7 +180,13 @@ export function createPetDesktop(input: {
           backgroundThrottling: false,
         },
       });
-      window.setIgnoreMouseEvents(true, { forward: true });
+      ignoreMouse(true);
+      if (process.platform === 'linux') {
+        // Electron cannot forward mousemove through an ignored Linux window.
+        // Native pointer observation only hit-tests our own visible controls.
+        hoverTimer = setInterval(pollHover, 50);
+        hoverTimer.unref();
+      }
       window.setAlwaysOnTop(true, "floating");
       if (process.platform === "darwin")
         window.setVisibleOnAllWorkspaces(true, {
@@ -174,6 +199,8 @@ export function createPetDesktop(input: {
         if (composing) window?.webContents.send("pet-desktop:compose-focus");
       });
       window.on("closed", () => {
+        stopHover();
+        dragging = false;
         window = undefined;
       });
       window.once("ready-to-show", () =>
@@ -244,7 +271,9 @@ export function createPetDesktop(input: {
   ipcMain.on("pet-desktop:action", (event, action: string) => {
     if (!window || event.sender !== window.webContents) return;
     if (action === "ready") { send(); window.webContents.send("pet-desktop:placement", bubbleBelow); }
+    if (action === "drag-start") dragging = true;
     if (action === "drag-end") {
+      dragging = false;
       if (pendingPetY !== undefined) return; // The renderer is still repositioning the bubble.
       const bounds = window.getBounds();
       const area = screen.getDisplayMatching(bounds).workArea;
@@ -256,7 +285,7 @@ export function createPetDesktop(input: {
     }
     if (action === "interactive") window.setIgnoreMouseEvents(false);
     if (action === "passthrough" && !composing)
-      window.setIgnoreMouseEvents(true, { forward: true });
+      ignoreMouse(true);
     if (action === "open") {
       window.blur();
       app.focus({ steal: true });
@@ -283,8 +312,18 @@ export function createPetDesktop(input: {
     }
     if (action === "compose-close") {
       composing = false;
-      window.setIgnoreMouseEvents(true, { forward: true });
+      ignoreMouse(true);
     }
+  });
+  ipcMain.on('pet-desktop:hit-regions', (event, value: unknown) => {
+    if (process.platform !== 'linux' || !window || event.sender !== window.webContents ||
+        !Array.isArray(value) || value.length > 3) return;
+    const bounds = window.getBounds();
+    if (!value.every(region => region && ['x', 'y', 'width', 'height'].every(key => Number.isFinite(region[key])) &&
+        region.x >= 0 && region.y >= 0 && region.width > 0 && region.height > 0 &&
+        region.x + region.width <= bounds.width + 1 && region.y + region.height <= bounds.height + 1)) return;
+    hitRegions = value.map(({ x, y, width, height }) => ({ x, y, width, height }));
+    pollHover();
   });
   ipcMain.on('pet-desktop:layout', (event, value) => {
     if (!window || event.sender !== window.webContents || !value ||
@@ -365,14 +404,19 @@ export function createPetDesktop(input: {
   });
   screen.on("display-metrics-changed", clamp);
   screen.on("display-removed", clamp);
+  const releaseForQuit = () => {
+    quitting = true;
+    stopHover();
+    ++revision;
+    auxiliaryWindowRegistry.destroy(window);
+  };
   app.on("before-quit", (event) => {
     // The quit coordinator may still be asking the user or cleaning up.
     if (event.defaultPrevented) return;
-    quitting = true;
-    ++revision;
-    auxiliaryWindowRegistry.destroy(window);
+    releaseForQuit();
   });
   return {
+    releaseForQuit,
     refresh: () =>
       refresh().catch((error) => console.error("[pet] refresh failed", error)),
   };

@@ -108,7 +108,11 @@ export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
 // Re-check against main before merging; sibling PRs may use the same next epoch.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 230 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 232 as const;
+// 232: Assistant cards and durable single-choice reply/status operations.
+// Older peers cannot display cards or submit and synchronize their choices safely.
+// 231: Assistant character packs, appearance onboarding and desktop pet capabilities.
+// 230: Separate quick-discovery control/status operations for the personal assistant.
 // 229: Session check-in proposes cards for unfinished work across Sessions.
 // 228: Executor catalog queries support per-agent filtering and process-free inventory.
 // Older peers reject the executorId and listOnly fields in the strict query decoder.

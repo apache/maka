@@ -68,3 +68,34 @@ test('unsafe cards are refused; card content survives queue and adds reading tim
     assert.ok(petMessageDuration(m)>petMessageDuration({id:'1',text:'你好'}));
   } finally {h.view.show();}
 });
+
+
+test('switching pet cards ignores a late choice and status from the previous card', async () => {
+  let resolveChoice!: (value: { selectedKey: string | null }) => void;
+  let resolveStatus!: (value: { selectedKey: string | null }) => void;
+  let reads = 0;
+  const h = setup(async input => {
+    if (input.cardId === 'next-card') return { selectedKey: null };
+    if (input.actionKey) return new Promise(resolve => { resolveChoice = resolve; });
+    if (++reads === 1) return { selectedKey: null };
+    return new Promise(resolve => { resolveStatus = resolve; });
+  });
+  try {
+    await settle();
+    h.element.querySelector('button')!.click();
+    assert.equal(h.view.pending, true);
+    h.view.show('host-owner', 'next-card', { ...card, title: 'Next card' });
+    await settle();
+    resolveChoice({ selectedKey: '0:0' });
+    await settle();
+    assert.match(h.element.textContent!, /Next card/);
+    assert.doesNotMatch(h.element.textContent!, /已发送/);
+    assert.ok([...h.element.querySelectorAll('button')].every(button => !button.disabled));
+    h.view.show('host-owner', 'card-id', card);
+    h.view.show('host-owner', 'next-card', { ...card, title: 'Next card' });
+    resolveStatus({ selectedKey: '0:0' });
+    await settle();
+    assert.match(h.element.textContent!, /Next card/);
+    assert.ok([...h.element.querySelectorAll('button')].every(button => !button.disabled));
+  } finally { h.view.show(); }
+});

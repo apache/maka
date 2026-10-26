@@ -66,7 +66,11 @@ function fixture(t: any) {
         tools: [
           {
             name: 'MatterDelegate',
-            parameters: z.any(),
+            parameters: z.object({
+              taskKey: z.string(),
+              title: z.string(),
+              request: z.string().trim().min(1).max(8000),
+            }),
             impl: async (input: any) => {
               calls++;
               init.taskCreated(owner!, input.taskKey, 'worker');
@@ -320,4 +324,31 @@ test('timer onboarding scopes both offers to the owner without reading conversat
   await f.init.tick();
   assert.equal(f.posts.length, 2, 'restarting does not duplicate either offer');
   assert.equal(f.calls(), 0, 'offers do not create appearance tasks without consent');
+});
+
+test('pet delegation budgets the complete escaped persona and maximum preferences', async (t) => {
+  const f = fixture(t);
+  f.pack.writeDocument('persona', '猫"\\'.repeat(4915), f.pack.readDocument('persona').revision);
+  const preferences = '独立的布偶猫'.repeat(667).slice(0, 4000);
+  await f.init.setup({ kind: 'pet', action: 'create', preferences });
+  const state = f.store.get<any>('petInitialization');
+  assert.equal(state.phase, 'running');
+  assert.ok(state.request.length <= 8000);
+  assert.ok(state.request.includes(preferences));
+  assert.equal(f.pack.readDocument('persona').content, '猫"\\'.repeat(4915));
+});
+
+test('an old invalid unadmitted request can be skipped or replaced instead of retrying forever', async (t) => {
+  const f = fixture(t);
+  f.store.set('characterInitialization', { phase: 'skipped', owner: 'owner' });
+  f.store.set('petInitialization', {
+    phase: 'starting',
+    owner: 'owner',
+    taskKey: 'assistant-pet-initialization-v1',
+    request: 'x'.repeat(8100),
+  });
+  await f.init.tick();
+  assert.notEqual(f.store.get<any>('petInitialization').phase, 'starting');
+  await f.init.setup({ kind: 'pet', action: 'skip' });
+  assert.equal(f.store.get<any>('petInitialization').phase, 'skipped');
 });
