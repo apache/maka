@@ -111,6 +111,11 @@ jobs:
       - name: Select npm
         run: npm install --global --no-audit --no-fund "$(node -p 'require("./package.json").packageManager')"
       - run: just setup
+      - name: Verify Rust dependency inventory before compilation
+        run: |
+          node scripts/rust/dependencies.mjs generate
+          sha256sum products/maka/cli/DEPENDENCIES.rust.tsv
+          git diff --exit-code -- products/maka/cli/DEPENDENCIES.rust.tsv
       - name: Verify Computer Use bridge build
         run: |
           node scripts/rust/check-cua-build.mjs
