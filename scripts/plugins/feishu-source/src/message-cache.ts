@@ -369,6 +369,11 @@ export class MessageCache {
       description:
         'Feishu messages from completed local sync jobs; call FeishuSync to download new messages.',
       scope: this.scope,
+      activityToken: async (caller: any) => {
+        await verify(caller);
+        const row = this.db.prepare('SELECT MAX(seq) AS seq FROM publications').get();
+        return row?.seq == null ? null : hash({ scope: this.scope, seq: row.seq });
+      },
       queryHelp:
         '{text?,types?,chatId?,startTime?,endTime?,limit?:1..500,cursor?}; Unix seconds. Default 50, enumeration 500. Local published originals only; preserve query fields when paging. Completed bounded scans do not guarantee all Feishu history. Index observation reads this local cache, not the live server; use FeishuSyncStatus for last successful source sync and failures. Older edits/deletions require refreshing their time range.',
       query,

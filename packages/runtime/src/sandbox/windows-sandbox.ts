@@ -64,8 +64,10 @@ export interface WindowsBrokerManifest {
     readonly exactWriteRoots: readonly string[];
     readonly network: 'restricted' | 'enabled';
     readonly environment: Readonly<Record<string, string>>;
-    /** Serialized last so manifests without it keep their historical digest. */
+    /** Kept in its historical position and omitted only by older producers. */
     readonly timeoutMs: number;
+    /** Optional W1 Glob admission mode; serialized last only when requested. */
+    readonly nonFollowingReadRoot?: string;
   };
 }
 
@@ -181,6 +183,9 @@ export class WindowsBrokerSandboxBackend implements SandboxBackend {
           MAKA_WINDOWS_SANDBOX: '1',
         }),
         timeoutMs: this.options.timeoutMs ?? DEFAULT_WINDOWS_BROKER_TIMEOUT_MS,
+        ...(plan.policy.nonFollowingReadRoot
+          ? { nonFollowingReadRoot: plan.policy.nonFollowingReadRoot }
+          : {}),
       };
       manifestPath = this.options.writeManifest({
         version: 1,
