@@ -154,3 +154,58 @@ jobs:
         with:
           path: ${{ runner.temp }}/mbx-cache
           key: ${{ steps.mbx-cache.outputs.cache-primary-key }}
+
+  # Root workspace tests compile NSH dependencies but do not select the nested
+  # workspace's own tests. Run them serially on a fresh runner when dispatched.
+  nsh-integration:
+    needs: test
+    if: ${{ always() && github.event_name == 'workflow_dispatch' && !cancelled() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      CARGO_BUILD_JOBS: "2"
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      CARGO_TARGET_DIR: ${{ runner.temp }}/nsh-target
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Verify source revision
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+        run: |
+          actual=$(git rev-parse HEAD)
+          echo "NSH validation source: $actual"
+          test "$actual" = "$EXPECTED_SHA"
+      - name: Update Rust
+        run: rustup update stable --no-self-update
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: nsh-cargo-${{ runner.os }}-${{ hashFiles('third-party/nsh/Cargo.lock') }}
+          restore-keys: nsh-cargo-${{ runner.os }}-
+      - name: Test NSH core, JS, headless and terminal integration
+        run: |
+          df -h "$RUNNER_TEMP"
+          df -i "$RUNNER_TEMP"
+          available=$(df -B1 --output=avail "$RUNNER_TEMP" | tail -n 1 | tr -d ' ')
+          test "$available" -ge 8589934592 || { echo "NSH tests require 8 GiB free before compilation" >&2; exit 1; }
+          cargo test --locked --manifest-path third-party/nsh/Cargo.toml \
+            -p nsh-core -p nsh-base -p nsh-engine -p nsh-js \
+            -p nsh-testing -p nsh-platform-tui --features nsh-testing/agent
+      - name: Test portable Web text layout and hit testing
+        run: |
+          available=$(df -B1 --output=avail "$RUNNER_TEMP" | tail -n 1 | tr -d ' ')
+          test "$available" -ge 4294967296 || { echo "Web text tests require 4 GiB free before compilation" >&2; exit 1; }
+          cargo test --locked --manifest-path third-party/nsh/Cargo.toml \
+            -p nsh-platform-web --no-default-features --test text
+      - name: Report NSH storage
+        if: ${{ always() }}
+        run: |
+          df -h "$RUNNER_TEMP"
+          df -i "$RUNNER_TEMP"
+          if [ -d "$CARGO_TARGET_DIR" ]; then du -sh "$CARGO_TARGET_DIR"; fi

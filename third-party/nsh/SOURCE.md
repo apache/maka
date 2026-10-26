@@ -127,6 +127,13 @@ when no paste listener is mounted, without inserting the paths as text.
 Maka's workspace uses these local crates, including NSH's offscreen renderer and
 image codec; changing them here changes the code built and tested with Maka.
 
+A manual dispatch of Maka's existing CI also runs the nested NSH core, base,
+engine, JS, headless (with `agent`) and terminal tests, followed by Web's portable
+`text` integration test. This separate runner starts after Maka's test job,
+even if that job fails; root workspace tests alone do not select these suites.
+The portable Web test does not validate browser rendering, and this job does
+not validate native platform runtimes or the `bundle`-gated testing suite.
+
 Develop and verify changes in this tree together with their Maka callers. Send
 reusable changes to `longbridge/nsh`. When synchronizing the fork or upstream,
 review local differences against the recorded revision, use upstream APIs and
