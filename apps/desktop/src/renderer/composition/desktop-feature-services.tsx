@@ -94,6 +94,8 @@ if (import.meta.env.DEV) {
 }
 
 import { createPersonalAssistantServices, PersonalAssistantServicesProvider } from '../features/personal-assistant/index.js';
+import { WorktreeServicesProvider } from '../features/worktrees/index.js';
+import { createDesktopWorktreeServices } from '../platform/desktop/create-worktree-services.js';
 import { createDesktopPersonalAssistantPort } from '../platform/desktop/personal-assistant.js';
 
 export function createDesktopFeatureServices() {
@@ -134,6 +136,7 @@ export function createDesktopFeatureServices() {
     storageUsage: createDesktopStorageUsageServices(),
     taskEntry: createDesktopTaskEntryServices(),
     workbar: createDesktopWorkbarServices(),
+    worktrees: createDesktopWorktreeServices(),
   };
 }
 
@@ -142,6 +145,7 @@ export function DesktopFeatureServicesProvider(props: {
   readonly children?: ReactNode;
 }) {
   return (
+    <WorktreeServicesProvider services={props.services.worktrees}>
     <SessionCatalogContext.Provider value={props.services.sessionCatalog}>
     <PersonalAssistantServicesProvider value={props.services.personalAssistant}>
     <AssistantSessionVisibilityProvider value={props.services.assistantSessionVisibility}>
@@ -201,5 +205,6 @@ export function DesktopFeatureServicesProvider(props: {
     </AssistantSessionVisibilityProvider>
     </PersonalAssistantServicesProvider>
     </SessionCatalogContext.Provider>
+    </WorktreeServicesProvider>
   );
 }

@@ -1290,6 +1290,10 @@ export class ExecutionFixture {
     safeBoundaryResumeEnabled = true,
   ): ChildProcess {
     const env = { ...process.env };
+    // Fixture Hosts must not bootstrap real model connections from the caller.
+    delete env.OPENAI_API_KEY;
+    delete env.ANTHROPIC_API_KEY;
+    delete env.DEEPSEEK_API_KEY;
     if (safeBoundaryResumeEnabled) env.MAKA_RUNTIME_SAFE_BOUNDARY_RESUME = '1';
     else env.MAKA_RUNTIME_SAFE_BOUNDARY_RESUME = '0';
     const child = fork(

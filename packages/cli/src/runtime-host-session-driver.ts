@@ -1461,7 +1461,16 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     const session = requireSession(
       await this.#request('session.create', {
         sessionId,
-        workspace,
+        workspace:
+          workspace.kind === 'project'
+            ? {
+                kind: 'project',
+                projectId: workspace.projectId,
+                ...(workspace.worktreePath
+                  ? { worktree: { kind: 'existing', path: workspace.worktreePath } }
+                  : {}),
+              }
+            : workspace,
         name,
         modelTarget: {
           kind: 'explicit',

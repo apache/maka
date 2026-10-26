@@ -18,6 +18,7 @@
  */
 
 import { ipcMain as electronIpcMain } from 'electron';
+import type { WorktreeSnapshot } from '@maka/core/worktree';
 import { createWorkspaceFileSearcher } from './workspace-file-search.js';
 import {
   handleReconnectableRead,
@@ -27,6 +28,7 @@ import {
 export interface WorkspaceSearchIpcDeps {
   ipcMain?: ReconnectableReadIpcMain;
   getProjectRoot(sessionId: unknown, projectId: unknown): Promise<string>;
+  queryWorktrees(projectId: string): Promise<WorktreeSnapshot>;
   allowLocalWorkspace?: boolean;
 }
 
@@ -34,7 +36,7 @@ export function registerWorkspaceSearchIpc(deps: WorkspaceSearchIpcDeps): void {
   const ipcMain = deps.ipcMain ?? electronIpcMain;
   const searcher = createWorkspaceFileSearcher();
   // Composer `@` mention popup: active sessions resolve from their persisted
-  // cwd; the new-task surface resolves from the app project root. Git repos
+  // cwd; the new-task surface resolves from the project or selected worktree. Git repos
   // honor .gitignore + untracked via `git ls-files`; other trees fall back to
   // a bounded walk. See workspace-file-search.ts.
   handleReconnectableRead(ipcMain, 'workspace:searchFiles', async (_event, input: unknown) => {
@@ -44,8 +46,28 @@ export function registerWorkspaceSearchIpc(deps: WorkspaceSearchIpcDeps): void {
       limit?: unknown;
       sessionId?: unknown;
       projectId?: unknown;
+      worktreePath?: unknown;
     };
-    const projectPath = await deps.getProjectRoot(request.sessionId, request.projectId);
+    let projectPath: string;
+    if (request.sessionId === undefined && request.worktreePath !== undefined) {
+      if (typeof request.projectId !== 'string' || typeof request.worktreePath !== 'string')
+        throw new Error('Invalid worktree search target');
+      // Only search paths that the owning Host still recognizes as available.
+      const snapshot = await deps.queryWorktrees(request.projectId);
+      const worktree = snapshot.projects
+        .find((project) => project.id === request.projectId)?.worktrees
+        .find((item) => item.path === request.worktreePath && item.available && !item.locked);
+      if (!worktree) throw new Error('Worktree is unavailable');
+      projectPath = worktree.path;
+    } else if (request.sessionId === undefined && typeof request.projectId === 'string') {
+      // A project's preferredPath is its last-used checkout. New tasks without
+      // an existing selection run in the Host's main directory instead.
+      const snapshot = await deps.queryWorktrees(request.projectId);
+      projectPath = snapshot.projects[0]?.mainPath
+        ?? await deps.getProjectRoot(undefined, request.projectId);
+    } else {
+      projectPath = await deps.getProjectRoot(request.sessionId, request.projectId);
+    }
     return searcher.search(projectPath, { query: request.query, limit: request.limit });
   });
 }

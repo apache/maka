@@ -50,6 +50,7 @@ export function createFakeTaskEntryServices(
   overrides: { [Service in keyof TaskEntryServices]?: Partial<TaskEntryServices[Service]> } = {},
 ): TaskEntryServices {
   return {
+    ...(overrides.worktrees?.query ? { worktrees: { ...overrides.worktrees, query: overrides.worktrees.query } } : {}),
     catalog: {
       getCatalog: async () => ({ defaultProfileId: 'local', hosts: [] }),
       subscribeChanges: noopSubscription,

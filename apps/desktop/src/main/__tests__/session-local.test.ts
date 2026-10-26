@@ -33,6 +33,8 @@ import {
   RuntimeHostRequestInterruptedError,
 } from '@maka/runtime-host/client';
 import type { SessionCatalogProjection, SessionCreateInput, TurnMessageSubmitInput, TurnMessageSubmitResult } from '@maka/runtime-host/protocol';
+import { createDesktopWorktreeServices } from '../../renderer/platform/desktop/create-worktree-services.js';
+import { toDesktopHostSessionSummary } from '../runtime-host-session-catalog-ipc-main.js';
 import { DesktopSessionLocalStore, type LocalMessageIntent } from '../session-local-store.js';
 import {
   createSessionLocalChangedEmitter,
@@ -49,6 +51,18 @@ import { projectLocalMessageDraft } from '../../preload/session-local-draft.js';
 import type { DesktopLocalMessageDraft } from '../../shared/session-local-contract.js';
 import { createRuntimeHostSessionCatalogRefresher, resolveRuntimeHostSessionCatalog } from '../../preload/runtime-host-session-catalog.js';
 import type { DesktopSessionSummary } from '../../preload/bridge-contract.js';
+import type { WorktreeInitialization, WorktreeSnapshot } from '@maka/core/worktree';
+
+function worktreeSnapshot(session: SessionCatalogProjection, initialization: WorktreeInitialization): WorktreeSnapshot {
+  const projectId = session.workspace.target.kind === 'project' ? session.workspace.target.projectId : 'project';
+  return {
+    config: { rootDirectory: '/worktrees', projects: {} },
+    projects: [{ id: projectId, name: 'Project', mainPath: '/repo', config: {}, worktrees: [{
+      projectId, name: 'task', path: session.workspace.hostCwd, head: 'a'.repeat(40),
+      isMain: false, managed: true, available: true, locked: false, sessionCount: 1, initialization,
+    }] }],
+  };
+}
 
 const accepted: TurnMessageSubmitResult = {
   disposition: 'turn_started',
@@ -93,6 +107,7 @@ async function database(t: TestContext, now?: () => number) {
 function client(hostEpoch: string): NonNullable<DesktopSessionLocalTarget['client']> {
   return {
     hostEpoch,
+    queryWorktreePreparation: async () => ({ phase: 'inactive' }),
     async getSession() {
       return null;
     },
@@ -2298,6 +2313,21 @@ test('paused storage is inert to legacy readers while new readers retain pause s
   assert.equal(db.reopen().get('authority', 'message-1')?.state, 'saved');
 });
 
+test('legacy worktree pauses reopen as typed blockers without exposing the encoded error', async (t) => {
+  const db = await database(t);
+  const record = db.store.enqueue('authority', intent());
+  db.store.update({ ...record, state: 'paused', error: 'WORKTREE_INITIALIZATION_FAILED: /worktrees/task' });
+  db.reopen();
+  const paused = db.store.get('authority', record.messageId)!;
+  assert.equal(paused.state, 'paused');
+  assert.equal(paused.pauseReason, 'worktree_initialization');
+  assert.equal(paused.error, undefined);
+  assert.deepEqual(db.store.list('authority'), [paused]);
+  assert.equal(db.store.stagedAttachments('authority', record.messageId).length, 1);
+  db.store.update({ ...paused, state: 'saved', pauseReason: undefined });
+  assert.equal(db.reopen().get('authority', record.messageId)?.pauseReason, undefined);
+});
+
 test('paused originals survive approval expiry and restart without dispatching until explicitly resumed', async (t) => {
   const db = await database(t);
   let now = Date.now();
@@ -2326,8 +2356,8 @@ test('paused originals survive approval expiry and restart without dispatching u
   assert.deepEqual(submitted, []);
   assert.equal(db.store.get(target.partition, 'message-1')?.state, 'paused');
   assert.equal(service.cancelUnsentToDraft(target, 'session-1', 'message-1', 7).stagedAttachments.length, 1);
-  assert.throws(() => service.resumeMessage(target, 'other-session', 'message-1'), /paused/);
-  service.resumeMessage(target, 'session-1', 'message-1');
+  await assert.rejects(service.resumeMessage(target, 'other-session', 'message-1'), /paused/);
+  await service.resumeMessage(target, 'session-1', 'message-1');
   service.wake();
   await nextTurn(); await nextTurn();
   assert.deepEqual(submitted, ['message-1']);
@@ -2451,4 +2481,406 @@ test('editing a submitted failure retains references and rejects unsettled or di
     store.update({ ...store.get(target.partition, source.messageId)!, state });
     assert.throws(() => service.readFailedMessage(target, 'session-1', source.messageId, 7), /definitively failed/);
   }
+});
+
+for (const recovery of ['retry', 'skip'] as const) {
+  test(`worktree ${recovery} resumes every original first message sharing the checkout`, async (t) => {
+    const db = await database(t);
+    const sessionId = 'worktree-first-message';
+    const workspace = { kind: 'project' as const, projectId: 'worktree-project', worktreePath: '/worktrees/task' };
+    const header: SessionCatalogProjection = { ...swarmCatalogSession('idle'), id: sessionId, workspace: { target: workspace, hostCwd: '/worktrees/task' } };
+    const created = new Map<string, SessionCatalogProjection>();
+    const sessionIds = [sessionId, 'worktree-second-message'];
+    let initialization: 'failed' | 'ready' | 'skipped' = 'failed';
+    let ingested = 0;
+    const dispatched: string[] = [];
+    const base = client('worktree-epoch');
+    const target: DesktopSessionLocalTarget = {
+      partition: 'authority', profileId: 'profile', scope: { hostId: 'root-host', targetEpoch: 'target' },
+      client: {
+        ...base,
+        listSessions: async () => [...created.values()],
+        queryWorktrees: async () => worktreeSnapshot(header, initialization),
+        createSession: async (input) => {
+          const session = { ...header, id: input.sessionId };
+          created.set(session.id, session);
+          return { ...session, workspaceBlocker: { kind: 'worktree_initialization' as const, path: workspace.worktreePath } };
+        },
+        ingestAttachment: async (input) => { ingested++; return base.ingestAttachment(input); },
+      },
+      submit: async (input) => { assert.equal(initialization, recovery === 'skip' ? 'skipped' : 'ready'); dispatched.push(input.messageId); return accepted; },
+    };
+    const records = sessionIds.map((id, index) => {
+      db.store.saveSession('authority', { id, name: 'Task', status: 'active', localState: 'pending' } as DesktopSessionSummaryInput, {
+        sessionId: id, workspace: { kind: 'project', projectId: workspace.projectId, worktree: index === 0 ? { kind: 'new' } : { kind: 'existing', path: workspace.worktreePath } }, taskDescription: 'Original task description', modelTarget: { kind: 'default' },
+      });
+      return db.store.enqueue('authority', intent(`original-${id}`, id));
+    });
+    const service = new DesktopSessionLocalService(db.store, { targets: () => [target], changed() {}, onError: (error) => assert.fail(String(error)) });
+    db.beforeClose.push(() => service.close());
+    service.wake();
+    await waitFor(() => records.every((record) => db.store.get('authority', record.messageId)?.state === 'paused'));
+    const manuallyPaused = db.store.enqueue('authority', intent('manually-paused', sessionId));
+    db.store.update({ ...manuallyPaused, state: 'paused' });
+    const editing = db.store.enqueue('authority', intent('editing-initial-message', sessionId));
+    db.store.update({ ...editing, state: 'paused', pauseReason: 'worktree_initialization' });
+    const editingDraft = service.cancelUnsentToDraft(target, sessionId, editing.messageId, 7);
+    for (const record of records) {
+      const paused = db.store.get('authority', record.messageId)!;
+      assert.equal(paused.pauseReason, 'worktree_initialization');
+      assert.equal(paused.error, undefined);
+      assert.equal(paused.intent.originHostEpoch, undefined);
+      assert.deepEqual(dispatched, []);
+      assert.equal(ingested, 0, 'attachments remain local until initialization succeeds or is skipped');
+      assert.equal(Buffer.from(db.store.stagedAttachments('authority', record.messageId)[0]!.content).toString(), 'original bytes');
+    }
+    const worktrees = createDesktopWorktreeServices({
+      newTasks: { getCatalog: async () => assert.fail('Unexpected catalog read'), subscribeChanges: () => () => {} },
+      worktrees: {
+        query: async () => assert.fail('Unexpected worktree query'),
+        mutate: async (input) => {
+          assert.equal(input.kind, 'initialize');
+          initialization = input.skip ? 'skipped' : 'ready';
+          return { kind: 'worktree', worktree: { projectId: workspace.projectId, name: 'task', path: workspace.worktreePath, head: 'a'.repeat(40), isMain: false, managed: true, available: true, locked: false, sessionCount: 2, initialization } };
+        },
+      },
+      sessions: { list: async () => [...created.values()].map((session) => ({
+        ...toDesktopHostSessionSummary(session), runtimeHostId: 'root-host',
+        profileId: 'profile', profileName: 'Local', profileKind: 'local',
+      })) },
+      shellRuns: { start: async () => assert.fail('Unexpected terminal') },
+      sessionLocal: {
+        listMessages: async (id) => service.listMessages(target, id),
+        resumeMessage: async (id, messageId) => service.resumeMessage(target, id, messageId),
+      },
+    });
+    const host = { profileId: 'profile', hostId: 'root-host' };
+    await worktrees.mutate(host, { kind: 'initialize', projectId: workspace.projectId, path: workspace.worktreePath, skip: recovery === 'skip' });
+    assert.equal(await worktrees.resumeTask(host, workspace.worktreePath), sessionId);
+    service.wake();
+    for (const record of records) {
+      assert.notEqual(db.store.get('authority', record.messageId)?.state, 'paused', 'every retained message must be resumed');
+    }
+    await waitFor(() => records.every((record) => db.store.get('authority', record.messageId)?.state === 'accepted'));
+    assert.deepEqual(dispatched.sort(), records.map((record) => record.messageId).sort());
+    assert.equal(ingested, 2);
+    assert.equal(db.store.get('authority', manuallyPaused.messageId)?.state, 'paused', 'initialization recovery must not resume a user-paused message');
+    assert.equal(db.store.get('authority', editing.messageId)?.state, 'paused', 'initialization recovery must not send an original withdrawn for editing');
+    assert.doesNotThrow(() => db.store.enqueue('authority', {
+      ...intent('edited-message', sessionId),
+      replacesLocalMessageId: editingDraft.replacesLocalMessageId,
+    }), 'the edited draft can still replace its original after initialization recovery');
+  });
+}
+
+test('a worktree first message survives a lost create acknowledgement, catalog refresh, and restart until initialization is resolved', async (t) => {
+  const db = await database(t);
+  const sessionId = 'worktree-lost-create-ack';
+  const workspace = { kind: 'project' as const, projectId: 'project', worktreePath: '/worktrees/task' };
+  const header: SessionCatalogProjection = {
+    ...swarmCatalogSession('idle'), id: sessionId,
+    workspace: { target: workspace, hostCwd: workspace.worktreePath },
+  };
+  const creating = deferred<SessionCatalogProjection>();
+  let creationStarted = false;
+  let initialization: 'failed' | 'skipped' = 'failed';
+  let ingested = 0;
+  const dispatched: TurnMessageSubmitInput[] = [];
+  const base = client('epoch');
+  const host = {
+    ...base,
+    listSessions: async () => [header],
+    queryWorktrees: async () => worktreeSnapshot(header, initialization),
+    ingestAttachment: async (input: Parameters<typeof base.ingestAttachment>[0]) => {
+      ingested++;
+      return base.ingestAttachment(input);
+    },
+  };
+  let target: DesktopSessionLocalTarget = {
+    partition: 'authority', profileId: 'profile', scope: { hostId: 'host', targetEpoch: 'target' },
+    client: {
+      ...host,
+      createSession: async () => { creationStarted = true; return creating.promise; },
+    },
+    submit: async (input) => {
+      if (initialization === 'failed')
+        throw new RuntimeHostOperationError('turn.message.submit', 'operation_unavailable', 'Worktree initialization has not completed');
+      dispatched.push(input);
+      return accepted;
+    },
+  };
+  db.store.saveSession('authority', { id: sessionId, name: 'Task', localState: 'pending' } as DesktopSessionSummaryInput, {
+    sessionId, workspace: { kind: 'project', projectId: 'project', worktree: { kind: 'new' } }, modelTarget: { kind: 'default' },
+  });
+  const original = db.store.enqueue('authority', intent('original-message', sessionId));
+  const deps = { targets: () => [target], changed() {}, onError: (error: unknown) => assert.fail(String(error)) };
+  let service = new DesktopSessionLocalService(db.store, deps);
+  db.beforeClose.push(() => service.close());
+  service.wake();
+  await waitFor(() => creationStarted);
+  // The Host's committed Session is discoverable even when its create reply is lost.
+  service.catalog();
+  await waitFor(() => service.catalog()[0]?.authoritative === true);
+  creating.reject(new RuntimeHostRequestInterruptedError('session.create', 'command', 'dispatched', 'connection_lost'));
+  await waitFor(() => service.listMessages(target, sessionId)[0]?.error?.startsWith('Saved locally.') === true);
+  service.close();
+  db.reopen();
+  target = {
+    ...target,
+    client: {
+      ...host,
+      createSession: async () => ({ ...header, workspaceBlocker: { kind: 'worktree_initialization', path: workspace.worktreePath } }),
+    },
+  };
+  service = new DesktopSessionLocalService(db.store, deps);
+  service.catalog();
+  await waitFor(() => service.catalog()[0]?.authoritative === true);
+  service.wake();
+  await waitFor(() => ['paused', 'failed'].includes(service.listMessages(target, sessionId)[0]?.state ?? ''));
+  const [retained] = service.listMessages(target, sessionId);
+  assert.equal(retained?.state, 'paused');
+  assert.equal(retained.pauseReason, 'worktree_initialization');
+  assert.equal(ingested, 0, 'the retained first message keeps its attachments local until initialization is resolved');
+  assert.equal(dispatched.length, 0);
+
+  await assert.rejects(async () => service.resumeMessage(target, sessionId, original.messageId), /initialization/);
+  assert.equal(db.store.get('authority', original.messageId)?.state, 'paused');
+  assert.equal(db.store.get('authority', original.messageId)?.intent.originHostEpoch, undefined);
+  assert.equal(ingested, 0, 'an unsuccessful readiness retry must retain local attachment bytes');
+  // Initialization can be resolved by another client while this Client is closed.
+  service.close();
+  initialization = 'skipped';
+  db.reopen();
+  service = new DesktopSessionLocalService(db.store, deps);
+  await service.resumeMessage(target, sessionId, original.messageId);
+  service.wake();
+  await waitFor(() => service.listMessages(target, sessionId)[0]?.state === 'accepted');
+  assert.equal(dispatched.length, 1);
+  assert.equal(dispatched[0]?.messageId, original.messageId);
+  assert.equal(dispatched[0]?.content.text, 'hello');
+  assert.equal(dispatched[0]?.content.attachments?.[0]?.name, 'note.txt');
+});
+
+for (const interruption of ['cancel', 'replace-host', 'withdraw-for-editing'] as const) {
+  test(`worktree readiness replies cannot resume a message after ${interruption}`, async (t) => {
+    const db = await database(t);
+    const header: SessionCatalogProjection = {
+      ...swarmCatalogSession('idle'),
+      workspace: { target: { kind: 'project', projectId: 'project' }, hostCwd: '/worktrees/task' },
+    };
+    const readiness = deferred<WorktreeSnapshot>();
+    let target: DesktopSessionLocalTarget = {
+      partition: 'authority', profileId: 'profile', scope: { hostId: 'host', targetEpoch: 'target' },
+      client: { ...client('epoch'), queryWorktrees: () => readiness.promise },
+      submit: async () => assert.fail('A stale readiness response must not dispatch'),
+    };
+    db.store.saveSession(target.partition, toDesktopHostSessionSummary(header));
+    const original = db.store.enqueue(target.partition, intent('original', header.id));
+    db.store.update({ ...original, state: 'paused', pauseReason: 'worktree_initialization' });
+    const service = new DesktopSessionLocalService(db.store, {
+      targets: () => [target], changed() {}, onError: assert.fail,
+    });
+    db.beforeClose.push(() => service.close());
+    const resuming = service.resumeMessage(target, header.id, original.messageId);
+    const rejected = assert.rejects(resuming, /paused|no longer current/);
+    if (interruption === 'cancel') db.store.cancel(target.partition, original.messageId);
+    else if (interruption === 'withdraw-for-editing') service.cancelUnsentToDraft(target, header.id, original.messageId, 7);
+    else target = { ...target, client: client('replacement-epoch') };
+    readiness.resolve(worktreeSnapshot(header, 'ready'));
+    await rejected;
+    assert.equal(db.store.get(target.partition, original.messageId)?.state,
+      interruption === 'cancel' ? undefined : 'paused');
+  });
+}
+
+test('slow worktree preparations leave delivery available and preserve each session queue', async (t) => {
+  const db = await database(t);
+  const creating = new Map(['preparing-a', 'preparing-b'].map((id) => [id, deferred<SessionCatalogProjection>()]));
+  const started: string[] = [];
+  const sent: string[] = [];
+  const target: DesktopSessionLocalTarget = {
+    partition: 'authority', profileId: 'profile', scope: { hostId: 'host', targetEpoch: 'target' },
+    client: {
+      ...client('epoch'),
+      createSession: async ({ sessionId }) => {
+        started.push(sessionId);
+        return creating.get(sessionId)!.promise;
+      },
+    },
+    submit: async ({ messageId }) => { sent.push(messageId); return accepted; },
+  };
+  for (const sessionId of creating.keys()) {
+    db.store.saveSession('authority', { id: sessionId, revision: 0, localState: 'pending' } as DesktopSessionSummaryInput, {
+      sessionId, workspace: { kind: 'project', projectId: 'project', worktree: { kind: 'new' } }, modelTarget: { kind: 'default' },
+    });
+  }
+  for (const [sessionId, messageId] of [
+    ['preparing-a', 'a-first'], ['preparing-a', 'a-second'],
+    ['preparing-b', 'b-first'], ['existing', 'existing-first'],
+  ]) {
+    db.store.enqueue('authority', { staged: [], command: {
+      sessionId: sessionId!, messageId: messageId!, placement: 'current_turn', content: { text: 'hello' },
+    } });
+  }
+  const service = new DesktopSessionLocalService(db.store, { targets: () => [target], changed() {}, onError: assert.fail });
+  db.beforeClose.push(() => service.close());
+  try {
+    service.wake();
+    await waitFor(() => sent.includes('existing-first'));
+    assert.deepEqual(sent, ['existing-first']);
+    assert.deepEqual(started, ['preparing-a', 'preparing-b']);
+    for (let index = 0; index < 3; index++) { service.wake(); await nextTurn(); }
+    assert.equal(started.length, 2, 'repeated wakes must not duplicate preparation');
+    creating.get('preparing-a')!.resolve({ ...swarmCatalogSession('idle'), id: 'preparing-a' });
+    await waitFor(() => sent.includes('a-second'));
+    assert.deepEqual(sent, ['existing-first', 'a-first', 'a-second']);
+    creating.get('preparing-b')!.resolve({ ...swarmCatalogSession('idle'), id: 'preparing-b' });
+    await waitFor(() => sent.includes('b-first'));
+  } finally {
+    service.close();
+    for (const [id, pending] of creating) pending.resolve({ ...swarmCatalogSession('idle'), id });
+    await nextTurn();
+  }
+});
+
+test('slow worktree creation immediately reports preparation, follows its own checkout, and clears on admission', async (t) => {
+  const db = await database(t);
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 10_000 });
+  const creating = deferred<SessionCatalogProjection>();
+  const sessionId = 'preparing-worktree';
+  const workspace = { kind: 'project' as const, projectId: 'project', worktreePath: '/worktrees/task' };
+  const header: SessionCatalogProjection = { ...swarmCatalogSession('idle'), id: sessionId, workspace: { target: workspace, hostCwd: '/worktrees/task' } };
+  let phase: 'preparing' | 'checkout' | 'initializing' | 'finalizing' = 'preparing';
+  let creationStarted = false;
+  let sent = false;
+  const target: DesktopSessionLocalTarget = {
+    partition: 'authority', profileId: 'profile', scope: { hostId: 'host', targetEpoch: 'target' },
+    client: {
+      ...client('epoch'),
+      createSession: async () => { creationStarted = true; return creating.promise; },
+      queryWorktreePreparation: async (operationId) => {
+        assert.equal(operationId, sessionId);
+        return phase === 'preparing' ? { phase } : { phase, path: '/worktrees/task' };
+      },
+    },
+    submit: async () => { sent = true; return accepted; },
+  };
+  db.store.saveSession('authority', { id: sessionId, localState: 'pending' } as DesktopSessionSummaryInput, {
+    sessionId, workspace: { kind: 'project', projectId: 'project', worktree: { kind: 'new' } }, modelTarget: { kind: 'default' },
+  });
+  db.store.enqueue('authority', { staged: [], command: { sessionId, messageId: 'first', placement: 'current_turn', content: { text: 'Build it' } } });
+  const service = new DesktopSessionLocalService(db.store, { targets: () => [target], changed() {}, onError: assert.fail });
+  db.beforeClose.push(() => service.close());
+  service.wake();
+  await waitFor(() => creationStarted);
+  const progress = () => service.listMessages(target, sessionId)[0]?.worktreePreparation;
+  assert.deepEqual(progress(), { phase: 'preparing', elapsedSeconds: 0 });
+  assert.equal(sent, false, 'preparation must be visible while creation is unresolved');
+  await nextTurn();
+  phase = 'checkout';
+  t.mock.timers.tick(1000);
+  await waitFor(() => progress()?.phase === 'checkout');
+  assert.equal(progress()?.path, '/worktrees/task');
+  phase = 'initializing';
+  t.mock.timers.tick(1000);
+  await waitFor(() => progress()?.phase === 'initializing');
+  assert.equal(progress()?.elapsedSeconds, 2);
+  assert.equal(sent, false);
+  phase = 'finalizing';
+  creating.resolve(header);
+  await waitFor(() => sent);
+  assert.equal(progress(), undefined, 'completed preparation must not leave a stale spinner');
+});
+
+
+test('offline creation saved with the previous worktree contract retains its checkout after restart', async (t) => {
+  const db = await database(t);
+  const legacy = {
+    sessionId: 'offline-worktree', modelTarget: { kind: 'default' as const },
+    workspace: { kind: 'project' as const, projectId: 'project' },
+    worktree: { kind: 'existing' as const, path: '/worktrees/original' },
+    taskDescription: 'Original offline task',
+  };
+  db.store.saveSession('authority', { id: legacy.sessionId, name: 'Task', status: 'active', localState: 'pending' } as DesktopSessionSummaryInput, legacy);
+  db.reopen();
+  const creation = db.store.creation('authority', legacy.sessionId)!;
+  assert.equal(Object.hasOwn(creation, 'worktree'), false);
+  assert.deepEqual(creation.workspace, {
+    kind: 'project', projectId: 'project', worktree: { kind: 'existing', path: '/worktrees/original' },
+  });
+  assert.equal(creation.taskDescription, legacy.taskDescription);
+});
+
+for (const decision of ['main', 'cancel'] as const) {
+  test(`worktree preparation ${decision} keeps delivery and local session ownership consistent`, async (t) => {
+    const db = await database(t);
+    const creating = deferred<SessionCatalogProjection>();
+    const sessionId = 'preparing-task';
+    let creationStarted = false;
+    const submitted: TurnMessageSubmitInput[] = [];
+    const header: SessionCatalogProjection = { ...swarmCatalogSession('idle'), id: sessionId,
+      workspace: { target: { kind: 'project', projectId: 'project' }, hostCwd: '/main' } };
+    const target: DesktopSessionLocalTarget = {
+      partition: 'authority', profileId: 'profile', scope: { hostId: 'host', targetEpoch: 'target' },
+      client: { ...client('epoch'),
+        createSession: async () => { creationStarted = true; return creating.promise; },
+        mutateWorktrees: async (input) => {
+          assert.deepEqual(input, { kind: 'resolve_preparation', projectId: 'project', operationId: sessionId, decision });
+          if (decision === 'cancel') {
+            assert.equal(db.store.get('authority', 'first')?.state, 'paused');
+            creating.reject(new Error('Preparation cancelled'));
+          } else creating.resolve(header);
+          return { kind: 'preparation_resolved' };
+        },
+      },
+      submit: async (input) => { submitted.push(input); return accepted; },
+    };
+    db.store.saveSession('authority', { id: sessionId, localState: 'pending' } as DesktopSessionSummaryInput, {
+      sessionId, workspace: { kind: 'project', projectId: 'project', worktree: { kind: 'new' } }, modelTarget: { kind: 'default' },
+    });
+    db.store.enqueue('authority', intent('first', sessionId));
+    const service = new DesktopSessionLocalService(db.store, { targets: () => [target], changed() {}, onError: assert.fail });
+    db.beforeClose.push(() => service.close());
+    service.wake();
+    await waitFor(() => creationStarted);
+    await service.resolveWorktreePreparation(target, sessionId, 'first', decision);
+    if (decision === 'main') {
+      await waitFor(() => submitted.length === 1);
+      assert.equal(db.store.sessions('authority')[0]?.cwd, '/main');
+      assert.equal(submitted[0]?.content.text, 'hello');
+      assert.equal(submitted[0]?.content.attachments?.[0]?.name, 'note.txt');
+    } else {
+      await nextTurn();
+      assert.deepEqual(submitted, []);
+      assert.deepEqual(db.store.sessions('authority'), []);
+      assert.deepEqual(db.store.list('authority'), []);
+    }
+    await assert.rejects(service.resolveWorktreePreparation(target, sessionId, 'first', 'cancel'), /no longer pending/);
+  });
+}
+
+
+test('a created main-directory task dispatches without depending on the worktree catalog', async (t) => {
+  const db = await database(t);
+  const sessionId = 'main-with-unavailable-catalog';
+  let catalogReads = 0;
+  let sent = false;
+  const header: SessionCatalogProjection = { ...swarmCatalogSession('idle'), id: sessionId,
+    workspace: { target: { kind: 'project', projectId: 'project' }, hostCwd: '/main' } };
+  const target: DesktopSessionLocalTarget = {
+    partition: 'authority', profileId: 'profile', scope: { hostId: 'host', targetEpoch: 'target' },
+    client: Object.assign(client('epoch'), { createSession: async () => header,
+      queryWorktrees: async () => { catalogReads++; throw new Error('Catalog unavailable'); } }),
+    submit: async () => { sent = true; return accepted; },
+  };
+  db.store.saveSession('authority', { id: sessionId, localState: 'pending' } as DesktopSessionSummaryInput, {
+    sessionId, workspace: { kind: 'project', projectId: 'project', worktree: { kind: 'main' } }, modelTarget: { kind: 'default' },
+  });
+  db.store.enqueue('authority', { staged: [], command: { sessionId, messageId: 'first', placement: 'current_turn', content: { text: 'Build it' } } });
+  const service = new DesktopSessionLocalService(db.store, { targets: () => [target], changed() {}, onError: assert.fail });
+  db.beforeClose.push(() => service.close());
+  service.wake();
+  await waitFor(() => ['accepted', 'failed'].includes(db.store.get('authority', 'first')?.state ?? ''));
+  assert.equal(sent, true, 'Successful session creation must not depend on a catalog read');
+  assert.equal(catalogReads, 0);
 });

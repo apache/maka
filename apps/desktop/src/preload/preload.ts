@@ -2044,7 +2044,11 @@ const makaBridge = {
         'skills:listInvocable',
         await runtimeHostScope(target),
         undefined,
-        { ...context, projectId: target.projectId },
+        {
+          ...context,
+          projectId: target.projectId,
+          ...(target.worktree?.kind === 'existing' ? { worktreePath: target.worktree.path } : {}),
+        },
       );
     },
     async getReadiness(
@@ -2065,7 +2069,12 @@ const makaBridge = {
       return invokeWhenReady(
         'workspace:searchFiles',
         await runtimeHostScope(target),
-        { query, projectId: target.projectId, ...options },
+        {
+          query,
+          projectId: target.projectId,
+          ...(target.worktree?.kind === 'existing' ? { worktreePath: target.worktree.path } : {}),
+          ...options,
+        },
       );
     },
     async create(
@@ -2076,6 +2085,7 @@ const makaBridge = {
       const session = await invokeWhenReady('session-local:create', scope, {
         ...input,
         projectId: target.projectId,
+        ...(target.worktree ? { worktree: target.worktree } : {}),
       }) as DesktopSessionSummaryInput;
       return projectCreatedSessionSummary(scope, session);
     },
@@ -2257,6 +2267,10 @@ const makaBridge = {
 
   },
   sessionLocal: {
+    async resolveWorktreePreparation(sessionId, messageId, decision) {
+      const session = await runtimeHostSessionRef(sessionId);
+      await invokeWhenReady('session-local:resolve-worktree', session.scope, session.sessionId, messageId, decision);
+    },
     async readFailedMessage(sessionId, messageId) {
       const session = await runtimeHostSessionRef(sessionId);
       const draft = await ipcRenderer.invoke('session-local:edit', session.scope, session.sessionId, messageId) as import('../shared/session-local-contract.js').DesktopLocalMessageDraft;
@@ -3049,6 +3063,11 @@ const makaBridge = {
       const scope = await localRuntimeHostRef();
       return (await invokeWhenReady('session-bundle:import', scope)) as SessionBundleImportIpcResult;
     },
+  },
+  worktrees: {
+    queryForSession(sessionId: string): Promise<{ path: string; canCreate: boolean }> { return invokeSessionRuntimeHost('worktree:session', sessionId); },
+    query(projectId?: string, host?: DesktopRuntimeHostRef): Promise<import('@maka/core/worktree').WorktreeSnapshot> { return invokeSelectedRuntimeHost(host, 'worktree:query', projectId); },
+    mutate(input: import('@maka/core/worktree').WorktreeMutation, host?: DesktopRuntimeHostRef): Promise<import('@maka/core/worktree').WorktreeMutationResult> { return invokeSelectedRuntimeHost(host, 'worktree:mutate', input); },
   },
   projects: {
     async getDefaultContext(host?: DesktopRuntimeHostRef): Promise<{

@@ -18,7 +18,7 @@
  */
 
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
+import { afterEach, beforeEach, describe, test } from "node:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -32,6 +32,22 @@ import {
 } from "../settings-ipc-helpers.js";
 
 describe("settings IPC helpers", () => {
+  const tavilyEnvKeys = ["TAVILY_API_KEY", "MAKA_TAVILY_API_KEY"] as const;
+  let previousTavilyApiKeys: Array<string | undefined>;
+
+  beforeEach(() => {
+    previousTavilyApiKeys = tavilyEnvKeys.map((key) => process.env[key]);
+    for (const key of tavilyEnvKeys) delete process.env[key];
+  });
+
+  afterEach(() => {
+    for (const [index, key] of tavilyEnvKeys.entries()) {
+      const previous = previousTavilyApiKeys[index];
+      if (previous === undefined) delete process.env[key];
+      else process.env[key] = previous;
+    }
+  });
+
   test("masks sensitive bot fields before returning settings to renderer", () => {
     const settings = createDefaultSettings();
     settings.botChat.channels.telegram.token = "telegram-secret";
@@ -55,18 +71,12 @@ describe("settings IPC helpers", () => {
   });
 
   test("marks Tavily environment credentials as renderer-safe source without returning the key", () => {
-    const previous = process.env.TAVILY_API_KEY;
     process.env.TAVILY_API_KEY = "tvly-env-secret";
-    try {
-      const settings = createDefaultSettings();
-      const masked = maskAppSettings(settings);
+    const settings = createDefaultSettings();
+    const masked = maskAppSettings(settings);
 
-      assert.equal(masked.webSearch.providers.tavily.apiKey, "");
-      assert.equal(masked.webSearch.providers.tavily.credentialSource, "env");
-    } finally {
-      if (previous === undefined) delete process.env.TAVILY_API_KEY;
-      else process.env.TAVILY_API_KEY = previous;
-    }
+    assert.equal(masked.webSearch.providers.tavily.apiKey, "");
+    assert.equal(masked.webSearch.providers.tavily.credentialSource, "env");
   });
 
   test("masks bot credentials in save responses and preserves them across masked saves and reloads", async () => {

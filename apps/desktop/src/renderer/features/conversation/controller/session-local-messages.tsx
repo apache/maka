@@ -17,11 +17,12 @@
  * under the License.
  */
 
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useContext, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { MessageQueueEntryProjection } from '@maka/core/events';
-import { useDraftMutationGuard, useUiLocale, type TransientUserMessageProjection } from '@maka/ui';
+import { getWorktreeCopy, useDraftMutationGuard, useUiLocale, type TransientUserMessageProjection } from '@maka/ui';
 import type { DesktopLocalMessage, DesktopLocalMessageDraft } from '../../../../shared/session-local-contract.js';
 import { ICON_SIZE, Pencil, Search, Trash2 } from '@maka/ui/icons';
+import { SettingsNavigationContext } from '../../../application/contracts/settings-presentation/settings-navigation.js';
 import { getSessionLocalCopy } from '../../../locales/session-local-copy.js';
 import type { RestoredDraftContent } from '../../../application/contracts/transient-message-projection.js';
 import { useConversationServices } from '../services.js';
@@ -30,6 +31,8 @@ import { localMessagePresentation } from './local-message-presentation.js';
 
 export function SessionLocalMessages(props: {
   readonly sessionId?: string;
+  readonly profileId?: string;
+  readonly onWorktreeCancelled?: (sessionId: string) => void;
   readonly queue?: readonly MessageQueueEntryProjection[];
   readonly session?: { readonly localState?: 'pending' | 'cached'; readonly runningTurnIds?: readonly string[] };
   readonly publish: (sessionId: string, message: TransientUserMessageProjection) => void;
@@ -44,6 +47,7 @@ export function SessionLocalMessages(props: {
   } | undefined;
 }): null {
   const services = useConversationServices();
+  const settingsNavigation = useContext(SettingsNavigationContext);
   const locale = useUiLocale();
   const hasPendingSessionReferences = useComposerMentionsContext()?.hasPendingSessionReferences;
   const latest = useRef({ ...props, hasPendingSessionReferences });
@@ -52,7 +56,7 @@ export function SessionLocalMessages(props: {
   const [busy, setBusy] = useState<string>();
   const [feedback, setFeedback] = useState<Record<string, string>>({});
   const [snapshot, setSnapshot] = useState<{ sessionId: string; messages: readonly DesktopLocalMessage[] }>();
-  const { sessionId, publish, update, retire, queue } = props;
+  const { sessionId, profileId, publish, update, retire, queue } = props;
   // Workspace transients survive selection changes, so their ownership must too.
   const publishedBySession = useRef(new Map<string, {
     states: Map<string, 'seen' | 'retired'>;
@@ -139,6 +143,18 @@ export function SessionLocalMessages(props: {
         retire(sessionId, message.messageId);
       };
       const actions: NonNullable<TransientUserMessageProjection['deliveryActions']>[number][] = [];
+      const preparingWorktree = !!message.worktreePreparation && message.state === 'saved' && message.canCancel;
+      if (preparingWorktree) {
+        const worktreeCopy = getWorktreeCopy(locale);
+        actions.push({ label: worktreeCopy.withoutWorktree, disabled: !!busy, onClick: run(async () => {
+          await services.resolveWorktreePreparation(sessionId, message.messageId, 'main');
+        }) }, { label: worktreeCopy.cancel, disabled: !!busy, onClick: run(async () => {
+          await services.resolveWorktreePreparation(sessionId, message.messageId, 'cancel');
+          states.set(message.messageId, 'retired');
+          retire(sessionId, message.messageId);
+          latest.current.onWorktreeCancelled?.(sessionId);
+        }) });
+      }
       if (message.state === 'failed') actions.push({ label: copy.edit, icon: <Pencil size={ICON_SIZE.control} aria-hidden="true" />, disabled: !!busy, onClick: run(async () => {
         const owner = generation.current;
         if (!latest.current.canRestoreDraft() || latest.current.hasPendingSessionReferences?.()) {
@@ -158,7 +174,7 @@ export function SessionLocalMessages(props: {
           if (!restored) await services.releaseRecoveryAttachments(draft.stagedAttachments.map((item) => item.approvalId));
         }
       }) });
-      if ((message.state === 'saved' || message.state === 'paused') && message.canCancel && props.captureUnsentDraftRestore) actions.push({
+      if (!preparingWorktree && (message.state === 'saved' || message.state === 'paused') && message.canCancel && props.captureUnsentDraftRestore) actions.push({
         label: copy.editUnsent, icon: <Pencil size={ICON_SIZE.control} aria-hidden="true" />, disabled: !!busy,
         onClick: run(async () => {
           if (latest.current.sessionId !== sessionId) return;
@@ -194,6 +210,11 @@ export function SessionLocalMessages(props: {
           }
         }),
       });
+      const initializationPaused = message.state === 'paused' && message.pauseReason === 'worktree_initialization';
+      if (initializationPaused && settingsNavigation) actions.push({
+        label: getWorktreeCopy(locale).settings,
+        onClick: () => settingsNavigation.openSettingsSection('worktrees', profileId),
+      });
       if (message.state === 'paused') actions.push({
         label: copy.resume, disabled: !!busy, onClick: run(async () => {
           // Clear the edited draft first: resuming the original must not leave
@@ -204,7 +225,7 @@ export function SessionLocalMessages(props: {
           await services.resumeMessage(sessionId, message.messageId);
         }),
       });
-      if (message.canCancel && message.state !== 'unknown') actions.push({
+      if (!preparingWorktree && message.canCancel && message.state !== 'unknown') actions.push({
         label: message.state === 'failed' ? copy.remove : copy.removeUnsent, disabled: !!busy,
         icon: <Trash2 size={ICON_SIZE.control} aria-hidden="true" />,
         onClick: run(remove),
@@ -227,6 +248,8 @@ export function SessionLocalMessages(props: {
         directoryReferences: message.directoryReferences, quotes: message.quotes,
         inlineReferences: message.inlineReferences, hostTurnId: message.turnId,
         deliveryStatus: presentation.status,
+        deliveryProgress: !!message.worktreePreparation && message.state === 'saved' && !message.waitingForConnection,
+        deliveryElapsed: presentation.elapsed,
         deliveryDetail: presentation.status === undefined ? undefined : feedback[key] || presentation.detail,
         deliveryTone: presentation.tone,
         deliveryDiagnostic: presentation.status === undefined ? undefined : message.error,
@@ -234,6 +257,6 @@ export function SessionLocalMessages(props: {
         deliveryActions: presentation.status === undefined ? [] : actions,
       });
     }
-  }, [sessionId, snapshot, services, publish, update, retire, locale, queue, busy, feedback, props.captureUnsentDraftRestore, recoveryLifetime]);
+  }, [sessionId, profileId, snapshot, services, publish, update, retire, locale, queue, busy, feedback, props.captureUnsentDraftRestore, recoveryLifetime, settingsNavigation]);
   return null;
 }

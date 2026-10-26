@@ -17,17 +17,14 @@
  * under the License.
  */
 
-import { createHash, randomUUID } from 'node:crypto';
-import { SIDE_CONVERSATION_SESSION_LABEL } from '@maka/core/side-conversation';
+import { randomUUID } from 'node:crypto';
 import { SESSION_NAME_MAX_CODE_POINTS, normalizeUserSessionName } from '@maka/core/session-name';
 import type { ExecutionBoundary } from '@maka/core/sandbox-boundary';
-import type { CreateSessionInput } from '@maka/core/runtime-inputs';
 import { redactSecrets } from '@maka/core/redaction';
 import {
   isWorkHubCoordinationSessionId,
   isWorkHubCoordinationSessionTarget,
   sessionRevisionFamilyId,
-  type SessionConversationCopy,
   type SessionHeader,
 } from '@maka/core/session';
 import { runtimeHostConversationCopyUnavailableReason } from './host-session-availability.js';
@@ -81,8 +78,16 @@ import {
 } from './session-revision-diagnostics.js';
 import { purgeSessionSidecars } from './session-sidecar-purge.js';
 
-type ConversationCopyKind = 'branch' | 'revision';
-type ConversationCopySemanticKind = ConversationCopyKind | 'side_conversation';
+import {
+  createConversationCopyInput,
+  conversationCopyFingerprint,
+  conversationCopySemanticKind,
+  isEmptySideConversation,
+  persistedConversationCopyKind,
+  type ConversationCopyKind,
+  type ConversationCopySemanticKind,
+  type ConversationCopyCreateInput,
+} from './session-conversation-copy-model.js';
 type ConversationCopyOperationKey = Exclude<
   SessionRevisionOperationKey,
   'session.revision.abandon'
@@ -94,12 +99,16 @@ interface ConversationCopyAdmissionRetry {
   readonly kind: 'retry_admission';
   readonly sessionIds: readonly string[];
 }
-type ConversationCopyCreateInput = CreateSessionInput & {
-  branchNameOrigin?: SessionHeader['branchNameOrigin'];
-  readonly conversationCopy: SessionConversationCopy;
-};
+interface ConversationCopyWorktreePreparation {
+  readonly kind: 'prepare_worktree';
+  readonly projectId: string;
+  readonly sourcePath: string;
+  readonly description: string;
+}
 
 export interface HostSessionRevisionCoordinatorOptions {
+  readonly worktrees?: import('./worktree-manager.js').HostWorktreeManager;
+  readonly projectMembership?: import('./project-membership-gate.js').HostProjectMembershipGate;
   readonly imageArchiveLimits?: import('@maka/core/image-delivery').ImageArchiveLimits;
   readonly stores: ExecutionStoresWriter<'interactive'>;
   readonly artifacts: InteractiveArtifactStoreWriter;
@@ -244,11 +253,41 @@ export class HostSessionRevisionCoordinator {
     // The first admitted read discovers only children retained by this copy.
     // Artifact deletion uses each child Session lane, so retry with those exact
     // lanes and keep the complete lease through validation and publication.
-    for (let pass = 0; pass < CONVERSATION_COPY_ADMISSION_PASSES; pass += 1) {
-      const result = await this.options.admission.runMany([...admittedSessionIds], (lease) =>
-        this.#copyAdmitted(semanticKind, input, requestFingerprint, lease, admittedSessionIds),
-      );
+    let preparedWorktreePath: string | undefined;
+    for (let pass = 0; pass < CONVERSATION_COPY_ADMISSION_PASSES; ) {
+      const result = await this.options.admission.runMany([...admittedSessionIds], (lease) => {
+        const copy = () =>
+          this.#copyAdmitted(
+            semanticKind,
+            input,
+            requestFingerprint,
+            lease,
+            admittedSessionIds,
+            preparedWorktreePath,
+          );
+        // Match Session creation's admission -> membership lock order. Relink
+        // cannot rewrite a legacy source or target between validation and bind.
+        return this.options.projectMembership ? this.options.projectMembership.run(copy) : copy();
+      });
       if ('ok' in result) return result;
+      if (result.kind === 'prepare_worktree') {
+        try {
+          // Release all source/graph leases during naming, Git checkout and setup.
+          // The next admitted pass revalidates revision, activity and graph ownership.
+          const checkout = await this.options.worktrees!.createWorktree({
+            kind: 'create',
+            projectId: result.projectId,
+            sourcePath: result.sourcePath,
+            operationId: input.targetSessionId,
+            description: result.description,
+          });
+          preparedWorktreePath = checkout.path;
+        } catch {
+          return copyFailure('operation_unavailable', 'Branch worktree preparation failed');
+        }
+        continue;
+      }
+      pass += 1;
       for (const sessionId of result.sessionIds) admittedSessionIds.add(sessionId);
     }
     return copyFailure('session_busy', 'Agent Graph child ownership changed during copy');
@@ -296,7 +335,10 @@ export class HostSessionRevisionCoordinator {
     requestFingerprint: `sha256:${string}`,
     lease: SessionAdmissionLease,
     admittedSessionIds: ReadonlySet<string>,
-  ): Promise<ConversationCopyOutcome | ConversationCopyAdmissionRetry> {
+    preparedWorktreePath: string | undefined,
+  ): Promise<
+    ConversationCopyOutcome | ConversationCopyAdmissionRetry | ConversationCopyWorktreePreparation
+  > {
     const existing = await this.#resolveExistingTarget(kind, input, requestFingerprint, false);
     if (existing) return existing;
 
@@ -453,9 +495,37 @@ export class HostSessionRevisionCoordinator {
       return copyFailure(linkedReferences.code, linkedReferences.message);
     }
 
+    if (kind !== 'revision' && input.worktree === 'new' && !preparedWorktreePath) {
+      if (!sourceHeader.projectId || !this.options.worktrees)
+        return copyFailure(
+          'operation_unavailable',
+          'A Git project is required to fork into a new worktree',
+        );
+      return {
+        kind: 'prepare_worktree',
+        projectId: sourceHeader.projectId,
+        sourcePath: sourceHeader.cwd,
+        description: [
+          sourceHeader.name,
+          ...slice.messages.flatMap((message) => (message.type === 'user' ? [message.text] : [])),
+        ]
+          .join('\n')
+          .slice(0, 8000),
+      };
+    }
     let createInput: ConversationCopyCreateInput;
     try {
-      createInput = await this.#createInput(kind, input, requestFingerprint, sourceHeader);
+      const cwd = preparedWorktreePath ?? sourceHeader.cwd;
+      if (sourceHeader.projectId && this.options.worktrees)
+        await this.options.worktrees.bind(input.targetSessionId, cwd);
+      createInput = createConversationCopyInput(
+        kind,
+        input,
+        requestFingerprint,
+        sourceHeader,
+        cwd,
+        sessionHeaders,
+      );
     } catch {
       return copyFailure('persistence_failed', 'Session revision family is unavailable');
     }
@@ -610,79 +680,6 @@ export class HostSessionRevisionCoordinator {
         conversationCopyCommitFailureMessage(error),
       );
     }
-  }
-
-  async #createInput(
-    kind: ConversationCopySemanticKind,
-    input: SessionConversationCopyInput,
-    requestFingerprint: `sha256:${string}`,
-    source: SessionHeader,
-  ): Promise<ConversationCopyCreateInput> {
-    const derivesFromCoordination =
-      isWorkHubCoordinationSessionTarget(source) && isEmptySideConversation(kind, input);
-    const common: ConversationCopyCreateInput = {
-      cwd: source.cwd,
-      ...(source.projectId !== undefined ? { projectId: source.projectId } : {}),
-      ...(source.llmConnectionId === undefined ? {} : { llmConnectionId: source.llmConnectionId }),
-      llmConnectionSlug: source.llmConnectionSlug,
-      model: source.model,
-      ...(source.thinkingLevel !== undefined ? { thinkingLevel: source.thinkingLevel } : {}),
-      permissionMode: derivesFromCoordination ? 'ask' : source.permissionMode,
-      toolMode: source.toolMode ?? 'direct',
-      collaborationMode: source.collaborationMode ?? 'agent',
-      orchestrationMode: source.orchestrationMode ?? 'default',
-      name: source.name,
-      ...(kind === 'revision' && source.branchNameOrigin
-        ? { branchNameOrigin: source.branchNameOrigin }
-        : {}),
-      labels:
-        kind === 'side_conversation'
-          ? derivesFromCoordination
-            ? [SIDE_CONVERSATION_SESSION_LABEL]
-            : [...new Set([...source.labels, SIDE_CONVERSATION_SESSION_LABEL])]
-          : [...source.labels],
-      conversationCopy: {
-        kind: persistedConversationCopyKind(kind),
-        sourceSessionId: input.sourceSessionId,
-        ...(input.sourceTurnId === undefined ? {} : { sourceTurnId: input.sourceTurnId }),
-        requestFingerprint,
-        state: 'preparing',
-        ...(kind === 'side_conversation' ? { intent: kind } : {}),
-      },
-      status: 'active',
-    };
-    if (kind !== 'revision') {
-      // An empty copy records provenance but fabricates no branch turn.
-      return {
-        ...common,
-        parentSessionId: input.sourceSessionId,
-        ...(input.sourceTurnId === undefined ? {} : { branchOfTurnId: input.sourceTurnId }),
-      };
-    }
-    // Revision copies always carry a turn boundary (enforced at decode).
-    if (input.sourceTurnId === undefined) {
-      throw new Error('Session revision copy requires a turn boundary');
-    }
-    const revisionOfTurnId = input.sourceTurnId;
-    const revisionRootSessionId = source.revisionRootSessionId ?? input.sourceSessionId;
-    const family = (await this.#stores.sessionStore.listHeaders()).filter(
-      (candidate) =>
-        candidate.conversationCopy?.state !== 'preparing' &&
-        (candidate.id === revisionRootSessionId ||
-          candidate.revisionRootSessionId === revisionRootSessionId),
-    );
-    const revisionIndex =
-      Math.max(1, ...family.map((candidate) => candidate.revisionIndex ?? 1)) + 1;
-    return {
-      ...common,
-      ...(source.parentSessionId ? { parentSessionId: source.parentSessionId } : {}),
-      ...(source.branchOfTurnId ? { branchOfTurnId: source.branchOfTurnId } : {}),
-      revisionRootSessionId,
-      revisionParentSessionId: input.sourceSessionId,
-      revisionOfTurnId,
-      revisionIndex,
-      revisionState: 'preparing',
-    };
   }
 
   async #resolveExistingTarget(
@@ -858,44 +855,6 @@ function isConversationRuntimeFactRewriteUnsupported(error: unknown): boolean {
     'code' in error &&
     error.code === 'branch_runtime_fact_rewrite_unsupported'
   );
-}
-
-function conversationCopyFingerprint(
-  kind: ConversationCopySemanticKind,
-  input: SessionConversationCopyInput,
-): `sha256:${string}` {
-  // The optimistic source revision guards only the initial create. Once this
-  // target exists, its stable identity must resolve the committed outcome even
-  // if a reconnecting Client observes a newer source revision.
-  const identity = [
-    kind === 'side_conversation' ? 'session.conversation-copy.v2' : 'session.conversation-copy.v1',
-    kind,
-    input.sourceSessionId,
-    input.targetSessionId,
-    // Absent for an empty copy. JSON.stringify renders the missing element as
-    // null, so an empty copy gets a distinct identity while through_turn and
-    // revision hashes stay byte-identical to a required sourceTurnId.
-    input.sourceTurnId,
-  ];
-  return `sha256:${createHash('sha256').update(JSON.stringify(identity)).digest('hex')}`;
-}
-
-function conversationCopySemanticKind(
-  kind: ConversationCopyKind,
-  input: SessionConversationCopyInput,
-): ConversationCopySemanticKind {
-  return kind === 'branch' && input.intent === 'side_conversation' ? input.intent : kind;
-}
-
-function isEmptySideConversation(
-  kind: ConversationCopySemanticKind,
-  input: SessionConversationCopyInput,
-): boolean {
-  return kind === 'side_conversation' && input.sourceTurnId === undefined;
-}
-
-function persistedConversationCopyKind(kind: ConversationCopySemanticKind): ConversationCopyKind {
-  return kind === 'revision' ? 'revision' : 'branch';
 }
 
 const LOGGED_COPY_FAILURE_DIAGNOSTICS = 5;

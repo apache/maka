@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { Fragment, memo, useEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type ReactNode } from 'react';
+import { createContext, useContext, Fragment, memo, useEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type ReactNode } from 'react';
 import { ICON_SIZE, GitBranch, Pencil, RefreshCcw, Timer } from './icons.js';
 import { useClipboardCopyFeedback } from './clipboard-feedback.js';
 import { MessageSummary } from './message-summary.js';
@@ -50,6 +50,8 @@ import {
 import { ChatReasoning } from './astryx-chat-reasoning.js';
 import { Tooltip } from '@astryxdesign/core/Tooltip';
 import { Icon } from '@astryxdesign/core/Icon';
+import { DropdownMenu, DropdownMenuItem } from '@astryxdesign/core/DropdownMenu';
+import { getWorktreeCopy } from './worktree-copy.js';
 import {
   type AttachmentRef,
   type InlineReference,
@@ -304,7 +306,11 @@ export function TransientUserMessage(props: {
       {message.deliveryStatus && (
         <div className="maka-message-delivery" data-tone={message.deliveryTone ?? 'neutral'}>
           <div role="status" aria-atomic="true">
-            <span className="maka-message-delivery-status">{message.deliveryStatus}</span>
+            <span className="maka-message-delivery-status">
+              {message.deliveryProgress && <Spinner size="sm" shade="subtle" aria-hidden="true" />}
+              {message.deliveryStatus}
+              {message.deliveryElapsed && <span aria-hidden="true">· {message.deliveryElapsed}</span>}
+            </span>
             {message.deliveryDetail && <p className="maka-message-delivery-detail">{message.deliveryDetail}</p>}
           </div>
           {!!message.deliveryActions?.length && <div className="maka-message-delivery-actions">
@@ -937,7 +943,7 @@ function splitTimelineAtUserMessages(
 }
 
 export interface TurnFooterActionMeta {
-  id: 'branch' | 'copy';
+  id: 'branch' | 'branch-worktree' | 'copy';
   label: string;
   enabled: boolean;
   tooltip?: string;
@@ -1090,6 +1096,10 @@ function TurnStatusBar(props: TurnStatusRowProps) {
   );
 }
 
+/** Whether the displayed session can fork into a new worktree. */
+const TurnBranchWorktreeContext = createContext(false);
+export const TurnBranchWorktreeProvider = TurnBranchWorktreeContext.Provider;
+
 function TurnFooter(props: {
   turnId?: string;
   actions: ReadonlyArray<TurnFooterActionMeta>;
@@ -1101,6 +1111,8 @@ function TurnFooter(props: {
   assistantText?: string;
 }) {
   const copy = getConversationCopy(useUiLocale()).messages;
+  const canCreateWorktree = useContext(TurnBranchWorktreeContext);
+  const worktreeCopy = getWorktreeCopy(useUiLocale());
   const hasSlotContent = useMakaClientSlotOccupied('conversation.turn.footer');
   const hasActions = props.actions.length > 0 || hasSlotContent;
   const isToolbar = !props.live && hasActions;
@@ -1124,6 +1136,25 @@ function TurnFooter(props: {
                 disabled={!action.enabled}
                 dataAction="copy"
               />
+            ) : action.id === 'branch' && canCreateWorktree ? (
+              <DropdownMenu
+                key={action.id}
+                hasChevron={false}
+                button={{
+                  label: copy.answerActionAriaLabel(action.label, props.context),
+                  isIconOnly: true,
+                  tooltip: action.tooltip ?? action.label,
+                  icon: STATUS_FOOTER_ICON.branch,
+                  variant: 'ghost',
+                  size: 'sm',
+                  'data-action': action.id,
+                  isDisabled: !action.enabled,
+                  isLoading: action.pending === true,
+                }}
+              >
+                <DropdownMenuItem label={worktreeCopy.same} onClick={() => props.onAction?.('branch')} />
+                <DropdownMenuItem label={worktreeCopy.newWorktree} onClick={() => props.onAction?.('branch-worktree')} />
+              </DropdownMenu>
             ) : (
               <UiIconButton
                 key={action.id}
@@ -1161,6 +1192,7 @@ function TurnFooter(props: {
 
 const STATUS_FOOTER_ICON: Record<TurnFooterActionMeta['id'], ReactNode> = {
   branch: <Icon icon={GitBranch} size="sm" />,
+  'branch-worktree': <Icon icon={GitBranch} size="sm" />,
   copy: <Icon icon="copy" size="sm" />,
 };
 

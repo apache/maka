@@ -26,6 +26,9 @@ export function projectSessionCatalogSummary(
   return {
     id: session.id,
     cwd: session.workspace.hostCwd,
+    ...(session.workspace.target.kind === 'project' && session.workspace.target.worktreePath
+      ? { workspaceFixed: true }
+      : {}),
     ...(session.workspace.target.kind === 'project'
       ? { projectId: session.workspace.target.projectId }
       : {}),

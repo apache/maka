@@ -38,7 +38,7 @@ export interface SettingsModalState {
 /** Every way the shell opens Settings, as data. */
 export type SettingsModalIntent =
   | { readonly kind: 'settings' }
-  | { readonly kind: 'section'; readonly section: SettingsSection }
+  | { readonly kind: 'section'; readonly section: SettingsSection; readonly profileId?: string }
   | { readonly kind: 'project'; readonly profileId: string }
   | { readonly kind: 'provider-catalog' }
   | { readonly kind: 'connection-detail'; readonly slug: string }
@@ -87,6 +87,7 @@ export function openSettingsModal(
       ? { section: 'projects', profileId: intent.profileId }
       : section
         ? { ...rememberedRequest, section,
+            ...(intent.kind === 'section' && intent.profileId !== undefined ? { profileId: intent.profileId } : {}),
             ...(intent.kind === 'external-agent' ? { externalAgentId: intent.executorId } : {}),
           }
         : rememberedRequest;

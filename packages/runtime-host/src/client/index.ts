@@ -147,6 +147,7 @@ export {
   readRuntimeHostInvocableSkills,
   readRuntimeHostProjectDetails,
   readRuntimeHostResources,
+  readRuntimeHostWorktrees,
   readRuntimeHostProjects,
   readRuntimeHostSessionCatalogPage,
   readRuntimeHostSessions,

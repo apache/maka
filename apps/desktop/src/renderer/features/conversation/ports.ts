@@ -44,6 +44,7 @@ export interface ConversationHostChange {
 }
 
 export interface ConversationNewTaskTarget {
+  readonly worktree?: import('@maka/core/worktree').TaskWorktreeSelection;
   readonly profileId: string;
   readonly hostId: string;
   readonly projectId: string | null;
@@ -55,7 +56,7 @@ export type ConversationFileSearchResult =
 
 export interface ConversationServices extends Pick<
   DesktopSessionLocalBridge,
-  'listMessages' | 'readFailedMessage' | 'releaseRecoveryAttachments' | 'cancelMessage' | 'resumeMessage' | 'reconcileMessage' | 'subscribeChanges'
+  'resolveWorktreePreparation' | 'listMessages' | 'readFailedMessage' | 'releaseRecoveryAttachments' | 'cancelMessage' | 'resumeMessage' | 'reconcileMessage' | 'subscribeChanges'
 > {
   readonly observation: import('./transcript-ports.js').ConversationObservationServices;
   readonly promptSuggestions?: {

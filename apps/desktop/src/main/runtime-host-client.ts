@@ -60,6 +60,7 @@ import {
   type RuntimeHostConnectionCatalogSnapshot,
   readRuntimeHostInvocableSkills,
   readRuntimeHostResources,
+  readRuntimeHostWorktrees,
   readRuntimeHostProjectDetails,
   readRuntimeHostProjects,
   readRuntimeHostSessions,
@@ -765,6 +766,14 @@ export class DesktopRuntimeHostClient {
     return (await this.request('session.shared.query', {})).session;
   }
 
+  queryWorktreePreparation(operationId: string) { return this.request('worktree.preparation.query', { operationId }); }
+
+  querySessionWorktree(sessionId: string) { return this.request('worktree.session.query', { sessionId }); }
+
+  queryWorktrees(projectId?: string) { return readRuntimeHostWorktrees(this, projectId); }
+
+  mutateWorktrees(input: import('@maka/core/worktree').WorktreeMutation) { return this.request('worktree.mutate', input); }
+
   async listProjects(
     includeLocations = true,
   ): Promise<(ProjectCatalogProject | ProjectCatalogProjectDetails)[]> {
@@ -1021,10 +1030,9 @@ export class DesktopRuntimeHostClient {
 
   async createSession(
     input: SessionCreateInput,
-  ): Promise<SessionCatalogProjection> {
-    return requireSessionProjection(
-      await this.request("session.create", input),
-    );
+  ): Promise<SessionCatalogProjection & { readonly workspaceBlocker?: import('@maka/core/worktree').WorktreeBlocker }> {
+    const result = await this.request('session.create', input);
+    return { ...requireSessionProjection(result), ...(result.workspaceBlocker ? { workspaceBlocker: result.workspaceBlocker } : {}) };
   }
 
   resolveWorkHubCoordinationSession() {

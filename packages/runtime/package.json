@@ -6,6 +6,7 @@
   "type": "module",
   "private": true,
   "exports": {
+    "./shell-exec": "./dist/shell-exec.js",
     "./code-mode": "./dist/code-mode.js",
     "./admission-limiter": "./dist/admission-limiter.js",
     "./ask-user-question-tool": "./dist/ask-user-question-tool.js",

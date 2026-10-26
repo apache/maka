@@ -59,6 +59,7 @@ import {
   type LocalOutboxRecord,
 } from './session-local-store.js';
 import type { DesktopTranscriptReplicaSnapshot } from './desktop-transcript-replica.js';
+import { SessionWorktreePreparation } from './session-worktree-preparation.js';
 import { SessionLocalAttachmentRecovery } from './session-local-attachment-recovery.js';
 
 /** The Host resolved no Skill for a Message that is settled from durable facts. */
@@ -74,6 +75,9 @@ export interface DesktopSessionLocalTarget {
   > & {
     /** Absent only in narrow test doubles; production clients always provide it. */
     readonly queryMessageExecutions?: DesktopRuntimeHostClient['queryMessageExecutions'];
+    readonly queryWorktreePreparation: DesktopRuntimeHostClient['queryWorktreePreparation'];
+    readonly queryWorktrees?: DesktopRuntimeHostClient['queryWorktrees'];
+    readonly mutateWorktrees?: DesktopRuntimeHostClient['mutateWorktrees'];
   };
   readonly submit?: (input: TurnMessageSubmitInput) => Promise<TurnMessageSubmitResult>;
 }
@@ -108,7 +112,9 @@ export function desktopSessionLocalPartition(input: {
 export class DesktopSessionLocalService {
   readonly attachmentRecovery = new SessionLocalAttachmentRecovery();
   readonly #checking = new Set<string>();
+  readonly #worktreePreparations = new SessionWorktreePreparation();
   readonly #running = new Set<string>();
+  readonly #preparing = new Set<string>();
   readonly #probed = new Map<string, DesktopSessionLocalTarget['client']>();
   readonly #retries = new Map<string, ReturnType<typeof setTimeout>>();
   readonly #snapshots = new Map<
@@ -209,25 +215,43 @@ export class DesktopSessionLocalService {
         ...targets.slice(0, this.#targetCursor),
       ];
       for (const target of ordered) {
-        if (this.#running.size >= 2) break;
-        if (!target.client || !target.submit || this.#running.has(target.partition)) continue;
+        if (!target.client || !target.submit) continue;
         const blockedSessions = new Set<string>();
-        const record = this.store.list(target.partition).find((record) => {
+        let record: LocalOutboxRecord | undefined;
+        for (const candidate of this.store.list(target.partition)) {
           // Settled messages retain their local copy without reserving delivery order.
           // Unresolved Host outcomes must still hold later messages behind them.
-          if (record.state === 'accepted' || record.state === 'failed' || record.state === 'paused') return false;
-          if (blockedSessions.has(record.sessionId)) return false;
-          blockedSessions.add(record.sessionId);
-          return this.#probed.get(`${target.partition}:${record.messageId}`) !== target.client;
-        });
+          if (candidate.state === 'accepted' || candidate.state === 'failed' || candidate.state === 'paused') continue;
+          if (blockedSessions.has(candidate.sessionId)) continue;
+          blockedSessions.add(candidate.sessionId);
+          const sessionKey = `${target.partition}:${candidate.sessionId}`;
+          const messageKey = `${target.partition}:${candidate.messageId}`;
+          if (this.#preparing.has(sessionKey) || this.#probed.get(messageKey) === target.client) continue;
+          if (candidate.intent.originHostEpoch === undefined && this.store.creation(target.partition, candidate.sessionId)) {
+            // Slow checkouts and setup scripts have their own bounded pool;
+            // they must never occupy an existing Session's delivery slot.
+            if (this.#preparing.size >= 2) continue;
+            this.#preparing.add(sessionKey);
+            void this.#deliver(target, candidate, true)
+              .catch(this.deps.onError)
+              .finally(() => {
+                this.#preparing.delete(sessionKey);
+                this.#checking.delete(messageKey);
+                this.wake();
+              });
+          } else if (!record && this.#running.size < 2 && !this.#running.has(target.partition)) {
+            record = candidate;
+          }
+        }
         if (!record) continue;
+        const delivery = record;
         this.#targetCursor = (targets.indexOf(target) + 1) % targets.length;
         this.#running.add(target.partition);
-        void this.#deliver(target, record)
+        void this.#deliver(target, delivery)
           .catch(this.deps.onError)
           .finally(() => {
             this.#running.delete(target.partition);
-            this.#checking.delete(`${target.partition}:${record.messageId}`);
+            this.#checking.delete(`${target.partition}:${delivery.messageId}`);
             this.wake();
           });
       }
@@ -257,8 +281,40 @@ export class DesktopSessionLocalService {
       retryScheduled: this.#retries.has(`${target.partition}:${record.messageId}`),
       waitingForConnection: !target.client || !target.submit,
       ...(record.error ? { error: record.error } : {}),
+      ...(record.pauseReason ? { pauseReason: record.pauseReason } : {}),
       ...(target.client && target.submit ? { delivering: true as const } : {}),
+      ...(this.#worktreePreparations.has(`${target.partition}:${record.messageId}`)
+        ? { worktreePreparation: this.#worktreePreparations.get(`${target.partition}:${record.messageId}`)! }
+        : {}),
     }));
+  }
+
+  async resolveWorktreePreparation(
+    target: DesktopSessionLocalTarget, sessionId: string, messageId: string, decision: 'main' | 'cancel',
+  ): Promise<void> {
+    const record = this.store.get(target.partition, messageId);
+    const creation = this.store.creation(target.partition, sessionId);
+    if (!record || record.sessionId !== sessionId || record.state !== 'saved' || record.intent.originHostEpoch
+      || creation?.workspace.kind !== 'project' || !this.#worktreePreparations.has(`${target.partition}:${messageId}`)
+      || !target.client?.mutateWorktrees)
+      throw new Error('Worktree preparation is no longer pending');
+    // Freeze cancellation synchronously, before the Host may finish preparing.
+    // The create response must never dispatch this message after Cancel wins.
+    if (decision === 'cancel') this.store.update({ ...record, state: 'paused' });
+    try {
+      await target.client.mutateWorktrees({ kind: 'resolve_preparation', projectId: creation.workspace.projectId,
+        operationId: sessionId, decision });
+    } catch (error) {
+      if (decision === 'cancel' && this.#current(target) && this.store.get(target.partition, messageId)?.state === 'paused') {
+        this.store.update(record);
+        this.#probed.delete(`${target.partition}:${messageId}`);
+        this.wake();
+      }
+      throw error;
+    }
+    if (!this.#current(target)) return;
+    if (decision === 'cancel') this.removeSession(target, sessionId);
+    this.deps.changed(target.scope, sessionId);
   }
 
   readFailedMessage(
@@ -283,7 +339,9 @@ export class DesktopSessionLocalService {
     // preparation re-checks ownership after each await before dispatching.
     const draft = this.#editableDraft(target, record, senderId);
     try {
-      this.store.update({ ...record, state: 'paused' });
+      // Withdrawing transfers the pause to the user. Completing initialization
+      // must not send this original while its replacement is being edited.
+      this.store.update({ ...record, state: 'paused', pauseReason: undefined });
       return { ...draft, replacesLocalMessageId: messageId };
     } catch (error) {
       this.attachmentRecovery.release(senderId, draft.stagedAttachments.map((item) => item.approvalId));
@@ -291,11 +349,31 @@ export class DesktopSessionLocalService {
     }
   }
 
-  resumeMessage(target: DesktopSessionLocalTarget, sessionId: string, messageId: string): void {
-    const record = this.store.get(target.partition, messageId);
-    if (!record || record.sessionId !== sessionId || record.state !== 'paused' || record.intent.originHostEpoch)
-      throw new Error('Only a paused, never-dispatched message can resume');
-    this.store.update({ ...record, state: 'saved', error: undefined });
+  async resumeMessage(target: DesktopSessionLocalTarget, sessionId: string, messageId: string): Promise<void> {
+    const readPaused = () => {
+      const record = this.store.get(target.partition, messageId);
+      if (!record || record.sessionId !== sessionId || record.state !== 'paused' || record.intent.originHostEpoch)
+        throw new Error('Only a paused, never-dispatched message can resume');
+      return record;
+    };
+    let record = readPaused();
+    if (record.pauseReason === 'worktree_initialization') {
+      const session = this.store.sessions(target.partition).find((item) => item.id === sessionId);
+      if (!session?.projectId || !target.client?.queryWorktrees)
+        throw new Error('Worktree initialization status is unavailable');
+      // Another Client can finish setup while this Client retains its durable pause.
+      // Observe readiness without rerunning setup or discarding the original message.
+      const snapshot = await target.client.queryWorktrees(session.projectId);
+      const worktree = snapshot.projects.flatMap((project) => project.worktrees)
+        .find((item) => item.path === session.cwd);
+      if (!worktree?.available || (worktree.initialization !== 'ready' && worktree.initialization !== 'skipped'))
+        throw new Error('Worktree initialization has not completed');
+      if (!this.#current(target)) throw new Error('Worktree initialization status is no longer current');
+      record = readPaused();
+      if (record.pauseReason !== 'worktree_initialization')
+        throw new Error('Message is no longer paused for worktree initialization');
+    }
+    this.store.update({ ...record, state: 'saved', error: undefined, pauseReason: undefined });
     const key = `${target.partition}:${messageId}`;
     clearTimeout(this.#retries.get(key));
     this.#retries.delete(key);
@@ -584,6 +662,7 @@ export class DesktopSessionLocalService {
 
   close(): void {
     this.#closed = true;
+    this.#worktreePreparations.close();
     this.attachmentRecovery.clear();
     for (const connection of this.#catalogConnections.values())
       connection.controller.abort(new Error('Owner Session catalog service is closed'));
@@ -622,7 +701,20 @@ export class DesktopSessionLocalService {
     this.#retries.set(key, timer);
   }
 
-  async #deliver(target: DesktopSessionLocalTarget, original: LocalOutboxRecord): Promise<void> {
+  #watchWorktree(target: DesktopSessionLocalTarget, record: LocalOutboxRecord,
+    creation: Parameters<DesktopRuntimeHostClient['createSession']>[0]): () => void {
+    if (creation.workspace.kind !== 'project' ||
+      (creation.workspace.worktree && creation.workspace.worktree.kind !== 'new')) return () => {};
+    return this.#worktreePreparations.watch({
+      key: `${target.partition}:${record.messageId}`,
+      query: () => target.client!.queryWorktreePreparation(creation.sessionId),
+      current: () => this.#current(target) && ['saved', 'sending', 'unknown'].includes(this.store.get(target.partition, record.messageId)?.state ?? ''),
+      changed: () => { if (this.#current(target)) this.deps.changed(target.scope, record.sessionId); },
+      explicit: creation.workspace.worktree?.kind === 'new',
+    });
+  }
+
+  async #deliver(target: DesktopSessionLocalTarget, original: LocalOutboxRecord, prepareOnly = false): Promise<void> {
     const client = target.client!;
     let record = original;
     const key = `${target.partition}:${record.messageId}`;
@@ -651,9 +743,19 @@ export class DesktopSessionLocalService {
       if (creation) {
         // session.create already has a durable request fingerprint. Replaying
         // exactly this create cannot adopt somebody else's Session identity.
-        const session = await client.createSession(creation);
+        const stopProgress = this.#watchWorktree(target, record, creation);
+        const session = await client.createSession(creation).finally(stopProgress);
         if (!stillOwned()) return;
-        this.store.saveSession(target.partition, toDesktopHostSessionSummary(session));
+        this.store.saveCreatedSession(record, toDesktopHostSessionSummary(session), session.workspaceBlocker?.kind);
+        if (session.workspaceBlocker) {
+          this.deps.changed(target.scope, record.sessionId);
+          return;
+        }
+      }
+      if (prepareOnly) {
+        this.#probed.delete(key);
+        this.deps.changed(target.scope, record.sessionId);
+        return;
       }
       if (!record.intent.attachmentsPrepared) {
         const attachments = [...(record.intent.command.content.attachments ?? [])];
@@ -868,9 +970,13 @@ export function registerDesktopSessionLocalIpc(deps: {
   ipcMain.handle('session-local:edit', (event, scope: unknown, sessionId: string, messageId: string) =>
     service.readFailedMessage(service.target(scope), requiredId(sessionId), requiredId(messageId), event.sender.id),
   );
-  ipcMain.handle('session-local:resume', (_event, scope: unknown, sessionId: string, messageId: string) => {
+  ipcMain.handle('session-local:resolve-worktree', async (_event, scope: unknown, sessionId: string, messageId: string, decision: unknown) => {
+    if (decision !== 'main' && decision !== 'cancel') throw new Error('Invalid worktree preparation decision');
+    await service.resolveWorktreePreparation(service.target(scope), requiredId(sessionId), requiredId(messageId), decision);
+  });
+  ipcMain.handle('session-local:resume', async (_event, scope: unknown, sessionId: string, messageId: string) => {
     const target = service.target(scope);
-    service.resumeMessage(target, requiredId(sessionId), requiredId(messageId));
+    await service.resumeMessage(target, requiredId(sessionId), requiredId(messageId));
     deps.changed(target.scope, sessionId);
     service.wake();
   });

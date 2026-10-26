@@ -340,7 +340,7 @@ describe('useSessionNavigationController', () => {
     assert.equal(controller().commands, first);
   });
 
-  it('names a session location only for a project that has more than one', async () => {
+  it('uses the project location when matched and otherwise falls back to the session cwd', async () => {
     const { root } = installReactRenderer();
     const linked: ProjectRecord = {
       id: 'linked',
@@ -366,8 +366,8 @@ describe('useSessionNavigationController', () => {
 
     assert.equal(controller().selectors.sessionLocation(catalog[0]!), '/repo');
     assert.equal(controller().selectors.sessionLocation(catalog[1]!), '/repo-feature');
-    assert.equal(controller().selectors.sessionLocation(catalog[2]!), undefined);
-    assert.equal(controller().selectors.sessionLocation(catalog[3]!), undefined);
+    assert.equal(controller().selectors.sessionLocation(catalog[2]!), '/elsewhere');
+    assert.equal(controller().selectors.sessionLocation(catalog[3]!), '/repo');
   });
 
   it('matches Windows locations across mixed separators and case', async () => {
@@ -434,7 +434,7 @@ describe('useSessionNavigationController', () => {
       renderController(root, { ...input(catalog, 'exact-case'), projectScopes: [localScope(posix)] }),
     );
 
-    assert.equal(controller().selectors.sessionLocation(catalog[0]!), undefined);
+    assert.equal(controller().selectors.sessionLocation(catalog[0]!), '//repo-feature');
     assert.equal(controller().selectors.worktreeSessionIds.has('different-case'), false);
     assert.equal(controller().selectors.sessionLocation(catalog[1]!), '//Repo-Feature');
     assert.equal(controller().selectors.worktreeSessionIds.has('exact-case'), true);
@@ -462,14 +462,14 @@ describe('useSessionNavigationController', () => {
     assert.equal(controller().selectors.worktreeSessionIds.has('unc-feature'), true);
   });
 
-  it('does not match a Host-workspace session against local project locations', async () => {
+  it('uses a Host-workspace session cwd without matching local project locations', async () => {
     const { root } = installReactRenderer();
     const linked: ProjectRecord = {
       id: 'linked',
       name: 'Linked',
       locations: [
         { path: '/repo', isWorktree: false },
-        { path: '/repo-feature', isWorktree: true },
+        { path: 'C:\\Repo-Feature', isWorktree: true },
       ],
       available: true,
     };
@@ -477,7 +477,7 @@ describe('useSessionNavigationController', () => {
       session('remote', {
         runtimeHostId: 'remote-host',
         projectId: 'linked',
-        cwd: '/repo-feature',
+        cwd: 'c:/repo-feature',
         profileId: 'remote-profile',
         profileName: 'Remote Mac',
         profileKind: 'remote',
@@ -487,7 +487,8 @@ describe('useSessionNavigationController', () => {
       renderController(root, { ...input(catalog, 'remote'), projectScopes: [localScope(linked)] }),
     );
 
-    assert.equal(controller().selectors.sessionLocation(catalog[0]!), undefined);
+    assert.equal(controller().selectors.sessionLocation(catalog[0]!), 'c:/repo-feature');
+    assert.equal(controller().selectors.worktreeSessionIds.has('remote'), false);
   });
 });
 

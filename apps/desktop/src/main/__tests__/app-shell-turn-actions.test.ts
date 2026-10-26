@@ -46,7 +46,7 @@ test('footer no longer exposes Regenerate', () => {
 });
 
 test('preserves a Branch copy identity after an ambiguous failure and completes it on success', async () => {
-  const calls: Array<{ sourceTurnId: string; copyId?: string }> = [];
+  const calls: Array<{ sourceTurnId: string; copyId?: string; worktree?: 'same' | 'new' }> = [];
   let loseFirstResponse = true;
   let selectionRevision = 0;
   let navigateDuringBranch = false;
@@ -100,6 +100,14 @@ test('preserves a Branch copy identity after an ambiguous failure and completes 
     assert.equal(calls.length, 3);
     assert.equal(opened.length, 1, 'late Branch must not replace the newer selection');
     assert.notEqual(calls[2]?.copyId, calls[1]?.copyId);
+
+    navigateDuringBranch = false;
+    const newWorktree = actions.handleTurnFooterAction('branch-action-turn', 'branch-worktree');
+    await actions.handleTurnFooterAction('branch-action-turn', 'branch');
+    await newWorktree;
+    assert.equal(calls.length, 4, 'Both menu choices share the same in-flight fork guard');
+    assert.equal(calls[3]?.worktree, 'new');
+    assert.equal(calls[2]?.worktree, undefined, 'Reusing the source preserves the default fork request');
   } finally {
     restoreWindow();
   }
@@ -108,7 +116,7 @@ test('preserves a Branch copy identity after an ambiguous failure and completes 
 function installWindow(
   branchFromTurn: (
     sessionId: string,
-    input: { sourceTurnId: string; copyId?: string },
+    input: { sourceTurnId: string; copyId?: string; worktree?: 'same' | 'new' },
   ) => Promise<SessionSummary>,
 ): () => void {
   const target = globalThis as unknown as { window?: unknown };

@@ -24,6 +24,7 @@ import {
   useRef,
   useState,
 } from 'react';
+import { useTaskWorktreeSelection } from './use-task-worktree-selection.js';
 import { findProjectByIdentity, type ProjectRecord } from '@maka/core/project';
 import type { WorkBoardItem } from '@maka/core/work-board';
 import {
@@ -186,7 +187,7 @@ export function useTaskEntryController(
   const sessionMoveCopy = getShellCopy(locale).sessionRowActions;
   const reportError = input.reportError;
   const manageProjects = input.manageProjects;
-  const { catalog: service, sessions, folders } = useTaskEntryServices();
+  const { catalog: service, sessions, folders, worktrees } = useTaskEntryServices();
   const [catalog, setCatalog] = useState<TaskEntryCatalog>(EMPTY_CATALOG);
   const [selectedProfileId, setSelectedProfileId] = useState<string>();
   const [projectSelections, setProjectSelections] = useState(
@@ -282,31 +283,36 @@ export function useTaskEntryController(
   const selectedProjectId = selectedHost
     ? resolveProjectSelection(selectedHost, projectSelections.get(selectedHost.profile.id))
     : undefined;
-  const target = selectedHost && selectedProjectId !== undefined
+  const baseTarget = selectedHost && selectedProjectId !== undefined
     ? {
         profileId: selectedHost.profile.id,
         hostId: selectedHost.hostId,
         projectId: selectedProjectId,
       }
     : undefined;
+  const worktree = useTaskWorktreeSelection(baseTarget, worktrees, catalog, reportError);
+  const target = baseTarget ? { ...baseTarget, ...(worktree.choice ? { worktree: worktree.choice } : {}) } : undefined;
   const currentProject = selectedHost && typeof selectedProjectId === 'string'
     ? findProjectByIdentity(selectedHost.projects, selectedProjectId)
     : undefined;
-  const projectPath = currentProject?.preferredPath ??
+  const projectPath = worktree.path ?? currentProject?.preferredPath ??
     (selectedProjectId === null ? selectedHost?.projectPath : undefined);
   const localHost = catalog.hosts.find(
     (host): host is ReadyTaskEntryHost =>
       host.profile.kind === 'local' && isReadyTaskEntryHost(host),
   );
 
-  const selectProject = useCallback((host: ReadyTaskEntryHost, projectId: string): void => {
+  const selectProject = useCallback((host: ReadyTaskEntryHost, projectId: string, worktreeValue?: string): void => {
     const project = findProjectByIdentity(host.projects, projectId);
     if (!project?.available || project.archivedAt !== undefined) return;
     setSelectedProfileId(host.profile.id);
     setProjectSelections((current) =>
       new Map(current).set(host.profile.id, project.id),
     );
-  }, []);
+    if (worktreeValue !== undefined) {
+      worktree.select({ profileId: host.profile.id, hostId: host.hostId }, project.id, worktreeValue);
+    }
+  }, [worktree.select]);
 
   const selectNoProject = useCallback((host: ReadyTaskEntryHost): void => {
     if (!host.capabilities.selectNoProject) return;
@@ -531,17 +537,19 @@ export function useTaskEntryController(
         selectedProjectId === selectedHost.selectedProjectId
       ? selectedHost.branch
       : undefined;
-    const catalogNeedsRetry = Boolean(error) || catalog.hosts.some(
+    const catalogNeedsRetry = Boolean(error) || worktree.hasError || catalog.hosts.some(
       (host) => host.readiness === 'ready' && host.state === 'error',
     );
     return {
-      label: selectedProject ?? selectedCatalogHost?.profile.name ??
-        (error ? copy.catalogUnavailable : undefined),
+      isWorktree: Boolean(worktree.choice && worktree.choice.kind !== 'main'),
+      label: selectedProject ?? selectedCatalogHost?.profile.name ?? (error ? copy.catalogUnavailable : undefined),
       ...(selectedCatalogHost &&
       runtimeHostProfileUsesHostWorkspace(selectedCatalogHost.profile.kind)
         ? { hostBadge: selectedCatalogHost.profile.name }
         : {}),
-      branch: selectedProjectId === null ? null : selectedBranch,
+      branch: selectedProjectId === null
+        ? null
+        : worktree.choice && worktree.choice.kind !== 'main' ? worktree.branch ?? null : selectedBranch,
       pending: pending || (refreshing && catalog.hosts.length === 0),
       selectedGroupId: selectedProfileId,
       groups: catalog.hosts.map((host) => {
@@ -566,6 +574,13 @@ export function useTaskEntryController(
           projects: host.projects.filter((project) => project.archivedAt === undefined),
           selectedProjectId: groupSelectedProjectId,
           onSelectProject: (projectId: string) => selectProject(host, projectId),
+          projectWorktrees: Object.fromEntries(host.projects.flatMap((project) => {
+            const menu = worktree.forProject({ profileId: host.profile.id, hostId: host.hostId }, project.id);
+            return menu ? [[project.id, {
+              ...menu,
+              onSelect: (value: string) => selectProject(host, project.id, value),
+            }]] : [];
+          })),
           ...(host.capabilities.chooseClientDirectory || host.capabilities.chooseHostDirectory
             ? { onAdd: (name?: string) => void addProjectForHost(host, name) }
             : {}),
@@ -591,6 +606,10 @@ export function useTaskEntryController(
     addProjectForHost,
     catalog,
     conversationCopy.noProject,
+    worktree.choice,
+    worktree.branch,
+    worktree.forProject,
+    worktree.hasError,
     copy.catalogUnavailable,
     copy.retryCatalog,
     copy.runtimeHostReadiness,

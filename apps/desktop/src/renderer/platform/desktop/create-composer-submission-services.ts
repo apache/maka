@@ -33,12 +33,14 @@ export type DesktopComposerSubmissionBridge = {
     | 'respondToUserQuestion'
   >;
   readonly newTasks: Pick<MakaBridge['newTasks'], 'create'>;
+  readonly worktrees?: Pick<MakaBridge['worktrees'], 'queryForSession'>;
 };
 
 export function createDesktopComposerSubmissionServices(
   bridge: DesktopComposerSubmissionBridge = window.maka,
 ): ComposerSubmissionServices {
   return {
+    ...(bridge.worktrees ? { readBranchWorkspace: (sessionId: string) => bridge.worktrees!.queryForSession(sessionId) } : {}),
     submitMessage: (sessionId, placement, command, options) =>
       bridge.sessions.submitMessage(sessionId, placement, command, options),
     createNewTask: (target, input) => bridge.newTasks.create(target, input),

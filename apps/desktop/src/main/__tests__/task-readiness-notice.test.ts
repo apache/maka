@@ -20,7 +20,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { TaskSubmissionReadinessSnapshot } from '@maka/core/task-submission-readiness';
-import { resolveTaskReadinessModelTarget } from '../../renderer/features/conversation/index.js';
+import { resolveTaskReadinessRequest } from '../../renderer/features/conversation/index.js';
 import {
   deriveTaskReadinessNotice,
   isTaskSubmissionHardBlocked,
@@ -28,7 +28,7 @@ import {
 
 test('an unlocked stale session keeps its stored target until explicit recovery', () => {
   assert.deepEqual(
-    resolveTaskReadinessModelTarget(
+    resolveTaskReadinessRequest(
       { llmConnectionSlug: 'stale', model: 'removed-model' },
       { kind: 'blocked', reason: 'connection_missing', connectionLocked: false },
       undefined,
@@ -37,9 +37,22 @@ test('an unlocked stale session keeps its stored target until explicit recovery'
   );
 });
 
+
+test('a fixed session readiness probe keeps its checkout instead of the new task workspace', () => {
+  assert.deepEqual(
+    resolveTaskReadinessRequest(
+      { llmConnectionSlug: 'stored', model: 'model', cwd: '/worktrees/task', workspaceFixed: true },
+      undefined,
+      { llmConnectionSlug: 'new-task', model: 'other-model' },
+      '/projects/main',
+    ),
+    { connectionSlug: 'stored', model: 'model', cwd: '/worktrees/task', workspaceFixed: true },
+  );
+});
+
 test('omits transient empty model target fields', () => {
   assert.deepEqual(
-    resolveTaskReadinessModelTarget(
+    resolveTaskReadinessRequest(
       undefined,
       undefined,
       { llmConnectionSlug: ' ', model: '' },

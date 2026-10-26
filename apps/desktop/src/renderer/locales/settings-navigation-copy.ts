@@ -37,6 +37,7 @@ const SETTINGS_NAVIGATION_COPY_BY_LOCALE = resolveUiMessageCatalog(defineShipped
     sections: {
       general: { label: '通用', description: '显示名称与界面语言、隐私与通知、任务默认与网络代理。' },
       appearance: { label: '外观', description: '界面主题与调色板。' },
+      worktrees: { label: 'Worktree', description: '按 Host 和项目管理工作目录、创建脚本及清理脚本。' },
       projects: { label: '工作区', description: '管理 Runtime Host 连接，以及默认 Host 上的项目。' },
       models: { label: '模型', description: '模型连接、API key 与 OAuth 订阅管理。' },
       'external-agents': { label: '外部 Agent', description: '管理外部 Agent 的连接和登录，配置后可在新会话中选择使用。' },
@@ -64,6 +65,7 @@ const SETTINGS_NAVIGATION_COPY_BY_LOCALE = resolveUiMessageCatalog(defineShipped
     sections: {
       general: { label: '通用', description: '顯示名稱與介面語言、隱私與通知、任務預設與網路代理。' },
       appearance: { label: '外觀', description: '介面主題與調色盤。' },
+      worktrees: { label: 'Worktree', description: '依 Host 與專案管理工作目錄、建立指令碼及清理指令碼。' },
       projects: { label: '工作區', description: '管理 Runtime Host 連線，以及預設 Host 上的專案。' },
       models: { label: '模型', description: '模型連線、API key 與 OAuth 訂閱管理。' },
       'external-agents': { label: '外部 Agent', description: '管理外部 Agent 的連線與登入，設定後可在新對話中選擇使用。' },
@@ -91,6 +93,7 @@ const SETTINGS_NAVIGATION_COPY_BY_LOCALE = resolveUiMessageCatalog(defineShipped
     sections: {
       general: { label: 'General', description: 'Display name and interface language, privacy and notifications, task defaults, and network proxy.' },
       appearance: { label: 'Appearance', description: 'Interface theme and color palette.' },
+      worktrees: { label: 'Worktree', description: 'Manage worktrees and lifecycle scripts by Host and project.' },
       projects: { label: 'Workspace', description: 'Manage Runtime Host connections and projects on the default Host.' },
       models: { label: 'Models', description: 'Model connections, API keys, and OAuth subscriptions.' },
       'external-agents': { label: 'External Agents', description: 'Manage connections and sign-in for external agents. Once configured, select them in new conversations.' },

@@ -99,6 +99,7 @@ export * from './session-transcript.js';
 export * from './session-turns.js';
 export * from './session-todo.js';
 export * from './workspace.js';
+export * from './worktree.js';
 export * from './workhub-coordination.js';
 export * from './websocket-path.js';
 export { INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID } from '../composition-identity.js';
@@ -108,7 +109,13 @@ export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
 // Re-check against main before merging; sibling PRs may use the same next epoch.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 229 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 235 as const;
+// 235: Worktree roots are Host-only; project configuration rejects root overrides.
+// 234: Worktree catalogs use byte-bounded pages with revision-checked continuation.
+// 233: Host-owned preparation queries and typed Session creation workspace blockers.
+// 232: Session creation has one workspace selection; Host reports branch-worktree capability.
+// 231: Worktree snapshots expose the durable creation identity for preparation feedback.
+// 230: Host-owned task worktrees, scripts, explicit worktree targets and branch selection.
 // 229: Session check-in proposes cards for unfinished work across Sessions.
 // 228: Executor catalog queries support per-agent filtering and process-free inventory.
 // Older peers reject the executorId and listOnly fields in the strict query decoder.

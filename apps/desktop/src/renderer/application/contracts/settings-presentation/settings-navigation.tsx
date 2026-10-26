@@ -21,7 +21,7 @@ import { createContext, useContext, useEffect, useLayoutEffect, useRef, type Rea
 import type { SettingsSection } from '@maka/core/settings';
 
 export interface SettingsNavigation {
-  openSettingsSection(section: SettingsSection): void;
+  openSettingsSection(section: SettingsSection, profileId?: string): void;
 }
 
 export const SettingsNavigationContext = createContext<SettingsNavigation | null>(null);

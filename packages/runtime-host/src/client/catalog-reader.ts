@@ -17,7 +17,10 @@
  * under the License.
  */
 
+import type { WorktreeProject, WorktreeProjectConfig, WorktreeSnapshot } from '@maka/core/worktree';
 import {
+  type WorktreeQueryInput,
+  type WorktreeQueryResult,
   decodeProjectCatalogProject,
   decodeProjectCatalogProjectDetails,
   type ConnectionCatalogCursor,
@@ -75,7 +78,13 @@ export interface RuntimeHostConnectionCatalogSnapshot {
 
 export class RuntimeHostCatalogReadError extends Error {
   constructor(
-    readonly catalog: 'connection' | 'project' | 'session' | 'skill' | 'runtime_resource',
+    readonly catalog:
+      | 'connection'
+      | 'project'
+      | 'session'
+      | 'skill'
+      | 'runtime_resource'
+      | 'worktree',
     readonly reason: 'unstable' | 'invalid_projection' | 'repeated_cursor',
   ) {
     super(`Runtime Host ${catalog} catalog read failed: ${reason}`);
@@ -332,6 +341,58 @@ export async function readRuntimeHostResources(
     },
   );
   return pages.flatMap((page) => page.resources);
+}
+
+/** Keep pagination inside the Host client so every Desktop surface sees a complete snapshot. */
+export async function readRuntimeHostWorktrees(
+  connection: {
+    request(operation: 'worktree.query', input: WorktreeQueryInput): Promise<WorktreeQueryResult>;
+  },
+  projectId?: string,
+): Promise<WorktreeSnapshot> {
+  const scope = projectId === undefined ? {} : { projectId };
+  const { first, pages } = await collectStablePages(
+    'worktree',
+    async () => {
+      const result = await connection.request('worktree.query', scope);
+      return result.kind === 'page' ? result : null;
+    },
+    async (revision, cursor) => {
+      const result = await connection.request('worktree.query', { ...scope, revision, cursor });
+      return result.kind === 'page' ? result : null;
+    },
+  );
+  const configs = new Map<string, WorktreeProjectConfig>();
+  const projects = new Map<string, WorktreeProject>();
+  const paths = new Set<string>();
+  const invalid = () => new RuntimeHostCatalogReadError('worktree', 'invalid_projection');
+  for (const page of pages) {
+    if (page.rootDirectory !== first.rootDirectory) throw invalid();
+    for (const item of page.items) {
+      switch (item.kind) {
+        case 'config':
+          if (configs.has(item.projectId)) throw invalid();
+          configs.set(item.projectId, item.config);
+          break;
+        case 'project':
+          if (projects.has(item.project.id)) throw invalid();
+          projects.set(item.project.id, { ...item.project, worktrees: [] });
+          break;
+        case 'worktree': {
+          const project = projects.get(item.worktree.projectId);
+          const key = JSON.stringify([item.worktree.projectId, item.worktree.path]);
+          if (!project || paths.has(key)) throw invalid();
+          paths.add(key);
+          project.worktrees.push(item.worktree);
+          break;
+        }
+      }
+    }
+  }
+  return {
+    config: { rootDirectory: first.rootDirectory, projects: Object.fromEntries(configs) },
+    projects: [...projects.values()],
+  };
 }
 
 interface StableCatalogPage {

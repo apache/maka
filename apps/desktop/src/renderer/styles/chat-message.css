@@ -327,7 +327,8 @@
     transition: opacity var(--duration-fast) var(--ease-standard);
   }
   .maka-user-message:is(:hover, :focus-within) .maka-message-meta,
-  .maka-assistant-answer:is(:hover, :focus-within) .maka-turn-footer {
+  .maka-assistant-answer:is(:hover, :focus-within) .maka-turn-footer,
+  .maka-assistant-answer .maka-turn-footer:has([aria-expanded="true"]) {
     opacity: 1;
     pointer-events: auto;
   }

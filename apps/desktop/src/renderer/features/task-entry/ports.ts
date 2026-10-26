@@ -38,6 +38,7 @@ export interface TaskEntryError {
 }
 
 export interface TaskEntryTarget extends TaskEntryHostRef {
+  readonly worktree?: import('@maka/core/worktree').TaskWorktreeSelection;
   readonly projectId: string | null;
 }
 
@@ -181,6 +182,11 @@ export interface TaskEntryFolderService {
 }
 
 export interface TaskEntryServices {
+  readonly worktrees?: {
+    query(projectId: string | undefined, host: TaskEntryHostRef): Promise<import('@maka/core/worktree').WorktreeSnapshot>;
+    readSelection?(host: TaskEntryHostRef, projectId: string): import('@maka/core/worktree').TaskWorktreeSelection | undefined;
+    writeSelection?(host: TaskEntryHostRef, projectId: string, selection: import('@maka/core/worktree').TaskWorktreeSelection): void;
+  };
   readonly catalog: TaskEntryCatalogService;
   readonly sessions: TaskEntrySessionService;
   readonly folders: TaskEntryFolderService;

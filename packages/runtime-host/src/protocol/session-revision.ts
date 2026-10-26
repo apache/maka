@@ -42,6 +42,7 @@ const SESSION_COPY_ERRORS = [
 ] as const;
 
 export interface SessionConversationCopyInput {
+  readonly worktree?: 'same' | 'new';
   readonly sourceSessionId: string;
   readonly targetSessionId: string;
   /**
@@ -118,6 +119,7 @@ export const SESSION_REVISION_OPERATION_SPECS = {
 
 function decodeSessionRevisionCopyInput(value: unknown): SessionConversationCopyInput {
   const input = decodeSessionConversationCopyInput(value);
+  if (input.worktree !== undefined) throw invalidProtocolFrame('Revisions cannot change worktree');
   if (input.intent !== undefined) {
     throw invalidProtocolFrame('Session revision copy does not support an intent');
   }
@@ -151,8 +153,10 @@ export function decodeSessionConversationCopyInput(value: unknown): SessionConve
     value,
     'Session conversation-copy input',
     ['sourceSessionId', 'targetSessionId', 'expectedSourceRevision'],
-    ['sourceTurnId', 'intent'],
+    ['sourceTurnId', 'intent', 'worktree'],
   );
+  if (input.worktree !== undefined && input.worktree !== 'same' && input.worktree !== 'new')
+    throw invalidProtocolFrame('Invalid branch worktree mode');
   const sourceSessionId = requireEntityId(input.sourceSessionId, 'sourceSessionId');
   const targetSessionId = requireEntityId(input.targetSessionId, 'targetSessionId');
   if (sourceSessionId === targetSessionId) {
@@ -171,6 +175,7 @@ export function decodeSessionConversationCopyInput(value: unknown): SessionConve
   return {
     sourceSessionId,
     targetSessionId,
+    ...(input.worktree === undefined ? {} : { worktree: input.worktree }),
     ...(sourceTurnId === undefined ? {} : { sourceTurnId }),
     expectedSourceRevision: positiveRevision(
       input.expectedSourceRevision,

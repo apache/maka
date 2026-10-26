@@ -352,6 +352,7 @@ export function createChatActions<Owner extends ComposerSurfaceOwner>(deps: {
         if (pending?.length) preflightAttachmentItems(pending);
         const session = await services.createNewTask(newTaskTarget, {
           name: DEFAULT_SESSION_NAME,
+          taskDescription: text.slice(0, 8000),
           ...newTaskConfiguration(deps),
         });
         unsentSessionId = session.id;

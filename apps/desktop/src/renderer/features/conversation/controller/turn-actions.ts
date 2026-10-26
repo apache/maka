@@ -75,16 +75,17 @@ export function createTurnActions(deps: {
     const sessionId = activeIdRef.current;
     if (!sessionId) return;
     const selectionIsCurrent = captureSelection();
-    const key = turnActionRegistry.keyOf(sessionId, turnId, actionId);
+    const key = turnActionRegistry.keyOf(sessionId, turnId, 'branch');
     // Ref-backed guard blocks same-frame double clicks before React has
     // committed the disabled state. State alone is too late here because
     // Branch IPC returns after the copy starts asynchronously.
     if (!turnActionRegistry.addKey(key)) return;
     try {
-      if (actionId === 'branch') {
+      if (actionId === 'branch' || actionId === 'branch-worktree') {
+        const worktree = actionId === 'branch-worktree' ? 'new' : 'same';
         const copyAttempt = acquireSessionCopyAttempt(
           {
-            scope: `turn-footer:${turnId}`,
+            scope: worktree === 'new' ? `turn-footer:${turnId}:new-worktree` : `turn-footer:${turnId}`,
             kind: 'branch',
             sourceSessionId: sessionId,
           },
@@ -93,6 +94,7 @@ export function createTurnActions(deps: {
         const newSession = await services.branchFromTurn(sessionId, {
           sourceTurnId: copyAttempt.sourceTurnId,
           copyId: copyAttempt.copyId,
+          ...(worktree === 'new' ? { worktree } : {}),
         });
         copyAttempt.complete();
         await refreshSessions();

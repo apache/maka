@@ -17,7 +17,9 @@
  * under the License.
  */
 
-import { createContext, createElement, useContext, useMemo, type ComponentType, type ReactNode } from 'react';
+import { createContext, createElement, useContext, useMemo, type ComponentProps, type ComponentType, type ReactNode } from 'react';
+import { Composer, getWorktreeCopy } from '@maka/ui';
+import { getTaskReadinessCopy } from '../../../locales/task-readiness-copy.js';
 import type { TaskSubmissionReadinessSnapshot } from '@maka/core/task-submission-readiness';
 import { useUiLocale } from '@maka/ui';
 import { useTaskSubmissionReadiness } from '../controller/use-task-submission-readiness.js';
@@ -27,12 +29,14 @@ import { useTaskReadinessServices, type TaskReadinessRequest } from '../readines
 import { useCurrentOnboardingSnapshot } from '../../../application/contracts/onboarding/onboarding-authority.js';
 
 interface TaskReadinessOwner {
+  readonly sessionId?: string;
+  readonly workspaceFixed?: boolean;
   readonly snapshot: TaskSubmissionReadinessSnapshot | undefined;
   readonly refresh: () => void;
   readonly openWorkspacePicker: (() => void) | undefined;
 }
 
-// Module-local: nothing outside this file can read the snapshot.
+// Module-local: only the notice and Composer leaves read this snapshot.
 const TaskReadinessContext = createContext<TaskReadinessOwner | undefined>(undefined);
 
 /**
@@ -65,12 +69,12 @@ export function TaskReadinessProvider(props: {
   // Facts and stable commands, so a shell render with the same Session and
   // permission leaves the notice reader alone.
   const openWorkspacePicker = useMemo(
-    () => recoverySessionId ? () => openSessionWorkspaceRecovery(recoverySessionId) : addProject,
-    [recoverySessionId, openSessionWorkspaceRecovery, addProject],
+    () => props.request.workspaceFixed ? undefined : recoverySessionId ? () => openSessionWorkspaceRecovery(recoverySessionId) : addProject,
+    [recoverySessionId, openSessionWorkspaceRecovery, addProject, props.request.workspaceFixed],
   );
   const owner = useMemo<TaskReadinessOwner>(
-    () => ({ snapshot, refresh, openWorkspacePicker }),
-    [snapshot, refresh, openWorkspacePicker],
+    () => ({ snapshot, refresh, openWorkspacePicker, sessionId: props.sessionId, workspaceFixed: props.request.workspaceFixed }),
+    [snapshot, refresh, openWorkspacePicker, props.request.workspaceFixed, props.sessionId],
   );
   return <TaskReadinessContext.Provider value={owner}>{props.children}</TaskReadinessContext.Provider>;
 }
@@ -84,7 +88,7 @@ export interface TaskReadinessNoticeView {
 }
 
 /**
- * The notice's only reader. Runtime and workspace blockers render through
+ * Runtime and workspace blockers render through
  * `surface`; a workspace blocker opens the picker, every other action reads
  * readiness again.
  */
@@ -94,11 +98,31 @@ export function TaskReadinessNoticeConsumer(props: { readonly surface: Component
   if (!owner) throw new Error('TaskReadinessProvider is required');
   const notice = deriveTaskReadinessNotice(owner.snapshot, locale);
   if (!notice) return null;
+  const fixedWorkspace = owner.workspaceFixed && owner.snapshot?.blockers.find(
+    (blocker) => blocker.state !== 'unknown' && (blocker.id === 'runtime' || blocker.id === 'workspace'),
+  )?.id === 'workspace';
+  const worktree = getWorktreeCopy(locale);
   return createElement(props.surface, {
     status: notice.tone === 'destructive' ? 'error' : 'warning',
-    title: notice.title,
-    description: notice.description,
-    actionLabel: notice.actionLabel,
-    onAction: notice.action === 'workspace_picker' ? owner.openWorkspacePicker : owner.refresh,
+    title: fixedWorkspace ? worktree.fixedUnavailable : notice.title,
+    description: fixedWorkspace ? '' : notice.description,
+    actionLabel: fixedWorkspace ? getTaskReadinessCopy(locale).workspace.actionLabel.retry : notice.actionLabel,
+    onAction: !fixedWorkspace && notice.action === 'workspace_picker' ? owner.openWorkspacePicker : owner.refresh,
   });
+}
+
+/** Keep the draft editable, but block both submit paths for a missing workspace. */
+export function TaskReadinessComposer(props: ComponentProps<typeof Composer>) {
+  const owner = useContext(TaskReadinessContext);
+  const locale = useUiLocale();
+  const blocked = owner?.sessionId === props.draftKey && owner?.snapshot?.blockers.some(
+    (blocker) => blocker.id === 'workspace' && blocker.state !== 'unknown',
+  );
+  const reason = owner?.workspaceFixed
+    ? getWorktreeCopy(locale).fixedUnavailable
+    : getTaskReadinessCopy(locale).workspace.title;
+  return <Composer {...props}
+    sendBlocked={props.sendBlocked || blocked}
+    sendBlockedReason={blocked ? reason : props.sendBlockedReason}
+  />;
 }

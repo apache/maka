@@ -24,16 +24,22 @@ import type { TaskSubmissionReadinessDimension, TaskSubmissionReadinessSnapshot 
 import type { UiLocale } from '@maka/core/ui-locale';
 import { getTaskReadinessCopy } from '../../../locales/task-readiness-copy.js';
 
-/** Selects the stored model target for the renderer's readiness probe. */
-export function resolveTaskReadinessModelTarget(
-  session: { llmConnectionSlug: string; model: string } | undefined,
+/** Projects the model and fixed workspace for the renderer readiness probe. */
+export function resolveTaskReadinessRequest(
+  session: { llmConnectionSlug: string; model: string; cwd?: string; workspaceFixed?: boolean } | undefined,
   _sendOutcome: SessionSendProjection | undefined,
   newTaskTarget: { llmConnectionSlug: string; model: string } | undefined,
-): { connectionSlug?: string; model?: string } {
-  return optionalModelTarget(
-    session?.llmConnectionSlug ?? newTaskTarget?.llmConnectionSlug,
-    session?.model ?? newTaskTarget?.model,
-  );
+  newTaskPath?: string,
+): { connectionSlug?: string; model?: string; cwd?: string; workspaceFixed?: boolean } {
+  const cwd = session?.cwd ?? newTaskPath;
+  return {
+    ...optionalModelTarget(
+      session?.llmConnectionSlug ?? newTaskTarget?.llmConnectionSlug,
+      session?.model ?? newTaskTarget?.model,
+    ),
+    ...(cwd ? { cwd } : {}),
+    ...(session?.workspaceFixed ? { workspaceFixed: true } : {}),
+  };
 }
 
 function optionalModelTarget(

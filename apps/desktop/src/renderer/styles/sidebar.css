@@ -297,12 +297,6 @@
   padding-inline-start: 0 !important;
 }
 
-/* A task has no leading icon, so under a project its title is pushed past the
-   project row's 1rem folder icon and the gap after it. */
-.maka-project-row .maka-session-row > div > .astryx-side-nav-item {
-  padding-inline-start: calc(var(--spacing-2) + 1rem + var(--spacing-2));
-}
-
 /*
  * Project/task hover details. Astryx owns the floating surface, top-layer
  * positioning, radius, padding, shadow, and open/close motion. This content
@@ -372,6 +366,12 @@
   gap: var(--space-0-5);
 }
 
+.maka-sidebar-hover-card-worktree {
+  min-width: 0;
+  color: var(--muted-foreground);
+  overflow-wrap: anywhere;
+}
+
 .maka-sidebar-hover-card-updated small {
   font: inherit;
 }
@@ -395,6 +395,18 @@
 .maka-session-row-attention-badge {
   display: inline-flex;
   flex: none;
+}
+
+/* Reserve the same leading slot on every task so titles align with each
+   other and with the project name, whether or not a worktree icon is shown. */
+.maka-session-row-worktree-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 1rem;
+  height: 1rem;
+  color: var(--muted-foreground);
 }
 
 .maka-session-row-host-badge > span,

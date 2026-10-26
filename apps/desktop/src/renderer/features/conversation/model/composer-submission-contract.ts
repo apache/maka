@@ -54,6 +54,7 @@ export interface ComposerSubmissionShell<Owner extends ComposerSurfaceOwner> {
   isNewChatOwnerActive(owner: Owner): boolean;
   activateFirstSendSession(session: DesktopSessionSummary): Promise<void>;
   openSession(sessionId: string, turnId?: string): void;
+  openNewTaskSurface?(): void;
   /** Drops a Session's renderer state after its unsent first message was retracted. */
   retireSession(sessionId: string): void;
   refreshSessions(): Promise<unknown>;

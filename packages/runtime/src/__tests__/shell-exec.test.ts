@@ -107,6 +107,17 @@ describe('runShellWithBoundedTail', () => {
     assert.equal(r.exitCode, 124);
   });
 
+  test('zero timeout lets the process finish normally', async () => {
+    const result = await runProcessWithBoundedTail(
+      process.execPath,
+      ['-e', "setTimeout(() => process.stdout.write('finished'), 100)"],
+      base({ timeoutMs: 0 }),
+    );
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.stdout, 'finished');
+    assert.equal(result.timedOut, false);
+  });
+
   test('does not spawn a process for an already-aborted invocation', async () => {
     const dir = await fs.mkdtemp(join(tmpdir(), 'shell-exec-pre-abort-'));
     const marker = join(dir, 'spawned');
@@ -196,7 +207,7 @@ describe('runShellWithBoundedTail', () => {
     }
   });
 
-  test('on abort, kills detached descendants of a directly spawned process', async () => {
+  test('on abort without a timeout, kills detached descendants of a directly spawned process', async () => {
     const dir = await fs.mkdtemp(join(tmpdir(), 'shell-exec-tree-'));
     const pidFile = join(dir, 'child.pid');
     const parentFile = join(dir, 'parent.cjs');
@@ -220,7 +231,7 @@ describe('runShellWithBoundedTail', () => {
       process.execPath,
       [parentFile],
       base({
-        timeoutMs: 10_000,
+        timeoutMs: 0,
         killGraceMs: 150,
         abortSignal: abort.signal,
       }),

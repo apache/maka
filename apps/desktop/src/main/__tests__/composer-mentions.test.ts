@@ -24,6 +24,7 @@ import { parseHTML } from 'linkedom';
 import { act, createElement, useLayoutEffect } from 'react';
 import { createRoot } from 'react-dom/client';
 import type { InvocableSkillEntry } from '@maka/runtime/skill-invocation';
+import type { DesktopNewTaskTarget } from '../../preload/bridge-contract.js';
 import { LocaleProvider } from '@maka/ui';
 import {
   ComposerMentionsProvider,
@@ -80,6 +81,14 @@ function installCatalogRenderer(t: TestContext) {
     resolve(skills: InvocableSkillEntry[]): void;
   }> = [];
   const services = stubConversationServices({
+    newTasks: {
+      subscribeChanges: () => () => {},
+      listInvocableSkills: async () => [],
+      searchFiles: async (target) => ({
+        ok: true,
+        files: [{ relativePath: target.worktree?.kind === 'existing' ? `${target.worktree.path}/file.ts` : 'main/file.ts' }],
+      }),
+    },
     skills: {
       listInvocable: (sessionId: string) => new Promise<InvocableSkillEntry[]>((resolve) => {
         pending.push({ sessionId, resolve });
@@ -89,9 +98,11 @@ function installCatalogRenderer(t: TestContext) {
 
   const sessionCatalog = createSessionCatalogController();
   const observations: CatalogObservation[] = [];
+  let latestMentions!: ComposerMentions;
   function Consumer({ sessionId }: { sessionId: string }) {
     const mentions = useComposerMentionsContext();
     assert.ok(mentions);
+    latestMentions = mentions;
     useLayoutEffect(() => {
       // Record what a consumer sees before the provider's passive effect can
       // replace the previous context's catalog and hide a missing render guard.
@@ -118,6 +129,7 @@ function installCatalogRenderer(t: TestContext) {
 
   return {
     observations,
+    searchFiles: (query: string) => latestMentions.searchMentionFiles(query),
     latest() {
       const observation = observations.at(-1);
       assert.ok(observation);
@@ -126,8 +138,8 @@ function installCatalogRenderer(t: TestContext) {
     pendingRequestCount() {
       return pending.length;
     },
-    async render(sessionId: string, skillCatalogRevision = 0, projectPath?: string) {
-      await act(() => root.render(createElement(LocaleProvider, {
+    async render(sessionId: string, skillCatalogRevision = 0, projectPath?: string, newTaskTarget?: DesktopNewTaskTarget) {
+      await act(async () => { root.render(createElement(LocaleProvider, {
         locale: 'en',
         children: createElement(ConversationServicesProvider, {
           services,
@@ -137,7 +149,8 @@ function installCatalogRenderer(t: TestContext) {
               draftKey: sessionId,
               conversationServices: services,
               children: createElement(ComposerMentionsProvider, {
-              sessionId,
+              sessionId: newTaskTarget ? undefined : sessionId,
+              newTaskTarget,
               projectPath,
               skillCatalogRevision,
               children: createElement(Consumer, { sessionId }),
@@ -145,7 +158,7 @@ function installCatalogRenderer(t: TestContext) {
             }),
           }),
         }),
-      })));
+      })); });
     },
     async settleNext(sessionId: string, skills: InvocableSkillEntry[]) {
       const request = pending.shift();
@@ -232,4 +245,15 @@ test('resolving the project path for an existing session keeps its catalog settl
     unavailable: false,
   });
   assert.equal(renderer.pendingRequestCount(), 0);
+});
+
+test('file mentions follow worktree switches within the same new-task project', async (t) => {
+  const renderer = installCatalogRenderer(t);
+  const target = { profileId: 'local', hostId: 'host-local', projectId: 'project-a' };
+  for (const path of ['/worktrees/first', '/worktrees/second']) {
+    await renderer.render('draft', 0, path, { ...target, worktree: { kind: 'existing', path } });
+    assert.deepEqual(await renderer.searchFiles('file'), [{ relativePath: `${path}/file.ts` }]);
+  }
+  await renderer.render('draft', 0, '/main', { ...target, worktree: { kind: 'main' } });
+  assert.deepEqual(await renderer.searchFiles('file'), [{ relativePath: 'main/file.ts' }]);
 });

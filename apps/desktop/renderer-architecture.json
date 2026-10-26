@@ -355,7 +355,7 @@
         "createComposerStagingCommands",
         "createComposerSubmissionCommands",
         "createExecutorSessionActivator",
-        "resolveTaskReadinessModelTarget",
+        "resolveTaskReadinessRequest",
         "useActiveExecutionBoundary",
         "useAppShellSessionUiState",
         "useShellChatModel"
@@ -513,6 +513,11 @@
         "WorkHubRoot",
         "WorkHubServicesProvider",
         "WorkHubSurfaceSwitch"
+      ]
+    },
+    "src/renderer/features/worktrees/index.ts": {
+      "composition": [
+        "WorktreeServicesProvider"
       ]
     }
   },
@@ -740,7 +745,7 @@
           "react": 1
         },
         "importSpecifiers": 43,
-        "nonTriviaTokens": 7274
+        "nonTriviaTokens": 7250
       },
       "src/renderer/use-app-shell-session-list.ts": {
         "importDeclarations": 3,
@@ -2987,6 +2992,7 @@
           "../features/personal-assistant/index.js": 1,
           "../features/session-bundle": 1,
           "../features/session-navigation": 1,
+          "../features/worktrees/index.js": 1,
           "../locales/settings-navigation-copy.js": 1,
           "../locales/settings-shared-copy.js": 1,
           "./about-settings-page": 1,

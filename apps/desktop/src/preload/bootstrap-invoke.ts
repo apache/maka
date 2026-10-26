@@ -42,6 +42,7 @@ const RUNTIME_HOST_INDEPENDENT_SCOPED_CHANNELS = new Set([
   'browser:close-page',
   'diagnostics:copyReport',
   'session-local:cancel',
+  'session-local:resolve-worktree',
   'session-local:create',
   'session-local:discard',
   'session-local:messages',

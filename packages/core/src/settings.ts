@@ -96,6 +96,7 @@ export const SETTINGS_SECTIONS = [
   'general',
   'appearance',
   'projects',
+  'worktrees',
   'memory',
   'daily-review',
   'models',

@@ -17,7 +17,7 @@
  * under the License.
  */
 
-export { resolveTaskReadinessModelTarget } from './model/task-readiness-notice.js';
+export { resolveTaskReadinessRequest } from './model/task-readiness-notice.js';
 export type { AppShellSessionUiStateController } from './model/session-ui-state.js';
 export type { SessionUiReads } from './model/session-ui-reads.js';
 export type { ConversationHostChange, ConversationCheckinPort, ConversationServices } from './ports.js';

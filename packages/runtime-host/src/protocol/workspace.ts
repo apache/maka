@@ -17,13 +17,19 @@
  * under the License.
  */
 
-import { requireEntityId, requireExactRecord, requireRecord, requireUtf8String } from './codec.js';
+import {
+  requireEntityId,
+  requireExactRecord,
+  requireRecord,
+  requireShapedRecord,
+  requireUtf8String,
+} from './codec.js';
 import { invalidProtocolFrame } from './errors.js';
 
 export const WORKSPACE_HOST_PATH_MAX_BYTES = 4 * 1024;
 
 export type WorkspaceTarget =
-  | { readonly kind: 'project'; readonly projectId: string }
+  | { readonly kind: 'project'; readonly projectId: string; readonly worktreePath?: string }
   | { readonly kind: 'host_path'; readonly path: string };
 
 export interface WorkspaceProjection {
@@ -46,10 +52,18 @@ export function decodeHostPath(
 export function decodeWorkspaceTarget(value: unknown): WorkspaceTarget {
   const target = requireRecord(value, 'Workspace target');
   if (target.kind === 'project') {
-    const exact = requireExactRecord(target, 'Project workspace target', ['kind', 'projectId']);
+    const exact = requireShapedRecord(
+      target,
+      'Project workspace target',
+      ['kind', 'projectId'],
+      ['worktreePath'],
+    );
     return {
       kind: 'project',
       projectId: requireEntityId(exact.projectId, 'Workspace project id'),
+      ...(exact.worktreePath === undefined
+        ? {}
+        : { worktreePath: decodeHostPath(exact.worktreePath, 'Worktree path') }),
     };
   }
   if (target.kind === 'host_path') {

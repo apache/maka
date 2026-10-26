@@ -37,6 +37,7 @@ import { composerTurnGates, desktopComposerSlashCommands } from '../model/compos
 import { executorComposerProps } from '../model/executor-composer.js';
 import { ExecutorBrandMark } from './executor-brand-marks.js';
 import type { LatestRequestUsage } from '../../../application/contracts/session-inspector/latest-request-usage.js';
+import { BranchWorktreeRoot } from '../submission-services.js';
 import { liveTurnFlags } from '../model/live-turn-flags.js';
 
 /** The displayed Session's Turn, read at chrome frequency. */
@@ -59,7 +60,7 @@ type TranscriptProps = Pick<ChatProps,
 };
 /** Shell-owned inputs for transcript action and health-notice gates. */
 type TranscriptGateInputs = {
-  activeSession?: ChatProps['activeSession'];
+  activeSession?: ChatProps['activeSession'] & { readonly revision?: number };
   /** The owner Session's execution boundary admits local interaction. */
   localInteractionAvailable: boolean;
   visible?: boolean;
@@ -115,7 +116,11 @@ export function ConversationTranscriptRegion<P extends object>(
   };
   // Keep parent updates from handing a covered transcript fresh props.
   return useMemo(
-    () => createElement(surface, { ...presentation, ...owned } as unknown as P),
+    () => createElement(BranchWorktreeRoot, {
+      sessionId,
+      sessionRevision: props.activeSession?.revision,
+      children: createElement(surface, { ...presentation, ...owned } as unknown as P),
+    }),
     [surface, visible, visible ? presentation : null, visible ? owned : null],
   );
 }

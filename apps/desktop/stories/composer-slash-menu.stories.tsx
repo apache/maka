@@ -152,6 +152,7 @@ const makaBridge = {
 };
 
 const conversationServices: ConversationServices = {
+  resolveWorktreePreparation: stubConversationServices().resolveWorktreePreparation,
   observation: stubConversationServices().observation,
   resume: stubConversationServices().resume,
   listMessages: async () => [],

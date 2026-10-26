@@ -179,7 +179,7 @@ export function useSessionNavigationController(
   const sessionLocation = useCallback(
     (session: SessionSummary): string | undefined => {
       const projected = sessionById.get(session.id);
-      if (!projected || runtimeHostProfileUsesHostWorkspace(projected.profileKind)) {
+      if (!projected) {
         return undefined;
       }
       const project = projected.projectId
@@ -187,7 +187,7 @@ export function useSessionNavigationController(
             runtimeHostProjectKey(projected.runtimeHostId, projected.projectId),
           )
         : undefined;
-      return deriveSessionLocation(projected, project);
+      return deriveSessionLocation(projected, project) ?? projected.cwd;
     },
     [projectByIdentity, sessionById],
   );

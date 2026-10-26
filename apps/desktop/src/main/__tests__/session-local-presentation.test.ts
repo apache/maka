@@ -233,3 +233,27 @@ test('failed-message recovery resolves the mounted composer when each callback r
   recovery.restoreDraft(recoveredDraft);
   assert.deepEqual(restored.at(-1), ['replacement', recoveredDraft.text, recoveredDraft.inlineReferences]);
 });
+
+test('worktree initialization pauses describe the retained message and its recovery route', () => {
+  const paused = localMessagePresentation({ ...message, state: 'paused', pauseReason: 'worktree_initialization' }, 'en');
+  assert.equal(paused.status, 'Initialization failed');
+  assert.match(paused.detail!, /original message is saved/);
+  assert.match(paused.detail!, /Worktree settings/);
+  assert.equal(paused.tone, 'warning');
+});
+
+test('worktree preparation remains visible with elapsed time until Host admission', () => {
+  for (const locale of ['en', 'zh-CN', 'zh-TW'] as const) {
+    for (const phase of ['preparing', 'checkout', 'initializing', 'finalizing'] as const) {
+      const preparing = { ...message, state: 'saved' as const, delivering: true as const,
+        worktreePreparation: { phase, elapsedSeconds: 65, path: '/worktrees/task' } };
+      const result = localMessagePresentation(preparing, locale);
+      assert.ok(result.status);
+      assert.match(result.elapsed!, /1.*5/);
+      assert.match(result.detail!, /\/worktrees\/task/);
+      assert.equal(result.tone, 'neutral');
+      assert.deepEqual(localMessagePresentation({ ...preparing, state: 'accepted' }, locale), { tone: 'neutral' });
+      assert.notEqual(localMessagePresentation({ ...preparing, state: 'failed' }, locale).status, result.status);
+    }
+  }
+});

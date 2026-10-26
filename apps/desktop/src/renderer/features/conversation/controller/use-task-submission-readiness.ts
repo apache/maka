@@ -23,9 +23,9 @@ import type { ConversationNewTaskTarget } from '../ports.js';
 import type { TaskReadinessRequest, TaskReadinessServices } from '../readiness-services.js';
 
 /**
- * Called only by `TaskReadinessProvider`. A changed request, target or refresh
- * key clears the previous snapshot before reading again; only the latest read
- * publishes, so a slow answer for an earlier target cannot replace a newer one.
+ * Called only by `TaskReadinessProvider`. Request changes clear the previous
+ * snapshot; refreshes retain confirmed workspace blockers until a new answer.
+ * Only the latest read publishes, including after cleanup and focus events.
  */
 export function useTaskSubmissionReadiness(
   services: TaskReadinessServices,
@@ -35,9 +35,7 @@ export function useTaskSubmissionReadiness(
   newTaskTarget?: ConversationNewTaskTarget,
 ) {
   const [snapshot, setSnapshot] = useState<TaskSubmissionReadinessSnapshot>();
-  const [revision, setRevision] = useState(0);
   const requestSequence = useRef(0);
-  const refresh = useCallback(() => setRevision((value) => value + 1), []);
 
   const checkNow = useCallback(async () => {
     const sequence = ++requestSequence.current;
@@ -49,13 +47,14 @@ export function useTaskSubmissionReadiness(
           : undefined;
       if (requestSequence.current === sequence) setSnapshot(next);
     } catch {
-      if (requestSequence.current === sequence) setSnapshot(undefined);
+      if (requestSequence.current === sequence) setSnapshot(retainWorkspaceBlocker);
     }
   }, [
     services,
     request.connectionSlug,
     request.model,
     request.cwd,
+    request.workspaceFixed,
     sessionId,
     newTaskTarget?.profileId,
     newTaskTarget?.hostId,
@@ -66,7 +65,26 @@ export function useTaskSubmissionReadiness(
     requestSequence.current += 1;
     setSnapshot(undefined);
     void checkNow();
-  }, [checkNow, refreshKey, revision]);
+    return () => { requestSequence.current += 1; };
+  }, [checkNow, refreshKey]);
+
+  // Keep the last confirmed blocker while refreshing the same target. A
+  // cleanup event or return from an external deletion must recheck readiness.
+  const refresh = useCallback(() => {
+    setSnapshot(retainWorkspaceBlocker);
+    void checkNow();
+  }, [checkNow]);
+  useEffect(() => services.subscribeChanges(refresh), [services, refresh]);
+  useEffect(() => {
+    window.addEventListener('focus', refresh);
+    return () => window.removeEventListener('focus', refresh);
+  }, [refresh]);
 
   return { snapshot, refresh };
+}
+
+function retainWorkspaceBlocker(snapshot: TaskSubmissionReadinessSnapshot | undefined) {
+  return snapshot?.blockers.some(
+    (blocker) => blocker.id === 'workspace' && blocker.state !== 'unknown',
+  ) ? snapshot : undefined;
 }

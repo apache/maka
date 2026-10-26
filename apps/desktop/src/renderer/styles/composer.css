@@ -415,8 +415,14 @@
 /* Model + thinking pair lives in left-controls (after permission), not send. */
 .maka-composer-left-controls .maka-model-selection-controls {
   flex: 0 1 auto;
+  flex-wrap: nowrap;
   min-width: 0;
   max-width: 100%;
+}
+/* Agent recovery includes explanatory text and an action. Let it wrap rather
+   than consume the model label's width in the otherwise single-row controls. */
+.maka-composer-left-controls .maka-model-selection-controls:has(.maka-executor-recovery) {
+  flex-wrap: wrap;
 }
 /* Selector's className belongs to the trigger INSIDE its Field. The Field
    is the model group's flex item, so its automatic content minimum must be
@@ -468,12 +474,9 @@
 .maka-composer-left-controls .maka-new-chat-model-selector .modelPickerOptionLabel {
   direction: ltr;
 }
-/* External model names share this row with an executor selector. Size the
-   trigger to its label and let the pair wrap instead of squeezing the model
-   into the native model + thinking pair's width budget. */
+/* External model names share this row with an executor selector. */
 .maka-composer-left-controls .maka-model-selection-controls:has(.maka-external-model-selector) {
   max-width: 100%;
-  flex-wrap: wrap;
 }
 .maka-composer-left-controls .maka-external-model-selector {
   width: max-content;
@@ -613,10 +616,30 @@
 .maka-composer-workspace {
   display: flex;
   align-items: center;
+  gap: var(--space-1);
   min-width: 0;
+  max-width: 100%;
+  flex-shrink: 0;
 }
 
-.maka-composer-workspace [role="menu"] {
+/* Measure expanded controls before React selects the fitting presentation. */
+.maka-composer-left-controls[data-workspace-layout='measure'] > * {
+  flex-shrink: 0;
+}
+
+.maka-workspace-picker-divider {
+  color: var(--muted-foreground);
+  flex-shrink: 0;
+}
+
+.maka-worktree-picker {
+  min-width: 0;
+  max-width: min(180px, 35vw);
+  flex: 0 1 auto;
+}
+
+/* Only the project directory list owns this scroll container. */
+.maka-composer-workspace [role="menu"]:has(> .maka-workspace-picker-scroll) {
   max-width: min(360px, calc(100vw - var(--space-6)));
   max-height: none;
   overflow: visible;
@@ -629,6 +652,25 @@
   scrollbar-gutter: stable;
   scrollbar-color: var(--foreground-alpha-16) transparent;
   scrollbar-width: thin;
+}
+
+.maka-worktree-existing {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.maka-worktree-search {
+  flex-shrink: 0;
+  padding: var(--space-2);
+  border-bottom: 1px solid var(--border);
+}
+
+.maka-worktree-existing-list {
+  min-height: 0;
+  max-height: min(240px, calc(100vh - var(--space-12)));
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .maka-workspace-picker-group + .maka-workspace-picker-group {

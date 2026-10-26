@@ -36,6 +36,7 @@ import {
   RuntimeHostSubscriptionError,
 } from '@maka/runtime-host/client';
 import {
+  decodeSessionCreateInput,
   SESSION_CONTINUITY_SCHEMA_VERSION,
   type GoalProjection,
   type InteractionPendingSnapshot,
@@ -60,6 +61,60 @@ import { WAIT_BUDGET_MS } from './tui-terminal-mock.js';
 import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
 
 describe('Runtime Host Maka Session driver', () => {
+  for (const path of ['/project', '/worktrees/task']) {
+    test(`/new preserves the project checkout ${path} through the creation protocol`, async () => {
+      const connection = new FakeConnection([
+        new FakeSubscription(continuitySnapshot({ rootTurn: null }), Promise.resolve([])),
+        new FakeSubscription(
+          continuitySnapshot({
+            session: {
+              sessionId: 'session-2',
+              metadataRevision: 1,
+              status: 'running',
+              createdAt: 1,
+              isArchived: false,
+            },
+            rootTurn: null,
+          }),
+          Promise.resolve([]),
+        ),
+      ]);
+      const request = connection.value.request;
+      connection.value.request = async (operation, input) => {
+        if (operation === 'session.create') decodeSessionCreateInput(input);
+        const result = await request(operation, input);
+        if (operation !== 'session.create') return result;
+        return {
+          ...(result as SessionCatalogProjection),
+          workspace: {
+            target: { kind: 'project', projectId: 'project', worktreePath: path },
+            hostCwd: path,
+          },
+        } as typeof result;
+      };
+      let nextId = 0;
+      const driver = createRuntimeHostMakaSessionDriver({
+        connection: connection.value,
+        cwd: path,
+        workspace: { kind: 'project', projectId: 'project' },
+        llmConnectionId: 'connection-1',
+        llmConnectionSlug: 'openai-main',
+        model: 'gpt-5',
+        newId: () => `session-${++nextId}`,
+      });
+      await driver.createSession({ cwd: path, model: 'gpt-5', llmConnectionSlug: 'openai-main' });
+      await driver.startNewSession();
+      await driver.preparePrompt('hello');
+      const creates = connection.requests.filter(({ operation }) => operation === 'session.create');
+      assert.equal(creates.length, 2);
+      assert.deepEqual((creates[1]!.input as OperationInput<'session.create'>).workspace, {
+        kind: 'project',
+        projectId: 'project',
+        worktree: { kind: 'existing', path },
+      });
+    });
+  }
+
   test('maps authoritative Catalog activity into Session summaries', () => {
     assert.equal(
       projectSessionCatalogSummary(sessionProjection({ activityAt: 42 })).activityAt,

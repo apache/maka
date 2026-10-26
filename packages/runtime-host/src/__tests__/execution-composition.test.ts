@@ -42,12 +42,12 @@ import { createRunCompositionSnapshot } from '@maka/core/run-composition';
 import type { BackendSendInput } from '@maka/core/backend-types';
 import type { SessionEvent } from '@maka/core/events';
 import { runtimeHandoffPause } from '@maka/core/runtime-handoff';
-import { deferred } from '@maka/core/test-only/async-primitives';
+import { deferred, withTimeout } from '@maka/core/test-only/async-primitives';
 import { runtimeInvocationFailureClass } from '@maka/runtime/runtime-event-read-model';
 import { parseNoRealConnectionError } from '@maka/core/connection-error-copy';
 import { PluginAgentService, type PluginAgentRuntime } from '@maka/runtime/plugin-agent-service';
 import { createRequire } from 'node:module';
-import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -113,10 +113,13 @@ import {
 } from '../protocol/index.js';
 import { PersonalAssistantService } from '../assistant/service.js';
 import { RootTurnCoordinator } from '../server/root-turn-coordinator.js';
+import { HostProjectMembershipGate } from '../server/project-membership-gate.js';
+import { HostWorktreeManager } from '../server/worktree-manager.js';
 import { HostWorkHubResultCoordinator } from '../server/workhub-result-coordinator.js';
 import { readLedgerMessages } from './fixtures/ledger-transcript.js';
 import { clientCapabilityConnectionIdentity } from './fixtures/client-capability.js';
 import { workHubDesktopCapabilityOffers } from './fixtures/workhub-capabilities.js';
+import { testScript } from './worktree-fixture.js';
 
 const require = createRequire(import.meta.url);
 const FAKE_CONNECTION_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
@@ -5219,6 +5222,7 @@ async function createCapturedExecutionComposition(
     readonly onWorkHubResult?: (input: BackendSendInput) => void;
     readonly primaryBackendFactory?: BackendFactory;
     readonly generateSessionTitle?: ExecutionRuntimeHostCompositionDependencies['generateSessionTitle'];
+    readonly generateWorktreeName?: ExecutionRuntimeHostCompositionDependencies['generateWorktreeName'];
     readonly residencies?: HostResidencyRegistry;
   } = {},
 ): Promise<{
@@ -5255,12 +5259,15 @@ async function createCapturedExecutionComposition(
         ...options.context,
       },
       {
+        // Composition tests configure their own models, independent of developer credentials.
+        bootstrapRuntimePolicy: false,
         ...(options.assistantHomeDirectory
           ? { assistantHomeDirectory: options.assistantHomeDirectory }
           : {}),
       },
       {
         generateSessionTitle: options.generateSessionTitle,
+        generateWorktreeName: options.generateWorktreeName,
         primaryBackendFactory: (context) =>
           context.sessionId === WORKHUB_COORDINATION_SESSION_ID
             ? new (class extends FakeBackend {
@@ -5916,7 +5923,7 @@ test('assistant Host fallback registers a task workspace usable by ordinary Sess
   timeout: 30000,
 }, async () => {
   await withCompositionRoot(async ({ root, owner }) => {
-    const home = join(root, 'isolated-home');
+    const home = join(await realpath(root), 'isolated-home');
     await mkdir(home);
     const caller: ConnectionContext = {
       hostEpoch: 'assistant-workspace-test',
@@ -5932,7 +5939,7 @@ test('assistant Host fallback registers a task workspace usable by ordinary Sess
       captured.composition.handlers['personal-assistant.call']({ method, input }, caller);
     try {
       const missingModel = await call('assistant.allocate-workspace');
-      assert.equal(missingModel.ok, false);
+      assert.equal(missingModel.ok, false, JSON.stringify(missingModel));
       if (!missingModel.ok) assert.match(missingModel.error.message, /No default Session model/);
       assert.equal((await captured.manager.listSessions()).length, 0);
       await assert.rejects(stat(join(home, 'Maka')));
@@ -5978,3 +5985,676 @@ test('assistant Host fallback registers a task workspace usable by ordinary Sess
     }
   });
 });
+
+test('project relink serializes legacy conversation-copy publication', {
+  timeout: 30_000,
+}, async (t) => {
+  await withCompositionRoot(async ({ root, owner }) => {
+    const originalPath = join(root, 'original');
+    const targetPath = join(root, 'target');
+    await mkdir(originalPath);
+    await mkdir(targetPath);
+    const connectionId = await configureFakeDefaultTarget(owner);
+    const captured = await createCapturedExecutionComposition(owner);
+    const caller: ConnectionContext = {
+      hostEpoch: 'project-relink-copy-test',
+      connectionId: 'desktop',
+      principal: 'local_owner',
+      principalKind: 'local_owner',
+      acquireResidency: () => ({ release() {} }),
+    };
+    const guardStarted = deferred<void>();
+    const releaseGuard = deferred<void>();
+    const copyQueued = deferred<void>();
+    let relinkPaused = false;
+    let pendingCopy: Promise<unknown> | undefined;
+    let pendingRelink: Promise<unknown> | undefined;
+    try {
+      const handlers = captured.composition.handlers;
+      const registered = await handlers['project.catalog.mutate'](
+        { kind: 'register', path: originalPath },
+        caller,
+      );
+      assert.ok(registered.ok);
+      if (!registered.ok) return;
+      const projectId = registered.result.project.id;
+      // Legacy Sessions predate durable worktree bindings.
+      const source = await captured.manager.createSession({
+        cwd: originalPath,
+        projectId,
+        llmConnectionId: connectionId,
+        llmConnectionSlug: 'fake',
+        model: 'fake-model',
+        permissionMode: 'ask',
+      });
+      const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+      const { revision } = await stores.sessionStore.readHeaderRecordSnapshot(source.id);
+      const isBound = HostWorktreeManager.prototype.isBound;
+      t.mock.method(
+        HostWorktreeManager.prototype,
+        'isBound',
+        async function (this: HostWorktreeManager, sessionId: string) {
+          const bound = await isBound.call(this, sessionId);
+          if (sessionId === source.id) {
+            relinkPaused = true;
+            guardStarted.resolve();
+            await releaseGuard.promise;
+            relinkPaused = false;
+          }
+          return bound;
+        },
+      );
+      const membershipRun = HostProjectMembershipGate.prototype.run;
+      t.mock.method(HostProjectMembershipGate.prototype, 'run', function <
+        T,
+      >(this: HostProjectMembershipGate, operation: () => Promise<T>) {
+        if (relinkPaused) copyQueued.resolve();
+        return membershipRun.call(this, operation) as Promise<T>;
+      });
+      const relink = handlers['project.catalog.mutate'](
+        { kind: 'relink', projectId, path: targetPath },
+        caller,
+      );
+      pendingRelink = relink;
+      await withTimeout(
+        guardStarted.promise,
+        2000,
+        'Project relink did not inspect fixed bindings',
+      );
+      const copy = handlers['session.branch.create'](
+        {
+          sourceSessionId: source.id,
+          targetSessionId: 'legacy-copy-after-relink',
+          expectedSourceRevision: revision,
+          intent: 'side_conversation',
+        },
+        caller,
+      );
+      pendingCopy = copy;
+      await withTimeout(
+        copyQueued.promise,
+        2000,
+        'Conversation copy bypassed the project membership gate',
+      );
+      releaseGuard.resolve();
+      assert.equal((await relink).ok, true);
+      const copied = await copy;
+      assert.ok(copied.ok && copied.result.kind === 'source_revision_conflict');
+      await assert.rejects(stores.sessionStore.readHeaderSnapshot('legacy-copy-after-relink'));
+    } finally {
+      releaseGuard.resolve();
+      await Promise.allSettled([pendingCopy, pendingRelink]);
+      await captured.composition.close();
+    }
+  });
+});
+
+test('task worktree lifecycle stays on the Host across creation, fork, recovery and cleanup', {
+  timeout: 30_000,
+}, async () => {
+  await withCompositionRoot(async ({ root, owner }) => {
+    const repo = join(root, 'project');
+    await mkdir(repo);
+    const git = (...args: string[]) =>
+      execFileSync('git', ['-C', repo, ...args], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+      }).trim();
+    git('init', '-b', 'main');
+    git('config', 'user.name', 'Worktree test');
+    git('config', 'user.email', 'test@example.invalid');
+    await writeFile(join(repo, 'file.txt'), 'initial\n');
+    git('add', '.');
+    git('commit', '-m', 'initial');
+    await configureFakeDefaultTarget(owner);
+    const caller: ConnectionContext = {
+      hostEpoch: 'worktree-test',
+      connectionId: 'desktop',
+      principal: 'local_owner',
+      principalKind: 'local_owner',
+      acquireResidency: () => ({ release() {} }),
+    };
+    const namingStarted = deferred<void>();
+    const releaseNaming = deferred<void>();
+    let pauseNaming = false;
+    let captured = await createCapturedExecutionComposition(owner, {
+      generateWorktreeName: async () => {
+        if (pauseNaming) {
+          namingStarted.resolve();
+          await releaseNaming.promise;
+        }
+        return { type: 'feat', slug: 'add-search' };
+      },
+    });
+    try {
+      const handlers = captured.composition.handlers;
+      const registered = await handlers['project.catalog.mutate'](
+        { kind: 'register', path: repo },
+        caller,
+      );
+      assert.equal(registered.ok, true, JSON.stringify(registered));
+      if (!registered.ok) return;
+      const projectId = registered.result.project.id;
+      assert.equal(
+        (
+          await handlers['worktree.mutate'](
+            {
+              kind: 'configure',
+              config: { rootDirectory: join(root, 'checkouts') },
+            },
+            caller,
+          )
+        ).ok,
+        true,
+      );
+      assert.equal(
+        (
+          await handlers['worktree.mutate'](
+            {
+              kind: 'configure',
+              projectId,
+              config: { setupScript: 'exit 7' },
+            },
+            caller,
+          )
+        ).ok,
+        true,
+      );
+      const createInput = {
+        sessionId: 'worktree-task',
+        workspace: {
+          kind: 'project' as const,
+          projectId,
+          worktree: { kind: 'new' as const },
+        },
+        taskDescription: 'Add search to the project',
+        modelTarget: { kind: 'default' as const },
+      };
+      const created = await handlers['session.create'](createInput, caller);
+      assert.equal(created.ok, true, JSON.stringify(created));
+      if (!created.ok) return;
+      assert.ok('workspace' in created.result);
+      if (!('workspace' in created.result)) return;
+      const source = created.result;
+      const explicitTarget = {
+        ...createInput,
+        sessionId: 'explicit-workspace-task',
+        workspace: {
+          kind: 'project' as const,
+          projectId,
+          worktree: {
+            kind: 'existing' as const,
+            path: source.workspace.hostCwd,
+          },
+        },
+      };
+      const firstExplicit = await handlers['session.create'](explicitTarget, caller);
+      assert.equal(firstExplicit.ok, true);
+      const changedTarget = await handlers['session.create'](
+        {
+          ...explicitTarget,
+          workspace: {
+            kind: 'project',
+            projectId,
+            worktree: { kind: 'existing', path: repo },
+          },
+        },
+        caller,
+      );
+      assert.equal(
+        changedTarget.ok,
+        false,
+        'a different checkout must conflict with the existing creation identity',
+      );
+      if (!changedTarget.ok) assert.equal(changedTarget.error.code, 'operation_conflict');
+      assert.deepEqual(await handlers['session.create'](explicitTarget, caller), firstExplicit);
+      const mainTask = await handlers['session.create'](
+        {
+          ...createInput,
+          sessionId: 'main-workspace-task',
+          workspace: {
+            kind: 'project',
+            projectId,
+            worktree: { kind: 'main' },
+          },
+        },
+        caller,
+      );
+      assert.equal(mainTask.ok, true);
+      const capability = await handlers['worktree.session.query'](
+        { sessionId: 'main-workspace-task' },
+        caller,
+      );
+      assert.equal(capability.ok, true);
+      if (capability.ok) assert.equal(capability.result.canCreate, true);
+      const unboundCheckout = await handlers['worktree.mutate'](
+        {
+          kind: 'create',
+          projectId,
+          operationId: 'unbound',
+          description: 'Unbound checkout',
+        },
+        caller,
+      );
+      assert.equal(unboundCheckout.ok, true);
+      if (unboundCheckout.ok && unboundCheckout.result.kind === 'worktree') {
+        const removed = await handlers['worktree.mutate'](
+          {
+            kind: 'remove',
+            projectId,
+            path: unboundCheckout.result.worktree.path,
+          },
+          caller,
+        );
+        assert.equal(
+          removed.ok,
+          true,
+          'cleanup without sessions does not enter an empty session gate',
+        );
+      }
+
+      assert.notEqual(source.workspace.hostCwd, repo);
+      assert.equal(source.workspace.target.kind, 'project');
+      const path = source.workspace.hostCwd;
+      const blocked = await handlers['turn.start'](
+        {
+          sessionId: source.id,
+          turnId: 'blocked-initialization-turn',
+          content: { text: 'Start work' },
+        },
+        caller,
+      );
+      assert.equal(blocked.ok, false, 'failed setup must block model execution');
+      if (!blocked.ok) assert.match(blocked.error.message, /initialization/i);
+      const skipped = await handlers['worktree.mutate'](
+        { kind: 'initialize', projectId, path, skip: true },
+        caller,
+      );
+      assert.equal(skipped.ok, true, JSON.stringify(skipped));
+      assert.deepEqual(source.workspaceBlocker, {
+        kind: 'worktree_initialization',
+        path,
+      });
+      const readyRetry = await handlers['session.create'](createInput, caller);
+      assert.equal(readyRetry.ok, true);
+      if (readyRetry.ok) {
+        assert.equal(readyRetry.result.workspaceBlocker, undefined);
+        const { workspaceBlocker, ...originalSession } = source;
+        assert.deepEqual(
+          readyRetry.result,
+          originalSession,
+          'retry adopts the same task with current readiness',
+        );
+      }
+      const shared = await handlers['session.create'](
+        {
+          ...createInput,
+          sessionId: 'shared-checkout-task',
+          workspace: {
+            kind: 'project',
+            projectId,
+            worktree: { kind: 'existing', path },
+          },
+        },
+        caller,
+      );
+      assert.equal(shared.ok, true, JSON.stringify(shared));
+      if (shared.ok && 'workspace' in shared.result)
+        assert.equal(shared.result.workspace.hostCwd, path);
+      await handlers['worktree.mutate'](
+        { kind: 'configure', projectId, config: { cleanupScript: 'exit 9' } },
+        caller,
+      );
+      await writeFile(join(path, 'source-head.txt'), 'current worktree HEAD');
+      execFileSync('git', ['-C', path, 'add', 'source-head.txt']);
+      execFileSync('git', ['-C', path, 'commit', '-m', 'advance source worktree'], {
+        stdio: 'pipe',
+      });
+      const sourceHead = execFileSync('git', ['-C', path, 'rev-parse', 'HEAD'], {
+        encoding: 'utf8',
+      }).trim();
+      assert.notEqual(sourceHead, git('rev-parse', 'HEAD'));
+      git('branch', 'retained-source-head', sourceHead);
+      const branchInput = {
+        sourceSessionId: source.id,
+        targetSessionId: 'fork-checkout-task',
+        expectedSourceRevision: source.revision,
+        intent: 'side_conversation' as const,
+        worktree: 'new' as const,
+      };
+      pauseNaming = true;
+      const preparingCopy = handlers['session.branch.create'](branchInput, caller);
+      let renamed;
+      try {
+        await withTimeout(namingStarted.promise, 3000, 'Fork did not start preparation');
+        renamed = await withTimeout(
+          handlers['session.metadata.update'](
+            {
+              sessionId: source.id,
+              expectedRevision: source.revision,
+              patch: { name: 'Renamed during preparation' },
+            },
+            caller,
+          ),
+          2000,
+          'Worktree preparation retained the source Session lease',
+        );
+      } finally {
+        pauseNaming = false;
+        releaseNaming.resolve();
+      }
+      assert.ok(renamed.ok && renamed.result.kind === 'committed');
+      if (!renamed.ok || renamed.result.kind !== 'committed') return;
+      const conflicted = await preparingCopy;
+      assert.ok(
+        conflicted.ok && conflicted.result.kind === 'source_revision_conflict',
+        'Copy must revalidate after preparing outside the lease',
+      );
+      const copied = await handlers['session.branch.create'](
+        {
+          ...branchInput,
+          expectedSourceRevision: renamed.result.session.revision,
+        },
+        caller,
+      );
+      assert.equal(copied.ok, true, JSON.stringify(copied));
+      assert.ok(
+        copied.ok && copied.result.kind === 'committed' && 'workspace' in copied.result.session,
+      );
+      if (copied.ok && copied.result.kind === 'committed' && 'workspace' in copied.result.session) {
+        const forkPath = copied.result.session.workspace.hostCwd;
+        assert.notEqual(forkPath, path);
+        assert.equal(
+          execFileSync('git', ['-C', forkPath, 'rev-parse', 'HEAD'], {
+            encoding: 'utf8',
+          }).trim(),
+          sourceHead,
+        );
+      }
+      const relocated = await handlers['session.workspace.relocate'](
+        {
+          sessionId: source.id,
+          expectedRevision: source.revision,
+          workspace: { kind: 'project', projectId },
+        },
+        caller,
+      );
+      assert.equal(relocated.ok, false, 'the worktree cannot be rebound');
+      await captured.composition.close();
+      captured = await createCapturedExecutionComposition(owner, {
+        generateWorktreeName: async () => {
+          throw new Error('Retry must not rename existing worktrees');
+        },
+      });
+      const recovered = await captured.composition.handlers['session.catalog.query'](
+        { kind: 'get', sessionId: source.id },
+        caller,
+      );
+      assert.equal(recovered.ok, true);
+      if (
+        recovered.ok &&
+        recovered.result.kind === 'session' &&
+        recovered.result.session &&
+        'workspace' in recovered.result.session
+      )
+        assert.equal(recovered.result.session.workspace.hostCwd, path);
+      const cleanup = await captured.composition.handlers['worktree.mutate'](
+        { kind: 'remove', projectId, path },
+        caller,
+      );
+      assert.equal(cleanup.ok, true, JSON.stringify(cleanup));
+      if (!cleanup.ok || cleanup.result.kind !== 'cleanup_failed') return;
+      const removed = await captured.composition.handlers['worktree.mutate'](
+        {
+          kind: 'remove',
+          projectId,
+          path,
+          confirmation: cleanup.result.confirmation,
+        },
+        caller,
+      );
+      assert.equal(removed.ok, true, JSON.stringify(removed));
+      if (removed.ok) assert.equal(removed.result.kind, 'removed');
+      const preserved = await captured.composition.handlers['session.catalog.query'](
+        { kind: 'get', sessionId: source.id },
+        caller,
+      );
+      assert.equal(preserved.ok, true, 'cleanup preserves conversation history');
+      const unavailable = await captured.composition.handlers['turn.start'](
+        {
+          sessionId: source.id,
+          turnId: 'removed-checkout-turn',
+          content: { text: 'Do not fall back to another directory' },
+        },
+        caller,
+      );
+      assert.equal(unavailable.ok, false, 'cleanup never redirects a task to the main checkout');
+    } finally {
+      releaseNaming.resolve();
+      await captured.composition.close();
+    }
+  });
+});
+
+for (const subdirectory of [false, true])
+  test(`worktree cleanup protects live Shell resources in idle sessions (subdirectory=${subdirectory})`, {
+    timeout: 30_000,
+  }, async () => {
+    await withCompositionRoot(async ({ root, owner }) => {
+      const repo = join(root, 'project');
+      await mkdir(join(repo, 'nested'), { recursive: true });
+      const git = (...args: string[]) =>
+        execFileSync('git', ['-C', repo, ...args], { stdio: 'pipe' });
+      git('init', '-b', 'main');
+      git('config', 'user.name', 'Worktree test');
+      git('config', 'user.email', 'test@example.invalid');
+      await writeFile(join(repo, 'nested', 'file.txt'), 'initial\n');
+      git('add', '.');
+      git('commit', '-m', 'initial');
+      await configureFakeDefaultTarget(owner);
+      const { composition, manager } = await createCapturedExecutionComposition(owner);
+      const caller: ConnectionContext = {
+        hostEpoch: 'worktree-shell-test',
+        connectionId: 'cli',
+        principal: 'local_owner',
+        principalKind: 'local_owner',
+        acquireResidency: () => ({ release() {} }),
+      };
+      try {
+        const handlers = composition.handlers;
+        const registered = await handlers['project.catalog.mutate'](
+          { kind: 'register', path: repo },
+          caller,
+        );
+        assert.ok(registered.ok, JSON.stringify(registered));
+        const projectId = registered.result.project.id;
+        const configured = await handlers['worktree.mutate'](
+          { kind: 'configure', config: { rootDirectory: join(root, 'checkouts') } },
+          caller,
+        );
+        assert.ok(configured.ok, JSON.stringify(configured));
+        const created = await handlers['worktree.mutate'](
+          { kind: 'create', projectId, operationId: 'shell-cleanup', description: 'Shell cleanup' },
+          caller,
+        );
+        assert.ok(created.ok && created.result.kind === 'worktree', JSON.stringify(created));
+        const path = created.result.worktree.path;
+        const sessionId = 'idle-shell-session';
+        const session = await handlers['session.create'](
+          {
+            sessionId,
+            workspace: { kind: 'host_path', path: subdirectory ? join(path, 'nested') : path },
+            modelTarget: { kind: 'default' },
+          },
+          caller,
+        );
+        assert.ok(session.ok, JSON.stringify(session));
+        // The confirmation path must not bypass a Shell started after the failed cleanup.
+        let confirmation: string | undefined;
+        if (subdirectory) {
+          const configured = await handlers['worktree.mutate'](
+            { kind: 'configure', projectId, config: { cleanupScript: 'exit 1' } },
+            caller,
+          );
+          assert.ok(configured.ok, JSON.stringify(configured));
+          const failed = await handlers['worktree.mutate'](
+            { kind: 'remove', projectId, path },
+            caller,
+          );
+          assert.ok(failed.ok && failed.result.kind === 'cleanup_failed', JSON.stringify(failed));
+          confirmation = failed.result.confirmation;
+        }
+        const started = await handlers['runtime.resource.start'](
+          {
+            sessionId,
+            launchId: 'background-shell',
+            command: await testScript(root, 'setInterval(() => {}, 1000);'),
+          },
+          caller,
+        );
+        assert.ok(started.ok, JSON.stringify(started));
+        assert.equal(started.result.resource.status, 'running');
+        assert.equal((await manager.listTurns(sessionId)).length, 0, 'No model Turn is active');
+        const remove = {
+          kind: 'remove' as const,
+          projectId,
+          path,
+          ...(confirmation ? { confirmation } : {}),
+        };
+        const blocked = await handlers['worktree.mutate'](remove, caller);
+        assert.ok(
+          !blocked.ok,
+          'A live Shell must block worktree cleanup even without an active Turn',
+        );
+        assert.equal(blocked.error.code, 'operation_conflict');
+        assert.match(blocked.error.message, /still running/);
+        assert.ok((await stat(path)).isDirectory());
+        const stopped = await handlers['runtime.resource.stop'](
+          { sessionId, ref: started.result.resource.ref },
+          caller,
+        );
+        assert.ok(stopped.ok, JSON.stringify(stopped));
+        const removed = await handlers['worktree.mutate'](remove, caller);
+        assert.deepEqual(removed, { ok: true, result: { kind: 'removed', path } });
+        await assert.rejects(stat(path), { code: 'ENOENT' });
+      } finally {
+        await composition.close();
+      }
+    });
+  });
+
+for (const subdirectory of [false, true])
+  test(`cleanup fences new host-path sessions until their workspace is revalidated (subdirectory=${subdirectory})`, {
+    timeout: 30_000,
+  }, async () => {
+    await withCompositionRoot(async ({ root, owner }) => {
+      const repo = join(root, 'project');
+      await mkdir(repo);
+      const git = (...args: string[]) =>
+        execFileSync('git', ['-C', repo, ...args], { stdio: 'pipe' });
+      git('init', '-b', 'main');
+      git('config', 'user.name', 'Worktree test');
+      git('config', 'user.email', 'test@example.invalid');
+      await mkdir(join(repo, 'nested'));
+      await writeFile(join(repo, 'nested', 'file.txt'), 'initial\n');
+      git('add', '.');
+      git('commit', '-m', 'initial');
+      await configureFakeDefaultTarget(owner);
+      const caller: ConnectionContext = {
+        hostEpoch: 'cleanup-race-test',
+        connectionId: 'cli',
+        principal: 'local_owner',
+        principalKind: 'local_owner',
+        acquireResidency: () => ({ release() {} }),
+      };
+      const captured = await createCapturedExecutionComposition(owner, {
+        generateWorktreeName: async () => ({ type: 'feat', slug: 'cleanup-race' }),
+      });
+      const release = join(root, 'release-cleanup');
+      let removing: Promise<unknown> | undefined;
+      try {
+        const handlers = captured.composition.handlers;
+        const registered = await handlers['project.catalog.mutate'](
+          { kind: 'register', path: repo },
+          caller,
+        );
+        assert.ok(registered.ok, JSON.stringify(registered));
+        const projectId = registered.result.project.id;
+        const configured = await handlers['worktree.mutate'](
+          {
+            kind: 'configure',
+            config: { rootDirectory: join(root, 'checkouts') },
+          },
+          caller,
+        );
+        assert.ok(configured.ok, JSON.stringify(configured));
+        const created = await handlers['worktree.mutate'](
+          {
+            kind: 'create',
+            projectId,
+            operationId: 'cleanup-race',
+            description: 'Cleanup race',
+          },
+          caller,
+        );
+        assert.ok(created.ok && created.result.kind === 'worktree', JSON.stringify(created));
+        const path = created.result.worktree.path;
+        const workspacePath = subdirectory ? join(path, 'nested') : path;
+        const marker = join(root, 'cleanup-started');
+        const cleanupConfigured = await handlers['worktree.mutate'](
+          {
+            kind: 'configure',
+            projectId,
+            config: {
+              cleanupScript: await testScript(
+                root,
+                `const fs = require('node:fs'); fs.writeFileSync(${JSON.stringify(marker)}, ''); const timer = setInterval(() => { if (fs.existsSync(${JSON.stringify(release)})) clearInterval(timer); }, 10);`,
+              ),
+            },
+          },
+          caller,
+        );
+        assert.ok(cleanupConfigured.ok, JSON.stringify(cleanupConfigured));
+        removing = handlers['worktree.mutate']({ kind: 'remove', projectId, path }, caller);
+        await waitFor(
+          () =>
+            stat(marker).then(
+              () => true,
+              () => false,
+            ),
+          5000,
+        );
+        // CLI/ACP may create a Session through an absolute path without project binding.
+        const session = await handlers['session.create'](
+          {
+            sessionId: 'late-host-path-session',
+            workspace: { kind: 'host_path', path: workspacePath },
+            modelTarget: { kind: 'default' },
+          },
+          caller,
+        );
+        assert.ok(session.ok, JSON.stringify(session));
+        const started = handlers['turn.start'](
+          {
+            sessionId: 'late-host-path-session',
+            turnId: 'late-turn',
+            content: { text: FAKE_HOLD_OPEN_PROMPT },
+          },
+          caller,
+        );
+        await assert.rejects(
+          withTimeout(started, 200, 'Turn must wait for cleanup'),
+          /Turn must wait for cleanup/,
+        );
+        await writeFile(release, '');
+        const removed = await removing;
+        assert.deepEqual(removed, { ok: true, result: { kind: 'removed', path } });
+        const result = await started;
+        assert.equal(result.ok, false, 'A turn cannot run in the checkout that cleanup removed');
+      } finally {
+        await writeFile(release, '');
+        await removing;
+        await captured.composition.close();
+      }
+    });
+  });

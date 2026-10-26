@@ -35,6 +35,7 @@ export function sessionMoveTargets(
   session: SessionNavigationSession,
   projectScopes: readonly SessionNavigationProjectScope[],
 ): readonly SessionMoveTarget[] {
+  if (session.workspaceFixed) return [];
   const hostScopes = projectScopes.filter((scope) => scope.hostId === session.runtimeHostId);
   const currentProject = session.projectId
     ? findProjectByIdentity(hostScopes.map((scope) => scope.project), session.projectId)

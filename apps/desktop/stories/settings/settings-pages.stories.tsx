@@ -18,7 +18,9 @@
  */
 
 
-import { useRef, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
+import { WorktreeServicesProvider } from '../../src/renderer/features/worktrees/index.js';
+import { createDesktopWorktreeServices } from '../../src/renderer/platform/desktop/create-worktree-services.js';
 import { createPersonalAssistantServices, PersonalAssistantServicesProvider } from '../../src/renderer/features/personal-assistant/index.js';
 import { createAssistantSessionVisibility, AssistantSessionVisibilityProvider } from '../../src/renderer/application/contracts/session-catalog/assistant-session-visibility.js';
 import type { Meta, StoryObj } from '@storybook/react-vite';
@@ -48,6 +50,7 @@ import type {
 import type { HealthSignal, HealthSnapshot } from '@maka/core/health';
 import type { DesktopExternalSessionCatalogItem } from '../../src/preload/external-session-catalog';
 import type {
+  DesktopRuntimeHostRef,
   AppUpdateInstallRequest,
   AppUpdateInstallResult,
   AppUpdateStatus,
@@ -2001,6 +2004,7 @@ function fieldChrome(element: HTMLElement) {
  * reach a provider its own component renders.
  */
 function SettingsStory(props: SettingsStoryProps) {
+  const worktreeServices = useMemo(() => createDesktopWorktreeServices(worktreeSettingsBridge as unknown as Parameters<typeof createDesktopWorktreeServices>[0]), []);
   const [assistant] = useState(() => createPersonalAssistantServices({
     call: async (method) => {
       if (method === 'assistant.enablement') return { enabled: false };
@@ -2024,7 +2028,7 @@ function SettingsStory(props: SettingsStoryProps) {
         <AppUpdateServicesProvider services={settingsAppUpdateServices}>
           <AppUpdateProvider>
             <TaskEntryServicesProvider services={taskEntryServices}>
-              <SettingsStoryFrame {...props} />
+              <WorktreeServicesProvider services={worktreeServices}><SettingsStoryFrame {...props} /></WorktreeServicesProvider>
             </TaskEntryServicesProvider>
           </AppUpdateProvider>
         </AppUpdateServicesProvider>
@@ -3806,4 +3810,149 @@ export const ImportTasksNoSource: Story = {
     },
   })],
   render: () => <SettingsStory section="import-tasks" />,
+};
+
+const worktreeStoryMain = '/Users/storybook/Projects/maka';
+const worktreeStoryPath = '/Users/storybook/.maka/worktrees/maka-23a41f00/search-field-f31d';
+const worktreeStoryProject = {
+  id: 'worktree-project', name: 'maka', available: true, preferredPath: worktreeStoryMain,
+  locations: [{ path: worktreeStoryMain, isWorktree: false }, { path: worktreeStoryPath, isWorktree: true }],
+};
+function worktreeStorySnapshot(): import('@maka/core/worktree').WorktreeSnapshot {
+  return {
+    config: { rootDirectory: '/Users/storybook/.maka/worktrees', projects: {} },
+    projects: [{ id: worktreeStoryProject.id, name: 'maka', mainPath: worktreeStoryMain, config: { setupScript: 'npm ci', cleanupScript: 'npm run teardown' }, worktrees: [
+      { projectId: worktreeStoryProject.id, path: worktreeStoryPath, name: 'search-field-f31d', branch: 'maka/search-field-f31d', head: 'a'.repeat(40), isMain: false, managed: true, available: true, locked: false, sessionCount: 1, initialization: 'failed', log: 'npm error Network request failed. Retry initialization or continue without it.' },
+    ] }],
+  };
+}
+let worktreeStoryState = worktreeStorySnapshot();
+const remoteWorktreeStoryState: import('@maka/core/worktree').WorktreeSnapshot = {
+  config: { rootDirectory: '/srv/maka/worktrees', projects: {} },
+  projects: [],
+};
+const worktreeSettingsBridge = {
+  ...makaBridge,
+  runtimeHostProfiles: {
+    ...makaBridge.runtimeHostProfiles,
+    getSnapshot: async () => runtimeHostProfilesWithRemote,
+  },
+  sessions: { list: async () => [] },
+  shellRuns: { start: async () => { throw new Error('No running terminal in this settings fixture'); } },
+  newTasks: {
+    getCatalog: async () => ({ defaultProfileId: 'local', hosts: [{
+      profile: { id: 'local', name: '本机', kind: 'local' }, hostId: 'worktree-host', readiness: 'ready', state: 'available', projects: [worktreeStoryProject],
+      capabilities: { chooseClientDirectory: true, chooseHostDirectory: false, selectNoProject: true }, selectedProjectId: worktreeStoryProject.id, chatDefaults: { permissionMode: 'bypass' },
+    }] }),
+    subscribeChanges: () => () => undefined,
+  },
+  worktrees: {
+    query: async (_projectId: string | undefined, host: DesktopRuntimeHostRef) =>
+      structuredClone(host.profileId === 'remote' ? remoteWorktreeStoryState : worktreeStoryState),
+    mutate: async (input: import('@maka/core/worktree').WorktreeMutation): Promise<import('@maka/core/worktree').WorktreeMutationResult> => {
+      const project = worktreeStoryState.projects[0]!;
+      if (input.kind === 'configure') {
+        if (input.projectId !== undefined) project.config = { ...input.config };
+        else worktreeStoryState.config.rootDirectory = input.config.rootDirectory;
+        return { kind: 'configured' };
+      }
+      if (input.kind === 'initialize') {
+        const item = project.worktrees.find((entry) => entry.path === input.path)!;
+        item.initialization = input.skip ? 'skipped' : 'ready';
+        item.log = input.skip ? item.log : 'Initialization completed.';
+        return { kind: 'worktree', worktree: item };
+      }
+      if (input.kind === 'remove') {
+        if (!input.confirmation) return { kind: 'cleanup_failed', path: input.path, log: 'npm error teardown command failed', confirmation: 'cleanup-confirmation' };
+        project.worktrees = project.worktrees.filter((entry) => entry.path !== input.path);
+        return { kind: 'removed', path: input.path };
+      }
+      throw new Error('Creation is exercised through the production task entry, not this settings fixture');
+    },
+  },
+};
+const withWorktreeSettingsBridge = withScopedMakaBridge(worktreeSettingsBridge);
+
+// Real path: Settings → Worktree → expand a project after its creation script failed.
+export const Worktrees: Story = {
+  decorators: [withWorktreeSettingsBridge],
+  beforeEach: () => { worktreeStoryState = worktreeStorySnapshot(); },
+  render: () => <SettingsStory section="worktrees" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const title = await canvas.findByText('maka', { selector: 'summary span' });
+    await userEvent.click(title);
+    const row = canvasElement.querySelector<HTMLElement>('.worktreeItem');
+    if (!row) throw new Error('Worktree row is missing');
+    expect(within(row).getByRole('button', { name: '清理' })).toBeVisible();
+    expect(within(row).getByRole('button', { name: '重试初始化' })).toBeVisible();
+    expect(within(row).getByRole('button', { name: '跳过初始化并继续任务' })).toBeVisible();
+    expect(row.querySelector('.worktreeLog')).toHaveAttribute('open');
+    const name = row.querySelector<HTMLElement>('.worktreeItemName')!;
+    const count = row.querySelector<HTMLElement>('.worktreeTaskCount')!;
+    const button = row.querySelector('button')!;
+    const centers = [name, count, button].map((element) => {
+      const bounds = element.getBoundingClientRect();
+      return bounds.top + bounds.height / 2;
+    });
+    expect(Math.max(...centers) - Math.min(...centers)).toBeLessThanOrEqual(1);
+    const pane = canvasElement.querySelector<HTMLElement>('.settingsMainPane');
+    if (!pane) throw new Error('Worktree settings frame is missing');
+    expect(pane.scrollWidth).toBeLessThanOrEqual(pane.clientWidth + 1);
+
+    await userEvent.click(canvas.getByRole('combobox', { name: 'Runtime Host' }));
+    await userEvent.click(await within(document.body).findByRole('option', { name: 'Remote' }));
+    await waitForStoryCondition(
+      () => {
+        const root = canvas.queryByRole('textbox', { name: '默认 worktree 根目录' });
+        return root instanceof HTMLInputElement && root.value === '/srv/maka/worktrees';
+      },
+      'Worktree settings did not switch to the selected Host',
+    );
+    expect(canvasElement.querySelector('.worktreeProject')).toBeNull();
+    await userEvent.click(canvas.getByRole('combobox', { name: 'Runtime Host' }));
+    await userEvent.click(await within(document.body).findByRole('option', { name: 'Local' }));
+    await canvas.findByText('maka', { selector: 'summary span' });
+    expect(canvas.getByRole('textbox', { name: '默认 worktree 根目录' }))
+      .toHaveValue('/Users/storybook/.maka/worktrees');
+    await userEvent.click(canvas.getByText('maka', { selector: 'summary span' }));
+  },
+};
+
+// Real path: Settings → Worktree → project → Clean up → the cleanup script fails.
+export const WorktreeCleanupFailure: Story = {
+  decorators: [withWorktreeSettingsBridge],
+  beforeEach: () => { worktreeStoryState = worktreeStorySnapshot(); },
+  render: () => <SettingsStory section="worktrees" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByText('maka', { selector: 'summary span' }));
+    await userEvent.click(await canvas.findByRole('button', { name: '清理' }));
+    const body = within(document.body);
+    const confirmation = within(await body.findByRole('alertdialog'));
+    await userEvent.click(await confirmation.findByRole('button', { name: '清理' }));
+    await body.findByRole('button', { name: '继续删除' });
+    await body.findByRole('button', { name: '保留目录' });
+  },
+};
+
+// Real path: Settings → Worktree → project settings icon → edit project configuration.
+export const WorktreeProjectConfiguration: Story = {
+  decorators: [withWorktreeSettingsBridge],
+  beforeEach: () => { worktreeStoryState = worktreeStorySnapshot(); },
+  render: () => <SettingsStory section="worktrees" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole('button', { name: 'maka · 项目配置' }));
+    expect(canvasElement.querySelector('.worktreeProjectDisclosure')).not.toHaveAttribute('open');
+    const body = within(document.body);
+    const dialog = within(await body.findByRole('dialog', { name: '项目配置' }));
+    const setup = dialog.getByRole('textbox', { name: '创建时脚本' });
+    await userEvent.clear(setup);
+    await userEvent.type(setup, 'npm install');
+    await userEvent.click(dialog.getByRole('button', { name: '保存' }));
+    await body.findByText('Worktree 设置已保存');
+    expect(worktreeStoryState.projects[0]!.config.setupScript).toBe('npm install');
+    expect(dialog.getByRole('textbox', { name: '清理时脚本' })).toHaveValue('npm run teardown');
+  },
 };

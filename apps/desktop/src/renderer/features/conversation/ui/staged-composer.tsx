@@ -18,13 +18,14 @@
  */
 
 import { useRef, type ComponentProps } from 'react';
-import { Composer, type ComposerSendMetadata } from '@maka/ui';
+import type { Composer, ComposerSendMetadata } from '@maka/ui';
 import {
   useSessionSettingsSettlement,
   type SessionSendSettlement,
 } from '../../../application/contracts/session-settings-settlement.js';
 import type { ComposerStagingSubmission } from '../model/composer-staging-contract.js';
 import { captureComposerStaging } from '../controller/capture-composer-staging.js';
+import { TaskReadinessComposer } from './task-readiness-provider.js';
 import { useComposerStaging } from './composer-staging-context.js';
 
 export type ComposerStagingProp =
@@ -53,7 +54,7 @@ export function StagedComposer({
   // on Session references or the send prepares a revision, so a setting write
   // that fails in between still stops this send.
   const settlementRef = useRef<SessionSendSettlement | undefined>(undefined);
-  return <Composer {...props} onSend={(text, metadata) =>
+  return <TaskReadinessComposer {...props} onSend={(text, metadata) =>
     props.onSend(text, metadata, captureComposerStaging(staging, staging.draftKey), settlementRef.current)} {...(stagingEnabled ? {
     retainSendContext: () => {
       const releaseAttachments = staging.retainAttachments(staging.submittableAttachments);

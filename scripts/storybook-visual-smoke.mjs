@@ -167,6 +167,17 @@ export function catalogJobs(
   const jobs = Object.values(entries)
     .filter((entry) => entry?.type === 'story' && typeof entry.id === 'string')
     .flatMap((entry) => {
+      // Recovery copy must not squeeze a short model label. The smaller width
+      // reproduces that pressure with macOS font metrics as well.
+      if (entry.id === 'product-model-picker--unselected-unavailable-agent-narrow') {
+        return [680, 720].map((width) => ({
+          storyId: entry.id,
+          colorScheme: 'light',
+          forcedColors: 'none',
+          palette: 'default',
+          viewport: { width, height: 900 },
+        }));
+      }
       // Exercise both sides of the rail's responsive boundary in the actual
       // browser viewport. A Storybook toolbar default does not resize smoke.
       if (entry.id === PROMPT_RAIL_CLEARANCE_STORY_ID) {

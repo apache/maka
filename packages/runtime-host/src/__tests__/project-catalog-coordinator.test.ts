@@ -40,6 +40,7 @@ import type { ConnectionContext } from '../server/operation-dispatcher.js';
 import { HostChangeFeed } from '../server/host-change-feed.js';
 import { HostProjectCatalogCoordinator } from '../server/project-catalog-coordinator.js';
 import { HostProjectMembershipGate } from '../server/project-membership-gate.js';
+import { HostWorktreeManager } from '../server/worktree-manager.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -93,6 +94,7 @@ test('Host Project Catalog relink merges identities and reassigns every affected
     })(),
   });
   const sessions = createSessionStore(storageRoot);
+  const worktrees = projectWorktrees(storageRoot, catalog, sessions);
   const hostChanges = new HostChangeFeed();
   const projectFrames: unknown[] = [];
   const sessionFrames: unknown[] = [];
@@ -125,6 +127,11 @@ test('Host Project Catalog relink merges identities and reassigns every affected
     { publish: (sessionId: string) => hostChanges.publishSessionCatalog(sessionId) },
     membership,
     () => assert.fail('ordinary project mutations must not drain the Host'),
+    undefined,
+    {
+      listSessions: () => sessions.listHeaders(),
+      isBound: (sessionId) => worktrees.isBound(sessionId),
+    },
   );
 
   try {
@@ -134,6 +141,7 @@ test('Host Project Catalog relink merges identities and reassigns every affected
     const duplicate = await catalog.register(newPath);
     const oldSession = await sessions.create(sessionInput(oldPath, original.id));
     const newSession = await sessions.create(sessionInput(destinationPath, duplicate.id));
+    await worktrees.bind(newSession.id, destinationPath);
 
     const relinked = await coordinator.handlers['project.catalog.mutate'](
       { kind: 'relink', projectId: original.id, path: newPath },
@@ -155,6 +163,7 @@ test('Host Project Catalog relink merges identities and reassigns every affected
       assert.equal(header.projectId, original.id);
       assert.equal(header.cwd, destinationPath);
     }
+    await worktrees.assertReady(newSession.id, destinationPath);
     assert.deepEqual(projectFrames, [
       { kind: 'project.catalog.changed', revision: 1 },
       { kind: 'project.catalog.changed', revision: 1 },
@@ -194,11 +203,154 @@ test('Host Project Catalog relink merges identities and reassigns every affected
       ],
     );
   } finally {
+    await worktrees.close();
     catalog.close();
     await sessions.close?.();
     await rm(base, { recursive: true, force: true });
   }
 });
+
+for (const workspace of ['folder', 'worktree'] as const) {
+  test(`Host Project Catalog rejects relink before changing a fixed ${workspace} Session`, async () => {
+    const base = await realpath(await mkdtemp(join(tmpdir(), 'maka-host-fixed-project-')));
+    const storageRoot = join(base, 'storage');
+    const originalPath = join(base, 'original');
+    const targetPath = join(base, 'target');
+    const linkedPath = join(base, 'linked');
+    if (workspace === 'worktree') {
+      await createGitRepositoryWithWorktree(originalPath, linkedPath);
+    } else {
+      await mkdir(originalPath);
+    }
+    await mkdir(targetPath);
+    const catalog = createProjectCatalog(storageRoot);
+    const sessions = createSessionStore(storageRoot);
+    const worktrees = projectWorktrees(storageRoot, catalog, sessions);
+    let published = 0;
+    let drains = 0;
+    const coordinator = new HostProjectCatalogCoordinator(
+      catalog,
+      {
+        publish: () => {
+          published += 1;
+        },
+      },
+      {
+        publish: () => {
+          published += 1;
+        },
+      },
+      new HostProjectMembershipGate(),
+      () => {
+        drains += 1;
+      },
+      undefined,
+      {
+        listSessions: () => sessions.listHeaders(),
+        isBound: (sessionId) => worktrees.isBound(sessionId),
+      },
+    );
+    try {
+      const project = await catalog.register(originalPath);
+      const mainSession = await sessions.create(sessionInput(originalPath, project.id));
+      if (workspace === 'worktree') {
+        await catalog.register(linkedPath, { prefer: false });
+        const linkedSession = await sessions.create(sessionInput(linkedPath, project.id));
+        await worktrees.bind(linkedSession.id, linkedPath);
+      } else {
+        await worktrees.bind(mainSession.id, originalPath);
+      }
+      const beforeProjects = await catalog.list();
+      const beforeSessions = await sessions.listHeaders();
+      const outcome = await coordinator.handlers['project.catalog.mutate'](
+        {
+          kind: 'relink',
+          projectId: project.id,
+          // Even relinking the main checkout to itself must preserve its sibling worktree.
+          path: workspace === 'worktree' ? originalPath : targetPath,
+        },
+        connection(),
+      );
+      assert.equal(outcome.ok, false);
+      if (!outcome.ok) {
+        assert.equal(outcome.error.code, 'operation_conflict');
+        assert.match(outcome.error.message, /fixed|bound/i);
+      }
+      assert.deepEqual(await catalog.list(), beforeProjects);
+      assert.deepEqual(await sessions.listHeaders(), beforeSessions);
+      assert.equal(published, 0);
+      assert.equal(drains, 0);
+      for (const header of beforeSessions) await worktrees.assertReady(header.id, header.cwd);
+    } finally {
+      await worktrees.close();
+      catalog.close();
+      await sessions.close?.();
+      await rm(base, { recursive: true, force: true });
+    }
+  });
+}
+
+test('Host Project Catalog accepts a fixed Session relink through a canonical path and alias', async () => {
+  const base = await realpath(await mkdtemp(join(tmpdir(), 'maka-host-fixed-project-alias-')));
+  const storageRoot = join(base, 'storage');
+  const originalPath = join(base, 'original');
+  const targetPath = join(base, 'target');
+  await mkdir(originalPath);
+  await mkdir(targetPath);
+  const catalog = createProjectCatalog(storageRoot);
+  const sessions = createSessionStore(storageRoot);
+  const worktrees = projectWorktrees(storageRoot, catalog, sessions);
+  const coordinator = new HostProjectCatalogCoordinator(
+    catalog,
+    { publish() {} },
+    { publish() {} },
+    new HostProjectMembershipGate(),
+    () => assert.fail('same-directory relink must not drain the Host'),
+    undefined,
+    {
+      listSessions: () => sessions.listHeaders(),
+      isBound: (sessionId) => worktrees.isBound(sessionId),
+    },
+  );
+  try {
+    const original = await catalog.register(originalPath);
+    const duplicate = await catalog.register(targetPath);
+    await catalog.relinkWithSessions(original.id, targetPath);
+    const session = await sessions.create(sessionInput(targetPath, duplicate.id));
+    await worktrees.bind(session.id, targetPath);
+    const relinked = await coordinator.handlers['project.catalog.mutate'](
+      { kind: 'relink', projectId: duplicate.id, path: `${targetPath}/.` },
+      connection(),
+    );
+    assert.equal(relinked.ok, true, JSON.stringify(relinked));
+    const header = await sessions.readHeaderSnapshot(session.id);
+    assert.equal(header.cwd, targetPath);
+    assert.equal(header.projectId, original.id);
+    await worktrees.assertReady(session.id, header.cwd);
+  } finally {
+    await worktrees.close();
+    catalog.close();
+    await sessions.close?.();
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+function projectWorktrees(
+  storageRoot: string,
+  catalog: ReturnType<typeof createProjectCatalog>,
+  sessions: ReturnType<typeof createSessionStore>,
+): HostWorktreeManager {
+  return new HostWorktreeManager({
+    stateRoot: storageRoot,
+    catalog,
+    listSessions: () => sessions.listHeaders(),
+    isSessionActive: () => false,
+    hasLiveSessionResources: async () => false,
+    generateName: async () => undefined,
+    withSessions: (_ids, operation) => operation(),
+    changed() {},
+  });
+}
 
 test('directory resolution failures cannot enter the unknown-commit drain path', async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-host-project-directory-failure-'));

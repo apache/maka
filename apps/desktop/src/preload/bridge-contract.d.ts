@@ -483,6 +483,7 @@ export type DesktopOAuthAuthorizationResult =
 export type DesktopNewTaskHostRef = DesktopRuntimeHostRef;
 
 export interface DesktopNewTaskTarget extends DesktopRuntimeHostRef {
+  readonly worktree?: import('@maka/core/worktree').TaskWorktreeSelection;
   readonly projectId: string | null;
 }
 
@@ -1526,6 +1527,11 @@ export interface MakaBridge {
     }): Promise<SessionBundleExportIpcResult>;
     /** Picks a `.maka-session` file and merges it into the Local workspace. */
     import(): Promise<SessionBundleImportIpcResult>;
+  };
+  worktrees: {
+    queryForSession(sessionId: string): Promise<{ path: string; canCreate: boolean }>;
+    query(projectId?: string, host?: DesktopRuntimeHostRef): Promise<import('@maka/core/worktree').WorktreeSnapshot>;
+    mutate(input: import('@maka/core/worktree').WorktreeMutation, host?: DesktopRuntimeHostRef): Promise<import('@maka/core/worktree').WorktreeMutationResult>;
   };
   projects: {
     getDefaultContext(host?: DesktopRuntimeHostRef): Promise<{

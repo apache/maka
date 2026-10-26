@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import type { WorktreeBlocker } from '@maka/core/worktree';
+import { decodeWorktreeBlocker } from './worktree.js';
 import { isExecutorConfiguration, type ExecutorConfiguration } from '@maka/core/executor-catalog';
 import { isCollaborationMode, type CollaborationMode } from '@maka/core/collaboration';
 import { isOrchestrationMode, type OrchestrationMode } from '@maka/core/orchestration';
@@ -53,6 +55,7 @@ import { defineHostPathOperation, defineOperation } from './operation-spec.js';
 import { decodeSessionStatus } from './session-status.js';
 import {
   decodeWorkspaceProjection,
+  decodeHostPath,
   decodeWorkspaceTarget,
   type WorkspaceProjection,
   type WorkspaceTarget,
@@ -164,9 +167,19 @@ export interface SessionExecutorTarget {
   readonly model?: string;
 }
 
+/** Creation intent is separate from the resolved WorkspaceTarget returned by the Host. */
+export type SessionCreateWorkspace =
+  | {
+      readonly kind: 'project';
+      readonly projectId: string;
+      readonly worktree?: import('@maka/core/worktree').TaskWorktreeSelection;
+    }
+  | Extract<WorkspaceTarget, { kind: 'host_path' }>;
+
 export interface SessionCreateInput {
+  readonly taskDescription?: string;
   readonly sessionId: string;
-  readonly workspace: WorkspaceTarget;
+  readonly workspace: SessionCreateWorkspace;
   readonly mode?: SessionStartMode;
   readonly name?: string;
   readonly labels?: readonly string[];
@@ -323,6 +336,20 @@ export interface SharedSessionCatalogProjection {
 
 export type SessionCatalogItem = SessionCatalogProjection | UnsupportedLegacySessionCatalogRecord;
 
+export type SessionCreateResult = SessionCatalogItem & {
+  readonly workspaceBlocker?: WorktreeBlocker;
+};
+
+export function decodeSessionCreateResult(value: unknown): SessionCreateResult {
+  const { workspaceBlocker, ...session } = requireRecord(value, 'Session creation result');
+  return {
+    ...decodeSessionCatalogItem(session),
+    ...(workspaceBlocker === undefined
+      ? {}
+      : { workspaceBlocker: decodeWorktreeBlocker(workspaceBlocker) }),
+  };
+}
+
 export type SharedSessionCatalogQueryInput = Record<string, never>;
 
 export interface SharedSessionCatalogQueryResult {
@@ -379,7 +406,7 @@ export const SESSION_CATALOG_OPERATION_SPECS = {
   }),
   'session.create': defineHostPathOperation<
     SessionCreateInput,
-    SessionCatalogItem,
+    SessionCreateResult,
     (typeof CREATE_ERRORS)[number]
   >(
     {
@@ -387,7 +414,7 @@ export const SESSION_CATALOG_OPERATION_SPECS = {
       availability: 'ready',
       errors: CREATE_ERRORS,
       decodeInput: decodeSessionCreateInput,
-      decodeOutput: decodeSessionCatalogItem,
+      decodeOutput: decodeSessionCreateResult,
       assertOutputForInput: (input, output) => assertSessionIdentity(input.sessionId, output),
     },
     (input) => input.workspace.kind === 'host_path',
@@ -589,6 +616,7 @@ export function decodeSessionCreateInput(value: unknown): SessionCreateInput {
       'permissionMode',
       'collaborationMode',
       'orchestrationMode',
+      'taskDescription',
     ],
   );
   const executorId = Object.hasOwn(input, 'executorId')
@@ -618,7 +646,10 @@ export function decodeSessionCreateInput(value: unknown): SessionCreateInput {
   }
   return {
     sessionId: requireEntityId(input.sessionId, 'sessionId'),
-    workspace: decodeWorkspaceTarget(input.workspace),
+    workspace: decodeSessionCreateWorkspace(input.workspace),
+    ...(input.taskDescription === undefined
+      ? {}
+      : { taskDescription: requireUtf8String(input.taskDescription, 'Task description', 32_000) }),
     ...(Object.hasOwn(input, 'mode') ? { mode: sessionStartMode(input.mode) } : {}),
     ...(Object.hasOwn(input, 'name') ? { name: sessionName(input.name) } : {}),
     ...(Object.hasOwn(input, 'labels') ? { labels: labels(input.labels) } : {}),
@@ -1325,4 +1356,41 @@ function assertSessionIdentity(
   if (output.id !== sessionId) {
     throw invalidProtocolFrame('Session operation result identity does not match request');
   }
+}
+
+function decodeTaskWorktreeSelection(
+  value: unknown,
+): import('@maka/core/worktree').TaskWorktreeSelection {
+  const record = requireRecord(value, 'Task worktree selection');
+  if (record.kind === 'main' || record.kind === 'new') {
+    requireExactRecord(value, 'Task worktree mode', ['kind']);
+    return { kind: record.kind };
+  }
+  if (record.kind === 'existing') {
+    requireExactRecord(value, 'Existing task worktree', ['kind', 'path']);
+    return { kind: 'existing', path: decodeHostPath(record.path, 'Task worktree path') };
+  }
+  throw invalidProtocolFrame('Invalid task worktree selection');
+}
+
+export function decodeSessionCreateWorkspace(value: unknown): SessionCreateWorkspace {
+  const workspace = requireRecord(value, 'Session creation workspace');
+  if (workspace.kind === 'host_path') {
+    const target = requireExactRecord(value, 'Host path workspace', ['kind', 'path']);
+    return { kind: 'host_path', path: decodeHostPath(target.path, 'Workspace path') };
+  }
+  const target = requireShapedRecord(
+    value,
+    'Project creation workspace',
+    ['kind', 'projectId'],
+    ['worktree'],
+  );
+  if (target.kind !== 'project') throw invalidProtocolFrame('Invalid creation workspace kind');
+  return {
+    kind: 'project',
+    projectId: requireEntityId(target.projectId, 'Workspace project id'),
+    ...(target.worktree === undefined
+      ? {}
+      : { worktree: decodeTaskWorktreeSelection(target.worktree) }),
+  };
 }

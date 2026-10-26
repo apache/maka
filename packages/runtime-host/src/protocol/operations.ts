@@ -43,6 +43,7 @@ import { OAUTH_OPERATION_SPECS } from './oauth.js';
 import { PLAN_OPERATION_SPECS } from './plan.js';
 import { PEER_MESH_OPERATION_SPECS } from './peer-mesh.js';
 import { PLUGIN_PLATFORM_OPERATION_SPECS } from './plugin-platform.js';
+import { WORKTREE_OPERATION_SPECS } from './worktree.js';
 import { PROJECT_CATALOG_OPERATION_SPECS } from './project-catalog.js';
 import {
   composeOperationSpecMaps,
@@ -222,7 +223,7 @@ export const HOST_OPERATION_SPECS = composeOperationSpecMaps(
   RUNTIME_RESOURCE_OPERATION_SPECS,
   SCHEDULED_TASK_OPERATION_SPECS,
   PLAN_OPERATION_SPECS,
-  PROJECT_CATALOG_OPERATION_SPECS,
+  composeOperationSpecMaps(PROJECT_CATALOG_OPERATION_SPECS, WORKTREE_OPERATION_SPECS),
   MESSAGE_OPERATION_SPECS,
   SESSION_TODO_OPERATION_SPECS,
   INTERACTION_OPERATION_SPECS,
@@ -330,6 +331,10 @@ export const REMOTE_OWNER_OPERATION_GRANTS = Object.freeze([
   'pricing.query',
   'project.catalog.mutate',
   'project.catalog.query',
+  'worktree.query',
+  'worktree.session.query',
+  'worktree.preparation.query',
+  'worktree.mutate',
   'queue.entries.reorder',
   'queue.entry.promote',
   'queue.entry.retract',

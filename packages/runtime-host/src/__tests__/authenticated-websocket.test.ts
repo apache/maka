@@ -241,7 +241,7 @@ test('one Local IPC owner and one authenticated WebSocket Client control the sam
     assert.ok(!('kind' in remoteProjectSession));
     if (!('kind' in remoteProjectSession)) {
       assert.deepEqual(remoteProjectSession.workspace, {
-        target: { kind: 'project', projectId: registeredProjectId },
+        target: { kind: 'project', projectId: registeredProjectId, worktreePath: canonicalRoot },
         hostCwd: canonicalRoot,
       });
     }

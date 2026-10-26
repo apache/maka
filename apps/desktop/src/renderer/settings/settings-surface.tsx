@@ -78,6 +78,7 @@ import { ProvidersPanel } from './providers-panel';
 import { ExternalAgentsSettingsPage } from '../features/external-agent-settings/index.js';
 import { SubagentSettingsPage } from './subagent-settings-page';
 import { safeLocalStorageSet } from '../browser-storage';
+import { WorktreeSettingsPage } from '../features/worktrees/index.js';
 import { ProjectsSettingsPage } from './projects-settings-page';
 import { AboutSettingsPage } from './about-settings-page';
 import { AppearanceSettingsPage } from './appearance-settings-page';
@@ -1236,6 +1237,7 @@ function SettingsPageBody(props: {
           onRetryRuntimeHost={props.onRetryRuntimeHost}
         />
       );
+    case 'worktrees': return <WorktreeSettingsPage onOpenSession={props.onOpenSession} />;
     case 'projects':
       return (
         <ProjectsSettingsPage
