@@ -58,7 +58,7 @@ The [website](https://maka.apache.org/en/) walks through one turn of the log and
 
 **Development testing**: To contribute or help test unreleased changes, see [CONTRIBUTING](./CONTRIBUTING.md) and the [development mailing list](https://lists.apache.org/list.html?dev@maka.apache.org). Development builds are not approved Apache releases.
 
-**Build from source**: To compile and run Desktop, the TUI, or the CLI directly from a source checkout, see the [Build from source](#build-from-source) section below.
+**Build from source**: To build Maka yourself, start from the signed source archive of an Apache release; see [Build an Apache release](#build-an-apache-release). To work on unreleased changes from Git, see [Contributor development](#contributor-development).
 
 ## Build from source
 
@@ -66,10 +66,34 @@ The [website](https://maka.apache.org/en/) walks through one turn of the log and
 
 - Node.js 22.19 or newer on the 22 line, or Node.js 24 or newer (CI uses Node.js 24; Node.js 23 is not supported);
 - npm (the lockfile and scripts use npm; the current `packageManager` is npm 11);
-- Git;
-- `ripgrep`, used by Runtime's `Grep` tool.
+- `ripgrep`, used by Runtime's `Grep` tool;
+- GnuPG to verify a release archive, or Git for contributor development.
 
-### Start Desktop
+### Build an Apache release
+
+Download the source archive, its signature and checksum, and the project `KEYS`, then verify them before building:
+
+```sh
+VERSION=0.2.0
+ARCHIVE=apache-maka-$VERSION-incubating-src.tar.gz
+curl -fL -o "$ARCHIVE" "https://www.apache.org/dyn/closer.lua/incubator/maka/$VERSION-incubating/$ARCHIVE?action=download"
+curl -fLO "https://downloads.apache.org/incubator/maka/$VERSION-incubating/$ARCHIVE.asc"
+curl -fLO "https://downloads.apache.org/incubator/maka/$VERSION-incubating/$ARCHIVE.sha512"
+curl -fLO https://downloads.apache.org/incubator/maka/KEYS
+gpg --import KEYS
+gpg --verify "$ARCHIVE.asc" "$ARCHIVE"
+shasum -a 512 -c "$ARCHIVE.sha512"
+tar -xzf "$ARCHIVE"
+cd "apache-maka-$VERSION-incubating"
+npm ci
+npm run dev:full
+```
+
+`npm run dev:full` builds every workspace and starts Desktop.
+
+### Contributor development
+
+To work on unreleased changes, start from a Git checkout. Development builds are not approved Apache releases.
 
 ```sh
 git clone https://github.com/apache/maka.git
