@@ -57,6 +57,16 @@ export interface BotMessageEvent {
   isGroup: boolean;
   text: string;
   sourceMessageId: string;
+  /**
+   * #6322: platform-native id of the place replies should land in, when it
+   * differs from the sending message's own id. Slack threads are addressed
+   * by the thread root ts: a thread reply carries that root here so replies
+   * stay in the thread, while `sourceMessageId` keeps identifying THIS
+   * message for idempotency (`botSourceEventKey`) and assistant inbox
+   * identity. Absent means "route replies to `sourceMessageId`" — on every
+   * other platform the reply target is the message id itself.
+   */
+  replyTargetId?: string;
   receivedAt: number;
   attachments?: BotAttachmentRef[];
   /**
@@ -137,6 +147,18 @@ export function botSourceEventKey(
   const sourceMessageId = message.sourceMessageId.trim();
   if (!sourceMessageId) return undefined;
   return `${message.platform}:${message.chatId}:${sourceMessageId}`;
+}
+
+/**
+ * #6322: routing target for bot replies. Prefers the platform-declared
+ * `replyTargetId` (Slack thread root ts) and falls back to the message's
+ * own id, which is the reply target on every other platform.
+ */
+export function botReplyTargetId(
+  message: Pick<BotMessageEvent, 'sourceMessageId' | 'replyTargetId'>,
+): string | undefined {
+  const target = (message.replyTargetId ?? message.sourceMessageId).trim();
+  return target || undefined;
 }
 
 /** DM-only commands; a group shares one conversation key, so reset must not affect every member. */
