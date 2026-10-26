@@ -1067,6 +1067,9 @@ export function decodeRuntimeEvent(value: unknown): RuntimeEvent {
         ...(value.content.runtimeContextName !== undefined
           ? { runtimeContextName: value.content.runtimeContextName }
           : {}),
+        ...(value.content.providerOptions !== undefined
+          ? { providerOptions: value.content.providerOptions }
+          : {}),
       },
     } as unknown as RuntimeEvent;
   }
