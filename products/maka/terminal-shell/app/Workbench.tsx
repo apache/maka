@@ -29,16 +29,19 @@ import { ImageViewer } from './ImageViewer';
 import type { Resources } from './resources';
 
 const CELL = 8;
-const CENTER_MIN = 72 * CELL;
+const CENTER_DOCK_WIDTH = 72 * CELL;
+const CENTER_MIN = 48 * CELL;
 const BROWSER_MIN = 24 * CELL;
 const BROWSER_MAX = 40 * CELL;
 const PREVIEW_MIN = 40 * CELL;
 
 export const canDockBrowser = (withPreview = false) =>
   windowSize().width >=
-  CENTER_MIN + BROWSER_MIN + CELL + (withPreview && canDockPreview() ? PREVIEW_MIN + CELL : 0);
-// Current layout policy, not a claim that narrower terminal columns are impossible.
-const canDockPreview = () => windowSize().width >= CENTER_MIN + PREVIEW_MIN + CELL;
+  CENTER_DOCK_WIDTH +
+    BROWSER_MIN +
+    CELL +
+    (withPreview && canDockPreview() ? PREVIEW_MIN + CELL : 0);
+const canDockPreview = () => windowSize().width >= CENTER_DOCK_WIDTH + PREVIEW_MIN + CELL;
 
 export function Workbench(props: {
   expanded(): boolean;
@@ -68,7 +71,7 @@ export function Workbench(props: {
     <View style={{ flex: 1, flexDirection: 'row', minHeight: 0 }}>
       <ResizablePanelGroup
         axis="horizontal"
-        handleAccessibilityLabel={tr('Resize session browser')}
+        handleAccessibilityLabel={tr('Resize workspace panels')}
         handleStyle={{ backgroundColor: C.line }}
         style={{ flex: 1, minWidth: 0, minHeight: 0, gap: CELL }}
       >
@@ -84,31 +87,19 @@ export function Workbench(props: {
             <WorkspaceBrowser {...props.browser} />
           </If>
         </ResizablePanel>
+        <ResizablePanel minSize={CENTER_MIN} style={{ minHeight: 0 }}>
+          {props.children}
+        </ResizablePanel>
         <ResizablePanel
-          minSize={CENTER_MIN + (preview() ? PREVIEW_MIN + CELL : 0)}
+          visible={preview()}
+          size={preferredPreviewWidth()}
+          minSize={PREVIEW_MIN}
+          onResize={(size) => preferredPreviewWidth.set(size)}
           style={{ minHeight: 0 }}
         >
-          <ResizablePanelGroup
-            axis="horizontal"
-            handleAccessibilityLabel={tr('Resize workspace preview')}
-            handleStyle={{ backgroundColor: C.line }}
-            style={{ flex: 1, minWidth: 0, minHeight: 0, gap: CELL }}
-          >
-            <ResizablePanel minSize={CENTER_MIN} style={{ minHeight: 0 }}>
-              {props.children}
-            </ResizablePanel>
-            <ResizablePanel
-              visible={preview()}
-              size={preferredPreviewWidth()}
-              minSize={PREVIEW_MIN}
-              onResize={(size) => preferredPreviewWidth.set(size)}
-              style={{ minHeight: 0 }}
-            >
-              <If when={preview()}>
-                <ResourcePane resources={props.resources} docked />
-              </If>
-            </ResizablePanel>
-          </ResizablePanelGroup>
+          <If when={preview()}>
+            <ResourcePane resources={props.resources} docked />
+          </If>
         </ResizablePanel>
       </ResizablePanelGroup>
       <If when={previewDialog()}>

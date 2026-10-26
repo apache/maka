@@ -59,6 +59,61 @@ import {
 } from '../../../../plugins/shared/tui-messages.js';
 
 export const settingsMessages = {
+  'Context & output': ['Context & output', '上下文与输出', '上下文與輸出'],
+  Tools: ['Tools', '工具', '工具'],
+  'Context window (tokens)': [
+    'Context window (tokens)',
+    '上下文窗口（token）',
+    '上下文視窗（token）',
+  ],
+  'Input limit (tokens)': ['Input limit (tokens)', '输入上限（token）', '輸入上限（token）'],
+  'Maximum output (tokens)': ['Maximum output (tokens)', '最大输出（token）', '最大輸出（token）'],
+  'Compaction threshold (tokens)': [
+    'Compaction threshold (tokens)',
+    '上下文压缩阈值（token）',
+    '上下文壓縮閾值（token）',
+  ],
+  'Total input and output capacity. Empty uses the model default.': [
+    'Total input and output capacity. Empty uses the model default.',
+    '输入与输出的总容量。留空使用模型默认值。',
+    '輸入與輸出的總容量。留空使用模型預設值。',
+  ],
+  'Independent input ceiling. Empty uses the model default.': [
+    'Independent input ceiling. Empty uses the model default.',
+    '独立的输入容量上限。留空使用模型默认值。',
+    '獨立的輸入容量上限。留空使用模型預設值。',
+  ],
+  'Requested output budget per step, capped by the provider and remaining capacity. Empty uses the model default.':
+    [
+      'Requested output budget per step, capped by the provider and remaining capacity. Empty uses the model default.',
+      '每步请求的输出额度，受提供商与剩余容量限制。留空使用模型默认值。',
+      '每步請求的輸出額度，受供應商與剩餘容量限制。留空使用模型預設值。',
+    ],
+  'Retained tokens that trigger automatic compaction. Empty uses 85% of the smaller context window and input limit.':
+    [
+      'Retained tokens that trigger automatic compaction. Empty uses 85% of the smaller context window and input limit.',
+      '触发自动压缩的保留 token 数。留空使用上下文窗口与输入上限中较小值的 85%。',
+      '觸發自動壓縮的保留 token 數。留空使用上下文視窗與輸入上限中較小值的 85%。',
+    ],
+  'Effective context: {context} · input: {input} · provider output limit: {output}': [
+    'Effective context: {context} · input: {input} · provider output limit: {output}',
+    '生效上下文：{context} · 输入：{input} · 提供方输出上限：{output}',
+    '生效上下文：{context} · 輸入：{input} · 提供方輸出上限：{output}',
+  ],
+  '{field} must be a positive whole number of tokens.': [
+    '{field} must be a positive whole number of tokens.',
+    '{field}必须是正整数 token 数。',
+    '{field}必須是正整數 token 數。',
+  ],
+  'Fetching models…': ['Fetching models…', '正在拉取模型…', '正在擷取模型…'],
+  'Retry fetching models': ['Retry fetching models', '重试拉取模型', '重試擷取模型'],
+  'Model fetch failed. The connection remains saved. Retry fetching models or add a model manually.':
+    [
+      'Model fetch failed. The connection remains saved. Retry fetching models or add a model manually.',
+      '模型拉取失败，连接已保存。请重试拉取或手动添加模型。',
+      '模型擷取失敗，連線已儲存。請重試擷取或手動新增模型。',
+    ],
+
   'Interface scale': ['Interface scale', '界面缩放', '介面縮放'],
   'Interface scale percentage': ['Interface scale percentage', '界面缩放百分比', '介面縮放百分比'],
   'Choose a preset or press Enter to preview. Ctrl+Alt+0 restores 100%.': [

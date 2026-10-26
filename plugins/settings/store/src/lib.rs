@@ -22,6 +22,7 @@
 pub mod access;
 mod catalog;
 mod changes;
+pub mod connection_summaries;
 pub mod connection_test;
 mod database;
 mod effect_snapshot;

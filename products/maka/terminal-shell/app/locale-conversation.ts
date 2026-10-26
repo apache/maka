@@ -61,6 +61,16 @@ import {
 } from '../../../../plugins/shared/locale-messages.js';
 
 export const conversationMessages = {
+  Connection: ['Connection', '连接', '連線'],
+  'Back to models': ['Back to models', '返回模型', '返回模型'],
+  'Load more connections': ['Load more connections', '加载更多连接', '載入更多連線'],
+  'Filter by connection': ['Filter by connection', '按连接筛选', '依連線篩選'],
+  'All connections': ['All connections', '所有连接', '所有連線'],
+  'No models match this search and connection.': [
+    'No models match this search and connection.',
+    '此连接中没有符合搜索条件的模型。',
+    '此連線中沒有符合搜尋條件的模型。',
+  ],
   'MCP server configuration': ['MCP server configuration', 'MCP 服务器配置', 'MCP 伺服器設定'],
   'Trust project MCP configuration?': [
     'Trust project MCP configuration?',

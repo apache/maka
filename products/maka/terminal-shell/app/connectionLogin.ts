@@ -41,6 +41,7 @@ export function createConnectionLogin(
   owner: {
     accepts(action: LoginAction): boolean;
     saved(action: LoginAction, result: Saved): Promise<void>;
+    discover(action: LoginAction): Promise<void>;
   },
 ) {
   const state = signal<Login | null>(null);
@@ -51,9 +52,10 @@ export function createConnectionLogin(
     alive = false;
     original?.cancel();
   });
-  const start = (action: LoginAction) => {
+  const start = async (action: LoginAction) => {
     if (!alive || !owner.accepts(action)) return;
-    return operations.run(async () => {
+    let saved = false;
+    await operations.run(async () => {
       if (!alive || !owner.accepts(action)) return;
       const id = ++occurrence;
       state.set({ occurrence: id, prompt: null, cancelling: false });
@@ -106,6 +108,7 @@ export function createConnectionLogin(
               { result: failure ? errorText(failure) : message('Sign-in was saved.') },
             );
           if (failure) throw failure;
+          saved = result.kind === 'saved';
           return;
         }
       } finally {
@@ -113,6 +116,12 @@ export function createConnectionLogin(
         if (alive && state()?.occurrence === id) state.set(null);
       }
     });
+    if (alive && saved) {
+      await operations.run(async () => {
+        operations.notice.set(message('Sign-in saved in the Host credential vault.'));
+        await owner.discover(action);
+      });
+    }
   };
   const cancel = (id: number) => {
     const current = state();
