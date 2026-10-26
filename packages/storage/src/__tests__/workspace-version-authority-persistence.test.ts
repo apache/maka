@@ -33,6 +33,7 @@ import {
 import { type RuntimeEvent } from '@maka/core/runtime-event';
 import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
 import { createConversationOperationalStateStore } from '../conversation-operational-state.js';
+import { acquireOperationalStateDatabase } from '../operational-state-store.js';
 import {
   createSqliteRuntimeStore,
   type SqliteRuntimeStoreFailpoint,
@@ -102,6 +103,85 @@ describe('workspace version persistence authority', () => {
       store.close();
       await rm(root, { recursive: true, force: true });
     }
+  });
+
+  it('purges a conversation whose managed Write/Edit settled into a workspace successor', async () => {
+    await withPurgeableWorkspaceDatabase(async ({ dbPath, store, purge }) => {
+      const { input } = await prepareSuccessorCommit(store);
+      const settled = await commitWorkspaceSuccessorInternal(store, input);
+      assert.equal(settled.created, true);
+
+      // The successor projection row points its dispatch/outcome columns at
+      // this conversation's runtime events; purge used to fail here with a
+      // bare `SqliteError: FOREIGN KEY constraint failed` and never recover.
+      await purge.purge('session-successor');
+
+      const raw = new DatabaseSync(dbPath, { readOnly: true });
+      try {
+        // The conversation's own evidence is gone.
+        assert.equal(countWhere(raw, 'runtime_events', 'session_id = ?', 'session-successor'), 0);
+        assert.equal(
+          countWhere(raw, 'tool_operations', 'operation_id = ?', input.toolOutcome.operationId),
+          0,
+        );
+        assert.equal(count(raw, 'runtime_managed_mutation_reservations'), 0);
+        // The workspace authority ledger survives untouched: the accepted
+        // successor fact lives in the authority stream, which no conversation
+        // purge may rewrite.
+        assert.equal(
+          countWhere(raw, 'runtime_events', 'session_id = ?', WORKSPACE_AUTHORITY_SESSION_ID),
+          3,
+        );
+        // The successor projection row cannot keep its conversation-scoped
+        // evidence (`tool_mutation` rows require non-NULL dispatch/outcome
+        // columns), so the row — and the head pointing at it — is deleted.
+        // The baseline version projection from the authority stream remains.
+        assert.equal(count(raw, 'runtime_workspace_versions'), 1);
+        assert.equal(
+          countWhere(
+            raw,
+            'runtime_workspace_versions',
+            'workspace_version_id = ?',
+            settled.committedSuccessor.workspaceVersionId,
+          ),
+          0,
+        );
+        assert.equal(count(raw, 'runtime_workspace_heads'), 0);
+      } finally {
+        raw.close();
+      }
+    });
+  });
+
+  it('purges a conversation that crashed with an unsettled managed mutation reservation', async () => {
+    await withPurgeableWorkspaceDatabase(async ({ dbPath, store, purge }) => {
+      const { input } = await prepareSuccessorCommit(store);
+      // No settlement: the reservation row and its prepared operation stay.
+
+      // The reservation references the prepared operation, so
+      // `DELETE FROM tool_operations` used to fail with
+      // `FOREIGN KEY constraint failed` and the conversation was undeletable.
+      await purge.purge('session-successor');
+
+      const raw = new DatabaseSync(dbPath, { readOnly: true });
+      try {
+        assert.equal(count(raw, 'runtime_managed_mutation_reservations'), 0);
+        assert.equal(
+          countWhere(raw, 'tool_operations', 'operation_id = ?', input.toolOutcome.operationId),
+          0,
+        );
+        assert.equal(countWhere(raw, 'runtime_events', 'session_id = ?', 'session-successor'), 0);
+        // The workspace authority facts and projections are untouched.
+        assert.equal(
+          countWhere(raw, 'runtime_events', 'session_id = ?', WORKSPACE_AUTHORITY_SESSION_ID),
+          2,
+        );
+        assert.equal(count(raw, 'runtime_workspace_versions'), 1);
+        assert.equal(count(raw, 'runtime_workspace_heads'), 1);
+      } finally {
+        raw.close();
+      }
+    });
   });
 
   it('reads canonical facts and projections from one SQLite snapshot', async () => {
@@ -1021,6 +1101,52 @@ describe('workspace version persistence authority', () => {
     }
   });
 });
+
+/**
+ * A database that carries BOTH the full operational schema registry and a
+ * bound workspace authority, so conversation purge can run against a
+ * workspace-authority-shaped database. `acquireOperationalStateDatabase`
+ * seeds registry rows that the storage-root bind guard counts as ordinary
+ * logical state; strip those rows so the authority can bind the way it does
+ * on a Runtime Host workspace that migrates before its first logical write.
+ */
+async function withPurgeableWorkspaceDatabase(
+  run: (input: {
+    root: string;
+    dbPath: string;
+    store: ReturnType<typeof createSqliteRuntimeStore>;
+    purge: ReturnType<typeof createConversationOperationalStateStore>;
+  }) => Promise<void>,
+): Promise<void> {
+  const root = await mkdtemp(join(tmpdir(), 'maka-workspace-authority-purge-'));
+  const dbPath = join(root, 'runtime.sqlite');
+  const outer = acquireOperationalStateDatabase(root);
+  outer.transaction('write', () => {
+    for (const table of [
+      'session_catalog_state',
+      'session_metadata_schema',
+      'usage_pricing_authority',
+      'usage_screen_revision',
+    ]) {
+      outer.database.prepare(`DELETE FROM ${table}`).run();
+    }
+  });
+  const store = createSqliteRuntimeStore(dbPath, {
+    databaseLease: acquireOperationalStateDatabase(root),
+  });
+  bindWorkspaceBaselineAuthorityStoreRootInternal(store, TEST_STORAGE_ROOT_ID);
+  registerWorkspaceSuccessorCandidateVerifierInternal(store, verifyTestCandidate);
+  registerManagedMutationNoEffectVerifierInternal(store, verifyTestNoEffect);
+  const purge = createConversationOperationalStateStore(root);
+  try {
+    await run({ root, dbPath, store, purge });
+  } finally {
+    purge.close();
+    store.close();
+    outer.close();
+    await rm(root, { recursive: true, force: true });
+  }
+}
 
 async function withDatabase(
   run: (input: {
