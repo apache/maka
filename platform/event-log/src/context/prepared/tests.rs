@@ -1131,3 +1131,131 @@ async fn prior_mcp_lookup_seeks_current_content_without_materializing_old_versio
     );
     log.close().await.unwrap();
 }
+
+#[tokio::test]
+async fn full_logical_discovery_scales_with_cold_and_checkpoint_windows() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    };
+
+    async fn prepare(after: u64, width: u64) -> (u64, u64) {
+        let directory = tempfile::tempdir().unwrap();
+        let log = EventLog::open(&directory.path().join("events.sqlite"))
+            .await
+            .unwrap();
+        seed(&log, 1, 1, false).await;
+        let through = after + width;
+        log.connection.run(move |db| Box::pin(async move {
+            let template: String = sqlx::query_scalar(
+                "SELECT row_json FROM context_semantic_rows WHERE owner_session_id='prepared-test' AND source_sequence=1")
+                .fetch_one(&mut *db).await?;
+            sqlx::query("WITH RECURSIVE numbers(n) AS (SELECT 2 UNION ALL SELECT n+1 FROM numbers WHERE n<?1)
+                INSERT INTO context_semantic_rows
+                SELECT 'prepared-test',n,0,n,n,0,'invocation','invocation','discovery-fixture','imported_user',0,0,1,0,
+                    json_set(?2,'$.id.sourceSequence',n,'$.order.sourceSequence',n,'$.revision',n)
+                FROM numbers")
+                .bind(through as i64).bind(template).execute(db).await?;
+            Ok(())
+        })).await.unwrap();
+        let counter = Arc::new(AtomicU64::new(0));
+        let observed = counter.clone();
+        log.connection
+            .run(move |db| {
+                Box::pin(async move {
+                    db.lock_handle().await?.set_progress_handler(1, move || {
+                        observed.fetch_add(1, Ordering::Relaxed);
+                        true
+                    });
+                    Ok(())
+                })
+            })
+            .await
+            .unwrap();
+        let selected = SemanticSelection {
+            after,
+            anchor_sequence: (after > 0).then_some(1),
+            ..selection(through)
+        };
+        // Count the complete production discovery, including every resumable
+        // transaction and neighbor call, before rendering any payload.
+        let build = log
+            .prepare_model_view(selected, "window-growth")
+            .await
+            .unwrap();
+        log.connection
+            .run(|db| {
+                Box::pin(async move {
+                    db.lock_handle().await?.remove_progress_handler();
+                    Ok(())
+                })
+            })
+            .await
+            .unwrap();
+        let mut count = 0;
+        let mut cursor: Option<String> = None;
+        loop {
+            let groups = log
+                .prepared_dirty_groups(&build, cursor.as_deref(), 256)
+                .await
+                .unwrap();
+            if groups.is_empty() {
+                break;
+            }
+            count += groups.len();
+            cursor = groups.last().map(|group| group.id.clone());
+        }
+        assert_eq!(count, (width + u64::from(after > 0)) as usize);
+        let measured = counter.load(Ordering::Relaxed);
+        let cleanup = Arc::new(AtomicU64::new(0));
+        let observed = cleanup.clone();
+        log.connection
+            .run(move |db| {
+                Box::pin(async move {
+                    db.lock_handle().await?.set_progress_handler(1, move || {
+                        observed.fetch_add(1, Ordering::Relaxed);
+                        true
+                    });
+                    Ok(())
+                })
+            })
+            .await
+            .unwrap();
+        drop(build);
+        let registry = log.prepared.clone();
+        log.connection
+            .run(move |db| {
+                Box::pin(async move {
+                    while gc::maintain(db, &registry).await? {}
+                    db.lock_handle().await?.remove_progress_handler();
+                    let remaining: i64 =
+                        sqlx::query_scalar("SELECT COUNT(*) FROM context_prepared_dirty")
+                            .fetch_one(db)
+                            .await?;
+                    assert_eq!(
+                        remaining, 0,
+                        "retirement must delete the indexed working rows"
+                    );
+                    Ok(())
+                })
+            })
+            .await
+            .unwrap();
+        let cleanup = cleanup.load(Ordering::Relaxed);
+        log.close().await.unwrap();
+        (measured, cleanup)
+    }
+
+    for after in [0, 4096] {
+        let small = prepare(after, 256).await;
+        let large = prepare(after, 1024).await;
+        assert!(
+            large.0 < small.0 * 10,
+            "full discovery became quadratic: after={after}, W=256 {small:?} -> W=1024 {large:?}"
+        );
+        assert!(
+            large.1 < small.1 * 10,
+            "indexed working-row retirement became quadratic: after={after}, W=256 {small:?} -> W=1024 {large:?}"
+        );
+    }
+}
