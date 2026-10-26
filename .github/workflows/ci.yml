@@ -167,7 +167,6 @@ jobs:
       CARGO_INCREMENTAL: "0"
       CARGO_PROFILE_DEV_DEBUG: "0"
       CARGO_PROFILE_TEST_DEBUG: "0"
-      CARGO_TARGET_DIR: ${{ runner.temp }}/nsh-target
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -179,6 +178,7 @@ jobs:
           actual=$(git rev-parse HEAD)
           echo "NSH validation source: $actual"
           test "$actual" = "$EXPECTED_SHA"
+          echo "CARGO_TARGET_DIR=$RUNNER_TEMP/nsh-target" >> "$GITHUB_ENV"
       - name: Update Rust
         run: rustup update stable --no-self-update
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
