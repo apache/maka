@@ -24,7 +24,7 @@ use maka_fs_tools::{
     directory,
     workspace::{self, directory::PublishedDirectory},
 };
-use maka_skills::{SkillScope, SkillSource, api::LocationId};
+use maka_skills::{LocationId, SkillScope, SkillSource};
 use std::path::Path;
 
 #[derive(Clone)]

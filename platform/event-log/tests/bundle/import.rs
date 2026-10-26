@@ -70,7 +70,7 @@ pub(super) async fn roundtrip(bytes: &[u8]) {
         .inventory
         .sessions
         .iter()
-        .map(|s| (s.id.clone(), json!({"workspace":"destination policy"})))
+        .map(|s| (s.id.clone(), json!({"policy":"destination policy"})))
         .collect();
 
     let mut faults = sqlx::SqliteConnection::connect_with(
@@ -157,7 +157,7 @@ pub(super) async fn roundtrip(bytes: &[u8]) {
         receipt
     );
     let mut changed = bindings.clone();
-    changed.insert(root.clone(), json!({"workspace":"another policy"}));
+    changed.insert(root.clone(), json!({"policy":"another policy"}));
     assert_eq!(
         log.import_bundle(
             StagedBundle::read(bytes).await.unwrap(),
@@ -406,7 +406,9 @@ async fn reexport(log: &EventLog, root: &str) {
     let mut staged = StagedBundle::read(bytes.as_slice()).await.unwrap();
     staged.validate_history().await.unwrap();
     staged.close().await.unwrap();
-    log.read_model_context(root, None).await.unwrap();
+    log.capture_model_context(root, None, 100_000, 64 * 1024 * 1024)
+        .await
+        .unwrap();
 }
 
 async fn collect(log: &EventLog) {

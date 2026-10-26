@@ -101,7 +101,7 @@ impl Projection {
             (Role::ToolCall | Role::ToolResult, _) => return self.tool_chunk(chunk, &text),
             (Role::Compaction, _) => return Ok(vec![]),
         };
-        self.text(&chunk.turn_id, &chunk.message_id, kind, &text, true, meta)
+        Ok(self.replace_text(&chunk.turn_id, &chunk.message_id, kind, &text, meta))
     }
     pub fn append(
         &mut self,
@@ -109,17 +109,36 @@ impl Projection {
         id: &str,
         kind: &ContentKind,
         delta: &str,
-    ) -> Result<Vec<acp::SessionUpdate>, crate::Error> {
-        let kind = match kind {
+    ) -> Vec<acp::SessionUpdate> {
+        let message_kind = match kind {
             ContentKind::Text => MessageKind::Text,
             ContentKind::Thinking => MessageKind::Thinking,
         };
-        let current = self
-            .streams
-            .get(&(turn.into(), id.into(), kind))
-            .map_or("", |message| message.text.as_str());
-        let next = format!("{current}{delta}");
-        self.text(turn, id, kind, &next, false, message_meta(turn, id))
+        let key = (turn.to_owned(), id.to_owned(), message_kind);
+        let meta = message_meta(turn, id);
+        if delta.is_empty()
+            && self
+                .streams
+                .get(&key)
+                .is_none_or(|message| message.meta == meta)
+        {
+            return vec![];
+        }
+        let message = self.streams.entry(key).or_insert_with(|| Message {
+            text: String::new(),
+            meta: meta.clone(),
+        });
+        message.text.push_str(delta);
+        message.meta = meta.clone();
+        let update = match kind {
+            ContentKind::Text => acp::SessionUpdate::AgentMessageChunk(
+                acp::ContentChunk::new(delta.into(), id).meta(meta),
+            ),
+            ContentKind::Thinking => acp::SessionUpdate::AgentThoughtChunk(
+                acp::ContentChunk::new(delta.into(), format!("thinking:{id}")).meta(meta),
+            ),
+        };
+        vec![update]
     }
 }
 

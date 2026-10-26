@@ -249,7 +249,7 @@ async fn install(
                 url: release.url.clone(),
                 method: http::Method::Get,
                 headers: vec![],
-                body: vec![],
+                body: Default::default(),
             },
         ))
         .await?

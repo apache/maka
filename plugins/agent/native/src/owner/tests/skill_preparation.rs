@@ -189,10 +189,10 @@ async fn skill_preparation_survives_host_restart_without_preparing_again() {
             None, None, Some(service_tools::Setup::skill_preparation(dir.path().into(), false))).await;
         let session = f.create("Prepared restart").await;
         let deployment = f.app.client().snapshot().effective.unwrap().deployment;
-        let raw = rusqlite::Connection::open(f.root.join(maka_event_log::root::ROOT_DATABASE)).unwrap();
+        let raw = rusqlite::Connection::open(f.session_database(&session)).unwrap();
         raw.execute_batch("CREATE TRIGGER hold_opening BEFORE INSERT ON event_log WHEN NEW.kind='invocation_opened' BEGIN SELECT RAISE(ABORT, 'fixture opening failure'); END;").unwrap();
         assert!(f.mutation(2, "send", json!({"sessionId":session,"message":"/skill:review inspect","model":f.selection().await}), Uuid::new_v4()).await.is_err());
-        assert_eq!(f.store.pending_messages(&session).await.unwrap().len(), 1);
+        assert_eq!(f.session(&session).await.pending_messages(&session).await.unwrap().len(), 1);
         f.app.shutdown().await.unwrap();
         raw.execute_batch("DROP TRIGGER hold_opening").unwrap();
         drop(raw);
@@ -214,7 +214,7 @@ async fn skill_preparation_survives_host_restart_without_preparing_again() {
         assert!(model_text(&sent, "user").contains("FROZEN INSTRUCTIONS"));
         assert!(!model_text(&sent, "user").contains("CHANGED INSTRUCTIONS"));
         response(&mut socket).await;
-        while !f.store.pending_messages(&session).await.unwrap().is_empty() { tokio::task::yield_now().await; }
+        while !f.session(&session).await.pending_messages(&session).await.unwrap().is_empty() { tokio::task::yield_now().await; }
         resumed.shutdown().await.unwrap();
         f.config.shutdown().await.unwrap();
     }).await.unwrap();

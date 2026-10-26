@@ -19,6 +19,7 @@ import android.view.Gravity;
 import android.view.View;
 import android.view.Window;
 import android.view.WindowInsets;
+import android.view.WindowInsetsAnimation;
 import android.view.WindowManager;
 import android.widget.FrameLayout;
 import android.widget.HorizontalScrollView;
@@ -49,11 +50,59 @@ public class NshView extends FrameLayout {
         void onError(String message);
     }
 
+    /**
+     * Handles the app's calls ({@code await host.call(name, data)}) and posts
+     * ({@code host.post(name, data)}) of one name ({@code nsh/host}), on the
+     * UI thread. Register it with {@link #handle}.
+     */
+    public interface HostHandler {
+        /**
+         * Called for each call or post.
+         *
+         * @param data its data: JSON as Java objects ({@code String},
+         *     {@code Number}, {@code Boolean}, {@code java.util.List},
+         *     {@code java.util.Map}), or null
+         * @param reply answers a call, once, now or later, from any thread
+         */
+        void handle(Object data, NshHostReply reply);
+    }
+
+    /**
+     * Takes the URLs the app opens ({@code openUrl} of {@code nsh/device}) before
+     * the system does, on the UI thread. Register it with {@link #setOpenUrlHandler}.
+     */
+    public interface OpenUrlHandler {
+        /**
+         * Called for each URL the app opens, checked and granted (its
+         * {@code openUrl} capability).
+         *
+         * @param url the URL
+         * @return true when the embedding app handled it (routed it through
+         *     its own router; the app's {@code openUrl} resolves true), false
+         *     for the system to open it ({@code Intent.ACTION_VIEW})
+         */
+        boolean openUrl(String url);
+    }
+
+    /** The embedding app's URL handler, or null. */
+    private volatile OpenUrlHandler openUrlHandler;
+
+    /** The handlers of the app's calls and posts, by name. */
+    private final java.util.Map<String, HostHandler> hostHandlers = new java.util.concurrent.ConcurrentHashMap<>();
+
     long handle;
+    /** Serializes background sends with releasing the native handle. */
+    private final Object hostLock = new Object();
     private final float density;
     private final Box root;
     private final Mounter mounter;
     private final TouchTracker touches;
+
+    @Override
+    public void onWindowFocusChanged(boolean focused) {
+        super.onWindowFocusChanged(focused);
+        if (handle != 0) mounter.publishFocusPath();
+    }
 
     @Override
     public boolean dispatchTouchEvent(android.view.MotionEvent e) {
@@ -126,11 +175,14 @@ public class NshView extends FrameLayout {
      * @param trace log per-commit timings
      */
     public NshView(Context context, boolean trace) {
-        this(context, trace, new File(context.getFilesDir(), "nsh"));
+        this(context, trace, new File(context.getFilesDir(), "nsh"), new File(context.getCacheDir(), "nsh"));
     }
 
-    /** As {@link #NshView(Context, boolean)}, the apps keeping their data in {@code dataDir}. */
-    NshView(Context context, boolean trace, File dataDir) {
+    /**
+     * As {@link #NshView(Context, boolean)}, the apps keeping their data in {@code dataDir} and the images they
+     * download in {@code cacheDir}.
+     */
+    NshView(Context context, boolean trace, File dataDir, File cacheDir) {
         super(context);
         density = getResources().getDisplayMetrics().density;
         TextLayouts.cacheDir = context.getCacheDir();
@@ -150,12 +202,33 @@ public class NshView extends FrameLayout {
         // sets no soft input mode, this makes the system resize (and report
         // the keyboard as insets) instead of panning the window.
         setScrollContainer(true);
+        // The keyboard's curve and duration, as it starts to move: what makes
+        // room for it moves with it (`LayoutCurve::Keyboard`).
+        if (Build.VERSION.SDK_INT >= 30) {
+            setWindowInsetsAnimationCallback(new WindowInsetsAnimation.Callback(
+                    WindowInsetsAnimation.Callback.DISPATCH_MODE_CONTINUE_ON_SUBTREE) {
+                @Override
+                public void onPrepare(WindowInsetsAnimation animation) {
+                    // Before the end state's insets are applied.
+                    if ((animation.getTypeMask() & WindowInsets.Type.ime()) == 0) return;
+                    keyboardDuration = animation.getDurationMillis();
+                    mounter.keyboardMotion(animation.getInterpolator(), keyboardDuration);
+                }
+
+                @Override
+                public WindowInsets onProgress(WindowInsets insets, java.util.List<WindowInsetsAnimation> running) {
+                    return insets;
+                }
+            });
+        }
         // The back key where the window has no OnBackInvokedCallback in
         // effect (below Android 13, or `enableOnBackInvokedCallback` off).
         addOnUnhandledKeyEventListener((v, e) -> onBackKey(e));
         // Apps keep their data in <dataDir>/<app id>: nsh in the files
         // directory unless the development host's test session says.
-        handle = Native.create(this, density, trace, dataDir.getPath());
+        // ... and the images they download in <cacheDir>/<app id>/images: nsh
+        // in the cache directory.
+        handle = Native.create(this, density, trace, dataDir.getPath(), cacheDir.getPath());
     }
 
     /**
@@ -211,6 +284,20 @@ public class NshView extends FrameLayout {
      */
     public void setStorageDirectory(File dir) {
         Native.setStorage(handle, dir == null ? null : dir.getPath());
+    }
+
+    /**
+     * Where the apps this view loads from now on keep their caches (the
+     * images they download, so they show again without a download and
+     * offline) and how much each keeps. The default
+     * ({@code NshCacheOptions.DEFAULT}): {@code nsh} in the Context's cache
+     * directory, each app in {@code <dir>/<app id>}, 256 MiB of images.
+     *
+     * @param options the options
+     */
+    public void setCacheOptions(NshCacheOptions options) {
+        Native.setCache(handle, options.location, options.directory == null ? null : options.directory.getPath(),
+                options.images, options.imagesMaxMegabytes);
     }
 
     /**
@@ -366,11 +453,110 @@ public class NshView extends FrameLayout {
      * Registers native component {@code name} ({@code nativeComponent(name, ...)}
      * in JS): {@code factory} makes one for every element created from now on.
      *
+     * Names under {@code nsh/} are NSH's own: registering one logs a warning
+     * and changes nothing.
+     *
      * @param name the name JS uses
      * @param factory makes the components (UI thread)
      */
     public void registerComponent(String name, NshComponent.Factory factory) {
+        if (name.startsWith("nsh/")) {
+            android.util.Log.w("nsh", "native component `" + name + "` is not registered: names under `nsh/` are NSH's");
+            return;
+        }
         mounter.components.put(name, factory);
+    }
+
+    /**
+     * The launch parameters of the apps loaded from now on: what the app
+     * reads synchronously at start as {@code host.params} ({@code nsh/host}),
+     * such as the conversation a notification opens. A running app keeps the
+     * parameters it started with; later requests are events ({@link #send}).
+     *
+     * @param params JSON as Java objects (a {@code java.util.Map} or an
+     *     {@code org.json.JSONObject}), or null for none
+     * @return false (and ignored) when they are not a JSON object
+     */
+    public boolean setParams(Object params) {
+        if (handle == 0) return false;
+        return Native.setHostParams(handle, params == null ? null : Json.stringify(params));
+    }
+
+    /**
+     * Sends event {@code name} with {@code data} to the running app: its
+     * {@code host.on(name, listener)} listeners get it ({@code nsh/host}). An
+     * app that does not listen to {@code name} yet keeps the event until it
+     * does; while no app runs, it waits for the next one loaded. Any thread;
+     * it never waits for the app.
+     *
+     * @param name the event
+     * @param data JSON as Java objects (see {@link HostHandler#handle}), or null
+     * @return false when the view was destroyed, or the name or data is invalid
+     */
+    public boolean send(String name, Object data) {
+        if (name == null) return false;
+        // Serialization may call the host's own code. Finish it before
+        // taking the lock and reading the view's current handle.
+        String json = data == null ? null : Json.stringify(data);
+        synchronized (hostLock) {
+            return handle != 0 && Native.sendHostEvent(handle, name, json);
+        }
+    }
+
+    /**
+     * Handles the app's calls ({@code await host.call(name, data)}) and posts
+     * ({@code host.post(name, data)}) of {@code name} on the UI thread,
+     * replacing the handler it had; null removes it. The app's calls of a
+     * name without a handler fail at once.
+     *
+     * @param name the call's name
+     * @param handler the handler, or null
+     */
+    public void handle(String name, HostHandler handler) {
+        if (handle == 0 || name == null) return;
+        if (handler == null) hostHandlers.remove(name);
+        else hostHandlers.put(name, handler);
+        Native.setHostHandler(handle, name, handler != null);
+    }
+
+    /**
+     * Takes the URLs the app opens ({@code openUrl} of {@code nsh/device}, a
+     * {@code TextView}'s links when it opens them) before the system does,
+     * replacing the handler it had; null (the default): the system opens
+     * every URL.
+     *
+     * @param handler the handler, or null
+     */
+    public void setOpenUrlHandler(OpenUrlHandler handler) {
+        if (handle == 0) return;
+        openUrlHandler = handler;
+        Native.setOpenUrlHandler(handle, handler != null);
+    }
+
+    /** A URL the app opens ({@code request}, answered once); called by libnsh on the engine thread. */
+    void openUrlMessage(String url, long request) {
+        main.post(() -> {
+            OpenUrlHandler handler = openUrlHandler;
+            boolean handled = false;
+            try {
+                handled = handler != null && handler.openUrl(url);
+            } finally {
+                Native.openUrlReply(request, handled);
+            }
+        });
+    }
+
+    /** A call ({@code call} != 0) or post of the app; called by libnsh on the engine thread. */
+    void hostMessage(String name, String json, long call) {
+        main.post(() -> {
+            HostHandler handler = hostHandlers.get(name);
+            NshHostReply reply = new NshHostReply(call);
+            if (handler == null) {
+                reply.reject("the embedding app handles no \"" + name + "\"");
+                return;
+            }
+            handler.handle(Json.parse(json), reply);
+        });
     }
 
     /**
@@ -396,10 +582,14 @@ public class NshView extends FrameLayout {
      * native components. The view can no longer be used.
      */
     public void destroy() {
-        if (handle != 0) {
-            Native.destroy(handle);
+        long taken;
+        synchronized (hostLock) {
+            taken = handle;
             handle = 0;
         }
+        // A send already in JNI finished before the handle was taken.
+        // Joining the engine needs no Java lock.
+        if (taken != 0) Native.destroy(taken);
         mounter.destroyComponents();
     }
 
@@ -423,6 +613,8 @@ public class NshView extends FrameLayout {
     // --- Environment ---------------------------------------------------------
 
     private float keyboard;
+    /** How long the keyboard's last move took (ms; `keyboardFrame().duration`). */
+    private long keyboardDuration = 250;
     /** The host app's locale and text size ({@link #setLocale}, {@link #setFontScale}). */
     private java.util.Locale hostLocale;
     private float hostFontScale;
@@ -512,7 +704,7 @@ public class NshView extends FrameLayout {
         java.util.Locale locale = hostLocale != null ? hostLocale : java.util.Locale.getDefault();
         float fontScale = hostFontScale > 0 && !Float.isInfinite(hostFontScale) ? hostFontScale : c.fontScale;
         Native.environment(handle, new float[] {
-            top / density, right / density, bottom / density, left / density, ime / density, 0.25f, fontScale,
+            top / density, right / density, bottom / density, left / density, ime / density, keyboardDuration / 1000f, fontScale,
             android.text.TextUtils.getLayoutDirectionFromLocale(java.util.Locale.getDefault()) == LAYOUT_DIRECTION_RTL ? 1 : 0,
             // "Remove animations" sets the animator scale to 0.
             android.provider.Settings.Global.getFloat(getContext().getContentResolver(),

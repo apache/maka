@@ -85,12 +85,51 @@ pub(super) async fn all(
             .await?;
         after = number;
     }
+    // Message openings freeze their inherited lineage at insertion. Install
+    // the already-validated copy topology first, while leaving roots unpinned
+    // until all source events have reached the destination.
+    source_copies(destination, relocated).await?;
     events(destination, relocated, &receipt.bundle_digest).await?;
     copies(destination, relocated, &receipt.bundle_digest).await?;
+    // All copied bases are installed before pinning: bundle Session IDs do not
+    // encode ancestry order.
+    for session in &receipt.session_ids {
+        sqlx::query("SELECT context_source_pin_copy(?)")
+            .bind(session)
+            .execute(&mut *destination)
+            .await?;
+    }
     materials(destination, staged, positions).await?;
     crate::transcript::directory::index_imported_sessions(destination, &receipt.session_ids)
         .await?;
     crate::bundle::accounting::validate(staged, destination).await
+}
+
+async fn source_copies(
+    destination: &mut SqliteConnection,
+    relocated: &mut SqliteConnection,
+) -> Result<(), StoreError> {
+    let mut after = String::new();
+    loop {
+        let rows:Vec<(String,String,i64)>=sqlx::query_as(
+            "SELECT owner,source,through_sequence FROM context_source_copies WHERE owner>? ORDER BY owner LIMIT 128")
+            .bind(&after).fetch_all(&mut *relocated).await?;
+        if rows.is_empty() {
+            break;
+        }
+        for (owner, source, through) in rows {
+            sqlx::query(
+                "INSERT INTO context_source_copies(owner,source,through_sequence) VALUES(?,?,?)",
+            )
+            .bind(&owner)
+            .bind(source)
+            .bind(through)
+            .execute(&mut *destination)
+            .await?;
+            after = owner;
+        }
+    }
+    Ok(())
 }
 
 async fn events(
@@ -110,11 +149,15 @@ async fn events(
             .bind(digest)
             .execute(&mut *destination)
             .await?;
-        sqlx::query("INSERT INTO event_log(sequence,event_id,invocation_id,kind,operation_id,event_json) VALUES(?,?,?,?,?,?)")
-            .bind(sequence).bind(&event.id).bind(&event.invocation.invocation_id)
-            .bind(event.fact.kind()).bind(event.fact.operation_id()).bind(json)
-            .execute(&mut *destination).await?;
+        crate::append::ingress::insert(
+            destination,
+            &event,
+            json,
+            crate::append::ingress::Position::Imported(Some(sequence as u64)),
+        )
+        .await?;
         crate::message_sources::insert(destination, &event).await?;
+        crate::root_store::usage_meter::append(destination, &event).await?;
         if matches!(
             event.fact,
             Fact::MessageImported { .. }

@@ -27,6 +27,7 @@ use sqlx::{Connection, SqliteConnection};
 use crate::{EventLog, StoreError, sequence_number};
 
 pub(crate) mod history;
+pub(crate) mod ingress;
 pub(crate) mod write;
 
 impl EventLog {
@@ -35,11 +36,22 @@ impl EventLog {
     /// until Session removal completes, after which all writes are rejected.
     /// This must not enclose effects: live dispatch and outcome remain separate.
     pub async fn append_batch(&self, events: &[EventWrite]) -> Result<Vec<u64>, CommitError> {
+        for event in events {
+            self.check_bound_session(&event.event().invocation.session_id)
+                .map_err(commit_error)?;
+        }
         if let Some(statement) = write::WriteAppend::from_events(events) {
             self.validate_root().map_err(commit_error)?;
             return self
                 .connection
-                .write(statement, self.commits.clone())
+                .write(
+                    statement,
+                    self.commits.sessions(
+                        events
+                            .iter()
+                            .map(|event| event.event().invocation.session_id.as_str()),
+                    ),
+                )
                 .await
                 .map_err(commit_error);
         }
@@ -55,96 +67,56 @@ impl EventLog {
         &self,
         event: &EventWrite,
         target: &maka_agent_facts::interaction::GrantTarget,
-        base_revision: u64,
+        basis: &maka_agent_facts::workspace::PermissionBasis,
     ) -> Result<u64, CommitError> {
         if !matches!(event.event().fact, Fact::ToolDispatched { .. }) {
             return Err(CommitError::Rejected(
                 "capability admission requires a tool dispatch".into(),
             ));
         }
-        self.append_batch_checked(
-            std::slice::from_ref(event),
-            Some((target.clone(), base_revision)),
-        )
-        .await
-        .map(|sequences| sequences[0])
-        .map_err(commit_error)
+        self.append_batch_checked(std::slice::from_ref(event), Some((target.clone(), *basis)))
+            .await
+            .map(|sequences| sequences[0])
+            .map_err(commit_error)
     }
 
     async fn append_batch_checked(
         &self,
         events: &[EventWrite],
-        capability: Option<(maka_agent_facts::interaction::GrantTarget, u64)>,
+        capability: Option<(
+            maka_agent_facts::interaction::GrantTarget,
+            maka_agent_facts::workspace::PermissionBasis,
+        )>,
     ) -> Result<Vec<u64>, StoreError> {
+        for event in events {
+            self.check_bound_session(&event.event().invocation.session_id)?;
+        }
         self.validate_root()?;
         let events = events.to_vec();
-        let commits = self.commits.clone();
-        let cache = self.context_cache.clone();
-        let ingress = self.connection.writer();
+        let commits = self.commits.sessions(
+            events
+                .iter()
+                .map(|event| event.event().invocation.session_id.as_str()),
+        );
         self.connection
             .run(move |connection| {
                 Box::pin(async move {
-                    let context = if let Some(consumer) =
-                        events.iter().find(|write| match &write.event().fact {
-                            Fact::ContextCheckpointRecorded { .. } => true,
-                            Fact::ModelRequested {
-                                purpose,
-                                checkpoint_event_id,
-                                source_scope,
-                                ..
-                            } => {
-                                checkpoint_event_id.is_some()
-                                    || *purpose == maka_agent_facts::context::ModelPurpose::Summary
-                                    || (matches!(
-                                        source_scope,
-                                        maka_agent_facts::event::LogScope::Lineage { .. }
-                                    ) && cache.has_raw(&write.event().invocation.session_id))
-                            }
-                            _ => false,
-                        }) {
-                        let origin = cache.stamp(connection, ingress.failures()).await?;
-                        let certificate =
-                            cache.get(&consumer.event().invocation.session_id, &origin)?;
-                        Some((origin, certificate))
-                    } else {
-                        None
-                    };
                     let mut transaction = connection.begin_with("BEGIN IMMEDIATE").await?;
-                    let (origin, mut verification) = if let Some((origin, certificate)) = context {
-                        let certificate = if cache
-                            .confirm_append(&mut transaction, &origin, ingress.failures())
-                            .await?
-                        {
-                            certificate
-                        } else {
-                            None
-                        };
-                        let verification = crate::context::cache::Verification::new(
-                            cache.clone(),
-                            origin.clone(),
-                            certificate,
-                        );
-                        (Some(origin), verification)
-                    } else {
-                        (None, crate::context::cache::Verification::default())
-                    };
                     let mut sequences = Vec::with_capacity(events.len());
                     let mut last_inserted = None;
                     for event in &events {
-                        if let Some((target, revision)) = &capability
+                        if let Some((target, basis)) = &capability
                             && crate::interactions::capability_grant(
                                 &mut transaction,
                                 &event.event().invocation.session_id,
                                 target,
                             )
                             .await?
-                            .is_none_or(|grant| grant.base_revision != Some(*revision))
+                            .is_none_or(|grant| grant.basis != Some(*basis))
                         {
                             return Err(StoreError::PermissionRevoked);
                         }
-                        let result =
-                            Self::append_verified(&mut transaction, event, &mut verification)
-                                .await?;
+                        let result = Self::append_in_transaction(&mut transaction, event).await?;
                         let sequence = match result {
                             AppendResult::Existing(sequence) => sequence,
                             AppendResult::Inserted(sequence) => {
@@ -160,21 +132,7 @@ impl EventLog {
                             .commit()
                             .await
                             .map_err(StoreError::CommitUnknown)?;
-                        commits.send_replace(sequence);
-                        // Optional cache work cannot change a confirmed commit's outcome.
-                        if let Some(origin) = origin
-                            && let Some(candidate) = verification.candidate()
-                        {
-                            match cache.stamp(connection, ingress.failures()).await {
-                                Ok(stamp) if stamp == origin => {
-                                    if cache.publish(candidate).is_err() {
-                                        cache.invalidate();
-                                    }
-                                }
-                                Ok(_) => {}
-                                Err(_) => cache.invalidate(),
-                            }
-                        }
+                        commits.publish(sequence);
                     } else {
                         transaction.rollback().await?;
                     }
@@ -188,19 +146,6 @@ impl EventLog {
     pub(crate) async fn append_in_transaction(
         transaction: &mut SqliteConnection,
         write: &EventWrite,
-    ) -> Result<AppendResult, StoreError> {
-        Self::append_verified(
-            transaction,
-            write,
-            &mut crate::context::cache::Verification::default(),
-        )
-        .await
-    }
-
-    async fn append_verified(
-        transaction: &mut SqliteConnection,
-        write: &EventWrite,
-        verification: &mut crate::context::cache::Verification,
     ) -> Result<AppendResult, StoreError> {
         let event = write.event();
         crate::recovery::require_local(transaction, &event.invocation.invocation_id).await?;
@@ -236,8 +181,7 @@ impl EventLog {
         {
             return Err(StoreError::SessionRetired);
         }
-        let id = &event.invocation.invocation_id;
-        history::validate_cached(transaction, event, verification).await?;
+        history::validate(transaction, event).await?;
         if matches!(event.fact, Fact::InvocationOpened { .. }) {
             crate::sessions::retain(transaction, &event.invocation.session_id).await?;
             let archived: bool = sqlx::query_scalar(
@@ -265,29 +209,14 @@ impl EventLog {
         if matches!(event.fact, Fact::InvocationEnded { .. }) {
             crate::interactions::lifecycle::require_closed(transaction, &event.invocation).await?;
         }
-        let inserted = sqlx::query(
-            "INSERT INTO event_log (event_id, invocation_id, kind, operation_id, event_json)
-             SELECT ?1, ?2, ?3, ?4, ?5 WHERE NOT EXISTS (
-                 SELECT 1 FROM session_message_sources WHERE owner_session_id = ?6 AND message_id = ?1
-                 UNION ALL SELECT 1 FROM message_admissions WHERE session_id = ?6 AND message_id = ?1)",
-        )
-        .bind(&event.id)
-        .bind(id)
-        .bind(event.fact.kind())
-        .bind(event.fact.operation_id())
-        .bind(json)
-        .bind(&event.invocation.session_id)
-        .execute(&mut *transaction)
-        .await?;
-        if inserted.rows_affected() != 1 {
-            return Err(StoreError::EventConflict);
-        }
-        let sequence = sequence_number(inserted.last_insert_rowid())?;
+        let sequence =
+            ingress::insert(transaction, event, json, ingress::Position::Admitted).await?;
         crate::message_sources::insert(transaction, event).await?;
         crate::tool_payloads::insert(transaction, write).await?;
         crate::artifacts::freeze_tool_media(transaction, event, sequence).await?;
         crate::composition::insert(transaction, write).await?;
         crate::usage::valuation::append(transaction, write).await?;
+        crate::root_store::usage_meter::append(transaction, event).await?;
         if matches!(event.fact, Fact::InvocationEnded { .. }) {
             crate::sessions::read_state::mark_unread(
                 transaction,

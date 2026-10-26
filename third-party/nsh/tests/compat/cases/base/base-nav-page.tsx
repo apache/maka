@@ -47,6 +47,7 @@ function Second() {
       header={<Text>Desktop header</Text>}
       headerLeft={<Text>Left item</Text>}
       headerRight={right() ? <Text>Right item</Text> : null}
+      ios={{ headerRightSystemItem: "add" }}
       headerTitle={<Text>Title item</Text>}
       onBackPress={() => backs.set(backs() + 1)}
       onDismiss={() => dismissed.set(`second, routes ${nav.routes().join(" > ")}`)}

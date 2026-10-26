@@ -26,7 +26,7 @@ use sqlx::Connection;
 
 /// A metadata CAS is distinct from event-log append and delivery revisions.
 pub enum SessionMutation<T> {
-    Committed(SessionRecord<T>),
+    Committed(Box<SessionRecord<T>>),
     RevisionConflict { expected: u64, actual: u64 },
 }
 
@@ -41,7 +41,7 @@ impl EventLog {
             .change_session_archived(id, None, archived, now)
             .await?
         {
-            SessionMutation::Committed(record) => Ok(record),
+            SessionMutation::Committed(record) => Ok(*record),
             SessionMutation::RevisionConflict { .. } => unreachable!("no revision precondition"),
         }
     }
@@ -57,6 +57,7 @@ impl EventLog {
         validate_id(id)?;
         validate_time(now)?;
         let id = id.to_owned();
+        let commits = self.commits.session(&id);
         self.connection.run(move |connection| Box::pin(async move {
         let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
         super::removal::require_mutable(&mut tx, &id).await?;
@@ -68,7 +69,10 @@ impl EventLog {
             return Err(StoreError::SessionBusy);
         }
         if record.archived == archived {
-            return Ok(SessionMutation::Committed(record));
+            return Ok(SessionMutation::Committed(Box::new(record)));
+        }
+        if record.revision >= MAX_SAFE_INTEGER {
+            return Err(invalid("session revision exhausted"));
         }
         if !archived {
             sqlx::query("DELETE FROM session_retirements WHERE session_id=? AND remove_session=0 AND completed=1")
@@ -82,7 +86,8 @@ impl EventLog {
         advance_catalog(&mut tx).await?;
         let record = read(&mut tx, &id).await?.ok_or(StoreError::SessionNotFound)?;
         tx.commit().await.map_err(StoreError::CommitUnknown)?;
-        Ok(SessionMutation::Committed(record))
+        commits.metadata();
+        Ok(SessionMutation::Committed(Box::new(record)))
         })).await
     }
 
@@ -139,7 +144,7 @@ impl EventLog {
         .await
     }
 
-    async fn mutate_session_metadata<T, F>(
+    pub(crate) async fn mutate_session_metadata<T, F>(
         &self,
         id: &str,
         expected: u64,
@@ -157,13 +162,13 @@ impl EventLog {
             return Err(invalid("invalid expected Session revision"));
         }
         let id = id.to_owned();
-        let commits = self.commits.clone();
+        let commits = self.commits.session(&id);
         self.connection
             .run(move |connection| {
                 Box::pin(async move {
                     let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
                     super::removal::require_mutable(&mut tx, &id).await?;
-                    let mut record: SessionRecord<T> = read(&mut tx, &id)
+                    let record: SessionRecord<T> = read(&mut tx, &id)
                         .await?
                         .ok_or(StoreError::SessionNotFound)?;
                     if record.revision != expected {
@@ -174,28 +179,39 @@ impl EventLog {
                     }
                     let boundary = if permission_time.is_some() {
                         Some(
-                            crate::interactions::permissions::boundary_revision(&mut tx, &id)
+                            crate::workspace_bindings::permission_basis(&mut tx, &id)
                                 .await?
                                 .ok_or_else(|| invalid("session permission boundary is missing"))?,
                         )
                     } else {
                         None
                     };
-                    let previous = record.configuration.clone();
-                    update(&mut record.configuration)?;
-                    if !always_advance && record.configuration == previous {
-                        return Ok(SessionMutation::Committed(record));
+                    let mut normalized = serde_json::to_value(&record.configuration)?;
+                    crate::workspace_bindings::normalize(
+                        &mut normalized,
+                        record.workspace_binding.as_ref(),
+                    )?;
+                    let mut configuration: T = serde_json::from_value(normalized)?;
+                    let previous = configuration.clone();
+                    update(&mut configuration)?;
+                    if !always_advance && configuration == previous {
+                        return Ok(SessionMutation::Committed(Box::new(record)));
                     }
-                    let configuration = serde_json::to_string(&record.configuration)?;
+                    let configuration = serde_json::to_value(configuration)?;
+                    crate::workspace_bindings::require_current_reference(&mut tx, &configuration)
+                        .await?;
+                    let configuration = serde_json::to_string(&configuration)?;
+                    let next_revision = expected
+                        .checked_add(1)
+                        .filter(|revision| *revision <= MAX_SAFE_INTEGER)
+                        .ok_or_else(|| invalid("session metadata revision exhausted"))?;
                     // Metadata is not activity: neither timestamps nor runtime_events move.
                     if sqlx::query(
-                        "UPDATE session_control SET configuration = ?, revision = revision + 1
-             WHERE id = ? AND revision = ? AND revision < ?",
+                        "UPDATE session_control SET configuration = ?, revision = ? WHERE id = ?",
                     )
                     .bind(configuration)
+                    .bind(next_revision as i64)
                     .bind(&id)
-                    .bind(expected as i64)
-                    .bind(MAX_SAFE_INTEGER as i64)
                     .execute(&mut *tx)
                     .await?
                     .rows_affected()
@@ -203,23 +219,19 @@ impl EventLog {
                     {
                         return Err(invalid("session metadata revision exhausted"));
                     }
-                    let closed = if let (Some(old), Some(now)) = (boundary, permission_time) {
-                        crate::interactions::permissions::close_previous_boundary(
+                    if let (Some(old), Some(now)) = (boundary, permission_time) {
+                        crate::interactions::permissions::close_previous_basis(
                             &mut tx, &id, old, now,
                         )
-                        .await?
-                    } else {
-                        0
-                    };
+                        .await?;
+                    }
                     advance_catalog(&mut tx).await?;
                     let record = read(&mut tx, &id)
                         .await?
                         .ok_or(StoreError::SessionNotFound)?;
                     tx.commit().await.map_err(StoreError::CommitUnknown)?;
-                    if closed > 0 {
-                        commits.send_modify(|_| {});
-                    }
-                    Ok(SessionMutation::Committed(record))
+                    commits.metadata();
+                    Ok(SessionMutation::Committed(Box::new(record)))
                 })
             })
             .await

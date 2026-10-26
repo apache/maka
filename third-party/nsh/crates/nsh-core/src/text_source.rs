@@ -4,6 +4,63 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use crate::TextLine;
 
+/// Canonical source coverage of a native virtual list's current projection.
+/// Rows may own disjoint ranges, including footnotes placed after the body.
+/// This describes source addressing, independently of which cells are mounted.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ListSourceRows {
+    /// Stable identity of the current complete source.
+    pub id: Arc<str>,
+    /// UTF-8 length of the current complete source.
+    pub source_len: u64,
+    /// UTF-8 length captured by the projection that produced these rows.
+    pub projection_len: u64,
+    /// Canonical UTF-8 ranges for each logical row, in row order.
+    pub rows: Arc<[Vec<std::ops::Range<u64>>]>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SourceRow {
+    Pending,
+    Row(u32),
+    Closed,
+}
+
+impl ListSourceRows {
+    pub(crate) fn row(&self, byte: u64) -> SourceRow {
+        let byte = byte.min(self.source_len);
+        if self.projection_len < self.source_len && byte >= self.projection_len {
+            return SourceRow::Pending;
+        }
+        let mut forward = None::<(u64, u32)>;
+        let mut tail = None::<(u64, u32)>;
+        for (index, ranges) in self.rows.iter().enumerate() {
+            for range in ranges {
+                if range.start <= byte && byte < range.end {
+                    return SourceRow::Row(index as u32);
+                }
+                if range.start > byte && forward.is_none_or(|(start, _)| range.start < start) {
+                    forward = Some((range.start, index as u32));
+                }
+                if tail.is_none_or(|(end, _)| range.end > end) {
+                    tail = Some((range.end, index as u32));
+                }
+            }
+        }
+        forward
+            .or(tail)
+            .map_or(SourceRow::Closed, |(_, row)| SourceRow::Row(row))
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum SourcePosition {
+    Ready(f32),
+    Pending,
+    Closed,
+}
+
 /// The canonical source represented by a text span.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TextSource {
@@ -25,7 +82,6 @@ pub enum TextSource {
 
 /// One rendered source segment.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-#[non_exhaustive]
 pub struct TextSourceSegment {
     /// Inclusive local UTF-16 start.
     pub start: u32,

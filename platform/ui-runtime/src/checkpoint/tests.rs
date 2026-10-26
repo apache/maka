@@ -19,7 +19,7 @@
 
 use super::*;
 use crate::editor::{EditorTextRef, TextRange};
-use maka_event_log::root::{ROOT_DATABASE, RootNamespaces, RootOwner};
+use maka_event_log::root::{RootNamespaces, RootOwner};
 use maka_packages::MANIFEST_FILE;
 use maka_packages::Package;
 use maka_plugin_core::deployment::DeploymentRef;
@@ -33,11 +33,11 @@ use serde_json::json;
 use std::{collections::BTreeMap, time::Duration};
 use uuid::Uuid;
 
-async fn store() -> (tempfile::TempDir, Arc<EventLog>) {
+async fn store() -> (tempfile::TempDir, Arc<RootStore>) {
     let dir = tempfile::tempdir().unwrap();
     let root =
         Arc::new(RootOwner::create(&dir.path().join("root"), &namespaces(dir.path())).unwrap());
-    let store = Arc::new(EventLog::for_root(root).await.unwrap());
+    let store = Arc::new(RootStore::open(root).await.unwrap());
     (dir, store)
 }
 fn namespaces(dir: &std::path::Path) -> RootNamespaces {
@@ -45,6 +45,19 @@ fn namespaces(dir: &std::path::Path) -> RootNamespaces {
         ownership: dir.join("owners"),
         control: dir.join("control"),
     }
+}
+// Hold the real data writers, without depending on private deployment routing.
+fn block_data_writers(dir: &std::path::Path) -> Vec<rusqlite::Connection> {
+    std::fs::read_dir(dir.join("root/runtime-partitions"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "sqlite"))
+        .map(|path| {
+            let connection = rusqlite::Connection::open(path).unwrap();
+            connection.execute_batch("BEGIN IMMEDIATE").unwrap();
+            connection
+        })
+        .collect()
 }
 fn policy() -> EditorPersistence {
     EditorPersistence {
@@ -56,7 +69,7 @@ fn policy() -> EditorPersistence {
         retry: 0,
     }
 }
-async fn scope(store: &Arc<EventLog>, source: &DeploymentRef) -> Scope {
+async fn scope(store: &Arc<RootStore>, source: &DeploymentRef) -> Scope {
     Scope {
         store: Arc::downgrade(store),
         source: store
@@ -98,7 +111,7 @@ async fn until(
     .await
     .unwrap();
 }
-async fn source(store: &EventLog, deployment: Uuid, expected: u64) -> DeploymentRef {
+async fn source(store: &RootStore, deployment: Uuid, expected: u64) -> DeploymentRef {
     let package = Package::new(BTreeMap::from([(MANIFEST_FILE.into(),serde_json::to_vec(&json!({"schemaVersion":1,"id":"ui.checkpoint","application":Declaration {entries:BTreeMap::from([(EntryTarget::Tui,EntryDeclaration {scene:None,implementation:Implementation::Native {implementation:"test.checkpoint".into()},configuration:json!({"type":"object"}).into(),imports:BTreeMap::new(),exports:BTreeMap::new()})]),composition:None}})).unwrap())])).unwrap();
     store
         .commit_application(
@@ -158,8 +171,7 @@ async fn final_coalesced_snapshot_flushes_before_cleanup_and_restores_after_root
     let text = "甲👩‍💻z";
     editor.save(&snapshot("old-owner", 1, text), text, &policy.metadata);
     until(&mut editor, &policy, EditorCheckpoint::accepts_input).await;
-    let blocker = rusqlite::Connection::open(dir.path().join("root").join(ROOT_DATABASE)).unwrap();
-    blocker.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let blocker = block_data_writers(dir.path());
     let final_body = format!(
         "{text}100\n{}FINAL COMPLETE DRAFT",
         "保留中文😀 draft bytes.\n".repeat(50_000)
@@ -187,11 +199,13 @@ async fn final_coalesced_snapshot_flushes_before_cleanup_and_restores_after_root
     drop(store);
     assert!(retained.upgrade().is_some(), "worker retains original Root");
     assert!(RootOwner::open(&dir.path().join("root"), &namespaces(dir.path())).is_err());
-    blocker.execute_batch("COMMIT").unwrap();
+    for connection in &blocker {
+        connection.execute_batch("COMMIT").unwrap();
+    }
     drop(blocker);
     resources.finish().await.unwrap();
     assert_eq!(budget.usage(), (0, 0, 0));
-    // EventLog drop starts asynchronous SQL shutdown. Reacquire the actual lease
+    // RootStore drop starts asynchronous SQL shutdown. Reacquire the actual lease
     // to prove that its independent connection owner has finished releasing it.
     let root = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
@@ -207,7 +221,7 @@ async fn final_coalesced_snapshot_flushes_before_cleanup_and_restores_after_root
     .await
     .unwrap();
     assert!(retained.upgrade().is_none());
-    let store = Arc::new(EventLog::for_root(root).await.unwrap());
+    let store = Arc::new(RootStore::open(root).await.unwrap());
     assert!(
         recipe_scope.open(&store).is_err(),
         "old evidence cannot cross a Root lease reopen"
@@ -574,8 +588,7 @@ async fn preference_busy_keeps_the_original_write_result_and_retirement_drains_i
     .unwrap();
     let original_payload = json!({"original": "完整 preference ".repeat(3000)});
     let original_bytes = maka_plugin_core::json::value_size(&original_payload, usize::MAX).unwrap();
-    let blocker = rusqlite::Connection::open(dir.path().join("root").join(ROOT_DATABASE)).unwrap();
-    blocker.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let blocker = block_data_writers(dir.path());
     props.command = Some(ValueCheckpointCommand::Write {
         sequence: 1,
         expected_revision: None,
@@ -596,7 +609,9 @@ async fn preference_busy_keeps_the_original_write_result_and_retirement_drains_i
         value: json!({"replacement": true}),
     });
     preferences.update(&props);
-    blocker.execute_batch("COMMIT").unwrap();
+    for connection in &blocker {
+        connection.execute_batch("COMMIT").unwrap();
+    }
     let busy = preferences.observe().unwrap();
     assert_eq!(busy.sequence, 2);
     assert!(
@@ -638,7 +653,9 @@ async fn preference_busy_keeps_the_original_write_result_and_retirement_drains_i
         original_payload
     );
 
-    blocker.execute_batch("BEGIN IMMEDIATE").unwrap();
+    for connection in &blocker {
+        connection.execute_batch("BEGIN IMMEDIATE").unwrap();
+    }
     props.command = Some(ValueCheckpointCommand::Write {
         sequence: 3,
         expected_revision: Some(revision),
@@ -648,7 +665,9 @@ async fn preference_busy_keeps_the_original_write_result_and_retirement_drains_i
     preferences.close();
     assert!(!resources.seal().unwrap());
     drop(preferences);
-    blocker.execute_batch("COMMIT").unwrap();
+    for connection in &blocker {
+        connection.execute_batch("COMMIT").unwrap();
+    }
     resources.finish().await.unwrap();
     assert_eq!(budget.usage(), (0, 0, 0));
     let (saved, ()) = checkpoints

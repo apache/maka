@@ -67,6 +67,7 @@ use gpui::{Font, FontFeatures, FontStyle, FontWeight, SharedString, TextSystem, 
 use nsh_core::{
     AutoCapitalize, Color, EventKind, EventPayload, InputConfig, NodeId, PayloadValue, Points,
     ReturnKeyType, SubmitBehavior, TextAlign,
+    input_tokens::InputTokenStyle,
     tailwind::state,
     text_edit::{self as model, Composition, Model, Unit, key_of, pasted, utf16_to_byte},
 };
@@ -130,6 +131,8 @@ pub(crate) struct InputState {
     count: Cell<u32>,
     /// Selection as last reported (UTF-16).
     reported: Cell<(u32, u32)>,
+    /// The caret as last reported, in the view.
+    reported_caret: Cell<nsh_core::Bounds<Points>>,
     /// The composition as last reported (`onCompositionChange`): its text
     /// while one is in progress.
     composed: RefCell<Option<String>>,
@@ -172,6 +175,7 @@ impl InputState {
             size: Cell::new((0.0, 0.0)),
             count: Cell::new(0),
             reported: Cell::new((0, 0)),
+            reported_caret: Cell::new(nsh_core::Bounds::default()),
             composed: RefCell::new(None),
             pending: RefCell::new(None),
             anim_color: Cell::new(None),
@@ -342,13 +346,17 @@ impl InputState {
     }
 
     /// The text offset at editor point `(x, y)`.
-    fn hit(&self, x: f32, y: f32) -> usize {
+    fn hit(&self, x: f32, y: f32, caret: bool) -> usize {
         let Some(layout) = self.layout() else {
             return 0;
         };
         let (ox, oy) = self.origin(&layout);
-        let pos = layout.hit(x - ox, y - oy);
-        self.model.borrow().text_at(pos, self.secure())
+        let model = self.model.borrow();
+        let secure = self.secure();
+        let pos = layout.hit(x - ox, y - oy, |at| {
+            !caret || model.tokens().is_caret(model.text_at(at, secure))
+        });
+        model.text_at(pos, secure)
     }
 
     /// Scrolls so that the caret shows.
@@ -411,6 +419,24 @@ impl Hosted for InputState {
         let secure = config.secure;
         let color = self.text_color();
         let focused = self.focused.get();
+        let tokens = if secure {
+            Vec::new()
+        } else {
+            display_tokens(&model)
+        };
+
+        for (range, style) in &tokens {
+            let Some(tint) = style.background_color else {
+                continue;
+            };
+            for (x, y, rw, rh) in layout.rects(range.start, range.end) {
+                cx.fill_rect(
+                    crate::geom::rect(ox + x, oy + y, rw, rh),
+                    [style.border_radius.0; 4],
+                    tint,
+                );
+            }
+        }
 
         if focused && model.has_selection() {
             let (s, e) = model.selection();
@@ -445,10 +471,10 @@ impl Hosted for InputState {
                 } else {
                     (h - placeholder.height) / 2.0
                 };
-                paint_glyphs(cx, &placeholder, 0.0, y, tint);
+                paint_glyphs(cx, &placeholder, 0.0, y, tint, &[]);
             }
         } else {
-            paint_glyphs(cx, &layout, ox, oy, color);
+            paint_glyphs(cx, &layout, ox, oy, color, &tokens);
         }
 
         if let Some(c) = model.composition.as_ref().filter(|c| !c.text.is_empty()) {
@@ -515,21 +541,37 @@ impl Hosted for InputState {
 
 /// Paints `layout`'s glyphs with its origin at `(ox, oy)` (current
 /// coordinates).
-fn paint_glyphs(cx: &mut DrawCx<'_>, layout: &Layout, ox: f32, oy: f32, color: Color) {
+fn paint_glyphs(
+    cx: &mut DrawCx<'_>,
+    layout: &Layout,
+    ox: f32,
+    oy: f32,
+    color: Color,
+    tokens: &[(Range<u32>, InputTokenStyle)],
+) {
     if cx.culled() || layout.glyphs.is_empty() {
         return;
     }
     let size = px(layout.size * cx.transform_scale());
+    let tint = cx.color(color);
+    let colors: Vec<_> = tokens
+        .iter()
+        .filter_map(|(range, style)| style.color.map(|color| (range, cx.color(color))))
+        .collect();
     let mut glyphs = Vec::with_capacity(layout.glyphs.len());
     for line in &layout.lines {
         let y = oy + line.y + line.baseline;
         for g in &layout.glyphs[line.glyphs.clone()] {
-            glyphs.push((cx.map(ox + line.x + g.x, y), *g));
+            let index = colors.partition_point(|(range, _)| range.end <= g.offset);
+            let tint = colors
+                .get(index)
+                .filter(|(range, _)| range.contains(&g.offset))
+                .map_or(tint, |(_, color)| *color);
+            glyphs.push((cx.map(ox + line.x + g.x, y), *g, tint));
         }
     }
-    let tint = cx.color(color);
     cx.paint(|window, _| {
-        for (p, g) in glyphs {
+        for (p, g, tint) in glyphs {
             let result = if g.emoji {
                 window.paint_emoji(p, g.font, g.id, size)
             } else {
@@ -540,6 +582,32 @@ fn paint_glyphs(cx: &mut DrawCx<'_>, layout: &Layout, ox: f32, oy: f32, color: C
             }
         }
     });
+}
+
+/// Project committed source ranges into the shown text, leaving the IME's
+/// preedit unstyled even when it sits inside the token being typed.
+fn display_tokens(model: &Model) -> Vec<(Range<u32>, InputTokenStyle)> {
+    let mut shown = Vec::new();
+    let caret = model.caret();
+    let composition = model
+        .composition
+        .as_ref()
+        .filter(|c| !c.text.is_empty())
+        .map_or(0, |c| model::utf16_len(&c.text) as u32);
+    for span in model.tokens().spans() {
+        let start = model.to_display(span.range.start, false);
+        let end = model.to_display(span.range.end, false);
+        if composition > 0 && span.range.start <= caret && caret < span.range.end {
+            let at = model.to_display(caret, false);
+            if start < at {
+                shown.push((start..at, span.style));
+            }
+            shown.push((at + composition..end, span.style));
+        } else {
+            shown.push((start..end, span.style));
+        }
+    }
+    shown
 }
 
 /// The font of a text style, resolved as the engine's text resolves it
@@ -646,6 +714,8 @@ impl FocusTarget {
 struct Focus {
     target: Option<FocusTarget>,
     inactive: bool,
+    /// Revoked by this sole owner whenever its focus admission changes.
+    admission: Rc<()>,
 }
 
 thread_local! {
@@ -720,6 +790,7 @@ pub(crate) fn focused_target(surface: &Surface) -> Option<FocusTarget> {
     FOCUS.with(|f| {
         if let Some(f) = f.borrow_mut().get_mut(&surface.key()) {
             f.target = None;
+            f.admission = Rc::new(());
         }
     });
     blink::update();
@@ -805,6 +876,9 @@ pub(crate) fn set_focus_target(surface: &Rc<Surface>, target: Option<FocusTarget
         }
         return;
     }
+    FOCUS.with(|f| {
+        f.borrow_mut().entry(surface.key()).or_default().admission = Rc::new(());
+    });
     if let Some(old) = &old {
         let view = old.view();
         if let Some(input) = input_of(view) {
@@ -857,6 +931,9 @@ pub(crate) fn window_focus(surface: &Rc<Surface>, has_focus: bool) -> bool {
         let entry = f.entry(surface.key()).or_default();
         let changed = entry.inactive == has_focus;
         entry.inactive = !has_focus;
+        if changed {
+            entry.admission = Rc::new(());
+        }
         changed
     });
     if !changed {
@@ -905,6 +982,17 @@ pub(crate) mod ime {
         let view = focused(surface)?;
         let input = input_of(&view)?;
         Some((view, input))
+    }
+
+    /// The live native field, independent of the surface's shared GPUI focus.
+    pub(crate) fn target(surface: &Surface) -> Option<gpui::TextInputTarget> {
+        let (_, input) = field(surface)?;
+        FOCUS.with(|focuses| {
+            focuses
+                .borrow()
+                .get(&surface.key())
+                .map(|focus| gpui::TextInputTarget::from_field(&input, &focus.admission))
+        })
     }
 
     /// The UTF-16 range of the composition, if there is one.
@@ -1089,22 +1177,83 @@ pub(crate) mod ime {
         let (x1, y1, _) = input.caret_rect(Some(end))?;
         let x1 = if y1 == y0 { x1.max(x0) } else { x0 };
         let content = content_rect(&view, &input);
-        let m = view.to_root()?;
-        let (ox, oy) = surface.origin.get();
-        let (Some(a), Some(b)) = (
-            m.map(content.origin.x.0 + x0, content.origin.y.0 + y0),
-            m.map(
-                content.origin.x.0 + x1 + CARET_WIDTH,
-                content.origin.y.0 + y0 + h,
-            ),
-        ) else {
+        let caret = crate::geom::rect(
+            content.origin.x.0 + x0,
+            content.origin.y.0 + y0,
+            x1 - x0 + CARET_WIDTH,
+            h,
+        )
+        .intersect(&content);
+        if caret.size.width.0 <= 0.0 || caret.size.height.0 <= 0.0 {
             return None;
-        };
+        }
+        let rectangle =
+            |x: f32, y: f32, w: f32, h: f32| [(x, y), (x + w, y), (x + w, y + h), (x, y + h)];
+        let mut polygon = rectangle(
+            caret.origin.x.0,
+            caret.origin.y.0,
+            caret.size.width.0,
+            caret.size.height.0,
+        )
+        .to_vec();
+        let mut current = view;
+        loop {
+            let state = current.state();
+            if state.opacity() <= 0.0 {
+                return None;
+            }
+            if state.clips() {
+                polygon = crate::decor::shape::clip_convex(
+                    &polygon,
+                    &rectangle(
+                        0.0,
+                        0.0,
+                        state.frame.size.width.0,
+                        state.frame.size.height.0,
+                    ),
+                );
+                if polygon.is_empty() {
+                    return None;
+                }
+            }
+            let Some(parent) = current.parent_view() else {
+                break;
+            };
+            let (x, y) = parent.state().child_origin(state.frame, state.shift);
+            let mut transform = crate::geom::Mat4::new().translate(x, y);
+            if let Some(local) = state.transform() {
+                transform = crate::geom::Mat4::mul(&local, &transform);
+            }
+            drop(state);
+            for point in &mut polygon {
+                *point = transform.map(point.0, point.1)?;
+            }
+            current = parent;
+        }
+        let (width, height) = surface.size();
+        let polygon =
+            crate::decor::shape::clip_convex(&polygon, &rectangle(0.0, 0.0, width, height));
+        let (mut left, mut top, mut right, mut bottom) = (
+            f32::INFINITY,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            f32::NEG_INFINITY,
+        );
+        for (x, y) in polygon {
+            left = left.min(x);
+            top = top.min(y);
+            right = right.max(x);
+            bottom = bottom.max(y);
+        }
+        if left >= right || top >= bottom {
+            return None;
+        }
+        let (ox, oy) = surface.origin.get();
         Some(crate::render::bounds(
-            ox + a.0.min(b.0),
-            oy + a.1.min(b.1),
-            (b.0 - a.0).abs(),
-            (b.1 - a.1).abs(),
+            ox + left,
+            oy + top,
+            right - left,
+            bottom - top,
         ))
     }
 
@@ -1118,7 +1267,7 @@ pub(crate) mod ime {
         let m = view.to_root()?;
         let (x, y) = m.unproject(f32::from(point.x) - ox, f32::from(point.y) - oy)?;
         let content = content_rect(&view, &input);
-        let at = input.hit(x - content.origin.x.0, y - content.origin.y.0);
+        let at = input.hit(x - content.origin.x.0, y - content.origin.y.0, true);
         let model = input.model.borrow();
         Some(model::byte_to_utf16(model.text(), at) as usize)
     }
@@ -1227,26 +1376,56 @@ fn key_press(surface: &Surface, view: &NshView, key: &str) {
     });
 }
 
-/// Reports the selection if it moved and JS listens.
+/// Reports the selection if it moved and JS listens, then the caret.
 fn report_selection(surface: &Surface, view: &NshView, input: &InputState) {
-    if !view.state().events.contains(EventKind::SelectionChange) {
+    if view.state().events.contains(EventKind::SelectionChange) {
+        let range = {
+            let model = input.model.borrow();
+            let (s, e) = model.selection();
+            let text = model.text();
+            (model::byte_to_utf16(text, s), model::byte_to_utf16(text, e))
+        };
+        if input.reported.replace(range) != range {
+            send(surface, view, EventKind::SelectionChange, || {
+                EventPayload::Map(vec![
+                    ("start", PayloadValue::Number(range.0 as f64)),
+                    ("end", PayloadValue::Number(range.1 as f64)),
+                ])
+            });
+        }
+    }
+    report_caret(surface, view, input);
+}
+
+/// `onCaretMove` if the caret moved (with the selection, or as the text
+/// scrolled or wrapped again) and JS listens.
+fn report_caret(surface: &Surface, view: &NshView, input: &InputState) {
+    // Only an input that edits shows a caret.
+    if !input.focused.get() || !view.state().events.contains(EventKind::CaretMove) {
         return;
     }
-    let range = {
-        let model = input.model.borrow();
-        let (s, e) = model.selection();
-        let text = model.text();
-        (model::byte_to_utf16(text, s), model::byte_to_utf16(text, e))
+    let caret: nsh_core::Bounds<Points> = caret_bounds(view, input);
+    if input.reported_caret.replace(caret) != caret {
+        send(surface, view, EventKind::CaretMove, || {
+            EventPayload::caret(caret)
+        });
+    }
+}
+
+/// The caret in the input view's coordinates (`onCaretMove`'s `bounds`):
+/// in the content box, scrolled with the text.
+fn caret_bounds(view: &NshView, input: &InputState) -> nsh_core::Bounds<Points> {
+    let Some((x, y, h)) = input.caret_rect(None) else {
+        return nsh_core::Bounds::default();
     };
-    if input.reported.replace(range) == range {
-        return;
+    let content = content_rect(view, input);
+    nsh_core::Bounds {
+        origin: nsh_core::geometry::point(
+            content.origin.x + Points(x),
+            content.origin.y + Points(y),
+        ),
+        size: nsh_core::geometry::size(Points(CARET_WIDTH), Points(h)),
     }
-    send(surface, view, EventKind::SelectionChange, || {
-        EventPayload::Map(vec![
-            ("start", PayloadValue::Number(range.0 as f64)),
-            ("end", PayloadValue::Number(range.1 as f64)),
-        ])
-    });
 }
 
 /// Reports the composition if it started, changed or ended since last
@@ -1308,7 +1487,7 @@ fn insert(surface: &Surface, view: &NshView, input: &InputState, text: &str, typ
         return;
     }
     let max = input.config.borrow().max_length;
-    let inserted = input.model.borrow_mut().insert(text, max);
+    let inserted = input.model.borrow_mut().insert_input(text, max, typed);
     input.goal_x.set(None);
     if let Some(fit) = &inserted
         && !fit.is_empty()
@@ -1380,7 +1559,15 @@ pub(crate) fn config(surface: &Rc<Surface>, view: &NshView, config: &InputConfig
         }
     }
     let editable_changed = input.config.borrow().editable != config.editable;
+    let tokens_changed = input.model.borrow_mut().set_tokens(&config.tokens);
     *input.config.borrow_mut() = config.clone();
+    if tokens_changed {
+        // Token styles leave shaping and line metrics intact. The model
+        // may move a selection off a newly atomic range.
+        input.reveal();
+        report_selection(surface, view, &input);
+        view.changed();
+    }
     if editable_changed && input.focused.get() {
         // The input handler comes or goes with the next frame.
         surface.invalidate();
@@ -1503,6 +1690,9 @@ pub(crate) fn content(view: &NshView, content: nsh_core::Bounds<Points>) {
     place(view, &input);
     if input.focused.get() {
         input.reveal();
+        if let Some(surface) = surface_of(view) {
+            report_caret(&surface, view, &input);
+        }
     }
 }
 
@@ -1582,9 +1772,60 @@ pub(crate) fn set_selection(view: &NshView, start: u32, end: u32) {
     view.changed();
 }
 
+/// One guarded, undoable application edit of this native input.
+pub(crate) fn replace_range(surface: &Rc<Surface>, view: &NshView, command: &nsh_core::Command) {
+    let nsh_core::Command::ReplaceRange {
+        range,
+        text,
+        expected_text,
+        expected_selection,
+        count,
+    } = command
+    else {
+        return;
+    };
+    let Some(input) = input_of(view) else {
+        return;
+    };
+    if !input.focused.get()
+        || !input.active.get()
+        || !input.config.borrow().editable
+        || !crate::input::focusable(surface, view)
+        || input.count.get() != *count
+    {
+        return;
+    }
+    let (changed, selection_changed) = {
+        let mut model = input.model.borrow_mut();
+        let before = model.selection();
+        let observed = model::byte_to_utf16(model.text(), before.0)
+            ..model::byte_to_utf16(model.text(), before.1);
+        if model.composition.is_some()
+            || model.text() != expected_text
+            || observed != *expected_selection
+            || range.start > range.end
+        {
+            return;
+        }
+        let start = model::utf16_to_byte(model.text(), range.start);
+        let end = model::utf16_to_byte(model.text(), range.end);
+        if model::byte_to_utf16(model.text(), start) != range.start
+            || model::byte_to_utf16(model.text(), end) != range.end
+        {
+            return;
+        }
+        let changed = model.replace_range(start..end, text, input.config.borrow().max_length);
+        (changed, model.selection() != before)
+    };
+    if changed || selection_changed {
+        input.goal_x.set(None);
+        after_edit(surface, view, &input, changed);
+    }
+}
+
 /// Characters typed into the focused field (the test agent's), as the
 /// input handler's `replace_text_in_range` brings them.
-#[cfg(any(feature = "dev", all(test, feature = "shot")))]
+#[cfg(any(feature = "dev", test))]
 pub(crate) fn char_input(surface: &Rc<Surface>, text: &str) {
     ime::replace_text_in_range(surface, None, text);
 }
@@ -1611,8 +1852,11 @@ pub(crate) fn pointer(surface: &Rc<Surface>, view: &NshView, event: &ItemPointer
                 ime::unmark_text(surface);
             }
             set_focus(surface, Some(view));
-            let at = input.hit(x, y);
             let secure = input.secure();
+            // Word/line selection needs the point inside the token; its
+            // resulting range is made whole by the model. A single caret
+            // instead targets only legal atomic boundaries.
+            let at = input.hit(x, y, event.clicks <= 1 || secure);
             let drag = {
                 let mut model = input.model.borrow_mut();
                 match event.clicks {
@@ -1647,7 +1891,7 @@ pub(crate) fn pointer(surface: &Rc<Surface>, view: &NshView, event: &ItemPointer
             let Some(drag) = input.drag.get() else {
                 return false;
             };
-            let at = input.hit(x, y);
+            let at = input.hit(x, y, matches!(drag, Drag::Char));
             {
                 let mut model = input.model.borrow_mut();
                 match drag {
@@ -1692,6 +1936,11 @@ pub(crate) fn wheel(view: &NshView, dy: f32) -> bool {
     let moved = input.scroll.get() != before;
     if moved {
         view.changed();
+        if input.focused.get()
+            && let Some(surface) = surface_of(view)
+        {
+            report_caret(&surface, view, &input);
+        }
     }
     moved
 }
@@ -1710,10 +1959,20 @@ pub(crate) fn context_menu(surface: &Rc<Surface>, view: &NshView) {
     let key = surface.key();
     let view = view.clone();
     crate::rt::on_app(move |cx| {
-        let has_text = cx
-            .read_from_clipboard()
+        let item = cx.read_from_clipboard();
+        // Images and files paste too while the app listens to pastes.
+        let listens = view.state().events.contains(EventKind::Paste);
+        let has_text = item
+            .as_ref()
             .and_then(|item| item.text())
-            .is_some_and(|t| !t.is_empty());
+            .is_some_and(|t| !t.is_empty())
+            || (listens
+                && item.iter().flat_map(|item| item.entries()).any(|entry| {
+                    matches!(
+                        entry,
+                        gpui::ClipboardEntry::Image(_) | gpui::ClipboardEntry::ExternalPaths(_)
+                    )
+                }));
         if let Some(surface) = Surface::by_key(key)
             && let Some(input) = input_of(&view)
         {
@@ -1927,10 +2186,16 @@ pub(crate) fn key(surface: &Rc<Surface>, event: &KeyEvent) -> bool {
         _ if is_command(m, mac) => match vk {
             0x41 => moved(&|model| model.select_all()),
             0x43 => {
+                if !input.model.borrow().has_selection() {
+                    return crate::keymap::empty_copy_consumed(surface, event);
+                }
                 copy(&input, secure);
                 true
             }
             _ if vk == VK_INSERT && !m.shift => {
+                if !input.model.borrow().has_selection() {
+                    return crate::keymap::empty_copy_consumed(surface, event);
+                }
                 copy(&input, secure);
                 true
             }
@@ -1995,29 +2260,92 @@ fn cut(surface: &Surface, view: &NshView, input: &InputState, secure: bool) -> b
     true
 }
 
-/// Pastes the clipboard's text into `view` (once the app is at hand: the
-/// clipboard is read with it), if it still has the focus then.
+/// Pastes the clipboard into `view` (once the app is at hand: the
+/// clipboard is read with it, only on the user's paste), if it still has
+/// the focus then: reports what it holds (`onPaste`) if the app listens,
+/// then inserts its text as `pasteBehavior` says.
 fn paste(surface: &Surface, view: &NshView) {
     let key = surface.key();
     let view = view.clone();
     crate::rt::on_app(move |cx| {
-        let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) else {
-            return;
-        };
+        let item = cx.read_from_clipboard();
         let Some(surface) = Surface::by_key(key) else {
             return;
         };
-        if focused(&surface).as_ref() != Some(&view) {
-            return;
-        }
-        let Some(input) = input_of(&view) else {
-            return;
-        };
-        let text = pasted(&text, input.multiline());
-        if !text.is_empty() {
-            insert(&surface, &view, &input, &text, false);
-        }
+        let text = item.as_ref().and_then(|item| item.text());
+        paste_content(&surface, &view, pasted_content(text, item));
     });
+}
+
+pub(crate) fn paste_content(
+    surface: &Surface,
+    view: &NshView,
+    mut paste: nsh_core::PasteEvent,
+) -> bool {
+    if !window_active(surface) || focused(surface).as_ref() != Some(view) {
+        return false;
+    }
+    let Some(input) = input_of(view) else {
+        return false;
+    };
+    let config = input.config.borrow();
+    if !config.editable {
+        return false;
+    }
+    let events = view.state().events;
+    let inferred_files = if events.contains(EventKind::FileDrop)
+        && paste.files.is_empty()
+        && paste.uris.is_empty()
+        && let Some(uris) = nsh_core::platform::clipboard::files_from_text(&paste.text)
+    {
+        paste.text.clear();
+        paste.uris = uris;
+        true
+    } else {
+        false
+    };
+    let text = (config.paste_behavior == nsh_core::PasteBehavior::Insert)
+        .then(|| pasted(&paste.text, input.multiline()));
+    drop(config);
+    if events.contains(EventKind::Paste) {
+        surface.event(
+            view.id(),
+            EventKind::Paste,
+            EventPayload::Paste(Box::new(paste)),
+        );
+    } else if inferred_files {
+        surface.event(
+            view.id(),
+            EventKind::FileDrop,
+            EventPayload::FileDrop(paste.uris),
+        );
+    }
+    if let Some(text) = text.filter(|text| !text.is_empty()) {
+        insert(surface, view, &input, &text, false);
+    }
+    true
+}
+
+/// What clipboard `item` holds, for `onPaste`: `text`, its images and its
+/// local files' `file:` URLs.
+fn pasted_content(text: Option<String>, item: Option<gpui::ClipboardItem>) -> nsh_core::PasteEvent {
+    let mut paste = nsh_core::PasteEvent::new(text.unwrap_or_default());
+    for entry in item.into_iter().flat_map(|item| item.into_entries()) {
+        match entry {
+            gpui::ClipboardEntry::Image(image) => {
+                paste.files.push(nsh_core::PastedFile::image(image.bytes));
+            }
+            gpui::ClipboardEntry::ExternalPaths(paths) => paste.uris.extend(
+                paths
+                    .paths()
+                    .iter()
+                    .filter(|path| path.is_absolute())
+                    .map(|path| nsh_core::platform::clipboard::file_url(&path.to_string_lossy())),
+            ),
+            _ => {}
+        }
+    }
+    paste
 }
 
 /// The start or end of the caret's visual line (wrapped lines included).
@@ -2028,10 +2356,9 @@ fn line_edge(input: &InputState, end: bool) -> usize {
     let secure = input.secure();
     let pos = input.model.borrow().display_caret(secure);
     let (start, stop) = layout.line_edges(pos);
-    input
-        .model
-        .borrow()
-        .text_at(if end { stop } else { start }, secure)
+    let model = input.model.borrow();
+    let at = model.text_at(if end { stop } else { start }, secure);
+    model.tokens().step(at, end)
 }
 
 /// Where Up / Down (a line) or Page Up / Down (a box) takes the caret,
@@ -2058,8 +2385,10 @@ fn vertical(input: &InputState, down: bool, page: bool) -> usize {
     if target > layout.height {
         return model.text().len();
     }
-    let at = layout.hit(goal, target);
-    model.text_at(at, secure)
+    let at = layout.hit(goal, target, |_| true);
+    // A directional key entering a wrapped atom must cross it, rather
+    // than snap back to the endpoint the caret just left.
+    model.tokens().step(model.text_at(at, secure), down)
 }
 
 // --- The caret's blinking ----------------------------------------------------
@@ -2228,6 +2557,7 @@ mod tests {
                 Focus {
                     target: Some(FocusTarget::View(view)),
                     inactive: false,
+                    ..Default::default()
                 },
             )
         });
@@ -2251,5 +2581,31 @@ mod tests {
         // the text.
         assert_eq!(m.text_at(2, false), 1);
         assert_eq!(m.text_at(4, false), 2);
+
+        m.composition = None;
+        m.set_tokens(&[nsh_core::input_tokens::InputTokenRule::new(
+            "(?P<token>ab)",
+            InputTokenStyle::default(),
+            false,
+        )
+        .unwrap()]);
+        m.composition = composition("中", None);
+        assert_eq!(
+            display_tokens(&m)
+                .into_iter()
+                .map(|(r, _)| r)
+                .collect::<Vec<_>>(),
+            vec![0..1, 2..3]
+        );
+        m.composition = None;
+        m.select(0, 0);
+        m.composition = composition("中", None);
+        assert_eq!(
+            display_tokens(&m)
+                .into_iter()
+                .map(|(r, _)| r)
+                .collect::<Vec<_>>(),
+            vec![1..3]
+        );
     }
 }

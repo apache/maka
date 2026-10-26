@@ -28,13 +28,12 @@ async fn read(bytes: &[u8], id: &str) -> Result<maka_session_import::Transcript,
     let directory = tempfile::tempdir().unwrap();
     std::fs::write(directory.path().join("rollout"), bytes).unwrap();
     let owner = maka_capabilities::call::Issuer::default()
-        .admit(
+        .issue(
             maka_capabilities::call::Identity::Remote {
                 request_id: uuid::Uuid::new_v4(),
             },
             CancellationToken::new(),
         )
-        .await
         .unwrap();
     let root = ReadRoot::open(directory.path()).await.unwrap();
     let file = root

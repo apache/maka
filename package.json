@@ -6,7 +6,7 @@
   "engines": {
     "node": ">=24.0.0"
   },
-  "packageManager": "npm@11.19.0",
+  "packageManager": "npm@12.2.1",
   "type": "module",
   "workspaces": [
     "packages/plugin-sdk",
@@ -21,12 +21,12 @@
     "esbuild@0.28.2": true
   },
   "devDependencies": {
-    "@biomejs/biome": "2.5.14",
+    "@biomejs/biome": "2.6.3",
     "esbuild": "0.28.2",
     "husky": "^9.1.7",
     "patch-package": "8.0.1",
     "typescript": "7.0.2",
     "yaml": "2.9.1",
-    "zod": "4.6.5"
+    "zod": "4.6.7"
   }
 }

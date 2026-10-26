@@ -21,11 +21,23 @@
 //! native Host bindings it runs against. The terminal and desktop shells
 //! each run it in their own backend.
 
+mod attachment_paths;
 pub mod bindings;
+mod clipboard;
 pub mod host;
-pub mod markdown;
 
 use nsh_engine::{Bundle, EngineConfig, Limits, Policy};
+use tokio::sync::watch;
+
+/// Whether the terminal or window the workbench shows in is in the
+/// foreground; the shell puts it in the engine context. Without one the
+/// workbench counts as in the background.
+#[derive(Clone)]
+pub struct Foreground(pub watch::Receiver<bool>);
+
+/// Previews the interface at another scale, where the shell's renderer can
+/// (the terminal's pixel display); the shell puts it in the engine context.
+pub struct UiScale(pub Box<dyn Fn(f32) -> Result<(), String> + Send + Sync>);
 
 /// Product code compiled from TSX; the caller supplies the native Host binding.
 pub const APPLICATION: &str = include_str!(concat!(env!("OUT_DIR"), "/app.js"));
@@ -48,6 +60,7 @@ impl nsh_engine::Assets for ApplicationAssets {
 pub fn application_bundle() -> Bundle {
     let capabilities = nsh_core::access::Capabilities::from_json(&serde_json::json!({
         "clipboard": true,
+        "host": ["terminal.exit"],
         "network": {"http": [{"host":"*","methods":["GET"],"schemes":["http","https"]}]}
     }))
     .expect("static workbench application capabilities");
@@ -70,7 +83,7 @@ pub fn configuration(
         // APPLICATION is compiled into this trusted executable; only the
         // interpreter stack is bounded, as for other standalone NSH apps.
         limits: Limits::standalone(),
-        ui_sets: vec![nsh_base::registry(), registry, markdown::registry()],
+        ui_sets: vec![nsh_base::registry(), registry],
         runtime: Some(runtime),
         ..EngineConfig::new(application_bundle())
     }

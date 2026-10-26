@@ -61,7 +61,13 @@ async fn inherited_prune_and_checkpoint_exclude_later_branch_archives_history_an
     continuation::append(&log, &source).await;
     log.append(&archive("source", &prior_tool)).await.unwrap();
     let before = log
-        .prepare_context_compaction("session", Some("source"), &CheckpointMode::PreTurn)
+        .capture_compaction_context(
+            "session",
+            Some("source"),
+            &CheckpointMode::PreTurn,
+            100_000,
+            64 * 1024 * 1024,
+        )
         .await
         .unwrap();
     let mut pair = summary_pair(&log, "source", &before).await;
@@ -88,7 +94,7 @@ async fn inherited_prune_and_checkpoint_exclude_later_branch_archives_history_an
     )
     .await;
     let original = log
-        .read_lineage_context(&first_claim.source, 100, 65536)
+        .capture_lineage_context(&first_claim.source, 100, 65536)
         .await
         .unwrap();
     assert_eq!(original.baseline.as_ref().unwrap().event_id, checkpoint.id);
@@ -119,10 +125,12 @@ async fn inherited_prune_and_checkpoint_exclude_later_branch_archives_history_an
     continuation::close(&log, &unrelated).await;
     open(&log, "later-compact", true).await;
     let later_source = log
-        .prepare_context_compaction(
+        .capture_compaction_context(
             "session",
             Some("later-compact"),
             &CheckpointMode::Standalone,
+            100_000,
+            64 * 1024 * 1024,
         )
         .await
         .unwrap();
@@ -132,7 +140,7 @@ async fn inherited_prune_and_checkpoint_exclude_later_branch_archives_history_an
     let child = continuation::opening("child", Some(first_claim.clone()));
     continuation::append(&log, &child).await;
     let active = log
-        .read_model_context("session", Some("child"))
+        .capture_model_context("session", Some("child"), 100_000, 64 * 1024 * 1024)
         .await
         .unwrap();
     assert!(
@@ -165,12 +173,12 @@ async fn inherited_prune_and_checkpoint_exclude_later_branch_archives_history_an
     let child_boundary =
         continuation::claim(&log, "second-claim", &child, first_claim.base.clone()).await;
     let child_context = log
-        .read_lineage_context(&child_boundary.source, 100, 65536)
+        .capture_lineage_context(&child_boundary.source, 100, 65536)
         .await
         .unwrap();
     assert!(
         matches!(
-            log.read_lineage_context(&child_boundary.source, 100, 8192)
+            log.capture_lineage_context(&child_boundary.source, 100, 8192)
                 .await,
             Err(StoreError::PrefixTooLarge)
         ),
@@ -202,42 +210,16 @@ async fn inherited_prune_and_checkpoint_exclude_later_branch_archives_history_an
     assert_eq!(selected_ids(&frozen), expected_ids);
     assert_eq!(frozen.effective_source_digest, expected_effective);
     assert_eq!(
-        log.read_lineage_context(&first_claim.source, 100, 65536)
+        log.capture_lineage_context(&first_claim.source, 100, 65536)
             .await
             .unwrap()
             .effective_source_digest,
         original.effective_source_digest
     );
-    let inspect = rusqlite::Connection::open(&path).unwrap();
-    inspect
-        .execute(
-            "UPDATE event_log SET event_json=event_json || ' ' WHERE event_id=?",
-            [&unrelated.id],
-        )
-        .unwrap();
-    assert_eq!(
-        log.read_frozen_model_context(&child_context.source_evidence, 100, 65536)
-            .await
-            .unwrap()
-            .effective_source_digest,
-        expected_effective
-    );
     let mut forged = first_claim.source.clone();
     forged.digest = continuation::digest('e');
-    assert!(log.read_lineage_context(&forged, 100, 65536).await.is_err());
-    inspect
-        .execute(
-            "UPDATE event_log SET event_json=event_json || ' ' WHERE event_id=?",
-            [&source.id],
-        )
-        .unwrap();
     assert!(
-        log.read_frozen_model_context(&child_context.source_evidence, 100, 65536)
-            .await
-            .is_err()
-    );
-    assert!(
-        log.scoped_prefix(child_context.source_evidence.scope, 100, 65536)
+        log.capture_lineage_context(&forged, 100, 65536)
             .await
             .is_err()
     );

@@ -35,7 +35,7 @@ pub(super) struct Captured {
     ceiling: Sandbox,
 }
 pub(super) fn capture(
-    configuration: &SessionConfiguration,
+    configuration: &ResolvedConfiguration,
     settings: &Configuration,
     state_root: &std::path::Path,
 ) -> Result<Captured, ToolError> {
@@ -113,7 +113,7 @@ impl Processes {
         &self,
         mut input: Execute,
         tool: &ToolCallContext,
-        configuration: SessionConfiguration,
+        configuration: ResolvedConfiguration,
         cancellation: &CancellationToken,
     ) -> Result<Value, ToolError> {
         let requested = input
@@ -147,9 +147,16 @@ impl Processes {
         .await
         .map_err(failed)??;
         // Original SQL projection orders admission against metadata CAS and Turn closure.
-        let current =
-            maka_agent_authority::permissions::live(&self.store, &tool.invocation).await?;
-        if current.boundary_revision != configuration.boundary_revision
+        let current = maka_agent_authority::permissions::live(
+            &maka_agent_authority::permissions::execution(
+                &self.store,
+                &tool.invocation,
+                tool.execution.as_deref(),
+            )?,
+            &tool.invocation,
+        )
+        .await?;
+        if current.permission_basis() != configuration.permission_basis()
             || current.workspace != configuration.workspace
         {
             return Err(failed(
@@ -181,7 +188,7 @@ impl Processes {
             source_tool_call_id: tool.tool_use_id(),
             visibility: ShellVisibility::Model,
             permissions: ShellPermissions {
-                boundary_revision: configuration.boundary_revision,
+                basis: configuration.permission_basis(),
                 sandbox: captured.executor.sandbox().clone(),
             },
             cwd: configuration.workspace.path,
@@ -205,10 +212,14 @@ impl Processes {
                 }
             },
         };
+        let execution = tool
+            .execution
+            .as_ref()
+            .map(|token| (tool.invocation.clone(), token.clone()));
         let mut handle = if input.pty {
-            self.resources.start_pty(record, command, size)
+            self.resources.start_pty(record, command, size, execution)
         } else {
-            self.resources.start_pipes(record, command)
+            self.resources.start_pipes(record, command, execution)
         }
         .map_err(|error| match error {
             ShellError::Process(error) => error,
@@ -225,7 +236,8 @@ impl Processes {
         } else {
             record
         };
-        self.project((*record).clone(), record.state.active()).await
+        self.project(tool, (*record).clone(), record.state.active())
+            .await
     }
 }
 
@@ -233,7 +245,7 @@ impl Processes {
     pub(super) async fn prepare(
         &self,
         tool: &ToolCallContext,
-        configuration: &SessionConfiguration,
+        configuration: &ResolvedConfiguration,
         requested: Option<PermissionRequest>,
         cancellation: &CancellationToken,
     ) -> Result<Captured, ToolError> {
@@ -245,12 +257,16 @@ impl Processes {
         })
         .await
         .map_err(failed)??;
-        let grants = self
-            .store
+        let store = maka_agent_authority::permissions::execution(
+            &self.store,
+            &tool.invocation,
+            tool.execution.as_deref(),
+        )?;
+        let grants = store
             .permission_grants(
                 &tool.invocation,
                 Some(&tool.tool_use_id()),
-                configuration.boundary_revision,
+                &configuration.permission_basis(),
             )
             .await
             .map_err(persistence)?;
@@ -275,7 +291,7 @@ impl Processes {
             }
             if !sandbox.permits(&required).map_err(failed)? {
                 let grant = maka_agent_authority::permissions::request(
-                    &self.store,
+                    &store,
                     configuration,
                     PermissionRequest {
                         reason: requested.reason,

@@ -40,10 +40,10 @@ just run --root /path/to/business-host
 
 终端和桌面 shell 运行同一个工作台，连接这个业务 Host；bundle 不再安装展示层或独立管理 Host。[更新已选插件包](../cli/README.zh-CN.md#产品更新恢复与-url-安装)会保留现有 Host 组合与原生授权。
 
-`just product` 重建 TypeScript bundle。开发二进制读取 `dist` 或 `MAKA_PRODUCT_BUNDLE` 指定的目录，仅修改 TypeScript 无需重新编译 Rust。发布二进制嵌入 bundle。构建根据组合生成代码及具名包的精确字节生成 `product-version.txt`；安装与更新会校验实际包字节是否匹配该标识。`dist` 和 `MAKA_PRODUCT_BUNDLE` 都是生成产物：修改源文件后重新构建，不要直接编辑输出文件。标识缺失、格式错误或内容不匹配时需要重新构建。需要与开发构建同时生成产物时，使用独立输出目录：
+CLI 的所有构建（包括 debug）都会嵌入当前 TypeScript bundle；修改插件源文件后需重新构建 CLI。`just product` 生成供检查和导出的独立 bundle，不会替换已有二进制内的资源。构建根据组合生成代码及具名包的精确字节生成 `product-version.txt`；安装与更新会校验实际包字节是否匹配该标识。bundle 输出是生成产物：修改源文件后重新构建，不要直接编辑输出文件。标识缺失、格式错误或内容不匹配时需要重新构建。需要与开发构建同时生成产物时，使用独立输出目录：
 
 ```sh
-node products/maka/bundle/scripts/build.mjs --output /tmp/maka-product-bundle
+node products/maka/bundle/scripts/build.mjs --output ~/.cache/maka/product-export
 ```
 
 ## 生成安装配置

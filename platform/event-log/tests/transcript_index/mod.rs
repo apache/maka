@@ -819,9 +819,11 @@ async fn completion_fanout_positions_preserve_usage_fences_sources_and_cold_rebu
                 sequence: completion,
             },
             false,
-            8192,
-            1,
-            65536,
+            maka_event_log::transcript::HistoryLimits {
+                max_bytes: 8192,
+                max_chunks: Some(1),
+                max_json_bytes: 65536,
+            },
         )
         .await
         .unwrap();
@@ -868,9 +870,11 @@ async fn completion_fanout_positions_preserve_usage_fences_sources_and_cold_rebu
                 .history_source(
                     "fanout",
                     through,
-                    position,
-                    field,
-                    None,
+                    maka_event_log::transcript::SourceSelection {
+                        locator: position,
+                        field,
+                        path: None,
+                    },
                     SourcePosition::After {
                         offset: text.len() as u64,
                     },
@@ -898,9 +902,11 @@ async fn completion_fanout_positions_preserve_usage_fences_sources_and_cold_rebu
             log.history_source(
                 "fanout",
                 old_fence,
-                position,
-                SourceField::Arguments,
-                None,
+                maka_event_log::transcript::SourceSelection {
+                    locator: position,
+                    field: SourceField::Arguments,
+                    path: None
+                },
                 SourcePosition::Start,
                 8192
             )
@@ -912,12 +918,14 @@ async fn completion_fanout_positions_preserve_usage_fences_sources_and_cold_rebu
         log.history_source(
             "fanout",
             through,
-            RowPosition {
-                source_sequence: completion,
-                item_index: 257
+            maka_event_log::transcript::SourceSelection {
+                locator: RowPosition {
+                    source_sequence: completion,
+                    item_index: 257
+                },
+                field: SourceField::Arguments,
+                path: None
             },
-            SourceField::Arguments,
-            None,
             SourcePosition::Start,
             8192
         )
@@ -938,7 +946,17 @@ async fn completion_fanout_positions_preserve_usage_fences_sources_and_cold_rebu
                 after,
                 ..
             } = log
-                .history_text("fanout", through, position, false, 8192, 17, 65536)
+                .history_text(
+                    "fanout",
+                    through,
+                    position,
+                    false,
+                    maka_event_log::transcript::HistoryLimits {
+                        max_bytes: 8192,
+                        max_chunks: Some(17),
+                        max_json_bytes: 65536,
+                    },
+                )
                 .await
                 .unwrap();
             for chunk in chunks {
@@ -1016,9 +1034,11 @@ async fn completion_fanout_positions_preserve_usage_fences_sources_and_cold_rebu
             .history_source(
                 "fanout",
                 through,
-                position,
-                field,
-                None,
+                maka_event_log::transcript::SourceSelection {
+                    locator: position,
+                    field,
+                    path: None,
+                },
                 SourcePosition::Start,
                 8192,
             )

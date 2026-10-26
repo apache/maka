@@ -117,7 +117,8 @@ An app declares what it may reach outside its VM in `nsh.json`:
     "statusBar": true,
     "clipboard": true,
     "picker": true,
-    "host": ["getUserInfo", "bridge.*"]
+    "host": ["getUserInfo", "bridge.*"],
+    "openUrl": { "schemes": ["https", "mailto"] }
   }
 }
 ```
@@ -183,6 +184,13 @@ allows them without allowing any remote page.
 
 `"picker": true` lets the app show the system's picker for photos ([`nsh/picker`](../modules/nsh-picker.md)): the user
 picks what reaches the app.
+
+### `openUrl`
+
+Lets the app open URLs outside it ([`openUrl`](../modules/nsh-device.md#openurl), a `TextView`'s links with
+`links="open"`): `"openUrl": true` for every scheme, `"openUrl": { "schemes": ["https", "mailto"] }` for the schemes
+listed. A URL whose scheme is not granted throws a `TypeError`. URLs that would run code or reach the app's own data
+(`javascript:`, `data:`, `file:`, ...) are never opened, whatever the capability.
 
 ### Storage
 

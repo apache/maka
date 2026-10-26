@@ -92,8 +92,13 @@ import { SelectionArea, TextView } from "nsh/base";
 | Platform | How a selection is made |
 |---|---|
 | macOS, Windows, Linux, GPUI | Drag across the texts; a double click selects a word, a triple click a paragraph, and a drag after them goes on by words or paragraphs. Shift+click extends the selection. Ctrl / Cmd+A selects everything in the area, Ctrl / Cmd+C copies, Escape or a press outside clears. |
+| Terminal | Drag across text nodes and lines; Shift+click extends the selection. Dragging beyond a Scroll edge scrolls while held. Ctrl+A selects the area, Ctrl+C or Ctrl+Insert copies, Escape clears a nonempty selection, and a press outside clears it. |
 | iOS, Android | A long press selects a word; the platform's handles extend it, and its edit menu has Copy and Select All. |
 | Web | The browser's own selection, with its gestures, menu and shortcuts. |
+
+On terminal surfaces, a retained background selection receives keys only in the active input scope. A modal or
+focused popup suspends that keyboard ownership; closing it makes the selection available again. Copy uses the
+same [host clipboard services and OSC 52 output](../docs/tui.md#keyboard-and-mouse) as other clipboard writes.
 
 ## What it selects
 

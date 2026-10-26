@@ -29,7 +29,8 @@ public final class DevActivity extends Activity {
         if (data != null) {
             java.io.File dir = new java.io.File(new java.io.File(getCacheDir(), "nsh-test"), data);
             deleteTree(dir);
-            view = new NshView(this, trace, dir);
+            // Its caches too (downloaded images): the app starts with none.
+            view = new NshView(this, trace, dir, new java.io.File(dir, "cache"));
         } else {
             view = new NshView(this, trace);
         }

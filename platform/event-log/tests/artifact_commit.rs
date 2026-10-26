@@ -86,7 +86,25 @@ async fn abandoned_upload_waiter_cannot_free_the_accepted_database_jobs_byte_bud
             .unwrap(),
         0
     );
+    // Independent reads observe committed state even while an accepted writer
+    // waits for its transaction; they are not implicit writer-queue barriers.
+    let before = tokio::time::timeout(
+        Duration::from_secs(5),
+        log.get_artifact("session", "upload"),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(before.record.is_none());
     competing.execute_batch("ROLLBACK").unwrap();
+    let released = tokio::time::timeout(
+        Duration::from_secs(5),
+        capacity.clone().acquire_many_owned(7),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    drop(released);
     let entry = tokio::time::timeout(
         Duration::from_secs(5),
         log.get_artifact("session", "upload"),

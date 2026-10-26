@@ -27,7 +27,7 @@ Maka 提供终端工作台和原生桌面 shell。Runtime Host 统一管理执�
 
 ## 从源码运行
 
-需要 Rust stable、Node.js 24 LTS、npm 11.19.0 和 [just](https://github.com/casey/just)。原生 Computer Use 在 macOS 需要 Xcode Command Line Tools，在 Linux 需要 X11 开发库。
+需要 Rust stable、Node.js 26、npm 12.2.1 和 [just](https://github.com/casey/just)。原生 Computer Use 在 macOS 需要 Xcode Command Line Tools，在 Linux 需要 X11 开发库。
 
 ```sh
 git clone https://github.com/apache/maka.git

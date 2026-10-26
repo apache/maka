@@ -53,7 +53,7 @@ async fn manual_compaction_has_receipt_busy_stop_and_one_shot_prompt() {
         assert!(facts.iter().any(|f| matches!(f, Fact::ContextCheckpointRecorded { .. })), "{facts:?}");
         assert_eq!(f.mutation(2,"compact",input.clone(),operation).await.unwrap(), started);
         assert_eq!(f.query("compactionPrompt",json!({"sessionId":session})).await.unwrap()["compactionPrompt"], "GLOBAL COMPACTION");
-        let found = f.query("recall",json!({"terms":["original-needle-429"],"session_id":session})).await.unwrap();
+        let found = f.recall(json!({"terms":["original-needle-429"],"session_id":session})).await.unwrap();
         assert!(!found["passages"].as_array().unwrap().is_empty(), "{found}");
         let hit = &found["passages"][0];
         let through = f.query("observe",json!({"sessionId":session})).await.unwrap()["through"].clone();

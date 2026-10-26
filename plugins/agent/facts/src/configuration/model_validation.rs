@@ -18,10 +18,6 @@
  */
 use super::validation::*;
 use super::*;
-pub fn connection_model(value: &Value) -> ValidationResult {
-    let model: ModelInfo = serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
-    model.validate()
-}
 pub fn catalog_entry(value: &ConnectionCatalogEntry) -> ValidationResult {
     entity_id(&value.connection_id)?;
     revision(value.revision, true)?;

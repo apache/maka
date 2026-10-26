@@ -33,6 +33,18 @@ app.register(component: "embed.badge") { context in Badge(context) }  // Badge: 
 The component gets its props (`setProp`, JSON as Foundation objects) and commands, emits events with
 `context.emit("tap", ["count": n])` and may report its size with `context.setSize(_:)`.
 
+The app and its host also talk without a view, through the view's channel (`nsh/host` in the app):
+
+```swift
+app.params = ["user": "Ada"]                         // host.params, read when the app starts
+app.handle("time") { _ in ["time": now()] }          // answers `await host.call("time")`
+app.handle("tapped") { data, _ in log(data) }        // hears `host.post("tapped", …)`
+app.send("message", ["text": "Hello"])               // `host.on("message", …)` in the app
+```
+
+Handlers run on the main thread; an `async throws` handler's result answers the call and an error it throws rejects
+it, and `{ data, reply in … }` answers later with `reply.resolve(_:)` / `reply.reject(_:)`, from any thread.
+
 Theme overrides: "Brand" puts the host's brand over the app's theme. The tokens of a theme file
 (`nsh.json`'s `"theme"` format) win over the app's of the same names, light and dark, and
 classes such as `bg-primary` restyle at once; `nil` gives the app its own theme back:

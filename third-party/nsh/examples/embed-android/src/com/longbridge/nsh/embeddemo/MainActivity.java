@@ -13,11 +13,18 @@ import android.widget.TextView;
 import com.longbridge.nsh.NshComponent;
 import com.longbridge.nsh.NshComponentContext;
 import com.longbridge.nsh.NshView;
+import java.text.DateFormat;
+import java.util.Collections;
+import java.util.Date;
+import java.util.Map;
 
 /**
  * An existing Android app that embeds a nsh app below its own native UI.
  * The nsh bundle (`nsh build ../embedded`) is packaged as APK
  * assets under `nsh/`; it uses a native component the app registers
+ * (`embed.badge`) and talks to the app through the view's channel
+ * (`nsh/host`): launch parameters, the "time" call it answers, the
+ * "tapped" posts it hears and the "message" events "Send a message" sends.
  * (`embed.badge`). "Brand" puts the host's brand over the app's theme
  * (`setThemeOverrides`).
  */
@@ -55,7 +62,13 @@ public final class MainActivity extends Activity {
             nsh.loadAssetBundle("nsh");
             count.setText("loaded " + (++loads) + "×");
         });
+        // An event the app hears with `host.on("message", ...)`.
+        Button message = new Button(this);
+        message.setText("Send a message");
+        message.setOnClickListener(v -> nsh.send("message",
+                Collections.singletonMap("text", "Hello from Android at " + DateFormat.getTimeInstance().format(new Date()))));
         column.addView(reload);
+        column.addView(message);
         Button brand = new Button(this);
         brand.setText("Brand");
         // null gives the app its own theme back.
@@ -72,6 +85,13 @@ public final class MainActivity extends Activity {
         nsh = new NshView(this);
         nsh.setErrorListener(message -> Log.e("embed-demo", message));
         nsh.registerComponent("embed.badge", context -> new Badge(this, context));
+        // The channel with the app (`nsh/host`): what it reads at start, the
+        // call it makes and the posts it sends.
+        nsh.setParams(Collections.singletonMap("user", "Ada"));
+        nsh.handle("time", (data, reply) ->
+                reply.resolve(Collections.singletonMap("time", DateFormat.getTimeInstance().format(new Date()))));
+        nsh.handle("tapped", (data, reply) ->
+                count.setText("the app posted tapped: " + ((Map<?, ?>) data).get("count")));
         frame.addView(nsh, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         column.addView(frame, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
 

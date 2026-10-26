@@ -56,7 +56,7 @@ impl ToolExecutor for Bridge {
     }
 }
 async fn evaluate(repl: &Repl, bridge: Arc<Bridge>, source: String) -> (bool, Vec<CellOutput>) {
-    let context = CellContext::new(CellStore::default(), vec![]);
+    let context = CellContext::new(CellStore::temporary().unwrap(), vec![]).unwrap();
     let result = repl
         .evaluate(
             source,

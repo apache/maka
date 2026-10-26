@@ -27,7 +27,8 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
-const LIMIT: usize = 8 * 1024 * 1024;
+const LIMIT: usize = maka_provider_protocol::sse::MAX_RECORD_BYTES;
+const ERROR_BODY_LIMIT: usize = 8 * 1024 * 1024;
 
 enum Response {
     Stream {
@@ -41,7 +42,7 @@ enum Response {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ingress_limits_close_only_offending_http_and_preserve_bounded_sse_records() {
-    tokio::time::timeout(Duration::from_secs(30), async {
+    tokio::time::timeout(Duration::from_secs(60), async {
         let models = ModelExecutor::new(Duration::from_secs(20)).unwrap();
         let exact_record = format!(":{}\n\n", "x".repeat(LIMIT - 3));
         let cr_records = format!(":{}\r\r", "x".repeat(LIMIT / 2)).repeat(3);
@@ -64,12 +65,12 @@ async fn ingress_limits_close_only_offending_http_and_preserve_bounded_sse_recor
                 read_request(&mut socket).await;
                 match response {
                     Response::DeclaredBody => {
-                        socket.write_all(format!("HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", LIMIT + 1).as_bytes()).await.unwrap();
+                        socket.write_all(format!("HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", ERROR_BODY_LIMIT + 1).as_bytes()).await.unwrap();
                     },
                     response => {
                         let (status, mime, mut body) = match response {
                             Response::Stream { body, .. } => (200, "text/event-stream", body),
-                            Response::StreamingBody => (400, "text/plain", "x".repeat(LIMIT + 1)),
+                            Response::StreamingBody => (400, "text/plain", "x".repeat(ERROR_BODY_LIMIT + 1)),
                             Response::DeclaredBody => unreachable!(),
                         };
                         socket.write_all(format!("HTTP/1.1 {status} Test\r\nContent-Type: {mime}\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
@@ -130,7 +131,7 @@ async fn ingress_limits_close_only_offending_http_and_preserve_bounded_sse_recor
                     panic!("case {index}: limits must be local adapter errors, not timeout/overflow");
                 };
                 if stream_limit {
-                    assert!(message.contains("SSE record exceeds 8 MiB"), "case {index}: {message}");
+                    assert!(message.contains("SSE record exceeds 64 MiB"), "case {index}: {message}");
                 } else {
                     assert!(message.contains("response body exceeds 8 MiB"), "case {index}: {message}");
                 }

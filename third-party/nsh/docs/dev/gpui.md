@@ -206,7 +206,7 @@ import -window root -display :170 whole.png        # the display, if the window'
 | Video | `native/video.rs` | Feature `video` (Linux): GStreamer `playbin` with an `appsink` of BGRA frames, each frame a `RenderImage` painted as view content (clipped, transformed at its bounds, covered like any view); `controls` draws NSH's own bar |
 | Web views | `native/web.rs` | Feature `webview`: wry. Linux: WebKitGTK 4.1 on GTK 3 (X11 only: GPUI must run on X11 or Xwayland) in a GPUI Fast native composition surface (an X11 child window) sized to the visible part of its view, GTK's loop pumped from GPUI's; macOS / Windows: wry's `WKWebView` / WebView2 child at the view's box |
 | Native components | `native.rs` | `AppView::register_component`; a component renders any GPUI or GPUI Kit element, laid out and prepainted at its box every frame, clipped to its clipping ancestors, painted where the tree draws its box; its hitboxes take the pointer there (`embedding.md`) |
-| Accessibility | `access.rs` | AccessKit nodes in GPUI's accessibility tree (NSAccessibility, UI Automation, AT-SPI through AccessKit's adapters), rebuilt while an assistive technology is attached: the views as synthetic children of the surface element, folded as on Windows and Linux, with roles, names, states, values and actions; the accessibility focus is a real element tracking the view's focus handle; announcements are live nodes |
+| Accessibility | `access.rs` | AccessKit nodes in GPUI's accessibility tree (NSAccessibility, UI Automation, AT-SPI through AccessKit's adapters), rebuilt while an assistive technology is attached: the views as synthetic children of the surface element, folded as on Windows and Linux (`accessibilityElementsHidden`, `visibility: hidden` and screens below the top hide a subtree, its texts naming nothing), with roles, names, states, values and actions; the accessibility focus is a real element tracking the view's focus handle; announcements are live nodes |
 | Environment | `system.rs` | Color scheme from the app or the window's appearance (`observe_window_appearance`); locale, font scale, reduce motion, right to left, screen reader and OS version read as each native backend reads them (the settings portal and AT-SPI over D-Bus on Linux, `zbus`); pixel ratio the window's scale factor; safe area and keyboard height 0 |
 | Window chrome (`nsh/desktop`) | `chrome.rs` | Windows open with a transparent title bar (macOS, Windows) so both styles can be drawn later: a title row drawn above the app, or the hidden style with the traffic lights / caption buttons over the app (`WindowControlArea` on Windows); Linux uses the window manager's decorations, or client-side ones when asked and granted. The application menu is GPUI's native menu bar on macOS, a menu bar drawn above the app elsewhere (always, or with `Window.setMenuBar("autoHide")` only after Alt alone, and while one of its menus is open); its shortcuts are matched on key downs after `nsh/keymap`'s bindings and before the focused field (`chrome::shortcut`), except an item whose `when` leaves the field the key (`MenuAction::fires_while_editing`); context menus are popups drawn over the window with keyboard access |
 | Clipboard | `system.rs` | GPUI's (`write_to_clipboard` / `read_from_clipboard`): text, `ClipboardEntry::Image` (a format other than PNG, JPEG, GIF, BMP or WebP, such as TIFF, is made PNG on a worker thread) and `ExternalPaths` (files). GPUI reads one kind per item, preferring files, then text, then images, so an item with text and an image (a browser's copied image with its address) gives the text |
@@ -228,12 +228,14 @@ focus, editing, capture, scrolling and application callbacks. Focus projections 
 their existing FIFO order. Terminal input follows this same route as window input, independently of output
 completion or presentation receipts.
 
-For Kitty output, `nsh-gpui-terminal::kitty::KittyFrame::wire` contains one complete `q=1` upload followed by
-retirement of the old owned image. The sole output owner writes and flushes the whole wire indivisibly before
-recording completion with `mark_presented`. Frame tokens and this receipt identify output for diagnostics; they do
-not authorize or delay input. Success replies do not gate this receipt; the sole reader ends the graphics session
-on any negative reply for either owned slot, including a late error. The independent capability query still
-requires its own positive reply. A completed flush does not prove display vsync.
+For Kitty output, the host confirms the terminal cursor is at the origin before uploading a frame. The
+`nsh-gpui-terminal::kitty::KittyFrame::wire` transaction uploads the new image at `z=1` with `q=0` and
+retains the previous placement underneath at `z=0`, enclosed in a synchronized update. The host waits
+for both the complete writer flush and the matching image success reply before recording completion
+with `mark_presented` and reusing the older slot. This bounds storage to two images without exposing
+an empty canvas during asynchronous image loading. The sole reader ends the graphics session on any
+negative reply for either owned slot, including a late error. Frame receipts govern resource reuse;
+they do not authorize or delay input, and do not prove display vsync.
 
 Home and End stay on the nearest enabled Scroll containing the native focus, including when it is already at that
 edge or its content fits. Editors retain their own Home and End behavior. Arrow keys, page keys and wheels keep

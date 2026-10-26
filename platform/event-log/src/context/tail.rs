@@ -62,8 +62,7 @@ pub(super) async fn read(
          a.sequence + 1 AS archives_before,
          CASE WHEN a.sequence IS NULL AND NOT ({items}) THEN t.event_json END AS canonical,
          CASE WHEN {items} THEN t.operation_id END AS model_step,
-         CASE WHEN {items} THEN json_extract(t.event_json,'$.invocation') END AS model_invocation,
-         (SELECT length(payload) FROM tool_result_payloads WHERE event_id=t.event_id) AS raw_bytes", " ORDER BY t.sequence"
+         CASE WHEN {items} THEN json_extract(t.event_json,'$.invocation') END AS model_invocation", " ORDER BY t.sequence"
     ), filter=filter, archive_filter=archive_filter, items=items))).bind(after as i64).bind(through as i64).bind(session).bind(before as i64).bind(&selection.lineage).fetch_all(&mut *connection).await?;
     let mut used = bytes as usize;
     let mut result = Vec::with_capacity(count as usize);
@@ -87,7 +86,6 @@ pub(super) async fn read(
             result.push(ContextEvent::ModelItems(Box::new(projected)));
         } else if let Some(json) = row.try_get::<Option<&str>, _>("canonical")? {
             let event = serde_json::from_str(json)?;
-            crate::tool_payloads::verify_binding(&event, row.try_get("raw_bytes")?)?;
             result.push(ContextEvent::Canonical(Box::new(StoredEvent {
                 sequence: sequence_number(row.try_get("sequence")?)?,
                 event,

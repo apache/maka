@@ -140,10 +140,15 @@ export function createSettingsOperations() {
             await afterKnown(original, value);
             continue;
           }
-          if (original.endpoint === 'management') {
+          if (
+            original.endpoint === 'management' ||
+            (original.endpoint === 'settings' && original.method === 'updateWorkspaceLocations')
+          ) {
             if (!record(value) || value.status !== 'committed') {
               if (record(value) && value.status === 'conflict')
-                throw new UiError('Host services changed elsewhere. Reload before saving again.');
+                throw new UiError('These settings changed elsewhere. Reload before saving again.');
+              if (record(value) && typeof value.diagnostic === 'string')
+                throw new Error(value.diagnostic);
               throw new UiError('The Host rejected this service change. Reload and review it.');
             }
           } else {

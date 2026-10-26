@@ -1,7 +1,7 @@
 //! Animation drivers. All are closed-form functions of elapsed time, so the
 //! result does not depend on frame rate or dropped frames.
 
-use crate::animation::ops::{AnimationId, Curve, Driver, EaseMode, Easing};
+use crate::animation::ops::{AnimationId, Curve, Driver, EaseMode, Easing, StepPosition};
 
 /// Spring rest thresholds (value units and units per second).
 const REST_DISPLACEMENT: f32 = 0.001;
@@ -84,10 +84,12 @@ impl Running {
                 delay_ms,
             } => {
                 let t_ms = t * 1000.0 - delay_ms;
-                if t_ms <= 0.0 {
+                // A step of no duration (a keyframe's jump) ends on the
+                // frame it starts, so the next one starts with it.
+                if t_ms < 0.0 || (t_ms == 0.0 && duration_ms > 0.0) {
                     return (self.from, 0.0, false);
                 }
-                if t_ms >= duration_ms || duration_ms <= 0.0 {
+                if t_ms >= duration_ms {
                     return (to, 0.0, true);
                 }
                 let p = ease(easing, t_ms / duration_ms);
@@ -270,7 +272,33 @@ pub(crate) fn ease(easing: Easing, p: f32) -> f32 {
             EaseMode::InOut if p < 0.5 => curve_in(curve, p * 2.0) / 2.0,
             EaseMode::InOut => 1.0 - curve_in(curve, (1.0 - p) * 2.0) / 2.0,
         },
+        Easing::Steps(count, position) => steps(count, position, p),
     }
+}
+
+/// CSS `steps(count, position)` at `p` (Easing Functions Level 2, without
+/// the before flag, which only matters for fill modes).
+fn steps(count: u32, position: StepPosition, p: f32) -> f32 {
+    let count = match position {
+        StepPosition::JumpNone => count.max(2),
+        _ => count.max(1),
+    } as f32;
+    let jumps = match position {
+        StepPosition::JumpStart | StepPosition::JumpEnd => count,
+        StepPosition::JumpNone => count - 1.0,
+        StepPosition::JumpBoth => count + 1.0,
+    };
+    let mut step = (p * count).floor();
+    if matches!(position, StepPosition::JumpStart | StepPosition::JumpBoth) {
+        step += 1.0;
+    }
+    if p >= 0.0 && step < 0.0 {
+        step = 0.0;
+    }
+    if p <= 1.0 && step > jumps {
+        step = jumps;
+    }
+    step / jumps
 }
 
 /// React Native's `Easing` functions (their own, "in", form).

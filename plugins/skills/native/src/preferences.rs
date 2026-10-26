@@ -21,11 +21,11 @@ use super::*;
 use maka_capabilities::storage::Data;
 use maka_capabilities::storage::Mutation;
 use maka_capabilities::storage::Namespace;
-use maka_event_log::{EventLog, StoreError};
+use maka_event_log::{RootStore, StoreError};
 
 #[derive(Clone)]
 pub(super) struct Store {
-    log: Arc<EventLog>,
+    log: Arc<RootStore>,
     key: String,
 }
 pub(super) struct Snapshot {
@@ -40,7 +40,7 @@ fn valid(reference: &str) -> bool {
     !reference.is_empty() && !reference.chars().any(char::is_control)
 }
 impl Store {
-    pub fn new(log: Arc<EventLog>, owner: String) -> Self {
+    pub fn new(log: Arc<RootStore>, owner: String) -> Self {
         Self {
             log,
             key: format!("{owner}preferences"),

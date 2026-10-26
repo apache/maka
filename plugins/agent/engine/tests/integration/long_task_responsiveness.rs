@@ -18,12 +18,12 @@
  */
 
 //! Release-only history/cancellation probe over explicitly selected disposable
-//! long_task_perf fixture databases. Preparation and warm reads are separate.
+//! long_task_perf fixture bundles. Preparation and warm reads are separate.
 use crate::support::context as fixture;
+use crate::support::store::SessionFixture;
 use maka_agent_engine::{RunError, RunWork};
 use maka_agent_facts::event::InvocationOutcome;
 use maka_agent_ports::session::history::{Page, Position};
-use maka_event_log::EventLog;
 use serde_json::{Value, json};
 use std::{
     path::PathBuf,
@@ -39,7 +39,7 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
-async fn tail(log: &EventLog, through: u64, turns: u64) -> (f64, usize) {
+async fn tail(log: &SessionFixture, through: u64, turns: u64) -> (f64, usize) {
     let started = Instant::now();
     let page = log
         .history_text(
@@ -47,9 +47,11 @@ async fn tail(log: &EventLog, through: u64, turns: u64) -> (f64, usize) {
             through,
             Position::Tail,
             false,
-            16 * 1024,
-            32,
-            64 * 1024,
+            maka_event_log::transcript::HistoryLimits {
+                max_bytes: 16 * 1024,
+                max_chunks: Some(32),
+                max_json_bytes: 64 * 1024,
+            },
         )
         .await
         .unwrap();
@@ -70,7 +72,7 @@ async fn tail(log: &EventLog, through: u64, turns: u64) -> (f64, usize) {
 async fn long_history_responsiveness() {
     assert!(!cfg!(debug_assertions), "run with --release");
     let paths = std::env::var("MAKA_RESPONSIVENESS_FIXTURES")
-        .expect("explicit comma-separated fixture databases required");
+        .expect("explicit comma-separated fixture bundles required");
     let repetitions: usize = std::env::var("MAKA_RESPONSIVENESS_REPETITIONS")
         .unwrap_or("5".into())
         .parse()
@@ -89,13 +91,9 @@ async fn long_history_responsiveness() {
         assert_eq!(metadata["settings"]["checkpoint"], true);
         let prepared_directory = tempfile::tempdir().unwrap();
         let prepared = prepared_directory.path().join("prepared.sqlite");
-        std::fs::copy(&source, &prepared).unwrap();
-        let log = EventLog::open(&prepared).await.unwrap();
-        if log.get_session::<Value>("session").await.unwrap().is_none() {
-            log.create_session("session", "responsiveness", &json!({}), 1)
-                .await
-                .unwrap();
-        }
+        let log = SessionFixture::from_bundle(&prepared, &source)
+            .await
+            .unwrap();
         let through = *log.subscribe_commits().borrow();
         let (first_page_ms, chunks) = tail(&log, through, turns).await;
         println!(
@@ -113,9 +111,12 @@ async fn long_history_responsiveness() {
             for repetition in 0..repetitions {
                 let directory = tempfile::tempdir().unwrap();
                 let database = directory.path().join("events.sqlite");
-                std::fs::copy(&prepared, &database).unwrap();
-                let log = Arc::new(EventLog::open(&database).await.unwrap());
-                let worker = fixture::engine(log.clone());
+                let log = Arc::new(
+                    SessionFixture::from_bundle(&database, &source)
+                        .await
+                        .unwrap(),
+                );
+                let worker = fixture::engine();
                 let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
                 let base = format!("http://{}/v1", listener.local_addr().unwrap());
                 let requests = Arc::new(AtomicUsize::new(0));
@@ -146,8 +147,11 @@ async fn long_history_responsiveness() {
                     } else {
                         panic!("expected message fixture");
                     }
+                    let running_store = log.store();
                     let mut starting =
-                        tokio::spawn(async move { engine.start(input, token).await });
+                        tokio::spawn(
+                            async move { engine.start(running_store, input, token).await },
+                        );
                     // The timed stimulus is valid only while admission is pending.
                     tokio::select! {
                         biased;
@@ -192,6 +196,7 @@ async fn long_history_responsiveness() {
                 }
                 let running = worker
                     .start(
+                        log.store(),
                         fixture::input(&base, "responsive", false),
                         CancellationToken::new(),
                     )

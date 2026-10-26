@@ -75,25 +75,6 @@ impl PreparedEffect {
         self
     }
 
-    /// Attach execution context after admission without moving journal-owned
-    /// leases into the callback or running the effect during preparation.
-    pub fn map_future(
-        mut self,
-        map: impl FnOnce(ToolFuture<ToolSuccess>, CancellationToken) -> ToolFuture<ToolSuccess>
-        + Send
-        + 'static,
-    ) -> Self {
-        let execute = self
-            .execute
-            .take()
-            .expect("prepared effect has not started");
-        self.execute = Some(Box::new(move |cancellation| {
-            let future = execute(cancellation.clone());
-            map(future, cancellation)
-        }));
-        self
-    }
-
     pub(super) fn start(&mut self, cancellation: CancellationToken) -> ToolFuture<ToolSuccess> {
         for admit in self.admissions.drain(..) {
             match admit() {
@@ -107,11 +88,18 @@ impl PreparedEffect {
 pub type PreparationFuture =
     Pin<Box<dyn Future<Output = Result<PreparedEffect, ToolRejection>> + Send>>;
 
+/// In-process custody supplied by the actual execution owner. Only that owner
+/// can recover its private concrete token; serialized identities cannot mint it.
+pub trait ExecutionCustody: std::any::Any + Send + Sync {
+    fn as_any(&self) -> &dyn std::any::Any;
+}
+
 /// Host-owned identity; neither model arguments nor Code Mode may choose it.
 #[derive(Clone)]
 pub struct ToolCallContext {
     pub invocation: Invocation,
     pub operation_id: String,
+    pub execution: Option<Arc<dyn ExecutionCustody>>,
 }
 
 impl ToolCallContext {

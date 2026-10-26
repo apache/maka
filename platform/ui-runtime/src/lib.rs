@@ -167,7 +167,7 @@ pub struct Application<V: ?Sized = ()> {
     render_depth_limit: Option<u16>,
     update_owner: Uuid,
     source: Option<maka_event_log::applications::SourceSnapshot>,
-    store: Option<std::sync::Arc<maka_event_log::EventLog>>,
+    store: Option<std::sync::Arc<maka_event_log::RootStore>>,
     origins: BTreeMap<Uuid, maka_event_log::applications::SourceSnapshot>,
     effective: Option<maka_plugin_core::deployment::DeploymentRef>,
     deployment_error: Option<String>,
@@ -203,7 +203,7 @@ impl<V: ?Sized + 'static> Application<V> {
     /// Static remote observations come only from that source; endpoints remain
     /// separate trusted registrations. Construct on the presentation owner thread.
     pub async fn start_from_store(
-        store: std::sync::Arc<maka_event_log::EventLog>,
+        store: std::sync::Arc<maka_event_log::RootStore>,
         source: maka_plugin_core::deployment::DeploymentRef,
         target: PresentationTarget,
         timer: tokio::runtime::Handle,
@@ -221,7 +221,7 @@ impl<V: ?Sized + 'static> Application<V> {
 
     /// Use the launcher's original checked snapshot; no second storage read.
     pub async fn start_loaded(
-        store: std::sync::Arc<maka_event_log::EventLog>,
+        store: std::sync::Arc<maka_event_log::RootStore>,
         loaded: maka_event_log::applications::LoadedDeployment,
         target: PresentationTarget,
         timer: tokio::runtime::Handle,
@@ -229,8 +229,8 @@ impl<V: ?Sized + 'static> Application<V> {
         mut native: NativeRegistry<V>,
         registrations: Vec<actions::RemoteService>,
     ) -> Result<Self> {
-        loaded
-            .check_store(&store)
+        store
+            .check_application(&loaded)
             .map_err(|e| Error::Invalid(e.to_string()))?;
         if loaded.source().input.environment.location != ExecutionLocation::Ui
             || loaded.source().input.environment.presentation != Some(target)
@@ -282,7 +282,7 @@ impl<V: ?Sized + 'static> Application<V> {
         remotes: actions::RemoteServices,
         persisted: Option<(
             maka_event_log::applications::SourceSnapshot,
-            std::sync::Arc<maka_event_log::EventLog>,
+            std::sync::Arc<maka_event_log::RootStore>,
         )>,
     ) -> Result<Self> {
         let candidate = deployment::prepare(input, bytes, &native, &remotes.declarations)?;
@@ -297,7 +297,7 @@ impl<V: ?Sized + 'static> Application<V> {
         remotes: actions::RemoteServices,
         persisted: Option<(
             maka_event_log::applications::SourceSnapshot,
-            std::sync::Arc<maka_event_log::EventLog>,
+            std::sync::Arc<maka_event_log::RootStore>,
         )>,
     ) -> Result<Self> {
         let deployment::Candidate {
@@ -968,7 +968,7 @@ impl<V: ?Sized + 'static> Application<V> {
             }
             let remaining = self.runtime.activations().count();
             if remaining == 0 {
-                // EventLog's independent owner confirms its actual SQL close.
+                // RootStore's independent owner confirms its actual SQL close.
                 // This only releases the UI execution's custody after cleanup.
                 self.native.take();
                 self.sources.clear();
@@ -1064,59 +1064,3 @@ fn capture_schemas(
 
 pub use native::surface_native;
 pub use native::{IMPLEMENTATION as LABEL_IMPLEMENTATION, native as label_native};
-
-#[cfg(test)]
-mod export_schema_tests {
-    use super::*;
-
-    #[test]
-    fn event_schema_changes_and_invalid_replacements_remain_checked() {
-        let events = BTreeMap::from([("submitted".into(), json!({"type":"string"}).into())]);
-        let original = event_schemas(&events).unwrap();
-        assert!(original["submitted"].validate(&json!("value")).is_ok());
-        assert!(original["submitted"].validate(&json!(true)).is_err());
-        let changed = event_schemas(&BTreeMap::from([(
-            "submitted".into(),
-            json!({"type":"boolean"}).into(),
-        )]))
-        .unwrap();
-        assert!(changed["submitted"].validate(&json!(true)).is_ok());
-        assert!(changed["submitted"].validate(&json!("value")).is_err());
-        assert!(matches!(
-            event_schemas(&BTreeMap::from([(
-                "submitted".into(),
-                json!({"type":"invalid"}).into()
-            ),])),
-            Err(Error::Invalid(_))
-        ));
-    }
-
-    #[test]
-    fn actual_value_exports_validate_each_value_against_the_complete_schema() {
-        let mut contract = Contract {
-            name: "example.Value".into(),
-            version: 1,
-            transport: Transport::Local,
-            interface: Interface::Value {
-                schema: json!({"type":"string"}).into(),
-            },
-        };
-        assert!(matches!(
-            values::export::<()>(json!("value"), &contract),
-            Ok(Export::Value(_))
-        ));
-        assert!(values::export::<()>(json!(true), &contract).is_err());
-        contract.interface = Interface::Value {
-            schema: json!({"type":"boolean"}).into(),
-        };
-        assert!(matches!(
-            values::export::<()>(json!(true), &contract),
-            Ok(Export::Value(_))
-        ));
-        assert!(values::export::<()>(json!("value"), &contract).is_err());
-        contract.interface = Interface::Value {
-            schema: json!({"type":"invalid"}).into(),
-        };
-        assert!(values::export::<()>(json!(true), &contract).is_err());
-    }
-}

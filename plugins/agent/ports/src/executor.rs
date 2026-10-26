@@ -196,6 +196,7 @@ pub struct Admitted {
 pub trait Execution: Send {
     fn execute(
         self: Box<Self>,
+        execution: Arc<dyn maka_agent_facts::tools::ExecutionCustody>,
         output: Arc<dyn OutputSink>,
         cancellation: CancellationToken,
     ) -> BoxFuture<'static, Settlement>;

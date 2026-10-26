@@ -39,7 +39,7 @@ impl Hub {
                 .after
         };
         let stop = &context.scope().cancellation;
-        let mut commits = self.agent.0.store.subscribe_commits();
+        let mut commits = self.agent.0.store.subscribe_changes();
         let mut previous = None;
         loop {
             if stop.is_cancelled() {

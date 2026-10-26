@@ -726,7 +726,22 @@ export function Button(props: {
 
 /** A round icon button (44 pt): light by default, `variant="secondary"` dark. */
 /** Switches the app between light and dark (`setColorScheme`), whatever the system shows. */
-export function ThemeToggle() {
+export function ThemeToggle(props: { bar?: boolean }) {
+  // In the system's bar (iOS, Android) the system draws the button (iOS's
+  // Liquid Glass): the item is the icon alone.
+  if (props.bar) {
+    return (
+      <Press
+        onPress={() => setColorScheme(isDark() ? "light" : "dark")}
+        scale={0.92}
+        accessibilityLabel={isDark() ? "Light appearance" : "Dark appearance"}
+      >
+        <View style={{ width: 34, height: 34, alignItems: "center", justifyContent: "center" }}>
+          <Icon name={isDark() ? "sun" : "moon"} size={18} tint={colors.text} />
+        </View>
+      </Press>
+    );
+  }
   return (
     <RoundButton
       icon={isDark() ? "sun" : "moon"}

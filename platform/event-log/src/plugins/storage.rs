@@ -119,7 +119,7 @@ impl EventLog {
             encoded.push(value);
         }
         let namespace = namespace.clone();
-        let commits = self.commits.clone();
+        let commits = self.commits.notice();
         self.connection.run(move |connection| Box::pin(async move {
             let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
             let mut records = Vec::new();
@@ -141,7 +141,7 @@ impl EventLog {
                 records.push(Record { revision, data: mutation.data });
             }
             tx.commit().await.map_err(StoreError::CommitUnknown)?;
-            commits.send_modify(|_| {});
+            commits.metadata();
             Ok(records)
         })).await
     }

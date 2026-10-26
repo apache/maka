@@ -166,9 +166,14 @@ fn main() -> std::process::ExitCode {
         // can read the environment while this process-local default is set.
         unsafe { std::env::set_var("GALLIUM_DRIVER", "d3d12") };
     }
-    if cli.logs_to_stderr()
-        && let Err(error) = logging::initialize()
-    {
+    let logging = if cli.logs_to_stderr() {
+        logging::initialize()
+    } else if cli.is_terminal_shell() {
+        logging::initialize_terminal_interaction()
+    } else {
+        Ok(())
+    };
+    if let Err(error) = logging {
         eprintln!("logging startup: {error}");
         return std::process::ExitCode::FAILURE;
     }

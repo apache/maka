@@ -30,7 +30,8 @@ use rmcp::{
         StreamableHttpClient, StreamableHttpError, StreamableHttpPostResponse,
     },
 };
-use sse_stream::{Error as SseError, Sse, SseStream};
+use rmcp_sse::{Error as SseError, Sse};
+use sse_stream::SseStream;
 use std::{collections::HashMap, sync::Arc};
 
 #[derive(Clone)]
@@ -104,7 +105,22 @@ fn sse(response: reqwest::Response, limit: usize) -> BoxStream<'static, Result<S
             Some((Ok(chunk), (source, size, line_has_bytes, cr, false)))
         },
     );
-    SseStream::from_bytes_stream(stream).boxed()
+    SseStream::from_bytes_stream(stream)
+        .map(|event| {
+            event
+                .map(|event| Sse {
+                    event: event.event,
+                    data: event.data,
+                    id: event.id,
+                    retry: event.retry,
+                })
+                .map_err(|error| match error {
+                    sse_stream::Error::Body(source) => SseError::Body(source),
+                    sse_stream::Error::Utf8Parse(source) => SseError::Utf8Parse(source),
+                    error => SseError::Body(Box::new(error)),
+                })
+        })
+        .boxed()
 }
 
 impl StreamableHttpClient for Client {

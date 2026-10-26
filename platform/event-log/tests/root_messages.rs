@@ -204,13 +204,21 @@ async fn root_sources_are_atomic_exclusive_delivery_proofs_and_rebuild_exact_vis
     assert_eq!(rows[0]["displayText"], "visible");
 
     // Root and steering deliveries share one identity domain, in both directions.
-    let colliding = RuntimeEvent::new(
-        event.invocation.clone(),
+    let colliding = RuntimeEvent::new(event.invocation.clone(), {
+        let message = first.message.clone();
+        let mut unprepared_content = message.content.clone();
+        unprepared_content.preparation.clear();
         Fact::MessageSteered {
-            source: None,
-            message: Box::new(first.message.clone()),
-        },
-    );
+            source: Box::new(maka_agent_facts::message::RootSourceMessage {
+                message: message.clone(),
+                unprepared_content,
+                submitted_placement: maka_agent_facts::message::Placement::CurrentTurn,
+                disposition: maka_agent_facts::message::MessageDisposition::Steering,
+                submitted_intent: None,
+            }),
+            message: Box::new(message),
+        }
+    });
     assert!(
         log.append(&EventWrite::plain(colliding).unwrap())
             .await
@@ -218,13 +226,21 @@ async fn root_sources_are_atomic_exclusive_delivery_proofs_and_rebuild_exact_vis
     );
     let delivered = source("already-steered", "correction").message;
     log.append(
-        &EventWrite::plain(RuntimeEvent::new(
-            event.invocation.clone(),
+        &EventWrite::plain(RuntimeEvent::new(event.invocation.clone(), {
+            let message = delivered;
+            let mut unprepared_content = message.content.clone();
+            unprepared_content.preparation.clear();
             Fact::MessageSteered {
-                source: None,
-                message: Box::new(delivered),
-            },
-        ))
+                source: Box::new(maka_agent_facts::message::RootSourceMessage {
+                    message: message.clone(),
+                    unprepared_content,
+                    submitted_placement: maka_agent_facts::message::Placement::CurrentTurn,
+                    disposition: maka_agent_facts::message::MessageDisposition::Steering,
+                    submitted_intent: None,
+                }),
+                message: Box::new(message),
+            }
+        }))
         .unwrap(),
     )
     .await

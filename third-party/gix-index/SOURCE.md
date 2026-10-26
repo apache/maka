@@ -19,10 +19,10 @@
 
 # gix-index long pathname padding
 
-Sources are copied from the published `gix-index` 0.55.0 crate at
-[upstream revision d2af4ed5532ea660fbd643e48d8925cd88de5ee0](https://github.com/GitoxideLabs/gitoxide/tree/d2af4ed5532ea660fbd643e48d8925cd88de5ee0/gix-index).
+Sources are copied from the published `gix-index` 0.58.0 crate at
+[upstream revision dd39fb66e3b1551c9fe849043e39b357a9799ca1](https://github.com/GitoxideLabs/gitoxide/tree/dd39fb66e3b1551c9fe849043e39b357a9799ca1/gix-index).
 Original Apache-2.0 and MIT license texts are preserved. `upstream.json` records
-the original forty-file inventory and SHA-256 hashes before the local patch,
+the original file inventory and SHA-256 hashes before the local patch,
 along with the published crate checksum. The normalized manifest and production
 dependencies remain unchanged. Registry installation metadata and the upstream
 build lockfile are omitted.

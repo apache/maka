@@ -201,7 +201,7 @@ impl ToolPreparer for GraphTool {
                 .graph_invocation(&context.invocation)
                 .await
                 .map_err(|_| ToolRejection::Unavailable)?;
-            hub.coordinator_source(&context.invocation)
+            hub.coordinator_source(&context)
                 .await
                 .map_err(|_| ToolRejection::Unavailable)?;
             Ok(PreparedEffect::new(move |cancel| {

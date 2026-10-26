@@ -383,6 +383,7 @@ fn windows(cx: &mut TestAppContext) {
     compositions_are_reported_and_hold_values_until_they_end(cx);
     menu_shortcuts_leave_a_focused_field_the_keys_it_uses(cx);
     presses_carry_where_the_pointer_was(cx);
+    presses_carry_the_modifier_keys_and_click_count(cx);
     an_embedded_surface_takes_the_keyboard_when_its_app_focuses_a_field(cx);
     the_app_s_shortcuts_reach_it_while_a_native_component_has_the_keyboard(cx);
     configured_assets_stay_with_their_original_load(cx);
@@ -400,10 +401,23 @@ fn windows(cx: &mut TestAppContext) {
 
 fn multiline_fields_keep_file_bytes_and_enter_line_endings(cx: &mut TestAppContext) {
     let source = r#"
-import { Input, mount, signal } from "nsh";
+import { Input, mount, signal, View } from "nsh";
+import { keymap } from "nsh/keymap";
 const value = signal("  A\t中\r\nB\rC\n\n");
-mount(() => <Input autoFocus multiline submitBehavior="newline" value={value()}
-  onChange={(text) => value.set(text)} style={{ height: 160 }} />);
+const behavior = signal("insert");
+const readonly = signal(false);
+const pastes = signal<string[]>([]);
+keymap.bind("f4", () => behavior.set("report"), { when: "always" });
+keymap.bind("f5", () => readonly.set(true), { when: "always" });
+mount(() => <View>
+  <Input autoFocus multiline submitBehavior="newline" value={value()}
+    pasteBehavior={behavior()} readonly={readonly()}
+    onFileDrop={() => {}}
+    onPaste={(event) => pastes.set([...pastes(), event.uris.length ? event.uris.join(";") : event.text])}
+    onChange={(text) => value.set(text)} style={{ height: 160 }} />
+  <Input testID="report" readonly value={`${behavior()}|${readonly()}|${pastes().join(",")}`}
+    style={{ height: 30 }} />
+</View>);
 "#;
     let code = nsh_bundler::compile_module("App.tsx", source, &[]).unwrap();
     let (view, cx) =
@@ -421,6 +435,56 @@ mount(() => <Input autoFocus multiline submitBehavior="newline" value={value()}
     wait_for(&view, cx, pasted);
     cx.simulate_keystrokes("enter");
     wait_for(&view, cx, "\tP\r\nQ\rR\n \n\r\n");
+    wait_for_report(&view, cx, "insert|false|");
+    view.update(cx, |view, _| {
+        assert!(view.paste(nsh_core::PasteEvent::new("one")));
+        assert!(view.paste(nsh_core::PasteEvent::new("two")));
+    });
+    wait_for(&view, cx, "\tP\r\nQ\rR\n \n\r\nonetwo");
+    wait_for_report(&view, cx, "insert|false|one,two");
+    view.update(cx, |view, _| {
+        assert!(view.paste(nsh_core::PasteEvent::new("'/tmp/a b.png' /tmp/c.txt")));
+    });
+    wait_for_report(
+        &view,
+        cx,
+        "insert|false|one,two,file:///tmp/a%20b.png;file:///tmp/c.txt",
+    );
+    assert_eq!(
+        field_text(&view, cx).as_deref(),
+        Some("\tP\r\nQ\rR\n \n\r\nonetwo")
+    );
+    cx.simulate_keystrokes("f4");
+    wait_for_report(
+        &view,
+        cx,
+        "report|false|one,two,file:///tmp/a%20b.png;file:///tmp/c.txt",
+    );
+    view.update(cx, |view, _| {
+        assert!(view.paste(nsh_core::PasteEvent::new("three")));
+    });
+    wait_for_report(
+        &view,
+        cx,
+        "report|false|one,two,file:///tmp/a%20b.png;file:///tmp/c.txt,three",
+    );
+    assert_eq!(
+        field_text(&view, cx).as_deref(),
+        Some("\tP\r\nQ\rR\n \n\r\nonetwo")
+    );
+    cx.simulate_keystrokes("f5");
+    wait_for_report(
+        &view,
+        cx,
+        "report|true|one,two,file:///tmp/a%20b.png;file:///tmp/c.txt,three",
+    );
+    view.update(cx, |view, _| {
+        assert!(!view.paste(nsh_core::PasteEvent::new("ignored")));
+    });
+    assert_eq!(
+        field_text(&view, cx).as_deref(),
+        Some("\tP\r\nQ\rR\n \n\r\nonetwo")
+    );
     view.update(cx, |view, _| view.stop());
 }
 
@@ -1962,4 +2026,74 @@ fn wait_until_blurred(view: &Entity<AppView>, cx: &mut VisualTestContext) {
         );
         std::thread::sleep(Duration::from_millis(10));
     }
+}
+
+/// A pressable strip over a focused field that shows what each press
+/// carried: the field reads the modifier keys and click count of the last
+/// press.
+const PRESS_MODIFIERS: &str = r#"
+import { Input, mount, signal, View } from "nsh";
+
+function App() {
+  const text = signal("none");
+  return (
+    <View style={{ flex: 1 }}>
+      <View
+        focusable={false}
+        onPress={(e) =>
+          text.set(
+            e
+              ? `ctrl ${e.modifiers.control} shift ${e.modifiers.shift} alt ${e.modifiers.alt} meta ${e.modifiers.platform} clicks ${e.clickCount}`
+              : "no event",
+          )
+        }
+        style={{ height: 40 }}
+      />
+      <Input autoFocus value={text()} onChange={(t) => text.set(t)} style={{ height: 30 }} />
+    </View>
+  );
+}
+mount(App);
+"#;
+
+fn presses_carry_the_modifier_keys_and_click_count(cx: &mut TestAppContext) {
+    let code = nsh_bundler::compile_module("App.tsx", PRESS_MODIFIERS, &[]).unwrap();
+    let (view, cx) =
+        cx.add_window_view(|window, cx| AppView::new(AppOptions::default(), window, cx));
+    view.update(cx, |view, _| view.load(App::Js(Bundle::source(code))));
+    cx.update(|window, cx| window.focus(&view.focus_handle(cx), cx));
+    wait_for(&view, cx, "none");
+    let strip = gpui::point(gpui::px(20.0), gpui::px(20.0));
+    cx.simulate_click(strip, gpui::Modifiers::control());
+    wait_for(
+        &view,
+        cx,
+        "ctrl true shift false alt false meta false clicks 1",
+    );
+    // A double click is two presses, the second counted as such.
+    click(cx, strip, 1);
+    click(cx, strip, 2);
+    wait_for(
+        &view,
+        cx,
+        "ctrl false shift false alt false meta false clicks 2",
+    );
+}
+
+/// A left click at `position` that is click `count` of a series.
+fn click(cx: &mut VisualTestContext, position: gpui::Point<gpui::Pixels>, count: usize) {
+    let (button, modifiers) = (gpui::MouseButton::Left, gpui::Modifiers::default());
+    cx.simulate_event(gpui::MouseDownEvent {
+        position,
+        button,
+        modifiers,
+        click_count: count,
+        first_mouse: false,
+    });
+    cx.simulate_event(gpui::MouseUpEvent {
+        position,
+        button,
+        modifiers,
+        click_count: count,
+    });
 }

@@ -66,7 +66,7 @@ use objc2_foundation::{
     NSCurrentLocaleDidChangeNotification, NSData, NSDictionary, NSKeyValueObservingOptions,
     NSLocale, NSLocaleLanguageDirection, NSNotification, NSNotificationCenter, NSObject,
     NSObjectNSKeyValueObserverRegistration, NSObjectProtocol, NSOperationQueue, NSPoint,
-    NSProcessInfo, NSString, ns_string,
+    NSProcessInfo, NSString, NSURL, ns_string,
 };
 
 use crate::{surface::Surface, view::NshView};
@@ -390,6 +390,17 @@ pub(crate) fn command(surface: &Rc<Surface>, _id: NodeId, command: &Command) {
         }
         Command::ReadClipboardFiles { id } => read_clipboard_files(surface, *id),
         Command::PickImages { id, request } => crate::picker::pick_images(surface, *id, *request),
+        Command::OpenUrl { id, url } => {
+            let opened = open_url(url);
+            surface.event(
+                ROOT_ID,
+                EventKind::OpenUrl,
+                EventPayload::Map(vec![
+                    ("id", PayloadValue::Number(*id as f64)),
+                    ("opened", PayloadValue::Bool(opened)),
+                ]),
+            );
+        }
         Command::Back => crate::navigation::default_back(surface),
         Command::ExitApp => {
             // Closing calls the window delegate synchronously, which stops
@@ -876,6 +887,60 @@ fn read_clipboard_image(surface: &Rc<Surface>, id: u32, has_only: bool) {
     });
 }
 
+/// What `pasteboard` holds, read as the user pastes into an input
+/// (`onPaste`): its text, each item's image (as it is in [`IMAGE_TYPES`], a
+/// TIFF or BMP as PNG) and local files' `file:` URLs (a file copied in the
+/// Finder is its URL, not the icon it carries).
+pub(crate) fn pasted(pasteboard: &NSPasteboard) -> nsh_core::PasteEvent {
+    // SAFETY: an immutable AppKit constant.
+    let string = unsafe { NSPasteboardTypeString };
+    let mut paste = nsh_core::PasteEvent::new(
+        pasteboard
+            .stringForType(string)
+            .map(|s| s.to_string())
+            .unwrap_or_default(),
+    );
+    let file_url = NSString::from_str("public.file-url");
+    for item in pasteboard
+        .pasteboardItems()
+        .map(|i| i.to_vec())
+        .unwrap_or_default()
+    {
+        if let Some(uri) = item.stringForType(&file_url) {
+            if crate::file_drop::is_local_uri(&uri) {
+                paste.uris.push(uri.to_string());
+            }
+            continue;
+        }
+        let image = IMAGE_TYPES.iter().find_map(|(mime, kind)| {
+            item.dataForType(&NSString::from_str(kind))
+                .map(|data| (*mime, data.to_vec()))
+        });
+        let Some((mime, bytes)) = image else {
+            continue;
+        };
+        let bytes = match mime {
+            "image/tiff" | "image/bmp" => to_png(&bytes).unwrap_or(bytes),
+            _ => bytes,
+        };
+        paste.files.push(nsh_core::PastedFile::image(bytes));
+    }
+    paste
+}
+
+/// Whether `pasteboard` holds what a text view's own paste leaves out:
+/// images or local files (reading the types is no paste: no privacy
+/// notice).
+pub(crate) fn has_pasted_files(pasteboard: &NSPasteboard) -> bool {
+    pasteboard.types().is_some_and(|types| {
+        IMAGE_TYPES
+            .iter()
+            .map(|(_, kind)| *kind)
+            .chain(["public.file-url"])
+            .any(|kind| types.containsObject(&NSString::from_str(kind)))
+    })
+}
+
 /// Encoded image `bytes` (a TIFF) encoded again as PNG.
 fn to_png(bytes: &[u8]) -> Option<Vec<u8>> {
     let rep = NSBitmapImageRep::imageRepWithData(&NSData::with_bytes(bytes))?;
@@ -911,6 +976,15 @@ fn read_clipboard_files(surface: &Rc<Surface>, id: u32) {
 
 /// `Clipboard.readText` / `hasText`: answers read `id` with whether the
 /// clipboard holds text and, unless `has_only`, the text.
+/// Opens `url` in the app that handles its scheme (`NSWorkspace`): whether
+/// one took it.
+pub(crate) fn open_url(url: &str) -> bool {
+    let Some(url) = NSURL::URLWithString(&NSString::from_str(url)) else {
+        return false;
+    };
+    NSWorkspace::sharedWorkspace().openURL(&url)
+}
+
 fn read_clipboard(surface: &Rc<Surface>, id: u32, has_only: bool) {
     let pasteboard = NSPasteboard::generalPasteboard();
     // SAFETY: an immutable AppKit constant.

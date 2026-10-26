@@ -101,17 +101,19 @@ impl EventLog {
             .await
     }
     /// Reads one selected immutable canonical field with a bounded UTF-8 body.
-    #[allow(clippy::too_many_arguments)]
     pub async fn history_source(
         &self,
         session: &str,
         through: u64,
-        locator: RowPosition,
-        field: SourceField,
-        path: Option<Vec<SourceSegment>>,
+        selection: crate::transcript::SourceSelection,
         position: SourcePosition,
         max_bytes: usize,
     ) -> Result<HistorySource, StoreError> {
+        let crate::transcript::SourceSelection {
+            locator,
+            field,
+            path,
+        } = selection;
         self.validate_root()?;
         crate::sessions::validate_id(session)?;
         if !(4..=128 * 1024).contains(&max_bytes) {

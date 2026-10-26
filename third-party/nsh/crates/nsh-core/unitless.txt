@@ -19,6 +19,20 @@ animation::graph::Graph::tick(now)                               # time
 animation::graph::Graph::value ->                                # a generic animated value (any prop: opacity, a color channel, a length)
 animation::ops::AnimationOp::Adjust.factor                       # an affine multiplier of a generic animated value
 animation::ops::AnimationOp::Adjust.offset                       # a generic animated value (any prop: opacity, a color channel, a length)
+animation::motion::Keyframe.offset                               # progress through an iteration (0..1, as easing coordinates)
+animation::motion::Keyframe.value                                # a generic animated value (any prop: opacity, a color channel, a length)
+animation::motion::Keyframe::at(offset)                          # progress through an iteration (0..1, as easing coordinates)
+animation::motion::Keyframe::at(value)                           # a generic animated value (any prop: opacity, a color channel, a length)
+animation::motion::Keyframe::new(value)                          # a generic animated value (any prop: opacity, a color channel, a length)
+animation::motion::KeyframeTiming.delay_ms                       # time
+animation::motion::KeyframeTiming.duration_ms                    # time
+animation::motion::KeyframeTiming::delay(delay_ms)               # time
+animation::motion::KeyframeTiming::new(duration_ms)              # time
+animation::motion::MotionChannel::identity ->                    # a motion channel's value (an opacity, points or degrees by channel)
+animation::motion::MotionSpec::start_values ->                   # a motion channel's value (an opacity, points or degrees by channel)
+animation::motion::MotionSpec::values(values)                    # a motion channel's value (an opacity, points or degrees by channel)
+animation::motion::keyframe_ends ->                              # a generic animated value (any prop: opacity, a color channel, a length)
+animation::motion::stagger_delay ->                              # a count of intervals
 animation::ops::AnimationOp::CreateDiffClamp.max                 # a generic animated value (any prop: opacity, a color channel, a length)
 animation::ops::AnimationOp::CreateDiffClamp.min                 # a generic animated value (any prop: opacity, a color channel, a length)
 animation::ops::AnimationOp::CreateInterpolate.input_range       # interpolation input stops (generic animated values)
@@ -122,6 +136,8 @@ ops::Command::Seek.0                                             # time
 ops::Command::ZoomTo.scale                                       # a zoom scale factor
 ops::EventPayload::Pan.velocity_x                                # a rate or a physical constant of an animation
 ops::EventPayload::Pan.velocity_y                                # a rate or a physical constant of an animation
+ops::EventPayload::PanCancelled.velocity_x                       # points per second, the same rate as Pan.velocity_x
+ops::EventPayload::PanCancelled.velocity_y                       # points per second, the same rate as Pan.velocity_y
 ops::IMAGE_SCALES                                                # pixel densities (device pixels per point)
 ops::ImageProp::FadeDuration.0                                   # time
 ops::ImageScales::iter ->                                        # pixel densities (device pixels per point)
@@ -129,6 +145,7 @@ ops::NativeProp::ProgressInterval.0                              # time
 ops::NativeProp::Rate.0                                          # a playback rate multiplier
 ops::NativeProp::Volume.0                                        # audio volume, 0..1
 ops::PayloadValue::Number.0                                      # a generic number (a JS value, a recorded slot)
+ops::Prop::LoadMoreAtStartThreshold.0                          # in viewport lengths (a ratio)
 ops::Prop::LoadMoreThreshold.0                                 # in viewport lengths (a ratio)
 ops::Prop::LongPressDelay.0                                      # time
 ops::Prop::MaxFontSizeMultiplier.0                               # a font scale factor
@@ -202,6 +219,8 @@ ui::ambient::keyboard_duration ->                                # time
 ui::ambient::pixel_ratio ->                                      # device pixels per point
 ui::animated::AnimatedNode::diff_clamp(max)                      # an animated value (any quantity)
 ui::animated::AnimatedNode::diff_clamp(min)                      # an animated value (any quantity)
+ui::animated::AnimatedNode::diff_clamp_with(max)                 # an animated value (any quantity)
+ui::animated::AnimatedNode::diff_clamp_with(min)                 # an animated value (any quantity)
 ui::animated::AnimatedNode::interpolate(input)                   # an animated value (any quantity)
 ui::animated::AnimatedNode::interpolate(output)                  # an animated value (any quantity)
 ui::animated::AnimatedNode::interpolate_colors(input)            # an animated value (any quantity)
@@ -214,6 +233,8 @@ ui::animated::AnimatedValue::decay_within(deceleration)          # a rate or a p
 ui::animated::AnimatedValue::decay_within(velocity)              # a rate or a physical constant of an animation
 ui::animated::AnimatedValue::diff_clamp(max)                     # an animated value (any quantity)
 ui::animated::AnimatedValue::diff_clamp(min)                     # an animated value (any quantity)
+ui::animated::AnimatedValue::diff_clamp_with(max)                # an animated value (any quantity)
+ui::animated::AnimatedValue::diff_clamp_with(min)                # an animated value (any quantity)
 ui::animated::AnimatedValue::interpolate(input)                  # an animated value (any quantity)
 ui::animated::AnimatedValue::interpolate(output)                 # an animated value (any quantity)
 ui::animated::AnimatedValue::interpolate_colors(input)           # an animated value (any quantity)
@@ -236,6 +257,7 @@ ui::animated::Animation::decay_within(velocity)                  # a rate or a p
 ui::animated::Animation::delay(ms)                               # time
 ui::animated::Animation::spring(to)                              # an animated value (any quantity)
 ui::animated::Animation::stagger(ms)                             # time
+ui::animated::Animation::stagger_from(ms)                        # time
 ui::animated::Animation::timing(to)                              # an animated value (any quantity)
 ui::animated::Spring.damping                                     # a rate or a physical constant of an animation
 ui::animated::Spring.mass                                        # a rate or a physical constant of an animation
@@ -333,7 +355,10 @@ ui::tokens::Tokens::number ->                                    # a design toke
 ui::tokens::Tokens::numbers ->                                   # a design token: a generic number (a radius, a size, a ratio)
 ui::tokens::Tokens::set_number(value)                            # a design token: a generic number (a radius, a size, a ratio)
 ui::tokens::Token::Number.0                                      # a design token: a generic number (a radius, a size, a ratio)
+ui::virtual_list::VirtualList::load_more_at_start_threshold(viewports)  # in viewport lengths (a ratio)
 ui::virtual_list::VirtualList::load_more_threshold(viewports)  # in viewport lengths (a ratio)
+animation::animator::Animator::value ->                          # a generic animated value (any prop: opacity, a color channel, a length)
+scroll::ScrollState::sticky_shifts_with(value)                  # a generic animated value read from the graph (a sticky cell's offset)
 ui::rows::Rows::column ->                                        # the app's data: numbers of any unit, which a component scales
 ui::rows::Rows::from_columns(columns)                            # the app's data: numbers of any unit, which a component scales
 

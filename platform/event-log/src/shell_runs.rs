@@ -68,6 +68,7 @@ impl EventLog {
         }
         let raw = encode(&record)?;
         let changes = self.shell_changes.clone();
+        let commits = self.commits.session(&record.session_id);
         self.connection
             .run(move |connection| {
                 Box::pin(async move {
@@ -80,6 +81,12 @@ impl EventLog {
                     .await?;
                     if !exists {
                         return Err(StoreError::SessionNotFound);
+                    }
+                    if crate::workspace_bindings::permission_basis(&mut tx, &record.session_id)
+                        .await?
+                        != Some(record.permissions.basis)
+                    {
+                        return Err(invalid("shell launch permission boundary changed"));
                     }
                     let inserted = sqlx::query(
                         "INSERT OR IGNORE INTO shell_runs
@@ -99,6 +106,7 @@ impl EventLog {
                     // Publish on the independent SQL owner even if the caller
                     // abandoned its response after admission.
                     let _ = changes.send(ShellChange::from(&record));
+                    commits.metadata();
                     Ok(record)
                 })
             })
@@ -115,6 +123,7 @@ impl EventLog {
         ids(session_id, id)?;
         let (session_id, id) = (session_id.to_owned(), id.to_owned());
         let changes = self.shell_changes.clone();
+        let commits = self.commits.session(&session_id);
         self.connection
             .run(move |connection| {
                 Box::pin(async move {
@@ -129,6 +138,7 @@ impl EventLog {
                     write(&mut tx, &next).await?;
                     tx.commit().await.map_err(StoreError::CommitUnknown)?;
                     let _ = changes.send(ShellChange::from(&next));
+                    commits.metadata();
                     Ok(next)
                 })
             })

@@ -17,25 +17,13 @@
  * under the License.
  */
 
-import { errorText, renderText, type UiText } from './text';
-import { tr } from './locale';
-import { SourceText } from './SourceText';
-import { cleanup, computed, effect, signal, Text, View } from 'nsh';
-import { markdown } from 'maka/markdown';
-import type { MarkdownBlock } from 'maka/markdown';
+import { cleanup, signal, Text } from 'nsh';
+import { SelectionArea, TextView } from 'nsh/base';
 import { hasCompletePrefix, type Row } from './history';
-import { C, bodyTextStyle, secondaryTextStyle } from './ui';
-import { MarkdownBlockView } from './MarkdownBlock';
-
-type Input = { messageId: string; field: string; source: string };
-type Projection = { input: Input; blocks: MarkdownBlock[] };
-const sameInput = (left: Input | null, right: Input | null) =>
-  left === right ||
-  (left !== null &&
-    right !== null &&
-    left.messageId === right.messageId &&
-    left.field === right.field &&
-    left.source === right.source);
+import { MarkdownImageView } from './MarkdownImage';
+import { SourceText } from './SourceText';
+import { tr } from './locale';
+import { C, bodyTextStyle, codeTextStyle, secondaryTextStyle } from './ui';
 
 export function MarkdownBody(props: {
   row: () => Row;
@@ -45,108 +33,109 @@ export function MarkdownBody(props: {
   openLink(target: string, restoreFocus: () => boolean): Promise<void>;
   userScroll(): void;
 }) {
-  const projection = signal<Projection | null>(null);
-  const failure = signal<{ input: Input; message: UiText } | null>(null);
-  let wanted: Input | null = null;
-  let preparing = false;
+  const failure = signal<string | null>(null);
   let alive = true;
-  const input = (): Input | null => {
-    const row = props.row();
-    return hasCompletePrefix(row)
-      ? { messageId: row.messageId, field: row.field, source: row.text }
-      : null;
-  };
-  const compatible = (parsed: Input, current: Input | null) =>
-    current !== null &&
-    current.messageId === parsed.messageId &&
-    current.field === parsed.field &&
-    current.source.startsWith(parsed.source);
-  async function prepare() {
-    if (!alive || preparing || wanted === null) return;
-    if (
-      sameInput(projection()?.input ?? null, wanted) ||
-      sameInput(failure()?.input ?? null, wanted)
-    )
-      return;
-    const captured = wanted;
-    preparing = true;
-    try {
-      const blocks = await markdown.parse(captured.source);
-      const current = input();
-      if (
-        alive &&
-        compatible(captured, current) &&
-        wanted !== null &&
-        compatible(wanted, current)
-      ) {
-        projection.set({ input: captured, blocks });
-        failure.set(null);
-      }
-    } catch (reason) {
-      if (alive && sameInput(captured, wanted)) {
-        projection.set(null);
-        failure.set({ input: captured, message: errorText(reason) });
-      }
-    } finally {
-      preparing = false;
-      void prepare();
-    }
-  }
-  effect(() => {
-    const current = input();
-    if (sameInput(current, wanted)) return;
-    if (wanted === null || !compatible(wanted, current)) {
-      projection.set(null);
-    }
-    wanted = current;
-    failure.set(null);
-    void prepare();
-  });
   cleanup(() => {
     alive = false;
   });
-  const blocks = computed(() => {
-    const parsed = projection();
-    // Only an actual parsed prefix of this exact message is retained while
-    // append work catches up. Replacements and incomplete history stay literal.
-    return parsed && compatible(parsed.input, input()) ? parsed.blocks : null;
-  });
+  const readingStyle = props.compact ? secondaryTextStyle : bodyTextStyle;
+  const color = props.compact ? C.muted : C.text;
   return (
-    <If
-      when={blocks()}
-      else={
-        <View style={{ gap: 0 }}>
-          <Text
-            selectable
-            style={{
-              ...(props.compact ? secondaryTextStyle : bodyTextStyle),
-              color: props.compact ? C.muted : C.text,
-            }}
-          >
+    <SelectionArea>
+      <If
+        when={hasCompletePrefix(props.row())}
+        else={
+          <Text selectable style={{ ...readingStyle, color }}>
             <SourceText row={props.row} sourceId={props.sourceId} />
           </Text>
-          <If when={failure()}>
-            <Text style={{ ...(props.compact ? secondaryTextStyle : {}), color: C.danger }}>
-              {tr('Formatting unavailable: {reason}', { reason: renderText(failure()!.message) })}
-            </Text>
-          </If>
-        </View>
-      }
-    >
-      <View style={{ gap: props.compact ? 6 : 16 }}>
-        <Each of={blocks() ?? []} key={(block: MarkdownBlock) => block.key}>
-          {(block) => (
-            <MarkdownBlockView
-              block={block}
+        }
+      >
+        <TextView
+          markdown={props.row().text}
+          sourceId={props.sourceId}
+          selectable
+          contentStyle={{ rowGap: props.compact ? 6 : 16 }}
+          options={{ streaming: true, preserveLineBreaks: true }}
+          labels={{ table: tr('Markdown table'), copied: tr('Copied') }}
+          onScrollIntent={props.userScroll}
+          onParseError={(reason) => failure.set(reason)}
+          onLinkPress={(event) => {
+            const row = props.row();
+            const sourceId = props.sourceId;
+            const target = event.target;
+            const owns = () => {
+              const current = props.row();
+              return (
+                alive &&
+                props.sourceId === sourceId &&
+                current.messageId === row.messageId &&
+                current.field === row.field &&
+                hasCompletePrefix(current) &&
+                current.text.startsWith(row.text)
+              );
+            };
+            if (owns() && target?.isLive())
+              void props.openLink(event.url, () => {
+                if (!owns() || !target) return false;
+                return target.focus();
+              });
+          }}
+          renderImage={(context) => (
+            <MarkdownImageView
+              image={() => context.image}
               sessionId={props.sessionId}
-              sourceId={props.sourceId}
-              compact={props.compact}
-              openLink={props.openLink}
-              userScroll={props.userScroll}
+              linked={context.linked}
+              flow={context.flow}
+              lineHeight={context.lineHeight}
             />
           )}
-        </Each>
-      </View>
-    </If>
+          renderCodeBlockAction={(action) => (
+            <Text selectable={false} style={{ ...secondaryTextStyle, color: C.muted }}>
+              {action.id === 'wrap' ? tr('Wrap code') : (action.label ?? action.id)}
+            </Text>
+          )}
+          codeBlockActions={[
+            { id: 'wrap', label: tr('Wrap code') },
+            { id: 'copy', label: tr('Copy code block') },
+          ]}
+          styles={{
+            root: { ...readingStyle, color },
+            paragraph: readingStyle,
+            heading: {
+              ...readingStyle,
+              fontSize: props.compact ? secondaryTextStyle.fontSize : 18,
+              fontWeight: props.compact ? '600' : '700',
+              color,
+            },
+            heading1: { fontSize: props.compact ? secondaryTextStyle.fontSize : 18 },
+            heading2: { fontSize: props.compact ? secondaryTextStyle.fontSize : 18 },
+            heading3: { fontSize: props.compact ? secondaryTextStyle.fontSize : 18 },
+            heading4: { fontSize: props.compact ? secondaryTextStyle.fontSize : 18 },
+            heading5: { fontSize: props.compact ? secondaryTextStyle.fontSize : 18 },
+            heading6: { fontSize: props.compact ? secondaryTextStyle.fontSize : 18 },
+            blockquote: { borderLeftColor: C.line, color: C.secondary },
+            link: { color: C.accent },
+            code: { color: props.compact ? C.muted : C.accentHover, backgroundColor: C.surface },
+            codeBlock: {
+              backgroundColor: C.surface,
+              borderColor: C.line,
+              borderRadius: props.compact ? 8 : 12,
+            },
+            codeBlockCode: { ...codeTextStyle, color },
+            codeBlockHeader: { color: C.muted },
+            tableCell: { ...readingStyle, color, borderColor: C.line },
+            tableHeaderCell: { ...readingStyle, color, fontWeight: '600', borderColor: C.line },
+            tableHead: { backgroundColor: C.raised },
+            tableRow: { backgroundColor: C.surface },
+            rule: { backgroundColor: C.line },
+          }}
+        />
+        <If when={failure()}>
+          <Text selectable={false} style={{ ...secondaryTextStyle, color: C.danger }}>
+            {tr('Formatting unavailable: {reason}', { reason: failure()! })}
+          </Text>
+        </If>
+      </If>
+    </SelectionArea>
   );
 }

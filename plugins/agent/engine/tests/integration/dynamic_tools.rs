@@ -20,13 +20,13 @@
 mod session;
 
 use crate::support::context as fixture;
+use crate::support::store::SessionFixture;
 use maka_agent_engine::RunWork;
 use maka_agent_facts::context::ModelRequestContext;
 use maka_agent_facts::event::Fact;
 use maka_agent_facts::execution::ToolMode;
 use maka_agent_facts::tools::ToolExecutor;
 use maka_agent_facts::tools::ToolFuture;
-use maka_event_log::EventLog;
 use maka_tools::{
     ToolCatalog, ToolDefinition, ToolHandler, ToolNesting, ToolRegistration, ToolSemantics,
 };
@@ -93,7 +93,7 @@ async fn discovery_defers_direct_admission_but_only_defers_descriptions_in_code_
         for mode in [ToolMode::Direct, ToolMode::CodeMode] {
             for compact in [false, true] {
                 let directory = tempfile::tempdir().unwrap();
-                let log = Arc::new(EventLog::open(&directory.path().join("events.sqlite")).await.unwrap());
+                let log = Arc::new(SessionFixture::open(&directory.path().join("events.sqlite")).await.unwrap());
                 let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
                 let base = format!("http://{}/v1", listener.local_addr().unwrap());
                 let effects = Arc::new(AtomicUsize::new(0));
@@ -163,8 +163,8 @@ async fn discovery_defers_direct_admission_but_only_defers_descriptions_in_code_
                 // discovery prompt itself exceed the provider input capacity.
                 input.context = Some(ModelRequestContext { provider_id:"openai".into(), context_window:Some(64_000), declared_window:Some(210), model_context_window:None });
                 input.work = RunWork::Message { allow_prior_unknown:false, source_messages:Vec::new(), message:"Use echo".into(), tools:catalog };
-                let engine = fixture::engine(log.clone());
-                engine.run(input, CancellationToken::new()).await.unwrap();
+                let engine = fixture::engine();
+                engine.run(log.store(), input, CancellationToken::new()).await.unwrap();
                 engine.drain().await;
                 server.await.unwrap();
                 assert_eq!(effects.load(Ordering::SeqCst), if mode == ToolMode::Direct { 1 } else { 2 });

@@ -76,12 +76,17 @@ export const controlFocusStyle = { backgroundColor: C.raised, borderColor: C.acc
 export const controlDisabledStyle = platform.isTerminal
   ? { backgroundColor: C.background }
   : { opacity: 0.4 };
+export type BrowserHeader = {
+  expanded: boolean;
+  hidden: boolean;
+  toggle(): void;
+};
 export function Header(props: {
   title: string;
   workspace?: string;
   status?: 'loading' | 'stopping' | 'failed';
   commands(): void;
-  browse?(): void;
+  browser: BrowserHeader;
   files?(): void;
   filesOpener?(node: YNode): void;
 }) {
@@ -97,8 +102,11 @@ export function Header(props: {
   };
   return (
     <View
+      accessibilityElementsHidden={props.browser.hidden}
+      pointerEvents={props.browser.hidden ? 'none' : 'auto'}
       desktop={windowDrag}
       style={{
+        opacity: props.browser.hidden ? 0 : 1,
         flexDirection: 'row',
         alignItems: 'center',
         paddingLeft: 16 + controlsLeft(!docked.browser()),
@@ -116,38 +124,45 @@ export function Header(props: {
       }}
     >
       <Button
+        class="group/sidebar-toggle"
+        onPress={props.browser.toggle}
+        accessibilityLabel={
+          props.browser.expanded ? tr('Collapse session browser') : tr('Expand session browser')
+        }
+        tooltip={
+          props.browser.expanded ? tr('Collapse session browser') : tr('Expand session browser')
+        }
+        selected={props.browser.expanded}
+        style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
+        hoverStyle={{ backgroundColor: C.surface }}
+        focusStyle={{ backgroundColor: C.raised }}
+      >
+        <View pointerEvents="none" accessibilityElementsHidden style={{ width: 16, height: 16 }}>
+          <View class="group-hover/sidebar-toggle:opacity-0">
+            <Icon name="sidebar" color={C.secondary} />
+          </View>
+          <View
+            class="opacity-0 group-hover/sidebar-toggle:opacity-100"
+            style={{ position: 'absolute', left: 0, top: 0 }}
+          >
+            <Icon
+              name={props.browser.expanded ? 'sidebarCollapse' : 'sidebarExpand'}
+              color={C.secondary}
+            />
+          </View>
+        </View>
+      </Button>
+      <Button
         onPress={props.commands}
         accessibilityLabel={tr('Open commands')}
-        tooltip={shortcut(tr('Search commands'), 'mod+p')}
-        style={{
-          ...controlStyle,
-          ...(platform.isTerminal
-            ? {}
-            : { width: 32, paddingHorizontal: 8, alignItems: 'center' as const }),
-        }}
+        tooltip={shortcut(tr('Commands'), 'mod+p')}
+        style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
         hoverStyle={{ backgroundColor: C.surface }}
         focusStyle={{ backgroundColor: C.raised }}
         activeStyle={{ backgroundColor: C.line }}
       >
-        <If when={platform.isTerminal} else={<Icon name="search" color={C.secondary} />}>
-          <View pointerEvents="none" style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-            <Text style={{ color: C.secondary, fontSize: 13 }}>{tr('Commands')}</Text>
-            <Text style={{ color: C.muted, fontSize: 11 }}>{keymap.label('mod+p')}</Text>
-          </View>
-        </If>
+        <Icon name="command" color={C.secondary} />
       </Button>
-      <If when={props.browse}>
-        <Button
-          onPress={props.browse}
-          accessibilityLabel={tr('Browse sessions')}
-          tooltip={shortcut(tr('Browse sessions'), 'mod+o')}
-          style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
-          hoverStyle={{ backgroundColor: C.surface }}
-          focusStyle={{ backgroundColor: C.raised }}
-        >
-          <Icon name="sidebar" color={C.secondary} />
-        </Button>
-      </If>
       <Text numberOfLines={1} style={{ color: C.text, flex: 1, minWidth: 0, fontWeight: '500' }}>
         {props.title}
       </Text>

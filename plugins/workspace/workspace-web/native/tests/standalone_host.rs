@@ -23,7 +23,7 @@ use maka_capabilities::call::Identity;
 use maka_capabilities::call::Issuer;
 use maka_capabilities::call::Scope;
 use maka_event_log::{
-    EventLog,
+    RootStore,
     root::{RootNamespaces, RootOwner},
 };
 use maka_host_runtime::application::{
@@ -150,7 +150,7 @@ fn input(web: &Package, caller: &Package) -> Input {
         launch: None,
     }
 }
-async fn open(store: Arc<EventLog>, deployment: Uuid, issuer: &Issuer) -> Application {
+async fn open(store: Arc<RootStore>, deployment: Uuid, issuer: &Issuer) -> Application {
     let mut registry = NativeRegistry::default();
     maka_web::provide(&mut registry).unwrap();
     registry
@@ -209,7 +209,7 @@ async fn query(app: &Application, issuer: &Issuer, method: &str) -> Value {
 }
 async fn mutate(
     app: &Application,
-    store: &EventLog,
+    store: &RootStore,
     issuer: &Issuer,
     method: &str,
     input: Value,
@@ -250,7 +250,7 @@ async fn native_web_keeps_root_settings_receipts_and_agent_admission_without_an_
         let namespaces=RootNamespaces { ownership:dir.path().join("owners"), control:dir.path().join("control") };
         let path=dir.path().join("root");
         let root=Arc::new(RootOwner::create(&path,&namespaces).unwrap());
-        let store=Arc::new(EventLog::for_root(root).await.unwrap());
+        let store=Arc::new(RootStore::open(root).await.unwrap());
         let web=package(true); let caller=package(false); let deployment=Uuid::new_v4();
         let source=store.commit_application(deployment,0,input(&web,&caller),vec![],vec![web,caller]).await.unwrap();
         let issuer=Issuer::default(); let app=open(store.clone(),deployment,&issuer).await;

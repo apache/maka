@@ -21,6 +21,7 @@ use crate::model::{ModelFinishReason, ModelPart, ModelStep, TextKind};
 use serde::{Deserialize, Serialize};
 
 mod breakdown;
+pub mod measure;
 pub use breakdown::{ContextBucket, ContextCounts, PreparedContextBreakdown};
 mod checkpoint_mode;
 mod summary;
@@ -44,8 +45,7 @@ pub struct ModelRequestContext {
     /// is subtracted here; this value is not the proactive compaction threshold.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_window: Option<u64>,
-    /// Full selected-model capacity. Unknown legacy values must not be inferred
-    /// from context_window, which may be an independent input-only limit.
+    /// Full selected-model capacity, independent of the input-only ceiling.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_context_window: Option<u64>,
     /// Resolved proactive threshold: explicit compactionThreshold, otherwise 85% of
@@ -122,17 +122,9 @@ pub struct ContextCheckpoint {
     pub summary_step_id: String,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SummaryFormat {
-    /// Legacy wire label; the prompt determines content and no sections are required.
-    SectionsV1,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TextSummary {
-    pub format: SummaryFormat,
     pub text: String,
 }
 
@@ -172,10 +164,7 @@ impl TextSummary {
                 }
             }
         }
-        Ok(Self {
-            format: SummaryFormat::SectionsV1,
-            text,
-        })
+        Ok(Self { text })
     }
 }
 
@@ -275,14 +264,6 @@ mod tests {
 
     #[test]
     fn request_context_keeps_unknown_windows_and_checks_utf16_and_safe_integers() {
-        let legacy: ModelRequestContext = serde_json::from_value(serde_json::json!({
-            "provider_id":"openai", "context_window":4000
-        }))
-        .unwrap();
-        assert_eq!(
-            legacy.model_context_window, None,
-            "an old input budget is not a model window"
-        );
         let mut context = ModelRequestContext {
             provider_id: "😀".repeat(256),
             context_window: None,
@@ -323,7 +304,7 @@ mod tests {
     #[test]
     fn checkpoint_mode_is_explicit_and_rejects_contradictory_fields() {
         let value = serde_json::json!({"mode":{"kind":"standalone"},"covered_through":1,"source_digest":"digest","summary_step_id":"step",
-            "summary":{"format":"sections_v1","text":"summary"}});
+            "summary":{"text":"summary"}});
         let mut checkpoint: ContextCheckpoint = serde_json::from_value(value.clone()).unwrap();
         assert_eq!(checkpoint.mode, CheckpointMode::Standalone);
         assert_eq!(serde_json::to_value(&checkpoint).unwrap(), value);

@@ -30,7 +30,6 @@ use sqlx::SqliteConnection;
 pub(super) async fn validate(
     connection: &mut SqliteConnection,
     event: &RuntimeEvent,
-    verification: &mut super::cache::Verification,
 ) -> Result<(), StoreError> {
     let Fact::ModelRequested {
         purpose,
@@ -71,26 +70,13 @@ pub(super) async fn validate(
             if source_scope != &selection.scope {
                 return Err(invalid("request checkpoint belongs to another scope"));
             }
-            let (baseline, source) = super::read::latest_with_evidence(
-                connection,
-                &selection,
-                *source_high_water,
-                verification,
-            )
-            .await?;
+            let (baseline, source) =
+                super::read::latest_with_evidence(connection, &selection, *source_high_water)
+                    .await?;
             let baseline = baseline.ok_or_else(|| invalid("missing request baseline"))?;
             if baseline.event_id != *id || source.digest != *source_digest {
                 return Err(invalid("request baseline evidence changed"));
             }
-            // A certified checkpoint still needs fresh archive-writer lineage:
-            // a later Message can make a previously unique Run ambiguous.
-            crate::archive::validate_selected(
-                connection,
-                &selection,
-                source.high_water,
-                i64::MAX as u64,
-            )
-            .await?;
         }
         return Ok(());
     }
@@ -136,7 +122,7 @@ pub(super) async fn validate(
         return Err(invalid("model request source changed"));
     }
     let (baseline, source) =
-        super::read::latest_with_evidence(connection, &selection, high, verification).await?;
+        super::read::latest_with_evidence(connection, &selection, high).await?;
     if source.digest != *source_digest {
         return Err(invalid("model request source changed"));
     }

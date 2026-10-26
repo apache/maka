@@ -19,7 +19,8 @@
 
 //! Explicitly composed management of a fixed deployment in the original Root.
 use super::*;
-use maka_event_log::{EventLog, StoreError, applications::validate_application};
+use maka_event_log::root_store::RootStore;
+use maka_event_log::{StoreError, applications::validate_application};
 use maka_plugin_core::contract::binary_resource_type;
 use maka_plugin_core::deployment::management::{
     DeploymentDocument, DeploymentDocumentChunk, DeploymentDocumentRead, DeploymentInstances,
@@ -44,7 +45,7 @@ pub const DEPLOYMENT_MANAGER: &str = "maka.application.management";
 #[derive(Clone)]
 pub struct ManagementTarget(Manager);
 impl ManagementTarget {
-    pub async fn from_source(store: Arc<EventLog>, source: DeploymentRef) -> Result<Self> {
+    pub async fn from_source(store: Arc<RootStore>, source: DeploymentRef) -> Result<Self> {
         let metadata = store
             .read_application_metadata_at(&source)
             .await
@@ -66,7 +67,7 @@ impl ManagementTarget {
 #[derive(Clone)]
 struct Manager {
     source: DeploymentRef,
-    store: Arc<EventLog>,
+    store: Arc<RootStore>,
     environment: maka_plugin_core::composition::Environment,
     writes: Arc<tokio::sync::Mutex<()>>,
 }

@@ -139,13 +139,13 @@ view()
 | `onLongPress` | `.on_long_press` | 无 | 手指按住达到 `delayLongPress`（500 ms）。 |
 | `onPressDown` / `onPressUp` | `.on_press_down` / `.on_press_up` | 无 | 手指按下 / 抬起或移出。 |
 | `onHoverIn` / `onHoverOut` | `.on_hover_in` / `.on_hover_out` | 无 | 鼠标移到视图（或其内部的视图）上 / 离开视图或窗口（见[悬停](./index.md#悬停)）。 |
-| `onHoverMove` | `.on_hover_move` | `HoverEvent` | 没有按下按键时鼠标在视图上移动：`position`、`pagePosition`（`Point`）和 `modifiers`；每帧最多一次。 |
+| `onHoverMove` | `.on_hover_move` | `HoverEvent` | 没有按下按键时鼠标在视图上移动，或鼠标停在那里时按下或松开了修饰键：`position`、`pagePosition`（`Point`）和 `modifiers`；每帧最多一次。 |
 | `onMouseMove` | `.on_mouse_move` | TSX `Point`；Rust `Point<Points>` | macOS、Linux、Windows、GPUI 和 Web 上的鼠标移动，包括按键拖动。坐标以当前视图的点为单位；嵌套监听者从内向外接收，每帧最多一次。 |
 | `onContextMenu` | `.on_context_menu` | `ContextMenuEvent` | 辅助按钮在视图上按下（见[上下文菜单](./index.md#上下文菜单)）。 |
 | `onFileDragEnter` / `onFileDragLeave` | `.on_file_drag_enter` / `.on_file_drag_leave` | 无 | 本地文件拖入 / 离开当前桌面拖放目标。 |
 | `onFileDrop` | `.on_file_drop` | `{ uris: string[] }`（`FileDropEvent`） | 本地文件或目录被放到桌面拖放目标。 |
 | `onLayout` | `.on_layout` | `Bounds`（`Bounds<Points>`） | 相对父视图的 frame 发生变化。 |
-| `onPanStart` / `onPanEnd` | `.on_pan_start` / `.on_pan_end` | `PanEvent` | 通过 `pan` 绑定的拖动开始 / 结束。 |
+| `onPanStart` / `onPanEnd` | `.on_pan_start` / `.on_pan_end` | `PanEvent` | 通过 `pan` 绑定的拖动开始 / 结束；系统取消时 `cancelled` 为 true。 |
 | `onPinchStart` / `onPinchEnd` | `.on_pinch_start` / `.on_pinch_end` | `{ scale, velocity }` | 通过 `pinch` 绑定的捏合开始 / 结束。 |
 | `onRotationStart` / `onRotationEnd` | `.on_rotation_start` / `.on_rotation_end` | `{ rotation, velocity }` | 通过 `rotation` 绑定的旋转开始 / 结束。 |
 | `onAccessibilityAction` | `.on_accessibility_action` | `{ actionName }` | 执行了一个自定义无障碍操作。 |

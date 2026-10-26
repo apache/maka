@@ -40,8 +40,9 @@ async fn turn(listener: &TcpListener, f: &Fixture, session: &str) -> (TcpStream,
     let (mut socket, _) = listener.accept().await.unwrap();
     request(&mut socket).await;
     let invocation = f
-        .store
-        .session_projection::<SessionConfiguration>(session)
+        .session(session)
+        .await
+        .session_projection::<StoredSessionConfiguration>(session)
         .await
         .unwrap()
         .unwrap()
@@ -50,18 +51,39 @@ async fn turn(listener: &TcpListener, f: &Fixture, session: &str) -> (TcpStream,
         .invocation;
     (socket, invocation)
 }
-fn authority(f: &Fixture, invocation: &Invocation) -> Scope {
-    f.issuer
-        .issue_with(
+async fn authority(
+    f: &Fixture,
+    invocation: &Invocation,
+) -> (Scope, maka_event_log::root_store::SessionExecutionScope) {
+    let session = &invocation.session_id;
+    let execution = f
+        .session(session)
+        .await
+        .execution_scope(Some(
+            f.owner
+                .session(session)
+                .await
+                .unwrap()
+                .configuration
+                .permission_basis(),
+        ))
+        .await
+        .unwrap();
+    let scope = f
+        .issuer
+        .issue_with_execution(
             Identity::Agent {
                 invocation: invocation.clone(),
                 operation_id: Some("protocol-fixture".into()),
             },
             true,
             CancellationToken::new(),
+            execution.store().execution_custody().unwrap(),
         )
-        .unwrap()
+        .unwrap();
+    (scope, execution)
 }
+
 async fn begin(
     f: &Fixture,
     consumer: u128,
@@ -115,7 +137,7 @@ async fn input(
     bytes: Option<Vec<u8>>,
     operation: Uuid,
 ) -> Value {
-    let scope = authority(f, invocation);
+    let (scope, execution) = authority(f, invocation).await;
     let result = begin(
         f,
         2,
@@ -129,6 +151,7 @@ async fn input(
     .await;
     result.cleanup.unwrap();
     scope.finish().await.unwrap();
+    drop(execution);
     returned(result.reply)
 }
 async fn run(
@@ -136,8 +159,13 @@ async fn run(
     invocation: &Invocation,
     executable: &str,
     args: Vec<String>,
-) -> (Scope, Mutation, Value) {
-    let scope = authority(f, invocation);
+) -> (
+    Scope,
+    maka_event_log::root_store::SessionExecutionScope,
+    Mutation,
+    Value,
+) {
+    let (scope, execution) = authority(f, invocation).await;
     let mut mutation = begin(
         f,
         2,
@@ -149,7 +177,7 @@ async fn run(
     .await;
     let started = mutation.recv().await.unwrap();
     assert_eq!(started["kind"], "started", "{started}");
-    (scope, mutation, started["id"].clone())
+    (scope, execution, mutation, started["id"].clone())
 }
 async fn drain(mut mutation: Mutation) -> (Vec<u8>, Vec<u8>, Value) {
     let (mut stdout, mut stderr) = (vec![], vec![]);
@@ -178,7 +206,7 @@ async fn protocol_exact_bytes_replay_and_same_process_across_turns() {
     tokio::time::timeout(Duration::from_secs(90), async {
         let (listener, f, session) = fixture().await;
         let (mut socket, first) = turn(&listener, &f, &session).await;
-        let (scope, mutation, process) = run(&f, &first, "/bin/cat", vec![]).await;
+        let (scope, execution, mutation, process) = run(&f, &first, "/bin/cat", vec![]).await;
         let drained = tokio::spawn(drain(mutation));
         let mut expected = vec![];
         let bytes: Vec<u8> = (0..8192).map(|n| n as u8).collect();
@@ -195,7 +223,7 @@ async fn protocol_exact_bytes_replay_and_same_process_across_turns() {
         end_turn(&f, &mut socket).await;
         // The original process call is still owned while this Session has no active Turn.
         assert!(!drained.is_finished());
-        let stale_scope = authority(&f, &first);
+        let (stale_scope, stale_execution) = authority(&f, &first).await;
         let mut stale = begin(
             &f,
             2,
@@ -219,6 +247,7 @@ async fn protocol_exact_bytes_replay_and_same_process_across_turns() {
             }
         ));
         stale_scope.finish().await.unwrap();
+        drop(stale_execution);
         let (mut socket, second) = turn(&listener, &f, &session).await;
         assert_ne!(first.invocation_id, second.invocation_id);
         input(
@@ -236,6 +265,7 @@ async fn protocol_exact_bytes_replay_and_same_process_across_turns() {
         assert!(stderr.is_empty());
         assert_eq!(result["success"], true, "{result}");
         scope.finish().await.unwrap();
+        drop(execution);
         end_turn(&f, &mut socket).await;
         processes::close(&f).await;
     })
@@ -248,9 +278,9 @@ async fn protocol_ownership_revocation_and_actual_cancellation_cleanup() {
     tokio::time::timeout(Duration::from_secs(90), async {
         let (listener, f, session) = fixture().await;
         let (mut socket, invocation) = turn(&listener, &f, &session).await;
-        let (scope, mutation, process) = run(&f, &invocation, "/bin/cat", vec![]).await;
+        let (scope, execution, mutation, process) = run(&f, &invocation, "/bin/cat", vec![]).await;
         // Same real Session and grant cannot take another activation's process.
-        let foreign_scope = authority(&f, &invocation);
+        let (foreign_scope, foreign_execution) = authority(&f, &invocation).await;
         let foreign = begin(
             &f,
             3,
@@ -271,6 +301,7 @@ async fn protocol_ownership_revocation_and_actual_cancellation_cleanup() {
             }
         ));
         foreign_scope.finish().await.unwrap();
+        drop(foreign_execution);
         // No new input is necessary for a permission change to stop an idle process.
         files::change(&f, &session, "read_only", false, true).await;
         let (stdout, _, result) = drain(mutation).await;
@@ -278,8 +309,9 @@ async fn protocol_ownership_revocation_and_actual_cancellation_cleanup() {
         assert_eq!(result["stopped"], true, "{result}");
         assert_eq!(result["error"], "Protocol process permissions changed");
         scope.finish().await.unwrap();
+        drop(execution);
         files::change(&f, &session, "workspace_write", true, false).await;
-        let (scope, mutation, _) = run(
+        let (scope, execution, mutation, _) = run(
             &f,
             &invocation,
             "/bin/sh",
@@ -303,6 +335,7 @@ async fn protocol_ownership_revocation_and_actual_cancellation_cleanup() {
         let (_, _, result) = drain(mutation).await;
         assert_eq!(result["stopped"], true, "{result}");
         scope.finish().await.unwrap();
+        drop(execution);
         let status = std::process::Command::new("/bin/kill")
             .args(["-0", pid.trim()])
             .output()
@@ -324,7 +357,7 @@ async fn protocol_argv_private_root_stdin_close_and_session_retirement() {
         let (listener, f, session) = fixture().await;
         let (mut socket, invocation) = turn(&listener, &f, &session).await;
         let literal = "$(touch shell-injection); $HOME; 'quoted'";
-        let (scope, mutation, _) = run(
+        let (scope, execution, mutation, _) = run(
             &f,
             &invocation,
             "/usr/bin/printf",
@@ -336,8 +369,9 @@ async fn protocol_argv_private_root_stdin_close_and_session_retirement() {
         assert_eq!(result["success"], true);
         assert!(!f.workspace.join("shell-injection").exists());
         scope.finish().await.unwrap();
+        drop(execution);
         std::fs::write(f.root.join("secret"), "private secret").unwrap();
-        let (scope, mutation, _) = run(
+        let (scope, execution, mutation, _) = run(
             &f,
             &invocation,
             "/bin/cat",
@@ -348,8 +382,9 @@ async fn protocol_argv_private_root_stdin_close_and_session_retirement() {
         assert!(stdout.is_empty());
         assert_eq!(result["success"], false);
         scope.finish().await.unwrap();
+        drop(execution);
         // EOF must reject subsequent writes even while the child remains alive.
-        let (scope, mut mutation, process) = run(
+        let (scope, execution, mut mutation, process) = run(
             &f,
             &invocation,
             "/bin/sh",
@@ -363,10 +398,11 @@ async fn protocol_argv_private_root_stdin_close_and_session_retirement() {
             json!([101, 111, 102]),
             "child must observe EOF before completing input"
         );
+        let (after_scope, after_execution) = authority(&f, &invocation).await;
         let after = begin(
             &f,
             2,
-            authority(&f, &invocation),
+            after_scope.clone(),
             "input",
             json!({"id":process,"bytes":[1]}),
             Uuid::new_v4(),
@@ -375,6 +411,8 @@ async fn protocol_argv_private_root_stdin_close_and_session_retirement() {
         .completion()
         .await;
         after.cleanup.unwrap();
+        after_scope.finish().await.unwrap();
+        drop(after_execution);
         assert!(matches!(
             after.reply.receipt,
             Receipt::Recorded {
@@ -384,8 +422,9 @@ async fn protocol_argv_private_root_stdin_close_and_session_retirement() {
         ));
         end_turn(&f, &mut socket).await;
         let current = f
-            .store
-            .get_session::<SessionConfiguration>(&session)
+            .session(&session)
+            .await
+            .get_session::<StoredSessionConfiguration>(&session)
             .await
             .unwrap()
             .unwrap();
@@ -396,6 +435,7 @@ async fn protocol_argv_private_root_stdin_close_and_session_retirement() {
         let (_, _, result) = drain(mutation).await;
         assert_eq!(result["stopped"], true, "{result}");
         scope.finish().await.unwrap();
+        drop(execution);
         assert!(f.store.session_retirement_ready(&session).await.unwrap());
         processes::close(&f).await;
     })
@@ -423,14 +463,29 @@ async fn protocol_native_requests_require_explicit_grants_and_own_cleanup() {
             .await;
             let session = f.create("Native protocol").await;
             let (mut socket, invocation) = turn(&listener, &f, &session).await;
+            let execution_scope = f
+                .session(&session)
+                .await
+                .execution_scope(Some(
+                    f.owner
+                        .session(&session)
+                        .await
+                        .unwrap()
+                        .configuration
+                        .permission_basis(),
+                ))
+                .await
+                .unwrap();
+            let execution = execution_scope.store().execution_custody().unwrap();
             let request = f
                 .services
-                .request(
+                .request_with_execution(
                     Identity::Agent {
                         invocation: invocation.clone(),
                         operation_id: Some("native-protocol".into()),
                     },
                     CancellationToken::new(),
+                    execution.clone(),
                 )
                 .unwrap();
             let started = request
@@ -447,6 +502,7 @@ async fn protocol_native_requests_require_explicit_grants_and_own_cleanup() {
             if !granted {
                 assert!(started.is_err());
                 request.finish().await.unwrap();
+                drop(execution_scope);
             } else {
                 let mut mutation = started.unwrap();
                 let process = mutation.recv().await.unwrap()["id"].clone();
@@ -482,12 +538,13 @@ async fn protocol_native_requests_require_explicit_grants_and_own_cleanup() {
                 request.finish().await.unwrap();
                 let request = f
                     .services
-                    .request(
+                    .request_with_execution(
                         Identity::Agent {
                             invocation,
                             operation_id: Some("shutdown-protocol".into()),
                         },
                         CancellationToken::new(),
+                        execution.clone(),
                     )
                     .unwrap();
                 let mut mutation = request
@@ -511,6 +568,7 @@ async fn protocol_native_requests_require_explicit_grants_and_own_cleanup() {
                     }
                     assert!(!f.app.client().snapshot().closed);
                     request.finish().await.unwrap();
+                    drop(execution_scope);
                 };
                 let (closed, (), (_, _, completion)) =
                     tokio::join!(f.app.shutdown(), finish, drain(mutation));

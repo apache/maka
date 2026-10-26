@@ -29,6 +29,8 @@ pub struct Context {
     pub(super) consumer: Activation,
     pub(super) requester: Activation,
     pub(super) operation: Option<RecoveryRef>,
+    pub(super) operation_scope:
+        Option<maka_event_log::applications::operations::OperationDispatchScope>,
     pub(super) attachments: Attachments,
     pub(super) imports: Arc<BTreeMap<String, Vec<Binding>>>,
     pub(super) dispatch: Weak<Dispatch>,
@@ -54,6 +56,15 @@ impl Context {
     }
     pub fn operation(&self) -> Option<&RecoveryRef> {
         self.operation.as_ref()
+    }
+    /// Proof of the actual original Host dispatch, never reconstructed from a receipt.
+    pub fn operation_scope(
+        &self,
+    ) -> Option<&maka_event_log::applications::operations::OperationDispatchScope> {
+        self.operation_scope.as_ref()
+    }
+    pub fn execution_custody(&self) -> Option<&Arc<dyn maka_agent_facts::tools::ExecutionCustody>> {
+        self.scope.execution()
     }
     pub fn scope(&self) -> &Scope {
         &self.scope

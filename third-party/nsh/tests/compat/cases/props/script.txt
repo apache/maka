@@ -263,6 +263,20 @@ covers [props] horizontal
 covers [props] scrollable
 covers [props] refreshing
 covers [props] scrollEventThrottle
+# props-refresh-indicator
+tap id:case-props-refresh-indicator
+expect Pull me
+# The app's indicator, 72 tall, takes the spinner's place; the pull feeds
+# the animated value the app made (created at 3).
+prop id:pull refreshIndicator height=72
+prop id:pull pullValue 3
+listens id:pull onRefresh
+# A list passes it to its scroll view.
+prop scroll:text:"Row 0" refreshIndicator height=60
+# Without a height there is no indicator: the platform's spinner stays.
+noprop id:none refreshIndicator
+covers [props] pullValue
+covers [props] refreshIndicator
 # props-scroll-zoom
 tap id:case-props-scroll-zoom
 expect Zoom
@@ -433,6 +447,27 @@ prop id:preview src https://example.com/photo.png
 covers [props] src
 covers [globals] URL
 covers [globals] Blob
+# props-list-start
+tap id:case-props-list-start
+# Opens at its start: not an approach.
+expect Item 0
+expect Starts: 0
+# 20 items of 40 points in 200. Away from the start, then back: 100
+# points from it is not within the threshold's quarter of a viewport (50
+# points, not the default whole one); 40 points is.
+scroll scroll:text:"Item 0" 0 300
+absent Starts: 1
+scroll scroll:text:"Item 9" 0 100
+absent Starts: 1
+scroll scroll:text:"Item 9" 0 40
+expect Starts: 1
+# Five items arrive above: the rows on screen keep their place, 200
+# points further down, out of the threshold, so nothing more loads.
+expect Item -4
+prop scroll:text:"Item 0" contentOffset y=240
+absent Starts: 2
+covers [props] List.loadMoreAtStartThreshold
+covers [events] onLoadMoreAtStart
 # props-list-sticky-offset
 tap id:case-props-list-sticky-offset
 # Items 0 and 3 stick 24 points below the top: each moves with the scroll
@@ -440,6 +475,9 @@ tap id:case-props-list-sticky-offset
 # reaches item 0's bottom there.
 expect Offset 0
 prop scroll:text:"Offset 0" stickyHeaderIndices start=-24 end=56, start=96 end=Infinity
+# An animated offset: the platform adds its value as it pins, every frame,
+# so the travel is the one at the top.
+prop scroll:text:"Animated 0" stickyHeaderIndices start=0 end=80, start=120 end=Infinity
 covers [props] stickyHeaderOffset
 # props-list-viewport
 tap id:case-props-list-viewport

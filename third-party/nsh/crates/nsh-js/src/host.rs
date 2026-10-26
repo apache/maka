@@ -47,6 +47,8 @@ pub(crate) struct Shared {
     timers: RefCell<Timers>,
     /// Per-VM host delegate for capability-gated exit requests.
     pub(crate) system_exit_handler: RefCell<Option<ExitHandler>>,
+    /// The embedding app's side of `nsh/host` (the engine's bridge).
+    pub(crate) host_bridge: RefCell<Option<Rc<dyn nsh_core::host_channel::HostBridge>>>,
     pub(crate) system_websocket:
         RefCell<Option<std::sync::Arc<dyn nsh_core::websocket::WebSocketTransport>>>,
     /// Permissions and host-selected app directory for native system operations.
@@ -601,10 +603,27 @@ impl Host {
         }
     }
 
+    /// Collects existing contacts whose owner no longer accepts native input,
+    /// without entering application code or running jobs.
+    pub fn invalid_touch_contacts(
+        &self,
+        accepts: impl FnMut(NodeId) -> bool,
+        contacts: &mut Vec<u32>,
+    ) {
+        if !self.cx.is_live() {
+            return;
+        }
+        self.cx
+            .with(|cx| crate::touch::invalid_contacts(cx.as_raw().as_ptr(), accepts, contacts));
+    }
+
     /// Forgets a physically cancelled native contact without handlers or jobs.
     /// The last known contact releases the JS responder and native scroll block;
     /// cancelling an unknown contact is inert, including repeated cancellation.
     pub fn cancel_touch(&self, contact: u32) {
+        if !self.cx.is_live() {
+            return;
+        }
         if self
             .cx
             .with(|cx| crate::touch::cancel_touch(cx.as_raw().as_ptr(), contact))
@@ -763,6 +782,41 @@ impl Host {
         *self.shared.system_websocket.borrow_mut() = transport;
     }
 
+    /// Connects `nsh/host` to the embedding app: its launch parameters, and
+    /// where the app's calls and posts go. Call before evaluating the bundle
+    /// (`host.params` is read when the module is first imported).
+    pub fn set_host_bridge(&self, bridge: Rc<dyn nsh_core::host_channel::HostBridge>) {
+        *self.shared.host_bridge.borrow_mut() = Some(bridge);
+    }
+
+    /// Delivers the embedding app's event `name` (`host.on`): to the
+    /// listeners of its name, or kept until one is added.
+    pub fn host_event(&self, name: &str, data: nsh_core::JsonValue) {
+        if !self.cx.is_live() {
+            return;
+        }
+        self.guarded(Phase::Call, || {
+            self.cx.with(|cx| {
+                crate::host_channel::deliver(cx.as_raw().as_ptr(), name, data);
+            });
+            self.run_jobs();
+        });
+    }
+
+    /// Settles call `id` (`host.call`) with the embedding app's answer, or
+    /// rejects it with the message.
+    pub fn host_reply(&self, id: u64, result: Result<nsh_core::JsonValue, String>) {
+        if !self.cx.is_live() {
+            return;
+        }
+        self.guarded(Phase::Call, || {
+            self.cx.with(|cx| {
+                crate::host_channel::settle(cx.as_raw().as_ptr(), id, result);
+            });
+            self.run_jobs();
+        });
+    }
+
     /// Installs the meaning of `process.exit(code)` for this VM. The callback
     /// runs on the owning engine thread after the app's exit capability check.
     /// NSH never terminates the embedding process itself.
@@ -803,11 +857,27 @@ impl Host {
 
     /// Earliest timer deadline, if any timer is pending.
     pub fn next_timer(&self) -> Option<Instant> {
-        self.shared.timers.borrow_mut().next_deadline()
+        let timer = self.shared.timers.borrow_mut().next_deadline();
+        let host = self
+            .cx
+            .is_live()
+            .then(|| {
+                self.cx
+                    .with(|cx| crate::host_channel::next_deadline(cx.as_raw().as_ptr()))
+            })
+            .flatten();
+        timer.into_iter().chain(host).min()
     }
 
     /// Runs all timers due at `now`.
     pub fn run_timers(&self, now: Instant) {
+        if self.cx.is_live() {
+            self.guarded(Phase::Call, || {
+                self.cx
+                    .with(|cx| crate::host_channel::expire(cx.as_raw().as_ptr(), now));
+                self.run_jobs();
+            });
+        }
         loop {
             // Release the borrow before calling into JS: callbacks may add timers.
             let Some(callback) = self.shared.timers.borrow_mut().pop_due(now) else {
@@ -1159,9 +1229,13 @@ fn payload_object<'js>(cx: &Ctx<'js>, payload: &EventPayload) -> rquickjs::Resul
         EventPayload::Press(nsh_core::PressEvent {
             position,
             page_position,
+            modifiers,
+            clicks,
         }) => {
             obj.set("position", point_object(cx, *position)?)?;
             obj.set("pagePosition", point_object(cx, *page_position)?)?;
+            obj.set("modifiers", modifiers_object(cx, modifiers)?)?;
+            obj.set("clickCount", *clicks)?;
         }
         EventPayload::Hover(nsh_core::HoverEvent {
             position,
@@ -1183,6 +1257,30 @@ fn payload_object<'js>(cx: &Ctx<'js>, payload: &EventPayload) -> rquickjs::Resul
                 list.set(index, uri.as_str())?;
             }
             obj.set("uris", list)?;
+        }
+        // The bytes cross natively: each file is a `File` over them.
+        EventPayload::Paste(paste) => {
+            obj.set("text", paste.text.as_str())?;
+            let files = rquickjs::Array::new(cx.clone())?;
+            for (index, file) in paste.files.iter().enumerate() {
+                let blob = crate::web::blob::Blob::new(file.data.clone(), file.mime.clone());
+                let made = crate::web::blob::new_file(
+                    cx.as_raw().as_ptr(),
+                    blob,
+                    file.name.clone(),
+                    crate::web::blob::now_ms(),
+                )
+                .map_err(|_| rquickjs::Error::Exception)?;
+                // SAFETY: an owned value of this context, handed over.
+                let value = unsafe { Value::from_raw(cx.clone(), made.take()) };
+                files.set(index, value)?;
+            }
+            obj.set("files", files)?;
+            let uris = rquickjs::Array::new(cx.clone())?;
+            for (index, uri) in paste.uris.iter().enumerate() {
+                uris.set(index, uri.as_str())?;
+            }
+            obj.set("uris", uris)?;
         }
         // The core answers picks; JS never gets their files this way.
         EventPayload::Picked { id, .. } => obj.set("id", *id)?,
@@ -1216,7 +1314,18 @@ fn payload_object<'js>(cx: &Ctx<'js>, payload: &EventPayload) -> rquickjs::Resul
             velocity_y,
             value_x,
             value_y,
+        }
+        | EventPayload::PanCancelled {
+            translation,
+            velocity_x,
+            velocity_y,
+            value_x,
+            value_y,
         } => {
+            obj.set(
+                "cancelled",
+                matches!(payload, EventPayload::PanCancelled { .. }),
+            )?;
             obj.set("translationX", translation.x.0)?;
             obj.set("translationY", translation.y.0)?;
             obj.set("velocityX", *velocity_x)?;
@@ -1879,6 +1988,63 @@ const report = (v) => text(String(v));
     }
 
     #[test]
+    fn fallback_shortcuts_require_support_and_deliver_their_handler_after_native_input() {
+        use nsh_core::{
+            Prop, ROOT_ID,
+            keymap::{KeyMatch, Keystroke},
+        };
+
+        let host = Host::new().unwrap();
+        host.eval_source(
+            r#"import { keymap } from "nsh/keymap";
+            globalThis.keymap = keymap;
+            globalThis.fallbackError = "";
+            globalThis.fallbackHits = 0;
+            try { keymap.bind("ctrl+c", () => {}, { when: "always", fallback: true }); }
+            catch (error) { fallbackError = `${error.name}: ${error.message}`; }"#,
+        )
+        .unwrap();
+        assert_eq!(
+            host.cx
+                .with(|cx| cx.globals().get::<_, String>("fallbackError").unwrap()),
+            "TypeError: keymap.bind fallback: requires native fallback keyboard shortcuts"
+        );
+        host.set_environment(&Environment {
+            fallback_key_bindings: true,
+            ..Environment::default()
+        });
+        host.eval_source(
+            r#"keymap.bind("ctrl+c", () => fallbackHits++, { when: "always", fallback: true });"#,
+        )
+        .unwrap();
+        let table = ops(&host)
+            .into_iter()
+            .find_map(|op| match op {
+                Op::SetProp {
+                    id: ROOT_ID,
+                    prop: Prop::Keymap(table),
+                } => Some(table),
+                _ => None,
+            })
+            .expect("mounted fallback keymap");
+        let stroke = Keystroke::parse("ctrl+c", nsh_core::platform::Os::Linux).unwrap();
+        assert_eq!(table.find(stroke, true, false), KeyMatch::None);
+        let KeyMatch::Fire(id) = table.find_fallback_with(stroke, true, false, |_| false) else {
+            panic!("fallback did not match the unhandled input key");
+        };
+        host.dispatch_event(
+            ROOT_ID,
+            EventKind::KeyCommand,
+            &EventPayload::Value(nsh_core::PayloadValue::Number(id as f64)),
+        );
+        assert_eq!(
+            host.cx
+                .with(|cx| cx.globals().get::<_, i32>("fallbackHits").unwrap()),
+            1
+        );
+    }
+
+    #[test]
     fn native_focus_support_is_available_before_the_first_render() {
         let host = Host::new().unwrap();
         host.set_environment(&Environment {
@@ -2205,6 +2371,11 @@ const report = (v) => text(String(v));
         let event = nsh_core::PressEvent {
             position: point(px(3.0), px(4.5)),
             page_position: point(px(30.0), px(40.5)),
+            modifiers: nsh_core::keymap::Modifiers {
+                ctrl: true,
+                ..Default::default()
+            },
+            clicks: 2,
         };
         host.cx.with(|cx| {
             let value = payload_object(&cx, &EventPayload::Press(event)).unwrap();
@@ -2222,6 +2393,10 @@ const report = (v) => text(String(v));
                 ),
                 (3.0, 4.5, 30.0, 40.5)
             );
+            let modifiers: rquickjs::Object = obj.get("modifiers").unwrap();
+            assert!(modifiers.get::<_, bool>("control").unwrap());
+            assert!(!modifiers.get::<_, bool>("shift").unwrap());
+            assert_eq!(obj.get::<_, u32>("clickCount").unwrap(), 2);
         });
     }
 
@@ -2306,6 +2481,27 @@ const report = (v) => text(String(v));
             let value = payload_object(&cx, &EventPayload::FileDrop(uris.clone())).unwrap();
             let actual: Vec<String> = value.as_object().unwrap().get("uris").unwrap();
             assert_eq!(actual, uris);
+        });
+    }
+
+    #[test]
+    fn paste_payload_hands_files_over_as_file_objects() {
+        let host = Host::new().unwrap();
+        let mut paste = nsh_core::PasteEvent::new("hi");
+        paste.files.push(nsh_core::PastedFile::image(vec![
+            0x89, b'P', b'N', b'G', 1, 2,
+        ]));
+        paste.uris.push("file:///tmp/a.txt".into());
+        host.cx.with(|cx| {
+            let value = payload_object(&cx, &EventPayload::Paste(Box::new(paste))).unwrap();
+            cx.globals().set("pasted", value).unwrap();
+            let summary: String = cx
+                .eval(
+                    "const f = pasted.files[0]; \
+                     `${pasted.text} ${f instanceof File} ${f.name} ${f.type} ${f.size} ${pasted.uris[0]}`",
+                )
+                .unwrap();
+            assert_eq!(summary, "hi true image.png image/png 6 file:///tmp/a.txt");
         });
     }
 

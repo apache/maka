@@ -17,16 +17,20 @@
  * under the License.
  */
 
-//! Native selection owns paths and bytes; JavaScript observes only upload metadata.
+//! Native intake snapshots files and images; upload observations contain only metadata.
 
 use super::{EDITOR, Scope, ScopedHost, execute};
-use maka_ui_runtime::{budget::Kind, file::read_selected};
+use maka_capabilities::call::ReadResource;
+use maka_ui_runtime::{
+    budget::Kind,
+    file::{FileSnapshot, read_selected},
+};
 use nsh_base::{Button, ButtonEvent, ButtonProps};
 use nsh_core::{
     JsonValue,
     ui::{self, Arg, JsHost, JsIn, JsOwned, JsValue, PropError, Ret, TsTypes, prelude::*},
 };
-use std::{path::PathBuf, rc::Rc, sync::Arc};
+use std::{rc::Rc, sync::Arc};
 use tokio::sync::{Mutex, mpsc, watch};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
@@ -141,7 +145,6 @@ pub(super) struct AttachmentPickerProps {
     pub path_placeholder: Prop<String>,
     pub upload_label: Prop<String>,
     pub uploading_label: Prop<String>,
-    pub selected_file_label: Prop<String>,
     #[prop(default)]
     pub visible: Prop<bool>,
     #[prop(default)]
@@ -172,58 +175,22 @@ pub(super) fn AttachmentPicker(
             return;
         };
         let scope = client.0.with(|client| client.scope.clone());
-        let selected = PathBuf::from(path.get_untracked());
-        if selected.as_os_str().is_empty() {
+        let selected = path.get_untracked();
+        let selected = selected.trim();
+        if selected.is_empty() {
             return;
         }
-        let id = Uuid::new_v4();
-        let name: String = selected
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .chars()
-            .filter(|character| !character.is_control())
-            .collect();
-        let name = if name.is_empty() {
-            props.selected_file_label.get_untracked()
-        } else {
-            name
-        };
+        let files = nsh_core::platform::clipboard::files_from_text(selected)
+            .unwrap_or_else(|| vec![selected.to_owned()]);
         busy.set(true);
-        cx.emit(AttachmentPickerEvent::Status(status(
-            id, "reading", &name, None,
-        )));
-        let (sender, mut receiver) = mpsc::channel(2);
-        let owner = scope.owner.clone();
-        let worker_name = name.clone();
-        let admitted = owner.spawn(async move {
-            let result = upload(scope, selected, id, &worker_name, &sender).await;
-            let update = match result {
-                Ok(()) => status(id, "complete", &worker_name, None),
-                Err(error) => status(id, "failed", &worker_name, Some(&error)),
-            };
-            // Observation has no custody. A gone receiver never interrupts the upload.
-            let _ = sender.try_send(update);
-        });
-        if let Err(error) = admitted {
-            busy.set(false);
-            cx.emit(AttachmentPickerEvent::Status(status(
-                id,
-                "failed",
-                &name,
-                Some(&error),
-            )));
-            return;
-        }
+        let intake = UploadIntake::files(scope, files);
         // Inner views may hide while IO continues. Observe under the component root.
         observer_owner.run(|| {
             ui::ambient::spawn(async move {
-                while let Some(update) = receiver.recv().await {
-                    if update["kind"] == "failed" || update["kind"] == "complete" {
-                        busy.set(false);
-                    }
+                while let Some(update) = intake.next_update().await {
                     cx.emit(AttachmentPickerEvent::Status(update));
                 }
+                busy.set(false);
             });
         });
     });
@@ -286,22 +253,215 @@ fn status(id: Uuid, kind: &str, name: &str, error: Option<&str>) -> JsonValue {
     value
 }
 
-async fn upload(
+#[class]
+pub struct UploadIntake {
+    updates: Arc<Mutex<mpsc::UnboundedReceiver<JsonValue>>>,
+    closed: CancellationToken,
+}
+
+#[derive(Clone)]
+struct Updates {
+    sender: mpsc::UnboundedSender<JsonValue>,
+    closed: CancellationToken,
+}
+impl Updates {
+    fn emit(&self, value: JsonValue) {
+        if !self.closed.is_cancelled() {
+            let _ = self.sender.send(value);
+        }
+    }
+}
+
+enum Selection {
+    Files(Vec<String>),
+    Clipboard,
+}
+
+impl UploadIntake {
+    pub(super) fn files(scope: Arc<Scope>, files: Vec<String>) -> Self {
+        Self::begin(scope, Selection::Files(files))
+    }
+    pub(super) fn clipboard(scope: Arc<Scope>) -> Self {
+        Self::begin(scope, Selection::Clipboard)
+    }
+    fn begin(scope: Arc<Scope>, selection: Selection) -> Self {
+        let (sender, receiver) = mpsc::unbounded_channel();
+        let closed = CancellationToken::new();
+        let updates = Updates {
+            sender,
+            closed: closed.clone(),
+        };
+        let failed = updates.clone();
+        let id = Uuid::new_v4();
+        let is_clipboard = matches!(&selection, Selection::Clipboard);
+        let name = match &selection {
+            Selection::Files(files) => files
+                .first()
+                .map(|path| display_name(path))
+                .unwrap_or_else(|| "Selected file".into()),
+            Selection::Clipboard => "Clipboard".into(),
+        };
+        let worker_name = name.clone();
+        let owner = scope.owner.clone();
+        let admitted = owner.spawn(async move {
+            if let Err(error) = intake(scope, selection, &updates, id).await {
+                updates.emit(if is_clipboard {
+                    serde_json::json!({"kind": "notice", "error": error})
+                } else {
+                    status(id, "failed", &worker_name, Some(&error))
+                });
+            }
+        });
+        if let Err(error) = admitted {
+            failed.emit(if is_clipboard {
+                serde_json::json!({"kind": "notice", "error": error})
+            } else {
+                status(id, "failed", &name, Some(&error))
+            });
+        }
+        Self {
+            updates: Arc::new(Mutex::new(receiver)),
+            closed,
+        }
+    }
+    async fn next_update(&self) -> Option<JsonValue> {
+        next_update(self.updates.clone(), self.closed.clone()).await
+    }
+}
+impl Drop for UploadIntake {
+    fn drop(&mut self) {
+        self.closed.cancel();
+    }
+}
+#[class]
+impl UploadIntake {
+    /// Observe metadata for the already admitted original selection and upload.
+    pub async fn next(this: Instance<Self>) -> Result<JsonValue, String> {
+        let (updates, closed) = this.with(|intake| (intake.updates.clone(), intake.closed.clone()));
+        drop(this);
+        Ok(next_update(updates, closed)
+            .await
+            .unwrap_or(JsonValue::Null))
+    }
+    /// End observation. The original owner continues reading and settling uploads.
+    pub fn close(&self) {
+        self.closed.cancel();
+    }
+}
+async fn next_update(
+    updates: Arc<Mutex<mpsc::UnboundedReceiver<JsonValue>>>,
+    closed: CancellationToken,
+) -> Option<JsonValue> {
+    let mut updates = tokio::select! {
+        biased;
+        () = closed.cancelled() => return None,
+        updates = updates.lock() => updates,
+    };
+    tokio::select! {
+        biased;
+        () = closed.cancelled() => None,
+        update = updates.recv() => update,
+    }
+}
+
+async fn intake(
     scope: Arc<Scope>,
-    path: PathBuf,
-    id: Uuid,
-    name: &str,
-    sender: &mpsc::Sender<JsonValue>,
+    selection: Selection,
+    updates: &Updates,
+    clipboard_id: Uuid,
 ) -> Result<(), String> {
     let budget = scope.owner.budget.clone();
     let _job = budget
         .reserve(Kind::Job, 1)
         .map_err(|error| error.to_string())?;
-    let snapshot = tokio::task::spawn_blocking(move || read_selected(&path, &budget))
+    let selected = match selection {
+        Selection::Files(files) => crate::clipboard::Selection::Files(files),
+        Selection::Clipboard => {
+            let budget = budget.clone();
+            tokio::task::spawn_blocking(move || -> Result<crate::clipboard::Selection, String> {
+                match crate::clipboard::read(&budget)? {
+                    crate::clipboard::Selection::Text(text) => Ok(
+                        match nsh_core::platform::clipboard::files_from_text(&text) {
+                            Some(files) => crate::clipboard::Selection::Files(files),
+                            None => crate::clipboard::Selection::Text(text),
+                        },
+                    ),
+                    selected => Ok(selected),
+                }
+            })
+            .await
+            .map_err(|_| "Clipboard worker failed")??
+        }
+    };
+    match selected {
+        crate::clipboard::Selection::Files(files) => upload_files(scope, files, updates).await,
+        crate::clipboard::Selection::Image(snapshot) => {
+            let name = snapshot.metadata()["name"]
+                .as_str()
+                .map(clean_name)
+                .unwrap_or_else(|| "Clipboard image".into());
+            updates.emit(status(clipboard_id, "reading", &name, None));
+            settle(scope, snapshot, clipboard_id, &name, updates).await;
+        }
+        crate::clipboard::Selection::Text(text) => {
+            updates.emit(serde_json::json!({"kind": "text", "text": text}));
+        }
+        crate::clipboard::Selection::Empty => {}
+    }
+    Ok(())
+}
+
+async fn upload_files(scope: Arc<Scope>, files: Vec<String>, updates: &Updates) {
+    for selected in files {
+        let id = Uuid::new_v4();
+        let name = display_name(&selected);
+        updates.emit(status(id, "reading", &name, None));
+        let budget = scope.owner.budget.clone();
+        let captured = tokio::task::spawn_blocking(move || {
+            let paths = crate::attachment_paths::resolve(&[selected])?;
+            let path = paths
+                .into_iter()
+                .next()
+                .ok_or("Selected file is unavailable")?;
+            read_selected(&path, &budget).map_err(|error| error.to_string())
+        })
         .await
-        .map_err(|_| "Selected file worker failed")?
-        .map_err(|error| error.to_string())?;
-    let _ = sender.try_send(status(id, "uploading", name, None));
+        .map_err(|_| "Selected file worker failed".to_owned())
+        .and_then(|result| result);
+        match captured {
+            Ok(snapshot) => {
+                let name = snapshot.metadata()["name"]
+                    .as_str()
+                    .map(clean_name)
+                    .unwrap_or(name);
+                settle(scope.clone(), snapshot, id, &name, updates).await;
+            }
+            Err(error) => updates.emit(status(id, "failed", &name, Some(&error))),
+        }
+    }
+}
+
+async fn settle(
+    scope: Arc<Scope>,
+    snapshot: Arc<FileSnapshot>,
+    id: Uuid,
+    name: &str,
+    updates: &Updates,
+) {
+    let result = upload(scope, snapshot, id, name, updates).await;
+    match result {
+        Ok(()) => updates.emit(status(id, "complete", name, None)),
+        Err(error) => updates.emit(status(id, "failed", name, Some(&error))),
+    }
+}
+async fn upload(
+    scope: Arc<Scope>,
+    snapshot: Arc<FileSnapshot>,
+    id: Uuid,
+    name: &str,
+    updates: &Updates,
+) -> Result<(), String> {
+    updates.emit(status(id, "uploading", name, None));
     let mutation = scope
         .owner
         .client
@@ -310,4 +470,30 @@ async fn upload(
     mutation.prepare().await?;
     mutation.confirm().await?;
     Ok(())
+}
+fn display_name(path: &str) -> String {
+    if let Ok(uri) = url::Url::parse(path)
+        && uri.scheme() == "file"
+    {
+        let name = uri.path().rsplit('/').next().unwrap_or_default();
+        return clean_name(&percent_encoding::percent_decode_str(name).decode_utf8_lossy());
+    }
+    let bytes = path.as_bytes();
+    if path.starts_with("\\\\")
+        || bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
+    {
+        return clean_name(path.rsplit(['/', '\\']).next().unwrap_or_default());
+    }
+    std::path::Path::new(path)
+        .file_name()
+        .map(|name| clean_name(&name.to_string_lossy()))
+        .unwrap_or_else(|| "Selected file".into())
+}
+fn clean_name(name: &str) -> String {
+    let name: String = name.chars().filter(|ch| !ch.is_control()).collect();
+    if name.is_empty() {
+        "Selected file".into()
+    } else {
+        name
+    }
 }

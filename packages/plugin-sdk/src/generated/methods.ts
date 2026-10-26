@@ -40,22 +40,22 @@ export type AgentCompactOutput_AgentCompactRejection =
  */
 export type AgentReadFileOutput_AgentFileReadPart =
   | {
+      kind: 'begin';
       version: string;
       digest: string;
       bytes: number;
       content: AgentReadFileOutput_AgentFileContent;
-      kind: 'begin';
     }
   | {
+      kind: 'chunk';
       offset: number;
       data: string;
-      kind: 'chunk';
     }
   | {
+      kind: 'end';
       version: string;
       digest: string;
       bytes: number;
-      kind: 'end';
     }
   | {
       kind: 'absent';
@@ -64,31 +64,31 @@ export type AgentReadFileOutput_AgentFileReadPart =
       kind: 'changed';
     }
   | {
-      bytes: number;
       kind: 'binary';
+      bytes: number;
     }
   | {
-      fileKind: AgentReadFileOutput_AgentFileKind;
       kind: 'unsupported';
+      fileKind: AgentReadFileOutput_AgentFileKind;
     };
 export type AgentReadFileOutput_AgentFileContent =
   | {
       kind: 'text';
     }
   | {
-      mimeType: string;
       kind: 'image';
+      mimeType: string;
     };
 export type AgentReadFileOutput_AgentFileKind = 'file' | 'directory' | 'symlink' | 'other';
 export type AgentSkillCandidatesInput_AgentSkillCandidatesBackend =
   | {
+      kind: 'model';
       model: AgentSkillCandidatesInput_ModelSelection;
       thinkingLevel?: AgentSkillCandidatesInput_ThinkingLevel | null;
-      kind: 'model';
     }
   | {
-      selection: AgentSkillCandidatesInput_AgentExecutorSelection;
       kind: 'executor';
+      selection: AgentSkillCandidatesInput_AgentExecutorSelection;
     };
 export type AgentSkillCandidatesInput_ThinkingLevel =
   | 'off'
@@ -121,6 +121,15 @@ export type SettingsUpdateInput_ApiProtocol =
   | 'anthropic-messages';
 export type SettingsUpdateInput_ModelModality = 'text' | 'image' | 'audio' | 'pdf' | 'video';
 export type SettingsUpdateInput_RelayServiceTier = 'fast';
+export type SettingsUpdateWorkspaceLocationsOutput_ManagementRejection =
+  | 'invalid_bundle'
+  | 'download_failed'
+  | 'invalid_document'
+  | 'invalid_source'
+  | 'package_unavailable'
+  | 'execution_environment'
+  | 'instance_unavailable'
+  | 'parent_disabled';
 /**
  * A physical model call or tool attempt, never copied conversation membership.
  */
@@ -137,40 +146,40 @@ export type SettingsUsageOutput_UsageActivity =
     };
 export type SettingsUsageOutput_UsageOrigin =
   | {
+      kind: 'agent';
       invocation: SettingsUsageOutput_Invocation;
       purpose: SettingsUsageOutput_ModelPurpose;
-      kind: 'agent';
       [k: string]: unknown | undefined;
     }
   | {
-      source: SettingsUsageOutput_UsageAuxiliarySource;
       kind: 'auxiliary';
+      source: SettingsUsageOutput_UsageAuxiliarySource;
       [k: string]: unknown | undefined;
     };
 export type SettingsUsageOutput_ModelPurpose = 'main' | 'summary';
 export type SettingsUsageOutput_UsageAuxiliarySource =
   | {
+      kind: 'application_operation';
       source: SettingsUsageOutput_DeploymentRef;
       namespace: SettingsUsageOutput_InstanceId;
       operation: string;
       fingerprint: string;
-      kind: 'application_operation';
       [k: string]: unknown | undefined;
     }
   | {
-      invocation: SettingsUsageOutput_Invocation;
       kind: 'session_title';
+      invocation: SettingsUsageOutput_Invocation;
       [k: string]: unknown | undefined;
     }
   | {
+      kind: 'agent';
       invocation: SettingsUsageOutput_Invocation;
       operation_id: string;
-      kind: 'agent';
       [k: string]: unknown | undefined;
     }
   | {
-      id: string;
       kind: 'host_effect';
+      id: string;
       [k: string]: unknown | undefined;
     };
 /**
@@ -180,20 +189,20 @@ export type SettingsUsageOutput_InstanceId = string[];
 export type SettingsUsageOutput_UsageOutcome = ('success' | 'error' | 'aborted') | 'unknown';
 export type SettingsUsageOutput_ToolOrigin =
   | {
-      step_id: string;
       kind: 'provider';
+      step_id: string;
       [k: string]: unknown | undefined;
     }
   | {
-      parent_operation_id: string;
-      parent_tool_call_id: string;
       kind: 'code_mode';
+      parent_operation_id: string;
+      parent_tool_call_id: string;
       [k: string]: unknown | undefined;
     }
   | {
+      kind: 'code_cell';
       parent_operation_id: string;
       parent_tool_call_id: string;
-      kind: 'code_cell';
       [k: string]: unknown | undefined;
     }
   | {
@@ -201,23 +210,23 @@ export type SettingsUsageOutput_ToolOrigin =
       [k: string]: unknown | undefined;
     }
   | {
+      kind: 'host_sdk';
       package_id: string;
       entry_id: string;
       activation: string;
       parent_operation_id: string | null;
-      kind: 'host_sdk';
       [k: string]: unknown | undefined;
     };
 export type SettingsUsageOutput_UsageToolResult =
   | {
-      reason: SettingsUsageOutput_RejectionKind;
       kind: 'rejected';
+      reason: SettingsUsageOutput_RejectionKind;
       [k: string]: unknown | undefined;
     }
   | {
+      kind: 'settled';
       startedAt: number;
       outcome: SettingsUsageOutput_UsageToolStatus;
-      kind: 'settled';
       [k: string]: unknown | undefined;
     };
 /**
@@ -231,28 +240,32 @@ export type SettingsUsageOutput_RejectionKind =
   | 'exclusive_conflict'
   | 'cancelled';
 export type SettingsUsageOutput_UsageToolStatus = 'success' | 'error' | 'unknown';
+/**
+ * Breakdown selected for a bounded summary page.
+ */
+export type SettingsUsageSummaryOutput_UsageGroup = 'byProvider' | 'byModel' | 'byTool';
 export type TerminalControlInput_RawAction =
   | {
-      text: string;
       type: 'text';
-    }
-  | {
       text: string;
-      type: 'paste';
     }
   | {
+      type: 'paste';
+      text: string;
+    }
+  | {
+      type: 'key';
       key: string;
       modifiers?: TerminalControlInput_TerminalModifiers;
-      type: 'key';
     }
   | {
+      type: 'mouse';
       event: TerminalControlInput_RawEvent;
       x: number;
       y: number;
       button?: TerminalControlInput_MouseButton;
       direction?: TerminalControlInput_ScrollDirection;
       modifiers?: TerminalControlInput_TerminalModifiers;
-      type: 'mouse';
     };
 /**
  * @maxItems 3
@@ -272,15 +285,15 @@ export type TerminalControlInput_ScrollDirection = 'up' | 'down';
  */
 export type TerminalReadDisplayOutput_TerminalDisplayPart =
   | {
+      kind: 'begin';
       revision: number;
       metadata: TerminalReadDisplayOutput_Metadata;
       scrollbackRows: number;
       lastAlternateSize?: TerminalReadDisplayOutput_TerminalSize | null;
-      kind: 'begin';
     }
   | {
-      parts: TerminalReadDisplayOutput_RowPart[];
       kind: 'rows';
+      parts: TerminalReadDisplayOutput_RowPart[];
     }
   | {
       kind: 'end';
@@ -358,12 +371,12 @@ export interface ServiceMethods {
       };
       output:
         | {
-            execution: AgentCompactOutput_AgentExecution;
             kind: 'started';
+            execution: AgentCompactOutput_AgentExecution;
           }
         | {
-            reason: AgentCompactOutput_AgentCompactRejection;
             kind: 'rejected';
+            reason: AgentCompactOutput_AgentCompactRejection;
           };
     };
     compactionPrompt: {
@@ -418,6 +431,11 @@ export interface ServiceMethods {
       mode: 'query';
       input: Runtime.AgentExecutorsRead;
       output: Runtime.AgentExecutors;
+    };
+    fileCandidates: {
+      mode: 'subscription';
+      input: Runtime.AgentFileCandidatesRead;
+      output: Runtime.AgentFileCandidates | null;
     };
     fork: {
       mode: 'mutation';
@@ -554,12 +572,12 @@ export interface ServiceMethods {
             kind: 'absent';
           }
         | {
+            kind: 'configuration';
             path: string;
             revision: string;
             trusted: boolean;
             servers: AgentProjectMcpOutput_AgentMcpServerView[];
             disabled: string[];
-            kind: 'configuration';
           };
     };
     projects: {
@@ -600,15 +618,15 @@ export interface ServiceMethods {
             kind: 'unavailable';
           }
         | {
+            kind: 'ready';
             patch: Runtime.AgentWorkspacePatch;
             offset: number;
             next: number | null;
             text: string;
-            kind: 'ready';
           };
     };
     recall: {
-      mode: 'query';
+      mode: 'subscription';
       input: Runtime.RecallQuery;
       output: Runtime.AgentRecallPage;
     };
@@ -826,16 +844,16 @@ export interface ServiceMethods {
       input: Runtime.PricingQuery;
       output:
         | {
+            kind: 'page';
             revision: number;
             offset: number;
             entries: Runtime.PricingEntry[];
             nextOffset: number | null;
-            kind: 'page';
           }
         | {
+            kind: 'revision_changed';
             expectedRevision: number;
             actualRevision: number;
-            kind: 'revision_changed';
           };
     };
     providers: {
@@ -891,27 +909,57 @@ export interface ServiceMethods {
       input: Runtime.PricingUpdate;
       output: Runtime.SettingsPricingResult;
     };
+    updateWorkspaceLocations: {
+      mode: 'mutation';
+      input: {
+        source: Runtime.DeploymentRef;
+        roots: Runtime.DirectoryRootSpec[];
+      };
+      /**
+       * A deterministic refusal is a recorded business result. Uncertain SQL/worker
+       * failures remain in the original operation journal's Unknown outcome.
+       */
+      output:
+        | {
+            status: 'committed';
+            value: SettingsUpdateWorkspaceLocationsOutput_SettingsWorkspaceLocations;
+          }
+        | {
+            status: 'conflict';
+            currentRevision: number;
+          }
+        | {
+            status: 'rejected';
+            reason: SettingsUpdateWorkspaceLocationsOutput_ManagementRejection;
+            diagnostic?: string | null;
+          };
+    };
     usage: {
       mode: 'query';
       input: Runtime.SettingsUsageRead;
       output: {
-        through: number;
+        through: SettingsUsageOutput_UsageFence;
         /**
          * @maxItems 32
          */
         attempts: SettingsUsageOutput_UsageActivity[];
         total: number;
-        nextOffset: number | null;
+        nextCursor: SettingsUsageOutput_UsageActivityCursor | null;
       };
     };
     usageSummary: {
       mode: 'query';
       input: Runtime.SettingsUsageSummaryRead;
       output: {
-        through: number;
+        through: SettingsUsageSummaryOutput_UsageFence;
         summary: SettingsUsageSummaryOutput_SettingsUsageTotals;
-        nextOffset: number | null;
+        nextCursor: SettingsUsageSummaryOutput_UsageGroupCursor | null;
       };
+    };
+    workspaceLocations: {
+      mode: 'query';
+      input: {};
+      output: SettingsWorkspaceLocationsOutput_SettingsWorkspaceLocations | null;
     };
   };
   settingsAuthentication: {
@@ -935,8 +983,8 @@ export interface ServiceMethods {
       input: Runtime.ConnectionCredentialTarget;
       output:
         | {
-            connection: Runtime.ConnectionVersionBasis;
             kind: 'ready';
+            connection: Runtime.ConnectionVersionBasis;
           }
         | {
             kind: 'failed';
@@ -976,10 +1024,10 @@ export interface ServiceMethods {
        */
       output:
         | {
+            kind: 'chunk';
             offset: number;
             totalBytes: number;
             text: string;
-            kind: 'chunk';
           }
         | {
             kind: 'complete';
@@ -1081,12 +1129,12 @@ export interface ServiceMethods {
       input: Runtime.TerminalTarget;
       output:
         | {
-            value: TerminalReadDisplayOutput_TerminalDisplayPart;
             kind: 'completed';
+            value: TerminalReadDisplayOutput_TerminalDisplayPart;
           }
         | {
-            message: string;
             kind: 'failed';
+            message: string;
           };
     };
     readOutput: {
@@ -1254,6 +1302,27 @@ export interface SettingsUpdateInput_ModelModalities {
   input: SettingsUpdateInput_ModelModality[];
   output: SettingsUpdateInput_ModelModality[];
 }
+export interface SettingsUpdateWorkspaceLocationsOutput_SettingsWorkspaceLocations {
+  source: SettingsUpdateWorkspaceLocationsOutput_DeploymentRef;
+  roots: SettingsUpdateWorkspaceLocationsOutput_DirectoryRootSpec[];
+}
+export interface SettingsUpdateWorkspaceLocationsOutput_DeploymentRef {
+  stateDomain: string;
+  deployment: string;
+  revision: number;
+}
+export interface SettingsUpdateWorkspaceLocationsOutput_DirectoryRootSpec {
+  label: string;
+  path: string;
+}
+export interface SettingsUsageOutput_UsageFence {
+  stateDomain: string;
+  /**
+   * @minItems 8
+   * @maxItems 8
+   */
+  partitions: [number, number, number, number, number, number, number, number];
+}
 export interface SettingsUsageOutput_UsageModelAttempt {
   requestId: string;
   origin: SettingsUsageOutput_UsageOrigin;
@@ -1325,6 +1394,19 @@ export interface SettingsUsageOutput_ToolCallIdentity {
   tool_call_id: string;
   origin: SettingsUsageOutput_ToolOrigin;
   [k: string]: unknown | undefined;
+}
+export interface SettingsUsageOutput_UsageActivityCursor {
+  completedAt: number;
+  partition: number;
+  requestId: string;
+}
+export interface SettingsUsageSummaryOutput_UsageFence {
+  stateDomain: string;
+  /**
+   * @minItems 8
+   * @maxItems 8
+   */
+  partitions: [number, number, number, number, number, number, number, number];
 }
 export interface SettingsUsageSummaryOutput_SettingsUsageTotals {
   models: SettingsUsageSummaryOutput_UsageModelTotals;
@@ -1411,6 +1493,26 @@ export interface SettingsUsageSummaryOutput_UsageModelSummary {
 export interface SettingsUsageSummaryOutput_UsageToolSummary {
   name: string;
   totals: SettingsUsageSummaryOutput_UsageToolTotals;
+}
+export interface SettingsUsageSummaryOutput_UsageGroupCursor {
+  group: SettingsUsageSummaryOutput_UsageGroup;
+  /**
+   * None is the unknown-provider group, not the beginning of pagination.
+   */
+  key: string | null;
+}
+export interface SettingsWorkspaceLocationsOutput_SettingsWorkspaceLocations {
+  source: SettingsWorkspaceLocationsOutput_DeploymentRef;
+  roots: SettingsWorkspaceLocationsOutput_DirectoryRootSpec[];
+}
+export interface SettingsWorkspaceLocationsOutput_DeploymentRef {
+  stateDomain: string;
+  deployment: string;
+  revision: number;
+}
+export interface SettingsWorkspaceLocationsOutput_DirectoryRootSpec {
+  label: string;
+  path: string;
 }
 /**
  * Durable recipient, not a registration lease. Re-loading the same package can

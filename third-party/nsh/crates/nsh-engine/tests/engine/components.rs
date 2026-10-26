@@ -78,11 +78,13 @@ pub(crate) fn start_with(
         ui_sets,
         runtime: None,
         data_dir: None,
+        cache: nsh_engine::CacheOptions::off(),
         storage: None,
         clock: Default::default(),
         context: Default::default(),
         pinned: Default::default(),
         clipboard: None,
+        host: Default::default(),
         picker: None,
     };
     (
@@ -227,6 +229,48 @@ pub(crate) fn until(
 
 pub(crate) fn shows(batch: &MountBatch, wanted: &str) -> bool {
     text_ids(batch, wanted).is_some()
+}
+
+const KEYED_CHILDREN: &str = r#"import { mount, signal, Text } from "nsh";
+import { Group } from "test/ui";
+
+const items = signal([{ id: "a", label: "A1" }, { id: "b", label: "B1" }]);
+// New objects, the same keys: the rows are kept.
+setTimeout(() => items.set([{ id: "a", label: "A2" }, { id: "b", label: "B2" }]), 50);
+
+mount(() => (
+  <Group>
+    <Each of={items()} key={(i: { id: string }) => i.id}>
+      {(item) => <Text>{item().label}</Text>}
+    </Each>
+  </Group>
+));
+"#;
+
+/// A component's children made by a keyed `<Each>` keep their rows when
+/// the items change: the children's expression is not made again.
+#[test]
+fn a_components_keyed_children_keep_their_rows() {
+    let (_engine, rx) = start(KEYED_CHILDREN);
+    let batches = until(&rx, |b| shows(b, "A2"));
+    let first = &batches[0];
+    let a = text_ids(first, "A1").expect("A1 shown");
+    let last = batches.last().unwrap();
+    assert_eq!(
+        text_ids(last, "A2"),
+        Some(a),
+        "the row's text is updated in place"
+    );
+    let deleted = batches[1..]
+        .iter()
+        .flat_map(|b| &b.items)
+        .any(|i| matches!(i, MountItem::Delete { id } if *id % 2 == 0));
+    assert!(!deleted, "no row of the app's is made again");
+    let removed = batches[1..]
+        .iter()
+        .flat_map(|b| &b.items)
+        .any(|i| matches!(i, MountItem::Remove { id } if *id % 2 == 0));
+    assert!(!removed, "the moved row stays in its wrapper");
 }
 
 const LAZY_SHEET: &str = r#"import { mount, signal, untracked, Text } from "nsh";
@@ -2721,4 +2765,185 @@ fn a_base_progress_shows_the_apps_value_in_its_indicator() {
     });
     assert_eq!(value(&after), Some(range(None)));
     assert_eq!(width(&after), Some(50.0));
+}
+
+const TAB_BAR: &str = r##"import { mount, signal } from "nsh";
+import { TabBar } from "nsh/mobile";
+
+const selected = signal(0);
+
+function App() {
+  return (
+    <TabBar
+      items={[
+        { title: "Records", icon: "list.bullet" },
+        { title: "Stats", icon: "chart.bar" },
+      ]}
+      selectedIndex={selected()}
+      onChange={(index: number) => selected.set(index)}
+    />
+  );
+}
+
+mount(App);
+"##;
+
+fn is_tab_bar(item: &MountItem) -> bool {
+    matches!(item, MountItem::Component { name, .. }
+        if &**name == nsh_core::platform::TAB_BAR_COMPONENT)
+}
+
+/// `nsh/mobile`'s `TabBar` is the system's component on iOS and Android,
+/// given the tabs as the app wrote them.
+#[test]
+fn the_tab_bar_is_the_systems_component_on_ios_and_android() {
+    use nsh_core::platform::Os;
+
+    for os in [Os::Ios, Os::Android] {
+        let (_engine, rx) = start_in(
+            TAB_BAR,
+            Environment {
+                os,
+                ..Environment::default()
+            },
+        );
+        let batches = until(&rx, |batch| batch.items.iter().any(is_tab_bar));
+        let props = batches.iter().find_map(|batch| {
+            batch.items.iter().find_map(|i| match i {
+                MountItem::ComponentProps { props, .. } => Some(props.clone()),
+                _ => None,
+            })
+        });
+        let props = props.expect("its props reach it");
+        let value = |key: &str| {
+            props
+                .iter()
+                .find(|(name, _)| &**name == key)
+                .and_then(|(_, value)| value.clone())
+        };
+        assert_eq!(
+            value("items"),
+            Some(serde_json::json!([
+                { "title": "Records", "icon": "list.bullet" },
+                { "title": "Stats", "icon": "chart.bar" },
+            ])),
+            "{os:?}"
+        );
+        assert_eq!(value("selectedIndex"), Some(serde_json::json!(0)), "{os:?}");
+    }
+}
+
+/// Where the system has no tab bar it renders nothing: no component at all;
+/// `isAvailable` tells which platforms `nsh/mobile` serves.
+#[test]
+fn the_tab_bar_renders_nothing_on_the_desktops_and_the_web() {
+    use nsh_core::platform::Os;
+
+    let app = TAB_BAR
+        .replace("mount, signal", "mount, signal, Text")
+        .replace("import { TabBar }", "import { TabBar, isAvailable }")
+        .replace(
+            "mount(App);",
+            "mount(() => <><App /><Text>{`Ready: ${isAvailable}`}</Text></>);",
+        );
+    for (os, available) in [(Os::Ios, true), (Os::Android, true)] {
+        let (_engine, rx) = start_in(
+            &app,
+            Environment {
+                os,
+                ..Environment::default()
+            },
+        );
+        let ready = format!("Ready: {available}");
+        let batches = until(&rx, |batch| shows(batch, &ready));
+        assert!(batches.iter().any(|batch| shows(batch, &ready)), "{os:?}");
+    }
+    for os in [Os::MacOs, Os::Windows, Os::Linux, Os::Web] {
+        let (_engine, rx) = start_in(
+            &app,
+            Environment {
+                os,
+                ..Environment::default()
+            },
+        );
+        let batches = until(&rx, |batch| shows(batch, "Ready: false"));
+        assert!(
+            batches.iter().any(|batch| shows(batch, "Ready: false")),
+            "{os:?}"
+        );
+        let platform = batches
+            .iter()
+            .any(|batch| batch.items.iter().any(is_tab_bar));
+        assert!(!platform, "no system bar on {os:?}, no component");
+    }
+}
+
+/// The user's choice reaches `onChange` as the index, and reactive updates
+/// reach the same bar; `selectedIndex` removed is its default, 0.
+#[test]
+fn the_tab_bar_reports_the_users_choice_and_follows_its_props() {
+    let app = r#"import { mount, signal, Text, View } from "nsh";
+import { TabBar } from "nsh/mobile";
+const selected = signal<number | undefined>(0);
+const items = signal([{ title: "Records" }, { title: "Stats" }]);
+mount(() => <View>
+  <TabBar items={items()} selectedIndex={selected()}
+    onChange={(index) => {
+      selected.set(index);
+      items.set([{ title: "Records" }, { title: "Statistics" }]);
+    }} />
+  <Text>{`Selected: ${selected()}`}</Text>
+  <Text onPress={() => selected.set(undefined)}>Reset</Text>
+</View>);
+"#;
+    let (engine, rx) = start(app);
+    let initial = until(&rx, |batch| shows(batch, "Selected: 0"));
+    let bar = initial
+        .iter()
+        .flat_map(|batch| &batch.items)
+        .find_map(|item| match item {
+            MountItem::Component { id, .. } if is_tab_bar(item) => Some(*id),
+            _ => None,
+        })
+        .expect("the system bar");
+    engine.control().dispatch_event(
+        bar,
+        EventKind::NativeEvent,
+        EventPayload::Native {
+            name: "change".into(),
+            data: serde_json::json!(1),
+        },
+    );
+    let updates = until(&rx, |batch| shows(batch, "Selected: 1"));
+    assert!(updates.iter().any(|batch| shows(batch, "Selected: 1")));
+    let props: Vec<_> = updates
+        .iter()
+        .flat_map(|batch| &batch.items)
+        .filter_map(|item| match item {
+            MountItem::ComponentProps { id, props } if *id == bar => Some(props),
+            _ => None,
+        })
+        .flatten()
+        .collect();
+    assert!(
+        props
+            .iter()
+            .any(|(name, value)| &**name == "selectedIndex"
+                && *value == Some(serde_json::json!(1)))
+    );
+    assert!(props.iter().any(|(name, value)| &**name == "items"
+        && *value == Some(serde_json::json!([{ "title": "Records" }, { "title": "Statistics" }]))));
+    let reset = initial
+        .iter()
+        .find_map(|batch| text_ids(batch, "Reset"))
+        .expect("reset text");
+    engine
+        .control()
+        .dispatch_event(reset, EventKind::Press, EventPayload::None);
+    let reset = until(&rx, |batch| shows(batch, "Selected: undefined"));
+    assert!(reset.iter().any(|batch| batch.items.iter().any(|item| {
+        matches!(item, MountItem::ComponentProps { id, props } if *id == bar
+            && props.iter().any(|(name, value)| &**name == "selectedIndex"
+                && *value == Some(serde_json::json!(0))))
+    })));
 }

@@ -85,12 +85,31 @@ pub struct Plan {
     recovery: Option<Binding>,
 }
 
+#[derive(Debug)]
+pub struct PackageChange {
+    pub path: Vec<String>,
+    pub package: PackageRef,
+}
+
 impl Plan {
     pub fn prepare(
         input: &Input,
         packages: &Packages,
         remote: &RemoteExports,
     ) -> Result<Self, Error> {
+        Self::prepare_replacing(input, packages, remote, |_| None).map(|(plan, _)| plan)
+    }
+
+    /// Check an atomic package update through the same template expansion and
+    /// binding validation as an ordinary source. The returned package changes
+    /// must be applied to Input and checked against the real immutable packages
+    /// before persistence; this projection is never a second source authority.
+    pub fn prepare_replacing(
+        input: &Input,
+        packages: &Packages,
+        remote: &RemoteExports,
+        replace: impl Fn(&PackageRef) -> Option<PackageRef>,
+    ) -> Result<(Self, Vec<PackageChange>), Error> {
         let target = input.environment.entry_target()?;
         composition::validate_nodes(&input.instances)?;
         for root in [&input.launch, &input.recovery].into_iter().flatten() {
@@ -101,6 +120,8 @@ impl Plan {
             target,
             nodes: BTreeMap::new(),
             aliases: BTreeMap::new(),
+            replace: &replace,
+            package_changes: Vec::new(),
         };
         builder.expand(&input.instances, &[], None, &BTreeMap::new(), &[], false)?;
         let remote = remote
@@ -165,11 +186,14 @@ impl Plan {
         let launch = input.launch.as_ref().map(resolve_root).transpose()?;
         let recovery = input.recovery.as_ref().map(resolve_root).transpose()?;
         validate_dependencies(&instances)?;
-        Ok(Self {
-            instances,
-            launch,
-            recovery,
-        })
+        Ok((
+            Self {
+                instances,
+                launch,
+                recovery,
+            },
+            builder.package_changes,
+        ))
     }
 
     pub fn instances(&self) -> &BTreeMap<InstanceId, Instance> {
@@ -209,6 +233,8 @@ struct Builder<'a> {
     target: EntryTarget,
     nodes: BTreeMap<InstanceId, Pending<'a>>,
     aliases: BTreeMap<Vec<String>, InstanceId>,
+    replace: &'a dyn Fn(&PackageRef) -> Option<PackageRef>,
+    package_changes: Vec<PackageChange>,
 }
 
 impl<'a> Builder<'a> {
@@ -370,6 +396,16 @@ impl<'a> Builder<'a> {
                             "deployment roots require a pinned package revision".into(),
                         )
                     })?,
+            };
+            let package = match (self.replace)(&package).filter(|next| next != &package) {
+                Some(next) => {
+                    self.package_changes.push(PackageChange {
+                        path: path.clone(),
+                        package: next.clone(),
+                    });
+                    next
+                }
+                None => package,
             };
             let declaration = self.packages.get(&package).ok_or_else(|| {
                 Error::Composition(format!(

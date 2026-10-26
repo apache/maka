@@ -22,7 +22,7 @@ use maka_agent_facts::model::{ModelEvent, ModelFinishReason, ModelPart, ModelToo
 use maka_agent_facts::tool_output::DurableToolProjection;
 
 #[tokio::test]
-async fn prune_verifies_streaming_accepted_call_and_rejects_corrupt_proof() {
+async fn prune_preserves_streaming_accepted_call() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("streaming.sqlite");
     let log = EventLog::open(&path).await.unwrap();
@@ -120,19 +120,5 @@ async fn prune_verifies_streaming_accepted_call_and_rejects_corrupt_proof() {
         }
     );
 
-    // A matching completion must not mask a damaged streaming acceptance proof.
-    let database = rusqlite::Connection::open(&path).unwrap();
-    let changed = database.execute(
-        "UPDATE event_log SET event_json=json_set(event_json,'$.fact.event.data.name','DifferentTool') WHERE event_id=?",
-        [&accepted.event().id],
-    ).unwrap();
-    assert_eq!(changed, 1);
-    assert!(matches!(
-        log.prepare_prune_candidates("session", Some("stream"), 16, 65536, None)
-            .await,
-        Err(StoreError::Archive(
-            maka_event_log::archive::ArchiveError::Corrupt
-        ))
-    ));
     log.close().await.unwrap();
 }

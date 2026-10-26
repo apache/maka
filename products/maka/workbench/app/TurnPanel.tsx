@@ -19,12 +19,11 @@
 
 import { createText, errorText } from './text';
 import { displayText, tr } from './locale';
-import { cleanup, computed, effect, inputAction, signal, Text, View } from 'nsh';
+import { cleanup, computed, effect, inputAction, signal, Text, View, List } from 'nsh';
 import type { YNode } from 'nsh';
 import { Button } from 'nsh/base';
 import type { AnimatedValue } from 'nsh/animated';
-import { List } from 'nsh/list';
-import { platform } from 'nsh/device';
+import { platform, windowSize } from 'nsh/device';
 import type { Row } from './history';
 import { MessageRow, type MessageViewState } from './MessageRow';
 import type { ProcessGroup, TurnPresentation } from './processGroups';
@@ -67,6 +66,9 @@ export type GroupViewState = {
   measured: Map<string, { width: number; height: number }>;
   lease: number;
   opening?: 'top' | 'bottom';
+  revealRow?: string;
+  visibleRows: ReturnType<typeof signal<ReadonlySet<string>>>;
+  rowNodes: Map<string, YNode>;
   list?: YNode;
   requestFocus?: boolean;
 };
@@ -157,15 +159,6 @@ function stableActivityTitle(desiredTitle: () => string, active: () => boolean) 
   return stableTitle;
 }
 
-export function ActivityStatus(props: { title: () => string; active: () => boolean }) {
-  const title = stableActivityTitle(props.title, props.active);
-  return (
-    <Text numberOfLines={1} ellipsizeMode="tail" style={{ color: C.secondary }}>
-      {title()}
-    </Text>
-  );
-}
-
 function ActivityLog(props: {
   group: () => ProcessGroup;
   row(id: string): Row | undefined;
@@ -203,7 +196,10 @@ function ActivityLog(props: {
   cleanup(() => {
     alive = false;
     pendingReveal.set(null);
-    if (state.list === ownList) state.list = undefined;
+    if (state.list === ownList) {
+      state.list = undefined;
+      state.visibleRows.set(new Set());
+    }
   });
   // Native cell measurements fit short groups. Unmeasured cells start at the
   // one-line row minimum; text length never acts as a layout authority.
@@ -212,7 +208,8 @@ function ActivityLog(props: {
       groupHeaderHeight +
       panelStyle.gap +
       2 * (panelStyle.marginVertical + panelStyle.padding + panelStyle.borderWidth);
-    const available = Math.max(16, props.viewport().height - chrome);
+    const viewportHeight = props.viewport().height;
+    const available = Math.max(16, Math.min(400, windowSize().height / 2, viewportHeight - chrome));
     return platform.isTerminal ? Math.floor(available / 16) * 16 : available;
   };
   const bodyHeight = () => {
@@ -254,6 +251,10 @@ function ActivityLog(props: {
         <List
           accessibilityLabel={tr('Turn activity')}
           each={props.group().rowIds}
+          onViewableItemsChange={(event) => {
+            if (alive && lease === state.lease)
+              state.visibleRows.set(new Set(event.viewableItems.map((item) => item.item)));
+          }}
           estimatedItemSize={controlStyle.minHeight + memberGap}
           scrollValue={state.offset}
           contentOffset={initial()!}
@@ -287,7 +288,11 @@ function ActivityLog(props: {
           ref={(node) => {
             ownList = node;
             state.list = node;
-            if (opening === 'bottom') node.scrollToEnd({ animated: false });
+            if (state.revealRow) {
+              const index = props.group().rowIds.indexOf(state.revealRow);
+              if (index >= 0) node.scrollToIndex({ index, viewPosition: 0, animated: false });
+              state.revealRow = undefined;
+            } else if (opening === 'bottom') node.scrollToEnd({ animated: false });
             else if (opening === 'top') node.scrollToOffset({ offset: 0, animated: false });
             if (state.requestFocus) {
               state.requestFocus = false;
@@ -301,8 +306,17 @@ function ActivityLog(props: {
               {(ownedId) => {
                 const first = props.row(ownedId());
                 if (!first) return <View />;
+                const rowId = ownedId();
+                let ownRow: YNode | undefined;
+                cleanup(() => {
+                  if (state.rowNodes.get(rowId) === ownRow) state.rowNodes.delete(rowId);
+                });
                 return (
                   <View
+                    ref={(node) => {
+                      ownRow = node;
+                      state.rowNodes.set(rowId, node);
+                    }}
                     style={{
                       paddingBottom: props.group().rowIds.at(-1) === ownedId() ? 0 : memberGap,
                     }}

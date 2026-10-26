@@ -25,6 +25,30 @@
   layer, framed at the fitted rectangle (the tint and its mask inside it); Android translates its draw matrix by the
   position; Windows, Linux, GPUI and the terminal backend draw at the fitted rectangle; the web sets CSS's `object-position` on the `<img>`
   (and the tint mask's position).
+- **Disk cache** (`nsh_core::image::DiskCache`, `image/cache.rs`): the encoded bytes of every `http(s)://` image (views,
+  canvases, `getSize` / `prefetch`) are kept on disk on every native backend, so an app reopened shows what it showed
+  without a download, and offline. One implementation in the core; each loader keeps its own networking and routes a
+  download through it: `lookup` (a fresh copy, or a stale one's validators) before the request, `complete` after it
+  (desktops: `DiskCache::load` around ureq on the worker threads; macOS / iOS: the lookup on a GCD queue and
+  `complete` in the `NSURLSession` delegate, with an `NSMutableURLRequest` carrying `If-None-Match` /
+  `If-Modified-Since` and `ReloadIgnoringLocalCacheData`, so the shared `URLCache` never answers for it; iOS starts the task from the main thread (`LoadEvent::Download`) so cancelling still works;
+  Android: `Native.imageCacheLookup` / `imageCacheComplete` around `HttpURLConnection` on the image threads, the
+  body crossing JNI only to be stored). Policy (RFC 9111 for a private cache, simplified): `200` / `203` are stored
+  unless `no-store`, `Vary: *` or over an eighth of the cache; fresh for `max-age`, else `Expires` − `Date`, else a
+  tenth of the time since `Last-Modified` (at most 7 days), less the response's age; stale at once with `no-cache`
+  or no freshness. Stale copies are revalidated (`304` refreshes them by its headers over the stored ones, `4xx`
+  drops them) and served when the request fails or the server answers `5xx`, unless `must-revalidate` / `no-cache`.
+  Keyed by URL alone (sources carry no request headers, so `Vary` other than `*` cannot differ). `asset:/` URIs are
+  never kept (the dev server's change with the app). Each entry is one file named by a digest of its URL (URL, policy
+  headers, body, CRC32 of them), written under a temporary name and renamed: readers on any thread, surface or
+  process see a whole entry or none, without locks; one that does not read back whole is deleted and is a miss. LRU
+  by modification time (a hit refreshes it at most every 10 minutes); past its limit a scan deletes the oldest down
+  to three quarters, and drops temporary files over an hour old. No process-wide registry: every engine opens its
+  own handle in `<root>/<app id>/images` from `EngineConfig::cache` (`CacheOptions::images`, 256 MiB by default:
+  `DEFAULT_DISK_CACHE_SIZE`) and hands it to the platform (`Engine::image_cache`); the files are all handles share.
+  Where the root is and how embedders set it: `embedding.md` "Caches". Development hosts given `--data-dir`
+  (`nsh test --target`) keep the caches in it (`CacheLocation::Dir`), so a test starts cold. The web runtime leaves
+  caching to the browser's HTTP cache.
 - **In-memory images** (`nsh_core::image`): `data:` URIs and `blob:` URLs are resolved once, in shared code, and their
   bytes travel with the source (`ImageSource::data`, an `ImageData`: shared, cloned without a copy, equal by
   identity). The core decodes a `data:` source (base64 or percent-encoded) when the prop is set

@@ -56,7 +56,11 @@ impl EventLog {
             committed_at: now,
         };
         outcome.validate().map_err(invalid)?;
-        let commits = self.commits.clone();
+        let commits = self.commits.sessions(
+            scope
+                .iter()
+                .map(|invocation| invocation.session_id.as_str()),
+        );
         self.connection
             .run(move |connection| {
                 Box::pin(async move {
@@ -65,7 +69,7 @@ impl EventLog {
                     if count > 0 {
                         tx.commit().await.map_err(StoreError::CommitUnknown)?;
                         // Interaction facts wake observers without advancing the execution cursor.
-                        commits.send_modify(|_| {});
+                        commits.metadata();
                     } else {
                         tx.rollback().await?;
                     }
@@ -98,6 +102,11 @@ pub(crate) async fn require_closed(
     Ok(())
 }
 
+pub(super) const PENDING_SESSION_PAGE: &str = "SELECT request_id FROM interaction_pending
+    WHERE session_id = ? AND request_id > ? ORDER BY request_id LIMIT 64";
+pub(super) const PENDING_ROOT_PAGE: &str = "SELECT request_id FROM interaction_pending
+    WHERE request_id > ? ORDER BY request_id LIMIT 64";
+
 /// Bound allocations independently of the number of requests in the root.
 /// Decode and validate source facts before deciding Run membership or closing.
 async fn visit_pending(
@@ -108,18 +117,20 @@ async fn visit_pending(
     let mut after = String::new();
     let mut count = 0;
     loop {
-        let ids: Vec<String> = sqlx::query_scalar(
-            "SELECT request_id FROM interaction_requests AS request
-             WHERE request_id > ? AND (? IS NULL OR session_id = ?)
-             AND NOT EXISTS (SELECT 1 FROM interaction_outcomes AS outcome
-                             WHERE outcome.request_id = request.request_id)
-             ORDER BY request_id LIMIT 64",
-        )
-        .bind(&after)
-        .bind(scope.map(|scope| &scope.session_id))
-        .bind(scope.map(|scope| &scope.session_id))
-        .fetch_all(&mut *connection)
-        .await?;
+        // Separate statements keep Session closure an indexed Session seek,
+        // while startup recovery pages the global active set only.
+        let ids: Vec<String> = if let Some(scope) = scope {
+            sqlx::query_scalar(PENDING_SESSION_PAGE)
+                .bind(&scope.session_id)
+                .bind(&after)
+                .fetch_all(&mut *connection)
+                .await?
+        } else {
+            sqlx::query_scalar(PENDING_ROOT_PAGE)
+                .bind(&after)
+                .fetch_all(&mut *connection)
+                .await?
+        };
         if ids.is_empty() {
             return Ok(count);
         }

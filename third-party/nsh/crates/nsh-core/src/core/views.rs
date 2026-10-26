@@ -696,19 +696,15 @@ impl<M: TextEngine> Core<M> {
         // (Resolved with the host's instance back: a region after this one
         // may hold its JS children.)
         let mut before = self.anchor_node(state.anchor);
-        for &child in nodes.iter().rev() {
-            if nested {
+        if nested {
+            for &child in nodes.iter().rev() {
                 if !self.nested_precedes(parent, child, before) {
                     self.join_nested_at(parent, child, before);
                 }
-            } else if !self.precedes(parent, child, before) {
-                let _ = self.apply_op(Op::Insert {
-                    parent,
-                    child,
-                    before,
-                });
+                before = Some(child);
             }
-            before = Some(child);
+        } else {
+            self.place_before(parent, &nodes, before);
         }
     }
 

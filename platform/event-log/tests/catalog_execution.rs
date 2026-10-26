@@ -279,7 +279,11 @@ async fn execution_projection_is_bounded_and_catalog_revision_tracks_committed_f
         rollback.execution.as_ref().unwrap().state,
         SessionExecutionState::Live { recorded_at: 1500 }
     );
-    assert_eq!(rollback.last_message, ended.last_message);
+    let message = rollback.last_message.as_ref().unwrap();
+    let previous = ended.last_message.as_ref().unwrap();
+    assert_eq!(message.recorded_at, previous.recorded_at);
+    assert_eq!(message.preview, previous.preview);
+    assert_eq!(message.tail_message_id, "rollback-opening");
     log.close().await.unwrap();
     // Rebuild commit-order guards from canonical facts, not max(time)/latest(text).
     source

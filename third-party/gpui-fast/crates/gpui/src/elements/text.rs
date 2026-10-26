@@ -284,7 +284,7 @@ impl Element for &'static str {
         _window: &mut Window,
         _cx: &mut App,
     ) {
-        text_layout.prepaint(bounds, self)
+        crate::fast::text::prepaint_text(text_layout, bounds, self, _window, _cx)
     }
 
     fn paint(
@@ -358,7 +358,7 @@ impl Element for SharedString {
         _window: &mut Window,
         _cx: &mut App,
     ) {
-        text_layout.prepaint(bounds, self.as_ref())
+        crate::fast::text::prepaint_text(text_layout, bounds, self.as_ref(), _window, _cx)
     }
 
     fn paint(
@@ -584,7 +584,7 @@ impl Element for StyledText {
         _window: &mut Window,
         _cx: &mut App,
     ) {
-        self.layout.prepaint(bounds, &self.text)
+        crate::fast::text::prepaint_text(&self.layout, bounds, &self.text, _window, _cx)
     }
 
     fn paint(
@@ -641,16 +641,10 @@ impl TextLayout {
         crate::fast::text::layout_text(self, text, runs, window, fast_cx)
     }
 
-    fn prepaint(&self, bounds: Bounds<Pixels>, text: &str) {
-        let mut element_state = self.0.borrow_mut();
-        let element_state = element_state
-            .as_mut()
-            .with_context(|| format!("measurement has not been performed on {text}"))
-            .unwrap();
-        element_state.bounds = Some(bounds);
-    }
-
     fn paint(&self, text: &str, window: &mut Window, cx: &mut App) {
+        if !crate::fast::text::paintable(self, text) {
+            return;
+        }
         self.paint_lines(TextPaintPass::All, window, cx)
             .with_context(|| format!("failed to paint {text}"))
             .unwrap();

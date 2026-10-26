@@ -24,6 +24,8 @@ pub enum OpenChangeReason {
     PressOutside,
     /// Its backdrop was pressed (a sheet's).
     BackdropPress,
+    /// A sheet was swiped toward its edge.
+    Swipe,
     /// Escape or the Android back button.
     Cancel,
     /// An item was chosen (a menu's).
@@ -116,8 +118,14 @@ pub(crate) struct SheetMotion {
     /// The backdrop's opacity.
     pub(crate) fade: AnimatedValue,
     /// The panel's translation.
-    pub(crate) x: AnimatedValue,
-    pub(crate) y: AnimatedValue,
+    pub(crate) x: AnimatedNode,
+    pub(crate) y: AnimatedNode,
+    /// Downward dragging is in points, independently of the entrance's
+    /// fraction of the current panel size.
+    pub(crate) drag_y: AnimatedValue,
+    away_x: AnimatedValue,
+    away_y: AnimatedValue,
+    away: Stored<(f32, f32)>,
     side: Stored<Placement>,
     /// Laid out once open: the panel's size, where it comes from.
     entering: Stored<bool>,
@@ -127,6 +135,8 @@ pub(crate) struct SheetMotion {
     closing: Stored<bool>,
     /// The panel stays mounted while closed ([`Self::keeping_panel`]).
     kept: Stored<bool>,
+    /// Stale animation ends and fallback timers cannot finish a newer motion.
+    generation: Stored<u64>,
 }
 
 impl SheetMotion {
@@ -135,17 +145,27 @@ impl SheetMotion {
         open: impl Fn() -> bool + 'static,
         side: impl Fn() -> Placement + 'static,
     ) -> Self {
+        let fade = animated_value(0.0);
+        let remaining = fade.interpolate(&[0.0, 1.0], &[1.0, 0.0]);
+        let away_x = animated_value(0.0);
+        let away_y = animated_value(0.0);
+        let drag_y = animated_value(0.0);
         let motion = Self {
             shown: signal(false),
             settled: signal(false),
-            fade: animated_value(0.0),
-            x: animated_value(0.0),
-            y: animated_value(0.0),
+            fade,
+            x: away_x.mul(&remaining),
+            y: away_y.mul(&remaining).add(&drag_y),
+            drag_y,
+            away_x,
+            away_y,
+            away: stored((0.0, 0.0)),
             side: stored(Placement::Bottom),
             entering: stored(false),
             panel: stored(None),
             closing: stored(false),
             kept: stored(false),
+            generation: stored(0),
         };
         effect(move || {
             let open = open();
@@ -176,22 +196,20 @@ impl SheetMotion {
                 return;
             }
             self.fade.set(0.0);
+            self.drag_y.set(0.0);
             self.shown.set(true);
             // A kept panel laid out before says its size no more.
             let known = self.kept.get().then(|| self.panel.with(|p| *p)).flatten();
             if let Some(size) = known {
-                let (x, y) = away(side, size);
-                self.x.set(x);
-                self.y.set(y);
+                self.set_away(size);
                 self.come_in();
                 return;
             }
             // Out of sight until the panel is laid out: as far as the window.
-            let (x, y) = away(side, window());
-            self.x.set(x);
-            self.y.set(y);
+            self.set_away(window());
             self.entering.replace(true);
         } else if self.shown.get_untracked() && !self.closing.with(|c| *c) {
+            let generation = self.next_motion();
             self.entering.replace(false);
             if reduce_motion() {
                 self.settled.set(false);
@@ -201,16 +219,14 @@ impl SheetMotion {
             // Going before it stops being settled: it is there until gone.
             self.closing.replace(true);
             self.settled.set(false);
-            let (x, y) = away(side, self.size());
-            self.x.timing(x, SHEET_OUT_MS, Easing::EaseIn);
-            self.y.timing(y, SHEET_OUT_MS, Easing::EaseIn);
+            self.drag_y.timing(0.0, SHEET_OUT_MS, Easing::EaseIn);
             let end = self.fade.timing(0.0, SHEET_OUT_MS, Easing::EaseIn);
             let (shown, closing) = (self.shown, self.closing);
             // Gone when the motion ends: the platform runs it and reports
             // its end, whatever clock the app's timers follow (a test's
             // manual one moves only as the test says).
             spawn(async move {
-                if end.await && closing.replace(false) {
+                if end.await && self.generation.get() == generation && closing.replace(false) {
                     shown.set(false);
                 }
             });
@@ -219,7 +235,7 @@ impl SheetMotion {
             set_timeout(
                 std::time::Duration::from_millis(SHEET_OUT_MS as u64),
                 move || {
-                    if closing.replace(false) {
+                    if self.generation.get() == generation && closing.replace(false) {
                         shown.set(false);
                     }
                 },
@@ -233,51 +249,63 @@ impl SheetMotion {
         self.settled.get() || (self.shown.get() && self.closing.with(|c| *c))
     }
 
-    /// The panel's size, as last laid out (the window's before).
-    fn size(self) -> Size<Points> {
-        self.panel.with(|p| *p).unwrap_or_else(window)
+    fn set_away(self, size: Size<Points>) {
+        let (x, y) = away(self.side.get(), size);
+        let before = self.away.replace((x, y));
+        if before.0 != x {
+            self.away_x.set(x);
+        }
+        if before.1 != y {
+            self.away_y.set(y);
+        }
     }
 
     /// The panel was laid out at `size`: it comes in from as far.
     pub(crate) fn laid_out(self, size: Size<Points>) {
         self.panel.replace(Some(size));
+        // Lazy children can fill in over several layout rounds, even in
+        // one native batch. Keep the distance live: the same entrance
+        // fraction then uses the complete size without restarting time.
+        self.set_away(size);
         if !self.entering.replace(false) {
             return;
         }
-        let (x, y) = away(self.side.with(|s| *s), size);
-        self.x.set(x);
-        self.y.set(y);
         self.come_in();
     }
 
     /// From where it is to its place, the backdrop to opaque; settled once
     /// it is there.
-    fn come_in(self) {
+    pub(crate) fn come_in(self) {
+        let generation = self.next_motion();
         if reduce_motion() {
-            self.x.set(0.0);
-            self.y.set(0.0);
+            self.drag_y.set(0.0);
             self.fade.set(1.0);
             self.settled.set(true);
             return;
         }
-        self.x.timing(0.0, SHEET_IN_MS, Easing::EaseOut);
-        self.y.timing(0.0, SHEET_IN_MS, Easing::EaseOut);
+        self.drag_y.timing(0.0, SHEET_IN_MS, Easing::EaseOut);
         let end = self.fade.timing(1.0, SHEET_IN_MS, Easing::EaseOut);
         let (settled, closing) = (self.settled, self.closing);
         // There when the motion ends, or after its time (as it goes).
         spawn(async move {
-            if end.await && !closing.with(|c| *c) {
+            if end.await && self.generation.get() == generation && !closing.with(|c| *c) {
                 settled.set(true);
             }
         });
         set_timeout(
             std::time::Duration::from_millis(SHEET_IN_MS as u64),
             move || {
-                if !closing.with(|c| *c) {
+                if self.generation.get() == generation && !closing.with(|c| *c) {
                     settled.set(true);
                 }
             },
         );
+    }
+
+    fn next_motion(self) -> u64 {
+        let next = self.generation.get().wrapping_add(1);
+        self.generation.replace(next);
+        next
     }
 }
 

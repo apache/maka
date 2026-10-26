@@ -273,22 +273,3 @@ impl ModelOverride {
         result
     }
 }
-
-impl super::ConnectionCatalogEntry {
-    pub fn effective_models(&self) -> Vec<super::ModelInfo> {
-        let mut models: std::collections::BTreeMap<_, _> = self
-            .models
-            .iter()
-            .map(|model| (model.id.as_str(), model.clone()))
-            .collect();
-        if let Some(overrides) = &self.model_overrides {
-            for (id, value) in overrides {
-                let model = models
-                    .entry(id)
-                    .or_insert_with(|| super::ModelInfo::new(id));
-                *model = value.apply(model);
-            }
-        }
-        models.into_values().collect()
-    }
-}

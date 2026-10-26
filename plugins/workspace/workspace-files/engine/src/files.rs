@@ -34,6 +34,7 @@ use std::{
 
 mod watch;
 pub use watch::Watch;
+mod candidates;
 mod preview;
 pub use preview::{FileCapture, FileContent, FileSnapshot};
 #[cfg(test)]
@@ -146,10 +147,10 @@ impl Directory {
         expose((|| {
             interrupted(cancel)?;
             let relative = match path {
-                Some(path) => gix::path::try_from_bstring(
-                    path.bytes().map_err(|_| error("files_invalid_path"))?,
-                )
-                .map_err(|_| error("files_invalid_path"))?,
+                Some(path) => {
+                    gix::path::from_bstring(path.bytes().map_err(|_| error("files_invalid_path"))?)
+                        .map_err(|_| error("files_invalid_path"))?
+                }
                 None => PathBuf::new(),
             };
             let directory = crate::directory::open(workspace, identity)?;
@@ -299,7 +300,7 @@ impl Directory {
                     .after
                     .bytes()
                     .map_err(|_| error("files_invalid_cursor"))?;
-                let path = gix::path::try_from_bstr(bytes.as_bstr())
+                let path = gix::path::from_bstr(bytes.as_bstr())
                     .map_err(|_| error("files_invalid_cursor"))?;
                 if path.parent().unwrap_or(Path::new("")) != self.relative {
                     return Err(error("files_invalid_cursor"));
@@ -317,7 +318,7 @@ impl Directory {
                 continue;
             }
             let relative = gix::path::to_unix_separators_on_windows(
-                gix::path::try_into_bstr(self.relative.join(&name))
+                gix::path::into_bstr(self.relative.join(&name))
                     .map_err(|_| error("files_unavailable"))?,
             )
             .into_owned();

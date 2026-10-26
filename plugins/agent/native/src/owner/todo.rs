@@ -33,7 +33,7 @@ pub(super) struct Todo {
     owner: OnceLock<Weak<Owner>>,
 }
 impl Todo {
-    pub fn new(store: Arc<EventLog>, prefix: String) -> Self {
+    pub fn new(store: Arc<RootStore>, prefix: String) -> Self {
         let storage = Arc::new(maka_host_runtime::storage::Storage::new(
             store,
             prefix,
@@ -181,6 +181,9 @@ impl Owner {
         }
         let boundary = self
             .store
+            .session(&context.invocation.session_id)
+            .await
+            .map_err(|error| error.to_string())?
             .invocation_boundary(
                 &context.invocation.session_id,
                 &context.invocation.invocation_id,

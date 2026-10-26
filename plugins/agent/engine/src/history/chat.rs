@@ -24,20 +24,48 @@ use maka_model::prompt::{ContentPart, Message, ToolOutput, ToolResult};
 /// Chat serializes tool content as text. Expose already materialized media in
 /// a user message, after all responses in the tool batch have been delivered.
 pub(crate) fn project(messages: Vec<Message>, language: Language) -> Vec<Message> {
-    let mut projected = Vec::with_capacity(messages.len());
-    let mut images = Vec::new();
-    for mut message in messages {
+    let mut state = Projection::new(language);
+    let mut projected = Vec::new();
+    for message in messages {
+        projected.extend(state.push(message));
+    }
+    projected.extend(state.finish());
+    projected
+}
+
+/// Cross-page state is only the media deferred until its tool batch closes.
+/// Page boundaries never cause an extra user role or move media before a result.
+pub(super) struct Projection {
+    language: Language,
+    images: Vec<ContentPart>,
+}
+
+impl Projection {
+    pub(super) fn new(language: Language) -> Self {
+        Self {
+            language,
+            images: Vec::new(),
+        }
+    }
+
+    pub(super) fn push(&mut self, mut message: Message) -> Vec<Message> {
+        let mut projected = Vec::new();
         if let Message::Tool { content, .. } = &mut message {
             for result in content {
-                extract(result, &mut images, language);
+                extract(result, &mut self.images, self.language);
             }
         } else {
-            flush(&mut projected, &mut images);
+            flush(&mut projected, &mut self.images);
         }
         projected.push(message);
+        projected
     }
-    flush(&mut projected, &mut images);
-    projected
+
+    pub(super) fn finish(&mut self) -> Vec<Message> {
+        let mut projected = Vec::new();
+        flush(&mut projected, &mut self.images);
+        projected
+    }
 }
 
 fn flush(messages: &mut Vec<Message>, images: &mut Vec<ContentPart>) {

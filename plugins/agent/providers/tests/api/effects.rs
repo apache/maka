@@ -18,7 +18,7 @@
  */
 
 use super::*;
-use futures_util::future::BoxFuture;
+use futures_util::{StreamExt, future::BoxFuture};
 use maka_agent_facts::provider::Credential;
 use maka_agent_ports::model::Connect;
 use maka_agent_ports::model::Error as ModelError;
@@ -31,16 +31,40 @@ use maka_capabilities::http;
 use std::sync::{Arc, Mutex};
 use tokio_util::sync::CancellationToken;
 
+struct CapturedRequest {
+    url: String,
+    headers: Vec<(String, String)>,
+    body: Vec<u8>,
+}
+impl CapturedRequest {
+    async fn read(request: http::Request) -> Self {
+        let mut chunks = request.body.into_stream();
+        let mut body = Vec::new();
+        while let Some(chunk) = chunks.next().await {
+            body.extend_from_slice(&chunk.unwrap());
+        }
+        Self {
+            url: request.url,
+            headers: request.headers,
+            body,
+        }
+    }
+}
 #[derive(Default)]
-struct Exchange(Mutex<Vec<http::Request>>);
+struct Exchange(Mutex<Vec<CapturedRequest>>);
 impl Transport for Exchange {
     fn identity(&self) -> u64 {
         1
     }
-    fn request(&self, request: http::Request) -> BoxFuture<'_, Result<http::Response, ModelError>> {
+    fn request(
+        &self,
+        request: http::Request,
+        _cancellation: tokio_util::sync::CancellationToken,
+    ) -> BoxFuture<'_, Result<http::Response, ModelError>> {
         Box::pin(async move {
             let url = request.url.clone();
             let read_allowed = matches!(request.method, http::Method::Get);
+            let request = CapturedRequest::read(request).await;
             self.0.lock().unwrap().push(request);
             Ok(http::Response {
                 head: http::Head {

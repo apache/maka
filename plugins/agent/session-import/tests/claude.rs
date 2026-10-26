@@ -72,13 +72,12 @@ async fn read(
     let path = directory.path().join("transcript");
     std::fs::write(&path, bytes).unwrap();
     let owner = maka_capabilities::call::Issuer::default()
-        .admit(
+        .issue(
             maka_capabilities::call::Identity::Remote {
                 request_id: uuid::Uuid::new_v4(),
             },
             CancellationToken::new(),
         )
-        .await
         .unwrap();
     let root = ReadRoot::open(directory.path()).await.unwrap();
     let resources = Arc::new(Resources::default());

@@ -66,6 +66,7 @@ impl EventLog {
     ) -> Result<MaterialCollection, StoreError> {
         self.validate_root()?;
         let after = after.map(str::to_owned);
+        let prepared = self.prepared.clone();
         self.connection.run(move |connection| Box::pin(async move {
             let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
             let session: Option<String> = sqlx::query_scalar(
@@ -99,17 +100,21 @@ impl EventLog {
             }
             // No live owner remains. Retained facts/membership, not UI metadata,
             // remain the material-collection authority; descendants were checked above.
+            // Also covers imported owners that never had a local retirement.
+            crate::context::prepared::gc::retire_owner(&mut tx,&session).await?;
+            crate::context::semantic::gc::retire_owner(&mut tx,&session).await?;
             for table in ["transcript_directory", "transcript_failures", "transcript_cache.rows", "transcript_cache.text"] {
                 let sql = format!("DELETE FROM {table} WHERE session_id=?");
                 sqlx::query(sqlx::AssertSqlSafe(sql.as_str())).bind(&session).execute(&mut *tx).await?;
             }
-            let rows: Vec<(String, String)> = sqlx::query_as(
-                "SELECT event_id, event_json FROM event_log WHERE event_session=?
+            let rows: Vec<(i64, String, String)> = sqlx::query_as(
+                "SELECT sequence,event_id,event_json FROM event_log WHERE event_session=?
                  AND event_json IS NOT NULL ORDER BY sequence LIMIT 8"
             ).bind(session).fetch_all(&mut *tx).await?;
-            for (id, body) in rows {
+            for (sequence,id,body) in rows {
                 let event: RuntimeEvent = serde_json::from_str(&body)?;
                 let proof = retained(&event);
+                crate::context::semantic::gc::collect_event(&mut tx,crate::sequence_number(sequence)?).await?;
                 sqlx::query("DELETE FROM tool_result_payloads WHERE event_id=?")
                     .bind(&id).execute(&mut *tx).await?;
                 let surface: Option<String> = sqlx::query_scalar(
@@ -125,6 +130,7 @@ impl EventLog {
                     .bind(&id).execute(&mut *tx).await?;
             }
             tx.commit().await.map_err(StoreError::CommitUnknown)?;
+            prepared.wake();
             Ok(MaterialCollection::Collected)
         })).await
     }

@@ -59,7 +59,6 @@ fn host_logs_reads_captured_stderr_without_an_installed_deployment() {
         b"pre-Ready host failure\n\xff"
     );
     assert_eq!(page["reset"], Value::Null);
-    assert_eq!(page["truncated"], false);
     assert_eq!(page["hasMore"], false);
     assert!(!page["cursor"].as_str().unwrap().is_empty());
 }

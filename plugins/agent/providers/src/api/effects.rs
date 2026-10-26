@@ -97,7 +97,8 @@ pub(super) async fn verify(
             method: http::Method::Post,
             headers: headers.into_iter().collect(),
             body: serde_json::to_vec(&body)
-                .map_err(|_| Error::Invalid("invalid verification body".into()))?,
+                .map_err(|_| Error::Invalid("invalid verification body".into()))?
+                .into(),
         },
         ResponseBody::Discard,
     )
@@ -155,13 +156,20 @@ pub(super) async fn send(
     request: http::Request,
     body: ResponseBody,
 ) -> Result<Vec<u8>, Error> {
-    let response = tokio::select! {
-        biased;
-        _ = context.cancellation.cancelled() => return Err(Error::Cancelled),
-        response = context.transport.request(request) => {
-            response.map_err(|_| Error::Transport("provider request failed".into()))?
-        }
-    };
+    if context.cancellation.is_cancelled() {
+        return Err(Error::Cancelled);
+    }
+    let response = context
+        .transport
+        .request(request, context.cancellation.clone())
+        .await
+        .map_err(|_| {
+            if context.cancellation.is_cancelled() {
+                Error::Cancelled
+            } else {
+                Error::Transport("provider request failed".into())
+            }
+        })?;
     let result = async {
         if !(200..300).contains(&response.head.status) {
             return Err(Error::Http(response.head.status));

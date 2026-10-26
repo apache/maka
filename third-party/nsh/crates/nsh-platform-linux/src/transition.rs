@@ -136,6 +136,13 @@ pub(crate) fn removing(
     true
 }
 
+/// `view` is deleted and does not animate out: its animations end with it.
+/// A keyframe `animation` repeats for good, and its frame callback would
+/// keep the deleted view and the display frames going.
+pub(crate) fn deleted(view: &NshView) {
+    view.state_mut().live = None;
+}
+
 /// The frame a running layout animation of `view` is heading to, if any.
 pub(crate) fn frame_target(view: &NshView) -> Option<Bounds<Points>> {
     view.state().live.as_ref()?.frame_target()

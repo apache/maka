@@ -35,7 +35,13 @@ async fn preturn_keeps_anchor_and_latest_main_never_falls_back_a_broken_newer_tr
     log.append(&opening("current")).await.unwrap();
     // Existing full prefix cap still holds; the small-field query did not load it.
     let source = log
-        .prepare_context_compaction("session", Some("current"), &CheckpointMode::PreTurn)
+        .capture_compaction_context(
+            "session",
+            Some("current"),
+            &CheckpointMode::PreTurn,
+            100_000,
+            64 * 1024 * 1024,
+        )
         .await
         .unwrap();
     log.append(&request(
@@ -66,7 +72,7 @@ async fn preturn_keeps_anchor_and_latest_main_never_falls_back_a_broken_newer_tr
     );
     log.append(&write).await.unwrap();
     let source = log
-        .read_model_context("session", Some("current"))
+        .capture_model_context("session", Some("current"), 100_000, 64 * 1024 * 1024)
         .await
         .unwrap();
     assert!(source.anchor.is_none());

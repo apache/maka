@@ -51,7 +51,12 @@ impl Reconcile {
         // Pending can already carry a newer schema while Active still serves
         // old code. Select its executor before any policy writer or migration.
         let pending = query::pending(&directory, &current).await?;
-        let executor = pending.as_ref().unwrap_or(&current).executable.clone();
+        let executor = pending
+            .as_ref()
+            .map(|pending| &pending.deployment)
+            .unwrap_or(&current)
+            .executable
+            .clone();
         if std::env::current_exe()?.canonicalize()? != executor {
             return execute(
                 &executor,
@@ -86,7 +91,7 @@ impl Reconcile {
         if active.executable != executor
             || query::pending(&directory, &active)
                 .await?
-                .is_some_and(|pending| pending.executable != executor)
+                .is_some_and(|pending| pending.deployment.executable != executor)
         {
             return Ok(());
         }
@@ -109,13 +114,13 @@ impl Reconcile {
 
 async fn perform(
     current: &Deployment,
-    pending: Option<Deployment>,
+    pending: Option<super::super::updates::Pending>,
     claim: &Record,
 ) -> Result<(), HostError> {
     if let Some(target) = pending {
         // A frozen intent wins over channel changes and failed download retries.
         execute(
-            &target.executable,
+            &target.deployment.executable,
             &deployment::Expected::from_deployment(current, claim.revision)
                 .arguments(Action::Reconcile),
         )

@@ -32,7 +32,7 @@ INSERT INTO pricing_authority VALUES(1, 0, NULL);
 CREATE TABLE pricing_overrides (
     model_key TEXT PRIMARY KEY,
     sort_key BLOB NOT NULL,
-    record_json TEXT NOT NULL CHECK(json_valid(record_json) AND length(CAST(record_json AS BLOB)) <= 4096)
+    record_json TEXT NOT NULL CHECK(json_valid(record_json))
 );
 CREATE TABLE connections (
     connection_id TEXT PRIMARY KEY,
@@ -61,7 +61,7 @@ CREATE TABLE credential_refresh_claims (
 );
 
 CREATE TABLE access_credentials (
-    document TEXT NOT NULL CHECK(json_valid(document) AND length(CAST(document AS BLOB)) <= 524288),
+    document TEXT NOT NULL CHECK(json_valid(document)),
     credential_id TEXT GENERATED ALWAYS AS (json_extract(document, '$.credentialId')) STORED NOT NULL UNIQUE,
     credential_hash TEXT GENERATED ALWAYS AS (json_extract(document, '$.credentialHash')) STORED NOT NULL UNIQUE
         CHECK(length(credential_hash) = 64)
@@ -70,14 +70,14 @@ CREATE TABLE access_credentials (
 CREATE TABLE runtime_policy (
     singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
     document TEXT NOT NULL CHECK(
-        json_valid(document) AND length(CAST(document AS BLOB)) <= 49152
+        json_valid(document)
     )
 );
 
 -- Receipts survive logout/removal: they prove completion, not current authorization.
 CREATE TABLE oauth_login_receipts (
     completion_order INTEGER PRIMARY KEY AUTOINCREMENT,
-    attempt_id TEXT NOT NULL UNIQUE CHECK(length(attempt_id) BETWEEN 1 AND 128),
+    attempt_id TEXT NOT NULL UNIQUE CHECK(length(attempt_id) >= 1),
     target TEXT NOT NULL,
     method TEXT NOT NULL,
     request_fingerprint TEXT NOT NULL,
@@ -90,7 +90,7 @@ CREATE TABLE plugin_credentials (
     scope_id TEXT NOT NULL,
     key TEXT NOT NULL,
     revision INTEGER NOT NULL CHECK(revision BETWEEN 1 AND 9007199254740991),
-    secret TEXT CHECK(secret IS NULL OR length(CAST(secret AS BLOB)) <= 65536),
+    secret TEXT,
     PRIMARY KEY (package_id, scope_id, key)
 ) STRICT;
 
@@ -99,9 +99,24 @@ CREATE TABLE plugin_authorizations (
     package_id TEXT NOT NULL,
     scope_id TEXT NOT NULL,
     operation_id TEXT NOT NULL,
-    document TEXT NOT NULL CHECK(length(CAST(document AS BLOB)) <= 65536),
+    document TEXT NOT NULL,
     revoked INTEGER NOT NULL DEFAULT 0 CHECK(revoked IN (0, 1)),
     UNIQUE(package_id, scope_id, operation_id)
+) STRICT;
+
+CREATE TABLE public_catalog (
+    source TEXT PRIMARY KEY NOT NULL CHECK(source IN ('models_dev', 'openrouter')),
+    body TEXT NOT NULL CHECK(json_valid(body)),
+    etag TEXT,
+    last_modified TEXT,
+    checked_at INTEGER NOT NULL
+) STRICT;
+
+CREATE TABLE project_mcp_trust (
+    owner TEXT NOT NULL,
+    workspace TEXT NOT NULL,
+    revision TEXT NOT NULL,
+    PRIMARY KEY (owner, workspace)
 ) STRICT;
 
 PRAGMA user_version = 1;

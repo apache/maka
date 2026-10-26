@@ -163,7 +163,7 @@ impl EventLog {
         let fence = i64::try_from(through).map_err(|_| invalid("invalid stream fence"))?;
         let session_id = session_id.to_owned();
         self.connection
-            .run(move |connection| {
+            .read(move |connection| {
                 Box::pin(async move {
                     let mut transaction = connection.begin().await?;
                     if through > high_water(&mut transaction).await? {

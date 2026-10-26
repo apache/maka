@@ -80,11 +80,11 @@ features = ["inspector"]
 
 [dependencies.gpui-fps]
 git = "https://github.com/longbridge/gpui-kit"
-rev = "77ff6f794dca3bcee2e90977cedf12a64aed17e4"
+rev = "7b14e03f2ed4b46fc4149a8a523c7f91bcad6560"
 
 [dependencies.gpui-kit]
 git = "https://github.com/longbridge/gpui-kit"
-rev = "77ff6f794dca3bcee2e90977cedf12a64aed17e4"
+rev = "7b14e03f2ed4b46fc4149a8a523c7f91bcad6560"
 default-features = false
 
 [dependencies.image]
@@ -97,9 +97,7 @@ version = "0.1"
 features = ["wasm-bindgen"]
 
 [dependencies.quickjs-jit-stdlib]
-version = "0.12.7"
-git = "https://github.com/longbridge/quickjs-jit"
-rev = "605da483611a3548edb8c33fdff602e3f5f42076"
+version = "=0.14.1"
 optional = true
 
 [dependencies.reqwest]
@@ -120,17 +118,13 @@ optional = true
 
 [dependencies.rquickjs]
 package = "quickjs-jit"
-version = "0.12.11"
-git = "https://github.com/longbridge/quickjs-jit"
-rev = "96593cd7a54440ac060a391b8baea7e9a3cf1393"
+version = "=0.14.1"
 features = ["macro", "loader", "jit-abi"]
 optional = true
 
 [dependencies.rquickjs-jit]
 package = "quickjs-jit-runtime"
-version = "0.12.11"
-git = "https://github.com/longbridge/quickjs-jit"
-rev = "96593cd7a54440ac060a391b8baea7e9a3cf1393"
+version = "=0.14.1"
 features = ["compiler"]
 optional = true
 

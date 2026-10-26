@@ -324,6 +324,8 @@ pub fn catalog() -> Value {
         root::<maka_agent_api::contract::ContextBucket>(&mut g),
         root::<maka_agent_api::contract::ContextCounts>(&mut g),
         root::<maka_agent_api::contract::FileListRead>(&mut g),
+        root::<maka_agent_api::contract::FileCandidatesRead>(&mut g),
+        root::<maka_agent_api::contract::FileCandidates>(&mut g),
         root::<maka_agent_api::contract::FileWatch>(&mut g),
         root::<maka_agent_api::contract::FileCursor>(&mut g),
         root::<maka_agent_api::contract::FilePage>(&mut g),

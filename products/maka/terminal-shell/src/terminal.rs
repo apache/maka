@@ -21,10 +21,12 @@
 //! and recovery stay outside this shell; blocked stdout never stalls native
 //! event dispatch or the input owner’s independent cancellation path.
 
+pub(crate) mod activation;
 mod adapter;
 mod frame_trace;
 mod graphics;
 mod input;
+mod interrupt;
 mod output;
 mod pixels;
 mod ui;
@@ -45,18 +47,22 @@ use std::{
 };
 use termina::{EventReader, PlatformTerminal, Terminal as _};
 
-const SETUP: &[u8] = b"\x1b[?1049h\x1b[?25l\x1b[?1000h\x1b[?1002h\x1b[?1006h\x1b[?2004h";
+const SETUP: &[u8] = b"\x1b[?1049h\x1b[?25l\x1b[?1000h\x1b[?1002h\x1b[?1006h\x1b[?1004h\x1b[?2004h";
 const CLEANUP: &[u8] =
-    b"\x1b[?2026l\x1b[?2004l\x1b[?1006l\x1b[?1002l\x1b[?1000l\x1b[?25h\x1b[?1049l";
+    b"\x1b[?2026l\x1b[?2004l\x1b[?1004l\x1b[?1006l\x1b[?1002l\x1b[?1000l\x1b[?25h\x1b[?1049l";
 const TICK: Duration = Duration::from_millis(16);
+// One existing best-effort restoration window, shared by IME release and IO.
+const RESTORATION_WAIT: Duration = Duration::from_millis(100);
 
 pub(crate) type GpuWorker = thread::JoinHandle<Result<(), String>>;
 
 #[derive(Clone, Default)]
 struct Presentation {
     state: Arc<Mutex<Inbox>>,
+    activation: activation::Activation,
     stop: Arc<AtomicBool>,
     driver: Option<thread::Thread>,
+    host: nsh_engine::HostChannel,
 }
 
 impl Presentation {
@@ -68,6 +74,27 @@ impl Presentation {
 
     fn shutdown(&self) {
         self.stop.store(true, Ordering::Release);
+        self.activation.clear();
+    }
+}
+
+/// Per-engine display control. Business configuration remains with the Host.
+pub(crate) struct UiScaleControl(Presentation);
+
+impl UiScaleControl {
+    pub(crate) fn preview(&self, scale: f32) -> Result<(), String> {
+        let mut state = self.0.state.lock().unwrap();
+        let inbox = state
+            .pixels
+            .as_mut()
+            .ok_or("pixel display is unavailable")?;
+        inbox.set_ui_scale(scale)?;
+        if let Some(wake) = &inbox.wake {
+            wake.unpark();
+        }
+        drop(state);
+        self.0.wake_driver();
+        Ok(())
     }
 }
 
@@ -102,8 +129,20 @@ pub(crate) fn run(
     let presentation = Presentation {
         stop: stop.clone(),
         driver: Some(thread::current()),
+        host: config.host.clone(),
         ..Default::default()
     };
+    let closing = stop.clone();
+    let activation = presentation.activation.clone();
+    let driver = thread::current();
+    config.host.handle("terminal.exit", move |_| {
+        closing.store(true, Ordering::Release);
+        activation.clear();
+        driver.unpark();
+    });
+    config.context = config.context.with(maka_workbench::Foreground(
+        presentation.activation.subscribe(),
+    ));
     let setup = [SETUP, graphics::QUERY].concat();
     let setup = {
         let mut setup = setup;
@@ -117,13 +156,15 @@ pub(crate) fn run(
                 protocol: None,
                 synchronized: false,
                 sixel_geometry: Default::default(),
+                ui_scale: 1.0,
             },
             tracing,
         ));
         setup.extend(state.pixel_probe.query()?);
+        setup.extend(pixels::text_input::query());
         setup
     };
-    output.submit(setup)?;
+    output.submit([setup])?;
     let mut input = None;
     let result = (|| {
         input = Some(start_reader(presentation.clone(), reader)?);
@@ -150,6 +191,18 @@ pub(crate) fn run(
         // blocked owner, including startup errors after terminal mutation.
         drive(&mut output, &presentation, &commands, &frames, &pending)
     })();
+    let restoration_deadline = Instant::now() + RESTORATION_WAIT;
+    let text_input_cleanup = close_text_input(
+        &mut output,
+        &presentation,
+        input.as_ref(),
+        restoration_deadline,
+    );
+    let result = match (result, text_input_cleanup) {
+        (Ok(()), cleanup) => cleanup,
+        (Err(error), Ok(())) => Err(error),
+        (Err(error), Err(cleanup)) => Err(format!("{error}; {cleanup}")),
+    };
     presentation.shutdown();
     // The platform guard must outlive the sole reader: restoring console modes
     // or code pages while it can still decode input races shutdown on Windows.
@@ -158,7 +211,7 @@ pub(crate) fn run(
     cleanup.extend(pixels::cleanup(&presentation, result.is_err()));
     cleanup.extend_from_slice(CLEANUP);
     let cleanup = output.close(cleanup).and_then(|receipt| {
-        match receipt.recv_timeout(Duration::from_millis(100)) {
+        match receipt.recv_timeout(restoration_deadline.saturating_duration_since(Instant::now())) {
             Ok(result) => result.map_err(|error| error.to_string()),
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 Err("terminal output restoration is still pending behind blocked output".into())
@@ -242,10 +295,10 @@ fn drive(
         }
         if writable {
             if let Some(bytes) = ready.take() {
-                output.submit(bytes)?;
+                output.submit([bytes])?;
                 writable = false;
             } else if let Some(query) = state.lock().unwrap().graphics.query() {
-                output.submit(query.to_vec())?;
+                output.submit([query.to_vec()])?;
                 setup = true;
                 writable = false;
             }
@@ -295,14 +348,84 @@ fn drive(
     }
 }
 
+/// An opted-in sender finishes its native composition before acknowledging
+/// disable(E). Keep decoding that FIFO during the existing best-effort restoration
+/// window. Cancellation cannot wait forever for blocked IO or a missing peer ACK;
+/// an incomplete release is reported instead of claiming the FIFO was drained.
+fn close_text_input(
+    output: &mut Output,
+    presentation: &Presentation,
+    reader: Option<&Reader>,
+    deadline: Instant,
+) -> Result<(), String> {
+    let bytes = presentation
+        .state
+        .lock()
+        .unwrap()
+        .pixels
+        .as_mut()
+        .and_then(pixels::Inbox::close_text_input);
+    let Some(bytes) = bytes else { return Ok(()) };
+    let mut release = Some(bytes);
+    loop {
+        let writable = output.poll()?;
+        let state = presentation.state.lock().unwrap();
+        if writable
+            && release.is_none()
+            && state
+                .pixels
+                .as_ref()
+                .is_some_and(|inbox| inbox.text_input.closed())
+        {
+            return Ok(());
+        }
+        if reader.is_some_and(|reader| {
+            reader.stop.load(Ordering::Acquire)
+                || reader
+                    .handle
+                    .as_ref()
+                    .is_none_or(thread::JoinHandle::is_finished)
+        }) {
+            return Err(state.error.clone().unwrap_or_else(|| {
+                "terminal text-input release incomplete: input ended before acknowledgement".into()
+            }));
+        }
+        drop(state);
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(
+                "terminal text-input release is still pending; terminal restoration incomplete"
+                    .into(),
+            );
+        }
+        if writable && let Some(bytes) = release.take() {
+            output.take_flushed();
+            presentation
+                .state
+                .lock()
+                .unwrap()
+                .pixels
+                .as_mut()
+                .unwrap()
+                .text_input
+                .release_submitted();
+            output.submit([bytes])?;
+        }
+        thread::park_timeout(remaining);
+    }
+}
+
 fn start_reader(presentation: Presentation, reader: EventReader) -> Result<Reader, String> {
-    let stop = presentation.stop.clone();
+    // Reader lifetime extends through the negotiated disable(E) handshake even
+    // after external cancellation has stopped the UI and output driver.
+    let stop = Arc::new(AtomicBool::new(false));
+    let reading = stop.clone();
     let waker = reader.waker();
     let handle = thread::Builder::new()
         .name("maka-nsh-input".into())
         .spawn(move || {
-            let Presentation { state, stop, .. } = &presentation;
-            while !stop.load(Ordering::Acquire) {
+            let Presentation { state, .. } = &presentation;
+            while !reading.load(Ordering::Acquire) {
                 {
                     let mut inbox = state.lock().unwrap();
                     // Keep polling and decoding in FIFO order, without
@@ -322,10 +445,13 @@ fn start_reader(presentation: Presentation, reader: EventReader) -> Result<Reade
                             Ok(None) => break,
                             Err(error) => {
                                 inbox.error = Some(error.to_string());
+                                reading.store(true, Ordering::Release);
+                                presentation.activation.clear();
                                 presentation.wake_driver();
                                 return;
                             }
                         };
+                        presentation.activation.observe(&event);
                         presentation.wake_driver();
                         inbox.graphics.observe(&event);
                         {
@@ -370,23 +496,26 @@ fn start_reader(presentation: Presentation, reader: EventReader) -> Result<Reade
                             }
                         }
                         inbox.push_terminal(event);
-                        if inbox.quit || inbox.error.is_some() || stop.load(Ordering::Acquire) {
+                        if inbox.quit || inbox.error.is_some() || reading.load(Ordering::Acquire) {
                             break;
                         }
                     }
                 }
-                if !stop.load(Ordering::Acquire) {
+                if !reading.load(Ordering::Acquire) {
                     match reader.wait_ready() {
                         Ok(()) => {}
                         Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
                         Err(error) => {
                             state.lock().unwrap().error = Some(error.to_string());
+                            reading.store(true, Ordering::Release);
+                            presentation.activation.clear();
                             presentation.wake_driver();
                             return;
                         }
                     }
                 }
             }
+            presentation.activation.clear();
             presentation.wake_driver();
         })
         .map_err(|error| error.to_string())?;
@@ -434,7 +563,7 @@ mod tests {
                     ..Default::default()
                 };
                 let mut output = Output::new(io::sink()).unwrap();
-                output.submit(b"SETUP".to_vec()).unwrap();
+                output.submit([b"SETUP".to_vec()]).unwrap();
                 started.send(thread::current()).unwrap();
                 drive(&mut output, &presentation, &commands, &receive, &pending)
             })
@@ -490,6 +619,7 @@ mod tests {
         struct Blocked {
             entered: mpsc::SyncSender<()>,
             resume: mpsc::Receiver<()>,
+            bytes: Arc<Mutex<Vec<u8>>>,
         }
         impl Write for Blocked {
             fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
@@ -499,6 +629,7 @@ mod tests {
                         .recv()
                         .map_err(|_| io::Error::other("gate closed"))?;
                 }
+                self.bytes.lock().unwrap().extend_from_slice(bytes);
                 Ok(bytes.len())
             }
             fn flush(&mut self) -> io::Result<()> {
@@ -506,15 +637,55 @@ mod tests {
             }
         }
         let state = Arc::new(Mutex::new(Inbox::default()));
+        let mut pixel_input = pixels::Inbox::new(
+            pixels::Capabilities {
+                size: termina::WindowSize {
+                    cols: 80,
+                    rows: 24,
+                    pixel_width: Some(640),
+                    pixel_height: Some(384),
+                },
+                mouse: pixels::MouseCoordinates::Cells,
+                protocol: Some(pixels::Protocol::Sixel),
+                synchronized: false,
+                sixel_geometry: Default::default(),
+                ui_scale: 1.0,
+            },
+            false,
+        );
+        use termina::escape::osc::{NshTextInput, Osc};
+        assert!(
+            pixel_input
+                .text_input
+                .consume(&termina::Event::Osc(Osc::NshTextInput(
+                    NshTextInput::Supported
+                )))
+        );
+        let mut parser = termina::Parser::default();
+        parser
+            .parse(&pixel_input.text_input.take_control().unwrap(), false)
+            .unwrap();
+        let Some(termina::Event::Osc(Osc::NshTextInput(NshTextInput::Enable(nonce)))) =
+            parser.pop()
+        else {
+            panic!("support must request one subscription");
+        };
+        // Ready has not arrived: cancellation must still revoke this nonce.
+        let disable_packet = Osc::NshTextInput(NshTextInput::Disable(nonce))
+            .to_string()
+            .into_bytes();
+        state.lock().unwrap().pixels = Some(pixel_input);
         let stop = Arc::new(AtomicBool::new(false));
         let (entered, observing) = mpsc::sync_channel(1);
         let (resume, gate) = mpsc::channel();
+        let written = Arc::new(Mutex::new(Vec::new()));
         let mut output = Output::new(Blocked {
             entered,
             resume: gate,
+            bytes: written.clone(),
         })
         .unwrap();
-        output.submit(b"SETUP".to_vec()).unwrap();
+        output.submit([b"SETUP".to_vec()]).unwrap();
         let (commands, _worker) = mpsc::sync_channel(1);
         let (frames, receive) = mpsc::sync_channel(1);
         frames
@@ -539,7 +710,16 @@ mod tests {
                 &receive,
                 &AtomicBool::new(false),
             );
-            let _ = finished.send(result);
+            let release = close_text_input(
+                &mut output,
+                &presentation,
+                None,
+                Instant::now() + RESTORATION_WAIT,
+            );
+            let mut cleanup = pixels::cleanup(&presentation, release.is_err());
+            cleanup.extend_from_slice(CLEANUP);
+            let cleanup = output.close(cleanup).unwrap();
+            let _ = finished.send((result, release, cleanup));
         });
         observing.recv_timeout(Duration::from_secs(1)).unwrap();
         if external {
@@ -549,10 +729,28 @@ mod tests {
         }
         // The caller can now run Host close/recovery while stdout is still
         // held by the test gate. No UI engine or output join is required.
-        result
+        let (driver, release, cleanup) = result.recv_timeout(Duration::from_secs(2)).unwrap();
+        driver.unwrap();
+        assert!(
+            release
+                .unwrap_err()
+                .contains("text-input release is still pending")
+        );
+        assert!(matches!(cleanup.try_recv(), Err(mpsc::TryRecvError::Empty)));
+        resume.send(()).unwrap();
+        cleanup
             .recv_timeout(Duration::from_secs(2))
             .unwrap()
             .unwrap();
-        resume.send(()).unwrap();
+        let bytes = written.lock().unwrap();
+        assert_eq!(
+            bytes
+                .windows(disable_packet.len())
+                .filter(|part| *part == disable_packet.as_slice())
+                .count(),
+            1
+        );
+        assert!(bytes.starts_with(b"SETUPFRAME"));
+        assert!(bytes.ends_with(CLEANUP));
     }
 }

@@ -100,31 +100,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn native_locales_resolve_supported_copy() {
-        for (locale, expected) in [
-            ("zh_CN.UTF-8", Language::ZhCn),
-            ("zh-Hans-SG", Language::ZhCn),
-            ("zh-Hant", Language::ZhTw),
-            ("zh_TW", Language::ZhTw),
-            ("zh-HK.UTF-8", Language::ZhTw),
-            ("ZH_mo", Language::ZhTw),
-            ("zh-Hans-TW", Language::ZhCn),
-            ("zh", Language::ZhCn),
-            ("en_GB.UTF-8", Language::En),
-            ("fr-FR", Language::En),
-            ("C", Language::En),
-            ("", Language::En),
-        ] {
-            assert_eq!(Language::from_locale(locale), expected, "{locale}");
-        }
-    }
-
-    #[test]
     fn deployment_locale_aliases_normalize_without_widening_saved_preferences() {
         for (locale, expected) in [
             ("", LanguagePreference::Auto),
             (" auto ", LanguagePreference::Auto),
             ("zh-Hans-CN", LanguagePreference::ZhCn),
+            ("zh-Hans-TW", LanguagePreference::ZhCn),
+            ("ZH_mo", LanguagePreference::ZhTw),
+            ("zh", LanguagePreference::ZhCn),
             ("zh-Hant-HK", LanguagePreference::ZhTw),
             ("zh_TW.UTF-8", LanguagePreference::ZhTw),
             ("en-US", LanguagePreference::En),
@@ -136,6 +119,7 @@ mod tests {
                 "{locale}"
             );
         }
+        assert_eq!(Language::from_locale(""), Language::En);
         assert!(serde_json::from_str::<LanguagePreference>(r#""zh-Hant-HK""#).is_err());
         assert_eq!(
             serde_json::from_str::<LanguagePreference>(r#""zh-TW""#).unwrap(),

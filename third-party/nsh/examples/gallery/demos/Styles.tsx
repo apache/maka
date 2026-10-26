@@ -1,4 +1,4 @@
-import { Image, type JSX, List, Scroll, signal, Text, View, type ViewStyle } from "nsh";
+import { cleanup, Image, type JSX, List, Scroll, signal, Text, View, type ViewStyle } from "nsh";
 import { Animated, createAnimatedValue, Easing } from "nsh/animated";
 import { alpha, Badge, Button, Caption, Card, colors, DemoPage, finish, hint, isDark, mono, Press, radius, Segmented, tints, Toggle } from "../ui";
 
@@ -394,12 +394,14 @@ function FlipCard() {
 function Transforms() {
   // A slow native sway, so the perspective reads as depth.
   const sway = createAnimatedValue(-30);
-  Animated.loop(
+  const loop = Animated.loop(
     Animated.sequence([
       Animated.timing(sway, { toValue: 30, duration: 2200, easing: Easing.inOut(Easing.sin) }),
       Animated.timing(sway, { toValue: -30, duration: 2200, easing: Easing.inOut(Easing.sin) }),
     ]),
-  ).start();
+  );
+  loop.start();
+  cleanup(() => loop.stop());
   return (
     <Card icon="physics" title="3D transforms" subtitle="perspective · rotateX/Y · skew · origin">
       <FlipCard />

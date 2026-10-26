@@ -63,7 +63,7 @@ pub use self::{
     stub::{RecordingNetwork, StubHandler, StubNetwork, StubReply, StubResponse, StubRoute},
 };
 use crate::{
-    screen::{self, Back, Pick, Screen},
+    screen::{self, Back, Contact, InputResult, Pick, Screen},
     selector::Selector,
 };
 
@@ -210,6 +210,10 @@ enum Pumped {
     Exited,
 }
 
+/// How soon a press follows the last on the same view to count as its next
+/// click: the platforms' default double-click time.
+const CLICK_INTERVAL: Duration = Duration::from_millis(500);
+
 /// An app on a headless engine ([`start`]) and what it shows ([`Screen`]),
 /// driven by steps: press views, type into inputs, scroll, go back, wait
 /// for what it shows.
@@ -261,6 +265,12 @@ pub struct Headless {
     clock: Clock,
     /// On a manual clock: the engine asked for a frame.
     wanted: Option<Arc<AtomicBool>>,
+    /// The embedding app's channel with the app (`EngineConfig::host`),
+    /// which the test plays.
+    host: nsh_engine::HostChannel,
+    /// The last press: its view and when, for counting a double press as
+    /// the platforms do ([`CLICK_INTERVAL`]).
+    last_press: Option<(NodeId, nsh_core::time::Instant, u32)>,
     /// Where the app's `nsh/host` calls go (the web page's host).
     #[cfg(feature = "js")]
     host_calls: Option<HostCalls>,
@@ -272,6 +282,7 @@ impl Headless {
         let environment = config.environment;
         let viewport = config.viewport;
         let clock = config.clock.clone();
+        let host = config.host.clone();
         let Launched {
             engine,
             batches,
@@ -297,6 +308,8 @@ impl Headless {
             observer: None,
             clock,
             wanted,
+            host,
+            last_press: None,
             #[cfg(feature = "js")]
             host_calls: None,
         })
@@ -402,6 +415,21 @@ impl Headless {
             self.frame(by);
             self.drain();
         }
+    }
+
+    /// The embedding app's channel with the app (`nsh/host`): its launch
+    /// parameters and handlers, as the engine was given them.
+    pub fn host(&self) -> &nsh_engine::HostChannel {
+        &self.host
+    }
+
+    /// The step `host.send`: the embedding app sends event `name` with
+    /// `data` (the app's `host.on(name, ...)` hears it), and the app
+    /// settles.
+    pub fn send_host_event(&mut self, name: &str, data: nsh_core::JsonValue) -> Result<(), String> {
+        self.step(format!("host.send({name})"));
+        self.host.send(name, data)?;
+        self.done()
     }
 
     /// The step `setViewport(<w>, <h>)`: the surface becomes `size` (a
@@ -554,7 +582,32 @@ impl Headless {
     }
 
     fn apply(&mut self, batch: &MountBatch) {
+        let focused = self
+            .screen
+            .focused()
+            .or(self.screen.key_focus())
+            .filter(|old| {
+                !batch
+                    .items
+                    .iter()
+                    .any(|item| matches!(item, MountItem::Delete { id } if id == old))
+            });
         self.screen.apply(batch);
+        // The app moved the focus (`focus()`, `blur()`): platforms tell the
+        // views as when the user moves it.
+        let now = self.screen.focused().or(self.screen.key_focus());
+        if now != focused {
+            self.engine
+                .control()
+                .set_focus_path(self.screen.focus_path());
+            if let Some(old) = focused {
+                self.set_focused_state(old, false);
+                self.send(old, EventKind::Blur, EventPayload::None);
+            }
+            if let Some(new) = now {
+                self.send(new, EventKind::Focus, EventPayload::None);
+            }
+        }
         self.exited |= batch.items.iter().any(|item| {
             matches!(
                 item,
@@ -587,10 +640,31 @@ impl Headless {
     }
 
     /// Does what a platform does after a batch: reports where commands
-    /// moved scroll views, tells modals they show, answers clipboard reads,
-    /// goes back when the app asked, reports finished animations.
+    /// moved scroll views, tells modals they show, answers clipboard reads
+    /// and the URLs opened, goes back when the app asked, reports finished
+    /// animations.
     fn react(&mut self) {
         let control = self.engine.control();
+        for result in self.screen.take_input_results() {
+            match result {
+                InputResult::CancelTouch(id) => control.cancel_touch(id),
+                InputResult::SetStates(id, states) => control.set_states(id, states),
+                InputResult::RetireListCell {
+                    id,
+                    request,
+                    focus_path,
+                } => {
+                    let retired = focus_path.is_none();
+                    if let Some(path) = focus_path {
+                        control.set_focus_path(path);
+                    }
+                    control.retire_list_cell(id, request, retired);
+                }
+            }
+        }
+        // A later source removal in the same batch may have revoked a focus
+        // that refused retirement earlier in that batch.
+        control.set_focus_path(self.screen.focus_path());
         for id in self.screen.take_scrolled() {
             if let Some(scroll) = self.screen.scroll(id) {
                 let (x, y) = (scroll.x, scroll.y);
@@ -621,6 +695,15 @@ impl Headless {
                 ),
             ];
             control.dispatch_event(ROOT_ID, EventKind::ImageInfo, EventPayload::Map(fields));
+        }
+        // URLs are recorded (`Screen::opened_urls`) and reported opened, as
+        // a device with an app for every scheme would.
+        for id in self.screen.take_url_opens() {
+            let fields = vec![
+                ("id", PayloadValue::Number(f64::from(id))),
+                ("opened", PayloadValue::Bool(true)),
+            ];
+            control.dispatch_event(ROOT_ID, EventKind::OpenUrl, EventPayload::Map(fields));
         }
         if self.screen.take_back_asked() {
             self.go_back(false);
@@ -746,8 +829,8 @@ impl Headless {
 
     /// The step `idle`: applies batches until none comes for `quiet`, or
     /// for 10 s at most (false then). Long enough, it lets the engine's
-    /// idle collection run (every second at most), so what the app keeps
-    /// alive shows.
+    /// idle collection run (every second at most, after 0.3 s without
+    /// work), so what the app keeps alive shows.
     pub fn idle(&mut self, quiet: Duration) -> Result<bool, String> {
         self.step("idle");
         let quiet = self.quiet(quiet, MAX_IDLE);
@@ -1048,16 +1131,21 @@ impl Headless {
         // The finger, as platforms report it to the views around it that
         // listen to touches (an overlay's `onPressOutside` among them).
         let path = self.screen.touch_path(id);
-        if !path.is_empty() {
-            self.send_touch(id, nsh_core::TouchPhase::Start, path.clone(), at);
+        let contact = self
+            .screen
+            .begin_contact(0, id, path.clone(), !path.is_empty());
+        if contact.reporting() {
+            self.send_touch(&contact, nsh_core::TouchPhase::Start, path.clone(), at);
         }
-        let payload = self.press_payload(id, None);
+        let inside = self.screen.press_point(&parsed, id);
+        let payload = self.press_payload(id, inside);
         for kind in [EventKind::PressDown, EventKind::PressUp, EventKind::Press] {
             self.send(id, kind, payload.clone());
         }
-        if !path.is_empty() {
-            self.send_touch(id, nsh_core::TouchPhase::End, path, at);
+        if contact.reporting() {
+            self.send_touch(&contact, nsh_core::TouchPhase::End, path, at);
         }
+        self.screen.end_contact(&contact);
         self.done()
     }
 
@@ -1077,25 +1165,45 @@ impl Headless {
             .bounds_in_root(id)
             .map(|bounds| bounds.origin + at);
         let path = self.screen.touch_path(id);
-        if !path.is_empty() {
-            self.send_touch(id, nsh_core::TouchPhase::Start, path.clone(), page);
+        let contact = self
+            .screen
+            .begin_contact(0, id, path.clone(), !path.is_empty());
+        if contact.reporting() {
+            self.send_touch(&contact, nsh_core::TouchPhase::Start, path.clone(), page);
         }
         let payload = self.press_payload(id, Some(at));
         for kind in [EventKind::PressDown, EventKind::PressUp, EventKind::Press] {
             self.send(id, kind, payload.clone());
         }
-        if !path.is_empty() {
-            self.send_touch(id, nsh_core::TouchPhase::End, path, page);
+        if contact.reporting() {
+            self.send_touch(&contact, nsh_core::TouchPhase::End, path, page);
         }
+        self.screen.end_contact(&contact);
         self.done()
     }
 
     /// A press at `at` in `view` (else the view's center), in that view
-    /// and in the root. `None` when the view has no bounds.
-    fn press_payload(&self, view: NodeId, at: Option<Point<Points>>) -> EventPayload {
+    /// and in the root, with no modifier keys. Presses on one view within
+    /// [`CLICK_INTERVAL`] of each other count up (`clicks` 2 is a double
+    /// press), as the platforms count them. `None` when the view has no
+    /// bounds.
+    fn press_payload(&mut self, view: NodeId, at: Option<Point<Points>>) -> EventPayload {
+        // A pointer's press takes the keyboard focus off the pressable Tab
+        // gave it to.
+        if self.screen.key_focus().is_some_and(|id| id != view) {
+            self.move_focus(None);
+        }
         let Some(bounds) = self.screen.bounds_in_root(view) else {
             return EventPayload::None;
         };
+        let now = self.clock.now();
+        let clicks = match self.last_press {
+            Some((last, at, clicks)) if last == view && now.duration_since(at) < CLICK_INTERVAL => {
+                clicks + 1
+            }
+            _ => 1,
+        };
+        self.last_press = Some((view, now, clicks));
         let position = at.unwrap_or_else(|| {
             point(
                 Points(bounds.size.width.0 / 2.0),
@@ -1108,6 +1216,8 @@ impl Headless {
                 Points(bounds.origin.x.0 + position.x.0),
                 Points(bounds.origin.y.0 + position.y.0),
             ),
+            modifiers: nsh_core::keymap::Modifiers::default(),
+            clicks,
         })
     }
 
@@ -1122,17 +1232,23 @@ impl Headless {
         let id = self.picked(pick, selector, "pressable view")?;
         let delay = self.screen.long_press_delay(id).unwrap_or(500.0).max(0.0);
         let path = self.screen.touch_path(id);
-        if !path.is_empty() {
-            self.send_touch(id, nsh_core::TouchPhase::Start, path.clone(), None);
+        let contact = self
+            .screen
+            .begin_contact(0, id, path.clone(), !path.is_empty());
+        if contact.reporting() {
+            self.send_touch(&contact, nsh_core::TouchPhase::Start, path.clone(), None);
         }
         let payload = self.press_payload(id, None);
         self.send(id, EventKind::PressDown, payload.clone());
         self.elapse(Duration::from_secs_f64(f64::from(delay) / 1000.0));
-        self.send(id, EventKind::LongPress, payload.clone());
-        self.send(id, EventKind::PressUp, payload);
-        if !path.is_empty() {
-            self.send_touch(id, nsh_core::TouchPhase::End, path, None);
+        if contact.active() {
+            self.send(id, EventKind::LongPress, payload.clone());
+            self.send(id, EventKind::PressUp, payload);
+            if contact.reporting() {
+                self.send_touch(&contact, nsh_core::TouchPhase::End, path, None);
+            }
         }
+        self.screen.end_contact(&contact);
         self.done()
     }
 
@@ -1154,6 +1270,7 @@ impl Headless {
             self.engine
                 .control()
                 .dispatch_event(id, EventKind::ChangeText, payload);
+            self.report_selection(id);
         }
         self.done()
     }
@@ -1178,6 +1295,54 @@ impl Headless {
         self.done()
     }
 
+    /// The step `paste(<selector>, <content>)`: the user pastes `content`
+    /// into the input `selector` names, as a paste with it on the clipboard
+    /// does: the input takes the focus, `onPaste` reports it, then, while
+    /// `pasteBehavior` inserts, its text is inserted at the end (a single
+    /// line takes line breaks as spaces; within `maxLength`): one edit
+    /// (`onChange`), no keys.
+    pub fn paste(&mut self, selector: &str, content: &nsh_core::PasteEvent) -> Result<(), String> {
+        let id = self.input_step(selector, format!("paste({selector})"))?;
+        self.send(
+            id,
+            EventKind::Paste,
+            EventPayload::Paste(Box::new(content.clone())),
+        );
+        let Some(input) = self.screen.input_mut(id) else {
+            return self.done();
+        };
+        if input.config.paste_behavior != nsh_core::PasteBehavior::Insert || content.text.is_empty()
+        {
+            return self.done();
+        }
+        let mut text = nsh_core::text_edit::pasted(&content.text, input.config.multiline);
+        if let Some(max) = input.config.max_length {
+            let room = (max as usize).saturating_sub(input.text.encode_utf16().count());
+            let mut used = 0;
+            text = text
+                .chars()
+                .take_while(|c| {
+                    used += c.len_utf16();
+                    used <= room
+                })
+                .collect();
+        }
+        if text.is_empty() {
+            return self.done();
+        }
+        input.text.push_str(&text);
+        input.count += 1;
+        let payload = EventPayload::Text {
+            text: input.text.clone(),
+            count: input.count,
+        };
+        self.engine
+            .control()
+            .dispatch_event(id, EventKind::ChangeText, payload);
+        self.report_selection(id);
+        self.done()
+    }
+
     /// The step `submit(<selector>)`: the return key in the input
     /// `selector` names, as its `submitBehavior` says: `onSubmit`
     /// (and the focus leaves it, by default in a single line), or a line
@@ -1197,13 +1362,7 @@ impl Headless {
         if self.screen.input(id).is_some_and(|i| !i.config.editable) {
             return Err(format!("the input `{selector}` is not editable"));
         }
-        if self.screen.focused() != Some(id) {
-            if let Some(old) = self.screen.focused() {
-                self.send(old, EventKind::Blur, EventPayload::None);
-            }
-            self.screen.set_focused(Some(id));
-            self.send(id, EventKind::Focus, EventPayload::None);
-        }
+        self.move_focus(Some(id));
         Ok(id)
     }
 
@@ -1218,17 +1377,21 @@ impl Headless {
     /// root with the views around it that listen to touches.
     fn send_touch(
         &self,
-        target: NodeId,
+        contact: &Contact,
         phase: nsh_core::TouchPhase,
         path: Vec<NodeId>,
         at: Option<Point<Points>>,
     ) {
+        if !contact.active() {
+            return;
+        }
+        let target = contact.target;
         let location = at.and_then(|p| self.screen.bounds_in_root(target).map(|b| p - b.origin));
         let touch = nsh_core::TouchEvent {
             phase,
             timestamp: 0.0,
             points: vec![nsh_core::TouchPoint {
-                id: 0,
+                id: contact.id,
                 target,
                 path,
                 page: at.unwrap_or_default(),
@@ -1285,6 +1448,24 @@ impl Headless {
         self.engine
             .control()
             .dispatch_event(id, EventKind::ChangeText, payload);
+        self.report_selection(id);
+    }
+
+    /// `onSelectionChange` and `onCaretMove` of input `id` after an edit,
+    /// as the platforms report them: the caret at the end of its text
+    /// ([`Screen::input_caret`]).
+    pub(crate) fn report_selection(&self, id: NodeId) {
+        let Some(input) = self.screen.input(id) else {
+            return;
+        };
+        let end = PayloadValue::Number(input.text.encode_utf16().count() as f64);
+        self.send(
+            id,
+            EventKind::SelectionChange,
+            EventPayload::Map(vec![("start", end.clone()), ("end", end)]),
+        );
+        let caret = self.screen.input_caret(id).unwrap_or_default();
+        self.send(id, EventKind::CaretMove, EventPayload::caret(caret));
     }
 
     /// The return key in input `id`.
@@ -1305,6 +1486,9 @@ impl Headless {
         self.send(id, EventKind::SubmitEditing, payload);
         if behavior == SubmitBehavior::BlurAndSubmit {
             self.screen.set_focused(None);
+            self.engine
+                .control()
+                .set_focus_path(self.screen.focus_path());
             self.send(id, EventKind::Blur, EventPayload::None);
         }
     }
@@ -1355,11 +1539,12 @@ impl Headless {
             let s = screen.scroll(id);
             EventPayload::Scroll(s.map_or(Point::default(), |s| point(s.x, s.y)))
         };
+        let contact = self.screen.begin_contact(1, id, Vec::new(), false);
         self.send(id, EventKind::ScrollDragStart, offset(&self.screen));
         // The core may shift the offset meanwhile (`ScrollBy`): each frame
         // moves on from where the view is.
         let mut frames = ((target - start).abs() / SCROLL_STEP).ceil() as usize * 2 + 10;
-        loop {
+        while contact.active() {
             let now = at(&self.screen);
             if (target - now).abs() < px(0.5) || frames == 0 {
                 break;
@@ -1383,8 +1568,12 @@ impl Headless {
             self.animator.scrolled(id, point(x, y));
             self.display_frame();
         }
-        self.send(id, EventKind::ScrollDragEnd, offset(&self.screen));
-        self.send(id, EventKind::ScrollEnd, offset(&self.screen));
+        if contact.active() {
+            self.send(id, EventKind::ScrollDragEnd, offset(&self.screen));
+            self.animator.scroll_ended(id);
+            self.send(id, EventKind::ScrollEnd, offset(&self.screen));
+        }
+        self.screen.end_contact(&contact);
         self.done()
     }
 }
@@ -1442,6 +1631,57 @@ mod tests {
     use nsh_core::ui::{Root, prelude::*};
 
     use super::*;
+
+    /// A paragraph with a link and a marked word.
+    #[component]
+    fn Linked() -> impl IntoElement {
+        text("See ")
+            .child(text("the guide").test_id("guide").underline())
+            .child(" or ")
+            .child(text("this").test_id("marked").bg(rgb(0xfde68a)))
+    }
+
+    #[test]
+    fn span_styles_are_read_by_test_id_or_text() {
+        let mut app = Headless::start(EngineConfig::new(Root::of::<Linked>())).unwrap();
+        app.first_render().unwrap();
+        let screen = app.screen();
+        assert!(screen.span_style("id:guide").unwrap().decoration.underline);
+        assert_eq!(screen.span_style("id:guide").unwrap().background, None);
+        let marked = screen.span_style("id:marked").unwrap().background.unwrap();
+        assert_eq!(marked.color, nsh_core::Color(0xfde6_8aff));
+        assert_eq!(
+            screen
+                .span_style("text:this")
+                .unwrap()
+                .background
+                .map(|b| b.color),
+            Some(marked.color)
+        );
+    }
+
+    #[component]
+    fn EmptySpans() -> impl IntoElement {
+        text("before ")
+            .child(text("").test_id("middle").underline())
+            .child(text("after").italic())
+            .child(text("").test_id("end").underline())
+            .child(text("").test_id("after"))
+    }
+
+    #[test]
+    fn empty_span_styles_do_not_read_neighbouring_characters() {
+        let mut app = Headless::start(EngineConfig::new(Root::of::<EmptySpans>())).unwrap();
+        app.first_render().unwrap();
+        let screen = app.screen();
+        for name in ["id:middle", "id:end", "middle", "end", "id:after", "after"] {
+            assert!(
+                screen.span_style(name).is_err(),
+                "empty span {name} has no first character"
+            );
+        }
+        assert!(screen.span_style("text:after").unwrap().italic);
+    }
 
     /// A count and a button that adds one.
     #[component]
@@ -1615,6 +1855,104 @@ mod tests {
         let mut app = Headless::start(EngineConfig::new(Root::of::<Metrics>())).unwrap();
         app.first_render().unwrap();
         app.wait_for("33 24 0 24").unwrap();
+    }
+
+    #[component]
+    fn FocusTransfer() -> impl IntoElement {
+        let blurs = signal(0_u32);
+        let presses = signal(0_u32);
+        view()
+            .child(
+                view()
+                    .test_id("button")
+                    .w(px(100.0))
+                    .h(px(30.0))
+                    .on_press(move || presses.update(|n| *n += 1))
+                    .on_blur(move || blurs.update(|n| *n += 1)),
+            )
+            .child(input().test_id("field"))
+            .child(text(move || {
+                format!("Blurs {} Presses {}", blurs.get(), presses.get())
+            }))
+    }
+
+    #[test]
+    fn input_steps_transfer_pressable_focus_without_reviving_it_after_submit() {
+        let mut config = EngineConfig::new(Root::of::<FocusTransfer>());
+        config.environment.os = nsh_core::platform::Os::MacOs;
+        config.environment.idiom = nsh_core::platform::Idiom::Desktop;
+        let mut app = Headless::start(config).unwrap();
+        app.first_render().unwrap();
+        app.press_key("tab").unwrap();
+        assert!(app.screen.key_focus().is_some());
+        app.type_text("id:field", "Ada").unwrap();
+        app.wait_for("Blurs 1 Presses 0").unwrap();
+        app.submit("id:field").unwrap();
+        app.press_key("enter").unwrap();
+        app.press_key("space").unwrap();
+        assert!(app.shows("Blurs 1 Presses 0"));
+        assert_eq!(app.screen.key_focus(), None);
+    }
+
+    #[test]
+    fn input_focus_commands_release_pressable_focus_before_blur() {
+        let mut config = EngineConfig::new(Root::of::<FocusTransfer>());
+        config.environment.os = nsh_core::platform::Os::MacOs;
+        config.environment.idiom = nsh_core::platform::Idiom::Desktop;
+        let mut app = Headless::start(config).unwrap();
+        app.first_render().unwrap();
+        app.press_key("tab").unwrap();
+        let field = app.screen.resolve(&Selector::parse("id:field").unwrap())[0];
+        app.apply(&MountBatch {
+            items: vec![MountItem::Command {
+                id: field,
+                command: Command::Focus,
+            }],
+            ..Default::default()
+        });
+        app.done().unwrap();
+        app.wait_for("Blurs 1 Presses 0").unwrap();
+        app.apply(&MountBatch {
+            items: vec![MountItem::Command {
+                id: field,
+                command: Command::Blur,
+            }],
+            ..Default::default()
+        });
+        app.done().unwrap();
+        app.press_key("enter").unwrap();
+        assert!(app.shows("Blurs 1 Presses 0"));
+        assert_eq!(app.screen.key_focus(), None);
+    }
+
+    #[test]
+    fn replacing_a_focused_id_does_not_send_the_old_blur_to_its_replacement() {
+        let mut config = EngineConfig::new(Root::of::<FocusTransfer>());
+        config.environment.os = nsh_core::platform::Os::MacOs;
+        let mut app = Headless::start(config).unwrap();
+        app.first_render().unwrap();
+        app.press_key("tab").unwrap();
+        let old = app.screen.key_focus().unwrap();
+        let mut events = nsh_core::EventMask::default();
+        events.set(EventKind::Blur, true);
+        app.apply(&MountBatch {
+            items: vec![
+                MountItem::Delete { id: old },
+                MountItem::Create {
+                    id: old,
+                    kind: nsh_core::ViewKind::View,
+                },
+                MountItem::Insert {
+                    parent: ROOT_ID,
+                    child: old,
+                    before: None,
+                },
+                MountItem::Events { id: old, events },
+            ],
+        });
+        app.done().unwrap();
+        assert!(app.shows("Blurs 0 Presses 0"));
+        assert_eq!(app.screen.key_focus(), None);
     }
 
     /// A name field that says hello and keeps what was sent.
@@ -1801,6 +2139,370 @@ mod tests {
         assert!(app.shows("Refreshes 1"));
         let error = app.drag("Nothing", point(px(1.0), px(1.0))).unwrap_err();
         assert!(error.starts_with("no view matches `Nothing`"), "{error}");
+    }
+
+    /// Keeps one real DOM node while changing its semantic owner, so the
+    /// engine sends Remove and Insert of the same id in one native batch.
+    #[cfg(feature = "js")]
+    fn contact_app(action: &str, scrolling: bool) -> (Headless, Arc<AtomicBool>) {
+        let source = r#"
+import { mount, signal } from "nsh";
+import { append, element, insert, prop } from "nsh:rt";
+mount(() => {
+  const log = signal("");
+  const shown = signal(true);
+  const record = value => log.set(`${log()}${value}|`);
+  const root = element("view");
+  prop(root, "style", { flex: 1 });
+  const label = element("text");
+  insert(label, () => `log ${log()}`);
+  append(root, label);
+  const content = element(SCROLLING ? "scroll" : "view");
+  prop(content, "testID", "content");
+  prop(content, "style", { height: 200 });
+  prop(content, "onScrollDragEnd", () => record("scroll-end"));
+  append(root, content);
+  const destination = element("view");
+  append(root, destination);
+  const held = element("view");
+  prop(held, "testID", "held");
+  prop(held, "style", { height: 40 });
+  prop(held, "delayLongPress", 200);
+  let armed = true;
+  const surgery = () => { ACTION };
+  const arm = () => {
+    if (armed) {
+      armed = false;
+      setTimeout(surgery, SCROLLING ? 160 : 10);
+    }
+  };
+  prop(held, "onTouchStart", arm);
+  prop(held, "onTouchEnd", () => record("end"));
+  prop(held, "onPressDown", () => { record("down"); arm(); });
+  prop(held, "onLongPress", () => record("long"));
+  prop(held, "onPressUp", () => record("up"));
+  prop(held, "onPress", () => record("press"));
+  insert(content, () => shown() ? held : null);
+  const tail = element("view");
+  prop(tail, "style", { height: 1000 });
+  append(content, tail);
+  return root;
+});
+"#
+        .replace("SCROLLING", if scrolling { "true" } else { "false" })
+        .replace("ACTION", action);
+        reinsert_app(source)
+    }
+
+    #[cfg(feature = "js")]
+    fn reinsert_app(source: String) -> (Headless, Arc<AtomicBool>) {
+        let mut config = EngineConfig::new(nsh_engine::Bundle::source(source));
+        config.clock = Clock::manual(std::time::UNIX_EPOCH);
+        let mut app = Headless::start(config).unwrap();
+        let same_batch = Arc::new(AtomicBool::new(false));
+        let seen = same_batch.clone();
+        app.observe(move |_, batch| {
+            for item in &batch.items {
+                if let MountItem::Remove { id } = item
+                    && batch
+                        .items
+                        .iter()
+                        .any(|next| matches!(next,
+                            MountItem::Insert { child, .. } | MountItem::ProjectRoot { id: child, .. }
+                                if child == id))
+                {
+                    seen.store(true, Ordering::Relaxed);
+                }
+            }
+        });
+        app.first_render().unwrap();
+        (app, same_batch)
+    }
+
+    #[cfg(feature = "js")]
+    const REBIND_CONTACT: &str = r#"
+shown.set(false);
+prop(held, "onPressDown", () => record("new-down"));
+prop(held, "onLongPress", () => record("new-long"));
+prop(held, "onPressUp", () => record("new-up"));
+prop(held, "onPress", () => record("new-press"));
+prop(held, "onTouchEnd", () => record("new-end"));
+shown.set(true);
+record("rebound");
+"#;
+
+    #[cfg(feature = "js")]
+    #[test]
+    fn a_reinserted_owner_does_not_receive_the_previous_long_press_or_drag() {
+        for long in [true, false] {
+            let (mut app, same_batch) = contact_app(REBIND_CONTACT, false);
+            let original = app.screen().press_target("id:held").unwrap();
+            if long {
+                app.long_press("id:held").unwrap();
+            } else {
+                app.drag("id:held", point(px(0.0), px(4.0))).unwrap();
+            }
+            assert!(same_batch.load(Ordering::Relaxed));
+            assert_eq!(app.screen().press_target("id:held").unwrap(), original);
+            app.wait_for("log down|rebound|").unwrap();
+            // The replacement accepts a fresh physical contact normally.
+            app.press("id:held").unwrap();
+            app.wait_for("log down|rebound|new-down|new-up|new-press|new-end|")
+                .unwrap();
+        }
+    }
+
+    #[cfg(feature = "js")]
+    #[test]
+    fn an_insert_only_move_keeps_the_existing_long_press() {
+        let (mut app, same_batch) =
+            contact_app(r#"append(destination, held); record("moved");"#, false);
+        app.long_press("id:held").unwrap();
+        assert!(!same_batch.load(Ordering::Relaxed));
+        app.wait_for("log down|moved|long|up|end|").unwrap();
+    }
+
+    #[cfg(feature = "js")]
+    #[test]
+    fn a_surviving_scroll_finishes_after_its_original_row_is_reinserted() {
+        let (mut app, same_batch) = contact_app(REBIND_CONTACT, true);
+        app.drag("id:held", point(px(0.0), px(-300.0))).unwrap();
+        assert!(same_batch.load(Ordering::Relaxed));
+        let Pick::One(content) = app
+            .screen()
+            .scroll_view(&Selector::parse("id:content").unwrap())
+        else {
+            panic!("one scroll view");
+        };
+        assert_eq!(app.screen().scroll(content).map(|s| s.y), Some(px(280.0)));
+        assert!(app.screen().texts().iter().any(|text| {
+            text.contains("rebound|")
+                && text.contains("scroll-end|")
+                && !text.contains("new-up|")
+                && !text.contains("new-press|")
+                && !text.contains("new-end|")
+        }));
+    }
+
+    #[cfg(feature = "js")]
+    #[test]
+    fn a_scroll_step_stops_when_its_native_owner_is_reinserted() {
+        let (mut app, reinserted) = reinsert_app(
+            r#"
+import { mount, signal } from "nsh";
+import { append, element, insert, prop } from "nsh:rt";
+mount(() => {
+  const log = signal("");
+  const shown = signal(true);
+  const record = value => log.set(`${log()}${value}|`);
+  const root = element("view");
+  prop(root, "style", { flex: 1 });
+  const label = element("text");
+  insert(label, () => `log ${log()}`);
+  append(root, label);
+  const scroll = element("scroll");
+  prop(scroll, "testID", "scroll");
+  prop(scroll, "style", { height: 100 });
+  prop(scroll, "onScroll", () => record("move"));
+  prop(scroll, "onScrollDragStart", () => {
+    record("start");
+    setTimeout(() => {
+      shown.set(false);
+      prop(scroll, "onScroll", () => record("new-move"));
+      prop(scroll, "onScrollDragStart", () => record("new-start"));
+      prop(scroll, "onScrollDragEnd", () => record("new-drag-end"));
+      prop(scroll, "onScrollEnd", () => record("new-end"));
+      shown.set(true);
+      record("rebound");
+    }, 10);
+  });
+  const tail = element("view");
+  prop(tail, "style", { height: 1000 });
+  append(scroll, tail);
+  insert(root, () => shown() ? scroll : null);
+  return root;
+});
+"#
+            .into(),
+        );
+        app.scroll("id:scroll", px(300.0)).unwrap();
+        assert!(reinserted.load(Ordering::Relaxed));
+        assert!(app.screen().texts().iter().any(|text| {
+            text.contains("start|") && text.contains("rebound|") && !text.contains("new-")
+        }));
+        app.scroll("id:scroll", px(20.0)).unwrap();
+        assert!(app.screen().texts().iter().any(|text| {
+            text.contains("new-start|")
+                && text.contains("new-move|")
+                && text.contains("new-drag-end|")
+                && text.contains("new-end|")
+        }));
+    }
+
+    #[cfg(feature = "js")]
+    #[test]
+    fn a_reinserted_owner_does_not_inherit_the_previous_hover_path() {
+        for reenter in [false, true] {
+            let (mut app, reinserted) = reinsert_app(
+                r#"
+import { mount, signal } from "nsh";
+import { append, element, insert, prop } from "nsh:rt";
+mount(() => {
+  const log = signal("");
+  const shown = signal(true);
+  const record = value => log.set(`${log()}${value}|`);
+  const root = element("view");
+  prop(root, "style", { flex: 1 });
+  const label = element("text");
+  insert(label, () => `log ${log()}`);
+  append(root, label);
+  const held = element("view");
+  prop(held, "testID", "held");
+  prop(held, "style", { height: 40 });
+  prop(held, "class", "hover:opacity-50");
+  prop(held, "onHoverIn", () => {
+    record("in");
+    setTimeout(() => {
+      shown.set(false);
+      prop(held, "onHoverIn", () => record("new-in"));
+      prop(held, "onHoverOut", () => record("new-out"));
+      shown.set(true);
+      record("rebound");
+    }, 10);
+  });
+  prop(held, "onHoverOut", () => record("out"));
+  insert(root, () => shown() ? held : null);
+  const other = element("view");
+  prop(other, "testID", "other");
+  prop(other, "style", { height: 40 });
+  prop(other, "onHoverIn", () => record("other-in"));
+  append(root, other);
+  return root;
+});
+"#
+                .into(),
+            );
+            app.set_environment("desktop pointer", |environment| {
+                environment.os = nsh_core::platform::Os::MacOs;
+                environment.idiom = nsh_core::platform::Idiom::Desktop;
+            })
+            .unwrap();
+            app.hover("id:held").unwrap();
+            app.run_for(Duration::from_millis(20)).unwrap();
+            assert!(reinserted.load(Ordering::Relaxed));
+            if reenter {
+                app.hover("id:held").unwrap();
+                app.wait_for("log in|rebound|new-in|").unwrap();
+            } else {
+                app.hover("id:other").unwrap();
+                app.wait_for("log in|rebound|other-in|").unwrap();
+                app.hover("id:held").unwrap();
+                app.wait_for("log in|rebound|other-in|new-in|").unwrap();
+            }
+        }
+    }
+
+    #[cfg(feature = "js")]
+    #[test]
+    fn cross_parent_modal_projection_keeps_the_native_presentation_slot() {
+        let source = r#"
+import { mount, signal } from "nsh";
+import { append, element, insert, prop } from "nsh:rt";
+mount(() => {
+  const picks = signal([]);
+  const reopened = signal(false);
+  const root = element("view");
+  prop(root, "style", { flex: 1 });
+  const result = element("text");
+  insert(result, () => `picked ${picks().join(",")}`);
+  append(root, result);
+  const button = (label, onPress) => {
+    const view = element("view");
+    prop(view, "style", { height: 40, width: 240 });
+    prop(view, "onPress", onPress);
+    const text = element("text");
+    insert(text, label);
+    append(view, text);
+    return view;
+  };
+  const modal = name => {
+    const view = element("modal");
+    prop(view, "style", { width: 320, height: 240 });
+    append(view, button("Choose", () => picks.set([...picks(), name])));
+    return view;
+  };
+  const left = element("view");
+  const right = element("view");
+  append(root, left);
+  append(root, right);
+  const older = modal("older");
+  const newer = modal("newer");
+  append(left, older);
+  append(right, newer);
+  insert(right, () => reopened() ? older : null);
+  append(newer, button("Move older modal", () => append(right, older)));
+  append(newer, button("Reopen older modal", () => {
+    reopened.set(true);
+    reopened.set(false);
+    reopened.set(true);
+  }));
+  return root;
+});
+"#;
+        let mut app =
+            Headless::start(EngineConfig::new(nsh_engine::Bundle::source(source.into()))).unwrap();
+        let projected = Arc::new(AtomicBool::new(false));
+        let seen = projected.clone();
+        app.observe(move |step, batch| {
+            if step == "press(Move older modal)"
+                && batch
+                    .items
+                    .iter()
+                    .any(|item| matches!(item, MountItem::ProjectRoot { .. }))
+            {
+                seen.store(true, Ordering::Relaxed);
+            }
+        });
+        app.first_render().unwrap();
+        app.press("text:Choose >> nth=0").unwrap();
+        app.wait_for("picked newer").unwrap();
+        app.press("Move older modal").unwrap();
+        assert!(projected.load(Ordering::Relaxed));
+        app.press("text:Choose >> nth=0").unwrap();
+        app.wait_for("picked newer,newer").unwrap();
+        // A genuine source removal ends that slot; reopening is a new
+        // presentation and now goes above the previously newer modal.
+        app.press("Reopen older modal").unwrap();
+        app.press("text:Choose >> nth=0").unwrap();
+        app.wait_for("picked newer,newer,older").unwrap();
+    }
+
+    /// A list with a refresh indicator of its own, 100 tall.
+    #[component]
+    fn FarPull() -> impl IntoElement {
+        let refreshes = signal(0_u32);
+        view()
+            .flex_1()
+            .child(text(move || format!("Refreshes {}", refreshes.get())))
+            .child(
+                scroll()
+                    .test_id("list")
+                    .flex_1()
+                    .refresh_indicator(Some(px(100.0)))
+                    .on_refresh(move |_: &()| refreshes.update(|r| *r += 1))
+                    .children((0..30).map(|i| view().h(px(50.0)).child(text(format!("Row {i}"))))),
+            )
+    }
+
+    #[test]
+    fn a_pull_refreshes_at_its_threshold() {
+        let mut app = Headless::start(EngineConfig::new(Root::of::<FarPull>())).unwrap();
+        app.first_render().unwrap();
+        // 150 points of finger rubber-band to less than 100 (past 64).
+        app.drag("Row 2", point(px(0.0), px(150.0))).unwrap();
+        assert!(app.shows("Refreshes 0"));
+        app.drag("Row 2", point(px(0.0), px(1000.0))).unwrap();
+        app.wait_for("Refreshes 1").unwrap();
     }
 
     /// A shortcut counting its presses, and a field.

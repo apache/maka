@@ -64,7 +64,8 @@ pub(super) async fn composition(
     session: &str,
 ) -> maka_agent_facts::composition::RequestComposition {
     let prefix = fixture
-        .store
+        .session(session)
+        .await
         .scoped_prefix(
             maka_agent_facts::event::LogScope::Session { id: session.into() },
             128,
@@ -84,7 +85,8 @@ pub(super) async fn composition(
         })
         .expect("actual model dispatch must retain ModelRequested");
     fixture
-        .store
+        .session(session)
+        .await
         .request_composition(session, &requested.event.id)
         .await
         .unwrap()
@@ -160,7 +162,7 @@ async fn fork_compaction_and_child_send_rebind_context_without_changing_parent_e
         response_with_text(&mut socket, "Completed parent history for the child summary.").await;
         fixture.drained().await;
         let original = composition(&fixture, parent_id).await;
-        let boundary = fixture.store.invocation_boundary(parent_id, sent["invocationId"].as_str().unwrap()).await.unwrap().unwrap().0;
+        let boundary = fixture.session(parent_id).await.invocation_boundary(parent_id, sent["invocationId"].as_str().unwrap()).await.unwrap().unwrap().0;
         let observed = fixture.query("observe", json!({"sessionId":parent_id})).await.unwrap();
         let forked = fixture.mutation(2, "fork", json!({"sessionId":parent_id,"expectedRevision":observed["session"]["revision"],"turnId":boundary.invocation.turn_id,"title":"Child context","labels":[]}), Uuid::new_v4()).await.unwrap();
         let child = forked["session"].clone();
@@ -316,10 +318,10 @@ async fn project_relocation_compaction_reuses_static_surface_with_current_worksp
         let projects = fixture.query("projects", json!({"kind":"list","cursor":null})).await.unwrap();
         let relocated = fixture.mutation(2, "project", json!({"kind":"relocate","project":projects["projects"][0]["reference"],"selection":roots["roots"][1]["selection"],"destination":null}), Uuid::new_v4()).await.unwrap();
         let current_session = fixture.query("observe", json!({"sessionId":id})).await.unwrap()["session"].clone();
-        let prior_context = fixture.store.read_model_context(id, None).await.unwrap();
+        let prior_context = fixture.session(id).await.read_model_view(id, None).await.unwrap();
         let prior_composition = match prior_context.latest_main {
             maka_event_log::context::LatestMainContext::Selected(latest) =>
-                fixture.store.completed_request_composition(id, latest.sequence).await.unwrap(),
+                fixture.session(id).await.completed_request_composition(id, latest.sequence).await.unwrap(),
             _ => None,
         };
         let compacted = fixture.mutation(2, "compact", json!({"sessionId":id,"model":fixture.selection().await,"prompt":"Summarize the conversation in its relocated workspace."}), Uuid::new_v4()).await.unwrap();

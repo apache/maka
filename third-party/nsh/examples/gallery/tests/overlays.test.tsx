@@ -28,6 +28,15 @@ test("a popover opens from its trigger and back closes it", async () => {
   await app.waitFor("popover closed (cancel)");
 });
 
+test("Escape cancels a popover without navigating away", async () => {
+  await app.press("Show the popover");
+  await app.waitFor("popover opened (triggerPress)");
+  await app.keyboard.press("escape");
+  await app.waitFor("popover closed (cancel)");
+  await app.waitFor("A press outside, Escape or back closes it.", { state: "gone" });
+  await app.waitFor("Open the overlay");
+});
+
 test("a tooltip the app opens shows on a touch screen, which shows none of its own", async () => {
   await app.longPress("Save");
   expect(app.texts()).not.toContain("Saves the document");

@@ -62,6 +62,7 @@ async fn external_output_is_durable_observation_not_native_dispatch_and_rebuilds
             approval_policy: maka_agent_facts::execution::ApprovalPolicy::OnRequest,
             boundary_revision: 0,
             cwd: temp.path().to_string_lossy().into_owned(),
+            workspace_binding: None,
             workspace_identity: None,
             model: None,
             editing_tools: None,
@@ -241,9 +242,11 @@ async fn external_output_is_durable_observation_not_native_dispatch_and_rebuilds
             through,
             maka_agent_ports::session::history::Position::Start,
             true,
-            8192,
-            32,
-            64 * 1024,
+            maka_event_log::transcript::HistoryLimits {
+                max_bytes: 8192,
+                max_chunks: Some(32),
+                max_json_bytes: 64 * 1024,
+            },
         )
         .await
         .unwrap();
@@ -264,9 +267,11 @@ async fn external_output_is_durable_observation_not_native_dispatch_and_rebuilds
         .history_source(
             "session",
             through,
-            answer.position,
-            maka_agent_ports::session::history::SourceField::Body,
-            None,
+            maka_event_log::transcript::SourceSelection {
+                locator: answer.position,
+                field: maka_agent_ports::session::history::SourceField::Body,
+                path: None,
+            },
             maka_agent_ports::session::history::SourcePosition::After { offset: 6 },
             8192,
         )

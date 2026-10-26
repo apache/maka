@@ -28,6 +28,7 @@ use maka_agent_ports::execution::MessageState;
 use maka_agent_ports::execution::Progress;
 use maka_agent_ports::execution::Resume;
 use maka_agent_ports::execution::SessionMessage;
+use maka_agent_ports::execution::SessionOperation;
 use maka_capabilities::authorization::CommandError;
 use serde::{Deserialize, Serialize};
 
@@ -193,9 +194,14 @@ impl Assignments {
                             // If delivery won, freeze its exact result before attempting stop.
                             let delivery = assignment.delivery.as_ref().ok_or(Error::Conflict)?;
                             record.selection = match delivery {
-                                Delivery::Submitted { .. } => {
+                                Delivery::Submitted { receipt } => {
                                     let observation = commands
-                                        .cancel(execution_id(&assignment.request.operation_id)?)
+                                        .cancel(SessionOperation {
+                                            session_id: receipt.invocation.session_id.clone(),
+                                            operation_id: execution_id(
+                                                &assignment.request.operation_id,
+                                            )?,
+                                        })
                                         .await?;
                                     record.stopped = Some(
                                         if matches!(observation.progress, Progress::Pending) {
@@ -208,7 +214,12 @@ impl Assignments {
                                 }
                                 Delivery::Queued { receipt } => {
                                     let observation = commands
-                                        .retract(execution_id(&assignment.request.operation_id)?)
+                                        .retract(SessionOperation {
+                                            session_id: receipt.invocation.session_id.clone(),
+                                            operation_id: execution_id(
+                                                &assignment.request.operation_id,
+                                            )?,
+                                        })
                                         .await?;
                                     selection(observation.state, &receipt.invocation)
                                 }

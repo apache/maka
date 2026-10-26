@@ -17,6 +17,7 @@
  * under the License.
  */
 
+use cua_skia as tiny_skia;
 use maka_computer_use::cursor::{Color, theme};
 fn main() {
     let output = std::env::args()

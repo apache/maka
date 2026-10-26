@@ -128,7 +128,7 @@ export function checkStagedWithBiome({
       return false;
     }
     // Biome echoes the input for files it formats or ignores, but prints
-    // nothing for a language it parses without formatting, such as Markdown.
+    // nothing when no enabled formatter produces output for the file.
     if (result.stdout.length === 0) continue;
     if (!result.stdout.equals(contents)) {
       process.stderr.write(`${path}: staged content is not formatted by Biome\n`);

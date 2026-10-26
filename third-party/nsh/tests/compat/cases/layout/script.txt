@@ -356,3 +356,8 @@ frame id:sticky-heading 0 0 390 30
 prop scroll:text:"Sticky bar" stickyHeaderIndices start=84 end=1084
 # The heading sticks within its section (50 to 450).
 prop scroll:text:"Sticky heading" stickyHeaderIndices start=50 end=420
+# An animated `top`: the platform adds its value as it pins, every frame,
+# so the travel is the one at the top: from 60 until its end meets the
+# content's (690).
+frame id:sticky-animated 0 60 390 30
+prop scroll:text:"Sticky animated" stickyHeaderIndices start=60 end=660

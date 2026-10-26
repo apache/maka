@@ -45,8 +45,9 @@ pub enum Operation {
     Http {
         method: maka_capabilities::http::Method,
         url: String,
-        body_digest: String,
-        body_bytes: usize,
+        /// Source-declared length; digest and byte count are upload observations
+        /// recorded in the outcome, never a preflight full-body materialization.
+        body_length: Option<u64>,
     },
     Notification {
         input: maka_capabilities::client_capability::Notification,

@@ -118,9 +118,6 @@ fn stage_one(directory: &Path, source: &Path) -> Result<(PathBuf, String), HostE
             break;
         }
         size += read as u64;
-        if size > 512 * 1024 * 1024 {
-            return Err("Host executable exceeds the package size limit".into());
-        }
         temporary.write_all(&buffer[..read])?;
         hasher.update(&buffer[..read]);
     }

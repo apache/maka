@@ -4,7 +4,10 @@
 //! The agent calls from a thread of its own; each call does its work on
 //! the main queue (`exec_sync`) and returns once the input is posted.
 
-use std::{rc::Rc, time::Duration};
+use std::{
+    rc::Rc,
+    time::{Duration, Instant},
+};
 
 use dispatch2::DispatchQueue;
 use nsh_core::{
@@ -24,7 +27,7 @@ use crate::{surface::Surface, synth};
 /// How long a press waits for the app to become active at most (a locked
 /// screen never lets it).
 const ACTIVATION: Duration = Duration::from_secs(1);
-/// A trackpad gesture's events, a display frame apart.
+/// A display frame, where the window's screen tells none.
 const FRAME: Duration = Duration::from_millis(16);
 /// How far one gesture event scrolls at most, in points.
 const GESTURE_STEP: f64 = 20.0;
@@ -57,12 +60,23 @@ impl MacNative {
         out
     }
 
+    /// A frame of the screen showing the window: a trackpad sends its
+    /// gesture's events at the display's rate (120 Hz on ProMotion).
+    fn frame(&self) -> Duration {
+        self.on_main(|_, window| {
+            let rate = window.screen()?.maximumFramesPerSecond();
+            (rate > 0).then(|| Duration::from_secs_f64(1.0 / rate as f64))
+        })
+        .flatten()
+        .unwrap_or(FRAME)
+    }
+
     /// Makes the app active, as presses into web views need (in another
     /// app, a click into a page only activates it): waits for it a second
     /// at most.
     fn activate(&self) {
-        let deadline = std::time::Instant::now() + ACTIVATION;
-        while std::time::Instant::now() < deadline {
+        let deadline = Instant::now() + ACTIVATION;
+        while Instant::now() < deadline {
             let active = self.on_main(|_, window| {
                 let app = NSApplication::sharedApplication(MainThreadMarker::from(window));
                 if !app.isActive() {
@@ -159,12 +173,16 @@ impl Native for MacNative {
         let (dx, dy) = (f64::from(delta.x.0), f64::from(delta.y.0));
         // A trackpad gesture: began, changed events a frame apart carrying
         // whole points that add up to the distance, ended (no momentum).
+        // On a schedule, so the main thread's hops do not slow them down.
         let frames = ((dx.abs().max(dy.abs()) / GESTURE_STEP).ceil() as u32).max(1);
-        let gesture = |dx: i32, dy: i32, phase: i64| {
+        let frame = self.frame();
+        let mut next = Instant::now();
+        let mut gesture = |dx: i32, dy: i32, phase: i64| {
             self.on_main(move |_, window| {
                 synth::wheel_with(window, x, y, dx, dy, Some(phase), 0, synth::timestamp());
             });
-            std::thread::sleep(FRAME);
+            next += frame;
+            std::thread::sleep(next.saturating_duration_since(Instant::now()));
         };
         gesture(0, 0, 1);
         let (mut sent_x, mut sent_y) = (0, 0);
@@ -201,6 +219,12 @@ impl Native for MacNative {
     fn type_text(&self, text: &str) {
         let text = text.to_owned();
         self.on_main(move |_, window| synth::type_text(window, &text));
+    }
+
+    fn paste(&self, content: &nsh_core::PasteEvent) -> Result<(), String> {
+        let content = content.clone();
+        self.on_main(move |_, window| crate::text_input::test_paste(window, &content))
+            .unwrap_or_else(|| Err("the window is gone".into()))
     }
 
     fn key(&self, key: Key) {

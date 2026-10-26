@@ -11,7 +11,11 @@
 //! 4. the hosted items ([`crate::view::Native`]) and the scroll indicator,
 //! 5. the border ([`crate::decor::draw_border`]),
 //!
-//! all inside an opacity layer when the view is translucent. A view whose
+//! all inside an opacity layer when the view is translucent, bounded by
+//! the area the subtree draws in (a layer is a surface of the size of its
+//! bounds and the clip: an unbounded one is as large as the window). A
+//! translucent view that paints only its background color takes no layer:
+//! the color is faded instead, which is the same. A view whose
 //! transform is projective (perspective, `rotateX` with a perspective) is
 //! drawn into an offscreen bitmap first and mapped with
 //! `DrawBitmap`'s perspective transform; every other transform is a 3x2
@@ -31,7 +35,7 @@
 use std::rc::Rc;
 
 use nsh_core::{
-    Bounds, Color, Points,
+    BlendMode, Bounds, Color, Points, ViewKind,
     geometry::{Point, Size},
 };
 use windows::{
@@ -63,7 +67,7 @@ use crate::{
     geom::Mat4,
     gfx::{self, Gfx},
     surface::Surface,
-    view::{Hosted, NshView},
+    view::{Hosted, NshView, ViewState},
 };
 
 /// A color as Direct2D's (straight alpha; Direct2D premultiplies).
@@ -98,12 +102,13 @@ pub(crate) const INFINITE: D2D_RECT_F = D2D_RECT_F {
 /// What was pushed on the context, to pop it the same way (and push it
 /// again: [`DrawCx::flatten`]).
 enum Pushed {
-    /// A layer: its opacity and mask, with the transform it was pushed
-    /// with.
+    /// A layer: its opacity, mask and content bounds, with the transform
+    /// it was pushed with.
     Layer {
         transform: Matrix3x2,
         opacity: f32,
         mask: Option<ID2D1Geometry>,
+        bounds: D2D_RECT_F,
     },
     /// An axis-aligned clip, with the transform it was pushed with.
     Clip {
@@ -141,6 +146,10 @@ pub(crate) struct DrawCx<'a> {
     pub(crate) backdrop: bool,
     /// The opacity of what is drawn now (the views' around it, multiplied).
     pub(crate) alpha: f32,
+    /// The opacity [`DrawCx::solid`] multiplies into its colors: a
+    /// translucent view that paints one shape is drawn with it instead of
+    /// a layer ([`draw_view`]).
+    fade: f32,
     /// The composed items (web views) reached in this pass, in paint
     /// order, with where they go.
     pub(crate) composed: Vec<Composed>,
@@ -150,6 +159,24 @@ pub(crate) struct DrawCx<'a> {
     /// The clip of the passes around this one (DIPs of the window), for
     /// a pass drawn offscreen in window coordinates.
     clip_base: Option<D2D_RECT_F>,
+    /// The window's bounds (DIPs) in the window's pass: the children of a
+    /// clipping view that fall outside what is visible are not drawn
+    /// ([`hidden_by_clips`]). `None` in passes drawn offscreen, which
+    /// draw everything.
+    pub(crate) window: Option<D2D_RECT_F>,
+    /// The areas (window DIPs) a partial frame draws: views wholly outside
+    /// them are left out. `None`: everything.
+    pub(crate) damage: Option<Vec<D2D_RECT_F>>,
+    /// The first pushes clip to a partial frame's areas: not part of what
+    /// views record as visible ([`DrawCx::visible`]).
+    clip_skip: usize,
+    /// In a pass drawn offscreen for a view (filters, 3D transforms), where
+    /// that view draws in the window: what its subtree records as painted
+    /// ([`NshView::set_painted`]).
+    pub(crate) group_area: Option<D2D_RECT_F>,
+    /// The pass draws the window's frame: views record where they were
+    /// painted (not in snapshots, which leave the screen as it is).
+    pub(crate) records: bool,
 }
 
 /// A composed item reached by a pass.
@@ -208,9 +235,15 @@ impl<'a> DrawCx<'a> {
             offscreen: false,
             backdrop: true,
             alpha: 1.0,
+            fade: 1.0,
             composed: Vec::new(),
             split: None,
             clip_base: None,
+            window: None,
+            damage: None,
+            clip_skip: 0,
+            group_area: None,
+            records: false,
         })
     }
 
@@ -231,14 +264,29 @@ impl<'a> DrawCx<'a> {
         cx.backdrop = false;
         cx.alpha = self.alpha;
         cx.clip_base = Some(self.clip_bounds());
+        cx.group_area = self.group_area;
+        cx.records = self.records;
         Ok(cx)
+    }
+
+    /// What the window and the clips pushed so far leave visible (DIPs of
+    /// the window), in the window's pass.
+    fn visible(&self) -> Option<D2D_RECT_F> {
+        let window = self.window?;
+        let clip = self.clip_bounds();
+        Some(D2D_RECT_F {
+            left: window.left.max(clip.left),
+            top: window.top.max(clip.top),
+            right: window.right.min(clip.right),
+            bottom: window.bottom.min(clip.bottom),
+        })
     }
 
     /// What the clips pushed so far leave visible, in DIPs of the target
     /// (and of the passes around it).
     fn clip_bounds(&self) -> D2D_RECT_F {
         let mut r = self.clip_base.unwrap_or(INFINITE);
-        for p in &self.pushed {
+        for p in self.pushed.iter().skip(self.clip_skip) {
             let b = match p {
                 Pushed::Clip { transform, rect } => crate::compose::map_bounds(transform, rect),
                 Pushed::Layer {
@@ -362,10 +410,13 @@ impl<'a> DrawCx<'a> {
         }
     }
 
-    /// The pass's solid brush, set to `color`.
+    /// The pass's solid brush, set to `color` (faded by the view's
+    /// opacity when it is drawn without a layer).
     pub(crate) fn solid(&self, color: Color) -> &ID2D1SolidColorBrush {
+        let mut c = color_f(color);
+        c.a *= self.fade;
         // SAFETY: a COM call on a live brush.
-        unsafe { self.brush.SetColor(&color_f(color)) };
+        unsafe { self.brush.SetColor(&c) };
         &self.brush
     }
 
@@ -380,27 +431,36 @@ impl<'a> DrawCx<'a> {
 
     /// Draws what follows at `opacity`.
     pub(crate) fn push_opacity(&mut self, opacity: f32) {
-        self.push_layer(opacity, None);
+        self.push_layer(opacity, None, INFINITE);
+    }
+
+    /// Draws what follows at `opacity`, all of it inside `bounds` (current
+    /// coordinates): Direct2D sizes the layer's surface to them, where an
+    /// unbounded layer takes the whole clip (the window's, often).
+    pub(crate) fn push_opacity_within(&mut self, opacity: f32, bounds: D2D_RECT_F) {
+        self.push_layer(opacity, None, bounds);
     }
 
     /// Clips what follows to `geometry` (in the current coordinates).
     pub(crate) fn push_clip_geometry(&mut self, geometry: &ID2D1Geometry) {
-        self.push_layer(1.0, Some(geometry.clone()));
+        self.push_layer(1.0, Some(geometry.clone()), INFINITE);
     }
 
-    /// Pushes a layer of `opacity` masked by `mask` (current coordinates).
-    fn push_layer(&mut self, opacity: f32, mask: Option<ID2D1Geometry>) {
-        self.push_layer_raw(opacity, mask.as_ref());
+    /// Pushes a layer of `opacity` masked by `mask`, its content inside
+    /// `bounds` (current coordinates).
+    fn push_layer(&mut self, opacity: f32, mask: Option<ID2D1Geometry>, bounds: D2D_RECT_F) {
+        self.push_layer_raw(opacity, mask.as_ref(), &bounds);
         self.pushed.push(Pushed::Layer {
             transform: self.dc_transform(),
             opacity,
             mask,
+            bounds,
         });
     }
 
-    fn push_layer_raw(&self, opacity: f32, mask: Option<&ID2D1Geometry>) {
+    fn push_layer_raw(&self, opacity: f32, mask: Option<&ID2D1Geometry>, bounds: &D2D_RECT_F) {
         let mut params = D2D1_LAYER_PARAMETERS1 {
-            contentBounds: INFINITE,
+            contentBounds: *bounds,
             geometricMask: std::mem::ManuallyDrop::new(mask.cloned()),
             maskAntialiasMode: D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
             maskTransform: Matrix3x2::identity(),
@@ -445,10 +505,11 @@ impl<'a> DrawCx<'a> {
                     transform,
                     opacity,
                     mask,
+                    bounds,
                 } => {
                     // SAFETY: a COM call on the live context.
                     unsafe { self.dc.SetTransform(transform) };
-                    self.push_layer_raw(*opacity, mask.as_ref());
+                    self.push_layer_raw(*opacity, mask.as_ref(), bounds);
                 }
                 Pushed::Clip { transform, rect } => {
                     // SAFETY: COM calls on the live context; popped by
@@ -607,11 +668,12 @@ pub(crate) fn rounded_geometry(
 /// parent's coordinates and `origin` where the view goes in them.
 pub(crate) fn draw_view(cx: &mut DrawCx<'_>, view: &NshView, parent: Mat4, origin: (f32, f32)) {
     let state = view.state();
-    if state.style.hidden || state.concealed {
-        return;
-    }
     let opacity = state.opacity();
-    if opacity <= 0.0 {
+    if state.style.hidden || state.concealed || opacity <= 0.0 {
+        drop(state);
+        if cx.records {
+            view.set_painted(None);
+        }
         return;
     }
     let mut local = Mat4::new().translate(origin.0, origin.1);
@@ -620,33 +682,226 @@ pub(crate) fn draw_view(cx: &mut DrawCx<'_>, view: &NshView, parent: Mat4, origi
     }
     let world = Mat4::mul(&local, &parent);
     if crate::decor::backface_away(&state, &world) {
+        drop(state);
+        if cx.records {
+            view.set_painted(None);
+        }
+        return;
+    }
+    if !world.is_affine() {
+        drop(state);
+        // Where a projected subtree lands is not kept: all of what is
+        // visible stands for it, and its subtree drawn offscreen.
+        let area = if cx.window.is_some() {
+            cx.visible()
+        } else {
+            cx.group_area
+        };
+        if cx.records {
+            view.set_painted(area);
+        }
+        cx.realize();
+        let outer = std::mem::replace(&mut cx.group_area, area);
+        draw_projected(cx, view, world, opacity);
+        cx.group_area = outer;
+        return;
+    }
+    let own = crate::compose::map_bounds(&world.to_3x2(), &own_area(&state));
+    let painted = match cx.visible() {
+        Some(visible) => intersection(&own, &visible),
+        None => cx.group_area,
+    };
+    if cx.records {
+        view.set_painted(painted);
+    }
+    // Outside a partial frame's area: a view whose subtree stays inside
+    // it (it clips, or has no children) draws nothing there.
+    if let Some(damage) = &cx.damage
+        && !damage.iter().any(|d| intersects(&own, d))
+        && state.natives.is_empty()
+        && (state.clips() || view.with_children(<[NshView]>::is_empty))
+    {
         return;
     }
     // Drawn above a web view reached before it, if any.
     cx.realize();
-    if !world.is_affine() {
-        drop(state);
-        return draw_projected(cx, view, world, opacity);
-    }
     let layered = crate::decor::layered(&state);
+    // Opacity applies to the view and its subtree as one group. When the
+    // view paints a single shape, fading that shape's color is the same
+    // and needs no layer.
+    let faded = opacity < 1.0 && !layered && paints_one_shape(view, &state);
     drop(state);
     cx.set_transform(world);
-    if opacity < 1.0 {
-        cx.push_opacity(opacity);
+    let grouped = opacity < 1.0 && !faded;
+    if grouped {
+        match drawn_area(view) {
+            Some(area) => cx.push_opacity_within(opacity, area),
+            None => cx.push_opacity(opacity),
+        }
     }
-    let alpha = cx.alpha;
+    let (alpha, fade) = (cx.alpha, cx.fade);
     cx.alpha *= opacity;
+    if faded {
+        cx.fade *= opacity;
+    }
     if layered {
         // Filters, a shadow of the content or a blend mode: the view is
         // drawn offscreen and composited as one image.
+        let area = drawn_area(view)
+            .map(|a| crate::compose::map_bounds(&world.to_3x2(), &a))
+            .or_else(|| cx.visible())
+            .or(cx.group_area);
+        let outer = std::mem::replace(&mut cx.group_area, area);
         crate::decor::draw_layered(cx, view, world);
+        cx.group_area = outer;
     } else {
         draw_content(cx, view, world);
     }
     cx.alpha = alpha;
-    if opacity < 1.0 {
+    cx.fade = fade;
+    if grouped {
         cx.pop();
     }
+}
+
+/// True if `view` (its `state`) paints at most one shape, its background
+/// color, and nothing else: no children, content, hosted items, border,
+/// outline, shadow or effects. Its opacity is then its color's alpha.
+fn paints_one_shape(view: &NshView, state: &ViewState) -> bool {
+    matches!(state.kind, ViewKind::View)
+        && state.text.is_none()
+        && state.image.is_none()
+        && state.canvas.is_none()
+        && state.input.is_none()
+        && state.scroll.is_none()
+        && state.natives.is_empty()
+        && state.style.effects.is_none()
+        && state.style.blend_mode == BlendMode::Normal
+        && !state.shadow().is_visible()
+        && !state.borders().is_visible()
+        && !state.style.outline.is_visible()
+        && view.with_children(<[NshView]>::is_empty)
+}
+
+/// Where a view paints itself (not its children), in its coordinates: its
+/// bounds, out by its shadows and outline, and the items it hosts.
+fn own_area(state: &ViewState) -> D2D_RECT_F {
+    let (w, h) = (state.frame.size.width.0, state.frame.size.height.0);
+    // A point more for the antialiased edges.
+    let o = crate::decor::outset(state) + 1.0;
+    let mut area = D2D_RECT_F {
+        left: -o,
+        top: -o,
+        right: w + o,
+        bottom: h + o,
+    };
+    for native in &state.natives {
+        let r = native.rect;
+        area = crate::view::union(
+            &area,
+            &rect_f(r.origin.x.0, r.origin.y.0, r.size.width.0, r.size.height.0),
+        );
+    }
+    area
+}
+
+/// True when `a` and `b` share some area.
+fn intersects(a: &D2D_RECT_F, b: &D2D_RECT_F) -> bool {
+    a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom
+}
+
+/// What `a` and `b` share, if anything.
+fn intersection(a: &D2D_RECT_F, b: &D2D_RECT_F) -> Option<D2D_RECT_F> {
+    intersects(a, b).then(|| D2D_RECT_F {
+        left: a.left.max(b.left),
+        top: a.top.max(b.top),
+        right: a.right.min(b.right),
+        bottom: a.bottom.min(b.bottom),
+    })
+}
+
+/// True when the pixel rectangles `a` and `b` share some pixels.
+pub(crate) fn overlap(a: &RECT, b: &RECT) -> bool {
+    a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom
+}
+
+/// True if `view`, placed at `origin` in its parent drawn at `world`,
+/// draws nothing inside `visible` (window DIPs): what its subtree covers
+/// ([`drawn_area`], with its shadows, outlines and transforms) lies
+/// outside. False when that area is not known.
+fn hidden_by_clips(view: &NshView, world: Mat4, origin: (f32, f32), visible: &D2D_RECT_F) -> bool {
+    let local = {
+        let s = view.state();
+        let mut local = Mat4::new().translate(origin.0, origin.1);
+        if let Some(t) = s.transform() {
+            local = Mat4::mul(&t, &local);
+        }
+        local
+    };
+    let world = Mat4::mul(&local, &world);
+    if !world.is_affine() {
+        return false;
+    }
+    let Some(area) = drawn_area(view) else {
+        return false;
+    };
+    let b = crate::compose::map_bounds(&world.to_3x2(), &area);
+    b.right <= visible.left
+        || b.left >= visible.right
+        || b.bottom <= visible.top
+        || b.top >= visible.bottom
+}
+
+/// The area `view` and its subtree draw in, in its coordinates: its
+/// bounds, out by its shadows and outline, with what its children draw
+/// unless it clips them. `None` when that is not known: an item it hosts
+/// unclipped (they may draw outside their rectangle), a 3D transform
+/// below it.
+pub(crate) fn drawn_area(view: &NshView) -> Option<D2D_RECT_F> {
+    let state = view.state();
+    let (w, h) = (state.frame.size.width.0, state.frame.size.height.0);
+    // A point more for the antialiased edges.
+    let o = crate::decor::outset(&state) + 1.0;
+    let mut area = D2D_RECT_F {
+        left: -o,
+        top: -o,
+        right: w + o,
+        bottom: h + o,
+    };
+    if state.clips() {
+        return Some(area);
+    }
+    if !state.natives.is_empty() {
+        return None;
+    }
+    view.with_children(|children| {
+        for child in children {
+            let local = {
+                let s = child.state();
+                if s.style.hidden || s.concealed || s.opacity() <= 0.0 {
+                    continue;
+                }
+                let origin = state.child_origin(s.frame, s.shift);
+                let mut local = Mat4::new().translate(origin.0, origin.1);
+                if let Some(t) = s.transform() {
+                    local = Mat4::mul(&t, &local);
+                }
+                local
+            };
+            if !local.is_affine() {
+                return None;
+            }
+            let a = drawn_area(child)?;
+            let b = crate::compose::map_bounds(&local.to_3x2(), &a);
+            area = D2D_RECT_F {
+                left: area.left.min(b.left),
+                top: area.top.min(b.top),
+                right: area.right.max(b.right),
+                bottom: area.bottom.max(b.bottom),
+            };
+        }
+        Some(area)
+    })
 }
 
 /// Draws what `view` draws and its subtree at `world` (set on the context):
@@ -659,27 +914,42 @@ pub(crate) fn draw_content(cx: &mut DrawCx<'_>, view: &NshView, world: Mat4) {
     crate::decor::draw_background(cx, &state);
     let clip = state.clips();
     let (w, h) = (state.frame.size.width.0, state.frame.size.height.0);
+    // Most views (boxes, rows) have no content of their own: no clip for it.
+    let content = state.text.is_some() || state.image.is_some() || state.canvas.is_some();
     if clip {
         cx.push_clip_rounded(crate::geom::rect(0.0, 0.0, w, h), state.radii());
-    } else {
+    } else if content {
         // The view's own content stays inside it, as a UIKit view's drawing
         // stays in its backing store.
         cx.push_clip_rect(0.0, 0.0, w, h);
     }
-    crate::text::draw(cx, &state);
-    crate::image::draw(cx, &state);
-    crate::canvas::draw(cx, &state);
-    if !clip {
+    if content {
+        crate::text::draw(cx, &state);
+        crate::image::draw(cx, &state);
+        crate::canvas::draw(cx, &state);
+    }
+    if !clip && content {
         cx.pop();
     }
     let natives = state.natives.clone();
     drop(state);
+    // Inside a clip (a scroll view's content), children out of sight are
+    // left out: drawing them would issue their commands for nothing.
+    let visible = if clip { cx.visible() } else { None };
     view.with_children(|children| {
         for child in children {
             let origin = {
                 let s = child.state();
                 view.state().child_origin(s.frame, s.shift)
             };
+            if let Some(visible) = &visible
+                && hidden_by_clips(child, world, origin, visible)
+            {
+                if cx.records {
+                    child.set_painted(None);
+                }
+                continue;
+            }
             draw_view(cx, child, world, origin);
         }
     });
@@ -896,7 +1166,38 @@ pub(crate) fn frame(surface: &Rc<Surface>) {
     // Only a window with web views has a composition: without one the
     // frame is the one swap chain, drawn and presented as always.
     let composition = surface.composition();
-    let drawn = draw_into(surface, &gfx, &target, scale, false, composition.as_deref());
+    // What changed, in pixels (`None`: everything). A window with web views
+    // draws its layers whole.
+    let damage = surface.take_damage();
+    let changed = damage
+        .filter(|_| composition.is_none())
+        .map(|rects| merged(pixel_rects(&rects, scale, size)))
+        .filter(|rects| !rects.is_empty());
+    // What the back buffer, two presents old, needs drawn again.
+    let redraw = chain.to_draw(changed.as_deref()).map(merged);
+    let areas: Option<Vec<D2D_RECT_F>> = redraw.as_ref().map(|rects| {
+        rects
+            .iter()
+            .map(|r| D2D_RECT_F {
+                left: r.left as f32 / scale,
+                top: r.top as f32 / scale,
+                right: r.right as f32 / scale,
+                bottom: r.bottom as f32 / scale,
+            })
+            .collect()
+    });
+    let fps = surface.fps();
+    let started = fps.as_ref().map(|_| std::time::Instant::now());
+    let drawn = draw_into(
+        surface,
+        &gfx,
+        &target,
+        scale,
+        false,
+        composition.as_deref(),
+        areas.as_deref(),
+    );
+    let painted = started.map(|s| s.elapsed());
     match drawn {
         Ok(drawn) => {
             if let Some(c) = &composition
@@ -907,22 +1208,139 @@ pub(crate) fn frame(surface: &Rc<Surface>) {
                 device_lost(surface);
                 return;
             }
-            if let Err(err) = chain.present() {
+            let shown = std::time::Instant::now();
+            if let Err(err) = chain.present(changed) {
                 log::warn!("present failed: {err}");
                 drop(swap);
                 device_lost(surface);
                 return;
             }
+            if let (Some(fps), Some(painted)) = (&fps, painted) {
+                fps.painted(painted, shown.elapsed());
+            }
             drop(swap);
-            surface.items_placed(drawn.items);
+            surface.items_placed(drawn.items, redraw.as_deref());
             surface.composed_placed(composition.as_deref(), drawn.composed, &drawn.layers);
         }
         Err(err) if err.code() == D2DERR_RECREATE_TARGET => {
             drop(swap);
             device_lost(surface);
         }
-        Err(err) => log::error!("drawing failed: {err}"),
+        Err(err) => {
+            log::error!("drawing failed: {err}");
+            // The back buffer holds what is not known: drawn whole next.
+            drop(swap);
+            surface.invalidate();
+        }
     }
+}
+
+/// The union of `rects` as one geometry.
+fn rects_geometry(gfx: &Gfx, rects: &[D2D_RECT_F]) -> windows::core::Result<ID2D1Geometry> {
+    // SAFETY: COM calls on the live factory.
+    unsafe {
+        let parts = rects
+            .iter()
+            .map(|r| {
+                gfx.factory
+                    .CreateRectangleGeometry(r)
+                    .and_then(|g| g.cast())
+                    .map(Some)
+            })
+            .collect::<windows::core::Result<Vec<Option<ID2D1Geometry>>>>()?;
+        gfx.factory
+            .CreateGeometryGroup(
+                windows::Win32::Graphics::Direct2D::Common::D2D1_FILL_MODE_WINDING,
+                &parts,
+            )?
+            .cast()
+    }
+}
+
+/// Window DIP rectangles as the pixels they touch (rounded out), within
+/// the window's `size`.
+fn pixel_rects(rects: &[D2D_RECT_F], scale: f32, size: (u32, u32)) -> Vec<RECT> {
+    let (w, h) = (size.0 as i32, size.1 as i32);
+    rects
+        .iter()
+        .map(|r| RECT {
+            left: ((r.left * scale).floor() as i32).clamp(0, w),
+            top: ((r.top * scale).floor() as i32).clamp(0, h),
+            right: ((r.right * scale).ceil() as i32).clamp(0, w),
+            bottom: ((r.bottom * scale).ceil() as i32).clamp(0, h),
+        })
+        .filter(|r| r.right > r.left && r.bottom > r.top)
+        .collect()
+}
+
+/// At most this many areas make a partial frame's clip; more are merged.
+const MAX_AREAS: usize = 24;
+
+/// `rects` merged where they overlap or touch (drawn apart, the overlap
+/// would be drawn twice) or their union adds no pixels, then the cheapest
+/// pairs merged until at most [`MAX_AREAS`] are left.
+fn merged(mut rects: Vec<RECT>) -> Vec<RECT> {
+    let area = |r: &RECT| i64::from(r.right - r.left) * i64::from(r.bottom - r.top);
+    let union = |a: &RECT, b: &RECT| RECT {
+        left: a.left.min(b.left),
+        top: a.top.min(b.top),
+        right: a.right.max(b.right),
+        bottom: a.bottom.max(b.bottom),
+    };
+    // The same area twice (a view drawn where it was), or inside another.
+    rects.sort_unstable_by_key(|r| std::cmp::Reverse(area(r)));
+    let mut kept: Vec<RECT> = Vec::with_capacity(rects.len());
+    for r in rects {
+        let inside = |k: &RECT| {
+            k.left <= r.left && k.top <= r.top && k.right >= r.right && k.bottom >= r.bottom
+        };
+        if !kept.iter().any(inside) {
+            kept.push(r);
+        }
+    }
+    let mut rects = kept;
+    if rects.len() > 256 {
+        let all = rects.iter().skip(1).fold(rects[0], |a, b| union(&a, b));
+        return vec![all];
+    }
+    loop {
+        // The pair whose union adds the fewest pixels to the two.
+        let mut best: Option<(usize, usize, i64)> = None;
+        for i in 0..rects.len() {
+            for j in i + 1..rects.len() {
+                let growth = area(&union(&rects[i], &rects[j])) - area(&rects[i]) - area(&rects[j]);
+                if best.is_none_or(|(_, _, g)| growth < g) {
+                    best = Some((i, j, growth));
+                }
+            }
+        }
+        match best {
+            Some((i, j, growth))
+                if growth <= 0 || rects.len() > MAX_AREAS || touching(&rects[i], &rects[j]) =>
+            {
+                let u = union(&rects[i], &rects[j]);
+                rects.swap_remove(j);
+                rects[i] = u;
+            }
+            _ => {
+                // The cheapest pair does not touch; another pair may.
+                let touch = (0..rects.len())
+                    .flat_map(|i| (i + 1..rects.len()).map(move |j| (i, j)))
+                    .find(|&(i, j)| touching(&rects[i], &rects[j]));
+                let Some((i, j)) = touch else {
+                    return rects;
+                };
+                let u = union(&rects[i], &rects[j]);
+                rects.swap_remove(j);
+                rects[i] = u;
+            }
+        }
+    }
+}
+
+/// True when `a` and `b` overlap or share an edge.
+fn touching(a: &RECT, b: &RECT) -> bool {
+    a.left <= b.right && b.left <= a.right && a.top <= b.bottom && b.top <= a.bottom
 }
 
 fn device_lost(surface: &Rc<Surface>) {
@@ -946,6 +1364,7 @@ struct Drawn {
 
 /// Draws the tree into `target` (its DPI set for `scale`), and into the
 /// layers of `composition` above its web views.
+#[allow(clippy::too_many_arguments)]
 fn draw_into(
     surface: &Rc<Surface>,
     gfx: &Gfx,
@@ -953,8 +1372,10 @@ fn draw_into(
     scale: f32,
     offscreen: bool,
     composition: Option<&Composition>,
+    areas: Option<&[D2D_RECT_F]>,
 ) -> windows::core::Result<Drawn> {
     let dc = &gfx.dc;
+    let background = color_f(crate::system::window_background(surface));
     // SAFETY: COM calls on the live context and target; `EndDraw` always
     // follows `BeginDraw`.
     unsafe {
@@ -962,7 +1383,9 @@ fn draw_into(
         dc.SetDpi(96.0 * scale, 96.0 * scale);
         dc.BeginDraw();
         dc.SetTransform(&Matrix3x2::identity());
-        dc.Clear(Some(&color_f(crate::system::window_background(surface))));
+        if areas.is_none() {
+            dc.Clear(Some(&background));
+        }
     }
     let mut cx = match DrawCx::new(gfx, scale, crate::system::dark(surface), surface.now()) {
         Ok(cx) => cx,
@@ -973,6 +1396,9 @@ fn draw_into(
         }
     };
     cx.offscreen = offscreen;
+    cx.records = !offscreen;
+    let (w, h) = surface.size();
+    cx.window = Some(rect_f(0.0, 0.0, w, h));
     cx.split = composition.map(|composition| Split {
         composition,
         size: surface.pixel_size(),
@@ -981,9 +1407,44 @@ fn draw_into(
         error: None,
     });
     let root = surface.root.clone();
-    draw_view(&mut cx, &root, Mat4::new(), (0.0, 0.0));
-    // The caption buttons, last: in the topmost layer, above web views.
-    crate::chrome::draw(surface, dc, scale);
+    match areas {
+        None => {
+            draw_view(&mut cx, &root, Mat4::new(), (0.0, 0.0));
+            // The caption buttons, last: in the topmost layer, above web
+            // views.
+            crate::chrome::draw(surface, dc, scale);
+        }
+        // A partial frame: each area cleared and drawn again, the rest of
+        // the back buffer kept.
+        // A partial frame: the areas cleared and the tree drawn once into
+        // them (a clip of their rectangles), the rest of the back buffer
+        // kept.
+        Some(areas) => {
+            cx.set_transform(Mat4::new());
+            match areas {
+                [a] => cx.push_clip_rect(a.left, a.top, a.right - a.left, a.bottom - a.top),
+                _ => match rects_geometry(gfx, areas) {
+                    Ok(group) => cx.push_clip_geometry(&group),
+                    Err(err) => {
+                        // SAFETY: closes the `BeginDraw` above.
+                        let _ = unsafe { dc.EndDraw(None, None) };
+                        return Err(err);
+                    }
+                },
+            }
+            cx.clip_skip = 1;
+            // SAFETY: a COM call between BeginDraw and EndDraw: clears what
+            // the clip leaves.
+            unsafe { dc.Clear(Some(&background)) };
+            cx.damage = Some(areas.to_vec());
+            draw_view(&mut cx, &root, Mat4::new(), (0.0, 0.0));
+            crate::chrome::draw(surface, dc, scale);
+            cx.damage = None;
+            cx.clip_skip = 0;
+            cx.set_transform(Mat4::new());
+            cx.pop();
+        }
+    }
     let items = std::mem::take(&mut cx.drawn);
     let composed = std::mem::take(&mut cx.composed);
     let (layers, error) = match cx.split.take() {
@@ -1051,7 +1512,7 @@ pub(crate) fn snapshot(surface: &Rc<Surface>, scale: f32) -> windows::core::Resu
             },
         )?;
         // Web views are not in it: their pages are composed by the system.
-        let drawn = draw_into(surface, &gfx, &target, scale, true, None)?;
+        let drawn = draw_into(surface, &gfx, &target, scale, true, None, None)?;
         drop(drawn);
         let read = gfx.dc.CreateBitmap(
             size,
@@ -1087,5 +1548,288 @@ pub(crate) fn snapshot(surface: &Rc<Surface>, scale: f32) -> windows::core::Resu
             height: px.1,
             data,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use nsh_core::{Edges, NodeId, TransformKind};
+
+    use super::*;
+    use crate::geom::rect;
+
+    fn view(
+        parent: Option<&NshView>,
+        id: NodeId,
+        kind: ViewKind,
+        frame: Bounds<Points>,
+    ) -> NshView {
+        let v = NshView::new(id, kind);
+        v.state_mut().frame = frame;
+        if let Some(parent) = parent {
+            v.insert_before(parent, None);
+        }
+        v
+    }
+
+    /// A 16-point box with a color and rounded corners, as an animated
+    /// dot or a highlighted cell.
+    fn dot(parent: Option<&NshView>, id: NodeId) -> NshView {
+        let v = view(parent, id, ViewKind::View, rect(0.0, 0.0, 16.0, 16.0));
+        {
+            let mut s = v.state_mut();
+            s.style.background_color = Color(0x3366_ccff);
+            s.style.border_radius = Points(2.0);
+            s.style.opacity = 0.5;
+        }
+        v
+    }
+
+    fn one_shape(v: &NshView) -> bool {
+        paints_one_shape(v, &v.state())
+    }
+
+    fn area(v: &NshView) -> (f32, f32, f32, f32) {
+        let a = drawn_area(v).expect("a known area");
+        (a.left, a.top, a.right, a.bottom)
+    }
+
+    #[test]
+    fn a_box_of_one_color_fades_its_color() {
+        let v = dot(None, 2);
+        assert!(one_shape(&v));
+        v.state_mut().style.borders.widths = Edges::all(Points(1.0));
+        v.state_mut().style.borders.colors = [Color::BLACK; 4];
+        // The border overlaps the background: only a layer fades both as one.
+        assert!(!one_shape(&v));
+
+        let v = dot(None, 4);
+        v.state_mut().style.shadow.opacity = 1.0;
+        assert!(!one_shape(&v));
+
+        let v = dot(None, 6);
+        v.state_mut().style.outline.width = Points(2.0);
+        v.state_mut().style.outline.color = Color::BLACK;
+        assert!(!one_shape(&v));
+
+        let parent = dot(None, 8);
+        dot(Some(&parent), 10);
+        // Its children are faded with it as one group.
+        assert!(!one_shape(&parent));
+
+        let text = view(None, 12, ViewKind::Text, rect(0.0, 0.0, 16.0, 16.0));
+        assert!(!one_shape(&text));
+    }
+
+    /// A target bitmap of `size` pixels and a way to read it back.
+    fn target(gfx: &Gfx, size: (u32, u32)) -> ID2D1Bitmap1 {
+        let props = D2D1_BITMAP_PROPERTIES1 {
+            pixelFormat: D2D1_PIXEL_FORMAT {
+                format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+            },
+            dpiX: 96.0,
+            dpiY: 96.0,
+            bitmapOptions: D2D1_BITMAP_OPTIONS_TARGET,
+            colorContext: std::mem::ManuallyDrop::new(None),
+        };
+        let size = D2D_SIZE_U {
+            width: size.0,
+            height: size.1,
+        };
+        // SAFETY: a COM call on the live context.
+        unsafe { gfx.dc.CreateBitmap(size, None, 0, &props) }.unwrap()
+    }
+
+    fn read(gfx: &Gfx, bitmap: &ID2D1Bitmap1, size: (u32, u32)) -> Vec<u8> {
+        let props = D2D1_BITMAP_PROPERTIES1 {
+            pixelFormat: D2D1_PIXEL_FORMAT {
+                format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+            },
+            dpiX: 96.0,
+            dpiY: 96.0,
+            bitmapOptions: D2D1_BITMAP_OPTIONS_CPU_READ | D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
+            colorContext: std::mem::ManuallyDrop::new(None),
+        };
+        // SAFETY: COM calls on live objects; the mapped rows are copied
+        // before `Unmap`.
+        unsafe {
+            let read = gfx
+                .dc
+                .CreateBitmap(
+                    D2D_SIZE_U {
+                        width: size.0,
+                        height: size.1,
+                    },
+                    None,
+                    0,
+                    &props,
+                )
+                .unwrap();
+            read.CopyFromBitmap(None, bitmap, None).unwrap();
+            let mapped = read.Map(D2D1_MAP_OPTIONS_READ).unwrap();
+            let mut data = Vec::new();
+            for row in 0..size.1 {
+                let start = mapped.bits.add((row * mapped.pitch) as usize);
+                data.extend_from_slice(std::slice::from_raw_parts(start, (size.0 * 4) as usize));
+            }
+            read.Unmap().unwrap();
+            data
+        }
+    }
+
+    #[test]
+    fn a_partial_frame_draws_what_a_whole_one_does() {
+        let Ok(gfx) = gfx::get() else {
+            // No Direct3D device, not even WARP.
+            return;
+        };
+        let size = (240, 140);
+        let surface = Surface::new(Default::default());
+        surface.resized(size, 1.0);
+        let root = surface.root.clone();
+        let boxed = |id, frame, color| {
+            let v = view(Some(&root), id, ViewKind::View, frame);
+            v.state_mut().style.background_color = Color(color);
+            v
+        };
+        let a = boxed(2, rect(10.0, 10.0, 50.0, 30.0), 0xcc2244ff);
+        let b = boxed(4, rect(120.0, 20.0, 40.0, 40.0), 0x2244ccff);
+        b.state_mut().style.shadow.opacity = 0.5;
+        b.state_mut().style.shadow.radius = Points(6.0);
+        let c = boxed(6, rect(180.0, 90.0, 30.0, 30.0), 0x22cc44ff);
+        boxed(8, rect(0.0, 100.0, 240.0, 40.0), 0x88888888);
+        let back = target(&gfx, size);
+        let whole = |into: &ID2D1Bitmap1| {
+            draw_into(&surface, &gfx, into, 1.0, false, None, None).unwrap();
+        };
+        whole(&back);
+        assert!(surface.take_damage().is_none(), "the first frame is whole");
+
+        // A move, a new color and a removal.
+        a.state_mut().frame = rect(30.0, 70.0, 50.0, 30.0);
+        a.moved();
+        b.state_mut().style.background_color = Color(0xeeaa22ff);
+        b.changed();
+        c.unparent();
+        let damage = surface.take_damage().expect("the changed views' areas");
+        let areas: Vec<D2D_RECT_F> = merged(pixel_rects(&damage, 1.0, size))
+            .iter()
+            .map(|r| {
+                rect_f(
+                    r.left as f32,
+                    r.top as f32,
+                    (r.right - r.left) as f32,
+                    (r.bottom - r.top) as f32,
+                )
+            })
+            .collect();
+        // Only around what changed: not the whole window.
+        let covered: f32 = areas
+            .iter()
+            .map(|r| (r.right - r.left) * (r.bottom - r.top))
+            .sum();
+        assert!(covered < (size.0 * size.1) as f32 * 0.6, "{areas:?}");
+        draw_into(&surface, &gfx, &back, 1.0, false, None, Some(&areas)).unwrap();
+
+        let fresh = target(&gfx, size);
+        whole(&fresh);
+        assert!(read(&gfx, &back, size) == read(&gfx, &fresh, size));
+        // Nothing changed since: nothing to draw.
+        assert!(surface.take_damage().is_none_or(|d| d.is_empty()));
+    }
+
+    #[test]
+    fn merged_areas_cost_no_more_than_apart() {
+        let r = |l, t, w, h| RECT {
+            left: l,
+            top: t,
+            right: l + w,
+            bottom: t + h,
+        };
+        // Overlapping ones become one; distant ones stay apart.
+        let m = merged(vec![r(0, 0, 10, 10), r(5, 5, 10, 10), r(100, 100, 5, 5)]);
+        assert_eq!(m.len(), 2);
+        assert!(m.contains(&r(0, 0, 15, 15)));
+        // Never more than MAX_AREAS.
+        let many: Vec<RECT> = (0..20).map(|i| r(i * 50, 0, 10, 10)).collect();
+        assert!(merged(many).len() <= MAX_AREAS);
+    }
+
+    #[test]
+    fn children_outside_the_visible_area_are_hidden() {
+        let visible = rect_f(0.0, 0.0, 100.0, 100.0);
+        let hidden = |v: &NshView, y: f32| hidden_by_clips(v, Mat4::new(), (0.0, y), &visible);
+        let row = view(None, 2, ViewKind::View, rect(0.0, 0.0, 100.0, 40.0));
+        assert!(!hidden(&row, 0.0));
+        assert!(!hidden(&row, 80.0));
+        // Below the visible area, and above it.
+        assert!(hidden(&row, 120.0));
+        assert!(hidden(&row, -60.0));
+        // Its shadow reaches in.
+        row.state_mut().style.shadow.opacity = 1.0;
+        row.state_mut().style.shadow.radius = Points(30.0);
+        assert!(!hidden(&row, 120.0));
+        row.state_mut().style.shadow.opacity = 0.0;
+        // A child sticking out of it reaches in.
+        view(Some(&row), 4, ViewKind::View, rect(0.0, -50.0, 10.0, 10.0));
+        assert!(!hidden(&row, 120.0));
+        assert!(hidden(&row, 200.0));
+        // A transform moves it in.
+        let moved = view(None, 6, ViewKind::View, rect(0.0, 0.0, 100.0, 40.0));
+        moved
+            .state_mut()
+            .style
+            .transform
+            .push(TransformKind::TranslateY, -150.0);
+        assert!(!hidden(&moved, 200.0));
+    }
+
+    #[test]
+    fn a_layer_covers_the_bounds_and_the_shadow() {
+        let v = dot(None, 2);
+        assert_eq!(area(&v), (-1.0, -1.0, 17.0, 17.0));
+        // React Native's shadow: offset (0, -3), radius 3.
+        v.state_mut().style.shadow.opacity = 1.0;
+        assert_eq!(area(&v), (-13.0, -13.0, 29.0, 29.0));
+    }
+
+    #[test]
+    fn a_layer_covers_what_the_children_draw() {
+        let parent = view(None, 2, ViewKind::View, rect(0.0, 0.0, 100.0, 100.0));
+        let a = view(
+            Some(&parent),
+            4,
+            ViewKind::View,
+            rect(80.0, 90.0, 40.0, 20.0),
+        );
+        let b = view(Some(&parent), 6, ViewKind::View, rect(0.0, 0.0, 10.0, 10.0));
+        b.state_mut()
+            .style
+            .transform
+            .push(TransformKind::TranslateX, -50.0);
+        assert_eq!(area(&parent), (-51.0, -1.0, 121.0, 111.0));
+
+        // Hidden children draw nothing.
+        a.state_mut().style.hidden = true;
+        assert_eq!(area(&parent), (-51.0, -1.0, 101.0, 101.0));
+
+        // Clipped children stay inside.
+        a.state_mut().style.hidden = false;
+        parent.state_mut().style.overflow_hidden = true;
+        assert_eq!(area(&parent), (-1.0, -1.0, 101.0, 101.0));
+    }
+
+    #[test]
+    fn a_layer_is_unbounded_when_the_area_is_not_known() {
+        let parent = view(None, 2, ViewKind::View, rect(0.0, 0.0, 100.0, 100.0));
+        let child = view(Some(&parent), 4, ViewKind::View, rect(0.0, 0.0, 50.0, 50.0));
+        {
+            let mut s = child.state_mut();
+            s.style.transform.push(TransformKind::Perspective, 300.0);
+            s.style.transform.push(TransformKind::RotateY, 60.0);
+        }
+        assert!(drawn_area(&parent).is_none());
     }
 }

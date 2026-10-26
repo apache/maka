@@ -67,7 +67,7 @@ impl<V: ?Sized + 'static> Application<V> {
         Ok(Self(inner))
     }
     pub async fn start_from_store(
-        store: Arc<maka_event_log::EventLog>,
+        store: Arc<maka_event_log::RootStore>,
         source: maka_plugin_core::deployment::DeploymentRef,
         target: PresentationTarget,
         scheduler: tokio::runtime::Handle,

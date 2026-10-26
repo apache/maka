@@ -17,7 +17,7 @@
  * under the License.
  */
 
-use crate::{Inner, RunError, RunInput, RunWork, compact, prune, steps};
+use crate::{RunContext, RunError, RunInput, RunWork, compact, prune, steps};
 use maka_agent_facts::event::CommitError;
 use maka_agent_facts::event::EventSink;
 use maka_agent_facts::event::EventWrite;
@@ -39,7 +39,7 @@ pub(super) struct ModelWork {
 }
 
 pub async fn run(
-    inner: Arc<Inner>,
+    inner: Arc<RunContext>,
     input: RunInput,
     cancellation_owner: tokio_util::sync::CancellationToken,
     admitted: tokio::sync::oneshot::Sender<()>,
@@ -98,7 +98,8 @@ pub async fn run(
             // changed discovery after preflight, but no stale proof may commit.
             // Handoff restores its explicit checkpoint instead of live names.
             if matches!(input.work, RunWork::Continuation { .. })
-                && prepared.loaded_basis != inner.loaded_snapshot(&input.invocation.session_id)
+                && prepared.loaded_basis
+                    != inner.shared.loaded_snapshot(&input.invocation.session_id)?
             {
                 return Err(RunError::ContinuationChanged);
             }
@@ -276,7 +277,7 @@ pub async fn run(
             }
             return Err(error.into());
         }
-        inner.clear_loaded(&input.invocation.session_id);
+        inner.shared.clear_loaded(&input.invocation.session_id)?;
     } else {
         let pause = match &outcome {
             InvocationOutcome::HandoffPaused { pause } => Some(pause.clone()),
@@ -293,6 +294,7 @@ pub async fn run(
 
 fn failure_class(error: &RunError) -> &'static str {
     match error {
+        RunError::SessionState(_) => "session_state_error",
         RunError::Busy => "session_busy",
         RunError::ContinuationChanged => "continuation_changed",
         RunError::ReconciliationRequired(_) => "reconciliation_required",
@@ -314,12 +316,13 @@ fn failure_class(error: &RunError) -> &'static str {
         RunError::Model(maka_model::ModelError::ContextOverflow { .. }) => "context_overflow",
         RunError::Tool(_) => "tool_execution",
         RunError::Internal(_) => "runtime_internal",
-        RunError::CleanupUnconfirmed => "cleanup_unconfirmed",
+        RunError::CleanupUnconfirmed
+        | RunError::Model(maka_model::ModelError::CleanupUnconfirmed) => "cleanup_unconfirmed",
     }
 }
 
 pub(super) async fn append(
-    inner: &Inner,
+    inner: &RunContext,
     invocation: &Invocation,
     fact: Fact,
 ) -> Result<(), RunError> {

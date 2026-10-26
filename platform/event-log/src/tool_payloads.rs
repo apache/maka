@@ -77,24 +77,6 @@ pub(crate) fn verify_binding(event: &RuntimeEvent, bytes: Option<i64>) -> Result
     Ok(())
 }
 
-pub(crate) async fn verify_invocation_bindings(
-    connection: &mut SqliteConnection,
-    invocation_id: &str,
-) -> Result<(), StoreError> {
-    let broken: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM runtime_events e
-         LEFT JOIN tool_result_payloads p ON p.event_id = e.event_id
-         WHERE e.invocation_id = ? AND e.kind = 'tool_settled'
-         AND json_extract(e.event_json, '$.fact.outcome.kind') = 'succeeded'
-         AND (p.event_id IS NULL OR COALESCE(json_extract(e.event_json, '$.fact.outcome.raw.bytes'), 0) != length(p.payload)
-              OR length(p.payload) = 0))",
-    ).bind(invocation_id).fetch_one(connection).await?;
-    if broken {
-        return Err(invalid());
-    }
-    Ok(())
-}
-
 pub(crate) async fn insert(
     connection: &mut SqliteConnection,
     write: &EventWrite,

@@ -27,8 +27,6 @@ pub struct Page {
     pub title: Option<String>,
     pub format: Format,
     pub content: String,
-    /// Refers to the extracted text, not a silently clipped HTML response.
-    pub truncated: bool,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]

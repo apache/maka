@@ -11,6 +11,10 @@ use super::{
 /// Animations of composite steps get ids from here up (JS's are small).
 const LEAF_IDS: AnimationId = 0x8000_0000;
 
+/// How long a snapping `diffClamp` takes to reach its bound (seconds), as
+/// Flutter's floating app bar.
+const SNAP_SECONDS: f64 = 0.2;
+
 /// The evaluated value of a node.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum AnimationValue {
@@ -75,12 +79,34 @@ enum Node {
         max: f32,
         /// The input and output at the last evaluation.
         state: Cell<Option<(f32, f32)>>,
+        /// Settles at the nearer bound when its scroll view rests.
+        snap: bool,
+        /// Its settling, while it runs.
+        snapping: Cell<Option<Snap>>,
     },
     Math {
         op: MathOp,
         a: Operand,
         b: Operand,
     },
+}
+
+/// A `diffClamp` moving to a bound after its scroll view came to rest.
+#[derive(Debug, Clone, Copy)]
+struct Snap {
+    from: f32,
+    to: f32,
+    /// The scroll value that came to rest, and where: scrolling it again
+    /// ends the settling.
+    source: NodeId,
+    at: f32,
+    /// Its input at the last evaluation: a snapping `diffClamp` it reads
+    /// settles too and moves it meanwhile.
+    input: f32,
+    /// The first frame's time.
+    start: Option<f64>,
+    /// It arrived: the next evaluation takes in where its input went.
+    done: bool,
 }
 
 /// Nodes deeper than this are treated as cycles (JS bug) and evaluate to 0.
@@ -102,6 +128,8 @@ pub struct Graph {
     started: Vec<NodeId>,
     /// Values of each composite when it last started, for resets.
     baselines: Vec<(u32, Vec<(NodeId, f32)>)>,
+    /// `diffClamp` nodes settling at a bound.
+    snaps: Vec<NodeId>,
 }
 
 /// A running composite animation.
@@ -410,6 +438,7 @@ impl Graph {
                 input,
                 min,
                 max,
+                snap,
             } => self.insert(
                 node,
                 Node::DiffClamp {
@@ -417,6 +446,8 @@ impl Graph {
                     min,
                     max: max.max(min),
                     state: Cell::new(None),
+                    snap,
+                    snapping: Cell::new(None),
                 },
             ),
             AnimationOp::CreateMath { node, op, a, b } => {
@@ -627,7 +658,120 @@ impl Graph {
 
     /// True while any animation runs (the platform keeps its frame clock on).
     pub fn is_animating(&self) -> bool {
-        !self.animating.is_empty() || !self.programs.is_empty()
+        !self.animating.is_empty() || !self.programs.is_empty() || !self.snaps.is_empty()
+    }
+
+    /// The scroll view whose scroll value is `source` came to rest (its
+    /// drag and momentum ended): every snapping `diffClamp` that follows it
+    /// and rests between its bounds settles at the nearer one, at `max`
+    /// only once its input reached `max` (a page scrolled less than a
+    /// bar's height shows the whole bar). True if one starts settling.
+    pub fn settle(&mut self, source: NodeId) -> bool {
+        let mut started = false;
+        let at = self.eval(source).number();
+        // Register moving nodes first, independent of their ids. Bound
+        // dependents then hold their output while those inputs settle.
+        for hold_bounds in [false, true] {
+            if hold_bounds && !started {
+                break;
+            }
+            for i in 0..self.nodes.len() {
+                let Some(Node::DiffClamp {
+                    input,
+                    min,
+                    max,
+                    snap: true,
+                    ..
+                }) = &self.nodes[i]
+                else {
+                    continue;
+                };
+                let (input, min, max) = (*input, *min, *max);
+                if !self.depends(input, source, 0) {
+                    continue;
+                }
+                // Brings its output up to the input.
+                let out = self.eval(i as NodeId).number();
+                let x = self.eval(input).number();
+                let bounded = out <= min || out >= max;
+                if bounded != hold_bounds {
+                    continue;
+                }
+                if hold_bounds && !self.snaps.iter().any(|&node| self.depends(input, node, 0)) {
+                    continue;
+                }
+                let to = if hold_bounds {
+                    out
+                } else if out - min >= (max - min) / 2.0 && x >= max {
+                    max
+                } else {
+                    min
+                };
+                if let Some(Node::DiffClamp { snapping, .. }) = &self.nodes[i] {
+                    snapping.set(Some(Snap {
+                        from: out,
+                        to,
+                        source,
+                        at,
+                        input: x,
+                        start: None,
+                        done: false,
+                    }));
+                }
+                if !self.snaps.contains(&(i as NodeId)) {
+                    self.snaps.push(i as NodeId);
+                }
+                started = true;
+            }
+        }
+        started
+    }
+
+    /// Whether `node` reads `source`, directly or through other nodes.
+    fn depends(&self, node: NodeId, source: NodeId, depth: u32) -> bool {
+        if node == source {
+            return true;
+        }
+        if depth > MAX_DEPTH {
+            return false;
+        }
+        match self.nodes.get(node as usize) {
+            Some(Some(Node::Interpolate { input, .. } | Node::DiffClamp { input, .. })) => {
+                self.depends(*input, source, depth + 1)
+            }
+            Some(Some(Node::Math { a, b, .. })) => [a, b].into_iter().any(|o| match *o {
+                Operand::Node(n) => self.depends(n, source, depth + 1),
+                Operand::Const(_) => false,
+            }),
+            _ => false,
+        }
+    }
+
+    /// Moves the settling `diffClamp` nodes to `now`. True if one moved.
+    fn run_snaps(&mut self, now: f64) -> bool {
+        let mut changed = false;
+        let nodes = &self.nodes;
+        self.snaps.retain(|&node| {
+            let Some(Some(Node::DiffClamp {
+                state, snapping, ..
+            })) = nodes.get(node as usize)
+            else {
+                return false;
+            };
+            // Gone: its scroll view scrolled again.
+            let Some(mut snap) = snapping.get() else {
+                return false;
+            };
+            let start = *snap.start.get_or_insert(now);
+            let p = ((now - start) / SNAP_SECONDS).clamp(0.0, 1.0) as f32;
+            let out = snap.from + (snap.to - snap.from) * ease(Easing::EaseOut, p);
+            state.set(Some((snap.input, out)));
+            changed = true;
+            snap.done = p >= 1.0;
+            snapping.set(Some(snap));
+            !snap.done
+        });
+        changed
     }
 
     /// Advances all animations to `now` (seconds, monotonic). Completed
@@ -647,6 +791,9 @@ impl Graph {
         }
         if !self.programs.is_empty() {
             changed |= self.run_programs(now, finished);
+        }
+        if !self.snaps.is_empty() {
+            changed |= self.run_snaps(now);
         }
         changed
     }
@@ -758,8 +905,25 @@ impl Graph {
                 min,
                 max,
                 state,
+                snapping,
+                ..
             })) => {
                 let x = self.eval_depth(*input, depth + 1).number();
+                if let Some(mut snap) = snapping.get() {
+                    if self.eval_depth(snap.source, depth + 1).number() != snap.at {
+                        // Scrolled again: it follows the input from where
+                        // the settling left it.
+                        snapping.set(None);
+                    } else {
+                        // Its input moved with a snapping `diffClamp` it
+                        // reads, which settles too: it settles on.
+                        if let Some((_, out)) = state.get() {
+                            state.set(Some((x, out)));
+                        }
+                        snap.input = x;
+                        snapping.set((!snap.done).then_some(snap));
+                    }
+                }
                 let out = match state.get() {
                     None => x.clamp(*min, *max),
                     Some((last, out)) => (out + x - last).clamp(*min, *max),
@@ -1325,6 +1489,7 @@ mod tests {
                 input: 1,
                 min: 0.0,
                 max: 50.0,
+                snap: false,
             },
             &mut f,
         );
@@ -1349,6 +1514,238 @@ mod tests {
         assert_eq!(at(&mut g, 0.0), 0.0);
         g.set(1, -30.0, &mut f);
         assert_eq!(g.eval(3).number(), 330.0);
+    }
+
+    /// A snapping `diffClamp` of value 1 in `0..=50` (node 2).
+    fn snapping(g: &mut Graph, f: &mut Vec<Finished>) {
+        values(g, f, &[1]);
+        g.apply(
+            AnimationOp::CreateDiffClamp {
+                node: 2,
+                input: 1,
+                min: 0.0,
+                max: 50.0,
+                snap: true,
+            },
+            f,
+        );
+    }
+
+    /// Scrolls value 1 to each of `offsets`, as frames of a scroll.
+    fn scroll(g: &mut Graph, f: &mut Vec<Finished>, offsets: &[f32]) {
+        for &o in offsets {
+            g.set(1, o, f);
+            g.eval(2);
+        }
+    }
+
+    #[test]
+    fn a_snapping_diff_clamp_settles_at_the_nearer_bound() {
+        let mut g = Graph::default();
+        let mut f = Vec::new();
+        snapping(&mut g, &mut f);
+        // Down 200, back up 10: 40 of 50 hidden, nearer to hidden.
+        scroll(&mut g, &mut f, &[0.0, 200.0, 190.0]);
+        assert_eq!(g.eval(2).number(), 40.0);
+        assert!(g.settle(1));
+        assert!(g.is_animating());
+        g.tick(1.0, &mut f);
+        assert_eq!(g.eval(2).number(), 40.0);
+        g.tick(1.1, &mut f);
+        let mid = g.eval(2).number();
+        assert!(mid > 40.0 && mid < 50.0, "{mid}");
+        g.tick(1.2, &mut f);
+        assert_eq!(g.eval(2).number(), 50.0);
+        assert!(!g.is_animating());
+        // Back up 30 from there: 20 hidden, nearer to shown.
+        scroll(&mut g, &mut f, &[160.0]);
+        assert_eq!(g.eval(2).number(), 20.0);
+        assert!(g.settle(1));
+        run(&mut g, &mut f, 2.0, 2.3);
+        assert_eq!(g.eval(2).number(), 0.0);
+        // It follows the scrolling from where it settled.
+        scroll(&mut g, &mut f, &[170.0]);
+        assert_eq!(g.eval(2).number(), 10.0);
+    }
+
+    #[test]
+    fn a_snapping_diff_clamp_hides_only_once_its_input_reached_max() {
+        let mut g = Graph::default();
+        let mut f = Vec::new();
+        snapping(&mut g, &mut f);
+        // A page scrolled 40 of a 50 bar: hiding it would leave a gap.
+        scroll(&mut g, &mut f, &[0.0, 40.0]);
+        assert!(g.settle(1));
+        run(&mut g, &mut f, 1.0, 1.3);
+        assert_eq!(g.eval(2).number(), 0.0);
+    }
+
+    #[test]
+    fn scrolling_again_ends_the_settling_where_it_is() {
+        let mut g = Graph::default();
+        let mut f = Vec::new();
+        snapping(&mut g, &mut f);
+        scroll(&mut g, &mut f, &[0.0, 200.0, 190.0]);
+        g.settle(1);
+        g.tick(1.0, &mut f);
+        g.tick(1.1, &mut f);
+        let at = g.eval(2).number();
+        // The finger moves the page down 5 before it ended.
+        scroll(&mut g, &mut f, &[195.0]);
+        assert_eq!(g.eval(2).number(), (at + 5.0).min(50.0));
+        g.tick(1.15, &mut f);
+        assert!(!g.is_animating());
+        assert_eq!(g.eval(2).number(), (at + 5.0).min(50.0));
+    }
+
+    #[test]
+    fn a_snapping_diff_clamp_of_a_snapping_one_settles_too() {
+        let mut g = Graph::default();
+        let mut f = Vec::new();
+        snapping(&mut g, &mut f);
+        // One of the first, in `0..=100`.
+        g.apply(
+            AnimationOp::CreateDiffClamp {
+                node: 3,
+                input: 2,
+                min: 0.0,
+                max: 100.0,
+                snap: true,
+            },
+            &mut f,
+        );
+        let at = |g: &Graph| (g.eval(2).number(), g.eval(3).number());
+        for o in [0.0, 200.0, 190.0] {
+            g.set(1, o, &mut f);
+            g.eval(3);
+        }
+        assert_eq!(at(&g), (40.0, 40.0));
+        // The first hides, past half; the second, short of half, shows.
+        assert!(g.settle(1));
+        g.tick(1.0, &mut f);
+        assert_eq!(at(&g), (40.0, 40.0));
+        g.tick(1.1, &mut f);
+        let (first, second) = at(&g);
+        assert!(first > 40.0 && first < 50.0, "{first}");
+        assert!(second > 0.0 && second < 40.0, "{second}");
+        g.tick(1.2, &mut f);
+        assert_eq!(at(&g), (50.0, 0.0));
+        assert!(!g.is_animating());
+        // Both follow the scrolling from there.
+        g.set(1, 180.0, &mut f);
+        assert_eq!(at(&g), (40.0, 0.0));
+        g.set(1, 185.0, &mut f);
+        assert_eq!(at(&g), (45.0, 5.0));
+
+        // The second stays at its lower bound while the first hides.
+        g.set(1, 180.0, &mut f);
+        assert_eq!(at(&g), (40.0, 0.0));
+        assert!(g.settle(1));
+        for now in [2.0, 2.1, 2.3] {
+            g.tick(now, &mut f);
+            assert_eq!(g.eval(3).number(), 0.0);
+        }
+        assert_eq!(at(&g), (50.0, 0.0));
+        assert!(!g.is_animating());
+        g.set(1, 170.0, &mut f);
+        assert_eq!(at(&g), (40.0, 0.0));
+        g.set(1, 175.0, &mut f);
+        assert_eq!(at(&g), (45.0, 5.0));
+    }
+
+    #[test]
+    fn a_bound_diff_clamp_holds_while_its_input_settles_regardless_of_node_order() {
+        for (first, second) in [(2, 3), (3, 2)] {
+            let mut g = Graph::default();
+            let mut f = Vec::new();
+            values(&mut g, &mut f, &[1]);
+            for (node, input, max) in [(first, 1, 50.0), (second, first, 10.0)] {
+                g.apply(
+                    AnimationOp::CreateDiffClamp {
+                        node,
+                        input,
+                        min: 0.0,
+                        max,
+                        snap: true,
+                    },
+                    &mut f,
+                );
+            }
+            for y in [0.0, 40.0] {
+                g.set(1, y, &mut f);
+                g.eval(second);
+            }
+            assert_eq!(g.eval(second).number(), 10.0);
+            assert!(g.settle(1));
+            for now in [1.0, 1.1, 1.3] {
+                g.tick(now, &mut f);
+                assert_eq!(g.eval(second).number(), 10.0);
+            }
+            assert_eq!(g.eval(first).number(), 0.0);
+            assert!(!g.is_animating());
+            assert!(!g.settle(1));
+            g.set(1, 35.0, &mut f);
+            assert_eq!(g.eval(second).number(), 10.0);
+            g.set(1, 45.0, &mut f);
+            assert_eq!(g.eval(second).number(), 10.0);
+            g.set(1, 40.0, &mut f);
+            assert_eq!(g.eval(second).number(), 5.0);
+        }
+    }
+
+    #[test]
+    fn only_snapping_diff_clamps_of_the_scroll_value_settle() {
+        let mut g = Graph::default();
+        let mut f = Vec::new();
+        snapping(&mut g, &mut f);
+        values(&mut g, &mut f, &[3]);
+        // A plain one of the same value, a snapping one through a product.
+        g.apply(
+            AnimationOp::CreateDiffClamp {
+                node: 4,
+                input: 1,
+                min: 0.0,
+                max: 50.0,
+                snap: false,
+            },
+            &mut f,
+        );
+        g.apply(
+            AnimationOp::CreateMath {
+                node: 5,
+                op: MathOp::Mul,
+                a: Operand::Node(1),
+                b: Operand::Const(2.0),
+            },
+            &mut f,
+        );
+        g.apply(
+            AnimationOp::CreateDiffClamp {
+                node: 6,
+                input: 5,
+                min: 0.0,
+                max: 50.0,
+                snap: true,
+            },
+            &mut f,
+        );
+        for o in [0.0, 200.0, 190.0] {
+            g.set(1, o, &mut f);
+            for n in [2, 4, 6] {
+                g.eval(n);
+            }
+        }
+        // Another value's end settles nothing.
+        assert!(!g.settle(3));
+        assert!(g.settle(1));
+        run(&mut g, &mut f, 1.0, 1.3);
+        assert_eq!(g.eval(2).number(), 50.0);
+        assert_eq!(g.eval(4).number(), 40.0);
+        // Through the product too: 30 of 50 hidden (twice the 10 scrolled
+        // back), nearer to hidden.
+        assert_eq!(g.eval(6).number(), 50.0);
+        // At a bound, nothing moves.
+        assert!(!g.settle(1));
     }
 
     #[test]

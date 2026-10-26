@@ -18,7 +18,7 @@
  */
 
 use maka_event_log::{
-    EventLog, StoreError,
+    RootStore, StoreError,
     root::{FileLease, ROOT_DATABASE, RootNamespaces, RootOwner},
 };
 use std::sync::Arc;
@@ -33,12 +33,14 @@ async fn initialization_and_high_water_failures_close_the_actual_sql_owner_befor
             control: directory.path().join("control"),
         };
         let owner = Arc::new(RootOwner::create(&root, &namespaces).unwrap());
-        let store = EventLog::for_root(owner).await.unwrap();
+        let store = RootStore::open(owner).await.unwrap();
         store.close().await.unwrap();
         let database = root.join(ROOT_DATABASE);
         let raw = rusqlite::Connection::open(&database).unwrap();
         if high_water {
-            // Actual invalid durable state reaches the post-initialization cursor read.
+            // Deliberately corrupt canonical storage outside RuntimeEvent ingress.
+            // Current projection ownership is application-level; no append UDF
+            // trigger must be disabled or restored around this fault fixture.
             raw.execute_batch("PRAGMA ignore_check_constraints=ON; INSERT INTO event_log(sequence,event_id,kind,event_json) VALUES(-1,'invalid','diagnostic','{}');").unwrap();
         } else {
             raw.execute_batch("PRAGMA application_id=123;").unwrap();
@@ -46,7 +48,7 @@ async fn initialization_and_high_water_failures_close_the_actual_sql_owner_befor
         raw.close().unwrap();
         let owner = Arc::new(RootOwner::open(&root, &namespaces).unwrap());
         let original = Arc::downgrade(&owner);
-        let error = EventLog::for_root(owner).await.err().unwrap();
+        let error = RootStore::open(owner).await.err().unwrap();
         if high_water {
             assert!(
                 matches!(error, StoreError::InvalidTransition(reason) if reason == "negative ledger sequence")

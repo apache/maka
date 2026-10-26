@@ -20,7 +20,7 @@
 //! Per-request projection of explicitly registered tools. A projection can
 //! narrow availability or replace its own handler/descriptor, never add a name.
 
-use crate::{CatalogError, ToolCatalog, catalog::RegisteredTool};
+use crate::{CatalogError, ToolCatalog};
 use maka_agent_facts::tools::ProviderTool;
 use maka_agent_facts::tools::ToolError;
 use maka_agent_facts::tools::ToolHandler;
@@ -97,7 +97,7 @@ impl ToolCatalog {
             input.tools = selected.clone();
             // The embedding owns cancellation and actual cleanup of this work.
             let bound = group.binding.bind(input).await?;
-            if bound.keys().cloned().collect::<BTreeSet<_>>() != selected {
+            if !bound.keys().eq(selected.iter()) {
                 return Err(ToolError::Failed(
                     "request binding changed its registered tool names".into(),
                 ));
@@ -105,84 +105,65 @@ impl ToolCatalog {
             for (name, projection) in bound {
                 let entries = Arc::make_mut(&mut self.entries);
                 let entry = entries.get(&name).expect("selected entry");
-                let mut registration = entry.registration.clone();
-                let mut validator = entry.validator.clone();
-                let projection = match projection {
+                let mut projected = (**entry).clone();
+                let handler = match projection {
                     BoundTool::Described {
                         handler,
                         description,
                     } => {
-                        if description.trim().is_empty() || description.len() > 16 * 1024 {
+                        if description.trim().is_empty() {
                             return Err(ToolError::Failed(
                                 "request tool description invalid".into(),
                             ));
                         }
-                        registration.definition.description = description;
-                        BoundTool::Prepared(handler)
+                        if projected.definition.description != description {
+                            Arc::make_mut(&mut projected.definition).description = description;
+                        }
+                        Some(handler)
                     }
                     BoundTool::Input { handler, schema } => {
-                        if schema != registration.definition.input_schema {
-                            validator = Arc::new(
+                        if schema != projected.definition.input_schema {
+                            projected.validator = Arc::new(
                                 jsonschema::options()
                                     .offline()
                                     .should_validate_formats(false)
                                     .build(&schema)
                                     .map_err(|e| ToolError::Failed(e.to_string()))?,
                             );
-                            registration.definition.input_schema = schema;
+                            Arc::make_mut(&mut projected.definition).input_schema = schema;
                         }
-                        BoundTool::Prepared(handler)
+                        Some(handler)
                     }
-                    projection => projection,
-                };
-                match projection {
-                    BoundTool::Described { .. } | BoundTool::Input { .. } => {
-                        unreachable!("projection already applied")
-                    }
+                    BoundTool::Prepared(handler) => Some(handler),
                     BoundTool::Unavailable => {
                         entries.remove(&name);
                         continue;
-                    }
-                    BoundTool::Prepared(handler) => {
-                        if !handler.names().contains(&name) {
-                            return Err(ToolError::Failed(
-                                "request handler does not own its tool".into(),
-                            ));
-                        }
-                        registration.definition.provider = None;
-                        registration.handler = ToolHandler::Prepared(handler);
                     }
                     BoundTool::Provider(provider) => {
                         provider
                             .validate()
                             .map_err(|e| ToolError::Failed(e.into()))?;
-                        registration.definition.provider = Some(provider);
-                        registration.nesting = ToolNesting::DirectOnly;
-                        registration.semantics = ToolSemantics::Parallel;
+                        if projected.definition.provider.as_ref() != Some(&provider) {
+                            Arc::make_mut(&mut projected.definition).provider = Some(provider);
+                        }
+                        projected.nesting = ToolNesting::DirectOnly;
+                        projected.semantics = ToolSemantics::Parallel;
+                        None
                     }
+                };
+                if let Some(handler) = handler {
+                    if !handler.names().contains(&name) {
+                        return Err(ToolError::Failed(
+                            "request handler does not own its tool".into(),
+                        ));
+                    }
+                    if projected.definition.provider.is_some() {
+                        Arc::make_mut(&mut projected.definition).provider = None;
+                    }
+                    projected.handler = ToolHandler::Prepared(handler);
                 }
-                let bytes = serde_json::to_vec(&registration.definition)
-                    .map_err(|e| ToolError::Failed(e.to_string()))?
-                    .len();
-                entries.insert(
-                    name,
-                    Arc::new(RegisteredTool {
-                        always_visible: entry.always_visible,
-                        registration,
-                        validator,
-                        bytes,
-                    }),
-                );
+                entries.insert(name, Arc::new(projected));
             }
-        }
-        if self
-            .entries
-            .values()
-            .map(|entry| entry.bytes)
-            .sum::<usize>()
-            > 1024 * 1024
-        {
-            return Err(ToolError::Failed("bound tool catalog exceeds 1 MiB".into()));
         }
         Ok(())
     }
@@ -194,10 +175,120 @@ pub struct BindingRequest {
     pub behavior: Option<maka_agent_facts::execution::BehaviorId>,
     pub model: Option<maka_agent_facts::tools::ModelToolContext>,
     pub invocation: maka_agent_facts::event::Invocation,
+    pub execution: Option<Arc<dyn maka_agent_facts::tools::ExecutionCustody>>,
     pub cwd: String,
     /// Effective catalog, already restricted by the Host's tool ceiling.
     pub tools: BTreeSet<String>,
     /// Complete frozen tool ceiling before individual binding groups project it.
     pub available_tools: BTreeSet<String>,
     pub cancellation: tokio_util::sync::CancellationToken,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{ToolDefinition, ToolRegistration};
+    use maka_agent_facts::{event::Invocation, tool_call::ToolRejection};
+    use serde_json::{Value, json};
+    use std::{
+        future::Future,
+        task::{Context, Poll, Waker},
+    };
+
+    struct Handler;
+    impl ToolPreparer for Handler {
+        fn names(&self) -> Vec<String> {
+            vec!["fixture".into()]
+        }
+        fn prepare(
+            &self,
+            _: String,
+            _: Value,
+            _: crate::ToolCallContext,
+            _: tokio_util::sync::CancellationToken,
+        ) -> crate::PreparationFuture {
+            Box::pin(async { Err(ToolRejection::Unavailable) })
+        }
+    }
+    struct Binding;
+    impl RequestBinding for Binding {
+        fn bind(&self, request: BindingRequest) -> BindingFuture {
+            Box::pin(async move {
+                let handler = Arc::new(Handler);
+                let projection = if request.cwd == "changed" {
+                    BoundTool::Input {
+                        handler,
+                        schema: json!({"type":"integer"}),
+                    }
+                } else {
+                    BoundTool::Prepared(handler)
+                };
+                Ok(BTreeMap::from([("fixture".into(), projection)]))
+            })
+        }
+    }
+    fn capture(catalog: &mut ToolCatalog, cwd: &str) {
+        let request = BindingRequest {
+            execution: None,
+            behavior: None,
+            model: None,
+            invocation: Invocation {
+                session_id: "session".into(),
+                turn_id: "turn".into(),
+                run_id: "run".into(),
+                invocation_id: "invocation".into(),
+            },
+            cwd: cwd.into(),
+            tools: BTreeSet::new(),
+            available_tools: BTreeSet::new(),
+            cancellation: tokio_util::sync::CancellationToken::new(),
+        };
+        // This fixture's binder has no external asynchronous work.
+        let mut future = std::pin::pin!(catalog.bind_native_request(request));
+        match future
+            .as_mut()
+            .poll(&mut Context::from_waker(Waker::noop()))
+        {
+            Poll::Ready(result) => result.unwrap(),
+            Poll::Pending => panic!("fixture binding unexpectedly waited"),
+        }
+    }
+
+    #[test]
+    fn request_handlers_share_descriptors_and_schema_projection_is_isolated() {
+        let base = ToolCatalog::new([ToolRegistration {
+            definition: ToolDefinition {
+                provider: None,
+                name: "fixture".into(),
+                description: "d".repeat(1024 * 1024 + 1),
+                input_schema: json!({"type":"string"}),
+                freeform: None,
+                output_schema: None,
+            },
+            nesting: ToolNesting::Nestable,
+            semantics: ToolSemantics::Parallel,
+            handler: ToolHandler::Prepared(Arc::new(Handler)),
+        }])
+        .unwrap()
+        .with_request_binding(BTreeSet::from(["fixture".into()]), Arc::new(Binding))
+        .unwrap();
+        let mut first = base.clone();
+        let mut second = base.clone();
+        capture(&mut first, "unchanged");
+        capture(&mut second, "unchanged");
+        let original = base.definitions().next().unwrap();
+        assert!(std::ptr::eq(original, first.definitions().next().unwrap()));
+        assert!(std::ptr::eq(original, second.definitions().next().unwrap()));
+        assert_eq!(base.digest(), first.digest());
+        capture(&mut second, "changed");
+        assert!(!std::ptr::eq(
+            original,
+            second.definitions().next().unwrap()
+        ));
+        assert!(base.validate("fixture", &json!("original")).is_ok());
+        assert!(first.validate("fixture", &json!("original")).is_ok());
+        assert!(second.validate("fixture", &json!(42)).is_ok());
+        assert!(second.validate("fixture", &json!("original")).is_err());
+        assert_ne!(base.digest(), second.digest());
+    }
 }

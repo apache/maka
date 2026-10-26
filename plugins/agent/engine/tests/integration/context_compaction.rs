@@ -18,10 +18,10 @@
  */
 
 use crate::support::context as support;
+use crate::support::store::SessionFixture;
 use maka_agent_facts::context::CompactOutcome;
 use maka_agent_facts::event::Fact;
 use maka_agent_facts::event::InvocationOutcome;
-use maka_event_log::EventLog;
 use std::sync::Arc;
 use support::*;
 use tokio::net::TcpListener;
@@ -29,13 +29,13 @@ use tokio_util::sync::CancellationToken;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn compact_next_main_and_reopen_use_durable_baseline_with_complete_tail() {
-    let engine = |log| {
+    let engine = || {
         let model = maka_model::ModelExecutor::new(std::time::Duration::from_secs(10)).unwrap();
         maka_agent_engine::Engine::new(
-            log,
             model,
             maka_tools::CodeExecutor::new(Default::default()).unwrap(),
         )
+        .unwrap()
     };
     let input = |base: &str, id: &str, compact| {
         let mut input = support::input(base, id, compact);
@@ -64,29 +64,45 @@ async fn compact_next_main_and_reopen_use_durable_baseline_with_complete_tail() 
         }
         requests
     });
-    let log = Arc::new(EventLog::open(&path).await.unwrap());
-    let worker = engine(log.clone());
+    let log = Arc::new(SessionFixture::open(&path).await.unwrap());
+    let worker = engine();
     worker
-        .run(input(&base, "old", false), CancellationToken::new())
+        .run(
+            log.store(),
+            input(&base, "old", false),
+            CancellationToken::new(),
+        )
         .await
         .unwrap();
     worker
-        .run(input(&base, "compact", true), CancellationToken::new())
+        .run(
+            log.store(),
+            input(&base, "compact", true),
+            CancellationToken::new(),
+        )
         .await
         .unwrap();
-    let source = log.read_model_context("session", None).await.unwrap();
+    let source = log.read_model_view("session", None).await.unwrap();
     let checkpoint = source.baseline.unwrap().event_id;
     worker
-        .run(input(&base, "tail", false), CancellationToken::new())
+        .run(
+            log.store(),
+            input(&base, "tail", false),
+            CancellationToken::new(),
+        )
         .await
         .unwrap();
     worker.drain().await;
     drop(worker);
     Arc::try_unwrap(log).ok().unwrap().close().await.unwrap();
-    let log = Arc::new(EventLog::open(&path).await.unwrap());
-    let worker = engine(log.clone());
+    let log = Arc::new(SessionFixture::open(&path).await.unwrap());
+    let worker = engine();
     worker
-        .run(input(&base, "reopen", false), CancellationToken::new())
+        .run(
+            log.store(),
+            input(&base, "reopen", false),
+            CancellationToken::new(),
+        )
         .await
         .unwrap();
     worker.drain().await;
@@ -222,7 +238,7 @@ async fn compact_next_main_and_reopen_use_durable_baseline_with_complete_tail() 
 async fn arbitrary_completed_summary_is_accepted_without_format_repair() {
     let directory = tempfile::tempdir().unwrap();
     let log = Arc::new(
-        EventLog::open(&directory.path().join("events.sqlite"))
+        SessionFixture::open(&directory.path().join("events.sqlite"))
             .await
             .unwrap(),
     );
@@ -237,10 +253,14 @@ async fn arbitrary_completed_summary_is_accepted_without_format_repair() {
         }
         requests
     });
-    let worker = engine(log.clone());
+    let worker = engine();
     for (id, compact) in [("old", false), ("bad", true), ("next", false)] {
         worker
-            .run(input(&base, id, compact), CancellationToken::new())
+            .run(
+                log.store(),
+                input(&base, id, compact),
+                CancellationToken::new(),
+            )
             .await
             .unwrap();
     }
@@ -266,7 +286,7 @@ async fn incomplete_summary_fails_without_repair_and_main_retains_incomplete_tex
     use tokio::io::AsyncWriteExt;
     let directory = tempfile::tempdir().unwrap();
     let log = Arc::new(
-        EventLog::open(&directory.path().join("events.sqlite"))
+        SessionFixture::open(&directory.path().join("events.sqlite"))
             .await
             .unwrap(),
     );
@@ -296,13 +316,21 @@ async fn incomplete_summary_fails_without_repair_and_main_retains_incomplete_tex
         }
         requests
     });
-    let worker = engine(log.clone());
+    let worker = engine();
     worker
-        .run(input(&base, "old", false), CancellationToken::new())
+        .run(
+            log.store(),
+            input(&base, "old", false),
+            CancellationToken::new(),
+        )
         .await
         .unwrap();
     worker
-        .run(input(&base, "shorten", true), CancellationToken::new())
+        .run(
+            log.store(),
+            input(&base, "shorten", true),
+            CancellationToken::new(),
+        )
         .await
         .unwrap();
     let effects = Arc::new(AtomicUsize::new(0));
@@ -315,12 +343,15 @@ async fn incomplete_summary_fails_without_repair_and_main_retains_incomplete_tex
         }),
     );
     assert!(matches!(
-        worker.run(truncated_input, CancellationToken::new()).await,
+        worker
+            .run(log.store(), truncated_input, CancellationToken::new())
+            .await,
         Err(maka_agent_engine::RunError::ModelIncomplete)
     ));
     assert_eq!(effects.load(Ordering::SeqCst), 0);
     worker
         .run(
+            log.store(),
             input(&base, "after-failure", false),
             CancellationToken::new(),
         )
@@ -393,7 +424,7 @@ async fn summary_preserves_main_prefix_tools_and_custom_instruction_with_indepen
     ] {
         let directory = tempfile::tempdir().unwrap();
         let log = Arc::new(
-            EventLog::open(&directory.path().join("events.sqlite"))
+            SessionFixture::open(&directory.path().join("events.sqlite"))
                 .await
                 .unwrap(),
         );
@@ -409,7 +440,7 @@ async fn summary_preserves_main_prefix_tools_and_custom_instruction_with_indepen
             requests
         });
         let effects = Arc::new(AtomicUsize::new(0));
-        let worker = engine(log.clone());
+        let worker = engine();
         for (id, compact) in [
             ("first", false),
             ("compact", true),
@@ -447,7 +478,10 @@ async fn summary_preserves_main_prefix_tools_and_custom_instruction_with_indepen
                 )
                 .work;
             }
-            worker.run(run, CancellationToken::new()).await.unwrap();
+            worker
+                .run(log.store(), run, CancellationToken::new())
+                .await
+                .unwrap();
         }
         worker.drain().await;
         let requests = server.await.unwrap();
@@ -471,7 +505,7 @@ async fn summary_preserves_main_prefix_tools_and_custom_instruction_with_indepen
             assert_eq!(requests[main]["max_tokens"], main_budget.unwrap_or(8000));
         }
         assert_eq!(effects.load(Ordering::SeqCst), 0);
-        let context = log.read_model_context("session", None).await.unwrap();
+        let context = log.read_model_view("session", None).await.unwrap();
         assert_eq!(context.baseline.unwrap().checkpoint.summary.text, "");
     }
 }
@@ -481,7 +515,7 @@ async fn summary_only_excerpts_after_provider_overflow_with_frozen_composition()
     use tokio::io::AsyncWriteExt;
     let directory = tempfile::tempdir().unwrap();
     let log = Arc::new(
-        EventLog::open(&directory.path().join("events.sqlite"))
+        SessionFixture::open(&directory.path().join("events.sqlite"))
             .await
             .unwrap(),
     );
@@ -502,9 +536,13 @@ async fn summary_only_excerpts_after_provider_overflow_with_frozen_composition()
         respond(&mut socket, "brief arbitrary summary", "stop").await;
         (full, fitted)
     });
-    let worker = engine(log.clone());
+    let worker = engine();
     worker
-        .run(input(&base, "old", false), CancellationToken::new())
+        .run(
+            log.store(),
+            input(&base, "old", false),
+            CancellationToken::new(),
+        )
         .await
         .unwrap();
     let mut compact = input(&base, "compact", true);
@@ -515,7 +553,10 @@ async fn summary_only_excerpts_after_provider_overflow_with_frozen_composition()
         model_context_window: Some(10_000),
         declared_window: None,
     });
-    worker.run(compact, CancellationToken::new()).await.unwrap();
+    worker
+        .run(log.store(), compact, CancellationToken::new())
+        .await
+        .unwrap();
     worker.drain().await;
     let (full, fitted) = server.await.unwrap();
     assert!(full["messages"].to_string().contains(&expected));
@@ -563,7 +604,7 @@ async fn summary_advertised_tools_never_execute() {
     use tokio::io::AsyncWriteExt;
     let directory = tempfile::tempdir().unwrap();
     let log = Arc::new(
-        EventLog::open(&directory.path().join("events.sqlite"))
+        SessionFixture::open(&directory.path().join("events.sqlite"))
             .await
             .unwrap(),
     );
@@ -585,7 +626,7 @@ async fn summary_advertised_tools_never_execute() {
         socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
     });
     let effects = Arc::new(AtomicUsize::new(0));
-    let worker = engine(log.clone());
+    let worker = engine();
     let mut main = input(&base, "main", false);
     main.work = agent_loop::input(
         &base,
@@ -596,10 +637,17 @@ async fn summary_advertised_tools_never_execute() {
         }),
     )
     .work;
-    worker.run(main, CancellationToken::new()).await.unwrap();
+    worker
+        .run(log.store(), main, CancellationToken::new())
+        .await
+        .unwrap();
     assert!(
         worker
-            .run(input(&base, "compact", true), CancellationToken::new())
+            .run(
+                log.store(),
+                input(&base, "compact", true),
+                CancellationToken::new()
+            )
             .await
             .is_err()
     );
@@ -607,7 +655,7 @@ async fn summary_advertised_tools_never_execute() {
     server.await.unwrap();
     assert_eq!(effects.load(Ordering::SeqCst), 0);
     assert!(
-        log.read_model_context("session", None)
+        log.read_model_view("session", None)
             .await
             .unwrap()
             .baseline
@@ -630,7 +678,7 @@ async fn overflow_preserves_system_and_first_goal_or_continuation_summary() {
     for baseline in [false, true] {
         let directory = tempfile::tempdir().unwrap();
         let log = Arc::new(
-            EventLog::open(&directory.path().join("events.sqlite"))
+            SessionFixture::open(&directory.path().join("events.sqlite"))
                 .await
                 .unwrap(),
         );
@@ -659,7 +707,7 @@ async fn overflow_preserves_system_and_first_goal_or_continuation_summary() {
             respond(&mut socket, "final summary", "stop").await;
             (full, fitted)
         });
-        let worker = engine(log.clone());
+        let worker = engine();
         let mut stages = vec![("first", false)];
         if baseline {
             stages.push(("baseline", true));
@@ -690,7 +738,10 @@ async fn overflow_preserves_system_and_first_goal_or_continuation_summary() {
                     declared_window: None,
                 });
             }
-            worker.run(run, CancellationToken::new()).await.unwrap();
+            worker
+                .run(log.store(), run, CancellationToken::new())
+                .await
+                .unwrap();
         }
         worker.drain().await;
         let (full, fitted) = server.await.unwrap();
@@ -752,7 +803,7 @@ async fn small_window_caps_summary_output_and_compacts_only_for_input_pressure()
     ] {
         let directory = tempfile::tempdir().unwrap();
         let log = Arc::new(
-            EventLog::open(&directory.path().join("events.sqlite"))
+            SessionFixture::open(&directory.path().join("events.sqlite"))
                 .await
                 .unwrap(),
         );
@@ -794,9 +845,13 @@ async fn small_window_caps_summary_output_and_compacts_only_for_input_pressure()
             }
             requests
         });
-        let worker = engine(log);
+        let worker = engine();
         worker
-            .run(input(&base, "old", false), CancellationToken::new())
+            .run(
+                log.store(),
+                input(&base, "old", false),
+                CancellationToken::new(),
+            )
             .await
             .unwrap();
         let mut next = input(&base, "next", manual);
@@ -807,7 +862,10 @@ async fn small_window_caps_summary_output_and_compacts_only_for_input_pressure()
             model_context_window: Some(4096),
             declared_window: None,
         });
-        worker.run(next, CancellationToken::new()).await.unwrap();
+        worker
+            .run(log.store(), next, CancellationToken::new())
+            .await
+            .unwrap();
         worker.drain().await;
         let requests = server.await.unwrap();
         let summaries: Vec<_> = requests
@@ -863,7 +921,7 @@ async fn new_summary_uses_captured_language_without_retranslating_the_prior_main
     ] {
         let directory = tempfile::tempdir().unwrap();
         let log = Arc::new(
-            EventLog::open(&directory.path().join("events.sqlite"))
+            SessionFixture::open(&directory.path().join("events.sqlite"))
                 .await
                 .unwrap(),
         );
@@ -878,7 +936,7 @@ async fn new_summary_uses_captured_language_without_retranslating_the_prior_main
             respond(&mut socket, SUMMARY, "stop").await;
             (main, summary)
         });
-        let worker = engine(log.clone());
+        let worker = engine();
         let mut original = input(&base, "original", false);
         original.configuration.system_prompt = Some(maka_agent_facts::execution::SystemPrompt {
             text: "Original custom prefix 原文".into(),
@@ -886,7 +944,7 @@ async fn new_summary_uses_captured_language_without_retranslating_the_prior_main
             sources: vec![],
         });
         worker
-            .run(original, CancellationToken::new())
+            .run(log.store(), original, CancellationToken::new())
             .await
             .unwrap();
         let mut compact = input(&base, "translated-summary", true);
@@ -896,7 +954,10 @@ async fn new_summary_uses_captured_language_without_retranslating_the_prior_main
             policy_revision: 0,
             sources: vec![],
         });
-        worker.run(compact, CancellationToken::new()).await.unwrap();
+        worker
+            .run(log.store(), compact, CancellationToken::new())
+            .await
+            .unwrap();
         worker.drain().await;
         let (main, summary) = server.await.unwrap();
         assert!(

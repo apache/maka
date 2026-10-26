@@ -346,7 +346,13 @@ impl<'p> Reader<'p> {
             }
             "math" if attr(node, "display").as_deref() == Some("block") => {
                 match tex_annotation(node) {
-                    Some(tex) => self.push_block(flow, Block::Math { tex }),
+                    Some(tex) => self.push_block(
+                        flow,
+                        Block::Math {
+                            tex,
+                            source: Vec::new(),
+                        },
+                    ),
                     None => self.inline_node(node, &mut flow.run, depth),
                 }
             }

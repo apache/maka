@@ -35,12 +35,15 @@ impl RequestBinding for Binding {
         Box::pin(async move {
             let request = service
                 .services
-                .request(
+                .request_with_execution(
                     Identity::Agent {
                         invocation: input.invocation,
                         operation_id: None,
                     },
                     input.cancellation.clone(),
+                    input.execution.ok_or_else(|| {
+                        ToolError::Persistence("Execution custody unavailable".into())
+                    })?,
                 )
                 .map_err(ToolError::Failed)?;
             let import = service.selection.import.clone();

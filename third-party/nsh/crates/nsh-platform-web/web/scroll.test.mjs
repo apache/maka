@@ -180,3 +180,160 @@ test('tracks stay with the cells in a content layer', () => {
   after.p.op_sticky(['sticky', 0, [[1, 0, 460]]]);
   assert.equal(after.cell(1).parentNode.parentNode, after.el._layer);
 });
+
+// Wheel and key glides (`scrollSmoothly`): their animation frames run one
+// at a time, a frame apart on the tests' clock (`performance.now`).
+const frames = new Map();
+let lastFrame = 0;
+let clock = 0;
+globalThis.requestAnimationFrame = (f) => (frames.set(++lastFrame, f), lastFrame);
+globalThis.cancelAnimationFrame = (id) => frames.delete(id);
+function runFrames(n = 120) {
+  for (let i = 0; i < n && frames.size; i++) {
+    clock += 16.7;
+    const due = [...frames.values()];
+    frames.clear();
+    for (const f of due) f(clock);
+  }
+}
+
+/** A vertical scroll view 300 × 200 with content 5000 tall, at the top. */
+function scroller() {
+  const p = Object.create(Player.prototype);
+  p.root = { parentNode: null };
+  p.size = [300, 200];
+  // A scroll that ends tells the engine (`nsh_scroll_ended`), which these
+  // players run without; -1: the engine is not due again (`schedule`).
+  p.wasm = { nsh_scroll_ended: () => -1 };
+  const el = {
+    _id: 1, _kind: 'scroll', _events: new Set(), _applied: 0, parentNode: p.root,
+    clientWidth: 300, clientHeight: 200, scrollWidth: 300, scrollHeight: 5000, scrollLeft: 0, scrollTop: 0,
+    scrollTo({ left, top }) {
+      this.scrollLeft = Math.min(Math.max(left, 0), this.scrollWidth - this.clientWidth);
+      this.scrollTop = Math.min(Math.max(top, 0), this.scrollHeight - this.clientHeight);
+    },
+  };
+  p.views = new Map([[1, el]]);
+  return { p, el };
+}
+const wheel = (el, deltaY) => ({ deltaMode: 0, deltaX: 0, deltaY, target: el, preventDefault() {} });
+
+test('scroll commands win over a wheel or key glide', (t) => {
+  t.mock.method(performance, 'now', () => clock);
+  const commands = [
+    [['cmd', 1, 'scrollTo', 0, 0, false], 0],
+    [['cmd', 1, 'scrollTo', 0, 0, true], 0],
+    [['cmd', 1, 'scrollToEnd', false], 4800],
+  ];
+  for (const key of [false, true]) {
+    for (const [command, end] of commands) {
+      const { p, el } = scroller();
+      if (key) p.scrollKey({ key: 'PageDown', shiftKey: false }, el);
+      else p.wheel(wheel(el, 900));
+      runFrames(2);
+      assert.ok(el._glide && el.scrollTop > 0, 'gliding');
+      p.op_cmd(command);
+      runFrames();
+      assert.equal(el.scrollTop, end, `${command[2]} after a ${key ? 'key' : 'wheel'}`);
+      assert.equal(el._glide, null);
+      assert.equal(el._driven, 0);
+      assert.equal(el._applied, 1);
+    }
+  }
+});
+
+test('a glide moves with the content the core keeps in place', (t) => {
+  t.mock.method(performance, 'now', () => clock);
+  const { p, el } = scroller();
+  p.wheel(wheel(el, 900));
+  runFrames(2);
+  const at = el.scrollTop;
+  p.op_sb(['sb', 1, 0, 100]);
+  assert.equal(el.scrollTop, at + 100);
+  runFrames();
+  assert.equal(el.scrollTop, 1000);
+  assert.equal(el._applied, 1);
+  // A touchpad's scroll goes on from there too.
+  const pad = scroller();
+  pad.p.wheel(wheel(pad.el, 20));
+  pad.p.op_sb(['sb', 1, 0, 100]);
+  pad.p.wheel(wheel(pad.el, 20));
+  assert.equal(pad.el.scrollTop, 140);
+});
+
+test('a scroll a command stops ends once, with or without moving', (t) => {
+  t.mock.method(performance, 'now', () => clock);
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  // Each from `start`, scrolled 40 down.
+  const commands = [
+    [['cmd', 1, 'scrollTo', 0, 40, false], 0, 40],
+    [['cmd', 1, 'scrollTo', 0, 40, true], 0, 40],
+    [['cmd', 1, 'scrollToEnd', false], 4760, 4800],
+    [['cmd', 1, 'scrollTo', 0, 0, false], 0, 0],
+  ];
+  for (const [command, start, end] of commands) {
+    const { p, el } = scroller();
+    el.scrollTop = start;
+    const ends = [];
+    el._events.add('onScrollEnd');
+    p.event = (id, name, e) => ends.push(e.y);
+    // A touchpad moves the view at once; its end waits for it to settle,
+    // and the browser's `scrollend` meanwhile is not the end.
+    p.wheel(wheel(el, 20));
+    p.wheel(wheel(el, 20));
+    p.scrollEnded(el);
+    const at = el.scrollTop;
+    p.op_cmd(command);
+    t.mock.timers.tick(200);
+    // The browser's `scrollend` follows a scroll that moved, only then.
+    if (el.scrollTop !== at) p.scrollEnded(el);
+    assert.deepEqual(ends, [end], command.slice(2).join(' '));
+    assert.equal(el._driven, 0);
+  }
+});
+
+test('fractional scroll commands end once at the browser destination', (t) => {
+  t.mock.method(performance, 'now', () => clock);
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  for (const animated of [false, true]) {
+    for (const destination of [40, 40.5]) {
+      const { p, el } = scroller();
+      const ends = [];
+      el._events.add('onScrollEnd');
+      p.event = (id, name, e) => ends.push(e.y);
+      p.wheel(wheel(el, 20));
+      p.wheel(wheel(el, 20));
+      // Model a browser that rounds to physical pixels, including a
+      // destination that rounds back to the current position.
+      el.scrollTo = () => { el.scrollTop = destination; };
+      p.op_cmd(['cmd', 1, 'scrollTo', 0, 40.4, animated]);
+      assert.deepEqual(ends, []);
+      if (destination !== 40) p.scrollEnded(el);
+      t.mock.timers.tick(200);
+      assert.deepEqual(ends, [destination]);
+      if (destination === 40) {
+        p.scrollEnded(el);
+        assert.deepEqual(ends, [destination]);
+      }
+    }
+  }
+});
+
+test('the command end fallback waits while a smooth scroll moves', (t) => {
+  t.mock.method(performance, 'now', () => clock);
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const { p, el } = scroller();
+  const ends = [];
+  el._events.add('onScrollEnd');
+  p.event = (id, name, e) => ends.push(e.y);
+  p.call = () => {};
+  p.wheel(wheel(el, 20));
+  p.op_cmd(['cmd', 1, 'scrollTo', 0, 400, true]);
+  t.mock.timers.tick(150);
+  p.scrolled(el);
+  t.mock.timers.tick(150);
+  assert.deepEqual(ends, []);
+  p.scrollEnded(el);
+  t.mock.timers.tick(200);
+  assert.deepEqual(ends, [400]);
+});

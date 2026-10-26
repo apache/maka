@@ -48,7 +48,7 @@ async fn narrower_checkpoint_does_not_corrupt_later_whole_session_archives() {
     let child = continuation::opening("child", Some(claim));
     continuation::append(&log, &child).await;
     let active = log
-        .read_model_context("session", Some("child"))
+        .capture_model_context("session", Some("child"), 100_000, 64 * 1024 * 1024)
         .await
         .unwrap();
     let mut main = request("child", "main", Some(&active)).event().clone();
@@ -64,7 +64,7 @@ async fn narrower_checkpoint_does_not_corrupt_later_whole_session_archives() {
         anchor_event_id: child.id.clone(),
     };
     let compact = log
-        .prepare_context_compaction("session", Some("child"), &mode)
+        .capture_compaction_context("session", Some("child"), &mode, 100_000, 64 * 1024 * 1024)
         .await
         .unwrap();
     let pair = summary_pair(&log, "child", &compact).await;
@@ -86,7 +86,7 @@ async fn narrower_checkpoint_does_not_corrupt_later_whole_session_archives() {
         .unwrap()
         .unwrap();
     let current = log
-        .read_model_context("session", Some("writer"))
+        .capture_model_context("session", Some("writer"), 100_000, 64 * 1024 * 1024)
         .await
         .unwrap();
     assert!(current.baseline.is_none());
@@ -104,7 +104,7 @@ async fn narrower_checkpoint_does_not_corrupt_later_whole_session_archives() {
         .unwrap()
         .unwrap();
     let selected = log
-        .read_lineage_context(&boundary.boundary, 100, 65536)
+        .capture_lineage_context(&boundary.boundary, 100, 65536)
         .await
         .unwrap();
     assert_eq!(selected.baseline.unwrap().event_id, checkpoint.id);
@@ -122,7 +122,7 @@ async fn narrower_checkpoint_does_not_corrupt_later_whole_session_archives() {
 }
 
 #[tokio::test]
-async fn session_checkpoint_cache_preserves_lineage_archive_run_identity_rejection() {
+async fn admitted_archive_survives_run_alias_reuse_while_fresh_lookup_rejects_ambiguity() {
     let mut outcomes = Vec::new();
     for cold in [false, true] {
         let directory = tempfile::tempdir().unwrap();
@@ -163,16 +163,21 @@ async fn session_checkpoint_cache_preserves_lineage_archive_run_identity_rejecti
         continuation::close(&log, &child).await;
         open(&log, "whole-session-summary", true).await;
         let source = log
-            .prepare_context_compaction(
+            .capture_compaction_context(
                 "session",
                 Some("whole-session-summary"),
                 &CheckpointMode::Standalone,
+                100_000,
+                64 * 1024 * 1024,
             )
             .await
             .unwrap();
         let pair = summary_pair(&log, "whole-session-summary", &source).await;
         log.append_batch(&pair).await.unwrap();
-        let original = log.read_model_context("session", None).await.unwrap();
+        let original = log
+            .capture_model_context("session", None, 100_000, 64 * 1024 * 1024)
+            .await
+            .unwrap();
         assert_eq!(
             original.baseline.as_ref().unwrap().event_id,
             pair[0].event().id
@@ -182,19 +187,11 @@ async fn session_checkpoint_cache_preserves_lineage_archive_run_identity_rejecti
             LogScope::Session { .. }
         ));
 
-        // A fresh Message may reuse a Run name. It must not erase the old
-        // archive's lineage identity requirement from the adopted checkpoint.
+        // Accepted archives retain their exact Invocation identity. Reusing a
+        // Run alias cannot reinterpret them, but new alias resolution fails.
         let mut reused = continuation::opening("new-message", None);
         reused.invocation.run_id = "archive-writer".into();
         continuation::append(&log, &reused).await;
-        let mut main = request("new-message", "next-main", Some(&original))
-            .event()
-            .clone();
-        main.invocation = reused.invocation;
-        let Fact::ModelRequested { purpose, .. } = &mut main.fact else {
-            panic!("fixture must be an actual model request")
-        };
-        *purpose = ModelPurpose::Main;
         let log = if cold {
             log.close().await.unwrap();
             EventLog::open(&path).await.unwrap()
@@ -210,30 +207,36 @@ async fn session_checkpoint_cache_preserves_lineage_archive_run_identity_rejecti
         let prune = log
             .prepare_prune_candidates("session", Some("new-message"), 128, 65536, None)
             .await
-            .expect_err("prune must freshly validate the archived writer's lineage")
-            .to_string();
+            .unwrap();
+        assert!(prune.candidates.is_empty());
         assert!(
-            prune.contains("Run names multiple invocations"),
-            "unexpected prune rejection: {prune}"
+            log.run_source("session", "archive-writer", None)
+                .await
+                .is_err()
         );
-        let outcome = log
-            .append(&EventWrite::plain(main).unwrap())
+        let current = log
+            .capture_model_context("session", Some("new-message"), 100_000, 64 * 1024 * 1024)
             .await
-            .map(|_| ())
-            .map_err(|error| error.to_string());
-        outcomes.push((outcome, prune));
+            .unwrap();
+        assert_eq!(
+            current.baseline.as_ref().unwrap().event_id,
+            pair[0].event().id
+        );
+        let mut main = request("new-message", "next-main", Some(&current))
+            .event()
+            .clone();
+        main.invocation = reused.invocation;
+        let Fact::ModelRequested { purpose, .. } = &mut main.fact else {
+            panic!()
+        };
+        *purpose = ModelPurpose::Main;
+        outcomes.push(
+            log.append(&EventWrite::plain(main).unwrap())
+                .await
+                .map(|_| ())
+                .map_err(|error| error.to_string()),
+        );
         log.close().await.unwrap();
     }
-    assert!(
-        outcomes[1]
-            .0
-            .as_ref()
-            .is_err_and(|message| message.contains("Run names multiple invocations")),
-        "full validation must retain the original archive writer identity: {:?}",
-        outcomes[1].0
-    );
-    assert_eq!(
-        outcomes[0], outcomes[1],
-        "cached and full validation must preserve the same archive writer identity rejection"
-    );
+    assert_eq!(outcomes, vec![Ok(()), Ok(())]);
 }

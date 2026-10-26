@@ -318,6 +318,10 @@ export const configurations = {
               'Trusted installation process. Runs outside the session filesystem sandbox.',
             type: 'object',
             properties: {
+              type: {
+                type: 'string',
+                const: 'stdio',
+              },
               command: {
                 type: 'string',
               },
@@ -348,10 +352,6 @@ export const configurations = {
                 },
                 default: [],
               },
-              type: {
-                type: 'string',
-                const: 'stdio',
-              },
             },
             additionalProperties: false,
             required: ['type', 'command', 'cwd'],
@@ -359,6 +359,10 @@ export const configurations = {
           {
             type: 'object',
             properties: {
+              type: {
+                type: 'string',
+                const: 'streamable_http',
+              },
               url: {
                 type: 'string',
               },
@@ -377,10 +381,6 @@ export const configurations = {
                   type: 'string',
                 },
                 default: {},
-              },
-              type: {
-                type: 'string',
-                const: 'streamable_http',
               },
             },
             additionalProperties: false,
@@ -944,6 +944,10 @@ export const configurations = {
             type: 'object',
             additionalProperties: false,
             properties: {
+              type: {
+                type: 'string',
+                const: 'stdio',
+              },
               command: {
                 type: 'string',
               },
@@ -974,10 +978,6 @@ export const configurations = {
                 description: 'Environment variable names explicitly forwarded from the Host.',
                 default: [],
               },
-              type: {
-                type: 'string',
-                const: 'stdio',
-              },
             },
             required: ['type', 'command', 'cwd'],
             description:
@@ -987,6 +987,10 @@ export const configurations = {
             type: 'object',
             additionalProperties: false,
             properties: {
+              type: {
+                type: 'string',
+                const: 'streamable_http',
+              },
               url: {
                 type: 'string',
               },
@@ -1005,10 +1009,6 @@ export const configurations = {
                 description:
                   'Header name to Host environment variable; keeps tokens out of config.',
                 default: {},
-              },
-              type: {
-                type: 'string',
-                const: 'streamable_http',
               },
             },
             required: ['type', 'url'],

@@ -18,6 +18,8 @@
  */
 
 mod replay;
+pub mod streaming;
+pub use streaming::prepared;
 mod wire;
 use super::{CacheBudget, CacheDirective, CacheSite, Citations};
 use crate::{

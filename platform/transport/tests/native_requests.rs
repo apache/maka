@@ -23,8 +23,8 @@ use futures_util::future::BoxFuture;
 use maka_capabilities::call::Attachments;
 use maka_capabilities::call::Identity;
 use maka_event_log::{
-    EventLog,
     root::{RootNamespaces, RootOwner},
+    root_store::RootStore,
 };
 use maka_host_runtime::application::{
     Application, Context, Handler, NativeActivation, NativeOwner, NativeRegistry, NativeRequest,
@@ -105,14 +105,14 @@ fn request(services: &NativeServices, jobs: &Jobs) -> Arc<NativeRequest> {
     jobs.0.lock().unwrap().push(request.clone());
     request
 }
-async fn store() -> (tempfile::TempDir, Arc<EventLog>) {
+async fn store() -> (tempfile::TempDir, Arc<RootStore>) {
     let directory = tempfile::tempdir().unwrap();
     let namespaces = RootNamespaces {
         ownership: directory.path().join("owners"),
         control: directory.path().join("control"),
     };
     let root = Arc::new(RootOwner::create(&directory.path().join("root"), &namespaces).unwrap());
-    let store = Arc::new(EventLog::for_root(root).await.unwrap());
+    let store = Arc::new(support::setup(RootStore::open(root)).await.unwrap());
     (directory, store)
 }
 
@@ -438,8 +438,8 @@ impl NativeOwner for Blocking {
 }
 #[tokio::test]
 async fn native_owner_close_waits_for_actual_child_cleanup_after_observer_drop() {
+    let (_directory, store) = store().await;
     tokio::time::timeout(Duration::from_secs(15), async {
-        let (_directory, store) = store().await;
         let deployment = Uuid::new_v4();
         let (input, mut packages) = support::host();
         let provider = packages

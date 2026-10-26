@@ -23,6 +23,7 @@ pub const NATIVE_MODULES: &[&str] = &[
     "nsh/android",
     "nsh/ios",
     "nsh/desktop",
+    "nsh/mobile",
     "nsh/webview",
     "nsh/video",
     "nsh/native",
@@ -140,6 +141,7 @@ mod tests {
             ),
             ("InputHostProps", "  masked?: boolean;"),
             ("InputHostProps", "  readonly?: boolean;"),
+            ("InputHostProps", "  tokens?: InputTokenRule[];"),
             ("IOSInputHostProps", "  inputAccessoryViewID?: string;"),
             (
                 "IOSInputHostProps",
@@ -154,6 +156,7 @@ mod tests {
                 "VideoHostProps",
                 "  onLoad?: (e: { duration: number; size: Size }) => void;",
             ),
+            ("VideoHostProps", "  audioSession?: AudioSession;"),
             (
                 "ScrollingHostProps",
                 "  decelerationRate?: \"normal\" | \"fast\" | number;",
@@ -166,10 +169,8 @@ mod tests {
                 "ScrollingHostProps",
                 "  onScrollIntent?: (e: { intent: \"start\" | \"end\" | \"scroll\" }) => void;",
             ),
-            ("ScrollHostProps", "  onFocus?: () => void;"),
-            ("ScrollHostProps", "  onBlur?: () => void;"),
-            ("ListHostProps", "  onFocus?: () => void;"),
-            ("ListHostProps", "  onBlur?: () => void;"),
+            ("HostProps", "  onFocus?: () => void;"),
+            ("HostProps", "  onBlur?: () => void;"),
             ("ListHostProps", "  contentStyle?: ListContentStyle;"),
             ("DialogHostProps", "  presentation?: ModalPresentation;"),
             ("DialogHostProps", "  closeOnEscape?: boolean;"),
@@ -185,6 +186,23 @@ mod tests {
                 .unwrap_or_else(|| panic!("{interface}"));
             let end = at + elements[at..].find("\n}").unwrap();
             assert!(elements[at..end].contains(prop), "{interface}: {prop}");
+        }
+        for kind in [crate::EventKind::Focus, crate::EventKind::Blur] {
+            let (_, applies, handler, _) =
+                super::host::EVENTS.iter().find(|e| e.0 == kind).unwrap();
+            assert_eq!(*handler, "() => void");
+            for tag in [
+                crate::Tag::View,
+                crate::Tag::Input,
+                crate::Tag::Scroll,
+                crate::Tag::List,
+            ] {
+                assert_ne!(
+                    super::host::element_bits(tag) & applies,
+                    0,
+                    "{kind:?} on {tag:?}"
+                );
+            }
         }
         assert!(elements.contains(
             "export type KeyboardType = \"default\" | \"number-pad\" | \"decimal-pad\" | \"numeric\" | \"numbers-and-punctuation\""

@@ -13,6 +13,8 @@ workspace = true
 
 [dependencies]
 unicode-linebreak.workspace = true
+unicode-segmentation.workspace = true
+regex.workspace = true
 rustc-hash.workspace = true
 slab.workspace = true
 taffy.workspace = true
@@ -42,6 +44,9 @@ futures-util.workspace = true
 tokio-tungstenite.workspace = true
 # `process`'s children: their process groups and exits (`runtime/process.rs`).
 libc.workspace = true
+# The image disk cache (`image/cache.rs`).
+httpdate.workspace = true
+crc32fast.workspace = true
 
 # `process`'s children on Windows: their jobs (`runtime/process.rs`).
 [target.'cfg(windows)'.dependencies]

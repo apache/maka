@@ -380,12 +380,15 @@ pub(crate) fn install(
         }
         crate::rt::flush(cx);
     });
-    // The keymap's held key (see `crate::keymap::forget_held`), and Alt
-    // alone showing a menu bar that hides itself.
+    // The keymap's held key (see `crate::keymap::forget_held`), Alt alone
+    // showing a menu bar that hides itself, and the hovered views told of
+    // the new modifiers.
     let s = surface.clone();
     window.on_modifiers_changed(move |e, _, cx| {
         crate::keymap::forget_held(&s);
-        crate::chrome::modifiers_changed(&s, &crate::keys::modifiers(&e.modifiers));
+        let modifiers = crate::keys::modifiers(&e.modifiers);
+        crate::chrome::modifiers_changed(&s, &modifiers);
+        crate::input::modifiers_changed(&s, modifiers);
         crate::rt::flush(cx);
     });
 }

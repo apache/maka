@@ -1,8 +1,10 @@
 ///
 pub mod from_tree {
+    use gix_error::Result;
     use std::collections::VecDeque;
 
     use bstr::{BStr, BString, ByteSlice, ByteVec};
+    use gix_error::{ErrorExt, bail, message};
     use gix_object::{tree, tree::EntryKind};
     use gix_traverse::tree::{Visit, depthfirst, visit::Action};
 
@@ -10,19 +12,6 @@ pub mod from_tree {
         Entry, PathStorage, State, Version,
         entry::{Flags, Mode, Stat},
     };
-
-    /// The error returned by [State::from_tree()].
-    #[derive(Debug, thiserror::Error)]
-    #[expect(missing_docs)]
-    pub enum Error {
-        #[error("The path \"{path}\" is invalid")]
-        InvalidComponent {
-            path: BString,
-            source: gix_validate::path::component::Error,
-        },
-        #[error(transparent)]
-        Traversal(#[from] gix_traverse::tree::depthfirst::Error),
-    }
 
     /// Initialization
     impl State {
@@ -64,23 +53,23 @@ pub mod from_tree {
             tree: &gix_hash::oid,
             objects: Find,
             validate: gix_validate::path::component::Options,
-        ) -> Result<Self, Error>
+        ) -> Result<Self>
         where
             Find: gix_object::Find,
         {
-            let _span = gix_features::trace::coarse!("gix_index::State::from_tree()");
+            let _span = gix_trace::coarse!("gix_index::State::from_tree()");
             let mut delegate = CollectEntries::new(validate);
-            match depthfirst(tree.to_owned(), depthfirst::State::default(), &objects, &mut delegate) {
-                Ok(()) => {}
-                Err(gix_traverse::tree::breadthfirst::Error::Cancelled) => {
-                    let (path, err) = delegate
-                        .invalid_path
-                        .take()
-                        .expect("cancellation only happens on validation error");
-                    return Err(Error::InvalidComponent { path, source: err });
-                }
-                Err(err) => return Err(err.into()),
+            let traversal = depthfirst(
+                tree.to_owned(),
+                depthfirst::State::default(),
+                &objects,
+                &mut delegate,
+            );
+
+            if let Some((path, err)) = delegate.invalid_path.take() {
+                bail!(err.and_raise(message!("The path \"{path}\" is invalid").validation()));
             }
+            traversal?;
 
             let CollectEntries {
                 entries,
@@ -88,12 +77,8 @@ pub mod from_tree {
                 path: _,
                 path_deque: _,
                 validate: _,
-                invalid_path,
+                invalid_path: _,
             } = delegate;
-
-            if let Some((path, err)) = invalid_path {
-                return Err(Error::InvalidComponent { path, source: err });
-            }
 
             Ok(State {
                 object_hash: tree.kind(),
@@ -142,10 +127,10 @@ pub mod from_tree {
                 self.path.push(b'/');
             }
             self.path.push_str(name);
-            if self.invalid_path.is_none() {
-                if let Err(err) = gix_validate::path::component(name, None, self.validate) {
-                    self.invalid_path = Some((self.path.clone(), err));
-                }
+            if self.invalid_path.is_none()
+                && let Err(err) = gix_validate::path::component(name, None, self.validate)
+            {
+                self.invalid_path = Some((self.path.clone(), err));
             }
         }
 
@@ -160,10 +145,15 @@ pub mod from_tree {
             // There are leaf-names that require special validation, specific to their mode.
             // Double-validate just for this case, as the previous validation didn't know the mode yet.
             if self.invalid_path.is_none() {
-                let start = self.path.rfind_byte(b'/').map(|pos| pos + 1).unwrap_or_default();
+                let start = self
+                    .path
+                    .rfind_byte(b'/')
+                    .map(|pos| pos + 1)
+                    .unwrap_or_default();
                 if let Err(err) = gix_validate::path::component(
                     self.path[start..].as_ref(),
-                    (entry.mode.kind() == EntryKind::Link).then_some(gix_validate::path::component::Mode::Symlink),
+                    (entry.mode.kind() == EntryKind::Link)
+                        .then_some(gix_validate::path::component::Mode::Symlink),
                     self.validate,
                 ) {
                     self.invalid_path = Some((self.path.clone(), err));

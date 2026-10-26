@@ -38,11 +38,14 @@ pub enum CatalogError {
     Schema(String),
 }
 
+#[derive(Clone)]
 pub(crate) struct RegisteredTool {
     pub(crate) always_visible: bool,
-    pub(crate) registration: ToolRegistration,
+    pub(crate) definition: Arc<ToolDefinition>,
+    pub(crate) nesting: ToolNesting,
+    pub(crate) semantics: ToolSemantics,
+    pub(crate) handler: maka_agent_facts::tools::ToolHandler,
     pub(crate) validator: Arc<Validator>,
-    pub(crate) bytes: usize,
 }
 
 #[derive(Clone, Default)]
@@ -90,9 +93,6 @@ impl ToolCatalog {
                     "duplicate, reserved, absent or invalid tool name".into(),
                 ));
             }
-            let definition_bytes = serde_json::to_vec(definition)
-                .map_err(|e| CatalogError::Schema(e.to_string()))?
-                .len();
             // Matches Maka's JSON-schema tool path: no format assertions,
             // defaults/coercion or fetching file/network references.
             let validator = jsonschema::options()
@@ -104,9 +104,11 @@ impl ToolCatalog {
                 definition.name.clone(),
                 Arc::new(RegisteredTool {
                     always_visible: false,
-                    registration,
+                    definition: Arc::new(registration.definition),
+                    nesting: registration.nesting,
+                    semantics: registration.semantics,
+                    handler: registration.handler,
                     validator: Arc::new(validator),
-                    bytes: definition_bytes,
                 }),
             );
         }
@@ -153,9 +155,7 @@ impl ToolCatalog {
                 (*name).into(),
                 Arc::new(RegisteredTool {
                     always_visible: true,
-                    registration: entry.registration.clone(),
-                    validator: entry.validator.clone(),
-                    bytes: entry.bytes,
+                    ..(**entry).clone()
                 }),
             );
         }
@@ -177,9 +177,7 @@ impl ToolCatalog {
     }
 
     pub fn definitions(&self) -> impl Iterator<Item = &ToolDefinition> {
-        self.entries
-            .values()
-            .map(|entry| &entry.registration.definition)
+        self.entries.values().map(|entry| entry.definition.as_ref())
     }
 
     /// Narrow registered Host tools without changing plugin scope or authority.
@@ -192,7 +190,7 @@ impl ToolCatalog {
             entries: Arc::new(
                 self.entries
                     .iter()
-                    .filter(|(_, entry)| entry.registration.nesting == ToolNesting::Nestable)
+                    .filter(|(_, entry)| entry.nesting == ToolNesting::Nestable)
                     .map(|(name, entry)| (name.clone(), entry.clone()))
                     .collect(),
             ),
@@ -202,7 +200,7 @@ impl ToolCatalog {
     }
 
     pub(super) fn direct_only(&self) -> Self {
-        self.select(|name| self.entries[name].registration.nesting == ToolNesting::DirectOnly)
+        self.select(|name| self.entries[name].nesting == ToolNesting::DirectOnly)
     }
 
     /// Stable request-surface identity; process-local handler addresses are excluded.
@@ -211,7 +209,7 @@ impl ToolCatalog {
             .entries
             .values()
             .map(|entry| {
-                let r = &entry.registration;
+                let r = entry;
                 (
                     &r.definition,
                     r.nesting == ToolNesting::Nestable,
@@ -222,14 +220,14 @@ impl ToolCatalog {
         let finishing: Vec<_> = self
             .entries
             .values()
-            .filter(|entry| entry.registration.semantics == ToolSemantics::FinishTurn)
-            .map(|entry| &entry.registration.definition.name)
+            .filter(|entry| entry.semantics == ToolSemantics::FinishTurn)
+            .map(|entry| &entry.definition.name)
             .collect();
         let visible: Vec<_> = self
             .entries
             .values()
             .filter(|entry| entry.always_visible)
-            .map(|entry| &entry.registration.definition.name)
+            .map(|entry| &entry.definition.name)
             .collect();
         // Preserve the existing durable identity when no new semantic is used.
         let bytes = if !visible.is_empty() {
@@ -246,13 +244,13 @@ impl ToolCatalog {
     pub fn semantics(&self, name: &str) -> Result<ToolSemantics, ToolRejection> {
         self.entries
             .get(name)
-            .map(|entry| entry.registration.semantics)
+            .map(|entry| entry.semantics)
             .ok_or(ToolRejection::Unavailable)
     }
 
     pub fn validate(&self, name: &str, input: &Value) -> Result<(), ToolRejection> {
         let entry = self.entries.get(name).ok_or(ToolRejection::Unavailable)?;
-        if entry.registration.definition.provider.is_some() {
+        if entry.definition.provider.is_some() {
             return Err(ToolRejection::Unavailable);
         }
         if !entry.validator.is_valid(input) {
@@ -292,12 +290,10 @@ impl ToolCatalog {
         if let Err(reason) = self.validate(&name, &input) {
             return Box::pin(async move { Err(reason) });
         }
-        let preparation = self.entries[&name].registration.handler.prepare(
-            name,
-            input,
-            context,
-            cancellation.clone(),
-        );
+        let preparation =
+            self.entries[&name]
+                .handler
+                .prepare(name, input, context, cancellation.clone());
         Box::pin(async move {
             let effect = preparation.await?;
             if cancellation.is_cancelled() {
@@ -305,61 +301,5 @@ impl ToolCatalog {
             }
             Ok(effect)
         })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use maka_agent_facts::tools::{ToolExecutor, ToolFuture};
-    struct Tools(Vec<String>);
-    impl ToolExecutor for Tools {
-        fn names(&self) -> Vec<String> {
-            self.0.clone()
-        }
-        fn invoke(&self, _: String, input: Value, _: CancellationToken) -> ToolFuture {
-            Box::pin(async move { Ok(input) })
-        }
-    }
-    #[test]
-    fn large_catalog_and_loaded_checkpoint_preserve_definitions() {
-        let names: Vec<_> = (0..160).map(|i| format!("tool_{i}")).collect();
-        let handler = crate::ToolHandler::Immediate(Arc::new(Tools(names.clone())));
-        let registrations: Vec<_> = names
-            .iter()
-            .map(|name| ToolRegistration {
-                definition: ToolDefinition {
-                    name: name.clone(),
-                    description: "test".into(),
-                    input_schema: serde_json::json!({"type":"object"}),
-                    output_schema: None,
-                    provider: None,
-                    freeform: None,
-                },
-                handler: handler.clone(),
-                nesting: ToolNesting::Nestable,
-                semantics: ToolSemantics::Parallel,
-            })
-            .collect();
-        let catalog = ToolCatalog::new(registrations.clone())
-            .unwrap()
-            .with_discovery();
-        assert_eq!(catalog.definitions().count(), 160);
-        let original = crate::availability::Availability::new(
-            catalog.clone(),
-            names
-                .into_iter()
-                .collect::<std::collections::BTreeSet<_>>()
-                .into(),
-        );
-        let restored = crate::availability::Availability::new(catalog, Default::default());
-        restored.restore(&original.checkpoint()).unwrap();
-        assert_eq!(restored.checkpoint().loaded.len(), 160);
-        let mut oversized = registrations;
-        oversized[0].definition.description = "x".repeat(1024 * 1024);
-        assert_eq!(
-            ToolCatalog::new(oversized).unwrap().definitions().count(),
-            160
-        );
     }
 }

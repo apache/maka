@@ -104,7 +104,9 @@ pub(super) fn workspace(repo: &Repository) -> io::Result<()> {
     let mut ignores = Search::default();
     let exclude = repo.repo.common_dir().join("info/exclude");
     if let Some(bytes) = optional(&exclude)? {
-        ignores.add_patterns_buffer(&bytes, &exclude, None, Default::default());
+        ignores
+            .add_patterns_buffer(&bytes, &exclude, None, Default::default())
+            .map_err(io::Error::other)?;
     }
     let fs = repo.repo.filesystem_options().map_err(io::Error::other)?;
     let pattern_root = if fs.precompose_unicode {
@@ -145,14 +147,20 @@ impl Walker<'_> {
         self.repo.check(&self.repo.root.join(relative))?;
         let previous = self.ignores.patterns.len();
         if let Some(bytes) = self.control(directory, relative, ".gitignore")? {
-            self.ignores.add_patterns_buffer(
-                &bytes,
-                self.pattern_root
-                    .join(gix::path::from_bstr(self.lookup_path(relative)?.as_bstr()).as_ref())
-                    .join(".gitignore"),
-                Some(&self.pattern_root),
-                Default::default(),
-            );
+            self.ignores
+                .add_patterns_buffer(
+                    &bytes,
+                    self.pattern_root
+                        .join(
+                            gix::path::from_bstr(self.lookup_path(relative)?.as_bstr())
+                                .map_err(io::Error::other)?
+                                .as_ref(),
+                        )
+                        .join(".gitignore"),
+                    Some(&self.pattern_root),
+                    Default::default(),
+                )
+                .map_err(io::Error::other)?;
         }
         self.control(directory, relative, ".gitattributes")?;
         for child in directory.entries()? {
@@ -220,7 +228,7 @@ impl Walker<'_> {
     }
     fn lookup_path(&self, path: &Path) -> io::Result<gix::bstr::BString> {
         let bytes = gix::path::to_unix_separators_on_windows(
-            gix::path::try_into_bstr(path).map_err(|_| failure("git_unsupported"))?,
+            gix::path::into_bstr(path).map_err(|_| failure("git_unsupported"))?,
         );
         Ok(if self.precompose_unicode {
             gix::utils::str::precompose_bstr(bytes)

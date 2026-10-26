@@ -19,7 +19,7 @@
 //! supported (a warning, once), nor a zoomable scroll view.
 
 use super::{Core, Key, Kind, NO_KEY, list::StickyRange};
-use crate::text::TextEngine;
+use crate::{animation::AnimationProp, text::TextEngine};
 
 impl<M: TextEngine> Core<M> {
     /// `key`'s style made it sticky with `insets`, or not sticky.
@@ -102,11 +102,32 @@ impl<M: TextEngine> Core<M> {
         } else {
             (insets.top, insets.bottom)
         };
+        // An animated inset: the platforms add its value as they pin.
+        let prop = if horizontal {
+            AnimationProp::StickyLeft
+        } else {
+            AnimationProp::StickyTop
+        };
+        let offset = (self.nodes[key as usize].animated.iter())
+            .find(|(p, _)| *p == prop)
+            .map(|&(_, n)| n);
+        let across = (self.nodes[key as usize].animated.iter()).any(|(p, _)| {
+            matches!(p, AnimationProp::StickyTop | AnimationProp::StickyLeft) && *p != prop
+        });
+        if across && !self.inset_warned {
+            self.inset_warned = true;
+            log::warn!(
+                target: "js",
+                "an animated `top` moves a sticky view in a vertical scroll view and `left` in a horizontal one; the other is ignored on view {}",
+                self.nodes[key as usize].id
+            );
+        }
         use taffy::style::ExpandedLengthPercentageAuto as Inset;
         let inset = match lead.expand() {
             Inset::Length(v) => v,
             // Of the scroll view's viewport, as of a scrollport.
             Inset::Percent(p) => p * viewport,
+            Inset::Auto if offset.is_some() => 0.0,
             Inset::Auto => {
                 if !matches!(trail.expand(), Inset::Auto) && !self.sticky_warned {
                     self.sticky_warned = true;
@@ -149,6 +170,7 @@ impl<M: TextEngine> Core<M> {
                 cell: node.id,
                 start,
                 end,
+                offset,
             },
         ))
     }

@@ -89,6 +89,9 @@ virtual_list(move || messages.with(|m| m.len()), move |at| {
 So keep per-item state in your data (keyed by id), not in signals created inside the row function: such a signal stays
 with the cell and shows up on another item.
 
+Cells waiting for their next item are hidden once their row is gone or shown by another cell, so screen readers,
+touches and UI tests meet each row once.
+
 ## Props
 
 | Prop | Rust | Type | Default | Description |
@@ -112,10 +115,14 @@ with the cell and shows up on another item.
 | `keyExtractor` | `.keys(\|\| ids)` | `(item: T, index: number) => string` | `item.key`, `item.id` or the index | The key of an item in viewability tokens. In Rust, the rows' identities, so rows keep their cells and sizes when rows come and go before them. |
 | `onLoadMore` | `.on_load_more(..)` | `() => void` | | The end is near: load more. |
 | `loadMoreThreshold` | `.load_more_threshold(viewports)` | `number` | `1` | How close to the end (in viewports) `onLoadMore` fires. |
+| `onLoadMoreAtStart` | `.on_load_more_at_start(..)` | `() => void` | | The start is near, after the user or a scroll command moved the list: load what comes before the first item. |
+| `loadMoreAtStartThreshold` | `.load_more_at_start_threshold(viewports)` | `number` | `1` | How close to the start (in viewports) `onLoadMoreAtStart` fires. |
 | `onViewableItemsChange` | `.on_viewable_items_change(..)` | `(info: { viewableItems: ViewToken<T>[]; changed: ViewToken<T>[] }) => void` | | Items became viewable or stopped being viewable. |
 | `viewabilityConfig` | `.viewability(..)`, `.minimum_view_time(..)` | `ViewabilityConfig` | | When items count as viewable (below). |
 | `refreshing` | `.refreshing(..)` | `boolean` | | The pull-to-refresh spinner shows. |
 | `onRefresh` | `.on_refresh(..)` | `() => void` | | The user pulled to refresh. |
+| `refreshIndicator` | `.refresh_indicator(Some(height))` | `{ height: number }` | | The app draws its own indicator, `height` points tall: the platform's spinner is hidden, a pull refreshes once it reaches `height`, and refreshing keeps `height` above the content. A height of 0 or less is none. |
+| `pullValue` | `.pull_value(&value)` | `AnimatedValue` | | An animated value fed with how far the list is pulled past its top (0 at rest, growing with the pull; the room kept above the content while it refreshes: `height` with `refreshIndicator`), for the app's indicator. |
 | `scrollbar` | `.scrollbar(..)` | `boolean` | `true` | The scroll indicator shows. On the desktop and in desktop browsers a horizontal view keeps it: it is the mouse's scroll bar. |
 | `scrollValue` | `.scroll_value(&value)` | `AnimatedValue` | | An animated value fed with the scroll offset, for scroll-linked animations. |
 | `keyboardDismissMode` | `.keyboard_dismiss_mode(..)` | `"none" \| "on-drag" \| "interactive"` | `"none"` | Whether dragging dismisses the keyboard. |
@@ -152,6 +159,7 @@ viewable rows, `changed()` the rows that came or went.
 | `onMomentumStart` / `onMomentumEnd` | `.on_momentum_start` / `.on_momentum_end` | `{ x, y }` | A glide started / stopped. |
 | `onScrollEnd` | `.on_scroll_end` | `{ x, y }` | Scrolling came to rest. |
 | `onLoadMore` | `.on_load_more` | none | Within `loadMoreThreshold` viewports of the end. |
+| `onLoadMoreAtStart` | `.on_load_more_at_start` | none | Within `loadMoreAtStartThreshold` viewports of the start, once per approach after a scroll. |
 | `onViewableItemsChange` | `.on_viewable_items_change` | `{ viewableItems, changed }` (`ViewableItems`) | Viewability changed. |
 | `onRefresh` | `.on_refresh` | none | Pulled to refresh. |
 

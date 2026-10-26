@@ -98,8 +98,10 @@
   place less its `top`, or `left` in a horizontal one, to where its end meets its parent's content box) and sends it
   with that view's sticky list rows (`core/sticky.rs`, `MountItem::StickyCells`), which the platforms pin on every
   scroll. It draws above its siblings of the same `zIndex` (`Node::stack_rank`), as above a page's in-flow boxes.
-  `bottom` / `right` stickiness and a zoomable scroll view are not supported. The `sticky` class sets it, as
-  Tailwind's does.
+  An animated `top` (`left`) is where it sticks, followed every frame: the core keeps it out of the view's bindings
+  (`AnimationProp::StickyTop` / `StickyLeft`, warned once on a view that is not sticky) and sends it as the range's
+  `StickyCell::offset`, which the platforms add as they pin, as for a list's animated `stickyHeaderOffset`. `bottom` /
+  `right` stickiness and a zoomable scroll view are not supported. The `sticky` class sets it, as Tailwind's does.
 - **Line heights**: unitless values inherit as multipliers. Percentages and `em` resolve against the element's
   font size before inheritance, so descendants inherit a computed length (`TextStyle::line_height_em`).
 - **`pointer-events-*` classes** inherit as CSS's `pointer-events` (the `pointerEvents` prop keeps React Native's
@@ -119,6 +121,14 @@
   left / right property of a node right to left (`apply_direction`), so a class names the other side there
   (`utilities::directed`, applied with the node's resolved direction; such classes depend on `deps::RTL`), and the
   swap puts it back. `text-end` is React Native's `right`, which the swap makes the end.
+- **SVG paint** (`fill`, `stroke`, `strokeWidth`, `strokeDasharray`; Tailwind's `fill-*`, `stroke-<color>`,
+  `stroke-<number>`): CSS's properties of SVG shapes, which CSS lets any element set and inherits, so they mean what
+  they mean in a browser: a color, `none` or `currentColor` (the element's text color), a width that is a length, and
+  dashes and gaps as lengths separated by spaces or commas (an odd list repeated, `none`, or lengths adding up to 0
+  for a solid line). They style what Rust components draw on canvases (a chart's marks;
+  `Painter::*_from_view`, `canvas.md`), kept per node in `Style::paint` (`PaintStyle`) and resolved by the core when
+  it sends the drawing (`Core::resolved_paint`); views draw nothing with them. `fill-inherit` / `stroke-inherit` set
+  nothing (they inherit already).
 - **Text style inheritance** (CSS-like): a view's text properties (color, font, size, alignment, ...) pass to the texts and inputs
   inside it, so `class="text-white"` on a button styles its label. So do its `whitespace-*` / `text-wrap` / `text-nowrap`
   (and `truncate`'s no wrapping) and `select-*` classes, as CSS's `white-space` and `user-select: auto` (`Core::inherited_text_props`:

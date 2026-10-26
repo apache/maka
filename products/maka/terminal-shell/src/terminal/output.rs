@@ -25,7 +25,7 @@ use std::{
 };
 
 enum Request {
-    Frame(Vec<u8>, mpsc::SyncSender<io::Result<Instant>>),
+    Frame(Vec<Vec<u8>>, mpsc::SyncSender<io::Result<Instant>>),
     Close(Vec<u8>, mpsc::SyncSender<io::Result<()>>),
 }
 
@@ -50,8 +50,11 @@ impl Output {
             .spawn(move || {
                 while let Ok(request) = receive.recv() {
                     match request {
-                        Request::Frame(bytes, receipt) => {
-                            let result = writer.write_all(&bytes).and_then(|_| writer.flush());
+                        Request::Frame(parts, receipt) => {
+                            let result = parts
+                                .iter()
+                                .try_for_each(|bytes| writer.write_all(bytes))
+                                .and_then(|()| writer.flush());
                             let failed = result.is_err();
                             let result = result.map(|()| Instant::now());
                             let _ = receipt.send(result);
@@ -75,13 +78,15 @@ impl Output {
         })
     }
 
-    pub fn submit(&mut self, bytes: Vec<u8>) -> Result<(), String> {
+    /// All owned parts share one write-and-flush receipt. A final cursor
+    /// sequence can follow an encoded image without reallocating its payload.
+    pub fn submit(&mut self, parts: impl IntoIterator<Item = Vec<u8>>) -> Result<(), String> {
         if self.pending.is_some() {
             return Err("terminal frame still in flight".into());
         }
         let (send, receive) = mpsc::sync_channel(1);
         self.send
-            .try_send(Request::Frame(bytes, send))
+            .try_send(Request::Frame(parts.into_iter().collect(), send))
             .map_err(|error| error.to_string())?;
         self.pending = Some(receive);
         Ok(())
@@ -198,7 +203,7 @@ mod tests {
         })
         .unwrap();
         output
-            .submit(super::super::graphics::QUERY.to_vec())
+            .submit([super::super::graphics::QUERY.to_vec()])
             .unwrap();
         observing.recv_timeout(Duration::from_secs(1)).unwrap();
         let before_flush = Instant::now();
@@ -285,10 +290,10 @@ mod tests {
             flushes: flushes.clone(),
         })
         .unwrap();
-        output.submit(frame.0).unwrap();
+        output.submit([frame.0]).unwrap();
         observing.recv_timeout(Duration::from_secs(1)).unwrap();
         assert!(!output.poll().unwrap());
-        assert!(output.submit(b"replacement".to_vec()).is_err());
+        assert!(output.submit([b"replacement".to_vec()]).is_err());
         let closed = output.close(b"RESTORE".to_vec()).unwrap();
         assert!(matches!(closed.try_recv(), Err(mpsc::TryRecvError::Empty)));
         release.send(()).unwrap();
@@ -306,10 +311,10 @@ mod tests {
     }
 
     #[test]
-    fn blocked_output_finishes_upload_and_retirement_before_cleanup() {
+    fn blocked_output_finishes_upload_and_retained_placement_before_cleanup() {
         // The writer is protocol agnostic. This complete Kitty-shaped payload
-        // includes the retirement suffix that must never become a second job.
-        let transaction = b"\x1b[H\x1b_Ga=T,i=41,p=1,q=1,m=0;AAAA\x1b\\\x1b[?2026h\x1b_Ga=d,d=I,i=73,q=2\x1b\\\x1b[?2026l";
+        // includes the retained placement suffix that must never become a second job.
+        let transaction = b"\x1b[?2026h\x1b[H\x1b_Ga=T,i=41,p=1,z=1,q=0,m=0;AAAA\x1b\\\x1b_Ga=p,i=73,p=1,z=0,q=1\x1b\\\x1b[?2026l";
         let bytes = Arc::new(Mutex::new(Vec::new()));
         let (gate, receive) = mpsc::channel();
         let (entered, observing) = mpsc::sync_channel(1);
@@ -319,7 +324,9 @@ mod tests {
             entered,
         })
         .unwrap();
-        output.submit(transaction.to_vec()).unwrap();
+        output
+            .submit([transaction.to_vec(), b"\x1b[7;19H".to_vec()])
+            .unwrap();
         observing.recv_timeout(Duration::from_secs(1)).unwrap();
         let partial = transaction.len() / 2;
         for _ in 0..partial {
@@ -328,10 +335,10 @@ mod tests {
         }
         assert_eq!(*bytes.lock().unwrap(), transaction[..partial]);
         assert!(!output.poll().unwrap());
-        assert!(output.submit(b"replacement".to_vec()).is_err());
+        assert!(output.submit([b"replacement".to_vec()]).is_err());
         let closed = output.close(b"!".to_vec()).unwrap();
         assert!(matches!(closed.try_recv(), Err(mpsc::TryRecvError::Empty)));
-        for _ in 0..transaction.len() - partial + 1 {
+        for _ in 0..transaction.len() - partial + b"\x1b[7;19H".len() + 1 {
             gate.send(()).unwrap();
         }
         closed
@@ -340,7 +347,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             *bytes.lock().unwrap(),
-            [transaction.as_slice(), b"!"].concat()
+            [transaction.as_slice(), b"\x1b[7;19H", b"!"].concat()
         );
     }
 
@@ -356,7 +363,7 @@ mod tests {
             }
         }
         let mut output = Output::new(Failed).unwrap();
-        output.submit(b"frame".to_vec()).unwrap();
+        output.submit([b"frame".to_vec()]).unwrap();
         loop {
             match output.poll() {
                 Ok(false) => thread::yield_now(),

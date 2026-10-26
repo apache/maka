@@ -18,11 +18,11 @@
  */
 
 use crate::support::context as support;
+use crate::support::store::SessionFixture;
 use maka_agent_engine::RunError;
 use maka_agent_facts::event::Fact;
 use maka_agent_facts::event::InvocationOutcome;
 use maka_agent_facts::event::ModelInterruption;
-use maka_event_log::EventLog;
 use std::sync::Arc;
 use support::*;
 use tokio::{
@@ -35,7 +35,7 @@ use tokio_util::sync::CancellationToken;
 async fn stopping_summary_drains_attempt_without_checkpoint_or_retry() {
     let directory = tempfile::tempdir().unwrap();
     let log = Arc::new(
-        EventLog::open(&directory.path().join("events.sqlite"))
+        SessionFixture::open(&directory.path().join("events.sqlite"))
             .await
             .unwrap(),
     );
@@ -58,13 +58,21 @@ async fn stopping_summary_drains_attempt_without_checkpoint_or_retry() {
         let mut bytes = Vec::new();
         let _ = summary.read_to_end(&mut bytes).await;
     });
-    let worker = engine(log.clone());
+    let worker = engine();
     worker
-        .run(input(&base, "old", false), CancellationToken::new())
+        .run(
+            log.store(),
+            input(&base, "old", false),
+            CancellationToken::new(),
+        )
         .await
         .unwrap();
     let running = worker
-        .start(input(&base, "stop", true), CancellationToken::new())
+        .start(
+            log.store(),
+            input(&base, "stop", true),
+            CancellationToken::new(),
+        )
         .await
         .unwrap();
     ready.await.unwrap();
@@ -109,7 +117,7 @@ async fn stopping_summary_drains_attempt_without_checkpoint_or_retry() {
             .any(|event| matches!(event.event.fact, Fact::ContextCheckpointRecorded { .. }))
     );
     assert!(
-        log.read_model_context("session", None)
+        log.read_model_view("session", None)
             .await
             .unwrap()
             .baseline

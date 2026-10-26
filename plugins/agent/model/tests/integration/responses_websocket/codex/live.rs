@@ -87,7 +87,7 @@ async fn live_luna_subscription_streams_and_confirms_canonical_ws_continuation()
             let request = ModelRequest {
                 language: maka_agent_facts::language::Language::En,
                 provider: provider.clone(),
-                prompt: prompt.clone(),
+                prompt: prompt.clone().into(),
                 tools: vec![],
                 provider_options: json!({"openai":{"reasoningEffort":"low"}}),
                 max_output_tokens: Some(128_000),
@@ -119,7 +119,10 @@ async fn live_luna_subscription_streams_and_confirms_canonical_ws_continuation()
                 lane.needs_confirmation(),
                 "HTTP completion cannot prove live WebSocket acceptance"
             );
-            assert!(lane.confirm(&prompt, &[], step.response_id.as_deref()));
+            assert!(
+                lane.confirm(&prompt.clone().into(), &[], step.response_id.as_deref())
+                    .await
+            );
         }
         drop(lane);
     })
@@ -163,7 +166,7 @@ async fn live_luna_subscription_http_decodes_the_stream_without_a_content_type_h
                 ModelRequest {
                     language: maka_agent_facts::language::Language::En,
                     provider: provider(),
-                    prompt,
+                    prompt: prompt.into(),
                     tools: vec![],
                     provider_options: json!({"openai":{"reasoningEffort":"low"}}),
                     max_output_tokens: Some(128_000),

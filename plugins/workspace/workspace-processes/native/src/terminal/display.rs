@@ -32,7 +32,7 @@ impl Processes {
     ) -> Result<Value, ToolError> {
         // Capture once. Subsequent chunks borrow this immutable display, never a
         // later SQL row or live preview; no transaction is held across delivery.
-        let observation = self.terminal_record(&target).await?;
+        let observation = self.terminal_record(&target, context).await?;
         if observation.state.active() {
             return Err(failed("Terminal display is not settled"));
         }
@@ -89,7 +89,8 @@ impl Processes {
                 .await?;
         }
         // The non-null final result is the last part delivered to subscribers.
-        self.terminal_session(&target.session_id, false).await?;
+        self.terminal_session(&target.session_id, false, context)
+            .await?;
         if context.scope().cancellation.is_cancelled() {
             return Err(failed("Terminal display cancelled"));
         }
@@ -107,7 +108,8 @@ impl Processes {
     ) -> Result<(), ToolError> {
         // A retained display grants neither Session authority nor continued
         // delivery after cancellation or owner drain.
-        self.terminal_session(&target.session_id, false).await?;
+        self.terminal_session(&target.session_id, false, context)
+            .await?;
         let value = completed(part)?;
         tokio::select! { biased;
             _ = context.scope().cancellation.cancelled() => Err(failed("Terminal display cancelled")),

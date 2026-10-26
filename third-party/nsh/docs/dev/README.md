@@ -14,6 +14,8 @@ For people working on NSH itself (`AGENTS.md` at the root is the short version a
 | [text.md](text.md) | Text blocks, spans, inline attachments |
 | [text-view.md](text-view.md) | `TextView` (`nsh/base`): Markdown, HTML and documents shown with the primitives, streaming, parts, extensions |
 | [dock.md](dock.md) | `DockArea` and `ResizablePanelGroup` (`nsh/base`): the layout data, render keys keeping panels across moves, drag and drop, compact presentation |
+| [diff.md](diff.md) | `DiffView` (`nsh/base`): the line diff, pairing and inline changes, rows and separators, patches, highlighting, parts |
+| [editor.md](editor.md) | `Editor` (`nsh/base`): the code editor's model, display rows, input and keys, virtualization, incremental highlighting, search, diagnostics, folds, parts |
 | [styles.md](styles.md) | Tailwind, effects, view styles, Android differences |
 | [geometry.md](geometry.md) | Units and geometry (`nsh_core::geometry`, as GPUI's): the types, the conversion boundaries, the `unit_types` check, the migration |
 | [scrolling-and-lists.md](scrolling-and-lists.md) | Scroll views, zooming, `List` |

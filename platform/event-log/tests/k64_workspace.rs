@@ -31,18 +31,22 @@ async fn complete_workspace_membership_and_session_configuration_survive_reopen(
         .to_string_lossy()
         .into_owned();
     let log = EventLog::open(&path).await.unwrap();
+    let binding = log
+        .attach_workspace("workspace-test", &json!({"path":cwd}))
+        .await
+        .unwrap();
     for index in 0..257 {
         log.create_session(
             &format!("session-{index:03}"),
             &format!("create-{index}"),
-            &json!({"workspace":{"path":cwd},"name":format!("Session {index}")}),
+            &json!({"workspace":binding,"boundary_revision":0,"name":format!("Session {index}")}),
             1,
         )
         .await
         .unwrap();
     }
     let fence = log.workspace_fence(&cwd).await;
-    let large = json!({"workspace":{"path":cwd},"original":"original-config-🦀".repeat(6000)});
+    let large = json!({"workspace":binding,"boundary_revision":0,"original":"original-config-🦀".repeat(6000)});
     let created = log
         .create_session("large-session", "large-original", &large, 2)
         .await;
@@ -138,9 +142,19 @@ async fn complete_structured_history_selectors_keep_deep_and_long_original_keys(
     .await
     .unwrap();
     let through = *log.subscribe_commits().borrow();
-    log.history_text("original", through, Position::Start, false, 8192, 8, 65536)
-        .await
-        .unwrap();
+    log.history_text(
+        "original",
+        through,
+        Position::Start,
+        false,
+        maka_event_log::transcript::HistoryLimits {
+            max_bytes: 8192,
+            max_chunks: Some(8),
+            max_json_bytes: 65536,
+        },
+    )
+    .await
+    .unwrap();
     let locator = {
         let raw = rusqlite::Connection::open(&path).unwrap();
         raw.query_row("SELECT source_sequence,item_index FROM transcript_directory WHERE session_id='original' AND role='tool_call'",[],|row|Ok(maka_agent_facts::history::RowPosition {source_sequence:row.get::<_,i64>(0)? as u64,item_index:row.get::<_,i64>(1)? as u64})).unwrap()
@@ -153,9 +167,11 @@ async fn complete_structured_history_selectors_keep_deep_and_long_original_keys(
             log.history_source(
                 "original",
                 through,
-                locator,
-                SourceField::Arguments,
-                Some(selected),
+                maka_event_log::transcript::SourceSelection {
+                    locator,
+                    field: SourceField::Arguments,
+                    path: Some(selected),
+                },
                 SourcePosition::Start,
                 4096,
             )

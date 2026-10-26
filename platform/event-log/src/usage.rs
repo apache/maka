@@ -31,8 +31,9 @@ pub use maka_agent_facts::accounting::ToolAttempt;
 use sqlx::{Row, sqlite::SqliteRow};
 
 mod auxiliary;
-mod reads;
+pub(crate) mod reads;
 mod summary;
+mod tool_result;
 pub use summary::Report;
 pub(crate) mod valuation;
 
@@ -73,7 +74,7 @@ impl Query {
         }
     }
 
-    fn validate(&self) -> Result<(), StoreError> {
+    pub(crate) fn validate(&self) -> Result<(), StoreError> {
         if !self.from.is_finite() || !self.to.is_finite() || self.from < 0.0 || self.to < self.from
         {
             return Err(invalid("invalid Usage time range"));
@@ -171,7 +172,7 @@ fn read_tool(row: &SqliteRow) -> Result<ToolAttempt, StoreError> {
             .map(serde_json::from_str)
             .transpose()?,
         completed_at: row.try_get("completed_at")?,
-        result: serde_json::from_str(row.try_get("result")?)?,
+        result: tool_result::decode(row.try_get("result")?)?,
     })
 }
 

@@ -19,11 +19,11 @@
 
 use base64::Engine;
 use futures_util::future::BoxFuture;
+use maka_agent_facts::model::prompt::Prompt;
 use maka_agent_ports::model;
 use maka_agent_ports::model::Context;
 use maka_agent_ports::model::Error;
 use maka_agent_ports::model::Lifetime;
-use maka_agent_ports::model::Message;
 use maka_agent_ports::model::ProviderAdapter;
 use maka_agent_ports::model::Request;
 use maka_agent_ports::model::Session;
@@ -74,20 +74,21 @@ impl Session for Subscription {
         mut request: Request,
         context: Context,
     ) -> BoxFuture<'static, Result<(), Error>> {
-        if let Err(error) = prepare(&mut request) {
-            return Box::pin(async { Err(error) });
-        }
-        self.0.stream(request, context)
+        let inner = self.0.clone();
+        Box::pin(async move {
+            prepare(&mut request).await?;
+            inner.stream(request, context).await
+        })
     }
     fn needs_confirmation(&self) -> bool {
         self.0.needs_confirmation()
     }
-    fn confirm(
-        &self,
-        prompt: &[Message],
-        settled_tool_call_ids: &[&str],
-        response_id: Option<&str>,
-    ) -> bool {
+    fn confirm<'a>(
+        &'a self,
+        prompt: &'a Prompt,
+        settled_tool_call_ids: &'a [&'a str],
+        response_id: Option<&'a str>,
+    ) -> BoxFuture<'a, bool> {
         self.0.confirm(prompt, settled_tool_call_ids, response_id)
     }
 }
@@ -116,7 +117,7 @@ pub fn request_headers(
     Ok(headers)
 }
 
-fn prepare(request: &mut Request) -> Result<(), Error> {
+async fn prepare(request: &mut Request) -> Result<(), Error> {
     if !matches!(request.provider.kind, model::ProviderKind::OpenaiResponses) {
         return Err(Error::Adapter(
             "subscription requires the Responses protocol".into(),
@@ -143,16 +144,23 @@ fn prepare(request: &mut Request) -> Result<(), Error> {
         .and_then(Value::as_str)
         .is_some_and(|v| !v.trim().is_empty())
     {
-        let instructions = request
-            .prompt
-            .iter()
-            .find_map(|message| match message {
-                model::Message::System { content, .. } if !content.trim().is_empty() => {
-                    Some(content.clone())
-                }
-                _ => None,
-            })
-            .unwrap_or_default();
+        let instructions = if let Some(instructions) = request.prompt.instructions() {
+            instructions.to_owned()
+        } else if let Some(messages) = request.prompt.memory_messages() {
+            messages
+                .iter()
+                .find_map(|message| match message {
+                    model::Message::System { content, .. } if !content.trim().is_empty() => {
+                        Some(content.clone())
+                    }
+                    _ => None,
+                })
+                .unwrap_or_default()
+        } else {
+            return Err(Error::Adapter(
+                "captured subscription prompt is missing its system instruction metadata".into(),
+            ));
+        };
         options.insert("instructions".into(), Value::String(instructions));
     }
     options.insert("store".into(), Value::Bool(false));

@@ -12,6 +12,8 @@ pub(crate) struct SystemConfig {
     pub(crate) data_dir: Option<std::path::PathBuf>,
     pub(crate) paths: nsh_core::access::TrustedPaths,
     pub(crate) wake: std::sync::Arc<dyn Fn() + Send + Sync>,
+    /// The embedding app's side of `nsh/host`.
+    pub(crate) host: std::rc::Rc<dyn nsh_core::host_channel::HostBridge>,
 }
 
 #[cfg(not(feature = "js"))]
@@ -98,6 +100,7 @@ mod imp {
             host.set_websocket_transport(system.websocket);
             host.set_filesystem(system.filesystem);
             host.set_system_wake(system.wake);
+            host.set_host_bridge(system.host);
             host.set_stop_flag(stop.clone());
             let exit_requested = Rc::new(Cell::new(false));
             let request = exit_requested.clone();
@@ -227,8 +230,24 @@ mod imp {
             self.host.cancel_touch(contact);
         }
 
+        pub(crate) fn invalid_touch_contacts(
+            &self,
+            accepts: impl FnMut(NodeId) -> bool,
+            contacts: &mut Vec<u32>,
+        ) {
+            self.host.invalid_touch_contacts(accepts, contacts);
+        }
+
         pub(crate) fn bind_list(&self, list: NodeId, binds: &[(u32, u32)]) {
             self.host.bind_list(list, binds);
+        }
+
+        pub(crate) fn host_event(&self, name: &str, data: nsh_core::JsonValue) {
+            self.host.host_event(name, data);
+        }
+
+        pub(crate) fn host_reply(&self, id: u64, result: Result<nsh_core::JsonValue, String>) {
+            self.host.host_reply(id, result);
         }
 
         pub(crate) fn animations_finished(&self, finished: &[nsh_core::animation::Finished]) {
@@ -379,7 +398,23 @@ mod stub {
             match *self {}
         }
 
+        pub(crate) fn invalid_touch_contacts(
+            &self,
+            _: impl FnMut(NodeId) -> bool,
+            _: &mut Vec<u32>,
+        ) {
+            match *self {}
+        }
+
         pub(crate) fn bind_list(&self, _: NodeId, _: &[(u32, u32)]) {
+            match *self {}
+        }
+
+        pub(crate) fn host_event(&self, _: &str, _: nsh_core::JsonValue) {
+            match *self {}
+        }
+
+        pub(crate) fn host_reply(&self, _: u64, _: Result<nsh_core::JsonValue, String>) {
             match *self {}
         }
 

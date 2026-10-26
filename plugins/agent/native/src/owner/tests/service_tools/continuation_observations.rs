@@ -22,12 +22,12 @@ use maka_agent_facts::{
     event::{InvocationOutcome, StoredEvent},
     model::ModelEvent,
 };
-use maka_event_log::EventLog;
+use maka_event_log::root_store::SessionStore;
 
 // Read each committed Session interval once, including pages that end between
 // observations. A commit wakeup alone does not prove this delta was persisted.
 async fn catch_up(
-    store: &EventLog,
+    store: &SessionStore,
     session: &str,
     after: &mut u64,
     through: u64,
@@ -89,7 +89,7 @@ async fn resume_many_observations_preserves_settled_effects() {
             })
             .await;
             let session = fixture.create("Resume individually committed observations").await;
-            let mut commits = fixture.store.subscribe_commits();
+            let mut commits = fixture.session(&session).await.subscribe_commits().unwrap();
             let sent = fixture.send(&session).await.unwrap();
             let source_id = sent["invocationId"].as_str().unwrap();
             let (mut first, _) = listener.accept().await.unwrap();
@@ -97,7 +97,7 @@ async fn resume_many_observations_preserves_settled_effects() {
             request(&mut first).await;
             let mut after = 0;
             let through = *commits.borrow_and_update();
-            let initial = catch_up(&fixture.store, &session, &mut after, through).await;
+            let initial = catch_up(&fixture.session(&session).await, &session, &mut after, through).await;
             let steps: Vec<_> = initial
                 .iter()
                 .filter_map(|stored| match &stored.event.fact {
@@ -131,7 +131,7 @@ async fn resume_many_observations_preserves_settled_effects() {
                 first.write_all(delta(text).as_bytes()).await.unwrap();
                 loop {
                     let through = *commits.borrow_and_update();
-                    for stored in catch_up(&fixture.store, &session, &mut after, through).await {
+                    for stored in catch_up(&fixture.session(&session).await, &session, &mut after, through).await {
                         if stored.event.invocation.invocation_id == source_id
                             && let Fact::ModelObserved { step_id, event: ModelEvent::PartDelta { text: observed, .. } } = stored.event.fact
                             && step_id == *step
@@ -162,17 +162,17 @@ async fn resume_many_observations_preserves_settled_effects() {
                 "sessionId":session,"invocationId":source_id
             })).await.unwrap();
             assert_eq!(execution["execution"]["state"], "cancelled");
-            let (boundary, high_water) = fixture.store.invocation_boundary(&session, source_id)
+            let (boundary, high_water) = fixture.session(&session).await.invocation_boundary(&session, source_id)
                 .await.unwrap().unwrap();
             assert_eq!(execution["execution"]["highWater"], high_water);
-            let source = fixture.store.run_source(
+            let source = fixture.session(&session).await.run_source(
                 &session, &boundary.invocation.run_id, None,
             ).await.unwrap().unwrap();
             assert_eq!(source.boundary.invocation, boundary.invocation);
             assert_eq!(source.boundary.high_water, high_water);
             let mut source_after = 0;
             let source_events: Vec<_> = catch_up(
-                &fixture.store, &session, &mut source_after, source.last.sequence,
+                &fixture.session(&session).await, &session, &mut source_after, source.last.sequence,
             ).await.into_iter().filter(|stored| stored.event.invocation == source.boundary.invocation).collect();
             assert_eq!(source_events.len() as u64, high_water);
             assert_eq!(committed, observations);
@@ -196,7 +196,7 @@ async fn resume_many_observations_preserves_settled_effects() {
                 .map(|stored| serde_json::to_vec(&stored.event).unwrap().len()).sum();
             assert!(bytes < 8 * 1024 * 1024);
             assert_eq!(high_water > 10_000, observations == 10_050);
-            let context = fixture.store.read_model_context(&session, None)
+            let context = fixture.session(&session).await.capture_model_context(&session, None, 1_000, 1024 * 1024)
                 .await.unwrap();
             let prompt_bytes = serde_json::to_vec(&pending_prompt).unwrap().len();
             assert!(context.tail.len() < 32);
@@ -219,13 +219,13 @@ async fn resume_many_observations_preserves_settled_effects() {
                 "sessionId":session,"invocationId":resumed["execution"]["invocationId"]
             })).await.unwrap();
             assert_eq!(replayed["execution"]["state"], "completed");
-            let unchanged = fixture.store.run_source(
+            let unchanged = fixture.session(&session).await.run_source(
                 &session, &source.boundary.invocation.run_id, None,
             ).await.unwrap().unwrap();
             assert_eq!(unchanged.boundary, source.boundary, "resume must preserve exact source bytes and positions");
             let through = *commits.borrow_and_update();
             let mut after_source = source_through;
-            let continuation = catch_up(&fixture.store, &session, &mut after_source, through).await;
+            let continuation = catch_up(&fixture.session(&session).await, &session, &mut after_source, through).await;
             assert!(!continuation.iter().any(|stored| matches!(stored.event.fact, Fact::ToolDispatched { .. })));
             assert_eq!(counter.effects.load(Ordering::SeqCst), 1, "resume must not redispatch a settled effect");
             fixture.app.shutdown().await.unwrap();

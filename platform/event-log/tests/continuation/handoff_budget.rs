@@ -34,7 +34,7 @@ async fn handoff_above_the_former_replay_allowance_can_be_sealed_and_cancelled_a
         .await
         .unwrap();
     let context = log
-        .read_model_context("session", Some("root"))
+        .capture_model_context("session", Some("root"), 100_000, 64 * 1024 * 1024)
         .await
         .unwrap();
     append(
@@ -113,12 +113,12 @@ async fn handoff_above_the_former_replay_allowance_can_be_sealed_and_cancelled_a
     assert_eq!(sealed.boundary.high_water, 4);
     assert_eq!(sealed.last.event, seal);
     assert!(matches!(
-        log.read_lineage_context(&sealed.boundary, 100, 8 * 1024 * 1024)
+        log.capture_lineage_context(&sealed.boundary, 100, 8 * 1024 * 1024)
             .await,
         Err(StoreError::PrefixTooLarge)
     ));
     assert!(matches!(
-        log.read_lineage_context(&sealed.boundary, 1, usize::MAX)
+        log.capture_lineage_context(&sealed.boundary, 1, usize::MAX)
             .await,
         Err(StoreError::PrefixTooLarge)
     ));
@@ -175,7 +175,7 @@ async fn handoff_above_the_former_replay_allowance_can_be_sealed_and_cancelled_a
     );
     assert_eq!(claim.replay, pause.execution.replay);
     let selected = log
-        .read_lineage_context(&successor.boundary, usize::MAX, usize::MAX)
+        .capture_lineage_context(&successor.boundary, usize::MAX, usize::MAX)
         .await
         .unwrap();
     assert!(selected.tail.iter().any(|event| matches!(event,
@@ -212,7 +212,7 @@ async fn handoff_above_the_former_replay_allowance_can_be_sealed_and_cancelled_a
             .boundary,
         sealed.boundary
     );
-    log.read_lineage_context(&successor.boundary, usize::MAX, usize::MAX)
+    log.capture_lineage_context(&successor.boundary, usize::MAX, usize::MAX)
         .await
         .unwrap();
     log.close().await.unwrap();

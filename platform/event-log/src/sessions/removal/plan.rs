@@ -128,34 +128,48 @@ impl EventLog {
         expected: u64,
         authority: RemovalAuthority,
     ) -> Result<RemoveFamilyResult, StoreError> {
+        self.remove_session_family_guarded(session, expected, std::sync::Arc::new(authority), None)
+            .await?
+            .ok_or_else(|| invalid("unguarded removal changed plan"))
+    }
+
+    pub(crate) async fn remove_session_family_guarded(
+        &self,
+        session: &str,
+        expected: u64,
+        authority: std::sync::Arc<RemovalAuthority>,
+        locked_plan: Option<RemovalPlan>,
+    ) -> Result<Option<RemoveFamilyResult>, StoreError> {
         self.validate_root()?;
         validate_id(session)?;
         if expected == 0 || expected > MAX_SAFE_INTEGER {
             return Err(invalid("invalid expected Session revision"));
         }
         let session = session.to_owned();
-        let commits = self.commits.clone();
+        let commits = self.commits.notice();
         self.connection
             .run(move |connection| {
                 Box::pin(async move {
                     let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
                     if let Some(plan) = receipt(&mut tx, &session).await? {
-                        return Ok(RemoveFamilyResult::Accepted(plan));
+                        return Ok(Some(RemoveFamilyResult::Accepted(plan)));
                     }
                     super::require_mutable(&mut tx, &session).await?;
-                    let actual: i64 =
-                        sqlx::query_scalar("SELECT revision FROM session_control WHERE id=?")
-                            .bind(&session)
-                            .fetch_optional(&mut *tx)
+                    let actual =
+                        crate::workspace_bindings::current_session_revision(&mut tx, &session)
                             .await?
                             .ok_or(StoreError::SessionNotFound)?;
-                    if actual as u64 != expected {
-                        return Ok(RemoveFamilyResult::RevisionConflict {
+                    if actual != expected {
+                        return Ok(Some(RemoveFamilyResult::RevisionConflict {
                             expected,
-                            actual: actual as u64,
-                        });
+                            actual,
+                        }));
                     }
                     let plan = read(&mut tx, &session).await?;
+                    if locked_plan.as_ref().is_some_and(|locked| locked != &plan) {
+                        tx.rollback().await?;
+                        return Ok(None);
+                    }
                     authority.check(&mut tx, &plan).await?;
                     for target in &plan.remove {
                         fence(&mut tx, target, Action::Remove).await?;
@@ -169,8 +183,10 @@ impl EventLog {
                         .execute(&mut *tx)
                         .await?;
                     tx.commit().await.map_err(StoreError::CommitUnknown)?;
-                    commits.send_modify(|_| {});
-                    Ok(RemoveFamilyResult::Accepted(plan))
+                    commits
+                        .for_sessions(plan.remove.iter().chain(&plan.archive).map(String::as_str))
+                        .metadata();
+                    Ok(Some(RemoveFamilyResult::Accepted(plan)))
                 })
             })
             .await

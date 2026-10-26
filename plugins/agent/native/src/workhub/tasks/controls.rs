@@ -131,6 +131,7 @@ impl Hub {
         &self,
         id: &str,
         offset: u64,
+        execution: Option<Arc<dyn maka_agent_facts::tools::ExecutionCustody>>,
         cancellation: CancellationToken,
     ) -> Result<Value, String> {
         let intent = self.control_intent(id).await?;
@@ -151,13 +152,18 @@ impl Hub {
         {
             return Err("workhub_original_worker_unavailable".into());
         }
-        let request = self.tasks.services.request(
-            Identity::Agent {
-                invocation: intent.source,
-                operation_id: Some(intent.tool_operation),
-            },
-            cancellation,
-        )?;
+        let identity = Identity::Agent {
+            invocation: intent.source,
+            operation_id: Some(intent.tool_operation),
+        };
+        let request = match execution {
+            Some(execution) => {
+                self.tasks
+                    .services
+                    .request_with_execution(identity, cancellation, execution)
+            }
+            None => self.tasks.services.request(identity, cancellation),
+        }?;
         self.observe_request(&request, async {
             let value = request.call(&assignment.worker, 0, "readPatch".into(), serde_json::json!({"execution":{"sessionId":session,"invocationId":invocation},"offset":offset}), Attachments::default())?.await?;
             let page: crate::contract::PatchPage = serde_json::from_value(value).map_err(|_| "workhub_patch_invalid")?;
@@ -271,7 +277,15 @@ impl Hub {
             .is_none()
         {
             let assignment = self.assignment(task).await?;
-            let value = self.task(task, false, None, cancellation.clone()).await?;
+            let value = self
+                .task_with_execution(
+                    task,
+                    false,
+                    None,
+                    context.execution.clone(),
+                    cancellation.clone(),
+                )
+                .await?;
             let observed: Task =
                 serde_json::from_value(value).map_err(|_| "workhub_task_invalid")?;
             let (progress, message) = match observed.status {
@@ -320,13 +334,18 @@ impl Hub {
                 }
                 Some(crate::contract::Work::Pending) if matches!(action, Action::Stop) => {
                     let message = message.ok_or("workhub_delivery_invalid")?;
-                    let request = self.tasks.services.request(
-                        Identity::Agent {
-                            invocation: context.invocation.clone(),
-                            operation_id: Some(context.operation_id.clone()),
-                        },
-                        cancellation.clone(),
-                    )?;
+                    let identity = Identity::Agent {
+                        invocation: context.invocation.clone(),
+                        operation_id: Some(context.operation_id.clone()),
+                    };
+                    let request = match &context.execution {
+                        Some(execution) => self.tasks.services.request_with_execution(
+                            identity,
+                            cancellation.clone(),
+                            execution.clone(),
+                        ),
+                        None => self.tasks.services.request(identity, cancellation.clone()),
+                    }?;
                     let queue = self
                         .observe_request(&request, async {
                             request
@@ -382,12 +401,14 @@ impl Hub {
                 Err(_) => return Err("workhub_control_commit_unknown".into()),
             }
         }
-        self.control(&id, true, cancellation).await
+        self.control(&id, true, context.execution.clone(), cancellation)
+            .await
     }
     pub(in crate::workhub) async fn control(
         &self,
         id: &str,
         advance: bool,
+        execution: Option<Arc<dyn maka_agent_facts::tools::ExecutionCustody>>,
         cancellation: CancellationToken,
     ) -> Result<Value, String> {
         if self.tasks.cleanup_failed() {
@@ -396,13 +417,18 @@ impl Hub {
         let intent = self.control_intent(id).await?;
         let assignment = self.assignment(&intent.task_id).await?;
         let operation = child_id(id);
-        let request = self.tasks.services.request(
-            Identity::Agent {
-                invocation: intent.source,
-                operation_id: Some(intent.tool_operation),
-            },
-            cancellation,
-        )?;
+        let identity = Identity::Agent {
+            invocation: intent.source,
+            operation_id: Some(intent.tool_operation),
+        };
+        let request = match execution {
+            Some(execution) => {
+                self.tasks
+                    .services
+                    .request_with_execution(identity, cancellation, execution)
+            }
+            None => self.tasks.services.request(identity, cancellation),
+        }?;
         let (method, input) = intent.selection.call();
         self.observe_request(&request, async {
             let status = match self

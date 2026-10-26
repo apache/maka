@@ -17,7 +17,7 @@
  * under the License.
  */
 
-use crate::{Inner, RunError, RunInput, model_attempt};
+use crate::{RunContext, RunError, RunInput, model_attempt};
 use maka_agent_facts::continuation::ContinuationClaim;
 use maka_agent_facts::continuation::REPLAY_VERSION;
 use maka_agent_facts::continuation::ReplayEvidence;
@@ -38,13 +38,13 @@ pub(super) struct PreparedClaim {
 /// Derive admission evidence from the exact sealed source. The caller supplies
 /// only its boundary, never a replay digest or a pre-authorized claim.
 pub(super) async fn prepare(
-    inner: &Arc<Inner>,
+    inner: &Arc<RunContext>,
     input: &RunInput,
     source: &RunBoundary,
     catalog: &maka_tools::ToolCatalog,
     cancellation: &CancellationToken,
 ) -> Result<PreparedClaim, RunError> {
-    let loaded_basis = inner.loaded_snapshot(&input.invocation.session_id);
+    let loaded_basis = inner.shared.loaded_snapshot(&input.invocation.session_id)?;
     let (base, replay) =
         inspect(inner, input, source, catalog, cancellation, &loaded_basis).await?;
     let pause = match &input.work {
@@ -72,7 +72,7 @@ pub(super) async fn prepare(
 }
 
 pub(super) async fn inspect(
-    inner: &Arc<Inner>,
+    inner: &Arc<RunContext>,
     input: &RunInput,
     source: &RunBoundary,
     catalog: &maka_tools::ToolCatalog,
@@ -123,13 +123,10 @@ pub(super) async fn inspect(
     }
     let base = match opening {
         InvocationInput::Message { .. } => {
-            let base = inner
-                .log
-                .context_before_run(&source.invocation, usize::MAX, usize::MAX)
-                .await?;
+            let base = inner.log.source_before_run(&source.invocation).await?;
             SessionBase {
-                high_water: base.source_evidence.high_water,
-                digest: base.source_evidence.digest,
+                high_water: base.high_water,
+                digest: base.digest,
             }
         }
         InvocationInput::Continuation { claim, .. } | InvocationInput::Handoff { claim, .. } => {
@@ -137,10 +134,7 @@ pub(super) async fn inspect(
         }
         _ => return Err(invalid("source is not a resumable model Run")),
     };
-    let context = inner
-        .log
-        .read_lineage_context(source, usize::MAX, usize::MAX)
-        .await?;
+    let context = inner.log.read_lineage_view(source).await?;
     let prompt = model_attempt::prompt(
         inner,
         input,
@@ -161,42 +155,60 @@ pub(super) async fn inspect(
         catalog.clone(),
         input.configuration.tool_mode,
         inner
+            .shared
             .cells
             .clone()
             .with_language(input.configuration.code_language),
-        loaded_basis.clone().into(),
+        inner.shared.loaded(&input.invocation.session_id),
     )
     .with_model(input.provider.tool_context());
-    if let crate::RunWork::Handoff { pause, .. } = &input.work {
-        tools.restore(&pause.execution.tools)?;
-    }
-    let definitions = tools.replay_definitions();
+    let selected = if let crate::RunWork::Handoff { pause, .. } = &input.work {
+        if pause.execution.tools.catalog_digest != catalog.digest()
+            || pause
+                .execution
+                .tools
+                .loaded
+                .iter()
+                .any(|name| name.is_empty() || name.len() > 128)
+        {
+            return Err(RunError::InvalidInput(
+                "handoff tool catalog changed".into(),
+            ));
+        }
+        &pause.execution.tools.loaded
+    } else {
+        loaded_basis
+    };
+    let definitions = tools.replay_selected(selected);
     // Resume validates names from the full explicit inventory, including tools
     // not yet advertised through lazy discovery.
     let mut available: std::collections::HashSet<_> = catalog.names().into_iter().collect();
     available.extend(definitions.iter().map(|definition| definition.name.clone()));
     // A handoff replays settled facts, including rejected calls to unavailable
     // tools. It never executes them again; the registered catalog is checked above.
-    for message in prompt
-        .iter()
-        .filter(|_| !matches!(input.work, crate::RunWork::Handoff { .. }))
-    {
-        if let Message::Assistant { content, .. } = message {
-            for part in content {
-                if let AssistantPart::ToolCall {
-                    tool_name,
-                    provider_executed,
-                    ..
-                } = part
-                    && *provider_executed != Some(true)
-                    && !available.contains(tool_name)
-                {
-                    return Err(invalid("continuation requires an unavailable tool"));
+    if !matches!(input.work, crate::RunWork::Handoff { .. }) {
+        let mut cursor = prompt.open();
+        while let Some(message) = cursor.next().await? {
+            if cancellation.is_cancelled() {
+                return Err(RunError::Cancelled);
+            }
+            if let Message::Assistant { content, .. } = message {
+                for part in content {
+                    if let AssistantPart::ToolCall {
+                        tool_name,
+                        provider_executed,
+                        ..
+                    } = part
+                        && provider_executed != Some(true)
+                        && !available.contains(&tool_name)
+                    {
+                        return Err(invalid("continuation requires an unavailable tool"));
+                    }
                 }
             }
         }
     }
-    let replay = replay(input, prompt, definitions, cancellation)?;
+    let replay = replay(input, prompt, definitions, cancellation).await?;
     if let crate::RunWork::Handoff { pause, .. } = &input.work
         && replay != pause.execution.replay
     {
@@ -206,24 +218,39 @@ pub(super) async fn inspect(
 }
 
 /// Shared by reversible handoff preparation and independently verified admission.
-pub(super) fn replay<W>(
+pub(super) async fn replay<W>(
     input: &RunInput<W>,
-    prompt: Vec<Message>,
+    mut prompt: crate::prepared_prompt::PreparedPrompt,
     definitions: Vec<maka_model::ToolDefinition>,
     cancellation: &CancellationToken,
 ) -> Result<ReplayEvidence, RunError> {
-    if !matches!(
-        prompt.iter().find(|m| !matches!(m, Message::System { .. })),
-        Some(Message::User { .. })
-    ) || !matches!(
-        prompt.last(),
-        Some(Message::User { .. } | Message::Tool { .. })
-    ) && !matches!(prompt.last(), Some(Message::Assistant { content, .. }) if matches!(content.last(), Some(AssistantPart::ToolResult { .. })))
-    {
+    let mut cursor = prompt.open();
+    let mut first_is_user = None;
+    let mut last_is_stable = false;
+    while let Some(message) = cursor.next().await? {
+        if cancellation.is_cancelled() {
+            return Err(RunError::Cancelled);
+        }
+        if !matches!(message, Message::System { .. }) && first_is_user.is_none() {
+            first_is_user = Some(matches!(message, Message::User { .. }));
+        }
+        last_is_stable = matches!(message, Message::User { .. } | Message::Tool { .. })
+            || matches!(message, Message::Assistant { ref content, .. } if matches!(content.last(), Some(AssistantPart::ToolResult { .. })));
+    }
+    if first_is_user != Some(true) || !last_is_stable {
         return Err(invalid(
             "continuation requires stable user/tool replay boundaries",
         ));
     }
+    prompt
+        .compile_wire(
+            input.configuration.language,
+            &input.provider,
+            &input.provider_options,
+            &definitions,
+            cancellation,
+        )
+        .await?;
     let request = model_attempt::prepare_request(
         input,
         prompt,

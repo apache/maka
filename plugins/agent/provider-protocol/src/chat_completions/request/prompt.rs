@@ -21,6 +21,7 @@ use crate::{Error, Result, input::*};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+#[derive(Clone)]
 pub struct PromptOptions {
     pub provider_namespace: String,
     pub metadata_namespace: String,

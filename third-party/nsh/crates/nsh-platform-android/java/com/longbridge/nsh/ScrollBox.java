@@ -1,5 +1,6 @@
 package com.longbridge.nsh;
 
+import android.animation.ValueAnimator;
 import android.annotation.SuppressLint;
 import android.content.Context;
 import android.graphics.Canvas;
@@ -193,6 +194,16 @@ final class ScrollBox extends FrameLayout implements Node {
             if (!kept && v != null) {
                 if (horizontal) v.setTranslationX(0); else v.setTranslationY(0);
             }
+            if (!kept && mounter.stickyHosts.get(old) == this) mounter.stickyHosts.remove(old);
+            mounter.forgetStickyOffset(old);
+        }
+        // A cell may be in a list in this scroll view's viewport: its
+        // animated offset finds this scroll view. Its offset is forgotten:
+        // the outputs after the batch bring back the ones still animated,
+        // so a cell whose offset became a number no longer adds the old one.
+        for (int c : cells) {
+            mounter.stickyHosts.put(c, this);
+            mounter.forgetStickyOffset(c);
         }
         stickyCells = cells;
         stickyStart = start;
@@ -215,13 +226,14 @@ final class ScrollBox extends FrameLayout implements Node {
         return stickyCells.length > 0;
     }
 
-    /** Moves the sticky cells with the scroll offset. */
-    private void pinSticky() {
+    /** Moves the sticky cells with the scroll offset (and their animated offsets). */
+    void pinSticky() {
         float offset = horizontal ? scroller.getScrollX() : scroller.getScrollY();
         for (int i = 0; i < stickyCells.length; i++) {
             View v = mounter.view(stickyCells[i]);
             if (v == null) continue;
-            float t = Math.max(0, Math.min(offset - stickyStart[i], stickyEnd[i] - stickyStart[i]));
+            float extra = mounter.stickyOffset(stickyCells[i]);
+            float t = Math.max(0, Math.min(offset + extra - stickyStart[i], stickyEnd[i] - stickyStart[i]));
             if (horizontal) v.setTranslationX(t); else v.setTranslationY(t);
         }
     }
@@ -424,15 +436,25 @@ final class ScrollBox extends FrameLayout implements Node {
      * keyboard). `requestRectangleOnScreen` cannot: ScrollView ignores its
      * padding when it decides whether a rectangle is visible.
      */
-    void reveal(View v, int margin) {
+    /**
+     * Scrolls {@code v} (and {@code margin} px around it) into view, over
+     * {@code motion}: an animator from 0 to 1 the caller starts. False when
+     * there is nothing to scroll (the animator is left alone).
+     */
+    boolean reveal(View v, int margin, ValueAnimator motion) {
         Rect r = new Rect(0, -margin, v.getWidth(), v.getHeight() + margin);
         scroller.offsetDescendantRectToMyCoords(v, r);
         int top = scroller.getScrollY();
         int bottom = top + scroller.getHeight() - scroller.getPaddingBottom();
         int dy = r.bottom > bottom ? Math.min(r.bottom - bottom, r.top - top) : Math.min(0, r.top - top);
-        if (dy == 0) return;
-        if (scroller instanceof ScrollView) ((ScrollView) scroller).smoothScrollBy(0, dy);
-        else scroller.scrollBy(0, dy);
+        if (dy == 0) return false;
+        if (!(scroller instanceof ScrollView)) {
+            scroller.scrollBy(0, dy);
+            return false;
+        }
+        int x = scroller.getScrollX();
+        motion.addUpdateListener(a -> scroller.scrollTo(x, top + Math.round(dy * (float) a.getAnimatedValue())));
+        return true;
     }
 
     /** Scrolls the core asked for that were applied (reported with offsets). */
@@ -475,6 +497,11 @@ final class ScrollBox extends FrameLayout implements Node {
         }
     }
 
+    /** A retirement must cancel this view's deferred input completion. */
+    void cancelPendingScroll() {
+        removeCallbacks(settled);
+    }
+
     /** Scrolling came to rest (no API for it: no change for a moment). */
     private void settled() {
         if (touching) {
@@ -485,6 +512,7 @@ final class ScrollBox extends FrameLayout implements Node {
             momentum = false;
             emit(Native.MOMENTUM_END);
         }
+        mounter.scrollEnded(id);
         float d = mounter.density;
         mounter.event(id, Native.SCROLL_END, null, 0, scroller.getScrollX() / d, scroller.getScrollY() / d);
     }
@@ -494,6 +522,28 @@ final class ScrollBox extends FrameLayout implements Node {
     /** `ScrollBehavior` zoom settings. */
     private boolean zooms, bouncesZoom = true, pinch = true, centerContent;
     private float minZoom = 1, maxZoom = 1;
+
+    /** Pull to refresh: whether the spinner shows, where (dp) a pull refreshes and the room kept while refreshing. */
+    private boolean refreshIndicator = true;
+    private float refreshThreshold = 64, refreshInset = 56;
+
+    /** `refreshIndicator`: the app draws its own, {@code height} dp tall, in place of the spinner. */
+    void setRefresh(boolean own, float height) {
+        float inset = own ? height : 56;
+        boolean changed = refreshIndicator == own || inset != refreshInset;
+        refreshIndicator = !own;
+        refreshThreshold = own ? height : 64;
+        refreshInset = inset;
+        if (!changed) return;
+        if (own) {
+            spinner.setVisibility(GONE);
+        } else if (refreshing) {
+            spinner.setVisibility(VISIBLE);
+            spinner.setAlpha(1);
+        }
+        // A refresh in progress keeps the room of the indicator now showing.
+        if (refreshing && !pulling) animatePull(inset * mounter.density, null);
+    }
 
     void setZoom(boolean zooms, float min, float max, boolean bouncesZoom, boolean pinch, boolean center) {
         minZoom = min;
@@ -993,13 +1043,15 @@ final class ScrollBox extends FrameLayout implements Node {
             case MotionEvent.ACTION_MOVE:
                 // Resistance like a rubber band.
                 setPull(Math.max(0, (e.getY() - startY) * 0.5f));
-                spinner.setVisibility(VISIBLE);
-                spinner.setAlpha(Math.min(1, pull / (64 * d)));
+                if (refreshIndicator) {
+                    spinner.setVisibility(VISIBLE);
+                    spinner.setAlpha(Math.min(1, pull / (refreshThreshold * d)));
+                }
                 return true;
             case MotionEvent.ACTION_UP:
             case MotionEvent.ACTION_CANCEL:
                 pulling = false;
-                if (pull >= 64 * d) {
+                if (pull >= refreshThreshold * d) {
                     setRefreshing(true);
                     mounter.event(id, Native.REFRESH);
                 } else {
@@ -1015,18 +1067,23 @@ final class ScrollBox extends FrameLayout implements Node {
         refreshing = on;
         float d = mounter.density;
         if (on) {
-            spinner.setVisibility(VISIBLE);
-            spinner.setAlpha(1);
-            animatePull(56 * d, null);
+            if (refreshIndicator) {
+                spinner.setVisibility(VISIBLE);
+                spinner.setAlpha(1);
+            }
+            animatePull(refreshInset * d, null);
         } else {
             animatePull(0, () -> spinner.setVisibility(GONE));
         }
     }
 
     private void setPull(float px) {
+        if (px == pull) return;
         pull = px;
         scroller.setTranslationY(px);
         spinner.setTranslationY(Math.max(0, px / 2 - spinner.getHeight() / 2f));
+        // The pull is a translation, not a scroll: the offset stays 0.
+        mounter.pull(id, px / mounter.density);
     }
 
     private void animatePull(float to, Runnable end) {

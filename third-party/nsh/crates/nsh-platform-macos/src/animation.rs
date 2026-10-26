@@ -32,6 +32,11 @@ impl UiAnimation {
         self.0.scrolled(id, Point::new(Points(x), Points(y)))
     }
 
+    /// Scroll view `id` came to rest: true if a snapping value settles.
+    pub(crate) fn scroll_ended(&mut self, id: u32) -> bool {
+        self.0.scroll_ended(id)
+    }
+
     /// The drag moved by `(tx, ty)` points since it began.
     pub(crate) fn pan_moved(&mut self, id: u32, tx: f32, ty: f32) {
         self.0.pan_moved(id, Point::new(Points(tx), Points(ty)));

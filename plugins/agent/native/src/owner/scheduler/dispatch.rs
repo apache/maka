@@ -22,12 +22,13 @@ use maka_event_log::message_admissions::{PendingExecution, PendingMessageAdmissi
 impl MessageBasis {
     pub(in crate::owner) fn validate_background_target(
         &self,
-        session: &SessionRecord<SessionConfiguration>,
+        session: &SessionRecord<ResolvedConfiguration>,
     ) -> Result<(), String> {
         if let Some(boundary) = &self.background
             && (session.archived
                 || session.configuration.workspace != boundary.workspace
                 || session.configuration.permissions != boundary.permissions
+                || session.configuration.binding != boundary.binding
                 || session.configuration.boundary_revision
                     != if session.id == boundary.session_id {
                         boundary.boundary_revision
@@ -76,6 +77,7 @@ impl Owner {
             || source.configuration.workspace != boundary.workspace
             || source.configuration.permissions != boundary.permissions
             || source.configuration.boundary_revision != boundary.boundary_revision
+            || source.configuration.binding != boundary.binding
         {
             return Err("scheduler_authorization_changed".into());
         }
@@ -121,6 +123,7 @@ impl Owner {
         if session.configuration.workspace != target.workspace
             || session.configuration.permissions != target.permissions
             || session.configuration.boundary_revision != target.boundary_revision
+            || session.configuration.binding != target.binding
         {
             return Err("scheduler_authorization_changed".into());
         }
@@ -191,6 +194,7 @@ impl Owner {
             model: Some(source.accepted),
             executor: None,
             workspace: session.configuration.workspace,
+            binding: session.configuration.binding,
             fingerprint: String::new(),
             tools: self.tool_basis.clone(),
         };
@@ -349,23 +353,26 @@ impl Owner {
         };
         // Before preparing a new session, observe the original message. A revoked
         // approval cannot change the known result of an already admitted fire.
-        let accepted = self
-            .store
-            .root_message(&session_id, &admission.source.message.message_id)
-            .await
-            .map_err(reason)?
-            .is_some()
-            || self
-                .store
-                .message_admission(&session_id, &admission.source.message.message_id)
-                .await
-                .map_err(reason)?
-                .is_some()
-            || self
-                .store
-                .message_cancelled(&session_id, &admission.source.message.message_id)
-                .await
-                .map_err(reason)?;
+        let accepted = match self.store.session(&session_id).await {
+            Ok(session) => {
+                session
+                    .root_message(&session_id, &admission.source.message.message_id)
+                    .await
+                    .map_err(reason)?
+                    .is_some()
+                    || session
+                        .message_admission(&session_id, &admission.source.message.message_id)
+                        .await
+                        .map_err(reason)?
+                        .is_some()
+                    || session
+                        .message_cancelled(&session_id, &admission.source.message.message_id)
+                        .await
+                        .map_err(reason)?
+            }
+            Err(maka_event_log::StoreError::SessionNotFound) => false,
+            Err(error) => return Err(reason(error)),
+        };
         if !accepted {
             if let Err(error) = self.validate_background(&basis).await {
                 if matches!(
@@ -385,23 +392,34 @@ impl Owner {
                     .ok_or("scheduler_approval_invalid")?;
                 if self
                     .store
-                    .get_session::<SessionConfiguration>(&session_id)
+                    .get_session::<StoredSessionConfiguration>(&session_id)
                     .await
                     .map_err(reason)?
                     .is_none()
                 {
+                    let authority = self.session(&boundary.session_id).await?;
+                    if authority.configuration.binding != boundary.binding {
+                        return Err("scheduler_authorization_changed".into());
+                    }
+                    // Preserve the approved binding identity, including after two
+                    // historical locations converge to the same selection.
+                    let workspace = authority
+                        .workspace_binding
+                        .as_ref()
+                        .ok_or("scheduler_authorization_changed")?
+                        .reference();
                     self.store
                         .create_session(
                             &session_id,
                             &basis.fingerprint,
-                            &SessionConfiguration {
+                            &StoredSessionConfiguration {
                                 backend: None,
                                 collaboration_mode: CollaborationMode::Agent,
                                 tools: basis.allowed_tools.clone(),
                                 title: fire.title.clone(),
                                 title_is_manual: true,
                                 labels: vec![],
-                                workspace: boundary.workspace.clone(),
+                                workspace,
                                 permissions: boundary.permissions.clone(),
                                 boundary_revision: 0,
                             },

@@ -45,66 +45,6 @@ pub(super) async fn store() -> (tempfile::TempDir, EventLog) {
 }
 
 #[tokio::test]
-async fn exact_source_cas_and_domain() {
-    let (_dir, store) = store().await;
-    let id = Uuid::new_v4();
-    assert!(store.load_application(id).await.unwrap().is_none());
-    let first = store
-        .commit_application(id, 0, input(), vec![], vec![])
-        .await
-        .unwrap();
-    first.validate().unwrap();
-    assert_eq!(
-        first.state_domain,
-        store.root_owner.as_ref().unwrap().root_id()
-    );
-    let loaded = store.load_application(id).await.unwrap().unwrap();
-    assert_eq!(loaded.source.reference, first);
-    assert_eq!(
-        serde_json::to_value(loaded.source.input).unwrap(),
-        serde_json::to_value(input()).unwrap()
-    );
-    assert!(matches!(
-        store
-            .commit_application(id, 0, input(), vec![], vec![])
-            .await,
-        Err(StoreError::RevisionConflict { .. })
-    ));
-    let second = store
-        .commit_application(id, 1, input(), vec![], vec![])
-        .await
-        .unwrap();
-    assert_eq!(second.revision, 2);
-    assert_eq!(
-        store
-            .load_application(id)
-            .await
-            .unwrap()
-            .unwrap()
-            .source
-            .reference,
-        second
-    );
-    assert_eq!(
-        store
-            .load_application_at(&first)
-            .await
-            .unwrap()
-            .unwrap()
-            .source
-            .reference,
-        first
-    );
-    let mut absent = first.clone();
-    absent.revision = 3;
-    assert!(store.load_application_at(&absent).await.unwrap().is_none());
-    let mut foreign = first.clone();
-    foreign.state_domain = "0".repeat(64);
-    assert!(store.load_application_at(&foreign).await.is_err());
-    store.close().await.unwrap();
-}
-
-#[tokio::test]
 async fn malformed_typed_source_is_rejected_when_loading() {
     let (_dir, store) = store().await;
     let id = Uuid::new_v4();
@@ -213,6 +153,7 @@ async fn immutable_bytes_preserve_every_committed_source_revision() {
     let (_dir, store) = store().await;
     let a = Uuid::new_v4();
     let b = Uuid::new_v4();
+    assert!(store.load_application(a).await.unwrap().is_none());
     let old = package("export default {}; // original");
     let new = package("export default {}; // replacement");
     let original = store
@@ -263,6 +204,12 @@ async fn immutable_bytes_preserve_every_committed_source_revision() {
             .files(),
         old.files()
     );
+    let mut absent = original.clone();
+    absent.revision = 3;
+    assert!(store.load_application_at(&absent).await.unwrap().is_none());
+    let mut foreign = original;
+    foreign.state_domain = "0".repeat(64);
+    assert!(store.load_application_at(&foreign).await.is_err());
     store.close().await.unwrap();
 }
 
@@ -368,6 +315,10 @@ async fn concurrent_cas_has_one_commit_and_reopen_keeps_original_domain() {
     );
     assert_ne!(a.is_ok(), b.is_ok());
     let source = a.or(b).unwrap();
+    assert_eq!(
+        source.state_domain,
+        store.root_owner.as_ref().unwrap().root_id()
+    );
     store.close().await.unwrap();
     let namespaces = RootNamespaces {
         ownership: dir.path().join("owners"),

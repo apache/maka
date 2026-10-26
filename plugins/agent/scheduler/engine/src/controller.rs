@@ -34,13 +34,8 @@ pub struct Controller {
     pub(crate) repository: Repository,
     pub(crate) catalog: Catalog,
     timezone: String,
-    misfire: crate::plan::Misfire,
 }
 impl Controller {
-    pub fn with_misfire(mut self, misfire: crate::plan::Misfire) -> Self {
-        self.misfire = misfire;
-        self
-    }
     pub fn view(&self, previous: &crate::view::View) -> crate::view::View {
         crate::view::View::committed(&self.catalog, previous)
     }
@@ -51,7 +46,6 @@ impl Controller {
             repository,
             catalog,
             timezone,
-            misfire: Default::default(),
         };
         owner.recover(now).await?;
         Ok(owner)
@@ -157,9 +151,6 @@ impl Controller {
                 .map_err(|_| Error::Unavailable("authorization deadline exceeded".into()))??,
             );
         }
-        if !self.catalog.plans.contains_key(&next.task.id) {
-            next.misfire = self.misfire;
-        }
         let result = MutationResult::Task {
             task: Box::new(next.task.clone()),
         };
@@ -200,7 +191,6 @@ impl Controller {
         }
         let task_id = format!("task-{operation_id}");
         let mut plan = Plan::create(task_id.clone(), input, creator, self.timezone.clone(), now)?;
-        plan.misfire = self.misfire;
         plan.authorization = Some(
             tokio::time::timeout(
                 std::time::Duration::from_secs(5),

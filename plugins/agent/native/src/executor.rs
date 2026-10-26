@@ -26,7 +26,7 @@ use maka_agent_ports::executor::OutputSink;
 use maka_agent_ports::executor::Request;
 use maka_agent_ports::executor::Settlement;
 use maka_capabilities::call::Identity;
-use maka_event_log::EventLog;
+use maka_event_log::RootStore;
 use maka_host_runtime::application::{Binding, NativeContext, NativeServices};
 use maka_plugin_core::operation::{OperationCleanup, OperationOutcome, Receipt};
 use serde::{Deserialize, Serialize};
@@ -52,7 +52,7 @@ pub(crate) struct Accepted {
 #[derive(Clone)]
 pub(crate) struct Backend {
     services: NativeServices,
-    store: Arc<EventLog>,
+    store: Arc<RootStore>,
     deployment: Uuid,
     consumer: maka_plugin_core::composition::InstanceId,
     binding: Binding,
@@ -217,16 +217,28 @@ struct Call {
 impl executor::Execution for Call {
     fn execute(
         self: Box<Self>,
+        execution: Arc<dyn maka_agent_facts::tools::ExecutionCustody>,
         output: Arc<dyn OutputSink>,
         cancellation: CancellationToken,
     ) -> BoxFuture<'static, Settlement> {
         Box::pin(async move {
-            let request = match self.backend.services.request(
+            let store = match self
+                .backend
+                .store
+                .session_for_execution(execution.as_ref(), &self.invocation)
+            {
+                Ok(store) => Arc::new(store),
+                Err(error) => {
+                    return Settlement::new(Err(Error::Persistence(error.to_string())), ());
+                }
+            };
+            let request = match self.backend.services.request_with_execution(
                 Identity::Agent {
                     invocation: self.invocation.clone(),
                     operation_id: None,
                 },
                 cancellation,
+                execution,
             ) {
                 Ok(request) => request,
                 Err(error) => return Settlement::new(Err(Error::Provider(error)), ()),
@@ -257,7 +269,7 @@ impl executor::Execution for Call {
                             .ok_or(Error::Unknown)?
                     } else {
                         let resources = attachments::capture(
-                            self.backend.store.clone(),
+                            store.clone(),
                             &request,
                             &self.invocation.session_id,
                             self.attachments,

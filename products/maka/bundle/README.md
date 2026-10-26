@@ -40,10 +40,10 @@ just run --root /path/to/business-host
 
 The terminal and desktop shells run the same workbench against this business Host; the bundle does not install a presenter or a separate management Host. [Selected-package updates](../cli/README.md#product-updates-recovery-and-url-installation) preserve the existing Host source and native grants.
 
-`just product` rebuilds the TypeScript bundle. Development binaries load `dist`, or the directory named by `MAKA_PRODUCT_BUNDLE`; TypeScript changes do not require Rust recompilation. Release binaries embed the bundle. The build generates `product-version.txt` from exact authoring and named package bytes. Installation and updates validate real package bytes against this identifier. Treat `dist` and `MAKA_PRODUCT_BUNDLE` as generated artifacts: rebuild after source changes instead of editing output files. Missing, malformed or mismatched identifiers require a rebuild. Use a separate output directory when building an artifact alongside a running development build:
+Every CLI build embeds the current TypeScript bundle, including debug builds. Rebuild the CLI after changing plugin sources. `just product` produces a separate bundle for inspection and export; it does not replace resources inside an existing binary. The build generates `product-version.txt` from exact authoring and named package bytes. Installation and updates validate real package bytes against this identifier. Treat the bundle output as a generated artifact: rebuild after source changes instead of editing output files. Missing, malformed or mismatched identifiers require a rebuild. Use a separate output directory when building an artifact alongside a running development build:
 
 ```sh
-node products/maka/bundle/scripts/build.mjs --output /tmp/maka-product-bundle
+node products/maka/bundle/scripts/build.mjs --output ~/.cache/maka/product-export
 ```
 
 ## Author an installation

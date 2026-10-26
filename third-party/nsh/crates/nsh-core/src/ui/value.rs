@@ -353,6 +353,123 @@ impl JsValue for crate::geometry::Size<crate::geometry::DevicePixels> {
     }
 }
 
+/// A field of a JS object, its key named in the error.
+fn field_of<T: JsValue>(value: JsIn<'_>, key: &str) -> Result<T, PropError> {
+    let v = value.field(key)?;
+    T::from_js(v.get()).map_err(|e| PropError(format!("`{key}`: {e}")))
+}
+
+/// A position in points: TS's `Point` (`{ x, y }`), as events carry it.
+impl JsValue for crate::geometry::Point<crate::geometry::Points> {
+    fn ts_type(_types: &mut TsTypes) -> String {
+        "Point".into()
+    }
+
+    fn from_js(value: JsIn<'_>) -> Result<Self, PropError> {
+        if value.kind() != JsKind::Object {
+            return Err(value.expected("an object with x and y"));
+        }
+        Ok(Self::new(field_of(value, "x")?, field_of(value, "y")?))
+    }
+
+    fn to_js<'a>(&self, host: &'a dyn JsHost) -> Result<JsOwned<'a>, PropError> {
+        let owned = JsOwned::new(host, host.new_object()?);
+        let object = owned.get().raw();
+        host.set_field(object, "x", self.x.to_js(host)?.into_raw())?;
+        host.set_field(object, "y", self.y.to_js(host)?.into_raw())?;
+        Ok(owned)
+    }
+}
+
+/// A size in points: TS's `Size` (`{ width, height }`).
+impl JsValue for crate::geometry::Size<crate::geometry::Points> {
+    fn ts_type(_types: &mut TsTypes) -> String {
+        "Size".into()
+    }
+
+    fn from_js(value: JsIn<'_>) -> Result<Self, PropError> {
+        if value.kind() != JsKind::Object {
+            return Err(value.expected("an object with width and height"));
+        }
+        Ok(Self::new(
+            field_of(value, "width")?,
+            field_of(value, "height")?,
+        ))
+    }
+
+    fn to_js<'a>(&self, host: &'a dyn JsHost) -> Result<JsOwned<'a>, PropError> {
+        let owned = JsOwned::new(host, host.new_object()?);
+        let object = owned.get().raw();
+        host.set_field(object, "width", self.width.to_js(host)?.into_raw())?;
+        host.set_field(object, "height", self.height.to_js(host)?.into_raw())?;
+        Ok(owned)
+    }
+}
+
+/// A rectangle in points: TS's `Bounds` (`{ origin, size }`), as events
+/// carry it.
+impl JsValue for crate::geometry::Bounds<crate::geometry::Points> {
+    fn ts_type(_types: &mut TsTypes) -> String {
+        "Bounds".into()
+    }
+
+    fn from_js(value: JsIn<'_>) -> Result<Self, PropError> {
+        if value.kind() != JsKind::Object {
+            return Err(value.expected("an object with origin and size"));
+        }
+        Ok(Self::new(
+            field_of(value, "origin")?,
+            field_of(value, "size")?,
+        ))
+    }
+
+    fn to_js<'a>(&self, host: &'a dyn JsHost) -> Result<JsOwned<'a>, PropError> {
+        let owned = JsOwned::new(host, host.new_object()?);
+        let object = owned.get().raw();
+        host.set_field(object, "origin", self.origin.to_js(host)?.into_raw())?;
+        host.set_field(object, "size", self.size.to_js(host)?.into_raw())?;
+        Ok(owned)
+    }
+}
+
+/// The modifier keys held: TS's `Modifiers` (`{ control, alt, shift,
+/// platform }`, GPUI's names), as press events carry them. A missing key
+/// is not held.
+impl JsValue for crate::keymap::Modifiers {
+    fn ts_type(_types: &mut TsTypes) -> String {
+        "Modifiers".into()
+    }
+
+    fn from_js(value: JsIn<'_>) -> Result<Self, PropError> {
+        if value.kind() != JsKind::Object {
+            return Err(value.expected("an object of modifier keys"));
+        }
+        let held = |key: &str| -> Result<bool, PropError> {
+            Ok(field_of::<Option<bool>>(value, key)?.unwrap_or(false))
+        };
+        Ok(Self {
+            ctrl: held("control")?,
+            alt: held("alt")?,
+            shift: held("shift")?,
+            cmd: held("platform")?,
+        })
+    }
+
+    fn to_js<'a>(&self, host: &'a dyn JsHost) -> Result<JsOwned<'a>, PropError> {
+        let owned = JsOwned::new(host, host.new_object()?);
+        let object = owned.get().raw();
+        for (key, held) in [
+            ("control", self.ctrl),
+            ("alt", self.alt),
+            ("shift", self.shift),
+            ("platform", self.cmd),
+        ] {
+            host.set_field(object, key, held.to_js(host)?.into_raw())?;
+        }
+        Ok(owned)
+    }
+}
+
 impl JsValue for SharedString {
     fn ts_type(_types: &mut TsTypes) -> String {
         "string".into()

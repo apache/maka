@@ -175,12 +175,17 @@ impl std::fmt::Debug for Components {
 impl Components {
     /// Registers a factory by the app's `nativeComponent` name.
     ///
-    /// Registering an existing name replaces its factory for future leaves.
+    /// Registering an existing name replaces its factory for future leaves. Names
+    /// under `nsh/` are NSH's own: registering one logs a warning and changes nothing.
     pub fn register(
         &mut self,
         name: &str,
         factory: impl Fn() -> Box<dyn NativeComponent> + Send + Sync + 'static,
     ) {
+        if nsh_core::platform::is_reserved_component(name) {
+            log::warn!("native component `{name}` is not registered: names under `nsh/` are NSH's");
+            return;
+        }
         self.factories.insert(Arc::from(name), Arc::new(factory));
     }
 
@@ -269,6 +274,31 @@ mod tests {
             .collect::<String>()
             .trim()
             .to_owned()
+    }
+
+    #[test]
+    fn host_registration_preserves_reserved_native_components() {
+        let mut registry = Components::default();
+        registry.factories.insert(
+            Arc::from(nsh_core::platform::TAB_BAR_COMPONENT),
+            Arc::new(|| Box::new(Counter { value: 7 })),
+        );
+        registry.register(nsh_core::platform::TAB_BAR_COMPONENT, || {
+            Box::new(Counter { value: 99 })
+        });
+        assert_eq!(
+            painted_value(
+                &*registry
+                    .create(nsh_core::platform::TAB_BAR_COMPONENT)
+                    .unwrap()
+            ),
+            "7"
+        );
+        registry.register("nsh/future-component", || Box::<Counter>::default());
+        assert!(registry.create("nsh/future-component").is_none());
+        // Only the reserved namespace is excluded; host names still work.
+        registry.register("nsh-custom", || Box::new(Counter { value: 3 }));
+        assert_eq!(painted_value(&*registry.create("nsh-custom").unwrap()), "3");
     }
 
     #[test]

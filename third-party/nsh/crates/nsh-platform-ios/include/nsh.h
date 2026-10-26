@@ -58,6 +58,47 @@ void nsh_app_set_limits(NshApp *app, uint32_t memory_mb, uint32_t stack_kb, uint
 /// or NULL.
 char *_Nullable nsh_app_set_storage_directory(NshApp *app, const char *_Nullable path);
 
+/// Where an app's caches are kept (`NshCacheOptions.location`).
+enum {
+    /// The system's cache directory: `nsh` in the app's Caches.
+    NSH_CACHE_LOCATION_SYSTEM = 0,
+    /// `NshCacheOptions.directory`.
+    NSH_CACHE_LOCATION_DIRECTORY = 1,
+    /// Nothing on disk.
+    NSH_CACHE_LOCATION_OFF = 2,
+};
+
+/// How much one cache keeps (`NshCacheOptions.images`).
+enum {
+    /// Its default size (images: 256 MiB).
+    NSH_CACHE_POLICY_DEFAULT = 0,
+    /// At most its `_max_mb` megabytes (MiB).
+    NSH_CACHE_POLICY_MAX_SIZE = 1,
+    /// Not kept on disk.
+    NSH_CACHE_POLICY_OFF = 2,
+};
+
+/// Where the apps keep their caches and how much each keeps. Zeroed, it is
+/// the default (the system's directory, default sizes). Set `size` to
+/// `sizeof(NshCacheOptions)`: fields added later read as zero for callers
+/// built against this header.
+typedef struct {
+    uint32_t size;
+    /// `NSH_CACHE_LOCATION_*`.
+    uint32_t location;
+    /// For `NSH_CACHE_LOCATION_DIRECTORY`: each app's caches in
+    /// `<directory>/<app id>`.
+    const char *_Nullable directory;
+    /// `NSH_CACHE_POLICY_*` of the images the apps download.
+    uint32_t images;
+    /// For `NSH_CACHE_POLICY_MAX_SIZE`.
+    uint32_t images_max_mb;
+} NshCacheOptions;
+
+/// Where the apps `app` loads keep their caches and how much each keeps.
+/// Applies from the next load. Returns why `options` are invalid, or NULL.
+char *_Nullable nsh_app_set_cache(NshApp *app, const NshCacheOptions *options);
+
 /// The embedding app's locale, standing in for the user's: a BCP 47 tag or a
 /// platform identifier (`zh-Hans-CN`, `en_US`); NULL follows the system's
 /// again. Applies at once and to every app loaded later. Returns why `tag` is
@@ -167,6 +208,51 @@ void nsh_component_set_size(const NshComponentContext *context, double width, do
 
 /// Frees a component's context.
 void nsh_component_context_free(NshComponentContext *_Nullable context);
+
+/// The launch parameters of the apps `app` loads from now on (`host.params`,
+/// read when an app starts): a JSON object, or NULL for none. Returns why
+/// `json` is not a JSON object, or NULL.
+char *_Nullable nsh_app_set_host_params(NshApp *app, const char *_Nullable json);
+
+/// Sends event `name` with `json` data (NULL: null) to the running app
+/// (`host.on(name, ...)`); kept until it listens to `name`, or for the next
+/// app while none runs. Returns why it cannot, or NULL.
+char *_Nullable nsh_app_send_host_event(NshApp *app, const char *name, const char *_Nullable json);
+
+/// A call of the app (`host.call`), answered once from any thread with
+/// `nsh_host_call_resolve` or `nsh_host_call_reject`, which free it.
+typedef struct NshHostCall NshHostCall;
+
+/// Handles the app's calls (`host.call`) and posts (`host.post`) of `name`,
+/// replacing the handler it had; a NULL `handler` removes it. `handler` runs on
+/// the main thread with the JSON data and, for a call, the call to answer
+/// (NULL for a post). `release` (optional) is called with `context`, on any
+/// thread, when the handler is replaced or removed or the app destroyed.
+void nsh_app_set_host_handler(NshApp *app, const char *name,
+                              void (*_Nullable handler)(void *_Nullable context, const char *json,
+                                                        NshHostCall *_Nullable call),
+                              void *_Nullable context,
+                              void (*_Nullable release)(void *_Nullable context));
+
+/// Answers `call` with `json` (NULL: null) and frees it. Any thread.
+void nsh_host_call_resolve(NshHostCall *call, const char *_Nullable json);
+
+/// Fails `call` with `message` and frees it. Any thread.
+void nsh_host_call_reject(NshHostCall *call, const char *message);
+
+/// Frees `call` unanswered: the app's call fails. Any thread.
+void nsh_host_call_free(NshHostCall *_Nullable call);
+
+/// Takes the URLs the app opens (`openUrl` of `nsh/device`) before the system
+/// does, replacing the handler it had; a NULL `handler` removes it. `handler`
+/// runs on the main thread with the URL and returns true when the embedding
+/// app took it, false for the system to open it. `release` (optional) is called
+/// with `context`, on any thread, when the handler is replaced or removed or
+/// the app destroyed.
+void nsh_app_set_open_url_handler(NshApp *app,
+                                  bool (*_Nullable handler)(void *_Nullable context, const char *url),
+                                  void *_Nullable context,
+                                  void (*_Nullable release)(void *_Nullable context));
 
 #ifdef __cplusplus
 }

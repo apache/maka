@@ -1,11 +1,13 @@
 // A case of the API's test suite (docs/dev/compatibility.md): `nsh/device`
 // as the headless runtime reports it (iOS, a phone, 1 pixel per point, the
-// script's viewport) and the color scheme an app sets. Its script checks
-// each.
-import { Text, View } from "nsh";
-import { colorScheme, fontScale, pixelRatio, platform, setColorScheme, windowSize } from "nsh/device";
+// script's viewport), the color scheme an app sets and `openUrl`: a promise
+// for a URL it opens (the headless runtime answers none), a `TypeError` for
+// one it never opens. Its script checks each.
+import { Text, View, signal } from "nsh";
+import { colorScheme, fontScale, openUrl, pixelRatio, platform, setColorScheme, windowSize } from "nsh/device";
 
 function App() {
+  const opened = signal("not opened");
   return (
     <View style={{ flex: 1, paddingTop: 64 }}>
       <Text>{`OS: ${platform.os}`}</Text>
@@ -23,6 +25,22 @@ function App() {
       </View>
       <View testID="system" onPress={() => setColorScheme("system")}>
         <Text>Follow the system</Text>
+      </View>
+      <Text>{`Open: ${opened()}`}</Text>
+      <View
+        testID="open"
+        onPress={() => {
+          const pending = openUrl("https://example.com/docs?page=1");
+          let refused = "none";
+          try {
+            openUrl("javascript:alert(1)");
+          } catch (e) {
+            refused = (e as Error).name;
+          }
+          opened.set(`${typeof pending.then}, refused ${refused}`);
+        }}
+      >
+        <Text>Open a link</Text>
       </View>
     </View>
   );

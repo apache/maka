@@ -19,11 +19,11 @@
 
 //! Explicit native process service; request data never supplies launch authority.
 use futures_util::future::BoxFuture;
-use maka_agent_api::session::SessionConfiguration;
+use maka_agent_api::session::ResolvedConfiguration;
 use maka_agent_facts::tools::ToolCallContext;
 use maka_agent_facts::tools::ToolError;
 use maka_config::ConfigurationStore;
-use maka_event_log::EventLog;
+use maka_event_log::RootStore;
 use maka_host_runtime::{
     application::{Context, Handler, NativeActivation, NativeContext, NativeOwner, NativeRegistry},
     shell::{ShellError, ShellResources, request::Execute},
@@ -77,7 +77,7 @@ pub fn provide(registry: &mut NativeRegistry) -> Result<(), String> {
     )
 }
 struct Processes {
-    store: Arc<EventLog>,
+    store: Arc<RootStore>,
     configuration: Arc<ConfigurationStore>,
     settings: Configuration,
     state_root: PathBuf,
@@ -244,6 +244,7 @@ impl Handler for Service {
             let tool = ToolCallContext {
                 invocation,
                 operation_id,
+                execution: context.scope().execution().cloned(),
             };
             let mut ticket = context
                 .scope()
@@ -320,8 +321,15 @@ impl Processes {
         cancellation: &CancellationToken,
     ) -> Result<Value, ToolError> {
         cancelled(cancellation)?;
-        let configuration =
-            maka_agent_authority::permissions::live(&self.store, &tool.invocation).await?;
+        let configuration = maka_agent_authority::permissions::live(
+            &maka_agent_authority::permissions::execution(
+                &self.store,
+                &tool.invocation,
+                tool.execution.as_deref(),
+            )?,
+            &tool.invocation,
+        )
+        .await?;
         if name == "execute" {
             if self.drain.is_cancelled() {
                 return Err(failed("Process owner is draining"));

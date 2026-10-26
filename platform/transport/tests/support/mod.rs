@@ -17,6 +17,19 @@
  * under the License.
  */
 
+// Real Roots initialize control and eight runtime partitions before behavior checks.
+pub async fn setup<T>(future: impl std::future::Future<Output = T>) -> T {
+    let started = std::time::Instant::now();
+    tokio::time::timeout(std::time::Duration::from_secs(60), future)
+        .await
+        .unwrap_or_else(|_| {
+            panic!(
+                "fixture initialization timed out after {:?}",
+                started.elapsed()
+            )
+        })
+}
+
 use maka_packages::Package;
 use maka_plugin_core::{
     composition::{Environment, ExecutionLocation, Input, InstanceId, PresentationTarget, Target},

@@ -63,10 +63,6 @@ const WHEEL_IDLE: f64 = 150.0;
 /// After a trackpad gesture ends, the system's momentum begins within this
 /// long (ms), or there is none.
 const MOMENTUM_WAIT: f64 = 100.0;
-/// How far past the top a release must be to trigger a refresh.
-const REFRESH_PULL: f32 = 64.0;
-/// Space kept above the content while refreshing (the spinner's).
-const REFRESH_SPACE: f32 = 56.0;
 /// Duration of animated scrolls and bounces back (ms).
 const ANIMATION: f64 = 300.0;
 /// The release speed (points per ms) a settled mouse wheel snaps with:
@@ -245,7 +241,7 @@ fn limits(state: &ViewState) -> (f32, f32) {
     };
     let max = s.max((state.frame.size.width.0, state.frame.size.height.0));
     let min = if !s.horizontal && s.live.refreshing {
-        -REFRESH_SPACE
+        -s.behavior.refresh_inset().0
     } else {
         0.0
     };
@@ -334,7 +330,14 @@ pub(crate) fn can_bounce(view: &NshView, dx: f32, dy: f32) -> bool {
 }
 
 /// Sends `kind` with the offset if JS listens to it.
-fn emit(surface: &Surface, view: &NshView, kind: EventKind) {
+fn emit(surface: &Rc<Surface>, view: &NshView, kind: EventKind) {
+    if kind == EventKind::ScrollEnd {
+        // Snapping animated values that follow it settle.
+        let id = view.state().id;
+        if surface.anim.borrow_mut().scroll_ended(id) {
+            surface.ensure_ticking();
+        }
+    }
     let (id, x, y) = {
         let state = view.state();
         if !state.events.contains(kind) {
@@ -581,7 +584,7 @@ fn commit(key: u64, id: nsh_core::NodeId) {
 /// Moves `view`'s main axis offset to `pos` (not clamped: drags rubber
 /// band) and updates everything that follows it.
 fn moved_to(surface: &Rc<Surface>, view: &NshView, pos: f32) {
-    let (id, x, y) = {
+    let (id, x, y, pulled) = {
         let mut state = view.state_mut();
         let Some(s) = state.scroll.as_mut() else {
             return;
@@ -590,6 +593,9 @@ fn moved_to(surface: &Rc<Surface>, view: &NshView, pos: f32) {
         if *target == pos {
             return;
         }
+        // How far it is pulled past its top, when that changes.
+        let pulled =
+            (!s.horizontal && (*target < 0.0 || pos < 0.0)).then(|| Points((-pos).max(0.0)));
         *target = pos;
         if s.indicator {
             s.live.shown = now();
@@ -598,7 +604,7 @@ fn moved_to(surface: &Rc<Surface>, view: &NshView, pos: f32) {
         }
         s.live.report = true;
         let (x, y) = reported(&state);
-        (state.id, x, y)
+        (state.id, x, y, pulled)
     };
     crate::surface::quiet(|| {
         apply_offset(surface, view);
@@ -606,7 +612,11 @@ fn moved_to(surface: &Rc<Surface>, view: &NshView, pos: f32) {
         update_overlays(view);
     });
     crate::input::content_moved(surface, true);
-    if surface.anim.borrow_mut().scrolled(id, x, y) && surface.mounter.try_borrow().is_ok() {
+    let mut fed = surface.anim.borrow_mut().scrolled(id, x, y);
+    if let Some(distance) = pulled {
+        fed |= surface.anim.borrow_mut().pulled(id, distance);
+    }
+    if fed && surface.mounter.try_borrow().is_ok() {
         // While a batch is applied the surface writes animations after it.
         surface.write_animations();
     }
@@ -750,8 +760,28 @@ fn ensure_ticking(surface: &Rc<Surface>, view: &NshView) {
     });
 }
 
+/// A recycling row must have no deferred scroll events after its owner is
+/// released. Its native offset is kept for a cancelled retirement/reinsert.
+pub(crate) fn detached(view: &NshView) {
+    if let Some(scroll) = view.state_mut().scroll.as_mut() {
+        scroll.live.phase = Phase::Idle;
+        scroll.live.report = false;
+        scroll.live.resampled = None;
+        scroll.live.commit_armed = false;
+        scroll.live.rested_at = None;
+    }
+    for child in view.child_views() {
+        detached(&child);
+    }
+}
+
 /// One frame of `view`'s motion; false when there is nothing left to do.
 fn tick(surface: &Rc<Surface>, view: &NshView, now: f64) -> bool {
+    // A retired native subtree may still have its already-scheduled frame
+    // callback. It must stop before emitting events into a reused node id.
+    if !mapped(view) {
+        return false;
+    }
     let sampled = {
         let mut state = view.state_mut();
         let Some(s) = state.scroll.as_mut() else {
@@ -862,7 +892,11 @@ fn tick(surface: &Rc<Surface>, view: &NshView, now: f64) -> bool {
             }
             busy |= alpha > 0.0;
         }
-        if !s.horizontal && main(s) < 0.0 && s.live.refreshing {
+        if !s.horizontal
+            && main(s) < 0.0
+            && s.live.refreshing
+            && s.behavior.refresh_indicator.is_none()
+        {
             s.live.spin = ((now / 1000.0) as f32 * 2.0 * PI) % (2.0 * PI);
             overlays = true;
             busy = true;
@@ -1013,7 +1047,10 @@ fn update_overlays(view: &NshView) {
         }
     }
     // The refresh spinner.
-    let shows = !s.horizontal && s.y < 0.0 && (s.live.refreshing || refresh_listened);
+    let shows = !s.horizontal
+        && s.y < 0.0
+        && s.behavior.refresh_indicator.is_none()
+        && (s.live.refreshing || refresh_listened);
     if !shows {
         if let Some(layer) = &s.live.spinner {
             layer.setHidden(true);
@@ -1035,9 +1072,9 @@ fn update_overlays(view: &NshView) {
     let progress = if s.live.refreshing {
         1.0
     } else {
-        (-s.y / REFRESH_PULL).min(1.0)
+        (-s.y / s.behavior.refresh_threshold().0).min(1.0)
     };
-    let cy = s.behavior.content_inset.top.0 - s.y - REFRESH_SPACE / 2.0;
+    let cy = s.behavior.content_inset.top.0 - s.y - s.behavior.refresh_inset().0 / 2.0;
     layer.setBounds(rect(0.0, 0.0, 0.0, 0.0));
     layer.setPosition(CGPoint::new((w / 2.0) as f64, cy as f64));
     let shown = ((progress * SPOKES as f32).ceil() as usize).min(SPOKES);
@@ -1119,8 +1156,12 @@ fn pin_sticky(surface: &Surface, view: &NshView) {
         };
         (s.sticky.clone(), main(s) - lead, s.horizontal)
     };
+    // An animated offset is the graph's (pinned again with its frames,
+    // `pin_animated_sticky`, when it is being written).
+    let anim = surface.anim.try_borrow().ok();
     for c in &cells {
-        let t = sticky_shift(Points(offset), c.start, c.end).0;
+        let extra = c.offset.zip(anim.as_ref()).map_or(0.0, |(n, a)| a.value(n));
+        let t = sticky_shift(Points(offset + extra), c.start, c.end).0;
         let shift = if horizontal { (t, 0.0) } else { (0.0, t) };
         with_cell(surface, view, c.cell, |cell| {
             let changed = {
@@ -1131,6 +1172,25 @@ fn pin_sticky(surface: &Surface, view: &NshView) {
                 cell.place();
             }
         });
+    }
+}
+
+/// Pins again the sticky cells of the scroll views whose cells stick an
+/// animated value further in, after the graph's values were written.
+pub(crate) fn pin_animated_sticky(surface: &Surface) {
+    let views: Vec<u32> = surface.anim.borrow().sticky_views().to_vec();
+    if views.is_empty() {
+        return;
+    }
+    for id in views {
+        let view = surface
+            .mounter
+            .try_borrow()
+            .ok()
+            .and_then(|m| m.views.get(&id).cloned());
+        if let Some(view) = view {
+            pin_sticky(surface, &view);
+        }
     }
 }
 
@@ -1333,29 +1393,42 @@ pub(crate) fn sticky(surface: &Rc<Surface>, view: &NshView, cells: Vec<StickyCel
 }
 
 /// `ScrollBehavior`.
-pub(crate) fn behavior(_surface: &Rc<Surface>, view: &NshView, behavior: &ScrollBehavior) {
-    let inset = {
+pub(crate) fn behavior(surface: &Rc<Surface>, view: &NshView, behavior: &ScrollBehavior) {
+    let (inset, refresh, held) = {
         let mut state = view.state_mut();
         let Some(s) = state.scroll.as_mut() else {
             return;
         };
         let inset = s.behavior.content_inset != behavior.content_inset;
+        let refresh = s.behavior.refresh_indicator != behavior.refresh_indicator;
         s.behavior = behavior.clone();
         if !behavior.enabled && matches!(s.live.phase, Phase::Thumb { .. } | Phase::Wheel { .. }) {
             s.live.phase = Phase::Idle;
         }
-        inset
+        // A refresh in progress keeps the room of the indicator now showing.
+        let held = (refresh
+            && !s.horizontal
+            && s.live.refreshing
+            && main(s) < 0.0
+            && !matches!(s.live.phase, Phase::Wheel { gesture: true, .. }))
+        .then(|| behavior.refresh_inset().0);
+        (inset, refresh, held)
     };
     if inset {
-        apply_offset(_surface, view);
+        apply_offset(surface, view);
+    }
+    if inset || refresh {
         update_overlays(view);
+    }
+    if let Some(room) = held {
+        animate_to(surface, view, -room, ANIMATION, false, false);
     }
 }
 
 /// `Refreshing`: shows the spinner above the content (scrolling to it
 /// when at the top) or hides it.
 pub(crate) fn refreshing(surface: &Rc<Surface>, view: &NshView, refreshing: bool) {
-    let (pos, held) = {
+    let (pos, held, inset) = {
         let mut state = view.state_mut();
         let Some(s) = state.scroll.as_mut() else {
             return;
@@ -1367,6 +1440,7 @@ pub(crate) fn refreshing(surface: &Rc<Surface>, view: &NshView, refreshing: bool
         (
             main(s),
             matches!(s.live.phase, Phase::Wheel { gesture: true, .. }),
+            s.behavior.refresh_inset().0,
         )
     };
     update_overlays(view);
@@ -1374,7 +1448,7 @@ pub(crate) fn refreshing(surface: &Rc<Surface>, view: &NshView, refreshing: bool
         return;
     }
     if refreshing && pos <= 0.5 {
-        animate_to(surface, view, -REFRESH_SPACE, ANIMATION, false, false);
+        animate_to(surface, view, -inset, ANIMATION, false, false);
     } else if !refreshing && pos < 0.0 {
         animate_to(surface, view, 0.0, ANIMATION, false, false);
     }
@@ -1441,7 +1515,7 @@ fn pulled_to_refresh(surface: &Surface, view: &NshView) -> bool {
         !s.horizontal
             && !s.live.refreshing
             && state.events.contains(EventKind::Refresh)
-            && main(s) <= -REFRESH_PULL
+            && s.behavior.refreshes(Points(main(s)))
     };
     if refresh {
         // Shown right away, as UIRefreshControl does; JS turns it off.

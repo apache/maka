@@ -78,6 +78,8 @@ virtual_list(move || messages.with(|m| m.len()), move |at| {
 
 因此，每个条目自己的状态要放在数据里（按 id 区分），不要放在行函数内部创建的 signal 里：那样的 signal 会跟着单元格走，出现在别的条目上。
 
+等待下一个条目的单元格，一旦它的行已不存在或由别的单元格显示，就会被隐藏，所以屏幕阅读器、触摸和 UI 测试每行只会遇到一次。
+
 ## 属性
 
 | 属性 | Rust | 类型 | 默认值 | 说明 |
@@ -101,10 +103,14 @@ virtual_list(move || messages.with(|m| m.len()), move |at| {
 | `keyExtractor` | `.keys(\|\| ids)` | `(item: T, index: number) => string` | `item.key`、`item.id` 或索引 | 条目在可见性 token 中的 key。在 Rust 中是各行的标识，前面的行增删时，行保留自己的单元格和尺寸。 |
 | `onLoadMore` | `.on_load_more(..)` | `() => void` | | 快到末端了：加载更多。 |
 | `loadMoreThreshold` | `.load_more_threshold(viewports)` | `number` | `1` | 距末端多近（以视口为单位）时触发 `onLoadMore`。 |
+| `onLoadMoreAtStart` | `.on_load_more_at_start(..)` | `() => void` | | 用户或滚动命令移动列表后快到开头了：加载第一项之前的内容。 |
+| `loadMoreAtStartThreshold` | `.load_more_at_start_threshold(viewports)` | `number` | `1` | 距开头多近（以视口为单位）时触发 `onLoadMoreAtStart`。 |
 | `onViewableItemsChange` | `.on_viewable_items_change(..)` | `(info: { viewableItems: ViewToken<T>[]; changed: ViewToken<T>[] }) => void` | | 有条目变为可见或不再可见。 |
 | `viewabilityConfig` | `.viewability(..)`、`.minimum_view_time(..)` | `ViewabilityConfig` | | 条目何时算作可见（见下文）。 |
 | `refreshing` | `.refreshing(..)` | `boolean` | | 显示下拉刷新的转圈。 |
 | `onRefresh` | `.on_refresh(..)` | `() => void` | | 用户下拉刷新。 |
+| `refreshIndicator` | `.refresh_indicator(Some(height))` | `{ height: number }` | | 应用自己绘制指示器，高 `height` 点：平台的转圈隐藏，下拉到 `height` 即刷新，刷新中在内容上方留出 `height`。`height` 不大于 0 时视为未设。 |
+| `pullValue` | `.pull_value(&value)` | `AnimatedValue` | | 一个动画值，写入列表被拉过顶部的距离（静止为 0，随下拉增大；刷新中为内容上方留出的空间，设了 `refreshIndicator` 时等于 `height`），用来绘制应用的指示器。 |
 | `scrollbar` | `.scrollbar(..)` | `boolean` | `true` | 显示滚动条。在桌面和桌面浏览器中，横向视图始终保留滚动条：它是鼠标的滚动条。 |
 | `scrollValue` | `.scroll_value(&value)` | `AnimatedValue` | | 接收滚动偏移的动画值，用于随滚动变化的动画。 |
 | `keyboardDismissMode` | `.keyboard_dismiss_mode(..)` | `"none" \| "on-drag" \| "interactive"` | `"none"` | 拖动时是否收起键盘。 |
@@ -135,6 +141,7 @@ virtual_list(move || messages.with(|m| m.len()), move |at| {
 | `onMomentumStart` / `onMomentumEnd` | `.on_momentum_start` / `.on_momentum_end` | `{ x, y }` | 惯性滑动开始 / 结束。 |
 | `onScrollEnd` | `.on_scroll_end` | `{ x, y }` | 滚动停止。 |
 | `onLoadMore` | `.on_load_more` | 无 | 距末端不足 `loadMoreThreshold` 个视口。 |
+| `onLoadMoreAtStart` | `.on_load_more_at_start` | 无 | 滚动后距开头不足 `loadMoreAtStartThreshold` 个视口，每次接近触发一次。 |
 | `onViewableItemsChange` | `.on_viewable_items_change` | `{ viewableItems, changed }`（`ViewableItems`） | 可见性变化。 |
 | `onRefresh` | `.on_refresh` | 无 | 下拉刷新。 |
 

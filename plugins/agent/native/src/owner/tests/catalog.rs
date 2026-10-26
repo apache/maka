@@ -30,6 +30,48 @@ async fn next(stream: &mut Subscription) -> Value {
 }
 
 #[tokio::test]
+async fn catalog_watch_rejects_stale_continuations_without_waiting_for_another_change() {
+    let fixture = Fixture::new("http://127.0.0.1:1/v1", None).await;
+    let session = fixture.create("Original catalog window").await;
+    let original = fixture
+        .query("list", json!({"filter":"all","position":{"kind":"start"}}))
+        .await
+        .unwrap();
+    fixture.create("Catalog changed before subscription").await;
+    for direction in ["after", "before"] {
+        let mut stream = fixture
+            .app
+            .client()
+            .subscribe(
+                fixture.binding(2).await,
+                "catalog".into(),
+                json!({"filter":"all","position":{
+                    "kind":direction,"revision":original["revision"],"cursor":session
+                }}),
+                scope(&fixture.issuer, true),
+                Attachments::new().into(),
+            )
+            .await
+            .unwrap();
+        let error = tokio::time::timeout(Duration::from_secs(5), async {
+            assert!(
+                stream.recv().await.is_none(),
+                "stale {direction} must not emit a page"
+            );
+            stream.completion().await.result.unwrap_err()
+        })
+        .await
+        .expect("stale continuation must fail without another catalog change");
+        assert!(
+            error.contains("agent_catalog_changed"),
+            "{direction}: {error}"
+        );
+    }
+    fixture.app.shutdown().await.unwrap();
+    fixture.config.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn catalog_observes_metadata_pending_and_removal_at_its_original_location() {
     let fixture = Fixture::new("http://127.0.0.1:1/v1", None).await;
     let mut bootstrap = fixture
@@ -97,26 +139,6 @@ async fn catalog_observes_metadata_pending_and_removal_at_its_original_location(
         unavailable.contains("agent_session_unavailable"),
         "{unavailable}"
     );
-    assert_eq!(
-        fixture
-            .query(
-                "list",
-                json!({"filter":"all","position":{"kind":"start"},"titleQuery":"界".repeat(128)})
-            )
-            .await
-            .unwrap()["sessions"],
-        json!([])
-    );
-    assert_eq!(
-        fixture
-            .query(
-                "list",
-                json!({"filter":"all","position":{"kind":"start"},"titleQuery":"界".repeat(129)})
-            )
-            .await
-            .unwrap()["sessions"],
-        json!([])
-    );
     let mut filtered = fixture.app.client().subscribe(
         fixture.binding(2).await, "catalog".into(),
         json!({"filter":"all","position":{"kind":"start"},"scope":owned_scope,"titleQuery":"Updated"}),
@@ -163,7 +185,7 @@ async fn catalog_observes_metadata_pending_and_removal_at_its_original_location(
     assert_eq!(fixture.query("list", json!({"filter":"all","position":{"kind":"start"},"scope":owned_scope,"titleQuery":"updated"})).await.unwrap()["sessions"], json!([]), "title substring matching is case-sensitive");
     fixture
         .store
-        .set_session_archived::<SessionConfiguration>(&ids[1], true, 3)
+        .set_session_archived::<StoredSessionConfiguration>(&ids[1], true, 3)
         .await
         .unwrap();
     let archived = next(&mut stream).await;
@@ -180,7 +202,8 @@ async fn catalog_observes_metadata_pending_and_removal_at_its_original_location(
 
     // Background pending sessions outside this page contribute to the exact count.
     fixture
-        .store
+        .session(&(catalog_interaction(&ids[0], "background")).session_id)
+        .await
         .establish_interaction(&catalog_interaction(&ids[0], "background"))
         .await
         .unwrap();
@@ -188,7 +211,8 @@ async fn catalog_observes_metadata_pending_and_removal_at_its_original_location(
     assert_eq!(pending["needsYouCount"], 1);
     assert_eq!(pending["sessions"][0]["id"], ids[2]);
     fixture
-        .store
+        .session(&(catalog_interaction(&ids[0], "background-second")).session_id)
+        .await
         .establish_interaction(&catalog_interaction(&ids[0], "background-second"))
         .await
         .unwrap();
@@ -210,7 +234,8 @@ async fn catalog_observes_metadata_pending_and_removal_at_its_original_location(
         .unwrap();
     assert_eq!(next(&mut stream).await["sessions"], pending["sessions"]);
     fixture
-        .store
+        .session(&(catalog_interaction("foreign", "foreign-request")).session_id)
+        .await
         .establish_interaction(&catalog_interaction("foreign", "foreign-request"))
         .await
         .unwrap();
@@ -220,7 +245,8 @@ async fn catalog_observes_metadata_pending_and_removal_at_its_original_location(
 
     for request in ["background", "background-second"] {
         fixture
-            .store
+            .session(&ids[0])
+            .await
             .commit_interaction_outcome(
                 request,
                 InteractionOutcome::Closure {
@@ -238,8 +264,9 @@ async fn catalog_observes_metadata_pending_and_removal_at_its_original_location(
     }
     for id in &ids[1..] {
         let record = fixture
-            .store
-            .get_session::<SessionConfiguration>(id)
+            .session(id)
+            .await
+            .get_session::<StoredSessionConfiguration>(id)
             .await
             .unwrap()
             .unwrap();
@@ -292,13 +319,12 @@ async fn explicit_read_marker_keeps_original_tail_authority_and_receipt() {
         let fixture = Fixture::new(&base, None).await;
         let session = fixture.create("Read marker").await;
         let read = |message: &str| json!({"sessionId":session,"messageId":message});
-        assert_eq!(
-            fixture
-                .query("observe", json!({"sessionId":session}))
-                .await
-                .unwrap()["session"]["hasUnread"],
-            false
-        );
+        let initial = fixture
+            .query("observe", json!({"sessionId":session}))
+            .await
+            .unwrap();
+        assert_eq!(initial["session"]["tailMessageId"], Value::Null);
+        assert_eq!(initial["session"]["hasUnread"], false);
         fixture.send(&session).await.unwrap();
         fixture.drained().await;
         let first = fixture
@@ -316,6 +342,7 @@ async fn explicit_read_marker_keeps_original_tail_authority_and_receipt() {
         let message = page["chunks"].as_array().unwrap().last().unwrap()["messageId"]
             .as_str()
             .unwrap();
+        assert_eq!(first["session"]["tailMessageId"], message);
         let stale = fixture
             .mutation(2, "markRead", read("unknown-message"), Uuid::new_v4())
             .await
@@ -328,6 +355,7 @@ async fn explicit_read_marker_keeps_original_tail_authority_and_receipt() {
             .unwrap();
         assert_eq!(marked["kind"], "observed");
         assert_eq!(marked["session"]["hasUnread"], false);
+        assert_eq!(marked["session"]["tailMessageId"], message);
         assert_eq!(
             marked["session"]["updatedAt"],
             first["session"]["updatedAt"]
@@ -390,6 +418,7 @@ async fn explicit_read_marker_keeps_original_tail_authority_and_receipt() {
         let latest = page["chunks"].as_array().unwrap().last().unwrap()["messageId"]
             .as_str()
             .unwrap();
+        assert_eq!(second["session"]["tailMessageId"], latest);
         assert_eq!(
             fixture
                 .mutation(2, "markRead", read(latest), Uuid::new_v4())
@@ -398,8 +427,9 @@ async fn explicit_read_marker_keeps_original_tail_authority_and_receipt() {
             false
         );
         let stored = fixture
-            .store
-            .get_session::<SessionConfiguration>(&session)
+            .session(&session)
+            .await
+            .get_session::<StoredSessionConfiguration>(&session)
             .await
             .unwrap()
             .unwrap();
@@ -409,7 +439,7 @@ async fn explicit_read_marker_keeps_original_tail_authority_and_receipt() {
         );
         fixture
             .store
-            .set_session_archived::<SessionConfiguration>(&session, true, now())
+            .set_session_archived::<StoredSessionConfiguration>(&session, true, now())
             .await
             .unwrap();
         assert_eq!(
@@ -461,13 +491,15 @@ async fn session_lifecycle_is_revision_checked_reversible_and_scoped() {
             .await
             .unwrap();
         assert_eq!(stale["kind"], "revision_conflict");
-        f.store
+        f.session(&(catalog_interaction(&session, "pending-delete")).session_id)
+            .await
             .establish_interaction(&catalog_interaction(&session, "pending-delete"))
             .await
             .unwrap();
         revision = f
-            .store
-            .get_session::<SessionConfiguration>(&session)
+            .session(&session)
+            .await
+            .get_session::<StoredSessionConfiguration>(&session)
             .await
             .unwrap()
             .unwrap()
@@ -482,7 +514,8 @@ async fn session_lifecycle_is_revision_checked_reversible_and_scoped() {
             .await
             .unwrap();
         assert_eq!(busy["reason"], "busy");
-        f.store
+        f.session(&session)
+            .await
             .commit_interaction_outcome(
                 "pending-delete",
                 InteractionOutcome::Closure {
@@ -493,8 +526,9 @@ async fn session_lifecycle_is_revision_checked_reversible_and_scoped() {
             .await
             .unwrap();
         revision = f
-            .store
-            .get_session::<SessionConfiguration>(&session)
+            .session(&session)
+            .await
+            .get_session::<StoredSessionConfiguration>(&session)
             .await
             .unwrap()
             .unwrap()
@@ -511,15 +545,17 @@ async fn session_lifecycle_is_revision_checked_reversible_and_scoped() {
         assert_eq!(removed["kind"], "removed");
         f.drained().await;
         assert!(
-            f.store
-                .get_session::<SessionConfiguration>(&session)
+            f.session(&session)
+                .await
+                .get_session::<StoredSessionConfiguration>(&session)
                 .await
                 .unwrap()
                 .is_none()
         );
         assert!(
-            f.store
-                .get_session::<SessionConfiguration>(&other)
+            f.session(&other)
+                .await
+                .get_session::<StoredSessionConfiguration>(&other)
                 .await
                 .unwrap()
                 .is_some()

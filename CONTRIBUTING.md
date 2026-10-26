@@ -27,7 +27,7 @@ Discuss project direction, governance and material product decisions on [dev@mak
 
 ## Develop
 
-Install Rust stable, Node.js 24 LTS, npm 11.19.0, just, cargo-nextest and Python 3. License checks also use cargo-deny. On Windows, put Git for Windows' `sh` on `PATH`.
+Install Rust stable, Node.js 26, npm 12.2.1, just, cargo-nextest and Python 3. License checks also use cargo-deny. On Windows, put Git for Windows' `sh` on `PATH`.
 
 ```sh
 just setup

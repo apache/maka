@@ -73,6 +73,29 @@ fn summary(options: &Value, text: &str, contract: PlaintextResponses) -> Option<
     }))
 }
 
+/// Persisted views are normalized and measured once by their projection owner.
+/// Small explicit requests normalize eagerly; a mismatched persisted policy must
+/// be recaptured rather than silently changing its exact count and metering.
+pub fn normalize(
+    prompt: crate::prompt::Prompt,
+    provider: &ProviderKind,
+) -> Result<crate::prompt::Prompt, crate::ModelError> {
+    if !matches!(provider, ProviderKind::OpenResponses(_))
+        || prompt.normalization() == Some(provider)
+    {
+        return Ok(prompt);
+    }
+    let messages = prompt.memory_messages().ok_or_else(|| {
+        crate::ModelError::Adapter(
+            "prompt reasoning policy does not match captured provider".into(),
+        )
+    })?;
+    Ok(
+        crate::prompt::Prompt::from_messages(project(messages.to_vec(), provider))
+            .with_normalization(provider.clone()),
+    )
+}
+
 /// Project before recording the request digest. This is idempotent so direct model
 /// callers also receive the same contract enforcement at the adapter boundary.
 pub fn project(mut messages: Vec<Message>, provider: &ProviderKind) -> Vec<Message> {

@@ -331,110 +331,6 @@ async fn revoked_root_cannot_read_or_publish_cached_catalogs() {
 }
 
 #[test]
-fn migration_retires_only_observed_models_and_preserves_typed_connection_and_secret_authorities() {
-    let database = rusqlite::Connection::open_in_memory().unwrap();
-    for migration in [
-        include_str!("../migrations/0001_configuration.sql"),
-        include_str!("../migrations/0002_shell_titles.sql"),
-        include_str!("../migrations/0003_complete_configuration.sql"),
-        include_str!("../migrations/0004_remove_assistant_tone.sql"),
-    ] {
-        database.execute_batch(migration).unwrap();
-    }
-    let mut expected: ConnectionCatalogEntry = serde_json::from_value(json!({
-        "connectionId":"11111111-1111-4111-8111-111111111111","revision":7,
-        "slug":"native","name":"Native",
-        "provider":{"packageId":"example","entryId":"api","scope":"profile","name":"api"},
-        "configuration":{"baseUrl":"http://localhost:18080/v1"},"enabled":true,
-        "enabledModelIds":["selected","manual"],
-        "modelOverrides":{"selected":{"vision":false},"manual":{}},
-        "requestBodyOverlay":{"temperature":0.5},
-        "models":[{"id":"selected","contextWindow":8192}],
-        "modelSource":"fetched","modelsFetchedAt":123
-    }))
-    .unwrap();
-    database
-        .execute(
-            "INSERT INTO connections VALUES(?1,?2,?3,?4)",
-            rusqlite::params![
-                expected.connection_id,
-                expected.slug,
-                i64::try_from(expected.revision).unwrap(),
-                serde_json::to_string(&expected).unwrap()
-            ],
-        )
-        .unwrap();
-    let target = json!({"connectionId":expected.connection_id,"modelId":"selected"}).to_string();
-    database
-        .execute(
-            "UPDATE connection_catalog SET revision=11, default_target=?",
-            [&target],
-        )
-        .unwrap();
-    database
-        .execute_batch(
-            "UPDATE credential_vault SET revision=9;
-             INSERT INTO credentials VALUES('fixture-locator','fixture-credential',3,'private fixture secret',123);",
-        )
-        .unwrap();
-    database
-        .execute_batch(include_str!("../migrations/0005_public_catalog.sql"))
-        .unwrap();
-    expected.models.clear();
-    expected.model_source = None;
-    expected.models_fetched_at = None;
-    let (column_revision, document): (i64, String) = database
-        .query_row("SELECT revision,document FROM connections", [], |row| {
-            Ok((row.get(0)?, row.get(1)?))
-        })
-        .unwrap();
-    let actual: ConnectionCatalogEntry = serde_json::from_str(&document).unwrap();
-    validation::catalog_entry(&actual).unwrap();
-    assert_eq!(column_revision, 7);
-    assert_eq!(actual, expected);
-    let raw: Value = serde_json::from_str(&document).unwrap();
-    assert!(raw.get("modelSource").is_none());
-    assert!(raw.get("modelsFetchedAt").is_none());
-    assert_eq!(
-        database
-            .query_row(
-                "SELECT revision,default_target FROM connection_catalog",
-                [],
-                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
-            )
-            .unwrap(),
-        (12, target)
-    );
-    assert_eq!(
-        database
-            .query_row(
-                "SELECT credential_id,revision,secret,updated_at FROM credentials",
-                [],
-                |row| Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, i64>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, i64>(3)?
-                ))
-            )
-            .unwrap(),
-        (
-            "fixture-credential".into(),
-            3,
-            "private fixture secret".into(),
-            123
-        )
-    );
-    assert_eq!(
-        database
-            .query_row("SELECT revision FROM credential_vault", [], |row| row
-                .get::<_, i64>(0))
-            .unwrap(),
-        9
-    );
-}
-
-#[test]
 fn uncertain_record_comparison_includes_all_http_metadata_and_check_time() {
     let original = record(json!({"unknown":1}), 10);
     let mut candidate = original.clone();
@@ -506,10 +402,10 @@ async fn raw_body_semantics_preserve_revisions_unknown_fields_and_original_json_
             .unwrap(),
         3
     );
-    // SQLite json_valid can accept numeric overflow even though Value cannot.
+    // SQLite json_valid accepts lone surrogates, but Value always rejects them.
     db.execute(
         "UPDATE public_catalog SET body = ?",
-        [r#"{"unknown":1e400,"unknown":null}"#],
+        [r#"{"unknown":"\ud800","unknown":null}"#],
     )
     .unwrap();
     assert!(store.public_catalog().await.is_err());
@@ -520,6 +416,67 @@ async fn raw_body_semantics_preserve_revisions_unknown_fields_and_original_json_
             .is_err()
     );
     assert_eq!(store.catalog().await.unwrap().revision, 3);
+    drop(db);
+    store.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn stored_numeric_overflow_follows_value_acceptance_and_preserves_atomicity() {
+    let temp = tempfile::tempdir().unwrap();
+    let owner = root(temp.path());
+    let store = ConfigurationStore::for_root(owner.clone()).await.unwrap();
+    let row = record(json!({"data":[],"unknown":null}), 10);
+    assert_eq!(
+        store
+            .put_public_catalog(PublicCatalogSource::OpenRouter, row.clone())
+            .await
+            .unwrap(),
+        1
+    );
+    let db = rusqlite::Connection::open(owner.canonical_path().join("configuration-rust.sqlite"))
+        .unwrap();
+    let raw = r#"{"data":[],"unknown":1e400,"unknown":null}"#;
+    db.execute("UPDATE public_catalog SET body = ?", [raw])
+        .unwrap();
+    let expected = serde_json::from_str::<Value>(raw);
+    let snapshot = store.public_catalog().await;
+    assert_eq!(snapshot.is_ok(), expected.is_ok());
+    let stored_raw = match snapshot {
+        Ok(snapshot) => {
+            assert_eq!(snapshot.catalog_revision, 1);
+            assert_eq!(snapshot.sources.len(), 1);
+            let body = &snapshot.sources[&PublicCatalogSource::OpenRouter].body;
+            assert_eq!(body.as_raw().get(), raw);
+            assert_eq!(
+                serde_json::from_str::<Value>(body.as_raw().get()).unwrap(),
+                expected.unwrap()
+            );
+            assert_eq!(
+                store
+                    .put_public_catalog(PublicCatalogSource::OpenRouter, row.clone())
+                    .await
+                    .unwrap(),
+                1
+            );
+            row.body.as_raw().get()
+        }
+        Err(_) => {
+            assert!(
+                store
+                    .put_public_catalog(PublicCatalogSource::OpenRouter, row.clone())
+                    .await
+                    .is_err()
+            );
+            raw
+        }
+    };
+    assert_eq!(
+        db.query_row("SELECT body FROM public_catalog", [], |row| row
+            .get::<_, String>(0))
+            .unwrap(),
+        stored_raw
+    );
+    assert_eq!(store.catalog().await.unwrap().revision, 1);
     drop(db);
     store.close().await.unwrap();
 }

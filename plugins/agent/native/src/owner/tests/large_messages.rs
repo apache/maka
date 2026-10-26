@@ -103,12 +103,12 @@ async fn public_send_preserves_six_hundred_kib_through_durable_admission_and_mai
                 entry["role"] == "user" && entry["content"].as_str().is_some_and(|text| text.as_bytes() == message.as_bytes()));
             response(&mut socket).await;
             f.drained().await;
-            root_proof = Some(f.store.root_message(&session, started["messageId"].as_str().unwrap()).await);
-            first = Some(f.store.first_message_opening(&session).await);
-            latest = Some(f.store.latest_message_opening(&session).await);
+            root_proof = Some(f.session(&session).await.root_message(&session, started["messageId"].as_str().unwrap()).await);
+            first = Some(f.session(&session).await.first_message_opening(&session).await);
+            latest = Some(f.session(&session).await.latest_message_opening(&session).await);
             if let Some(Ok(Some(proof))) = &root_proof {
-                editable = Some(f.store.editable_message(&session, &proof.opening().event.invocation.turn_id, started["messageId"].as_str().unwrap()).await);
-                foreign_source = Some(f.store.editable_message(&other, &proof.opening().event.invocation.turn_id, started["messageId"].as_str().unwrap()).await);
+                editable = Some(f.session(&session).await.editable_message(&session, &proof.opening().event.invocation.turn_id, started["messageId"].as_str().unwrap()).await);
+                foreign_source = Some(f.session(&other).await.editable_message(&other, &proof.opening().event.invocation.turn_id, started["messageId"].as_str().unwrap()).await);
             }
             for target in [json!({"kind":"message","messageId":started["messageId"]}), json!({"kind":"invocation","invocationId":started["invocationId"]})] {
                 work.push(f.query("work", json!({"sessionId":session,"target":target})).await);
@@ -139,8 +139,8 @@ async fn public_send_preserves_six_hundred_kib_through_durable_admission_and_mai
                 }
             }
         }
-        let pending = f.store.pending_messages(&session).await;
-        let canonical = f.store.scoped_prefix(LogScope::Session { id: session.clone() }, 128, 8 * 1024 * 1024).await;
+        let pending = f.session(&session).await.pending_messages(&session).await;
+        let canonical = f.session(&(session)).await.scoped_prefix(LogScope::Session { id: session.clone() }, 128, 8 * 1024 * 1024).await;
         let app_cleanup = f.app.shutdown().await;
         let mut reopened_text = String::new();
         let mut reopened_source = None;
@@ -152,7 +152,7 @@ async fn public_send_preserves_six_hundred_kib_through_durable_admission_and_mai
             let deployment = f.app.source().unwrap().deployment;
             let root_owner = f.store.owned_root().unwrap();
             f.store.shutdown().await.unwrap();
-            f.store = Arc::new(EventLog::for_root(root_owner).await.unwrap());
+            f.store = Arc::new(RootStore::open(root_owner).await.unwrap());
             let mut native = NativeRegistry::default();
             maka_settings_native::provide(&mut native, crate::owner::tests::bundled_catalog()).unwrap();
             provide_all(&mut native).unwrap();
@@ -173,8 +173,8 @@ async fn public_send_preserves_six_hundred_kib_through_durable_admission_and_mai
                 if page["after"].is_null() { break; }
                 history["position"] = json!({"kind":"after","cursor":page["after"]});
             }
-            reopened_source = Some(f.store.root_message(&session, started["messageId"].as_str().unwrap()).await);
-            reopened_facts = Some(f.store.scoped_prefix(LogScope::Session { id: session.clone() }, 128, 8 * 1024 * 1024).await);
+            reopened_source = Some(f.session(&session).await.root_message(&session, started["messageId"].as_str().unwrap()).await);
+            reopened_facts = Some(f.session(&(session)).await.scoped_prefix(LogScope::Session { id: session.clone() }, 128, 8 * 1024 * 1024).await);
             f.app.shutdown().await.unwrap();
             f.store.shutdown().await.unwrap();
         }
@@ -280,7 +280,7 @@ async fn public_large_queue_edit_and_promotion_preserve_original_identity_and_ex
         let queued = f.mutation(2, "send", send_input.clone(), send_operation).await.unwrap();
         let queued_retry = f.mutation(2, "send", send_input, send_operation).await.unwrap();
         let read_before = f.query("queueMessage", json!({"sessionId":session,"messageId":queued["messageId"],"expectedRevision":queued["revision"]})).await.unwrap();
-        let pending_before = f.store.pending_messages(&session).await.unwrap();
+        let pending_before = f.session(&session).await.pending_messages(&session).await.unwrap();
         let other_queue = f.query("queue", json!({"sessionId":other})).await.unwrap();
         let foreign_read = f.query("queueMessage", json!({"sessionId":other,"messageId":queued["messageId"],"expectedRevision":other_queue["revision"]})).await.unwrap();
         let foreign_update = f.mutation(2, "editQueue", json!({"sessionId":other,"expectedRevision":other_queue["revision"],"edit":{"kind":"update","messageId":queued["messageId"],"message":"foreign replacement"}}), Uuid::new_v4()).await.unwrap();
@@ -291,7 +291,7 @@ async fn public_large_queue_edit_and_promotion_preserve_original_identity_and_ex
         let changed_retry = f.mutation(2, "editQueue", update_input.clone(), update_operation).await.unwrap();
         let stale = f.mutation(2, "editQueue", update_input, Uuid::new_v4()).await.unwrap();
         let read_after = f.query("queueMessage", json!({"sessionId":session,"messageId":queued["messageId"],"expectedRevision":changed["revision"]})).await.unwrap();
-        let pending_after = f.store.pending_messages(&session).await.unwrap();
+        let pending_after = f.session(&session).await.pending_messages(&session).await.unwrap();
         let promotion_input = json!({"sessionId":session,"expectedRevision":changed["revision"],"edit":{"kind":"promote","messageId":queued["messageId"]}});
         let promotion_operation = Uuid::new_v4();
         let promoted = f.mutation(2, "editQueue", promotion_input.clone(), promotion_operation).await.unwrap();
@@ -308,10 +308,10 @@ async fn public_large_queue_edit_and_promotion_preserve_original_identity_and_ex
         let current = f.query("observe", json!({"sessionId":session})).await.unwrap();
         response(&mut next).await;
         f.drained().await;
-        let pending = f.store.pending_messages(&session).await.unwrap();
+        let pending = f.session(&session).await.pending_messages(&session).await.unwrap();
         let work = f.query("work", json!({"sessionId":session,"target":{"kind":"message","messageId":queued["messageId"]}})).await;
-        let source = f.store.root_message(&session, queued["messageId"].as_str().unwrap()).await;
-        let canonical = f.store.scoped_prefix(LogScope::Session { id: session.clone() }, 128, 8 * 1024 * 1024).await.unwrap();
+        let source = f.session(&session).await.root_message(&session, queued["messageId"].as_str().unwrap()).await;
+        let canonical = f.session(&(session)).await.scoped_prefix(LogScope::Session { id: session.clone() }, 128, 8 * 1024 * 1024).await.unwrap();
         f.app.shutdown().await.unwrap();
         f.config.shutdown().await.unwrap();
 
@@ -351,7 +351,7 @@ async fn public_large_queue_edit_and_promotion_preserve_original_identity_and_ex
         assert_eq!(steering.len(), 1);
         assert_eq!(steering[0].event.invocation.invocation_id, started["invocationId"]);
         assert!(serde_json::to_vec(&steering[0].event).unwrap().len() > 1024 * 1024);
-        let Fact::MessageSteered { message, source: Some(steered) } = &steering[0].event.fact else { panic!("steering retains original source") };
+        let Fact::MessageSteered { message, source: steered } = &steering[0].event.fact else { panic!("steering retains original source") };
         assert_eq!(message.message_id, queued["messageId"]);
         assert!(message.content.text.as_bytes() == edited.as_bytes());
         assert!(steered.message.content.text.as_bytes() == edited.as_bytes());

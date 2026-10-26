@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { cleanup, signal } from 'nsh';
+import { cleanup, computed, signal } from 'nsh';
 import { host } from './host';
 import { message, UiError } from './text';
 import type {
@@ -26,6 +26,7 @@ import type {
   ConnectionVersionBasis,
   CredentialStatus,
   ModelOverride,
+  ModelSelection,
   SettingsConnectionDetail,
   SettingsConnectionsRead,
   SettingsConnectionSummary,
@@ -54,7 +55,10 @@ export type ConnectionEditor = {
   apiKey: string;
 };
 export type ConnectionAction = { editor: number; revision: number | null };
-export type ModelAction = ConnectionAction & { modelId: string; originalId: string | null };
+export type ModelAction = ConnectionAction & {
+  modelId: string;
+  originalId: string | null;
+};
 export type RemovalAction = ConnectionAction & {
   kind: 'connection' | 'key' | 'model';
   modelId: string | null;
@@ -62,6 +66,7 @@ export type RemovalAction = ConnectionAction & {
 export type ModelEditor = {
   codeMode: boolean | null;
   codeModeLanguage: CodeLanguage | null;
+  applyPatch: boolean | null;
   originalId: string | null;
   id: string;
   label: string;
@@ -84,6 +89,8 @@ export const thinkingLevels: ThinkingLevel[] = [
   'ultra',
 ];
 const pretty = (value: unknown) => JSON.stringify(value ?? null, null, 2);
+const searchTerms = (query: string) => query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+const matches = (text: string, terms: string[]) => terms.every((term) => text.includes(term));
 const basis = (detail: Detail): ConnectionVersionBasis => ({
   connectionId: detail.target.connectionId,
   revision: detail.target.revision,
@@ -104,13 +111,20 @@ export function createModelSettings(
   changed: () => void,
   operations: SettingsOperations,
   active: () => boolean,
+  initialModel?: ModelSelection,
 ) {
   const { busy, error, notice, pending, pendingKnown, report, mutate, run } = operations;
   const page = signal<SettingsPage>('connections');
   const connections = signal<SettingsConnectionSummary[]>([]);
   const providers = signal<SettingsProviderSummary[]>([]);
+  const connectionQuery = signal('');
+  const providerQuery = signal('');
+  const modelQuery = signal('');
   const revision = signal<number | null>(null);
-  const defaultTarget = signal<{ connectionId: string; modelId: string } | null>(null);
+  const defaultTarget = signal<{
+    connectionId: string;
+    modelId: string;
+  } | null>(null);
   const next = signal<number | null>(null);
   const providerNext = signal<number | null>(null);
   const editor = signal<ConnectionEditor | null>(null);
@@ -118,6 +132,60 @@ export function createModelSettings(
   const credential = signal<CredentialStatus | null>(null);
   const loading = signal(false);
   const confirmation = signal<'connection' | 'key' | 'model' | null>(null);
+  const connectionIndex = computed(() =>
+    connections().map((item) => ({
+      item,
+      text: [
+        item.name,
+        item.slug,
+        item.basis.connectionId,
+        item.provider.name,
+        item.provider.packageId,
+        item.provider.entryId,
+      ]
+        .join('\n')
+        .toLowerCase(),
+    })),
+  );
+  const providerIndex = computed(() =>
+    providers().map((item) => ({
+      item,
+      text: [item.label, item.identity.name, item.identity.packageId, item.identity.entryId]
+        .join('\n')
+        .toLowerCase(),
+    })),
+  );
+  const editing = computed(() => editor()?.baseline?.editing);
+  const modelProvider = computed(() =>
+    [editor()?.provider.descriptor.label ?? '', editor()?.provider.identity.name ?? ''].join('\n'),
+  );
+  const modelIndex = computed(() => {
+    const facts = editing();
+    return (facts?.enabledModelIds ?? []).map((id) => ({
+      id,
+      text: [id, facts?.modelOverrides?.[id]?.displayName ?? '', modelProvider()]
+        .join('\n')
+        .toLowerCase(),
+    }));
+  });
+  const filteredConnections = computed(() => {
+    const terms = searchTerms(connectionQuery());
+    return connectionIndex()
+      .filter(({ text }) => matches(text, terms))
+      .map(({ item }) => item);
+  });
+  const filteredProviders = computed(() => {
+    const terms = searchTerms(providerQuery());
+    return providerIndex()
+      .filter(({ text }) => matches(text, terms))
+      .map(({ item }) => item);
+  });
+  const filteredModels = computed(() => {
+    const terms = searchTerms(modelQuery());
+    return modelIndex()
+      .filter(({ text }) => matches(text, terms))
+      .map(({ id }) => id);
+  });
   let alive = true;
   let read = 0;
   let editorInstance = 0;
@@ -151,14 +219,17 @@ export function createModelSettings(
   const loadConnections = async (more = false) => {
     if (!alive || !active() || loading() || (more && next() === null)) return;
     const generation = ++read;
-    const extent = more ? connections().length + 16 : Math.max(16, connections().length);
+    const extent = more
+      ? connections().length + 16
+      : page() === 'connections'
+        ? Math.max(16, connections().length)
+        : 16;
     loading.set(true);
     error.set('');
     try {
       let rows = more ? connections() : [];
       let cursor = more ? next() : null;
       let version = revision();
-      let restarted = false;
       for (;;) {
         let request: SettingsConnectionsRead = { kind: 'start' };
         if (cursor !== null) {
@@ -168,9 +239,6 @@ export function createModelSettings(
         const result = await host.query('settings', 'connections', request);
         if (!alive || !active() || generation !== read) return;
         if (result.kind === 'changed') {
-          if (restarted)
-            throw new UiError('The connection catalog keeps changing. Refresh to try again.');
-          restarted = true;
           rows = [];
           cursor = null;
           version = null;
@@ -181,11 +249,15 @@ export function createModelSettings(
         rows = [...rows, ...result.connections];
         cursor = result.next;
         version = result.revision;
-        if (cursor !== null && rows.length < extent) continue;
         connections.set(rows);
         revision.set(version);
         next.set(cursor);
         defaultTarget.set(result.defaultTarget);
+        if (
+          cursor !== null &&
+          ((page() === 'connections' && connectionQuery().trim()) || rows.length < extent)
+        )
+          continue;
         break;
       }
     } catch (reason) {
@@ -195,26 +267,45 @@ export function createModelSettings(
     }
   };
   const loadProviders = async (more = false) => {
-    const offset = more ? providerNext() : 0;
-    if (!alive || !active() || loading() || offset === null) return;
+    let offset = more ? providerNext() : 0;
+    if (!alive || !active() || loading() || offset === null || page() !== 'providers') return;
     const generation = ++read;
     loading.set(true);
     error.set('');
     try {
-      const result = await host.query('settings', 'providers', { offset });
-      if (!alive || !active() || generation !== read) return;
-      providers.set(more ? [...providers(), ...result.providers] : result.providers);
-      providerNext.set(result.next);
+      let rows = more ? providers() : [];
+      for (;;) {
+        const result = await host.query('settings', 'providers', { offset });
+        if (!alive || !active() || generation !== read) return;
+        if (result.next !== null && result.next <= offset)
+          throw new UiError('The provider catalog did not advance.');
+        rows = [...rows, ...result.providers];
+        providers.set(rows);
+        providerNext.set(result.next);
+        if (result.next === null || !providerQuery().trim()) break;
+        offset = result.next;
+      }
     } catch (reason) {
       if (generation === read) report(reason);
     } finally {
       if (alive && generation === read) loading.set(false);
     }
   };
+  const searchConnections = (text: string) => {
+    if (!alive || !active() || page() !== 'connections') return;
+    connectionQuery.set(text);
+    if (text.trim() && next() !== null) void loadConnections(true);
+  };
+  const searchProviders = (text: string) => {
+    if (!alive || !active() || page() !== 'providers') return;
+    providerQuery.set(text);
+    if (text.trim() && providerNext() !== null) void loadProviders(true);
+  };
   const newConnection = () => {
     if (busy()) return;
     editor.set(null);
     model.set(null);
+    modelQuery.set('');
     error.set('');
     notice.set('');
     confirmation.set(null);
@@ -223,7 +314,7 @@ export function createModelSettings(
     void loadProviders();
   };
   const chooseProvider = async (identity: SettingsProviderSummary['identity']) => {
-    if (!active() || busy() || loading() || page() !== 'providers') return;
+    if (!alive || !active() || busy() || page() !== 'providers') return;
     const generation = ++read;
     loading.set(true);
     error.set('');
@@ -289,19 +380,24 @@ export function createModelSettings(
   };
   const readCredential = async (detail: Detail) => {
     const result = await host.query('settings', 'credentialStatus', {
-      locator: { scope: 'connection', connectionId: detail.target.connectionId, kind: 'provider' },
+      locator: {
+        scope: 'connection',
+        connectionId: detail.target.connectionId,
+        kind: 'provider',
+      },
     });
     if (result.kind !== 'status') throw new UiError('This connection is no longer available.');
     return result.status as CredentialStatus;
   };
   const openConnection = async (target: ConnectionVersionBasis) => {
-    if (!active() || busy() || loading()) return;
+    if (!alive || !active() || busy() || page() !== 'connections') return;
     const generation = ++read;
     loading.set(true);
     error.set('');
     notice.set('');
     editor.set(null);
     model.set(null);
+    modelQuery.set('');
     page.set('connections');
     try {
       const detail = await readDetail(target);
@@ -451,7 +547,10 @@ export function createModelSettings(
         if (JSON.stringify(body) !== JSON.stringify(original.editing!.requestBodyOverlay))
           changes.requestBodyOverlay = body;
         if (Object.keys(changes).length)
-          result = await mutate('settings', 'update', { expected: basis(original), changes });
+          result = await mutate('settings', 'update', {
+            expected: basis(original),
+            changes,
+          });
       }
       let detail = original;
       if (result) {
@@ -494,7 +593,10 @@ export function createModelSettings(
       const form = editor();
       return !!(
         form?.baseline &&
-        current({ editor: request.editor, revision: request.input.expected.revision }) &&
+        current({
+          editor: request.editor,
+          revision: request.input.expected.revision,
+        }) &&
         form.baseline.target.connectionId === request.input.expected.connectionId &&
         JSON.stringify(credentialBasis(credential())) ===
           JSON.stringify(request.input.expectedCredential) &&
@@ -574,6 +676,7 @@ export function createModelSettings(
       label: raw?.displayName ?? '',
       codeMode: raw?.codeMode ?? null,
       codeModeLanguage: raw?.codeModeLanguage ?? null,
+      applyPatch: raw?.applyPatch ?? null,
       thinkingLevels: raw?.thinkingLevels ? [...raw.thinkingLevels] : null,
       defaultThinkingLevel: raw?.defaultThinkingLevel ?? null,
       effective: null,
@@ -646,8 +749,13 @@ export function createModelSettings(
     )
       changeModel({ defaultThinkingLevel: request.level });
   };
-  const changeCodeMode = (request: ModelAction & { enabled: boolean | null }) => {
-    if (currentModel(request)) changeModel({ codeMode: request.enabled });
+  const changeTool = (
+    request: ModelAction & {
+      tool: 'codeMode' | 'applyPatch';
+      enabled: boolean | null;
+    },
+  ) => {
+    if (currentModel(request)) changeModel({ [request.tool]: request.enabled });
   };
   const changeCodeLanguage = (request: ModelAction & { language: CodeLanguage }) => {
     if (currentModel(request)) changeModel({ codeModeLanguage: request.language });
@@ -683,6 +791,8 @@ export function createModelSettings(
       else value.codeMode = current.codeMode;
       if (current.codeModeLanguage === null) delete value.codeModeLanguage;
       else value.codeModeLanguage = current.codeModeLanguage;
+      if (current.applyPatch === null) delete value.applyPatch;
+      else value.applyPatch = current.applyPatch;
       overrides[id] = value;
       const result = await mutate('settings', 'update', {
         expected: basis(form.baseline),
@@ -749,7 +859,9 @@ export function createModelSettings(
       const kind = confirmation();
       confirmation.set(null);
       if (kind === 'connection') {
-        const result = await mutate('settings', 'remove', { expected: basis(form.baseline) });
+        const result = await mutate('settings', 'remove', {
+          expected: basis(form.baseline),
+        });
         if (result.kind !== 'committed') throw rejection(result);
         if (alive) {
           editor.set(null);
@@ -835,11 +947,42 @@ export function createModelSettings(
     page.set('connections');
     if (active()) void loadConnections();
   };
-  if (active()) activate();
+  const openInitialModel = async (target: ModelSelection) => {
+    const catalogRead = read + 1;
+    await loadConnections();
+    if (!alive || !active() || catalogRead !== read || page() !== 'connections') return;
+    const generation = read + 1;
+    await openConnection({
+      connectionId: target.connectionId,
+      revision: target.revision,
+    });
+    if (
+      !alive ||
+      !active() ||
+      generation !== read ||
+      page() !== 'connection' ||
+      editor()?.baseline?.target.connectionId !== target.connectionId ||
+      editor()?.baseline?.target.revision !== target.revision
+    )
+      return;
+    editModel({ ...action(), id: target.modelId });
+  };
+  if (active()) {
+    if (initialModel) void openInitialModel(initialModel);
+    else activate();
+  }
   return {
     page,
     connections,
     providers,
+    connectionQuery,
+    providerQuery,
+    modelQuery,
+    filteredConnections,
+    filteredProviders,
+    filteredModels,
+    searchConnections,
+    searchProviders,
     revision,
     defaultTarget,
     editor,
@@ -874,7 +1017,7 @@ export function createModelSettings(
     toggleThinking,
     useProviderThinking,
     defaultThinking,
-    changeCodeMode,
+    changeTool,
     changeCodeLanguage,
     showModels,
     saveModel,

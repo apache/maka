@@ -94,10 +94,10 @@ Layout is computed in Rust (flexbox and CSS grid). The defaults differ from CSS'
 | `display` | `"flex" \| "grid" \| "block" \| "flow-root" \| "none"` | `.flex()`, `.grid()`, `.hidden()` | The layout of the children. `"none"` removes the element from layout and hides it. `"block"` stacks children as CSS block layout does. Default `"flex"`. |
 | `boxSizing` | `"border-box" \| "content-box"` | | Dimensions include borders and padding, or content alone. Default `"border-box"`. |
 | `position` | `"relative" \| "absolute" \| "static" \| "fixed" \| "sticky"` | `.relative()`, `.absolute()` | `"absolute"` takes the element out of the flow and places it by `top` / `right` / `bottom` / `left` relative to its nearest positioned ancestor (its parent unless that is `"static"`). `"static"` stays in flow and ignores insets. `"fixed"` preserves the element type and lays out and mounts it in its surface or modal root, keeping it in place while surrounding content scrolls. `"sticky"` stays in the flow and, while its parent is in view, sticks `top` (`left` in a horizontal scroll view) from the start of the viewport of the scroll view around it, until its end meets its parent's content box's; it draws above its siblings of the same `zIndex`. Default `"relative"`. |
-| `top` | `DimensionValue` | `.top(…)`, `.inset(…)` | Offset from the parent's top edge (absolute) or from the element's own position (relative). |
+| `top` | `DimensionValue \| AnimatedNode` | `.top(…)`, `.inset(…)`, `.bind_sticky_top(&node)` | Offset from the parent's top edge (absolute) or from the element's own position (relative). On a sticky view, where it sticks, which an animated value moves every frame. |
 | `right` | `DimensionValue` | `.right(…)` | Offset from the right edge. In right-to-left layouts it means the end edge. |
 | `bottom` | `DimensionValue` | `.bottom(…)` | Offset from the bottom edge. |
-| `left` | `DimensionValue` | `.left(…)` | Offset from the left edge. In right-to-left layouts it means the start edge. |
+| `left` | `DimensionValue \| AnimatedNode` | `.left(…)`, `.bind_sticky_left(&node)` | Offset from the left edge. In right-to-left layouts it means the start edge. On a sticky view in a horizontal scroll view, where it sticks, which an animated value moves every frame. |
 | `start` | `DimensionValue` | | Left in left-to-right layouts, right in right-to-left ones. |
 | `end` | `DimensionValue` | | Right in left-to-right layouts, left in right-to-left ones. |
 | `zIndex` | `number` | `.z_index(z)` | Order among siblings (stable for equal values); also the native stacking order. |
@@ -391,6 +391,18 @@ For animations driven by values, gestures or springs, use [nsh/animated](./nsh-a
 | Key | Type | Rust | Description |
 |---|---|---|---|
 | `cursor` | `"auto" \| "default" \| "pointer" \| "text" \| "grab" \| "grabbing" \| "not-allowed" \| ...` (every CSS cursor keyword, and `"none"`) | `.cursor(Cursor)`, `.cursor_pointer()` | The pointer shape over the view, for pointers (iPad trackpads, Mac Catalyst, desktops). |
+
+### SVG paint
+
+CSS's paint properties of SVG shapes, which any element takes and the elements inside it inherit, as in a browser.
+They paint what Rust components draw on canvases.
+
+| Key | Type | Rust | Description |
+|---|---|---|---|
+| `fill` | `"none" \| "currentColor" \| ColorValue` | `.fill_color(c)`, `.fill_none()`, `.fill_current()` | What shapes are filled with; `currentColor` is the element's text color. |
+| `stroke` | `"none" \| "currentColor" \| ColorValue` | `.stroke_color(c)`, `.stroke_none()`, `.stroke_current()` | What the outlines of shapes are painted with. |
+| `strokeWidth` | `number \| string` | `.stroke_width(w)` | The width of those outlines, a length (1 by default). |
+| `strokeDasharray` | `number \| string` | — | Dashes and gaps along those outlines: lengths separated by spaces or commas (`"4 2"`), an odd list repeated, or `"none"`. |
 
 ## TextStyle
 

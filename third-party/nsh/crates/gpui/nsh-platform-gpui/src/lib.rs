@@ -69,7 +69,10 @@ pub use nsh_core::{
     platform::{Appearance, Locale},
     ui::{AdaptiveColor, Color, Hsla, Rgba},
 };
-pub use nsh_engine::{App, AppError, AppErrorKind, Bundle, Limits, PackageInfo, Root};
+pub use nsh_engine::{
+    App, AppError, AppErrorKind, Bundle, ByteSize, CacheLocation, CacheOptions, CachePolicy,
+    Limits, PackageInfo, Root,
+};
 /// Signed packages: verifying, unpacking and accepting them
 /// (`docs/dev/signed-packages.md`).
 #[cfg(feature = "js")]

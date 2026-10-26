@@ -95,13 +95,7 @@ pub(crate) async fn validate_append(
     }
     let selection = Selection::for_invocation(connection, &event.invocation).await?;
     validate_selection(connection, &selection, &target.event_id).await?;
-    let baseline = read::latest_selected(
-        connection,
-        &selection,
-        i64::MAX as u64,
-        &mut crate::context::cache::Verification::default(),
-    )
-    .await?;
+    let baseline = read::latest_selected(connection, &selection, i64::MAX as u64).await?;
     if baseline
         .as_ref()
         .is_some_and(|b| target.sequence <= b.checkpoint.covered_through)
@@ -139,55 +133,17 @@ pub(crate) async fn find(
     target_id: &str,
     before: u64,
 ) -> Result<Option<(u64, ArchivedPlaceholder)>, StoreError> {
-    let rows: Vec<(i64, Option<String>,String,String)> = sqlx::query_as(
-        "SELECT sequence, CASE WHEN length(CAST(event_json AS BLOB)) <= 32768 THEN event_json END,event_id,invocation_id
-         FROM runtime_events WHERE kind = 'tool_result_archived'
-         AND CAST(json_extract(event_json, '$.fact.placeholder.identity.runtime_event_id') AS TEXT) = ?1 AND sequence < ?2
-         AND json_extract(event_json, '$.invocation.session_id') = ?3 LIMIT 2",
-    ).bind(target_id).bind(before as i64).bind(session).fetch_all(&mut *connection).await?;
-    if rows.len() > 1 {
-        return Err(ArchiveError::Corrupt.into());
-    }
-    let Some((sequence, json, event_id, invocation_id)) = rows.into_iter().next() else {
-        return Ok(None);
-    };
-    let event: RuntimeEvent = serde_json::from_str(&json.ok_or(ArchiveError::Corrupt)?)
-        .map_err(|_| ArchiveError::Corrupt)?;
-    if event.invocation.session_id != session
-        || event.id != event_id
-        || event.invocation.invocation_id != invocation_id
-    {
-        return Err(ArchiveError::Corrupt.into());
-    }
-    let writer:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM runtime_events o WHERE o.invocation_id=? AND o.kind='invocation_opened' AND o.sequence<? AND json_extract(o.event_json,'$.invocation')=json(?) AND NOT EXISTS(SELECT 1 FROM runtime_events t WHERE t.invocation_id=o.invocation_id AND t.kind='invocation_ended' AND t.sequence<?))")
-        .bind(&invocation_id).bind(sequence).bind(serde_json::to_string(&event.invocation)?).bind(sequence).fetch_one(&mut *connection).await?;
-    if !writer {
-        return Err(ArchiveError::Corrupt.into());
-    }
-    let Fact::ToolResultArchived { placeholder } = event.fact else {
-        return Err(ArchiveError::Corrupt.into());
-    };
-    let target = target::read(connection, session, target_id)
-        .await?
-        .ok_or(ArchiveError::Corrupt)?;
-    if target.sequence >= sequence_number(sequence)? {
-        return Err(ArchiveError::Corrupt.into());
-    }
-    let selection = Selection::for_invocation(connection, &event.invocation).await?;
-    validate_selection(connection, &selection, target_id).await?;
-    // Do not recurse into checkpoint proofs: those validate their archive source here.
-    let baseline =
-        read::latest_record(connection, &selection, sequence_number(sequence)? - 1).await?;
-    let covered = match baseline.map(|b| b.event.fact) {
-        Some(Fact::ContextCheckpointRecorded { checkpoint }) => checkpoint.covered_through,
-        None => 0,
-        _ => return Err(ArchiveError::Corrupt.into()),
-    };
-    if target.sequence <= covered {
-        return Err(ArchiveError::Corrupt.into());
-    }
-    validate(&target, &placeholder)?;
-    Ok(Some((sequence as u64, placeholder)))
+    let row: Option<(i64, String)> = sqlx::query_as(
+        "SELECT sequence,placeholder_json FROM context_archive_records
+        WHERE session_id=? AND target_event_id=? AND sequence<?",
+    )
+    .bind(session)
+    .bind(target_id)
+    .bind(before as i64)
+    .fetch_optional(connection)
+    .await?;
+    row.map(|(sequence, json)| Ok((sequence_number(sequence)?, serde_json::from_str(&json)?)))
+        .transpose()
 }
 
 async fn validate_selection(
@@ -218,11 +174,10 @@ pub(crate) async fn archived(
     let Some((_, placeholder)) = find(connection, session, target_id, before).await? else {
         return Ok(None);
     };
-    // Validation above releases its bounded base; only compact identity survives.
-    let (sequence, invocation, operation_id, is_error): (i64,String,String,bool) = sqlx::query_as(
-        "SELECT sequence,json_extract(event_json,'$.invocation'),operation_id,
-         json_extract(event_json,'$.fact.outcome.kind') = 'failed' FROM runtime_events WHERE event_id = ?",
-    ).bind(target_id).fetch_one(connection).await?;
+    let (sequence,invocation,operation_id,is_error):(i64,String,String,bool)=sqlx::query_as(
+        "SELECT target_sequence,target_invocation_json,operation_id,is_error FROM context_archive_records
+         WHERE session_id=? AND target_event_id=? AND sequence<?")
+        .bind(session).bind(target_id).bind(before as i64).fetch_one(connection).await?;
     Ok(Some(ArchivedToolResult {
         sequence: sequence_number(sequence)?,
         event_id: target_id.into(),

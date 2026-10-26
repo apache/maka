@@ -255,7 +255,8 @@ fn buffer_source<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> Result<Vec<u8>> {
         )
     };
     if let Some(buffer) = ArrayBuffer::from_value(value.clone()) {
-        return Ok(buffer.as_bytes().unwrap_or_default().to_vec());
+        // SAFETY: No JS runs between borrowing the backing store and completing the copy.
+        return Ok(unsafe { buffer.as_bytes().unwrap_or_default().to_vec() });
     }
     let array_buffer: Object = ctx.globals().get("ArrayBuffer")?;
     let is_view: Function = array_buffer.get("isView")?;
@@ -267,11 +268,19 @@ fn buffer_source<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> Result<Vec<u8>> {
     let offset: usize = view.get("byteOffset")?;
     let length: usize = view.get("byteLength")?;
     // A detached buffer reads as no bytes, as the standard's copy step does.
-    Ok(buffer
-        .as_bytes()
-        .and_then(|bytes| bytes.get(offset..offset + length))
-        .unwrap_or_default()
-        .to_vec())
+    // SAFETY: All property reads above complete before the borrow. Only Rust bounds
+    // checks and the copy execute while the backing store is borrowed.
+    Ok(unsafe {
+        buffer
+            .as_bytes()
+            .and_then(|bytes| {
+                offset
+                    .checked_add(length)
+                    .and_then(|end| bytes.get(offset..end))
+            })
+            .unwrap_or_default()
+            .to_vec()
+    })
 }
 
 /// A JavaScript string as Rust text, with each lone surrogate replaced by

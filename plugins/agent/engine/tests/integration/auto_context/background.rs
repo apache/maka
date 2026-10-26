@@ -19,16 +19,17 @@
 
 use super::*;
 use crate::support::agent_loop;
+use crate::support::store::SessionFixture;
 use maka_agent_engine::Engine;
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 
-fn engine(log: Arc<EventLog>) -> Engine {
+fn engine() -> Engine {
     Engine::new(
-        log,
         maka_model::ModelExecutor::new(Duration::from_secs(10)).unwrap(),
         maka_tools::CodeExecutor::new(Default::default()).unwrap(),
     )
+    .unwrap()
 }
 
 async fn respond_tail_call(socket: &mut tokio::net::TcpStream, id: &str, value: u64) {
@@ -44,8 +45,8 @@ async fn respond_tail_call(socket: &mut tokio::net::TcpStream, id: &str, value: 
 async fn background_summary_preserves_steering_tool_tail_and_frozen_physical_retry() {
     tokio::time::timeout(Duration::from_secs(20), async {
         let directory = tempfile::tempdir().unwrap();
-        let log = Arc::new(EventLog::open(&directory.path().join("events.sqlite")).await.unwrap());
-        log.create_session("session", "create", &json!({}), 1).await.unwrap();
+        let log = Arc::new(SessionFixture::open(&directory.path().join("events.sqlite")).await.unwrap());
+
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}/v1", listener.local_addr().unwrap());
         let count = Arc::new(AtomicUsize::new(0));
@@ -140,17 +141,17 @@ async fn background_summary_preserves_steering_tool_tail_and_frozen_physical_ret
             assert_eq!(checkpoint.covered_through, captured_cut, "checkpoint coverage stays at capture time rather than swallowing newer history");
             fixture::respond(&mut last, "done", "stop").await;
         });
-        let worker = engine(log.clone());
+        let worker = engine();
         let mut old = fixture::input(&base, "old", false);
         old.context = context(None);
-        worker.run(old, CancellationToken::new()).await.unwrap();
-        worker.run(next, CancellationToken::new()).await.unwrap();
+        worker.run(log.store(), old, CancellationToken::new()).await.unwrap();
+        worker.run(log.store(), next, CancellationToken::new()).await.unwrap();
         worker.drain().await;
         server.await.unwrap();
         assert_eq!(count.load(Ordering::SeqCst), 2, "each accepted tool effect happens once");
-        let source = log.read_model_context("session", None).await.unwrap();
+        let source = log.read_model_view("session", None).await.unwrap();
         assert!(source.baseline.is_some());
-        assert!(log.unfinished_invocations(10).await.unwrap().is_empty());
+        assert!(log.unfinished_invocations(0, 10).await.unwrap().invocations.is_empty());
     }).await.expect("background work and physical retries must settle");
 }
 
@@ -161,8 +162,8 @@ async fn background_summary_drains_before_terminal_handoff_and_retirement() {
             use tokio::io::AsyncReadExt;
             let directory = tempfile::tempdir().unwrap();
             let path = directory.path().join("events.sqlite");
-            let log = Arc::new(EventLog::open(&path).await.unwrap());
-            log.create_session("session", "create", &json!({}), 1).await.unwrap();
+            let log = Arc::new(SessionFixture::open(&path).await.unwrap());
+
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let base = format!("http://{}/v1", listener.local_addr().unwrap());
             let count = Arc::new(AtomicUsize::new(0));
@@ -204,11 +205,11 @@ async fn background_summary_drains_before_terminal_handoff_and_retirement() {
                 if !matches!(ending, "cancel" | "retire") { agent_loop::respond(&mut main, ending == "handoff").await; }
                 let _ = summary.unwrap().read_to_end(&mut Vec::new()).await;
             });
-            let worker = engine(log.clone());
+            let worker = engine();
             let mut old = fixture::input(&base, "old", false);
             old.context = context(None);
-            worker.run(old, CancellationToken::new()).await.unwrap();
-            let running = worker.start(next, CancellationToken::new()).await.unwrap();
+            worker.run(log.store(), old, CancellationToken::new()).await.unwrap();
+            let running = worker.start(log.store(), next, CancellationToken::new()).await.unwrap();
             ready.await.unwrap();
             if ending == "summary-tool" {
                 let mut commits = log.subscribe_commits();
@@ -229,7 +230,7 @@ async fn background_summary_drains_before_terminal_handoff_and_retirement() {
             } else { None };
             if ending == "retire" {
                 let session = log.get_session::<serde_json::Value>("session").await.unwrap().unwrap();
-                assert!(matches!(log.begin_session_removal("session", session.revision).await.unwrap(),
+                assert!(matches!(log.root().begin_session_removal("session", session.revision).await.unwrap(),
                     maka_event_log::sessions::SessionRemovalResult::Accepted(_)));
             }
             if matches!(ending, "cancel" | "retire") { running.cancel(); }
@@ -257,14 +258,14 @@ async fn background_summary_drains_before_terminal_handoff_and_retirement() {
                 rows.extend(view.push_with_tool_output(event, payload.as_ref()).unwrap());
             }
             assert!(rows.iter().all(|row| !serde_json::to_string(&row.message).unwrap().contains("private unfinished summary")));
-            assert!(log.unfinished_invocations(10).await.unwrap().is_empty());
-            assert!(log.read_model_context("session", None).await.unwrap().baseline.is_none());
+            assert!(log.unfinished_invocations(0, 10).await.unwrap().invocations.is_empty());
+            assert!(log.read_model_view("session", None).await.unwrap().baseline.is_none());
             assert_eq!(count.load(Ordering::SeqCst), usize::from(ending == "handoff"));
-            if ending == "retire" { assert!(log.session_retirement_ready("session").await.unwrap()); }
+            if ending == "retire" { assert!(log.root().session_retirement_ready("session").await.unwrap()); }
             drop(worker);
             Arc::try_unwrap(log).ok().unwrap().close().await.unwrap();
-            let log = EventLog::open(&path).await.unwrap();
-            assert_eq!(maka_event_log::recovery::recover_invocations(&log).await.unwrap(), 0);
+            let log = SessionFixture::open(&path).await.unwrap();
+            assert_eq!(log.root().recover_invocations().await.unwrap(), 0);
             log.close().await.unwrap();
         }).await.expect("summary must drain before the invocation seals");
     }

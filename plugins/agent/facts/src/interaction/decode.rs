@@ -55,10 +55,10 @@ fn request(v: &Value) -> Result<InteractionRequest> {
             }
         }
         Some("permissions") => {
-            shape(v, &["kind", "toolUseId", "baseRevision", "request"])?;
+            shape(v, &["kind", "toolUseId", "basis", "request"])?;
             InteractionRequest::Permissions {
                 tool_use_id: field(v, "toolUseId")?,
-                base_revision: field(v, "baseRevision")?,
+                basis: field(v, "basis")?,
                 request: field(v, "request")?,
             }
         }
@@ -70,15 +70,15 @@ fn request(v: &Value) -> Result<InteractionRequest> {
             }
         }
         Some("client_capability") => {
-            if v.get("baseRevision").is_some() {
-                shape(v, &["kind", "toolUseId", "target", "baseRevision"])?;
+            if v.get("basis").is_some() {
+                shape(v, &["kind", "toolUseId", "target", "basis"])?;
             } else {
                 shape(v, &["kind", "toolUseId", "target"])?;
             }
             InteractionRequest::ClientCapability {
                 tool_use_id: field(v, "toolUseId")?,
                 target: field(v, "target")?,
-                base_revision: field(v, "baseRevision")?,
+                basis: field(v, "basis")?,
             }
         }
         Some("form") => {

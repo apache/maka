@@ -34,9 +34,9 @@ use std::{
 };
 
 use nsh_core::{
-    ATTACHMENT_CHAR, AttributedText, Bounds, Color, DecorationStyle, EllipsizeMode, EventKind,
-    FontFamily, Points, ResolvedTextStyle, Size, TextAlign, TextEngine, TextLayout, TextLine,
-    TextSpan, geometry::px,
+    ATTACHMENT_CHAR, Affinity, AttributedText, Bounds, Color, DecorationStyle, EllipsizeMode,
+    EventKind, FontFamily, Points, ResolvedTextStyle, Size, TextAlign, TextEngine, TextLayout,
+    TextLine, TextPosition, TextSpan, geometry::px,
 };
 use rustc_hash::FxHashMap;
 use windows::{
@@ -413,6 +413,9 @@ struct Run {
     indices: Box<[u32]>,
     /// The color layers when the run has color glyphs.
     layers: Option<Box<[Layer]>>,
+    /// Whether it is the ellipsis DirectWrite trimmed the text with: drawn,
+    /// but not text a selection covers.
+    sign: bool,
 }
 
 impl Run {
@@ -455,12 +458,37 @@ struct Line {
     runs: std::ops::Range<usize>,
 }
 
+/// An attachment as placed in a final layout.
+struct Inline {
+    /// Its placeholder (UTF-16 offset).
+    index: u32,
+    /// Left edge (content coordinates).
+    x: f32,
+    width: f32,
+}
+
+/// A box on a line a caret sits next to: a glyph, or an attachment.
+struct Stop {
+    /// Left edge (content coordinates).
+    x: f32,
+    width: f32,
+    /// UTF-16 offset of the cluster (or the placeholder) it shows.
+    index: u32,
+    /// Whether it is right to left: its cluster starts at its right edge.
+    rtl: bool,
+    /// Whether it is a glyph of the trimming ellipsis.
+    sign: bool,
+}
+
 /// A final layout: plain data, drawn on the main thread.
 #[derive(Default)]
 pub(crate) struct WinLayout {
     runs: Vec<Run>,
     lines: Vec<Line>,
     attachments: Vec<Option<(f32, f32)>>,
+    /// The attachments placed, to hit test lines that hold them (the text
+    /// is not at hand there).
+    inline: Vec<Inline>,
 }
 
 // --- Recording ------------------------------------------------------------------------------
@@ -1810,6 +1838,7 @@ impl TextEngine for DWriteTextEngine {
                     offsets: raw.offsets.into(),
                     indices,
                     layers,
+                    sign: raw.sign,
                 },
                 ink,
             ));
@@ -1829,6 +1858,11 @@ impl TextEngine for DWriteTextEngine {
             let line = line_of(oy + a.height);
             if let Some(&(_, _, top, ascent, _)) = tops.get(line) {
                 out.attachments[n] = Some((x, top + ascent - a.top));
+                out.inline.push(Inline {
+                    index: a.index,
+                    x,
+                    width: a.width,
+                });
                 objects[n] = Some((line, x));
             }
         }
@@ -1902,6 +1936,33 @@ impl TextEngine for DWriteTextEngine {
                 .map(|a| a.map(|(x, y)| nsh_core::geometry::point(Points(x), Points(y))))
                 .collect()
         })
+    }
+
+    fn hit_test(&self, layout: &TextLayout, point: nsh_core::Point<Points>) -> TextPosition {
+        layout
+            .downcast::<WinLayout>()
+            .map_or_else(TextPosition::default, |l| l.hit_test(point.x.0, point.y.0))
+    }
+
+    fn caret_rect(&self, layout: &TextLayout, position: TextPosition) -> Option<Bounds<Points>> {
+        layout.downcast::<WinLayout>()?.caret_rect(position)
+    }
+
+    fn range_rects(
+        &self,
+        layout: &TextLayout,
+        range: std::ops::Range<u32>,
+        out: &mut Vec<Bounds<Points>>,
+    ) {
+        let Some(layout) = layout.downcast::<WinLayout>() else {
+            return;
+        };
+        layout.range_rects((range.start, range.end), |x, y, w, h| {
+            out.push(Bounds::new(
+                nsh_core::geometry::point(Points(x), Points(y)),
+                nsh_core::geometry::size(Points(w), Points(h)),
+            ));
+        });
     }
 
     fn register_font(&self, data: &[u8]) -> Result<(), String> {
@@ -2317,7 +2378,7 @@ pub(crate) fn draw(cx: &mut DrawCx<'_>, state: &ViewState) {
     let range = drawn.selection.as_ref().and_then(|s| s.range.get());
     if let Some(range) = range.or_else(|| drawn.area_range.get()) {
         let brush = cx.solid(selection_tint(&drawn.text));
-        layout.selection_rects(&drawn.text, range, |x, y, w, h| {
+        layout.range_rects(range, |x, y, w, h| {
             // SAFETY: a COM call between BeginDraw and EndDraw.
             unsafe { cx.dc.FillRectangle(&rect_f(ox + x, oy + y, w, h), brush) };
         });
@@ -2446,7 +2507,7 @@ pub(crate) fn range_rect(state: &ViewState, start: u32, end: u32) -> Option<(f32
     let layout = drawn.layout.downcast::<WinLayout>()?;
     let (cx, cy) = (drawn.content.origin.x.0, drawn.content.origin.y.0);
     let mut first = None;
-    layout.selection_rects(&drawn.text, (start, end), |x, y, w, h| {
+    layout.range_rects((start, end), |x, y, w, h| {
         first.get_or_insert((cx + x, cy + y, w, h));
     });
     first
@@ -2465,7 +2526,8 @@ pub(crate) fn char_at(state: &ViewState, x: f32, y: f32) -> Option<u32> {
 pub(crate) fn caret_at(state: &ViewState, x: f32, y: f32) -> Option<u32> {
     let drawn = state.text.as_ref()?;
     let layout = drawn.layout.downcast::<WinLayout>()?;
-    Some(layout.caret_at(x - drawn.content.origin.x.0, y - drawn.content.origin.y.0))
+    let (x, y) = (x - drawn.content.origin.x.0, y - drawn.content.origin.y.0);
+    Some(layout.hit_test(x, y).offset)
 }
 
 // --- Selection ----------------------------------------------------------------------
@@ -2654,7 +2716,7 @@ fn pressed(key: u64, view: &NshView, s: &Selection, clicks: u32, x: f32, y: f32,
                 .and_then(|i| drawn.text.link_at(i))
                 .is_some_and(|l| press.iter().any(|&k| l.events.contains(k)));
         (
-            layout.caret_at(lx, ly),
+            layout.hit_test(lx, ly).offset,
             char_index,
             drawn.text.clone(),
             over_press,
@@ -2715,7 +2777,9 @@ fn dragged(key: u64, view: &NshView, s: &Selection, dx: f32, dy: f32, x: f32, y:
         let Some(layout) = drawn.layout.downcast::<WinLayout>() else {
             return;
         };
-        let caret = layout.caret_at(x - drawn.content.origin.x.0, y - drawn.content.origin.y.0);
+        let caret = layout
+            .hit_test(x - drawn.content.origin.x.0, y - drawn.content.origin.y.0)
+            .offset;
         extend(&drawn.text.text, s.anchor.get(), caret, s.unit.get())
     };
     select(key, view, Some(range));
@@ -2893,11 +2957,38 @@ impl WinLayout {
     /// The glyphs of `line` with their left edge and advance (content
     /// coordinates), cluster offset and whether their run is right to
     /// left.
-    fn line_glyphs<'a>(&'a self, line: &Line) -> impl Iterator<Item = (f32, f32, u32, bool)> + 'a {
-        self.runs[line.runs.clone()].iter().flat_map(|run| {
-            let rtl = run.rtl();
-            run.boxes().map(move |(x, w, index)| (x, w, index, rtl))
-        })
+    fn line_glyphs<'a>(&'a self, line: &Line) -> impl Iterator<Item = Stop> + 'a {
+        self.runs
+            .get(line.runs.clone())
+            .unwrap_or_default()
+            .iter()
+            .flat_map(|run| {
+                let (rtl, sign) = (run.rtl(), run.sign);
+                run.boxes().map(move |(x, width, index)| Stop {
+                    x,
+                    width,
+                    index,
+                    rtl,
+                    sign,
+                })
+            })
+    }
+
+    /// The glyphs and the attachments of `line`: what a caret sits next to.
+    fn line_stops<'a>(&'a self, line: &Line) -> impl Iterator<Item = Stop> + 'a {
+        let (start, end) = (line.info.start, line.info.end);
+        let objects = self
+            .inline
+            .iter()
+            .filter(move |o| o.index >= start && o.index < end)
+            .map(|o| Stop {
+                x: o.x,
+                width: o.width,
+                index: o.index,
+                rtl: false,
+                sign: false,
+            });
+        self.line_glyphs(line).chain(objects)
     }
 
     /// The line at height `y`, if any.
@@ -2912,42 +3003,100 @@ impl WinLayout {
     fn char_at(&self, x: f32, y: f32) -> Option<u32> {
         let line = self.line_at(y)?;
         self.line_glyphs(line)
-            .find(|&(gx, w, _, _)| x >= gx && x < gx + w)
-            .map(|(_, _, index, _)| index)
+            .find(|s| x >= s.x && x < s.x + s.width)
+            .map(|s| s.index)
     }
 
     /// The caret position (UTF-16 offset) nearest `(x, y)` in content
     /// coordinates: on the line at that height (the first above the text,
-    /// the last below it), at the glyph edge nearest x.
-    fn caret_at(&self, x: f32, y: f32) -> u32 {
-        let Some(line) = self
+    /// the last below it), at the cluster edge nearest x. A hit that ends
+    /// a soft-wrapped line is its end, [`Affinity::Upstream`].
+    fn hit_test(&self, x: f32, y: f32) -> TextPosition {
+        let Some(k) = self
             .lines
             .iter()
-            .find(|l| y < (l.info.y + l.info.height).0)
-            .or(self.lines.last())
+            .position(|l| y < (l.info.y + l.info.height).0)
+            .or_else(|| self.lines.len().checked_sub(1))
         else {
-            return 0;
+            return TextPosition::default();
         };
-        // Distance, the glyph's cluster, the caret goes after it.
+        let Some(line) = self.lines.get(k) else {
+            return TextPosition::default();
+        };
+        // Distance, the cluster, the caret goes after it.
         let mut best: Option<(f32, u32, bool)> = None;
-        for (gx, w, index, rtl) in self.line_glyphs(line) {
-            for (edge, right) in [(gx, false), (gx + w, true)] {
+        for s in self.line_stops(line) {
+            for (edge, right) in [(s.x, false), (s.x + s.width, true)] {
                 let d = (x - edge).abs();
                 if best.is_none_or(|b| d < b.0) {
-                    best = Some((d, index, right != rtl));
+                    best = Some((d, s.index, right != s.rtl));
                 }
             }
         }
-        match best {
+        let offset = match best {
             None => line.info.start,
             Some((_, index, false)) => index,
             Some((_, index, true)) => self
-                .line_glyphs(line)
-                .map(|(_, _, i, _)| i)
+                .line_stops(line)
+                .map(|s| s.index)
                 .filter(|&i| i > index)
                 .min()
                 .unwrap_or(line.info.end),
+        };
+        // A hard break leaves a gap before the next line's start: only a
+        // soft wrap has the offset on both lines.
+        let wrapped = offset == line.info.end
+            && self
+                .lines
+                .get(k.saturating_add(1))
+                .is_some_and(|next| next.info.start == offset);
+        let affinity = if wrapped {
+            Affinity::Upstream
+        } else {
+            Affinity::Downstream
+        };
+        TextPosition::new(offset, affinity)
+    }
+
+    /// The line a caret at `position` is on (the rule of
+    /// [`TextPosition::line`], without copying the lines out).
+    fn line_of(&self, position: TextPosition) -> Option<&Line> {
+        let i = position.line_in(self.lines.iter().map(|l| l.info.start..l.info.end))?;
+        self.lines.get(i)
+    }
+
+    /// The x (content coordinates) of the caret at `offset` on `line`: the
+    /// leading edge of the cluster that starts there (the one it is in,
+    /// when inside one), the trailing edge of the last one at the line's end.
+    fn caret_x(&self, line: &Line, offset: u32) -> f32 {
+        let cluster = self
+            .line_stops(line)
+            .map(|s| s.index)
+            .filter(|&i| i <= offset)
+            .max()
+            .or_else(|| self.line_stops(line).map(|s| s.index).min());
+        let Some(cluster) = cluster else {
+            return line.info.x.0;
+        };
+        let trailing = cluster < offset && offset >= line.info.end;
+        let mut edge: Option<f32> = None;
+        // A cluster can have several glyphs: the outermost edge of them.
+        for s in self.line_stops(line).filter(|s| s.index == cluster) {
+            let right = trailing != s.rtl;
+            let e = if right { s.x + s.width } else { s.x };
+            edge = Some(edge.map_or(e, |p| if right { p.max(e) } else { p.min(e) }));
         }
+        edge.unwrap_or(line.info.x.0)
+    }
+
+    /// The caret at `position` (content coordinates): zero wide, as high as
+    /// its line. `None` when there are no lines.
+    fn caret_rect(&self, position: TextPosition) -> Option<Bounds<Points>> {
+        let line = self.line_of(position)?;
+        Some(Bounds::new(
+            nsh_core::geometry::point(Points(self.caret_x(line, position.offset)), line.info.y),
+            nsh_core::geometry::size(Points(0.0), line.info.height),
+        ))
     }
 
     /// Calls `f(x, y, width, height, radius, color)` with the boxes
@@ -2991,30 +3140,16 @@ impl WinLayout {
 
     /// Calls `f(x, y, width, height)` with the rectangles (content
     /// coordinates) that highlight the characters of `range`: per line,
-    /// the spans of selected glyphs and attachments, line high.
-    fn selection_rects(
-        &self,
-        text: &AttributedText,
-        (a, b): (u32, u32),
-        mut f: impl FnMut(f32, f32, f32, f32),
-    ) {
+    /// the spans of selected glyphs and attachments, line high. The
+    /// trimming ellipsis is never selected.
+    fn range_rects(&self, (a, b): (u32, u32), mut f: impl FnMut(f32, f32, f32, f32)) {
         let mut spans: Vec<(f32, f32)> = Vec::new();
         for line in &self.lines {
             let (y, h) = (line.info.y.0, line.info.height.0);
             spans.clear();
-            for (gx, w, index, _) in self.line_glyphs(line) {
-                if index >= a && index < b {
-                    spans.push((gx, gx + w));
-                }
-            }
-            for (attachment, at) in text.attachments.iter().zip(&self.attachments) {
-                if let Some((x, _)) = at
-                    && attachment.index >= a
-                    && attachment.index < b
-                    && attachment.index >= line.info.start
-                    && attachment.index < line.info.end
-                {
-                    spans.push((*x, *x + attachment.width.0));
+            for s in self.line_stops(line) {
+                if !s.sign && s.index >= a && s.index < b {
+                    spans.push((s.x, s.x + s.width));
                 }
             }
             spans.sort_by(|p, q| p.0.total_cmp(&q.0));
@@ -3620,23 +3755,24 @@ mod tests {
         let (size, layout) = layout_of(&engine, &t, None);
         let l = layout.downcast::<WinLayout>().unwrap();
         assert_eq!(l.lines.len(), 2);
-        assert_eq!(l.caret_at(-5.0, 2.0), 0);
-        assert_eq!(l.caret_at((size.width + px(20.0)).0, 2.0), 15);
+        let at = |x: f32, y: f32| l.hit_test(x, y).offset;
+        assert_eq!(at(-5.0, 2.0), 0);
+        assert_eq!(at((size.width + px(20.0)).0, 2.0), 15);
         // Below the text: the last line.
         assert_eq!(
-            l.caret_at((size.width + px(20.0)).0, (size.height + px(50.0)).0),
+            at((size.width + px(20.0)).0, (size.height + px(50.0)).0),
             22
         );
-        let mid = l.caret_at((size.width / 2.0).0, 2.0);
+        let mid = at((size.width / 2.0).0, 2.0);
         assert!(mid > 3 && mid < 12, "{mid}");
         // Nearest glyph edge: just right of a glyph's start is before it.
-        let (gx, w, index, _) = l.line_glyphs(&l.lines[0]).nth(2).unwrap();
-        assert_eq!(l.caret_at(gx + w * 0.2, 2.0), index);
-        assert_eq!(l.caret_at(gx + w * 0.8, 2.0), index + 1);
-        assert_eq!(l.char_at(gx + w * 0.5, 2.0), Some(index));
+        let g = l.line_glyphs(&l.lines[0]).nth(2).unwrap();
+        assert_eq!(at(g.x + g.width * 0.2, 2.0), g.index);
+        assert_eq!(at(g.x + g.width * 0.8, 2.0), g.index + 1);
+        assert_eq!(l.char_at(g.x + g.width * 0.5, 2.0), Some(g.index));
 
         let mut rects = Vec::new();
-        l.selection_rects(&t, (6, 19), |x, y, w, h| rects.push((x, y, w, h)));
+        l.range_rects((6, 19), |x, y, w, h| rects.push((x, y, w, h)));
         // "line here" on the first line, "sec" on the second.
         assert_eq!(rects.len(), 2, "{rects:?}");
         assert!(rects[0].0 > 0.0 && rects[0].1 == 0.0);
@@ -3648,7 +3784,70 @@ mod tests {
         let (size, layout) = layout_of(&engine, &rtl, None);
         let l = layout.downcast::<WinLayout>().unwrap();
         // Right to left: the right edge is the start.
-        assert_eq!(l.caret_at((size.width + px(5.0)).0, 2.0), 0);
-        assert_eq!(l.caret_at(-5.0, 2.0), 9);
+        assert_eq!(l.hit_test((size.width + px(5.0)).0, 2.0).offset, 0);
+        assert_eq!(l.hit_test(-5.0, 2.0).offset, 9);
+    }
+
+    #[test]
+    fn hit_testing_through_the_engine() {
+        let engine = engine();
+        let t = text(&[("The quick brown fox jumps over the lazy dog", plain(15.0))]);
+        let (size, layout) = layout_of(&engine, &t, Some(90.0));
+        let lines = engine.lines(&layout);
+        assert!(lines.len() > 2);
+        let far = size.width.0 + 50.0;
+        // Past the end of a wrapped line: its end, upstream; the caret
+        // box is on that line.
+        let p = engine.hit_test(&layout, nsh_core::geometry::point(Points(far), lines[0].y));
+        assert_eq!(p.offset, lines[0].end);
+        assert_eq!(p.affinity, Affinity::Upstream);
+        let caret = engine.caret_rect(&layout, p).unwrap();
+        assert_eq!(caret.origin.y, lines[0].y);
+        assert_eq!(caret.size.height, lines[0].height);
+        assert_eq!(caret.size.width, Points(0.0));
+        // The same offset downstream is the start of the next line.
+        let next = engine
+            .caret_rect(
+                &layout,
+                TextPosition::new(lines[1].start, Affinity::Downstream),
+            )
+            .unwrap();
+        assert_eq!(next.origin.y, lines[1].y);
+        // The last line ends the text, downstream.
+        let last = lines.last().unwrap();
+        let p = engine.hit_test(&layout, nsh_core::geometry::point(Points(far), last.y));
+        assert_eq!(p.offset, last.end);
+        assert_eq!(p.affinity, Affinity::Downstream);
+        // A range across lines appends one box per line, through the
+        // first line's end, and an empty one nothing.
+        let origin = nsh_core::geometry::point(Points(0.0), Points(0.0));
+        let mut out = vec![Bounds::new(origin, Size::new(Points(0.0), Points(0.0)))];
+        engine.range_rects(&layout, 2..lines[1].end - 1, &mut out);
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[1].origin.y, lines[0].y);
+        assert_eq!(out[2].origin.y, lines[1].y);
+        engine.range_rects(&layout, 4..4, &mut out);
+        assert_eq!(out.len(), 3);
+    }
+
+    #[test]
+    fn hard_breaks_keep_the_caret_before_them() {
+        let engine = engine();
+        let t = text(&[("ab\ncd", plain(15.0))]);
+        let (size, layout) = layout_of(&engine, &t, None);
+        let lines = engine.lines(&layout);
+        assert_eq!(lines.len(), 2);
+        let far = nsh_core::geometry::point(size.width + px(30.0), px(1.0));
+        let p = engine.hit_test(&layout, far);
+        assert_eq!(p, TextPosition::new(2, Affinity::Downstream));
+        let c = engine.caret_rect(&layout, p).unwrap();
+        assert_eq!(c.origin.y, lines[0].y);
+        // Another layout type: nothing.
+        let other = TextLayout(Arc::new(0u8));
+        assert_eq!(
+            engine.hit_test(&other, nsh_core::geometry::point(px(0.0), px(0.0))),
+            TextPosition::default()
+        );
+        assert!(engine.caret_rect(&other, p).is_none());
     }
 }

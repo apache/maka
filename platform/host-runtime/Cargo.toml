@@ -36,16 +36,16 @@ maka-fs-tools.workspace = true
 maka-process.workspace = true
 maka-sandbox.workspace = true
 maka-network.workspace = true
-reqwest.workspace = true
+reqwest = { workspace = true, features = ["stream"] }
 maka-presentation.workspace = true
 serde_json.workspace = true
 serde.workspace = true
 schemars.workspace = true
 sha2.workspace = true
-base64 = "0.22"
+base64 = "0.23.1"
 getrandom = "0.4.3"
-hyper = { version = "1.11.1", features = ["server", "http1"] }
-hyper-util = { version = "0.1.20", features = ["tokio"] }
+hyper = { version = "1.12.0", features = ["server", "http1"] }
+hyper-util = { version = "0.1.21", features = ["tokio"] }
 http-body-util = "0.1.5"
 tokio-tungstenite.workspace = true
 thiserror.workspace = true
@@ -55,7 +55,7 @@ tokio-util.workspace = true
 uuid.workspace = true
 libc.workspace = true
 tempfile.workspace = true
-tracing = { version = "0.1", default-features = false, features = ["std"] }
+tracing = { version = "0.1.44", default-features = false, features = ["std"] }
 
 [dev-dependencies]
 tokio-util = { workspace = true, features = ["compat"] }

@@ -35,10 +35,13 @@ pub const MANIFEST_FILE: &str = "maka.extension.json";
 
 /// Validated immutable bytes. Retained instances keep their exact package alive.
 #[derive(Clone, Debug)]
-pub struct Package {
-    manifest: Arc<Manifest>,
-    files: Arc<BTreeMap<String, Vec<u8>>>,
-    digest: Arc<str>,
+pub struct Package(Arc<PackageData>);
+
+#[derive(Debug)]
+struct PackageData {
+    manifest: Manifest,
+    files: BTreeMap<String, Vec<u8>>,
+    digest: String,
 }
 
 impl Package {
@@ -85,30 +88,30 @@ impl Package {
                 .iter()
                 .map(|(path, bytes)| (path.as_str(), bytes.as_slice())),
         );
-        Ok(Self {
-            manifest: Arc::new(manifest),
-            files: Arc::new(files),
-            digest: digest.into(),
-        })
+        Ok(Self(Arc::new(PackageData {
+            manifest,
+            files,
+            digest,
+        })))
     }
 
     pub fn manifest(&self) -> &Manifest {
-        &self.manifest
+        &self.0.manifest
     }
     pub fn application_ref(&self) -> maka_plugin_core::package::PackageRef {
         maka_plugin_core::package::PackageRef {
-            id: self.manifest.id.clone(),
-            revision: self.digest.to_string(),
+            id: self.0.manifest.id.clone(),
+            revision: self.0.digest.clone(),
         }
     }
     pub fn files(&self) -> &BTreeMap<String, Vec<u8>> {
-        &self.files
+        &self.0.files
     }
     pub fn digest(&self) -> &str {
-        &self.digest
+        &self.0.digest
     }
     pub fn file(&self, path: &str) -> Option<&[u8]> {
-        self.files.get(path).map(Vec::as_slice)
+        self.0.files.get(path).map(Vec::as_slice)
     }
 }
 
@@ -133,7 +136,7 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn checked_application_shares_its_declaration_and_rejects_invalid_authoring() {
+    fn checked_application_rejects_conflicting_and_invalid_authoring() {
         use maka_plugin_core::package::{CheckedDeclaration, EntryTarget, Packages};
         let manifest = json!({"schemaVersion":1,"id":"example.checked","application":{"entries":{"host":{
             "implementation":{"kind":"native","implementation":"example.checked"},
@@ -145,22 +148,15 @@ mod tests {
         )]))
         .unwrap();
         let declaration = package.manifest().application.as_ref().unwrap();
-        let shared = declaration.clone();
-        assert!(std::ptr::eq(
-            declaration.declaration(),
-            shared.declaration()
-        ));
         assert_eq!(
             serde_json::to_value(declaration).unwrap(),
             manifest["application"]
         );
         let reference = package.application_ref();
         let mut packages = Packages::default();
-        packages.insert_checked(reference.clone(), shared).unwrap();
-        assert!(std::ptr::eq(
-            packages.get(&reference).unwrap(),
-            declaration.declaration()
-        ));
+        packages
+            .insert_checked(reference.clone(), declaration.clone())
+            .unwrap();
         let mut changed = declaration.declaration().clone();
         changed
             .entries
@@ -229,8 +225,7 @@ mod tests {
             Package::from_bundle(&package.to_bundle()).unwrap().digest(),
             package.digest()
         );
-        let invalid_json =
-            BTreeMap::from([(MANIFEST_FILE.into(), vec![b' '; 8 * 1024 * 1024 + 1])]);
+        let invalid_json = BTreeMap::from([(MANIFEST_FILE.into(), b"{invalid".to_vec())]);
         assert!(
             matches!(Package::new(invalid_json), Err(Error::Invalid(reason)) if reason.starts_with("manifest:"))
         );

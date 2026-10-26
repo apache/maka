@@ -26,7 +26,7 @@ use maka_plugin_core::{
 };
 use serde_json::Value;
 use sqlx::{Connection, Row};
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 const MAX_REVISION: u64 = (1 << 53) - 1;
 
@@ -39,10 +39,11 @@ pub struct Checkpoint {
     pub content: Vec<u8>,
 }
 /// This capability comes from a checked original source, never guest JSON.
-/// Holding it retains the original EventLog and its actual Root custody.
+/// Idle capabilities retain no SQL or Root authority; accepted calls retain it.
 #[derive(Clone)]
 pub struct Checkpoints {
-    store: Arc<EventLog>,
+    store: Weak<EventLog>,
+    stop: Option<tokio_util::sync::CancellationToken>,
     deployment: String,
     instance: String,
 }
@@ -75,13 +76,25 @@ impl EventLog {
             return Err(invalid("UI checkpoints require a UI deployment"));
         }
         Ok(Checkpoints {
-            store: self.clone(),
+            store: Arc::downgrade(self),
+            stop: None,
             deployment: source.reference().deployment.to_string(),
             instance: serde_json::to_string(instance)?,
         })
     }
 }
 impl Checkpoints {
+    pub(crate) fn with_shutdown(mut self, stop: tokio_util::sync::CancellationToken) -> Self {
+        self.stop = Some(stop);
+        self
+    }
+    fn owner(&self) -> Result<Arc<EventLog>, StoreError> {
+        if self.stop.as_ref().is_some_and(|stop| stop.is_cancelled()) {
+            return Err(StoreError::ConnectionClosed);
+        }
+        self.store.upgrade().ok_or(StoreError::ConnectionClosed)
+    }
+
     /// Admit all stored encoded fields before fetching them. The callback
     /// and payload read share one SQLite snapshot; its token follows the result.
     pub async fn read<T: Send + 'static>(
@@ -90,11 +103,12 @@ impl Checkpoints {
         admit: impl FnOnce(usize) -> Result<T, StoreError> + Send + 'static,
     ) -> Result<Option<(Checkpoint, T)>, StoreError> {
         key_valid(key)?;
-        self.store.validate_root()?;
+        let store = self.owner()?;
+        store.validate_root()?;
         let deployment = self.deployment.clone();
         let instance = self.instance.clone();
         let key = key.to_owned();
-        self.store.connection.run(move |connection| Box::pin(async move {
+        store.connection.run(move |connection| Box::pin(async move {
             let mut tx = connection.begin().await?;
             let lengths: Option<(i64, i64, i64, i64)> = sqlx::query_as("SELECT length(CAST(content AS BLOB)), length(CAST(format AS BLOB)), length(CAST(data_source_json AS BLOB)), length(CAST(metadata_json AS BLOB)) FROM application_ui_checkpoints WHERE deployment=? AND instance=? AND key=?")
                 .bind(&deployment).bind(&instance).bind(&key).fetch_optional(&mut *tx).await?;
@@ -137,7 +151,8 @@ impl Checkpoints {
         content: Vec<u8>,
     ) -> Result<u64, StoreError> {
         key_valid(key)?;
-        self.store.validate_root()?;
+        let store = self.owner()?;
+        store.validate_root()?;
         if format.is_empty() || expected.is_some_and(|value| value == 0 || value >= MAX_REVISION) {
             return Err(invalid("invalid UI checkpoint"));
         }
@@ -147,7 +162,7 @@ impl Checkpoints {
         let instance = self.instance.clone();
         let key = key.to_owned();
         let format = format.to_owned();
-        self.store.connection.run(move |connection| Box::pin(async move {
+        store.connection.run(move |connection| Box::pin(async move {
             let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
             let current: Option<(i64, Option<String>, Option<String>)> = sqlx::query_as("SELECT revision, format, data_source_json FROM application_ui_checkpoints WHERE deployment=? AND instance=? AND key=?")
                 .bind(&deployment).bind(&instance).bind(&key).fetch_optional(&mut *tx).await?;

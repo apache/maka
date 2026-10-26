@@ -76,6 +76,9 @@ pub fn run(first: Connection, root: Root, runtime: tokio::runtime::Runtime) -> R
     } = first;
     let handle = runtime.handle().clone();
     let detach = Detach::new(bindings, (endpoint.clone(), epoch), runtime);
+    let (active, foreground) = watch::channel(false);
+    let (exit, mut exits) = tokio::sync::mpsc::unbounded_channel();
+    let shell = Shell { foreground, exit };
     let mut start = Some((config, Placement::new(&directory), endpoint, epoch, root));
     // Quitting waits for the detach: GPUI's default quits Linux and Windows
     // apps as their last window closes, giving the detach no more than its
@@ -91,13 +94,30 @@ pub fn run(first: Connection, root: Root, runtime: tokio::runtime::Runtime) -> R
         .detach();
         let (config, placement, endpoint, epoch, root) = start.take().expect("the app starts once");
         let placement = Rc::new(placement);
-        let window = match open(config, placement.clone(), cx) {
+        let window = match open(shell.attach(config), placement.clone(), cx) {
             Ok(window) => window,
             Err(error) => {
                 eprintln!("maka-desktop-shell: cannot open a window: {error}");
                 std::process::exit(1);
             }
         };
+        let _ = window.update(cx, |_, window, cx| {
+            active.send_replace(window.is_window_active());
+            cx.observe_window_activation(window, move |_, window, _| {
+                active.send_replace(window.is_window_active());
+            })
+            .detach();
+        });
+        let closing = placement.clone();
+        cx.spawn(async move |cx| {
+            if exits.recv().await.is_some() {
+                let _ = window.update(cx, |_, window, cx| {
+                    closing.save(window, cx);
+                    window.remove_window();
+                });
+            }
+        })
+        .detach();
         // Quitting from elsewhere (the Dock, logging out) gets the time GPUI
         // gives quit handlers; a window still open records its place first.
         let quitting = detach.clone();
@@ -106,7 +126,16 @@ pub fn run(first: Connection, root: Root, runtime: tokio::runtime::Runtime) -> R
             quitting.start(cx)
         })
         .detach();
-        follow(window, (endpoint, epoch), root, handle.clone(), &detach, cx);
+        let host = (endpoint, epoch);
+        follow(
+            window,
+            host,
+            root,
+            handle.clone(),
+            &detach,
+            shell.clone(),
+            cx,
+        );
         cx.activate(true);
     });
     Ok(())
@@ -183,6 +212,7 @@ fn follow(
     root: Root,
     runtime: Handle,
     detach: &Detach,
+    shell: Shell,
     cx: &mut App,
 ) {
     let detach = detach.clone();
@@ -241,11 +271,35 @@ fn follow(
                 return;
             }
             drop(moving);
-            let _ = window.update(cx, |view, _, _| view.load_with_config(config));
+            let _ = window.update(cx, |view, _, _| view.load_with_config(shell.attach(config)));
             host = (endpoint, epoch);
         }
     })
     .detach();
+}
+
+/// What the window gives each workbench it loads, beside its Host.
+#[derive(Clone)]
+struct Shell {
+    /// Whether the window is active.
+    foreground: watch::Receiver<bool>,
+    /// Closes the window.
+    exit: tokio::sync::mpsc::UnboundedSender<()>,
+}
+
+impl Shell {
+    fn attach(&self, mut config: EngineConfig) -> EngineConfig {
+        config.context = config
+            .context
+            .with(maka_workbench::Foreground(self.foreground.clone()));
+        // The workbench's exit gesture (Ctrl+C twice) closes the window, as
+        // it ends the terminal.
+        let exit = self.exit.clone();
+        config.host.handle("terminal.exit", move |_| {
+            let _ = exit.send(());
+        });
+        config
+    }
 }
 
 /// Detaches the client once: its tasks stop and its Host connection closes.

@@ -35,7 +35,6 @@ use tokio_util::sync::CancellationToken;
 pub(super) struct Captured<'a, 'view> {
     reader: &'a Reader<'view>,
     path: PathBuf,
-    directories: BTreeSet<OsString>,
     files: BTreeSet<OsString>,
 }
 pub(super) enum EntriesError {
@@ -55,13 +54,6 @@ pub(crate) enum ReadError {
     Cancelled,
     Failure(DiscoveryFailure),
 }
-pub(super) enum SkillRead {
-    Empty,
-    Document {
-        bytes: Vec<u8>,
-        origin: Option<super::origin::Origin>,
-    },
-}
 impl<'a, 'view> Captured<'a, 'view> {
     pub(super) fn open(
         source: &Source,
@@ -77,7 +69,6 @@ impl<'a, 'view> Captured<'a, 'view> {
         Ok(Self {
             reader,
             path: source.directory.clone(),
-            directories: BTreeSet::new(),
             files: BTreeSet::new(),
         })
     }
@@ -94,9 +85,6 @@ impl<'a, 'view> Captured<'a, 'view> {
             .visit_directory(&path, Symlinks::Reject, |entry| {
                 check_cancelled(cancellation).map_err(|_| FileError::Retired)?;
                 let name = OsString::from(entry.name);
-                if matches!(entry.kind, Kind::Directory) {
-                    self.directories.insert(name.clone());
-                }
                 if matches!(entry.kind, Kind::File) {
                     self.files.insert(name.clone());
                 }
@@ -115,29 +103,13 @@ impl<'a, 'view> Captured<'a, 'view> {
     pub(super) fn read_skill(
         &self,
         name: &OsStr,
-        collect_origin: bool,
         cancellation: &CancellationToken,
-    ) -> Result<Option<SkillRead>, ReadError> {
+    ) -> Result<Option<Vec<u8>>, ReadError> {
         if self.files.contains(name) {
             return Ok(None);
         }
         let directory = self.path.join(name);
-        let bytes = read_view(self.reader, &directory.join("SKILL.md"), cancellation)?;
-        let Some(bytes) = bytes else {
-            return Ok(self.directories.contains(name).then_some(SkillRead::Empty));
-        };
-        let origin = if collect_origin {
-            let origin = super::origin::read(
-                self.reader,
-                &directory,
-                name.to_str().expect("UTF-8 entry"),
-                cancellation,
-            )?;
-            Some(origin)
-        } else {
-            None
-        };
-        Ok(Some(SkillRead::Document { bytes, origin }))
+        read_view(self.reader, &directory.join("SKILL.md"), cancellation)
     }
 }
 

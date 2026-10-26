@@ -303,6 +303,8 @@ export type RuntimeProtocol =
   | ContextBucket
   | ContextCounts
   | AgentFileListRead
+  | AgentFileCandidatesRead
+  | AgentFileCandidates
   | AgentFileWatch
   | AgentFileCursor
   | AgentFilePage
@@ -398,13 +400,13 @@ export type Receipt =
       kind: 'not_recorded';
     }
   | {
+      kind: 'recorded';
       outcome: OperationOutcome;
       cleanup: OperationCleanup;
-      kind: 'recorded';
     }
   | {
-      diagnostic: string;
       kind: 'unavailable';
+      diagnostic: string;
     };
 /**
  * Unresolved means no durable result is known, including after process loss.
@@ -414,12 +416,12 @@ export type OperationOutcome =
       kind: 'unresolved';
     }
   | {
-      value: unknown;
       kind: 'returned';
+      value: unknown;
     }
   | {
-      diagnostic: string;
       kind: 'unknown';
+      diagnostic: string;
     };
 export type OperationCleanup =
   | {
@@ -429,16 +431,16 @@ export type OperationCleanup =
       kind: 'confirmed';
     }
   | {
-      diagnostic: string;
       kind: 'failed';
+      diagnostic: string;
     };
 export type HostLogPosition =
   | {
       kind: 'tail';
     }
   | {
-      cursor: HostLogCursor;
       kind: 'after';
+      cursor: HostLogCursor;
     };
 export type HostLogCursor = string;
 export type HostLogPage =
@@ -446,12 +448,12 @@ export type HostLogPage =
       kind: 'missing';
     }
   | {
+      kind: 'data';
       cursor: HostLogCursor;
       bytes: string;
       reset?: HostLogReset | null;
       truncated: boolean;
       hasMore: boolean;
-      kind: 'data';
     };
 export type HostLogReset = 'replaced' | 'truncated';
 export type UiAuthoringCommand =
@@ -513,9 +515,9 @@ export type DeploymentInstances =
       kind: 'start';
     }
   | {
+      kind: 'continue';
       source: DeploymentRef;
       after?: InstanceId | null;
-      kind: 'continue';
     };
 export type ExecutionLocation = 'host' | 'ui';
 export type PresentationTarget = 'tui';
@@ -525,8 +527,8 @@ export type PresentationTarget = 'tui';
  */
 export type PackageSelection =
   | {
-      package: PackageRef;
       source: 'pinned';
+      package: PackageRef;
     }
   | {
       source: 'current';
@@ -534,28 +536,29 @@ export type PackageSelection =
 export type PackageUse = 'entry' | 'composition';
 export type Target =
   | {
+      kind: 'instance';
       path: string[];
       export: string;
-      kind: 'instance';
     }
   | {
-      name: string;
       kind: 'import';
+      name: string;
     }
   | {
+      kind: 'remote';
       deployment: string;
       instance: InstanceId;
       export: string;
-      kind: 'remote';
     };
 export type Interface =
   | {
+      kind: 'service';
       methods: {
         [k: string]: Method | undefined;
       };
-      kind: 'service';
     }
   | {
+      kind: 'component';
       props: unknown;
       events: {
         [k: string]: unknown | undefined;
@@ -563,16 +566,15 @@ export type Interface =
       captures: {
         [k: string]: Capture | undefined;
       };
-      kind: 'component';
     }
   | {
-      schema: unknown;
       kind: 'value';
+      schema: unknown;
     }
   | {
+      kind: 'resource';
       resource: string;
       schema: unknown;
-      kind: 'resource';
     };
 export type MethodMode = 'query' | 'mutation' | 'subscription';
 /**
@@ -581,8 +583,8 @@ export type MethodMode = 'query' | 'mutation' | 'subscription';
  */
 export type CaptureOutput =
   | {
-      resource: ResourceType;
       kind: 'resource';
+      resource: ResourceType;
     }
   | {
       kind: 'continuation';
@@ -593,15 +595,16 @@ export type Availability = 'required' | 'optional';
  */
 export type CompositionChange =
   | {
+      kind: 'insert';
       name: string;
       package: PackageRef;
       settings: SettingChange[];
       bindings: {
         [k: string]: Target[] | undefined;
       };
-      kind: 'insert';
     }
   | {
+      kind: 'update';
       name: string;
       configuration: {
         [k: string]: unknown | undefined;
@@ -609,36 +612,35 @@ export type CompositionChange =
       bindings: {
         [k: string]: Target[] | undefined;
       };
-      kind: 'update';
     }
   | {
-      name: string;
       kind: 'remove';
+      name: string;
     };
 export type SettingValue =
   | {
-      text: string;
       kind: 'text';
-    }
-  | {
       text: string;
-      kind: 'number';
     }
   | {
-      value: boolean;
+      kind: 'number';
+      text: string;
+    }
+  | {
       kind: 'boolean';
+      value: boolean;
     }
   | {
       kind: 'null';
     };
 export type BindingConsumer =
   | {
-      name: string;
       kind: 'root';
+      name: string;
     }
   | {
-      package: PackageRef;
       kind: 'package';
+      package: PackageRef;
     };
 export type UiAuthoringState =
   | {
@@ -650,8 +652,8 @@ export type UiAuthoringState =
       [k: string]: unknown | undefined;
     }
   | {
-      outcome: unknown;
       status: 'completed';
+      outcome: unknown;
       [k: string]: unknown | undefined;
     };
 export type SettingKind =
@@ -664,19 +666,19 @@ export type SettingKind =
   | 'unsupported';
 export type BindingCandidate =
   | {
+      kind: 'bound';
       key: string;
       label: string;
       presentation?: PackagePresentation;
       target: Target;
-      kind: 'bound';
     }
   | {
+      kind: 'package';
       key: string;
       label: string;
       presentation?: PackagePresentation;
       package: PackageRef;
       export: string;
-      kind: 'package';
     };
 export type Cardinality =
   | {
@@ -686,9 +688,9 @@ export type Cardinality =
       kind: 'optional';
     }
   | {
+      kind: 'many';
       min: number;
       max: number;
-      kind: 'many';
     };
 /**
  * A deterministic refusal is a recorded business result. Uncertain SQL/worker
@@ -696,17 +698,17 @@ export type Cardinality =
  */
 export type ManagementResultForPackageInstalled =
   | {
-      value: PackageInstalled;
       status: 'committed';
+      value: PackageInstalled;
     }
   | {
-      currentRevision: number;
       status: 'conflict';
+      currentRevision: number;
     }
   | {
+      status: 'rejected';
       reason: ManagementRejection;
       diagnostic?: string | null;
-      status: 'rejected';
     };
 export type ManagementRejection =
   | 'invalid_bundle'
@@ -723,27 +725,27 @@ export type ManagementRejection =
  */
 export type ManagementResultForDeploymentRef =
   | {
-      value: DeploymentRef;
       status: 'committed';
+      value: DeploymentRef;
     }
   | {
-      currentRevision: number;
       status: 'conflict';
+      currentRevision: number;
     }
   | {
+      status: 'rejected';
       reason: ManagementRejection;
       diagnostic?: string | null;
-      status: 'rejected';
     };
 export type Implementation =
   | {
+      kind: 'javascript';
       module: string;
       realm: Realm;
-      kind: 'javascript';
     }
   | {
-      implementation: string;
       kind: 'native';
+      implementation: string;
     };
 export type Realm = 'shared' | 'dedicated';
 /**
@@ -752,49 +754,50 @@ export type Realm = 'shared' | 'dedicated';
  */
 export type UiExport =
   | {
+      kind: 'component';
       contract: Contract;
       component: string[];
-      kind: 'component';
     }
   | {
+      kind: 'value';
       contract: Contract;
       value: unknown;
-      kind: 'value';
     };
 /**
  * Input origin is assigned by the application, never by plugin event payloads.
  */
 export type ComponentInput =
   | {
-      key: string;
-      event: unknown;
       kind: 'raw';
-    }
-  | {
       key: string;
       event: unknown;
-      kind: 'action';
     }
   | {
+      kind: 'action';
+      key: string;
+      event: unknown;
+    }
+  | {
+      kind: 'component';
       key: string;
       child: string;
       name: string;
       event: unknown;
-      kind: 'component';
     };
 export type Surface = {
-  binding: string;
   kind: 'terminal';
+  binding: string;
 };
 export type TerminalScene =
   | {
+      kind: 'rule';
       key: string;
       direction: TerminalDirection;
       color: TerminalColor;
       ascii: boolean;
-      kind: 'rule';
     }
   | {
+      kind: 'choice';
       key: string;
       label: string;
       options: TerminalChoiceOption[];
@@ -806,9 +809,9 @@ export type TerminalScene =
       border: TerminalColor;
       selected: TerminalColor;
       accent: TerminalColor;
-      kind: 'choice';
     }
   | {
+      kind: 'item';
       key: string;
       content: TerminalScene;
       disabled?: boolean;
@@ -824,9 +827,9 @@ export type TerminalScene =
        * Emit submit for physical Space; focus and pointer activation stay separate.
        */
       submit_space?: boolean;
-      kind: 'item';
     }
   | {
+      kind: 'context_menu';
       key: string;
       /**
        * Native Copy selection entry; absent omits selection capture.
@@ -850,9 +853,9 @@ export type TerminalScene =
       border_color: TerminalColor;
       title_color?: TerminalColor | null;
       padding?: number;
-      kind: 'context_menu';
     }
   | {
+      kind: 'dialog';
       key: string;
       background: TerminalScene;
       content: TerminalScene;
@@ -873,9 +876,9 @@ export type TerminalScene =
       border_color: TerminalColor;
       title_color?: TerminalColor | null;
       padding?: number;
-      kind: 'dialog';
     }
   | {
+      kind: 'adaptive_pane';
       key: string;
       background: TerminalScene;
       content: TerminalScene;
@@ -885,9 +888,9 @@ export type TerminalScene =
       overlay: TerminalDialogAppearance;
       motion: boolean;
       command?: TerminalPaneCommand | null;
-      kind: 'adaptive_pane';
     }
   | {
+      kind: 'stack';
       key: string;
       direction: TerminalDirection;
       wide?: TerminalResponsiveStack | null;
@@ -923,9 +926,9 @@ export type TerminalScene =
       layout?: TerminalLayout;
       scroll?: TerminalScrollPolicy & string;
       visible?: boolean;
-      kind: 'stack';
     }
   | {
+      kind: 'text';
       key: string;
       text: string;
       /**
@@ -940,9 +943,9 @@ export type TerminalScene =
       animation?: TerminalAnimationFrame[];
       align?: TerminalAlign & string;
       bold?: boolean;
-      kind: 'text';
     }
   | {
+      kind: 'button';
       key: string;
       label: string;
       /**
@@ -976,9 +979,9 @@ export type TerminalScene =
        * Emphasize the label and hit area independently of keyboard focus.
        */
       bold?: boolean;
-      kind: 'button';
     }
   | {
+      kind: 'component';
       key: string;
       binding: string;
       member: number;
@@ -986,7 +989,6 @@ export type TerminalScene =
       on: {
         [k: string]: string | undefined;
       };
-      kind: 'component';
     };
 export type TerminalDirection = 'row' | 'column';
 /**
@@ -1022,40 +1024,40 @@ export type Modifier = 'control' | 'primary' | 'alt' | 'shift' | 'super';
 export type TerminalAlign = 'start' | 'center' | 'end';
 export type CapturePlan =
   | {
-      source: CaptureSource;
       kind: 'forward';
+      source: CaptureSource;
     }
   | {
       kind: 'native';
     };
 export type ActionOutcome =
   | {
-      reason: string;
       status: 'not_accepted';
-    }
-  | {
-      value: unknown;
-      status: 'succeeded';
-    }
-  | {
-      value: unknown;
-      status: 'updated';
-    }
-  | {
       reason: string;
+    }
+  | {
+      status: 'succeeded';
+      value: unknown;
+    }
+  | {
+      status: 'updated';
+      value: unknown;
+    }
+  | {
       status: 'failed';
+      reason: string;
     }
   | {
       status: 'stale';
     }
   | {
+      status: 'operation';
       reply: OperationReply;
       /**
        * Position of the original confirmed caller commit, independent of the
        * business outcome. A missing commit never authorizes advancing recovery.
        */
       caller: CallerConfirmation | null;
-      status: 'operation';
     };
 export type FontFamily = string;
 /**
@@ -1071,21 +1073,21 @@ export type ScrollbarEntrance = 'fade' | 'slide_and_fade';
 export type SubmitKey = 'enter' | 'primary_enter' | 'control_enter';
 export type EditorEdit =
   | {
+      kind: 'replace_range';
       range: TextRange;
       text: string;
-      kind: 'replace_range';
     }
   | {
-      text: string;
       kind: 'replace';
+      text: string;
     }
   | {
-      text: string;
       kind: 'reset';
+      text: string;
     }
   | {
-      text: string;
       kind: 'append';
+      text: string;
     };
 export type FilePasteAction = 'next' | 'retry' | 'cancel';
 export type FilePhase = 'empty' | 'choosing' | 'ready' | 'failed';
@@ -1102,35 +1104,36 @@ export type FileError =
  */
 export type DiffContent =
   | {
+      kind: 'annotated';
       source: string;
       rows: DiffRow[];
-      kind: 'annotated';
     }
   | {
+      kind: 'comparison';
       before: string;
       after: string;
       language?: string | null;
-      kind: 'comparison';
     }
   | {
+      kind: 'patch';
       source: string;
       operation: DiffPatch;
       language?: string | null;
-      kind: 'patch';
     };
 export type DiffKind = 'removed' | 'added' | 'context' | 'content';
 export type DiffPatch = 'create' | 'update';
 export type ShellOutput =
   | {
+      mode: 'pipes';
       stdout: string;
       stderr: string;
       latestStream?: PipeStream;
       stdoutTruncated: boolean;
       stderrTruncated: boolean;
       redacted: boolean;
-      mode: 'pipes';
     }
   | {
+      mode: 'pty';
       screen: string;
       scrollback: string;
       lastAlternateScreen?: string;
@@ -1140,31 +1143,30 @@ export type ShellOutput =
       alternateScreen: boolean;
       truncated: boolean;
       redacted: boolean;
-      mode: 'pty';
     };
 export type PipeStream = 'stdout' | 'stderr';
 export type RawAction =
   | {
-      text: string;
       type: 'text';
-    }
-  | {
       text: string;
-      type: 'paste';
     }
   | {
+      type: 'paste';
+      text: string;
+    }
+  | {
+      type: 'key';
       key: string;
       modifiers?: TerminalModifiers;
-      type: 'key';
     }
   | {
+      type: 'mouse';
       event: RawEvent;
       x: number;
       y: number;
       button?: MouseButton;
       direction?: ScrollDirection;
       modifiers?: TerminalModifiers;
-      type: 'mouse';
     };
 /**
  * @maxItems 3
@@ -1187,18 +1189,19 @@ export type ReadingTarget =
       kind: 'end';
     }
   | {
+      kind: 'find';
       query: string;
       step: FindStep;
-      kind: 'find';
     }
   | {
       kind: 'clear_find';
     }
   | {
-      rows: number;
       kind: 'scroll_rows';
+      rows: number;
     }
   | {
+      kind: 'reveal_source';
       /**
        * @minItems 1
        */
@@ -1208,38 +1211,37 @@ export type ReadingTarget =
        * If supplied, reveal only while this accepted find retains its original physical intent.
        */
       find_sequence?: number | null;
-      kind: 'reveal_source';
     }
   | {
-      key: string;
       kind: 'focus_item';
+      key: string;
     }
   | {
-      key: string;
       kind: 'reveal_child';
+      key: string;
     };
 export type FindStep = 'first' | 'next' | 'previous';
 export type ReadingScrollDirection = 'up' | 'down';
 export type ReadingStatus = 'applied' | 'cancelled' | 'rejected';
 export type ValueCheckpointCommand =
   | {
-      sequence: number;
       kind: 'read';
+      sequence: number;
     }
   | {
+      kind: 'write';
       sequence: number;
       expectedRevision?: number | null;
       value: unknown;
-      kind: 'write';
     };
 export type TextFileOperation =
   | {
       kind: 'read';
     }
   | {
+      kind: 'write';
       expectedDigest?: string | null;
       text: string;
-      kind: 'write';
     };
 export type TextFileState =
   | {
@@ -1255,13 +1257,13 @@ export type TextFileState =
       kind: 'saving';
     }
   | {
+      kind: 'ready';
       digest?: string | null;
       text?: string | null;
-      kind: 'ready';
     }
   | {
-      error: TextFileError;
       kind: 'failed';
+      error: TextFileError;
     };
 export type TextFileError =
   | 'read_failed'
@@ -1278,13 +1280,13 @@ export type ValueCheckpointState =
       kind: 'saving';
     }
   | {
+      kind: 'ready';
       revision?: number | null;
       value?: unknown;
-      kind: 'ready';
     }
   | {
-      diagnostic: string;
       kind: 'failed';
+      diagnostic: string;
     };
 export type TerminalPaste = 'reject_controls' | 'spaces';
 export type EditorOutcome =
@@ -1292,8 +1294,8 @@ export type EditorOutcome =
       status: 'applied';
     }
   | {
-      reason: EditorConflict;
       status: 'conflict';
+      reason: EditorConflict;
     };
 export type EditorConflict =
   | 'persistence'
@@ -1307,31 +1309,32 @@ export type EditorCheckpointState =
       kind: 'loading';
     }
   | {
+      kind: 'restore';
       version: number;
       snapshot: EditorSnapshot;
       metadata: unknown;
-      kind: 'restore';
     }
   | {
+      kind: 'ready';
       saved: boolean;
       initialized: boolean;
-      kind: 'ready';
     }
   | {
-      diagnostic: string;
       kind: 'failed';
+      diagnostic: string;
     };
 export type EditorCapture =
   | {
       kind: 'current';
     }
   | {
+      kind: 'at_revision';
       owner: string;
       revision: number;
-      kind: 'at_revision';
     };
 export type McpTransport =
   | {
+      type: 'stdio';
       command: string;
       args?: string[];
       /**
@@ -1345,9 +1348,9 @@ export type McpTransport =
        * Environment variable names explicitly forwarded from the Host.
        */
       passEnv?: string[];
-      type: 'stdio';
     }
   | {
+      type: 'streamable_http';
       url: string;
       headers?: {
         [k: string]: string | undefined;
@@ -1358,7 +1361,6 @@ export type McpTransport =
       headerEnv?: {
         [k: string]: string | undefined;
       };
-      type: 'streamable_http';
     };
 /**
  * Session sandbox policy. Full access explicitly disables filesystem and process isolation.
@@ -1379,14 +1381,14 @@ export type JevCredentialTarget =
       kind: 'api_key';
     }
   | {
-      name: string;
       kind: 'header';
+      name: string;
     };
 export type JevCredentialChange = 'replace' | 'remove';
 export type JevUpdate =
   | {
-      snapshot: JevSnapshot;
       kind: 'updated';
+      snapshot: JevSnapshot;
     }
   | {
       kind: 'changed';
@@ -1396,47 +1398,48 @@ export type JevUpdate =
     };
 export type JevQuestion =
   | {
+      type: 'noul';
       instructions: unknown;
       criteria?: {
         [k: string]: unknown | undefined;
       } | null;
-      type: 'noul';
     }
   | {
+      type: 'choice';
       instructions: unknown;
       criteria: {
         [k: string]: unknown | undefined;
       };
-      type: 'choice';
     }
   | {
+      type: 'score';
       instructions: unknown;
       criteria: unknown[];
-      type: 'score';
     };
 export type JevResult =
   | {
-      value: JevEvaluationResult;
       kind: 'completed';
+      value: JevEvaluationResult;
     }
   | {
-      message: string;
       kind: 'failed';
+      message: string;
     };
 export type JevAnswer =
   | {
-      noul: number;
       type: 'noul';
+      noul: number;
     }
   | {
+      type: 'choice';
       choice: string;
       confidence: number;
       probabilities: {
         [k: string]: number | undefined;
       };
-      type: 'choice';
     }
   | {
+      type: 'score';
       score: number;
       confidence: number;
       probabilities: {
@@ -1445,13 +1448,12 @@ export type JevAnswer =
       legend: {
         [k: string]: string | undefined;
       };
-      type: 'score';
     };
 export type WebSource = 'model' | 'tavily';
 export type WebUpdate =
   | {
-      snapshot: WebSnapshot;
       kind: 'updated';
+      snapshot: WebSnapshot;
     }
   | {
       kind: 'changed';
@@ -1470,28 +1472,28 @@ export type WebCheckOutcome =
   | 'timeout';
 export type WebResult =
   | {
-      value: unknown;
       kind: 'completed';
+      value: unknown;
     }
   | {
-      message: string;
       kind: 'failed';
+      message: string;
     };
 export type WebEndpoint =
   | {
       state: 'not_checked';
     }
   | {
+      state: 'unknown';
       target: string;
       error: string;
-      state: 'unknown';
     }
   | {
+      state: 'checked';
       target: string;
       httpStatus: number;
       elapsedMs: number;
       health: WebReadiness;
-      state: 'checked';
     };
 export type WebReadiness = 'healthy' | 'unknown' | 'unhealthy';
 export type ThinkingLevel =
@@ -1505,12 +1507,12 @@ export type ThinkingLevel =
   | 'ultra';
 export type AgentGlobalInstructionsView =
   | {
+      kind: 'available';
       source: AgentGlobalInstructionSource;
       path: string;
       revision: string;
       content: string;
       exists: boolean;
-      kind: 'available';
     }
   | {
       kind: 'unavailable';
@@ -1532,25 +1534,25 @@ export type ExecutorSetupAction =
       kind: 'check';
     }
   | {
-      methodId: string;
       kind: 'authenticate';
+      methodId: string;
     };
 export type ExecutorSetupResult =
   | {
+      kind: 'checked';
       info?: ExecutorSetupInfo | null;
       methods: ExecutorAuthenticationMethod[];
-      kind: 'checked';
     }
   | {
       kind: 'authenticated';
     }
   | {
-      diagnostic: string;
       kind: 'unresolved';
+      diagnostic: string;
     };
 export type ExecutorSetupProgress = {
-  url: string;
   kind: 'authorization_url';
+  url: string;
 };
 /**
  * Selects the Host's local desktop or its Windows host when running in WSL.
@@ -1560,14 +1562,14 @@ export type Desktop = 'auto' | 'local' | 'windows';
 export type ComputerReplState = 'fresh' | 'ready' | 'reset_required';
 export type ComputerResult =
   | {
+      kind: 'completed';
       artifact: string;
       state: ComputerReplState;
-      kind: 'completed';
     }
   | {
+      kind: 'failed';
       message: string;
       state: ComputerReplState;
-      kind: 'failed';
     };
 export type Scope = 'subtree' | 'exact';
 /**
@@ -1576,82 +1578,82 @@ export type Scope = 'subtree' | 'exact';
 export type Access = 'read' | 'write' | 'deny';
 export type ExecutorOutcome =
   | {
-      text: string;
       status: 'completed';
+      text: string;
     }
   | {
-      reason?: string | null;
       status: 'cancelled';
+      reason?: string | null;
     }
   | {
+      status: 'failed';
       message: string;
       code?: string | null;
       recoverable?: boolean;
-      status: 'failed';
     };
 /**
  * External tool activity is observation, never a request to dispatch a Host tool.
  */
 export type ExecutorOutput =
   | {
-      text: string;
       type: 'output_delta';
-    }
-  | {
       text: string;
-      type: 'thinking_delta';
     }
   | {
+      type: 'thinking_delta';
+      text: string;
+    }
+  | {
+      type: 'tool_start';
       toolCallId: string;
       name: string;
       input: unknown;
-      type: 'tool_start';
     }
   | {
+      type: 'tool_progress';
       toolCallId: string;
       text: string;
-      type: 'tool_progress';
     }
   | {
+      type: 'tool_result';
       toolCallId: string;
       text: string;
       isError?: boolean;
-      type: 'tool_result';
     };
 export type ProtocolProcessProgress =
   | {
-      id: string;
       kind: 'started';
+      id: string;
     }
   | {
+      kind: 'output';
       stream: ProtocolProcessStream;
       /**
        * @maxItems 8192
        */
       bytes: number[];
-      kind: 'output';
     };
 export type ProtocolProcessStream = 'stdout' | 'stderr';
 export type ProtocolProcessCompletion =
   | {
+      kind: 'exited';
       code?: number | null;
       success: boolean;
       stopped: boolean;
       error?: string | null;
-      kind: 'exited';
     }
   | {
-      message: string;
       kind: 'failed';
+      message: string;
     };
 export type WorkHubPresetsResult =
   | {
-      snapshot: WorkHubPresets;
       kind: 'saved';
+      snapshot: WorkHubPresets;
     }
   | {
-      snapshot: WorkHubPresets;
       kind: 'conflict';
+      snapshot: WorkHubPresets;
     }
   | {
       kind: 'invalid';
@@ -1669,20 +1671,20 @@ export type GraphStatus =
   | 'failed';
 export type GraphTarget =
   | {
-      agentId: string;
       kind: 'agent';
+      agentId: string;
     }
   | {
-      presetId: string;
       kind: 'preset';
+      presetId: string;
     }
   | {
-      executorId: string;
       kind: 'executor';
+      executorId: string;
     }
   | {
-      operatorId: OperatorId;
       kind: 'operator';
+      operatorId: OperatorId;
     };
 export type OperatorId = string;
 export type GraphWorkState =
@@ -1705,8 +1707,8 @@ export type AgentExecutionState =
   | 'cancelled';
 export type WorkHubGraphAction =
   | {
-      mode: GraphMode;
       kind: 'start';
+      mode: GraphMode;
     }
   | {
       kind: 'stop';
@@ -1716,32 +1718,32 @@ export type WorkHubGraphAction =
     };
 export type WorkHubGraphChanged =
   | {
-      epoch: GraphEpoch;
       kind: 'committed';
+      epoch: GraphEpoch;
     }
   | {
-      current?: GraphEpoch | null;
       kind: 'conflict';
+      current?: GraphEpoch | null;
     }
   | {
-      reason: string;
       kind: 'rejected';
+      reason: string;
     };
 export type WorkHubCoordinator =
   | {
       kind: 'missing';
     }
   | {
-      workspace: AgentDirectorySelection;
       kind: 'pending';
+      workspace: AgentDirectorySelection;
     }
   | {
-      session: AgentSession;
       kind: 'ready';
+      session: AgentSession;
     }
   | {
-      reason: AgentRejection;
       kind: 'rejected';
+      reason: AgentRejection;
     };
 /**
  * The next turn's choice, independent of an already admitted execution.
@@ -1749,14 +1751,14 @@ export type WorkHubCoordinator =
  */
 export type AgentBackendPreference =
   | {
+      kind: 'model';
       connectionId: string;
       modelId: string;
       thinkingLevel?: ThinkingLevel | null;
-      kind: 'model';
     }
   | {
-      selection: AgentExecutorSelection;
       kind: 'executor';
+      selection: AgentExecutorSelection;
     };
 export type CollaborationMode = 'agent' | 'plan';
 export type AgentSessionActivity = 'idle' | 'working' | 'waiting';
@@ -1772,18 +1774,18 @@ export type AgentRejection =
   | 'closed';
 export type WorkHubTaskStatus =
   | {
-      dependencies: string[];
       kind: 'blocked';
+      dependencies: string[];
     }
   | {
       kind: 'cancelled';
     }
   | {
+      kind: 'preparing';
       stage: WorkHubPreparationStage;
       operation: string;
       sessionId?: string | null;
       state: WorkHubPreparationState;
-      kind: 'preparing';
     }
   | {
       kind: 'pending';
@@ -1795,29 +1797,29 @@ export type WorkHubTaskStatus =
       kind: 'unavailable';
     }
   | {
-      reason: string;
       kind: 'rejected';
+      reason: string;
     }
   | {
+      kind: 'started';
       sessionId: string;
       invocationId: string;
       progress?: AgentWork | null;
-      kind: 'started';
     }
   | {
+      kind: 'queued';
       sessionId: string;
       messageId: string;
       progress?: AgentWork | null;
-      kind: 'queued';
     };
 export type WorkHubPreparationStage =
   | {
       kind: 'create';
     }
   | {
+      kind: 'attachment';
       index: number;
       total: number;
-      kind: 'attachment';
     }
   | {
       kind: 'delivery';
@@ -1836,8 +1838,8 @@ export type WorkHubPreparationState =
       kind: 'original_capture_required';
     }
   | {
-      reason: string;
       kind: 'rejected';
+      reason: string;
     };
 export type AgentWork =
   | {
@@ -1853,6 +1855,7 @@ export type AgentWork =
       kind: 'changed';
     }
   | {
+      kind: 'delivered';
       shared: boolean;
       execution: AgentExecution;
       answer?: AgentAnswerPage | null;
@@ -1860,7 +1863,6 @@ export type AgentWork =
        * Count for this exact Run; original Session interactions retain all authority.
        */
       pendingInteractions: number;
-      kind: 'delivered';
     };
 export type WorkHubControlStatus =
   | {
@@ -1873,25 +1875,25 @@ export type WorkHubControlStatus =
       kind: 'uncertain';
     }
   | {
-      outcome: WorkHubControlOutcome;
       kind: 'returned';
+      outcome: WorkHubControlOutcome;
     };
 export type WorkHubControlOutcome =
   | {
-      result: AgentPatchResult;
       kind: 'patch';
+      result: AgentPatchResult;
     }
   | {
-      result: AgentStopped;
       kind: 'stop';
+      result: AgentStopped;
     }
   | {
-      result: AgentResumeResult;
       kind: 'resume';
+      result: AgentResumeResult;
     }
   | {
-      result: AgentQueueMutationResult;
       kind: 'retract';
+      result: AgentQueueMutationResult;
     };
 export type AgentPatchResult =
   | {
@@ -1904,17 +1906,17 @@ export type AgentPatchResult =
       kind: 'changed';
     }
   | {
-      patch: AgentWorkspacePatch;
       kind: 'ready';
+      patch: AgentWorkspacePatch;
     };
 export type AgentResumeResult =
   | {
-      execution: AgentExecution;
       kind: 'started';
+      execution: AgentExecution;
     }
   | {
-      reason: AgentResumeParkReason;
       kind: 'parked';
+      reason: AgentResumeParkReason;
     };
 export type AgentResumeParkReason =
   | 'closed'
@@ -1928,17 +1930,17 @@ export type AgentResumeParkReason =
   | 'safety_check_failed';
 export type AgentQueueMutationResult =
   | {
-      revision: number;
       kind: 'committed';
+      revision: number;
     }
   | {
+      kind: 'revision_conflict';
       expected: number;
       actual: number;
-      kind: 'revision_conflict';
     }
   | {
-      reason: AgentQueueRejection;
       kind: 'rejected';
+      reason: AgentQueueRejection;
     };
 export type AgentQueueRejection =
   | 'closed'
@@ -1949,22 +1951,22 @@ export type AgentQueueRejection =
   | 'not_running';
 export type AgentWorkTarget =
   | {
-      invocationId: string;
       kind: 'invocation';
+      invocationId: string;
     }
   | {
-      messageId: string;
       kind: 'message';
+      messageId: string;
     };
 export type SettingsModelsRead =
   | {
-      query?: string;
       kind: 'start';
+      query?: string;
     }
   | {
+      kind: 'continue';
       revision: number;
       cursor: SettingsModelCursor;
-      kind: 'continue';
     };
 export type UsageActivityKind = 'model' | 'tool';
 export type UsageActivityStatus = 'success' | 'error' | 'aborted' | 'unknown' | 'rejected';
@@ -1984,59 +1986,59 @@ export type UsageActivity =
     };
 export type UsageOrigin =
   | {
+      kind: 'agent';
       invocation: Invocation;
       purpose: ModelPurpose;
-      kind: 'agent';
       [k: string]: unknown | undefined;
     }
   | {
-      source: UsageAuxiliarySource;
       kind: 'auxiliary';
+      source: UsageAuxiliarySource;
       [k: string]: unknown | undefined;
     };
 export type ModelPurpose = 'main' | 'summary';
 export type UsageAuxiliarySource =
   | {
+      kind: 'application_operation';
       source: DeploymentRef;
       namespace: InstanceId;
       operation: string;
       fingerprint: string;
-      kind: 'application_operation';
       [k: string]: unknown | undefined;
     }
   | {
-      invocation: Invocation;
       kind: 'session_title';
+      invocation: Invocation;
       [k: string]: unknown | undefined;
     }
   | {
+      kind: 'agent';
       invocation: Invocation;
       operation_id: string;
-      kind: 'agent';
       [k: string]: unknown | undefined;
     }
   | {
-      id: string;
       kind: 'host_effect';
+      id: string;
       [k: string]: unknown | undefined;
     };
 export type UsageOutcome = ('success' | 'error' | 'aborted') | 'unknown';
 export type ToolOrigin =
   | {
-      step_id: string;
       kind: 'provider';
+      step_id: string;
       [k: string]: unknown | undefined;
     }
   | {
-      parent_operation_id: string;
-      parent_tool_call_id: string;
       kind: 'code_mode';
+      parent_operation_id: string;
+      parent_tool_call_id: string;
       [k: string]: unknown | undefined;
     }
   | {
+      kind: 'code_cell';
       parent_operation_id: string;
       parent_tool_call_id: string;
-      kind: 'code_cell';
       [k: string]: unknown | undefined;
     }
   | {
@@ -2044,23 +2046,23 @@ export type ToolOrigin =
       [k: string]: unknown | undefined;
     }
   | {
+      kind: 'host_sdk';
       package_id: string;
       entry_id: string;
       activation: string;
       parent_operation_id?: string | null;
-      kind: 'host_sdk';
       [k: string]: unknown | undefined;
     };
 export type UsageToolResult =
   | {
-      reason: RejectionKind;
       kind: 'rejected';
+      reason: RejectionKind;
       [k: string]: unknown | undefined;
     }
   | {
+      kind: 'settled';
       startedAt: number;
       outcome: UsageToolStatus;
-      kind: 'settled';
       [k: string]: unknown | undefined;
     };
 /**
@@ -2080,156 +2082,157 @@ export type UsageToolStatus = 'success' | 'error' | 'unknown';
 export type UsageGroup = 'byProvider' | 'byModel' | 'byTool';
 export type SettingsPricingResult =
   | {
-      result: PricingUpdated;
       kind: 'updated';
+      result: PricingUpdated;
     }
   | {
       kind: 'rejected';
     };
 export type PricingUpdated =
   | {
-      revision: number;
       kind: 'committed';
-    }
-  | {
       revision: number;
-      kind: 'unchanged';
     }
   | {
+      kind: 'unchanged';
+      revision: number;
+    }
+  | {
+      kind: 'revision_conflict';
       expectedRevision: number;
       actualRevision: number;
-      kind: 'revision_conflict';
     };
 export type PricingQuery =
   | {
       kind: 'start';
     }
   | {
+      kind: 'continue';
       revision: number;
       offset: number;
-      kind: 'continue';
     };
 export type PricingPage =
   | {
+      kind: 'page';
       revision: number;
       offset: number;
       entries: PricingEntry[];
       nextOffset?: number | null;
-      kind: 'page';
     }
   | {
+      kind: 'revision_changed';
       expectedRevision: number;
       actualRevision: number;
-      kind: 'revision_changed';
     };
 export type PricingEntry =
   | {
-      pricing: Pricing;
       source: 'builtin';
+      pricing: Pricing;
     }
   | {
+      source: 'custom';
       pricing: Pricing;
       resetEffect: PricingResetEffect;
-      source: 'custom';
     };
 export type PricingResetEffect = 'restore_builtin' | 'become_unpriced';
 export type PricingMutation =
   | {
-      pricing: Pricing;
       kind: 'upsert';
+      pricing: Pricing;
     }
   | {
-      modelKey: string;
       kind: 'delete';
+      modelKey: string;
     };
 export type LanguagePreference = 'auto' | 'en' | 'zh-CN' | 'zh-TW';
 export type ProxyProtocol = 'http' | 'https' | 'socks5';
 export type CredentialLocator =
   | {
+      scope: 'connection';
       connectionId: string;
       kind: ConnectionCredentialKind;
-      scope: 'connection';
     }
   | {
-      kind: PasswordKind;
       scope: 'network_proxy';
+      kind: PasswordKind;
     };
 export type ConnectionCredentialKind = 'provider' | 'request_headers';
 export type PasswordKind = 'password';
 export type SettingsNetworkCredentialAction = 'keep' | 'delete' | 'replace';
 export type SettingsNetworkUpdated =
   | {
-      result: NetworkProxyUpdateResult;
       kind: 'applied';
+      result: NetworkProxyUpdateResult;
     }
   | {
       kind: 'rejected';
     };
 export type NetworkProxyUpdateResult =
   | {
+      kind: 'committed';
       revision: number;
       credentialStatus: CredentialStatus;
-      kind: 'committed';
     }
   | {
+      kind: 'revision_conflict';
       expectedRevision: number;
       actualRevision: number;
-      kind: 'revision_conflict';
     }
   | {
+      kind: 'proxy_target_mismatch';
       expected: CredentialTarget;
       actual: CredentialTarget;
-      kind: 'proxy_target_mismatch';
     }
   | {
+      kind: 'credential_stale';
       expected: CredentialVersionBasis | null;
       actual: CredentialVersionBasis | null;
-      kind: 'credential_stale';
     };
 export type SettingsPreferencesMutation =
   | {
-      preference: LanguagePreference;
       kind: 'language';
+      preference: LanguagePreference;
     }
   | {
-      prompt?: string | null;
       kind: 'compaction_prompt';
+      prompt?: string | null;
     }
   | {
-      displayName: string;
       kind: 'personalization';
+      displayName: string;
     }
   | {
-      enabled: boolean;
       kind: 'workspace_instructions';
-    }
-  | {
-      incognitoActive: boolean;
-      kind: 'privacy';
-    }
-  | {
       enabled: boolean;
+    }
+  | {
+      kind: 'privacy';
+      incognitoActive: boolean;
+    }
+  | {
       kind: 'shell_titles';
+      enabled: boolean;
     };
 export type SettingsPreferencesUpdated =
   | {
-      revision: number;
       kind: 'committed';
+      revision: number;
     }
   | {
+      kind: 'revision_conflict';
       expectedRevision: number;
       actualRevision: number;
-      kind: 'revision_conflict';
     }
   | {
       kind: 'rejected';
     };
 export type SettingsModelsPage =
   | {
-      revision: number;
       kind: 'changed';
+      revision: number;
     }
   | {
+      kind: 'ready';
       revision: number;
       /**
        * @maxItems 16
@@ -2392,7 +2395,6 @@ export type SettingsModelsPage =
           ];
       defaultModel: SettingsDefaultModel;
       next: SettingsModelCursor | null;
-      kind: 'ready';
     };
 /**
  * Interpreter used only for model-facing Code Mode cells.
@@ -2403,28 +2405,29 @@ export type SettingsDefaultModel =
       kind: 'none';
     }
   | {
-      target: ConnectionTarget;
       kind: 'unavailable';
+      target: ConnectionTarget;
     }
   | {
-      choice: SettingsModelChoice;
       kind: 'ready';
+      choice: SettingsModelChoice;
     };
 export type SettingsConnectionsRead =
   | {
       kind: 'start';
     }
   | {
+      kind: 'continue';
       revision: number;
       offset: number;
-      kind: 'continue';
     };
 export type SettingsConnectionsPage =
   | {
-      revision: number;
       kind: 'changed';
+      revision: number;
     }
   | {
+      kind: 'ready';
       revision: number;
       defaultTarget: ConnectionTarget | null;
       /**
@@ -2592,37 +2595,36 @@ export type SettingsConnectionsPage =
             SettingsConnectionSummary,
           ];
       next: number | null;
-      kind: 'ready';
     };
 export type SettingsConnectionDetail =
   | {
-      actual: ConnectionVersionBasis | null;
       kind: 'stale';
+      actual: ConnectionVersionBasis | null;
     }
   | {
+      kind: 'ready';
       target: ConnectionCredentialTarget;
       name: string;
       enabled: boolean;
       enabledModelCount: number;
       editing?: SettingsConnectionEditingFacts;
-      kind: 'ready';
     };
 export type ApiProtocol = 'openai-chat-completions' | 'openai-responses' | 'anthropic-messages';
 export type ModelModality = 'text' | 'image' | 'audio' | 'pdf' | 'video';
 export type RelayServiceTier = 'fast';
 export type SettingsCredentialLoginResult =
   | {
-      connection: ConnectionIdentity;
       kind: 'saved';
+      connection: ConnectionIdentity;
     }
   | {
-      reason: SettingsCredentialRejection;
       kind: 'rejected';
+      reason: SettingsCredentialRejection;
     }
   | {
+      kind: 'failed';
       reason: SettingsLoginFailure;
       message: string;
-      kind: 'failed';
     };
 export type SettingsCredentialRejection =
   | 'invalid_input'
@@ -2638,46 +2640,46 @@ export type SettingsCredentialRejection =
 export type SettingsLoginFailure = 'cancelled' | 'expired' | 'transport' | 'authentication';
 export type SettingsCredentialSaveResult =
   | {
-      connection: ConnectionIdentity;
       kind: 'saved';
+      connection: ConnectionIdentity;
     }
   | {
-      reason: SettingsCredentialRejection;
       kind: 'rejected';
+      reason: SettingsCredentialRejection;
     };
 export type Nullable_MapOf_ModelOverride = {
   [k: string]: ModelOverride | undefined;
 } | null;
 export type CredentialVaultQueryResult =
   | {
-      status: CredentialStatus;
       kind: 'status';
+      status: CredentialStatus;
     }
   | {
       kind: 'connection_not_found';
     };
 export type CredentialMutationResult =
   | {
-      reason: ConfigurationRejection;
       kind: 'rejected';
+      reason: ConfigurationRejection;
     }
   | {
+      kind: 'committed';
       vaultRevision: number;
       status: CredentialStatus;
-      kind: 'committed';
     }
   | {
       kind: 'connection_not_found';
     }
   | {
+      kind: 'connection_stale';
       expected: ConnectionVersionBasis;
       actual: ConnectionVersionBasis | null;
-      kind: 'connection_stale';
     }
   | {
+      kind: 'credential_stale';
       expected: CredentialVersionBasis | null;
       actual: CredentialVersionBasis | null;
-      kind: 'credential_stale';
     };
 /**
  * A confirmed rejection contains no provider diagnostics or user input.
@@ -2688,34 +2690,35 @@ export type ConfigurationRejection =
   | 'provider_unavailable';
 export type CatalogMutationResult =
   | {
-      reason: ConfigurationRejection;
       kind: 'rejected';
+      reason: ConfigurationRejection;
     }
   | {
+      kind: 'committed';
       catalogRevision: number;
       connection?: ConnectionVersionBasis | null;
-      kind: 'committed';
     }
   | {
+      kind: 'revision_conflict';
       expectedRevision: number;
       actualRevision: number;
-      kind: 'revision_conflict';
     }
   | {
-      slug: string;
       kind: 'connection_exists';
+      slug: string;
     }
   | {
+      kind: 'connection_stale';
       expected: ConnectionVersionBasis;
       actual: ConnectionVersionBasis | null;
-      kind: 'connection_stale';
     }
   | {
-      target: ConnectionTarget;
       kind: 'invalid_default_target';
+      target: ConnectionTarget;
     };
 export type SkillLibraryPage =
   | {
+      kind: 'page';
       writable: boolean;
       preferencesWritable: boolean;
       preferenceRevision: number;
@@ -2723,13 +2726,13 @@ export type SkillLibraryPage =
       entries: SkillLibraryEntry[];
       after?: SkillLibraryCursor | null;
       diagnostics: string[];
-      kind: 'page';
     }
   | {
       kind: 'changed';
     };
 export type SkillLibraryDocument =
   | {
+      kind: 'page';
       writable: boolean;
       preferencesWritable: boolean;
       preferenceRevision: number;
@@ -2740,7 +2743,6 @@ export type SkillLibraryDocument =
       before?: number | null;
       after?: number | null;
       totalBytes: number;
-      kind: 'page';
     }
   | {
       kind: 'changed';
@@ -2751,49 +2753,50 @@ export type SkillLibraryDocument =
 export type SkillLibraryChangeKind = 'install' | 'update' | 'delete';
 export type SkillLibraryPreview =
   | {
+      kind: 'ready';
       review: SkillLibraryReview;
       target: string;
       entries: number;
       paths: string[];
       pathsTruncated: boolean;
       locallyModified: boolean;
-      kind: 'ready';
     }
   | {
       kind: 'changed';
     }
   | {
-      reason: string;
       kind: 'rejected';
+      reason: string;
     };
 export type SkillLibraryChangeResult =
   | {
-      reference: string;
       kind: 'applied';
+      reference: string;
     }
   | {
       kind: 'changed';
     }
   | {
-      reason: string;
       kind: 'rejected';
+      reason: string;
     };
 export type SkillLibraryPreferenceResult =
   | {
-      revision: number;
       kind: 'applied';
+      revision: number;
     }
   | {
       kind: 'changed';
     }
   | {
-      reason: string;
       kind: 'rejected';
+      reason: string;
     };
 export type SkillScope = 'project' | 'workspace' | 'user' | 'custom';
-export type SkillSource = 'maka' | 'agents' | 'legacy' | 'custom';
+export type SkillSource = 'maka' | 'agents' | 'custom';
 export type SkillModelLoadResult =
   | {
+      kind: 'loaded';
       revision: string;
       metadata: SkillMetadata;
       instructions: string;
@@ -2802,12 +2805,11 @@ export type SkillModelLoadResult =
       relativePath: string;
       declaredTools: string[];
       declaredToolsTruncated: boolean;
-      truncated: boolean;
       receipt: SkillInvocationReceipt;
-      kind: 'loaded';
       [k: string]: unknown | undefined;
     }
   | {
+      kind: 'resource';
       revision: string;
       reference: string;
       path: string;
@@ -2818,7 +2820,6 @@ export type SkillModelLoadResult =
       partialLine: boolean;
       next?: SkillModelLoad | null;
       receipt: SkillInvocationReceipt;
-      kind: 'resource';
       [k: string]: unknown | undefined;
     }
   | {
@@ -2826,14 +2827,14 @@ export type SkillModelLoadResult =
       [k: string]: unknown | undefined;
     }
   | {
+      kind: 'unavailable';
       reason: SkillFailureReason;
       receipt: SkillInvocationReceipt;
-      kind: 'unavailable';
       [k: string]: unknown | undefined;
     }
   | {
-      reason: string;
       kind: 'resource_unavailable';
+      reason: string;
       [k: string]: unknown | undefined;
     };
 /**
@@ -2850,7 +2851,6 @@ export type SkillInvocationReceipt =
       name: string;
       scope: SkillScope;
       source: SkillSource;
-      truncated: boolean;
     }
   | {
       invocation: SkillInvocationMode;
@@ -2867,17 +2867,17 @@ export type SkillFailureReason =
   | 'resolution_failed';
 export type SkillPreparation =
   | {
+      kind: 'ready';
       /**
        * None preserves the original message exactly.
        */
       text?: string | null;
       record: SkillPreparationRecord;
       requiredTools: string[];
-      kind: 'ready';
     }
   | {
-      invocation: SkillInvocationResult;
       kind: 'blocked';
+      invocation: SkillInvocationResult;
     };
 export type SkillInvocationFailure = SkillRequestFailure;
 export type AgentSessionFilter = 'all' | 'archived' | 'needs_you';
@@ -2886,48 +2886,48 @@ export type AgentSessionPosition =
       kind: 'start';
     }
   | {
-      cursor: string;
       kind: 'at';
+      cursor: string;
     }
   | {
-      revision: string;
-      cursor: string;
       kind: 'after';
-    }
-  | {
       revision: string;
       cursor: string;
+    }
+  | {
       kind: 'before';
+      revision: string;
+      cursor: string;
     };
 export type AgentSessionListScope =
   | {
       kind: 'all';
     }
   | {
-      projectId: string;
       kind: 'project';
+      projectId: string;
     }
   | {
-      sessionId: string;
       kind: 'workspace';
+      sessionId: string;
     };
 export type AgentWorkspaceSelection =
   | {
-      selection: AgentDirectorySelection;
       kind: 'isolated_git';
+      selection: AgentDirectorySelection;
     }
   | {
+      kind: 'project';
       project: AgentProjectRef;
       selection: AgentDirectorySelection;
-      kind: 'project';
     }
   | {
-      selection: AgentDirectorySelection;
       kind: 'directory';
+      selection: AgentDirectorySelection;
     }
   | {
-      sessionId: string;
       kind: 'session';
+      sessionId: string;
     };
 export type PlanComplexity = 'low' | 'medium' | 'high';
 export type PlanProposalStatus =
@@ -2944,41 +2944,41 @@ export type AgentPlanPhase =
   | 'cancelled';
 export type AgentPlanAction =
   | {
+      kind: 'approve';
       proposalId: string;
       proposalRevision: number;
       approval: AgentPlanApproval;
-      kind: 'approve';
     }
   | {
-      proposalId: string;
       kind: 'revise';
-    }
-  | {
       proposalId: string;
-      kind: 'abandon';
     }
   | {
+      kind: 'abandon';
+      proposalId: string;
+    }
+  | {
+      kind: 'resume';
       executionId: string;
       approval: AgentPlanApproval;
-      kind: 'resume';
     }
   | {
+      kind: 'cancel';
       executionId: string;
       reason: string;
-      kind: 'cancel';
     };
 export type AgentPlanResult =
   | {
-      revision: number;
       kind: 'committed';
+      revision: number;
     }
   | {
-      actual: number;
       kind: 'conflict';
+      actual: number;
     }
   | {
-      reason: string;
       kind: 'rejected';
+      reason: string;
     };
 export type GoalStatus =
   | 'armed'
@@ -2996,15 +2996,16 @@ export type GoalStatus =
 export type GoalReportKind = 'progress' | 'achieved' | 'waiting' | 'impossible';
 export type AgentGoalChange =
   | {
+      kind: 'create';
       sessionId: string;
       objective: string;
       maxIterations: number;
       tokenBudget?: number | null;
       start: boolean;
       approval: AgentGoalApproval;
-      kind: 'create';
     }
   | {
+      kind: 'control';
       sessionId: string;
       goalId: string;
       revision: number;
@@ -3013,42 +3014,41 @@ export type AgentGoalChange =
        * Explicit renewed model and session authority, only for Resume without a pending iteration.
        */
       approval?: AgentGoalApproval | null;
-      kind: 'control';
     };
 export type GoalControl = 'pause' | 'resume' | 'cancel' | 'complete';
 export type AgentGoalResult =
   | {
+      kind: 'committed';
       goalId: string;
       revision: number;
-      kind: 'committed';
     }
   | {
-      actual?: number | null;
       kind: 'conflict';
+      actual?: number | null;
     }
   | {
-      reason: string;
       kind: 'rejected';
+      reason: string;
     };
 export type AgentTodoStatus = 'pending' | 'in_progress' | 'completed';
 export type AgentRecapReceipt =
   | {
+      kind: 'pending';
       operationId: string;
       through: number;
-      kind: 'pending';
     }
   | {
+      kind: 'ready';
       operationId: string;
       through: number;
       text: string;
       modelId: string;
-      kind: 'ready';
     }
   | {
+      kind: 'failed';
       operationId: string;
       through: number;
       reason: AgentRecapFailure;
-      kind: 'failed';
     };
 export type AgentRecapFailure =
   | 'empty_or_oversized_output'
@@ -3056,61 +3056,61 @@ export type AgentRecapFailure =
   | 'model_unavailable';
 export type AgentScheduleRead =
   | {
+      kind: 'list';
       cursor?: string | null;
       expectedRevision?: number | null;
-      kind: 'list';
     }
   | {
-      taskId: string;
       kind: 'get';
+      taskId: string;
     }
   | {
-      reference: RecoveryRef;
       kind: 'receipt';
+      reference: RecoveryRef;
     };
 export type AgentSchedules =
   | {
+      kind: 'page';
       revision: number;
       tasks: AgentScheduledSummary[];
       nextCursor?: string | null;
-      kind: 'page';
     }
   | {
-      detail?: AgentScheduledDetail | null;
       kind: 'task';
+      detail?: AgentScheduledDetail | null;
     }
   | {
-      revision: number;
       kind: 'changed';
+      revision: number;
     }
   | {
-      result?: AgentScheduleResult | null;
       kind: 'receipt';
+      result?: AgentScheduleResult | null;
     };
 export type Status = 'active' | 'paused' | 'completed' | 'expired';
 export type Intent = {
-  body: string;
   kind: 'text';
+  body: string;
 };
 export type Schedule =
   | {
-      runAt: number;
       kind: 'once';
+      runAt: number;
     }
   | {
+      kind: 'interval';
       everySeconds: number;
       startAt: number;
-      kind: 'interval';
     }
   | {
+      kind: 'calendar';
       recurrence: Recurrence;
       anchorAt: number;
-      kind: 'calendar';
     }
   | {
+      kind: 'cron';
       expression: string;
       startAt: number;
-      kind: 'cron';
     };
 export type Recurrence = 'daily' | 'weekly' | 'monthly';
 export type AgentScheduledEffect =
@@ -3118,24 +3118,24 @@ export type AgentScheduledEffect =
       kind: 'reminder';
     }
   | {
+      kind: 'session';
       target: AgentScheduledTarget;
       model: ModelSelection;
       thinkingLevel?: ThinkingLevel | null;
-      kind: 'session';
     }
   | {
+      kind: 'agent_run';
       target: AgentScheduledTarget;
       model: ModelSelection;
       thinkingLevel?: ThinkingLevel | null;
-      kind: 'agent_run';
     };
 export type Creator =
   | {
       kind: 'user';
     }
   | {
-      sessionId: string;
       kind: 'agent';
+      sessionId: string;
     }
   | {
       kind: 'system';
@@ -3144,98 +3144,99 @@ export type Outcome = 'ok' | 'failed' | 'blocked';
 export type Misfire = 'skip' | 'latest';
 export type AgentScheduleResult =
   | {
+      kind: 'committed';
       taskId: string;
       revision: number;
-      kind: 'committed';
     }
   | {
-      actual?: number | null;
       kind: 'conflict';
+      actual?: number | null;
     }
   | {
-      reason: string;
       kind: 'rejected';
+      reason: string;
     };
 export type AgentScheduleChange =
   | {
-      input: AgentScheduledInput;
       kind: 'create';
+      input: AgentScheduledInput;
     }
   | {
+      kind: 'update';
       taskId: string;
       revision: number;
       input: AgentScheduledInput;
-      kind: 'update';
     }
   | {
-      taskId: string;
-      revision: number;
       kind: 'approve';
-    }
-  | {
       taskId: string;
       revision: number;
+    }
+  | {
       kind: 'pause';
-    }
-  | {
       taskId: string;
       revision: number;
+    }
+  | {
       kind: 'resume';
-    }
-  | {
       taskId: string;
       revision: number;
-      kind: 'trigger_now';
     }
   | {
+      kind: 'trigger_now';
+      taskId: string;
+      revision: number;
+    }
+  | {
+      kind: 'snooze';
       taskId: string;
       revision: number;
       delayMs: number;
-      kind: 'snooze';
     }
   | {
+      kind: 'acknowledge';
       taskId: string;
       revision: number;
       fireId: string;
-      kind: 'acknowledge';
     }
   | {
-      taskId: string;
-      revision: number;
       kind: 'clear_history';
-    }
-  | {
       taskId: string;
       revision: number;
+    }
+  | {
       kind: 'delete';
+      taskId: string;
+      revision: number;
     };
 export type AgentImportsRead =
   | {
       kind: 'sources';
     }
   | {
+      kind: 'catalog';
       source: AgentImportSourceRef;
       query: AgentImportQuery;
-      kind: 'catalog';
     }
   | {
+      kind: 'preview';
       source: AgentImportSourceRef;
       entry: AgentImportEntryRef;
       digest: string | null;
       after: number;
-      kind: 'preview';
     }
   | {
-      after: string | null;
       kind: 'copies';
+      after: string | null;
     };
 export type AgentImportsPage =
   | {
+      kind: 'sources';
       revision: number;
       sources: AgentImportSource[];
-      kind: 'sources';
     }
   | {
+      kind: 'catalog';
       source: AgentImportSourceRef;
       /**
        * @maxItems 16
@@ -3391,13 +3392,13 @@ export type AgentImportsPage =
             AgentImportEntry,
           ];
       next: string | null;
-      kind: 'catalog';
     }
   | {
-      preview: AgentImportPreview;
       kind: 'preview';
+      preview: AgentImportPreview;
     }
   | {
+      kind: 'copies';
       /**
        * @maxItems 16
        */
@@ -3545,7 +3546,6 @@ export type AgentImportsPage =
             AgentSession,
           ];
       next: string | null;
-      kind: 'copies';
     }
   | {
       kind: 'changed';
@@ -3555,53 +3555,50 @@ export type AgentImportsPage =
     }
   | {
       kind: 'invalid';
-    }
-  | {
-      kind: 'limit';
     };
 export type AgentImportLocation =
   | {
-      directory: AgentDirectorySelection;
       kind: 'codex';
-    }
-  | {
       directory: AgentDirectorySelection;
-      kind: 'claude_code';
     }
   | {
+      kind: 'claude_code';
+      directory: AgentDirectorySelection;
+    }
+  | {
+      kind: 'open_code';
       directory: AgentDirectorySelection;
       database: string;
-      kind: 'open_code';
     };
 export type AgentImportRecordKind = 'user' | 'assistant' | 'tool_call' | 'tool_result' | 'note';
 export type AgentImportChange =
   | {
+      kind: 'save_source';
       revision: number;
       id: string | null;
       name: string;
       location: AgentImportLocation;
-      kind: 'save_source';
     }
   | {
+      kind: 'remove_source';
       revision: number;
       id: string;
-      kind: 'remove_source';
     }
   | {
+      kind: 'copy';
       selection: AgentImportSelection;
       directory: AgentDirectorySelection;
       title: string;
-      kind: 'copy';
     };
 export type AgentImportResult =
   | {
+      kind: 'sources';
       revision: number;
       sources: AgentImportSource[];
-      kind: 'sources';
     }
   | {
-      session: AgentSession;
       kind: 'imported';
+      session: AgentSession;
     }
   | {
       kind: 'changed';
@@ -3611,21 +3608,19 @@ export type AgentImportResult =
     }
   | {
       kind: 'invalid';
-    }
-  | {
-      kind: 'limit';
     };
 export type AgentProjectsRead =
   | {
-      cursor: AgentProjectCursor | null;
       kind: 'list';
+      cursor: AgentProjectCursor | null;
     }
   | {
-      selection: AgentDirectorySelection;
       kind: 'directory';
+      selection: AgentDirectorySelection;
     };
 export type AgentProjectsPage =
   | {
+      kind: 'projects';
       revision: string;
       /**
        * @maxItems 16
@@ -3774,11 +3769,10 @@ export type AgentProjectsPage =
             AgentProject,
           ];
       next: AgentProjectCursor | null;
-      kind: 'projects';
     }
   | {
-      location: AgentProjectLocation;
       kind: 'directory';
+      location: AgentProjectLocation;
     }
   | {
       kind: 'changed';
@@ -3788,33 +3782,33 @@ export type AgentProjectsPage =
     };
 export type AgentProjectChange =
   | {
+      kind: 'register';
       selection: AgentDirectorySelection;
       expected: AgentProjectRef | null;
-      kind: 'register';
     }
   | {
+      kind: 'rename';
       project: AgentProjectRef;
       name: string;
-      kind: 'rename';
     }
   | {
-      project: AgentProjectRef;
       kind: 'archive';
-    }
-  | {
       project: AgentProjectRef;
-      kind: 'restore';
     }
   | {
+      kind: 'restore';
+      project: AgentProjectRef;
+    }
+  | {
+      kind: 'relocate';
       project: AgentProjectRef;
       selection: AgentDirectorySelection;
       destination: AgentProjectRef | null;
-      kind: 'relocate';
     };
 export type AgentProjectResult =
   | {
-      project: AgentProject;
       kind: 'committed';
+      project: AgentProject;
     }
   | {
       kind: 'changed';
@@ -3830,109 +3824,109 @@ export type AgentProjectResult =
     };
 export type AgentCreated =
   | {
-      session: AgentSession;
       kind: 'created';
+      session: AgentSession;
     }
   | {
-      reason: AgentRejection;
       kind: 'rejected';
+      reason: AgentRejection;
     };
 export type AgentForkResult =
   | {
-      session: AgentSession;
       kind: 'forked';
+      session: AgentSession;
     }
   | {
+      kind: 'revision_conflict';
       expected: number;
       actual: number;
-      kind: 'revision_conflict';
     }
   | {
-      reason: AgentRejection;
       kind: 'rejected';
+      reason: AgentRejection;
     };
 export type AgentDirectories =
   | {
       kind: 'roots';
     }
   | {
+      kind: 'children';
       selection: AgentDirectorySelection;
       after: string | null;
-      kind: 'children';
     };
 export type AgentDirectoryPage =
   | {
-      roots: AgentDirectory[];
       kind: 'roots';
+      roots: AgentDirectory[];
     }
   | {
+      kind: 'children';
       directory: AgentDirectory;
       /**
        * @maxItems 32
        */
       children: AgentDirectory[];
       after: string | null;
-      kind: 'children';
     };
 export type AgentMetadataResult =
   | {
-      session: AgentSession;
       kind: 'committed';
+      session: AgentSession;
     }
   | {
+      kind: 'revision_conflict';
       expected: number;
       actual: number;
-      kind: 'revision_conflict';
     }
   | {
-      reason: AgentRejection;
       kind: 'rejected';
+      reason: AgentRejection;
     };
 export type AgentSessionAction = 'archive' | 'restore' | 'remove';
 export type AgentSessionChanged =
   | {
-      session: AgentSession;
       kind: 'changed';
+      session: AgentSession;
     }
   | {
-      sessionId: string;
       kind: 'removed';
+      sessionId: string;
     }
   | {
+      kind: 'revision_conflict';
       expected: number;
       actual: number;
-      kind: 'revision_conflict';
     }
   | {
-      reason: AgentRejection;
       kind: 'rejected';
+      reason: AgentRejection;
     };
 export type AgentExecutionResult =
   | {
       kind: 'missing';
     }
   | {
-      execution: AgentExecution;
       kind: 'found';
+      execution: AgentExecution;
     };
 export type AgentAttachmentUploadResult =
   | {
-      attachment: AgentAttachment;
       kind: 'uploaded';
+      attachment: AgentAttachment;
     }
   | {
-      reason: AgentAttachmentRejection;
       kind: 'rejected';
+      reason: AgentAttachmentRejection;
     };
 export type AgentAttachmentRejection = 'invalid_file' | 'closed' | 'archived';
 export type AgentMarkReadResult =
   | {
-      session: AgentSession;
       kind: 'observed';
+      session: AgentSession;
     }
   | {
-      reason: AgentRejection;
       kind: 'rejected';
+      reason: AgentRejection;
     };
 export type AgentInteractionKind =
   | 'service_approval'
@@ -3942,23 +3936,23 @@ export type AgentInteractionKind =
   | 'client_capability';
 export type InteractionAnswer =
   | {
-      decision: Decision;
       kind: 'service_approval';
+      decision: Decision;
     }
   | {
-      decision: Decision2;
       kind: 'permissions';
+      decision: Decision2;
     }
   | {
-      answers: (string | null)[];
       kind: 'question';
+      answers: (string | null)[];
     }
   | ((
       | {
+          action: 'accept';
           values: {
             [k: string]: FormValue | undefined;
           };
-          action: 'accept';
           [k: string]: unknown | undefined;
         }
       | {
@@ -3974,8 +3968,8 @@ export type InteractionAnswer =
       [k: string]: unknown | undefined;
     })
   | {
-      decision: Decision;
       kind: 'client_capability';
+      decision: Decision;
     };
 export type Decision = 'allow' | 'deny';
 export type Decision2 =
@@ -3983,58 +3977,58 @@ export type Decision2 =
       decision: 'deny';
     }
   | {
+      decision: 'allow';
       permissions: Permissions;
       scope: Scope2;
-      decision: 'allow';
     };
 export type Scope2 = 'once' | 'turn' | 'session';
 export type FormValue = string | number | boolean | string[];
 export type AgentInteractionResult =
   | {
-      record: InteractionRecord;
       kind: 'recorded';
+      record: InteractionRecord;
     }
   | {
-      reason: AgentInteractionRejection;
       kind: 'rejected';
+      reason: AgentInteractionRejection;
     };
 export type InteractionRequest =
   | {
+      kind: 'service_approval';
       toolUseId: string;
       toolName: string;
       service: string;
       method: string;
       binding: string;
       through: number;
-      kind: 'service_approval';
     }
   | {
-      toolUseId: string | null;
-      baseRevision: number;
-      request: PermissionRequest;
       kind: 'permissions';
+      toolUseId: string | null;
+      basis: PermissionBasis;
+      request: PermissionRequest;
     }
   | {
+      kind: 'question';
       toolUseId: string;
       questions: InteractionQuestion[];
-      kind: 'question';
     }
   | {
+      kind: 'form';
       toolUseId: string;
       message: string;
       requester: FormRequester;
       fields: FormField[];
-      kind: 'form';
     }
   | {
+      kind: 'client_capability';
       toolUseId: string;
       target: GrantTarget;
       /**
        * Agent-owned approvals expire with this original permission boundary.
-       * Older capability records without a boundary remain readable.
+       * Unbound capabilities are explicit; Agent-owned capabilities capture a full binding stamp.
        */
-      baseRevision?: number | null;
-      kind: 'client_capability';
+      basis?: PermissionBasis | null;
     };
 export type FormField = {
   name: string;
@@ -4045,83 +4039,83 @@ export type FormField = {
 } & FormField1;
 export type FormField1 =
   | {
+      kind: 'string';
       default?: string | null;
       minLength?: number | null;
       maxLength?: number | null;
       format?: FormFormat | null;
-      kind: 'string';
       [k: string]: unknown | undefined;
     }
   | {
-      default?: number | null;
-      minimum?: number | null;
-      maximum?: number | null;
       kind: 'number';
-      [k: string]: unknown | undefined;
-    }
-  | {
       default?: number | null;
       minimum?: number | null;
       maximum?: number | null;
+      [k: string]: unknown | undefined;
+    }
+  | {
       kind: 'integer';
+      default?: number | null;
+      minimum?: number | null;
+      maximum?: number | null;
       [k: string]: unknown | undefined;
     }
   | {
-      default?: boolean | null;
       kind: 'boolean';
+      default?: boolean | null;
       [k: string]: unknown | undefined;
     }
   | {
+      kind: 'single_select';
       options: FormOption[];
       default?: string | null;
-      kind: 'single_select';
       [k: string]: unknown | undefined;
     }
   | {
+      kind: 'multi_select';
       options: FormOption[];
       default?: string[] | null;
       minItems?: number | null;
       maxItems?: number | null;
-      kind: 'multi_select';
       [k: string]: unknown | undefined;
     };
 export type FormFormat = 'email' | 'uri' | 'date' | 'date-time';
 export type GrantCapability = 'browser' | 'computer_use' | 'desktop_mcp' | 'mcp';
 export type GrantScope =
   | {
-      origin: string;
       kind: 'browser_origin';
+      origin: string;
     }
   | {
       kind: 'capability';
     }
   | {
+      kind: 'mcp_tool';
       serverId: string;
       toolName: string;
-      kind: 'mcp_tool';
     };
 export type InteractionOutcome =
   | {
+      kind: 'service_approval_decision';
       decision: Decision;
       committedAt: number;
-      kind: 'service_approval_decision';
     }
   | {
+      kind: 'permissions_decision';
       decision: Decision2;
       committedAt: number;
-      kind: 'permissions_decision';
     }
   | {
+      kind: 'question_answer';
       answers: (string | null)[];
       committedAt: number;
-      kind: 'question_answer';
     }
   | ((
       | {
+          action: 'accept';
           values: {
             [k: string]: FormValue | undefined;
           };
-          action: 'accept';
           [k: string]: unknown | undefined;
         }
       | {
@@ -4133,19 +4127,19 @@ export type InteractionOutcome =
           [k: string]: unknown | undefined;
         }
     ) & {
-      committedAt: number;
       kind: 'form_answer';
+      committedAt: number;
       [k: string]: unknown | undefined;
     })
   | {
+      kind: 'client_capability_decision';
       decision: Decision;
       committedAt: number;
-      kind: 'client_capability_decision';
     }
   | {
+      kind: 'closure';
       reason: ClosureReason;
       committedAt: number;
-      kind: 'closure';
     };
 export type ClosureReason =
   | 'turn_stopped'
@@ -4157,23 +4151,23 @@ export type ClosureReason =
 export type AgentInteractionRejection = 'closed' | 'unavailable' | 'invalid_answer' | 'unsupported';
 export type FormResponse =
   | {
-      result: FormResult;
       kind: 'answered';
+      result: FormResult;
     }
   | {
-      reason: ClosureReason;
       kind: 'closed';
+      reason: ClosureReason;
     }
   | {
-      reason: QuestionRejection;
       kind: 'rejected';
+      reason: QuestionRejection;
     };
 export type FormResult =
   | {
+      action: 'accept';
       values: {
         [k: string]: FormValue | undefined;
       };
-      action: 'accept';
       [k: string]: unknown | undefined;
     }
   | {
@@ -4190,23 +4184,23 @@ export type AgentContextRequestState = 'requested' | 'completed' | 'interrupted'
 export type AgentFileKind = 'file' | 'directory' | 'symlink' | 'other';
 export type AgentFileChange =
   | {
-      directoryIdentity: string;
       kind: 'ready';
+      directoryIdentity: string;
     }
   | {
       kind: 'changed';
     }
   | {
-      reason: AgentFileUnavailable;
       kind: 'unavailable';
+      reason: AgentFileUnavailable;
     };
 export type AgentFileUnavailable = 'directory_changed';
 export type GitArea = 'staged' | 'worktree' | 'untracked';
 export type GitChangeKind = 'added' | 'modified' | 'deleted' | 'type_changed' | 'conflicted';
 export type GitDiff =
   | {
-      patch: string;
       kind: 'text';
+      patch: string;
     }
   | {
       kind: 'binary';
@@ -4222,56 +4216,56 @@ export type GitDiff =
  */
 export type TerminalOutputEvent =
   | {
+      kind: 'data';
       sequence: number;
       size: TerminalSize;
       initialSize: TerminalSize;
       dataBase64: string;
-      kind: 'data';
     }
   | {
+      kind: 'resize';
       sequence: number;
       size: TerminalSize;
       initialSize: TerminalSize;
-      kind: 'resize';
     }
   | {
-      after: number;
-      size: TerminalSize;
-      initialSize: TerminalSize;
       kind: 'pending';
-    }
-  | {
       after: number;
       size: TerminalSize;
       initialSize: TerminalSize;
-      kind: 'closed';
     }
   | {
-      reason: TerminalOutputUnavailable;
+      kind: 'closed';
+      after: number;
+      size: TerminalSize;
+      initialSize: TerminalSize;
+    }
+  | {
       kind: 'unavailable';
+      reason: TerminalOutputUnavailable;
     };
 export type TerminalOutputUnavailable = 'not_retained';
 export type TerminalOutcome_TerminalOutputEvent =
   | {
-      value: TerminalOutputEvent;
       kind: 'completed';
+      value: TerminalOutputEvent;
     }
   | {
-      message: string;
       kind: 'failed';
+      message: string;
     };
 export type Ownership =
   | {
       kind: 'local';
     }
   | {
+      kind: 'source_owned';
       sourceSessionId: string;
       ownerSessionId: string;
-      kind: 'source_owned';
     }
   | {
-      sourceSessionId: string;
       kind: 'source_unavailable';
+      sourceSessionId: string;
     };
 export type SnapshotKind = 'shell_run';
 export type ShellMode = 'pipes' | 'pty';
@@ -4285,89 +4279,89 @@ export type ShellStatus =
   | 'orphaned';
 export type TerminalOutcome_TerminalPage =
   | {
-      value: TerminalPage;
       kind: 'completed';
+      value: TerminalPage;
     }
   | {
-      message: string;
       kind: 'failed';
+      message: string;
     };
 export type TerminalOutcome_ResourceUpdate =
   | {
-      value: ResourceUpdate;
       kind: 'completed';
+      value: ResourceUpdate;
     }
   | {
-      message: string;
       kind: 'failed';
+      message: string;
     };
 export type TerminalOutcome_TerminalLeaseUpdate =
   | {
-      value: TerminalLeaseUpdate;
       kind: 'completed';
+      value: TerminalLeaseUpdate;
     }
   | {
-      message: string;
       kind: 'failed';
+      message: string;
     };
 export type TerminalOutcome_TerminalControlReceipt =
   | {
-      value: TerminalControlReceipt;
       kind: 'completed';
+      value: TerminalControlReceipt;
     }
   | {
-      message: string;
       kind: 'failed';
+      message: string;
     };
 export type TerminalOutcome_TerminalReleased =
   | {
-      value: TerminalReleased;
       kind: 'completed';
+      value: TerminalReleased;
     }
   | {
-      message: string;
       kind: 'failed';
+      message: string;
     };
 export type TerminalOutcome_TerminalStopped =
   | {
-      value: TerminalStopped;
       kind: 'completed';
+      value: TerminalStopped;
     }
   | {
-      message: string;
       kind: 'failed';
+      message: string;
     };
 export type QuestionResult =
   | {
-      answers: QuestionResponse[];
       kind: 'answered';
+      answers: QuestionResponse[];
     }
   | {
-      reason: ClosureReason;
       kind: 'closed';
+      reason: ClosureReason;
     }
   | {
-      reason: QuestionRejection;
       kind: 'rejected';
+      reason: QuestionRejection;
     };
 export type AgentSendResult =
   | {
+      kind: 'rejected';
       sessionId: string;
       reason: AgentSkillInputRejection;
       skills?: SkillInvocationResult | null;
-      kind: 'rejected';
     }
   | {
+      kind: 'started';
       sessionId: string;
       invocationId: string;
       messageId: string;
-      kind: 'started';
     }
   | {
+      kind: 'queued';
       sessionId: string;
       messageId: string;
       revision: number;
-      kind: 'queued';
     };
 export type AgentSkillInputRejection = 'skills_unavailable';
 export type AgentDeliveryFact =
@@ -4375,98 +4369,98 @@ export type AgentDeliveryFact =
       kind: 'opened';
     }
   | {
-      messageId: string;
       kind: 'executor_started';
+      messageId: string;
     }
   | {
       kind: 'transcript_changed';
     }
   | {
+      kind: 'step_ended';
       stepId: string;
       /**
        * The model/executor completed; this says nothing about tool business success.
        */
       completed: boolean;
-      kind: 'step_ended';
     }
   | {
+      kind: 'part_started';
       messageId: string;
       stepId: string;
       partId: string;
       textKind: AgentContentKind;
-      kind: 'part_started';
     }
   | {
-      stepId: string;
-      partId: string;
-      text: string;
       kind: 'delta';
-    }
-  | {
       stepId: string;
       partId: string;
-      kind: 'part_finished';
+      text: string;
     }
   | {
+      kind: 'part_finished';
+      stepId: string;
+      partId: string;
+    }
+  | {
+      kind: 'tool_input_started';
       toolUseId: string;
       stepId: string;
       name: string;
       providerExecuted: boolean;
-      kind: 'tool_input_started';
     }
   | {
+      kind: 'tool_input_delta';
       toolUseId: string;
       text: string;
-      kind: 'tool_input_delta';
     }
   | {
+      kind: 'tool_input_ready';
       toolUseId: string;
       stepId: string;
       name: string;
       providerExecuted: boolean;
-      kind: 'tool_input_ready';
     }
   | {
+      kind: 'tool_dispatched';
       toolUseId: string;
       name: string;
       title?: DisplayText | null;
-      kind: 'tool_dispatched';
     }
   | {
-      toolUseId: string;
       kind: 'tool_rejected';
+      toolUseId: string;
     }
   | {
+      kind: 'tool_settled';
       toolUseId: string;
       settlement: ToolSettlement;
-      kind: 'tool_settled';
     }
   | {
+      kind: 'provider_tool_result';
       toolUseId: string;
       isError: boolean;
-      kind: 'provider_tool_result';
     }
   | {
+      kind: 'executor_tool_start';
       toolUseId: string;
       name: string;
-      kind: 'executor_tool_start';
     }
   | {
+      kind: 'executor_tool_progress';
       toolUseId: string;
       /**
        * The most recent at most 2048 codepoints of reported progress, not the complete result.
        */
       text: string;
-      kind: 'executor_tool_progress';
     }
   | {
+      kind: 'executor_tool_result';
       toolUseId: string;
       isError: boolean;
-      kind: 'executor_tool_result';
     }
   | {
-      failed: boolean;
       kind: 'ended';
+      failed: boolean;
     };
 export type AgentContentKind = 'text' | 'thinking';
 /**
@@ -4480,28 +4474,28 @@ export type AgentDiagnosticPosition =
       kind: 'latest';
     }
   | {
+      kind: 'before';
       through: number;
       sequence: number;
-      kind: 'before';
     };
 export type DiagnosticDetail =
   | {
+      kind: 'execution';
       invocation: Invocation;
       reason: ExecutionFailureReason;
       modelFailure?: ModelFailureCause | null;
-      kind: 'execution';
     }
   | {
+      kind: 'model_step';
       invocation: Invocation;
       stepId: string;
       status: ModelInterruption;
       modelFailure?: ModelFailureCause | null;
-      kind: 'model_step';
     }
   | {
+      kind: 'session_title';
       invocation: Invocation;
       cause: TitleFailureCause;
-      kind: 'session_title';
     };
 export type ExecutionFailureReason =
   | 'session_busy'
@@ -4530,8 +4524,8 @@ export type ExecutionFailureReason =
  */
 export type ModelFailureCause =
   | {
-      status: number;
       kind: 'http';
+      status: number;
     }
   | {
       kind: 'timed_out';
@@ -4540,8 +4534,8 @@ export type ModelFailureCause =
       kind: 'context_overflow';
     }
   | {
-      reason: ProviderFailureReason;
       kind: 'provider';
+      reason: ProviderFailureReason;
     }
   | {
       kind: 'adapter';
@@ -4558,8 +4552,8 @@ export type TitleFailureCause =
       kind: 'preparation';
     }
   | {
-      cause: ModelFailureCause;
       kind: 'model';
+      cause: ModelFailureCause;
     }
   | {
       kind: 'invalid_output';
@@ -4583,21 +4577,21 @@ export type HistoryPosition =
       kind: 'tail';
     }
   | {
+      kind: 'row';
       position: HistoryRowPosition;
       field: HistoryField;
-      kind: 'row';
     }
   | {
-      cursor: Cursor;
       kind: 'before';
-    }
-  | {
       cursor: Cursor;
-      kind: 'after';
     }
   | {
-      sequence: number;
+      kind: 'after';
+      cursor: Cursor;
+    }
+  | {
       kind: 'event';
+      sequence: number;
     };
 /**
  * A readable field in a conversation window, in presentation order.
@@ -4610,80 +4604,80 @@ export type HistoryField = 'thinking' | 'body';
 export type HistoryView = 'text' | 'conversation';
 export type AgentDeliveryPage =
   | {
+      kind: 'events';
       through: number;
       nextAfter: number;
       events: AgentDelivery[];
-      kind: 'events';
     }
   | {
-      queue: AgentQueue;
       kind: 'queue';
+      queue: AgentQueue;
     }
   | {
-      pending: AgentPendingInteractions;
       kind: 'interactions';
+      pending: AgentPendingInteractions;
     };
 /**
  * Trusted producer attribution, preserved independently of editable content.
  */
 export type MessageOrigin =
   | {
-      taskId: string;
       kind: 'workhub_task';
+      taskId: string;
     }
   | {
-      graphId: string;
       kind: 'workhub_graph';
+      graphId: string;
     };
 export type AgentQueueKind = 'in_flight' | 'steering' | 'followup';
 export type AgentQueueMessageResult =
   | {
+      kind: 'ready';
       revision: number;
       hasAttachments: boolean;
       message: string;
-      kind: 'ready';
     }
   | {
+      kind: 'revision_conflict';
       expected: number;
       actual: number;
-      kind: 'revision_conflict';
     }
   | {
       kind: 'missing';
     };
 export type AgentQueueAction =
   | {
-      messageId: string;
       kind: 'retract';
-    }
-  | {
       messageId: string;
-      kind: 'promote';
     }
   | {
+      kind: 'promote';
+      messageId: string;
+    }
+  | {
+      kind: 'update';
       messageId: string;
       message: string;
-      kind: 'update';
     }
   | {
+      kind: 'reorder';
       /**
        * @minItems 1
        */
       messageIds: [string, ...string[]];
-      kind: 'reorder';
     };
 /**
  * Model identity recorded for the exact historical assistant step.
  */
 export type HistoryModel =
   | {
+      kind: 'native';
       requestedModelId: string;
       reportedModelId: string | null;
-      kind: 'native';
     }
   | {
-      modelId: string;
       kind: 'imported';
+      modelId: string;
     };
 export type AttachmentKind = 'image' | 'pdf' | 'doc' | 'code' | 'other';
 export type HistoryTurnOutcome = 'completed' | 'failed' | 'aborted';
@@ -4693,13 +4687,14 @@ export type HistoryTurnOutcome = 'completed' | 'failed' | 'aborted';
  */
 export type Role = 'compaction' | 'failure' | 'user' | 'assistant' | 'tool_call' | 'tool_result';
 export type AgentHistoryPage = {
+  kind: 'ready';
   through: number;
   chunks: AgentHistoryChunk[];
   before: Cursor | null;
   after: Cursor | null;
-  kind: 'ready';
 };
 export type AgentHistorySearchPage = {
+  kind: 'ready';
   through: number;
   /**
    * @maxItems 16
@@ -4864,7 +4859,6 @@ export type AgentHistorySearchPage = {
    * Continue even when this batch has no matches. Null is the end of the scan.
    */
   nextAfter: HistoryRowPosition | null;
-  kind: 'ready';
 };
 /**
  * An explicitly selected canonical transcript field, never an execution grant.
@@ -4874,12 +4868,12 @@ export type SourceField =
   | 'receipt';
 export type AgentHistorySourceReference =
   | {
-      position: HistoryRowPosition;
       kind: 'row';
+      position: HistoryRowPosition;
     }
   | {
-      toolUseId: string;
       kind: 'tool_use';
+      toolUseId: string;
     };
 /**
  * A structural selector into an original JSON field. Keys and array indices
@@ -4894,14 +4888,15 @@ export type SourcePosition =
       kind: 'tail';
     }
   | {
-      offset: number;
       kind: 'before';
+      offset: number;
     }
   | {
-      offset: number;
       kind: 'after';
+      offset: number;
     };
 export type AgentHistorySourcePage = {
+  kind: 'ready';
   through: number;
   source: HistorySource;
   /**
@@ -4909,7 +4904,6 @@ export type AgentHistorySourcePage = {
    * This is display text, never a filesystem capability or open command.
    */
   filePath?: string | null;
-  kind: 'ready';
 };
 /**
  * Presentation role of the exact row. This carries no execution authority.
@@ -4922,16 +4916,17 @@ export type SourceFormat = 'text' | 'json' | 'image_descriptor';
  */
 export type AgentToolImageFrame =
   | {
+      kind: 'chunk';
       mimeType: string;
       totalBytes: number;
       offset: number;
       data: string;
-      kind: 'chunk';
     }
   | {
       kind: 'complete';
     };
 export type AgentToolImagePage = {
+  kind: 'ready';
   through: number;
   position: HistoryRowPosition;
   offset: number;
@@ -4942,20 +4937,20 @@ export type AgentToolImagePage = {
    * Standard padded Base64 of at most 32KiB of encoded image bytes.
    */
   data: string;
-  kind: 'ready';
 };
 export type AgentAttachmentImageSource =
   | {
-      id: string;
       kind: 'uploaded';
+      id: string;
     }
   | {
+      kind: 'history';
       through: number;
       position: HistoryRowPosition;
       attachmentIndex: number;
-      kind: 'history';
     };
 export type AgentAttachmentImagePage = {
+  kind: 'ready';
   source: AgentAttachmentImageSource;
   offset: number;
   totalBytes: number;
@@ -4965,17 +4960,17 @@ export type AgentAttachmentImagePage = {
    * Standard padded Base64 of at most 32KiB of encoded image bytes.
    */
   data: string;
-  kind: 'ready';
 };
 /**
  * Resource names select slots in the current request, not durable grants.
  */
 export type HostRequest =
   | {
-      value: unknown;
       operation: 'emit';
+      value: unknown;
     }
   | {
+      operation: 'call';
       import: string;
       provider: number;
       method: string;
@@ -4983,9 +4978,9 @@ export type HostRequest =
       attachments: {
         [k: string]: string | undefined;
       };
-      operation: 'call';
     }
   | {
+      operation: 'mutate';
       import: string;
       provider: number;
       method: string;
@@ -4994,37 +4989,36 @@ export type HostRequest =
       attachments: {
         [k: string]: string | undefined;
       };
-      operation: 'mutate';
     }
   | {
-      reference: RecoveryRef;
       operation: 'recover';
+      reference: RecoveryRef;
     }
   | {
-      slot: string;
       operation: 'metadata';
+      slot: string;
     }
   | {
+      operation: 'read';
       slot: string;
       start: number;
       end: number;
-      operation: 'read';
     };
 export type Identity2 =
   | {
+      kind: 'agent';
       invocation: Invocation;
       operationId?: string | null;
-      kind: 'agent';
       [k: string]: unknown | undefined;
     }
   | {
-      requestId: string;
       kind: 'remote';
+      requestId: string;
       [k: string]: unknown | undefined;
     }
   | {
-      grant: Id;
       kind: 'background';
+      grant: Id;
       [k: string]: unknown | undefined;
     };
 /**
@@ -5033,14 +5027,14 @@ export type Identity2 =
  */
 export type Id = string;
 export type MarkdownTextResult = {
-  text: string;
   kind: 'ready';
+  text: string;
 };
 
 export interface ClientDraft {
   revision: number;
   text: string;
-  attachments?: ClientDraftAttachment[];
+  attachments: ClientDraftAttachment[];
 }
 /**
  * Display metadata for an immutable Host upload in this exact draft owner.
@@ -5095,7 +5089,7 @@ export interface ClientOperation {
   /**
    * Durable fence proving that this attempt did not dispatch.
    */
-  abandoned?: boolean;
+  abandoned: boolean;
   /**
    * Present only after original preparation has been durably recorded.
    */
@@ -7190,6 +7184,7 @@ export interface AgentSession {
   dataSource: AgentDataSource;
   permissions: AgentWorkspacePermissions;
   boundaryRevision: number;
+  binding: BindingStamp;
   id: string;
   title: string;
   labels: string[];
@@ -7198,6 +7193,10 @@ export interface AgentSession {
   updatedAt: number;
   archived: boolean;
   hasUnread: boolean;
+  /**
+   * Exact durable visible tail accepted by markRead; independent of preview clocks.
+   */
+  tailMessageId: string | null;
   activity: AgentSessionActivity;
 }
 /**
@@ -7214,6 +7213,10 @@ export interface AgentDataSource {
   stateDomain: string;
   deployment: string;
   namespace: InstanceId;
+}
+export interface BindingStamp {
+  id: string;
+  permissionEpoch: number;
 }
 export interface AgentWorkspace {
   /**
@@ -7654,13 +7657,21 @@ export interface SettingsModelCursor {
 export interface SettingsUsageRead {
   range: SettingsUsageRange;
   selection: UsageSelection;
-  offset: number;
+  cursor: UsageActivityCursor | null;
 }
 export interface SettingsUsageRange {
   from: number;
   to: number;
   sessionId: string | null;
-  through: number | null;
+  through: UsageFence | null;
+}
+export interface UsageFence {
+  stateDomain: string;
+  /**
+   * @minItems 8
+   * @maxItems 8
+   */
+  partitions: [number, number, number, number, number, number, number, number];
 }
 /**
  * Filters only the activity list, never headline accounting for the range.
@@ -7670,14 +7681,19 @@ export interface UsageSelection {
   status?: UsageActivityStatus | null;
   search?: string;
 }
+export interface UsageActivityCursor {
+  completedAt: number;
+  partition: number;
+  requestId: string;
+}
 export interface SettingsUsagePage {
-  through: number;
+  through: UsageFence;
   /**
    * @maxItems 32
    */
   attempts: UsageActivity[];
   total: number;
-  nextOffset?: number | null;
+  nextCursor?: UsageActivityCursor | null;
 }
 export interface UsageModelAttempt {
   requestId: string;
@@ -7740,9 +7756,9 @@ export interface ToolCallIdentity {
   [k: string]: unknown | undefined;
 }
 export interface SettingsUsageSummary {
-  through: number;
+  through: UsageFence;
   summary: SettingsUsageTotals;
-  nextOffset?: number | null;
+  nextCursor?: UsageGroupCursor | null;
 }
 export interface SettingsUsageTotals {
   models: UsageModelTotals;
@@ -7830,10 +7846,17 @@ export interface UsageToolSummary {
   name: string;
   totals: UsageToolTotals;
 }
+export interface UsageGroupCursor {
+  group: UsageGroup;
+  /**
+   * None is the unknown-provider group, not the beginning of pagination.
+   */
+  key?: string | null;
+}
 export interface SettingsUsageSummaryRead {
   range: SettingsUsageRange;
   group: UsageGroup;
-  offset: number;
+  cursor: UsageGroupCursor | null;
 }
 export interface PricingUpdate {
   expectedRevision: number;
@@ -8235,7 +8258,6 @@ export interface SkillLibraryEntry {
   description: string;
   valid: boolean;
   shadowedBy?: string | null;
-  metadataTruncated: boolean;
   issues: string[];
 }
 export interface SkillPreference {
@@ -8275,6 +8297,9 @@ export interface SkillLibrarySetPreference {
 }
 export interface SkillModelSearch {
   query: string;
+  /**
+   * Omission returns the complete matching catalog.
+   */
   limit?: number | null;
 }
 export interface SkillModelLoad {
@@ -8303,7 +8328,6 @@ export interface ReadInput {
 export interface SkillModelSearchResult {
   revision: string;
   query: string;
-  queryTruncated: boolean;
   matches: SearchMatch[];
   totalEligible: number;
   matchedCount: number;
@@ -8472,6 +8496,7 @@ export interface AgentScheduledTarget {
   workspace: AgentWorkspace;
   permissions: AgentWorkspacePermissions;
   boundaryRevision: number;
+  binding: BindingStamp;
 }
 export interface AgentPlanReceiptRead {
   reference: RecoveryRef;
@@ -8839,7 +8864,9 @@ export interface RecallQuery {
    * @minItems 1
    */
   terms: [string, ...string[]];
-  question?: string | null;
+  /**
+   * An explicit caller-selected result budget; omission retains all matching results.
+   */
   limit?: number | null;
   session_id?: string | null;
   since?: number | null;
@@ -8855,7 +8882,14 @@ export interface AgentRecallPassage {
   session: AgentSession;
   anchorMessageId: string;
   anchorPosition: HistoryRowPosition;
+  /**
+   * Display preview beginning at the first match. The anchor opens the complete source.
+   */
   excerpt: string;
+  /**
+   * Highlight ranges in UTF-16 code units within `excerpt`.
+   */
+  highlights: AgentRecallHighlight[];
   matchedTerms: string[];
 }
 /**
@@ -8865,6 +8899,10 @@ export interface AgentRecallPassage {
 export interface HistoryRowPosition {
   sourceSequence: number;
   itemIndex: number;
+}
+export interface AgentRecallHighlight {
+  start: number;
+  end: number;
 }
 export interface AgentImportSourceRef {
   id: string;
@@ -9120,6 +9158,13 @@ export interface InteractionRecord {
   outcome: InteractionOutcome | null;
 }
 /**
+ * Captured authority, never silently upgraded by resolving a current binding.
+ */
+export interface PermissionBasis {
+  boundaryRevision: number;
+  binding: BindingStamp;
+}
+/**
  * The Host supplies the real operation description; it is display information,
  * not authority inferred from a command string or a plugin-supplied Session ID.
  */
@@ -9306,6 +9351,31 @@ export interface AgentFileCursor {
   directoryIdentity: string;
   after: WorkspacePath;
 }
+/**
+ * Workspace-relative file suggestions from this Session's admitted directory.
+ */
+export interface AgentFileCandidatesRead {
+  sessionId: string;
+  /**
+   * Omission or null selects the workspace root.
+   */
+  directory?: WorkspacePath | null;
+  /**
+   * Empty or whitespace browses the selected directory's direct files and directories.
+   * Otherwise, searches file paths within that directory's descendants.
+   */
+  query: string;
+}
+/**
+ * An emitted batch of path observations; null final completion ends the subscription.
+ */
+export interface AgentFileCandidates {
+  entries: AgentFileEntry[];
+}
+export interface AgentFileEntry {
+  path: WorkspacePath;
+  kind: AgentFileKind;
+}
 export interface AgentFileWatch {
   sessionId: string;
   path: WorkspacePath | null;
@@ -9314,10 +9384,6 @@ export interface AgentFilePage {
   directoryIdentity: string;
   entries: AgentFileEntry[];
   next: AgentFileCursor | null;
-}
-export interface AgentFileEntry {
-  path: WorkspacePath;
-  kind: AgentFileKind;
 }
 export interface GitStatusEntry {
   area: GitArea;

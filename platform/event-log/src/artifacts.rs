@@ -70,6 +70,7 @@ impl EventLog {
         bytes: impl AsRef<[u8]> + Send + 'static,
     ) -> Result<Artifact, StoreError> {
         self.validate_root()?;
+        self.check_bound_session(&artifact.session_id)?;
         self.connection
             .run(move |connection| {
                 Box::pin(async move {

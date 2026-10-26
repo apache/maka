@@ -86,7 +86,7 @@ impl EventLog {
         execution.sort_all_objects();
         let execution_digest =
             maka_agent_facts::artifact::content_digest(&serde_json::to_vec(&execution)?);
-        let commits = self.commits.clone();
+        let commits = self.commits.session(&admission.invocation.session_id);
         self.connection
             .run(move |connection| {
                 Box::pin(async move {
@@ -134,7 +134,7 @@ impl EventLog {
                         .execute(&mut *tx)
                         .await?;
                     tx.commit().await.map_err(StoreError::CommitUnknown)?;
-                    commits.send_modify(|_| {});
+                    commits.metadata();
                     Ok(receipt)
                 })
             })

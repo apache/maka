@@ -27,7 +27,7 @@ pub(super) async fn run(
     id: Uuid,
     command: maka_process::Command,
     input: mpsc::Receiver<Write>,
-    configuration: Option<&SessionConfiguration>,
+    session: Option<(&maka_event_log::SessionStore, &ResolvedConfiguration)>,
 ) -> Result<Completion, ToolError> {
     if context.scope().cancellation.is_cancelled() || owner.drain.is_cancelled() {
         return Ok(Completion::Failed {
@@ -91,16 +91,15 @@ pub(super) async fn run(
         Ok(())
     };
     let monitor = async {
-        let Some(configuration) = configuration else {
+        let Some((store, configuration)) = session else {
             finished.cancelled().await;
             return Ok(());
         };
-        let mut changes = owner.store.subscribe_catalog_changes();
+        let mut changes = store.subscribe_commits().map_err(|e| e.to_string())?;
         loop {
             changes.borrow_and_update();
-            let current = owner
-                .store
-                .get_session::<SessionConfiguration>(
+            let current = store
+                .get_session::<maka_agent_api::session::StoredSessionConfiguration>(
                     &context
                         .scope()
                         .identity
@@ -113,13 +112,14 @@ pub(super) async fn run(
             let current = current
                 .filter(|s| !s.archived)
                 .ok_or("Protocol process Session unavailable")?;
-            if current.configuration.boundary_revision != configuration.boundary_revision
+            let current = maka_agent_authority::permissions::resolve_session(current)
+                .map_err(|e| e.to_string())?;
+            if current.configuration.permission_basis() != configuration.permission_basis()
                 || current.configuration.workspace != configuration.workspace
             {
                 return Err("Protocol process permissions changed".into());
             }
-            if owner
-                .store
+            if store
                 .session_retirement(&current.id)
                 .await
                 .map_err(|e| e.to_string())?

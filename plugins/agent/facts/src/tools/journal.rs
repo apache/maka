@@ -36,6 +36,16 @@ impl ToolJournal {
     pub fn new(sink: Arc<dyn EventSink>, invocation: Invocation) -> Self {
         Self { sink, invocation }
     }
+    pub fn execution_custody(&self) -> Option<Arc<dyn super::ExecutionCustody>> {
+        self.sink.clone().execution_custody()
+    }
+    pub fn context(&self, operation_id: String) -> super::ToolCallContext {
+        super::ToolCallContext {
+            invocation: self.invocation.clone(),
+            operation_id,
+            execution: self.execution_custody(),
+        }
+    }
     pub fn invocation(&self) -> &Invocation {
         &self.invocation
     }
@@ -176,7 +186,7 @@ impl ToolJournal {
             } else {
                 effect.start(cancellation).await
             };
-            let id = uuid::Uuid::new_v4().to_string();
+            let id = RuntimeEvent::new_id();
             let recorded_at = std::time::SystemTime::now();
             if let Err(ToolError::OperationCleanupUnconfirmed {
                 message,

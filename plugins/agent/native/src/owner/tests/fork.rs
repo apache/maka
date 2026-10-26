@@ -79,9 +79,7 @@ async fn fork_completed_turn_excludes_active_tail_and_continues_without_replayin
         assert_eq!(std::fs::read_to_string(f.workspace.join("fork-effect.txt")).unwrap(), "original tool effect\n");
         response_with_text(&mut socket, "Turn A completed answer").await;
         f.drained().await;
-        let turn_a = f
-            .store
-            .invocation_boundary(&source, first["invocationId"].as_str().unwrap())
+        let turn_a = f.session(&source).await.invocation_boundary(&source, first["invocationId"].as_str().unwrap())
             .await
             .unwrap()
             .unwrap()
@@ -142,7 +140,7 @@ async fn fork_completed_turn_excludes_active_tail_and_continues_without_replayin
         let retained_id = read_argument["path"].as_str().unwrap()
             .strip_prefix("maka://runtime/attachments/")
             .expect("inherited attachment must name a Session resource");
-        assert_eq!(f.store.read_artifact_chunk(target, retained_id, 0, 1024).await.unwrap().unwrap().bytes,
+        assert_eq!(f.session(target).await.read_artifact_chunk(target, retained_id, 0, 1024).await.unwrap().unwrap().bytes,
             b"retained Turn A attachment\n");
         assert!(!messages.contains("Turn B: active tail must stay out"), "{messages}");
         let historical_tool: Value = serde_json::from_str(
@@ -179,10 +177,10 @@ async fn fork_archived_source_narrows_current_authority_and_refuses_managed_sess
         let source = f.create("Archived history").await;
         let original = f.owner.session(&source).await.unwrap();
         // Persist a source accepted under a formerly broader installation.
-        let changed = f.store.update_session_metadata(
+        let changed = f.session(&source).await.update_session_metadata(
             &source,
             original.revision,
-            |configuration: &mut SessionConfiguration| {
+            |configuration: &mut StoredSessionConfiguration| {
                 configuration.permissions = WorkspacePermissions {
                     access: WorkspaceAccess::DangerFullAccess,
                     request_permissions: true,
@@ -194,7 +192,7 @@ async fn fork_archived_source_narrows_current_authority_and_refuses_managed_sess
             },
         ).await.unwrap();
         assert!(matches!(changed, maka_event_log::sessions::SessionMutation::Committed(_)));
-        let archived = f.store.set_session_archived::<SessionConfiguration>(&source, true, now()).await.unwrap();
+        let archived = f.store.set_session_archived::<StoredSessionConfiguration>(&source, true, now()).await.unwrap();
         let forked = f.mutation(2, "fork", json!({"sessionId":source,"expectedRevision":archived.revision,"turnId":null,"title":"Fresh authority","labels":[]}), Uuid::new_v4()).await.unwrap();
         assert_eq!(forked["kind"], "forked");
         assert_eq!(forked["session"]["archived"], false);
@@ -206,12 +204,12 @@ async fn fork_archived_source_narrows_current_authority_and_refuses_managed_sess
         let target = forked["session"]["id"].as_str().unwrap();
         let fresh = f.owner.session(target).await.unwrap().configuration;
         assert!(fresh.title_is_manual);
-        assert_eq!(serde_json::to_value(fresh.workspace).unwrap(), serde_json::to_value(archived.configuration.workspace).unwrap());
+        assert_eq!(serde_json::to_value(fresh.workspace).unwrap(), serde_json::to_value(resolve_session(archived.clone()).unwrap().configuration.workspace).unwrap());
 
-        let narrowed = f.store.update_session_metadata(
+        let narrowed = f.session(&source).await.update_session_metadata(
             &source,
             archived.revision,
-            |configuration: &mut SessionConfiguration| {
+            |configuration: &mut StoredSessionConfiguration| {
                 configuration.tools = Some(vec![]);
                 Ok(())
             },
@@ -232,7 +230,7 @@ async fn fork_archived_source_narrows_current_authority_and_refuses_managed_sess
                 managed: true,
                 authority_session_id: None,
             },
-            &f.owner.session(&source).await.unwrap().configuration,
+            &f.session(&source).await.get_session::<StoredSessionConfiguration>(&source).await.unwrap().unwrap().configuration,
             now(),
         ).await.unwrap();
         let revision = f.owner.session(&managed).await.unwrap().revision;

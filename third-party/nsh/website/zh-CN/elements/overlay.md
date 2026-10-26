@@ -83,7 +83,7 @@ function MoreButton() {
 
 有 `anchor` 时，NSH 把它放在锚点旁边：
 
-- `anchor` 是一个视图（一个 `ref`），或根视图坐标系中的一个 `Point`（`{ x, y }`），即触摸的 `pageX` / `pageY`（显示在指针位置的菜单）。
+- `anchor` 是一个视图（一个 `ref`）、根视图坐标系中的一个 `Point`（`{ x, y }`），即触摸的 `pageX` / `pageY`（显示在指针位置的菜单），或那里的一个 `Bounds`（`{ origin, size }`）：输入框的光标（`onCaretMove` 的 `pageBounds`），输入内容的候选在那里打开。
 - `placement` 是它所在的一侧：`"top"`、`"bottom"`（默认）、`"left"` 或 `"right"`。这一侧放不下而另一侧放得下时，它会去另一侧；两侧都放不下时，它会去空间更大的一侧。
 - `align` 决定它沿这一侧如何对齐：`"start"`、`"center"`（默认）或 `"end"`。在锚点上方和下方时，start 和 end 跟随布局方向：start 是左边缘，在从右到左的布局中是右边缘。
 - `offset` 是锚点与浮层之间的间距；`margin` 是它与安全区边缘保持的距离，它始终位于安全区之内：放不下时会沿所在一侧滑动。
@@ -117,7 +117,7 @@ function MoreButton() {
 
 | 属性 | Rust | 类型 | 默认值 | 说明 |
 |---|---|---|---|---|
-| `anchor` | `.anchor(&element_ref)`、`.anchor_point(point)` | `YNode \| { x: number; y: number } \| null` | 无 | 它相对放置的视图或点。没有时，它是根视图中的固定定位盒子。 |
+| `anchor` | `.anchor(&element_ref)`、`.anchor_point(point)`、`.anchor_bounds(bounds)` | `YNode \| Point \| Bounds \| null` | 无 | 它相对放置的视图、点或矩形。没有时，它是根视图中的固定定位盒子。 |
 | `placement` | `.placement(..)` | `"top" \| "bottom" \| "left" \| "right"` | `"bottom"` | 它位于锚点的哪一侧。 |
 | `align` | `.align(..)` | `"start" \| "center" \| "end"` | `"center"` | 它沿这一侧如何与锚点对齐。 |
 | `offset` | `.offset(px(..))` | `number` | `0` | 锚点与浮层之间的间距。 |

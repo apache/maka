@@ -20,12 +20,12 @@
 //! Immutable acceptance metadata and scope-specific live keyset indexes.
 use super::*;
 use maka_capabilities::storage::Scan;
-use maka_event_log::EventLog;
+use maka_event_log::RootStore;
 
 const MAX_TIME: u64 = (1 << 53) - 1;
 
 pub(super) struct Catalog<'a> {
-    pub(super) store: &'a EventLog,
+    pub(super) store: &'a RootStore,
     pub(super) prefix: &'a str,
 }
 
@@ -342,9 +342,24 @@ mod tests {
     };
     use serde_json::json;
 
+    async fn open_store(path: &std::path::Path) -> RootStore {
+        let parent = path.parent().unwrap();
+        let namespaces = maka_event_log::root::RootNamespaces {
+            ownership: parent.join("ownership"),
+            control: parent.join("control"),
+        };
+        let owner = if path.exists() {
+            maka_event_log::root::RootOwner::open(path, &namespaces)
+        } else {
+            maka_event_log::root::RootOwner::create(path, &namespaces)
+        }
+        .unwrap();
+        RootStore::open(Arc::new(owner)).await.unwrap()
+    }
     const OWNER: &str = "catalog-owner-";
     fn context(session: char, operation: &str) -> ToolCallContext {
         ToolCallContext {
+            execution: None,
             invocation: Invocation {
                 session_id: format!("{OWNER}{}", session.to_string().repeat(32)),
                 turn_id: "turn".into(),
@@ -354,20 +369,29 @@ mod tests {
             operation_id: operation.into(),
         }
     }
+    async fn workspace_binding(
+        log: &RootStore,
+    ) -> maka_event_log::workspace_bindings::WorkspaceBinding<Value> {
+        let workspace = json!({ "path": "/workspace", "directoryIdentity": format!("sha256:{}", "a".repeat(64)), "identity": "workspace:v1:11111111-1111-4111-8111-111111111111" });
+        let reference = log.attach_workspace(OWNER, &workspace).await.unwrap();
+        log.workspace_binding(reference.id).await.unwrap().unwrap()
+    }
     fn assignment(
+        binding: &maka_event_log::workspace_bindings::WorkspaceBinding<Value>,
         context: &ToolCallContext,
         id: &str,
         graph: Option<(&maka_graph::GraphId, &WorkId)>,
     ) -> Assignment {
-        let workspace = json!({ "path": "/workspace", "directoryIdentity": format!("sha256:{}", "a".repeat(64)), "identity": "workspace:v1:11111111-1111-4111-8111-111111111111" });
+        let workspace = &binding.workspace;
+        let stamp = binding.stamp();
         serde_json::from_value(json!({
             "graph": graph.map(|(graph, work)| json!({ "graphId": graph, "workId": work,
-                "authority": {"sessionId": context.invocation.session_id, "workspace": workspace, "permissions": { "access": "workspace_write", "requestPermissions": false }, "boundaryRevision": 1},
+                "authority": {"sessionId": context.invocation.session_id, "workspace": workspace, "permissions": { "access": "workspace_write", "requestPermissions": false }, "boundaryRevision": 1, "binding": stamp},
                 "route": {"kind":"operator", "workId": work} })),
             "dependencies": [], "source": context.invocation, "tool_operation": context.operation_id,
             "worker": "worker", "binding": "original-binding", "operation": child_id(id), "delivery": "send",
             "input": { "message": "unparsed original worker input" }, "target": {"kind":"existing", "sessionId":"worker-session"}, "attachments": [],
-            "return_route": {"workspace": workspace, "model": {
+            "return_route": {"workspace": workspace, "binding": stamp, "model": {
                 "binding": {"connection_id":"connection", "connection_slug":"connection", "model":"fixture-model"}, "thinking_level": null,
                 "tool_mode": "direct", "editing_tools": null, "public_model": null,
                 "context": {"provider_id":"provider"},
@@ -377,6 +401,7 @@ mod tests {
         })).unwrap()
     }
     async fn accept(
+        binding: &maka_event_log::workspace_bindings::WorkspaceBinding<Value>,
         catalog: &Catalog<'_>,
         context: &ToolCallContext,
         title: &str,
@@ -393,7 +418,9 @@ mod tests {
         mutations.push(Mutation {
             key: format!("{OWNER}tasks/{id}"),
             expected_revision: None,
-            data: Data::Present(serde_json::to_value(assignment(context, &id, None)).unwrap()),
+            data: Data::Present(
+                serde_json::to_value(assignment(binding, context, &id, None)).unwrap(),
+            ),
         });
         catalog
             .store
@@ -418,7 +445,8 @@ mod tests {
     async fn scoped_live_pages_preserve_acceptance_and_reject_foreign_or_stale_cursors() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("catalog.sqlite");
-        let log = EventLog::open(&path).await.unwrap();
+        let log = open_store(&path).await;
+        let binding = workspace_binding(&log).await;
         let catalog = Catalog {
             store: &log,
             prefix: OWNER,
@@ -430,6 +458,7 @@ mod tests {
             let ctx = context('a', &format!("route-{index}"));
             accepted.push(
                 accept(
+                    &binding,
                     &catalog,
                     &ctx,
                     &format!("Task {index}"),
@@ -438,6 +467,7 @@ mod tests {
                 .await,
             );
             accept(
+                &binding,
                 &catalog,
                 &context('b', &format!("other-{index}")),
                 "Other coordinator",
@@ -491,6 +521,7 @@ mod tests {
                 .is_err()
         );
         let newest = accept(
+            &binding,
             &catalog,
             &context('a', "new-between-pages"),
             "New arrival",
@@ -525,7 +556,8 @@ mod tests {
             key: format!("{OWNER}tasks/{failed_id}"),
             expected_revision: Some(1),
             data: Data::Present(
-                serde_json::to_value(assignment(&failed_context, &failed_id, None)).unwrap(),
+                serde_json::to_value(assignment(&binding, &failed_context, &failed_id, None))
+                    .unwrap(),
             ),
         });
         assert!(matches!(
@@ -560,7 +592,7 @@ mod tests {
         let metadata = catalog
             .metadata(
                 &newest,
-                &assignment(&context('a', "new-between-pages"), &newest, None),
+                &assignment(&binding, &context('a', "new-between-pages"), &newest, None),
             )
             .await
             .unwrap();
@@ -569,7 +601,7 @@ mod tests {
             ("New arrival", 1000)
         );
         log.close().await.unwrap();
-        let log = EventLog::open(&path).await.unwrap();
+        let log = open_store(&path).await;
         let catalog = Catalog {
             store: &log,
             prefix: OWNER,
@@ -603,7 +635,7 @@ mod tests {
         log.close().await.unwrap();
     }
 
-    async fn revisions(log: &EventLog) -> BTreeMap<String, u64> {
+    async fn revisions(log: &RootStore) -> BTreeMap<String, u64> {
         let mut revisions = BTreeMap::new();
         let mut after = None;
         loop {
@@ -658,7 +690,8 @@ mod tests {
     async fn maximal_graph_acceptance_commits_tasks_and_catalog_in_one_real_transaction() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("maximal.sqlite");
-        let log = Arc::new(EventLog::open(&path).await.unwrap());
+        let log = Arc::new(open_store(&path).await);
+        let binding = workspace_binding(&log).await;
         let storage = Arc::new(maka_host_runtime::storage::Storage::new(
             log.clone(),
             String::new(),
@@ -705,7 +738,12 @@ mod tests {
             let id = graph::graph_task_id(&epoch.graph_id, &work.work_id);
             expected.push(id.clone());
             summaries.push((id.clone(), "worker".into(), work.instruction.clone()));
-            let assignment = assignment(&context, &id, Some((&epoch.graph_id, &work.work_id)));
+            let assignment = assignment(
+                &binding,
+                &context,
+                &id,
+                Some((&epoch.graph_id, &work.work_id)),
+            );
             mutations.push(Mutation {
                 key: format!("{OWNER}tasks/{id}"),
                 expected_revision: None,
@@ -750,7 +788,7 @@ mod tests {
         drop(repository);
         drop(storage);
         Arc::try_unwrap(log).ok().unwrap().close().await.unwrap();
-        let log = EventLog::open(&path).await.unwrap();
+        let log = open_store(&path).await;
         let catalog = Catalog {
             store: &log,
             prefix: OWNER,

@@ -87,6 +87,17 @@ impl ScrollHost for Host<'_> {
         }
     }
 
+    fn pulled(&self, distance: Points) {
+        let pulled = self
+            .surface
+            .anim
+            .borrow_mut()
+            .pulled(self.view.id(), distance);
+        if pulled && self.surface.mounter.try_borrow().is_ok() {
+            self.surface.write_animations();
+        }
+    }
+
     fn relayout(&self) {
         self.view.queue_allocate();
     }
@@ -113,6 +124,13 @@ impl ScrollHost for Host<'_> {
                 glib::ControlFlow::Break
             }
         });
+    }
+
+    fn settled(&self) {
+        let id = self.view.id();
+        if self.surface.anim.borrow_mut().scroll_ended(id) {
+            self.surface.ensure_ticking();
+        }
     }
 
     fn dark(&self) -> bool {
@@ -165,7 +183,11 @@ fn pin_sticky(surface: &Surface, view: &NshView) {
     if s.sticky.is_empty() {
         return;
     }
-    for (cell, shift) in s.sticky_shifts() {
+    // An animated offset is the graph's (pinned again with its frames,
+    // `pin_animated_sticky`, when it is being written).
+    let anim = surface.anim.try_borrow().ok();
+    let value = |n| anim.as_ref().map_or(0.0, |a| a.value(n));
+    for (cell, shift) in s.sticky_shifts_with(value) {
         let shift = (shift.x.0, shift.y.0);
         with_cell(surface, view, cell, |cell| {
             let mut cs = cell.state_mut();
@@ -175,6 +197,22 @@ fn pin_sticky(surface: &Surface, view: &NshView) {
                 cell.moved();
             }
         });
+    }
+}
+
+/// Pins again the sticky cells of the scroll views whose cells stick an
+/// animated value further in, after the graph's values were written.
+pub(crate) fn pin_animated_sticky(surface: &Surface) {
+    let views: Vec<u32> = surface.anim.borrow().sticky_views().to_vec();
+    for id in views {
+        let view = surface
+            .mounter
+            .try_borrow()
+            .ok()
+            .and_then(|m| m.views.get(&id).cloned());
+        if let Some(view) = view {
+            pin_sticky(surface, &view);
+        }
     }
 }
 
@@ -297,6 +335,16 @@ pub(crate) fn command(surface: &Rc<Surface>, view: &NshView, command: &Command) 
 /// A touchscreen drag on `view` began (the mouse never drags content).
 pub(crate) fn drag_begin(surface: &Rc<Surface>, view: &NshView) {
     shared::drag_begin(&Host::new(surface, view));
+}
+
+/// Stops the row's scroll owners before its recycling acknowledgement.
+pub(crate) fn detached(surface: &Rc<Surface>, view: &NshView) {
+    if view.kind() == ViewKind::Scroll {
+        shared::detached(&Host::new(surface, view));
+    }
+    for child in view.child_views() {
+        detached(surface, &child);
+    }
 }
 
 /// The drag moved by `(dx, dy)` points since it began.
@@ -479,8 +527,14 @@ pub(crate) fn install_keyboard(surface: &Rc<Surface>) {
         window.add_controller(keys);
         let weak = weak.clone();
         window.connect_focus_widget_notify(move |window| {
-            if let (Some(surface), Some(focus)) = (weak.upgrade(), GtkWindowExt::focus(window)) {
-                reveal(&surface, &focus);
+            if let Some(surface) = weak.upgrade() {
+                let focus = GtkWindowExt::focus(window);
+                surface.control(|control| {
+                    control.set_focus_path(crate::input::focus_path(&surface, focus.clone()));
+                });
+                if let Some(focus) = focus {
+                    reveal(&surface, &focus);
+                }
             }
         });
     });

@@ -780,6 +780,19 @@ pub trait Element: IntoElement + Sized {
         self
     }
 
+    /// A sticky view ([`super::Styled::sticky`]) sticks this animated value
+    /// from the top of the scroll view's viewport, following it (below a
+    /// header that moves: `header.add(8.0)`; TS: `top` set to an animated
+    /// value).
+    fn bind_sticky_top(self, value: &impl super::Animated) -> Self {
+        self.bind(crate::animation::AnimationProp::StickyTop, value)
+    }
+
+    /// The same as [`Self::bind_sticky_top`] in a horizontal scroll view.
+    fn bind_sticky_left(self, value: &impl super::Animated) -> Self {
+        self.bind(crate::animation::AnimationProp::StickyLeft, value)
+    }
+
     /// Appends a transform step driven by an animated value, after the styles'
     /// transforms.
     fn bind_transform(mut self, kind: crate::TransformKind, value: &impl super::Animated) -> Self {
@@ -788,6 +801,28 @@ pub trait Element: IntoElement + Sized {
             self.node().attrs.animated.push((decl, node));
         }
         self
+    }
+
+    /// Binds a motion's channels: its opacity, and its transform after the
+    /// styles' transforms (translations, then rotations, then the scales,
+    /// `scale` folded into `scale_x` and `scale_y`: 7 steps of a view's 8).
+    fn bind_motion(self, motion: &super::Motion) -> Self {
+        use crate::animation::MotionChannel::*;
+        let mut this = self.bind_opacity(&motion.value(Opacity));
+        for channel in [TranslateX, TranslateY, Rotate, RotateX, RotateY] {
+            if let Some(kind) = channel.transform() {
+                this = this.bind_transform(kind, &motion.value(channel));
+            }
+        }
+        let scale = motion.value(Scale);
+        this.bind_transform(
+            crate::TransformKind::ScaleX,
+            &scale.mul(&motion.value(ScaleX)),
+        )
+        .bind_transform(
+            crate::TransformKind::ScaleY,
+            &scale.mul(&motion.value(ScaleY)),
+        )
     }
 
     /// Moves it right by an animated value (points).
@@ -1254,7 +1289,7 @@ pub trait Interactive: Element {
     fn on_mouse_move<M>(self, listener: impl IntoListener<crate::Point<crate::Points>, M>) -> Self {
         self.on(
             EventKind::MouseMove,
-            events::typed(listener.into_listener(), events::offset),
+            events::typed(listener.into_listener(), events::mouse_position),
         )
     }
 
@@ -1266,6 +1301,24 @@ pub trait Interactive: Element {
         self.on(
             EventKind::ContextMenu,
             events::typed(listener.into_listener(), events::context_menu),
+        )
+    }
+
+    /// It took the keyboard focus: an input, or a view that takes presses
+    /// reached by Tab (or `focus()`) on the platforms that move the focus
+    /// between pressables.
+    fn on_focus<M>(self, listener: impl IntoListener<(), M>) -> Self {
+        self.on(
+            EventKind::Focus,
+            events::typed(listener.into_listener(), events::unit),
+        )
+    }
+
+    /// It lost the keyboard focus.
+    fn on_blur<M>(self, listener: impl IntoListener<(), M>) -> Self {
+        self.on(
+            EventKind::Blur,
+            events::typed(listener.into_listener(), events::unit),
         )
     }
 
@@ -1423,6 +1476,21 @@ pub trait Interactive: Element {
         let bound = &mut self.node().attrs.bound;
         bound.extend(x);
         bound.extend(y);
+        self
+    }
+
+    /// Enables native pans without replacing their values or listeners.
+    /// A disabled pan leaves presses and scrolling to the content.
+    fn pan_enabled(mut self, enabled: impl IntoReactive<bool>) -> Self {
+        super::host::bind_prop(self.node(), enabled, Prop::PanEnabled);
+        self
+    }
+
+    /// On iOS, a vertical pan shares descendant scroll views' touches and
+    /// follows only the downward distance left after scrolling to the top.
+    /// Other platforms keep their normal pan and scroll arbitration.
+    fn pan_scroll_handoff(mut self, enabled: impl IntoReactive<bool>) -> Self {
+        super::host::bind_prop(self.node(), enabled, Prop::PanScrollHandoff);
         self
     }
 

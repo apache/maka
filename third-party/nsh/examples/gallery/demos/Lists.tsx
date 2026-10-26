@@ -1,9 +1,10 @@
-import { computed, Input, List, Scroll, signal, Text, View, type YNode } from "nsh";
-import { LayoutAnimation } from "nsh/animated";
+import { cleanup, computed, effect, Input, List, Scroll, signal, Text, View, type YNode } from "nsh";
+import { reduceMotion } from "nsh/accessibility";
+import { Animated, type AnimatedNode, createAnimatedValue, Easing, LayoutAnimation } from "nsh/animated";
 import { platform } from "nsh/device";
 import { keyboardFrame, KeyboardAvoidingView, safeAreaInsets, Tab, Tabs } from "nsh/base";
 import { Icon, type IconName } from "../icons";
-import { Appear, Badge, bindRefresh, Button, colors, columnsFor, desktop, finish, hint, IconTile, Meter, mono, Press, radius, RoundButton, Section, Segmented, tabPress, type Tone, toneColor, toneTint } from "../ui";
+import { alpha, Appear, Badge, bindRefresh, Button, colors, columnsFor, desktop, finish, hint, IconTile, Meter, mono, Press, radius, RoundButton, Section, Segmented, tabPress, type Tone, toneColor, toneTint } from "../ui";
 
 const tones: Tone[] = ["accent", "info", "warn", "up", "danger", "neutral"];
 
@@ -341,10 +342,89 @@ function Chat() {
 
 const ranges = ["Today", "Yesterday", "This week", "This month", "This year", "All time", "Custom"];
 
-/** Horizontal scrolling, pull to refresh on a plain scroll view, and an empty list. */
+const indicators = [
+  { value: "system", label: "System spinner" },
+  { value: "custom", label: "Custom indicator" },
+] as const;
+
+/** How tall the custom indicator is: where a pull refreshes, and the room it keeps while refreshing. */
+const INDICATOR = 72;
+
+/**
+ * A pull-to-refresh indicator drawn by the app, in the gallery's look, over the top of a scroll view: a round chip
+ * that travels in with the pull (`pull`, its `pullValue`), grows and fades in, turns its arrow over once the pull
+ * reaches the height where it refreshes, and spins while it refreshes. The pull drives all of it on the UI thread.
+ */
+function CustomIndicator(props: { pull: AnimatedNode; refreshing: boolean }) {
+  const turn = createAnimatedValue(0);
+  const spin = Animated.loop(Animated.timing(turn, { toValue: 1, duration: 900, easing: Easing.linear }));
+  effect(() => {
+    if (props.refreshing && !reduceMotion()) {
+      turn.set(0);
+      spin.start();
+    } else {
+      spin.stop();
+    }
+  });
+  cleanup(() => spin.stop());
+  const pull = props.pull;
+  return (
+    <View
+      pointerEvents="none"
+      style={{ position: "absolute", top: 0, left: 0, right: 0, height: INDICATOR, alignItems: "center", justifyContent: "center" }}
+    >
+      <View
+        style={{
+          width: 40,
+          height: 40,
+          borderRadius: 20,
+          borderWidth: 1,
+          borderColor: colors.border,
+          backgroundColor: colors.raised,
+          ...finish.raised,
+          alignItems: "center",
+          justifyContent: "center",
+          opacity: pull.interpolate({ inputRange: [0, 24], outputRange: [0, 1] }),
+          transform: [
+            { translateY: pull.interpolate({ inputRange: [0, INDICATOR], outputRange: [-28, 0] }) },
+            { scale: pull.interpolate({ inputRange: [0, INDICATOR], outputRange: [0.6, 1] }) },
+          ],
+        }}
+      >
+        {/* The arrow points down while pulling and turns up once releasing refreshes. */}
+        <View
+          style={{
+            position: "absolute",
+            opacity: props.refreshing ? 0 : 1,
+            transform: [{ rotate: pull.interpolate({ inputRange: [INDICATOR * 0.5, INDICATOR], outputRange: ["0deg", "180deg"] }) }],
+          }}
+        >
+          <Icon name="arrow-down" size={18} tint={colors.accent} />
+        </View>
+        <View
+          style={{
+            position: "absolute",
+            width: 20,
+            height: 20,
+            borderRadius: 10,
+            borderWidth: 2,
+            borderColor: alpha(colors.accent, 0.25),
+            borderTopColor: colors.accent,
+            opacity: props.refreshing ? 1 : 0,
+            transform: [{ rotate: turn.interpolate({ inputRange: [0, 1], outputRange: ["0deg", "360deg"] }) }],
+          }}
+        />
+      </View>
+    </View>
+  );
+}
+
+/** Horizontal scrolling, pull to refresh on a plain scroll view (the system spinner or a custom indicator), and an empty list. */
 function More() {
   const refreshing = signal(false);
   const refreshed = signal(0);
+  const indicator = signal<"system" | "custom">("system");
+  const pull = createAnimatedValue(0);
   const range = signal("This week");
   const items = signal<{ n: number; tone: Tone }[]>([]);
   const refresh = () => {
@@ -360,8 +440,15 @@ function More() {
     change();
   };
   const cards = Array.from({ length: 1000 }, (_, i) => i);
-  return (
-    <Scroll style={{ flex: 1 }} refreshing={refreshing()} onRefresh={refresh}>
+  const custom = () => indicator() === "custom";
+  const page = (
+    <Scroll
+      style={{ flex: 1 }}
+      refreshing={refreshing()}
+      onRefresh={refresh}
+      pullValue={pull}
+      refreshIndicator={custom() ? { height: INDICATOR } : undefined}
+    >
       <View style={{ padding: 16, gap: 16 }}>
         {/* `position: sticky`: in the flow, then at the top while the page scrolls under it. */}
         <View
@@ -388,13 +475,14 @@ function More() {
             <IconTile name="arrow-down" tint={refreshing() ? colors.accent : colors.text} />
             <View style={{ flex: 1, gap: 2 }}>
               <Text style={{ fontSize: 15, color: colors.text }}>{refreshing() ? "Refreshing…" : hint("Pull the page down", refreshKey ? `Refresh or ${refreshKey}` : "Refresh below")}</Text>
-              <Text style={{ fontSize: 13, color: colors.muted }}>The system spinner on a plain scroll view</Text>
+              <Text style={{ fontSize: 13, color: colors.muted }}>{custom() ? "An indicator the app draws, from pullValue" : "The system spinner on a plain scroll view"}</Text>
             </View>
             <View style={{ alignItems: "flex-end" }}>
               <Text style={{ fontSize: 28, fontWeight: "600", color: colors.text, fontVariant: ["tabular-nums"] }}>{refreshed()}</Text>
               <Text style={{ fontSize: 12, color: colors.faint }}>refreshes</Text>
             </View>
           </View>
+          <Segmented options={indicators} value={indicator()} onChange={(v) => indicator.set(v)} />
           {/* The mouse does not pull scroll views down: desktops refresh here. */}
           <If when={platform.idiom === "desktop"}>
             <Button label="Refresh" variant="secondary" disabled={refreshing()} onPress={refresh} />
@@ -507,6 +595,14 @@ function More() {
       </View>
     </Scroll>
   );
+  return (
+    <View style={{ flex: 1 }}>
+      {page}
+      <If when={custom()}>
+        <CustomIndicator pull={pull} refreshing={refreshing()} />
+      </If>
+    </View>
+  );
 }
 
 type Entry = { id: number; tone: Tone };
@@ -564,11 +660,21 @@ function WeekHeading(props: { week: number }) {
 
 type PageRow = Entry | { week: number };
 
+/** The height of the page's bar, which hides as the page scrolls down. */
+const BAR = 44;
+
 /** Headers and two lists on one page: the lists have no scroll view of
  * their own (`viewport="parent"`), the page scrolls them as one, and only
- * their rows near its viewport exist. The first list's week headings stick
- * to the top of the page. */
+ * their rows near its viewport exist. A bar over the page hides as it
+ * scrolls down and comes back as it scrolls up (`diffClamp`), and the
+ * first list's week headings stick just below it, wherever it is
+ * (`stickyHeaderOffset` set to how much of it shows). */
 function Page() {
+  const scroll = createAnimatedValue(0);
+  // How much of the bar is hidden, following the page's scrolling.
+  const hidden = scroll.diffClamp(0, BAR);
+  // How much of it shows: where the week headings stick.
+  const shown = hidden.mul(-1).add(BAR);
   // 200 entries, a week heading before every 20.
   const recent: PageRow[] = entries(0, 200).flatMap((e) => (e.id % 20 === 0 ? [{ week: e.id / 20 + 1 }, e] : [e]));
   const weeks = recent.flatMap((row, i) => ("week" in row ? [i] : []));
@@ -585,43 +691,73 @@ function Page() {
     </View>
   );
   return (
-    <Scroll testID="page" style={{ flex: 1 }}>
-      <View style={{ padding: 16, gap: 10, width: "100%", maxWidth: 720, alignSelf: "center" }}>
-        <Section title="One page, two lists" note={'viewport="parent"'}>
-          <Text style={{ fontSize: 13, color: colors.muted }}>
-            The lists below lie in the page at their full length, and the page scrolls them with this header: only the
-            rows near its viewport exist, in recycled cells.
-          </Text>
-          <View style={{ flexDirection: "row", gap: 8 }}>
-            <Action label="Recent 150" icon="arrow-down" onPress={() => list.scrollToIndex({ index: indexOf(149), viewPosition: 0.5 })} />
-            <Action label="End of recent" onPress={() => list.scrollToEnd()} />
-          </View>
-        </Section>
-        {heading("Recent", "200 rows")}
-        <List ref={list} viewport="parent" each={recent} estimatedItemSize={56} stickyHeaderIndices={weeks} contentStyle={{ gap: 6 }}>
-          {(row) => (
-            <If when={"week" in row()} else={<EntryRow entry={row() as Entry} label="Recent" />}>
-              <WeekHeading week={(row() as { week: number }).week} />
-            </If>
-          )}
-        </List>
-        {heading("Archive", `${archive().length} rows`)}
-        <List
-          viewport="parent"
-          each={archive()}
-          estimatedItemSize={56}
-          contentStyle={{ gap: 6 }}
-          onLoadMore={loadMore}
-          footer={
-            <Text style={{ textAlign: "center", color: colors.faint, fontSize: 13, padding: 16 }}>
-              {archive().length < 500 ? "Loading more…" : "End of the archive"}
+    <View style={{ flex: 1, overflow: "hidden" }}>
+      <Scroll testID="page" scrollValue={scroll} style={{ flex: 1 }}>
+        <View style={{ padding: 16, paddingTop: 16 + BAR, gap: 10, width: "100%", maxWidth: 720, alignSelf: "center" }}>
+          <Section title="One page, two lists" note={'viewport="parent"'}>
+            <Text style={{ fontSize: 13, color: colors.muted }}>
+              The lists below lie in the page at their full length, and the page scrolls them with this header: only the
+              rows near its viewport exist, in recycled cells.
             </Text>
-          }
-        >
-          {(entry) => <EntryRow entry={entry()} label="Archived" />}
-        </List>
+            <View style={{ flexDirection: "row", gap: 8 }}>
+              <Action label="Recent 150" icon="arrow-down" onPress={() => list.scrollToIndex({ index: indexOf(149), viewPosition: 0.5 })} />
+              <Action label="End of recent" onPress={() => list.scrollToEnd()} />
+            </View>
+          </Section>
+          {heading("Recent", "200 rows")}
+          <List
+            ref={list}
+            viewport="parent"
+            each={recent}
+            estimatedItemSize={56}
+            stickyHeaderIndices={weeks}
+            stickyHeaderOffset={shown}
+            contentStyle={{ gap: 6 }}
+          >
+            {(row) => (
+              <If when={"week" in row()} else={<EntryRow entry={row() as Entry} label="Recent" />}>
+                <WeekHeading week={(row() as { week: number }).week} />
+              </If>
+            )}
+          </List>
+          {heading("Archive", `${archive().length} rows`)}
+          <List
+            viewport="parent"
+            each={archive()}
+            estimatedItemSize={56}
+            contentStyle={{ gap: 6 }}
+            onLoadMore={loadMore}
+            footer={
+              <Text style={{ textAlign: "center", color: colors.faint, fontSize: 13, padding: 16 }}>
+                {archive().length < 500 ? "Loading more…" : "End of the archive"}
+              </Text>
+            }
+          >
+            {(entry) => <EntryRow entry={entry()} label="Archived" />}
+          </List>
+        </View>
+      </Scroll>
+      <View
+        style={{
+          position: "absolute",
+          top: 0,
+          left: 0,
+          right: 0,
+          height: BAR,
+          flexDirection: "row",
+          alignItems: "center",
+          gap: 8,
+          paddingHorizontal: 20,
+          backgroundColor: colors.background,
+          borderBottomWidth: 1,
+          borderBottomColor: colors.border,
+          transform: [{ translateY: hidden.mul(-1) }],
+        }}
+      >
+        <Text style={{ flex: 1, fontSize: 15, fontWeight: "600", color: colors.text }}>Recent and archived</Text>
+        <Text style={{ fontSize: 13, color: colors.faint }}>hides as you scroll down</Text>
       </View>
-    </Scroll>
+    </View>
   );
 }
 

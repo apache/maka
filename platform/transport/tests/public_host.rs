@@ -21,13 +21,13 @@
 #[allow(dead_code)]
 mod support;
 use maka_event_log::{
-    EventLog,
     root::{RootNamespaces, RootOwner},
+    root_store::RootStore,
 };
 use maka_host_runtime::{
     application::{
         NativeRegistry,
-        host::{Client, Host, discovery},
+        host::{Client, Configuration as HostConfiguration, Host, discovery},
         transport::{Grant, HostEndpoint, Reply},
     },
     ipc::LocalListener,
@@ -45,14 +45,14 @@ async fn public_ipc_persists_original_gateway_intent_and_retires_original_owner(
         maka_event_log::root::private_directory(directory.path()).unwrap();
         let namespaces = RootNamespaces { ownership: directory.path().join("owners"), control: directory.path().join("control") };
         let root = directory.path().join("root");
-        let store = Arc::new(EventLog::for_root(Arc::new(RootOwner::create(&root, &namespaces).unwrap())).await.unwrap());
+        let store = Arc::new(support::setup(RootStore::open(Arc::new(RootOwner::create(&root, &namespaces).unwrap()))).await.unwrap());
         let deployment = Uuid::new_v4();
         let (input, packages) = support::host();
         let source = store.commit_application(deployment, 0, input, vec![], packages).await.unwrap();
-        let host = Host::open(store.clone(), deployment, NativeRegistry::default(), Some(maka_host_js::factory(Default::default())), BTreeMap::from([
+        let host = Host::open(store.clone(), deployment, NativeRegistry::default(), Some(maka_host_js::factory(Default::default())), HostConfiguration::PublicHost { endpoints: BTreeMap::from([
             ("business".into(), HostEndpoint { consumer: support::identity(13), import: "business".into(), grant: Grant { methods: ["read".into(), "write".into()].into(), recovery: false } }),
             ("receipts".into(), HostEndpoint { consumer: support::identity(13), import: "receipts".into(), grant: Grant { methods: ["read".into()].into(), recovery: true } }),
-        ]), vec![]).await.unwrap();
+        ]), native: vec![], product_methods: Default::default() }).await.unwrap();
         #[cfg(unix)]
         let address = directory.path().join("host.sock");
         #[cfg(windows)]
@@ -80,6 +80,7 @@ async fn public_ipc_persists_original_gateway_intent_and_retires_original_owner(
         write.start().await.unwrap();
         assert!(matches!(write.receive().await.unwrap(), Reply::Prepared { .. }));
         let reference = write.reference().unwrap().clone();
+        client.refresh().await.unwrap();
         assert!(store.application_intent(deployment, support::identity(13), reference.operation).await.unwrap().is_none());
         assert!(matches!(write.confirm().await.unwrap(), Reply::Mutation { ref reply, cleanup: Ok(()) } if matches!(reply.receipt, Receipt::Recorded { outcome: OperationOutcome::Returned { .. }, cleanup: OperationCleanup::Confirmed })));
         assert!(write.cleanup_confirmed());
@@ -156,7 +157,7 @@ async fn public_ipc_pulls_large_subscription_original_and_confirms_cleanup() {
             control: directory.path().join("control"),
         };
         let root = directory.path().join("root");
-        let store = Arc::new(EventLog::for_root(Arc::new(RootOwner::create(&root, &namespaces).unwrap())).await.unwrap());
+        let store = Arc::new(support::setup(RootStore::open(Arc::new(RootOwner::create(&root, &namespaces).unwrap()))).await.unwrap());
         let deployment = Uuid::new_v4();
         let (mut input, mut packages) = support::host();
         let mut contract = support::business();
@@ -191,9 +192,9 @@ async fn public_ipc_pulls_large_subscription_original_and_confirms_cleanup() {
             })
         })).unwrap();
         store.commit_application(deployment, 0, input, vec![], packages).await.unwrap();
-        let host = Host::open(store.clone(), deployment, native, Some(maka_host_js::factory(Default::default())), BTreeMap::from([
+        let host = Host::open(store.clone(), deployment, native, Some(maka_host_js::factory(Default::default())), HostConfiguration::PublicHost { endpoints: BTreeMap::from([
             ("business".into(), HostEndpoint { consumer: support::identity(13), import: "business".into(), grant: Grant { methods: ["read".into()].into(), recovery: false } }),
-        ]), vec![]).await.unwrap();
+        ]), native: vec![], product_methods: Default::default() }).await.unwrap();
         #[cfg(unix)]
         let address = directory.path().join("host.sock");
         #[cfg(windows)]
@@ -267,7 +268,7 @@ async fn lost_session_close_observer_cannot_release_accepted_work_or_root_early(
         maka_event_log::root::private_directory(directory.path()).unwrap();
         let namespaces = RootNamespaces { ownership: directory.path().join("owners"), control: directory.path().join("control") };
         let root = directory.path().join("root");
-        let store = Arc::new(EventLog::for_root(Arc::new(RootOwner::create(&root, &namespaces).unwrap())).await.unwrap());
+        let store = Arc::new(support::setup(RootStore::open(Arc::new(RootOwner::create(&root, &namespaces).unwrap()))).await.unwrap());
         let deployment = Uuid::new_v4();
         let (mut input, mut packages) = support::host();
         let package = packages.iter_mut().find(|package| package.manifest().id == "local.business").unwrap();
@@ -281,9 +282,9 @@ async fn lost_session_close_observer_cannot_release_accepted_work_or_root_early(
             exports: Ok(BTreeMap::from([("Counter".into(), maka_plugin_core::runtime::Published { contract: support::business(), value: blocked.clone() as Arc<dyn maka_host_runtime::application::Handler> })])), owner: blocked,
         } }) } })).unwrap();
         store.commit_application(deployment, 0, input, vec![], packages).await.unwrap();
-        let host = Host::open(store.clone(), deployment, native, Some(maka_host_js::factory(Default::default())), BTreeMap::from([
+        let host = Host::open(store.clone(), deployment, native, Some(maka_host_js::factory(Default::default())), HostConfiguration::PublicHost { endpoints: BTreeMap::from([
             ("business".into(), HostEndpoint { consumer: support::identity(13), import: "business".into(), grant: Grant { methods: ["write".into()].into(), recovery: false } }),
-        ]), vec![]).await.unwrap();
+        ]), native: vec![], product_methods: Default::default() }).await.unwrap();
         #[cfg(unix)]
         let address = directory.path().join("host.sock");
         #[cfg(windows)]
@@ -328,13 +329,63 @@ async fn lost_session_close_observer_cannot_release_accepted_work_or_root_early(
 struct PeerHost {
     directory: tempfile::TempDir,
     namespaces: RootNamespaces,
-    store: Arc<EventLog>,
+    store: Arc<RootStore>,
     host: Arc<Host>,
     address: std::path::PathBuf,
     serving: tokio::task::JoinHandle<Result<(), String>>,
     selections: BTreeMap<String, HostEndpoint>,
 }
 impl PeerHost {
+    fn startup_helper(&self) -> std::path::PathBuf {
+        use maka_host_runtime::application::host::startup::Ready;
+        let directory = self.directory.path();
+        let ready = Ready {
+            root_id: self.host.root_id().into(),
+            epoch: self.host.epoch(),
+        };
+        std::fs::write(
+            directory.join("startup.json"),
+            serde_json::to_vec(&ready).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            directory.join("startup-helper.mjs"),
+            include_str!("support/startup-helper.mjs"),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let executable = directory.join("startup-helper");
+            let script = directory.join("startup-helper.mjs");
+            let fixture = directory.join("startup.json");
+            let quote = |path: &std::path::Path| {
+                format!("'{}'", path.to_str().unwrap().replace('\'', "'\"'\"'"))
+            };
+            std::fs::write(
+                &executable,
+                format!(
+                    "#!/bin/sh\nexec node {} {} \"$@\"\n",
+                    quote(&script),
+                    quote(&fixture)
+                ),
+            )
+            .unwrap();
+            std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+            executable
+        }
+        #[cfg(windows)]
+        {
+            let executable = directory.join("startup-helper.cmd");
+            std::fs::write(
+                &executable,
+                "@node \"%~dp0startup-helper.mjs\" \"%~dp0startup.json\" %*\r\n",
+            )
+            .unwrap();
+            executable
+        }
+    }
+
     async fn start() -> Self {
         let directory = tempfile::tempdir().unwrap();
         maka_event_log::root::private_directory(directory.path()).unwrap();
@@ -343,9 +394,9 @@ impl PeerHost {
             control: directory.path().join("control"),
         };
         let store = Arc::new(
-            EventLog::for_root(Arc::new(
+            support::setup(RootStore::open(Arc::new(
                 RootOwner::create(&directory.path().join("host"), &namespaces).unwrap(),
-            ))
+            )))
             .await
             .unwrap(),
         );
@@ -384,8 +435,11 @@ impl PeerHost {
             deployment,
             NativeRegistry::default(),
             Some(maka_host_js::factory(Default::default())),
-            selections.clone(),
-            vec![],
+            HostConfiguration::PublicHost {
+                endpoints: selections.clone(),
+                native: vec![],
+                product_methods: Default::default(),
+            },
         )
         .await
         .unwrap();
@@ -414,14 +468,14 @@ impl PeerHost {
         name: &str,
         target: maka_plugin_core::composition::PresentationTarget,
     ) -> (
-        Arc<EventLog>,
+        Arc<RootStore>,
         maka_plugin_core::deployment::DeploymentRef,
         maka_plugin_core::composition::InstanceId,
     ) {
         let store = Arc::new(
-            EventLog::for_root(Arc::new(
+            support::setup(RootStore::open(Arc::new(
                 RootOwner::create(&self.directory.path().join(name), &self.namespaces).unwrap(),
-            ))
+            )))
             .await
             .unwrap(),
         );
@@ -436,8 +490,8 @@ impl PeerHost {
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn quit_keeps_other_clients_and_stops_after_the_last_client() {
+    let fixture = support::setup(PeerHost::start()).await;
     tokio::time::timeout(std::time::Duration::from_secs(15), async {
-        let fixture = PeerHost::start().await;
         let epoch = Some(fixture.host.epoch());
         let mut detached = Client::connect(&fixture.address, epoch).await.unwrap();
         detached.close().await.unwrap();
@@ -462,8 +516,8 @@ async fn quit_keeps_other_clients_and_stops_after_the_last_client() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn concurrent_quits_stop_the_host() {
+    let fixture = support::setup(PeerHost::start()).await;
     tokio::time::timeout(std::time::Duration::from_secs(15), async {
-        let fixture = PeerHost::start().await;
         let epoch = Some(fixture.host.epoch());
         let mut first = Client::connect(&fixture.address, epoch).await.unwrap();
         let mut second = Client::connect(&fixture.address, epoch).await.unwrap();
@@ -478,8 +532,8 @@ async fn concurrent_quits_stop_the_host() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn reconnect_captures_the_replacement_host_registration() {
+    let fixture = support::setup(PeerHost::start()).await;
     tokio::time::timeout(Duration::from_secs(20), async {
-        let fixture = PeerHost::start().await;
         let mut original = Client::connect(&fixture.address, Some(fixture.host.epoch())).await.unwrap();
         let before = original.catalogue().describe("business").unwrap().registration_epoch.unwrap();
         let (mut input, packages) = support::host();
@@ -499,6 +553,11 @@ async fn reconnect_captures_the_replacement_host_registration() {
         let mut read = connected.call("business", "read".into(), Value::Null, Default::default()).await.unwrap();
         read.start().await.unwrap();
         assert!(matches!(read.receive().await.unwrap(), Reply::Finished { result: Ok(ref value), cleanup: Ok(()) } if value["effects"] == 0));
+        original.refresh().await.unwrap();
+        assert_eq!(original.catalogue(), connected.catalogue());
+        let mut refreshed = original.call("business", "read".into(), Value::Null, Default::default()).await.unwrap();
+        refreshed.start().await.unwrap();
+        assert!(matches!(refreshed.receive().await.unwrap(), Reply::Finished { result: Ok(ref value), cleanup: Ok(()) } if value["effects"] == 0));
         original.close().await.unwrap();
         connected.close().await.unwrap();
         assert!(Client::retire(&fixture.address, fixture.host.epoch()).await.unwrap());
@@ -532,8 +591,8 @@ async fn peer_call(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn local_peer_sessions_preserve_ui_journals_grants_and_independent_revision_approvals() {
     use maka_plugin_core::composition::PresentationTarget;
+    let fixture = support::setup(PeerHost::start()).await;
     tokio::time::timeout(Duration::from_secs(30), async {
-        let fixture = PeerHost::start().await;
         let (ui, source, consumer) = fixture.ui("tui", PresentationTarget::Tui).await;
         let (other_ui, other_source, other_consumer) = fixture.ui("second_ui", PresentationTarget::Tui).await;
         let epoch = Some(fixture.host.epoch());
@@ -617,8 +676,8 @@ async fn cancelled_peer_control_never_appends_another_command_to_its_anchor() {
         transport::wire,
     };
     use maka_plugin_core::composition::PresentationTarget;
+    let fixture = support::setup(PeerHost::start()).await;
     tokio::time::timeout(Duration::from_secs(30), async {
-        let fixture = PeerHost::start().await;
         let (ui, source, consumer) = fixture.ui("ui", PresentationTarget::Tui).await;
         let mut probe = Client::connect_peer(&fixture.address, Some(fixture.host.epoch()), source.clone(), [consumer.clone()].into(), fixture.selections.clone()).await.unwrap();
         let catalogue = probe.catalogue().clone();
@@ -757,9 +816,10 @@ async fn cancelled_peer_control_never_appends_another_command_to_its_anchor() {
 async fn discovered_connections_release_ui_roots_without_stopping_the_shared_host() {
     use maka_plugin_core::composition::PresentationTarget;
     use maka_transport::{Configuration, Connections, HostLocation};
+    let fixture = support::setup(PeerHost::start()).await;
     tokio::time::timeout(Duration::from_secs(30), async {
-        let fixture = PeerHost::start().await;
         let registration = fixture.host.publish_registration(&fixture.address, None).unwrap();
+        let helper = fixture.startup_helper();
         let (ui, source, _) = fixture.ui("tui-connections", PresentationTarget::Tui).await;
         let configuration = || Configuration { hosts: vec![maka_transport::Host {
             name: "local".into(),
@@ -774,17 +834,17 @@ async fn discovered_connections_release_ui_roots_without_stopping_the_shared_hos
                 1 => input.hosts[0].location = HostLocation::Public { root: fixture.directory.path().join("host"), state_domain: Some("0".repeat(64)) },
                 _ => input.hosts[0].location = HostLocation::Public { root: fixture.directory.path().join("never-create"), state_domain: None },
             }
-            let mut connections = Connections::prepare(ui.clone(), source.deployment, PresentationTarget::Tui, input, fixture.namespaces.clone(), std::path::PathBuf::from("unused-local-startup-helper"), NativeRegistry::default(), Some(maka_host_js::factory(Default::default()))).await.unwrap();
+            let mut connections = Connections::prepare(ui.clone(), source.deployment, PresentationTarget::Tui, input, fixture.namespaces.clone(), helper.clone(), NativeRegistry::default(), Some(maka_host_js::factory(Default::default()))).await.unwrap();
             assert!(connections.start().await.is_err());
             connections.close().await.unwrap();
         }
         assert!(!fixture.directory.path().join("never-create").exists());
-        let mut connections = Connections::prepare(ui.clone(), source.deployment, PresentationTarget::Tui, configuration(), fixture.namespaces.clone(), std::path::PathBuf::from("unused-local-startup-helper"), NativeRegistry::default(), Some(maka_host_js::factory(Default::default()))).await.unwrap();
+        let mut connections = Connections::prepare(ui.clone(), source.deployment, PresentationTarget::Tui, configuration(), fixture.namespaces.clone(), helper.clone(), NativeRegistry::default(), Some(maka_host_js::factory(Default::default()))).await.unwrap();
         connections.start().await.unwrap();
         let frozen = connections.registrations();
         assert_eq!(frozen.len(), 2);
         let (second_ui, second_source, _) = fixture.ui("second_ui-connections", PresentationTarget::Tui).await;
-        let mut other = Connections::prepare(second_ui.clone(), second_source.deployment, PresentationTarget::Tui, configuration(), fixture.namespaces.clone(), std::path::PathBuf::from("unused-local-startup-helper"), NativeRegistry::default(), Some(maka_host_js::factory(Default::default()))).await.unwrap();
+        let mut other = Connections::prepare(second_ui.clone(), second_source.deployment, PresentationTarget::Tui, configuration(), fixture.namespaces.clone(), helper.clone(), NativeRegistry::default(), Some(maka_host_js::factory(Default::default()))).await.unwrap();
         other.start().await.unwrap();
         assert_eq!(fixture.host.status().sessions, 2);
         connections.close().await.unwrap();
@@ -821,6 +881,7 @@ async fn quitting_an_externally_stopped_host_requires_its_original_root_release(
         for replacement in [false, true] {
         let fixture = PeerHost::start().await;
         let registration = fixture.host.publish_registration(&fixture.address, None).unwrap();
+        let helper = fixture.startup_helper();
         let (ui, source, _) = fixture.ui("external-stop-ui", PresentationTarget::Tui).await;
         let ui_root = fixture.directory.path().join("external-stop-ui");
         let host_root = fixture.directory.path().join("host");
@@ -833,7 +894,7 @@ async fn quitting_an_externally_stopped_host_requires_its_original_root_release(
             endpoints: fixture.selections.clone(), native: vec![],
         }] };
         let mut connections = Connections::prepare(ui.clone(), source.deployment, PresentationTarget::Tui,
-            configuration, fixture.namespaces.clone(), std::path::PathBuf::from("unused-local-startup-helper"),
+            configuration, fixture.namespaces.clone(), helper.clone(),
             NativeRegistry::default(), Some(maka_host_js::factory(Default::default()))).await.unwrap();
         connections.start().await.unwrap();
         assert_eq!(fixture.host.status().sessions, 1);
@@ -851,9 +912,9 @@ async fn quitting_an_externally_stopped_host_requires_its_original_root_release(
         drop((fixture.host, fixture.store));
         drop(RootOwner::open(&host_root, &fixture.namespaces).unwrap());
         let replacement = if replacement {
-            let store = Arc::new(EventLog::for_root(Arc::new(RootOwner::open(&host_root, &fixture.namespaces).unwrap())).await.unwrap());
+            let store = Arc::new(support::setup(RootStore::open(Arc::new(RootOwner::open(&host_root, &fixture.namespaces).unwrap()))).await.unwrap());
             let host = Host::open(store, deployment, NativeRegistry::default(),
-                Some(maka_host_js::factory(Default::default())), fixture.selections.clone(), vec![]).await.unwrap();
+                Some(maka_host_js::factory(Default::default())), HostConfiguration::PublicHost { endpoints: fixture.selections.clone(), native: vec![], product_methods: Default::default() }).await.unwrap();
             assert_ne!(host.epoch(), original_epoch);
             #[cfg(unix)]
             let address = fixture.address.clone();
@@ -957,9 +1018,11 @@ async fn configured_native_grants_apply_live_survive_source_update_and_root_rest
         };
         let root = directory.path().join("host");
         let store = Arc::new(
-            EventLog::for_root(Arc::new(RootOwner::create(&root, &namespaces).unwrap()))
-                .await
-                .unwrap(),
+            support::setup(RootStore::open(Arc::new(
+                RootOwner::create(&root, &namespaces).unwrap(),
+            )))
+            .await
+            .unwrap(),
         );
         let deployment = Uuid::new_v4();
         let (mut input, mut packages) = support::host();
@@ -993,7 +1056,7 @@ async fn configured_native_grants_apply_live_survive_source_update_and_root_rest
                 consumer: support::identity(13),
                 import: "business".into(),
                 grant: Grant {
-                    methods: ["read".into()].into(),
+                    methods: ["read".into(), "write".into()].into(),
                     recovery: false,
                 },
             },
@@ -1001,6 +1064,7 @@ async fn configured_native_grants_apply_live_survive_source_update_and_root_rest
         let previous = Configuration::PublicHost {
             endpoints: endpoints.clone(),
             native: vec![],
+            product_methods: ["business".into()].into(),
         };
         let desired = Configuration::PublicHost {
             endpoints: endpoints.clone(),
@@ -1012,6 +1076,7 @@ async fn configured_native_grants_apply_live_survive_source_update_and_root_rest
                 methods: ["read".into()].into(),
                 recovery: false,
             }],
+            product_methods: ["business".into()].into(),
         };
         store
             .select_committed_application_launch(
@@ -1026,8 +1091,7 @@ async fn configured_native_grants_apply_live_survive_source_update_and_root_rest
             deployment,
             native,
             Some(maka_host_js::factory(Default::default())),
-            endpoints,
-            vec![],
+            previous.clone(),
         )
         .await
         .unwrap();
@@ -1042,10 +1106,39 @@ async fn configured_native_grants_apply_live_survive_source_update_and_root_rest
             async move { host.serve_local(listener, CancellationToken::new()).await }
         });
         let mut client = Client::connect(&address, Some(host.epoch())).await.unwrap();
+        let publication = client.publication().await.unwrap();
+        assert_eq!(publication.source, source);
+        assert_eq!(
+            serde_json::to_value(publication.configuration).unwrap(),
+            serde_json::to_value(&previous).unwrap()
+        );
         let services = activations.recv().await.unwrap();
         assert_eq!(
             native_read(&services).await.unwrap_err(),
             "native service invocation is not granted"
+        );
+        // A stale catalogue may offer only a subset of a product-owned contract.
+        // Reject that snapshot without changing either live or durable authority.
+        let mut narrowed = desired.clone();
+        let Configuration::PublicHost { endpoints, .. } = &mut narrowed;
+        endpoints.get_mut("business").unwrap().grant.methods = ["read".into()].into();
+        let error = client
+            .configure(source.clone(), previous.clone(), narrowed.clone())
+            .await
+            .unwrap_err();
+        assert!(error.contains("current service contract"), "{error}");
+        assert_eq!(
+            serde_json::to_value(client.publication().await.unwrap().configuration).unwrap(),
+            serde_json::to_value(&previous).unwrap()
+        );
+        assert_eq!(
+            store
+                .application_launch()
+                .await
+                .unwrap()
+                .unwrap()
+                .configuration,
+            serde_json::to_value(&previous).unwrap()
         );
         // A stale source or unrelated previous selection must not publish grants.
         let mut future = source.clone();
@@ -1079,6 +1172,30 @@ async fn configured_native_grants_apply_live_survive_source_update_and_root_rest
             .configure(source.clone(), previous.clone(), desired.clone())
             .await
             .unwrap();
+        let publication = client.publication().await.unwrap();
+        assert_eq!(publication.source, source);
+        assert_eq!(
+            serde_json::to_value(publication.configuration).unwrap(),
+            serde_json::to_value(&desired).unwrap()
+        );
+        // An explicit restriction is valid only when its caller also transfers
+        // method ownership; the same Configure path keeps that intent intact.
+        let Configuration::PublicHost {
+            product_methods, ..
+        } = &mut narrowed;
+        product_methods.remove("business");
+        client
+            .configure(source.clone(), desired.clone(), narrowed.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(client.publication().await.unwrap().configuration).unwrap(),
+            serde_json::to_value(&narrowed).unwrap()
+        );
+        client
+            .configure(source.clone(), narrowed, desired.clone())
+            .await
+            .unwrap();
         // Retry the exact command after losing its acknowledgement.
         client
             .configure(source.clone(), previous.clone(), desired.clone())
@@ -1093,12 +1210,26 @@ async fn configured_native_grants_apply_live_survive_source_update_and_root_rest
             .await
             .unwrap();
         assert_eq!(next.revision, 2);
+        // The current head is a CAS witness, not a claim that this connected
+        // incarnation originally started from the newer source revision.
+        let publication = client.publication().await.unwrap();
+        assert_eq!(publication.source, next);
+        assert_eq!(host.source(), &source);
+        assert_eq!(client.source(), &source);
+        assert_eq!(
+            serde_json::to_value(publication.configuration).unwrap(),
+            serde_json::to_value(&desired).unwrap()
+        );
         assert!(
             client
                 .configure(source, desired.clone(), previous)
                 .await
                 .is_err()
         );
+        client
+            .configure(publication.source, desired.clone(), desired.clone())
+            .await
+            .unwrap();
         assert_eq!(
             native_read(&services).await.unwrap(),
             serde_json::json!({"effects":0})
@@ -1112,23 +1243,21 @@ async fn configured_native_grants_apply_live_survive_source_update_and_root_rest
         drop((client, services, host, store));
         // Reopen from the durable launcher selection, as a new Host process does.
         let store = Arc::new(
-            EventLog::for_root(Arc::new(RootOwner::open(&root, &namespaces).unwrap()))
-                .await
-                .unwrap(),
+            support::setup(RootStore::open(Arc::new(
+                RootOwner::open(&root, &namespaces).unwrap(),
+            )))
+            .await
+            .unwrap(),
         );
         let saved = store.application_launch().await.unwrap().unwrap();
-        let Configuration::PublicHost {
-            endpoints,
-            native: grants,
-        } = serde_json::from_value(saved.configuration).unwrap();
+        let configuration: Configuration = serde_json::from_value(saved.configuration).unwrap();
         let (native, mut activations) = native_caller();
         let host = Host::open(
             store.clone(),
             deployment,
             native,
             Some(maka_host_js::factory(Default::default())),
-            endpoints,
-            grants,
+            configuration,
         )
         .await
         .unwrap();
@@ -1212,7 +1341,7 @@ async fn public_ipc_preserves_large_query_progress_and_original_mutation_receipt
         maka_event_log::root::private_directory(directory.path()).unwrap();
         let namespaces = RootNamespaces { ownership:directory.path().join("owners"), control:directory.path().join("control") };
         let root = directory.path().join("root");
-        let store = Arc::new(EventLog::for_root(Arc::new(RootOwner::create(&root,&namespaces).unwrap())).await.unwrap());
+        let store = Arc::new(support::setup(RootStore::open(Arc::new(RootOwner::create(&root,&namespaces).unwrap()))).await.unwrap());
         let deployment = Uuid::new_v4();
         let (mut input, mut packages) = support::native_host("public.large");
         let mut contract = support::business();
@@ -1237,9 +1366,9 @@ async fn public_ipc_preserves_large_query_progress_and_original_mutation_receipt
             } })
         } })).unwrap();
         store.commit_application(deployment,0,input,vec![],packages).await.unwrap();
-        let host = Host::open(store.clone(),deployment,native,Some(maka_host_js::factory(Default::default())),BTreeMap::from([
+        let host = Host::open(store.clone(),deployment,native,Some(maka_host_js::factory(Default::default())),HostConfiguration::PublicHost { endpoints: BTreeMap::from([
             ("business".into(),HostEndpoint { consumer:support::identity(13),import:"business".into(),grant:Grant { methods:["read".into(),"write".into()].into(),recovery:false } }),
-        ]),vec![]).await.unwrap();
+        ]), native: vec![], product_methods: Default::default() }).await.unwrap();
         #[cfg(unix)] let address = directory.path().join("large.sock");
         #[cfg(windows)] let address = std::path::PathBuf::from(format!(r"\\.\pipe\maka-large-test-{}",Uuid::new_v4()));
         let listener = LocalListener::bind(&address).unwrap();
@@ -1259,7 +1388,7 @@ async fn public_ipc_preserves_large_query_progress_and_original_mutation_receipt
         let write_cleanup = write.close().await;
         let write_confirmed = write.cleanup_confirmed();
         let intent = if let Some(reference)=&reference { store.application_intent(deployment,support::identity(13),reference.operation).await.unwrap() } else { None };
-        let observation = if let Some(reference)=&reference { store.operation_observation(reference).await.unwrap() } else { None };
+        let observation = if let Some(reference)=&reference { store.operation(reference).unwrap().operation_observation().await.unwrap() } else { None };
         client.close().await.unwrap();
         assert!(Client::retire_with_options(&address,host.epoch(),true,true).await.unwrap());
         serving.await.unwrap().unwrap();

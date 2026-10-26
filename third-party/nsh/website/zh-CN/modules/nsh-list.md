@@ -95,8 +95,12 @@ interface ReadonlyListSource<T> {
 |---|---|---|---|
 | `onLoadMore` | `() => void` | | 距离末端不超过 `loadMoreThreshold` 个视口时调用：用于加载更多。 |
 | `loadMoreThreshold` | `number` | `1` | 距离末端多近（以视口长度计）时触发 `onLoadMore`。 |
+| `onLoadMoreAtStart` | `() => void` | | 用户或滚动命令移动列表后，距离开头不超过 `loadMoreAtStartThreshold` 个视口时调用：加载第一项之前的内容。 |
+| `loadMoreAtStartThreshold` | `number` | `1` | 距离开头多近（以视口长度计）时触发 `onLoadMoreAtStart`。 |
 | `refreshing` | `boolean` | | 显示下拉刷新的加载指示器。 |
 | `onRefresh` | `() => void` | | 启用下拉刷新；加载期间设置 `refreshing`。 |
+| `refreshIndicator` | `{ height: number }` | | 应用自己绘制下拉刷新指示器，高 `height`，取代转圈。 |
+| `pullValue` | `AnimatedValue` | | 写入列表被拉过顶部的距离，用于绘制那个指示器。 |
 | `onViewableItemsChange` | `(info: { viewableItems: ViewToken<T>[]; changed: ViewToken<T>[] }) => void` | | 变为可见或不再可见的条目。 |
 | `viewabilityConfig` | `ViewabilityConfig` | | 条目何时算作可见。 |
 

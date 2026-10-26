@@ -28,7 +28,6 @@ use tokio_util::task::{TaskTracker, task_tracker::TaskTrackerToken};
 pub struct Resources {
     state: Mutex<State>,
     tasks: TaskTracker,
-    wake: Option<Box<dyn Fn() + Send + Sync>>,
 }
 #[derive(Default)]
 struct State {
@@ -44,20 +43,6 @@ impl Resources {
         let state = self.state.lock().unwrap();
         state.failure.is_none() && self.tasks.is_empty()
     }
-    /// Wake the original presenter after ticket destruction has changed its
-    /// settlement fact. The callback must not retain the resource group itself.
-    pub fn with_wake(wake: impl Fn() + Send + Sync + 'static) -> Self {
-        Self {
-            wake: Some(Box::new(wake)),
-            ..Default::default()
-        }
-    }
-    /// Publish a native observation wake, without asserting cleanup completion.
-    pub fn notify(&self) {
-        if let Some(wake) = &self.wake {
-            wake();
-        }
-    }
     pub fn reserve(self: &Arc<Self>) -> Result<Ticket, ToolError> {
         let state = self.state.lock().unwrap();
         if state.closed {
@@ -65,9 +50,8 @@ impl Resources {
         }
         Ok(Ticket {
             group: self.clone(),
-            _token: Some(self.tasks.token()),
-            complete: false,
-            started: false,
+            _token: self.tasks.token(),
+            state: TicketState::Reserved,
         })
     }
     /// Seal original admission and inspect actual worker settlement without a
@@ -95,13 +79,17 @@ impl Resources {
 }
 pub struct Ticket {
     group: Arc<Resources>,
-    _token: Option<TaskTrackerToken>,
-    complete: bool,
-    started: bool,
+    _token: TaskTrackerToken,
+    state: TicketState,
+}
+enum TicketState {
+    Reserved,
+    Started,
+    Settled,
 }
 impl Ticket {
     pub fn start(&mut self) {
-        self.started = true;
+        self.state = TicketState::Started;
     }
     /// Preserve original custody when losing an observation cannot establish
     /// actual resource cleanup. A failed group never emits a successful receipt.
@@ -109,7 +97,7 @@ impl Ticket {
         let mut state = self.group.state.lock().unwrap();
         state.failure.get_or_insert(error);
         state.retained.push(Box::new(custody));
-        self.complete = true;
+        self.state = TicketState::Settled;
     }
     pub fn complete(mut self, result: Result<(), String>) {
         if let Err(error) = result {
@@ -120,24 +108,18 @@ impl Ticket {
                 .failure
                 .get_or_insert(error);
         }
-        self.complete = true;
+        self.state = TicketState::Settled;
     }
 }
 impl Drop for Ticket {
     fn drop(&mut self) {
-        if self.started && !self.complete {
+        if matches!(self.state, TicketState::Started) {
             self.group
                 .state
                 .lock()
                 .unwrap()
                 .failure
                 .get_or_insert_with(|| "plugin resource worker disappeared".into());
-        }
-        // Publish after the original tracker token is actually gone. Waking
-        // before token drop could strand a presenter that observes Pending.
-        drop(self._token.take());
-        if let Some(wake) = &self.group.wake {
-            wake();
         }
     }
 }

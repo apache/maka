@@ -22,7 +22,7 @@ use crate::support::preflight as support;
 use maka_agent_facts::event::Fact;
 use maka_agent_facts::event::ToolOutcome;
 use maka_agent_facts::model::ToolInput;
-use maka_agent_facts::tool_call::ToolRejection;
+use maka_agent_facts::tool_call::{ToolCallIdentity, ToolRejection};
 use maka_agent_facts::tools::ToolError;
 use maka_code_runtime::CellLimits;
 use maka_event_log::EventLog;
@@ -40,6 +40,9 @@ async fn provider_preflight_rejects_before_t1_and_exclusivity_follows_call_order
     let log = Arc::new(EventLog::open(&path).await.unwrap());
     let effect = Arc::new(Effect::default());
     let cells = CodeExecutor::new(CellLimits::default()).unwrap();
+    let invalid_code_type = serde_json::from_value::<String>(json!(1))
+        .expect_err("numeric code must not deserialize as a string")
+        .to_string();
     let cases = [
         (
             "finish",
@@ -135,7 +138,7 @@ async fn provider_preflight_rejects_before_t1_and_exclusivity_follows_call_order
                 (
                     call("exec", "exec", json!({"code":1})),
                     Some(ToolRejection::InvalidInput {
-                        message: "invalid type: integer `1`, expected a string".into(),
+                        message: invalid_code_type,
                     }),
                 ),
                 (
@@ -185,7 +188,7 @@ async fn provider_preflight_rejects_before_t1_and_exclusivity_follows_call_order
             catalog(effect.clone()),
             mode,
             cells.clone(),
-            Default::default(),
+            maka_tools::availability::LoadedTools::temporary().unwrap(),
         );
         let request = run
             .capture(".", tokio_util::sync::CancellationToken::new())
@@ -220,10 +223,35 @@ async fn provider_preflight_rejects_before_t1_and_exclusivity_follows_call_order
                     matches!(result, Err(ToolError::Failed(_))),
                     "{id}: {result:?}"
                 );
-                assert!(matches!(facts.last().unwrap(),
-                    Fact::ToolRejected { operation_id, call: identity, input, reason: actual, .. }
-                    if input == &call.input && operation_id == &format!("{step_id}:{}", call.id)
-                        && identity.tool_call_id == call.id && actual == &reason));
+                let Fact::ToolRejected {
+                    operation_id,
+                    call: identity,
+                    name,
+                    input,
+                    reason: actual,
+                } = facts.last().unwrap()
+                else {
+                    panic!(
+                        "{id}:{}: expected rejection, got {:?}",
+                        call.id,
+                        facts.last()
+                    );
+                };
+                assert_eq!(input, &call.input, "{id}:{}: rejected input", call.id);
+                assert_eq!(
+                    operation_id,
+                    &format!("{step_id}:{}", call.id),
+                    "{id}:{}: rejected operation",
+                    call.id
+                );
+                assert_eq!(
+                    identity,
+                    &ToolCallIdentity::provider(step_id.clone(), call.id.clone()),
+                    "{id}:{}: rejected call identity",
+                    call.id
+                );
+                assert_eq!(name, &call.name, "{id}:{}: rejected tool", call.id);
+                assert_eq!(actual, &reason, "{id}:{}: rejection reason", call.id);
                 assert!(!facts.iter().any(|fact| matches!(fact,
                     Fact::ToolDispatched { operation_id, .. } | Fact::ToolSettled { operation_id, .. }
                     if operation_id == &format!("{step_id}:{}", call.id))));
@@ -312,7 +340,7 @@ async fn nested_preflight_is_effect_free_and_diagnostics_are_successful_parent_v
             catalog(effect.clone()),
             ToolMode::CodeMode,
             cells.clone(),
-            Default::default(),
+            maka_tools::availability::LoadedTools::temporary().unwrap(),
         );
         let value = run
             .capture(".", tokio_util::sync::CancellationToken::new())

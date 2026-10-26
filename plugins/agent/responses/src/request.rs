@@ -53,6 +53,7 @@ enum Input {
         content: Vec<Content>,
     },
     Item(Item),
+    Replay(Value),
 }
 #[derive(Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -197,10 +198,22 @@ impl Request<'_> {
                 Message::Assistant { content: parts, .. } => {
                     for part in parts {
                         match part {
-                            AssistantPart::Text { text, .. } => input.push(Input::Message {
-                                role: "assistant",
-                                content: vec![Content::OutputText { text: text.clone() }],
-                            }),
+                            AssistantPart::Text {
+                                text,
+                                provider_options,
+                            } => {
+                                if self.plaintext.is_none()
+                                    && let Some(item) =
+                                        crate::replay::text(provider_options, text, "message")?
+                                {
+                                    input.push(Input::Replay(item));
+                                } else {
+                                    input.push(Input::Message {
+                                        role: "assistant",
+                                        content: vec![Content::OutputText { text: text.clone() }],
+                                    });
+                                }
+                            }
                             AssistantPart::Reasoning {
                                 text,
                                 provider_options,
@@ -239,6 +252,12 @@ impl Request<'_> {
                                     }));
                                 }
                                 None => {
+                                    if let Some(item) =
+                                        crate::replay::text(provider_options, text, "reasoning")?
+                                    {
+                                        input.push(Input::Replay(item));
+                                        continue;
+                                    }
                                     let id = metadata(provider_options, "openai", "itemId");
                                     let encrypted_content = metadata(
                                         provider_options,
@@ -294,28 +313,63 @@ impl Request<'_> {
                                 } else if self.plaintext.is_none()
                                     && let Some(source) = custom_source
                                 {
-                                    input.push(Input::Item(Item::CustomToolCall {
-                                        call_id: tool_call_id.clone(),
-                                        name: wire_name(tool_name).into(),
-                                        input: source.clone(),
-                                    }));
+                                    if let Some(item) = crate::replay::call(
+                                        provider_options,
+                                        "custom_tool_call",
+                                        tool_call_id,
+                                        wire_name(tool_name),
+                                        source,
+                                    )? {
+                                        input.push(Input::Replay(item));
+                                    } else {
+                                        input.push(Input::Item(Item::CustomToolCall {
+                                            call_id: tool_call_id.clone(),
+                                            name: wire_name(tool_name).into(),
+                                            input: source.clone(),
+                                        }));
+                                    }
                                 } else {
-                                    input.push(Input::Item(Item::FunctionCall {
-                                        call_id: tool_call_id.clone(),
-                                        name: wire_name(tool_name).into(),
-                                        arguments: match custom_source {
-                                            Some(source) if tool_name == "exec" => {
-                                                json!({"code":source}).to_string()
-                                            }
-                                            _ => match args {
-                                                ToolInput::Json(value) => value.to_string(),
-                                                ToolInput::InvalidJson { raw } => raw.clone(),
-                                            },
+                                    let arguments = match custom_source {
+                                        Some(source) if tool_name == "exec" => {
+                                            json!({"code":source}).to_string()
+                                        }
+                                        _ => match args {
+                                            ToolInput::Json(value) => value.to_string(),
+                                            ToolInput::InvalidJson { raw } => raw.clone(),
                                         },
-                                    }));
+                                    };
+                                    if self.plaintext.is_none()
+                                        && let Some(item) = crate::replay::call(
+                                            provider_options,
+                                            "function_call",
+                                            tool_call_id,
+                                            wire_name(tool_name),
+                                            &arguments,
+                                        )?
+                                    {
+                                        input.push(Input::Replay(item));
+                                    } else {
+                                        input.push(Input::Item(Item::FunctionCall {
+                                            call_id: tool_call_id.clone(),
+                                            name: wire_name(tool_name).into(),
+                                            arguments,
+                                        }));
+                                    }
                                 }
                             }
-                            AssistantPart::ToolResult { .. } => {}
+                            AssistantPart::ToolResult {
+                                provider_options,
+                                output,
+                                ..
+                            } => {
+                                if self.plaintext.is_none()
+                                    && options["store"] == false
+                                    && let Some(item) =
+                                        crate::replay::provider(provider_options, output)?
+                                {
+                                    input.push(Input::Replay(item));
+                                }
+                            }
                         }
                     }
                 }
@@ -476,6 +530,45 @@ impl Request<'_> {
         }
         Ok(body)
     }
+}
+
+/// Exact per-message input items for immutable wire preparation. Envelope fields
+/// (model, tools, output limit) are intentionally outside this codec.
+pub fn encode_message(
+    message: &Message,
+    language: maka_agent_facts::language::Language,
+    plaintext: Option<PlaintextResponses>,
+    options: &Value,
+) -> Result<Vec<Value>> {
+    let mut body = Request {
+        language,
+        model: "",
+        prompt: std::slice::from_ref(message),
+        tools: &[],
+        options,
+        max_output_tokens: None,
+        plaintext,
+    }
+    .encode()?;
+    let Value::Array(items) = body["input"].take() else {
+        unreachable!()
+    };
+    Ok(items)
+}
+
+/// Version every semantic wire change; persisted pieces are valid only for the
+/// captured language, reasoning contract, and effective reference policy.
+pub fn wire_codec(
+    language: maka_agent_facts::language::Language,
+    plaintext: Option<PlaintextResponses>,
+    options: &Value,
+) -> String {
+    let namespace = if plaintext.is_some() {
+        "openResponses"
+    } else {
+        "openai"
+    };
+    json!({"responses":3,"language":language,"plaintext":plaintext,"store":options[namespace]["store"] != false}).to_string()
 }
 
 #[cfg(test)]

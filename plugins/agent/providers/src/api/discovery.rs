@@ -191,7 +191,7 @@ impl InventoryClient {
                 url: url.into(),
                 method: http::Method::Get,
                 headers: self.headers.clone().into_iter().collect(),
-                body: vec![],
+                body: Default::default(),
             },
             effects::ResponseBody::Inventory,
         )

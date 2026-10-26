@@ -19,12 +19,12 @@
 
 use super::*;
 use maka_event_log::{
-    EventLog,
     root::{RootNamespaces, RootOwner},
+    root_store::RootStore,
 };
 use maka_host_runtime::{
     application::{
-        host::{Client, Host},
+        host::{Client, Configuration, Host},
         transport::{Grant as EndpointGrant, HostEndpoint, wire::Reply},
     },
     ipc::LocalListener,
@@ -131,7 +131,7 @@ async fn fixed_root_logs_public_endpoint_survives_unrelated_initialization_failu
             .unwrap();
         capture.write_all(b"before\n").unwrap();
         capture.flush().unwrap();
-        let store = Arc::new(EventLog::for_root(owner).await.unwrap());
+        let store = Arc::new(RootStore::open(owner).await.unwrap());
         let (input, packages) = sources();
         let source = store
             .commit_application(Uuid::new_v4(), 0, input, vec![], packages)
@@ -142,23 +142,26 @@ async fn fixed_root_logs_public_endpoint_survives_unrelated_initialization_failu
             source.deployment,
             NativeRegistry::default(),
             Some(maka_host_js::factory(Limits::default())),
-            [("logs", vec!["read", "watch"]), ("readOnly", vec!["read"])]
-                .into_iter()
-                .map(|(name, methods)| {
-                    (
-                        name.into(),
-                        HostEndpoint {
-                            consumer: id(2),
-                            import: "logs".into(),
-                            grant: EndpointGrant {
-                                methods: methods.into_iter().map(str::to_owned).collect(),
-                                recovery: false,
+            Configuration::PublicHost {
+                endpoints: [("logs", vec!["read", "watch"]), ("readOnly", vec!["read"])]
+                    .into_iter()
+                    .map(|(name, methods)| {
+                        (
+                            name.into(),
+                            HostEndpoint {
+                                consumer: id(2),
+                                import: "logs".into(),
+                                grant: EndpointGrant {
+                                    methods: methods.into_iter().map(str::to_owned).collect(),
+                                    recovery: false,
+                                },
                             },
-                        },
-                    )
-                })
-                .collect(),
-            vec![],
+                        )
+                    })
+                    .collect(),
+                native: vec![],
+                product_methods: Default::default(),
+            },
         )
         .await
         .unwrap();
@@ -246,7 +249,7 @@ async fn fixed_root_logs_public_endpoint_survives_unrelated_initialization_failu
         host.shutdown().await.unwrap();
         drop(host);
         let store = Arc::try_unwrap(store)
-            .unwrap_or_else(|_| panic!("Host cleanup retained the original EventLog"));
+            .unwrap_or_else(|_| panic!("Host cleanup retained the original RootStore"));
         store.close().await.unwrap();
         let (read, initial, appended, reconnected, denied_reason, path_error) = observed.expect(
             "explicitly granted public HostLogs must read and follow the original Root capture",
@@ -283,7 +286,7 @@ async fn failed_startup_retirement_waits_for_cleanup_without_blocking_session_ad
         let root = directory.path().join("root");
         let owner = Arc::new(RootOwner::create(&root, &namespaces).unwrap());
         let root_id = owner.root_id().to_owned();
-        let store = Arc::new(EventLog::for_root(owner).await.unwrap());
+        let store = Arc::new(RootStore::open(owner).await.unwrap());
         let mut provider = entry(
             true,
             Implementation::Native {
@@ -352,18 +355,21 @@ async fn failed_startup_retirement_waits_for_cleanup_without_blocking_session_ad
             source.deployment,
             native,
             Some(maka_host_js::factory(Limits::default())),
-            BTreeMap::from([(
-                "echo".into(),
-                HostEndpoint {
-                    consumer: id(2),
-                    import: "echo".into(),
-                    grant: EndpointGrant {
-                        methods: ["echo".to_owned()].into_iter().collect(),
-                        recovery: false,
+            Configuration::PublicHost {
+                endpoints: BTreeMap::from([(
+                    "echo".into(),
+                    HostEndpoint {
+                        consumer: id(2),
+                        import: "echo".into(),
+                        grant: EndpointGrant {
+                            methods: ["echo".to_owned()].into_iter().collect(),
+                            recovery: false,
+                        },
                     },
-                },
-            )]),
-            vec![],
+                )]),
+                native: vec![],
+                product_methods: Default::default(),
+            },
         )
         .await
         .unwrap();
@@ -416,7 +422,7 @@ async fn failed_startup_retirement_waits_for_cleanup_without_blocking_session_ad
         assert!(host.status().closed);
         drop(host);
         let store = Arc::try_unwrap(store)
-            .unwrap_or_else(|_| panic!("Host cleanup retained the original EventLog"));
+            .unwrap_or_else(|_| panic!("Host cleanup retained the original RootStore"));
         store.close().await.unwrap();
         assert_eq!(
             RootOwner::open(&root, &namespaces).unwrap().root_id(),

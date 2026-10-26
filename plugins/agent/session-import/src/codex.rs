@@ -355,7 +355,7 @@ impl Converter {
         let removed: BTreeSet<_> = self.turns.drain(retain..).collect();
         if !removed.is_empty() {
             self.records
-                .retain(|record| !removed.contains(&record.source_turn_id))?;
+                .retain(|record| !removed.contains(&record.source_turn_id));
             self.calls.retain(|_, call| !removed.contains(&call.turn));
         }
         self.turn = None;

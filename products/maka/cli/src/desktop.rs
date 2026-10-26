@@ -48,7 +48,10 @@ impl Args {
         let stop = CancellationToken::new();
         let _signals = crate::signals::watch(stop.clone())?;
         let root = self.root.clone();
-        let mut client = crate::deployment::connect_local(root.clone()).await?;
+        let mut client = tokio::select! {
+            result = crate::deployment::connect_local(root.clone()) => result?,
+            _ = stop.cancelled() => return Ok(ExitCode::SUCCESS),
+        };
         let result = self.launch(&client, &stop).await;
         // Detach, as the terminal does: the Host finishes the work it accepted
         // and then stops once no client is left.

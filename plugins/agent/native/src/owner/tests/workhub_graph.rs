@@ -225,7 +225,7 @@ async fn graph_real_model_dispatches_original_work_wakes_and_selects_actual_resu
         assert_eq!(notice["target"]["tools"], json!([]));
         let admission = &notice["notification"]["admission"];
         let notice_id = admission["source"]["message_id"].as_str().unwrap();
-        let facts = fixture.store.scoped_prefix(maka_agent_facts::event::LogScope::Session {id:session.into()},512,8*1024*1024).await.unwrap();
+        let facts = fixture.session(session).await.scoped_prefix(maka_agent_facts::event::LogScope::Session {id:session.into()},512,8*1024*1024).await.unwrap();
         let sources: Vec<_> = facts.events.iter().filter_map(|row| match &row.event.fact {
             Fact::InvocationOpened {input:maka_agent_facts::input::InvocationInput::Message {source_messages,..},..} => Some(source_messages.as_slice()),
             _ => None,
@@ -531,7 +531,7 @@ async fn model_tool_envelopes_reject_invalid_branches_before_dispatch_and_allow_
                     .contains("arguments do not match the declared schema"),
                 "{name} must reach the next model step as a normal schema rejection: {sent}"
             );
-            let prefix = fixture.store.prefix(1000, 2 * 1024 * 1024).await.unwrap();
+            let prefix = fixture.prefix(session, 1000, 2 * 1024 * 1024).await;
             let rejected: Vec<_> = prefix
                 .events
                 .iter()
@@ -582,7 +582,7 @@ async fn model_tool_envelopes_reject_invalid_branches_before_dispatch_and_allow_
             query_import(&fixture, hub::EXPORT, "tasks", json!({})).await["entries"],
             json!([])
         );
-        let prefix = fixture.store.prefix(1000, 2 * 1024 * 1024).await.unwrap();
+        let prefix = fixture.prefix(session, 1000, 2 * 1024 * 1024).await;
         let dispatched: Vec<_> = prefix
             .events
             .iter()

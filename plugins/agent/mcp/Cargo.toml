@@ -33,8 +33,10 @@ tokio = { workspace = true, features = ["process", "io-util"] }
 tokio-util.workspace = true
 reqwest.workspace = true
 futures-util.workspace = true
-which = "8"
-sse-stream = "0.2.6"
+which = "8.0.6"
+sse-stream = "0.3.0"
+# rmcp 3.7 exposes the previous SSE event type in its transport contract.
+rmcp-sse = { package = "sse-stream", version = "0.2.6" }
 
 [dev-dependencies]
 maka-event-log.workspace = true

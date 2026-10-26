@@ -22,9 +22,9 @@ use maka_agent_facts::interaction::PermissionRequest;
 use std::path::Component;
 
 pub(super) async fn authorize(
-    store: &EventLog,
+    store: &maka_event_log::SessionStore,
     captured: Captured,
-    configuration: &SessionConfiguration,
+    configuration: &ResolvedConfiguration,
     tool: &'static str,
     input: &Value,
     context: &ToolCallContext,
@@ -37,7 +37,7 @@ pub(super) async fn authorize(
         .permission_grants(
             &context.invocation,
             Some(&context.tool_use_id()),
-            configuration.boundary_revision,
+            &configuration.permission_basis(),
         )
         .await
         .map_err(|_| failed("Workspace permission observation unavailable"))?;

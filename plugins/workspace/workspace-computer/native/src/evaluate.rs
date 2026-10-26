@@ -19,6 +19,7 @@
 
 use super::*;
 use maka_agent_facts::language::Language;
+use maka_agent_facts::workspace::PermissionBasis;
 use maka_agent_facts::{
     artifact::{Artifact, ArtifactKind, ArtifactSource},
     capability::{CallResult, ContentBlock},
@@ -39,7 +40,7 @@ impl Computer {
         name: &str,
         input: Value,
         call: Scope,
-        revision: u64,
+        basis: PermissionBasis,
         interaction: Arc<sessions::Interaction>,
         cancellation: CancellationToken,
     ) -> Result<ResultValue, ToolError> {
@@ -62,7 +63,7 @@ impl Computer {
             },
         )
         .await?;
-        if current.boundary_revision != revision {
+        if current.permission_basis() != basis {
             return Err(failed("Computer Use permissions changed while queued"));
         }
         if name == "reset" {
@@ -78,6 +79,7 @@ impl Computer {
             return self
                 .output(
                     &invocation,
+                    &call,
                     vec![CellOutput::Text {
                         text: maka_computer_use::language::reset(language).into(),
                     }],
@@ -85,7 +87,7 @@ impl Computer {
                 )
                 .await;
         }
-        access::granted(self, &call, revision).await?;
+        access::granted(self, &call, basis).await?;
         let platform = {
             let mut native = interaction.native.lock().await;
             native.configure(
@@ -101,21 +103,33 @@ impl Computer {
             heap_bytes: 128 * 1024 * 1024,
             ..Default::default()
         };
-        let context = CellContext::new(Default::default(), vec![]).with_image_deduplication();
+        let context = tokio::task::spawn_blocking(|| {
+            let store = maka_code_runtime::CellStore::temporary()?;
+            CellContext::new(store, vec![])
+        })
+        .await
+        .map_err(failed)?
+        .map_err(|error| failed(error.message))?
+        .with_image_deduplication();
         let runtime =
             repl.get_or_insert_with(|| Repl::new(maka_computer_use::facade_for(platform), limits));
         let bridge = Arc::new(Bridge {
             owner: self.clone(),
             call: call.clone(),
             native: interaction.native.clone(),
-            revision,
+            basis,
             language,
         });
-        let mut changes = self.store.subscribe_catalog_changes();
+        let store = maka_agent_authority::permissions::execution(
+            &self.store,
+            &invocation,
+            call.execution().map(|token| token.as_ref()),
+        )?;
+        let mut changes = store.subscribe_commits().map_err(failed)?;
         let monitor = async {
             loop {
                 changes.borrow_and_update();
-                access::granted(self, &call, revision).await?;
+                access::granted(self, &call, basis).await?;
                 changes.changed().await.map_err(failed)?;
             }
             #[allow(unreachable_code)]
@@ -168,6 +182,7 @@ impl Computer {
         }
         self.output(
             &invocation,
+            &call,
             context.take_output(),
             if runtime.is_closed() {
                 ReplState::ResetRequired
@@ -180,6 +195,7 @@ impl Computer {
     async fn output(
         &self,
         invocation: &Invocation,
+        call: &Scope,
         output: Vec<CellOutput>,
         state: ReplState,
     ) -> Result<ResultValue, ToolError> {
@@ -197,10 +213,14 @@ impl Computer {
             source: ArtifactSource::SessionEffect,
             summary: None,
         };
-        self.store
-            .commit_artifact(artifact, bytes)
-            .await
-            .map_err(|e| ToolError::Persistence(message(e)))?;
+        maka_agent_authority::permissions::execution(
+            &self.store,
+            invocation,
+            call.execution().map(|token| token.as_ref()),
+        )?
+        .commit_artifact(artifact, bytes)
+        .await
+        .map_err(|e| ToolError::Persistence(message(e)))?;
         Ok(ResultValue::Completed {
             artifact: id,
             state,
@@ -211,7 +231,7 @@ impl Computer {
         call: Scope,
         input: Value,
         native: Arc<tokio::sync::Mutex<maka_computer_use::Session>>,
-        revision: u64,
+        basis: PermissionBasis,
         language: Language,
         cancellation: CancellationToken,
     ) -> Result<Value, ToolError> {
@@ -226,7 +246,7 @@ impl Computer {
             () = cancellation.cancelled() => return Err(failed("Computer Use cancelled while queued")),
             native = native.lock_owned() => native,
         };
-        access::granted(self, &call, revision).await?;
+        access::granted(self, &call, basis).await?;
         if cancellation.is_cancelled() {
             return Err(failed("Computer Use cancelled before admission"));
         }
@@ -264,8 +284,12 @@ impl Computer {
         }
         let result = ToolJournal::new(
             Arc::new(access::Journal {
-                store: self.store.clone(),
-                revision,
+                store: maka_agent_authority::permissions::execution(
+                    &self.store,
+                    &invocation,
+                    call.execution().map(|token| token.as_ref()),
+                )?,
+                basis,
             }),
             invocation,
         )
@@ -309,7 +333,7 @@ struct Bridge {
     owner: Arc<Computer>,
     call: Scope,
     native: Arc<tokio::sync::Mutex<maka_computer_use::Session>>,
-    revision: u64,
+    basis: PermissionBasis,
     language: Language,
 }
 impl ToolExecutor for Bridge {
@@ -320,14 +344,14 @@ impl ToolExecutor for Bridge {
         let owner = self.owner.clone();
         let call = self.call.clone();
         let native = self.native.clone();
-        let revision = self.revision;
+        let basis = self.basis;
         let language = self.language;
         Box::pin(async move {
             if name != "cua" {
                 return Err(failed("Computer operation unavailable"));
             }
             owner
-                .operation(call, input, native, revision, language, cancellation)
+                .operation(call, input, native, basis, language, cancellation)
                 .await
         })
     }

@@ -24,8 +24,9 @@
 //! MAKA_ENGINE_PERF_TOOL_EVERY=20 MAKA_ENGINE_PERF_TOOLS_PER_TURN=1 models sparse tools.
 //! Set those to 1 and 8 for dense stress; MAKA_ENGINE_PERF_RESULT_BYTES=128 controls payloads.
 //! Optional MAKA_ENGINE_PERF_FIXTURE_DIR=/tmp/maka-perf and MAKA_ENGINE_PERF_FIXTURE_TAG=<revision>
-//! cache closed pristine databases, copied for every sample. Use separate tags/directories per build.
+//! cache pristine bundles, imported into a fresh Root for every sample. Use separate tags/directories per build.
 //! Checkpoint histories compact every 1000 turns; raw requests retain the HTTP fixture's 16 MiB limit.
+use crate::support::store::SessionFixture;
 use crate::support::{context as fixture, image_projection::identity};
 use maka_agent_facts::{
     context::ModelPurpose,
@@ -35,11 +36,10 @@ use maka_agent_facts::{
     tool_call::ToolCallIdentity,
     tool_output::ToolOutput,
 };
-use maka_event_log::EventLog;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::Arc,
     time::{Duration, Instant, SystemTime},
 };
@@ -55,7 +55,7 @@ fn setting(name: &str, default: usize) -> usize {
 // Tool turns follow stale_pruning; ordinary turns persist validated streamed text.
 // Batch each closed turn, keeping fixture setup out of the measured interval.
 async fn seed(
-    log: &EventLog,
+    log: &SessionFixture,
     range: std::ops::Range<usize>,
     result_bytes: usize,
     tool_every: usize,
@@ -249,7 +249,7 @@ async fn seed(
 }
 
 // Only fixture setup uses compaction; never include it in the measured Run.
-async fn compact(worker: &maka_agent_engine::Engine, log: &EventLog, through_turn: usize) {
+async fn compact(worker: &maka_agent_engine::Engine, log: &SessionFixture, through_turn: usize) {
     println!(
         "{}",
         json!({"phase":"compact_start", "through_turn":through_turn})
@@ -266,6 +266,7 @@ async fn compact(worker: &maka_agent_engine::Engine, log: &EventLog, through_tur
     let invocation = tokio::time::timeout(
         Duration::from_secs(300),
         worker.run(
+            log.store(),
             fixture::input(&base, &format!("compact-{through_turn}"), true),
             CancellationToken::new(),
         ),
@@ -293,7 +294,7 @@ async fn compact(worker: &maka_agent_engine::Engine, log: &EventLog, through_tur
 }
 
 async fn prepare(
-    log: &Arc<EventLog>,
+    log: &Arc<SessionFixture>,
     turns: usize,
     result_bytes: usize,
     tool_every: usize,
@@ -305,7 +306,7 @@ async fn prepare(
         json!({"phase":"seed_start", "history_turns":turns, "checkpoint":checkpoint})
     );
     let started = Instant::now();
-    let worker = fixture::engine(log.clone());
+    let worker = fixture::engine();
     let mut counts = (0, 0);
     for start in (0..turns).step_by(1000) {
         let end = (start + 1000).min(turns);
@@ -348,17 +349,6 @@ fn cache_directory() -> Option<PathBuf> {
     Some(directory)
 }
 
-fn copy_new(source: &Path, destination: &Path) {
-    let mut source = std::fs::File::open(source).unwrap();
-    let mut destination = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(destination)
-        .unwrap();
-    std::io::copy(&mut source, &mut destination).unwrap();
-    destination.sync_all().unwrap();
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "release performance harness: creates disposable long histories"]
 #[allow(clippy::assertions_on_constants)] // Compile in debug; reject only execution.
@@ -396,7 +386,7 @@ async fn engine_long_history() {
                 usize::from(checkpoint)
             );
             (
-                directory.join(format!("{stem}.sqlite")),
+                directory.join(format!("{stem}.bundle")),
                 directory.join(format!("{stem}.json")),
             )
         });
@@ -404,7 +394,7 @@ async fn engine_long_history() {
             if !database.exists() && !metadata.exists() {
                 let staging = tempfile::tempdir_in(cache.as_ref().unwrap()).unwrap();
                 let staging_database = staging.path().join("events.sqlite");
-                let log = Arc::new(EventLog::open(&staging_database).await.unwrap());
+                let log = Arc::new(SessionFixture::open(&staging_database).await.unwrap());
                 let (events, tools) = prepare(
                     &log,
                     turns,
@@ -415,13 +405,13 @@ async fn engine_long_history() {
                 )
                 .await;
                 let high_water = *log.subscribe_commits().borrow();
+                log.write_bundle(database).await.unwrap();
                 Arc::try_unwrap(log)
                     .ok()
                     .expect("fixture still has owners")
                     .close()
                     .await
                     .unwrap();
-                copy_new(&staging_database, database);
                 let record = json!({"settings":settings, "history_events":events, "history_tool_results":tools, "high_water":high_water});
                 use std::io::Write;
                 let mut file = std::fs::OpenOptions::new()
@@ -443,19 +433,30 @@ async fn engine_long_history() {
         for repetition in 0..repetitions {
             let directory = tempfile::tempdir().unwrap();
             let database = directory.path().join("events.sqlite");
-            let cached = cache_paths.as_ref().map(|(source, metadata)| {
-                println!("{}", json!({"phase":"fixture_copy_start", "history_turns":turns, "repetition":repetition}));
-                copy_new(source, &database);
-                let record: Value = serde_json::from_slice(&std::fs::read(metadata).unwrap()).unwrap();
-                println!("{}", json!({"phase":"fixture_copy_done", "history_turns":turns, "repetition":repetition}));
+            let cached = cache_paths.as_ref().map(|(_source, metadata)| {
+                let record: Value =
+                    serde_json::from_slice(&std::fs::read(metadata).unwrap()).unwrap();
                 record
             });
             let open_started = Instant::now();
-            let log = Arc::new(
-                EventLog::open(&database)
+            let log = Arc::new(if let Some((source, _)) = &cache_paths {
+                println!(
+                    "{}",
+                    json!({"phase":"fixture_import_start", "history_turns":turns, "repetition":repetition})
+                );
+                let fixture = SessionFixture::from_bundle(&database, source)
                     .await
-                    .expect("fixture store open/schema validation failed"),
-            );
+                    .expect("fixture bundle import failed");
+                println!(
+                    "{}",
+                    json!({"phase":"fixture_import_done", "history_turns":turns, "repetition":repetition})
+                );
+                fixture
+            } else {
+                SessionFixture::open(&database)
+                    .await
+                    .expect("fixture Root open/schema validation failed")
+            });
             let store_open_ms = open_started.elapsed().as_secs_f64() * 1000.0;
             let (history_events, history_tool_results) = if let Some(record) = cached {
                 assert_eq!(
@@ -486,11 +487,8 @@ async fn engine_long_history() {
                 last.state.terminal_outcome(),
                 Some(InvocationOutcome::Completed)
             ));
-            let database_bytes = std::fs::metadata(&database).unwrap().len();
-            let database_wal_bytes =
-                std::fs::metadata(database.with_file_name("events.sqlite-wal"))
-                    .map_or(0, |metadata| metadata.len());
-            let worker = fixture::engine(log.clone());
+            let (database_bytes, database_wal_bytes) = log.storage_bytes();
+            let worker = fixture::engine();
             let before = *log.subscribe_commits().borrow();
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let base = format!("http://{}/v1", listener.local_addr().unwrap());
@@ -531,7 +529,7 @@ async fn engine_long_history() {
             });
             let invocation = tokio::time::timeout(
                 Duration::from_secs(300),
-                worker.run(input, CancellationToken::new()),
+                worker.run(log.store(), input, CancellationToken::new()),
             )
             .await
             .expect("engine Run timed out")

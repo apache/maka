@@ -48,7 +48,7 @@ pub(crate) struct Scheduler {
     link: OnceLock<Weak<Owner>>,
 }
 impl Scheduler {
-    pub fn new(store: Arc<EventLog>, prefix: String) -> Self {
+    pub fn new(store: Arc<RootStore>, prefix: String) -> Self {
         Self {
             storage: Arc::new(maka_host_runtime::storage::Storage::new(
                 store,

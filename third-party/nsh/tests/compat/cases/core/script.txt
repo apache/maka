@@ -45,9 +45,12 @@ expect Decay moves forward: yes
 expect Value is a node: true
 expect Sum is a node: true
 expect Interpolation is a node: true
+# A node, the same for the same options, another without `snap`.
+expect Snapping diffClamp: true true true
 expect Composite: function/function/function
 expect Preset duration: 300
 expect Created: 250 linear opacity
+expect Keyboard: keyboard
 frame id:faded 0 302 40 40
 frame id:box 0 359 50 20
 tap id:grow
@@ -316,6 +319,19 @@ covers [nsh] CanvasGradient
 covers [nsh] CanvasRenderingContext2D
 covers [nsh] Path2D
 covers [nsh] List
+# core-motion
+tap id:case-core-motion
+expect Presets: many
+expect Kinds: attention enter exit loop
+expect Shake moves: translateX
+expect Fade in up from: 24
+expect Steps: 0 0.25 0.5 0.75 1
+expect Transform steps: 7
+expect Bound: true
+expect Started: yes
+expect Staggered: function function
+covers [nsh/animated] createMotion
+covers [nsh/animated] motions
 # core-overlay
 tap id:case-core-overlay
 expect OverlayContent
@@ -334,6 +350,10 @@ expect Pressed outside
 tap id:point
 expect Placed left
 frame id:overlay 322 4 50 10
+# Against a box (300, 50, 1 × 20): on its right, 8 points away, their
+# bottoms lined up.
+tap id:box
+frame id:overlay 309 60 50 10
 # Escape or back.
 event text:OverlayContent onCancel
 absent OverlayContent

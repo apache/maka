@@ -29,7 +29,11 @@
 //!
 //! [termwiz's OSC support]: https://docs.rs/termwiz/latest/termwiz/escape/struct.Osc.html
 
-use std::fmt::{self, Display};
+use std::{
+    fmt::{self, Display},
+    num::NonZeroU64,
+    ops::Range,
+};
 
 use crate::{base64, style::RgbColor};
 
@@ -83,11 +87,114 @@ pub enum Osc<'a> {
     ///
     /// xterm defines reset commands by adding 100 to the dynamic color number.
     ResetDynamicColor(DynamicColorNumber),
+
+    /// Private OSC 777 `nsh-text-input` negotiation, composition, or caret geometry.
+    NshTextInput(NshTextInput),
     // TODO: I didn't copy many available commands yet...
+}
+
+/// The negotiated, private NSH text-input extension carried by OSC 777.
+///
+/// Text selection offsets count UTF-16 code units within `preedit`. Enable and
+/// disable nonces identify an application subscription; composition IDs identify
+/// source-owned lifetimes. The application owns admission and stale-ID rejection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NshTextInput {
+    /// Ask whether the terminal implements this extension.
+    Query,
+    /// Acknowledge extension support without enabling forwarding.
+    Supported,
+    /// Subscribe to composition delivery with a positive application nonce.
+    Enable(NonZeroU64),
+    /// Acknowledge the subscription after draining old native delivery.
+    Ready(NonZeroU64),
+    /// Cancel only the named source-owned composition lifetime.
+    Cancel(NonZeroU64),
+    /// Revoke the subscription identified by this application nonce.
+    Disable(NonZeroU64),
+    /// Acknowledge revocation after draining native delivery.
+    Disabled(NonZeroU64),
+    /// Set or clear candidate-window bounds for the named subscription.
+    Caret {
+        nonce: NonZeroU64,
+        bounds: Option<NshTextInputCaretRect>,
+    },
+    /// One atomic committed prefix and remaining composition snapshot.
+    ///
+    /// An inactive snapshot has empty preedit and selection `0..0`. Active
+    /// snapshots may have empty preedit, including composition start. The range
+    /// must fall on Unicode scalar boundaries; it may not split a surrogate pair.
+    Update {
+        composition: NonZeroU64,
+        active: bool,
+        selection: Range<usize>,
+        commit: String,
+        preedit: String,
+    },
+}
+
+/// Exact candidate-window bounds in fractional terminal-cell coordinates.
+///
+/// All edges are finite and nonnegative. Zero-width insertion carets are valid;
+/// the bottom edge must be strictly below the top edge.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NshTextInputCaretRect {
+    edges: [f64; 4],
+}
+
+impl NshTextInputCaretRect {
+    /// Validate left, top, right, and bottom edges.
+    pub fn new(left: f64, top: f64, right: f64, bottom: f64) -> Option<Self> {
+        let edges = [left, top, right, bottom];
+        (edges.iter().all(|edge| edge.is_finite() && *edge >= 0.0) && right >= left && bottom > top)
+            .then_some(Self { edges })
+    }
+
+    /// Return left, top, right, and bottom edges, in that order.
+    pub fn edges(&self) -> [f64; 4] {
+        self.edges
+    }
+}
+
+// Construction excludes NaN, so equality is reflexive.
+impl Eq for NshTextInputCaretRect {}
+
+pub(crate) fn valid_text_input_update(
+    active: bool,
+    selection: &Range<usize>,
+    preedit: &str,
+) -> bool {
+    if (!active && !preedit.is_empty()) || selection.start > selection.end {
+        return false;
+    }
+    let mut offset = 0;
+    let mut start_seen = selection.start == 0;
+    if selection.end == 0 {
+        return start_seen;
+    }
+    for ch in preedit.chars() {
+        offset += ch.len_utf16();
+        start_seen |= offset == selection.start;
+        if offset >= selection.end {
+            return offset == selection.end && start_seen;
+        }
+    }
+    false
 }
 
 impl Display for Osc<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Self::NshTextInput(NshTextInput::Update {
+            active,
+            selection,
+            preedit,
+            ..
+        }) = self
+        {
+            if !valid_text_input_update(*active, selection, preedit) {
+                return Err(fmt::Error);
+            }
+        }
         f.write_str(super::OSC)?;
         match self {
             Self::SetIconNameAndWindowTitle(s) => write!(f, "0;{s}")?,
@@ -108,6 +215,40 @@ impl Display for Osc<'_> {
                 }
             }
             Self::ResetDynamicColor(color) => write!(f, "{}", 100 + *color as u8)?,
+            Self::NshTextInput(input) => {
+                f.write_str("777;nsh-text-input;")?;
+                match input {
+                    NshTextInput::Query => f.write_str("query")?,
+                    NshTextInput::Supported => f.write_str("supported")?,
+                    NshTextInput::Enable(nonce) => write!(f, "enable;{nonce}")?,
+                    NshTextInput::Ready(nonce) => write!(f, "ready;{nonce}")?,
+                    NshTextInput::Cancel(composition) => write!(f, "cancel;{composition}")?,
+                    NshTextInput::Disable(nonce) => write!(f, "disable;{nonce}")?,
+                    NshTextInput::Disabled(nonce) => write!(f, "disabled;{nonce}")?,
+                    NshTextInput::Caret { nonce, bounds } => {
+                        write!(f, "caret;{nonce}")?;
+                        if let Some(bounds) = bounds {
+                            let [left, top, right, bottom] = bounds.edges();
+                            write!(f, ";{left};{top};{right};{bottom}")?;
+                        }
+                    }
+                    NshTextInput::Update {
+                        composition,
+                        active,
+                        selection,
+                        commit,
+                        preedit,
+                    } => write!(
+                        f,
+                        "update;{composition};{};{};{};{};{}",
+                        u8::from(*active),
+                        selection.start,
+                        selection.end,
+                        base64::encode(commit.as_bytes()),
+                        base64::encode(preedit.as_bytes())
+                    )?,
+                }
+            }
         }
         f.write_str(super::ST)?;
         Ok(())

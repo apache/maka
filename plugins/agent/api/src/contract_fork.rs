@@ -69,7 +69,7 @@ pub struct ForkReceiptResult {
 }
 
 /// Frozen conversation ancestry for presentation, not authority over the source.
-#[derive(Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentSessionBranch")]
 pub struct SessionBranch {

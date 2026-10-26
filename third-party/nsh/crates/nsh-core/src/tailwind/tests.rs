@@ -1667,3 +1667,35 @@ fn sticky_is_position_sticky() {
     assert_eq!(s.layout.position, taffy::Position::Relative);
     assert!(!styled("sticky absolute").pending.sticky_position);
 }
+
+/// Tailwind CSS 4's `fill-*` / `stroke-*`: `fill: <color>`, `fill: none`,
+/// `fill: currentcolor`, `fill: inherit`, `stroke: <color>`,
+/// `stroke-width: <number>` and an arbitrary length.
+#[test]
+fn svg_paint_utilities_follow_tailwind_css() {
+    use crate::style::SvgPaint;
+    let s = styled("fill-red-500/50 stroke-blue-500 stroke-2");
+    assert_eq!(s.paint.fill, Some(SvgPaint::Color(Color(0xfb2c_3680))));
+    assert_eq!(s.paint.stroke, Some(SvgPaint::Color(Color(0x2b7f_ffff))));
+    assert_eq!(s.paint.stroke_width, Some(px(2.0)));
+    let s = styled("fill-none stroke-current stroke-[1.5px]");
+    assert_eq!(s.paint.fill, Some(SvgPaint::None));
+    assert_eq!(s.paint.stroke, Some(SvgPaint::CurrentColor));
+    assert_eq!(s.paint.stroke_width, Some(px(1.5)));
+    let s = styled("fill-current stroke-none stroke-0 stroke-[#00ff00]");
+    assert_eq!(s.paint.fill, Some(SvgPaint::CurrentColor));
+    assert_eq!(s.paint.stroke, Some(SvgPaint::Color(Color(0x00ff_00ff))));
+    assert_eq!(s.paint.stroke_width, Some(px(0.0)));
+    // `inherit` takes the parent's, which is what an unset property does.
+    let s = styled("fill-red-500 fill-inherit");
+    assert_eq!(s.paint.fill, None);
+    // The design tokens, light and dark.
+    let ui = ui_theme();
+    let s = styled("stroke-primary");
+    assert_eq!(
+        s.paint.stroke,
+        Some(SvgPaint::Color(Color::from(
+            ui.color("primary").unwrap().light
+        )))
+    );
+}

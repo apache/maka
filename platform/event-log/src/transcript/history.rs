@@ -75,16 +75,13 @@ impl EventLog {
     /// including metadata and empty projection boundaries. The first complete
     /// fragment advances even when its metadata exceeds this target; subsequent
     /// fragments are packed within it. Cursor positions grant no access.
-    #[allow(clippy::too_many_arguments)]
     pub async fn history_text(
         &self,
         session: &str,
         through: u64,
         position: Position,
         include_thinking: bool,
-        max_bytes: usize,
-        max_chunks: usize,
-        max_json_bytes: usize,
+        limits: crate::transcript::HistoryLimits,
     ) -> Result<Page, StoreError> {
         self.history_view(
             session,
@@ -92,14 +89,11 @@ impl EventLog {
             position,
             include_thinking,
             HistoryView::Text,
-            max_bytes,
-            Some(max_chunks),
-            max_json_bytes,
+            limits,
         )
         .await
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub async fn history_view(
         &self,
         session: &str,
@@ -107,10 +101,13 @@ impl EventLog {
         position: Position,
         include_thinking: bool,
         view: HistoryView,
-        max_bytes: usize,
-        max_chunks: Option<usize>,
-        max_json_bytes: usize,
+        limits: crate::transcript::HistoryLimits,
     ) -> Result<Page, StoreError> {
+        let crate::transcript::HistoryLimits {
+            max_bytes,
+            max_chunks,
+            max_json_bytes,
+        } = limits;
         self.validate_root()?;
         if !(4..=128 * 1024).contains(&max_bytes)
             || max_chunks == Some(0)
@@ -898,8 +895,12 @@ mod tests {
     #[tokio::test]
     async fn conversation_retains_trace_parents_and_hides_transport_helpers() {
         let mut db = SqliteConnection::connect(":memory:").await.unwrap();
-        let schema = include_str!("../../migrations/0033_transcript_directory.sql");
-        sqlx::raw_sql(&schema[schema.find("CREATE TABLE transcript_directory (").unwrap()..])
+        let schema = crate::schema::fixture(|_, name| {
+            name.starts_with("transcript_directory")
+                || name.starts_with("transcript_failures")
+                || name.starts_with("directory_")
+        });
+        sqlx::raw_sql(sqlx::AssertSqlSafe(schema.as_str()))
             .execute(&mut db)
             .await
             .unwrap();
@@ -1002,8 +1003,12 @@ mod tests {
         }
 
         let mut db = SqliteConnection::connect(":memory:").await.unwrap();
-        let schema = include_str!("../../migrations/0033_transcript_directory.sql");
-        sqlx::raw_sql(&schema[schema.find("CREATE TABLE transcript_directory (").unwrap()..])
+        let schema = crate::schema::fixture(|_, name| {
+            name.starts_with("transcript_directory")
+                || name.starts_with("transcript_failures")
+                || name.starts_with("directory_")
+        });
+        sqlx::raw_sql(sqlx::AssertSqlSafe(schema.as_str()))
             .execute(&mut db)
             .await
             .unwrap();

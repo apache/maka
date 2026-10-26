@@ -713,11 +713,7 @@ impl Surface {
     }
     /// Completes a host paste only if its input, selection and edit count
     /// still match the request and its clipboard capability remains granted.
-    pub fn complete_paste(
-        &mut self,
-        mut edit: InputEdit,
-        result: Result<ClipboardContent, String>,
-    ) {
+    pub fn complete_paste(&mut self, edit: InputEdit, result: Result<ClipboardContent, String>) {
         if !self.access.allows_clipboard() {
             return;
         }
@@ -729,8 +725,7 @@ impl Surface {
             return;
         }
         if let Ok(ClipboardContent::Text(text)) = result {
-            edit.replacement = text;
-            self.apply_input_edit(edit);
+            self.paste_input(edit.node, text);
         }
     }
     pub(crate) fn announce(&mut self, text: String) {

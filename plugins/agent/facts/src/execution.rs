@@ -127,6 +127,9 @@ pub struct InvocationConfiguration {
     /// Captured from the workspace marker, never reconstructed from a later path.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_identity: Option<WorkspaceIdentity>,
+    /// Frozen shared-workspace authority; None only for non-Session execution.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_binding: Option<crate::workspace::BindingStamp>,
     pub workspace_origin: WorkspaceOrigin,
     pub sandbox_mode: SandboxMode,
     pub approval_policy: ApprovalPolicy,

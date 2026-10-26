@@ -21,7 +21,7 @@ use super::*;
 use records::{ids, revision};
 
 impl EventLog {
-    /// Read metadata and payload in one original writer snapshot. The owned
+    /// Read metadata and payload in one independent read snapshot. The owned
     /// callback runs synchronously; neither the reader nor its metadata can escape.
     pub async fn with_artifact<T: Send + 'static>(
         &self,
@@ -43,7 +43,7 @@ impl EventLog {
         ids(&session, Some(artifact_id))?;
         let artifact = artifact_id.to_owned();
         self.connection
-            .run(move |connection| {
+            .read(move |connection| {
                 Box::pin(async move {
                     let mut tx = connection.begin().await?;
                     let result = async {
@@ -82,7 +82,7 @@ impl EventLog {
         }
         let session_id = session_id.to_owned();
         self.connection
-            .run(move |connection| {
+            .read(move |connection| {
                 Box::pin(async move {
                     let mut tx = connection.begin().await?;
                     require_session(&mut tx, &session_id).await?;
@@ -124,7 +124,7 @@ impl EventLog {
         ids(session_id, Some(artifact_id))?;
         let (session_id, artifact_id) = (session_id.to_owned(), artifact_id.to_owned());
         self.connection
-            .run(move |connection| {
+            .read(move |connection| {
                 Box::pin(async move {
                     let mut tx = connection.begin().await?;
                     require_session(&mut tx, &session_id).await?;
@@ -154,7 +154,7 @@ impl EventLog {
         }
         let (session, artifact) = (session_id.to_owned(), artifact_id.to_owned());
         self.connection
-            .run(move |connection| {
+            .read(move |connection| {
                 Box::pin(async move {
                     let mut tx = connection.begin().await?;
                     let result = async {

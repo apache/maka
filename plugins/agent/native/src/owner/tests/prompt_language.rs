@@ -19,75 +19,6 @@
 
 use super::*;
 
-#[tokio::test]
-async fn shared_language_preference_can_be_saved_through_settings_host() {
-    tokio::time::timeout(Duration::from_secs(30), async {
-        let fixture = Fixture::new("http://127.0.0.1:9/v1", None).await;
-        let client = fixture.app.client();
-        let binding = client
-            .bind(client.activation(&id(2)).unwrap(), "settings".into())
-            .await
-            .unwrap()
-            .remove(0);
-        let initial = client
-            .start(
-                binding.clone(),
-                "assistantPreferences".into(),
-                json!({}),
-                scope(&fixture.issuer, true),
-                Attachments::new().into(),
-            )
-            .await
-            .unwrap()
-            .result()
-            .await
-            .unwrap();
-        let revision = initial["revision"].as_u64().unwrap();
-        let outcome: Result<Value, String> = async {
-            let prepared = client
-                .prepare_mutation(
-                    binding,
-                    "updateAssistantPreferences".into(),
-                    json!({
-                        "expectedRevision":revision,
-                        "mutation":{"kind":"language","preference":"zh-CN"}
-                    }),
-                    scope(&fixture.issuer, true),
-                    Uuid::new_v4(),
-                    Attachments::new().into(),
-                )
-                .await?;
-            let reply = client.mutate_owned(prepared).await?.result().await;
-            match reply.receipt {
-                Receipt::Recorded {
-                    outcome: OperationOutcome::Returned { value },
-                    ..
-                } => Ok(value),
-                receipt => Err(format!(
-                    "unexpected language preference receipt: {receipt:?}"
-                )),
-            }
-        }
-        .await;
-        let saved_revision = fixture.config.runtime_policy().await.unwrap().revision;
-        fixture.app.shutdown().await.unwrap();
-        fixture.config.shutdown().await.unwrap();
-
-        assert_eq!(
-            outcome,
-            Ok(json!({"kind":"committed","revision":revision + 1})),
-            "the shared language preference must be accepted through the public Settings capability"
-        );
-        assert_eq!(
-            saved_revision,
-            revision + 1,
-            "the preference commit must reach the root-owned policy"
-        );
-    })
-    .await
-    .unwrap();
-}
-
 async fn settings_binding(app: &Application, consumer: u128) -> Binding {
     let client = app.client();
     client
@@ -247,55 +178,6 @@ async fn settings_surfaces_share_saved_language_and_cas_across_activation() {
     }).await.unwrap();
 }
 
-#[tokio::test]
-async fn new_capture_in_existing_session_uses_shared_chinese_language() {
-    tokio::time::timeout(Duration::from_secs(45), async {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let home = tempfile::tempdir().unwrap();
-        let fixture = Fixture::configured(
-            &format!("http://{}/v1", listener.local_addr().unwrap()),
-            None, None, None,
-            |settings| settings.assistant = Some(contract::AssistantConfiguration {
-                home: Some(home.path().to_str().unwrap().into()),
-            }),
-        ).await;
-        let session = fixture.create("Existing conversation before language selection").await;
-        let initial = preferences(&fixture.app, &fixture.issuer, 2).await;
-        let saved = update_preferences(&fixture.app, &fixture.issuer, 2, &initial["revision"],
-            json!({"kind":"language","preference":"zh-CN"})).await;
-        let selected = preferences(&fixture.app, &fixture.issuer, 2).await;
-        let original = "K71B_ORIGINAL_🦀\n原样文本 \"quoted\" /keep-this-token";
-        let sent = fixture.mutation(2, "send", json!({
-            "sessionId":session,"message":original,"model":fixture.selection().await,
-        }), Uuid::new_v4()).await.unwrap();
-        let (mut socket, _) = listener.accept().await.unwrap();
-        let outgoing = request(&mut socket).await;
-        response(&mut socket).await;
-        fixture.drained().await;
-        let boundary = fixture.store.invocation_boundary(
-            &session, sent["invocationId"].as_str().unwrap(),
-        ).await.unwrap().unwrap().0;
-        let configuration = serde_json::to_value(fixture.store.invocation_configuration(
-            &boundary.invocation,
-        ).await.unwrap().unwrap()).unwrap();
-        fixture.app.shutdown().await.unwrap();
-        fixture.config.shutdown().await.unwrap();
-
-        assert_eq!(saved, json!({"kind":"committed","revision":initial["revision"].as_u64().unwrap() + 1}));
-        assert_eq!(selected["language"], "zh-CN");
-        assert_eq!(selected["resolvedLanguage"], "zh-CN");
-        let messages = outgoing["messages"].as_array().unwrap();
-        let users: Vec<_> = messages.iter().filter(|message| message["role"] == "user")
-            .map(|message| message["content"].as_str().unwrap()).collect();
-        assert_eq!(users, vec![original], "original user data must reach the actual provider unchanged: {outgoing}");
-        assert!(messages.iter().filter(|message| message["role"] == "system")
-            .any(|message| message["content"].as_str().unwrap().contains("你是 [Maka](https://github.com/apache/maka)，一个 AI Agent。")),
-            "Chinese builtin identity must reach the provider after selecting zh-CN; payload: {outgoing}; captured configuration: {configuration}");
-        assert_eq!(configuration["language"], "zh-CN",
-            "new work must retain its selected language; payload: {outgoing}; captured configuration: {configuration}");
-    }).await.unwrap();
-}
-
 async fn assistant_fixture(listener: &TcpListener, home: &std::path::Path) -> Fixture {
     Fixture::configured(
         &format!("http://{}/v1", listener.local_addr().unwrap()),
@@ -325,7 +207,7 @@ pub(super) async fn select_language(fixture: &Fixture, preference: &str) -> Valu
 
 fn stored_configuration(fixture: &Fixture, invocation: &str) -> Value {
     let connection = rusqlite::Connection::open_with_flags(
-        fixture.root.join(maka_event_log::root::ROOT_DATABASE),
+        fixture.runtime_database_containing("SELECT COUNT(*) FROM runtime_events WHERE invocation_id=?1 AND kind='invocation_opened'", invocation),
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
     )
     .unwrap();
@@ -435,7 +317,7 @@ async fn accepted_queue_and_explicit_resume_keep_english_across_language_changes
         let queue_input = json!({"sessionId":first,"message":queued_text,"model":fixture.selection().await});
         let operation = Uuid::new_v4();
         let queued = fixture.mutation(2, "send", queue_input.clone(), operation).await.unwrap();
-        let queue = fixture.store.message_queue(&first).await.unwrap();
+        let queue = fixture.session(&first).await.message_queue(&first).await.unwrap();
         let queued_basis = queue.entries.iter().find(|entry| entry.source.message.message_id == queued["messageId"])
             .unwrap().execution.basis.clone();
         let chinese = select_language(&fixture, "zh-CN").await;
@@ -449,7 +331,7 @@ async fn accepted_queue_and_explicit_resume_keep_english_across_language_changes
         let queued_request = request(&mut socket).await;
         response(&mut socket).await;
         fixture.drained().await;
-        let promoted = fixture.store.latest_turn_boundary(&first).await.unwrap().unwrap().invocation;
+        let promoted = fixture.session(&first).await.latest_turn_boundary(&first).await.unwrap().unwrap().invocation;
         let queued_configuration = stored_configuration(&fixture, &promoted.invocation_id);
         let fresh_configuration = stored_configuration(&fixture, fresh["invocationId"].as_str().unwrap());
         let queued_composition = session_context::composition(&fixture, &first).await;

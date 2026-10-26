@@ -20,14 +20,17 @@
 use maka_agent_facts::interaction::ClosureReason;
 use maka_agent_facts::interaction::InteractionOutcome;
 use maka_agent_facts::interaction::InteractionRecord;
-use maka_event_log::EventLog;
+use maka_event_log::SessionStore;
 
 pub async fn wait(
-    store: &EventLog,
-    id: &str,
+    store: &SessionStore,
+    expected: &InteractionRecord,
     cancellation: &tokio_util::sync::CancellationToken,
 ) -> Result<InteractionOutcome, &'static str> {
-    let mut commits = store.subscribe_commits();
+    let id = &expected.request_id;
+    let mut commits = store
+        .subscribe_session_commits(&expected.session_id)
+        .map_err(|_| "interaction_store_closed")?;
     loop {
         let record = store
             .interaction(id)
@@ -49,7 +52,7 @@ pub async fn wait(
     }
 }
 pub async fn withdraw(
-    store: &EventLog,
+    store: &SessionStore,
     expected: &InteractionRecord,
 ) -> Result<Option<InteractionOutcome>, &'static str> {
     let Some(record) = store
@@ -86,7 +89,7 @@ pub async fn withdraw(
 
 /// The admitted call retains custody until publication or withdrawal is reconciled.
 pub async fn publish(
-    store: &EventLog,
+    store: &SessionStore,
     context: &maka_host_runtime::application::Context,
     invocation: &maka_agent_facts::event::Invocation,
     record: &InteractionRecord,
@@ -105,7 +108,7 @@ pub async fn publish(
         if !committed.matches {
             return Err("interaction_identity_conflict");
         }
-        wait(store, &record.request_id, &context.scope().cancellation).await
+        wait(store, record, &context.scope().cancellation).await
     }
     .await;
     match result {

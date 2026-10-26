@@ -21,7 +21,7 @@
 use super::*;
 use maka_agent_facts::session::{CopyPurpose, CopyRequest, CopyState};
 use maka_capabilities::call::Scope;
-use maka_event_log::{StoreError, sessions::SessionCopyResult};
+use maka_event_log::{StoreError, root_store::CreationRejection, sessions::SessionCopyResult};
 use maka_plugin_core::operation::RecoveryRef;
 
 impl Owner {
@@ -84,7 +84,7 @@ impl Owner {
         }
         let Some(source) = self
             .store
-            .get_session::<SessionConfiguration>(&input.session_id)
+            .get_session::<StoredSessionConfiguration>(&input.session_id)
             .await
             .map_err(fork_failure)?
         else {
@@ -92,6 +92,7 @@ impl Owner {
                 reason: Rejection::SessionUnavailable,
             });
         };
+        let source = resolve_session(source)?;
         if source.revision != input.expected_revision {
             return Ok(ForkResult::RevisionConflict {
                 expected: input.expected_revision,
@@ -147,14 +148,19 @@ impl Owner {
             }
             _ => WorkspaceAccess::DangerFullAccess,
         };
-        let configuration = SessionConfiguration {
+        let workspace = self
+            .store
+            .attach_workspace(&self.prefix, &parent.workspace)
+            .await
+            .map_err(fork_failure)?;
+        let configuration = StoredSessionConfiguration {
             backend: parent.backend,
             collaboration_mode: CollaborationMode::Agent,
             tools,
             title: input.title,
             title_is_manual: true,
             labels: input.labels,
-            workspace: parent.workspace,
+            workspace,
             permissions: WorkspacePermissions {
                 access,
                 request_permissions: parent.permissions.request_permissions
@@ -172,21 +178,47 @@ impl Owner {
                 StoreError::HistoryTurnMissing
                 | StoreError::HistoryTurnSplit
                 | StoreError::HistoryUnsettled
-                | StoreError::HistoryProviderEffectUnresolved,
+                | StoreError::HistoryProviderEffectUnresolved
+                | StoreError::SessionCreationRejected(
+                    CreationRejection::HistoryTurnMissing
+                    | CreationRejection::HistoryTurnSplit
+                    | CreationRejection::HistoryUnsettled
+                    | CreationRejection::HistoryProviderEffectUnresolved,
+                ),
             ) => {
                 return Ok(ForkResult::Rejected {
                     reason: Rejection::HistoryUnavailable,
                 });
             }
-            Err(StoreError::ManagedSession) => {
+            Err(
+                StoreError::ManagedSession
+                | StoreError::SessionCreationRejected(CreationRejection::ManagedSource),
+            ) => {
                 return Ok(ForkResult::Rejected {
                     reason: Rejection::ManagedSession,
                 });
             }
-            Err(StoreError::SessionNotFound | StoreError::SessionRetired) => {
+            Err(
+                StoreError::SessionNotFound
+                | StoreError::SessionRetired
+                | StoreError::SessionCreationRejected(
+                    CreationRejection::MissingDependency | CreationRejection::Retired,
+                ),
+            ) => {
                 return Ok(ForkResult::Rejected {
                     reason: Rejection::SessionUnavailable,
                 });
+            }
+            Err(StoreError::SessionCreationRejected(
+                CreationRejection::MissingWorkspaceBinding
+                | CreationRejection::StaleWorkspaceBinding,
+            )) => {
+                return Ok(ForkResult::Rejected {
+                    reason: Rejection::WorkspaceUnavailable,
+                });
+            }
+            Err(StoreError::SessionCreationRejected(CreationRejection::IdentityConflict)) => {
+                return Err("agent_fork_conflict".into());
             }
             Err(StoreError::SessionBusy) => {
                 return Ok(ForkResult::Rejected {
@@ -197,7 +229,7 @@ impl Owner {
         };
         match copied {
             SessionCopyResult::Committed(session) => Ok(ForkResult::Forked {
-                session: Box::new(crate::service::summary(self, *session)),
+                session: Box::new(crate::service::summary(self, resolve_session(*session)?)),
             }),
             SessionCopyResult::SourceRevisionConflict { expected, actual } => {
                 Ok(ForkResult::RevisionConflict { expected, actual })
@@ -249,10 +281,14 @@ impl Owner {
                 }
                 let session = owner
                     .store
-                    .get_session::<SessionConfiguration>(&target)
+                    .get_session::<StoredSessionConfiguration>(&target)
                     .await
                     .map_err(fork_failure)?
-                    .map(|session| Box::new(crate::service::summary(&owner, session)));
+                    .map(|session| {
+                        resolve_session(session)
+                            .map(|session| Box::new(crate::service::summary(&owner, session)))
+                    })
+                    .transpose()?;
                 Ok(ForkReceiptResult { session })
             })
         })

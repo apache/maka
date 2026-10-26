@@ -18,8 +18,9 @@
  */
 
 use super::*;
-use maka_agent_api::{contract::WorkspaceAccess, session::SessionConfiguration};
+use maka_agent_api::{contract::WorkspaceAccess, session::ResolvedConfiguration};
 use maka_agent_facts::language::Language;
+use maka_agent_facts::workspace::PermissionBasis;
 use maka_agent_facts::{
     event::{CommitFuture, EventSink, EventWrite, Fact},
     interaction::{Decision, InteractionOutcome, InteractionRecord, InteractionRequest},
@@ -32,7 +33,7 @@ pub(super) async fn current(
     owner: &Computer,
     call: &Scope,
     tool: &str,
-) -> Result<(SessionConfiguration, Language), ToolError> {
+) -> Result<(ResolvedConfiguration, Language), ToolError> {
     if owner.stopping.is_cancelled() || call.cancellation.is_cancelled() {
         return Err(failed("Computer Use cancelled"));
     }
@@ -43,7 +44,12 @@ pub(super) async fn current(
     if call.identity.operation_id().is_none() {
         return Err(failed("Computer Use requires an original tool operation"));
     }
-    let configuration = maka_agent_authority::permissions::live(&owner.store, invocation).await?;
+    let store = maka_agent_authority::permissions::execution(
+        &owner.store,
+        invocation,
+        call.execution().map(|token| token.as_ref()),
+    )?;
+    let configuration = maka_agent_authority::permissions::live(&store, invocation).await?;
     if configuration.permissions.access == WorkspaceAccess::ReadOnly {
         return Err(failed("Explore mode does not allow Computer Use"));
     }
@@ -56,8 +62,7 @@ pub(super) async fn current(
             "Computer Use tool is outside the current Session ceiling",
         ));
     }
-    let accepted = owner
-        .store
+    let accepted = store
         .invocation_configuration(invocation)
         .await
         .map_err(|e| ToolError::Persistence(message(e)))?
@@ -77,21 +82,25 @@ pub(super) async fn current(
 pub(super) async fn granted(
     owner: &Computer,
     call: &Scope,
-    revision: u64,
+    basis: PermissionBasis,
 ) -> Result<(), ToolError> {
     let (current, _) = current(owner, call, "cua_repl").await?;
-    if current.boundary_revision != revision {
+    if current.permission_basis() != basis {
         return Err(failed("Computer Use permission boundary changed"));
     }
-    let grant = owner
-        .store
+    let store = maka_agent_authority::permissions::execution(
+        &owner.store,
+        call.identity.agent().expect("checked Agent"),
+        call.execution().map(|token| token.as_ref()),
+    )?;
+    let grant = store
         .client_capability_grant(
             &call.identity.agent().expect("checked Agent").session_id,
             &api::target(),
         )
         .await
         .map_err(|e| ToolError::Persistence(message(e)))?;
-    if grant.is_none_or(|grant| grant.base_revision != Some(revision)) {
+    if grant.is_none_or(|grant| grant.basis != Some(basis)) {
         return Err(failed("Computer Use Session grant is missing or revoked"));
     }
     Ok(())
@@ -99,20 +108,25 @@ pub(super) async fn granted(
 pub(super) async fn approve(
     owner: &Computer,
     call: &Scope,
-    configuration: &SessionConfiguration,
+    configuration: &ResolvedConfiguration,
     cancellation: &CancellationToken,
 ) -> Result<(), ToolError> {
     let context = ToolCallContext {
+        execution: call.execution().cloned(),
         invocation: call.identity.agent().expect("checked Agent").clone(),
         operation_id: call.identity.operation_id().expect("checked tool").into(),
     };
     let target = api::target();
-    if owner
-        .store
+    let store = maka_agent_authority::permissions::execution(
+        &owner.store,
+        &context.invocation,
+        context.execution.as_deref(),
+    )?;
+    if store
         .client_capability_grant(&context.invocation.session_id, &target)
         .await
         .map_err(|e| ToolError::Persistence(message(e)))?
-        .is_some_and(|grant| grant.base_revision == Some(configuration.boundary_revision))
+        .is_some_and(|grant| grant.basis == Some(configuration.permission_basis()))
     {
         return Ok(());
     }
@@ -131,7 +145,7 @@ pub(super) async fn approve(
                 serde_json::to_vec(&(
                     &context.invocation,
                     &context.operation_id,
-                    configuration.boundary_revision,
+                    configuration.permission_basis(),
                     &target
                 ))
                 .expect("Computer approval identity")
@@ -141,27 +155,25 @@ pub(super) async fn approve(
         request: InteractionRequest::ClientCapability {
             tool_use_id: context.tool_use_id(),
             target,
-            base_revision: Some(configuration.boundary_revision),
+            basis: Some(configuration.permission_basis()),
         },
         outcome: None,
     };
     let observed = async {
-        let committed = owner
-            .store
+        let committed = store
             .establish_run_interaction(&context.invocation, &record)
             .await
             .map_err(|_| "Computer approval publication unavailable")?;
         if !committed.matches {
             return Err("Computer approval identity conflict");
         }
-        maka_agent_authority::interaction_wait::wait(&owner.store, &record.request_id, cancellation)
-            .await
+        maka_agent_authority::interaction_wait::wait(&store, &record, cancellation).await
     }
     .await;
     let outcome = match observed {
         Ok(outcome) => outcome,
         Err(error) => {
-            match maka_agent_authority::interaction_wait::withdraw(&owner.store, &record).await {
+            match maka_agent_authority::interaction_wait::withdraw(&store, &record).await {
                 Ok(Some(outcome)) => outcome,
                 Ok(None) => return Err(failed(error)),
                 Err(error) => return Err(ToolError::CleanupUnconfirmed(error.into())),
@@ -180,21 +192,21 @@ pub(super) async fn approve(
     ) {
         return Err(failed("Computer Use access was not granted"));
     }
-    granted(owner, call, configuration.boundary_revision).await
+    granted(owner, call, configuration.permission_basis()).await
 }
 
 /// T1 is committed under the original grant fence. T2 must still settle even
 /// after permission revocation, so only the dispatch uses the checked append.
 pub(super) struct Journal {
-    pub store: Arc<maka_event_log::EventLog>,
-    pub revision: u64,
+    pub store: maka_event_log::SessionStore,
+    pub basis: PermissionBasis,
 }
 impl EventSink for Journal {
     fn commit(self: Arc<Self>, event: EventWrite) -> CommitFuture {
         Box::pin(async move {
             if matches!(event.event().fact, Fact::ToolDispatched { .. }) {
                 self.store
-                    .append_capability_dispatch(&event, &api::target(), self.revision)
+                    .append_capability_dispatch(&event, &api::target(), &self.basis)
                     .await
             } else {
                 self.store.append(&event).await

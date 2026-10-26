@@ -39,7 +39,8 @@ pub struct Report {
 
 impl EventLog {
     pub async fn usage_summary(&self, query: Query) -> Result<Report, StoreError> {
-        self.read_usage_summary(query, None).await
+        self.read_usage_summary(query, None, None, false, false)
+            .await
     }
     /// Full totals and one bounded breakdown at the same settlement fence.
     pub async fn usage_summary_page(
@@ -51,17 +52,34 @@ impl EventLog {
         if offset > i64::MAX as u64 {
             return Err(invalid("invalid Usage group offset"));
         }
-        self.read_usage_summary(query, Some((group, offset))).await
+        self.read_usage_summary(query, Some((group, offset)), None, false, false)
+            .await
+    }
+    pub(crate) async fn usage_totals(&self, query: Query) -> Result<Report, StoreError> {
+        self.read_usage_summary(query, None, None, false, true)
+            .await
+    }
+    pub(crate) async fn usage_summary_after(
+        &self,
+        query: Query,
+        group: Group,
+        after: Option<Option<String>>,
+    ) -> Result<Report, StoreError> {
+        self.read_usage_summary(query, Some((group, 0)), after, true, false)
+            .await
     }
     async fn read_usage_summary(
         &self,
         query: Query,
         page: Option<(Group, u64)>,
+        after: Option<Option<String>>,
+        key_order: bool,
+        totals_only: bool,
     ) -> Result<Report, StoreError> {
         self.validate_root()?;
         query.validate()?;
         self.connection
-            .run(move |connection| {
+            .read(move |connection| {
                 Box::pin(async move {
                     let mut tx = connection.begin().await?;
                     let through = query.fence(&mut tx).await?;
@@ -73,6 +91,12 @@ impl EventLog {
                     tools.push(TOOLS);
                     query.restrict(&mut tools, through);
                     let tool_row = tools.build().fetch_one(&mut *tx).await?;
+                    let selection = GroupSelection {
+                        page,
+                        after: after.as_ref(),
+                        key_order,
+                        totals_only,
+                    };
                     let mut summary = Summary {
                         pending: Pending {
                             models: pending(&mut tx, &query, through, "model_usage", "started_at")
@@ -92,10 +116,8 @@ impl EventLog {
                             &mut tx,
                             &query,
                             through,
-                            MODELS,
-                            "json_extract(quote_json, '$.providerId')",
-                            page,
                             Group::ByProvider,
+                            &selection,
                         )
                         .await?
                         .iter()
@@ -106,45 +128,31 @@ impl EventLog {
                             })
                         })
                         .collect::<Result<_, StoreError>>()?,
-                        by_model: groups(
-                            &mut tx,
-                            &query,
-                            through,
-                            MODELS,
-                            "model_id",
-                            page,
-                            Group::ByModel,
-                        )
-                        .await?
-                        .iter()
-                        .map(|row| {
-                            Ok(ModelSummary {
-                                model_id: row.try_get("key")?,
-                                totals: read_models(row)?,
+                        by_model: groups(&mut tx, &query, through, Group::ByModel, &selection)
+                            .await?
+                            .iter()
+                            .map(|row| {
+                                Ok(ModelSummary {
+                                    model_id: row.try_get("key")?,
+                                    totals: read_models(row)?,
+                                })
                             })
-                        })
-                        .collect::<Result<_, StoreError>>()?,
-                        by_tool: groups(
-                            &mut tx,
-                            &query,
-                            through,
-                            TOOLS,
-                            "name",
-                            page,
-                            Group::ByTool,
-                        )
-                        .await?
-                        .iter()
-                        .map(|row| {
-                            Ok(ToolSummary {
-                                name: row.try_get("key")?,
-                                totals: read_tools(row)?,
+                            .collect::<Result<_, StoreError>>()?,
+                        by_tool: groups(&mut tx, &query, through, Group::ByTool, &selection)
+                            .await?
+                            .iter()
+                            .map(|row| {
+                                Ok(ToolSummary {
+                                    name: row.try_get("key")?,
+                                    totals: read_tools(row)?,
+                                })
                             })
-                        })
-                        .collect::<Result<_, StoreError>>()?,
+                            .collect::<Result<_, StoreError>>()?,
                     };
                     let mut next_offset = None;
-                    if let Some((group, offset)) = page {
+                    if let Some((group, offset)) = page
+                        && !key_order
+                    {
                         // The query includes one lookahead row. Account for bytes as well
                         // as rows, without truncating an identity or silently dropping it.
                         loop {
@@ -184,22 +192,59 @@ impl EventLog {
     }
 }
 
+struct GroupSelection<'a> {
+    page: Option<(Group, u64)>,
+    after: Option<&'a Option<String>>,
+    key_order: bool,
+    totals_only: bool,
+}
+
 async fn groups(
     connection: &mut sqlx::SqliteConnection,
     query: &Query,
     through: u64,
-    columns: &'static str,
-    key: &'static str,
-    page: Option<(Group, u64)>,
     group: Group,
+    selection: &GroupSelection<'_>,
 ) -> Result<Vec<SqliteRow>, StoreError> {
-    if page.is_some_and(|(selected, _)| selected != group) {
+    let GroupSelection {
+        page,
+        after,
+        key_order,
+        totals_only,
+    } = *selection;
+    let (columns, key) = match group {
+        Group::ByProvider => (MODELS, "json_extract(quote_json, '$.providerId')"),
+        Group::ByModel => (MODELS, "model_id"),
+        Group::ByTool => (TOOLS, "name"),
+    };
+    if totals_only || page.is_some_and(|(selected, _)| selected != group) {
         return Ok(vec![]);
     }
     let mut sql = QueryBuilder::<Sqlite>::new("SELECT ");
-    sql.push(key).push(" AS key, ").push(columns);
+    // Bound the transferred identity before SQLite materializes the result row.
+    // An oversized group is rejected below; it is never silently coalesced.
+    sql.push("CASE WHEN length(CAST(")
+        .push(key)
+        .push(" AS BLOB)) <= 49152 THEN ")
+        .push(key)
+        .push(" END AS key, MAX(length(CAST(")
+        .push(key)
+        .push(" AS BLOB))) AS key_bytes, ")
+        .push(columns);
     query.restrict(&mut sql, through);
-    sql.push(" GROUP BY key ORDER BY calls DESC, key");
+    if let Some(after) = after {
+        sql.push(" AND ").push(key);
+        if let Some(after) = after {
+            sql.push(" > ").push_bind(after.clone());
+        } else {
+            sql.push(" IS NOT NULL");
+        }
+    }
+    sql.push(if key_order {
+        " GROUP BY key ORDER BY key"
+    } else {
+        " GROUP BY key ORDER BY calls DESC, key"
+    });
     if page.is_some() {
         sql.push(" LIMIT ").push_bind(33);
     }
@@ -207,6 +252,14 @@ async fn groups(
         sql.push(" OFFSET ").push_bind(offset as i64);
     }
     let rows = sql.build().fetch_all(connection).await?;
+    for row in &rows {
+        if row
+            .try_get::<Option<i64>, _>("key_bytes")?
+            .is_some_and(|bytes| bytes > 48 * 1024)
+        {
+            return Err(invalid("one Usage group exceeds page capacity"));
+        }
+    }
     Ok(rows)
 }
 

@@ -134,6 +134,7 @@ pub(super) fn spawn(
 
 struct Session {
     engine: LocalEngine<TerminalTextEngine>,
+    host: nsh_engine::HostChannel,
     surface: Surface,
     environment: Environment,
     sink: Sink,
@@ -143,6 +144,7 @@ struct Session {
     started: Instant,
     effects: Vec<u8>,
     deadline: Option<Instant>,
+    frame_requested: bool,
     last_sent_focus_path: Option<Vec<nsh_core::NodeId>>,
 }
 
@@ -159,12 +161,14 @@ impl Session {
         };
         surface.set_access(access);
         surface.set_host_services_enabled(true);
+        config.environment.fallback_key_bindings = true;
         let assets = config
             .assets
             .get_or_insert_with(|| Arc::new(maka_workbench::ApplicationAssets));
         surface.set_assets(Some(assets.clone()));
         let sink = Sink::default();
         let environment = config.environment;
+        let host = config.host.clone();
         let engine = LocalEngine::start(config, TerminalTextEngine::new(metrics), sink.clone())
             .ok_or("NSH UI engine failed to start")?;
         let terminal = Terminal::with_options(
@@ -176,6 +180,7 @@ impl Session {
         .map_err(|error| error.to_string())?;
         Ok(Self {
             engine,
+            host,
             surface,
             environment,
             sink,
@@ -186,12 +191,14 @@ impl Session {
             effects: Vec::new(),
             // The first advance obtains the engine's actual timer deadline.
             deadline: Some(Instant::now()),
+            frame_requested: false,
             last_sent_focus_path: None,
         })
     }
 
     fn initial_frame(&mut self) -> Result<Frame, String> {
         self.apply_commits()?;
+        self.begin_frame();
         self.encode(true)
     }
 
@@ -236,6 +243,7 @@ impl Session {
             changed = true;
         }
         for event in command.inputs {
+            super::interrupt::activity(&self.host, &event);
             changed |= match event {
                 Event::Mouse(mouse)
                     if matches!(
@@ -256,6 +264,9 @@ impl Session {
             self.deadline = self.engine.pump();
             changed |= self.apply_commits()?;
         }
+        if command.draw {
+            self.begin_frame();
+        }
         self.deadline = self.engine.pump();
         changed |= self.apply_commits()?;
         changed |= self.surface.tick(self.started.elapsed().as_secs_f64());
@@ -274,6 +285,14 @@ impl Session {
         self.forward_events()
     }
 
+    fn begin_frame(&mut self) {
+        // Paced List overscan and animation callbacks advance once per draw,
+        // independently of how often input or engine work needs pumping.
+        if std::mem::take(&mut self.frame_requested) {
+            self.engine.control().frame();
+        }
+    }
+
     fn forward_events(&mut self) -> Result<(), String> {
         let events: Vec<_> = self.surface.drain_events().collect();
         self.dispatch_events(events)
@@ -289,6 +308,10 @@ impl Session {
                 }
                 SurfaceEvent::HintObservation(observation) => control.observe_hint(observation),
                 SurfaceEvent::Scroll(id, offset, applied) => control.scroll(id, offset, applied),
+                SurfaceEvent::ListCellRetired(id, request, retired) => {
+                    control.set_focus_path(self.surface.focus_path());
+                    control.retire_list_cell(id, request, retired);
+                }
                 SurfaceEvent::States(id, states) => control.set_states(id, states),
                 SurfaceEvent::AnimationsFinished(finished) => control.animations_finished(finished),
                 SurfaceEvent::ComponentSize(id, size) => control.set_component_size(id, size),
@@ -340,9 +363,7 @@ impl Session {
             self.surface.apply(batch);
         }
         self.forward_events()?;
-        if commits.frame {
-            self.engine.control().frame();
-        }
+        self.frame_requested |= commits.frame;
         Ok(changed)
     }
 
@@ -350,7 +371,7 @@ impl Session {
         if !changed && self.effects.is_empty() {
             return Ok(self.frame(None));
         }
-        // This UI draws its own caret, so the physical cursor is always hidden.
+        // The UI paints its caret; the hidden terminal cursor still anchors IME.
         let writer = self.terminal.backend_mut().writer_mut();
         crossterm::queue!(writer, crossterm::terminal::BeginSynchronizedUpdate)
             .map_err(|error| error.to_string())?;
@@ -359,6 +380,13 @@ impl Session {
         self.terminal.flush().map_err(|error| error.to_string())?;
         self.terminal
             .hide_cursor()
+            .map_err(|error| error.to_string())?;
+        let cursor = self
+            .surface
+            .input_cursor_position(self.area)
+            .unwrap_or_else(|| (self.area.x, self.area.y).into());
+        self.terminal
+            .set_cursor_position(cursor)
             .map_err(|error| error.to_string())?;
         crossterm::queue!(
             self.terminal.backend_mut().writer_mut(),
@@ -375,7 +403,7 @@ impl Session {
     }
 
     fn frame(&self, bytes: Option<Vec<u8>>) -> Frame {
-        let redraw_at = if self.dirty || !self.effects.is_empty() {
+        let redraw_at = if self.dirty || self.frame_requested || !self.effects.is_empty() {
             Some(Instant::now())
         } else if self.surface.animating() {
             // Native jobs expose pending work, not completion notifications.
@@ -500,7 +528,7 @@ mod tests {
                     flushed,
                 })
                 .unwrap();
-                output.submit(b"SETUP".to_vec()).unwrap();
+                output.submit([b"SETUP".to_vec()]).unwrap();
                 started.send(thread::current()).unwrap();
                 super::super::drive(&mut output, &presentation, &commands, &frames, &pending)
             })
@@ -861,8 +889,19 @@ mod tests {
     "#;
 
     #[test]
-    fn a_retained_row_uses_the_current_binding_after_background_rebind() {
-        let mut session = Session::new(config(APP)).unwrap();
+    fn a_retained_row_uses_its_current_value_after_a_background_update() {
+        // Keep the logical owner while updating its data. Replacing the
+        // source object instead deletes the assignment and needs native ACK.
+        let source = APP
+            .replace(
+                "const rows = signal([{ id: \"A\" }]);",
+                "const current = signal(\"A\"); const rows = signal([{ get id() { return current(); } }]);",
+            )
+            .replace(
+                "requestAnimationFrame(() => rows.set([{ id: \"B\" }]));",
+                "requestAnimationFrame(() => current.set(\"B\"));",
+            );
+        let mut session = Session::new(config(&source)).unwrap();
         session.initial_frame().unwrap();
         let events = click(&session.surface, "row:A");
         let row = session
@@ -956,7 +995,7 @@ mod tests {
     }
 
     #[test]
-    fn ordinary_actions_continue_while_drawing_is_deferred() {
+    fn ordinary_actions_continue_while_frame_callbacks_wait_for_drawing() {
         let mut session = Session::new(config(
             r#"
             import { inputAction, mount, signal } from "nsh";
@@ -977,21 +1016,48 @@ mod tests {
                 }));
                 return root;
             });
-            requestAnimationFrame(() => status.set("after"));
+            requestAnimationFrame(() => {
+                status.set("first");
+                requestAnimationFrame(() => {
+                    status.set("second");
+                    requestAnimationFrame(() => status.set("third"));
+                });
+            });
             "#,
         ))
         .unwrap();
         session.initial_frame().unwrap();
+        assert!(session.surface.snapshot().contains("before closed:0"));
         let mut background = command([]);
         background.draw = false;
-        assert!(session.advance(background).unwrap().bytes.is_none());
+        let frame = session.advance(background).unwrap();
+        assert!(frame.bytes.is_none());
+        assert!(frame.redraw_at.is_some());
+        assert!(session.surface.snapshot().contains("first closed:0"));
         let mut events = click(&session.surface, "Close");
         events.extend(events.clone());
         let mut input = command(events);
         input.draw = false;
         assert!(session.advance(input).unwrap().bytes.is_none());
-        assert!(session.surface.snapshot().contains("after closed:2"));
+        assert!(session.surface.snapshot().contains("first closed:2"));
+        for _ in 0..3 {
+            let mut background = command([]);
+            background.draw = false;
+            let frame = session.advance(background).unwrap();
+            assert!(frame.bytes.is_none());
+            assert!(frame.redraw_at.is_some());
+            assert!(session.surface.snapshot().contains("first closed:2"));
+        }
+        let frame = session.advance(command([])).unwrap();
+        assert!(frame.bytes.is_some());
+        assert!(frame.redraw_at.is_some());
+        assert!(session.surface.snapshot().contains("second closed:2"));
+        let mut input = command(click(&session.surface, "Close"));
+        input.draw = false;
+        assert!(session.advance(input).unwrap().bytes.is_none());
+        assert!(session.surface.snapshot().contains("second closed:3"));
         assert!(session.advance(command([])).unwrap().bytes.is_some());
+        assert!(session.surface.snapshot().contains("third closed:3"));
     }
 
     #[test]
@@ -1090,7 +1156,7 @@ mod tests {
                     flushes,
                 })
                 .unwrap();
-                output.submit(b"SETUP".to_vec()).unwrap();
+                output.submit([b"SETUP".to_vec()]).unwrap();
                 let result = super::super::drive(
                     &mut output,
                     &presentation,
@@ -1336,6 +1402,7 @@ mod tests {
             mount(() => {
                 const input = element("input");
                 prop(input, "autoFocus", true);
+                prop(input, "style", { height: 16 });
                 bindProp(input, "value", draft);
                 prop(input, "onChange", text => draft.set(text));
                 return input;
@@ -1353,6 +1420,16 @@ mod tests {
         let editor = session.surface.input_context().unwrap();
         assert_eq!(editor.text.as_deref(), Some("你好😀"));
         assert_eq!(editor.selection, 4..4);
+        let bytes = session.advance(command([])).unwrap().bytes.unwrap();
+        assert!(bytes.ends_with(b"\x1b[1;7H\x1b[?2026l"));
+        session.sink.submit(MountBatch {
+            items: vec![MountItem::Command {
+                id: editor.node,
+                command: nsh_core::Command::Blur,
+            }],
+        });
+        let bytes = session.advance(command([])).unwrap().bytes.unwrap();
+        assert!(bytes.ends_with(b"\x1b[1;1H\x1b[?2026l"));
     }
 
     #[test]

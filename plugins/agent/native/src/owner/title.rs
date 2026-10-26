@@ -31,6 +31,71 @@ use maka_event_log::usage::AuxiliarySource;
 use maka_model::{ModelRequest, prompt::Message};
 use tracing::Instrument;
 
+#[derive(Default)]
+pub(super) struct Registry {
+    active: Arc<std::sync::Mutex<BTreeMap<String, Arc<Work>>>>,
+}
+struct Work {
+    cancellation: CancellationToken,
+    completed: tokio::sync::watch::Sender<Option<bool>>,
+}
+struct Worker {
+    active: Arc<std::sync::Mutex<BTreeMap<String, Arc<Work>>>>,
+    session: String,
+    work: Arc<Work>,
+    reported: bool,
+}
+impl Registry {
+    fn start(&self, session: &str, cancellation: CancellationToken) -> Option<Worker> {
+        let mut active = self.active.lock().unwrap();
+        if active.contains_key(session) {
+            return None;
+        }
+        let (completed, _) = tokio::sync::watch::channel(None);
+        let work = Arc::new(Work {
+            cancellation,
+            completed,
+        });
+        active.insert(session.to_owned(), work.clone());
+        Some(Worker {
+            active: self.active.clone(),
+            session: session.to_owned(),
+            work,
+            reported: false,
+        })
+    }
+
+    // Called under the lifecycle gate, which excludes new title admission.
+    pub(super) async fn cancel_and_wait(&self, session: &str) -> Result<(), ()> {
+        let work = self.active.lock().unwrap().get(session).cloned();
+        let Some(work) = work else {
+            return Ok(());
+        };
+        let mut completed = work.completed.subscribe();
+        work.cancellation.cancel();
+        loop {
+            if let Some(success) = *completed.borrow_and_update() {
+                return success.then_some(()).ok_or(());
+            }
+            completed.changed().await.map_err(|_| ())?;
+        }
+    }
+}
+impl Worker {
+    fn complete(&mut self, success: bool) {
+        self.reported = true;
+        self.work.completed.send_replace(Some(success));
+    }
+}
+impl Drop for Worker {
+    fn drop(&mut self) {
+        self.active.lock().unwrap().remove(&self.session);
+        if !self.reported {
+            self.work.completed.send_replace(Some(false));
+        }
+    }
+}
+
 #[cfg(test)]
 pub(super) struct WriteGate {
     pub(super) entered: tokio::sync::Semaphore,
@@ -77,6 +142,13 @@ impl Owner {
         let Ok(mut ticket) = self.auxiliary.resources.reserve() else {
             return;
         };
+        let Some(mut worker) = self
+            .titles
+            .start(&invocation.session_id, self.stop.child_token())
+        else {
+            return;
+        };
+        let cancellation = worker.work.cancellation.clone();
         let owner = self.clone();
         let span = tracing::error_span!("agent_title_worker", session_id = %invocation.session_id,
             turn_id = %invocation.turn_id, run_id = %invocation.run_id,
@@ -84,10 +156,13 @@ impl Owner {
         self.workers.spawn(
             async move {
                 ticket.start();
-                let completion =
-                    std::panic::AssertUnwindSafe(owner.generate_title(invocation, model))
-                        .catch_unwind()
-                        .await;
+                let completion = std::panic::AssertUnwindSafe(owner.generate_title_with(
+                    invocation,
+                    model,
+                    cancellation,
+                ))
+                .catch_unwind()
+                .await;
                 let fatal = match &completion {
                     Err(_) => Some(("title_worker_panicked", "worker_panicked")),
                     Ok(Err(ToolError::Persistence(_))) => {
@@ -108,6 +183,9 @@ impl Owner {
                     _ => Ok(()),
                 };
                 ticket.complete(cleanup);
+                // Physical completion precedes owner-state publication: an
+                // archive may be waiting while it holds that lifecycle gate.
+                worker.complete(fatal.is_none());
                 if let Some((stage, cause)) = fatal {
                     tracing::error!(
                         stage,
@@ -122,14 +200,28 @@ impl Owner {
             .instrument(span),
         );
     }
+    #[cfg(test)]
     pub(super) async fn generate_title(
         &self,
         invocation: Invocation,
         model: crate::model::AcceptedModel,
     ) -> Result<(), ToolError> {
+        self.generate_title_with(invocation, model, self.stop.child_token())
+            .await
+    }
+
+    async fn generate_title_with(
+        &self,
+        invocation: Invocation,
+        model: crate::model::AcceptedModel,
+        cancellation: CancellationToken,
+    ) -> Result<(), ToolError> {
+        if cancellation.is_cancelled() {
+            return Ok(());
+        }
         let Some(session) = self
             .store
-            .get_session::<SessionConfiguration>(&invocation.session_id)
+            .get_session::<StoredSessionConfiguration>(&invocation.session_id)
             .await
             .map_err(persistence)?
         else {
@@ -139,6 +231,9 @@ impl Owner {
             || session.archived
             || self
                 .store
+                .session(&invocation.session_id)
+                .await
+                .map_err(persistence)?
                 .session_manager(&invocation.session_id)
                 .await
                 .map_err(persistence)?
@@ -148,6 +243,9 @@ impl Owner {
         }
         let Some(opening) = self
             .store
+            .session(&invocation.session_id)
+            .await
+            .map_err(persistence)?
             .first_message_opening(&invocation.session_id)
             .await
             .map_err(|error| match error {
@@ -190,7 +288,6 @@ impl Owner {
         let Some(input) = maka_session_title::Title.prepare(text, language) else {
             return Ok(());
         };
-        let cancellation = self.stop.child_token();
         let _cancel = cancellation.clone().drop_guard();
         let operation = async {
             input
@@ -227,7 +324,7 @@ impl Owner {
                     ModelRequest {
                         language: input.language,
                         provider: prepared.provider,
-                        prompt,
+                        prompt: prompt.into(),
                         tools: Vec::new(),
                         provider_options: prepared.options,
                         max_output_tokens: Some(
@@ -255,7 +352,9 @@ impl Owner {
         // Uncertain persistence or physical cleanup outranks the logical deadline.
         let result = match result {
             Err(GenerationError::Operation(error)) => return Err(error),
-            _ if self.stop.is_cancelled() => return Ok(()),
+            _ if self.stop.is_cancelled() || (cancellation.is_cancelled() && !timed_out) => {
+                return Ok(());
+            }
             _ if timed_out => Err(TitleFailureCause::Model {
                 cause: ModelFailureCause::TimedOut,
             }),
@@ -275,6 +374,9 @@ impl Owner {
             Ok(title) => title,
             Err(cause) => {
                 self.store
+                    .session(&invocation.session_id)
+                    .await
+                    .map_err(persistence)?
                     .record_title_failure(invocation.clone(), cause)
                     .await
                     .map_err(persistence)?;
@@ -284,13 +386,17 @@ impl Owner {
         // Main execution also moves the public revision. Retry metadata only;
         // each attempt gives queued manual changes and shutdown a turn at the gate.
         loop {
-            let runs = self.runs.lock().await;
+            let runs = tokio::select! {
+                biased;
+                () = cancellation.cancelled() => return Ok(()),
+                runs = self.runs.lock() => runs,
+            };
             if runs.closing || self.stop.is_cancelled() {
                 return Ok(());
             }
             let Some(current) = self
                 .store
-                .get_session::<SessionConfiguration>(&invocation.session_id)
+                .get_session::<StoredSessionConfiguration>(&invocation.session_id)
                 .await
                 .map_err(persistence)?
             else {
@@ -301,6 +407,9 @@ impl Owner {
                 || current.configuration.title != session.configuration.title
                 || self
                     .store
+                    .session(&invocation.session_id)
+                    .await
+                    .map_err(persistence)?
                     .session_manager(&invocation.session_id)
                     .await
                     .map_err(persistence)?
@@ -322,7 +431,7 @@ impl Owner {
                 .update_session_metadata(
                     &invocation.session_id,
                     current.revision,
-                    move |configuration: &mut SessionConfiguration| {
+                    move |configuration: &mut StoredSessionConfiguration| {
                         if !configuration.title_is_manual {
                             configuration.title = title;
                         }
@@ -341,5 +450,35 @@ impl Owner {
                 Err(error) => return Err(persistence(error)),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod registry_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn archive_waits_for_acknowledged_title_cleanup_and_releases_finished_entries() {
+        let registry = Registry::default();
+        for id in 0..64 {
+            let session = format!("title-{id}");
+            let mut worker = registry.start(&session, CancellationToken::new()).unwrap();
+            let mut waiting = Box::pin(registry.cancel_and_wait(&session));
+            assert!(futures_util::poll!(&mut waiting).is_pending());
+            assert!(worker.work.cancellation.is_cancelled());
+            worker.complete(true);
+            waiting.await.unwrap();
+            drop(worker);
+            assert!(registry.active.lock().unwrap().is_empty());
+        }
+        let worker = registry.start("lost", CancellationToken::new()).unwrap();
+        let mut waiting = Box::pin(registry.cancel_and_wait("lost"));
+        assert!(futures_util::poll!(&mut waiting).is_pending());
+        drop(worker);
+        assert!(
+            waiting.await.is_err(),
+            "a disappeared worker cannot confirm cleanup"
+        );
+        assert!(registry.active.lock().unwrap().is_empty());
     }
 }

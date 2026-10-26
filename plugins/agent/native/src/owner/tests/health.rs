@@ -84,10 +84,11 @@ mod acceptance {
     use maka_agent_facts::interaction::{InteractionRecord, InteractionRequest};
 
     async fn pending(f: &Fixture, session: &str) -> InteractionRecord {
-        let mut commits = f.store.subscribe_commits();
+        let mut commits = f.session(session).await.subscribe_commits().unwrap();
         loop {
             if let Some(record) = f
-                .store
+                .session(session)
+                .await
                 .pending_interactions(session)
                 .await
                 .unwrap()
@@ -146,7 +147,8 @@ mod acceptance {
         loop {
             changes.borrow_and_update();
             if !f
-                .store
+                .session(&session)
+                .await
                 .read_shell_run(&session, id)
                 .await
                 .unwrap()
@@ -190,12 +192,12 @@ mod acceptance {
             assert_eq!(checked["value"]["process"]["logs"]["stdout"],"health-output");
             assert_eq!(socket.read(&mut [0;1]).await.unwrap(),0);
             let deployment = f.app.source().unwrap().deployment;
-            let prefix=f.store.scoped_prefix(maka_agent_facts::event::LogScope::Session { id:session.clone() },256,4*1024*1024).await.unwrap();
+            let prefix=f.session(&(session)).await.scoped_prefix(maka_agent_facts::event::LogScope::Session { id:session.clone() },256,4*1024*1024).await.unwrap();
             let event=prefix.events.iter().rev().find(|event|matches!(event.event.fact,maka_agent_facts::event::Fact::ToolSettled { .. })).unwrap();
-            let maka_agent_facts::tool_output::ToolOutput::Operation(reply)=f.store.resolve_tool_result(&session,&event.event.id).await.unwrap() else { panic!("original health receipt") };
+            let maka_agent_facts::tool_output::ToolOutput::Operation(reply)=f.session(&session).await.resolve_tool_result(&session,&event.event.id).await.unwrap() else { panic!("original health receipt") };
             let original=reply.reference;
             assert_eq!(original.method,"health");
-            let original_receipt = f.store.operation_observation(&original).await.unwrap().unwrap();
+            let original_receipt = f.store.operation(&original).unwrap().operation_observation().await.unwrap().unwrap();
             f.app.shutdown().await.unwrap();
             let mut native = NativeRegistry::default();
             maka_settings_native::provide(&mut native, crate::owner::tests::bundled_catalog()).unwrap();
@@ -213,7 +215,7 @@ mod acceptance {
             let foreign=f.create("Foreign").await;
             let rejected=roundtrip(&model,&f,&foreign,"BackgroundTaskHealth",json!({"ref":reference,"url":url})).await;
             assert_eq!(rejected["kind"],"failed","{rejected}");
-            assert!(f.store.pending_interactions(&foreign).await.unwrap().is_empty());
+            assert!(f.session(&foreign).await.pending_interactions(&foreign).await.unwrap().is_empty());
             assert!(tokio::time::timeout(Duration::from_millis(50),endpoint.accept()).await.is_err());
             f.app.shutdown().await.unwrap(); f.config.shutdown().await.unwrap();
         }).await.unwrap();
@@ -228,7 +230,7 @@ mod acceptance {
             pending(&f,&session).await;
             f.mutation(2,"stop",json!({"sessionId":session,"invocationId":started["invocationId"]}),Uuid::new_v4()).await.unwrap();
             f.drained().await;
-            assert!(f.store.pending_interactions(&session).await.unwrap().is_empty());
+            assert!(f.session(&session).await.pending_interactions(&session).await.unwrap().is_empty());
             assert!(tokio::time::timeout(Duration::from_millis(50),endpoint.accept()).await.is_err());
             let started=call(&model,&f,&session,"BackgroundTaskHealth",json!({"ref":reference,"url":url})).await;
             permission(&f,&pending(&f,&session).await,true).await;
@@ -248,7 +250,7 @@ mod acceptance {
             let private=roundtrip(&model,&f,&session,"BackgroundTaskHealth",json!({"ref":reference,"url":url})).await;
             assert_eq!(private["value"]["endpoint"]["state"],"unknown","{private}");
             assert_eq!(private["value"]["process"]["status"],"completed");
-            assert!(f.store.pending_interactions(&session).await.unwrap().is_empty());
+            assert!(f.session(&session).await.pending_interactions(&session).await.unwrap().is_empty());
             assert!(tokio::time::timeout(Duration::from_millis(50),endpoint.accept()).await.is_err());
             f.app.shutdown().await.unwrap(); f.config.shutdown().await.unwrap();
         }).await.unwrap();
@@ -278,7 +280,7 @@ mod acceptance {
             assert_eq!(lines[1]["value"]["process"]["status"],"completed");
             response(&mut model_socket).await; f.drained().await;
             assert!(tokio::time::timeout(Duration::from_millis(50),redirect.accept()).await.is_err());
-            assert!(f.store.pending_interactions(&session).await.unwrap().is_empty());
+            assert!(f.session(&session).await.pending_interactions(&session).await.unwrap().is_empty());
             f.app.shutdown().await.unwrap(); f.config.shutdown().await.unwrap();
         }).await.unwrap();
     }

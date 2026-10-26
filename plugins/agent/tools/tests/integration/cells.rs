@@ -145,7 +145,7 @@ async fn yielding_cells_keep_ancestry_deliver_deltas_share_json_and_drain_on_run
             definition:ToolDefinition { freeform: None, output_schema: None, provider:None,name:"block".into(),description:"wait".into(),input_schema:json!({"type":"object"}) },
             handler:ToolHandler::Immediate(Arc::new(Block(release.clone()))),nesting:ToolNesting::Nestable,semantics:ToolSemantics::Parallel,
         }]).unwrap();
-        let loaded = maka_tools::availability::LoadedTools::default();
+        let loaded = maka_tools::availability::LoadedTools::temporary().unwrap();
         let run = RunTools::new(maka_agent_facts::language::Language::En, log.clone(), invocation.clone(), catalog, ToolMode::CodeMode, CodeExecutor::new(CellLimits::default()).unwrap(), loaded.clone());
         let first = invoke(&log, &run, &invocation, "first", "exec", json!("// @exec: {\"yield_time_ms\":1000,\"max_output_tokens\":1000}\ntext('early'); await yield_control(); await tools.block({}); text('late'); store('n',42);")).await;
         assert_eq!(first["state"], "running");
@@ -166,7 +166,7 @@ async fn yielding_cells_keep_ancestry_deliver_deltas_share_json_and_drain_on_run
         })).unwrap()).await.is_err(), "settled cells cannot inject notifications");
         assert_eq!(last["result"]["value"],Value::Null);
         assert_eq!(last["content"],json!([{"kind":"text","text":"late"}]));
-        loaded.clear();
+        loaded.clear().unwrap();
         let next = invoke(&log,&run,&invocation,"next","exec",json!({"code":format!("const complete_source = {}; text(load('n'));", serde_json::to_string(&"甲".repeat(24_000)).unwrap())})).await;
         assert_eq!(next["content"][0]["text"],"42");
         let stopping = invoke(&log,&run,&invocation,"stopping","exec",json!({"code":"notify('stoppable'); await yield_control(); await tools.block({});"})).await;
@@ -228,7 +228,7 @@ async fn collected_cell_recovery_uses_the_original_run_language_and_keeps_user_o
             ToolCatalog::default(),
             ToolMode::CodeMode,
             CodeExecutor::new(CellLimits::default()).unwrap(),
-            Default::default(),
+            maka_tools::availability::LoadedTools::temporary().unwrap(),
         );
         let finished = invoke(
             &log,

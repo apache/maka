@@ -33,7 +33,8 @@ pub struct SkillToolRequest<T> {
 #[schemars(rename = "SkillModelSearch")]
 pub struct ModelSearch {
     pub query: String,
-    #[schemars(range(min = 1, max = 8))]
+    /// Omission returns the complete matching catalog.
+    #[schemars(range(min = 1))]
     pub limit: Option<usize>,
 }
 #[derive(Deserialize, Serialize, JsonSchema)]
@@ -78,7 +79,6 @@ pub enum ModelLoadResult<'a> {
         relative_path: String,
         declared_tools: Vec<String>,
         declared_tools_truncated: bool,
-        truncated: bool,
         receipt: maka_skills::SkillInvocationReceipt,
     },
     Resource {

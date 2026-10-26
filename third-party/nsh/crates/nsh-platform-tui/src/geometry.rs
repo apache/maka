@@ -314,7 +314,12 @@ impl Surface {
                     } else {
                         parent.scroll.y.0
                     };
-                    (offset - sticky.start.0 * zoom)
+                    // Sample on each presentation pass so a moving sticky
+                    // inset updates drawing and hits without a scroll event.
+                    let extra = sticky
+                        .offset
+                        .map_or(0.0, |value| self.animation.eval(value).number());
+                    (offset + (extra - sticky.start.0) * zoom)
                         .clamp(0.0, ((sticky.end.0 - sticky.start.0) * zoom).max(0.0))
                 })
                 .sum::<f32>();
@@ -390,10 +395,18 @@ impl Surface {
 
 #[cfg(test)]
 mod tests {
-    use nsh_core::{MountBatch, MountItem, ROOT_ID, ViewStyle};
+    use nsh_core::{MountBatch, MountItem, ROOT_ID, StickyCell, ViewStyle};
 
     use super::*;
     use crate::CellMetrics;
+
+    fn sticky_cell(cell: NodeId, start: f32, end: f32) -> StickyCell {
+        let mut sticky = StickyCell::default();
+        sticky.cell = cell;
+        sticky.start = px(start);
+        sticky.end = px(end);
+        sticky
+    }
 
     #[test]
     fn descendant_sticky_cells_move_their_subtree_on_both_axes() {
@@ -430,11 +443,7 @@ mod tests {
             }
             items.push(MountItem::StickyCells {
                 id: 2,
-                cells: vec![nsh_core::StickyCell {
-                    cell: 6,
-                    start: px(60.0),
-                    end: px(140.0),
-                }],
+                cells: vec![sticky_cell(6, 60.0, 140.0)],
             });
             surface.apply(MountBatch { items });
             surface.node_mut(2).unwrap().scroll.horizontal = horizontal;
@@ -476,18 +485,7 @@ mod tests {
             surface.apply(MountBatch {
                 items: vec![MountItem::StickyCells {
                     id: 2,
-                    cells: vec![
-                        nsh_core::StickyCell {
-                            cell: 6,
-                            start: px(60.0),
-                            end: px(140.0),
-                        },
-                        nsh_core::StickyCell {
-                            cell: 12,
-                            start: px(30.0),
-                            end: px(90.0),
-                        },
-                    ],
+                    cells: vec![sticky_cell(6, 60.0, 140.0), sticky_cell(12, 30.0, 90.0)],
                 }],
             });
             for (index, id) in [6, 8, 10, 12].into_iter().enumerate() {
@@ -504,6 +502,116 @@ mod tests {
             });
             for (index, id) in [6, 8, 10, 12].into_iter().enumerate() {
                 assert_eq!(origin(&surface, id), before[index]);
+            }
+        }
+    }
+
+    #[test]
+    fn animated_sticky_offsets_update_paint_and_hits_without_scrolling() {
+        use nsh_core::animation::{AnimationOp, Driver, Easing};
+        use ratatui::{buffer::Buffer, layout::Rect, style::Color};
+
+        for horizontal in [false, true] {
+            let mut surface = Surface::new(20, 10, CellMetrics::default());
+            let at = |main| {
+                if horizontal {
+                    Point::new(px(main), px(0.0))
+                } else {
+                    Point::new(px(0.0), px(main))
+                }
+            };
+            let mut items = Vec::new();
+            for (id, parent, kind, main, extent) in [
+                (2, ROOT_ID, ViewKind::Scroll, 0.0, 160.0),
+                (4, 2, ViewKind::View, 32.0, 160.0),
+                (6, 4, ViewKind::View, 16.0, 32.0),
+                (8, 6, ViewKind::View, 0.0, 16.0),
+                (10, 4, ViewKind::View, 96.0, 16.0),
+            ] {
+                items.extend([
+                    MountItem::Create { id, kind },
+                    MountItem::Insert {
+                        parent,
+                        child: id,
+                        before: None,
+                    },
+                    MountItem::Frame {
+                        id,
+                        frame: Bounds::new(at(main), Size::new(px(extent), px(extent))),
+                    },
+                ]);
+            }
+            let mut sticky = sticky_cell(6, 48.0, 144.0);
+            sticky.offset = Some(1);
+            items.extend([
+                MountItem::ScrollContent {
+                    id: 2,
+                    size: Size::new(px(320.0), px(320.0)),
+                },
+                MountItem::ViewStyle {
+                    id: 8,
+                    style: Box::new(ViewStyle {
+                        background_color: nsh_core::Color(0xff0000ff),
+                        ..Default::default()
+                    }),
+                },
+                MountItem::StickyCells {
+                    id: 2,
+                    cells: vec![sticky],
+                },
+                MountItem::Animation(AnimationOp::CreateValue {
+                    node: 1,
+                    value: 0.0,
+                }),
+                MountItem::Animation(AnimationOp::Start {
+                    node: 1,
+                    animation: 1,
+                    driver: Driver::Timing {
+                        to: 32.0,
+                        duration_ms: 1000.0,
+                        easing: Easing::Linear,
+                        delay_ms: 0.0,
+                    },
+                }),
+            ]);
+            surface.apply(MountBatch { items });
+            let scroll = &mut surface.node_mut(2).unwrap().scroll;
+            scroll.horizontal = horizontal;
+            if horizontal {
+                scroll.x = px(80.0);
+            } else {
+                scroll.y = px(80.0);
+            }
+            let sibling = surface.global_frame(10).unwrap();
+            let area = Rect::new(0, 0, 20, 10);
+            for (now, inset) in [(0.0, 0.0), (0.5, 16.0), (1.0, 32.0)] {
+                assert!(surface.tick(now) || now == 0.0);
+                assert_eq!(surface.global_frame(6).unwrap().origin, at(inset));
+                assert_eq!(surface.global_frame(8).unwrap().origin, at(inset));
+                assert_eq!(surface.global_frame(10).unwrap(), sibling);
+                let point = at(inset) + Point::new(px(8.0), px(8.0));
+                assert_eq!(surface.hit_test(point.x.0, point.y.0), Some(8));
+                assert_eq!(
+                    surface.hit_snapshot().hit_test(point.x.0, point.y.0),
+                    Some(8)
+                );
+                let mut buffer = Buffer::empty(area);
+                surface.render(area, &mut buffer);
+                let cell = if horizontal {
+                    ((inset / 8.0) as u16, 0)
+                } else {
+                    (0, (inset / 16.0) as u16)
+                };
+                assert_eq!(buffer[cell].bg, Color::Rgb(255, 0, 0));
+            }
+            // Animated insets use the same content-point scale and travel
+            // bounds as numeric insets, including negative values.
+            surface.node_mut(2).unwrap().scroll.physics.zoom = 2.0;
+            for (value, expected) in [(-100.0, 16.0), (32.0, 64.0), (200.0, 208.0)] {
+                surface.apply(MountBatch {
+                    items: vec![MountItem::Animation(AnimationOp::Set { node: 1, value })],
+                });
+                assert_eq!(surface.global_frame(6).unwrap().origin, at(expected));
             }
         }
     }

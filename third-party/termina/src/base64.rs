@@ -91,6 +91,48 @@ pub fn encode(input: &[u8]) -> String {
     String::from_utf8(output).expect("Invalid UTF8")
 }
 
+/// Decode canonical, padded standard Base64; empty input represents empty bytes.
+pub fn decode(input: &str) -> Option<Vec<u8>> {
+    fn value(byte: u8) -> Option<u8> {
+        match byte {
+            b'A'..=b'Z' => Some(byte - b'A'),
+            b'a'..=b'z' => Some(byte - b'a' + 26),
+            b'0'..=b'9' => Some(byte - b'0' + 52),
+            b'+' => Some(62),
+            b'/' => Some(63),
+            _ => None,
+        }
+    }
+
+    if input.len() % 4 != 0 {
+        return None;
+    }
+    let mut output = Vec::with_capacity(input.len() / 4 * 3);
+    for (index, chunk) in input.as_bytes().chunks_exact(4).enumerate() {
+        let a = value(chunk[0])?;
+        let b = value(chunk[1])?;
+        let last = index + 1 == input.len() / 4;
+        match (chunk[2], chunk[3]) {
+            (b'=', b'=') if last && b & 15 == 0 => {
+                output.push(a << 2 | b >> 4);
+            }
+            (c, b'=') if last => {
+                let c = value(c)?;
+                if c & 3 != 0 {
+                    return None;
+                }
+                output.extend_from_slice(&[a << 2 | b >> 4, b << 4 | c >> 2]);
+            }
+            (c, d) => {
+                let c = value(c)?;
+                let d = value(d)?;
+                output.extend_from_slice(&[a << 2 | b >> 4, b << 4 | c >> 2, c << 6 | d]);
+            }
+        }
+    }
+    Some(output)
+}
+
 #[cfg(test)]
 mod tests {
     fn compare_encode(expected: &str, target: &[u8]) {

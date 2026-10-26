@@ -26,6 +26,7 @@ pub mod preferences;
 mod service;
 mod setup;
 pub mod usage;
+pub mod workspace_locations;
 use futures_util::future::BoxFuture;
 use maka_agent_facts::language::LanguagePreference;
 use maka_host_runtime::application::{NativeActivation, NativeOwner, NativeRegistry};
@@ -33,10 +34,12 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use std::sync::Arc;
 #[derive(Default, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Configuration {
     #[serde(default)]
     locale: String,
+    #[serde(default)]
+    workspace_locations: Option<workspace_locations::Configuration>,
 }
 
 fn configuration_schema() -> serde_json::Value {
@@ -81,6 +84,8 @@ pub fn provide(
                             .await
                             .map_err(|_| "settings_store_unavailable")?;
                         Ok::<_, String>(Arc::new(service::Settings {
+                            source: persistence.source().clone(),
+                            workspace_locations: configuration.workspace_locations,
                             catalog,
                             configuration: Arc::new(store),
                             log: persistence.store().clone(),

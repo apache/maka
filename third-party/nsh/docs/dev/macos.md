@@ -57,9 +57,19 @@ server client, log forwarding, the error overlay: `dev.rs`). The runtime needs m
   every frame of a scroll (~165 `viewWillDraw` and backing-store checks per frame in the gallery's Lists demo, ~70% of
   the frame's main-thread time). Plain sublayers are not visible-rect managed. A content layer is drawn again when
   its content changes and when its size does (`needsDisplayOnBoundsChange`), not when the view moves (transitions
-  redrew every moving text on every frame before). Canvases draw asynchronously (`drawsAsynchronously`: Core
-  Animation replays the drawing on its threads; Stocks idle, main-thread time per frame ~3.3 → ~1.8 ms, process CPU
-  ~60% → ~30%); text draws at once, which measured faster than asynchronously.
+  redrew every moving text on every frame before). Text draws at once, which measured faster than asynchronously.
+  A canvas draws at once too until it paints 10 times a second or more (an animation, live data: `canvas.rs`
+  `Cadence`), when it draws asynchronously (`drawsAsynchronously`: Core Animation replays the drawing on its
+  threads; Stocks idle, main-thread time per frame ~3.3 → ~1.8 ms, process CPU ~60% → ~30%), and at once again after
+  a slow second. Drawing asynchronously costs graphics memory (`footprint`'s "Owned physical footprint (unmapped)
+  (graphics)", ~50–60 MB for the process while any canvas draws so) and Metal work per layer, which a canvas redrawn
+  every few seconds gains nothing from: three 340×40 charts redrawn every 2 s hold ~21 MB at once against ~83 MB
+  asynchronously. A canvas whose long static part is kept as a `CGLayer` (`canvas.rs`: a drawing painted unchanged
+  30 times) draws at once however often it paints: each frame draws the layer and replays the animated rest, which
+  costs less than the drawing threads, their Metal work and their IOSurface backing stores (the gallery's Canvas
+  page: CPU 7–10% → 4–6%, GPU 5–6% → 0%, ~210 → ~105 MB).
+  Contents stay in the screen's format: 8-bit contents (`kCAContentsFormatRGBA8Uint`) measured slower on the
+  ProMotion display, which converts them on every frame.
 - **No masks on what scrolls, where avoidable** (`visual.rs`): the window server pays for a mask on every frame its
   layer moves. Outer box shadows under an opaque background (a fill layer, or an opaque gradient, both above them)
   are plain `shadowPath` casters, masked only under translucent ones; inset shadows are clipped by their holder's
@@ -139,7 +149,7 @@ server client, log forwarding, the error overlay: `dev.rs`). The runtime needs m
 | Video | `native.rs` | AVFoundation (loaded at run time, as on iOS): an `AVPlayerLayer` in a view that lets the mouse through, or AVKit's `AVPlayerView` with `controls` |
 | Web views | `native.rs` | `WKWebView` (iOS's bridge: `window.nsh.postMessage`, injected JS, the `webview` capability's navigation policy, every prop, event and command iOS has); a web view is transparent by default (`drawsBackground = false`), a page without a background showing the view behind it; macOS's web view has no scroll view to turn off, so with `scrollable={false}` the root's `hitTest:` keeps wheel and trackpad scrolls from it (`passes_wheel`) and they scroll the app's scroll views around it (the page's own keys and scripts still scroll it; swipes between pages, `allowsBackForwardNavigationGestures`, are scrolls too) |
 | Native components | `native.rs` | `AppView::register_component(name, factory)`; a `NativeComponent`'s `NSView` fills the node's view; `ComponentContext::emit` / `set_size` from any thread |
-| Accessibility | `access.rs` | `NSAccessibility` setters on the views: roles and subroles, labels, values, states, `testID` as the identifier; `accessible={true}` hides the children; live regions announced |
+| Accessibility | `access.rs` | `NSAccessibility` setters on the views: roles and subroles, labels, values, states, `testID` as the identifier; `accessible={true}` hides the children, `accessibilityElementsHidden` and `visibility: hidden` the view and its subtree (as in a browser), the view answering `accessibilityChildren` itself; live regions announced |
 | Environment | `system.rs` | Color scheme: the app's appearance when it forces one, else the root's effective appearance (the root's appearance is set to the app's, so hosted controls follow); locale and RTL from `NSLocale`, reduce motion and VoiceOver from `NSWorkspace` (live), the backing scale factor (again when the window moves to another screen: `pixelRatio()`), the OS version; `platform.os` `"macos"`, idiom `desktop`, font scale 1, safe area and keyboard height 0 |
 | Window chrome (`nsh/desktop`) | `chrome.rs` | `setTitle`; a hidden title bar is `FullSizeContentView` with a transparent, untitled title bar (the traffic lights stay), its area (native frame geometry, including `contentLayoutRect` for a toolbar, and the zoom button's right edge + 8) reported as the environment's `title_bar`, 0 in full screen; a left press on a `windowDrag` view calls `performWindowDragWithEvent:` and a double click does what `AppleActionOnDoubleClick` says (zoom by default), the press never reaching the app; `setFrame` merges the fields given with the window's frame and calls `setFrame:display:animate:` (`x`/`y` are the bottom left corner's screen coordinates; `anchorTop` keeps the top edge when `height` changes without a `y`), `setLevel` maps to an `NSWindowLevel` (`desktopIcon` is `kCGDesktopIconWindowLevel`, and it also makes the window stationary on every space, out of Mission Control and Cmd+`); `orderFront` deminiaturizes, activates the app and makes the window key; the application menu replaces the main menu (its first submenu is the app menu; the replaced one comes back with `null`), context menus are `popUpMenuPositioningItem:atLocation:inView:` from the main queue (they track the mouse in a loop of their own); role items send AppKit's standard actions down the responder chain and are not reported, the others target an `NshMenuTarget` that reports their tag; AppKit validates the items (roles are enabled and titled by the responder chain: `Undo Typing`, `Exit Full Screen`), a disabled item's action is one nothing answers; an app's bar height selects an empty `NSToolbar` (`UnifiedCompact` up to 44pt, `Unified` above), with AppKit laying out the traffic lights on every live-resize frame; `titleBar().height` reports the actual unobscured-content boundary from `contentLayoutRect`, refreshed after deferred layout; a host's existing toolbar and style stay untouched; NSH tracks its own toolbar by object identity and restores the window's previous style when removing it, moving between windows or dropping the surface |
 
@@ -149,6 +159,10 @@ server client, log forwarding, the error overlay: `dev.rs`). The runtime needs m
 | Performance monitor | `fps.rs`, `gpu.rs` | `--fps` / `AppOptions::fps` / `AppView::set_fps_monitor`: a panel above the surface that lets the mouse through, redrawn twice a second from the surface's `nsh_engine::perf::PerfMonitor` (see below); GPU time from the IO registry (`accumulatedGPUTime` of the process' accelerator clients) |
 
 ## Keyboard
+
+Single-line fields center the native font's line in the input's content box. Their attributed placeholders use
+the same natural line height as the field editor, including when `text-base` supplies a larger `lineHeight` for
+layout. Multiline text views use the configured paragraph line height.
 
 A key goes to the window's first responder: a field's editor (the window's shared field editor, an `NSTextView`), a
 multiline input's `NshTextView`, a hosted view, or the surface's root. Menus' key equivalents (`app.rs`: Cmd+Q / H /

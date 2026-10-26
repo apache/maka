@@ -22,6 +22,7 @@ pub mod assembly;
 pub mod budget;
 pub mod error;
 pub mod prompt;
+pub mod prompt_source;
 pub mod request;
 mod tool_input;
 use serde_json::Value;

@@ -115,6 +115,8 @@ view.load(App::Js(Bundle::source(code)));
 - `open_app_window(source, options, cx)` 在运行中的 GPUI 应用里打开一个带 `AppView` 的窗口。
 - `run_app(source, options)` 启动 GPUI，在一个窗口中运行一个应用直到窗口关闭（开发宿主就是这样做的）。
 - `AppView::register_component(name, factory)` 在加载前注册你自己的原生组件（[原生组件](./native-components.md)）。
+- `AppOptions::cache`（或 `AppView::set_cache`，作用于之后加载的应用）设置应用保存缓存（[下载的图片](./images-and-assets.md#磁盘缓存)）的位置和每种缓存的大小：`CacheOptions { location, images }`，`CacheLocation::System`（默认）、`Dir(path)` 或 `Off`，`CachePolicy::Default`（256 MiB）、`MaxSize(ByteSize::mib(n))` 或 `Off`。
+- `AppView::host()` 是视图与它运行的应用之间的通道（[`nsh/host`](../modules/nsh-host.md)），一个可在任意线程使用的 `HostChannel`：加载前用 `set_params(map)` 给应用启动参数（`host.params`），用 `send(name, data)` 发送事件（`host.on`），用 `handle(name, |call| …)` 回答应用的 `host.call(name, data)` 并接收它的 `host.post`（`call.resolve(json)`、`call.reject(message)`，可以立即回答，也可以稍后在任意线程回答）。处理函数在引擎线程运行：把调用交给你的 GPUI entity（例如通过一个由 `cx.spawn` 任务读取的 channel），在那里回答。macOS、Windows 和 Linux 的 `AppView` 也有同样的 `host()`。它的 `handle_open_url(|request| …)` 在系统之前看到应用打开的 URL（[`openUrl`](../modules/nsh-device.md#openurl)）：你的应用自己处理了这个 URL 时调用 `request.handled()`，调用 `request.decline()`（或直接丢弃 request）则由系统用 GPUI 的 `open_url` 打开。
 - `AppOptions::limits`（或 `AppView::set_limits`，作用于之后加载的应用）设置 VM 限制：JS 堆、栈、时间预算和节点配额（[沙箱与能力](./sandbox-and-capabilities.md)）。嵌入的应用默认是 `Limits::default()`（256 MB 堆）；开发宿主把应用作为独立应用运行，使用 `Limits::standalone()`。
 - `AppView::connect_dev_server(url, cx)`（feature `dev`）从 `nsh dev` 加载应用，边改边重新加载，错误浮层显示在视图上；`AppView::on_error` 照样收到应用的错误。
 - `AppView::on_app_error(|error| …)` 接收应用的错误：`error.kind`（应用加载失败、未捕获的异常、VM 已停止），`error.is_fatal()` 表示该应用不会再执行任何 JS，`error.message`、`error.stack`，以及 `error.package`（它来自的签名包的 id 和 build 号）。`AppView::on_error` 以文本形式收到同样的错误。

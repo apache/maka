@@ -24,7 +24,7 @@ use maka_agent_facts::interaction::InteractionRecord;
 use maka_agent_facts::interaction::InteractionRequest;
 use maka_agent_facts::tools::ToolCallContext;
 use maka_agent_facts::tools::ToolError;
-use maka_event_log::EventLog;
+use maka_event_log::SessionStore;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tokio_util::sync::CancellationToken;
@@ -37,7 +37,7 @@ pub(crate) struct Selection<'a> {
 }
 
 pub(crate) async fn confirm(
-    store: &EventLog,
+    store: &SessionStore,
     context: &ToolCallContext,
     selection: Selection<'_>,
     input: &Value,
@@ -84,7 +84,7 @@ pub(crate) async fn confirm(
         if !committed.matches {
             return Err("service confirmation identity conflict");
         }
-        wait(store, &record.request_id, cancellation).await
+        wait(store, &record, cancellation).await
     }
     .await;
     let outcome = match result {

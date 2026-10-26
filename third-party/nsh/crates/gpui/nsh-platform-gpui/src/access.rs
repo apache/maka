@@ -24,8 +24,9 @@
 //! scroll views, views with press handlers, labelled views and every view
 //! with an `accessibilityRole` are elements; plain containers are looked
 //! through; `accessibilityElementsHidden`, `importantForAccessibility:
-//! "no-hide-descendants"` and screens below the top of a stack hide a whole
-//! subtree, `importantForAccessibility: "no"` / `accessible={false}` only
+//! "no-hide-descendants"`, `visibility: hidden` (as in a browser) and
+//! screens below the top of a stack hide a whole subtree, its texts naming
+//! nothing, `importantForAccessibility: "no"` / `accessible={false}` only
 //! the view itself. Buttons, links, checkboxes, tabs, ... and
 //! `accessible={true}` views group their content: texts, images and groups
 //! inside them name the element ([`own_name`]); controls inside stay
@@ -226,13 +227,20 @@ pub(crate) fn role_for(a: &Accessibility, kind: ViewKind, pressable: bool) -> Op
         AxRole::Toolbar => Role::Toolbar,
         AxRole::List => Role::List,
         AxRole::Grid => Role::Grid,
+        AxRole::Table => Role::Table,
+        AxRole::Row => Role::Row,
+        AxRole::Cell => Role::Cell,
+        AxRole::ColumnHeader => Role::ColumnHeader,
+        AxRole::RowGroup => Role::RowGroup,
     })
 }
 
 /// How the view of `s` takes part in the tree (its own state only).
 pub(crate) fn part(s: &ViewState) -> Part {
     let a = &s.props.accessibility;
-    if s.concealed || a.hidden {
+    // `visibility: hidden` takes the subtree out, as a browser does: what
+    // is not drawn is not read either, nor part of a name.
+    if s.concealed || s.style.hidden || a.hidden {
         return Part::Hidden;
     }
     match role_for(a, s.kind, is_pressable(s.events)) {
@@ -661,7 +669,7 @@ fn walk(
     for child in &view.child_views() {
         let Some(s) = child.try_state() else { continue };
         let part = part(&s);
-        if part == Part::Hidden || s.style.hidden {
+        if part == Part::Hidden {
             continue;
         }
         let (x, y) = view.state().child_origin(s.frame, s.shift);
@@ -1657,6 +1665,26 @@ mod tests {
         assert_eq!(f.label(), Some("Password"));
         assert_eq!(f.value(), None);
         assert!(f.supports_action(Action::SetValue));
+    }
+
+    /// `visibility: hidden` takes the view and its subtree out of the tree,
+    /// of names folded from content and of the accessibility focus, as a
+    /// browser does.
+    #[test]
+    fn a_hidden_style_hides_the_subtree() {
+        let (root, all) = tree();
+        find(&all, 8).state_mut().style.hidden = true;
+        assert_eq!(part(&find(&all, 8).state()), Part::Hidden);
+        assert_eq!(name_of(&find(&all, 6)).as_deref(), Some("icon"));
+        assert_eq!(node(&built(&root), 6).label(), Some("icon"));
+        assert_eq!(exposed(&find(&all, 10)), Err(()));
+        find(&all, 2).state_mut().style.hidden = true;
+        let b = built(&root);
+        assert_eq!(b.top, [node_id(7, 22)]);
+        assert_eq!(exposed(&find(&all, 14)), Err(()));
+        find(&all, 2).state_mut().style.hidden = false;
+        find(&all, 8).state_mut().style.hidden = false;
+        assert_eq!(node(&built(&root), 6).label(), Some("Save icon"));
     }
 
     #[test]

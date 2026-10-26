@@ -92,37 +92,69 @@ impl Mounter {
                 parent,
                 child,
                 before,
+            } => self.insert(surface, *parent, *child, *before),
+            MountItem::ProjectRoot {
+                parent,
+                id,
+                following,
             } => {
-                let (Some(parent), Some(child)) = (self.get(*parent), self.get(*child)) else {
-                    return;
-                };
-                match child.kind() {
-                    ViewKind::Modal => return crate::navigation::present(surface, child),
-                    ViewKind::HeaderItem => {
-                        return crate::navigation::header_item(surface, parent, child);
-                    }
-                    ViewKind::InputAccessory => {
-                        return crate::text_input::accessory(surface, parent, child);
-                    }
-                    _ => {}
-                }
-                let before = before
-                    .and_then(|b| self.views.get(&b))
-                    .filter(|b| b.parent().as_ref() == Some(parent.upcast_ref()));
-                if child.parent().is_some() {
-                    child.unparent();
-                }
-                child.insert_before(parent, before);
-                parent.queue_allocate();
-                crate::transition::inserted(surface, child, self.layout_animation.as_ref());
-                if parent.kind() == ViewKind::Stack {
-                    crate::navigation::stack_changed(surface, parent, Some(child));
-                }
-                if parent.kind() == ViewKind::Scroll {
-                    crate::scroll::child_inserted(parent);
-                }
-                crate::selection_area::touched(surface, child);
+                let before =
+                    self.views
+                        .get(parent)
+                        .zip(self.views.get(id))
+                        .and_then(|(parent, child)| {
+                            if matches!(
+                                child.kind(),
+                                ViewKind::Modal | ViewKind::HeaderItem | ViewKind::InputAccessory
+                            ) {
+                                return None;
+                            }
+                            following.iter().find_map(|id| {
+                                let candidate = self.views.get(id)?;
+                                (candidate.parent().as_ref() == Some(parent.upcast_ref())
+                                    && !matches!(
+                                        candidate.kind(),
+                                        ViewKind::Modal
+                                            | ViewKind::HeaderItem
+                                            | ViewKind::InputAccessory
+                                    )
+                                    && (child.kind() != ViewKind::Screen
+                                        || candidate.kind() == ViewKind::Screen))
+                                    .then_some(*id)
+                            })
+                        });
+                self.insert(surface, *parent, *id, before);
             }
+            MountItem::RetireListCell { id, request, roots } => {
+                let views: Vec<_> = roots
+                    .iter()
+                    .filter_map(|id| self.views.get(id).cloned())
+                    .collect();
+                let focused = views.iter().find_map(|view| {
+                    let path = crate::input::focus_path(
+                        surface,
+                        view.root().and_then(|root| root.focus()),
+                    );
+                    roots.iter().any(|id| path.contains(id)).then_some(path)
+                });
+                if let Some(path) = focused {
+                    surface.control(|control| {
+                        control.set_focus_path(path);
+                        control.retire_list_cell(*id, *request, false);
+                    });
+                    return;
+                }
+                for view in views {
+                    crate::text_input::retire_cell(&view);
+                    crate::input::retire_cell(surface, &view);
+                    crate::scroll::detached(surface, &view);
+                    crate::selection_area::touched(surface, &view);
+                    crate::navigation::park_retired_root(surface, &view);
+                }
+                surface.control(|control| control.retire_list_cell(*id, *request, true));
+            }
+            // The roots were synchronously parked before our true reply.
+            MountItem::ListCellRetired { .. } => {}
             MountItem::Remove { id } => {
                 if let Some(view) = self.get(*id) {
                     crate::selection_area::touched(surface, view);
@@ -135,11 +167,13 @@ impl Mounter {
             MountItem::Delete { id } => {
                 crate::file_drop::deleted(surface, *id);
                 if let Some(view) = self.views.remove(id) {
+                    crate::navigation::deleted_parked_root(surface, &view);
                     crate::selection_area::touched(surface, &view);
                     crate::native::deleted(surface, &view);
                     // A removal animation detaches the view when it ends.
                     if !crate::transition::removing(surface, &view, self.layout_animation.as_ref())
                     {
+                        crate::transition::deleted(&view);
                         self.detach(surface, &view);
                     }
                 }
@@ -189,6 +223,7 @@ impl Mounter {
                 let old = std::mem::replace(&mut view.state_mut().style, style.clone());
                 crate::input::style_changed(view);
                 crate::transition::style_changed(surface, view, &old);
+                crate::access::style_changed(view, &old);
                 view.moved();
             }
             MountItem::Text {
@@ -341,6 +376,37 @@ impl Mounter {
             // The animator's (`Surface::apply`).
             MountItem::Animation(_) | MountItem::AnimationBindings { .. } => {}
         }
+    }
+
+    /// Inserts through the existing native host for this kind of child.
+    fn insert(&self, surface: &Rc<Surface>, parent: NodeId, child: NodeId, before: Option<NodeId>) {
+        let (Some(parent), Some(child)) = (self.get(parent), self.get(child)) else {
+            return;
+        };
+        match child.kind() {
+            ViewKind::Modal => return crate::navigation::present(surface, child),
+            ViewKind::HeaderItem => return crate::navigation::header_item(surface, parent, child),
+            ViewKind::InputAccessory => {
+                return crate::text_input::accessory(surface, parent, child);
+            }
+            _ => {}
+        }
+        let before = before
+            .and_then(|id| self.views.get(&id))
+            .filter(|before| before.parent().as_ref() == Some(parent.upcast_ref()));
+        if child.parent().is_some() {
+            child.unparent();
+        }
+        child.insert_before(parent, before);
+        parent.queue_allocate();
+        crate::transition::inserted(surface, child, self.layout_animation.as_ref());
+        if parent.kind() == ViewKind::Stack {
+            crate::navigation::stack_changed(surface, parent, Some(child));
+        }
+        if parent.kind() == ViewKind::Scroll {
+            crate::scroll::child_inserted(parent);
+        }
+        crate::selection_area::touched(surface, child);
     }
 
     /// Takes `view` out of its parent (a modal is dismissed).

@@ -55,6 +55,7 @@ impl Hub {
                     id,
                     controls::Action::Stop,
                     ToolCallContext {
+                        execution: None,
                         invocation: assignment.source.clone(),
                         operation_id: format!("graph-stop-{id}"),
                     },

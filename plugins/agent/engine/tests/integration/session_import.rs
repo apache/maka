@@ -128,7 +128,13 @@ async fn import_is_retryable_history_not_an_execution_and_survives_copy_and_rest
         .unwrap();
     assert_eq!(prefix.events.len(), 5);
     assert!(EventWrite::plain(prefix.events[0].event.clone()).is_err());
-    assert!(log.unfinished_invocations(100).await.unwrap().is_empty());
+    assert!(
+        log.unfinished_invocations(0, 100)
+            .await
+            .unwrap()
+            .invocations
+            .is_empty()
+    );
     let accepted_digest = prefix.digest;
     let accepted_through = prefix.high_water;
     log.close().await.unwrap();
@@ -177,7 +183,7 @@ async fn import_is_retryable_history_not_an_execution_and_survives_copy_and_rest
         session.last_message.as_ref().unwrap().preview.as_deref(),
         Some("the original answer")
     );
-    let source = log.read_model_context("imported", None).await.unwrap();
+    let source = log.read_model_view("imported", None).await.unwrap();
     let frozen = source.source_evidence;
     let prefix = log
         .scoped_prefix(
@@ -218,9 +224,11 @@ async fn import_is_retryable_history_not_an_execution_and_survives_copy_and_rest
             prefix.high_water,
             maka_agent_ports::session::history::Position::Start,
             false,
-            16 * 1024,
-            8,
-            1024 * 1024,
+            maka_event_log::transcript::HistoryLimits {
+                max_bytes: 16 * 1024,
+                max_chunks: Some(8),
+                max_json_bytes: 1024 * 1024,
+            },
         )
         .await
         .unwrap();
@@ -267,7 +275,7 @@ async fn import_is_retryable_history_not_an_execution_and_survives_copy_and_rest
         .unwrap();
     assert!(matches!(copy, SessionCopyResult::Committed(_)));
     assert_eq!(
-        log.read_model_context("copy", None)
+        log.capture_model_context("copy", None, 10_000, 16 * 1024 * 1024)
             .await
             .unwrap()
             .tail
@@ -407,12 +415,12 @@ async fn imported_conversation_compacts_before_its_first_native_turn() {
     use std::sync::Arc;
     use tokio_util::sync::CancellationToken;
     let directory = tempfile::tempdir().unwrap();
-    let log = Arc::new(
-        EventLog::open(&directory.path().join("compact.sqlite"))
+    let root = Arc::new(
+        crate::support::store::RootFixture::open(&directory.path().join("compact.sqlite"))
             .await
             .unwrap(),
     );
-    log.import_session(
+    root.import_session(
         &owner("session"),
         &source(),
         &json!({}),
@@ -445,6 +453,8 @@ async fn imported_conversation_compacts_before_its_first_native_turn() {
     )
     .await
     .unwrap();
+    let log = Arc::new(root.select("session").await.unwrap());
+    drop(root);
     let prefix = log
         .scoped_prefix(
             LogScope::Session {
@@ -480,20 +490,28 @@ async fn imported_conversation_compacts_before_its_first_native_turn() {
         }
         requests
     });
-    let worker = engine(log.clone());
+    let worker = engine();
     worker
-        .run(input(&base, "compact", true), CancellationToken::new())
+        .run(
+            log.store(),
+            input(&base, "compact", true),
+            CancellationToken::new(),
+        )
         .await
         .unwrap();
     assert!(
-        log.read_model_context("session", None)
+        log.read_model_view("session", None)
             .await
             .unwrap()
             .baseline
             .is_some()
     );
     worker
-        .run(input(&base, "continue", false), CancellationToken::new())
+        .run(
+            log.store(),
+            input(&base, "continue", false),
+            CancellationToken::new(),
+        )
         .await
         .unwrap();
     worker.drain().await;
@@ -515,7 +533,11 @@ async fn large_import_fits_summary_recovers_overflow_and_continues_after_restart
 
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("large-import.sqlite");
-    let log = Arc::new(EventLog::open(&path).await.unwrap());
+    let root = Arc::new(
+        crate::support::store::RootFixture::open(&path)
+            .await
+            .unwrap(),
+    );
     let large = format!(
         "original-goal-marker {} original-tail-marker",
         "历史".repeat(1_600_000)
@@ -530,9 +552,11 @@ async fn large_import_fits_summary_recovers_overflow_and_continues_after_restart
             },
         )
     }));
-    log.import_session(&owner("session"), &source(), &json!({}), records, 1)
+    root.import_session(&owner("session"), &source(), &json!({}), records, 1)
         .await
         .unwrap();
+    let log = Arc::new(root.select("session").await.unwrap());
+    drop(root);
     let imported = log
         .scoped_prefix(
             LogScope::Session {
@@ -559,7 +583,13 @@ async fn large_import_fits_summary_recovers_overflow_and_continues_after_restart
     );
     drop(imported_bytes);
     drop(imported);
-    assert!(log.unfinished_invocations(16).await.unwrap().is_empty());
+    assert!(
+        log.unfinished_invocations(0, 16)
+            .await
+            .unwrap()
+            .invocations
+            .is_empty()
+    );
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}/v1", listener.local_addr().unwrap());
@@ -593,14 +623,14 @@ async fn large_import_fits_summary_recovers_overflow_and_continues_after_restart
         });
         run
     };
-    let worker = engine(log.clone());
+    let worker = engine();
     worker
-        .run(run_input("continue"), CancellationToken::new())
+        .run(log.store(), run_input("continue"), CancellationToken::new())
         .await
         .unwrap();
     worker.drain().await;
     let checkpoint = log
-        .read_model_context("session", None)
+        .read_model_view("session", None)
         .await
         .unwrap()
         .baseline
@@ -634,10 +664,14 @@ async fn large_import_fits_summary_recovers_overflow_and_continues_after_restart
     drop(worker);
     Arc::try_unwrap(log).ok().unwrap().close().await.unwrap();
 
-    let log = Arc::new(EventLog::open(&path).await.unwrap());
-    let worker = engine(log.clone());
+    let log = Arc::new(
+        crate::support::store::SessionFixture::open(&path)
+            .await
+            .unwrap(),
+    );
+    let worker = engine();
     worker
-        .run(run_input("reopen"), CancellationToken::new())
+        .run(log.store(), run_input("reopen"), CancellationToken::new())
         .await
         .unwrap();
     worker.drain().await;
@@ -663,7 +697,7 @@ async fn large_import_fits_summary_recovers_overflow_and_continues_after_restart
         );
     }
     assert_eq!(
-        log.read_model_context("session", None)
+        log.read_model_view("session", None)
             .await
             .unwrap()
             .baseline

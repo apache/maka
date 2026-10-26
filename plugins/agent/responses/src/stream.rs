@@ -41,30 +41,17 @@ pub async fn stream(
     lane: Option<crate::Lane>,
     transport: Arc<Shared>,
 ) -> Result<(), ModelError> {
-    let Context {
-        events: sender,
-        cancellation,
-        idle_timeout,
-        transport: network,
-    } = context;
-    if let Some(lane) = &lane {
-        lane.prepare(&mut request);
-    }
+    let skip = if let Some(lane) = &lane {
+        tokio::select! {
+            biased;
+            _ = context.cancellation.cancelled() => return Err(ModelError::Cancelled),
+            skip = lane.prepare(&mut request) => skip,
+        }
+    } else {
+        0
+    };
     let lane = lane.map(|lane| lane.transport);
-    let operation = run(
-        request,
-        sender,
-        idle_timeout,
-        lane,
-        transport,
-        cancellation.clone(),
-        network,
-    );
-    tokio::select! {
-        biased;
-        _ = cancellation.cancelled() => Err(ModelError::Cancelled),
-        result = operation => result,
-    }
+    run(request, skip, context, lane, transport).await
 }
 fn http_failure(status: u16) -> ModelError {
     match (ModelFailureCause::Http { status }).validate() {
@@ -85,60 +72,91 @@ fn interruption(
 async fn wait<T>(
     duration: Duration,
     decoder: &Decoder,
+    cancellation: &CancellationToken,
     future: impl Future<Output = T>,
 ) -> Result<T, ModelError> {
-    tokio::time::timeout(duration, future).await.map_err(|_| {
-        interruption(
+    tokio::select! {
+        biased;
+        _ = cancellation.cancelled() => Err(ModelError::Cancelled),
+        result = tokio::time::timeout(duration, future) => result.map_err(|_| interruption(
+            decoder, ProviderFailureReason::TimedOut, ModelError::TimedOut.to_string(),
+        )),
+    }
+}
+
+/// Cancellation and idle timeout signal the upload, then await its physical
+/// source settlement. Dropping request() here could orphan a retained chunk.
+async fn request_http(
+    network: &dyn maka_agent_ports::model::Transport,
+    input: http::Request,
+    cancellation: &CancellationToken,
+    duration: Duration,
+    decoder: &Decoder,
+) -> Result<http::Response, ModelError> {
+    let upload_cancel = cancellation.child_token();
+    let operation = network.request(input, upload_cancel.clone());
+    tokio::pin!(operation);
+    let timeout = tokio::select! {
+        biased;
+        _ = cancellation.cancelled() => false,
+        result = &mut operation => return result,
+        _ = tokio::time::sleep(duration) => true,
+    };
+    upload_cancel.cancel();
+    match operation.await {
+        Ok(response) => {
+            response.body.cancel();
+            response.body.close().await.map_err(|error| match error {
+                http::Error::CleanupUnconfirmed => ModelError::CleanupUnconfirmed,
+                other => ModelError::Adapter(other.to_string()),
+            })?;
+        }
+        Err(ModelError::Cancelled) => {}
+        Err(error) => return Err(error),
+    }
+    if timeout {
+        Err(interruption(
             decoder,
             ProviderFailureReason::TimedOut,
             ModelError::TimedOut.to_string(),
-        )
-    })
+        ))
+    } else {
+        Err(ModelError::Cancelled)
+    }
 }
 async fn emit(
     decoder: &mut Decoder,
     value: Value,
     sender: &Arc<dyn Events>,
+    cancellation: &CancellationToken,
 ) -> Result<(), ModelError> {
     for event in decoder.push(value).map_err(failure)? {
-        sender.emit(event.into()).await?;
+        tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => return Err(ModelError::Cancelled),
+            result = sender.emit(event.into()) => result?,
+        }
     }
     Ok(())
 }
 async fn run(
     request: ModelRequest,
-    sender: Arc<dyn Events>,
-    idle_timeout: Duration,
+    skip: usize,
+    context: Context,
     lane: Option<ResponsesLane>,
     transport: Arc<Shared>,
-    cancellation: CancellationToken,
-    network: Arc<dyn maka_agent_ports::model::Transport>,
 ) -> Result<(), ModelError> {
+    let Context {
+        events: sender,
+        cancellation,
+        idle_timeout,
+        transport: network,
+    } = context;
     let plaintext = match request.provider.kind {
         ProviderKind::OpenResponses(p) => Some(p),
         _ => None,
     };
-    let mut body = crate::request::Request {
-        language: request.language,
-        model: &request.provider.model,
-        prompt: &request.prompt,
-        tools: &request.tools,
-        options: &request.provider_options,
-        max_output_tokens: request.max_output_tokens,
-        plaintext,
-    }
-    .encode()
-    .map_err(failure)?;
-    if let Some(overlay) = &request.provider.body_overlay {
-        for (key, value) in overlay {
-            if body.get(key).is_some() {
-                return Err(ModelError::Adapter(format!(
-                    "Extra request body conflicts with a generated field: {key}"
-                )));
-            }
-            body[key] = value.clone();
-        }
-    }
+    let mut body = crate::body::NativeBody::new(&request, plaintext, skip).map_err(failure)?;
     let mut url = reqwest::Url::parse(&request.provider.base_url)
         .map_err(|_| ModelError::Adapter("invalid Responses endpoint".into()))?;
     url.set_path(&format!("{}/responses", url.path().trim_end_matches('/')));
@@ -152,10 +170,11 @@ async fn run(
                 .as_ref()
                 .is_none_or(|value| value.is_empty())
     }) {
-        let exchange = Exchange::new(lane, cancellation, network.clone(), transport);
+        let exchange = Exchange::new(lane, cancellation.clone(), network.clone(), transport);
         match wait(
             idle_timeout,
             &decoder,
+            &cancellation,
             exchange.start(url.to_string(), headers.clone(), body),
         )
         .await?
@@ -167,7 +186,7 @@ async fn run(
         })? {
             Some(full) => body = full,
             None => {
-                while let Some(frame) = wait(idle_timeout, &decoder, exchange.next())
+                while let Some(frame) = wait(idle_timeout, &decoder, &cancellation, exchange.next())
                     .await?
                     .map_err(|error| match error {
                         crate::Error::Interrupted(message) => {
@@ -180,24 +199,49 @@ async fn run(
                     let value = serde_json::from_str(&frame).map_err(|_| {
                         ModelError::Adapter("invalid Responses WebSocket JSON".into())
                     })?;
-                    emit(&mut decoder, value, &sender).await?;
+                    emit(&mut decoder, value, &sender, &cancellation).await?;
                 }
                 return decoder.end().map_err(failure);
             }
         }
     }
-    let response = wait(
-        idle_timeout,
-        &decoder,
-        network.request(http::Request {
+    let response = request_http(
+        network.as_ref(),
+        http::Request {
             method: http::Method::Post,
             url: url.to_string(),
             headers: headers.into_iter().collect(),
-            body: serde_json::to_vec(&body)
-                .map_err(|error| ModelError::Adapter(error.to_string()))?,
-        }),
+            body: body.http(),
+        },
+        &cancellation,
+        idle_timeout,
+        &decoder,
     )
-    .await??;
+    .await?;
+    let result = read_response(
+        &response,
+        &mut decoder,
+        &sender,
+        idle_timeout,
+        &cancellation,
+    )
+    .await;
+    // A provider may finish before it consumes the complete upload. All exits,
+    // including terminal SSE, rejection, timeout and cancellation, settle the
+    // response's upload lease before this adapter returns.
+    response.body.close().await.map_err(|error| match error {
+        http::Error::CleanupUnconfirmed => ModelError::CleanupUnconfirmed,
+        other => ModelError::Adapter(other.to_string()),
+    })?;
+    result
+}
+async fn read_response(
+    response: &http::Response,
+    decoder: &mut Decoder,
+    sender: &Arc<dyn Events>,
+    idle_timeout: Duration,
+    cancellation: &CancellationToken,
+) -> Result<(), ModelError> {
     let content_type = header(&response.head, "content-type");
     // Some Responses endpoints omit Content-Type even for a valid event
     // stream. The decoder still validates its frames and terminal outcome.
@@ -230,11 +274,18 @@ async fn run(
             None => ModelError::Adapter(format!("Responses HTTP {status}: error body interrupted")),
         };
         let mut bytes = Vec::new();
-        while let Some(chunk) = wait(idle_timeout, &decoder, response.body.next())
+        while let Some(chunk) = wait(idle_timeout, decoder, cancellation, response.body.next())
             .await
-            .map_err(|_| body_failure())?
+            .map_err(|error| {
+                if matches!(error, ModelError::Cancelled) {
+                    error
+                } else {
+                    body_failure()
+                }
+            })?
             .map_err(|error| match error {
                 http::Error::Denied => ModelError::Cancelled,
+                http::Error::CleanupUnconfirmed => ModelError::CleanupUnconfirmed,
                 _ => body_failure(),
             })?
         {
@@ -277,10 +328,12 @@ async fn run(
             response.head.status
         ))
     };
-    while let Some(chunk) = wait(idle_timeout, &decoder, response.body.next())
+    while let Some(chunk) = wait(idle_timeout, decoder, cancellation, response.body.next())
         .await
         .map_err(|error| {
-            if content_type.is_none() && !received_event {
+            if matches!(error, ModelError::Cancelled) {
+                error
+            } else if content_type.is_none() && !received_event {
                 missing_events()
             } else {
                 error
@@ -289,18 +342,19 @@ async fn run(
         .map_err(|error| match error {
             http::Error::Failed(_) if content_type.is_none() && !received_event => missing_events(),
             http::Error::Failed(_) => interruption(
-                &decoder,
+                decoder,
                 ProviderFailureReason::Network,
                 "Responses stream read failed",
             ),
             http::Error::Denied => ModelError::Cancelled,
+            http::Error::CleanupUnconfirmed => ModelError::CleanupUnconfirmed,
             other => ModelError::Adapter(other.to_string()),
         })?
     {
         for byte in chunk {
             if let Some(value) = sse.push(byte).map_err(failure)? {
                 received_event = true;
-                emit(&mut decoder, value, &sender).await?;
+                emit(decoder, value, sender, cancellation).await?;
                 if decoder.finished() {
                     return Ok(());
                 }
@@ -314,6 +368,7 @@ async fn run(
     }
     decoder.end().map_err(failure)
 }
+
 fn headers(request: &ModelRequest) -> Result<BTreeMap<String, String>, ModelError> {
     let mut headers = BTreeMap::from([
         ("content-type".into(), "application/json".into()),
@@ -355,6 +410,7 @@ fn context_overflow(code: &str) -> bool {
 fn failure(error: crate::Error) -> ModelError {
     use crate::Error;
     match error {
+        Error::CleanupUnconfirmed => ModelError::CleanupUnconfirmed,
         Error::Truncated {
             replay_safe,
             retained_output_safe,
@@ -404,4 +460,106 @@ fn header<'a>(head: &'a http::Head, name: &str) -> Option<&'a str> {
         .iter()
         .find(|(key, _)| key.eq_ignore_ascii_case(name))
         .and_then(|(_, value)| std::str::from_utf8(value).ok())
+}
+
+#[cfg(test)]
+mod upload_settlement_tests {
+    use super::*;
+    use futures_util::future::BoxFuture;
+    use maka_agent_ports::model::{Connect, Socket, Transport};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use tokio::sync::Notify;
+
+    #[derive(Default)]
+    struct Draining {
+        entered: Notify,
+        cancelled: Notify,
+        release: Notify,
+        settled: AtomicBool,
+        unknown: bool,
+    }
+    impl Transport for Draining {
+        fn identity(&self) -> u64 {
+            0
+        }
+        fn request(
+            &self,
+            input: http::Request,
+            cancellation: CancellationToken,
+        ) -> BoxFuture<'_, Result<http::Response, ModelError>> {
+            Box::pin(async move {
+                let _input = input;
+                self.entered.notify_one();
+                cancellation.cancelled().await;
+                self.cancelled.notify_one();
+                self.release.notified().await;
+                self.settled.store(true, Ordering::SeqCst);
+                Err(if self.unknown {
+                    ModelError::CleanupUnconfirmed
+                } else {
+                    ModelError::Cancelled
+                })
+            })
+        }
+        fn connect(&self, _: Connect) -> BoxFuture<'_, Result<Arc<dyn Socket>, ModelError>> {
+            Box::pin(async { Err(ModelError::Adapter("unused fixture transport".into())) })
+        }
+    }
+    #[tokio::test]
+    async fn cancellation_and_idle_timeout_wait_for_upload_settlement() {
+        for (timeout, unknown) in [(false, false), (true, false), (false, true), (true, true)] {
+            let network = Arc::new(Draining {
+                unknown,
+                ..Default::default()
+            });
+            let cancellation = CancellationToken::new();
+            let task_network = network.clone();
+            let task_cancel = cancellation.clone();
+            let task = tokio::spawn(async move {
+                let decoder = Decoder::new(None, &[]);
+                request_http(
+                    task_network.as_ref(),
+                    http::Request {
+                        method: http::Method::Post,
+                        url: "http://fixture.invalid".into(),
+                        headers: vec![],
+                        body: Default::default(),
+                    },
+                    &task_cancel,
+                    if timeout {
+                        Duration::from_millis(10)
+                    } else {
+                        Duration::from_secs(10)
+                    },
+                    &decoder,
+                )
+                .await
+            });
+            network.entered.notified().await;
+            if !timeout {
+                cancellation.cancel();
+            }
+            network.cancelled.notified().await;
+            assert!(
+                !task.is_finished(),
+                "the deadline must not discard an unsettled upload future"
+            );
+            assert!(!network.settled.load(Ordering::SeqCst));
+            network.release.notify_one();
+            let result = task.await.unwrap();
+            if unknown {
+                assert!(
+                    matches!(result, Err(ModelError::CleanupUnconfirmed)),
+                    "cancellation must not hide unconfirmed cleanup"
+                );
+            } else if timeout {
+                assert!(
+                    matches!(result, Err(ModelError::Provider(failure)) if failure.reason() == ProviderFailureReason::TimedOut)
+                );
+            } else {
+                assert!(matches!(result, Err(ModelError::Cancelled)));
+            }
+            assert!(network.settled.load(Ordering::SeqCst));
+        }
+    }
 }

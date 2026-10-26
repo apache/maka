@@ -145,6 +145,8 @@ mod tests {
 
     #[test]
     fn physical_leave_retires_old_mouse_events_without_losing_keyboard_or_paste() {
+        use termina::event as tm;
+
         let mut inbox = Inbox::default();
         inbox.push(key('a'));
         inbox.push(mouse(MouseEventKind::Down(MouseButton::Left)));
@@ -157,6 +159,47 @@ mod tests {
             inbox.pop_batch(),
             vec![key('a'), Event::Paste("你好 draft".into())]
         );
+
+        let activation = super::super::activation::Activation::default();
+        let mut reported = activation.subscribe();
+        assert!(!activation.foreground(), "startup has no focus evidence");
+        let pointer = |kind| {
+            termina::Event::SgrMouse(tm::SgrMouseEvent {
+                kind,
+                x: 1,
+                y: 1,
+                modifiers: tm::Modifiers::NONE,
+            })
+        };
+        let mut release = tm::KeyEvent::new(tm::KeyCode::Char('a'), tm::Modifiers::NONE);
+        release.kind = tm::KeyEventKind::Release;
+        for (event, expected) in [
+            (termina::Event::FocusIn, true),
+            (termina::Event::MouseLeave, true),
+            (termina::Event::FocusOut, false),
+            (pointer(tm::MouseEventKind::Moved), false),
+            (pointer(tm::MouseEventKind::ScrollDown), false),
+            (termina::Event::Key(release), false),
+            (
+                pointer(tm::MouseEventKind::Down(tm::MouseButton::Left)),
+                true,
+            ),
+            (termina::Event::FocusOut, false),
+            (
+                termina::Event::Key(tm::KeyEvent::new(
+                    tm::KeyCode::Char('a'),
+                    tm::Modifiers::NONE,
+                )),
+                true,
+            ),
+            (termina::Event::FocusOut, false),
+        ] {
+            activation.observe(&event);
+            // The getter revokes foreground before any queued UI callback.
+            assert_eq!(activation.foreground(), expected, "{event:?}");
+            assert_eq!(*reported.borrow_and_update(), expected, "{event:?}");
+        }
+        assert!(!reported.has_changed().unwrap());
     }
 
     #[test]

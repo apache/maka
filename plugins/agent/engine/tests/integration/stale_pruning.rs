@@ -17,6 +17,7 @@
  * under the License.
  */
 
+use crate::support::store::SessionFixture;
 use crate::support::{context as fixture, image_projection::identity};
 use maka_agent_facts::context::ModelPurpose;
 use maka_agent_facts::event::EventWrite;
@@ -27,14 +28,13 @@ use maka_agent_facts::event::RuntimeEvent;
 use maka_agent_facts::input::InvocationInput;
 use maka_agent_facts::tool_call::ToolCallIdentity;
 use maka_agent_facts::tool_output::ToolOutput;
-use maka_event_log::EventLog;
 use serde_json::{Value, json};
 use std::{sync::Arc, time::SystemTime};
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 
 // Closed canonical history written before pruning was enabled, not a derived view.
-async fn legacy(log: &EventLog, id: &str, repeats: usize) {
+async fn legacy(log: &SessionFixture, id: &str, repeats: usize) {
     let invocation = identity(id);
     let step = format!("step-{id}");
     let operation = format!("{step}:call-{id}");
@@ -84,7 +84,7 @@ async fn legacy(log: &EventLog, id: &str, repeats: usize) {
 async fn history_pruning_binds_post_coverage_first_pages_into_summary_after_reopen() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("events.sqlite");
-    let log = Arc::new(EventLog::open(&path).await.unwrap());
+    let log = Arc::new(SessionFixture::open(&path).await.unwrap());
     for id in ["one", "two", "three"] {
         legacy(&log, id, 1500).await;
     }
@@ -118,9 +118,10 @@ async fn history_pruning_binds_post_coverage_first_pages_into_summary_after_reop
         assert!(!request["messages"].to_string().contains("body-two-"));
         fixture::respond(&mut socket, "done", "stop").await;
     });
-    let worker = fixture::engine(log.clone());
+    let worker = fixture::engine();
     worker
         .run(
+            log.store(),
             fixture::input(&base, "compact", true),
             CancellationToken::new(),
         )
@@ -169,10 +170,11 @@ async fn history_pruning_binds_post_coverage_first_pages_into_summary_after_reop
     assert!(original.into_json().to_string().contains("body-one-"));
     drop(worker);
     Arc::try_unwrap(log).ok().unwrap().close().await.unwrap();
-    let log = Arc::new(EventLog::open(&path).await.unwrap());
-    let worker = fixture::engine(log);
+    let log = Arc::new(SessionFixture::open(&path).await.unwrap());
+    let worker = fixture::engine();
     worker
         .run(
+            log.store(),
             fixture::input(&base, "next", false),
             CancellationToken::new(),
         )
@@ -186,7 +188,7 @@ async fn history_pruning_binds_post_coverage_first_pages_into_summary_after_reop
 async fn small_first_page_does_not_starve_later_large_stale_result() {
     let directory = tempfile::tempdir().unwrap();
     let log = Arc::new(
-        EventLog::open(&directory.path().join("events.sqlite"))
+        SessionFixture::open(&directory.path().join("events.sqlite"))
             .await
             .unwrap(),
     );
@@ -207,9 +209,10 @@ async fn small_first_page_does_not_starve_later_large_stale_result() {
         assert!(messages.contains("body-large-"));
         fixture::respond(&mut socket, "done", "stop").await;
     });
-    let worker = fixture::engine(log.clone());
+    let worker = fixture::engine();
     worker
         .run(
+            log.store(),
             fixture::input(&base, "next", false),
             CancellationToken::new(),
         )

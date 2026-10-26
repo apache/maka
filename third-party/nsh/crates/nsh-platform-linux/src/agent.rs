@@ -6,7 +6,11 @@
 //! default priority, as input does: an idle source (`MainContext::invoke`)
 //! waits for a busy main loop (software rendering redrawing) to be idle.
 
-use std::{rc::Rc, sync::mpsc, time::Duration};
+use std::{
+    rc::Rc,
+    sync::mpsc,
+    time::{Duration, Instant},
+};
 
 use gtk4::{self as gtk, gdk, glib, prelude::*};
 use nsh_core::{
@@ -21,7 +25,7 @@ use crate::{input::Simulated, surface::Surface, synth};
 const MAIN: Duration = Duration::from_secs(10);
 /// A press's hold, as a quick click's.
 const CLICK: Duration = Duration::from_millis(60);
-/// A touchpad's scroll events, a display frame apart.
+/// A display frame, where the window's monitor tells none.
 const FRAME: Duration = Duration::from_millis(16);
 /// How far one scroll event moves at most, in points.
 const SCROLL_STEP: f32 = 20.0;
@@ -48,6 +52,21 @@ impl LinuxNative {
             let _ = tx.send(Surface::by_key(key).map(|surface| f(&surface)));
         });
         rx.recv_timeout(MAIN).ok().flatten()
+    }
+
+    /// A frame of the monitor showing the window: a touchpad sends its
+    /// scroll events at the display's rate.
+    fn frame(&self) -> Duration {
+        self.with_window(|_, window| {
+            let surface = window.surface()?;
+            let rate = WidgetExt::display(window)
+                .monitor_at_surface(&surface)?
+                .refresh_rate();
+            // Millihertz.
+            (rate > 0).then(|| Duration::from_secs_f64(1000.0 / rate as f64))
+        })
+        .flatten()
+        .unwrap_or(FRAME)
     }
 
     /// `f` with the surface's window on the main thread.
@@ -121,12 +140,16 @@ impl Native for LinuxNative {
     fn scroll(&self, at: Point<Points>, delta: Point<Points>) {
         let (x, y) = (at.x.0, at.y.0);
         let (dx, dy) = (delta.x.0, delta.y.0);
-        // A touchpad's smooth events, a frame apart, adding up to it.
+        // A touchpad's smooth events, a frame apart, adding up to it: on a
+        // schedule, so the main thread's hops do not slow them down.
         let n = (dx.abs().max(dy.abs()) / SCROLL_STEP).ceil().max(1.0) as u32;
+        let frame = self.frame();
+        let mut next = Instant::now();
         for _ in 0..n {
             let (sx, sy) = (dx / n as f32, dy / n as f32);
             self.on_main(move |s| crate::input::simulate(s, Simulated::Wheel(x, y, sx, sy)));
-            std::thread::sleep(FRAME);
+            next += frame;
+            std::thread::sleep(next.saturating_duration_since(Instant::now()));
         }
     }
 

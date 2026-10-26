@@ -20,9 +20,8 @@
 import { ProjectMcp } from './ProjectMcpConsent';
 import type { ProjectMcp as ProjectMcpOwner } from './projectMcp';
 import { tr } from './locale';
-import { cleanup, effect, Input, inputAction, signal, Text, View } from 'nsh';
+import { cleanup, effect, Input, inputAction, signal, Text, View, Image } from 'nsh';
 import type { JSX, YNode } from 'nsh';
-import { Image } from 'nsh/image';
 import { Button } from 'nsh/base';
 import { platform, windowSize } from 'nsh/device';
 import { keymap } from 'nsh/keymap';
@@ -34,9 +33,20 @@ import { QueueDock, type QueueSession } from './QueueDock';
 import { SessionPermissionsSelect } from './SessionPermissionsSelect';
 import type { SessionPermissions } from './sessionPermissions';
 import type { BackendIdentity, ModelDetails } from './modelSelection';
-import { C, bodyTextStyle, compact, controlStyle, shortcut } from './ui';
+import { C, bodyTextStyle, compact, controlStyle } from './ui';
 import { Icon } from './Icon';
+import { ComposerCompletion, createComposerCompletion } from './ComposerCompletion';
+import type { ComposerCommand } from './composerCommands';
 import logo from './assets/maka.png';
+
+// Match the skill invocation grammar; the surrounding whitespace is not part of the chip.
+const skillTokens = [
+  {
+    pattern: String.raw`(?:^|[\t-\r \u{00a0}\u{1680}\u{2000}-\u{200a}\u{2028}\u{2029}\u{202f}\u{205f}\u{3000}\u{feff}])(?P<token>/skill:[A-Za-z0-9._-]+)`,
+    style: { color: C.accent, backgroundColor: `${C.accent}20`, borderRadius: 4 },
+    atomic: true,
+  },
+];
 
 export type SendAction = {
   owner: string;
@@ -81,25 +91,43 @@ export type ComposerSession = {
 export function Composer(props: {
   session(): ComposerSession | null;
   attach(node: YNode): void;
-  commands(target: { sessionId: string | null }): void;
+  commands(): ComposerCommand[];
+  active(): boolean;
   models: JSX.Element;
   request: JSX.Element;
   stopAction(): () => void;
   chooseWorkspace(): void;
   settings(): void;
 }) {
+  const completion = createComposerCompletion({
+    session: props.session,
+    commands: props.commands,
+    active: props.active,
+  });
   const hero = () => props.session() === null || props.session()!.empty();
   const blocked = () => props.session()?.blockedReason() ?? '';
   const cannotSend = () =>
     props.session() === null ||
-    !!blocked() ||
-    (!props.session()?.draft().trim() && !props.session()?.attachments.files().length);
+    !props.session()?.editable() ||
+    (!completion.isCommand() &&
+      (!!blocked() ||
+        (!props.session()?.draft().trim() && !props.session()?.attachments.files().length)));
   const sendLabel = () =>
     props.session()?.invocation() != null ? tr('Queue message') : tr('Send message');
   const primaryStops = () => props.session()?.invocation() != null && cannotSend();
   let unbind = () => {};
   cleanup(() => unbind());
   const cardRoot = signal<YNode | null>(null);
+  effect(() => {
+    const owner = props.session();
+    const node = cardRoot();
+    if (node && props.active() && owner?.editable() && owner.invocation() === null && owner.draft())
+      return keymap.bind('ctrl+c', completion.clearDraft, {
+        when: 'always',
+        within: node,
+        fallback: true,
+      });
+  });
   effect(() => {
     const stop = props.stopAction();
     const node = cardRoot();
@@ -331,6 +359,7 @@ export function Composer(props: {
                       ref={(node) => {
                         editor = node;
                         props.attach(node);
+                        completion.attach(owner?.sessionId ?? null, node);
                       }}
                       testID="message"
                       accessibilityLabel={tr('Message composer')}
@@ -338,10 +367,22 @@ export function Composer(props: {
                       pointerEvents={owner ? 'auto' : 'none'}
                       multiline
                       submitBehavior="submit"
+                      tokens={skillTokens}
                       value={owner?.draft() ?? ''}
                       readonly={!owner?.editable()}
-                      onChange={owner?.changeDraft}
-                      onSubmit={owner?.submit}
+                      onChange={owner ? (text) => completion.change(owner, text) : undefined}
+                      onPaste={owner ? (event) => completion.paste(owner, event) : undefined}
+                      onFileDrop={owner ? (event) => completion.drop(owner, event) : undefined}
+                      onFocus={owner ? () => completion.pasteFocus(owner) : undefined}
+                      onBlur={owner ? () => completion.pasteBlur(owner) : undefined}
+                      onSelectionChange={
+                        owner ? (event) => completion.selection(owner, event) : undefined
+                      }
+                      onCaretMove={owner ? (event) => completion.caret(owner, event) : undefined}
+                      onCompositionChange={
+                        owner ? (event) => completion.composition(owner, event) : undefined
+                      }
+                      onSubmit={owner ? (event) => completion.submit(owner, event) : undefined}
                       placeholder={
                         owner ? tr('Message or run a task…') : tr('Choose a workspace to begin…')
                       }
@@ -363,11 +404,13 @@ export function Composer(props: {
             style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}
           >
             <Button
-              onPress={inputAction(props.commands, {
+              ref={completion.addButton}
+              onPress={inputAction(completion.toggleAdd, {
                 sessionId: props.session()?.sessionId ?? null,
               })}
-              accessibilityLabel={tr('Open commands')}
-              tooltip={shortcut(tr('Commands'), 'mod+p')}
+              accessibilityLabel={tr('Add to message')}
+              tooltip={tr('Add to message')}
+              disabled={!props.session()?.editable() || completion.composing()}
               style={{
                 width: 32,
                 height: 32,
@@ -381,29 +424,6 @@ export function Composer(props: {
             >
               <Icon name="plus" color={C.secondary} />
             </Button>
-            <If when={props.session() !== null}>
-              <Button
-                accessibilityLabel={tr('Attach files')}
-                tooltip={shortcut(tr('Attach files'), 'mod+u')}
-                disabled={props.session()!.attachments.restoring()}
-                onPress={inputAction(props.session()!.attachments.open, {
-                  owner: props.session()!.sessionId,
-                  value: !props.session()!.attachments.picker(),
-                })}
-                style={{
-                  width: 32,
-                  height: 32,
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  borderRadius: 16,
-                }}
-                hoverStyle={{ backgroundColor: C.line }}
-                focusStyle={{ backgroundColor: C.line }}
-                activeStyle={{ backgroundColor: C.surface }}
-              >
-                <Icon name="paperclip" color={C.secondary} />
-              </Button>
-            </If>
             <SessionPermissionsSelect owner={props.session()?.permissions ?? null} />
             <If when={props.session() !== null}>
               <View pointerEvents="box-none" style={{ flex: 1, minWidth: 0 }}>
@@ -421,7 +441,7 @@ export function Composer(props: {
                 primaryStops()
                   ? inputAction(props.session()!.stop, props.session()!.invocation())
                   : props.session()
-                    ? inputAction(props.session()!.sendRendered, {
+                    ? inputAction(completion.send, {
                         owner: props.session()!.sessionId,
                         text: props.session()!.draft(),
                         backend: props.session()!.backend(),
@@ -452,6 +472,7 @@ export function Composer(props: {
               />
             </Button>
           </View>
+          <ComposerCompletion state={completion} />
         </View>
         <View style={{ minHeight: 24, paddingTop: 8 }}>
           <If when={blocked()}>

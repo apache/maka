@@ -55,15 +55,14 @@ fn query() -> Query {
         cursor: None,
     }
 }
-async fn owner() -> maka_capabilities::call::Scope {
+fn owner() -> maka_capabilities::call::Scope {
     maka_capabilities::call::Issuer::default()
-        .admit(
+        .issue(
             maka_capabilities::call::Identity::Remote {
                 request_id: uuid::Uuid::new_v4(),
             },
             CancellationToken::new(),
         )
-        .await
         .unwrap()
 }
 
@@ -88,7 +87,7 @@ async fn catalog_paging_preserves_scope_archive_and_exact_wire_continuation() {
         &rollout("c", None, "Archived"),
         30_000,
     );
-    let owner = owner().await;
+    let owner = owner();
     let root = ReadRoot::open(directory.path()).await.unwrap();
     let view = root.bind_scope(&owner);
     let first = catalog::list(
@@ -277,7 +276,7 @@ async fn claude_catalog_uses_bounded_real_cwd_even_when_the_first_record_is_part
         nested.as_bytes(),
         20_000,
     );
-    let owner = owner().await;
+    let owner = owner();
     let root = ReadRoot::open(directory.path()).await.unwrap();
     let view = root.bind_scope(&owner);
     let all = catalog::list(&view, Format::ClaudeCode, query())

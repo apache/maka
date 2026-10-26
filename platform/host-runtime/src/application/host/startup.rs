@@ -146,7 +146,7 @@ async fn connect_target(executable: &Path, target: Target<'_>) -> Result<Client>
 
 pub struct Prepared {
     discovery: Discovery,
-    _startup: Option<Anchor>,
+    _startup: Anchor,
 }
 
 impl Prepared {
@@ -178,52 +178,25 @@ async fn prepare_target(
     if !executable.is_absolute() {
         return Err("local Host startup executable must be absolute".into());
     }
-    let mut startup = None;
-    let mut discovered = match discover(target.root(), namespaces).await {
-        Ok(discovered) => discovered,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            startup = Some(launch(executable, target).await?);
-            discover(target.root(), namespaces)
-                .await
-                .map_err(|error| error.to_string())?
-        }
-        Err(error) => return Err(error.to_string()),
-    };
+    // The launcher owns update and retirement policy even when a Host is live.
+    let (startup, ready) = launch(executable, target).await?;
+    let discovered = discover(target.root(), namespaces)
+        .await
+        .map_err(|error| error.to_string())?;
     check_selection(&discovered, target)?;
-    let stream = match ipc::connect(&discovered.endpoint).await {
-        Ok(stream) => stream,
-        Err(error)
-            if startup.is_none()
-                && error.downcast_ref::<std::io::Error>().is_some_and(|error| {
-                    matches!(
-                        error.kind(),
-                        std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
-                    )
-                }) =>
-        {
-            startup = Some(launch(executable, target).await?);
-            discovered = discover(target.root(), namespaces)
-                .await
-                .map_err(|error| error.to_string())?;
-            check_selection(&discovered, target)?;
-            ipc::connect(&discovered.endpoint)
-                .await
-                .map_err(|error| error.to_string())?
-        }
-        Err(error) => return Err(error.to_string()),
-    };
+    let stream = ipc::connect(&discovered.endpoint)
+        .await
+        .map_err(|error| error.to_string())?;
     let status = Client::status_stream(stream, Some(discovered.host_epoch)).await?;
     discovered
         .verify(&status)
         .map_err(|error| error.to_string())?;
-    if startup.as_ref().is_some_and(|(_, ready)| {
-        discovered.host_epoch != ready.epoch || discovered.root_id != ready.root_id
-    }) {
+    if discovered.host_epoch != ready.epoch || discovered.root_id != ready.root_id {
         return Err("local Host identity changed during startup".into());
     }
     Ok(Prepared {
         discovery: discovered,
-        _startup: startup.map(|(anchor, _)| anchor),
+        _startup: startup,
     })
 }
 

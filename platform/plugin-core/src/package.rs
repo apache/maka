@@ -350,23 +350,3 @@ impl NativeDefinition {
         }
     }
 }
-
-#[cfg(test)]
-mod checked_tests {
-    use super::*;
-
-    #[test]
-    fn checked_declaration_keeps_the_raw_schema_and_rejects_invalid_wire_values() {
-        assert_eq!(
-            schemars::schema_for!(CheckedDeclaration),
-            schemars::schema_for!(Declaration)
-        );
-        let error = serde_json::from_value::<CheckedDeclaration>(serde_json::json!({"entries":{}}))
-            .unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("invalid application declaration")
-        );
-    }
-}

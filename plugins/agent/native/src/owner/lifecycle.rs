@@ -52,7 +52,7 @@ impl Owner {
         }
         let Some(session) = self
             .store
-            .get_session::<SessionConfiguration>(&input.session_id)
+            .get_session::<StoredSessionConfiguration>(&input.session_id)
             .await
             .map_err(|_| "agent_session_unavailable")?
         else {
@@ -69,6 +69,9 @@ impl Owner {
         // Managed tasks retain their owner's lifecycle authority.
         if self
             .store
+            .session(&input.session_id)
+            .await
+            .map_err(|error| error.to_string())?
             .session_manager(&input.session_id)
             .await
             .map_err(|_| "agent_session_unavailable")?
@@ -81,6 +84,9 @@ impl Owner {
         if runs.controls.contains_key(&input.session_id)
             || !self
                 .store
+                .session(&input.session_id)
+                .await
+                .map_err(|error| error.to_string())?
                 .message_queue(&input.session_id)
                 .await
                 .map_err(|_| "agent_queue_unavailable")?
@@ -88,13 +94,19 @@ impl Owner {
                 .is_empty()
             || self.graph_selected(&input.session_id).await?
             || !matches!(
-                crate::service::summary(self, session).activity,
+                crate::service::summary(self, resolve_session(session)?).activity,
                 SessionActivity::Idle
             )
         {
             return Ok(SessionChanged::Rejected {
                 reason: Rejection::Busy,
             });
+        }
+        if matches!(input.action, SessionAction::Archive) {
+            self.titles
+                .cancel_and_wait(&input.session_id)
+                .await
+                .map_err(|_| "agent_session_change_unknown")?;
         }
         match input.action {
             SessionAction::Remove => {
@@ -120,7 +132,7 @@ impl Owner {
             SessionAction::Archive | SessionAction::Restore => {
                 match self
                     .store
-                    .change_session_archived::<SessionConfiguration>(
+                    .change_session_archived::<StoredSessionConfiguration>(
                         &input.session_id,
                         Some(input.expected_revision),
                         matches!(input.action, SessionAction::Archive),
@@ -129,7 +141,10 @@ impl Owner {
                     .await
                 {
                     Ok(SessionMutation::Committed(session)) => Ok(SessionChanged::Changed {
-                        session: Box::new(crate::service::summary(self, session)),
+                        session: Box::new(crate::service::summary(
+                            self,
+                            resolve_session(*session)?,
+                        )),
                     }),
                     Ok(SessionMutation::RevisionConflict { expected, actual }) => {
                         Ok(SessionChanged::RevisionConflict { expected, actual })
@@ -164,7 +179,12 @@ impl Owner {
                         _ = tokio::time::sleep(Duration::from_millis(200)) => continue,
                     }
                 }
-                owner.engine.release_session_state(&session);
+                if owner.engine.release_session_state(&session).is_err() {
+                    tokio::select! {
+                        _ = owner.stop.cancelled() => return,
+                        _ = tokio::time::sleep(Duration::from_secs(1)) => continue,
+                    }
+                }
                 // The original deletion fence is restart recovery. Never undo it
                 // or acknowledge cleanup if durable owners are still unsettled.
                 if matches!(

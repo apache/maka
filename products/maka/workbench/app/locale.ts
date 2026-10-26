@@ -18,6 +18,7 @@
  */
 
 import { signal } from 'nsh';
+import { composerMessages } from './locale-composer';
 import type { DisplayText, LanguagePreference } from '../../../../packages/plugin-sdk/src/index.js';
 import { createCopy, languageIndex, resolveLocale } from '../../../../plugins/shared/locale.js';
 import { host as nativeHost } from 'maka/host';
@@ -25,6 +26,7 @@ import { commonMessages } from './locale-common';
 import { conversationMessages } from './locale-conversation';
 import { settingsMessages } from './locale-settings';
 import { workspaceMessages } from './locale-workspace';
+import { recallMessages } from './locale-recall';
 
 const nativeLocale = nativeHost.systemLocale;
 const currentLocale = signal(resolveLocale('auto', nativeLocale));
@@ -32,8 +34,10 @@ let observedRevision = -1;
 const copy = createCopy({
   ...commonMessages,
   ...conversationMessages,
+  ...composerMessages,
   ...settingsMessages,
   ...workspaceMessages,
+  ...recallMessages,
 });
 export type MessageKey = keyof ReturnType<typeof copy>;
 

@@ -33,8 +33,8 @@ use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
 pub(crate) struct Catalog {
     pub tools: maka_tools::ToolCatalog,
-    pub definitions: Vec<ToolDefinition>,
-    pub bindings: BTreeMap<String, Option<String>>,
+    pub definitions: Arc<Vec<ToolDefinition>>,
+    pub bindings: Arc<BTreeMap<String, Option<String>>>,
     pub planning: Vec<String>,
 }
 struct Snapshot {
@@ -55,7 +55,7 @@ pub(crate) struct Projects {
     owner: String,
     global: Vec<ServerConfiguration>,
     global_names: BTreeMap<String, Vec<String>>,
-    store: Arc<maka_event_log::EventLog>,
+    store: Arc<maka_event_log::RootStore>,
     configuration: Arc<maka_config::ConfigurationStore>,
     snapshots: RwLock<BTreeMap<String, Arc<Snapshot>>>,
     opening: std::sync::Mutex<BTreeMap<String, std::sync::Weak<Mutex<()>>>>,
@@ -70,7 +70,7 @@ impl Projects {
         owner: String,
         global: Vec<ServerConfiguration>,
         global_names: BTreeMap<String, Vec<String>>,
-        store: Arc<maka_event_log::EventLog>,
+        store: Arc<maka_event_log::RootStore>,
         configuration: Arc<maka_config::ConfigurationStore>,
         workers: TaskTracker,
         stop: CancellationToken,
@@ -358,8 +358,8 @@ impl Projects {
                     Arc::new(Snapshot {
                         catalog: Arc::new(Catalog {
                             tools,
-                            definitions,
-                            bindings,
+                            definitions: Arc::new(definitions),
+                            bindings: Arc::new(bindings),
                             planning,
                         }),
                         servers,

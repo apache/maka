@@ -25,7 +25,7 @@ use futures_util::{
     FutureExt,
     future::{BoxFuture, join_all},
 };
-use maka_event_log::{EventLog, root::RootNamespaces};
+use maka_event_log::{root::RootNamespaces, root_store::RootStore};
 use maka_host_runtime::application::host::{
     Client,
     startup::{self, valid_root_id},
@@ -155,7 +155,7 @@ pub struct Connections {
     source: DeploymentRef,
     initial: Option<maka_event_log::applications::LoadedDeployment>,
     observations: Vec<RemoteObservation>,
-    store: Option<Arc<EventLog>>,
+    store: Option<Arc<RootStore>>,
     cohost_native: maka_host_runtime::application::NativeRegistry,
     cohost_scripts: Option<Arc<dyn maka_host_runtime::application::backend::Factory>>,
     namespaces: RootNamespaces,
@@ -171,7 +171,7 @@ impl Connections {
     /// Host starts. This phase has no Host process or database effects.
     #[allow(clippy::too_many_arguments)]
     pub async fn prepare(
-        store: Arc<EventLog>,
+        store: Arc<RootStore>,
         deployment: Uuid,
         target: PresentationTarget,
         configuration: Configuration,
@@ -201,7 +201,7 @@ impl Connections {
     /// Adopt one checked UI snapshot from the same live original Root owner.
     #[allow(clippy::too_many_arguments)]
     pub async fn prepare_loaded(
-        store: Arc<EventLog>,
+        store: Arc<RootStore>,
         loaded: maka_event_log::applications::LoadedDeployment,
         target: PresentationTarget,
         configuration: Configuration,
@@ -210,8 +210,8 @@ impl Connections {
         mut cohost_native: maka_host_runtime::application::NativeRegistry,
         cohost_scripts: Option<Arc<dyn maka_host_runtime::application::backend::Factory>>,
     ) -> Result<Self> {
-        loaded
-            .check_store(&store)
+        store
+            .check_application(&loaded)
             .map_err(|error| error.to_string())?;
         configuration.validate()?;
         let deployment = loaded.source().reference.deployment;
@@ -511,7 +511,7 @@ impl Connections {
     /// plan's enabled consumers, retaining only the explicitly live old sources.
     pub async fn approve_source(
         &mut self,
-        store: &EventLog,
+        store: &RootStore,
         source: DeploymentRef,
         retain: BTreeSet<u64>,
     ) -> Result<Vec<RemoteService>> {

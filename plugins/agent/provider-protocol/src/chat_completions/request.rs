@@ -202,6 +202,30 @@ fn canonical_namespace(namespace: &str) -> String {
     }
     canonical
 }
+/// Message projection settings, independent from tools and envelope fields.
+pub fn prompt_options(
+    namespace: &str,
+    provided: &Extensions,
+    multipart_tool_content: bool,
+) -> PromptOptions {
+    let canonical = canonical_namespace(namespace);
+    let metadata_namespace = if canonical != namespace
+        && provided
+            .as_ref()
+            .and_then(|provided| provided.get(&canonical))
+            .is_some_and(|value| !value.is_null())
+    {
+        canonical
+    } else {
+        namespace.to_owned()
+    };
+    PromptOptions {
+        provider_namespace: namespace.to_owned(),
+        metadata_namespace,
+        multipart_tool_content,
+    }
+}
+
 /// Selected provider extensions may override standard request fields. Keep that
 /// escape hatch at serialization, after typed sampling and format construction.
 #[derive(Serialize)]
@@ -226,7 +250,21 @@ struct Body {
     #[serde(skip_serializing_if = "Option::is_none")]
     response_format: Option<Value>,
 }
+/// Prepare the bounded request fields independently from the replayable prompt.
+/// The caller owns streaming `messages` after validating these fields.
+pub fn prepare_fields(request: Request<'_>, config: &Config) -> Result<Prepared> {
+    prepare_inner(request, config, false)
+}
+
 pub fn prepare(request: Request<'_>, config: &Config) -> Result<Prepared> {
+    prepare_inner(request, config, true)
+}
+
+fn prepare_inner(
+    request: Request<'_>,
+    config: &Config,
+    include_messages: bool,
+) -> Result<Prepared> {
     let namespace = &config.provider_namespace;
     let canonical = canonical_namespace(namespace);
     let provided = request.extensions.unwrap_or_default();
@@ -340,14 +378,20 @@ pub fn prepare(request: Request<'_>, config: &Config) -> Result<Prepared> {
     if let Some(verbosity) = options.text_verbosity {
         body["verbosity"] = json!(verbosity);
     }
-    body["messages"] = json!(messages(
-        request.messages,
-        &PromptOptions {
-            provider_namespace: namespace.clone(),
-            metadata_namespace: metadata_namespace.clone(),
-            multipart_tool_content: config.multipart_tool_content
-        }
-    )?);
+    // Extensions cannot replace the canonical prompt, including in streaming mode.
+    body.as_object_mut()
+        .expect("request fields")
+        .remove("messages");
+    if include_messages {
+        body["messages"] = json!(messages(
+            request.messages,
+            &PromptOptions {
+                provider_namespace: namespace.clone(),
+                metadata_namespace: metadata_namespace.clone(),
+                multipart_tool_content: config.multipart_tool_content
+            }
+        )?);
+    }
     let tools = prepare_tools(request.tools, request.tool_choice);
     warnings.extend(tools.warnings);
     if let Some(definitions) = tools.definitions {

@@ -61,7 +61,13 @@ impl EventLog {
         language: Language,
         quote: Option<maka_agent_facts::pricing::Quote>,
     ) -> Result<Uuid, StoreError> {
-        self.admit_auxiliary_model(source, None, language, quote)
+        match &source {
+            Source::Agent { invocation, .. } | Source::SessionTitle { invocation } => {
+                self.check_bound_session(&invocation.session_id)?
+            }
+            _ => {}
+        }
+        self.admit_auxiliary_model(source, None, language, quote, true)
             .await
     }
 
@@ -87,6 +93,34 @@ impl EventLog {
             Some((reference, binding, session_id)),
             language,
             quote,
+            true,
+        )
+        .await
+    }
+
+    /// RootStore supplies original dispatch custody and a live Session execution lease.
+    /// Source pending/once-only facts remain transactional in this operation journal.
+    pub(crate) async fn begin_bound_auxiliary_operation_model(
+        &self,
+        reference: RecoveryRef,
+        binding: ModelBinding,
+        session_id: String,
+        language: Language,
+        quote: Option<maka_agent_facts::pricing::Quote>,
+    ) -> Result<Uuid, StoreError> {
+        self.operation_domain(&reference)?;
+        let source = Source::ApplicationOperation {
+            source: reference.source.clone(),
+            namespace: reference.namespace.clone(),
+            operation: reference.operation,
+            fingerprint: reference.fingerprint.clone(),
+        };
+        self.admit_auxiliary_model(
+            source,
+            Some((reference, binding, session_id)),
+            language,
+            quote,
+            false,
         )
         .await
     }
@@ -97,16 +131,18 @@ impl EventLog {
         operation: Option<(RecoveryRef, ModelBinding, String)>,
         language: Language,
         quote: Option<maka_agent_facts::pricing::Quote>,
+        local_session: bool,
     ) -> Result<Uuid, StoreError> {
         self.validate_root()?;
-        let commits = self.commits.clone();
+        let expected_session = self.expected_session.clone();
+        let commits = self.commits.notice();
         self.connection
             .run(move |connection| {
                 Box::pin(async move {
                     let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
                     let (binding, session_id) = if let Some((reference, binding, session)) = operation {
                         crate::applications::operations::require_pending(&mut tx, &reference).await?;
-                        crate::sessions::removal::require_accepting(&mut tx, &session).await?;
+                        if local_session { crate::sessions::removal::require_accepting(&mut tx, &session).await?; }
                         let used: bool = sqlx::query_scalar(
                             "SELECT EXISTS(SELECT 1 FROM event_log WHERE kind='auxiliary_model_started'
                              AND json_extract(event_json, '$.source') = json(?))"
@@ -114,9 +150,15 @@ impl EventLog {
                         if used { return Err(invalid("Application operation already attempted its auxiliary model")); }
                         (binding, Some(session))
                     } else { binding(&mut tx, &source).await? };
+                    if let Some(expected) = expected_session.as_deref()
+                        && session_id.as_deref() != Some(expected)
+                    {
+                        return Err(invalid("foreign auxiliary Session"));
+                    }
                     if let Some(quote) = &quote {
                         quote.validate(&binding.model).map_err(invalid)?;
                     }
+                    let commits = commits.for_sessions(session_id.iter().map(String::as_str));
                     let record = Admission {
                         source,
                         language,
@@ -130,7 +172,7 @@ impl EventLog {
                         super::valuation::capture(&mut tx, &id.to_string(), quote).await?;
                     }
                     tx.commit().await.map_err(StoreError::CommitUnknown)?;
-                    commits.send_replace(sequence);
+                    commits.publish(sequence);
                     Ok(id)
                 })
             })
@@ -144,12 +186,14 @@ impl EventLog {
         usage: ModelUsage,
     ) -> Result<(), StoreError> {
         self.validate_root()?;
-        let commits = self.commits.clone();
+        let expected_session = self.expected_session.clone();
+        let commits = self.commits.notice();
         self.connection
             .run(move |connection| {
                 Box::pin(async move {
                     let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
-                    require_pending(&mut tx, id).await?;
+                    let session = require_pending(&mut tx, id, expected_session.as_deref()).await?;
+                    let commits = commits.for_sessions(session.iter().map(String::as_str));
                     super::valuation::value(&mut tx, &id.to_string(), &usage).await?;
                     let sequence = insert(
                         &mut tx,
@@ -162,7 +206,7 @@ impl EventLog {
                     )
                     .await?;
                     tx.commit().await.map_err(StoreError::CommitUnknown)?;
-                    commits.send_replace(sequence);
+                    commits.publish(sequence);
                     Ok(())
                 })
             })
@@ -175,15 +219,17 @@ impl EventLog {
         outcome: Outcome,
     ) -> Result<(), StoreError> {
         self.validate_root()?;
-        let commits = self.commits.clone();
+        let expected_session = self.expected_session.clone();
+        let commits = self.commits.notice();
         self.connection
             .run(move |connection| {
                 Box::pin(async move {
                     let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
-                    require_pending(&mut tx, id).await?;
+                    let session = require_pending(&mut tx, id, expected_session.as_deref()).await?;
+                    let commits = commits.for_sessions(session.iter().map(String::as_str));
                     let sequence = settle(&mut tx, id, outcome).await?;
                     tx.commit().await.map_err(StoreError::CommitUnknown)?;
-                    commits.send_replace(sequence);
+                    commits.publish(sequence);
                     Ok(())
                 })
             })
@@ -195,7 +241,7 @@ impl EventLog {
     pub async fn recover_auxiliary_models(&self) -> Result<(), StoreError> {
         self.validate_root()?;
         loop {
-            let commits = self.commits.clone();
+            let commits = self.commits.notice();
             let count = self.connection.run(move |connection| Box::pin(async move {
                 let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
                 let ids: Vec<String> = sqlx::query_scalar(
@@ -211,7 +257,7 @@ impl EventLog {
                         .map_err(|_| invalid("invalid auxiliary request identity"))?, Outcome::Unknown).await?);
                 }
                 tx.commit().await.map_err(StoreError::CommitUnknown)?;
-                if let Some(sequence) = last { commits.send_replace(sequence); }
+                if let Some(sequence) = last { commits.publish(sequence); }
                 Ok(ids.len())
             })).await?;
             if count < 128 {
@@ -317,17 +363,25 @@ async fn binding(
     }
 }
 
-async fn require_pending(connection: &mut SqliteConnection, id: Uuid) -> Result<(), StoreError> {
-    let pending: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM event_log WHERE event_id = ?1 AND kind = 'auxiliary_model_started')
+async fn require_pending(
+    connection: &mut SqliteConnection,
+    id: Uuid,
+    expected_session: Option<&str>,
+) -> Result<Option<String>, StoreError> {
+    // Membership and pending status are checked together, in the same transaction
+    // that observes/settles this private source admission.
+    let session: Option<Option<String>> = sqlx::query_scalar(
+        "SELECT json_extract(event_json, '$.session_id') FROM event_log
+         WHERE event_id = ?1 AND kind = 'auxiliary_model_started'
+         AND (?2 IS NULL OR json_extract(event_json, '$.session_id') = ?2)
          AND NOT EXISTS(SELECT 1 FROM event_log WHERE kind = 'auxiliary_model_settled'
-             AND json_extract(event_json, '$.request_id') = ?1)"
-    ).bind(id.to_string()).fetch_one(connection).await?;
-    if pending {
-        Ok(())
-    } else {
-        Err(invalid("auxiliary model request is not pending"))
-    }
+             AND json_extract(event_json, '$.request_id') = ?1)",
+    )
+    .bind(id.to_string())
+    .bind(expected_session)
+    .fetch_optional(connection)
+    .await?;
+    session.ok_or_else(|| invalid("auxiliary model request is not pending"))
 }
 
 async fn settle(
@@ -335,8 +389,8 @@ async fn settle(
     id: Uuid,
     outcome: Outcome,
 ) -> Result<u64, StoreError> {
-    insert(
-        connection,
+    let sequence = insert(
+        &mut *connection,
         Uuid::new_v4(),
         "auxiliary_model_settled",
         &Settlement {
@@ -345,7 +399,9 @@ async fn settle(
             completed_at: SystemTime::now(),
         },
     )
-    .await
+    .await?;
+    crate::root_store::usage_meter::settle_auxiliary(connection, id).await?;
+    Ok(sequence)
 }
 
 async fn insert(
@@ -362,17 +418,4 @@ async fn insert(
             .execute(connection)
             .await?;
     crate::sequence_number(inserted.last_insert_rowid())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn original_english_admission_keeps_canonical_bytes() {
-        let original = r#"{"source":{"kind":"host_effect","id":"00000000-0000-0000-0000-000000000001"},"binding":{"connection_id":"connection","connection_slug":"named","model":"chosen"},"session_id":null,"started_at":{"secs_since_epoch":1,"nanos_since_epoch":0}}"#;
-        let admission: Admission = serde_json::from_str(original).unwrap();
-        assert_eq!(admission.language, Language::En);
-        assert_eq!(serde_json::to_string(&admission).unwrap(), original);
-    }
 }

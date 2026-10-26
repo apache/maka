@@ -11,6 +11,9 @@
 //! them as they do a download's. The backends that cannot take the source
 //! itself (Android's Java loader, the browser's `<img>`) look the bytes up by
 //! URI in an [`InlineImages`].
+//!
+//! Downloaded images are kept on disk by a [`DiskCache`] (native backends:
+//! `cache.rs` has the policy and the format).
 
 use std::{
     fmt,
@@ -19,6 +22,11 @@ use std::{
 };
 
 use rustc_hash::FxHashMap;
+
+#[cfg(not(target_arch = "wasm32"))]
+mod cache;
+#[cfg(not(target_arch = "wasm32"))]
+pub use cache::{CacheHeaders, DEFAULT_DISK_CACHE_SIZE, DiskCache, Fetched, Lookup, Validators};
 
 type Bytes = dyn AsRef<[u8]> + Send + Sync;
 

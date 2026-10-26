@@ -14,9 +14,11 @@ import { host } from "nsh/host";
 
 ```ts
 const host: {
+  readonly params: { readonly [key: string]: unknown };
+  post(name: string, data?: unknown): void;
   available(): boolean;
   call(name: string, args?: unknown, options?: { timeout?: number }): Promise<unknown>;
-  on(event: string, listener: (payload: unknown) => void): { remove(): void };
+  on(event: string, listener: (payload: unknown) => void): (() => void) & { remove(): void };
 };
 ```
 
@@ -53,10 +55,10 @@ const quote = await host.call("quote.refresh", { symbol: "AAPL" }, { timeout: 50
 ## host.on
 
 ```ts
-on(event: string, listener: (payload: unknown) => void): { remove(): void };
+on(event: string, listener: (payload: unknown) => void): (() => void) & { remove(): void };
 ```
 
-宿主每发送一次 `event`，就以它的数据调用 `listener`，直到调用 `remove()`。宿主在应用启动前发送的事件会在应用启动后送达，应用顶层注册的监听器能收到；监听器注册之前发送的事件不会补发给它。应用启动时的状态用 `host.call` 读取，之后的变化用 `host.on` 跟进。
+平台事件中，宿主每发送一次 `event`，就以它的数据调用 `listener`，直到调用 `remove()`。宿主在应用启动前发送的事件会在应用启动后送达，应用顶层注册的监听器能收到；监听器注册之前发送的事件不会补发给它。应用启动时的状态用 `host.call` 读取，之后的变化用 `host.on` 跟进。
 
 ```ts
 const sub = host.on("loginChanged", (payload) => console.log(payload));
@@ -89,3 +91,68 @@ player.hostEvent("loginChanged", { signedIn: true });
 ```json
 { "web": { "host": "./host.js", "connect": ["api.example.com"] } }
 ```
+
+## host.params
+
+嵌入方在启动你的应用之前设置的参数，从你的代码第一行起就可以同步读取；没有设置时是 `{}`。应用运行期间它们保持不变：之后的请求以事件的形式到来。
+
+```tsx
+const conversation = host.params.conversation as string | undefined;
+mount(() => (conversation ? <Conversation id={conversation} /> : <Inbox />));
+```
+
+
+## 原生 SDK 通道
+
+原生 SDK 的 `send` 会保留尚未监听的事件，最多 256 条。最后一个监听器在接收过程中取消订阅时，其余事件仍按原顺序等待；重载停机期间发送的事件交给下一次加载的应用。`host.on` 返回的订阅既可作为清理函数调用，也提供 `remove()`。`host.post(name, data)` 向原生 SDK 的处理函数投递数据，处理函数可用 `isPost` 区分投递与调用。
+
+## 嵌入方的一侧
+
+每个视图为它加载的所有应用保留一条通道。在加载之前设置参数，随时在任意线程发送事件，按名称注册处理函数。调用和投递需要在 `capabilities.host` 中授权。处理函数回答一次，可以立即回答，也可以稍后回答；始终没有到来的回答会让调用失败。
+
+```rust tabs
+// 任一平台的 AppView（GPUI、macOS、Windows、Linux、iOS）：它的 HostChannel。
+use serde_json::json;
+
+let host = view.host();
+let mut params = serde_json::Map::new();
+params.insert("conversation".into(), json!("42"));
+host.set_params(params);
+// 在引擎线程运行：立即回答，或把调用移走，稍后在任意线程回答。
+host.handle("user.profile", |call| {
+    let id = call.data()["id"].clone();
+    call.resolve(json!({ "id": id, "name": "Ada" }));
+});
+host.send("conversation.open", json!({ "id": "43" })).unwrap();
+```
+
+```swift tabs
+appView.params = ["conversation": "42"]
+try appView.loadBundle(at: bundleURL)
+
+// 在主线程运行；返回回答，或抛出错误让调用失败。
+appView.handle("user.profile") { data in
+    let id = (data as? [String: Any])?["id"]
+    return ["id": id ?? NSNull(), "name": try await profiles.name(of: id)]
+}
+appView.handle("analytics") { data, _ in analytics.log(data) }
+appView.send("conversation.open", ["id": "43"])
+```
+
+```java tabs
+nsh.setParams(Map.of("conversation", "42"));
+nsh.loadAssetBundle("nsh");
+
+// 在 UI 线程运行；立即或稍后在任意线程回答。
+nsh.handle("user.profile", (data, reply) -> {
+    Object id = ((Map<?, ?>) data).get("id");
+    profiles.load(id, profile -> reply.resolve(Map.of("id", id, "name", profile.name)),
+            error -> reply.reject(error.getMessage()));
+});
+nsh.send("conversation.open", Map.of("id", "43"));
+```
+
+参见 [iOS 嵌入](../docs/ios.md#与应用通信)、[Android 嵌入](../docs/android.md#与应用通信) 和 [GPUI](../docs/gpui.md)。
+
+> [!NOTE]
+> 原生 SDK 的调用和投递与平台调用一样，需要 [`host` 能力](../docs/sandbox-and-capabilities.md#host)授权。Rust 应用直接通过嵌入方注册的函数调用其 Rust 代码（[`nativeModule`](./nsh-native.md#nativemodule) 和 Rust 导入）。

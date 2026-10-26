@@ -3,12 +3,16 @@
 //! phones and tablets have one too, a tablet's keyboard, a Chromebook's).
 //! The app's shortcuts (`nsh/keymap`) take it first, as the platforms'
 //! keymaps do: the newest binding of the keystroke that fires where the
-//! focus is reports `onKeyCommand`. Else the focused input takes the keys
-//! that edit it, and Escape goes back.
+//! focus is reports `onKeyCommand`. Else Tab moves the keyboard focus
+//! between the inputs and the views that take presses where the platform
+//! does (macOS, the web), Return and Space press the pressable it is on,
+//! the focused input takes the keys that edit it, and Escape goes back.
 
 use nsh_core::{
-    EventKind, EventPayload, PayloadValue, ROOT_ID,
+    EventKind, EventPayload, NodeId, PayloadValue, ROOT_ID,
     keymap::{Key, KeyMatch, Keystroke},
+    platform::Os,
+    tailwind::state::FOCUSED,
 };
 
 use super::Headless;
@@ -41,6 +45,21 @@ impl Headless {
         }
         let m = stroke.modifiers;
         let plain = !(m.ctrl || m.alt || m.cmd);
+        if stroke.key == Key::Tab && plain && self.tabs_to_pressables() {
+            self.tab(m.shift);
+            return self.done();
+        }
+        if let Some(view) = self.screen.key_focus()
+            && self.screen.focused().is_none()
+            && plain
+            && !m.shift
+            && matches!(stroke.key, Key::Enter | Key::Char(' '))
+        {
+            for kind in [EventKind::PressDown, EventKind::PressUp, EventKind::Press] {
+                self.send(view, kind, EventPayload::None);
+            }
+            return self.done();
+        }
         if let Some(input) = self.screen.focused() {
             match stroke.key {
                 Key::Enter if plain => self.return_key(input),
@@ -63,6 +82,62 @@ impl Headless {
         self.done()
     }
 
+    /// Whether Tab stops at views that take presses, as on macOS and the
+    /// web (the other platforms move it between fields only).
+    fn tabs_to_pressables(&self) -> bool {
+        matches!(self.environment.os, Os::MacOs | Os::Web)
+    }
+
+    /// Tab (`back`: Shift+Tab): the keyboard focus moves to the next stop
+    /// ([`crate::screen::Screen::tab_stops`]), around from the last.
+    fn tab(&mut self, back: bool) {
+        let stops = self.screen.tab_stops();
+        let current = self.screen.focused().or(self.screen.key_focus());
+        let at = current.and_then(|id| stops.iter().position(|s| *s == id));
+        let Some(next) = nsh_core::input::tab_stop(at, stops.len(), back, true) else {
+            return;
+        };
+        self.move_focus(Some(stops[next]));
+    }
+
+    /// Moves the keyboard focus to `to` (an input or a pressable), telling
+    /// the view it leaves and the one it reaches.
+    pub(super) fn move_focus(&mut self, to: Option<NodeId>) {
+        let from = self.screen.focused().or(self.screen.key_focus());
+        if from == to {
+            return;
+        }
+        self.screen.set_focused(None);
+        self.screen.set_key_focus(None);
+        if let Some(new) = to {
+            if self.screen.input(new).is_some() {
+                self.screen.set_focused(Some(new));
+            } else {
+                self.screen.set_key_focus(Some(new));
+            }
+        }
+        self.engine
+            .control()
+            .set_focus_path(self.screen.focus_path());
+        if let Some(old) = from {
+            self.set_focused_state(old, false);
+            self.send(old, EventKind::Blur, EventPayload::None);
+        }
+        if let Some(new) = to {
+            self.set_focused_state(new, true);
+            self.send(new, EventKind::Focus, EventPayload::None);
+        }
+    }
+
+    /// The pressable's `focus:` state, which follows the keyboard focus.
+    pub(super) fn set_focused_state(&mut self, id: NodeId, on: bool) {
+        if self.screen.input(id).is_none()
+            && let Some(states) = self.screen.set_state(id, FOCUSED, on)
+        {
+            self.engine.control().set_states(id, states);
+        }
+    }
+
     /// Backspace in input `id`: its last character goes.
     fn backspace(&mut self, id: nsh_core::NodeId) {
         self.key_press(id, "Backspace");
@@ -80,6 +155,7 @@ impl Headless {
         self.engine
             .control()
             .dispatch_event(id, EventKind::ChangeText, payload);
+        self.report_selection(id);
     }
 }
 

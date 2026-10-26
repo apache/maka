@@ -16,14 +16,14 @@ use gpui::{
 use markdown::mdast;
 
 use crate::{
-    ScrollableMask, Scrollbar, StyledExt, h_flex,
+    GlobalState, ScrollableMask, Scrollbar, StyledExt, h_flex,
     scrollable_mask::horizontal_scroll_area,
     text::{
         CodeBlockActionsFn, CodeBlockHighlighterFn, MarkdownExtensions, MarkdownNode,
         TableActionsFn,
         document::{NodeRenderOptions, PrevBlock, flow_position},
         inline::{
-            Inline, InlineHighlight, InlineState, combine_highlights, fade_highlights,
+            Inline, InlineHighlight, InlineState, code_insets, combine_highlights, fade_highlights,
             point_in_text_selection, text_runs, text_size_ranges,
         },
         inline_flow::{InlineFlow, InlineFlowItem, slice_ranges},
@@ -161,6 +161,10 @@ impl CustomBlockSelectionProjection {
         self.state
             .set_selection(custom_block_selection(self.bounds, start, end));
     }
+
+    pub(super) fn deselect(&self) {
+        self.state.set_selection(None);
+    }
 }
 
 fn custom_block_selection(
@@ -180,6 +184,77 @@ fn custom_block_selection(
     } else {
         BlockSelection::Empty
     })
+}
+
+/// A table cell, laid out as its content. Text painted inside it knows its
+/// cell, so a drag that starts in the cell selects only in that cell.
+struct TableCellElement(AnyElement, Option<gpui::WeakEntity<super::TextViewState>>);
+
+impl IntoElement for TableCellElement {
+    type Element = Self;
+
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl Element for TableCellElement {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
+        (self.0.request_layout(window, cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        // Prepaint runs for the whole window before any text paints, so the
+        // cell that holds the anchor is known to all text, in every view.
+        if let Some(view) = self.1.as_ref().and_then(gpui::WeakEntity::upgrade) {
+            view.read(cx)
+                .selection_adapter
+                .record_table_cell(bounds, cx);
+        }
+        GlobalState::global(cx).push_table_cell(bounds);
+        self.0.prepaint(window, cx);
+        GlobalState::global(cx).pop_table_cell();
+    }
+
+    fn paint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _: &mut (),
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        GlobalState::global(cx).push_table_cell(bounds);
+        self.0.paint(window, cx);
+        GlobalState::global(cx).pop_table_cell();
+    }
 }
 
 /// Observe the plugin's own bounds without changing its layout or listeners.
@@ -255,14 +330,15 @@ impl Element for CustomBlockElement {
             if state.preserve_inline_selection {
                 return self.state.selection();
             }
-            let (start, end) = state.selection_points(cx)?;
+            let (start, end) = state.painted_selection_points(cx)?;
             custom_block_selection(bounds, start, end)
         });
         self.state.set_selection(selection);
         if let Some(view) = &view {
             if view.read(cx).is_selectable() {
-                view.query(cx, |state, _| {
+                view.query(cx, |state, cx| {
                     state.selection_adapter.report_inline(
+                        GlobalState::global(cx).table_cell(),
                         hitbox,
                         vec![bounds],
                         None,
@@ -559,11 +635,18 @@ impl BlockNode {
                     for row in table.children.iter() {
                         let mut row_texts = vec![];
                         for cell in row.children.iter() {
-                            row_texts.push(match kind {
-                                BlockTextKind::All => cell.children.text(),
-                                // Source is handled above; only Selected reaches here.
-                                _ => cell.children.selected_text(),
-                            });
+                            match kind {
+                                BlockTextKind::All => row_texts.push(cell.children.text()),
+                                // Source is handled above; only Selected reaches
+                                // here. A cell with nothing selected adds nothing,
+                                // so a selection in one cell copies only its text.
+                                _ => {
+                                    let selected = cell.children.selected_text();
+                                    if !selected.is_empty() {
+                                        row_texts.push(selected);
+                                    }
+                                }
+                            }
                         }
                         if !row_texts.is_empty() {
                             block_text.push_str(&row_texts.join(" "));
@@ -986,6 +1069,8 @@ fn set_leaf_key(state: &mut Arc<Mutex<InlineState>>, key: u64) {
     *state = Arc::new(Mutex::new(InlineState {
         text,
         editor_key: Some(key),
+        hovered_link: None,
+        cleanup_senders: Vec::new(),
         ..Default::default()
     }));
 }
@@ -1272,18 +1357,22 @@ pub(crate) fn reconstruct_markdown(
 ///
 /// Cells emit their own selected source; rows are piped (`| a | b |`) and the
 /// delimiter/alignment row is inserted after the first row, so a selected
-/// table round-trips as a Markdown table. Returns an empty string when no cell
-/// is selected.
+/// table round-trips as a Markdown table. A selection in one cell (a drag that
+/// started in a cell stays in it) is that cell's source alone. Returns an empty
+/// string when no cell is selected.
 fn table_selected_source(table: &Table) -> String {
     let cell_source = |cell: &TableCell| cell.children.selected_source().replace('\n', " ");
 
-    let any_selected = table.children.iter().any(|row| {
-        row.children
-            .iter()
-            .any(|cell| !cell_source(cell).trim().is_empty())
-    });
-    if !any_selected {
-        return String::new();
+    let mut selected = table
+        .children
+        .iter()
+        .flat_map(|row| row.children.iter())
+        .map(cell_source)
+        .filter(|source| !source.trim().is_empty());
+    match (selected.next(), selected.next()) {
+        (None, _) => return String::new(),
+        (Some(only), None) => return only.trim().to_string(),
+        _ => {}
     }
 
     let mut lines: Vec<String> = Vec::new();
@@ -1598,7 +1687,9 @@ impl Paragraph {
                 let mut highlight = mark_highlight(style, node_cx, cx);
                 if let Some(link_mark) = style.link.clone() {
                     highlight.style.color = Some(node_cx.style.link());
-                    highlight.style.underline = Some(link_underline(&node_cx.style));
+                    if node_cx.style.is_link_underlined() {
+                        highlight.style.underline = Some(link_underline(&node_cx.style));
+                    }
                     links.push((inner_range.clone(), link_mark));
                 }
                 node_highlights.push((inner_range, highlight));
@@ -2713,11 +2804,21 @@ fn mark_highlight(mark: &TextMark, node_cx: &NodeContext, cx: &App) -> InlineHig
     let mut font_family = None;
     if mark.code {
         highlight = highlight.highlight(node_cx.style.inline_code_highlight());
+        let style = node_cx.style.inline_code_style();
+        highlight = highlight.highlight(HighlightStyle {
+            color: style.text.color,
+            font_weight: style.text.font_weight,
+            font_style: style.text.font_style,
+            underline: style.text.underline,
+            strikethrough: style.text.strikethrough,
+            ..Default::default()
+        });
         font_family = Some(
-            node_cx
-                .style
-                .code_font_family()
-                .cloned()
+            style
+                .text
+                .font_family
+                .clone()
+                .or_else(|| node_cx.style.code_font_family().cloned())
                 .unwrap_or_else(|| cx.theme().tokens.typography.mono.clone()),
         );
     }
@@ -2728,6 +2829,7 @@ fn mark_highlight(mark: &TextMark, node_cx: &NodeContext, cx: &App) -> InlineHig
         style: highlight,
         font_family,
         font_size_scale: mark.code.then_some(0.875),
+        code_style: mark.code.then(|| node_cx.style.inline_code_style().clone()),
     }
 }
 
@@ -2779,6 +2881,7 @@ impl Paragraph {
                 self.inline_flow_items(fade_key, fades, backgrounds, node_cx, cx),
             )
             .link_source(node_cx.link_source.clone())
+            .hover_underline(hover_link_underline(&node_cx.style))
             .editor_key(self.leaf_key())
             .into_any_element();
         }
@@ -2804,6 +2907,7 @@ impl Paragraph {
             }
             return Inline::new(self.state.clone(), links, highlights)
                 .link_source(node_cx.link_source.clone())
+                .hover_underline(hover_link_underline(&node_cx.style))
                 .element_id(leaf_element_id(fade_key))
                 .range_backgrounds(backgrounds)
                 .reveal(reveal)
@@ -2839,6 +2943,7 @@ impl Paragraph {
                             ),
                         )
                         .link_source(node_cx.link_source.clone())
+                        .hover_underline(hover_link_underline(&node_cx.style))
                         .range_backgrounds(slice_backgrounds(
                             backgrounds,
                             consumed,
@@ -2871,7 +2976,9 @@ impl Paragraph {
 
                     if let Some(mut link_mark) = style.link.clone() {
                         highlight.style.color = Some(node_cx.style.link());
-                        highlight.style.underline = Some(link_underline(&node_cx.style));
+                        if node_cx.style.is_link_underlined() {
+                            highlight.style.underline = Some(link_underline(&node_cx.style));
+                        }
 
                         link_mark =
                             node_cx.render_link(link_mark, consumed + inner_range.start, ordinal);
@@ -2897,6 +3004,7 @@ impl Paragraph {
             child_nodes.push(
                 Inline::new(self.state.clone(), links, highlights)
                     .link_source(node_cx.link_source.clone())
+                    .hover_underline(hover_link_underline(&node_cx.style))
                     .range_backgrounds(slice_backgrounds(backgrounds, consumed, text_end))
                     .reveal(node_cx.reveal_at(fade_key, consumed, text_end))
                     .into_any_element(),
@@ -2991,7 +3099,9 @@ impl Paragraph {
                     if let Some(link) = &mark.link {
                         object_link = Some(node_cx.render_link(link.clone(), node_ix, ordinal));
                         object_style.color = Some(node_cx.style.link());
-                        object_style.underline = Some(link_underline(&node_cx.style));
+                        if node_cx.style.is_link_underlined() {
+                            object_style.underline = Some(link_underline(&node_cx.style));
+                        }
                     }
                 }
                 let rendered_node = node.clone();
@@ -3060,7 +3170,9 @@ impl Paragraph {
 
                     if let Some(mut link_mark) = style.link.clone() {
                         highlight.style.color = Some(node_cx.style.link());
-                        highlight.style.underline = Some(link_underline(&node_cx.style));
+                        if node_cx.style.is_link_underlined() {
+                            highlight.style.underline = Some(link_underline(&node_cx.style));
+                        }
 
                         link_mark = node_cx.render_link(link_mark, node_ix, ordinal);
 
@@ -3113,6 +3225,12 @@ fn block_element_id(kind: &'static str, span: Option<Span>, ix: usize) -> Elemen
 /// document; the HTML parser records no spans, so its paragraphs share one.
 fn leaf_element_id(fade_key: Option<TextLeafKey>) -> ElementId {
     fade_key.map_or_else(|| ElementId::from("p"), ElementId::from)
+}
+
+fn hover_link_underline(style: &TextViewStyle) -> Option<gpui::UnderlineStyle> {
+    style
+        .is_link_underlined_on_hover()
+        .then(|| link_underline(style))
 }
 
 /// A link's underline: a hairline in a translucent link color, so a run of
@@ -3361,16 +3479,17 @@ fn measure_table_text_columns(
                     })
                     .collect::<Vec<_>>();
                 let mut line_w = gpui::Pixels::ZERO;
-                for (range, scale) in text_size_ranges(line.len(), &line_highlights) {
+                for (range, scale) in
+                    text_size_ranges(line.len(), &line_highlights, font_size, window.rem_size())
+                {
                     let highlights = slice_ranges(
                         &line_highlights,
                         range.start,
                         range.end,
                         |range, highlight| (range, highlight.clone()),
                     );
-                    if highlights.iter().any(|(_, h)| h.font_size_scale.is_some()) {
-                        line_w += px(crate::text::inline_flow::INLINE_CODE_PADDING * 2.);
-                    }
+                    let insets = code_insets(&highlights, font_size * scale, window.rem_size());
+                    line_w += insets.left + insets.right;
                     let runs = text_runs(range.len(), text_style, &highlights);
                     line_w += window
                         .text_system()
@@ -4053,19 +4172,23 @@ impl BlockNode {
                     cells.push(slack(lead).into_any_element());
                 }
                 cells.push(
-                    div()
-                        .flex_basis(px(0.))
-                        .flex_grow(CELL_GROW)
-                        .min_w(px(column.min))
-                        .max_w(px(column.max))
-                        .overflow_hidden()
-                        .when(align == ColumnumnAlign::Center, |this| this.text_center())
-                        .when(align == ColumnumnAlign::Right, |this| this.text_right())
-                        .px_3()
-                        .py(px(7.))
-                        .refine_style(&style.table_cell())
-                        .children(content)
-                        .into_any_element(),
+                    TableCellElement(
+                        div()
+                            .flex_basis(px(0.))
+                            .flex_grow(CELL_GROW)
+                            .min_w(px(column.min))
+                            .max_w(px(column.max))
+                            .overflow_hidden()
+                            .when(align == ColumnumnAlign::Center, |this| this.text_center())
+                            .when(align == ColumnumnAlign::Right, |this| this.text_right())
+                            .px_3()
+                            .py(px(7.))
+                            .refine_style(&style.table_cell())
+                            .children(content)
+                            .into_any_element(),
+                        node_cx.link_source.text_view().cloned(),
+                    )
+                    .into_any_element(),
                 );
                 if trail > 0. || !is_last_col {
                     cells.push(
@@ -5436,6 +5559,28 @@ mod tests {
             block.selected_text(SelectionFormat::Source),
             "| Name | Age |\n| :-- | --: |\n| Alice | 30 |\n"
         );
+    }
+
+    /// A drag that starts in a table cell stays in it, so the copy is the
+    /// cell's text alone: no pipes, no delimiter row, no other cells or rows.
+    #[test]
+    fn a_selection_in_one_table_cell_copies_only_that_cell() {
+        let table = table_of(
+            vec![
+                vec![plain_cell("Name"), plain_cell("Age")],
+                vec![
+                    TableCell {
+                        children: selected_paragraph("Alice"),
+                        width: None,
+                    },
+                    plain_cell("30"),
+                ],
+            ],
+            vec![ColumnumnAlign::Left, ColumnumnAlign::Right],
+        );
+        let block = BlockNode::Table(table);
+        assert_eq!(block.selected_text(SelectionFormat::Plain).trim(), "Alice");
+        assert_eq!(block.selected_text(SelectionFormat::Source), "Alice\n");
     }
 
     /// A cell holding plain text, as `Table::to_markdown` and

@@ -81,6 +81,7 @@ function NameField() {
 | `autoCapitalize` | `.auto_capitalize(AutoCapitalize::None)` | `"none" \| "sentences" \| "words" \| "characters"` | `"sentences"` | 自动大写。 |
 | `autoCorrect` | `.auto_correct(..)` | `boolean` | `true` | 系统自动更正。 |
 | `autoComplete` | `.auto_fill(AutoFill::OneTimeCode)` | `AutoComplete \| TextContentType` | | 输入框内容的类型，用于自动填充：`"username"`、`"current-password"`、`"new-password"`、`"one-time-code"`、`"email"`、`"tel"`、`"postal-code"`、`"cc-number"`、`"off"` 等。 |
+| `pasteBehavior` | `.paste_behavior(PasteBehavior::Report)` | `"insert" \| "report"` | `"insert"` | 粘贴做什么：`"insert"` 插入粘贴的文本，`"report"` 不插入任何内容，由应用处理 `onPaste` 报告的内容。图片和文件从不插入。 |
 | `submitBehavior` | `.submit_behavior(SubmitBehavior::Submit)` | `"submit" \| "blurAndSubmit" \| "newline"` | `"blurAndSubmit"`（单行），`"newline"`（多行） | 回车键做什么：`"submit"` 触发 `onSubmit` 并保持焦点，`"blurAndSubmit"` 提交后再失去焦点，`"newline"` 插入换行（多行；单行总是提交）。会提交的多行输入框在硬件键盘上仍可用 Shift+Return 或 Option / Alt+Return 换行。`"submit"` 让键盘保持弹出（例如连续发送多条消息）。 |
 | `autoFocus` | `.auto_focus(..)` | `boolean` | `false` | 出现时自动获得焦点。 |
 
@@ -139,6 +140,8 @@ input().auto_fill(AutoFill::OneTimeCode).keyboard_type(KeyboardType::Number)
 | `onSubmit` | `.on_submit(\|text: &str\| ..)` | `{ text }` | 在会提交的输入框中按下了回车键（单行，或 `submitBehavior` 为 `"submit"` / `"blurAndSubmit"`）。 |
 | `onFocus` / `onBlur` | `.on_focus` / `.on_blur` | 无 | 输入框获得 / 失去焦点。 |
 | `onSelectionChange` | `.on_selection_change(\|s: &Selection\| ..)` | `{ start, end }` | 光标或选区移动（UTF-16 单位）。 |
+| `onPaste` | `.on_paste(\|e: &PasteEvent\| ..)` | `{ text, files, uris }` | 用户粘贴了内容：文本、作为 `File` 的图片（如截图）、本地文件的 `file:` URL。在它插入的文本的 `onChange` 之前（[表单与键盘](../docs/forms-and-keyboard.md#粘贴图片和文件)）。 |
+| `onCaretMove` | `.on_caret_move(\|e: &CaretEvent\| ..)` | `{ bounds, pageBounds }` | 光标随选区移动，或因文本滚动、重新换行而移动：`bounds` 是它在输入框中的位置，`pageBounds` 是它在窗口中的位置，可作为 `Overlay` 的 `anchor`（[表单与键盘](../docs/forms-and-keyboard.md#光标位置)）。 |
 | `onKeyPress` | `.on_key_press(\|key: &str\| ..)` | `{ key }` | 文本变化之前：`key` 是输入的文本、`"Backspace"` 或 `"Enter"`。 |
 | `onContentSizeChange` | `.on_content_size_change(\|size: &Size<Points>\| ..)` | `{ width, height }` | 文本尺寸变化（多行时按输入框宽度计算），随输入报告；输入框为空时报告一行空行的尺寸，与占位文字无关。 |
 | `onCompositionChange` | `.on_composition_change(\|e: &Composition\| ..)` | `{ composing, text }` | 输入法的组字开始、变化或结束：`text` 是正在组的字（选字前的拼音、变换前的假名），结束时为 `""`。上屏的文本先经 `onChange` 报告，然后才报告结束。 |
@@ -199,6 +202,8 @@ let password!: YNode;
 
 ## 平台说明
 
+- 在 macOS 上，单行文字、提示文字和光标使用原生输入框一致的字体度量，在内容区域内一起垂直居中。
+  `lineHeight` 参与布局；多行编辑器同时用它控制段落行高。
 - [滚动视图](./scroll.md#键盘)中的输入框会在原生侧自动避开键盘。其他位置请使用 [`KeyboardAvoidingView`](./keyboard-avoiding-view.md)。
 - `disabled` 除了应用禁用样式，还会禁用输入框（不能获得焦点）；`readonly` 的输入框仍可获得焦点和选择文本。
 - `inputAccessoryViewID` 在 iOS 上生效，那里的键盘有附件栏。

@@ -58,15 +58,20 @@ fn destination_changed(surface: &Rc<Surface>, id: NodeId, enabled: bool) {
         None => {}
     }
     if !enabled {
-        let matches = surface
-            .file_drop
-            .target
-            .borrow()
-            .as_ref()
-            .is_some_and(|view| view.id() == id);
-        if matches {
-            set_target(surface, None);
-        }
+        invalidate(surface, id);
+    }
+}
+
+/// Ends the old destination's drag state without disabling future drops.
+pub(crate) fn invalidate(surface: &Surface, id: NodeId) {
+    let matches = surface
+        .file_drop
+        .target
+        .borrow()
+        .as_ref()
+        .is_some_and(|view| view.id() == id);
+    if matches {
+        set_target(surface, None);
     }
 }
 

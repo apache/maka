@@ -609,15 +609,14 @@ mod tests {
             preferences: Arc::new(Privacy::default()),
         }
     }
-    async fn scope() -> call::Scope {
+    fn scope() -> call::Scope {
         call::Issuer::default()
-            .admit(
+            .issue(
                 call::Identity::Remote {
                     request_id: Uuid::new_v4(),
                 },
                 CancellationToken::new(),
             )
-            .await
             .unwrap()
     }
 
@@ -627,7 +626,7 @@ mod tests {
         let history = Arc::new(History::default());
         let models = Arc::new(Models::default());
         let backend = recaps(store.clone(), history.clone(), models.clone());
-        let scope = scope().await;
+        let scope = scope();
         let id = Uuid::new_v4();
         let result = backend
             .generate(&scope, "session", id, Language::ZhCn)
@@ -696,7 +695,7 @@ mod tests {
         let models = Arc::new(Models::default());
         models.unknown.store(true, Ordering::SeqCst);
         let backend = recaps(store.clone(), history.clone(), models.clone());
-        let scope = scope().await;
+        let scope = scope();
         let id = Uuid::new_v4();
         assert!(matches!(
             backend
@@ -730,7 +729,7 @@ mod tests {
         let models = Arc::new(Models::default());
         models.wait.store(true, Ordering::SeqCst);
         let backend = Arc::new(recaps(store, history, models.clone()));
-        let parent = scope().await;
+        let parent = scope();
         let first = Uuid::new_v4();
         let worker = {
             let backend = backend.clone();
@@ -771,7 +770,7 @@ mod tests {
         let models = Arc::new(Models::default());
         models.incomplete.store(true, Ordering::SeqCst);
         let backend = recaps(store.clone(), history.clone(), models.clone());
-        let scope = scope().await;
+        let scope = scope();
         let id = Uuid::new_v4();
         let original = backend
             .generate(&scope, "session", id, Language::ZhTw)
@@ -815,7 +814,7 @@ mod tests {
         let models = Arc::new(Models::default());
         history.endless.store(true, Ordering::SeqCst);
         let mut backend = recaps(store.clone(), history.clone(), models.clone());
-        let parent = scope().await;
+        let parent = scope();
         assert!(matches!(
             backend
                 .generate(&parent, "session", Uuid::new_v4(), Language::En)
@@ -843,7 +842,7 @@ mod tests {
         let models = Arc::new(Models::default());
         models.wait.store(true, Ordering::SeqCst);
         let backend = Arc::new(recaps(store, history, models.clone()));
-        let parent = scope().await;
+        let parent = scope();
         let id = Uuid::new_v4();
         let worker = {
             let backend = backend.clone();
@@ -856,7 +855,7 @@ mod tests {
         parent.cancellation.cancel();
         assert!(matches!(worker.await.unwrap(), Err(Error::Unknown)));
         parent.finish().await.unwrap();
-        let current = scope().await;
+        let current = scope();
         assert!(
             matches!(backend.read(&current,"session").await.unwrap(),Some(Receipt::Pending{operation_id,..})if operation_id==id)
         );

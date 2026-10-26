@@ -23,7 +23,7 @@
 
 Builds model requests and streams responses through provider adapters. `ModelExecutor` manages requests, `Conversation` builds conversation input, and `reasoning` handles reasoning configuration. Provider credentials arrive through `AuthResolver`; the caller supplies authorized network and accounting context.
 
-Chat Completions compatible and Anthropic Messages use the pure Rust [protocol core](../provider-protocol/README.md). The native adapter retains shared input reservations through physical cleanup and output reservations through consumption. Its idle deadline covers network waits; waiting for local capacity is backpressure.
+Chat Completions compatible and Anthropic Messages use the pure Rust [protocol core](../provider-protocol/README.md). The native adapter releases request bodies after dispatch; an open stream holds no input-size admission quota. Queued output shares a 32 MiB byte window until consumed. One larger atomic event owns the whole window while its journal fragments drain, so this is backpressure rather than a response-size cap. The idle deadline covers network waits, excluding output backpressure.
 
 Canonical response items and text remain complete across HTTP, SSE, WebSocket and durable reconstruction. Chunking and bounded channels apply backpressure without a separate whole-response quota. Disposable continuation caches may be evicted; canonical history remains the recovery source. Request token selection, provider protocol validation and owned idle/cancellation cleanup stay separate from content retention.
 

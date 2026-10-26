@@ -167,9 +167,10 @@ const gpuiUpstreamFiles = new Set(
     'gpui-kit',
     'async-io',
     'gix-index',
+    'gix-discover',
     'sqlx-sqlite',
+    'reqwest',
     'image-webp',
-    'llrt-crypto',
     'termina',
     'nsh',
   ].flatMap((project) =>

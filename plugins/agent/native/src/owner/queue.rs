@@ -217,7 +217,12 @@ impl Owner {
             if self.stop.is_cancelled() {
                 return Ok(None);
             }
-            let queue = self.store.message_queue(session).await?;
+            let queue = self
+                .store
+                .session(session)
+                .await?
+                .message_queue(session)
+                .await?;
             let Some(entry) = queue
                 .entries
                 .iter()
@@ -272,7 +277,7 @@ impl Owner {
         entry: &PendingMessageAdmission,
         invocation: Invocation,
     ) -> Result<(PreparedRun, MessageBasis), String> {
-        let basis: MessageBasis = serde_json::from_value(entry.execution.basis.clone())
+        let mut basis: MessageBasis = serde_json::from_value(entry.execution.basis.clone())
             .map_err(|_| "agent_message_basis_invalid")?;
         self.validate_background(&basis).await?;
         self.validate_graph_basis(&invocation.session_id, &basis)
@@ -290,6 +295,13 @@ impl Owner {
         if tools_changed {
             return Err("agent_tools_changed".into());
         }
+        // Deserialization allocates independent descriptors. Only after the original
+        // content checks succeed may this admitted basis share the captured catalog.
+        if basis.executor.is_none() {
+            basis.tools = self.tool_basis.clone();
+            basis.internal_tools = selected_catalog.definitions.clone();
+            basis.internal_bindings = selected_catalog.bindings.clone();
+        }
         let session = self.session(&invocation.session_id).await?;
         basis.validate_background_target(&session)?;
         if (!matches!(basis.background_kind, BackgroundKind::Plan(_))
@@ -297,6 +309,7 @@ impl Owner {
             || (basis.collaboration_mode == CollaborationMode::Plan && !self.settings.plans)
             || session.archived
             || session.configuration.workspace != basis.workspace
+            || session.configuration.binding != basis.binding
             || session.configuration.tools != basis.allowed_tools
             || (basis.executor.is_some() && basis.allowed_tools.is_some())
         {
@@ -356,10 +369,11 @@ impl Owner {
         }
         let session = self
             .store
-            .get_session::<SessionConfiguration>(&invocation.session_id)
+            .get_session::<StoredSessionConfiguration>(&invocation.session_id)
             .await
             .map_err(|_| "agent_store_unavailable")?
             .ok_or("agent_session_unavailable")?;
+        let session = resolve_session(session)?;
         let permissions = &session.configuration.permissions;
         let mut configuration = InvocationConfiguration {
             language: basis.language,
@@ -380,6 +394,7 @@ impl Owner {
                 ApprovalPolicy::Never
             },
             boundary_revision: session.configuration.boundary_revision,
+            workspace_binding: Some(session.configuration.binding),
             collaboration_mode: basis.collaboration_mode,
             orchestration_mode: if let Some(epoch) = &basis.graph {
                 graph::behavior(epoch)
@@ -458,8 +473,26 @@ impl Owner {
         cancellation: CancellationToken,
     ) -> Result<RunningInvocation, RunError> {
         match input {
-            PreparedRun::Model(input) => self.engine.start(*input, cancellation).await,
-            PreparedRun::Executor(input) => self.engine.start_executor(*input, cancellation).await,
+            PreparedRun::Model(input) => {
+                self.engine
+                    .start(
+                        self.store.session(&input.invocation.session_id).await?,
+                        *input,
+                        cancellation,
+                    )
+                    .await
+            }
+            PreparedRun::Executor(input) => {
+                self.engine
+                    .start_executor(
+                        self.store
+                            .session(&input.request.invocation.session_id)
+                            .await?,
+                        *input,
+                        cancellation,
+                    )
+                    .await
+            }
         }
     }
     async fn fail_pending(
@@ -489,7 +522,11 @@ impl Owner {
         .map(|fact| EventWrite::plain(RuntimeEvent::new(invocation.clone(), fact)))
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| RunError::InvalidInput(error.to_string()))?;
-        self.store.append_batch(&events).await?;
+        self.store
+            .session(&invocation.session_id)
+            .await?
+            .append_batch(&events)
+            .await?;
         Ok(())
     }
     pub async fn stop_run(
@@ -517,11 +554,17 @@ impl Owner {
         loop {
             let revision = self
                 .store
+                .session(session)
+                .await
+                .map_err(|error| error.to_string())?
                 .message_queue_revision(session)
                 .await
                 .map_err(|_| "agent_queue_unavailable")?;
             match self
                 .store
+                .session(&command.session_id)
+                .await
+                .map_err(|error| error.to_string())?
                 .interrupt_message_queue(&command, revision, Some(&control.invocation))
                 .await
             {

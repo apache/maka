@@ -256,6 +256,7 @@ mod tests {
             protocol: None,
             synchronized: false,
             sixel_geometry: Default::default(),
+            ui_scale: 1.0,
         };
         let mut mapping = Mapping::default();
         let raw = |x, y| {
@@ -371,6 +372,7 @@ mod density_tests {
                 protocol: None,
                 synchronized: false,
                 sixel_geometry: Default::default(),
+                ui_scale: 1.0,
             };
             assert_eq!(caps.scale_factor(), f32::from(cell_height) / 16.0);
             assert_eq!(
@@ -406,6 +408,18 @@ mod density_tests {
             }
             assert!(caps.contains(position));
             assert!(!caps.contains(point(px(640.0), px(0.0))));
+            let zoomed = Capabilities {
+                ui_scale: 1.25,
+                ..caps
+            };
+            assert_eq!(
+                zoomed.logical_viewport(),
+                Some(gpui::size(px(512.0), px(512.0)))
+            );
+            assert_eq!(
+                mouse_position(&event(3, 4), zoomed),
+                Some(point(px(16.0), px(44.8)))
+            );
         }
     }
 }

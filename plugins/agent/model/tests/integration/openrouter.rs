@@ -62,18 +62,17 @@ async fn run(protocol: &str, kind: ProviderKind) {
             "Call echo with token amber-native-42 exactly once, then report its result. Do not answer without calling echo.",
         )];
         for turn in 0..2 {
+            let mut input = ModelRequest {
+                language: maka_agent_facts::language::Language::En,
+                provider: provider.clone(),
+                prompt: prompt.clone().into(),
+                tools: tools.clone(),
+                provider_options: options.clone(),
+                max_output_tokens: Some(4096),
+            };
+            let reads = super::provider_stream::prepare_input(&mut input);
             let mut stream = executor
-                .stream(
-                    ModelRequest {
-                        language: maka_agent_facts::language::Language::En,
-                        provider: provider.clone(),
-                        prompt: prompt.clone(),
-                        tools: tools.clone(),
-                        provider_options: options.clone(),
-                        max_output_tokens: Some(4096),
-                    },
-                    CancellationToken::new(),
-                )
+                .stream(input, CancellationToken::new())
                 .await
                 .unwrap();
             let mut builder = StepBuilder::default();
@@ -91,6 +90,7 @@ async fn run(protocol: &str, kind: ProviderKind) {
                 .cancel_and_wait()
                 .await
                 .expect("actual stream cleanup");
+            reads.assert_wire_only();
             assert!(
                 step.usage.input_tokens.is_some(),
                 "{protocol}: missing input usage"
@@ -172,7 +172,7 @@ async fn run(protocol: &str, kind: ProviderKind) {
             }
         }
         println!(
-            "OpenRouter {protocol} {model}: native tool call, canonical replay, final text, usage and cleanup passed"
+            "OpenRouter {protocol} {model}: prepared-wire tool call, canonical replay, final text, usage, zero semantic reads and cleanup passed"
         );
     }
 }
@@ -238,7 +238,8 @@ async fn vision(protocol: &str, kind: ProviderKind) {
             },
         ],
         provider_options: None,
-    }];
+    }].into();
+    let reads = super::provider_stream::prepare_input(&mut input);
     let executor = ModelExecutor::new(Duration::from_secs(120)).unwrap();
     let mut stream = executor
         .stream(input, CancellationToken::new())
@@ -255,6 +256,7 @@ async fn vision(protocol: &str, kind: ProviderKind) {
             .unwrap();
     }
     stream.cancel_and_wait().await.unwrap();
+    reads.assert_wire_only();
     let step = builder.finish().unwrap();
     let text = step
         .parts
@@ -274,7 +276,7 @@ async fn vision(protocol: &str, kind: ProviderKind) {
     );
     assert!(step.usage.input_tokens.is_some() && step.usage.output_tokens.is_some());
     println!(
-        "OpenRouter {protocol} {model}: inline PNG, color recognition, usage and cleanup passed"
+        "OpenRouter {protocol} {model}: prepared-wire inline PNG, color recognition, usage, zero semantic reads and cleanup passed"
     );
 }
 

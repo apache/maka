@@ -36,7 +36,13 @@ async fn bundle_checkpoint_requires_its_atomic_terminal_even_with_a_valid_transf
     end(&log, "old").await;
     open(&log, "compact", true).await;
     let source = log
-        .prepare_context_compaction("session", Some("compact"), &CheckpointMode::Standalone)
+        .capture_compaction_context(
+            "session",
+            Some("compact"),
+            &CheckpointMode::Standalone,
+            100_000,
+            64 * 1024 * 1024,
+        )
         .await
         .unwrap();
     let pair = summary_pair(&log, "compact", &source).await;

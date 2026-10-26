@@ -85,11 +85,13 @@ mount(() => <Text>{{shown()}}</Text>);
         ui_sets: Vec::new(),
         runtime: None,
         data_dir: data,
+        cache: nsh_engine::CacheOptions::off(),
         storage: None,
         clock: Default::default(),
         context: Default::default(),
         pinned: Default::default(),
         clipboard: None,
+        host: Default::default(),
         picker: None,
     };
     (
@@ -645,11 +647,13 @@ mount(() => <Text>{shown}</Text>);
         ui_sets: Vec::new(),
         runtime: None,
         data_dir: Some(root.clone()),
+        cache: nsh_engine::CacheOptions::off(),
         storage: None,
         clock: Default::default(),
         context: Default::default(),
         pinned: Default::default(),
         clipboard: None,
+        host: Default::default(),
         picker: None,
     };
     let _engine = Engine::start(config, || ApproxTextEngine, ChannelSink(tx)).unwrap();

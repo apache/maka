@@ -181,6 +181,7 @@ In Rust, each prop is a method of `input()` named in snake case (`.placeholder(.
 | `readonly` | `boolean` | `false` | The user can select and copy the text but not change it. |
 | `autoFocus` | `boolean` | `false` | Focused when it appears. |
 | `submitBehavior` | `"submit" \| "blurAndSubmit" \| "newline"` | single line `"blurAndSubmit"`, multiline `"newline"` | What return does: submit and keep the focus, submit and unfocus, or insert a line break (multiline only). |
+| `pasteBehavior` | `"insert" \| "report"` | `"insert"` | What a paste does: insert its text, or nothing ([pasting](#pasting-images-and-files)). |
 | `caret` | `boolean` | `true` | The caret is drawn; `false` hides it. |
 | `ios={{ keyboardAppearance }}` | `"default" \| "light" \| "dark"` | `"default"` | The keyboard's look (iOS). |
 | `selectedRange` | `{ start: number; end?: number }` | | The controlled selection, in UTF-16 units. |
@@ -197,6 +198,8 @@ Events:
 | `onSubmit` | `{ text }` | The return key was pressed in an input that submits (single line, or `submitBehavior` `"submit"` / `"blurAndSubmit"`). |
 | `onFocus` / `onBlur` | | The input gained / lost focus. |
 | `onSelectionChange` | `{ start, end }` | The caret or selection moved (UTF-16 units). |
+| `onPaste` | `{ text, files, uris }` | The user pasted: text, images as `File`s, local files' URLs ([pasting](#pasting-images-and-files)). |
+| `onCaretMove` | `{ bounds, pageBounds }` | The caret moved: where it is in the input and in the window ([the caret](#the-caret)). |
 | `onKeyPress` | `{ key }` | Before the text changes: `key` is the typed text, `"Backspace"` or `"Enter"`. |
 | `onContentSizeChange` | `{ width, height }` | The text's size changed (at the input's width when multiline), as it is typed; an empty input reports one empty line, whatever its placeholder. |
 | `onCompositionChange` | `{ composing, text }` | An input method's composition started, changed or ended (see [Input methods](#input-methods)). |
@@ -423,6 +426,129 @@ const selection = signal<{ start: number; end?: number } | undefined>(undefined)
 <View onPress={() => selection.set({ start: 0, end: text().length })}><Text>Select all</Text></View>
 ```
 
+## The caret
+
+The caret event (`.on_caret_move(..)`, TSX `onCaretMove`) says where the caret is, so that what belongs at the
+caret can open there: suggestions for an `@` mention, a slash command's menu, an emoji picker. `bounds` is a `Bounds`
+in the input (`origin` and `size`, the input's padding and scrolling applied), as wide as the platform draws the
+caret and as tall as its line; `pageBounds` is the same box in the window (or the dialog the input is in), which an
+overlay takes as its `anchor`. The event comes while the input has the focus, whenever the caret moves: with the
+selection, and when the input's text scrolls or wraps onto other lines. In Rust an overlay is placed against a box
+with `.anchor_bounds(..)`.
+
+```rust tabs
+let draft = signal(String::new());
+let end = signal(0u32);
+let caret = signal(None::<Bounds<Points>>);
+
+view()
+    .child(
+        input()
+            .multiline(true)
+            .value(move || draft.get())
+            .on_change(move |t: &str| draft.set(t.to_owned()))
+            .on_selection_change(move |s: &Selection| end.set(s.end))
+            .on_caret_move(move |e: &CaretEvent| {
+                // Suggestions while the word before the caret starts with "@".
+                let typed = draft.with(|t| utf16_slice(t, 0, end.get()));
+                let word = typed.rsplit(char::is_whitespace).next().unwrap_or("");
+                caret.set(word.starts_with('@').then_some(e.page_bounds));
+            })
+            .p_2(),
+    )
+    .child(when(
+        move || caret.get().is_some(),
+        move || {
+            overlay()
+                .anchor_bounds(move || caret.get().unwrap_or_default())
+                .placement(Placement::Bottom)
+                .align(Align::Start)
+                .offset(px(4.0))
+                .child(text("@ada"))
+                .child(text("@grace"))
+        },
+    ))
+```
+
+```tsx tabs
+import { type Bounds, Input, Overlay, Text, View, signal } from "nsh";
+
+const draft = signal("");
+const end = signal(0);
+const caret = signal<Bounds | null>(null);
+
+<View>
+  <Input
+    multiline
+    value={draft()}
+    onChange={(t) => draft.set(t)}
+    onSelectionChange={(e) => end.set(e.end)}
+    onCaretMove={(e) => {
+      // Suggestions while the word before the caret starts with "@".
+      const word = draft().slice(0, end()).split(/\s/).pop() ?? "";
+      caret.set(word.startsWith("@") ? e.pageBounds : null);
+    }}
+    class="p-2"
+  />
+  <If when={caret()}>
+    <Overlay anchor={caret()} placement="bottom" align="start" offset={4}>
+      <Text>@ada</Text>
+      <Text>@grace</Text>
+    </Overlay>
+  </If>
+</View>;
+```
+
+`pageBounds` is where the caret was when the event came: a page that scrolls under the input moves the input but
+sends no event, so close the suggestions when it scrolls, or anchor them to the input itself.
+
+## Pasting images and files
+
+The paste event (`.on_paste(..)`, TSX `onPaste`) tells what the user pasted, from the keyboard's shortcut, a menu's
+Paste or a keyboard's image: `text`, `files` and `uris`. `files` are what the clipboard held as data, such as a
+screenshot or an image copied from a page or another app: `File`s whose bytes the app can upload or show, named
+`image.png` (or the type it is). `uris` are the `file:` URLs of files copied in a file manager, as a file drop's.
+The platform reads the clipboard as the user pastes, and only then.
+
+The input inserts the pasted text by itself, as it always does: the event comes before the `onChange` of that text.
+Images and files are never inserted, since an input holds text. With `pasteBehavior` `"report"` the input inserts
+nothing, and the app decides what a paste does: send a long text as an attachment, or insert a cleaned-up version.
+The input decides at once, from the prop, because the system asks it on the spot.
+
+```rust tabs
+let attachments = signal(Vec::<PastedFile>::new());
+
+input()
+    .multiline(true)
+    .placeholder("Message")
+    .on_paste(move |e: &PasteEvent| {
+        // A screenshot pasted into the message goes along as an image.
+        attachments.update(|a| a.extend(e.files.iter().cloned()));
+    })
+    .p_2()
+```
+
+```tsx tabs
+import { Input, signal } from "nsh";
+
+const attachments = signal<File[]>([]);
+
+<Input
+  multiline
+  placeholder="Message"
+  onPaste={(e) => {
+    // A screenshot pasted into the message goes along as an image.
+    attachments.update((a) => [...a, ...e.files]);
+  }}
+  class="p-2"
+/>;
+```
+
+Upload a pasted file as any `File`, with `fetch` and `FormData` (`form.append("image", file)`); its bytes stay
+native until they are sent. On Android, keyboards that insert images (GIFs, stickers) report them the same way. On
+Linux the clipboard is read asynchronously, so the event may come after the `onChange` of the text it inserts.
+Masked inputs on macOS keep AppKit's own paste and report nothing.
+
 ## Multiline inputs that grow
 
 A multiline input (`.multiline(true)`, TSX `multiline`) scrolls its text inside its own height. To grow it with its content, feed the content size event's height (`.on_content_size_change(..)`, TSX `onContentSizeChange`) back into its style, with a limit:
@@ -575,7 +701,7 @@ It assumes it reaches the bottom of the surface, as a screen's content does. On 
 
 ### The keyboard accessor
 
-`keyboard_height()` and `keyboard_duration()` in Rust, and `keyboardFrame()` from `nsh/base` in TSX (a `{ height, duration }`), are reactive: how far the keyboard reaches into the surface (0 when hidden; the bottom safe area under it included) and its animation's duration in seconds. Read them for anything custom: hide a floating button while typing, or size a panel.
+`keyboard_height()` and `keyboard_duration()` in Rust, and `keyboardFrame()` from `nsh/base` in TSX (a `{ height, duration }`), are reactive: how far the keyboard reaches into the surface (0 when hidden; the bottom safe area under it included) and its animation's duration in seconds. Read them for anything custom: hide a floating button while typing, or size a panel. A layout that changes with them moves with the keyboard when it animates on the keyboard's curve: `LayoutAnimation.configureNext({ duration: keyboardFrame().duration * 1000, update: { type: "keyboard" } })` (Rust: `LayoutCurve::Keyboard`), as `KeyboardAvoidingView` does.
 
 ```rust tabs
 view().child(when(

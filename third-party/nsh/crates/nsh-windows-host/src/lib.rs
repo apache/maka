@@ -5,6 +5,8 @@
 //! - `nsh-windows-host --bundle <path> [--trace]` runs a built bundle (`.nshc`
 //!   is QuickJS bytecode, anything else JS source).
 //!
+//! - `--fps` logs the performance monitor's readings once a second (frame
+//!   rate, frame phases, commits, CPU and memory; target `nsh::perf`).
 //! - `--window-size 390x844` sets the window size in points (default 1200x800,
 //!   wide enough for desktop layouts such as the gallery's sidebar).
 //! - `--data-dir <dir>` keeps the apps' data there instead of the system's
@@ -56,6 +58,7 @@ pub fn main() -> std::process::ExitCode {
                 source = Some(AppSource::Bundle(bundle));
             }
             "--trace" => options.trace = true,
+            "--fps" => options.fps = true,
             "--app-id" => {
                 if let Some(id) = args.next().filter(|id| !id.is_empty()) {
                     options.app_id = id;
@@ -63,7 +66,15 @@ pub fn main() -> std::process::ExitCode {
             }
             // Where apps keep their data (`nsh test --target` gives each app
             // a fresh one); the system's data directory otherwise.
-            "--data-dir" => options.data_dir = args.next().map(PathBuf::from),
+            "--data-dir" => {
+                options.data_dir = args.next().map(PathBuf::from);
+                // Its caches too (downloaded images): a test's app starts with none.
+                if let Some(dir) = &options.data_dir {
+                    options.cache = nsh_engine::CacheOptions::at(nsh_engine::CacheLocation::Dir(
+                        dir.join("cache"),
+                    ));
+                }
+            }
             "--window-size" => match args.next().as_deref().and_then(parse_size) {
                 Some(size) => options.size = size,
                 None => log::warn!("--window-size takes <width>x<height> in points, as 390x844"),

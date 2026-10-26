@@ -5,28 +5,35 @@
 //! rest arrives. Only the last block is touched: the blocks before it are
 //! complete.
 
+#[cfg(test)]
 use std::borrow::Cow;
 
 use super::container::{fence_closes, fence_opens, strip_containers};
+use super::mapped::Source;
 
 /// `source` with the syntax its last block leaves open closed.
+#[cfg(test)]
 pub(crate) fn repair_streaming(source: &str) -> Cow<'_, str> {
-    let Some(tail_start) = last_block(source) else {
-        return Cow::Borrowed(source);
-    };
-    let tail = &source[tail_start..];
-    if tail.trim().is_empty() {
-        return Cow::Borrowed(source);
-    }
-    let repaired = match table(tail) {
-        Some(table) => table,
-        None => inline(tail),
-    };
-    if repaired == tail {
+    let repaired = repair_mapped(Source::original(source));
+    if &*repaired == source {
         Cow::Borrowed(source)
     } else {
-        Cow::Owned(format!("{}{repaired}", &source[..tail_start]))
+        Cow::Owned(repaired.to_string())
     }
+}
+
+pub(super) fn repair_mapped(source: Source) -> Source {
+    let Some(tail_start) = last_block(&source) else {
+        return source;
+    };
+    let tail = source.slice(tail_start..source.len());
+    if tail.trim().is_empty() {
+        return source;
+    }
+    let repaired = table(&tail).unwrap_or_else(|| inline(&tail));
+    let mut out = source.slice(0..tail_start);
+    out.append(&repaired);
+    out
 }
 
 /// Where the last block of `source` starts (after its last blank line or
@@ -72,7 +79,7 @@ fn last_block(source: &str) -> Option<usize> {
 /// A table's header followed by its delimiter row being typed (`| a | b |`
 /// then `| --`): the delimiter row completed to the header's width, so the
 /// header shows as a table (and not, for a lone `-`, as a heading).
-fn table(tail: &str) -> Option<String> {
+fn table(tail: &Source) -> Option<Source> {
     let body = tail.trim_end_matches('\n');
     let (header, delimiter) = body.split_once('\n')?;
     if delimiter.contains('\n') || !header.contains('|') {
@@ -88,7 +95,7 @@ fn table(tail: &str) -> Option<String> {
     }
     if !delimiter.contains('-') {
         // Nothing a column could be made of yet: the header alone.
-        return Some(header.to_owned());
+        return Some(tail.slice(0..header.len()));
     }
     let columns = cells(header).len().max(1);
     let typed = cells(delimiter);
@@ -104,7 +111,10 @@ fn table(tail: &str) -> Option<String> {
         }
         row.push_str(" |");
     }
-    Some(format!("{header}\n{row}"))
+    let mut out = tail.slice(0..header.len());
+    out.push("\n");
+    out.push(&row);
+    Some(out)
 }
 
 /// The cells of a table row (unescaped `|` separate them; the outer ones
@@ -139,12 +149,12 @@ fn cells(row: &str) -> Vec<&str> {
 }
 
 /// The inline syntax the last block leaves open, closed.
-fn inline(tail: &str) -> String {
+fn inline(tail: &Source) -> Source {
     let text = tex(tail);
     let text = links(&text);
     let text = tag(&text);
     let mut text = close(&text);
-    if text != tail {
+    if *text != **tail {
         text.truncate(text.trim_end().len());
     }
     text
@@ -228,7 +238,7 @@ fn outside(spans: &[Span], open: Option<Span>, i: usize) -> bool {
 
 /// A TeX formula left open (`\\(x`, `\\[` and lines of it) closed, or
 /// removed while nothing follows its opener.
-fn tex(text: &str) -> String {
+fn tex(text: &Source) -> Source {
     let (code, open_code) = spans(text, false);
     let bytes = text.as_bytes();
     let mut i = 0;
@@ -250,28 +260,28 @@ fn tex(text: &str) -> String {
             None => {
                 let body = &text[i + 2..];
                 if body.trim().is_empty() {
-                    return text[..i].trim_end().to_owned();
+                    return text.slice(0..text[..i].trim_end().len());
                 }
-                let mut out = text.trim_end().to_owned();
+                let mut out = text.slice(0..text.trim_end().len());
                 if bytes[i + 1] == b'(' {
-                    out.push_str("\\)");
+                    out.push("\\)");
                 } else if body.contains('\n') {
                     // A display formula of lines of its own: its closer on
                     // a line of its own.
-                    out.push_str("\n\\]");
+                    out.push("\n\\]");
                 } else {
-                    out.push_str("\\]");
+                    out.push("\\]");
                 }
                 return out;
             }
         }
     }
-    text.to_owned()
+    text.clone()
 }
 
 /// Links and images not finished: `[text` and `[text](partial` as their
 /// text, `![alt` and `![alt](partial` removed.
-fn links(text: &str) -> String {
+fn links(text: &Source) -> Source {
     let (spans, open) = code_spans(text);
     let bytes = text.as_bytes();
     // Ranges removed, and for a link whose destination is unfinished the
@@ -322,21 +332,21 @@ fn links(text: &str) -> String {
         }
     }
     if remove.is_empty() {
-        return text.to_owned();
+        return text.clone();
     }
     remove.sort_unstable();
-    let mut out = String::with_capacity(text.len());
+    let mut out = text.writer();
     let mut at = 0;
     for (s, e) in remove {
         if s > at {
-            out.push_str(&text[at..s]);
+            out.copy(&text[at..s]);
         }
         at = at.max(e);
     }
     if at < text.len() {
-        out.push_str(&text[at..]);
+        out.copy(&text[at..]);
     }
-    out
+    out.finish()
 }
 
 /// Where a link destination starting at `from` ends (after its `)`).
@@ -358,16 +368,16 @@ fn destination_end(bytes: &[u8], from: usize) -> Option<usize> {
 
 /// An HTML tag (or autolink) being typed at the end, removed: `<`, `<di`,
 /// `<a href="x`, `</`.
-fn tag(text: &str) -> String {
+fn tag(text: &Source) -> Source {
     let (spans, open) = code_spans(text);
     let Some(lt) = text.rfind('<') else {
-        return text.to_owned();
+        return text.clone();
     };
     if !outside(&spans, open, lt)
         || text[lt..].contains('>')
         || (lt > 0 && text.as_bytes()[lt - 1] == b'\\')
     {
-        return text.to_owned();
+        return text.clone();
     }
     let after = &text[lt + 1..];
     let tagged = after
@@ -375,16 +385,16 @@ fn tag(text: &str) -> String {
         .next()
         .is_none_or(|c| c.is_ascii_alphabetic() || c == '/' || c == '!');
     if tagged && !after.contains('\n') {
-        text[..lt].trim_end_matches([' ', '\t']).to_owned()
+        text.slice(0..text[..lt].trim_end_matches([' ', '\t']).len())
     } else {
-        text.to_owned()
+        text.clone()
     }
 }
 
 /// Inline code and emphasis (`**`, `*`, `__`, `_`, `~~`) and formulas
 /// (`$$`, `$`) left open, closed in the reverse order they opened; a marker
 /// with nothing after it yet is removed instead.
-fn close(text: &str) -> String {
+fn close(text: &Source) -> Source {
     let (spans, open_code) = code_spans(text);
     // A run of markers at the end after a space opens nothing yet (`a **`):
     // removed.
@@ -397,7 +407,7 @@ fn close(text: &str) -> String {
             .is_none_or(char::is_whitespace)
         && open_code.is_none_or(|(s, _)| s > run_start)
     {
-        return close(trimmed[..run_start].trim_end());
+        return close(&text.slice(0..trimmed[..run_start].trim_end().len()));
     }
     let bytes = text.as_bytes();
     let scan_end = open_code.map_or(bytes.len(), |(s, _)| s);
@@ -455,7 +465,7 @@ fn close(text: &str) -> String {
         i += len;
     }
 
-    let mut out = text.to_owned();
+    let mut out = text.clone();
     // A code span with nothing in it yet: its backticks removed.
     let mut code_closer = None;
     if let Some((s, len)) = open_code {
@@ -485,10 +495,10 @@ fn close(text: &str) -> String {
     let keep = out.trim_end().len();
     out.truncate(keep);
     if let Some(len) = code_closer {
-        out.extend(std::iter::repeat_n('`', len));
+        out.push(&"`".repeat(len));
     }
     for (token, _) in stack.iter().rev() {
-        out.push_str(token);
+        out.push(token);
     }
     out
 }

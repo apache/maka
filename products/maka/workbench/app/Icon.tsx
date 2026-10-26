@@ -22,7 +22,9 @@ import { platform } from 'nsh/device';
 
 const glyphs = {
   back: '‹',
-  sidebar: '▤',
+  sidebar: '◫',
+  sidebarCollapse: '◁',
+  sidebarExpand: '▷',
   plus: '+',
   send: '↑',
   stop: '■',
@@ -35,6 +37,7 @@ const glyphs = {
   refresh: '↻',
   file: '📄',
   terminal: '⌁',
+  command: '⌘',
   copy: '⧉',
   archive: '▤',
   trash: '⌫',
@@ -60,6 +63,7 @@ export function Icon(props: { name: keyof typeof glyphs; color: string }) {
   if (platform.isTerminal)
     return (
       <Text
+        selectable={false}
         pointerEvents="none"
         accessibilityElementsHidden
         style={{
@@ -88,9 +92,20 @@ export function Icon(props: { name: keyof typeof glyphs; color: string }) {
         cx.beginPath();
         switch (props.name) {
           case 'sidebar':
-            cx.roundRect(1.5, 2.5, 13, 11, 2);
-            cx.moveTo(6, 2.5);
-            cx.lineTo(6, 13.5);
+          case 'sidebarCollapse':
+          case 'sidebarExpand':
+            cx.roundRect(1.5, 1.5, 13, 13, 2);
+            cx.moveTo(5.5, 1.5);
+            cx.lineTo(5.5, 14.5);
+            if (props.name === 'sidebarCollapse') {
+              cx.moveTo(10.5, 5.5);
+              cx.lineTo(8, 8);
+              cx.lineTo(10.5, 10.5);
+            } else if (props.name === 'sidebarExpand') {
+              cx.moveTo(8.5, 5.5);
+              cx.lineTo(11, 8);
+              cx.lineTo(8.5, 10.5);
+            }
             break;
           case 'plus':
             cx.moveTo(8, 3);
@@ -185,6 +200,17 @@ export function Icon(props: { name: keyof typeof glyphs; color: string }) {
             cx.moveTo(9, 1.5);
             cx.lineTo(9, 5.5);
             cx.lineTo(13, 5.5);
+            break;
+          case 'command':
+            cx.moveTo(5.5, 3.5);
+            cx.arc(3.5, 3.5, 2, 0, Math.PI / 2, true);
+            cx.lineTo(12.5, 5.5);
+            cx.arc(12.5, 3.5, 2, Math.PI / 2, Math.PI, true);
+            cx.lineTo(10.5, 12.5);
+            cx.arc(12.5, 12.5, 2, Math.PI, (Math.PI * 3) / 2, true);
+            cx.lineTo(3.5, 10.5);
+            cx.arc(3.5, 12.5, 2, (Math.PI * 3) / 2, Math.PI * 2, true);
+            cx.lineTo(5.5, 3.5);
             break;
           case 'terminal':
             cx.roundRect(1, 2, 14, 12, 2);

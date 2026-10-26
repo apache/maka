@@ -66,6 +66,10 @@ pub enum OverlayAnchor {
     /// A point in the root view's coordinates (touches' `pageX` /
     /// `pageY`): a menu opened where the pointer is.
     Point(Point<Points>),
+    /// A box in the root view's coordinates: an input's caret
+    /// (`onCaretMove`'s `pageBounds`), where an `@` mention's
+    /// suggestions open.
+    Bounds(Bounds<Points>),
     /// What a view draws: the box around its children (the view itself
     /// while it has none). A trigger wrapped in a view its parent
     /// stretches is placed against what shows, not the stretched wrapper.

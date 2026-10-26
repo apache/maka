@@ -22,7 +22,8 @@ mod product;
 mod serve;
 
 pub(crate) use product::{
-    ProductHost, Roots, live_update_available, open_host, select_committed_host,
+    LivePublication, ProductHost, Roots, configure_workspace_locations, directories,
+    live_update_available, open_host, prepare_live_publication, select_committed_host,
 };
 
 use std::path::{Path, PathBuf};
@@ -235,7 +236,9 @@ fn read_json<T: serde::de::DeserializeOwned>(source: &Path) -> Result<T, HostErr
     ))?)
 }
 
-async fn open_store(root: PathBuf) -> Result<maka_event_log::EventLog, HostError> {
+pub(super) async fn open_store(
+    root: PathBuf,
+) -> Result<maka_event_log::root_store::RootStore, HostError> {
     let owner = tokio::task::spawn_blocking(move || {
         maka_event_log::root::RootOwner::open(
             &root,

@@ -88,7 +88,7 @@ async fn sglang_protocols_preserve_reasoning_tools_and_replay() {
                     ModelRequest {
                         language: maka_agent_facts::language::Language::En,
                         provider: provider.clone(),
-                        prompt: prompt.clone(),
+                        prompt: prompt.clone().into(),
                         tools: tools.clone(),
                         provider_options: options.clone(),
                         max_output_tokens: Some(4096),
@@ -241,7 +241,7 @@ async fn codex_search_preserves_real_provider_calls_and_citations() {
             prompt: vec![
                 maka_model::prompt::Message::System { content: "Use the provided web search tool for current information. Reply briefly with a cited source.".into(), provider_options: None },
                 maka_model::prompt::Message::user("Search rust-lang.org for the current stable Rust release. Give its version and release date with a citation.")
-            ],
+            ].into(),
             tools: vec![ToolDefinition {
                 freeform: None,
                 output_schema: None,

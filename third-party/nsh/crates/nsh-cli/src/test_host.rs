@@ -26,18 +26,28 @@ use crate::{build, run::Target, ui};
 const CONNECT: Duration = Duration::from_secs(60);
 
 /// Starts the apps tests open on `target`'s host; `browser` is the one
-/// `--target web` runs them in (else the one found on this machine).
+/// `--target web` runs them in (else the one found on this machine); `fps`
+/// has the host log its performance monitor's readings.
 pub(crate) fn starter(
     target: Target,
     browser: Option<&Path>,
     work: &Path,
+    fps: bool,
 ) -> anyhow::Result<StartHost> {
     if browser.is_some() && target != Target::Web {
         anyhow::bail!("--browser goes with --target web");
     }
+    if fps
+        && !matches!(
+            target,
+            Target::Linux | Target::Macos | Target::Windows | Target::Ios
+        )
+    {
+        anyhow::bail!("--fps goes with --target linux, macos, windows or ios");
+    }
     match target {
         Target::Web => return crate::test_web::starter(browser),
-        Target::Ios => return crate::test_ios::starter(work),
+        Target::Ios => return crate::test_ios::starter(work, fps),
         Target::Android => return crate::test_android::starter(work),
         _ => {}
     }
@@ -50,7 +60,7 @@ pub(crate) fn starter(
     // Built (in a checkout) or found once, before the first test.
     let host = crate::runtime::test_host(target.platform())?;
     Ok(Arc::new(move |entry: &Path, options: &HostOptions| {
-        start(target, &host, entry, options).map(|h| Box::new(h) as Box<dyn Host>)
+        start(target, &host, entry, options, fps).map(|h| Box::new(h) as Box<dyn Host>)
     }))
 }
 
@@ -94,6 +104,7 @@ fn start(
     host: &Path,
     entry: &Path,
     options: &HostOptions,
+    fps: bool,
 ) -> Result<TestHost, String> {
     let server = serve(entry, options)?;
     let entry = resolve(entry)?;
@@ -109,6 +120,9 @@ fn start(
         .arg("--data-dir")
         .arg(&data)
         .stdin(Stdio::null());
+    if fps {
+        command.arg("--fps");
+    }
     if target == Target::Macos {
         // A window AppKit restored from an earlier run would not be this one.
         command.args(["-ApplePersistenceIgnoreState", "YES"]);

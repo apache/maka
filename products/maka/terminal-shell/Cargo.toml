@@ -25,7 +25,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
-base64 = "0.22.1"
+base64 = "0.23.1"
 clap.workspace = true
 maka-event-log.workspace = true
 maka-host-runtime.workspace = true
@@ -47,4 +47,5 @@ nsh-platform-gpui.workspace = true
 nsh-gpui-terminal.workspace = true
 
 [dev-dependencies]
+nsh-bundler = { workspace = true, features = ["bundle"] }
 tempfile.workspace = true

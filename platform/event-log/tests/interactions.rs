@@ -25,8 +25,31 @@ use maka_agent_facts::interaction::GrantTarget;
 use maka_agent_facts::interaction::InteractionOutcome;
 use maka_agent_facts::interaction::InteractionRecord;
 use maka_agent_facts::interaction::InteractionRequest;
+use maka_agent_facts::workspace::{BindingStamp, PermissionBasis};
 use maka_event_log::EventLog;
 use sqlx::Connection;
+
+async fn bound_session(log: &EventLog, session: &str, boundary_revision: u64) -> PermissionBasis {
+    let reference = log
+        .attach_workspace("permissions", &serde_json::json!({"path":"/workspace"}))
+        .await
+        .unwrap();
+    log.create_session(
+        session,
+        "create",
+        &serde_json::json!({"workspace":reference,"boundary_revision":boundary_revision}),
+        1,
+    )
+    .await
+    .unwrap();
+    PermissionBasis {
+        boundary_revision,
+        binding: BindingStamp {
+            id: reference.id,
+            permission_epoch: reference.permission_epoch_at_attach,
+        },
+    }
+}
 
 #[tokio::test]
 async fn permission_receipts_preserve_partial_scope_and_revoke_by_boundary_revision() {
@@ -40,14 +63,7 @@ async fn permission_receipts_preserve_partial_scope_and_revoke_by_boundary_revis
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("permissions.sqlite");
     let log = EventLog::open(&path).await.unwrap();
-    log.create_session(
-        "session",
-        "create",
-        &serde_json::json!({"boundary_revision": 4}),
-        1,
-    )
-    .await
-    .unwrap();
+    let basis = bound_session(&log, "session", 4).await;
     let invocation = Invocation {
         session_id: "session".into(),
         turn_id: "turn".into(),
@@ -65,7 +81,7 @@ async fn permission_receipts_preserve_partial_scope_and_revoke_by_boundary_revis
     let make_request = |id: &str| InteractionRecord {
         request: InteractionRequest::Permissions {
             tool_use_id: Some("tool-use".into()),
-            base_revision: 4,
+            basis,
             request: PermissionRequest {
                 reason: "Read the requested result".into(),
                 command: None,
@@ -146,20 +162,20 @@ async fn permission_receipts_preserve_partial_scope_and_revoke_by_boundary_revis
         );
     }
     let all = log
-        .permission_grants(&invocation, Some("tool-use"), 4)
+        .permission_grants(&invocation, Some("tool-use"), &basis)
         .await
         .unwrap();
     assert_eq!(all.len(), 3);
     assert!(all.iter().all(|grant| grant.permissions == partial));
     assert_eq!(
-        log.permission_grants(&invocation, None, 4)
+        log.permission_grants(&invocation, None, &basis)
             .await
             .unwrap()
             .len(),
         2
     );
     assert_eq!(
-        log.permission_grants(&invocation, Some("other-tool"), 4)
+        log.permission_grants(&invocation, Some("other-tool"), &basis)
             .await
             .unwrap()
             .len(),
@@ -170,7 +186,7 @@ async fn permission_receipts_preserve_partial_scope_and_revoke_by_boundary_revis
         ..invocation.clone()
     };
     assert_eq!(
-        log.permission_grants(&other_run, Some("tool-use"), 4)
+        log.permission_grants(&other_run, Some("tool-use"), &basis)
             .await
             .unwrap()
             .len(),
@@ -181,7 +197,7 @@ async fn permission_receipts_preserve_partial_scope_and_revoke_by_boundary_revis
         ..other_run
     };
     assert_eq!(
-        log.permission_grants(&other_turn, Some("tool-use"), 4)
+        log.permission_grants(&other_turn, Some("tool-use"), &basis)
             .await
             .unwrap()
             .len(),
@@ -192,7 +208,7 @@ async fn permission_receipts_preserve_partial_scope_and_revoke_by_boundary_revis
         ..invocation.clone()
     };
     assert!(
-        log.permission_grants(&other_session, Some("tool-use"), 4)
+        log.permission_grants(&other_session, Some("tool-use"), &basis)
             .await
             .unwrap()
             .is_empty()
@@ -209,7 +225,7 @@ async fn permission_receipts_preserve_partial_scope_and_revoke_by_boundary_revis
     );
     assert_eq!(log.close_abandoned_interactions(30).await.unwrap(), 1);
     assert_eq!(
-        log.permission_grants(&invocation, Some("tool-use"), 4)
+        log.permission_grants(&invocation, Some("tool-use"), &basis)
             .await
             .unwrap(),
         all
@@ -267,16 +283,23 @@ async fn permission_receipts_preserve_partial_scope_and_revoke_by_boundary_revis
             .is_none()
     );
     assert!(
-        log.permission_grants(&invocation, Some("tool-use"), 4)
+        log.permission_grants(&invocation, Some("tool-use"), &basis)
             .await
             .unwrap()
             .is_empty()
     );
     assert!(
-        log.permission_grants(&invocation, Some("tool-use"), 5)
-            .await
-            .unwrap()
-            .is_empty()
+        log.permission_grants(
+            &invocation,
+            Some("tool-use"),
+            &PermissionBasis {
+                boundary_revision: 5,
+                ..basis
+            }
+        )
+        .await
+        .unwrap()
+        .is_empty()
     );
     assert!(
         log.establish_interaction(&make_request("stale_request"))
@@ -296,9 +319,7 @@ async fn capability_approval_and_dispatch_share_the_original_permission_boundary
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("capability.sqlite");
     let log = EventLog::open(&path).await.unwrap();
-    log.create_session("session", "create", &json!({"boundary_revision": 0}), 1)
-        .await
-        .unwrap();
+    let basis = bound_session(&log, "session", 0).await;
     let invocation = Invocation {
         session_id: "session".into(),
         turn_id: "turn".into(),
@@ -318,8 +339,14 @@ async fn capability_approval_and_dispatch_share_the_original_permission_boundary
     .unwrap();
     let make_request = |id: &str, revision| {
         let mut record = request(id);
-        if let InteractionRequest::ClientCapability { base_revision, .. } = &mut record.request {
-            *base_revision = Some(revision);
+        if let InteractionRequest::ClientCapability {
+            basis: captured, ..
+        } = &mut record.request
+        {
+            *captured = Some(PermissionBasis {
+                boundary_revision: revision,
+                ..basis
+            });
         }
         record
     };
@@ -344,9 +371,16 @@ async fn capability_approval_and_dispatch_share_the_original_permission_boundary
             input: json!({}),
         })
     };
-    log.append_capability_dispatch(&dispatch("before"), &target, 0)
-        .await
-        .unwrap();
+    log.append_capability_dispatch(
+        &dispatch("before"),
+        &target,
+        &PermissionBasis {
+            boundary_revision: 0,
+            ..basis
+        },
+    )
+    .await
+    .unwrap();
     log.establish_run_interaction(&invocation, &make_request("pending", 0))
         .await
         .unwrap();
@@ -367,8 +401,15 @@ async fn capability_approval_and_dispatch_share_the_original_permission_boundary
             .is_none()
     );
     assert!(matches!(
-        log.append_capability_dispatch(&dispatch("revoked"), &target, 0)
-            .await,
+        log.append_capability_dispatch(
+            &dispatch("revoked"),
+            &target,
+            &PermissionBasis {
+                boundary_revision: 0,
+                ..basis
+            }
+        )
+        .await,
         Err(CommitError::PermissionRevoked)
     ));
     let late = log
@@ -409,20 +450,35 @@ async fn capability_approval_and_dispatch_share_the_original_permission_boundary
             .await
             .unwrap()
             .unwrap()
-            .base_revision,
+            .basis
+            .map(|basis| basis.boundary_revision),
         Some(1)
     );
     assert!(
         matches!(
-            log.append_capability_dispatch(&dispatch("stale_worker"), &target, 0)
-                .await,
+            log.append_capability_dispatch(
+                &dispatch("stale_worker"),
+                &target,
+                &PermissionBasis {
+                    boundary_revision: 0,
+                    ..basis
+                }
+            )
+            .await,
             Err(CommitError::PermissionRevoked)
         ),
         "renewal cannot revive a worker captured under the old boundary"
     );
-    log.append_capability_dispatch(&dispatch("after"), &target, 1)
-        .await
-        .unwrap();
+    log.append_capability_dispatch(
+        &dispatch("after"),
+        &target,
+        &PermissionBasis {
+            boundary_revision: 1,
+            ..basis
+        },
+    )
+    .await
+    .unwrap();
     log.close().await.unwrap();
     let log = EventLog::open(&path).await.unwrap();
     assert_eq!(
@@ -430,7 +486,8 @@ async fn capability_approval_and_dispatch_share_the_original_permission_boundary
             .await
             .unwrap()
             .unwrap()
-            .base_revision,
+            .basis
+            .map(|basis| basis.boundary_revision),
         Some(1)
     );
     let events = log
@@ -464,7 +521,7 @@ fn request(id: &str) -> InteractionRecord {
         created_at: 10,
         request: InteractionRequest::ClientCapability {
             tool_use_id: "tool-use".into(),
-            base_revision: None,
+            basis: None,
             target: GrantTarget {
                 provider_id: "provider".into(),
                 contract_id: "contract".into(),
@@ -913,16 +970,13 @@ async fn permission_metadata_cas_closes_only_old_pending_requests_and_notifies_w
     let log = EventLog::open(&temp.path().join("permission-cas.sqlite"))
         .await
         .unwrap();
-    for session in ["session", "other"] {
-        log.create_session(session, session, &json!({"boundary_revision": 4}), 1)
-            .await
-            .unwrap();
-    }
+    let basis = bound_session(&log, "session", 4).await;
+    bound_session(&log, "other", 4).await;
     let permissions = |id: &str, session: &str| InteractionRecord {
         session_id: session.into(),
         request: InteractionRequest::Permissions {
             tool_use_id: Some("tool-use".into()),
-            base_revision: 4,
+            basis,
             request: PermissionRequest {
                 reason: "Exact write".into(),
                 command: None,

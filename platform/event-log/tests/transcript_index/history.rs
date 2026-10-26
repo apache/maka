@@ -148,9 +148,11 @@ async fn history_pages_preserve_utf8_nul_suffixes_archive_and_frozen_fences() {
                     position,
                     false,
                     maka_agent_ports::session::history::HistoryView::Conversation,
-                    4096,
-                    Some(8),
-                    64 * 1024,
+                    maka_event_log::transcript::HistoryLimits {
+                        max_bytes: 4096,
+                        max_chunks: Some(8),
+                        max_json_bytes: 64 * 1024,
+                    },
                 )
                 .await
                 .unwrap();
@@ -180,7 +182,17 @@ async fn history_pages_preserve_utf8_nul_suffixes_archive_and_frozen_fences() {
     let mut pages = 0;
     loop {
         let page = log
-            .history_text("a", through, position, false, 16 * 1024, 8, 1024 * 1024)
+            .history_text(
+                "a",
+                through,
+                position,
+                false,
+                maka_event_log::transcript::HistoryLimits {
+                    max_bytes: 16 * 1024,
+                    max_chunks: Some(8),
+                    max_json_bytes: 1024 * 1024,
+                },
+            )
             .await
             .unwrap();
         assert!(serde_json::to_vec(&page).unwrap().len() < 256 * 1024);
@@ -248,7 +260,17 @@ async fn history_pages_preserve_utf8_nul_suffixes_archive_and_frozen_fences() {
         "JSON string values stay multiline; property names and non-text leaves are not searchable"
     );
     let Page::Ready { chunks, after, .. } = log
-        .history_text("a", old, Position::Start, false, 16 * 1024, 8, 1024 * 1024)
+        .history_text(
+            "a",
+            old,
+            Position::Start,
+            false,
+            maka_event_log::transcript::HistoryLimits {
+                max_bytes: 16 * 1024,
+                max_chunks: Some(8),
+                max_json_bytes: 1024 * 1024,
+            },
+        )
         .await
         .unwrap();
     assert!(after.is_none());
@@ -289,7 +311,17 @@ async fn history_pages_preserve_utf8_nul_suffixes_archive_and_frozen_fences() {
         chunks: destination,
         ..
     } = log
-        .history_text("b", old, Position::Start, false, 16 * 1024, 8, 1024 * 1024)
+        .history_text(
+            "b",
+            old,
+            Position::Start,
+            false,
+            maka_event_log::transcript::HistoryLimits {
+                max_bytes: 16 * 1024,
+                max_chunks: Some(8),
+                max_json_bytes: 1024 * 1024,
+            },
+        )
         .await
         .unwrap();
     assert!(
@@ -297,7 +329,17 @@ async fn history_pages_preserve_utf8_nul_suffixes_archive_and_frozen_fences() {
         "optional cache cannot grant another Session canonical visibility"
     );
     let Page::Ready { chunks: source, .. } = log
-        .history_text("a", old, Position::Start, false, 16 * 1024, 8, 1024 * 1024)
+        .history_text(
+            "a",
+            old,
+            Position::Start,
+            false,
+            maka_event_log::transcript::HistoryLimits {
+                max_bytes: 16 * 1024,
+                max_chunks: Some(8),
+                max_json_bytes: 1024 * 1024,
+            },
+        )
         .await
         .unwrap();
     assert_eq!(
@@ -314,7 +356,17 @@ async fn history_pages_preserve_utf8_nul_suffixes_archive_and_frozen_fences() {
     })
     .await;
     let rebuilt = log
-        .history_text("b", old, Position::Start, false, 16 * 1024, 8, 1024 * 1024)
+        .history_text(
+            "b",
+            old,
+            Position::Start,
+            false,
+            maka_event_log::transcript::HistoryLimits {
+                max_bytes: 16 * 1024,
+                max_chunks: Some(8),
+                max_json_bytes: 1024 * 1024,
+            },
+        )
         .await
         .unwrap();
     let Page::Ready {
@@ -334,9 +386,11 @@ async fn history_pages_preserve_utf8_nul_suffixes_archive_and_frozen_fences() {
             through,
             Position::Start,
             false,
-            16 * 1024,
-            8,
-            1024 * 1024,
+            maka_event_log::transcript::HistoryLimits {
+                max_bytes: 16 * 1024,
+                max_chunks: Some(8),
+                max_json_bytes: 1024 * 1024,
+            },
         )
         .await
         .unwrap();
@@ -476,9 +530,11 @@ async fn tool_metadata_preserves_empty_calls_and_non_text_results_through_frozen
                 call_fence,
                 Position::Start,
                 false,
-                8192,
-                8,
-                64 * 1024,
+                maka_event_log::transcript::HistoryLimits {
+                    max_bytes: 8192,
+                    max_chunks: Some(8),
+                    max_json_bytes: 64 * 1024,
+                },
             )
             .await
             .unwrap();
@@ -507,7 +563,17 @@ async fn tool_metadata_preserves_empty_calls_and_non_text_results_through_frozen
                     after,
                     ..
                 } = log
-                    .history_text(session, through, position, false, 8192, 1, 64 * 1024)
+                    .history_text(
+                        session,
+                        through,
+                        position,
+                        false,
+                        maka_event_log::transcript::HistoryLimits {
+                            max_bytes: 8192,
+                            max_chunks: Some(1),
+                            max_json_bytes: 64 * 1024,
+                        },
+                    )
                     .await
                     .unwrap();
                 assert!(chunks.len() <= 1);
@@ -525,9 +591,11 @@ async fn tool_metadata_preserves_empty_calls_and_non_text_results_through_frozen
                             .history_source(
                                 session,
                                 through,
-                                chunk.position,
-                                field,
-                                None,
+                                maka_event_log::transcript::SourceSelection {
+                                    locator: chunk.position,
+                                    field,
+                                    path: None,
+                                },
                                 SourcePosition::Start,
                                 8192,
                             )
@@ -558,9 +626,11 @@ async fn tool_metadata_preserves_empty_calls_and_non_text_results_through_frozen
                                         .history_source(
                                             session,
                                             call_fence,
-                                            chunk.position,
-                                            field,
-                                            None,
+                                            maka_event_log::transcript::SourceSelection {
+                                                locator: chunk.position,
+                                                field,
+                                                path: None
+                                            },
                                             SourcePosition::Start,
                                             8192
                                         )
@@ -672,9 +742,11 @@ async fn tool_metadata_preserves_empty_calls_and_non_text_results_through_frozen
             through,
             Position::Tail,
             false,
-            8192,
-            8,
-            64 * 1024,
+            maka_event_log::transcript::HistoryLimits {
+                max_bytes: 8192,
+                max_chunks: Some(8),
+                max_json_bytes: 64 * 1024,
+            },
         )
         .await
         .unwrap();
@@ -760,7 +832,17 @@ async fn oversized_tool_metadata_returns_accepted_window_without_consuming_its_b
             after,
             ..
         } = log
-            .history_text("budget", through, position, false, 8192, 8, 1024)
+            .history_text(
+                "budget",
+                through,
+                position,
+                false,
+                maka_event_log::transcript::HistoryLimits {
+                    max_bytes: 8192,
+                    max_chunks: Some(8),
+                    max_json_bytes: 1024,
+                },
+            )
             .await
             .unwrap();
         assert_eq!(chunks.len(), 1);
@@ -784,7 +866,17 @@ async fn oversized_tool_metadata_returns_accepted_window_without_consuming_its_b
             after: soft_after,
             ..
         } = log
-            .history_text("budget", through, position, false, 8192, 8, 1024)
+            .history_text(
+                "budget",
+                through,
+                position,
+                false,
+                maka_event_log::transcript::HistoryLimits {
+                    max_bytes: 8192,
+                    max_chunks: Some(8),
+                    max_json_bytes: 1024,
+                },
+            )
             .await
             .unwrap();
         assert_eq!(soft.len(), 1);
@@ -799,7 +891,17 @@ async fn oversized_tool_metadata_returns_accepted_window_without_consuming_its_b
             soft_after.is_some()
         });
         let Page::Ready { chunks, .. } = log
-            .history_text("budget", through, position, false, 8192, 1, 64 * 1024)
+            .history_text(
+                "budget",
+                through,
+                position,
+                false,
+                maka_event_log::transcript::HistoryLimits {
+                    max_bytes: 8192,
+                    max_chunks: Some(1),
+                    max_json_bytes: 64 * 1024,
+                },
+            )
             .await
             .unwrap();
         assert_eq!(chunks.len(), 1);
@@ -879,9 +981,11 @@ async fn bounded_history_windows_cover_sparse_rows_both_directions_and_validate_
                 position,
                 false,
                 maka_agent_ports::session::history::HistoryView::Conversation,
-                32 * 1024,
-                None,
-                64 * 1024,
+                maka_event_log::transcript::HistoryLimits {
+                    max_bytes: 32 * 1024,
+                    max_chunks: None,
+                    max_json_bytes: 64 * 1024,
+                },
             )
             .await
             .unwrap();
@@ -917,9 +1021,11 @@ async fn bounded_history_windows_cover_sparse_rows_both_directions_and_validate_
                 position,
                 false,
                 maka_agent_ports::session::history::HistoryView::Conversation,
-                text_budget,
-                None,
-                64 * 1024,
+                maka_event_log::transcript::HistoryLimits {
+                    max_bytes: text_budget,
+                    max_chunks: None,
+                    max_json_bytes: 64 * 1024,
+                },
             )
             .await
             .unwrap();
@@ -933,9 +1039,11 @@ async fn bounded_history_windows_cover_sparse_rows_both_directions_and_validate_
                     position,
                     false,
                     maka_agent_ports::session::history::HistoryView::Conversation,
-                    text_budget,
-                    None,
-                    budget,
+                    maka_event_log::transcript::HistoryLimits {
+                        max_bytes: text_budget,
+                        max_chunks: None,
+                        max_json_bytes: budget,
+                    },
                 )
                 .await
                 .unwrap();
@@ -985,7 +1093,17 @@ async fn bounded_history_windows_cover_sparse_rows_both_directions_and_validate_
                     after,
                     through: actual,
                 } = log
-                    .history_text("window", through, position, false, budget, 2, 1024 * 1024)
+                    .history_text(
+                        "window",
+                        through,
+                        position,
+                        false,
+                        maka_event_log::transcript::HistoryLimits {
+                            max_bytes: budget,
+                            max_chunks: Some(2),
+                            max_json_bytes: 1024 * 1024,
+                        },
+                    )
                     .await
                     .unwrap();
                 assert_eq!(actual, through);
@@ -1067,9 +1185,11 @@ async fn bounded_history_windows_cover_sparse_rows_both_directions_and_validate_
                         Position::After { cursor }
                     },
                     false,
-                    7,
-                    2,
-                    1024 * 1024,
+                    maka_event_log::transcript::HistoryLimits {
+                        max_bytes: 7,
+                        max_chunks: Some(2),
+                        max_json_bytes: 1024 * 1024,
+                    },
                 )
                 .await;
             assert_eq!(
@@ -1108,9 +1228,11 @@ async fn bounded_history_windows_cover_sparse_rows_both_directions_and_validate_
                 through,
                 Position::After { cursor },
                 false,
-                7,
-                2,
-                1024 * 1024
+                maka_event_log::transcript::HistoryLimits {
+                    max_bytes: 7,
+                    max_chunks: Some(2),
+                    max_json_bytes: 1024 * 1024
+                }
             )
             .await
             .is_err()
@@ -1133,9 +1255,11 @@ async fn bounded_history_windows_cover_sparse_rows_both_directions_and_validate_
                 }
             },
             false,
-            7,
-            2,
-            1024 * 1024
+            maka_event_log::transcript::HistoryLimits {
+                max_bytes: 7,
+                max_chunks: Some(2),
+                max_json_bytes: 1024 * 1024
+            }
         )
         .await
         .is_err()
@@ -1146,9 +1270,11 @@ async fn bounded_history_windows_cover_sparse_rows_both_directions_and_validate_
             through,
             Position::Event { sequence: through },
             false,
-            7,
-            2,
-            1024 * 1024,
+            maka_event_log::transcript::HistoryLimits {
+                max_bytes: 7,
+                max_chunks: Some(2),
+                max_json_bytes: 1024 * 1024,
+            },
         )
         .await
         .unwrap();
@@ -1171,14 +1297,34 @@ async fn history_text_accepts_committed_fences_without_preparation_and_rejects_f
     let later = interrupt(&log, "a").await;
     assert!(later > through);
     assert!(
-        log.history_text("a", later + 1, Position::Start, false, 16, 2, 1024 * 1024)
-            .await
-            .is_err(),
+        log.history_text(
+            "a",
+            later + 1,
+            Position::Start,
+            false,
+            maka_event_log::transcript::HistoryLimits {
+                max_bytes: 16,
+                max_chunks: Some(2),
+                max_json_bytes: 1024 * 1024
+            }
+        )
+        .await
+        .is_err(),
         "a fence beyond committed canonical history is invalid"
     );
 
     let Page::Ready { chunks, .. } = log
-        .history_text("a", later, Position::Tail, false, 16, 2, 1024 * 1024)
+        .history_text(
+            "a",
+            later,
+            Position::Tail,
+            false,
+            maka_event_log::transcript::HistoryLimits {
+                max_bytes: 16,
+                max_chunks: Some(2),
+                max_json_bytes: 1024 * 1024,
+            },
+        )
         .await
         .unwrap();
     assert!(chunks.iter().any(|chunk| chunk.role == Role::Assistant));
@@ -1235,7 +1381,7 @@ async fn empty_projection_boundaries_obey_the_exact_json_window_budget() {
                 "a",
                 Fact::MessageSteered {
                     message: Box::new(message),
-                    source: Some(Box::new(source)),
+                    source: Box::new(source),
                 },
             ))
             .await
@@ -1260,9 +1406,11 @@ async fn empty_projection_boundaries_obey_the_exact_json_window_budget() {
             through,
             Position::Event { sequence: target },
             false,
-            4,
-            1,
-            1024 * 1024,
+            maka_event_log::transcript::HistoryLimits {
+                max_bytes: 4,
+                max_chunks: Some(1),
+                max_json_bytes: 1024 * 1024,
+            },
         )
         .await
         .unwrap();
@@ -1278,9 +1426,11 @@ async fn empty_projection_boundaries_obey_the_exact_json_window_budget() {
             through,
             Position::After { cursor },
             false,
-            32,
-            1,
-            1024 * 1024,
+            maka_event_log::transcript::HistoryLimits {
+                max_bytes: 32,
+                max_chunks: Some(1),
+                max_json_bytes: 1024 * 1024,
+            },
         )
         .await
         .unwrap();
@@ -1292,9 +1442,11 @@ async fn empty_projection_boundaries_obey_the_exact_json_window_budget() {
             through,
             Position::After { cursor },
             false,
-            32,
-            8,
-            budget,
+            maka_event_log::transcript::HistoryLimits {
+                max_bytes: 32,
+                max_chunks: Some(8),
+                max_json_bytes: budget,
+            },
         )
         .await
         .unwrap();
@@ -1321,9 +1473,11 @@ async fn empty_projection_boundaries_obey_the_exact_json_window_budget() {
                 through,
                 Position::After { cursor },
                 false,
-                4,
-                8,
-                budget,
+                maka_event_log::transcript::HistoryLimits {
+                    max_bytes: 4,
+                    max_chunks: Some(8),
+                    max_json_bytes: budget,
+                },
             )
             .await
             .unwrap();
@@ -1414,7 +1568,17 @@ async fn message_material_labels_and_time_survive_exact_paging_and_text_cache_lo
             .unwrap();
 
         let Page::Ready { chunks, .. } = log
-            .history_text(session, through, Position::Start, false, 8192, 1, 64 * 1024)
+            .history_text(
+                session,
+                through,
+                Position::Start,
+                false,
+                maka_event_log::transcript::HistoryLimits {
+                    max_bytes: 8192,
+                    max_chunks: Some(1),
+                    max_json_bytes: 64 * 1024,
+                },
+            )
             .await
             .unwrap();
         assert_eq!(chunks.len(), 1, "material-only prompts remain visible");
@@ -1450,9 +1614,11 @@ async fn message_material_labels_and_time_survive_exact_paging_and_text_cache_lo
                         position,
                         false,
                         maka_agent_ports::session::history::HistoryView::Conversation,
-                        4,
-                        Some(1),
-                        64 * 1024,
+                        maka_event_log::transcript::HistoryLimits {
+                            max_bytes: 4,
+                            max_chunks: Some(1),
+                            max_json_bytes: 64 * 1024,
+                        },
                     )
                     .await
                     .unwrap();
@@ -1522,9 +1688,11 @@ async fn message_material_labels_and_time_survive_exact_paging_and_text_cache_lo
                     Position::After { cursor: split },
                     false,
                     maka_agent_ports::session::history::HistoryView::Conversation,
-                    4,
-                    Some(1),
-                    64 * 1024,
+                    maka_event_log::transcript::HistoryLimits {
+                        max_bytes: 4,
+                        max_chunks: Some(1),
+                        max_json_bytes: 64 * 1024
+                    }
                 )
                 .await
                 .is_err(),
@@ -1549,7 +1717,17 @@ async fn message_material_labels_and_time_survive_exact_paging_and_text_cache_lo
                         after,
                         ..
                     } = log
-                        .history_text(session, through, position, false, budget, 1, 64 * 1024)
+                        .history_text(
+                            session,
+                            through,
+                            position,
+                            false,
+                            maka_event_log::transcript::HistoryLimits {
+                                max_bytes: budget,
+                                max_chunks: Some(1),
+                                max_json_bytes: 64 * 1024,
+                            },
+                        )
                         .await
                         .unwrap();
                     assert!(chunks.len() <= 1);
@@ -1560,9 +1738,11 @@ async fn message_material_labels_and_time_survive_exact_paging_and_text_cache_lo
                             .history_source(
                                 session,
                                 through,
-                                sequence,
-                                SourceField::Body,
-                                None,
+                                maka_event_log::transcript::SourceSelection {
+                                    locator: sequence,
+                                    field: SourceField::Body,
+                                    path: None,
+                                },
                                 if reverse {
                                     SourcePosition::Before {
                                         offset: chunk.offset + chunk.text.len() as u64,
@@ -1671,7 +1851,17 @@ async fn message_material_labels_and_time_survive_exact_paging_and_text_cache_lo
     );
     for (session, through, sequence, expected, conversation) in sources {
         let Page::Ready { chunks, .. } = log
-            .history_text(session, through, Position::Start, false, 8192, 1, 64 * 1024)
+            .history_text(
+                session,
+                through,
+                Position::Start,
+                false,
+                maka_event_log::transcript::HistoryLimits {
+                    max_bytes: 8192,
+                    max_chunks: Some(1),
+                    max_json_bytes: 64 * 1024,
+                },
+            )
             .await
             .unwrap();
         assert_eq!(chunks[0].text, expected);
@@ -1684,9 +1874,11 @@ async fn message_material_labels_and_time_survive_exact_paging_and_text_cache_lo
                 Position::Start,
                 false,
                 maka_agent_ports::session::history::HistoryView::Conversation,
-                8192,
-                Some(1),
-                64 * 1024,
+                maka_event_log::transcript::HistoryLimits {
+                    max_bytes: 8192,
+                    max_chunks: Some(1),
+                    max_json_bytes: 64 * 1024,
+                },
             )
             .await
             .unwrap();
@@ -1774,9 +1966,11 @@ async fn thinking_windows_preserve_field_order_bytes_and_explicit_body_only_read
             through,
             Position::Start,
             true,
-            8192,
-            8,
-            64 * 1024,
+            maka_event_log::transcript::HistoryLimits {
+                max_bytes: 8192,
+                max_chunks: Some(8),
+                max_json_bytes: 64 * 1024,
+            },
         )
         .await
         .unwrap();
@@ -1817,7 +2011,17 @@ async fn thinking_windows_preserve_field_order_bytes_and_explicit_body_only_read
                 let mut done = false;
                 for _ in 0..2048 {
                     let page = log
-                        .history_text("thinking", through, position, include, budget, 2, 64 * 1024)
+                        .history_text(
+                            "thinking",
+                            through,
+                            position,
+                            include,
+                            maka_event_log::transcript::HistoryLimits {
+                                max_bytes: budget,
+                                max_chunks: Some(2),
+                                max_json_bytes: 64 * 1024,
+                            },
+                        )
                         .await
                         .unwrap();
                     assert!(serde_json::to_vec(&page).unwrap().len() <= 64 * 1024);
@@ -1913,9 +2117,11 @@ async fn thinking_windows_preserve_field_order_bytes_and_explicit_body_only_read
             through,
             Position::After { cursor },
             false,
-            8192,
-            2,
-            64 * 1024
+            maka_event_log::transcript::HistoryLimits {
+                max_bytes: 8192,
+                max_chunks: Some(2),
+                max_json_bytes: 64 * 1024
+            }
         )
         .await
         .is_err(),
@@ -1927,9 +2133,11 @@ async fn thinking_windows_preserve_field_order_bytes_and_explicit_body_only_read
             through,
             Position::After { cursor },
             true,
-            8192,
-            2,
-            64 * 1024,
+            maka_event_log::transcript::HistoryLimits {
+                max_bytes: 8192,
+                max_chunks: Some(2),
+                max_json_bytes: 64 * 1024,
+            },
         )
         .await
         .unwrap();
@@ -1947,9 +2155,11 @@ async fn thinking_windows_preserve_field_order_bytes_and_explicit_body_only_read
                 cursor: body_cursor,
             },
             true,
-            8192,
-            1,
-            64 * 1024,
+            maka_event_log::transcript::HistoryLimits {
+                max_bytes: 8192,
+                max_chunks: Some(1),
+                max_json_bytes: 64 * 1024,
+            },
         )
         .await
         .unwrap();
@@ -1959,9 +2169,11 @@ async fn thinking_windows_preserve_field_order_bytes_and_explicit_body_only_read
         .history_source(
             "thinking",
             through,
-            cursor.position,
-            maka_agent_ports::session::history::SourceField::Thinking,
-            None,
+            maka_event_log::transcript::SourceSelection {
+                locator: cursor.position,
+                field: maka_agent_ports::session::history::SourceField::Thinking,
+                path: None,
+            },
             maka_agent_ports::session::history::SourcePosition::Start,
             8192,
         )
@@ -1980,9 +2192,11 @@ async fn thinking_windows_preserve_field_order_bytes_and_explicit_body_only_read
                 }
             },
             true,
-            8192,
-            2,
-            64 * 1024
+            maka_event_log::transcript::HistoryLimits {
+                max_bytes: 8192,
+                max_chunks: Some(2),
+                max_json_bytes: 64 * 1024
+            }
         )
         .await
         .is_err(),
@@ -2010,9 +2224,11 @@ async fn thinking_windows_preserve_field_order_bytes_and_explicit_body_only_read
             through,
             Position::After { cursor },
             true,
-            8192,
-            2,
-            64 * 1024,
+            maka_event_log::transcript::HistoryLimits {
+                max_bytes: 8192,
+                max_chunks: Some(2),
+                max_json_bytes: 64 * 1024,
+            },
         )
         .await
         .unwrap();
@@ -2081,7 +2297,18 @@ async fn failed_turn_and_retry_diagnostics_are_visible_with_exact_sources_and_fe
         let mut failures = BTreeMap::<RowPosition, String>::new();
         for _ in 0..64 {
             let Page::Ready { chunks, after, .. } = log
-                .history_view("failed", through, position, false, view, 17, Some(1), 8192)
+                .history_view(
+                    "failed",
+                    through,
+                    position,
+                    false,
+                    view,
+                    maka_event_log::transcript::HistoryLimits {
+                        max_bytes: 17,
+                        max_chunks: Some(1),
+                        max_json_bytes: 8192,
+                    },
+                )
                 .await
                 .unwrap();
             for chunk in chunks {
@@ -2092,9 +2319,11 @@ async fn failed_turn_and_retry_diagnostics_are_visible_with_exact_sources_and_fe
                     .history_source(
                         "failed",
                         through,
-                        chunk.position,
-                        SourceField::Body,
-                        None,
+                        maka_event_log::transcript::SourceSelection {
+                            locator: chunk.position,
+                            field: SourceField::Body,
+                            path: None,
+                        },
                         SourcePosition::After {
                             offset: chunk.offset,
                         },
@@ -2128,9 +2357,11 @@ async fn failed_turn_and_retry_diagnostics_are_visible_with_exact_sources_and_fe
                 Position::Tail,
                 false,
                 view,
-                8192,
-                Some(16),
-                8192,
+                maka_event_log::transcript::HistoryLimits {
+                    max_bytes: 8192,
+                    max_chunks: Some(16),
+                    max_json_bytes: 8192,
+                },
             )
             .await
             .unwrap();
@@ -2158,7 +2389,17 @@ async fn failed_turn_and_retry_diagnostics_are_visible_with_exact_sources_and_fe
     log.close().await.unwrap();
     let log = EventLog::open(&path).await.unwrap();
     let Page::Ready { chunks, .. } = log
-        .history_text("failed", through, Position::Tail, false, 8192, 16, 8192)
+        .history_text(
+            "failed",
+            through,
+            Position::Tail,
+            false,
+            maka_event_log::transcript::HistoryLimits {
+                max_bytes: 8192,
+                max_chunks: Some(16),
+                max_json_bytes: 8192,
+            },
+        )
         .await
         .unwrap();
     assert_eq!(
@@ -2245,7 +2486,17 @@ async fn notification_origin_survives_every_history_and_bounded_source_fragment(
     let mut pages = 0;
     loop {
         let page = log
-            .history_text("notice", through, position, false, 256, 2, 1536)
+            .history_text(
+                "notice",
+                through,
+                position,
+                false,
+                maka_event_log::transcript::HistoryLimits {
+                    max_bytes: 256,
+                    max_chunks: Some(2),
+                    max_json_bytes: 1536,
+                },
+            )
             .await
             .unwrap();
         assert!(serde_json::to_vec(&page).unwrap().len() <= 1536);
@@ -2276,9 +2527,11 @@ async fn notification_origin_survives_every_history_and_bounded_source_fragment(
             .history_source(
                 "notice",
                 through,
-                sequence,
-                SourceField::Body,
-                None,
+                maka_event_log::transcript::SourceSelection {
+                    locator: sequence,
+                    field: SourceField::Body,
+                    path: None,
+                },
                 SourcePosition::After { offset },
                 256,
             )
@@ -2299,9 +2552,11 @@ async fn notification_origin_survives_every_history_and_bounded_source_fragment(
         .history_source(
             "notice",
             through,
-            sequence,
-            SourceField::Body,
-            None,
+            maka_event_log::transcript::SourceSelection {
+                locator: sequence,
+                field: SourceField::Body,
+                path: None,
+            },
             SourcePosition::Start,
             1024,
         )
@@ -2321,9 +2576,11 @@ async fn notification_origin_survives_every_history_and_bounded_source_fragment(
         .history_source(
             "notice",
             through,
-            sequence,
-            SourceField::Body,
-            None,
+            maka_event_log::transcript::SourceSelection {
+                locator: sequence,
+                field: SourceField::Body,
+                path: None,
+            },
             SourcePosition::After { offset: end as u64 },
             1024,
         )
@@ -2510,7 +2767,17 @@ async fn response_models_follow_exact_steps_fences_and_retained_copied_history()
             let mut done = false;
             for _ in 0..128 {
                 let page = log
-                    .history_text(session, through, position, true, 37, 2, 4096)
+                    .history_text(
+                        session,
+                        through,
+                        position,
+                        true,
+                        maka_event_log::transcript::HistoryLimits {
+                            max_bytes: 37,
+                            max_chunks: Some(2),
+                            max_json_bytes: 4096,
+                        },
+                    )
                     .await
                     .unwrap();
                 assert!(serde_json::to_vec(&page).unwrap().len() <= 4096);
@@ -2541,13 +2808,15 @@ async fn response_models_follow_exact_steps_fences_and_retained_copied_history()
                         .history_source(
                             session,
                             through,
-                            chunk.position,
-                            if *field == HistoryField::Thinking {
-                                SourceField::Thinking
-                            } else {
-                                SourceField::Body
+                            maka_event_log::transcript::SourceSelection {
+                                locator: chunk.position,
+                                field: if *field == HistoryField::Thinking {
+                                    SourceField::Thinking
+                                } else {
+                                    SourceField::Body
+                                },
+                                path: None,
                             },
-                            None,
                             SourcePosition::After {
                                 offset: chunk.offset,
                             },
@@ -2741,7 +3010,17 @@ async fn response_models_follow_exact_steps_fences_and_retained_copied_history()
 async fn item_accepted_text_at_old_fence_is_independent_of_later_body_cache() {
     async fn snapshot(log: &EventLog, through: u64) -> (Value, Vec<(Role, String)>) {
         let page = log
-            .history_text("a", through, Position::Start, false, 4096, 16, 16384)
+            .history_text(
+                "a",
+                through,
+                Position::Start,
+                false,
+                maka_event_log::transcript::HistoryLimits {
+                    max_bytes: 4096,
+                    max_chunks: Some(16),
+                    max_json_bytes: 16384,
+                },
+            )
             .await
             .unwrap();
         let Page::Ready { chunks, .. } = &page;

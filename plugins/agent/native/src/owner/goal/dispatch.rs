@@ -72,7 +72,7 @@ impl Owner {
     pub(in crate::owner) fn start_goals(self: &Arc<Self>) {
         let owner = self.clone();
         self.producers.spawn(async move {
-            let mut changes = owner.store.subscribe_commits();
+            let mut changes = owner.store.subscribe_changes();
             let mut previous_error = None;
             loop {
                 changes.borrow_and_update();
@@ -127,6 +127,9 @@ impl Owner {
             let original = identity(&pending.request);
             let boundary = self
                 .store
+                .session(&session)
+                .await
+                .map_err(|error| error.to_string())?
                 .turn_boundary(&session, &original.turn_id)
                 .await
                 .map_err(reason)?;
@@ -170,6 +173,9 @@ impl Owner {
             let message = &request.source.message.message_id;
             if self
                 .store
+                .session(&session)
+                .await
+                .map_err(|error| error.to_string())?
                 .message_cancelled(&session, message)
                 .await
                 .map_err(reason)?
@@ -184,6 +190,9 @@ impl Owner {
             }
             let accepted = self
                 .store
+                .session(&session)
+                .await
+                .map_err(|error| error.to_string())?
                 .message_admission(&session, message)
                 .await
                 .map_err(reason)?

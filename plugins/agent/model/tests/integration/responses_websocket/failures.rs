@@ -20,7 +20,7 @@
 use super::*;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn screenshot_requests_can_exceed_the_response_frame_limit() {
+async fn screenshot_requests_are_reassembled_from_bounded_transport_fragments() {
     use maka_agent_facts::model::prompt::ContentPart;
     use maka_agent_facts::model::prompt::FileData;
     use maka_agent_facts::model::prompt::Message as Prompt;
@@ -33,7 +33,7 @@ async fn screenshot_requests_can_exceed_the_response_frame_limit() {
                 socket,
                 Some(
                     tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default()
-                        .max_frame_size(Some(64 * 1024 * 1024))
+                        .max_frame_size(Some(16 * 1024))
                         .max_message_size(Some(64 * 1024 * 1024)),
                 ),
             )
@@ -53,7 +53,8 @@ async fn screenshot_requests_can_exceed_the_response_frame_limit() {
                 provider_options: None,
             }],
             provider_options: None,
-        }];
+        }]
+        .into();
         let executor = ModelExecutor::new(Duration::from_secs(10)).unwrap();
         generate(&executor, &Conversation::default(), input).await;
         server.await.unwrap();
@@ -231,17 +232,8 @@ async fn rejected_upgrade_falls_back_before_dispatch_and_stays_http() {
                 if expected == "GET" {
                     socket.write_all(b"HTTP/1.1 405 Method Not Allowed\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await.unwrap();
                 } else {
-                    let length: usize = head.lines().find_map(|line| {
-                        let (key, value) = line.split_once(':')?;
-                        key.eq_ignore_ascii_case("content-length").then(|| value.trim().parse().unwrap())
-                    }).unwrap();
-                    while bytes.len() < boundary + length {
-                        let mut buffer = [0; 4096];
-                        let count = socket.read(&mut buffer).await.unwrap();
-                        assert_ne!(count, 0);
-                        bytes.extend_from_slice(&buffer[..count]);
-                    }
-                    let body: Value = serde_json::from_slice(&bytes[boundary..boundary + length]).unwrap();
+                    let body = crate::http_body(&mut socket, &head, bytes[boundary..].to_vec()).await;
+                    let body: Value = serde_json::from_slice(&body).unwrap();
                     assert_eq!(body["stream"], true);
                     assert!(body.get("type").is_none());
                     let response: String = events("resp_http", "OK").iter().map(|event| format!("data: {event}\n\n")).collect();
@@ -280,25 +272,8 @@ async fn assert_failed(mut stream: maka_model::ModelStream) {
 
 async fn http_ok(listener: &TcpListener) -> Value {
     let (mut socket, _) = listener.accept().await.unwrap();
-    let mut head = Vec::new();
-    loop {
-        head.push(socket.read_u8().await.unwrap());
-        if head.ends_with(b"\r\n\r\n") {
-            break;
-        }
-    }
-    let head = String::from_utf8(head).unwrap();
+    let (head, bytes) = crate::http_request(&mut socket).await;
     assert!(head.starts_with("POST /v1/responses "));
-    let length: usize = head
-        .lines()
-        .find_map(|line| {
-            let (key, value) = line.split_once(':')?;
-            key.eq_ignore_ascii_case("content-length")
-                .then(|| value.trim().parse().unwrap())
-        })
-        .unwrap();
-    let mut bytes = vec![0; length];
-    socket.read_exact(&mut bytes).await.unwrap();
     let body: Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(body["stream"], true);
     assert!(body.get("previous_response_id").is_none());

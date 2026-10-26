@@ -324,7 +324,6 @@ impl TextFile {
                 .resources
                 .reserve()
                 .map_err(|_| TextFileError::WorkerFailed)?;
-            let wake = self.resources.clone();
             let operation = command.operation.clone();
             let (sender, receiver) = mpsc::sync_channel(1);
             std::thread::Builder::new()
@@ -350,7 +349,6 @@ impl TextFile {
                         state,
                         _bytes: bytes,
                     });
-                    wake.notify();
                     ticket.complete(cleanup);
                 })
                 .map_err(|_| TextFileError::WorkerFailed)?;

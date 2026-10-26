@@ -131,8 +131,15 @@ the operating system helper or terminal handles clipboard acceptance.
 The app's [`nsh/keymap`](../modules/nsh-keymap.md) bindings run before default handling. Terminal emulators decide
 which keys and modifiers reach an app; choose shortcuts that your supported terminal forwards.
 
-Selectable text supports mouse selection and Ctrl+A/C, and inline text links activate through pointer hit testing.
-Native alert and action-sheet overlays use Tab or the arrows to choose a button and Enter to activate it.
+Selectable text supports mouse selection, and inline text links activate through pointer hit testing.
+[`SelectionArea`](../elements/selection-area.md) extends a selection across text nodes, lines and `TextView`
+blocks. Drag or Shift+click to extend it; dragging beyond a Scroll edge scrolls while held. Ctrl+A selects the
+area, Ctrl+C or Ctrl+Insert copies, and Escape clears a nonempty selection. Text marked `selectable={false}`
+stays out, so labels and control captions need not enter a copy. Copy uses the underlying text, including its
+line breaks and Unicode content, through the same host clipboard and OSC 52 path described above.
+A modal or focused popup suspends keyboard handling for a retained background selection; closing the overlay
+makes that selection available again. Native alert and action-sheet overlays use Tab or the arrows to choose
+a button and Enter to activate it.
 
 [`nsh/desktop`](../modules/nsh-desktop.md) is available on terminal surfaces for titles and menus.
 `platform.isTerminal` identifies this presentation while `platform.idiom === "desktop" && !platform.isTerminal` identifies graphical desktop surfaces.

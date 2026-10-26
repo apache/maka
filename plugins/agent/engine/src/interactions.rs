@@ -19,19 +19,19 @@
 
 use crate::RunError;
 use maka_agent_facts::event::Invocation;
-use maka_event_log::EventLog;
+use maka_event_log::root_store::SessionStore;
 use tokio_util::sync::CancellationToken;
 
 /// Host-owned canonical requests pause model progress, not cell execution or
 /// client observation. No UI connection, timeout, or second pending counter owns
 /// this boundary. The producers/Host remain responsible for committing outcomes.
 pub(super) async fn wait_until_clear(
-    log: &EventLog,
+    log: &SessionStore,
     invocation: &Invocation,
     cancellation: &CancellationToken,
 ) -> Result<(), RunError> {
     // Subscribe before reading so an answer cannot land in a missed-wakeup gap.
-    let mut commits = log.subscribe_commits();
+    let mut commits = log.subscribe_session_commits(&invocation.session_id)?;
     loop {
         if cancellation.is_cancelled() {
             return Err(RunError::Cancelled);
@@ -68,13 +68,8 @@ mod tests {
 
     #[tokio::test]
     async fn canonical_wait_is_run_scoped_waits_for_every_outcome_and_cancels_without_answering() {
-        let directory = tempfile::tempdir().unwrap();
-        let log = EventLog::open(&directory.path().join("events.sqlite"))
-            .await
-            .unwrap();
-        log.create_session("session", "create", &serde_json::json!({}), 1)
-            .await
-            .unwrap();
+        let (_directory, root) = crate::test_support::root().await;
+        let log = crate::test_support::session(&root, "session").await;
         let invocation = Invocation {
             session_id: "session".into(),
             turn_id: "turn".into(),

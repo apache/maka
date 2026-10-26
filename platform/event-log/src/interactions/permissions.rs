@@ -24,6 +24,7 @@ use maka_agent_facts::interaction::InteractionOutcome;
 use maka_agent_facts::interaction::InteractionRecord;
 use maka_agent_facts::interaction::InteractionRequest;
 use maka_agent_facts::interaction::entity_id;
+use maka_agent_facts::workspace::PermissionBasis;
 use maka_sandbox::grant::{Decision, Permissions, Scope};
 use sqlx::Connection;
 
@@ -39,38 +40,20 @@ pub(super) async fn require_revision(
     connection: &mut sqlx::SqliteConnection,
     record: &InteractionRecord,
 ) -> Result<(), StoreError> {
-    let revision = match &record.request {
-        InteractionRequest::Permissions { base_revision, .. }
+    let expected = match &record.request {
+        InteractionRequest::Permissions { basis, .. }
         | InteractionRequest::ClientCapability {
-            base_revision: Some(base_revision),
-            ..
-        } => Some(*base_revision),
+            basis: Some(basis), ..
+        } => Some(*basis),
         _ => None,
     };
-    if let Some(revision) = revision
-        && boundary_revision(connection, &record.session_id).await? != Some(revision)
+    if let Some(expected) = expected
+        && crate::workspace_bindings::permission_basis(connection, &record.session_id).await?
+            != Some(expected)
     {
         return Err(invalid("permission request has a stale Session boundary"));
     }
     Ok(())
-}
-
-pub(crate) async fn boundary_revision(
-    connection: &mut sqlx::SqliteConnection,
-    session: &str,
-) -> Result<Option<u64>, StoreError> {
-    let revision: Option<Option<i64>> = sqlx::query_scalar(
-        "SELECT json_extract(configuration, '$.boundary_revision') FROM session_control WHERE id = ? AND archived = 0",
-    ).bind(session).fetch_optional(connection).await?;
-    revision
-        .flatten()
-        .map(|revision| {
-            u64::try_from(revision)
-                .ok()
-                .filter(|revision| *revision <= maka_agent_facts::interaction::MAX_SAFE_INTEGER)
-                .ok_or_else(|| invalid("invalid Session permission boundary revision"))
-        })
-        .transpose()
 }
 
 impl EventLog {
@@ -82,7 +65,7 @@ impl EventLog {
         &self,
         invocation: &Invocation,
         tool_use_id: Option<&str>,
-        base_revision: u64,
+        basis: &PermissionBasis,
     ) -> Result<Vec<PermissionGrant>, StoreError> {
         self.validate_root()?;
         for id in [
@@ -92,16 +75,15 @@ impl EventLog {
         ] {
             entity_id(id).map_err(invalid)?;
         }
-        if tool_use_id.is_some_and(|id| id.is_empty())
-            || base_revision > maka_agent_facts::interaction::MAX_SAFE_INTEGER
-        {
+        if tool_use_id.is_some_and(|id| id.is_empty()) || basis.validate().is_err() {
             return Err(invalid("invalid permission observation identity"));
         }
         let invocation = invocation.clone();
+        let basis = *basis;
         let tool_use_id = tool_use_id.map(str::to_owned);
         self.connection.run(move |connection| Box::pin(async move {
             let mut tx = connection.begin().await?;
-            if boundary_revision(&mut tx, &invocation.session_id).await? != Some(base_revision) {
+            if crate::workspace_bindings::permission_basis(&mut tx, &invocation.session_id).await? != Some(basis) {
                 return Ok(Vec::new());
             }
             let ids: Vec<String> = sqlx::query_scalar(
@@ -109,7 +91,9 @@ impl EventLog {
                  JOIN interaction_outcomes AS outcome ON outcome.request_id = request.request_id
                  WHERE request.session_id = ?
                  AND json_extract(request.record_json, '$.request.kind') = 'permissions'
-                 AND json_extract(request.record_json, '$.request.baseRevision') = ?
+                 AND json_extract(request.record_json, '$.request.basis.boundaryRevision') = ?
+                 AND json_extract(request.record_json, '$.request.basis.binding.id') = ?
+                 AND json_extract(request.record_json, '$.request.basis.binding.permissionEpoch') = ?
                  AND json_extract(outcome.outcome_json, '$.kind') = 'permissions_decision'
                  AND json_extract(outcome.outcome_json, '$.decision.decision') = 'allow'
                  AND (json_extract(outcome.outcome_json, '$.decision.scope') = 'session'
@@ -119,7 +103,7 @@ impl EventLog {
                                    AND json_extract(request.record_json, '$.runId') = ?
                                    AND json_extract(request.record_json, '$.request.toolUseId') = ?))))
                  ORDER BY request.created_at, request.request_id",
-            ).bind(&invocation.session_id).bind(base_revision as i64).bind(&invocation.turn_id)
+            ).bind(&invocation.session_id).bind(basis.boundary_revision as i64).bind(basis.binding.id.to_string()).bind(basis.binding.permission_epoch as i64).bind(&invocation.turn_id)
                 .bind(&invocation.run_id).bind(&tool_use_id).fetch_all(&mut *tx).await?;
             let mut grants = Vec::with_capacity(ids.len());
             for id in ids {
@@ -137,19 +121,22 @@ impl EventLog {
 
 /// Called only inside the owning metadata CAS. Existing first-writer outcomes
 /// stay immutable; the new revision makes those earlier grants inapplicable.
-pub(crate) async fn close_previous_boundary(
+pub(crate) async fn close_previous_basis(
     connection: &mut sqlx::SqliteConnection,
     session: &str,
-    previous: u64,
+    previous: PermissionBasis,
     now: u64,
 ) -> Result<usize, StoreError> {
-    let current = boundary_revision(connection, session)
+    let current = crate::workspace_bindings::permission_basis(connection, session)
         .await?
         .ok_or_else(|| invalid("Session permission boundary disappeared"))?;
     if current == previous {
         return Ok(0);
     }
-    if current <= previous {
+    if current.boundary_revision < previous.boundary_revision
+        || (current.binding == previous.binding
+            && current.boundary_revision <= previous.boundary_revision)
+    {
         return Err(invalid("Session permission boundary must advance"));
     }
     let closure = InteractionOutcome::Closure {
@@ -159,9 +146,9 @@ pub(crate) async fn close_previous_boundary(
     let mut closed = 0;
     for record in super::pending(connection, session).await? {
         if matches!(record.request,
-            InteractionRequest::Permissions { base_revision, .. }
-            | InteractionRequest::ClientCapability { base_revision: Some(base_revision), .. }
-            if base_revision == previous)
+            InteractionRequest::Permissions { basis, .. }
+            | InteractionRequest::ClientCapability { basis: Some(basis), .. }
+            if basis == previous)
         {
             closure
                 .validate_for_request(&record.request)

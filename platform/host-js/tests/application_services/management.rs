@@ -19,8 +19,8 @@
 
 use super::*;
 use maka_event_log::{
-    EventLog,
     root::{RootNamespaces, RootOwner},
+    root_store::RootStore,
 };
 use maka_host_runtime::application::{Binding, management::DEPLOYMENT_MANAGER};
 use maka_plugin_core::{
@@ -101,7 +101,7 @@ struct Fixture {
     _directory: tempfile::TempDir,
     root: std::path::PathBuf,
     namespaces: RootNamespaces,
-    store: Arc<EventLog>,
+    store: Arc<RootStore>,
     app: Application,
     issuer: Issuer,
     source: DeploymentRef,
@@ -122,7 +122,7 @@ impl Fixture {
             control: directory.path().join("control"),
         };
         let store = Arc::new(
-            EventLog::for_root(Arc::new(RootOwner::create(&root, &namespaces).unwrap()))
+            RootStore::open(Arc::new(RootOwner::create(&root, &namespaces).unwrap()))
                 .await
                 .unwrap(),
         );
@@ -620,7 +620,9 @@ async fn installed_bytes_do_not_activate_until_explicit_cas_replace_and_original
     assert_eq!(f.read().await.source.reference, source);
     assert_eq!(
         f.store
-            .operation_observation(&install.reference)
+            .operation(&install.reference)
+            .unwrap()
+            .operation_observation()
             .await
             .unwrap()
             .unwrap()
@@ -878,7 +880,9 @@ async fn ui_target_uses_original_root_but_keeps_host_journal_and_fixed_presentat
     );
     assert_eq!(
         f.store
-            .operation_observation(&install.reference)
+            .operation(&install.reference)
+            .unwrap()
+            .operation_observation()
             .await
             .unwrap()
             .unwrap()
@@ -1171,7 +1175,9 @@ async fn instance_pages_freeze_source_and_nested_enabled_intents_preserve_origin
     );
     assert_eq!(
         f.store
-            .operation_observation(&change.reference)
+            .operation(&change.reference)
+            .unwrap()
+            .operation_observation()
             .await
             .unwrap()
             .unwrap()
@@ -1631,7 +1637,9 @@ async fn composition_choices_and_atomic_edits_preserve_source_bindings_and_origi
     // Original durable receipts remain exact after further source revisions.
     assert_eq!(
         f.store
-            .operation_observation(&committed.reference)
+            .operation(&committed.reference)
+            .unwrap()
+            .operation_observation()
             .await
             .unwrap()
             .unwrap()

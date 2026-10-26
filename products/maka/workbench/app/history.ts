@@ -19,6 +19,7 @@
 
 import type {
   AgentHistoryAttachment,
+  HistoryCompaction,
   HistoryModel,
   HistoryTurnTiming,
 } from '../../../../packages/plugin-sdk/src/index.js';
@@ -45,6 +46,7 @@ export type Row = {
   timing?: HistoryTurnTiming;
   model?: HistoryModel;
   finalOutput?: boolean;
+  compaction?: HistoryCompaction;
   metadataThrough?: number;
   invocationId?: string;
   stepId?: string;
@@ -97,6 +99,7 @@ export function historyMetadata(chunk: any, through: number, previous?: Row) {
     timing: chunk.timing,
     model: chunk.model,
     finalOutput: chunk.finalOutput,
+    compaction: chunk.compaction,
     tool: chunk.tool,
     metadataThrough: through,
   };

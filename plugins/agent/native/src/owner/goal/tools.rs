@@ -111,7 +111,15 @@ impl Owner {
         &self,
         context: &ToolCallContext,
     ) -> Result<Saved<MessageBasis>, String> {
-        if !self.settings.goals || self.session(&context.invocation.session_id).await?.archived {
+        if !self.settings.goals
+            || self
+                .tool_store(context)?
+                .get::<StoredSessionConfiguration>()
+                .await
+                .map_err(|error| error.to_string())?
+                .ok_or("agent_session_unavailable")?
+                .archived
+        {
             return Err("goal_unavailable".into());
         }
         let saved = self
@@ -130,7 +138,7 @@ impl Owner {
             .as_ref()
             .ok_or("goal_iteration_missing")?;
         let boundary = self
-            .store
+            .tool_store(context)?
             .invocation_boundary(
                 &context.invocation.session_id,
                 &context.invocation.invocation_id,

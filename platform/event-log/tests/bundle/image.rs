@@ -137,7 +137,17 @@ async fn rows(
     let mut position = Position::Start;
     loop {
         let Page::Ready { chunks, after, .. } = log
-            .history_text(session, through, position, false, 8192, 8, 65536)
+            .history_text(
+                session,
+                through,
+                position,
+                false,
+                maka_event_log::transcript::HistoryLimits {
+                    max_bytes: 8192,
+                    max_chunks: Some(8),
+                    max_json_bytes: 65536,
+                },
+            )
             .await
             .unwrap();
         for chunk in chunks {

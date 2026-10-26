@@ -108,10 +108,11 @@ pub(super) async fn finish(listener: &TcpListener, f: &Fixture) -> Value {
     result
 }
 pub(super) async fn pending(f: &Fixture, session: &str) -> InteractionRecord {
-    let mut commits = f.store.subscribe_commits();
+    let mut commits = f.session(session).await.subscribe_commits().unwrap();
     loop {
         if let Some(record) = f
-            .store
+            .session(session)
+            .await
             .pending_interactions(session)
             .await
             .unwrap()
@@ -258,11 +259,11 @@ async fn native_files_reuse_actual_read_search_write_edit_and_patch_executors() 
                 "applyPatch" => assert_eq!(std::fs::read_to_string(f.workspace.join("new.txt")).unwrap(), expected),
                 _ => assert!(result.to_string().contains(expected.trim()), "{method}: {result}"),
             }
-            assert!(f.store.pending_interactions(&session).await.unwrap().is_empty());
+            assert!(f.session(&session).await.pending_interactions(&session).await.unwrap().is_empty());
             {
                 let facts = service_tools::facts(&f, &session).await;
                 assert!(facts.iter().any(|fact| matches!(fact, maka_agent_facts::event::Fact::ToolDispatched {presentation: Some(key), name, ..} if key == &format!("maka.workspace.Files@1/{method}") && name == "WorkspaceFile")));
-                let through = *f.store.subscribe_commits().borrow();
+                let through = f.through(&session).await;
 
                 let page = f.query("history", json!({"sessionId":session,"through":through,"position":{"kind":"start"}})).await.unwrap();
                 assert!(page["chunks"].as_array().unwrap().iter().any(|chunk| chunk["tool"]["call"]["presentation"] == format!("maka.workspace.Files@1/{method}")), "{page}");
@@ -436,7 +437,8 @@ async fn native_code_mode_mutations_admit_large_utf8_inputs_and_preserve_origina
             );
             let bytes = std::fs::read(&target).unwrap();
             let prefix = f
-                .store
+                .session(&(session))
+                .await
                 .scoped_prefix(
                     LogScope::Session {
                         id: session.clone(),
@@ -471,7 +473,8 @@ async fn native_code_mode_mutations_admit_large_utf8_inputs_and_preserve_origina
                 })
                 .unwrap();
             let receipt = f
-                .store
+                .session(&session)
+                .await
                 .resolve_tool_result(&session, &settled.event.id)
                 .await
                 .unwrap();
@@ -520,7 +523,8 @@ async fn native_code_mode_mutations_admit_large_utf8_inputs_and_preserve_origina
             assert_eq!(bytes, expected.as_bytes());
         }
         assert!(
-            f.store
+            f.session(&session)
+                .await
                 .pending_interactions(&session)
                 .await
                 .unwrap()
@@ -548,15 +552,10 @@ async fn native_file_permission_decisions_recover_first_winner_and_obey_turn_sco
             .await;
             let record = pending(&f, &session).await;
             assert!(!f.workspace.join("approved.txt").exists());
-            let InteractionRequest::Permissions {
-                base_revision,
-                request,
-                ..
-            } = &record.request
-            else {
+            let InteractionRequest::Permissions { basis, request, .. } = &record.request else {
                 unreachable!()
             };
-            assert_eq!(*base_revision, 1);
+            assert_eq!(basis.boundary_revision, 1);
             assert_eq!(request.permissions.filesystem.len(), 1);
             assert_eq!(
                 request.permissions.filesystem[0].path,
@@ -644,15 +643,15 @@ async fn revocation_and_stop_close_waiting_file_requests_without_effects() {
                 // Unchanged settings preserve pending requests; explicit revoke advances the boundary.
                 let unchanged = change(&f, &session, "read_only", true, false).await;
                 assert_eq!(unchanged["session"]["boundaryRevision"], 1);
-                assert!(f.store.interaction(&record.request_id).await.unwrap().unwrap().outcome.is_none());
+                assert!(f.session(&record.session_id).await.interaction(&record.request_id).await.unwrap().unwrap().outcome.is_none());
                 assert_eq!(change(&f, &session, "read_only", true, true).await["session"]["boundaryRevision"], 2);
                 assert_eq!(finish(&listener, &f).await["kind"], "failed");
             }
             let late = answer(&f, &record, Some("session")).await;
             assert_eq!(late["record"]["outcome"]["kind"], "closure");
-            assert!(matches!(f.store.interaction(&record.request_id).await.unwrap().unwrap().outcome, Some(InteractionOutcome::Closure { .. })));
+            assert!(matches!(f.session(&record.session_id).await.interaction(&record.request_id).await.unwrap().unwrap().outcome, Some(InteractionOutcome::Closure { .. })));
             assert!(!f.workspace.join("blocked.txt").exists());
-            assert!(f.store.pending_interactions(&session).await.unwrap().is_empty());
+            assert!(f.session(&session).await.pending_interactions(&session).await.unwrap().is_empty());
             close(&f).await;
         }
     }).await.unwrap();
@@ -684,7 +683,8 @@ async fn native_files_never_grant_metadata_private_root_symlink_or_parent_escape
             let result = finish(&listener, &f).await;
             assert_eq!(result["kind"], "failed", "{path}: {result}");
             assert!(
-                f.store
+                f.session(&session)
+                    .await
                     .pending_interactions(&session)
                     .await
                     .unwrap()
@@ -703,7 +703,8 @@ async fn native_files_never_grant_metadata_private_root_symlink_or_parent_escape
         .await;
         assert_eq!(finish(&listener, &f).await["kind"], "failed");
         assert!(
-            f.store
+            f.session(&session)
+                .await
                 .pending_interactions(&session)
                 .await
                 .unwrap()
@@ -781,7 +782,8 @@ async fn sandbox_off_allows_external_files_and_restoring_it_restricts_access() {
                     "{mode}: {result}"
                 );
                 assert!(
-                    f.store
+                    f.session(&session)
+                        .await
                         .pending_interactions(&session)
                         .await
                         .unwrap()
@@ -856,7 +858,8 @@ async fn native_files_external_write_requires_approval_and_once_grants_expire() 
         assert_eq!(finish(&listener, &f).await["kind"], "completed");
         assert_eq!(std::fs::read_to_string(&temporary).unwrap(), "temporary");
         assert!(
-            f.store
+            f.session(&session)
+                .await
                 .pending_interactions(&session)
                 .await
                 .unwrap()

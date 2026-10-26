@@ -39,7 +39,8 @@ use maka_agent_facts::tools::ToolFuture;
 use maka_code_runtime::{
     CellAbort, CellContext, CellDiagnosticKind, CellLimits, CellResult, CellStore, ToolMetadata,
 };
-use maka_event_log::EventLog;
+use maka_event_log::root::{RootNamespaces, RootOwner};
+use maka_event_log::root_store::RootStore;
 use maka_fs_tools::{MutationExecutor, ReadExecutor, ReadScope, WriteCoordinator, WriteScope};
 use maka_js_runtime::CodeExecutor;
 use maka_sandbox::{
@@ -52,8 +53,9 @@ use uuid::Uuid;
 
 #[derive(clap::Args)]
 pub(super) struct Args {
-    #[arg(long, value_name = "FILE")]
-    log: PathBuf,
+    /// Owned State Root directory for this execution.
+    #[arg(long, value_name = "DIRECTORY")]
+    root: PathBuf,
     /// Filesystem isolation: read-only, workspace-write (default), danger-full-access.
     #[arg(long, value_parser = parse_sandbox)]
     sandbox: Option<SandboxMode>,
@@ -124,15 +126,20 @@ pub(super) async fn run(args: Args) -> Result<(), maka_host_runtime::HostError> 
     };
     let cwd = std::env::current_dir()?.canonicalize()?;
     let cwd = PathBuf::from(maka_fs_tools::workspace::project::host_path(&cwd)?);
-    let log = Arc::new(EventLog::open(&args.log).await?);
+    let namespaces = RootNamespaces::for_current_account()?;
+    let owner = if args.root.join(maka_event_log::root::ROOT_MARKER).exists() {
+        RootOwner::open(&args.root, &namespaces)?
+    } else {
+        RootOwner::create(&args.root, &namespaces)?
+    };
+    let root = Arc::new(RootStore::open(Arc::new(owner)).await?);
+    maka_host_runtime::recovery::recover(&root).await?;
     let (mut sandbox, _) = maka_fs_tools::workspace::permissions::resolve(sandbox_mode, &cwd)?;
     if let Sandbox::Managed { filesystem, .. } = &mut sandbox {
-        let path = args.log.canonicalize()?;
-        let path = maka_fs_tools::workspace::project::host_path(&path)?;
-        for suffix in ["", "-wal", "-shm", "-journal"] {
-            filesystem
-                .rules
-                .push(Rule::exact(format!("{path}{suffix}"), Access::Deny));
+        for path in [&args.root, &namespaces.ownership, &namespaces.control] {
+            let path = path.canonicalize()?;
+            let path = maka_fs_tools::workspace::project::host_path(&path)?;
+            filesystem.rules.push(Rule::subtree(path, Access::Deny));
         }
     }
     let (read_scope, write_scope) = match sandbox {
@@ -160,6 +167,33 @@ pub(super) async fn run(args: Args) -> Result<(), maka_host_runtime::HostError> 
         run_id: id(),
         invocation_id: id(),
     };
+    let binding = root
+        .attach_workspace("cli-code", &json!({"path":cwd}))
+        .await?;
+    let stamp = maka_agent_facts::workspace::BindingStamp {
+        id: binding.id,
+        permission_epoch: binding.permission_epoch_at_attach,
+    };
+    let now = u64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_millis(),
+    )?;
+    let session = root
+        .create_session(
+            &invocation.session_id,
+            &invocation.invocation_id,
+            &json!({"workspace":binding,"boundary_revision":0}),
+            now,
+        )
+        .await?;
+    let scope = session
+        .execution_scope(Some(maka_agent_facts::workspace::PermissionBasis {
+            boundary_revision: 0,
+            binding: stamp,
+        }))
+        .await?;
+    let log = Arc::new(scope.store());
     log.append(&EventWrite::plain(RuntimeEvent::new(
         invocation.clone(),
         Fact::InvocationOpened {
@@ -171,6 +205,7 @@ pub(super) async fn run(args: Args) -> Result<(), maka_host_runtime::HostError> 
                 editing_tools: None,
                 tool_discovery: false,
                 tool_composition: None,
+                workspace_binding: Some(stamp),
                 workspace_identity: None,
                 cwd: cwd
                     .into_os_string()
@@ -198,15 +233,8 @@ pub(super) async fn run(args: Args) -> Result<(), maka_host_runtime::HostError> 
         invocation.clone(),
         Arc::new(local_tools),
     ));
-    let cancellation = CancellationToken::new();
-    let signal_cancel = cancellation.clone();
-    let signal = tokio::spawn(async move {
-        if tokio::signal::ctrl_c().await.is_ok() {
-            signal_cancel.cancel();
-        }
-    });
     let context = CellContext::new(
-        CellStore::default(),
+        CellStore::temporary().map_err(|error| error.message)?,
         tools
             .names()
             .into_iter()
@@ -215,7 +243,16 @@ pub(super) async fn run(args: Args) -> Result<(), maka_host_runtime::HostError> 
                 description: String::new(),
             })
             .collect(),
-    );
+    )
+    .map_err(|error| error.message)?;
+    let cancellation = CancellationToken::new();
+    let signal_cancel = cancellation.clone();
+    let signal = tokio::spawn(async move {
+        if tokio::signal::ctrl_c().await.is_ok() {
+            signal_cancel.cancel();
+        }
+    });
+    let lease = scope.accept();
     let result = engine
         .execute_with_context(source, tools, cancellation, context.clone())
         .await;
@@ -248,12 +285,23 @@ pub(super) async fn run(args: Args) -> Result<(), maka_host_runtime::HostError> 
             model_failure: None,
         },
     };
-    log.append(&EventWrite::plain(RuntimeEvent::new(
-        invocation.clone(),
-        Fact::InvocationEnded { outcome },
-    ))?)
-    .await?;
-    log.shutdown().await?;
+    let terminal = log
+        .append(&EventWrite::plain(RuntimeEvent::new(
+            invocation.clone(),
+            Fact::InvocationEnded { outcome },
+        ))?)
+        .await;
+    if matches!(
+        &result,
+        Err(CellAbort::Tool(ToolError::CleanupUnconfirmed(_)) | CellAbort::Internal(_))
+    ) {
+        lease.retain_unconfirmed();
+    } else {
+        lease.finish();
+    }
+    let closed = root.shutdown().await;
+    terminal?;
+    closed?;
     match result {
         Ok(output) => {
             println!(

@@ -85,17 +85,22 @@ pub(crate) fn events_changed(surface: &Rc<Surface>, view: &NshView) {
 
 pub(crate) fn deleted(surface: &Surface, id: NodeId) {
     surface.file_drop.destinations.borrow_mut().set(id, false);
-    if surface
+    invalidate(surface, id);
+    if surface.file_drop.destinations.borrow().count == 0 {
+        reset(surface);
+    }
+}
+
+/// Ends the old destination's drag state without discarding OLE's offer.
+pub(crate) fn invalidate(surface: &Surface, id: NodeId) {
+    let matches = surface
         .file_drop
         .target
         .borrow()
         .as_ref()
-        .is_some_and(|v| v.id() == id)
-    {
+        .is_some_and(|view| view.id() == id);
+    if matches {
         set_target(surface, None);
-    }
-    if surface.file_drop.destinations.borrow().count == 0 {
-        reset(surface);
     }
 }
 

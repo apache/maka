@@ -360,7 +360,6 @@ fn entry(
         description: description.into(),
         valid,
         shadowed_by,
-        metadata_truncated: false,
         issues: issues.iter().map(|issue| issue.message.clone()).collect(),
     }
 }

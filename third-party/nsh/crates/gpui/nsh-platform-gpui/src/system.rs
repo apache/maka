@@ -930,6 +930,25 @@ pub(crate) fn command(surface: &Rc<Surface>, _id: NodeId, command: &Command) {
         Command::ReadClipboardImage { id, has_only } => {
             read_clipboard_image(surface.key(), *id, *has_only)
         }
+        Command::OpenUrl { id, url } => {
+            let (key, id, url) = (surface.key(), *id, url.clone());
+            crate::rt::on_app(move |cx| {
+                // GPUI hands it to the system's opener (`NSWorkspace`,
+                // `ShellExecuteW`, the desktop portal / `xdg-open`) and
+                // reports nothing back: it went out.
+                cx.open_url(&url);
+                if let Some(surface) = Surface::by_key(key) {
+                    surface.event(
+                        ROOT_ID,
+                        EventKind::OpenUrl,
+                        EventPayload::Map(vec![
+                            ("id", PayloadValue::Number(id as f64)),
+                            ("opened", PayloadValue::Bool(true)),
+                        ]),
+                    );
+                }
+            });
+        }
         Command::ReadClipboardFiles { id } => {
             let (key, id) = (surface.key(), *id);
             crate::rt::on_app(move |cx| {

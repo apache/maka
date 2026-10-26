@@ -76,8 +76,10 @@ app that updates twice a second:
 | `CPU` / `GPU` / `MEM` | The process: CPU (100% is one core), its GPU share, its memory footprint (Activity Monitor's figure). |
 
 The bars below are the last 120 frames' main-thread time against one refresh (the line): green within half of it, amber
-within it, red over. With `--trace` too, the host also logs the readings once a second (milliseconds as
-mean/p50/p95/max). Measure release builds; the monitor costs nothing while it is off.
+within it, red over. While the panel shows, the readings are also logged once a second (target `nsh::perf`, in the
+Linux backend's shape with macOS's frame phases `tick`, `drain` and `canvas`; milliseconds as mean/p50/p95/max), which
+`nsh test --fps -v` shows and `examples/gallery/tools/perf.py` reads. Measure release builds; the monitor costs nothing
+while it is off.
 
 ## Packaging
 
@@ -155,6 +157,10 @@ or update relaunch, call `nsh_platform_macos::quit_app()` from any thread. It
 closes the retained window, stops the engine and returns from `run_app`.
 `nsh_core::ui::desktop::close_window()` follows the chosen window-close policy.
 
+
+`AppOptions::cache` (or `AppView::set_cache`, for the apps loaded next) sets where the apps keep their caches, the
+[images they download](./images-and-assets.md#kept-on-disk), and how much each keeps (`CacheOptions`: the system's
+cache directory and 256 MiB of images by default).
 
 `AppView::set_locale(Some(locale))` and `AppView::set_font_scale(Some(scale))` give the app your app's language and
 text size in place of the system's (`None` follows the system's again): `locale()`, `Intl`, `fontScale()` and text

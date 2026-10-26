@@ -19,6 +19,9 @@ const TEXT_COLOR: f32 = 12.0;
 const SHADOW_COLOR: f32 = 13.0;
 /// The shadow's radius (points).
 const SHADOW_RADIUS: f32 = 14.0;
+/// How much further a sticky cell sticks (points; `StickyCell::offset`):
+/// `ScrollBox.java` pins it again.
+const STICKY_OFFSET: f32 = 15.0;
 /// Canvas animated value slot `n` is `CANVAS_ARG + n` (a color as ARGB bits).
 const CANVAS_ARG: f32 = 1000.0;
 /// A color value as Java's ARGB bits.
@@ -73,6 +76,11 @@ pub(crate) struct UiAnimation {
     gestures: FxHashMap<u32, Gestures>,
     /// Scroll view id -> (value node, horizontal).
     scrolls: FxHashMap<u32, (NodeId, bool)>,
+    /// Vertical scroll view id -> pull value node.
+    pulls: FxHashMap<u32, NodeId>,
+    /// Scroll view id -> its sticky cells that stick an animated value
+    /// further in, with that value's node.
+    sticky: FxHashMap<u32, Vec<(u32, NodeId)>>,
 }
 
 impl UiAnimation {
@@ -100,20 +108,44 @@ impl UiAnimation {
                 id,
                 horizontal,
                 scroll_value,
+                pull_value,
                 ..
-            } => match scroll_value {
-                Some(node) => {
-                    self.scrolls.insert(id, (node, horizontal));
+            } => {
+                match scroll_value {
+                    Some(node) => {
+                        self.scrolls.insert(id, (node, horizontal));
+                    }
+                    None => {
+                        self.scrolls.remove(&id);
+                    }
                 }
-                None => {
-                    self.scrolls.remove(&id);
+                match pull_value.filter(|_| !horizontal) {
+                    Some(node) => {
+                        self.pulls.insert(id, node);
+                    }
+                    None => {
+                        self.pulls.remove(&id);
+                    }
                 }
-            },
+            }
+            MountItem::StickyCells { id, cells } => {
+                let animated: Vec<(u32, NodeId)> = cells
+                    .iter()
+                    .filter_map(|c| Some((c.cell, c.offset?)))
+                    .collect();
+                if animated.is_empty() {
+                    self.sticky.remove(&id);
+                } else {
+                    self.sticky.insert(id, animated);
+                }
+            }
             MountItem::Delete { id } => {
                 self.bindings.remove(&id);
                 self.statics.remove(&id);
                 self.gestures.remove(&id);
                 self.scrolls.remove(&id);
+                self.pulls.remove(&id);
+                self.sticky.remove(&id);
             }
             _ => {}
         }
@@ -127,6 +159,15 @@ impl UiAnimation {
         self.graph.is_animating()
     }
 
+    /// Scroll view `id` came to rest: the snapping values that follow its
+    /// scroll value settle. True if one starts moving.
+    pub(crate) fn scroll_ended(&mut self, id: u32) -> bool {
+        let Some(&(node, _)) = self.scrolls.get(&id) else {
+            return false;
+        };
+        self.graph.settle(node)
+    }
+
     /// A scroll view moved: feeds its scroll value.
     pub(crate) fn scrolled(&mut self, id: u32, x: f32, y: f32) -> bool {
         let Some(&(node, horizontal)) = self.scrolls.get(&id) else {
@@ -134,6 +175,16 @@ impl UiAnimation {
         };
         self.graph
             .set(node, if horizontal { x } else { y }, &mut self.finished);
+        true
+    }
+
+    /// A vertical scroll view is pulled `distance` points past its top:
+    /// feeds its pull value.
+    pub(crate) fn pulled(&mut self, id: u32, distance: f32) -> bool {
+        let Some(&node) = self.pulls.get(&id) else {
+            return false;
+        };
+        self.graph.set(node, distance.max(0.0), &mut self.finished);
         true
     }
 
@@ -264,6 +315,8 @@ impl UiAnimation {
                             transformed = true;
                         }
                     }
+                    // The scroll view's (`sticky` below), never bound.
+                    AnimationProp::StickyTop | AnimationProp::StickyLeft => {}
                 }
             }
             if let Some(s) = shadow {
@@ -280,6 +333,13 @@ impl UiAnimation {
                 for (code, value) in TRANSFORM_CODES.iter().zip(values) {
                     out.extend_from_slice(&[v, *code, value]);
                 }
+            }
+        }
+        // Sticky cells that stick an animated value further in.
+        for cells in self.sticky.values() {
+            for &(cell, node) in cells {
+                let value = self.graph.eval(node).number();
+                out.extend_from_slice(&[f32::from_bits(cell), STICKY_OFFSET, value]);
             }
         }
         out

@@ -25,20 +25,19 @@ use maka_agent_facts::event::Invocation;
 use maka_agent_facts::execution::ModelBinding;
 use maka_agent_facts::execution::ToolMode;
 use maka_code_runtime::CellLimits;
-use maka_event_log::EventLog;
 use maka_model::{ModelExecutor, ProviderConfig, ProviderKind};
 use maka_tools::CodeExecutor;
 use serde_json::json;
-use std::{collections::BTreeMap, sync::Arc, time::Duration};
+use std::{collections::BTreeMap, time::Duration};
 use tokio::{io::AsyncWriteExt, net::TcpStream};
 
 pub const SUMMARY: &str = "## Goal\nContinue the durable task.\n## Progress\n### Done\n- Saved the original work.\n## Next Steps\n1. Verify checkpoint replay.\n## Critical Context\n- summary-marker in src/event.rs.";
-pub fn engine(log: Arc<EventLog>) -> Engine {
+pub fn engine() -> Engine {
     Engine::new(
-        log,
         ModelExecutor::new(Duration::from_secs(10)).unwrap(),
         CodeExecutor::new(CellLimits::default()).unwrap(),
     )
+    .unwrap()
 }
 pub fn input(base: &str, id: &str, compact: bool) -> RunInput {
     let mut configuration = invocation::configuration(ToolMode::Direct);

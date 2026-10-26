@@ -17,11 +17,10 @@
  * under the License.
  */
 
+use crate::body::NativeBody;
 use futures_util::FutureExt;
-use maka_agent_ports::model::Frame;
 use maka_agent_ports::model::Socket;
 use maka_agent_ports::model::Transport;
-use serde_json::Value;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::{
     collections::BTreeMap,
@@ -35,7 +34,6 @@ type Result<T> = std::result::Result<T, crate::Error>;
 mod cache;
 mod connect;
 mod frame;
-mod output;
 mod shared;
 use cache::{Baseline, Prepared};
 use frame::{ReadError, receive};
@@ -115,12 +113,12 @@ impl Exchange {
         self.cancellation.cancel();
     }
 
-    pub async fn start(
+    pub(crate) async fn start(
         &self,
         url: String,
         headers: BTreeMap<String, String>,
-        body: Value,
-    ) -> Result<Option<Value>> {
+        body: NativeBody,
+    ) -> Result<Option<NativeBody>> {
         // Cancellation drops the in-flight connect/send future and its socket.
         tokio::select! {
             biased;
@@ -133,8 +131,8 @@ impl Exchange {
         &self,
         url: String,
         headers: BTreeMap<String, String>,
-        body: Value,
-    ) -> Result<Option<Value>> {
+        body: NativeBody,
+    ) -> Result<Option<NativeBody>> {
         let route = self
             .transport
             .route(&url, &headers, self.network.identity());
@@ -202,40 +200,25 @@ impl Exchange {
         } else {
             &prepared.full
         };
-        // Serialize a borrowed envelope without cloning the complete input.
-        let mut object: BTreeMap<_, _> = body
-            .as_object()
-            .unwrap()
-            .iter()
-            .filter(|(key, _)| !matches!(key.as_str(), "stream" | "background"))
-            .map(|(key, value)| (key.as_str(), value))
-            .collect();
-        let kind = Value::String("response.create".into());
-        object.insert("type", &kind);
-        let text =
-            serde_json::to_string(&object).map_err(|_| error("invalid Responses request"))?;
-        connection
-            .socket
-            .send(Frame::Text(text))
-            .await
-            .map_err(|cause| {
-                if !self.cancellation.is_cancelled() {
-                    self.transport.defer(route, Instant::now());
+        let text = body.clone().websocket();
+        connection.socket.send_text(text).await.map_err(|cause| {
+            if !self.cancellation.is_cancelled() {
+                self.transport.defer(route, Instant::now());
+            }
+            match cause {
+                maka_agent_facts::model::error::ModelError::Provider(failure)
+                    if failure.reason()
+                        == maka_agent_facts::model::error::ProviderFailureReason::Network =>
+                {
+                    // The engine owns recovery from canonical history. This
+                    // transport never resends an uncertain response.create.
+                    crate::Error::Interrupted(failure.message().into())
                 }
-                match cause {
-                    maka_agent_facts::model::error::ModelError::Provider(failure)
-                        if failure.reason()
-                            == maka_agent_facts::model::error::ProviderFailureReason::Network =>
-                    {
-                        // The engine owns recovery from canonical history. This
-                        // transport never resends an uncertain response.create.
-                        crate::Error::Interrupted(failure.message().into())
-                    }
-                    cause => {
-                        crate::Error::Transport(format!("Responses WebSocket send failed: {cause}"))
-                    }
+                cause => {
+                    crate::Error::Transport(format!("Responses WebSocket send failed: {cause}"))
                 }
-            })?;
+            }
+        })?;
         connection.baseline = prepared.cache(&self.transport.cache);
         *active = Some(connection);
         Ok(None)
@@ -252,17 +235,14 @@ impl Exchange {
             result = receive(connection.socket.as_ref()) => result,
         };
         match result {
-            Ok((text, terminal, reusable, mut event)) => {
-                connection.baseline = connection.baseline.take().and_then(|mut baseline| {
-                    baseline.observe(&mut event, &self.transport.cache)?;
-                    Some(baseline)
-                });
+            Ok((text, terminal, reusable, event)) => {
                 if terminal {
                     let mut idle = active.take();
                     if let Some(connection) = idle.as_mut() {
-                        connection.baseline = connection.baseline.take().and_then(|baseline| {
-                            baseline.complete(&mut event["response"], &self.transport.cache)
-                        });
+                        connection.baseline = connection
+                            .baseline
+                            .take()
+                            .and_then(|baseline| baseline.complete(&event["response"]));
                     }
                     let mut lane = self.lane.0.lock().unwrap();
                     lane.busy = false;

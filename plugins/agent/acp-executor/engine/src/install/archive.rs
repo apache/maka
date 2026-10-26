@@ -97,7 +97,7 @@ pub(super) fn publish(
     for index in 0..zip.len() {
         control.check(retiring)?;
         let mut source = zip.by_index(index).map_err(|_| Error::Integrity)?;
-        let name = source.name().to_owned();
+        let name = source.name().map_err(|_| Error::Integrity)?.into_owned();
         let expected_bytes = source.size();
         if ![release.server, release.helper].contains(&name.as_str())
             || files.contains_key(&name)

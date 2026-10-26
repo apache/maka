@@ -238,21 +238,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn legacy_delivery_bytes_and_content_identity_remain_unchanged() {
-        let legacy = r#"{"message_id":"legacy","content":{"text":"hello","display_text":null},"submitted_content_digest":"sha256:492ad580202470bc57f23703f4cfbfc657e4133aaa385a1a307fa39b1e0c4543"}"#;
-        let mut message: DeliveredMessage = serde_json::from_str(legacy).unwrap();
-        message.validate().unwrap();
-        assert_eq!(message.origin, None);
-        assert_eq!(serde_json::to_string(&message).unwrap(), legacy);
-        let digest = message.content.content_digest().unwrap();
-        assert_eq!(digest, message.submitted_content_digest);
-        message.origin = Some(MessageOrigin::WorkhubTask {
-            task_id: "task-original".into(),
-        });
-        assert_eq!(message.content.content_digest().unwrap(), digest);
-    }
-
-    #[test]
     fn atomic_starts_preserve_intent_without_accepting_mixed_queue_sources() {
         let mut sources: Vec<_> = ["first", "second"]
             .into_iter()

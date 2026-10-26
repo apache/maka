@@ -63,23 +63,20 @@ pub(crate) fn clear(surface: &Surface) {
     surface.keymap.table.borrow_mut().take();
 }
 
-/// A key down: whether it fired (or, held, repeats) one of the bindings;
-/// then it is consumed. `editing`: a text field or a native component has
-/// the keyboard focus.
-pub(crate) fn key(surface: &Rc<Surface>, event: &KeyEvent, editing: bool) -> bool {
-    let repeat = repeats(&surface.keymap, event);
-    let Some(table) = surface.keymap.table.borrow().clone() else {
-        return false;
-    };
-    let Some(keystroke) = keystroke(event) else {
-        return false;
-    };
-    // The dev host's Ctrl+R / Cmd+R reloads, whatever the app binds.
-    if cfg!(feature = "dev") && keystroke.reloads(OS) {
-        return false;
-    }
-    let path = surface.focus_path();
-    let found = table.find_with(keystroke, editing, repeat, |id| path.contains(&id));
+/// Records each physical key down once, before either binding phase.
+pub(crate) fn pressed(surface: &Surface, event: &KeyEvent) -> bool {
+    repeats(&surface.keymap, event)
+}
+
+/// A key down in one binding phase. Both phases use the same repeat fact.
+pub(crate) fn key(
+    surface: &Rc<Surface>,
+    event: &KeyEvent,
+    editing: bool,
+    repeat: bool,
+    fallback: bool,
+) -> bool {
+    let found = find(surface, event, editing, repeat, fallback);
     if let KeyMatch::Fire(id) = found {
         surface.event(
             ROOT_ID,
@@ -88,6 +85,37 @@ pub(crate) fn key(surface: &Rc<Surface>, event: &KeyEvent, editing: bool) -> boo
         );
     }
     found.consumed()
+}
+
+/// An empty copy remains a no-op unless the app supplied a fallback.
+pub(crate) fn empty_copy_consumed(surface: &Surface, event: &KeyEvent) -> bool {
+    let editing = crate::text_input::focused(surface).is_some();
+    find(surface, event, editing, false, true) == KeyMatch::None
+}
+
+fn find(
+    surface: &Surface,
+    event: &KeyEvent,
+    editing: bool,
+    repeat: bool,
+    fallback: bool,
+) -> KeyMatch {
+    let Some(table) = surface.keymap.table.borrow().clone() else {
+        return KeyMatch::None;
+    };
+    let Some(keystroke) = keystroke(event) else {
+        return KeyMatch::None;
+    };
+    // The dev host's Ctrl+R / Cmd+R reloads, whatever the app binds.
+    if cfg!(feature = "dev") && keystroke.reloads(OS) {
+        return KeyMatch::None;
+    }
+    let path = surface.focus_path();
+    if fallback {
+        table.find_fallback_with(keystroke, editing, repeat, |id| path.contains(&id))
+    } else {
+        table.find_with(keystroke, editing, repeat, |id| path.contains(&id))
+    }
 }
 
 /// Whether a key down is an auto-repeat (see the module docs), noting the

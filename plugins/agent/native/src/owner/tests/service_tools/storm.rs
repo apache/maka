@@ -174,7 +174,7 @@ fn summary_output(output: &maka_agent_facts::model::ModelStep, expected: &str) {
 
 async fn serve(
     listener: TcpListener,
-    store: Arc<maka_event_log::EventLog>,
+    store: maka_event_log::root_store::SessionStore,
     session: String,
     case: Case,
     progress: Arc<StdMutex<Value>>,
@@ -201,7 +201,7 @@ async fn serve(
             progress["http_requests"] = json!(progress["http_requests"].as_u64().unwrap() + 1);
             progress["normalized_request_json_bytes"] = json!(request_bytes);
         }
-        let through = *store.subscribe_commits().borrow();
+        let through = *store.subscribe_commits().unwrap().borrow();
         let mut requested = None;
         loop {
             let page = store
@@ -485,7 +485,7 @@ async fn verify(
     case: Case,
     served: &Value,
 ) -> Value {
-    let through = *fixture.store.subscribe_commits().borrow();
+    let through = fixture.through(session).await;
     let mut after = 0;
     let mut dispatched = BTreeMap::new();
     let mut settled = BTreeSet::new();
@@ -500,7 +500,8 @@ async fn verify(
     let mut checkpoints = 0;
     loop {
         let page = fixture
-            .store
+            .session(session)
+            .await
             .session_events(session, after, through, 512, usize::MAX)
             .await
             .unwrap();
@@ -538,7 +539,8 @@ async fn verify(
                     );
                     projected_bytes += serde_json::to_vec(&case.business(index)).unwrap().len();
                     let raw = fixture
-                        .store
+                        .session(session)
+                        .await
                         .resolve_tool_result(session, &stored.event.id)
                         .await
                         .unwrap();
@@ -773,7 +775,7 @@ async fn run(case: Case) -> Value {
         }
     };
     let entered_before = counter.entered.available_permits();
-    let store = fixture.store.clone();
+    let store = fixture.session(&session).await;
     let server_session = session.clone();
     let (send, receive) = tokio::sync::oneshot::channel();
     let progress = Arc::new(StdMutex::new(
@@ -858,13 +860,14 @@ async fn run(case: Case) -> Value {
     let app = fixture.app.shutdown().await;
     let config = fixture.config.shutdown().await;
     // Retain actual partial counts on timeout, panic, or maintenance boundary.
-    let through = *fixture.store.subscribe_commits().borrow();
+    let through = fixture.through(&session).await;
     let mut counts =
         json!({"dispatches":0,"settlements":0,"summary_requests":0,"checkpoints":0,"archives":0});
     let mut after = 0;
     loop {
         let page = match fixture
-            .store
+            .session(&session)
+            .await
             .session_events(&session, after, through, 512, usize::MAX)
             .await
         {

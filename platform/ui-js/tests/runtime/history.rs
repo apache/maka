@@ -20,9 +20,9 @@
 use super::Application;
 use super::{support, timer};
 use maka_event_log::{
-    EventLog,
+    RootStore,
     applications::intents::CallerIntent,
-    root::{ROOT_DATABASE, RootNamespaces, RootOwner},
+    root::{RootNamespaces, RootOwner},
 };
 use maka_packages::MANIFEST_FILE;
 use maka_packages::Package;
@@ -184,18 +184,18 @@ fn namespaces(dir: &std::path::Path) -> RootNamespaces {
         control: dir.join("control"),
     }
 }
-fn store(timer: &tokio::runtime::Runtime, dir: &std::path::Path, create: bool) -> Arc<EventLog> {
+fn store(timer: &tokio::runtime::Runtime, dir: &std::path::Path, create: bool) -> Arc<RootStore> {
     let owner = if create {
         RootOwner::create(&dir.join("root"), &namespaces(dir))
     } else {
         RootOwner::open(&dir.join("root"), &namespaces(dir))
     }
     .unwrap();
-    Arc::new(timer.block_on(EventLog::for_root(Arc::new(owner))).unwrap())
+    Arc::new(timer.block_on(RootStore::open(Arc::new(owner))).unwrap())
 }
 fn start(
     timer: &tokio::runtime::Runtime,
-    store: Arc<EventLog>,
+    store: Arc<RootStore>,
     deployment: Uuid,
     target: PresentationTarget,
 ) -> (Application, maka_plugin_core::runtime::Mount) {
@@ -506,13 +506,31 @@ fn accepted_history_waiting_behind_real_sql_writer_retains_root_after_surface_ex
         .clone();
     let (mut app, mount) = start(&timer, store.clone(), deployment, PresentationTarget::Tui);
     let weak = Arc::downgrade(&store);
-    let sql = rusqlite::Connection::open(dir.path().join("root").join(ROOT_DATABASE)).unwrap();
-    sql.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let sql: Vec<_> = std::fs::read_dir(dir.path().join("root/runtime-partitions"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "sqlite"))
+        .map(|path| {
+            let connection = rusqlite::Connection::open(path).unwrap();
+            connection.execute_batch("BEGIN IMMEDIATE").unwrap();
+            connection
+        })
+        .collect();
     let queued = Arc::new(tokio::sync::Semaphore::new(0));
     let observed = queued.clone();
     let writer_store = store.clone();
+    let writer_source = timer
+        .block_on(store.load_application_at(&source))
+        .unwrap()
+        .unwrap()
+        .snapshot();
     let write = timer.spawn(async move {
-        let future = writer_store.commit_application(deployment, 1, input, vec![], packages);
+        let future = writer_store.record_application_intent_from(
+            &writer_source,
+            identity(4),
+            reference(),
+            serde_json::Value::Null,
+        );
         tokio::pin!(future);
         std::future::poll_fn(|cx| {
             let result = future.as_mut().poll(cx);
@@ -552,10 +570,11 @@ fn accepted_history_waiting_behind_real_sql_writer_retains_root_after_surface_ex
             .kind(),
         std::io::ErrorKind::WouldBlock
     );
-    sql.execute_batch("COMMIT").unwrap();
+    for connection in &sql {
+        connection.execute_batch("COMMIT").unwrap();
+    }
     drop(sql);
-    let desired = timer.block_on(write).unwrap().unwrap();
-    assert_ne!(desired, source);
+    timer.block_on(write).unwrap().unwrap();
     let completion = timer.block_on(future);
     let maka_ui_runtime::actions::TaskCompletion::Query(ref query) = completion else {
         panic!("expected history query")

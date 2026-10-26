@@ -137,9 +137,9 @@ export interface OverlayProps extends CommonProps, OverlayHostProps {
 }
 
 /** What JS sets on a Rust component's host itself: the app's classes
- * (appended to the component's own), its inline and state styles, its test id,
- * keyboard focus eligibility, tooltip, layout events and the ref (`ref.command(name, args)`). */
-export type ComponentHostProps = Pick<ViewProps, "class" | "classList" | "style" | "activeStyle" | "hoverStyle" | "focusStyle" | "disabledStyle" | "testID" | "focusable" | "tooltip" | "onLayout" | "ref">;
+ * (appended to the component's own), its inline and state styles, its test id, keyboard focus eligibility, its
+ * tooltip, layout events and the ref (`ref.command(name, args)`). */
+export type ComponentHostProps = { [K in "class" | "classList" | "style" | "activeStyle" | "hoverStyle" | "focusStyle" | "disabledStyle" | "testID" | "focusable" | "tooltip" | "onLayout" | "ref"]?: ViewProps[K] };
 
 /** An operating system (`platform.os`). */
 export type OS = "ios" | "android" | "macos" | "windows" | "linux" | "web";
@@ -746,6 +746,58 @@ fn member_names(members: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn element_focus_handlers_are_inherited_from_shared_host_props() {
+        let types = element_types();
+        let start = types.find("export interface HostProps {").unwrap();
+        let end = start + types[start..].find("\n}").unwrap();
+        for event in ["onFocus", "onBlur"] {
+            assert!(types[start..end].contains(&format!("  {event}?: () => void;")));
+        }
+        for inheritance in [
+            "export interface CommonProps extends TouchProps, HostProps, StateStyleProps {",
+            "export interface ViewProps extends CommonProps {",
+            "export interface InputProps extends CommonProps, InputHostProps {",
+            "export interface ScrollProps extends CommonProps, ScrollingHostProps, ScrollHostProps {",
+        ] {
+            assert!(types.contains(inheritance), "{inheritance}");
+        }
+        assert!(crate::list::TYPES.contains(
+            "export interface ListProps<T> extends Omit<ViewProps, \"children\">, ScrollingHostProps, ListHostProps {"
+        ));
+    }
+
+    #[derive(Default, nsh_core::ui::JsObject)]
+    struct Pick {
+        value: bool,
+    }
+
+    #[nsh_core::ui::module]
+    struct PickerTypes;
+
+    #[nsh_core::ui::module]
+    impl PickerTypes {
+        fn accept(_pick: Pick) {}
+    }
+
+    #[test]
+    fn component_host_props_do_not_import_a_modules_pick_type() {
+        PickerTypes::accept(Pick::default());
+        let mut registry = nsh_core::ui::Registry::ui_set("test/picker-types");
+        registry.module::<PickerTypes>();
+        let files = type_definitions(&[registry.into()]);
+        let (_, fixture) = files
+            .iter()
+            .find(|(path, _)| path == "test/picker-types.d.ts")
+            .unwrap();
+        assert!(fixture.contains("interface Pick"), "{fixture}");
+        let (_, types) = files
+            .iter()
+            .find(|(path, _)| path == "nsh/types.d.ts")
+            .unwrap();
+        assert!(!types.contains("picker-types"), "{types}");
+    }
 
     #[test]
     fn variant_types_image_asset_lists_its_scales() {

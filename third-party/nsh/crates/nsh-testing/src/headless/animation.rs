@@ -54,6 +54,22 @@ impl Animator {
         }
     }
 
+    /// A vertical scroll view is pulled `distance` past its top: feeds its
+    /// pull value.
+    pub(crate) fn pulled(&mut self, id: NodeId, distance: Points) {
+        if self.graph.pulled(id, distance) {
+            self.wake();
+        }
+    }
+
+    /// Scroll view `id` came to rest: the snapping values that follow it
+    /// settle.
+    pub(crate) fn scroll_ended(&mut self, id: NodeId) {
+        if self.graph.scroll_ended(id) {
+            self.wake();
+        }
+    }
+
     /// A drag of view `id` began: grabbing its animating pan values stops
     /// them where they are.
     pub(crate) fn pan_began(&mut self, id: NodeId) {

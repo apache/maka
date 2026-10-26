@@ -80,7 +80,13 @@ impl Sdk {
         let bin = toolchain.join("bin");
         // On Windows the NDK's per-target compilers are batch files.
         let script = if cfg!(windows) { ".cmd" } else { "" };
-        let clang = bin.join(format!("{triple}{MIN_SDK}-clang{script}"));
+        // ARMv7's compilers are named `armv7a-linux-androideabi`, the
+        // others after Rust's triple.
+        let clang_target = match triple {
+            "armv7-linux-androideabi" => "armv7a-linux-androideabi",
+            other => other,
+        };
+        let clang = bin.join(format!("{clang_target}{MIN_SDK}-clang{script}"));
         let env_triple = triple.replace('-', "_");
         let mut cmd = Command::new(env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
         cmd.env(format!("CC_{env_triple}"), &clang)

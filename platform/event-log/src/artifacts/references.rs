@@ -75,16 +75,14 @@ pub(crate) fn from_event(event: &RuntimeEvent) -> Vec<(&StorageRef, Option<&Atta
                     .flatten()
                     .map(|a| (&a.storage_ref, Some(a))),
             );
-            if let Some(source) = source {
-                references.extend(
-                    source
-                        .unprepared_content
-                        .attachments
-                        .iter()
-                        .flatten()
-                        .map(|a| (&a.storage_ref, Some(a))),
-                );
-            }
+            references.extend(
+                source
+                    .unprepared_content
+                    .attachments
+                    .iter()
+                    .flatten()
+                    .map(|a| (&a.storage_ref, Some(a))),
+            );
         }
         Fact::ToolSettled {
             outcome:
@@ -113,10 +111,7 @@ pub(crate) fn revision(event: &RuntimeEvent) -> Result<Vec<&AttachmentRef>, Stor
         Fact::InvocationOpened {
             input: InvocationInput::Message { .. },
             ..
-        } | Fact::MessageSteered {
-            source: Some(_),
-            ..
-        }
+        } | Fact::MessageSteered { .. }
     ) {
         return Err(StoreError::InvalidTransition(
             "revision source has no canonical input".into(),

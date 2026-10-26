@@ -11,14 +11,13 @@
 
 use std::cell::{Cell, RefCell};
 
-use nsh_core::ATTACHMENT_CHAR;
+use nsh_core::{ATTACHMENT_CHAR, Affinity, TextPosition};
 use objc2::{
     DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send,
     rc::{Retained, Weak},
     runtime::ProtocolObject,
 };
-use objc2_core_foundation::{CFRetained, CGFloat, CGPoint, CGRect, CGSize};
-use objc2_core_text::CTLine;
+use objc2_core_foundation::{CGFloat, CGPoint, CGRect, CGSize};
 use objc2_foundation::{NSArray, NSObject, NSRange, NSString};
 use objc2_ui_kit::{
     NSWritingDirection, UITextInput, UITextInputDelegate, UITextInputStringTokenizer,
@@ -26,7 +25,10 @@ use objc2_ui_kit::{
     UITextSelectionRect, UIView,
 };
 
-use crate::{text::CoreTextLayout, text_view::TextView};
+use crate::{
+    text::{CoreTextLayout, line_of},
+    text_view::TextView,
+};
 
 define_class!(
     /// A position in the text (UTF-16 offset).
@@ -160,41 +162,6 @@ impl Selection {
     /// Selection is on (the interaction is attached).
     pub(crate) fn is_on(&self) -> bool {
         self.interaction.borrow().is_some()
-    }
-}
-
-/// A laid out line in view coordinates.
-struct LineBox {
-    line: CFRetained<CTLine>,
-    /// Its characters.
-    start: usize,
-    end: usize,
-    /// The x of its origin.
-    x: CGFloat,
-    top: CGFloat,
-    bottom: CGFloat,
-    width: CGFloat,
-}
-
-impl LineBox {
-    /// The x of the caret before character `index`.
-    fn x_of(&self, index: usize) -> CGFloat {
-        // SAFETY: a valid line; no secondary offset wanted.
-        self.x
-            + unsafe {
-                self.line
-                    .offset_for_string_index(index as isize, std::ptr::null_mut())
-            }
-    }
-
-    /// The caret index nearest to `x`.
-    fn index_at(&self, x: CGFloat) -> usize {
-        // SAFETY: a valid line.
-        let index = unsafe {
-            self.line
-                .string_index_for_position(CGPoint::new(x - self.x, 0.0))
-        };
-        (index.max(0) as usize).clamp(self.start, self.end)
     }
 }
 
@@ -408,21 +375,24 @@ impl TextView {
         if direction == backward {
             return self.sel_moved(position, -by);
         }
-        let lines = self.line_boxes();
         let at = offset(position);
-        let line = line_of(&lines, at)?;
-        let target = if direction == UITextLayoutDirection::Up {
-            line as isize - by
-        } else {
-            line as isize + by
-        };
-        let to = if target < 0 {
-            0
-        } else if target as usize >= lines.len() {
-            self.text_length()
-        } else {
-            lines[target as usize].index_at(lines[line].x_of(at))
-        };
+        let len = self.text_length();
+        let to = self
+            .with_text(|text, _| {
+                let lines = text.boxes();
+                let line = line_of(&lines, at, Affinity::Downstream)?;
+                let target = if direction == UITextLayoutDirection::Up {
+                    line as isize - by
+                } else {
+                    line as isize + by
+                };
+                Some(match usize::try_from(target) {
+                    Err(_) => 0,
+                    Ok(t) if t >= lines.len() => len,
+                    Ok(t) => lines.get(t)?.index_at(lines.get(line)?.x_of(at)),
+                })
+            })
+            .flatten()?;
         Some(Position::make(self.mtm(), to))
     }
 
@@ -463,37 +433,15 @@ impl TextView {
         }
     }
 
-    /// The laid out lines, in view coordinates.
-    fn line_boxes(&self) -> Vec<LineBox> {
+    /// Runs `f` with the laid out text and the origin of its content box
+    /// (the view coordinates of the layout's content coordinates). `None`
+    /// without a layout.
+    fn with_text<R>(&self, f: impl FnOnce(&CoreTextLayout, CGPoint) -> R) -> Option<R> {
         let layout = self.ivars().layout.borrow();
-        let Some((layout, content)) = layout.as_ref() else {
-            return Vec::new();
-        };
-        let Some(text) = layout.downcast::<CoreTextLayout>() else {
-            return Vec::new();
-        };
-        let bottom = (content.origin.y.0 + content.size.height.0) as CGFloat;
-        text.lines
-            .iter()
-            .map(|l| {
-                let (mut ascent, mut descent) = (0.0, 0.0);
-                // SAFETY: valid out pointers.
-                let width = unsafe {
-                    l.line
-                        .typographic_bounds(&mut ascent, &mut descent, std::ptr::null_mut())
-                } as CGFloat;
-                let start = l.range.location.max(0) as usize;
-                LineBox {
-                    line: l.line.clone(),
-                    start,
-                    end: start + l.range.length.max(0) as usize,
-                    x: content.origin.x.0 as CGFloat + l.origin.x,
-                    top: bottom - (l.origin.y + ascent),
-                    bottom: bottom - (l.origin.y - descent),
-                    width,
-                }
-            })
-            .collect()
+        let (layout, content) = layout.as_ref()?;
+        let text = layout.downcast::<CoreTextLayout>()?;
+        let origin = CGPoint::new(content.origin.x.0 as CGFloat, content.origin.y.0 as CGFloat);
+        Some(f(text, origin))
     }
 
     /// The caret position nearest to `point` (view coordinates), within
@@ -511,23 +459,13 @@ impl TextView {
         Some(Position::make(self.mtm(), at.min(self.text_length())))
     }
 
-    /// The caret offset nearest to `point` (view coordinates): the line
-    /// nearest vertically, then the caret nearest on it.
+    /// The caret offset nearest to `point` (view coordinates).
     pub(crate) fn closest_offset(&self, point: CGPoint) -> usize {
-        let lines = self.line_boxes();
-        let d = |l: &LineBox| {
-            if point.y < l.top {
-                l.top - point.y
-            } else if point.y > l.bottom {
-                point.y - l.bottom
-            } else {
-                0.0
-            }
-        };
-        lines
-            .iter()
-            .min_by(|a, b| d(a).total_cmp(&d(b)))
-            .map_or(0, |line| line.index_at(point.x))
+        self.with_text(|text, o| {
+            text.position_at(CGPoint::new(point.x - o.x, point.y - o.y))
+                .offset as usize
+        })
+        .unwrap_or(0)
     }
 
     /// The character under `point`.
@@ -550,30 +488,27 @@ impl TextView {
     /// (where a selection that ends there ends) rather than at the start
     /// of the next.
     pub(crate) fn caret_rect_at(&self, at: usize, trailing: bool) -> CGRect {
-        let lines = self.line_boxes();
-        let line = if trailing {
-            lines
-                .iter()
-                .position(|l| at > l.start && at <= l.end)
-                .or_else(|| line_of(&lines, at))
+        let affinity = if trailing {
+            Affinity::Upstream
         } else {
-            line_of(&lines, at)
+            Affinity::Downstream
         };
-        match line {
-            Some(i) => {
-                let l = &lines[i];
-                CGRect::new(
-                    CGPoint::new(l.x_of(at), l.top),
-                    CGSize::new(2.0, l.bottom - l.top),
-                )
-            }
-            None => {
-                let content = self
-                    .content_box()
-                    .unwrap_or(CGRect::new(CGPoint::ZERO, CGSize::ZERO));
-                CGRect::new(content.origin, CGSize::new(2.0, content.size.height))
-            }
-        }
+        let position = TextPosition::new(u32::try_from(at).unwrap_or(u32::MAX), affinity);
+        // UIKit's caret is a 2 point wide bar; the layout's is zero wide.
+        self.with_text(|text, o| {
+            let rect = text.caret_box(position)?;
+            Some(CGRect::new(
+                CGPoint::new(rect.origin.x + o.x, rect.origin.y + o.y),
+                CGSize::new(2.0, rect.size.height),
+            ))
+        })
+        .flatten()
+        .unwrap_or_else(|| {
+            let content = self
+                .content_box()
+                .unwrap_or(CGRect::new(CGPoint::ZERO, CGSize::ZERO));
+            CGRect::new(content.origin, CGSize::new(2.0, content.size.height))
+        })
     }
 
     /// The box the text is laid out in (view coordinates).
@@ -595,35 +530,15 @@ impl TextView {
     /// The rects of the UTF-16 range `a..b` on each line it covers (view
     /// coordinates), with whether each holds its start and its end.
     pub(crate) fn range_rects(&self, a: usize, b: usize) -> Vec<(CGRect, bool, bool)> {
-        let lines = self.line_boxes();
-        let mut out = Vec::new();
-        if a >= b {
-            return out;
-        }
-        for l in &lines {
-            if l.end <= a || l.start >= b {
-                continue;
+        self.with_text(|text, o| {
+            let mut boxes = text.range_boxes(a, b);
+            for (rect, ..) in &mut boxes {
+                rect.origin.x += o.x;
+                rect.origin.y += o.y;
             }
-            let (from, to) = (a.max(l.start), b.min(l.end));
-            let x1 = l.x_of(from);
-            // Through the line's end when the range goes on past it.
-            let x2 = if b > l.end { l.x + l.width } else { l.x_of(to) };
-            out.push((
-                CGRect::new(
-                    CGPoint::new(x1.min(x2), l.top),
-                    CGSize::new((x2 - x1).abs(), l.bottom - l.top),
-                ),
-                a >= l.start,
-                b <= l.end,
-            ));
-        }
-        if let Some(first) = out.first_mut() {
-            first.1 = true;
-        }
-        if let Some(last) = out.last_mut() {
-            last.2 = true;
-        }
-        out
+            boxes
+        })
+        .unwrap_or_default()
     }
 
     pub(crate) fn sel_first_rect(&self, range: &UITextRange) -> CGRect {
@@ -659,15 +574,6 @@ impl TextView {
             CGRect::new(CGPoint::ZERO, CGSize::ZERO),
         )
     }
-}
-
-/// The line holding offset `at` (the last one for the text's end).
-fn line_of(lines: &[LineBox], at: usize) -> Option<usize> {
-    lines
-        .iter()
-        .position(|l| at >= l.start && at < l.end)
-        .or_else(|| lines.iter().rposition(|l| at >= l.start && at <= l.end))
-        .or_else(|| (!lines.is_empty()).then(|| lines.len() - 1))
 }
 
 #[cfg(test)]

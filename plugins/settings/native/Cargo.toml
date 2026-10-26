@@ -23,6 +23,12 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+maka-packages.workspace = true
+maka-fs-tools.workspace = true
+tokio.workspace = true
+maka-agent-api.workspace = true
+maka-skills-api.workspace = true
+maka-workspace-api.workspace = true
 hex.workspace = true
 maka-agent-facts.workspace = true
 maka-agent-ports.workspace = true
@@ -39,8 +45,7 @@ schemars.workspace = true
 sha2.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+tokio-util.workspace = true
 
 [dev-dependencies]
-tokio.workspace = true
-tokio-util.workspace = true
 tempfile.workspace = true

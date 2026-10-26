@@ -31,8 +31,8 @@ maka-plugin-core.workspace = true
 deno_core.workspace = true
 deno_error.workspace = true
 futures-util.workspace = true
-deno_webidl = "=0.258.0"
-deno_web = "=0.289.0"
+deno_webidl = "=0.260.0"
+deno_web = "=0.291.0"
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

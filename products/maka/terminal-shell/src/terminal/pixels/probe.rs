@@ -113,6 +113,7 @@ impl SixelGeometry {
 #[derive(Clone, Copy)]
 pub(crate) struct Capabilities {
     pub size: WindowSize,
+    pub ui_scale: f32,
     pub mouse: MouseCoordinates,
     // None during startup, before any image protocol has replied positively.
     pub protocol: Option<Protocol>,
@@ -152,13 +153,15 @@ impl Capabilities {
     /// An ordinary 16-device-pixel cell is one logical UI unit of density;
     /// Retina/font zoom increases resolution without shrinking the interface.
     pub fn scale_factor(self) -> f32 {
-        self.size
-            .pixel_height
-            .filter(|height| *height > 0)
-            .filter(|_| self.size.rows > 0)
-            .map_or(1.0, |height| {
-                f32::from(height) / f32::from(self.size.rows) / 16.0
-            })
+        self.ui_scale
+            * self
+                .size
+                .pixel_height
+                .filter(|height| *height > 0)
+                .filter(|_| self.size.rows > 0)
+                .map_or(1.0, |height| {
+                    f32::from(height) / f32::from(self.size.rows) / 16.0
+                })
     }
 
     pub fn logical_viewport(self) -> Option<gpui::Size<gpui::Pixels>> {
@@ -345,6 +348,7 @@ impl Probe {
             synchronized: features.synchronized
                 || self.synchronized.is_some_and(|(supported, _)| supported),
             sixel_geometry: self.sixel_geometry,
+            ui_scale: 1.0,
         };
         if protocol == Protocol::Sixel && capabilities.pixel_size() != capabilities.viewport() {
             // No app exists yet: use the original Unicode path instead of
@@ -712,6 +716,7 @@ mod tests {
                 protocol: None,
                 synchronized: false,
                 sixel_geometry: Default::default(),
+                ui_scale: 1.0,
             }
             .viewport()
             .is_none()

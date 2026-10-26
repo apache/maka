@@ -48,9 +48,10 @@ use gpui::{
     TextSystem, WindowTextSystem, px,
 };
 use nsh_core::{
-    ATTACHMENT_CHAR, AttributedText, Color, DecorationStyle, EllipsizeMode, EventKind, FontFamily,
-    Point, Points, ResolvedTextStyle, Size, TextAlign, TextEngine, TextLayout, TextLine, TextSpan,
-    geometry::point,
+    ATTACHMENT_CHAR, Affinity, AttributedText, Bounds, Color, DecorationStyle, EllipsizeMode,
+    EventKind, FontFamily, Point, Points, ResolvedTextStyle, Size, TextAlign, TextEngine,
+    TextLayout, TextLine, TextPosition, TextSpan,
+    geometry::{point, size},
 };
 use rustc_hash::FxHashMap;
 use unicode_bidi::{Level, ParagraphBidiInfo};
@@ -1498,6 +1499,28 @@ impl TextEngine for GpuiTextEngine {
         })
     }
 
+    fn hit_test(&self, layout: &TextLayout, p: Point<Points>) -> TextPosition {
+        layout
+            .downcast::<GpuiLayout>()
+            .map_or_else(TextPosition::default, |l| l.hit_test(p.x.0, p.y.0))
+    }
+
+    fn caret_rect(&self, layout: &TextLayout, position: TextPosition) -> Option<Bounds<Points>> {
+        layout.downcast::<GpuiLayout>()?.caret_rect(position)
+    }
+
+    fn range_rects(&self, layout: &TextLayout, range: Range<u32>, out: &mut Vec<Bounds<Points>>) {
+        let Some(l) = layout.downcast::<GpuiLayout>() else {
+            return;
+        };
+        l.selection_rects((range.start, range.end), |x, y, w, h| {
+            out.push(Bounds::new(
+                point(Points(x), Points(y)),
+                size(Points(w), Points(h)),
+            ));
+        });
+    }
+
     fn register_font(&self, data: &[u8]) -> Result<(), String> {
         let families = font_families(data)?;
         let key = (Arc::as_ptr(&self.system) as usize, hash(data));
@@ -1946,19 +1969,42 @@ impl GpuiLayout {
             .map(|b| b.at)
     }
 
-    /// The caret position (UTF-16 offset) nearest `(x, y)` in content
-    /// coordinates: on the line at that height (the first above the text,
-    /// the last below it), at the box edge nearest x.
-    fn caret_at(&self, x: f32, y: f32) -> u32 {
-        let Some(line) = self
+    /// The boxes of `line`.
+    fn line_boxes(&self, line: &Line) -> &[CBox] {
+        self.boxes.get(line.boxes.clone()).unwrap_or_default()
+    }
+
+    /// Whether line `i` was cut by wrapping rather than by a break
+    /// character: the next line then starts where it ends (a break
+    /// character sits between the lines of a hard break).
+    fn wraps(&self, i: usize) -> bool {
+        match (self.lines.get(i), self.lines.get(i + 1)) {
+            (Some(line), Some(next)) => next.info.start == line.info.end,
+            _ => false,
+        }
+    }
+
+    /// The index of the line the caret at `position` is on (the rules of
+    /// [`nsh_core::TextPosition::line`], without copying the lines).
+    fn line_of(&self, position: TextPosition) -> Option<usize> {
+        position.line_in(self.lines.iter().map(|l| l.info.start..l.info.end))
+    }
+
+    /// The caret position nearest `(x, y)` in content coordinates: on the
+    /// line at that height (the first above the text, the last below it),
+    /// at the box edge nearest x. At a wrapped line's end it is
+    /// [`Affinity::Upstream`], so the caret stays on that line.
+    fn hit_test(&self, x: f32, y: f32) -> TextPosition {
+        let Some((i, line)) = self
             .lines
             .iter()
-            .find(|l| y < (l.info.y + l.info.height).0)
-            .or(self.lines.last())
+            .position(|l| y < (l.info.y + l.info.height).0)
+            .or(self.lines.len().checked_sub(1))
+            .and_then(|i| Some((i, self.lines.get(i)?)))
         else {
-            return 0;
+            return TextPosition::default();
         };
-        let boxes = &self.boxes[line.boxes.clone()];
+        let boxes = self.line_boxes(line);
         // Distance, the box's offset, the caret goes after it.
         let mut best: Option<(f32, u32, bool)> = None;
         for b in boxes {
@@ -1969,7 +2015,7 @@ impl GpuiLayout {
                 }
             }
         }
-        match best {
+        let offset = match best {
             None => line.info.start,
             Some((_, at, false)) => at,
             Some((_, at, true)) => boxes
@@ -1978,7 +2024,35 @@ impl GpuiLayout {
                 .filter(|&i| i > at)
                 .min()
                 .unwrap_or(line.info.end),
-        }
+        };
+        let affinity = if offset == line.info.end && self.wraps(i) {
+            Affinity::Upstream
+        } else {
+            Affinity::Downstream
+        };
+        TextPosition::new(offset, affinity)
+    }
+
+    /// The caret at `position` (content coordinates): no width, as high as
+    /// its line, at the edge of the box that starts at the offset or, past
+    /// the last character of the line, at the end of the last box before it.
+    fn caret_rect(&self, position: TextPosition) -> Option<Bounds<Points>> {
+        let line = self.lines.get(self.line_of(position)?)?;
+        let o = position.offset.max(line.info.start).min(line.info.end);
+        let boxes = self.line_boxes(line);
+        let x = if let Some(b) = boxes.iter().find(|b| b.at == o) {
+            // The edge the characters start at.
+            if b.rtl { b.x + b.w } else { b.x }
+        } else if let Some(b) = boxes.iter().filter(|b| b.at < o).max_by_key(|b| b.at) {
+            // The edge they end at.
+            if b.rtl { b.x } else { b.x + b.w }
+        } else {
+            line.info.x.0
+        };
+        Some(Bounds::new(
+            point(Points(x), line.info.y),
+            size(Points::ZERO, line.info.height),
+        ))
     }
 
     /// Calls `f(x, y, width, height, radius, color)` with the boxes
@@ -2525,7 +2599,11 @@ pub(crate) fn char_at(state: &ViewState, x: f32, y: f32) -> Option<u32> {
 pub(crate) fn caret_at(state: &ViewState, x: f32, y: f32) -> Option<u32> {
     let drawn = state.text.as_ref()?;
     let layout = drawn.layout.downcast::<GpuiLayout>()?;
-    Some(layout.caret_at(x - drawn.content.origin.x.0, y - drawn.content.origin.y.0))
+    Some(
+        layout
+            .hit_test(x - drawn.content.origin.x.0, y - drawn.content.origin.y.0)
+            .offset,
+    )
 }
 
 // --- Selection ----------------------------------------------------------------------
@@ -2721,7 +2799,7 @@ fn pressed(key: u64, view: &NshView, s: &Selection, clicks: u32, x: f32, y: f32,
                 .and_then(|i| drawn.text.link_at(i))
                 .is_some_and(|l| press.iter().any(|&k| l.events.contains(k)));
         (
-            layout.caret_at(lx, ly),
+            layout.hit_test(lx, ly).offset,
             char_index,
             drawn.text.clone(),
             over_press,
@@ -2782,7 +2860,9 @@ fn dragged(key: u64, view: &NshView, s: &Selection, dx: f32, dy: f32, x: f32, y:
         let Some(layout) = drawn.layout.downcast::<GpuiLayout>() else {
             return;
         };
-        let caret = layout.caret_at(x - drawn.content.origin.x.0, y - drawn.content.origin.y.0);
+        let caret = layout
+            .hit_test(x - drawn.content.origin.x.0, y - drawn.content.origin.y.0)
+            .offset;
         extend(&drawn.text.text, s.anchor.get(), caret, s.unit.get())
     };
     select(key, view, Some(range));
@@ -2878,6 +2958,8 @@ pub(crate) fn key(surface: &Rc<crate::surface::Surface>, event: &crate::input::K
         VK_C | VK_INSERT if command => {
             if let Some(text) = selected_text(&view) {
                 crate::system::set_clipboard_text(&text);
+            } else {
+                return crate::keymap::empty_copy_consumed(surface, event);
             }
         }
         VK_A if command => select_all(surface.key(), &view),
@@ -3783,16 +3865,23 @@ mod tests {
         let (size, layout) = layout_of(&engine, &t, None);
         let l = layout.downcast::<GpuiLayout>().unwrap();
         assert_eq!(l.lines.len(), 2);
-        assert_eq!(l.caret_at(-5.0, 2.0), 0);
-        assert_eq!(l.caret_at(size.width.0 + 20.0, 2.0), 15);
+        assert_eq!(l.hit_test(-5.0, 2.0).offset, 0);
+        // A hard break: the caret goes before it, on that line.
+        assert_eq!(
+            l.hit_test(size.width.0 + 20.0, 2.0),
+            TextPosition::new(15, Affinity::Downstream)
+        );
         // Below the text: the last line.
-        assert_eq!(l.caret_at(size.width.0 + 20.0, size.height.0 + 50.0), 22);
-        let mid = l.caret_at((size.width / 2.0).0, 2.0);
+        assert_eq!(
+            l.hit_test(size.width.0 + 20.0, size.height.0 + 50.0).offset,
+            22
+        );
+        let mid = l.hit_test((size.width / 2.0).0, 2.0).offset;
         assert!(mid > 3 && mid < 12, "{mid}");
         // Nearest edge: just right of a box's start is before it.
         let b = l.boxes[l.lines[0].boxes.clone()][2];
-        assert_eq!(l.caret_at(b.x + b.w * 0.2, 2.0), b.at);
-        assert_eq!(l.caret_at(b.x + b.w * 0.8, 2.0), b.at + 1);
+        assert_eq!(l.hit_test(b.x + b.w * 0.2, 2.0).offset, b.at);
+        assert_eq!(l.hit_test(b.x + b.w * 0.8, 2.0).offset, b.at + 1);
         assert_eq!(l.char_at(b.x + b.w * 0.5, 2.0), Some(b.at));
 
         let mut rects = Vec::new();
@@ -3808,8 +3897,61 @@ mod tests {
         let (size, layout) = layout_of(&engine, &rtl, None);
         let l = layout.downcast::<GpuiLayout>().unwrap();
         // Right to left: the right edge is the start.
-        assert_eq!(l.caret_at(size.width.0 + 5.0, 2.0), 0);
-        assert_eq!(l.caret_at(-5.0, 2.0), 9);
+        assert_eq!(l.hit_test(size.width.0 + 5.0, 2.0).offset, 0);
+        assert_eq!(l.hit_test(-5.0, 2.0).offset, 9);
+    }
+
+    /// The engine's hit testing: the end of a wrapped line is `Upstream`
+    /// and its caret stays on that line, carets sit on box edges, and
+    /// ranges append a line-high box per line.
+    #[test]
+    fn engine_hit_testing() {
+        let Some(engine) = engine() else {
+            return;
+        };
+        let t = text(&[("alpha beta gamma delta epsilon", plain(15.0))]);
+        let (_, layout) = layout_of(&engine, &t, Some(90.0));
+        let lines = engine.lines(&layout);
+        assert!(lines.len() > 2, "{lines:?}");
+        let first = &lines[0];
+        assert_eq!(first.end, lines[1].start);
+
+        let past = point(Points(500.0), first.y + first.height / 2.0);
+        let end = engine.hit_test(&layout, past);
+        assert_eq!(end, TextPosition::new(first.end, Affinity::Upstream));
+        let up = engine.caret_rect(&layout, end).unwrap();
+        let down = engine
+            .caret_rect(&layout, TextPosition::new(first.end, Affinity::Downstream))
+            .unwrap();
+        assert_eq!((up.origin.y, up.size.width), (first.y, Points::ZERO));
+        assert_eq!(up.size.height, first.height);
+        assert_eq!(down.origin.y, lines[1].y);
+        assert!(up.origin.x.0 > down.origin.x.0 + 20.0, "{up:?} {down:?}");
+        // The start of the text and a point above it.
+        let start = engine.hit_test(&layout, point(Points(-5.0), Points(-5.0)));
+        assert_eq!(start, TextPosition::default());
+        assert_eq!(engine.caret_rect(&layout, start).unwrap().origin.x, first.x);
+
+        // A range over two lines appends to what `out` holds.
+        let mut out = vec![Bounds::new(
+            point(Points(1.0), Points(2.0)),
+            size(Points(3.0), Points(4.0)),
+        )];
+        engine.range_rects(&layout, 2..lines[1].start + 2, &mut out);
+        assert_eq!(out.len(), 3, "{out:?}");
+        assert_eq!(out[1].origin.y, first.y);
+        assert_eq!(out[2].origin.y, lines[1].y);
+        assert_eq!(out[1].size.height, first.height);
+        engine.range_rects(&layout, 4..4, &mut out);
+        assert_eq!(out.len(), 3);
+
+        // Not this engine's layout.
+        let other = nsh_core::ApproxTextEngine;
+        let foreign = other.layout(&other.prepare(&t), Size::new(Points(90.0), Points(40.0)));
+        assert_eq!(engine.hit_test(&foreign, past), TextPosition::default());
+        assert!(engine.caret_rect(&foreign, end).is_none());
+        engine.range_rects(&foreign, 0..5, &mut out);
+        assert_eq!(out.len(), 3);
     }
 
     #[test]

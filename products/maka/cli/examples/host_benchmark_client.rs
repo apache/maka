@@ -44,9 +44,9 @@
 //! close drains all scopes; EOF waits for outstanding commands and closes scopes.
 //!
 //! All commands other than connect/close run concurrently, with no semaphore or hidden
-//! queue. One GUI-like scope has a real 128-request admission limit. For multi-client
-//! throughput, request e.g. ceil(agents/48) scopes and explicitly route each group to
-//! its scope. A send occupies a watch plus a mutation during admission; every scope
+//! queue. One GUI-like scope has no fixed request-count cap. Multi-client cases
+//! explicitly select their scope count and route each group to its scope.
+//! A send occupies a watch plus a mutation during admission; every scope
 //! has its own anchor, while all share ONE Journal clone/SQLite database. The returned
 //! scope count must be reported separately from single-scope measurements.
 //! Timing starts before draft persistence and ends at the original invocation's Ended
@@ -387,7 +387,7 @@ async fn execute(state: &State, command: &Command) -> Result<Value> {
         *state.clients.write().await = clients;
         *state.journal.write().await = Some(journal);
         return Ok(
-            json!({"scopes":scopes,"anchors":scopes,"journals":1,"maxRequestsPerScope":128,"hostEpoch":discovered.host_epoch}),
+            json!({"scopes":scopes,"anchors":scopes,"journals":1,"hostEpoch":discovered.host_epoch}),
         );
     }
     if command.op == "close" {

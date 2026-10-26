@@ -304,7 +304,7 @@ async fn scheduler_model_proposal_requires_user_approval_and_archived_source_blo
         assert_eq!(actual.configuration.workspace,original.configuration.workspace);
         assert_eq!(actual.configuration.permissions,original.configuration.permissions);
         assert_eq!(change(&f,"clear_history",&id,json!({})).await["kind"],"committed");
-        f.store.set_session_archived::<SessionConfiguration>(&source,true,now()).await.unwrap();
+        f.store.set_session_archived::<StoredSessionConfiguration>(&source,true,now()).await.unwrap();
         assert_eq!(change(&f,"trigger_now",&id,json!({})).await["kind"],"committed");
         let blocked = settled(&f,&id).await;
         assert_eq!(blocked["task"]["runs"][0]["outcome"],"blocked");
@@ -325,7 +325,7 @@ async fn scheduler_reopens_frozen_fire_and_reconciles_original_admission_after_l
         let mut f = fixture(&format!("http://{}/v1",listener.local_addr().unwrap())).await;
         let source = f.create("Background authority").await;
         let boundary = f.owner.session(&source).await.unwrap().configuration;
-        let created = f.mutation(2,"schedule",json!({"kind":"create","input":task(json!({"kind":"agent_run","target":{"sessionId":source,"workspace":boundary.workspace,"permissions":boundary.permissions,"boundaryRevision":boundary.boundary_revision},"model":f.selection().await,"thinkingLevel":null}))}),Uuid::new_v4()).await.unwrap();
+        let created = f.mutation(2,"schedule",json!({"kind":"create","input":task(json!({"kind":"agent_run","target":{"sessionId":source,"workspace":boundary.workspace,"permissions":boundary.permissions,"boundaryRevision":boundary.boundary_revision,"binding":boundary.binding},"model":f.selection().await,"thinkingLevel":null}))}),Uuid::new_v4()).await.unwrap();
         let id = created["taskId"].as_str().unwrap();
         f.app.shutdown().await.unwrap();
         let storage = maka_host_runtime::storage::Storage::new(f.store.clone(),f.owner.prefix.clone(),Namespace::new("maka.agent.scheduler",maka_plugin_core::scope::Scope::Profile).unwrap());
@@ -354,7 +354,7 @@ async fn scheduler_reopens_frozen_fire_and_reconciles_original_admission_after_l
         // retain the exact frozen fire/approval, as a failed settlement would.
         let saved = storage.read(key.clone()).await.unwrap().unwrap();
         storage.batch(vec![Mutation{key:key.clone(),expected_revision:Some(saved.revision),data:Data::Present(frozen)}]).await.unwrap();
-        f.store.set_session_archived::<SessionConfiguration>(&source,true,now()).await.unwrap();
+        f.store.set_session_archived::<StoredSessionConfiguration>(&source,true,now()).await.unwrap();
         reopen(&mut f).await;
         let recovered = settled(&f,id).await;
         let actual = &recovered["task"]["runs"][0];
@@ -382,7 +382,7 @@ async fn scheduler_rechecks_new_conversation_boundary_after_creation_before_admi
         let mut f = fixture(&format!("http://{}/v1", listener.local_addr().unwrap())).await;
         let source = f.create("Approved source").await;
         let boundary = f.owner.session(&source).await.unwrap().configuration;
-        let created = f.mutation(2, "schedule", json!({"kind":"create","input":task(json!({"kind":"agent_run","target":{"sessionId":source,"workspace":boundary.workspace,"permissions":boundary.permissions,"boundaryRevision":boundary.boundary_revision},"model":f.selection().await,"thinkingLevel":null}))}), Uuid::new_v4()).await.unwrap();
+        let created = f.mutation(2, "schedule", json!({"kind":"create","input":task(json!({"kind":"agent_run","target":{"sessionId":source,"workspace":boundary.workspace,"permissions":boundary.permissions,"boundaryRevision":boundary.boundary_revision,"binding":boundary.binding},"model":f.selection().await,"thinkingLevel":null}))}), Uuid::new_v4()).await.unwrap();
         let id = created["taskId"].as_str().unwrap();
         f.app.shutdown().await.unwrap();
         let storage = maka_host_runtime::storage::Storage::new(f.store.clone(), f.owner.prefix.clone(), Namespace::new("maka.agent.scheduler", maka_plugin_core::scope::Scope::Profile).unwrap());
@@ -396,14 +396,14 @@ async fn scheduler_rechecks_new_conversation_boundary_after_creation_before_admi
         let target = format!("{}{}", f.owner.prefix, &identity[..32]);
         // Durable cut after creation. An intervening user boundary change must
         // not widen the scheduled invocation, even while its source is valid.
-        let mut changed = boundary;
+        let mut changed = f.session(&source).await.get_session::<StoredSessionConfiguration>(&source).await.unwrap().unwrap().configuration;
         changed.boundary_revision = 1;
         f.store.create_session(&target, "intervening-boundary-change", &changed, now()).await.unwrap();
         storage.batch(vec![Mutation { key, expected_revision: Some(saved.revision), data: Data::Present(serde_json::to_value(pending).unwrap()) }]).await.unwrap();
         reopen(&mut f).await;
         let blocked = settled(&f, id).await;
         assert_eq!(blocked["task"]["runs"][0]["outcome"], "blocked");
-        assert!(f.store.message_admission(&target, &format!("m_{identity}")).await.unwrap().is_none());
+        assert!(f.session(&target).await.message_admission(&target, &format!("m_{identity}")).await.unwrap().is_none());
         assert!(service_tools::facts(&f, &target).await.is_empty());
         assert!(tokio::time::timeout(Duration::from_millis(100), listener.accept()).await.is_err());
         f.app.shutdown().await.unwrap();

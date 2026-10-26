@@ -635,7 +635,7 @@ impl Tab {
                 let metrics = self
                     .frame_request(session, "Page.getLayoutMetrics", json!({}))
                     .await?;
-                let tree = cua_driver_core::browser::semantic_ax_tree(
+                let mut tree = cua_driver_core::browser::semantic_ax_tree(
                     &tree,
                     &dom,
                     &layout,
@@ -655,11 +655,10 @@ impl Tab {
                 );
                 let scope =
                     serde_json::to_string(&[&observed.id, &observed.loader]).map_err(failed)?;
-                for raw in tree["nodes"]
-                    .as_array()
-                    .ok_or_else(|| failed("browser returned no accessibility nodes"))?
-                {
-                    let mut node = raw.clone();
+                let frame_nodes = tree["nodes"]
+                    .as_array_mut()
+                    .ok_or_else(|| failed("browser returned no accessibility nodes"))?;
+                for mut node in frame_nodes.drain(..) {
                     for key in ["nodeId", "parentId"] {
                         if let Some(id) = node[key].as_str() {
                             node[key] = json!(format!("{scope}:{id}"));

@@ -21,7 +21,6 @@
 use crate::{StoreError, sequence_number};
 use maka_agent_facts::event::Fact;
 use maka_agent_facts::event::Invocation;
-use maka_agent_facts::event::InvocationInput;
 use maka_agent_facts::event::LogScope;
 use maka_agent_facts::event::RuntimeEvent;
 use sqlx::SqliteConnection;
@@ -65,53 +64,18 @@ impl Selection {
         let invocation = crate::turns::run_invocation(connection, session, run)
             .await?
             .ok_or_else(|| super::invalid("lineage root Run is missing"))?;
-        let (sequence, event) =
-            super::proof::by_kind(connection, &invocation, "invocation_opened", None).await?;
-        if event.invocation.session_id != *session || event.invocation.run_id != *run {
-            return Err(super::invalid("lineage root identity changed"));
-        }
-        let Fact::InvocationOpened {
-            input,
-            configuration,
-        } = event.fact
-        else {
-            return Err(super::invalid("lineage root has no opening"));
-        };
-        let mut runs = vec![invocation];
-        let base = match &input {
-            InvocationInput::Message { .. } => {
-                super::evidence::high_water(connection, session, sequence as i64).await?
-            }
-            InvocationInput::Continuation { claim, .. }
-            | InvocationInput::Handoff { claim, .. } => {
-                input
-                    .validate_inheritance(&event.invocation)
-                    .map_err(super::invalid)?;
-                let workspace = configuration
-                    .as_ref()
-                    .and_then(|c| c.workspace_identity.as_ref())
-                    .ok_or_else(|| super::invalid("lineage root has no workspace identity"))?;
-                runs.extend(
-                    crate::continuation::ancestors(
-                        connection,
-                        &claim.source,
-                        &claim.base,
-                        workspace,
-                    )
-                    .await?
-                    .into_iter()
-                    .map(|i| i.invocation_id),
-                );
-                claim.base.high_water
-            }
-            _ => return Err(super::invalid("opening does not inherit model history")),
-        };
+        let base: i64 = sqlx::query_scalar(
+            "SELECT base_sequence FROM context_source_lineages WHERE invocation_id=?",
+        )
+        .bind(&invocation)
+        .fetch_optional(connection)
+        .await?
+        .ok_or_else(|| super::invalid("opening does not inherit model history"))?;
+        let lineage = serde_json::to_string(&serde_json::json!({"base":base,"run":invocation}))?;
         Ok(Self {
             scope: scope.clone(),
             session: Some(session.clone()),
-            lineage: Some(serde_json::to_string(
-                &serde_json::json!({"base":base,"runs":runs}),
-            )?),
+            lineage: Some(lineage),
         })
     }
 
@@ -155,10 +119,16 @@ impl Selection {
         Self::for_opening(connection, &opening).await
     }
 
+    /// Test one candidate using immutable logarithmic ancestry jumps.
+    pub(crate) fn lineage_contains(candidate: &str, parameter: &str) -> String {
+        format!("context_lineage_contains(json_extract({parameter},'$.run'),{candidate})")
+    }
+
     /// Alias and parameter are internal SQL identifiers, never client values.
     pub fn predicate(alias: &str, parameter: &str) -> String {
+        let contains = Self::lineage_contains(&format!("{alias}.invocation_id"), parameter);
         format!(
-            "({parameter} IS NULL OR {alias}.sequence <= json_extract({parameter},'$.base') OR {alias}.invocation_id IN (SELECT value FROM json_each({parameter},'$.runs')))"
+            "({parameter} IS NULL OR {alias}.sequence<=json_extract({parameter},'$.base') OR {contains})"
         )
     }
 

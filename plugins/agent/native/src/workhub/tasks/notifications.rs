@@ -39,7 +39,7 @@ impl Tasks {
             let Some(hub) = link.get().and_then(Weak::upgrade) else {
                 return;
             };
-            let mut commits = hub.agent.0.store.subscribe_commits();
+            let mut commits = hub.agent.0.store.subscribe_changes();
             let mut after = None;
             let mut previous_error = None;
             let mut graph_scan = 0;

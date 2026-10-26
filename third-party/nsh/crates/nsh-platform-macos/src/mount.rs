@@ -106,6 +106,7 @@ impl Mounter {
         crate::system::end_batch(surface);
         crate::input::content_moved(surface, false);
         crate::selection_area::end_batch(surface);
+        surface.control(|control| control.set_focus_path(crate::input::focus_path(surface)));
     }
 
     fn get(&self, id: NodeId) -> Option<&NshView> {
@@ -141,35 +142,34 @@ impl Mounter {
                 parent,
                 child,
                 before,
+            } => self.insert(surface, *parent, *child, *before),
+            MountItem::ProjectRoot {
+                parent,
+                id,
+                following,
             } => {
-                let (Some(parent), Some(child)) = (self.get(*parent), self.get(*child)) else {
-                    return;
-                };
-                match child.kind() {
-                    ViewKind::Modal => return crate::navigation::present(surface, child),
-                    ViewKind::HeaderItem => {
-                        return crate::navigation::header_item(surface, parent, child);
-                    }
-                    ViewKind::InputAccessory => {
-                        return crate::text_input::accessory(surface, parent, child);
-                    }
-                    _ => {}
-                }
-                let before = before
-                    .and_then(|b| self.views.get(&b))
-                    .filter(|b| b.parent_view().as_ref() == Some(parent));
-                if child.has_parent() {
-                    child.unparent();
-                }
-                child.insert_before(parent, before);
-                crate::transition::inserted(surface, child, self.layout_animation.as_ref());
-                if parent.kind() == ViewKind::Stack {
-                    crate::navigation::stack_changed(surface, parent, Some(child));
-                }
-                if parent.kind() == ViewKind::Scroll {
-                    crate::scroll::child_inserted(parent);
-                }
+                let before = self.root_anchor(*parent, *id, following);
+                self.insert(surface, *parent, *id, before);
             }
+            MountItem::RetireListCell { id, request, roots } => {
+                let path = crate::input::focus_path(surface);
+                let retired = !roots.iter().any(|root| path.contains(root));
+                if retired {
+                    for root in roots {
+                        if let Some(view) = self.get(*root) {
+                            crate::input::retiring(surface, view);
+                            crate::scroll::detached(view);
+                            crate::navigation::park_retired_root(surface, view);
+                        }
+                    }
+                }
+                surface.control(|control| {
+                    control.set_focus_path(path);
+                    control.retire_list_cell(*id, *request, retired);
+                });
+            }
+            // Native roots already parked before their acknowledgement.
+            MountItem::ListCellRetired { .. } => {}
             MountItem::Remove { id } => {
                 if let Some(view) = self.get(*id) {
                     // A removal animation detaches the view when it ends.
@@ -181,10 +181,12 @@ impl Mounter {
             MountItem::Delete { id } => {
                 crate::file_drop::deleted(surface, *id);
                 if let Some(view) = self.views.remove(id) {
+                    crate::navigation::deleted_parked_root(surface, &view);
                     crate::native::deleted(surface, &view);
                     // A removal animation detaches the view when it ends.
                     if !crate::transition::removing(surface, &view, self.layout_animation.as_ref())
                     {
+                        crate::transition::deleted(&view);
                         self.detach(surface, &view);
                     }
                 }
@@ -230,6 +232,7 @@ impl Mounter {
                 crate::transition::style_changed(surface, view, &old);
                 view.moved();
                 crate::decor::style_changed(view, &old);
+                crate::access::style_changed(view, &old);
             }
             MountItem::Text {
                 id,
@@ -379,6 +382,56 @@ impl Mounter {
             MountItem::Command { id, command } => self.command(surface, *id, command),
             // The animator's (`Surface::apply`).
             MountItem::Animation(_) | MountItem::AnimationBindings { .. } => {}
+        }
+    }
+
+    fn root_anchor(&self, parent: NodeId, id: NodeId, following: &[NodeId]) -> Option<NodeId> {
+        let (Some(parent), Some(root)) = (self.get(parent), self.get(id)) else {
+            return None;
+        };
+        // These roots use navigation/accessory hosting, not the source
+        // parent's ordinary NSView child order.
+        if matches!(
+            root.kind(),
+            ViewKind::Modal | ViewKind::HeaderItem | ViewKind::InputAccessory
+        ) {
+            return None;
+        }
+        following.iter().copied().find(|id| {
+            self.get(*id).is_some_and(|candidate| {
+                !matches!(
+                    candidate.kind(),
+                    ViewKind::Modal | ViewKind::HeaderItem | ViewKind::InputAccessory
+                ) && candidate.parent_view().as_ref() == Some(parent)
+            })
+        })
+    }
+
+    fn insert(&self, surface: &Rc<Surface>, parent: NodeId, child: NodeId, before: Option<NodeId>) {
+        let (Some(parent), Some(child)) = (self.get(parent), self.get(child)) else {
+            return;
+        };
+        match child.kind() {
+            ViewKind::Modal => return crate::navigation::present(surface, child),
+            ViewKind::HeaderItem => return crate::navigation::header_item(surface, parent, child),
+            ViewKind::InputAccessory => {
+                return crate::text_input::accessory(surface, parent, child);
+            }
+            _ => {}
+        }
+        let before = before
+            .and_then(|id| self.get(id))
+            .filter(|view| view.parent_view().as_ref() == Some(parent));
+        if child.has_parent() {
+            child.unparent();
+        }
+        child.insert_before(parent, before);
+        crate::transition::inserted(surface, child, self.layout_animation.as_ref());
+        if parent.kind() == ViewKind::Stack {
+            crate::navigation::stack_changed(surface, parent, Some(child));
+        }
+        if parent.kind() == ViewKind::Scroll {
+            crate::scroll::child_inserted(parent);
         }
     }
 

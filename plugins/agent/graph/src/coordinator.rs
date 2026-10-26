@@ -194,11 +194,7 @@ impl Coordinator {
         let Some(intent) = self.intents.get(work) else {
             return Ok(());
         };
-        let observation = match self
-            .commands
-            .query(intent.request.operation_id.clone())
-            .await
-        {
+        let observation = match self.commands.query(intent.request.operation()).await {
             Ok(observation) => observation,
             Err(CommandError::NotFound) => return Ok(()),
             Err(error) => return Err(error.into()),
@@ -226,11 +222,7 @@ impl Coordinator {
             }
             let page = self
                 .commands
-                .events(
-                    intent.request.operation_id.clone(),
-                    execution.after,
-                    through,
-                )
+                .events(intent.request.operation(), execution.after, through)
                 .await?;
             execution.apply_page(page)?;
         }
@@ -243,7 +235,7 @@ impl Coordinator {
         {
             match self
                 .commands
-                .workspace_patch(intent.request.operation_id.clone())
+                .workspace_patch(intent.request.operation())
                 .await
             {
                 Ok(patch) => {
@@ -304,9 +296,7 @@ impl Coordinator {
                 && !matches!(execution.observation.progress, Progress::Ended { .. })
             {
                 let intent = &self.intents[work];
-                self.commands
-                    .cancel(intent.request.operation_id.clone())
-                    .await?;
+                self.commands.cancel(intent.request.operation()).await?;
             }
             return Ok(());
         }
@@ -414,7 +404,7 @@ impl Coordinator {
             if let Some(event) = self
                 .commands
                 .event(
-                    intent.request.operation_id.clone(),
+                    intent.request.operation(),
                     id.into(),
                     execution.observation.through_sequence,
                 )

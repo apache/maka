@@ -10,6 +10,8 @@ demo: text-view
 
 `TextView` 显示用 Markdown、HTML 或应用自己构建的文档块写成的文档：标题、段落、强调、链接、列表与任务列表、引用和 GitHub 的提示块（alert）、代码、表格、图片、公式、脚注和折叠块。它为 AI 模型在聊天中的回复而设计：回复以 Markdown 流式到达，每来一段，文本就带着格式显示出来。解析在 Rust 中完成，文档用 [`Text`](./text.md) 元素和视图绘制。
 
+根文档块随外层滚动视口按需挂载。`contentStyle` 用点数设置文档行的内边距和间距，默认为 `{ rowGap: 11.25 }`；根节点的类和样式控制外层几何与文字外观。
+
 它负责行为，并自带一套阅读排版：15pt 正文、宽松的 25.5pt 行高，半粗体标题且上方留有空间，链接以主题的 `primary` 色加下划线，代码使用主题的 `font-mono`，放在带边框的圆角框中，表格四边都有线、表头行带底色，引用在一侧带一条线，提示块是带图标、采用 GitHub 提示色的着色框。颜色取自主题的令牌（`foreground`、`muted-foreground`、`border`、`muted`、`primary`，警示（caution）用 `destructive`），因此主题和深色外观都会作用于它。每个部件在这些默认样式之上接收应用的样式：TSX 中是 `classes` 和 `styles`，Rust 中是按部件给出的类型化样式（`TextViewParts`）。Rust 用 `nsh_base::text_view()` 创建它，TSX 用从 `nsh/base` 导入的 `<TextView>`。
 
 ```rust tabs
@@ -83,7 +85,7 @@ mount(App);
 
 `TextView` 由 [`Text`](./text.md) 元素组成，其中的文本行为与 Text 页面描述的完全一致。每个段落、标题、表格单元格和代码块都是一个原生 `Text`：一个独立排版、换行、跟随字体缩放的文本块，设置 `selectable` 后可以选择和复制。加粗、强调、删除线等行内标记是它的[片段](./text.md#片段)；行内代码是带[片段背景](./text.md#片段背景)的片段，因此 `code: "rounded bg-neutral-100"` 会给它一个圆角背景；链接是[可点击的片段](./text.md#链接)；图片和行内自定义节点是[行内附件](./text.md#行内视图和图片)。根节点上的文本样式会传给每个部件，就像[文本样式](./text.md#文本样式)从 `Text` 传给它的片段一样。
 
-设置 `selectable` 后，整个文档作为一体选择，就像网页一样：拖动（在触摸屏上是长按后拖动选择手柄）可以从一个段落、列表项、单元格或代码块延伸到下一个，复制会取得它们全部的文字。设置了 `selectable` 的 `TextView` 本身就是一个 [`SelectionArea`](./selection-area.md)；放在 `SelectionArea` 里时，它的选区还会延伸到周围的文字和其他 `TextView`。
+设置 `selectable` 后，已挂载的文字共享一个选区：拖动（在触摸屏上是长按后拖动选择手柄）可以从一个已挂载的段落、列表项、单元格或代码块延伸到下一个，复制取得选中的文字。设置了 `selectable` 的 `TextView` 本身就是一个 [`SelectionArea`](./selection-area.md)；放在 `SelectionArea` 里时，它的选区还会延伸到周围已挂载的文字和其他 `TextView`。复制完整文档时使用完整源码或 `TextView.plainText(document)`（[文档模型](#the-document-model)）。
 
 `TextView` 增加的是其余部分：把 Markdown、HTML 或文档读成文档块，文本周围的视图（列表、引用、表格、代码块、折叠块、脚注），流式输出，按部件设定样式，渲染函数和扩展。
 
@@ -131,7 +133,7 @@ fn total() -> impl IntoElement {
 
 ## 部件样式
 
-`class` 和 `style` 设定根节点（各文档块组成的一列）的样式；在那里设置的文本样式（颜色、字号、字体）会传给每个部件。根节点也是部件 `root`：`styles.root` 以带类型的方式接收文本样式（`style` 的类型是视图样式），`classes.root` 接收类。`classes` 按部件接收 Tailwind 类，`styles` 按部件接收内联样式。部件的类排在它自己的默认样式之后，因此优先生效；它的 `styles` 又优先于它的类。在 Rust 中，部件接收类型化的样式：`TextViewParts` 为每个 `TextViewPart` 提供一个细化其样式的函数，作用于提供它的视图下面的每个 `TextView`（[类型化的部件样式](#typed-part-styles)），根节点则使用样式方法。默认样式的行高以点为单位：改变某个部件字号的类也要设定行高（Tailwind 的 `text-*` 类会一并设定）。
+`class` 和 `style` 设置原生文档视口的外层几何与文字外观；其中的文本样式（颜色、字号、字体）会传给每个部件。`contentStyle` 用点数设置文档行的内边距和间距。根节点也是部件 `root`：`styles.root` 以带类型的方式接收文本样式（`style` 的类型是视图样式），`classes.root` 接收类。`classes` 按部件接收 Tailwind 类，`styles` 按部件接收内联样式。部件的类排在它自己的默认样式之后，因此优先生效；它的 `styles` 又优先于它的类。在 Rust 中，部件接收类型化的样式：`TextViewParts` 为每个 `TextViewPart` 提供一个细化其样式的函数，作用于提供它的视图下面的每个 `TextView`（[类型化的部件样式](#typed-part-styles)），根节点则使用样式方法。默认样式的行高以点为单位：改变某个部件字号的类也要设定行高（Tailwind 的 `text-*` 类会一并设定）。
 
 ```rust tabs
 use nsh_base::{TextViewPart, TextViewParts, text_view, theme};
@@ -158,7 +160,10 @@ fn reply(markdown: Signal<SharedString>) -> impl IntoElement {
     );
     text_view()
         .markdown(move || markdown.get())
-        .gap_3()
+        .content_style(nsh_core::ListContentStyle {
+            row_gap: px(12.0),
+            ..nsh_core::ListContentStyle::default()
+        })
         .text_size(px(15.0))
         .line_height(px(24.0))
         .text_color(rgb(0x262626))
@@ -169,7 +174,8 @@ fn reply(markdown: Signal<SharedString>) -> impl IntoElement {
 ```tsx tabs
 <TextView
   markdown={reply()}
-  class="gap-3 text-[15px] leading-6 text-neutral-800"
+  contentStyle={{ rowGap: 12 }}
+  class="text-[15px] leading-6 text-neutral-800"
   classes={{
     heading: "text-neutral-950",
     heading2: "text-xl mt-2",
@@ -190,7 +196,7 @@ fn reply(markdown: Signal<SharedString>) -> impl IntoElement {
 
 | 部件 | Rust | 说明 |
 |---|---|---|
-| `root` | `Root` | 文本视图本身，即各文档块组成的一列；这里的文本样式传给每个部件。 |
+| `root` | `Root` | 原生文档视口的外层几何与继承的文字外观；文档行的内边距和间距使用 `contentStyle`。 |
 | `paragraph` | `Paragraph` | 每个段落。 |
 | `heading` | `Heading` | 每个标题，在其级别的部件之前。 |
 | `heading1` … `heading6` | `Heading1` … `Heading6` | 对应级别的标题（27、20、17，其余 15pt，半粗体）。 |
@@ -315,6 +321,18 @@ fn doc(markdown: &'static str) -> impl IntoElement {
 ```
 
 `scroll_to_anchor` 和 `open_web`（TSX 中是 `scrollToAnchor` 和 `nav`）代表应用自己的函数。
+
+设置 `links="open"` 后，按下指向其他网站或应用的链接（带 scheme 的 URL：`https:`、`mailto:` 等）时，在 `onLinkPress` 报告之后，还会用 [`openUrl`](../modules/nsh-device.md#openurl) 在应用之外打开它，受应用的 `openUrl` 能力约束；文档内的锚点（`#…`）只报告。默认值 `"report"` 什么都不打开。
+
+```rust tabs
+use nsh_base::{TextViewLinks, text_view};
+
+text_view().markdown(doc).links(TextViewLinks::Open)
+```
+
+```tsx tabs
+<TextView markdown={doc} links="open" />
+```
 
 <a id="render-functions"></a>
 
@@ -720,7 +738,9 @@ fn chat() -> impl IntoElement {
 | `extensions` | `.extensions(..)` | `MarkdownExtension[]` | `[]` | 应用自己的语法，生成自定义节点（[Markdown 扩展](#markdown-extensions)）。 |
 | `classes` | `.classes(..)` | `TextViewClasses` | `{}` | 按部件设定的 Tailwind 类。 |
 | `styles` | `.styles(..)` | `TextViewStyles` | `{}` | 按部件设定的内联样式（每个都是 `StyleProp<TextStyle>`），优先于类。 |
-| `selectable` | `.selectable(..)` | `boolean` | `false` | 整个文档作为一体可选择：选区可以跨越它的段落、标题、单元格和代码块（[SelectionArea](./selection-area.md)）。 |
+| `contentStyle` | `.content_style(..)` | `ListContentStyle` | `{ rowGap: 11.25 }` | 原生文档行的内边距和间距，单位为点；显式值替换整个内容布局。 |
+| `selectable` | `.selectable(..)` | `boolean` | `false` | 已挂载的文字共享选区，可跨越段落、标题、单元格和代码块（[SelectionArea](./selection-area.md)）。 |
+| `links` | `.links(..)` | `"report" \| "open"` | `"report"` | 按下链接时的行为：报告它（`onLinkPress`），设为 `"open"` 时还会在应用之外打开指向其他网站或应用的链接（[链接](#链接)）。 |
 | `codeBlockScrollbar` | `.code_block_scrollbar(..)` | `boolean` | `true` | 代码块显示其水平滚动指示器。 |
 | `tableScrollbar` | `.table_scrollbar(..)` | `boolean` | `true` | 表格显示其水平滚动指示器。 |
 | `streamingCaret` | `.streaming_caret(..)` | `JSX.Element` | | 显示在文档末尾：在最后一段文本之后以行内方式显示，否则单独一行。 |
@@ -731,7 +751,7 @@ fn chat() -> impl IntoElement {
 | `renderTableActions` | `.render_table_actions(\|table\| ..)` | `(table: TextViewTable) => JSX.Element` | | 每个表格上方的内容。 |
 | `renderMath` | `.render_math(\|math\| ..)` | `(math: TextViewMath) => JSX.Element` | | 显示公式。 |
 | `renderImage` | `.render_image(\|image\| ..)` | `(image: TextViewImage) => JSX.Element` | | 显示图片。 |
-| `class`、`style` | 样式方法 | `string`、`StyleProp<ViewStyle>` | | 根节点，即各文档块组成的一列；其文本样式传给每个部件（带类型的文本样式：`styles.root`）。 |
+| `class`、`style` | 样式方法 | `string`、`StyleProp<ViewStyle>` | | 原生文档视口的外层几何与文字外观（带类型的文本样式：`styles.root`）；文档行的内边距和间距使用 `contentStyle`。 |
 
 在 Rust 中，按部件给出的类和样式是 `TextViewClasses` 和 `TextViewStyles`；Rust 视图通常用 [`TextViewParts`](#typed-part-styles) 设定部件样式。
 

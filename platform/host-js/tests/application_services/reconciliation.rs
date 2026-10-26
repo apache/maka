@@ -42,9 +42,9 @@ fn js_provider(label: &str) -> Package {
 
 #[tokio::test]
 async fn live_adoption_preserves_original_mutation_preparation_and_unchanged_activations() {
-    tokio::time::timeout(Duration::from_secs(20), async {
-        for automatic in [false, true] {
-            let (dir, _namespaces, store) = store().await;
+    for automatic in [false, true] {
+        let (dir, _namespaces, store) = store().await;
+        tokio::time::timeout(Duration::from_secs(20), async {
             let issuer = Issuer::default();
             let calls = Arc::new(AtomicUsize::new(0));
             let (app, deployment) = launch(
@@ -167,16 +167,16 @@ async fn live_adoption_preserves_original_mutation_preparation_and_unchanged_act
             app.shutdown().await.unwrap();
             drop((app, client));
             close(store).await;
-        }
-    })
-    .await
-    .unwrap();
+        })
+        .await
+        .unwrap();
+    }
 }
 
 #[tokio::test]
 async fn live_installed_replacement_waits_for_original_call_resources_and_native_close() {
+    let (_dir, _namespaces, store) = store().await;
     tokio::time::timeout(Duration::from_secs(20), async {
-        let (_dir, _namespaces, store) = store().await;
         let provider = native_package();
         let consumer = consumer();
         let deployment = Uuid::new_v4();
@@ -395,10 +395,10 @@ async fn live_installed_replacement_waits_for_original_call_resources_and_native
 
 #[tokio::test]
 async fn failed_live_initializer_preserves_healthy_instances_and_later_revision_can_converge() {
+    let (_dir, _namespaces, store) = store().await;
     tokio::time::timeout(Duration::from_secs(20), async {
         const INITIALIZER_SECRET: &str = "SECRET_REAL_JS_INITIALIZER_EXCEPTION";
         let (mut capture, _log_guard) = log_capture();
-        let (_dir, _namespaces, store) = store().await;
         let provider = native_package();
         let consumer = consumer();
         let deployment = Uuid::new_v4();
@@ -585,8 +585,8 @@ async fn failed_live_initializer_preserves_healthy_instances_and_later_revision_
 #[tokio::test]
 async fn retirement_does_not_wait_for_a_blocked_actual_source_sql_load() {
     use sqlx::{Connection, Executor, SqliteConnection, sqlite::SqliteConnectOptions};
+    let (dir, _ns, store) = store().await;
     tokio::time::timeout(Duration::from_secs(10), async {
-        let (dir, _ns, store) = store().await;
         let issuer = Issuer::default();
         let calls = Arc::new(AtomicUsize::new(0));
         let (app, _) = launch(

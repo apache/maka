@@ -138,7 +138,6 @@ impl Case {
         self.commands += 1;
         let output = Command::new(env!("CARGO_BIN_EXE_maka"))
             .args(arguments)
-            .env("MAKA_PRODUCT_BUNDLE", bundle)
             .output()
             .unwrap();
         let prefix = self.evidence.join(format!("{:02}-{name}", self.commands));
@@ -279,9 +278,7 @@ async fn seed(wal: bool) -> Fixture {
     let domain = owner.root_id().to_owned();
     let lease =
         FileLease::acquire(&case.root.join(format!("{ROOT_DATABASE}.writer.lock"))).unwrap();
-    let bundle = std::env::var_os("MAKA_PRODUCT_BUNDLE")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../bundle/dist"));
+    let bundle = PathBuf::from(env!("OUT_DIR")).join("product");
     // Same built package discovery and same-ID old fork as the ordinary standalone
     // command fixture. No injected synchronizer map or synthetic product bundle.
     let current = Package::read_from(&bundle.join("packages/workspace-files")).unwrap();

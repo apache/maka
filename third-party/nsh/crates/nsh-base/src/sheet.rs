@@ -25,6 +25,11 @@ pub struct SheetProps {
     /// A press on the backdrop closes it (default true).
     #[prop(default = true)]
     pub close_on_backdrop_press: Prop<bool>,
+    /// A bottom sheet follows a downward swipe and closes on release past
+    /// 30% of its height or 800 points per second (default false).
+    /// On iOS, a scroll inside it hands the same drag over at its top.
+    #[prop(default)]
+    pub close_on_swipe: Prop<bool>,
     /// The classes of the panel.
     pub popup_class: Prop<Option<SharedString>>,
     /// The inline style of the panel, over its classes.
@@ -44,7 +49,7 @@ pub struct SheetProps {
 /// The events of a [`Sheet`].
 #[derive(Debug, Clone, PartialEq, Event)]
 pub enum SheetEvent {
-    /// It closed (a press on the backdrop, Escape or back), with why: set
+    /// It closed (a press on the backdrop, Escape, back or a swipe), with why: set
     /// `open` to follow it.
     #[args(open, reason)]
     OpenChange(bool, OpenChangeReason),
@@ -53,7 +58,7 @@ pub enum SheetEvent {
     /// It went: it is all gone (also when the app closed it).
     Close,
     /// The user tried to close it (Escape or back, a press on the
-    /// backdrop), whether or not `closeOnEscape` / `closeOnBackdropPress`
+    /// backdrop, or an enabled swipe), whether or not `closeOnEscape` / `closeOnBackdropPress`
     /// let it close.
     Cancel,
 }
@@ -76,6 +81,35 @@ pub fn Sheet(props: SheetProps, cx: Scope<SheetEvent>) -> impl IntoElement {
         }
     };
     let motion = SheetMotion::new(move || open.get(), move || props.side.get());
+    let height = animated_value(1.0);
+    let panel_height = stored(Points(1.0));
+    let swipe_enabled = animated_value(0.0);
+    // The same native value drives the panel and scrim: finger motion
+    // never waits for a Rust component turn or a JS callback.
+    let progress = motion
+        .drag_y
+        .div(&height)
+        .interpolate(&[0.0, 1.0], &[0.0, 1.0]);
+    let dragged_y = progress
+        .mul(&height)
+        .sub(&motion.drag_y)
+        .mul(&swipe_enabled)
+        .add(&motion.y);
+    // During exit both fade and drag return to zero. Subtracting keeps
+    // the backdrop fading forward from the finger's release position.
+    let dragged_fade = motion
+        .fade
+        .sub(&progress.mul(&swipe_enabled))
+        .interpolate(&[0.0, 1.0], &[0.0, 1.0]);
+    let swipe = move || props.close_on_swipe.get() && props.side.get() == Placement::Bottom;
+    let was_swipe = stored(false);
+    effect(move || {
+        let enabled = swipe();
+        swipe_enabled.set(if enabled { 1.0 } else { 0.0 });
+        if was_swipe.replace(enabled) && !enabled && open.get_untracked() {
+            motion.come_in();
+        }
+    });
     lifecycle(
         move || motion.there(),
         move || cx.emit(SheetEvent::Open),
@@ -84,7 +118,7 @@ pub fn Sheet(props: SheetProps, cx: Scope<SheetEvent>) -> impl IntoElement {
     when(motion.shown, move || {
         let backdrop = overlay()
             .inset_0()
-            .bind_opacity(&motion.fade)
+            .bind_opacity(&dragged_fade)
             .focusable(false)
             .app_class(props.backdrop_class)
             .inline_style(props.backdrop_style)
@@ -94,7 +128,7 @@ pub fn Sheet(props: SheetProps, cx: Scope<SheetEvent>) -> impl IntoElement {
                     change(false, OpenChangeReason::BackdropPress);
                 }
             });
-        let panel = overlay()
+        let mut panel = overlay()
             .style_with(move |s| match props.side.get() {
                 Placement::Bottom => s.left_0().right_0().bottom_0(),
                 Placement::Top => s.left_0().right_0().top_0(),
@@ -104,8 +138,11 @@ pub fn Sheet(props: SheetProps, cx: Scope<SheetEvent>) -> impl IntoElement {
             .app_class(props.popup_class)
             .inline_style(props.popup_style)
             .bind_translate_x(&motion.x)
-            .bind_translate_y(&motion.y)
-            .on_layout(move |frame: &Bounds<Points>| motion.laid_out(frame.size))
+            .on_layout(move |frame: &Bounds<Points>| {
+                panel_height.replace(frame.size.height.max(Points(1.0)));
+                height.set(frame.size.height.0.max(1.0));
+                motion.laid_out(frame.size);
+            })
             .on_cancel(move || {
                 cx.emit(SheetEvent::Cancel);
                 if props.close_on_escape.get_untracked() {
@@ -113,6 +150,34 @@ pub fn Sheet(props: SheetProps, cx: Scope<SheetEvent>) -> impl IntoElement {
                 }
             })
             .child(props.children);
+        panel = panel
+            .pan_values(None, Some(&motion.drag_y))
+            .pan_enabled(move || swipe() && open.get() && motion.settled.get())
+            .pan_scroll_handoff(swipe)
+            .on_pan_end(move |e: &PanEvent| {
+                if !open.get_untracked() {
+                    return;
+                }
+                let distance = e.value_y.unwrap_or(0.0).max(0.0);
+                let dismiss = !e.cancelled
+                    && distance > 0.0
+                    && (distance >= panel_height.get().0 * 0.3 || e.velocity_y >= 800.0);
+                if props.close_on_swipe.get_untracked()
+                    && props.side.get_untracked() == Placement::Bottom
+                    && dismiss
+                {
+                    cx.emit(SheetEvent::Cancel);
+                    change(false, OpenChangeReason::Swipe);
+                }
+                // Controlled open may decline the request. It comes back
+                // until the owner's next value actually starts closing it.
+                if open.get_untracked() {
+                    motion.come_in();
+                }
+            });
+        // These bindings change in place when the permission changes;
+        // children and scroll positions keep their state.
+        panel = panel.bind_translate_y(&dragged_y);
         vec![backdrop.into_element(), panel.into_element()]
     })
 }

@@ -87,8 +87,8 @@ async fn complete_source_runs_forty_ordered_effects_and_returns_complete_value()
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn complete_scratch_output_and_notifications_survive_cell_settlement() {
     use maka_code_runtime::{CellContext, CellOutput, CellStore};
-    let store = CellStore::default();
-    let context = CellContext::new(store.clone(), vec![]);
+    let store = CellStore::temporary().unwrap();
+    let context = CellContext::new(store.clone(), vec![]).unwrap();
     let engine = CodeExecutor::new(CellLimits::default()).unwrap();
     let result = engine.execute_with_context(
         "const complete='保留😀z'.repeat(100000); store('original',complete); for(let index=0;index<70;index++) text(String(index)); text(complete); notify(complete); return complete;".into(),
@@ -116,7 +116,7 @@ async fn complete_scratch_output_and_notifications_survive_cell_settlement() {
         notifications.front() == Some(&complete),
         "complete notification changed"
     );
-    let next = CellContext::new(store, vec![]);
+    let next = CellContext::new(store, vec![]).unwrap();
     let loaded = engine
         .execute_with_context(
             "return load('original');".into(),

@@ -6,7 +6,7 @@ use std::cell::Cell;
 
 use nsh_core::{
     AutoCapitalize, AutoFill, Bounds, Color, InputConfig, KeyboardAppearance, KeyboardType, NodeId,
-    Points, ReturnKeyType, SubmitBehavior, TextAlign,
+    Points, ReturnKeyType, SubmitBehavior, TextAlign, geometry::px,
 };
 use objc2::{
     AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send,
@@ -40,6 +40,12 @@ pub(crate) struct InputIvars {
     /// A line break typed with a modifier (Shift / Option+Return) is being
     /// inserted: it never submits.
     line_break: Cell<bool>,
+    /// The caret as last reported (`onCaretMove`), in the input.
+    caret: Cell<Bounds<Points>>,
+    /// The app listens to pastes (`onPaste`).
+    paste_listens: Cell<bool>,
+    /// A paste inserts its text (`pasteBehavior`).
+    paste_inserts: Cell<bool>,
 }
 
 impl Default for InputIvars {
@@ -55,6 +61,9 @@ impl Default for InputIvars {
             caret_hidden: Cell::new(false),
             submit: Cell::new(SubmitBehavior::Newline),
             line_break: Cell::new(false),
+            caret: Cell::new(Bounds::default()),
+            paste_listens: Cell::new(false),
+            paste_inserts: Cell::new(true),
         }
     }
 }
@@ -89,6 +98,33 @@ define_class!(
             }
             // SAFETY: calling the superclass implementation.
             unsafe { msg_send![super(self), caretRectForPosition: position] }
+        }
+
+        /// Where the caret is, drawn or not (`caret()`).
+        #[unsafe(method(nshCaretRectForPosition:))]
+        fn shown_caret_rect(&self, position: &objc2::runtime::AnyObject) -> CGRect {
+            // SAFETY: calling the superclass implementation.
+            unsafe { msg_send![super(self), caretRectForPosition: position] }
+        }
+
+        /// A paste (the edit menu, Command+V): reported, and its text
+        /// inserted as `pasteBehavior` says.
+        #[unsafe(method(paste:))]
+        fn paste(&self, sender: Option<&AnyObject>) {
+            if pasting(self.as_ref(), self.ivars()) {
+                // SAFETY: calling the superclass implementation.
+                let _: () = unsafe { msg_send![super(self), paste: sender] };
+            }
+        }
+
+        /// Paste is offered for images and files too while the app listens.
+        #[unsafe(method(canPerformAction:withSender:))]
+        fn can_perform(&self, action: Sel, sender: Option<&AnyObject>) -> Bool {
+            if action == sel!(paste:) && can_paste_more(self.as_ref(), self.ivars()) {
+                return Bool::YES;
+            }
+            // SAFETY: calling the superclass implementation.
+            unsafe { msg_send![super(self), canPerformAction: action, withSender: sender] }
         }
 
         #[unsafe(method(deleteBackward))]
@@ -199,6 +235,33 @@ define_class!(
             unsafe { msg_send![super(self), caretRectForPosition: position] }
         }
 
+        /// Where the caret is, drawn or not (`caret()`).
+        #[unsafe(method(nshCaretRectForPosition:))]
+        fn shown_caret_rect(&self, position: &objc2::runtime::AnyObject) -> CGRect {
+            // SAFETY: calling the superclass implementation.
+            unsafe { msg_send![super(self), caretRectForPosition: position] }
+        }
+
+        /// A paste (the edit menu, Command+V): reported, and its text
+        /// inserted as `pasteBehavior` says.
+        #[unsafe(method(paste:))]
+        fn paste(&self, sender: Option<&AnyObject>) {
+            if pasting(self.as_ref(), self.ivars()) {
+                // SAFETY: calling the superclass implementation.
+                let _: () = unsafe { msg_send![super(self), paste: sender] };
+            }
+        }
+
+        /// Paste is offered for images and files too while the app listens.
+        #[unsafe(method(canPerformAction:withSender:))]
+        fn can_perform(&self, action: Sel, sender: Option<&AnyObject>) -> Bool {
+            if action == sel!(paste:) && can_paste_more(self.as_ref(), self.ivars()) {
+                return Bool::YES;
+            }
+            // SAFETY: calling the superclass implementation.
+            unsafe { msg_send![super(self), canPerformAction: action, withSender: sender] }
+        }
+
         #[unsafe(method(deleteBackward))]
         fn delete_backward(&self) {
             let empty = self.text().length() == 0;
@@ -256,6 +319,123 @@ define_class!(
     }
 );
 
+/// A paste into input `view`: reports what the general pasteboard holds
+/// (`onPaste`) if the app listens; whether the input then inserts its text
+/// (the superclass's `paste:`). The pasteboard is read only here, on the
+/// user's paste.
+fn pasting(view: &UIView, ivars: &InputIvars) -> bool {
+    pasting_from(
+        view,
+        ivars,
+        &objc2_ui_kit::UIPasteboard::generalPasteboard(),
+    )
+}
+
+/// [`pasting`] from `board`.
+fn pasting_from(view: &UIView, ivars: &InputIvars, board: &objc2_ui_kit::UIPasteboard) -> bool {
+    if ivars.paste_listens.get() {
+        let paste = crate::system::pasted(board);
+        report_paste(view, paste);
+    }
+    // SAFETY: a plain getter (no paste notice).
+    ivars.paste_inserts.get() && unsafe { board.hasStrings() }
+}
+
+/// A test's paste (`nsh test --target ios`): `content` on a pasteboard of
+/// its own (the device's clipboard stays as it was), pasted into the
+/// focused input as the user's paste is: reported, then its text inserted
+/// as `pasteBehavior` says.
+#[cfg(feature = "dev")]
+pub(crate) fn test_paste(
+    window: &objc2_ui_kit::UIWindow,
+    content: &nsh_core::PasteEvent,
+) -> Result<(), String> {
+    let responder = crate::synth::first_responder(window).ok_or("no input has the focus")?;
+    let (view, ivars): (&UIView, &InputIvars) =
+        if let Some(field) = responder.downcast_ref::<Field>() {
+            (field.as_ref(), field.ivars())
+        } else if let Some(area) = responder.downcast_ref::<Area>() {
+            (area.as_ref(), area.ivars())
+        } else {
+            return Err("no input of the app has the focus".into());
+        };
+    let board = objc2_ui_kit::UIPasteboard::pasteboardWithUniqueName();
+    let mut items: Vec<Retained<NSDictionary<NSString, AnyObject>>> = Vec::new();
+    let item = |kind: &str, value: &AnyObject| {
+        NSDictionary::from_slices(&[&*NSString::from_str(kind)], &[value])
+    };
+    if !content.text.is_empty() {
+        items.push(item(
+            "public.utf8-plain-text",
+            &NSString::from_str(&content.text),
+        ));
+    }
+    for file in &content.files {
+        let kind = match file.mime.as_str() {
+            "image/png" => "public.png",
+            "image/jpeg" => "public.jpeg",
+            "image/gif" => "com.compuserve.gif",
+            _ => "public.data",
+        };
+        items.push(item(
+            kind,
+            &objc2_foundation::NSData::with_bytes(&file.data),
+        ));
+    }
+    for uri in &content.uris {
+        if let Some(url) = objc2_foundation::NSURL::URLWithString(&NSString::from_str(uri)) {
+            items.push(item("public.file-url", &url));
+        }
+    }
+    // SAFETY: UIPasteboard's setter of items (type to value).
+    let _: () = unsafe { msg_send![&board, setItems: &*NSArray::from_retained_slice(&items)] };
+    let inserts = pasting_from(view, ivars, &board);
+    // SAFETY: plain getters of the test's pasteboard.
+    if inserts && let Some(text) = unsafe { board.string() } {
+        // SAFETY: UIKeyInput's method, which both input classes implement.
+        let _: () = unsafe { msg_send![view, insertText: &*text] };
+    }
+    // SAFETY: a plain getter; the test's pasteboard is not used again.
+    objc2_ui_kit::UIPasteboard::removePasteboardWithName(&*unsafe { board.name() });
+    Ok(())
+}
+
+/// Whether input `view` offers Paste for what UIKit's own paste would not:
+/// images and files, while the app listens to pastes.
+fn can_paste_more(view: &UIView, ivars: &InputIvars) -> bool {
+    let board = objc2_ui_kit::UIPasteboard::generalPasteboard();
+    // SAFETY: plain getters, which show no paste notice.
+    ivars.paste_listens.get()
+        && view.isFirstResponder()
+        && unsafe { board.hasImages() || board.hasURLs() }
+}
+
+/// Reports `paste` to the app (`onPaste`), through the input's delegate,
+/// the event target.
+pub(crate) fn report_paste(view: &UIView, paste: nsh_core::PasteEvent) {
+    // SAFETY: both input classes have a `delegate`, set to the target.
+    let delegate: Option<Retained<AnyObject>> = unsafe { msg_send![view, delegate] };
+    if let Some(target) = delegate
+        .as_deref()
+        .and_then(|d| d.downcast_ref::<EventTarget>())
+    {
+        target.pasted(view.tag() as NodeId, paste);
+    }
+}
+
+/// The paste settings of input view `view` (`onPaste` listened,
+/// `pasteBehavior` inserts).
+fn set_paste(view: &UIView, listens: bool, inserts: bool) {
+    let ivars = view
+        .downcast_ref::<Field>()
+        .map(|f| f.ivars())
+        .or_else(|| view.downcast_ref::<Area>().map(|a| a.ivars()));
+    if let Some(ivars) = ivars {
+        ivars.paste_listens.set(listens);
+        ivars.paste_inserts.set(inserts);
+    }
+}
+
 /// Reports `Backspace` for a delete in an empty input (to its delegate,
 /// the event target).
 fn backspace_on_empty(view: &UIView) {
@@ -296,6 +476,36 @@ pub(crate) fn selection(view: &UIView) -> Option<(u32, u32)> {
         let b: isize = msg_send![view, offsetFromPosition: &*begin, toPosition: &*end];
         Some((a.max(0) as u32, b.max(0) as u32))
     }
+}
+
+/// The caret at the end of the selection of an input view, in the input's
+/// coordinates (its container, which the editor fills), drawn or not.
+pub(crate) fn caret(view: &UIView) -> Option<Bounds<Points>> {
+    // SAFETY: UITextField and UITextView adopt UITextInput; both input
+    // classes answer `nshCaretRectForPosition:`.
+    let rect: CGRect = unsafe {
+        let range: Option<Retained<AnyObject>> = msg_send![view, selectedTextRange];
+        let end: Retained<AnyObject> = msg_send![&range?, end];
+        msg_send![view, nshCaretRectForPosition: &*end]
+    };
+    let rect = match view.superview() {
+        Some(container) => view.convertRect_toView(rect, Some(&container)),
+        None => rect,
+    };
+    Some(Bounds {
+        origin: nsh_core::geometry::point(px(rect.origin.x as f32), px(rect.origin.y as f32)),
+        size: nsh_core::geometry::size(px(rect.size.width as f32), px(rect.size.height as f32)),
+    })
+}
+
+/// Records `caret` as the one reported for input view `view`; false when
+/// it was already.
+pub(crate) fn caret_changed(view: &UIView, caret: Bounds<Points>) -> bool {
+    let ivars = view
+        .downcast_ref::<Field>()
+        .map(|f| f.ivars())
+        .or_else(|| view.downcast_ref::<Area>().map(|a| a.ivars()));
+    ivars.is_none_or(|i| i.caret.replace(caret) != caret)
 }
 
 /// Selects `start..end` (UTF-16 units, clamped to the text).
@@ -412,6 +622,8 @@ pub(crate) struct Input {
     pending: Option<(String, u32)>,
     config: Option<InputConfig>,
     content: Bounds<Points>,
+    /// The app listens to pastes (`onPaste`).
+    paste_listens: bool,
 }
 
 impl Input {
@@ -429,6 +641,7 @@ impl Input {
             pending: None,
             config: None,
             content: Bounds::default(),
+            paste_listens: false,
         };
         input.attach(target);
         input
@@ -483,6 +696,17 @@ impl Input {
             }
         }
         self.container.addSubview(view);
+    }
+
+    /// Whether the app listens to pastes (`onPaste`): Paste is offered for
+    /// images and files then, and what is pasted is read and reported.
+    pub(crate) fn set_paste_listens(&mut self, listens: bool) {
+        self.paste_listens = listens;
+        let inserts = self
+            .config
+            .as_ref()
+            .is_none_or(|c| c.paste_behavior == nsh_core::PasteBehavior::Insert);
+        set_paste(self.editor_view(), listens, inserts);
     }
 
     /// Selects `start..end` of the text.
@@ -566,6 +790,11 @@ impl Input {
             }
         }
         crate::mount::mirror(self.editor_view(), config.rtl);
+        set_paste(
+            self.editor_view(),
+            self.paste_listens,
+            config.paste_behavior == nsh_core::PasteBehavior::Insert,
+        );
         let first = self.config.is_none();
         let auto_focus = config.auto_focus;
         self.config = Some(config);

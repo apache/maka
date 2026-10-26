@@ -30,14 +30,15 @@ use maka_agent_facts::shell_run::ShellPatch;
 use maka_agent_facts::shell_run::ShellRun;
 use maka_agent_facts::shell_run::ShellState;
 use maka_agent_facts::tools::ToolError;
-use maka_event_log::{EventLog, StoreError};
+use maka_event_log::StoreError;
+use maka_event_log::root_store::SessionStore;
 use maka_process::{ObservedProcess, PipeEvent, ProcessOutcome, Termination};
 use std::sync::{Arc, Mutex};
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
 pub(super) async fn run(
-    log: Arc<EventLog>,
+    log: SessionStore,
     mut record: ShellRun,
     mut process: ObservedProcess,
     updates: &watch::Sender<Update>,
@@ -185,7 +186,7 @@ fn observe(
 }
 
 async fn persist(
-    log: &EventLog,
+    log: &SessionStore,
     record: &mut ShellRun,
     state: Option<ShellState>,
     updates: &watch::Sender<Update>,

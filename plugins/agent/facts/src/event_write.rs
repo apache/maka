@@ -172,12 +172,8 @@ impl EventWrite {
             }
         }
         if let Fact::MessageSteered { message, source } = &event.fact {
-            crate::event::validate_steered_source(
-                message,
-                source.as_deref(),
-                &event.invocation.session_id,
-            )
-            .map_err(|message| CommitError::Rejected(message.into()))?;
+            crate::event::validate_steered_source(message, source, &event.invocation.session_id)
+                .map_err(|message| CommitError::Rejected(message.into()))?;
         }
         if let Fact::InvocationOpened {
             configuration: Some(configuration),

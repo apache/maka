@@ -156,7 +156,7 @@ export async function packNativeCli({
         timeout: 180_000,
       }),
     );
-    const results = JSON.parse(packed.stdout);
+    const results = Object.values(JSON.parse(packed.stdout));
     if (results.length !== 1 || results[0].name !== name || results[0].version !== version) {
       throw new Error('npm pack returned an inconsistent native package');
     }

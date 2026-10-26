@@ -23,6 +23,7 @@ use crate::support::code_mode_lifetime as fixture;
 use crate::support::http;
 use fixture::{SlowEffect, respond};
 
+use crate::support::store::SessionFixture;
 use futures_util::poll;
 use maka_agent_engine::{Engine, RunError, RunInput};
 use maka_agent_facts::event::Fact;
@@ -31,7 +32,6 @@ use maka_agent_facts::event::InvocationOutcome;
 use maka_agent_facts::event::TerminalStatus;
 use maka_agent_facts::event::ToolOutcome;
 use maka_code_runtime::CellLimits;
-use maka_event_log::EventLog;
 use maka_model::{ModelExecutor, ProviderConfig, ProviderKind};
 use maka_tools::CodeExecutor;
 use maka_tools::{
@@ -122,18 +122,18 @@ async fn dropping_caller_keeps_child_session_and_cell_owned_until_drain() {
         let effect = Arc::new(SlowEffect::default());
         let committed;
         {
-            let log = Arc::new(EventLog::open(&path).await.unwrap());
+            let log = Arc::new(SessionFixture::open(&path).await.unwrap());
             let cells = CodeExecutor::new(CellLimits::default()).unwrap();
             let engine = Engine::new(
-                log.clone(),
                 ModelExecutor::new(Duration::from_secs(10)).unwrap(),
                 cells.clone(),
-            );
+            ).unwrap();
             let owner = engine.clone();
             let running_input = input(&base, "aborted", effect.clone());
             let caller_token = CancellationToken::new();
             let token = caller_token.clone();
-            let caller = tokio::spawn(async move { owner.run(running_input, token).await });
+            let running_store = log.store();
+            let caller = tokio::spawn(async move { owner.run(running_store, running_input, token).await });
             effect.entered.notified().await;
             caller.abort();
             assert!(caller.await.unwrap_err().is_cancelled());
@@ -154,14 +154,13 @@ async fn dropping_caller_keeps_child_session_and_cell_owned_until_drain() {
             )));
             assert!(matches!(
                 engine
-                    .run(
-                        input(&base, "blocked", effect.clone()),
+                    .run(log.store(), input(&base, "blocked", effect.clone()),
                         CancellationToken::new()
                     )
                     .await,
                 Err(RunError::Busy)
             ));
-            let output = maka_code_runtime::CellContext::new(Default::default(), vec![]);
+            let output = maka_code_runtime::CellContext::new(maka_code_runtime::CellStore::temporary().unwrap(), vec![]).unwrap();
             let next = cells.execute_module("text(7);".into(), effect.clone(), CancellationToken::new(), output.clone());
             tokio::pin!(next);
             // Explicitly poll the contender while the cancelled effect remains
@@ -216,7 +215,7 @@ async fn dropping_caller_keeps_child_session_and_cell_owned_until_drain() {
             Arc::try_unwrap(log).ok().unwrap().close().await.unwrap();
         }
         {
-            let log = Arc::new(EventLog::open(&path).await.unwrap());
+            let log = Arc::new(SessionFixture::open(&path).await.unwrap());
             let recovered = log.prefix(100, 128 * 1024).await.unwrap();
             assert_eq!(serde_json::to_value(&recovered.events).unwrap(), committed);
             assert!(
@@ -226,13 +225,11 @@ async fn dropping_caller_keeps_child_session_and_cell_owned_until_drain() {
                     .is_empty()
             );
             let engine = Engine::new(
-                log.clone(),
                 ModelExecutor::new(Duration::from_secs(10)).unwrap(),
                 CodeExecutor::new(CellLimits::default()).unwrap(),
-            );
+            ).unwrap();
             engine
-                .run(
-                    input(&base, "reopened", effect.clone()),
+                .run(log.store(), input(&base, "reopened", effect.clone()),
                     CancellationToken::new(),
                 )
                 .await
@@ -285,7 +282,7 @@ async fn yielded_cell_can_receive_an_answer_and_be_observed_by_the_next_model_st
 async fn verify_yielded(continuation: bool) {
     let directory = tempfile::tempdir().unwrap();
     let log = Arc::new(
-        EventLog::open(&directory.path().join("events.sqlite"))
+        SessionFixture::open(&directory.path().join("events.sqlite"))
             .await
             .unwrap(),
     );
@@ -334,10 +331,10 @@ async fn verify_yielded(continuation: bool) {
         respond(&mut socket, false).await;
     });
     let engine = Engine::new(
-        log.clone(),
         ModelExecutor::new(Duration::from_secs(5)).unwrap(),
         CodeExecutor::new(CellLimits::default()).unwrap(),
-    );
+    )
+    .unwrap();
     let mut request = input(&base, "yielded", effect.clone());
     if continuation {
         use maka_agent_facts::event::EventWrite;
@@ -390,7 +387,10 @@ async fn verify_yielded(continuation: bool) {
             tools,
         };
     }
-    engine.run(request, CancellationToken::new()).await.unwrap();
+    engine
+        .run(log.store(), request, CancellationToken::new())
+        .await
+        .unwrap();
     server.await.unwrap();
     engine.drain().await;
     assert_eq!(effect.count.load(Ordering::SeqCst), 1);

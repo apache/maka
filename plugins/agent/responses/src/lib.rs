@@ -18,7 +18,9 @@
  */
 
 //! Native Responses protocol and disposable connection state.
+mod body;
 mod budget;
+mod replay;
 mod stream;
 pub use stream::stream;
 mod lane;
@@ -33,6 +35,8 @@ pub mod transport;
 pub type Result<T> = std::result::Result<T, Error>;
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("Responses resource cleanup is unconfirmed")]
+    CleanupUnconfirmed,
     #[error("Responses stream ended without completion")]
     Truncated {
         replay_safe: bool,

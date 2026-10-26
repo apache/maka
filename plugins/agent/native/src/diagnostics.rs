@@ -80,6 +80,7 @@ pub(crate) fn run_cause(error: &RunError) -> &'static str {
         RunError::Commit(CommitError::Rejected(_)) => "commit_rejected",
         RunError::Commit(CommitError::OutcomeUnknown(_)) => "commit_outcome_unknown",
         RunError::Busy => "session_busy",
+        RunError::SessionState(_) => "session_state_error",
         RunError::ContinuationChanged => "continuation_changed",
         RunError::ReconciliationRequired(_) => "reconciliation_required",
         RunError::InvalidInput(_) => "invalid_input",

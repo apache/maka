@@ -1,6 +1,7 @@
 //! The small runtime modules: `nsh/android`
 //! (`isAvailable`, `BackHandler.onBackPress` over the registry's module),
-//! `nsh/ios` (`isAvailable`, `InputAccessoryView`), `nsh/webview` and
+//! `nsh/ios` (`isAvailable`, `InputAccessoryView`), `nsh/mobile`
+//! (`isAvailable`, with the registry's `TabBar`), `nsh/webview` and
 //! `nsh/video` (their host elements as components, which the compiler
 //! makes in place for their tags), `nsh/native` (`nativeComponent`: the
 //! JS face of components the embedding app registers natively;
@@ -283,7 +284,7 @@ fn host_module(ctx: *mut JsContext) -> JsValue {
         // SAFETY: the object takes the function.
         unsafe { qjs::JS_SetPropertyStr(ctx, host, name.as_ptr(), func) };
     }
-    host
+    crate::host_channel::extend(ctx, host)
 }
 
 /// `host.available()`: whether the platform embeds a host that answers
@@ -294,7 +295,7 @@ unsafe extern "C" fn host_available(
     _argc: c_int,
     _argv: *mut JsValue,
 ) -> JsValue {
-    boolean(crate::env::current(ctx).host)
+    boolean(crate::env::current(ctx).host || crate::host_channel::available(ctx))
 }
 
 /// `host.on(event, listener)`: `{ remove() }`.
@@ -453,20 +454,17 @@ pub(crate) const HOST_EXPORTS: &[Item] = &[(
     Export::Value(host_module),
     Ts::value(
         "The app embedding NSH: `host.call(name, args)` calls one of its functions\n(granted by `capabilities.host` in nsh.json), `host.on(event, f)` hears its\nevents, `host.available()` says whether the platform embeds one.",
-        "hostModule & HostEvents",
+        "Host & hostModule & HostEvents",
     ),
 )];
 
-/// `nsh/host`'s types (with the runtime registry's module).
-pub(crate) const HOST_TYPES: &str = r#"/** The embedding host's events and whether there is one. */
-export interface HostEvents {
-  /** Whether the platform embeds a host that answers calls; without one,
-   * `call` rejects at once. */
-  available(): boolean;
-  /** Calls `listener` with each `event` the host sends, until `remove()`. */
-  on(event: string, listener: (payload: unknown) => void): { remove(): void };
-}
-"#;
+/// The hand-written exports of `nsh/mobile` (with the registry's
+/// `TabBar`).
+pub(crate) const MOBILE_EXPORTS: &[Item] = &[(
+    "isAvailable",
+    Export::Value(|cx| boolean(matches!(os(cx), Os::Ios | Os::Android))),
+    Ts::value("True on iOS (and Mac Catalyst) and Android.", "boolean"),
+)];
 
 /// `nsh/ios`.
 pub(crate) const IOS_EXPORTS: &[Item] = &[

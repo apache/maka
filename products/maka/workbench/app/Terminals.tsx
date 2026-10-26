@@ -18,9 +18,8 @@
  */
 
 import { tr } from './locale';
-import { inputAction, Text, View } from 'nsh';
+import { inputAction, Text, View, List } from 'nsh';
 import { Button } from 'nsh/base';
-import { List } from 'nsh/list';
 import { terminalStatus, type TerminalsModel } from './terminalState';
 import { Icon } from './Icon';
 import {
@@ -129,15 +128,18 @@ export function Terminals(props: { model: TerminalsModel; sessionId: string }) {
       </If>
       <List
         each={model.entries()}
-        keyExtractor={(entry) => entry.result.ref}
+        keyExtractor={(entry) => entry.value().result.ref}
         estimatedItemSize={64}
         accessibilityLabel={tr('Conversation terminals')}
         style={{ flex: 1, minHeight: 0 }}
       >
         {(entry) => (
           <Button
-            onPress={inputAction(model.open, entry())}
-            accessibilityLabel={tr('Open terminal {name}', { name: entry().result.cmd })}
+            onPress={inputAction(model.open, {
+              sessionId: entry().value().sessionId,
+              ref: entry().value().result.ref,
+            })}
+            accessibilityLabel={tr('Open terminal {name}', { name: entry().value().result.cmd })}
             style={{
               ...controlStyle,
               paddingHorizontal: 12,
@@ -155,11 +157,13 @@ export function Terminals(props: { model: TerminalsModel; sessionId: string }) {
                 numberOfLines={1}
                 style={{ ...captionTextStyle, color: C.text, fontWeight: '500' }}
               >
-                {entry().result.cmd || tr('Interactive shell')}
+                {entry().value().result.cmd || tr('Interactive shell')}
               </Text>
               <Text numberOfLines={1} style={{ ...captionTextStyle, color: C.muted }}>
-                {terminalStatus(entry().result.status)} · {entry().result.mode} ·{' '}
-                {entry().ownership.kind === 'local' ? entry().result.cwd : tr('shared · view only')}
+                {terminalStatus(entry().value().result.status)} · {entry().value().result.mode} ·{' '}
+                {entry().value().ownership.kind === 'local'
+                  ? entry().value().result.cwd
+                  : tr('shared · view only')}
               </Text>
             </View>
           </Button>

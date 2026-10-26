@@ -1,5 +1,6 @@
 import { Overlay, signal, Text, View, type YNode } from "nsh";
 import { Popover, Sheet, Tooltip } from "nsh/base";
+import { dismissToast, toast } from "../toast";
 import { platform } from "nsh/device";
 import { Badge, Button, Caption, Card, colors, DemoPage, finish, mono, radius } from "../ui";
 
@@ -41,7 +42,7 @@ function Trigger(props: { label: string }) {
 /**
  * Overlays: `<Overlay>` shows its children on top of the screen whatever
  * clips them, and `nsh/base`'s popups are built on it: a popover, a
- * tooltip (and the `tooltip` prop every element has), a sheet (menus have
+ * tooltip (and the `tooltip` prop every element has), a sheet, toasts (menus have
  * a demo of their own, `Menus.tsx`).
  */
 export function Overlays() {
@@ -154,6 +155,34 @@ export function Overlays() {
     );
   }
 
+  function Toasts() {
+    let count = 0;
+    return (
+      <Card icon="system" title="Toast" subtitle="The gallery's toasts, on ToastManager, ToastStack and Toast">
+        <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+          <Button
+            label="Copy the link"
+            variant="secondary"
+            onPress={() => {
+              count += 1;
+              void toast({ title: "Copied", description: `The link is on the clipboard (${count})` });
+            }}
+          />
+          <Button
+            label="Delete the draft"
+            variant="secondary"
+            onPress={async () => {
+              const answer = await toast({ id: "draft", title: "Draft deleted", action: "Undo", close: "×", duration: 8000 });
+              last.set(answer === "Undo" ? "toast: undone" : "toast: gone");
+            }}
+          />
+          <Button label="Dismiss all" variant="secondary" onPress={() => dismissToast()} />
+        </View>
+        <Caption label="Swipe one away; the pointer on one stops its time" />
+      </Card>
+    );
+  }
+
   function Last() {
     return (
       <Card icon="system" title="Last event">
@@ -162,5 +191,5 @@ export function Overlays() {
     );
   }
 
-  return <DemoPage cards={[Primitive, Popovers, Tooltips, Sheets, Last]} />;
+  return <DemoPage cards={[Primitive, Popovers, Tooltips, Sheets, Toasts, Last]} />;
 }

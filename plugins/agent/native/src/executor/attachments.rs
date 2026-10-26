@@ -22,7 +22,7 @@ use maka_agent_facts::artifact::ArtifactSource;
 use maka_agent_facts::attachment::AttachmentRef;
 use maka_agent_facts::attachment::StorageRef;
 use maka_capabilities::call::ResourceEncoding;
-use maka_event_log::{EventLog, artifacts::ArtifactReadScope};
+use maka_event_log::{SessionStore, artifacts::ArtifactReadScope};
 use maka_host_runtime::application::{
     CallResources, NativeRequest, RESOURCE_CHUNK_LIMIT, ResourceDescriptor,
 };
@@ -34,7 +34,7 @@ use std::{
 
 use maka_agent_api::executor::AttachmentMetadata as Metadata;
 pub(super) async fn capture(
-    store: Arc<EventLog>,
+    store: Arc<SessionStore>,
     request: &NativeRequest,
     session: &str,
     attachments: Vec<AttachmentRef>,
