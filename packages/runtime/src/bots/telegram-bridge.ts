@@ -420,7 +420,21 @@ export class TelegramBotBridge extends BaseBotAdapter implements SendCapable {
           },
           this.abortController.signal,
         );
+        // Issue #6330: a poll failure after a successful getMe (revoked
+        // token, sustained 4xx/5xx) previously kept readiness at
+        // 'operational' — the channel looked healthy while never
+        // receiving. Hold the same failure contract as sendMessage:
+        // degrade readiness, record the failure, emit the change.
+        // Recovery stays message/send-driven, as in the wechat bridge.
         if (!updates.ok || !Array.isArray(updates.result)) {
+          this.readiness = this.readiness === 'operational' ? 'degraded' : 'credentials_valid';
+          this.recordFailure(
+            typeof updates.description === 'string' && updates.description.trim()
+              ? updates.description
+              : 'get-updates-failed',
+            updates.error_code === 401 ? 'token_invalid' : 'stream-failed',
+          );
+          this.emitStatusChange();
           await sleep(5_000);
           continue;
         }
@@ -431,6 +445,9 @@ export class TelegramBotBridge extends BaseBotAdapter implements SendCapable {
       } catch (error) {
         if (!this.running) return;
         if (error instanceof Error && error.name === 'AbortError') return;
+        this.readiness = this.readiness === 'operational' ? 'degraded' : 'credentials_valid';
+        this.recordFailure(error);
+        this.emitStatusChange();
         await sleep(5_000);
       }
     }
