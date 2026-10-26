@@ -2155,7 +2155,7 @@ pub(crate) mod tests {
     }
 
     fn retained_row_label(host: &Host, row: nsh_core::ui::RowRef) -> Option<String> {
-        use nsh_core::ui::class::Ret;
+        use nsh_core::ui::Ret;
 
         host.with_raw(|cx| {
             let call = super::host_outside_calls(cx);
@@ -2199,7 +2199,7 @@ pub(crate) mod tests {
 
     #[test]
     fn retained_rows_reject_other_hosts_and_outlive_their_vm_harmlessly() {
-        use nsh_core::ui::{JsKind, class::Ret};
+        use nsh_core::ui::{JsKind, Ret};
 
         let source = host();
         let destination = host();

@@ -1496,7 +1496,7 @@
     "third-party/nsh/crates/nsh-js/src/bytecode.rs": "59721147154608fb29fc583adcc9f6b8c3c1c9bf0cf1a0499d89173f36f6ebf9",
     "third-party/nsh/crates/nsh-js/src/canvas.rs": "64582fc7c63bcc552b1a46341f41a9b2975fa62d0f76942fb873497ff4d513e8",
     "third-party/nsh/crates/nsh-js/src/chunks.rs": "b3f7aa20c22eac8515ab0fff427e70725334beed9d4deb4361ae154da316e89f",
-    "third-party/nsh/crates/nsh-js/src/classes.rs": "871ef28d32b8492db448053aa815eb7dee64c83d085fbf1e879883d133512200",
+    "third-party/nsh/crates/nsh-js/src/classes.rs": "9de62a3d520a5da50c4256115d32bfc85adfe458074925ca02797870a59baf63",
     "third-party/nsh/crates/nsh-js/src/clock.rs": "06c083117a5eaa2d2deddcb41e52ab9e1a9f48efa72d6e9a0f27135bd237b161",
     "third-party/nsh/crates/nsh-js/src/components.rs": "587af76b9246cd557d2128230db7afe6fd3d3d3d508d2dd0d7d1441ee9bd2c5d",
     "third-party/nsh/crates/nsh-js/src/console.rs": "2bb26f43b5326680cbaf9ab1fcc58fa0ab049c349feff6dafd39c99d4240f6a3",
