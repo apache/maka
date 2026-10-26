@@ -1,6 +1,6 @@
 import { Input, mount, Scroll, signal, Text, View } from "nsh";
 import { Button, Keyboard, Switch, KeyboardAvoidingView, keyboardFrame } from "nsh/base";
-import { desktop, tint, ui } from "./palette";
+import { button, buttonText, desktop, field, tint, ui } from "./palette";
 
 function App() {
   const draft = signal("");
@@ -12,13 +12,10 @@ function App() {
     messages.update((list) => [...list, draft().trim()]);
     draft.set("");
   };
-  const chip = (on: boolean) => ({
-    ...(on ? ui().accentFill : ui().raised),
-    borderRadius: 999,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-  });
-  const chipText = (on: boolean) => ({ color: on ? ui().onAccent : ui().text, fontSize: 13, fontWeight: "600" as const });
+  const chip = (on: () => boolean) => button("secondary", { on, size: "sm" });
+  const chipText = (on: () => boolean) => buttonText("secondary", { on });
+  const isPadding = () => behavior() === "padding";
+  const isHeight = () => behavior() === "height";
   return (
     <KeyboardAvoidingView
       enabled={enabled()}
@@ -33,19 +30,19 @@ function App() {
             : "Tap the message field: the bar moves up with the keyboard."}
         </Text>
         <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
-          <Button onPress={() => behavior.set("padding")} selected={behavior() === "padding"} style={chip(behavior() === "padding")}>
-            <Text style={chipText(behavior() === "padding")}>padding</Text>
+          <Button onPress={() => behavior.set("padding")} selected={isPadding()} {...chip(isPadding)}>
+            <Text style={chipText(isPadding)}>padding</Text>
           </Button>
-          <Button onPress={() => behavior.set("height")} selected={behavior() === "height"} style={chip(behavior() === "height")}>
-            <Text style={chipText(behavior() === "height")}>height</Text>
+          <Button onPress={() => behavior.set("height")} selected={isHeight()} {...chip(isHeight)}>
+            <Text style={chipText(isHeight)}>height</Text>
           </Button>
           <Switch
             checked={enabled()}
             onChange={(next) => enabled.set(next)}
             class="flex-row items-center gap-2 px-1 active:opacity-70"
-            trackClass="w-9 rounded-full p-0.5 transition-colors"
+            trackClass="w-9 rounded-full p-0.5 transition-colors motion-reduce:transition-none"
             trackStyle={enabled() ? ui().accentFill : ui().inset}
-            thumbClass="size-4 rounded-full transition-transform checked:translate-x-4"
+            thumbClass="size-4 rounded-full transition-transform motion-reduce:transition-none checked:translate-x-4"
             thumbStyle={enabled() ? { backgroundColor: ui().onAccent } : ui().raised}
           >
             <Text style={{ color: ui().text, fontSize: 13, fontWeight: "600" }}>enabled {String(enabled())}</Text>
@@ -76,13 +73,13 @@ function App() {
           testID="message"
           returnKeyType="send"
           placeholder="Message"
-          style={{ ...ui().inset, flex: 1, fontSize: 16, color: ui().text, placeholderColor: ui().faint, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 8 }}
+          {...field({ style: { flex: 1 } })}
         />
-        <Button onPress={send} style={{ ...ui().primary, borderRadius: 10, paddingHorizontal: 14, justifyContent: "center" }} activeStyle={{ opacity: 0.7 }}>
-          <Text style={{ color: ui().onPrimary, fontWeight: "600" }}>Send</Text>
+        <Button onPress={send} {...button("primary")}>
+          <Text style={buttonText("primary")}>Send</Text>
         </Button>
-        <Button onPress={() => Keyboard.dismiss()} style={{ ...ui().raised, borderRadius: 10, paddingHorizontal: 12, justifyContent: "center" }} activeStyle={{ opacity: 0.7 }}>
-          <Text style={{ color: ui().text, fontWeight: "600" }}>Done</Text>
+        <Button onPress={() => Keyboard.dismiss()} {...button()}>
+          <Text style={buttonText()}>Done</Text>
         </Button>
       </View>
     </KeyboardAvoidingView>

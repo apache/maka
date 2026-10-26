@@ -152,8 +152,8 @@ pub(crate) fn render(ed: Ed) -> impl IntoElement {
 /// Which of the editor's two trees a part is made for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Layer {
-    /// In the scroll views, empty: what the pointer, the wheel, the scroll
-    /// bars and touches reach (the platforms scroll it).
+    /// In the scroll views: the active-line backgrounds and what the
+    /// pointer, wheel, scroll bars and touches reach (the platforms scroll it).
     Hit,
     /// Over the scroll views, receiving no pointer: what shows, placed
     /// where the editor scrolled to. Its views keep their handlers for the
@@ -704,11 +704,15 @@ fn rows_box(ed: Ed, lh: impl Fn() -> Points + Clone + 'static, layer: Layer) -> 
     });
     let el = el.min_w(relative(1.0));
     if layer == Layer::Hit {
+        // Backgrounds belong to the scroll content, below its native
+        // indicators. The paint overlay above it holds the foreground.
         // The selection's handles take touches of their own.
-        return el.child(super::touch::handles(ed)).into_element();
+        return el
+            .child(active_lines(ed.clone(), lh))
+            .child(super::touch::handles(ed))
+            .into_element();
     }
-    el.child(active_lines(ed.clone(), lh.clone()))
-        .child(rulers(ed.clone()))
+    el.child(rulers(ed.clone()))
         .child(indent_guides(ed.clone(), lh.clone()))
         .child(match_rects(ed.clone()))
         .child(selection_rects(ed.clone()))

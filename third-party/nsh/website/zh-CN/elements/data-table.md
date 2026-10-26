@@ -10,7 +10,7 @@ demo: el-data-table
 
 `DataTable` 像电子表格那样显示行和列，并向两个方向滚动，行数和列数都不限。只创建视野中的单元格，所以一百万行、一万列的表格滚动起来与小表格一样流畅。行、列或单元格可以用指针和键盘选择；列有固定的宽度，拖动边缘调整宽度，拖动标题移动，可以在其他列滚动时固定在左侧，也可以排序。标题可以位于分组标签之下，单元格和标题都可以由应用绘制。
 
-`DataTable` 负责行为，并带有一套由主题令牌构成的默认外观：标题在 `muted` 底色上，行与行之间有 `border` 线，悬停和选中时染上 `primary` 的色调。每个部件都在这些默认值之上接受应用的样式（`classes` 和 `styles`）。Rust 用 `nsh_base::data_table()` 创建它，TSX 用 `nsh/base` 中的 `<DataTable>`。
+`DataTable` 提供布局、对齐、虚拟化和交互。应用通过 `classes` 和 `styles` 设置各部件的内边距、颜色、边框和选中态外观。Rust 用 `nsh_base::data_table()` 创建它，TSX 用 `nsh/base` 中的 `<DataTable>`。
 
 ```rust tabs
 use nsh_base::{DataTableColumn, data_table};
@@ -67,7 +67,7 @@ mount(App);
 | `title` | 标题的文字。默认为 `key`。 |
 | `width` | 宽度，单位为点。默认 `120`。 |
 | `minWidth`、`maxWidth` | 拖动或适配宽度时的最小和最大宽度。默认 `20` 和 `1200`。 |
-| `fitPadding` | 应用绘制单元格（`renderCell`）时在文字宽度之外增加的宽度（图标、徽标），适配列宽时计入。 |
+| `fitPadding` | 应用的内边距、图标或徽标需要的额外宽度，适配列宽时加到最宽的标题或单元格文字上。 |
 | `align` | `"start"`（默认）、`"center"` 或 `"end"`（用于数字），单元格和标题一致。 |
 | `sortable` | 标题末端有一个排序按钮，按下会请求排序（见[排序](#sorting)）。 |
 | `fixed` | 其他列在它下面滚动时，它固定在左侧。固定列排在其他列之前，保持各自的顺序。 |
@@ -253,7 +253,7 @@ const columns: DataTableColumn[] = [
 
 ## 为部件设置样式
 
-`class` 和 `style` 设置表格盒子的样式。`classes` 按部件接受 Tailwind 类，`styles` 按部件接受内联样式；部件的类排在它自己的默认样式之后，所以优先生效，而它的 `styles` 优先于类。
+`class` 和 `style` 设置表格盒子的样式。`classes` 按部件接受 Tailwind 类，`styles` 按部件接受内联样式；部件提供表格的基本结构和对齐，类设置外观，`styles` 优先于类。
 
 ```tsx
 <DataTable
@@ -262,7 +262,13 @@ const columns: DataTableColumn[] = [
   stripe
   class="flex-1 rounded-lg border border-border"
   classes={{
-    headerCell: "bg-secondary",
+    header: "bg-secondary",
+    headerCell: "pl-2 pr-1",
+    headerContent: "gap-1",
+    cell: "px-2",
+    resizeHandle: "bg-border group-hover:bg-primary",
+    sortAscending: "text-muted-foreground opacity-60 selected:text-foreground selected:opacity-100",
+    sortDescending: "text-muted-foreground opacity-60 selected:text-foreground selected:opacity-100",
     rowSelected: "bg-primary/10",
     rowHover: "bg-muted/50",
     fixedEdge: "bg-border",
@@ -276,9 +282,12 @@ const columns: DataTableColumn[] = [
 | `header` | 横跨表格的标题区，包含分组标签行和标题行 |
 | `groupCell` | 位于所跨各列上方的分组标签 |
 | `headerCell` | 每一列的标题单元格 |
+| `headerContent` | 标题文字和排序按钮的布局行，可设置两者的间距 |
+| `headerCellDragging` | 正在拖动的标题，排在 `headerCell` 之后 |
 | `headerCellSorted` | 表格当前排序所依据的列的标题，排在 `headerCell` 之后 |
 | `headerCellSelected` | 被选中列的标题，排在 `headerCell` 之后 |
-| `sortIndicator` | 可排序列的排序按钮：上下两个箭头，已排序方向的箭头使用文字颜色 |
+| `sortIndicator` | 可排序列的排序按钮 |
+| `sortAscending`、`sortDescending` | 上下两个箭头，当前排序方向应用 `selected:` |
 | `resizeHandle` | 列尾部边缘供拖动调整的线 |
 | `moveIndicator` | 被拖动的列将放下的位置上的线 |
 | `row` | 每一个表体行 |
@@ -324,7 +333,7 @@ const columns: DataTableColumn[] = [
 | `loading` | `.loading(..)` | `boolean` | `false` | 表格正在加载：`onLoadMore` 等待，`loadingView` 显示。 |
 | `hasMore` | `.has_more(..)` | `boolean` | `false` | 还有更多行可以加载。 |
 | `loadMoreThreshold` | `.load_more_threshold(..)` | `number` | `20` | 距最后一行多少行时触发 `onLoadMore`。 |
-| `fontFamily` | `.font_family(..)` | `string` | 主题的 `font-sans` | 单元格的字体。 |
+| `fontFamily` | `.font_family(..)` | `string` | 继承 | 单元格的字体。 |
 | `fontSize` | `.font_size(..)` | `number` | `14` | 单元格的字号，单位为点。 |
 | `scrollbar` | `.scrollbar(..)` | `boolean` | `true` | 滚动条。 |
 | `verticalScrollbar`、`horizontalScrollbar` | `.vertical_scrollbar(..)`、`.horizontal_scrollbar(..)` | `boolean` | `scrollbar` | 单个方向的滚动条（水平的是桌面平台表格下方的滚动条）。 |

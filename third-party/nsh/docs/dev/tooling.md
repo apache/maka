@@ -123,6 +123,9 @@ before every `cargo run`): `✓` lines for its builds, cargo's and the tools' ou
 - The CLI watches sources with notify and pushes every rebuild over WebSocket (`/ws`, default port 8790, the next free port if taken) to all
   connected hosts; new clients subscribe before receiving the current state, so no event is missed. Protocol: `crates/nsh-dev/src/protocol.rs`
   (JSON text frames + binary frames).
+- Imported source directories and theme files outside the entry directory are watched too, using the last
+  successful bundle's dependencies. The gallery and website demos share `examples/nsh-gallery-ui`; saving one of
+  its components or its theme rebuilds the app as saving a file inside the app does.
 - Bytecode version negotiation: the client reports `BYTECODE_VERSION` in its handshake; on a mismatch the server sends JS source instead
   (an empty version, the web host's, asks for source without a warning).
 - Limits: hosts run the app on its own, without limits, unless `--limits` asks for an embedding app's

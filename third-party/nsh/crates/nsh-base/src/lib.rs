@@ -1,7 +1,8 @@
 //! `nsh/base`: the behavior and infrastructure foundation of NSH apps' UI,
 //! written in Rust, with no look of its own (as `gpui-base` is GPUI Kit's):
 //! controls (`Button`, `Checkbox`, `Radio` in a `RadioGroup`, `Switch`,
-//! `Tab` in `Tabs`), a progress bar (`Progress`), disclosure (`Collapsible`), navigation (stacks and pages), dialogs, popups on the core's overlays
+//! `Tab` in `Tabs`), a progress bar (`Progress`), disclosure (`Collapsible`),
+//! the parts of charts (`plot`: `nsh/base/plot`), navigation (stacks and pages), dialogs, popups on the core's overlays
 //! (`Popover`, `Menu`, `ContextMenu`, `Tooltip`, `Sheet`), a code editor
 //! (`Editor`), the changes between two texts (`DiffView`), tables over any number of rows and columns (`DataTable`) and static tables
 //! with a table's semantics (`Table` and its parts), toasts (`Toast`,
@@ -27,6 +28,7 @@ pub mod editor;
 mod keyboard;
 mod menu;
 mod navigation;
+pub mod plot;
 mod popover;
 mod popup;
 mod progress;
@@ -188,7 +190,9 @@ pub fn registry() -> Registry {
         // Navigation: made by `nsh-js` (`navigation.rs`), declared by hand.
         .native_values(&["NavStack", "NavPage", "Dialog", "createNavStack"])
         // The theme: the app's over the default, as design tokens.
-        .tokens_from(tokens_of);
+        .tokens_from(tokens_of)
+        // Charts' parts, a module of their own: `nsh/base/plot`.
+        .submodule(plot::registry());
     registry
 }
 
@@ -250,11 +254,20 @@ mod tests {
         );
         let modules: Vec<_> = registry.module_specs().iter().map(|m| m.name).collect();
         assert_eq!(modules, ["AlertDialog", "Keyboard", "TextView"]);
+        let sets: Vec<_> = registry.sets().iter().map(|s| s.specifier()).collect();
+        assert_eq!(sets, [Some("nsh/base"), Some("nsh/base/plot")]);
+        let plot: Vec<_> = super::plot::registry()
+            .specs()
+            .iter()
+            .map(|s| s.export.clone())
+            .collect();
+        assert_eq!(plot, ["Area", "Grid", "Line", "Plot"]);
     }
 
     /// Every export TS sees has a doc comment (the declarations show it).
     #[test]
     fn every_export_is_documented() {
         assert_eq!(super::registry().undocumented(), Vec::<String>::new());
+        assert_eq!(super::plot::registry().undocumented(), Vec::<String>::new());
     }
 }

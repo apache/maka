@@ -172,7 +172,9 @@ The rules every demo follows, now and for the ones to come:
   "Layout patterns"): the subject on a stage that takes the room, beside an
   inspector column of about 300 points with its state, its event log and
   the options that tune it (`Split`, or `Stage` and `Inspector`, with
-  `Panel`, `Log` and `Segmented`). With a pointer (`desktop`, from
+  `Panel`, `Log` and `Segmented`; buttons and text fields are never styled by hand: spread `button(kind)` and
+  `field()` and give the label `buttonText(kind)`, so every demo shares one size, radius, hover, pressed, focus and
+  disabled treatment). With a pointer (`desktop`, from
   `platform.idiom === "desktop"`) it has desktop density (`size`: controls
   of 28 and 32 points, rows of 32 and 40): buttons as wide as their labels,
   never as wide as the stage, comparable numbers in tabular figures at the
@@ -183,7 +185,7 @@ The rules every demo follows, now and for the ones to come:
   The phone layout keeps working as the desktop one changes.
 - **It shows the element, not the gallery.** A short screen of what the page
   explains: the element's main props and events, its state printed on screen,
-  colours from `demos/palette.ts` (light and dark).
+  colours and reusable components from `demos/palette.ts`, backed by `examples/nsh-gallery-ui` (light and dark).
 - **It is checked in both.** `nsh test website/demos/<name>.tsx` runs it as a
   phone; `nsh test website/demos/<name>.tsx --target web` (a browser) or
   `--target linux` (a window) as a desktop. Look at both before adding it.
@@ -196,14 +198,16 @@ The player in `public/play/` is the WebAssembly build of the nsh runtime
 bun run play       # = cargo xtask web: nsh.wasm, nsh.js, index.html, demos/*.nshc (dev and build run it)
 ```
 
-Run it again after changing a demo or the runtime. Embedded demos follow
-the page's theme (`?theme=`, then a message on each change) and take their
-colours from `demos/palette.ts`; `demos/nsh.json` gives Rust components the matching light and dark
-theme (`demos/graphite-theme.json`).
-The playground compiles in the browser, without that theme, one file at a
-time: it puts `demos/palette.ts` in place of a demo's import of it, so the
-palette is written without JSX and a demo declares none of its names at the
-top level. The
+Run it again after changing the runtime. Gallery and website demos share the internal
+`examples/nsh-gallery-ui` components, palette, `finishes.json` and `theme.json`.
+The site also generates CSS variables from these files (`src/lib/gallery-ui-css.js`), so page surfaces and native
+demos follow the same visual foundation. `demos/palette.ts` is their documentation
+adapter; `demos/nsh.json` references that shared theme. Embedded demos follow the page's appearance (`?theme=`,
+then a message on each change).
+
+The playground compiles one file in the browser. `src/lib/inline-gallery-ui.ts` includes the adapter's shared
+modules in separate scopes and applies the same theme before the first render, so a demo's imports and theme
+work in the playground as they do in a normal NSH build. The
 player is built separately from the site. Whether it exists is decided
 at build time: without `public/play/index.html`, pages show the demo's source
 only and the home page's host app shows a placeholder. Adding or removing the

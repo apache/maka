@@ -1,6 +1,6 @@
 import { mount, signal, Text, View } from "nsh";
 import { type Edge, SafeAreaView, safeArea, safeAreaInsets } from "nsh/base";
-import { desktop, size, tint, ui } from "./palette";
+import { button, buttonText, desktop, tint, ui } from "./palette";
 
 const EDGES: Edge[] = ["top", "right", "bottom", "left"];
 
@@ -53,13 +53,9 @@ function App() {
                 <View
                   role="button"
                   onPress={() => toggle(edge())}
-                  activeStyle={{ opacity: 0.6 }}
-                  style={{
-                    ...(on() ? ui().accentFill : ui().raised),
-                    ...(desktop ? { borderRadius: 8, height: size.control, paddingHorizontal: 12, justifyContent: "center" } : { borderRadius: 10, paddingHorizontal: 14, paddingVertical: 8 }),
-                  }}
+                  {...button("secondary", { on })}
                 >
-                  <Text style={{ color: on() ? ui().onAccent : ui().muted, fontWeight: "600", fontSize: desktop ? 13 : undefined }}>{edge()}</Text>
+                  <Text style={buttonText("secondary", { on })}>{edge()}</Text>
                 </View>
               );
             }}

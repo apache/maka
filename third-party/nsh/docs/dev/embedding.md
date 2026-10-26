@@ -79,6 +79,19 @@ cancelled or later projections; otherwise it explicitly does nothing. Scene mirr
   `NshComponent.destroy()` on every component still alive (`Mounter.destroyComponents`). `ref.command(name, args)` → `Command::Native`. Unknown names render an empty box (warned once). Props and events
   cross the C ABI / JNI as JSON text (Swift `JSONSerialization`, Java `org.json` as maps and lists). Registered
   components are the embedding app's own code: capabilities do not apply to them.
+  An own prop given an animated value (JS: an `AnimatedNode` as the prop; Rust: `NativeView::bind_animated_prop`) is bound
+  instead of sent: `Prop::ComponentPropBinding`, a slot per name (`AnimationProp::ComponentSlot(n)` among the view's
+  `AnimationBindings`, the names in `MountItem::ComponentPropSlots`, sent before the bindings that use new slots). The
+  platform evaluates it with its graph and hands the component the value on the frames it changed, on the main / UI
+  thread with no JS: `setAnimatedNumber(name, double)` / `setAnimatedColor(name, argb)` (Java, Swift; `set_animated_number`
+  / `set_animated_color` on the Rust traits), whose defaults call `setProp` with the number. De-duplicated per (view,
+  slot): Android in `ComponentBox` (the outputs, codes `70000 + n` for a number and `140000 + n` for a color, come every
+  frame), iOS in `ComponentHost`, the desktops in `Animator::write_components`; a component attached after its bindings
+  gets the values then, and bindings that change are handed over again. While bound, a static value of the same name is
+  kept but not sent; unbinding (JS: the prop is a plain value again) sends it, or `None`. The C ABI takes the callbacks
+  through `nsh_app_register_component_with_animation` (`NshComponentAnimationCallbacks`); `nsh_app_register_component` is
+  unchanged and its components get the values as `set_prop` JSON. GPUI delivers them with the next frame, as props;
+  the web has no registered components and ignores them.
   On the GPUI backend (`nsh-platform-gpui`, `native.rs`) a component renders a GPUI element
   (`NativeComponent::render(window, cx) -> Option<AnyElement>`, any GPUI / GPUI Kit element or `Entity` view): the
   surface element's prepaint lays it out at the box's window bounds and prepaints it (`prepaint_as_root`, clipped to the

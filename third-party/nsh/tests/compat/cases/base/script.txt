@@ -1048,6 +1048,75 @@ covers [nsh/base] TableHead
 covers [nsh/base] TableCell
 covers [nsh/base] TableCaption
 
+tap id:case-base-plot
+# One image for screen readers, with the app's label, at the app's size.
+expect hovered null
+prop id:plot role image
+prop id:plot accessibilityLabel Price
+frame id:plot 0 20 200 100
+# The rows' x on a linear scale of 0 to 40: at 0, 50 and 100 points. The
+# row nearest the pointer, reported when it changes, none once it leaves;
+# the app's value for screen readers and its tooltip follow.
+event id:plot onHoverMove position.x=45 position.y=10
+expect hovered 1
+expect tip 1
+prop id:plot accessibilityValue text=row1
+# The hover's dots, one per mark, each a box the size of its dot around
+# the mark's point (the tooltip's sibling below it the last mark's): the
+# plot's `dotClass` (8), a mark's own `hoverDotStyle` (10 by 10) or
+# `hoverDotClass` (12) in its place, an area's class and style each in
+# place of the plot's (4 wide, 6 high).
+frame below:parent:parent:parent:id:tip 0 0 10 10
+frame below:below:parent:parent:parent:id:tip 0 0 12 12
+frame below:below:below:parent:parent:parent:id:tip 0 0 8 8
+frame below:below:below:below:parent:parent:parent:id:tip 0 0 4 6
+# The tooltip at the top, `tooltipOffset` below the top edge (the
+# animator centers it on the cross line, inside the plot).
+frame parent:parent:id:tip 0 6 40 16
+# Beside the pointer: right of the cross line in the plot's left half,
+# above the pointer in its lower half and below it in the upper one,
+# `tooltipOffset` away.
+tap id:pointer-tip
+event id:plot onHoverMove position.x=45 position.y=80
+frame parent:parent:id:tip 6 -22 40 16
+event id:plot onHoverMove position.x=45 position.y=10
+frame parent:parent:id:tip 6 6 40 16
+event id:plot onHoverMove position.x=90 position.y=10
+expect hovered 2
+prop id:plot accessibilityValue text=row2
+event id:plot onHoverOut
+expect hovered null
+# New rows: the plot reads them again.
+tap id:more
+expect rows 4
+event id:plot onHoverMove position.x=60 position.y=10
+expect hovered 1
+event id:plot onHoverOut
+expect hovered null
+# A sparkline follows no pointer: it reports nothing, even once a press
+# that comes after the pointer has been handled.
+prop id:spark accessibilityLabel Spark
+event id:spark onHoverMove position.x=90 position.y=10
+tap id:more
+expect rows 5
+expect hovered null
+covers [nsh/base/plot] Plot
+covers [nsh/base/plot] Line
+covers [nsh/base/plot] Area
+covers [nsh/base/plot] Grid
+covers [props] Plot.data
+covers [props] Plot.x
+covers [props] Plot.xScale
+covers [props] Plot.tooltipContent
+covers [props] Plot.tooltipPlacement
+covers [props] Plot.tooltipOffset
+covers [props] Line.hoverDotClass
+covers [props] Line.hoverDotStyle
+covers [props] Area.hoverDotClass
+covers [props] Area.hoverDotStyle
+covers [props] Plot.interactive
+covers [events] Plot.onHoverChange
+
 # The app's design tokens: shadcn's `neutral` with the app's theme over it.
 tap id:case-base-token
 expect token up #138a5aff

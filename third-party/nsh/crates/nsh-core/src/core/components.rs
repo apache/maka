@@ -731,6 +731,16 @@ impl<M: TextEngine> Core<M> {
         self.tokens_changed();
     }
 
+    /// What [`Core::tokens`] become when the root's `uiTheme` (the app's
+    /// theme file) is set, with the embedding app's tokens of now: JS reads
+    /// them in the turn that sends the theme, before it reaches the core.
+    pub fn theme_tokens(&self) -> crate::ui::ThemeTokens {
+        crate::ui::ThemeTokens::new(
+            self.components.registry.token_source(),
+            self.components.host_tokens.clone(),
+        )
+    }
+
     /// The design tokens the app is drawn with now: the app's, under the
     /// embedding app's. A new value (not the same `Arc`) when they change.
     pub fn tokens(&self) -> &Arc<Tokens> {

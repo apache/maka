@@ -1,5 +1,5 @@
 import { mount, signal, Text, View } from "nsh";
-import { Inspector, Panel, size, Stage, ui, wide } from "./palette";
+import { button, buttonText, focusRing, hoverFill, Inspector, Panel, size, Stage, ui, wide } from "./palette";
 
 interface Todo {
   id: number;
@@ -20,19 +20,13 @@ function App() {
   const toggle = (id: number) => todos.update((list) => list.map((t) => (t.id === id ? { ...t, done: !t.done } : t)));
   const add = () => todos.update((list) => [...list, { id: nextId++, title: `Task ${nextId - 1}`, done: false }]);
   const remove = (id: number) => todos.update((list) => list.filter((t) => t.id !== id));
-  // Touch buttons on a phone; compact ones, as wide as their labels, in a desktop layout.
-  const button = () =>
-    wide()
-      ? ({ borderRadius: 8, height: size.control, paddingHorizontal: 12, justifyContent: "center" } as const)
-      : ({ borderRadius: 10, paddingHorizontal: 12, paddingVertical: 8 } as const);
-
   const actions = () => (
     <View style={{ flexDirection: "row", gap: 8 }}>
-      <View onPress={add} activeStyle={{ opacity: 0.6 }} style={{ ...ui().accentFill, ...button() }}>
-        <Text style={{ color: ui().onAccent, fontWeight: "600", fontSize: wide() ? 13 : undefined }}>Add</Text>
+      <View onPress={add} {...button("accent")}>
+        <Text style={buttonText("accent")}>Add</Text>
       </View>
-      <View onPress={() => showDone.set(!showDone())} activeStyle={{ opacity: 0.6 }} style={{ ...ui().raised, ...button() }}>
-        <Text style={{ color: ui().text, fontSize: wide() ? 13 : undefined }}>{showDone() ? "Hide done" : "Show done"}</Text>
+      <View onPress={() => showDone.set(!showDone())} {...button()}>
+        <Text style={buttonText()}>{showDone() ? "Hide done" : "Show done"}</Text>
       </View>
     </View>
   );
@@ -64,6 +58,9 @@ function App() {
                   borderColor: ui().accent,
                   backgroundColor: todo().done ? ui().accent : "transparent",
                 }}
+                hoverStyle={{ opacity: 0.88 }}
+                focusStyle={focusRing()}
+                activeStyle={{ opacity: 0.7 }}
               />
               <Text
                 style={{
@@ -76,7 +73,7 @@ function App() {
                 {index() + 1}. {todo().title}
               </Text>
               <If when={todo().done}>
-                <View onPress={() => remove(todo().id)} hitSlop={8}>
+                <View onPress={() => remove(todo().id)} hitSlop={8} hoverStyle={hoverFill()} focusStyle={focusRing()} activeStyle={{ opacity: 0.7 }}>
                   <Text style={{ color: ui().down, fontSize: wide() ? 13 : undefined }}>Remove</Text>
                 </View>
               </If>

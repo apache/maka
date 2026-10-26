@@ -48,6 +48,38 @@ pub enum Token {
 /// (`None`): how a UI set reads the app's theme ([`super::Registry::tokens_from`]).
 pub type TokenSource = fn(Option<&str>) -> Result<Tokens, String>;
 
+/// The tokens a surface is drawn with once the app's theme file reaches its
+/// root ([`crate::Core::theme_tokens`]). The entry hands the theme to the
+/// renderer in the turn of its first render, before the theme's op reaches
+/// the core: JS reads the tokens from here meanwhile, so its first render
+/// already has them (`token()` of `nsh`).
+#[derive(Debug, Clone, Default)]
+#[non_exhaustive]
+pub struct ThemeTokens {
+    /// How the UI sets read a theme file (`None`: none does).
+    source: Option<TokenSource>,
+    /// The embedding app's tokens, which win over the app's.
+    host: Option<Arc<Tokens>>,
+}
+
+impl ThemeTokens {
+    pub(crate) fn new(source: Option<TokenSource>, host: Option<Arc<Tokens>>) -> Self {
+        Self { source, host }
+    }
+
+    /// The tokens drawn with when the app's theme file is `json`: its own
+    /// under the embedding app's, as the core makes them. `None`: no UI set
+    /// reads themes, or `json` is not one (the core reports it when the
+    /// theme reaches it).
+    pub fn of(&self, json: &str) -> Option<Tokens> {
+        let app = (self.source?)(Some(json)).ok()?;
+        Some(match &self.host {
+            Some(host) => host.over(&app),
+            None => app,
+        })
+    }
+}
+
 impl Tokens {
     /// The color named `name`.
     pub fn color(&self, name: &str) -> Option<AdaptiveColor> {

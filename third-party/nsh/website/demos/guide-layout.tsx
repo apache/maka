@@ -1,5 +1,5 @@
 import { mount, Scroll, signal, Text, View } from "nsh";
-import { desktop, Inspector, tint, ui, wide } from "./palette";
+import { button, buttonText, desktop, Inspector, tint, ui, wide } from "./palette";
 
 type Direction = "column" | "row";
 type Justify = "flex-start" | "center" | "flex-end" | "space-between" | "space-evenly";
@@ -12,16 +12,8 @@ function Choice<T extends string>(props: { label: string; options: readonly T[];
       <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
         <Each of={props.options}>
           {(o) => (
-            <View
-              onPress={() => props.onChange(o())}
-              style={{
-                paddingHorizontal: 10,
-                paddingVertical: 5,
-                borderRadius: 8,
-                ...(props.value === o() ? ui().accentFill : ui().raised),
-              }}
-            >
-              <Text style={{ fontSize: 12, color: props.value === o() ? ui().onAccent : ui().text }}>{o()}</Text>
+            <View onPress={() => props.onChange(o())} {...button("secondary", { size: "sm", on: () => props.value === o() })}>
+              <Text style={buttonText("secondary", { on: () => props.value === o() })}>{o()}</Text>
             </View>
           )}
         </Each>
@@ -121,15 +113,9 @@ function App() {
             <View style={{ padding: 20, paddingTop: 24, gap: 14 }}>
               <View
                 onPress={() => direction.set(direction() === "row" ? "column" : "row")}
-                style={{
-                  alignSelf: "flex-start",
-                  paddingHorizontal: 12,
-                  paddingVertical: 6,
-                  borderRadius: 8,
-                  ...ui().primary,
-                }}
+                {...button("primary", { align: "flex-start" })}
               >
-                <Text style={{ fontSize: 13, fontWeight: "600", color: ui().onPrimary }}>
+                <Text style={buttonText("primary")}>
                   flexDirection: {direction()} ({desktop ? "click" : "tap"} to switch)
                 </Text>
               </View>

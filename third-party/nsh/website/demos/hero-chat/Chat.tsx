@@ -1,7 +1,7 @@
 import { batch, computed, effect, Input, List, Scroll, signal, Text, View, type YNode } from "nsh";
 import { createAnimatedValue, LayoutAnimation } from "nsh/animated";
 import { Clipboard } from "nsh/clipboard";
-import { keyboardFrame, KeyboardAvoidingView, safeAreaInsets, SelectionArea } from "nsh/base";
+import { Collapsible, keyboardFrame, KeyboardAvoidingView, safeAreaInsets, SelectionArea } from "nsh/base";
 import { Icon, type IconName } from "./icons";
 import { alpha, Appear, Badge, colors, finish, IconTile, motion, Press, radius, RoundButton, Segmented, toneTint } from "./ui";
 import { Glyph } from "./chat/glyphs";
@@ -362,7 +362,16 @@ export function Chat(props: { autoplay?: string } = {}) {
           </If>
         </View>
         <If when={reasoning()}>
-          <View style={{ gap: 8 }}>
+          <Collapsible
+            open={!!reasoning()?.open}
+            class="gap-2"
+            content={
+              <View style={{ flexDirection: "row", gap: 12, paddingLeft: 7 }}>
+                <View style={{ width: 2, borderRadius: 1, backgroundColor: colors.border }} />
+                <Text selectable style={{ flex: 1, fontSize: 14, lineHeight: 20, color: colors.muted }}>{reasoning()?.text}</Text>
+              </View>
+            }
+          >
             <Press
               scale={0.98}
               onPress={() => {
@@ -371,7 +380,7 @@ export function Chat(props: { autoplay?: string } = {}) {
                 update(m().id, (x) => ({ ...x, reasoning: x.reasoning && { ...x.reasoning, open: !x.reasoning.open } }));
               }}
               accessibilityLabel="Reasoning"
-              accessibilityState={{ selected: !!reasoning()?.open }}
+              accessibilityState={{ expanded: !!reasoning()?.open }}
             >
               <View style={{ flexDirection: "row", alignItems: "center", gap: 8, height: 32, alignSelf: "flex-start" }}>
                 <If when={live() && liveThinking()?.seconds === null} else={<Glyph name="brain" size={16} tint={colors.muted} />}>
@@ -390,13 +399,7 @@ export function Chat(props: { autoplay?: string } = {}) {
                 </View>
               </View>
             </Press>
-            <If when={reasoning()?.open}>
-              <View style={{ flexDirection: "row", gap: 12, paddingLeft: 7 }}>
-                <View style={{ width: 2, borderRadius: 1, backgroundColor: colors.border }} />
-                <Text selectable style={{ flex: 1, fontSize: 14, lineHeight: 20, color: colors.muted }}>{reasoning()?.text}</Text>
-              </View>
-            </If>
-          </View>
+          </Collapsible>
         </If>
         <Each of={tools()} key={(t) => t.id}>
           {(tool) => <ToolCard tool={tool()} />}

@@ -39,6 +39,7 @@ animation::ops::AnimationOp::CreateInterpolate.input_range       # interpolation
 animation::ops::AnimationOp::CreateValue.value                   # a generic animated value (any prop: opacity, a color channel, a length)
 animation::ops::AnimationOp::Set.value                           # a generic animated value (any prop: opacity, a color channel, a length)
 animation::ops::AnimationOp::SetOffset.offset                    # a generic animated value (any prop: opacity, a color channel, a length)
+animation::ops::AnimatedPropValue::Number.0                          # a native component's animated prop, whatever the component makes of it
 animation::ops::Composite::Delay.0                               # time
 animation::ops::Curve::Back.0                                    # an easing curve parameter
 animation::ops::Curve::Elastic.0                                 # an easing curve parameter

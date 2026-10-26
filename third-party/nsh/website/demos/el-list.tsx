@@ -1,5 +1,5 @@
 import { List, mount, signal, Text, View, type YNode } from "nsh";
-import { desktop, Inspector, Panel, size, tint, ui, wide } from "./palette";
+import { button, buttonText, desktop, Inspector, Panel, size, tint, ui, wide } from "./palette";
 
 type Trade = { id: string; symbol: string; shares: number; change: number };
 
@@ -203,16 +203,8 @@ function App() {
 
 function Chip(props: { label: string; onPress: () => void }) {
   return (
-    <View
-      onPress={props.onPress}
-      activeStyle={{ opacity: 0.6 }}
-      style={
-        wide()
-          ? { ...ui().raised, height: size.control, paddingHorizontal: 12, justifyContent: "center", borderRadius: 8 }
-          : { ...ui().raised, paddingHorizontal: 12, paddingVertical: 7, borderRadius: 10 }
-      }
-    >
-      <Text style={{ color: ui().text, fontWeight: "600", fontSize: wide() ? 13 : undefined }}>{props.label}</Text>
+    <View onPress={props.onPress} {...button()}>
+      <Text style={buttonText()}>{props.label}</Text>
     </View>
   );
 }

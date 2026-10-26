@@ -147,8 +147,25 @@ function nativeComponent<P extends object = {}, E extends object = {}>(
 | 元素被创建 | 组件创建后立即收到所有已设置的自有 prop |
 | 某个 prop 的值变化 | 该 prop 及其新值 |
 | 某个 prop 变为 `undefined` | 该 prop，但没有值（Swift 中为 `nil`，Java 中为 `null`） |
+| 绑定到动画值的 prop 变化 | `setAnimatedNumber` / `setAnimatedColor`，在值变化的那些帧 |
 
-Props 携带 JSON 值；接口只传数据（函数、类实例和 `AnimatedValue` 留在应用中）。
+Props 携带 JSON 值；接口只传数据（函数和类实例留在应用中）。
+
+### 动画 props
+
+prop 也可以是一个动画值：`AnimatedValue`，或由它派生的节点（`interpolate`、滚动视图的 `scrollValue` 或
+`pullValue`）。这时它不会以 JSON 发送：NSH 会绑定它，值每一帧变化时都会在 UI 线程直接交给组件，不经过 JS，所以组件能跟着拖动或下拉刷新。
+
+```tsx
+const pull = createAnimatedValue(0);
+<Scroll pullValue={pull} refreshIndicator={{ height: 72 }} refreshing={refreshing()} onRefresh={refresh}>
+  <Spinner progress={pull.interpolate({ inputRange: [0, 72], outputRange: [0, 1] })} />
+</Scroll>
+```
+
+组件通过 `setAnimatedNumber(name, value)` 收到数值，通过 `setAnimatedColor(name, argb)` 收到颜色（`0xAARRGGBB`）；两者默认都以该数值调用
+`setProp`，所以没有实现它们的组件也能收到值。Rust 组件实现 `set_animated_number` 和 `set_animated_color`，Rust 代码用
+`native(name).bind_animated_prop("progress", &value)` 绑定 prop。重新给该 prop 一个普通值即解除绑定，并发送这个值。Web 上没有注册的原生组件。
 
 ## 事件
 

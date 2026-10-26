@@ -175,6 +175,8 @@ struct BundleOptions {
     /// The VM limits the page runs the app with ([`nsh_bundle_limits`]);
     /// `None`: none, as an app on its own.
     limits: Option<String>,
+    /// Static chunks staged before the entry starts.
+    chunks: Vec<nsh_engine::Chunk>,
 }
 
 struct Running {
@@ -502,7 +504,8 @@ fn start(code: BundleCode, width: f32, height: f32, dark: u32, pixel_ratio: f32)
         // SAFETY: trusted, per `nsh_start_bytecode`'s contract.
         BundleCode::Bytecode(bytes) => unsafe { Bundle::bytecode(bytes) },
     }
-    .with_policy(policy);
+    .with_policy(policy)
+    .with_chunks(options.chunks);
     if let Some(harden) = options.harden {
         // SAFETY: trusted, per `nsh_bundle_harden`'s contract.
         bundle = unsafe { bundle.with_harden_bytecode(harden) };
@@ -650,8 +653,36 @@ pub unsafe extern "C" fn nsh_bundle_options(
             harden: None,
             app_id: (!app_id.is_empty()).then_some(app_id),
             limits: None,
+            chunks: Vec::new(),
         }
     });
+}
+
+/// Stages a static dependency for the next app, after [`nsh_bundle_options`].
+///
+/// # Safety
+///
+/// Both ranges are memory from [`nsh_alloc`]. Bytecode must be trusted output
+/// from the matching CLI, as required by [`nsh_start_bytecode`].
+#[cfg(feature = "js")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nsh_bundle_chunk(
+    name: *const u8,
+    name_len: usize,
+    code: *const u8,
+    code_len: usize,
+    bytecode: u32,
+) {
+    // SAFETY: the caller provides allocated ranges and trusted bytecode.
+    let chunk = unsafe {
+        let name = string(name, name_len);
+        if bytecode != 0 {
+            nsh_engine::Chunk::bytecode(name, std::slice::from_raw_parts(code, code_len).to_vec())
+        } else {
+            nsh_engine::Chunk::source(name, string(code, code_len))
+        }
+    };
+    OPTIONS.with(|o| o.borrow_mut().chunks.push(chunk));
 }
 
 /// Sets the VM limits the next [`nsh_start`] / [`nsh_start_bytecode`]

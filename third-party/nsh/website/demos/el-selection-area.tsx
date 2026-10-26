@@ -1,7 +1,7 @@
 import { Input, mount, Scroll, signal, Text, View } from "nsh";
 import { SelectionArea, TextView } from "nsh/base";
 import { platform } from "nsh/device";
-import { ui } from "./palette";
+import { field, ui } from "./palette";
 
 const NOTES = "- Sync runs **in the background**\n- Conflicts merge *per field*";
 
@@ -35,7 +35,7 @@ function App() {
           value={pasted()}
           onChange={(text) => pasted.set(text)}
           placeholder="Paste here"
-          style={{ ...ui().inset, height: 110, borderRadius: 12, padding: 12, fontSize: 15, color: ui().text, placeholderColor: ui().faint }}
+          {...field({ style: { height: 110 } })}
         />
         <Text style={{ fontSize: 12, color: ui().muted, fontVariant: ["tabular-nums"] }}>
           {pasted().length} characters, {pasted() ? pasted().split("\n").length : 0} lines

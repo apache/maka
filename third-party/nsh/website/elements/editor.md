@@ -677,7 +677,7 @@ is set with `fontFamily`, `fontSize` and `lineHeight`, which the editor measures
 | `foldMarker` | The marker of a line where a fold starts | `⌄`, `›` folded, `muted-foreground` |
 | `content` | The text area beside the gutter | 4pt before the text |
 | `line` | Every row of text | |
-| `activeLine` | Behind the rows of the lines with a caret | `muted`, faint |
+| `activeLine` | Behind the rows of the lines with a caret, below the scroll indicators | `muted`, faint |
 | `selection` | Behind selected text | A tint of `primary` |
 | `caret` | The carets | 2pt wide, `foreground`, blinking |
 | `composition` | The text an input method is composing | Underlined |

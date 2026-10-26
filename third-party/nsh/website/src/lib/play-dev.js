@@ -15,6 +15,7 @@ import { fileURLToPath } from 'node:url';
 const website = fileURLToPath(new URL('../..', import.meta.url));
 const root = join(website, '..');
 const web = join(root, 'crates/nsh-platform-web/web');
+const galleryUi = join(root, 'examples/nsh-gallery-ui');
 const nsh = join(root, 'target/release/nsh');
 
 export function playDev(base) {
@@ -24,6 +25,12 @@ export function playDev(base) {
     apply: 'serve',
     configureServer(server) {
       server.watcher.add(join(website, 'demos'));
+      server.watcher.add(galleryUi);
+      // Demo bytecode is compiled on request, outside Vite's module graph.
+      // Reload its frames when the shared component layer or theme changes.
+      server.watcher.on('change', (path) => {
+        if (path.startsWith(`${galleryUi}/`)) server.ws.send({ type: 'full-reload' });
+      });
       server.middlewares.use((req, res, next) => {
         const path = new URL(req.url ?? '/', 'http://localhost').pathname;
         if (!path.startsWith(prefix)) return next();

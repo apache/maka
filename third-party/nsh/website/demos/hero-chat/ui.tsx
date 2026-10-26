@@ -296,7 +296,7 @@ export function Press(props: {
   style?: ViewStyle;
   role?: "button" | "tab" | "switch" | "link";
   accessibilityLabel?: string;
-  accessibilityState?: { selected?: boolean; checked?: boolean; disabled?: boolean };
+  accessibilityState?: { selected?: boolean; checked?: boolean; disabled?: boolean; expanded?: boolean };
   hitSlop?: number;
   children: JSX.Element;
 }) {

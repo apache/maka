@@ -1,7 +1,7 @@
 # Website design
 
 Rules for `website/`, so later changes stay coherent. The site follows the
-gallery's design language (`examples/gallery/ui.tsx`): graphite surfaces lit
+shared example UI's design language (`examples/nsh-gallery-ui`): graphite surfaces lit
 from above, one citrus accent, tinted status colours — neutral and refined,
 the look of the UI nsh draws.
 
@@ -32,6 +32,10 @@ the look of the UI nsh draws.
    only gradients are the surfaces' own top-to-bottom light.
 
 ## Colour
+
+The shared source is `examples/nsh-gallery-ui/theme.json`, with surfaces in `finishes.json`. The website
+loads their generated CSS through `virtual:nsh-gallery-ui.css`; its own semantic variables alias those values.
+The NSH gallery and runnable demos consume the same files.
 
 Tokens live in `src/styles/global.css`: `:root` holds the dark theme,
 `html.light` its light variant. A pre-paint script in `BaseLayout.astro`
@@ -160,12 +164,9 @@ logs it).
 - Demos (`demos/*.tsx`), the hero's chat and the playground follow the
   page's theme: the player starts with `?theme=` and gets a message on every
   change (`themeDemos` in `src/lib/demo-client.ts`), and demos read their
-  colours from `demos/palette.ts` (`ui()`, over `colorScheme()`) inside JSX,
-  so they switch live. The playground inlines that file into a demo that
-  imports it; its Dark switch follows the page until changed.
-  `demos/nsh.json` gives Rust components both appearances
-  (`demos/graphite-theme.json`). Never custom Tailwind colour names: the
-  playground compiles without `nsh.json`.
+  colours from `demos/palette.ts`, an adapter of `examples/nsh-gallery-ui`, inside JSX. Its palette reads the
+  shared theme's tokens, so it switches live. The playground includes the shared modules in isolated scopes and
+  applies their `theme.json` before the first render. `demos/nsh.json` references that same file for normal builds.
 - A demo is shown in a **frame** (`.phone`, `frameBar()` in
   `src/lib/demo.js`): a card with the card finish, a slim bar (an icon tile,
   the file name, a "Live" badge) and the app on an inset surface, no device

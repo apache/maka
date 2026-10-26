@@ -17,6 +17,7 @@ import BaseEditor from "./base-editor";
 import BaseNavPage from "./base-nav-page";
 import BaseNavStack from "./base-nav-stack";
 import BasePopups from "./base-popups";
+import BasePlot from "./base-plot";
 import BaseProgress from "./base-progress";
 import BaseTable from "./base-table";
 import BaseRadio from "./base-radio";
@@ -51,6 +52,7 @@ const cases: Record<string, () => JSX.Element> = {
   "base-resizable": BaseResizable,
   "base-tabs": BaseTabs,
   "base-collapsible": BaseCollapsible,
+  "base-plot": BasePlot,
   "base-progress": BaseProgress,
   "base-table": BaseTable,
   "base-toast": BaseToast,

@@ -1499,6 +1499,16 @@ impl<M: TextEngine + 'static> Driver<M> {
         posts.set_notify(Arc::new(move || {
             let _ = wake.send(Message::Wake);
         }));
+        // The embedding app's tokens sent before the start
+        // (`Engine::start_with`) are there as the bundle evaluates, so its
+        // first render reads them; the rest comes after it, in order.
+        let mut early = Vec::new();
+        while let Ok(message) = rx.try_recv() {
+            match message {
+                Message::Tokens(tokens) => core.set_host_tokens(tokens.map(|t| *t)),
+                message => early.push(message),
+            }
+        }
         let js_tokens = core.tokens().clone();
         let state = State {
             core,
@@ -1578,6 +1588,7 @@ impl<M: TextEngine + 'static> Driver<M> {
                     posts,
                     &environment,
                     driver.state.js_tokens.clone(),
+                    driver.state.core.theme_tokens(),
                     text_engine,
                     stop,
                     sink,
@@ -1602,7 +1613,10 @@ impl<M: TextEngine + 'static> Driver<M> {
         // What was sent before the start (`Engine::start_with`) is in the
         // first frame; a move of the clock comes after it.
         let mut moves = Vec::new();
-        while let Ok(message) = rx.try_recv() {
+        let pending = early
+            .into_iter()
+            .chain(std::iter::from_fn(|| rx.try_recv().ok()));
+        for message in pending {
             if let Message::Advance(..) = message {
                 moves.push(message);
             } else if !handle(script, state, message) {
@@ -2803,7 +2817,12 @@ fn handle<M: TextEngine>(script: Option<&Script>, state: &mut State<M>, message:
             state.perf = monitor;
             state.perf_commit = perf::CommitTiming::default();
         }
-        Message::Tokens(tokens) => state.core.set_host_tokens(tokens.map(|t| *t)),
+        Message::Tokens(tokens) => {
+            state.core.set_host_tokens(tokens.map(|t| *t));
+            if let Some(script) = script {
+                script.set_theme_tokens(state.core.theme_tokens());
+            }
+        }
         // A Rust app has no `nsh/host`: what the host sends it goes.
         Message::HostEvent(name, data) => {
             if let Some(script) = script {

@@ -1283,8 +1283,10 @@ pub(crate) fn encode(out: &mut Out, item: &MountItem) {
         MountItem::Component { id, name } => out.item("comp").num(*id).str(name).end(),
         // Browsers hit-test what overflows a box themselves; the keymap
         // stays in Rust (`nsh_key`).
+        // No registered native components on the web.
         MountItem::ComponentProps { .. }
         | MountItem::ListCellRetired { .. }
+        | MountItem::ComponentPropSlots { .. }
         | MountItem::Keymap(_)
         | MountItem::Overflow { .. }
         | MountItem::AnimationBindings { .. }

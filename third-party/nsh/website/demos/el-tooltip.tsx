@@ -1,6 +1,6 @@
 import { mount, signal, Text, View } from "nsh";
 import { type OpenChangeReason, Tooltip } from "nsh/base";
-import { desktop, Inspector, Log, Panel, size, Stage, ui, wide } from "./palette";
+import { button, buttonText, desktop, Inspector, Log, Panel, Stage, ui, wide } from "./palette";
 
 /** An icon button with a hint of the app's look, above or below it. */
 function Tool(props: {
@@ -18,16 +18,7 @@ function Tool(props: {
       <View
         onPress={props.onPress}
         accessibilityLabel={props.label}
-        activeStyle={{ opacity: 0.6 }}
-        hoverStyle={{ borderColor: ui().accent }}
-        style={{
-          ...ui().raised,
-          width: desktop ? 36 : 52,
-          height: desktop ? 36 : 52,
-          borderRadius: desktop ? 8 : 14,
-          alignItems: "center",
-          justifyContent: "center",
-        }}
+        {...button("secondary", { align: "center", style: { width: desktop ? 36 : 52, height: desktop ? 36 : 52, paddingHorizontal: 0 } })}
         tooltip={
           <Tooltip
             open={props.pinned || hovered()}
@@ -70,14 +61,9 @@ function App() {
     <View
       tooltip="Shows every tooltip without a pointer"
       onPress={() => pinned.set(!pinned())}
-      activeStyle={{ opacity: 0.6 }}
-      style={
-        wide()
-          ? { ...ui().raised, alignSelf: "center", height: size.control, paddingHorizontal: 12, borderRadius: 8, justifyContent: "center" }
-          : { ...ui().raised, flex: 1, height: 40, borderRadius: 10, alignItems: "center", justifyContent: "center" }
-      }
+      {...button("secondary", { align: "center", style: wide() ? {} : { flex: 1 } })}
     >
-      <Text style={{ fontSize: desktop ? 13 : 14, fontWeight: "500", color: ui().text }}>
+      <Text style={buttonText()}>
         {wide() ? (pinned() ? "Unpin the tooltips" : "Pin the tooltips") : pinned() ? "Unpin" : "Pin"}
       </Text>
     </View>

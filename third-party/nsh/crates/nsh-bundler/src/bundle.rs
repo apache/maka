@@ -82,12 +82,17 @@ pub struct Bundle {
     pub code: String,
     /// Source map (JSON) from `code` back to the app sources.
     pub source_map: Option<String>,
-    /// The chunks `import()` loads, with [`BundleOptions::split`] (else
+    /// Shared and lazy chunks, with [`BundleOptions::split`] (else
     /// none), in a stable order.
     pub chunks: Vec<Chunk>,
+    /// Static dependency closure needed before evaluating the entry.
+    pub entry_imports: Vec<String>,
     /// Asset files the app imports, relative to the entry directory
     /// (`asset:/<path>` URIs refer to them).
     pub assets: Vec<PathBuf>,
+    /// Source and configuration files read by the build, as absolute paths.
+    /// Development servers watch these even outside the entry directory.
+    pub watch_files: Vec<PathBuf>,
     /// The native modules the app imports (`nsh`, `nsh/list`,
     /// `nsh/base`, an app's own UI set), sorted: what a host must
     /// serve to run it.
@@ -99,7 +104,7 @@ pub struct Bundle {
     pub elapsed_ms: f64,
 }
 
-/// A chunk of a split bundle: modules that `import()` loads (with what
+/// A chunk of a split bundle: shared or lazy modules (with what
 /// they share with other such chunks), an ES module of its own.
 ///
 /// Chunks import each other and the entry chunk statically, by relative
@@ -419,7 +424,11 @@ pub async fn bundle_async(options: &BundleOptions) -> Result<Bundle, BundleError
         };
         let map = chunk.map.as_ref().map(|m| m.to_json_string());
         if chunk.is_entry {
-            entry_chunk = Some((chunk.code.clone(), map));
+            entry_chunk = Some((
+                chunk.code.clone(),
+                map,
+                chunk_imports(chunk.imports.iter().map(|i| i.as_str()), &chunk.filename),
+            ));
         } else {
             chunks.push(Chunk {
                 id: chunk.filename.to_string(),
@@ -429,9 +438,10 @@ pub async fn bundle_async(options: &BundleOptions) -> Result<Bundle, BundleError
             });
         }
     }
-    let (code, source_map) =
+    let (code, source_map, imports) =
         entry_chunk.ok_or_else(|| BundleError::other("bundle produced no entry chunk"))?;
     chunks.sort_by(|a, b| a.id.cmp(&b.id));
+    let entry_imports = entry_dependencies(imports, &chunks);
     let mut assets: Vec<PathBuf> = std::mem::take(&mut *assets.lock().expect("assets lock"))
         .into_iter()
         .filter_map(|p| p.strip_prefix(&cwd_root).ok().map(PathBuf::from))
@@ -446,11 +456,47 @@ pub async fn bundle_async(options: &BundleOptions) -> Result<Bundle, BundleError
         code,
         source_map,
         chunks,
+        entry_imports,
         assets,
+        watch_files: watch_files(&bundler, &cwd_root),
         natives: natives.into_iter().collect(),
         capabilities,
         elapsed_ms: start.elapsed().as_secs_f64() * 1000.0,
     })
+}
+
+/// The bundler's imported files and the theme read by NSH's setup.
+/// Follow static edges only; lazy entry points remain on demand.
+fn entry_dependencies(mut pending: Vec<String>, chunks: &[Chunk]) -> Vec<String> {
+    let mut seen = std::collections::BTreeSet::new();
+    while let Some(id) = pending.pop() {
+        let Some(chunk) = chunks.iter().find(|chunk| chunk.id == id) else {
+            continue;
+        };
+        if seen.insert(id) {
+            pending.extend(chunk.imports.iter().cloned());
+        }
+    }
+    seen.into_iter().collect()
+}
+
+fn watch_files(bundler: &rolldown::Bundler, dir: &std::path::Path) -> Vec<PathBuf> {
+    let mut files: Vec<PathBuf> = bundler
+        .watch_files()
+        .iter()
+        .map(|path| PathBuf::from(path.key().as_str()))
+        .filter(|path| path.is_file())
+        .collect();
+    if let Ok(config) = std::fs::read_to_string(dir.join("nsh.json"))
+        && let Ok(config) = serde_json::from_str::<serde_json::Value>(&config)
+        && let Some(theme) = config.get("theme").and_then(|v| v.as_str())
+        && let Ok(path) = dunce::canonicalize(dir.join(theme))
+    {
+        files.push(path);
+    }
+    files.sort();
+    files.dedup();
+    files
 }
 
 /// The warning for an app that imports `nsh/host` and grants itself none
@@ -491,6 +537,8 @@ pub struct HotBundle {
     preloads: Vec<String>,
     /// Asset files the app imports (as in [`Bundle::assets`]).
     pub assets: Vec<PathBuf>,
+    /// Source and configuration files read by the build, as absolute paths.
+    pub watch_files: Vec<PathBuf>,
     /// As in [`Bundle::capabilities`].
     pub capabilities: Option<nsh_core::access::Capabilities>,
     /// Wall time spent bundling, in milliseconds.
@@ -739,6 +787,7 @@ pub async fn bundle_hot_async(
             .collect(),
         entry: entry_id.ok_or_else(|| BundleError::other("bundle produced no entry chunk"))?,
         assets,
+        watch_files: watch_files(&bundler, &cwd),
         capabilities,
         elapsed_ms: start.elapsed().as_secs_f64() * 1000.0,
     })
@@ -846,6 +895,25 @@ mod tests {
         let eager = bundle_hot(&dir.join("App.tsx"), &[]).unwrap();
         assert!(matches!(eager.patch(&bundle), HotPatch::Reload));
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn entry_dependencies_include_static_cycles_but_leave_lazy_chunks_deferred() {
+        let chunk = |id: &str, imports: &[&str]| Chunk {
+            id: id.to_owned(),
+            code: String::new(),
+            source_map: None,
+            imports: imports.iter().map(|id| (*id).to_owned()).collect(),
+        };
+        let chunks = vec![
+            chunk("ui.js", &["theme.js"]),
+            chunk("theme.js", &["ui.js"]),
+            chunk("screen.js", &["ui.js"]),
+        ];
+        assert_eq!(
+            entry_dependencies(vec!["ui.js".into(), "nsh".into()], &chunks),
+            vec!["theme.js", "ui.js"]
+        );
     }
 
     #[test]
@@ -1025,6 +1093,38 @@ mod tests {
         let (code, _) = bundle_hot(&dir.join("App.tsx"), &[]).unwrap().script();
         assert!(code.contains("require(\"./Screen.js\")"), "{code}");
         assert!(!code.contains("import("), "{code}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn shared_sources_and_external_themes_are_watched() {
+        let dir = app("shared-watch");
+        let entry_dir = dir.join("example");
+        let ui = dir.join("ui");
+        std::fs::create_dir_all(&entry_dir).unwrap();
+        std::fs::create_dir_all(&ui).unwrap();
+        std::fs::write(ui.join("index.ts"), "export const label = 'shared';").unwrap();
+        std::fs::write(
+            ui.join("theme.json"),
+            r#"{"cssVars":{"theme":{},"light":{},"dark":{}}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            entry_dir.join("nsh.json"),
+            r#"{"theme":"../ui/theme.json"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            entry_dir.join("App.tsx"),
+            "import { mount, Text } from 'nsh'; import { label } from '../ui'; mount(() => <Text>{label}</Text>);",
+        )
+        .unwrap();
+        let built = bundle_app(&entry_dir, false);
+        let hot = bundle_hot(&entry_dir.join("App.tsx"), &[]).unwrap();
+        for files in [&built.watch_files, &hot.watch_files] {
+            assert!(files.contains(&dunce::canonicalize(ui.join("index.ts")).unwrap()));
+            assert!(files.contains(&dunce::canonicalize(ui.join("theme.json")).unwrap()));
+        }
         let _ = std::fs::remove_dir_all(dir);
     }
 

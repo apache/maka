@@ -1022,7 +1022,8 @@ class Player {
    * `"memory=128MB,call=2s"`, `""` for the embedding defaults; without it
    * the app runs on its own, with none), and where a split bundle's chunks are: `chunks[id]`
    * (a URL), else `id` relative to `chunkBase` (default: the page); the
-   * chunks of a bytecode bundle are bytecode too.
+   * chunks of a bytecode bundle are bytecode too. Static entry dependencies
+   * are supplied as preloadedChunks[id] (source or bytecode).
    */
   run(code, {
     release = false,
@@ -1031,6 +1032,7 @@ class Player {
     sourceMap = "",
     appId = "",
     limits = null,
+    preloadedChunks = {},
     chunks = this.options.chunks,
     chunkBase = this.options.chunkBase,
   } = {}) {
@@ -1040,6 +1042,11 @@ class Player {
     this.chunks = { map: chunks ?? {}, base: chunkBase ?? document.baseURI, bytecode };
     this.call(() => this.withStrings([capabilities ?? "", sourceMap ?? "", appId ?? ""], (cp, cl, mp, ml, ip, il) =>
       this.wasm.nsh_bundle_options(release ? 1 : 0, cp, cl, mp, ml, ip, il)));
+    for (const [id, source] of Object.entries(preloadedChunks)) {
+      const bytes = source instanceof ArrayBuffer ? new Uint8Array(source) : source;
+      this.call(() => this.withStrings([id, bytes], (np, nl, cp, cl) =>
+        this.wasm.nsh_bundle_chunk(np, nl, cp, cl, typeof bytes === "string" ? 0 : 1)));
+    }
     if (harden) this.call(() => this.withStrings([new Uint8Array(harden)], (p, l) => this.wasm.nsh_bundle_harden(p, l)));
     if (limits != null) this.call(() => this.withStrings([limits], (p, l) => this.wasm.nsh_bundle_limits(p, l)));
     this.begin(width, (environment) => {

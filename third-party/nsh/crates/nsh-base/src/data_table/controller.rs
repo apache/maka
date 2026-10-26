@@ -17,15 +17,13 @@ use super::{
     columns::{Columns, Spec},
     selection::{self, Move, Nav, Selectable, Selection},
 };
-use crate::{theme, window::RowWindow};
+use crate::window::RowWindow;
 
 /// A column's width unless it says another.
 const DEFAULT_WIDTH: f32 = 120.0;
 /// The narrowest and widest a column is unless it says otherwise.
 const MIN_WIDTH: f32 = 20.0;
 const MAX_WIDTH: f32 = 1200.0;
-/// The room before and after a cell's text (the default look's padding).
-pub(crate) const CELL_PAD: f32 = 12.0;
 /// The room a sortable title keeps for its indicator.
 pub(crate) const SORT_WIDTH: f32 = 20.0;
 /// Rows around the view that fitting a column measures, at most.
@@ -366,7 +364,6 @@ impl Dt {
             .props
             .font_family
             .get()
-            .or_else(|| theme().font_sans.clone())
             .unwrap_or_else(|| "system-ui".into());
         let size = self.props.font_size.get().0;
         let generic = matches!(
@@ -399,7 +396,7 @@ impl Dt {
                 }
             }
         };
-        (digit * digits as f32 + CELL_PAD * 2.0).max(40.0)
+        (digit * digits as f32).max(40.0)
     }
 
     /// The sizes and offsets now (tracked).
@@ -1144,17 +1141,15 @@ impl Dt {
         if sortable {
             widest += SORT_WIDTH;
         }
-        let title = widest;
         let mut text = String::new();
         for row in from..to.max(from) {
             text.clear();
             self.write_cell(row, def, &mut text);
             if !text.is_empty() {
-                widest = widest.max(measure_text(&css, &text).0 + padding);
+                widest = widest.max(measure_text(&css, &text).0);
             }
         }
-        widest = widest.max(title);
-        self.set_width(def, widest.ceil() + CELL_PAD * 2.0, true)
+        self.set_width(def, (widest + padding).ceil(), true)
     }
 
     /// A title was grabbed to move its column.

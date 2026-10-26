@@ -109,6 +109,11 @@ Things that were found the hard way. Read the section of the area you change bef
 - **Development hosts never restore windows**: `nsh run` launches the Catalyst host with `-ApplePersistenceIgnoreState YES`;
   after a crash, macOS would otherwise show a modal "reopen windows?" alert over it.
 - **IPAs are zipped with `ditto -c -k --norsrc --keepParent`**: `--sequesterRsrc` adds `__MACOSX/` resource forks.
+- **Float fields of the dev protocol decode through `nsh_dev::protocol`'s `float`** (`deserialize_with`): rolldown turns
+  on serde_json's `arbitrary_precision`, which feature unification can carry into a host's build, and then a number
+  with a fraction inside an internally tagged enum (every message, `TestStep`, `SceneQuery`) is buffered as a map
+  `{"$serde_json::private::Number": "390.5"}` that a plain `f32` / `f64` field rejects ("invalid type: map, expected
+  f64"); integers decode either way. A new float field in a message takes the same attribute.
 
 ## iOS, UIKit and Mac Catalyst
 

@@ -581,7 +581,7 @@ let editor!: EditorRef;
 | `foldMarker` | 折叠开始处那一行的标记 | `⌄`，折叠后为 `›`，`muted-foreground` |
 | `content` | 行号栏旁边的文本区域 | 文本前 4pt |
 | `line` | 每一行文本 | |
-| `activeLine` | 有光标的行的背后 | `muted`，很淡 |
+| `activeLine` | 有光标的行的背后，位于滚动指示条下方 | `muted`，很淡 |
 | `selection` | 所选文本的背后 | `primary` 的浅色 |
 | `caret` | 光标 | 2pt 宽，`foreground`，闪烁 |
 | `composition` | 输入法正在组合的文本 | 下划线 |

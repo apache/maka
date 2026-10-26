@@ -45,19 +45,20 @@ pub(crate) fn start_with(
         std::fs::write(dir.join("nsh.json"), config).unwrap();
     }
     let ui_sets = vec![nsh_base::registry(), crate::test_ui::registry()];
+    // `nsh/base` with its submodules (`nsh/base/plot`).
+    let described: Vec<nsh_core::ui::description::SetDescription> = ui_sets
+        .iter()
+        .flat_map(nsh_core::ui::Registry::sets)
+        .map(Into::into)
+        .collect();
     let bundle = nsh_bundler::bundle(&nsh_bundler::BundleOptions {
         entry,
         minify: false,
         split: false,
-        ui_sets: ui_sets.iter().map(Into::into).collect(),
+        ui_sets: described.clone(),
     })
     .unwrap();
-    let bytecode = nsh_js::compile_bytecode_with(
-        &bundle.code,
-        false,
-        &ui_sets.iter().map(Into::into).collect::<Vec<_>>(),
-    )
-    .unwrap();
+    let bytecode = nsh_js::compile_bytecode_with(&bundle.code, false, &described).unwrap();
     let (tx, rx) = crossbeam_channel::unbounded();
     let config = EngineConfig {
         // SAFETY: compiled just now by this runtime.
@@ -2946,4 +2947,772 @@ mount(() => <View>
             && props.iter().any(|(name, value)| &**name == "selectedIndex"
                 && *value == Some(serde_json::json!(0))))
     })));
+}
+
+const BASE_PLOT: &str = r##"import { mount, signal, Text, View } from "nsh";
+import { Area, Grid, Line, Plot } from "nsh/base/plot";
+
+type Row = { t: number; price: number; avg?: number; name: string };
+
+function App() {
+  const rows = signal<Row[]>([
+    { t: 0, price: 10, avg: 15, name: "a" },
+    { t: 1, price: 20, avg: 15, name: "b" },
+    { t: 2, price: 30, name: "c" },
+  ]);
+  const hovered = signal<number | null>(null);
+  return (
+    <View>
+      <Plot
+        testID="plot"
+        data={rows()}
+        y="price"
+        yScale={{ type: "linear", domain: [0, 40] }}
+        accessibilityLabel="Price"
+        class="w-[200px] h-[100px] stroke-[#ff0000]"
+        style={{ color: "#0000ff" }}
+        onHoverChange={(index) => hovered.set(index)}
+      >
+        <Grid y={[0, 20, 40]} class="stroke-[#00ff00]" style={{ strokeDasharray: "2 2" }} />
+        <Area class="fill-[#0000ff]/50" curve="linear" />
+        <Line curve="linear" class="stroke-2" />
+        <Line y="avg" curve="stepAfter" class="stroke-current" />
+      </Plot>
+      <Text>{`hover ${hovered()}`}</Text>
+      <View testID="more" onPress={() => rows.set([...rows(), { t: 3, price: 40, name: "d" }])} />
+    </View>
+  );
+}
+
+mount(App);
+"##;
+
+/// `nsh/base/plot`: a `Plot` of rows with its marks, each a canvas drawn
+/// natively from the rows' fields by the plot's scales, painting with the
+/// paint properties it inherits (`stroke-*` on the plot, `fill-*` and
+/// `strokeDasharray` on a mark, `currentColor` where none is set); one
+/// element for screen readers; the row nearest the pointer reported when
+/// it changes; new rows drawn again in one batch.
+#[test]
+fn a_base_plot_draws_its_marks_from_the_rows() {
+    use nsh_core::{
+        AccessibilityRole, Color, HoverEvent,
+        canvas::{CanvasOp, Num, Paint, PathOp},
+    };
+    let (engine, rx) = start(BASE_PLOT);
+    // The marks draw once the plot has its size.
+    let drawings = |batches: &[MountBatch]| {
+        batches
+            .iter()
+            .flat_map(|b| b.items.iter())
+            .filter_map(|i| match i {
+                MountItem::Canvas { id, drawing } => Some((*id, drawing.clone())),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    let points = |ops: &[CanvasOp]| {
+        ops.iter()
+            .filter_map(|op| match op {
+                CanvasOp::Path(PathOp::MoveTo(Num::Const(x), Num::Const(y)))
+                | CanvasOp::Path(PathOp::LineTo(Num::Const(x), Num::Const(y))) => Some((*x, *y)),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    let mut batches = Vec::new();
+    while let Ok(batch) = rx.recv_timeout(Duration::from_millis(500)) {
+        let done = drawings(std::slice::from_ref(&batch))
+            .iter()
+            .any(|(_, d)| points(&d.ops).len() > 3);
+        batches.push(batch);
+        if done {
+            break;
+        }
+    }
+    assert!(shows(&batches[0], "hover null"));
+    // The latest drawing of each canvas, in the order JS made the marks,
+    // in the plot's coordinates (each canvas reaches 8 points past it).
+    assert_eq!(plot_bleeds(&batches), [8.0; 4]);
+    let latest = plot_drawings(&batches);
+    let [(_, grid), (_, area), (line, price), (_, avg)] = &latest[..] else {
+        panic!("four marks: {latest:?}")
+    };
+    let (red, blue, green) = (Color(0xff00_00ff), Color(0x0000_ffff), Color(0x00ff_00ff));
+    // The grid: its own stroke and dashes, a line across at each value
+    // (on the middle of a pixel row), 40 at the top.
+    assert_eq!(grid.ops[0], CanvasOp::StrokeStyle(Paint::Color(green)));
+    assert_eq!(grid.ops[2], CanvasOp::LineDash([px(2.0), px(2.0)].into()));
+    assert_eq!(
+        points(&grid.ops),
+        [
+            (0.0, 100.5),
+            (200.0, 100.5),
+            (0.0, 50.5),
+            (200.0, 50.5),
+            (0.0, 0.5),
+            (200.0, 0.5)
+        ]
+    );
+    // The area: its fill, the price line and down to the bottom edge.
+    assert_eq!(
+        area.ops[0],
+        CanvasOp::FillStyle(Paint::Color(Color(0x0000_ff80)))
+    );
+    assert_eq!(
+        &points(&area.ops)[..5],
+        [
+            (0.0, 75.0),
+            (100.0, 50.0),
+            (200.0, 25.0),
+            (200.0, 100.0),
+            (0.0, 100.0)
+        ]
+    );
+    // The lines: the plot's stroke inherited, its own width; the second
+    // the plot's text color (`stroke-current`), steps through the rows
+    // with an `avg`.
+    assert_eq!(price.ops[0], CanvasOp::StrokeStyle(Paint::Color(red)));
+    assert_eq!(price.ops[1], CanvasOp::LineWidth(Num::Const(2.0)));
+    assert_eq!(
+        points(&price.ops),
+        [(0.0, 75.0), (100.0, 50.0), (200.0, 25.0)]
+    );
+    assert_eq!(avg.ops[0], CanvasOp::StrokeStyle(Paint::Color(blue)));
+    assert_eq!(
+        points(&avg.ops),
+        [(0.0, 62.5), (100.0, 62.5), (100.0, 62.5)]
+    );
+    // The area's top edge: the plot's stroke, inherited as CSS does.
+    assert!(area.ops.contains(&CanvasOp::StrokeStyle(Paint::Color(red))));
+
+    // One element for screen readers: the image, with the app's label.
+    let plot = batches
+        .iter()
+        .flat_map(|b| b.items.iter())
+        .find_map(|i| match i {
+            MountItem::ViewProps { id, props } if props.test_id.as_deref() == Some("plot") => {
+                Some((*id, props.clone()))
+            }
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(plot.1.accessibility.role, AccessibilityRole::Image);
+    assert_eq!(plot.1.accessibility.accessible, Some(true));
+    assert_eq!(plot.1.accessibility.label.as_deref(), Some("Price"));
+
+    // The pointer: the nearest row, once per change, none once it leaves.
+    let hover = |x: f32| {
+        engine.control().dispatch_event(
+            plot.0,
+            EventKind::HoverMove,
+            EventPayload::Hover(HoverEvent {
+                position: nsh_core::geometry::point(px(x), px(10.0)),
+                ..Default::default()
+            }),
+        )
+    };
+    hover(90.0);
+    until(&rx, |b| shows(b, "hover 1"));
+    hover(160.0);
+    until(&rx, |b| shows(b, "hover 2"));
+    engine
+        .control()
+        .dispatch_event(plot.0, EventKind::HoverOut, EventPayload::None);
+    until(&rx, |b| shows(b, "hover null"));
+
+    // New rows: the marks drawn again, in one batch, nothing for the grid
+    // whose lines stay.
+    let more = batches
+        .iter()
+        .flat_map(|b| b.items.iter())
+        .find_map(|i| match i {
+            MountItem::ViewProps { id, props } if props.test_id.as_deref() == Some("more") => {
+                Some(*id)
+            }
+            _ => None,
+        })
+        .unwrap();
+    engine
+        .control()
+        .dispatch_event(more, EventKind::Press, EventPayload::None);
+    let after = until(&rx, |b| !drawings(std::slice::from_ref(b)).is_empty());
+    let redrawn = drawings(&after[after.len() - 1..]);
+    assert_eq!(redrawn.len(), 3, "the area and the lines: {redrawn:?}");
+    let (_, price) = redrawn.iter().find(|(id, _)| id == line).unwrap();
+    assert_eq!(
+        points(&price.ops),
+        [
+            (0.0, 75.0),
+            (66.666664, 50.0),
+            (133.33333, 25.0),
+            (200.0, 0.0)
+        ]
+    );
+}
+/// The latest drawing of each plot mark's canvas in `batches`, in the
+/// order the marks were made, in the plot's coordinates: without the
+/// translation by the canvas's bleed past the plot ([`plot_bleeds`]).
+fn plot_drawings(batches: &[MountBatch]) -> Vec<(u32, std::sync::Arc<nsh_core::canvas::Drawing>)> {
+    use nsh_core::canvas::CanvasOp;
+    plot_canvases(batches)
+        .into_iter()
+        .map(|(id, d)| {
+            let mut d = (*d).clone();
+            if matches!(d.ops.first(), Some(CanvasOp::Translate(..))) {
+                d.ops.remove(0);
+            }
+            (id, std::sync::Arc::new(d))
+        })
+        .collect()
+}
+
+/// How far each plot mark's canvas reaches past the plot (its drawing's
+/// first translation), in the order the marks were made.
+fn plot_bleeds(batches: &[MountBatch]) -> Vec<f32> {
+    use nsh_core::canvas::{CanvasOp, Num};
+    plot_canvases(batches)
+        .iter()
+        .filter_map(|(_, d)| match d.ops.first() {
+            Some(CanvasOp::Translate(Num::Const(x), Num::Const(y))) if x == y => Some(*x),
+            _ => None,
+        })
+        .collect()
+}
+
+fn plot_canvases(batches: &[MountBatch]) -> Vec<(u32, std::sync::Arc<nsh_core::canvas::Drawing>)> {
+    let mut latest: Vec<(u32, std::sync::Arc<nsh_core::canvas::Drawing>)> = Vec::new();
+    for item in batches.iter().flat_map(|b| b.items.iter()) {
+        if let MountItem::Canvas { id, drawing } = item {
+            match latest.iter_mut().find(|(i, _)| i == id) {
+                Some(entry) => entry.1 = drawing.clone(),
+                None => latest.push((*id, drawing.clone())),
+            }
+        }
+    }
+    latest.sort_by_key(|(id, _)| *id);
+    latest
+}
+
+/// The points a drawing's path goes through (its moves, lines and the
+/// ends of its curves).
+fn path_points(ops: &[nsh_core::canvas::CanvasOp]) -> Vec<(f32, f32)> {
+    use nsh_core::canvas::{CanvasOp, Num, PathOp};
+    ops.iter()
+        .filter_map(|op| match op {
+            CanvasOp::Path(PathOp::MoveTo(Num::Const(x), Num::Const(y)))
+            | CanvasOp::Path(PathOp::LineTo(Num::Const(x), Num::Const(y))) => Some((*x, *y)),
+            CanvasOp::Path(PathOp::CubicTo(n)) => match (n[4], n[5]) {
+                (Num::Const(x), Num::Const(y)) => Some((x, y)),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect()
+}
+
+/// The view whose `testID` is `test_id`.
+fn test_view(batches: &[MountBatch], test_id: &str) -> u32 {
+    batches
+        .iter()
+        .flat_map(|b| b.items.iter())
+        .find_map(|i| match i {
+            MountItem::ViewProps { id, props } if props.test_id.as_deref() == Some(test_id) => {
+                Some(*id)
+            }
+            _ => None,
+        })
+        .expect(test_id)
+}
+
+/// Batches until one holds a drawing that `done` accepts.
+fn until_drawn(
+    rx: &Receiver<MountBatch>,
+    done: impl Fn(&nsh_core::canvas::Drawing) -> bool,
+) -> Vec<MountBatch> {
+    until(rx, |b| {
+        b.items
+            .iter()
+            .any(|i| matches!(i, MountItem::Canvas { drawing, .. } if done(drawing)))
+    })
+}
+
+const BASE_PLOT_SHAPES: &str = r##"import { mount, signal, View } from "nsh";
+import { Area, Grid, Line, Plot } from "nsh/base/plot";
+
+type Row = { t: number; v: number | null };
+
+function App() {
+  const width = signal(200);
+  const rows: Row[] = [
+    { t: 0, v: -10 },
+    { t: 1, v: null },
+    { t: 2, v: 10 },
+    { t: 3, v: 30 },
+  ];
+  return (
+    <View>
+      {/* The default curve, a gap and negatives; a function of each row. */}
+      <Plot testID="curved" data={rows} y="v" style={{ width: width(), height: 100 }}>
+        <Line />
+        <Line y={(d: Row) => d.v ?? 0} />
+      </Plot>
+      {/* Rows of a mark's own, on a linear x scale. */}
+      <Plot data={rows} x="t" y="v" xScale={{ type: "linear", domain: [0, 4] }} yScale={{ type: "linear", domain: [-10, 30] }} style={{ width: 200, height: 100 }}>
+        <Line data={[{ at: 1, w: 30 }, { at: 3, w: -10 }]} x="at" y="w" curve="linear" />
+      </Plot>
+      {/* No rows, one row, all equal values. */}
+      <Plot data={[]} y="v" style={{ width: 200, height: 100 }}><Line /></Plot>
+      <Plot data={[{ v: 5 }]} y="v" style={{ width: 200, height: 100 }}><Line /></Plot>
+      <Plot data={[{ v: 5 }, { v: 5 }]} y="v" style={{ width: 200, height: 100 }}><Area /></Plot>
+      {/* currentColor follows the appearance. */}
+      <Plot data={[{ v: 1 }, { v: 2 }]} y="v" class="text-black dark:text-white" style={{ width: 200, height: 100 }}>
+        <Grid y={[1, 2]} />
+        {/* A theme's chart token, a series' color. */}
+        <Grid y={[1]} class="stroke-chart-1" />
+      </Plot>
+      <View testID="wider" onPress={() => width.set(400)} style={{ height: 20 }} />
+    </View>
+  );
+}
+
+mount(App);
+"##;
+
+/// `nsh/base/plot`'s marks over the edges of their data: the default
+/// curve (`natural`, a smooth one), rows without a value skipped as
+/// `gpui-base` skips them, negatives, the app's function of a row (called
+/// in the next turn), rows of a mark's own, no rows, one row, a domain of
+/// one value, a resize, and `currentColor` following the appearance.
+#[test]
+fn base_plot_marks_draw_the_edges_of_their_data() {
+    use nsh_core::canvas::{CanvasOp, Paint, PathOp};
+    let environment = Environment {
+        color_scheme: nsh_core::platform::ColorScheme::Dark,
+        ..Environment::default()
+    };
+    let (engine, rx) = start_in(BASE_PLOT_SHAPES, environment);
+    // The function's values come a turn after the rows.
+    let batches = until_drawn(&rx, |d| {
+        path_points(&d.ops)
+            == [
+                (0.0, 100.0),
+                (66.666664, 75.0),
+                (133.33333, 50.0),
+                (200.0, 0.0),
+            ]
+    });
+    // Every mark's canvas reaches past the plot by the strokes' room (8
+    // points), so a line through the domain's highest or lowest value
+    // draws whole; these curves swing no further than their points.
+    assert_eq!(plot_bleeds(&batches), [8.0; 8]);
+    let marks = plot_drawings(&batches);
+    let [
+        (_, curved),
+        _,
+        (_, own),
+        (_, empty),
+        (_, one),
+        (_, equal),
+        (_, grid),
+        (_, chart),
+    ] = &marks[..]
+    else {
+        panic!("eight marks: {marks:?}")
+    };
+    // The default curve: cubic segments through the rows with a value
+    // (-10, 10, 30 over the extent -10 to 30; the gap skipped).
+    assert!(
+        curved
+            .ops
+            .iter()
+            .any(|op| matches!(op, CanvasOp::Path(PathOp::CubicTo(_))))
+    );
+    assert_eq!(
+        path_points(&curved.ops),
+        [(0.0, 100.0), (133.33333, 50.0), (200.0, 0.0)]
+    );
+    // A mark's own rows on the plot's linear x scale.
+    assert_eq!(path_points(&own.ops), [(50.0, 0.0), (150.0, 100.0)]);
+    // No rows: no path. One row: a move to the middle, as `gpui-base`'s.
+    assert!(path_points(&empty.ops).is_empty());
+    assert_eq!(path_points(&one.ops), [(100.0, 50.0)]);
+    // All equal: the middle of the plot.
+    assert_eq!(path_points(&equal.ops)[..2], [(0.0, 50.0), (200.0, 50.0)]);
+    // Dark: the grid's `currentColor` is the plot's dark text color.
+    assert_eq!(
+        grid.ops[0],
+        CanvasOp::StrokeStyle(Paint::Color(nsh_core::Color(0xffff_ffff)))
+    ); // `stroke-chart-1`: the theme's first chart color (dark), opaque.
+    let CanvasOp::StrokeStyle(Paint::Color(c)) = chart.ops[0] else {
+        panic!("{:?}", chart.ops[0])
+    };
+    assert!(c.0 & 0xff == 0xff && c != nsh_core::Color(0xffff_ffff));
+
+    // Wider: the marks drawn again for the new width.
+    let wider = test_view(&batches, "wider");
+    engine
+        .control()
+        .dispatch_event(wider, EventKind::Press, EventPayload::None);
+    let after = until_drawn(&rx, |d| path_points(&d.ops).last() == Some(&(400.0, 0.0)));
+    assert!(!plot_drawings(&after).is_empty());
+}
+
+const BASE_PLOT_MOTION: &str = r##"import { mount, signal, Text, View } from "nsh";
+import { Line, Plot } from "nsh/base/plot";
+
+function App() {
+  const hovered = signal<number | null>(null);
+  return (
+    <View>
+      <Plot
+        testID="plot"
+        data={[{ v: 1 }, { v: 2 }, { v: 3 }]}
+        y="v"
+        appearGeneration={1}
+        motion={{ appear: { duration: 300 }, enter: { duration: 120 }, exit: { duration: 80 }, pointer: { stiffness: 300, damping: 30 } }}
+        accessibilityValue={{ text: hovered() == null ? undefined : `row ${hovered()}` }}
+        crossLineClass="w-px bg-[#999999]"
+        dotClass="size-2 rounded-full bg-[#3366ff]"
+        tooltipContent={<Text>tip</Text>}
+        onHoverChange={(index) => hovered.set(index)}
+        style={{ width: 200, height: 100 }}
+      >
+        <Line dot dotClass="size-1" />
+      </Plot>
+      <Text>{`hover ${hovered()}`}</Text>
+    </View>
+  );
+}
+
+mount(App);
+"##;
+
+/// `Plot`'s motion (`gpui-base`'s `PlotMotion`), natively: the marks draw
+/// in over `motion.appear` behind a clip the platform's animator moves;
+/// the hover's parts (cross line, a dot per mark, the tooltip) take the
+/// first row the pointer comes over at once and fade in over `enter`,
+/// glide to the next on the pointer spring, and fade out over `exit`; the
+/// app's value for screen readers follows; no mark is drawn again for the
+/// pointer. With reduced motion, everything is complete at once.
+#[test]
+fn base_plot_moves_natively_with_its_motion() {
+    use nsh_core::{
+        animation::{AnimationOp, Driver},
+        canvas::CanvasOp,
+    };
+    let (engine, rx) = start(BASE_PLOT_MOTION);
+    let batches = until_drawn(&rx, |d| {
+        d.ops.iter().any(|op| matches!(op, CanvasOp::Clip(..)))
+    });
+    let timings = |batches: &[MountBatch]| -> Vec<(f32, f32)> {
+        batches
+            .iter()
+            .flat_map(|b| b.items.iter())
+            .filter_map(|i| match i {
+                MountItem::Animation(AnimationOp::Start {
+                    driver:
+                        Driver::Timing {
+                            to, duration_ms, ..
+                        },
+                    ..
+                }) => Some((*to, *duration_ms)),
+                _ => None,
+            })
+            .collect()
+    };
+    let springs = |batches: &[MountBatch]| {
+        batches
+            .iter()
+            .flat_map(|b| b.items.iter())
+            .filter(|i| {
+                matches!(
+                    i,
+                    MountItem::Animation(AnimationOp::Start {
+                        driver: Driver::Spring { .. },
+                        ..
+                    })
+                )
+            })
+            .count()
+    };
+    // The appear: 0 to 1 over 300 ms, the line clipped to it (a slot the
+    // animator moves) and its dots in.
+    // The appear starts in the turn after the first drawing (an async
+    // task of the plot's), so wait for its timing too.
+    let mut batches = batches;
+    if !timings(&batches).contains(&(1.0, 300.0)) {
+        batches.extend(until(&rx, |b| {
+            timings(std::slice::from_ref(b)).contains(&(1.0, 300.0))
+        }));
+    }
+    assert!(timings(&batches).contains(&(1.0, 300.0)));
+    let line = plot_drawings(&batches);
+    assert!(!line[0].1.slots.is_empty());
+    assert!(shows(&batches[0], "hover null"));
+
+    let plot = test_view(&batches, "plot");
+    let hover = |x: f32| {
+        engine.control().dispatch_event(
+            plot,
+            EventKind::HoverMove,
+            EventPayload::Hover(nsh_core::HoverEvent {
+                position: nsh_core::geometry::point(px(x), px(10.0)),
+                ..Default::default()
+            }),
+        )
+    };
+    // Entering: the parts placed at once, then faded in over 120 ms; the
+    // app's value for screen readers follows; no mark drawn again.
+    hover(90.0);
+    let entered = until(&rx, |b| shows(b, "hover 1"));
+    assert!(timings(&entered).contains(&(1.0, 120.0)));
+    assert_eq!(springs(&entered), 0);
+    assert!(plot_drawings(&entered).is_empty());
+    assert!(entered.iter().flat_map(|b| b.items.iter()).any(|i| matches!(
+        i,
+        MountItem::ViewProps { id, props } if *id == plot
+            && props.accessibility.value.as_ref().and_then(|v| v.text.as_deref()) == Some("row 1")
+    )));
+    // Over the plot: the next row on the pointer spring.
+    hover(190.0);
+    let glided = until(&rx, |b| shows(b, "hover 2"));
+    assert!(springs(&glided) > 0);
+    assert!(plot_drawings(&glided).is_empty());
+    // Leaving: faded out over 80 ms.
+    engine
+        .control()
+        .dispatch_event(plot, EventKind::HoverOut, EventPayload::None);
+    let left = until(&rx, |b| shows(b, "hover null"));
+    assert!(timings(&left).contains(&(0.0, 80.0)));
+
+    // Reduced motion: no appear, no clip.
+    let environment = Environment {
+        reduce_motion: true,
+        ..Environment::default()
+    };
+    let (_engine, rx) = start_in(BASE_PLOT_MOTION, environment);
+    let mut batches = until(&rx, |b| shows(b, "hover null"));
+    batches.extend(until(&rx, |_| false));
+    assert!(!timings(&batches).contains(&(1.0, 300.0)));
+    assert!(
+        plot_drawings(&batches)
+            .iter()
+            .all(|(_, d)| !d.ops.iter().any(|op| matches!(op, CanvasOp::Clip(..))))
+    );
+}
+
+const BASE_PLOT_PARTS: &str = r##"import { mount, signal, Text, View } from "nsh";
+import { Area, Line, Plot } from "nsh/base/plot";
+
+function App() {
+  const hovered = signal<number | null>(null);
+  const placement = signal<"top" | "pointer">("top");
+  return (
+    <View>
+      <Plot
+        testID="plot"
+        data={[{ v: 10, w: 5 }, { v: 20, w: 15 }, { v: 30, w: 35 }]}
+        y="v"
+        yScale={{ type: "linear", domain: [0, 40] }}
+        dotClass="size-2"
+        dotStyle={{ backgroundColor: "#ffffff" }}
+        tooltipContent={<View testID="tip" style={{ width: 60, height: 20 }} />}
+        tooltipPlacement={placement()}
+        tooltipOffset={8}
+        onHoverChange={(index) => hovered.set(index)}
+        style={{ width: 200, height: 100 }}
+      >
+        <Area curve="linear" backgroundClass="bg-linear-to-b from-[#ff0000] to-transparent" hoverDotClass="hidden" />
+        <Line curve="linear" hoverDotStyle={{ backgroundColor: "#ff0000" }} />
+        <Line y="w" curve="linear" />
+      </Plot>
+      <Text>{`hover ${hovered()} ${placement()}`}</Text>
+      <View testID="pointer" onPress={() => placement.set("pointer")} style={{ height: 20 }} />
+    </View>
+  );
+}
+
+mount(App);
+"##;
+
+/// The parts `gpui-base`'s plot gives each mark and its tooltip: a mark's
+/// own hover dot (`hoverDotStyle`, the plot's `dotStyle` for the marks
+/// that set none), an area's background (a CSS gradient over the box
+/// around its shape, shown inside the shape only, its `fill` then none),
+/// and the tooltip's placement (`tooltipPlacement`, `tooltipOffset`): the
+/// layout puts it on a side of a point the animator moves and keeps
+/// inside the plot.
+#[test]
+fn base_plot_marks_have_parts_of_their_own_and_the_tooltip_stays_inside() {
+    use nsh_core::{
+        Color, HoverEvent,
+        animation::Animator,
+        canvas::{CanvasOp, GradientShape, Paint},
+        geometry::point,
+    };
+    let (engine, rx) = start(BASE_PLOT_PARTS);
+    let mut all = until_drawn(&rx, |d| {
+        d.ops
+            .iter()
+            .any(|op| matches!(op, CanvasOp::FillStyle(Paint::Gradient(_))))
+    });
+    all.extend(until(&rx, |_| false));
+
+    // The area's background: the gradient from its highest point (25) to
+    // its baseline (100), filling its shape; the canvas's view draws no
+    // background, and the area's `fill` is none.
+    let drawings = plot_drawings(&all);
+    let (background, gradient) = drawings
+        .iter()
+        .find_map(|(id, d)| {
+            d.ops.iter().find_map(|op| match op {
+                CanvasOp::FillStyle(Paint::Gradient(g)) => Some((*id, g.clone())),
+                _ => None,
+            })
+        })
+        .expect("a gradient");
+    assert_eq!(
+        gradient.shape,
+        GradientShape::Linear {
+            start: point(px(100.0), px(25.0)),
+            end: point(px(100.0), px(100.0)),
+        }
+    );
+    assert_eq!(gradient.stops[0].1, Color(0xff00_00ff));
+    let style = all
+        .iter()
+        .flat_map(|b| b.items.iter())
+        .filter_map(|i| match i {
+            MountItem::ViewStyle { id, style } if *id == background => Some(style.clone()),
+            _ => None,
+        })
+        .next_back()
+        .unwrap();
+    assert!(style.background_color.is_transparent());
+    assert!(
+        style
+            .effects
+            .as_deref()
+            .is_none_or(|e| e.background_images.is_empty())
+    );
+    assert!(drawings.iter().any(|(id, d)| *id != background
+        && d.ops.first() == Some(&CanvasOp::FillStyle(Paint::Color(Color::TRANSPARENT)))));
+
+    // The hover's dots: the first line's its own, the other line's the
+    // plot's (the area's is hidden).
+    let backgrounds = |all: &[MountBatch], color: Color| {
+        let mut ids: Vec<u32> = all
+            .iter()
+            .flat_map(|b| b.items.iter())
+            .filter_map(|i| match i {
+                MountItem::ViewStyle { id, style } if style.background_color == color => Some(*id),
+                _ => None,
+            })
+            .collect();
+        ids.sort();
+        ids.dedup();
+        ids.len()
+    };
+    assert_eq!(backgrounds(&all, Color(0xff00_00ff)), 1);
+    assert!(backgrounds(&all, Color(0xffff_ffff)) >= 1);
+
+    let plot = test_view(&all, "plot");
+    let hover = |x: f32, y: f32| {
+        engine.control().dispatch_event(
+            plot,
+            EventKind::HoverMove,
+            EventPayload::Hover(HoverEvent {
+                position: point(px(x), px(y)),
+                ..Default::default()
+            }),
+        )
+    };
+    // The tooltip: the view around the app's content, and the point it is
+    // placed by around that; where the layout puts the one and the
+    // animator the other.
+    let tip = test_view(&all, "tip");
+    let parent = |all: &[MountBatch], child: u32| {
+        all.iter()
+            .flat_map(|b| b.items.iter())
+            .find_map(|i| match i {
+                MountItem::Insert {
+                    parent, child: c, ..
+                } if *c == child => Some(*parent),
+                _ => None,
+            })
+            .unwrap()
+    };
+    // The tooltip's content sits in its slot's view, inside the box its
+    // margins place, inside the point the animator moves.
+    let (holder, point_view) = {
+        let holder = parent(&all, parent(&all, tip));
+        (holder, parent(&all, holder))
+    };
+    let placed = |all: &[MountBatch]| {
+        let frame = all
+            .iter()
+            .flat_map(|b| b.items.iter())
+            .filter_map(|i| match i {
+                MountItem::Frame { id, frame } if *id == holder => Some(*frame),
+                _ => None,
+            })
+            .next_back()
+            .unwrap();
+        let mut animator = Animator::default();
+        for item in all.iter().flat_map(|b| b.items.iter()) {
+            animator.apply(item);
+        }
+        let mut moved = (f32::NAN, f32::NAN);
+        animator.write(
+            |id| (id == point_view).then_some(id),
+            |_, values, _| {
+                moved = (
+                    values.transform[0].unwrap_or(f32::NAN),
+                    values.transform[1].unwrap_or(f32::NAN),
+                )
+            },
+        );
+        (
+            (frame.origin.x.0, frame.origin.y.0),
+            (frame.size.width.0, frame.size.height.0),
+            moved,
+        )
+    };
+    let near = |(x, y): (f32, f32), (wx, wy): (f32, f32)| {
+        assert!(
+            (x - wx).abs() < 0.01 && (y - wy).abs() < 0.01,
+            "({x}, {y}) is not ({wx}, {wy})"
+        );
+    };
+
+    // `"top"`: centered on the cross line at the last row (200), kept
+    // inside the right edge (140 + 60), its offset below the top.
+    hover(190.0, 10.0);
+    all.extend(until(&rx, |b| shows(b, "hover 2 top")));
+    all.extend(until(&rx, |_| false));
+    let (at, size, moved) = placed(&all);
+    near(at, (0.0, 8.0));
+    near(size, (60.0, 20.0));
+    near(moved, (140.0, 0.0));
+
+    // `"pointer"`: in the lower right, left of the cross line and above
+    // the pointer, its offset from both.
+    let pointer = test_view(&all, "pointer");
+    engine
+        .control()
+        .dispatch_event(pointer, EventKind::Press, EventPayload::None);
+    all.extend(until(&rx, |b| shows(b, "hover 2 pointer")));
+    hover(190.0, 80.0);
+    all.extend(until(&rx, |_| false));
+    let (at, _, moved) = placed(&all);
+    near(at, (-68.0, -28.0));
+    near(moved, (200.0, 80.0));
+    // In the upper left: right of the cross line, below the pointer.
+    hover(10.0, 10.0);
+    all.extend(until(&rx, |b| shows(b, "hover 0 pointer")));
+    all.extend(until(&rx, |_| false));
+    let (at, _, moved) = placed(&all);
+    near(at, (8.0, 8.0));
+    near(moved, (0.0, 10.0));
 }

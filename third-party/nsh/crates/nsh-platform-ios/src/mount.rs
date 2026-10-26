@@ -923,12 +923,9 @@ impl Mounter {
                         self.control.clone(),
                         self.access.clone(),
                     ))),
-                    ViewKind::Native => {
-                        Native::Component(Box::new(crate::component::ComponentHost {
-                            container: NshView::new(self.mtm),
-                            component: None,
-                        }))
-                    }
+                    ViewKind::Native => Native::Component(Box::new(
+                        crate::component::ComponentHost::new(NshView::new(self.mtm)),
+                    )),
                     ViewKind::Video => Native::Video(Box::new(VideoHost::new(
                         self.mtm,
                         id,
@@ -1426,6 +1423,13 @@ impl Mounter {
                     if let Some(s) = self.slot(id) {
                         apply_dynamic(s, &self.animator);
                     }
+                    // A component gets what is bound again.
+                    if let Some(Some(s)) = self.views.get_mut(id as usize)
+                        && let Native::Component(host) = &mut s.native
+                    {
+                        host.forget();
+                        host.push(&s.bindings, &self.animator);
+                    }
                     return true;
                 }
             }
@@ -1516,6 +1520,23 @@ impl Mounter {
                 ) = (made, self.slot_mut(id))
                 {
                     host.attach(component);
+                }
+                // Bindings may have come first: the new component gets them.
+                if let Some(Some(s)) = self.views.get_mut(id as usize)
+                    && let Native::Component(host) = &mut s.native
+                {
+                    host.forget();
+                    host.push(&s.bindings, &self.animator);
+                }
+            }
+            MountItem::ComponentPropSlots { id, names } => {
+                if let Some(Slot {
+                    native: Native::Component(host),
+                    ..
+                }) = self.slot_mut(id)
+                {
+                    host.slots = names;
+                    host.forget();
                 }
             }
             MountItem::ComponentProps { id, props } => {
@@ -4358,6 +4379,15 @@ impl Mounter {
         for &id in &self.animated {
             if let Some(s) = self.views.get(id as usize).and_then(Option::as_ref) {
                 apply_dynamic(s, animator);
+            }
+        }
+        // Components get their bound props' changes (no view borrowed while
+        // they run but their own slot).
+        for &id in &self.animated {
+            if let Some(Some(s)) = self.views.get_mut(id as usize)
+                && let Native::Component(host) = &mut s.native
+            {
+                host.push(&s.bindings, animator);
             }
         }
         // Sticky cells that stick an animated value further in follow it.

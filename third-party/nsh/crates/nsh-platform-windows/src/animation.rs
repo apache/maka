@@ -42,6 +42,20 @@ impl UiAnimation {
         self.0.pan_moved(id, Point::new(Points(tx), Points(ty)));
     }
 
+    /// Hands `set` the bound native component props that moved, for the
+    /// views `has` says hold a made component (the others get theirs once
+    /// they do).
+    pub(crate) fn write_components(
+        &mut self,
+        has: impl Fn(u32) -> bool,
+        mut set: impl FnMut(u32, &str, nsh_core::animation::AnimatedPropValue),
+    ) {
+        self.0.write_components(
+            |id| has(id).then_some(id),
+            |id, name, value| set(id, name, value),
+        );
+    }
+
     /// Writes every bound property's current value into its view.
     pub(crate) fn write(&mut self, mounter: &Mounter) {
         self.0.write(

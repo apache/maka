@@ -60,9 +60,8 @@ pub struct DataTableColumn {
     /// The widest a drag or a fit makes it (default 1200).
     #[prop(skip_none)]
     pub max_width: Option<Points>,
-    /// What the app's drawing of a cell (`renderCell`) adds to its text's
-    /// width (an icon, a badge), counted when a fit sizes the column to its
-    /// widest text.
+    /// Extra room for the app's padding, icons or badges when fitting the
+    /// column, added to the widest title or cell text.
     #[prop(skip_none)]
     pub fit_padding: Option<Points>,
     /// How its cells and title are aligned.
@@ -274,8 +273,8 @@ pub struct DataTableDump {
 /// `selection`, with the arrow keys, Home, End, Page Up and Down, Tab), columns resize, move, stay fixed at the left and
 /// sort (the app sorts: `sort`, `onSortChange`), titles can sit under group
 /// labels, and a cell or a title can be drawn by the app (`renderCell`,
-/// `renderHeaderCell`). The table has a default look from the theme's
-/// tokens, every part of which the app restyles (`classes`, `styles`).
+/// `renderHeaderCell`). The table supplies layout and alignment; the app
+/// styles its parts (`classes`, `styles`).
 #[derive(Clone, Copy, PartialEq, Props)]
 #[props(generic)]
 pub struct DataTableProps {
@@ -368,8 +367,8 @@ pub struct DataTableProps {
     /// How many rows from the last make `onLoadMore` fire (default 20).
     #[prop(default = 20)]
     pub load_more_threshold: Prop<u32>,
-    /// The font family of cells (default the theme's `font-sans`, else the
-    /// system's), which the table measures texts in to fit columns.
+    /// The font family of cells, inherited when omitted. The table uses
+    /// this family (or the system's) to measure texts for column fits.
     pub font_family: Prop<Option<SharedString>>,
     /// The font size of cells, in points (default 14).
     #[prop(default = Points(14.0))]

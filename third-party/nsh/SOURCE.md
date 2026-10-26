@@ -26,7 +26,7 @@ at `de176695240d550f2b303643b8019146c7989e7f`. The upstream project is
 
 `upstream.json` keeps that initial `repository` and `revision`. Its
 `upstream_revision` records the latest integrated `longbridge/nsh` main revision:
-`e5fe48b4c70ff82b302bfa4883a87a73a6666526`. The first upstream synchronization
+`5359c07ff7b5728e67957c24322373309c90666b`. The first upstream synchronization
 starts from `6bb0b7908043132067456e4a21dd57c90a0bdce5`, already included in the
 initial fork import.
 
@@ -155,3 +155,18 @@ review local differences against the recorded revision, use upstream APIs and
 recommended patterns where appropriate, and remove patches that upstream has
 superseded. Refresh the recorded source hashes to the newly imported revision;
 they describe the import, not later Maka modifications.
+
+
+The Plot and shared-gallery import keeps the base library unstyled: shared demo
+finishes live in the private `examples/nsh-gallery-ui` source package, without
+new external dependencies. Native component animated props use stable named
+slots. The terminal backend evaluates those slots through its existing Graph,
+retains prop-response events and intrinsic sizing, and resets delivered values
+when bindings or component identity change. Android reserves opcode 36 for
+component slots, preserving the local retirement and root-projection opcodes
+34 and 35. These are local wire adaptations, not upstream source hashes.
+Host theme tokens are available before first JS evaluation without dropping
+other queued engine messages. The existing terminal lifecycle, retained-row
+host-identity checks and focus regressions remain in place. Native platform
+runtime and gallery appearance checks require their supported environments;
+Linux core tests are not evidence of those visual checks.

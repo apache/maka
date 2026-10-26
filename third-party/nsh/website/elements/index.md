@@ -111,6 +111,7 @@ and take their look from the app.
 | `<Switch>` | `nsh_base::switch()` | An on / off control with a track and a thumb | [Switch](./switch.md) |
 | `<Collapsible>` | `nsh_base::collapsible()` | A region whose content expands and collapses | [Collapsible](./collapsible.md) |
 | `<Progress>` | `nsh_base::progress()` | A progress bar: how far a task is, or that it is under way | [Progress](./progress.md) |
+| `<Plot>`, `<Line>`, `<Area>`, `<Grid>` (`nsh/base/plot`) | `nsh_base::plot::{plot, line, area, grid}` | A chart's frame and its marks, drawn natively from the app's rows | [Plot](./plot.md) |
 | `<Dialog>` | `nsh_base::dialog()` | Presents its children over everything else | [Dialog](./dialog.md) |
 | `<NavStack>`, `<NavPage>` | `nsh_base::nav_stack()`, `nsh_base::nav_page()` | Native navigation: a stack of pages with the platform's header and back gestures | [NavStack](./nav-stack.md) |
 | `<SafeAreaView>` | `nsh_base::safe_area_view()` | Pads its content clear of notches, bars and the home indicator | [SafeAreaView](./safe-area-view.md) |

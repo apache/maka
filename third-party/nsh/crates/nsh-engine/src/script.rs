@@ -71,6 +71,7 @@ mod imp {
             posts: nsh_core::ui::Posts,
             environment: &Environment,
             tokens: Arc<nsh_core::ui::Tokens>,
+            theme: nsh_core::ui::ThemeTokens,
             text_engine: Rc<M>,
             stop: Arc<AtomicBool>,
             sink: Rc<dyn MountSink>,
@@ -134,6 +135,7 @@ mod imp {
             }));
             host.set_environment(environment);
             host.set_tokens(tokens);
+            host.set_theme_tokens(theme);
             let script = Script {
                 host,
                 exit_requested,
@@ -304,6 +306,10 @@ mod imp {
             self.host.set_tokens(tokens);
         }
 
+        pub(crate) fn set_theme_tokens(&self, theme: nsh_core::ui::ThemeTokens) {
+            self.host.set_theme_tokens(theme);
+        }
+
         pub(crate) fn take_fonts(&self, out: &mut Vec<String>) {
             self.host.take_fonts(out);
         }
@@ -359,6 +365,7 @@ mod stub {
             _: nsh_core::ui::Posts,
             _: &Environment,
             _: Arc<nsh_core::ui::Tokens>,
+            _: nsh_core::ui::ThemeTokens,
             _: Rc<M>,
             _: Arc<AtomicBool>,
             sink: Rc<dyn MountSink>,
@@ -463,6 +470,10 @@ mod stub {
         }
 
         pub(crate) fn set_tokens(&self, _: Arc<nsh_core::ui::Tokens>) {
+            match *self {}
+        }
+
+        pub(crate) fn set_theme_tokens(&self, _: nsh_core::ui::ThemeTokens) {
             match *self {}
         }
 

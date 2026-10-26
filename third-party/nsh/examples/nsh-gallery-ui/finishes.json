@@ -1,0 +1,108 @@
+{
+  "dark": {
+    "card": {
+      "backgroundImage": "linear-gradient(180deg, #1b1c20 0%, #191a1d 100%)",
+      "boxShadow": "inset 0 1px 0 rgba(255,255,255,0.04), 0 16px 36px -20px rgba(0,0,0,0.75)"
+    },
+    "inset": {
+      "boxShadow": "inset 0 1px 3px rgba(0,0,0,0.55)"
+    },
+    "field": {
+      "boxShadow": "inset 0 1px 2px rgba(0,0,0,0.55)"
+    },
+    "raised": {
+      "backgroundImage": "linear-gradient(180deg, #2b2d32 0%, #24262a 100%)",
+      "boxShadow": "inset 0 1px 0 rgba(255,255,255,0.07), 0 1px 1px rgba(0,0,0,0.4), 0 6px 14px -7px rgba(0,0,0,0.7)"
+    },
+    "light": {
+      "backgroundImage": "linear-gradient(180deg, #fbfbfc 0%, #e3e5e8 100%)",
+      "boxShadow": "inset 0 1px 0 #ffffff, 0 1px 1px rgba(0,0,0,0.4), 0 8px 18px -8px rgba(0,0,0,0.75)"
+    },
+    "accent": {
+      "backgroundImage": "linear-gradient(180deg, #d6f78a 0%, #c1ea5c 100%)",
+      "boxShadow": "inset 0 1px 0 rgba(255,255,255,0.55), 0 1px 1px rgba(0,0,0,0.4), 0 8px 20px -9px rgba(200,242,109,0.4)"
+    },
+    "track": {
+      "boxShadow": "inset 0 1px 2px rgba(0,0,0,0.5)"
+    },
+    "knob": {
+      "boxShadow": "inset 0 1px 0 rgba(255,255,255,0.35), 0 2px 6px rgba(0,0,0,0.45)"
+    },
+    "pill": {
+      "backgroundColor": "#2b2d32",
+      "backgroundImage": "linear-gradient(180deg, #2f3136 0%, #2a2c30 100%)",
+      "boxShadow": "inset 0 1px 0 rgba(255,255,255,0.08), 0 1px 1px rgba(0,0,0,0.4), 0 6px 14px -7px rgba(0,0,0,0.7)",
+      "borderColor": "rgba(255,255,255,0.08)"
+    },
+    "chip": {
+      "boxShadow": "inset 0 1px 0 rgba(255,255,255,0.07), inset 0 -1px 0 rgba(0,0,0,0.18)"
+    },
+    "glass": {
+      "backgroundColor": "rgba(22,23,26,0.62)",
+      "backgroundImage": "linear-gradient(180deg, rgba(255,255,255,0.04) 0%, rgba(255,255,255,0.019) 60%)",
+      "boxShadow": "inset 0 1px 0 rgba(255,255,255,0.09), 0 -8px 24px rgba(0,0,0,0.28)",
+      "borderColor": "rgba(255,255,255,0.07)",
+      "backdropFilter": "blur(20px)"
+    },
+    "menu": {
+      "backgroundColor": "rgba(30,32,36,0.82)",
+      "backgroundImage": "linear-gradient(180deg, rgba(255,255,255,0.043) 0%, rgba(255,255,255,0.024) 40%, rgba(255,255,255,0.018) 100%)",
+      "boxShadow": "inset 0 1px 0 rgba(255,255,255,0.11), inset 0 -1px 0 rgba(0,0,0,0.25), 0 12px 32px rgba(0,0,0,0.42)",
+      "borderColor": "rgba(255,255,255,0.08)",
+      "backdropFilter": "blur(24px)"
+    }
+  },
+  "light": {
+    "card": {
+      "backgroundImage": "linear-gradient(180deg, #ffffff 0%, #fdfdfc 100%)",
+      "boxShadow": "inset 0 1px 0 #ffffff, 0 1px 1px rgba(20,20,10,0.04), 0 14px 32px -18px rgba(20,20,10,0.2)"
+    },
+    "inset": {
+      "boxShadow": "inset 0 1px 2px rgba(20,20,10,0.07)"
+    },
+    "field": {
+      "boxShadow": "inset 0 1px 2px rgba(20,20,10,0.09)"
+    },
+    "raised": {
+      "backgroundImage": "linear-gradient(180deg, #ffffff 0%, #f6f6f2 100%)",
+      "boxShadow": "inset 0 1px 0 #ffffff, 0 1px 1px rgba(20,20,10,0.06), 0 5px 12px -6px rgba(20,20,10,0.18)"
+    },
+    "light": {
+      "backgroundImage": "linear-gradient(180deg, #2e3035 0%, #1b1c20 100%)",
+      "boxShadow": "inset 0 1px 0 rgba(255,255,255,0.16), 0 1px 1px rgba(20,20,10,0.2), 0 7px 14px -7px rgba(20,20,10,0.5)"
+    },
+    "accent": {
+      "backgroundImage": "linear-gradient(180deg, #d6f78a 0%, #c1ea5c 100%)",
+      "boxShadow": "inset 0 1px 0 rgba(255,255,255,0.6), 0 1px 1px rgba(80,110,10,0.2), 0 7px 14px -7px rgba(110,150,20,0.55)"
+    },
+    "track": {
+      "boxShadow": "inset 0 1px 2px rgba(20,20,10,0.08)"
+    },
+    "knob": {
+      "boxShadow": "inset 0 1px 0 #ffffff, 0 1px 4px rgba(20,20,10,0.28)"
+    },
+    "pill": {
+      "backgroundColor": "#ffffff",
+      "backgroundImage": "linear-gradient(180deg, #ffffff 0%, #f6f6f2 100%)",
+      "boxShadow": "inset 0 1px 0 #ffffff, 0 1px 1px rgba(20,20,10,0.06), 0 5px 12px -6px rgba(20,20,10,0.18)",
+      "borderColor": "rgba(20,20,10,0.14)"
+    },
+    "chip": {
+      "boxShadow": "inset 0 1px 0 rgba(255,255,255,0.65), inset 0 -1px 0 rgba(20,20,10,0.04)"
+    },
+    "glass": {
+      "backgroundColor": "rgba(250,250,248,0.66)",
+      "backgroundImage": "linear-gradient(180deg, rgba(255,255,255,0.472) 0%, rgba(255,255,255,0.227) 60%)",
+      "boxShadow": "inset 0 1px 0 rgba(255,255,255,0.9), 0 -6px 20px rgba(20,20,10,0.06)",
+      "borderColor": "rgba(20,20,10,0.07)",
+      "backdropFilter": "blur(20px)"
+    },
+    "menu": {
+      "backgroundColor": "rgba(255,255,255,0.84)",
+      "backgroundImage": "linear-gradient(180deg, rgba(255,255,255,0.497) 0%, rgba(255,255,255,0.287) 40%, rgba(255,255,255,0.217) 100%)",
+      "boxShadow": "inset 0 1px 0 #ffffff, inset 0 -1px 0 rgba(20,20,10,0.05), 0 12px 32px rgba(20,20,10,0.12)",
+      "borderColor": "rgba(20,20,10,0.08)",
+      "backdropFilter": "blur(24px)"
+    }
+  }
+}

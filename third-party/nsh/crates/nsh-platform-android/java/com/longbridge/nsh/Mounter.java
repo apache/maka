@@ -63,6 +63,7 @@ final class Mounter {
     private static final int APPEARANCE = 33;
     private static final int RETIRE_LIST_CELL = 34;
     private static final int PROJECT_ROOT = 35;
+    private static final int COMPONENT_PROP_SLOTS = 36;
     /** The surface lays out right to left: native widgets mirror. */
     boolean rtl;
     /** The app's appearance (`nsh_core::platform::Appearance`): 0 the system's, 1 light, 2 dark. */
@@ -451,6 +452,8 @@ final class Mounter {
                     View v = views.get(id);
                     Dynamic d = statics.get(id);
                     if (v != null && d != null) applyDynamic(v, d);
+                    // Its props bound again are handed over again.
+                    if (v instanceof ComponentBox) ((ComponentBox) v).forgetAnimated();
                     break;
                 }
                 case GESTURES: {
@@ -531,6 +534,13 @@ final class Mounter {
                 case COMPONENT: {
                     int id = b.getInt();
                     component(id, string(objects, b.getInt()));
+                    break;
+                }
+                case COMPONENT_PROP_SLOTS: {
+                    View v = views.get(b.getInt());
+                    String[] names = new String[b.getInt()];
+                    for (int i = 0; i < names.length; i++) names[i] = string(objects, b.getInt());
+                    if (v instanceof ComponentBox) ((ComponentBox) v).slots = names;
                     break;
                 }
                 case COMPONENT_PROPS: {
@@ -1598,6 +1608,8 @@ final class Mounter {
 
     /** Canvas animated value slot `n` arrives as property `CANVAS_ARG + n` (`animation.rs`). */
     private static final int CANVAS_ARG = 1000;
+    /** A native component's animated prop slot `n`: a number as `COMPONENT_NUMBER + n`, a color (ARGB bits) as `COMPONENT_COLOR + n` (`animation.rs`). */
+    private static final int COMPONENT_NUMBER = 70000, COMPONENT_COLOR = 140000;
 
     /** How much further each sticky cell sticks (px; an animated `StickyCell::offset`). */
     private final java.util.HashMap<Integer, Float> stickyOffsets = new java.util.HashMap<>();
@@ -1622,6 +1634,13 @@ final class Mounter {
             if (v == null) continue;
             float value = out[i + 2];
             int prop = (int) out[i + 1];
+            if (prop >= COMPONENT_NUMBER) {
+                if (v instanceof ComponentBox) {
+                    boolean color = prop >= COMPONENT_COLOR;
+                    ((ComponentBox) v).setAnimated(prop - (color ? COMPONENT_COLOR : COMPONENT_NUMBER), color, value);
+                }
+                continue;
+            }
             if (prop >= CANVAS_ARG) {
                 if (v instanceof CanvasBox) ((CanvasBox) v).setSlot(prop - CANVAS_ARG, value);
                 continue;

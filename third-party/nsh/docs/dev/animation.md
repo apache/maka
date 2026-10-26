@@ -35,7 +35,9 @@
   Bindable: `opacity`, `backgroundColor`, `borderColor` (all sides), a text's `color` (the whole text: iOS and Android draw
   it into a layer and paint over it in the color, `SourceIn` / `SRC_IN`), `shadowColor` / `shadowOpacity` /
   `shadowRadius`, the translate / scale / rotate parts of `transform`, and where views stick: a sticky view's `top` /
-  `left` and a list's `stickyHeaderOffset` (`StickyCell::offset`, `docs/dev/scrolling-and-lists.md`). iOS shapes the decoration with the bound
+  `left` and a list's `stickyHeaderOffset` (`StickyCell::offset`, `docs/dev/scrolling-and-lists.md`), and a registered native
+  component's own props (`AnimationProp::ComponentSlot(slot)`, `docs/dev/embedding.md`: the component is handed the value,
+  a number or an ARGB color, on the frames it changes). iOS shapes the decoration with the bound
   values (and the layers for them even while they are transparent: `bound_style`), then sets the colors and shadow
   on those layers each frame; Android and web get them as properties (`Mounter.java` codes 11–14; the web composes
   `box-shadow`, dropping layered `boxShadow`s while bound). Driven on the main thread by `CADisplayLink`,

@@ -1,5 +1,5 @@
 import { mount, Scroll, signal, Text, View, type YNode } from "nsh";
-import { desktop, Inspector, Panel, size, ui, wide } from "./palette";
+import { button, buttonText, desktop, Inspector, Panel, size, ui, wide } from "./palette";
 
 // The page colors, read when they render: they follow the theme.
 const colors = (): string[] => [ui().accent, ui().info, ui().violet, ui().down, ui().warn, ui().up];
@@ -36,14 +36,9 @@ function App() {
   const toTop = (compact: boolean) => (
     <View
       onPress={() => scroller.scrollTo({ y: 0, animated: true })}
-      activeStyle={{ opacity: 0.6 }}
-      style={
-        compact
-          ? { ...ui().raised, alignSelf: "flex-start", borderRadius: 8, height: size.control, paddingHorizontal: 12, justifyContent: "center" }
-          : { ...ui().raised, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 6 }
-      }
+      {...button("secondary", { size: compact ? "md" : "sm" })}
     >
-      <Text style={{ color: ui().text, fontSize: compact ? 13 : undefined }}>scrollTo top</Text>
+      <Text style={buttonText()}>scrollTo top</Text>
     </View>
   );
 

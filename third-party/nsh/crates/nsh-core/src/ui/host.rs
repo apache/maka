@@ -35,6 +35,7 @@ use crate::{
 pub(crate) fn same_kind(a: &Prop, b: &Prop) -> bool {
     match (a, b) {
         (Prop::ComponentProp(a, _), Prop::ComponentProp(b, _)) => a == b,
+        (Prop::ComponentPropBinding(a, _), Prop::ComponentPropBinding(b, _)) => a == b,
         (Prop::RustProp(a, _), Prop::RustProp(b, _)) => a == b,
         _ => HostProps::same_kind(a, b),
     }
@@ -45,6 +46,7 @@ pub(crate) fn same_kind(a: &Prop, b: &Prop) -> bool {
 pub(crate) fn reset(prop: &Prop) -> Option<Prop> {
     match prop {
         Prop::ComponentProp(name, _) => Some(Prop::ComponentProp(name.clone(), None)),
+        Prop::ComponentPropBinding(name, _) => Some(Prop::ComponentPropBinding(name.clone(), None)),
         Prop::RustProp(name, _) => Some(Prop::RustProp(name, None)),
         _ => HostProps::reset(prop),
     }
@@ -1241,6 +1243,22 @@ impl NativeView {
         })
     }
 
+    /// Binds its prop `name` to an animated value: the platform hands the
+    /// value (a number or a color) to the component on every frame it
+    /// changes, with no engine work per frame (JS: an animated value given
+    /// to a `nativeComponent` prop). A value set with [`Self::prop`] under
+    /// that name waits until the binding goes.
+    pub fn bind_animated_prop(mut self, name: &str, value: &impl super::Animated) -> Self {
+        if let Some(node) = value.animated_node().live() {
+            set(
+                &mut self.0,
+                Prop::ComponentPropBinding(name.into(), Some(node.id())),
+            );
+            self.0.attrs.bound.push(node);
+        }
+        self
+    }
+
     /// It emitted an event.
     pub fn on_native_event<M>(self, listener: impl IntoListener<NativeEvent, M>) -> Self {
         self.listen(
@@ -1780,6 +1798,24 @@ impl Painter {
         self.view_paint(
             ViewPaint::StrokeDasharray,
             CanvasOp::LineDash(Arc::from([])),
+        )
+    }
+
+    /// Fills the current path with the canvas view's background: its
+    /// `backgroundColor` and its `backgroundImage` gradients (`bg-*`,
+    /// `bg-linear-*` classes, the appearance's colors), positioned over
+    /// `area` (this drawing's coordinates) as over a box of that size. The
+    /// view then draws no background of its own: the background shows only
+    /// where the path fills, as CSS's `clip-path` shows a box's
+    /// ([`ViewPaint::Background`]). The canvas's state is kept around the
+    /// fill.
+    pub fn fill_background_from_view(self, area: Bounds<Points>) -> Self {
+        self.view_paint(
+            ViewPaint::Background {
+                area,
+                rule: FillRule::NonZero,
+            },
+            CanvasOp::Fill(None, FillRule::NonZero),
         )
     }
 

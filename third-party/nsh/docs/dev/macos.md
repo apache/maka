@@ -78,12 +78,16 @@ server client, log forwarding, the error overlay: `dev.rs`). The runtime needs m
   ~107 without, although the app committed every frame in time (Instruments' Animation Hitches: every frame one
   refresh late).
 - **Out-of-sight content is not drawn** (`Mounter::draw_when_shown`): text and canvases whose content changes (a
-  canvas's animated values on every frame while they run) are drawn only if some of the view can be seen
-  (`visibleRect`), else when it shows (after scrolls, batches and frames; a view out of the tree waits until it is
-  inserted and shows). Lists keep rows out of sight, hidden screens stay mounted, and a content layer, unlike AppKit's
-  lazy `drawRect:`, would otherwise draw them all at once (the Stocks demo's pulsing sparklines redrew all 22 rows at
-  120 Hz). A canvas in sight redraws only the area its changed values cover (`NshView::redraw_rect`:
-  `setNeedsDisplayInRect:` on the content layer; `docs/dev/canvas.md`, "Partial redraws").
+  canvas's animated values on every frame while they run) are drawn only if some of the view can be seen, else when it
+  shows (after scrolls, batches and frames; a view out of the tree waits until it is inserted and shows). Seen is
+  `NshView::shown`'s walk up the tree, not AppKit's `visibleRect`: only ancestors that clip their children (`overflow:
+  hidden`, scroll views, stacks, images, inputs) and the root cut a view off, and what overflows any other ancestor
+  shows, as in CSS (a label centered on a zero-width anchor: cut at every ancestor, as `visibleRect` cuts, its text was
+  never drawn while its background, a layer property, showed). Lists keep rows out of sight, hidden screens stay
+  mounted, and a content layer, unlike AppKit's lazy `drawRect:`, would otherwise draw them all at once (the Stocks
+  demo's pulsing sparklines redrew all 22 rows at 120 Hz). A canvas in sight redraws only the area its changed values
+  cover (`NshView::redraw_rect`: `setNeedsDisplayInRect:` on the content layer; `docs/dev/canvas.md`, "Partial
+  redraws").
 - **Trackpad scrolls are shown in step with the display** (`scroll.rs`, `Resampled`): gesture and momentum events come
   at about the display's rate (120 Hz) but not in step with it, so applied as they come some frames moved twice and
   some not at all (up to a quarter of a fling's frames, depending on how the events fell; the frame rate still read

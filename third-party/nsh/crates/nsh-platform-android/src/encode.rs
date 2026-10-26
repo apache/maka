@@ -68,6 +68,7 @@ const ACCESSIBILITY_LABEL: i32 = 32;
 const APPEARANCE: i32 = 33;
 const RETIRE_LIST_CELL: i32 = 34;
 const PROJECT_ROOT: i32 = 35;
+const COMPONENT_PROP_SLOTS: i32 = 36;
 
 /// An entry of the object table.
 pub(crate) enum Obj {
@@ -506,6 +507,14 @@ pub(crate) fn encode(batch: MountBatch) -> Encoded {
                 e.int(COMPONENT);
                 e.int(id as i32);
                 e.string(name.to_string());
+            }
+            MountItem::ComponentPropSlots { id, names } => {
+                e.int(COMPONENT_PROP_SLOTS);
+                e.int(id as i32);
+                e.int(names.len() as i32);
+                for name in names {
+                    e.string(name.to_string());
+                }
             }
             MountItem::ComponentProps { id, props } => {
                 e.int(COMPONENT_PROPS);

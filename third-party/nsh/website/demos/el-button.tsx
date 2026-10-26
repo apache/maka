@@ -1,9 +1,9 @@
 import { mount, signal, Text, View } from "nsh";
 import { Button, Switch } from "nsh/base";
-import { desktop, Inspector, Panel, size, Stage, tint, ui, wide } from "./palette";
+import { button, buttonText, desktop, Inspector, Panel, size, Stage, tint, ui, wide } from "./palette";
 
-const track = `${desktop ? "w-9" : "w-12"} rounded-full p-0.5 transition-colors`;
-const thumb = desktop ? "size-4 rounded-full transition-transform checked:translate-x-4" : "size-5.5 rounded-full transition-transform checked:translate-x-5";
+const track = `${desktop ? "w-9" : "w-12"} rounded-full p-0.5 transition-colors motion-reduce:transition-none`;
+const thumb = desktop ? "size-4 rounded-full transition-transform motion-reduce:transition-none checked:translate-x-4" : "size-5.5 rounded-full transition-transform motion-reduce:transition-none checked:translate-x-5";
 
 function App() {
   const presses = signal(0);
@@ -12,11 +12,6 @@ function App() {
   const bold = signal(true);
   const italic = signal(false);
   const last = signal("–");
-  // A pointer gets compact buttons as wide as their labels; a phone, 44-point ones.
-  const chip = () =>
-    desktop
-      ? { ...ui().raised, borderRadius: 8, height: size.control, paddingHorizontal: 12, alignItems: "center" as const, justifyContent: "center" as const }
-      : { ...ui().raised, borderRadius: 10, paddingHorizontal: 14, paddingVertical: 10, alignItems: "center" as const };
   const label = () => ({ color: ui().text, fontSize: desktop ? 13 : 15, fontWeight: "600" as const });
 
   const counter = () => (
@@ -28,17 +23,9 @@ function App() {
       onPressDown={() => pressing.set(true)}
       onPressUp={() => pressing.set(false)}
       disabled={disabled()}
-      style={
-        desktop
-          ? { ...ui().accentFill, alignSelf: "flex-start", borderRadius: 8, height: size.control, paddingHorizontal: 14, justifyContent: "center" }
-          : { ...ui().accentFill, borderRadius: 12, padding: 14, alignItems: "center" }
-      }
-      activeStyle={{ opacity: 0.7 }}
-      hoverStyle={{ borderColor: ui().text }}
-      focusStyle={{ borderColor: ui().info, borderWidth: 2 }}
-      disabledStyle={{ opacity: 0.35 }}
+      {...button("accent")}
     >
-      <Text style={{ color: ui().onAccent, fontSize: desktop ? 14 : 16, fontWeight: "600" }}>Pressed {presses()}×</Text>
+      <Text style={buttonText("accent")}>Pressed {presses()}×</Text>
     </Button>
   );
   const pressState = () => `${pressing() ? "onPressDown: pressing…" : "onPressUp: released"} · disabled ${String(disabled())}`;
@@ -60,9 +47,8 @@ function App() {
       selected={on()}
       onPress={flip}
       accessibilityLabel={name}
-      style={{ ...chip(), width: desktop ? size.control : 48, paddingHorizontal: desktop ? 0 : 14 }}
+      {...button("secondary", { align: "flex-start", style: { width: size.control, paddingHorizontal: 0 } })}
       selectedStyle={{ backgroundColor: tint(ui().accent, 0.25), backgroundImage: "none", borderColor: ui().accent }}
-      activeStyle={{ opacity: 0.7 }}
     >
       <Text style={text()}>{glyph}</Text>
     </Button>

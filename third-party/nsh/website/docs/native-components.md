@@ -155,8 +155,28 @@ or a TSX `text={label()}` reads a signal, the new value is sent when the signal 
 | The element is created | Every own prop that is set, right after the component is made |
 | A prop's value changes | That prop with its new value |
 | A prop becomes `undefined` | That prop with no value (`nil` in Swift, `null` in Java) |
+| A prop bound to an animated value moves | `setAnimatedNumber` / `setAnimatedColor`, on the frames it changes |
 
-Props carry JSON values; keep the interface to data (functions, class instances and `AnimatedValue`s stay in the app).
+Props carry JSON values; keep the interface to data (functions and class instances stay in the app).
+
+### Animated props
+
+A prop can also be an animated value: an `AnimatedValue`, or a node derived from one (`interpolate`, a scroll view's
+`scrollValue` or `pullValue`). It is then not sent as JSON: NSH binds it, and the component is handed the value on the UI
+thread on every frame it changes, without going through JS, so it can follow a drag or a pull to refresh.
+
+```tsx
+const pull = createAnimatedValue(0);
+<Scroll pullValue={pull} refreshIndicator={{ height: 72 }} refreshing={refreshing()} onRefresh={refresh}>
+  <Spinner progress={pull.interpolate({ inputRange: [0, 72], outputRange: [0, 1] })} />
+</Scroll>
+```
+
+The component receives numbers with `setAnimatedNumber(name, value)` and colors with `setAnimatedColor(name, argb)`
+(`0xAARRGGBB`); by default both call `setProp` with the number, so a component that does not implement them still
+gets the value. Rust components implement `set_animated_number` and `set_animated_color`, and Rust code binds a prop
+with `native(name).bind_animated_prop("progress", &value)`. Giving the prop a plain value again unbinds it and sends that
+value. The web has no registered components.
 
 ## Events
 

@@ -1,6 +1,6 @@
 import { mount, signal, Text, View } from "nsh";
 import { ContextMenu, Menu, MenuItem, MenuSeparator, type OpenChangeReason, Submenu } from "nsh/base";
-import { desktop, Inspector, Panel, size, Stage, tint, ui, wide } from "./palette";
+import { button, buttonText, desktop, Inspector, Panel, Stage, tint, ui, wide } from "./palette";
 
 /** A popup at the trigger on desktops, a sheet at the bottom on phones. */
 const surface = () =>
@@ -73,19 +73,8 @@ function App() {
       backdropStyle={backdrop}
       onOpenChange={changed("File")}
       trigger={
-        <View
-          activeStyle={{ opacity: 0.7 }}
-          hoverStyle={{ opacity: 0.85 }}
-          style={{
-            ...ui().raised,
-            alignSelf: "flex-start",
-            borderRadius: desktop ? 8 : 10,
-            paddingHorizontal: desktop ? 12 : 16,
-            height: desktop ? size.control : 38,
-            justifyContent: "center",
-          }}
-        >
-          <Text style={{ fontSize: desktop ? 13 : 14, fontWeight: "600", color: ui().text }}>File ▾</Text>
+        <View {...button("secondary", { align: "flex-start" })}>
+          <Text style={buttonText()}>File ▾</Text>
         </View>
       }
     >

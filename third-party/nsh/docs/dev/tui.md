@@ -63,7 +63,11 @@ guide is [Terminal](../../website/docs/tui.md), with a matching
 - `services.rs`: explicit embedding callbacks, supervised clipboard
   helpers, menus, terminal title/output requests and semantic accessibility.
 - `native.rs`: per-view factories for host terminal components, receiving
-  the existing native props, commands and event protocol.
+  the existing native props, commands and event protocol. Animated
+  component props retain stable named slots and are delivered once per changed
+  value through the same Graph. Numeric and ARGB color setters default to
+  `set_prop`; responses and intrinsic sizing follow ordinary prop updates.
+  Unbinding or replacing/deleting a component resets its delivery cache.
 - `script.rs`: deterministic in-memory drawing and simulated events; it
   parses all steps before starting the app, then waits for the first
   real mount batch before executing assertions and snapshots.

@@ -204,6 +204,32 @@ mod tests {
     }
 
     #[test]
+    fn entry_bytecode_resolves_static_shared_chunks_and_back_imports() {
+        let entry = "import { read } from './shared.js'; export const base = 7; globalThis.result = read();";
+        let shared =
+            "import { base } from './bundle.js'; export function read() { return base + 1; }";
+        for strip in [Strip::Nothing, Strip::Source, Strip::All] {
+            let compiled = compile_chunk_bytecode(
+                entry,
+                &[(crate::BUNDLE_NAME, entry), ("shared.js", shared)],
+                strip,
+                &[],
+            )
+            .unwrap();
+            let host = crate::Host::new().unwrap();
+            // SAFETY: compiled by the linked engine immediately above.
+            unsafe {
+                host.add_chunk_bytecode("shared.js", compiled[1].clone());
+            }
+            host.eval_bytecode(&compiled[0]).unwrap();
+            assert!(
+                host.eval_script("check", "globalThis.result === 8")
+                    .unwrap()
+            );
+        }
+    }
+
+    #[test]
     fn stripped_chunks_preserve_dynamic_import_resolution_after_loading() {
         let entry = "globalThis.loaded = false;";
         let chunk = r#"

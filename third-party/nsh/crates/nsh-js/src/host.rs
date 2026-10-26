@@ -1103,6 +1103,17 @@ impl Host {
         });
     }
 
+    /// Sets how the app's theme file makes the tokens it is drawn with
+    /// ([`nsh_core::Core::theme_tokens`]): `token()` reads them from the
+    /// entry's first statement on, before the theme reaches the core. Call
+    /// before evaluating the bundle, then when the embedding app's tokens
+    /// change.
+    pub fn set_theme_tokens(&self, theme: nsh_core::ui::ThemeTokens) {
+        self.cx.with(|cx| {
+            crate::env::set_theme_tokens(cx.as_raw().as_ptr(), theme);
+        });
+    }
+
     /// True if JS asked for a display frame (`requestAnimationFrame`).
     pub fn wants_frame(&self) -> bool {
         !self.shared.frames.borrow().is_empty()

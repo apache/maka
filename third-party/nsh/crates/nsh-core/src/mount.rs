@@ -941,6 +941,16 @@ pub enum MountItem {
         /// The name it was registered by (`com.example.map`).
         name: Arc<str>,
     },
+    /// The names of a registered native component's animated prop slots:
+    /// `names[n]` is [`AnimationProp::ComponentSlot`]`(n)`. Sent before the
+    /// [`MountItem::AnimationBindings`] that use new slots; slots keep their
+    /// name for the component's life.
+    ComponentPropSlots {
+        /// The container.
+        id: NodeId,
+        /// The name of each slot.
+        names: Vec<Arc<str>>,
+    },
     /// Properties of a registered native component that changed (all of
     /// them after [`MountItem::Component`]); `None` removes one.
     ComponentProps {

@@ -90,8 +90,9 @@ hides as none. An edit lays out only the lines of its `LineSpan` and shifts the 
 ### Rendering and virtualization
 
 The view is a vertical `Scroll` of a row of the gutter and the text area (a horizontal `Scroll` without soft wrap).
-The scroll views hold only the hit layer: empty boxes of the rows' size that take the wheel, the scroll bars, touches,
-presses and the pointer's cursor. What shows is the paint layer, drawn over the scroll views (`pointer_events(None)`)
+The scroll views hold the hit layer: boxes of the rows' size that take the wheel, the scroll bars, touches,
+presses and the pointer's cursor. The active-line backgrounds are drawn in these boxes, below the scroll indicators.
+The text and foreground decorations are the paint layer, drawn over the scroll views (`pointer_events(None)`)
 and moved by the offsets they report (`top(-scroll_y)`, `left(-scroll_x)`): the rows the offset needs and the offset
 itself come in the same commit, so a scroll bar dragged across a long file or a paste of many lines never shows a
 frame where the platform moved the content before the rows it needs were made. The paint layer's views keep the hit
@@ -101,7 +102,7 @@ height before the viewport is known. That window (`window.rs`'s `RowWindow`, whi
 while it covers the rows in view with half a viewport to spare, so most scroll frames change no rows and commit
 nothing; the row list is a memo of the window, and `each` keeps the views of rows that stay in it. Each row is an absolutely placed view holding one `Text` whose spans are
 the row's runs of one token and one set of decorations (`State::row_content`). The rows' box draws, from back to
-front: the active lines' backgrounds, the rulers, indent guides, search matches, selections, the matching brackets,
+front: the rulers, indent guides, search matches, selections, the matching brackets,
 the rows, the whitespace marks, diagnostics' marks, the placeholder, the carets and the composition. Each layer is a
 `dynamic` over the revisions it depends on.
 

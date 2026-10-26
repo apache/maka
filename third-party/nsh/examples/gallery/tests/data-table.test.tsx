@@ -30,6 +30,8 @@ test("the Data table demo selects cells and columns", async () => {
   await app.press("role:button[Data table]");
   await app.waitFor("Apple 1");
   await app.press("Cells");
+  // The ID data column already supplies numbers; cell mode adds no row-number gutter.
+  expect(app.count("text:7")).toBe(1);
   await app.press("text:/^US$/ >> nth=0");
   await app.waitFor("Cell row 1, Market");
   await app.keyboard.press("right");

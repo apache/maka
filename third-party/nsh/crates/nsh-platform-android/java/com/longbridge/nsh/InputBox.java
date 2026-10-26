@@ -137,6 +137,10 @@ final class InputBox extends FrameLayout implements Node {
         edit.setBackground(new ColorDrawable(0));
         edit.setPadding(0, 0, 0, 0);
         edit.setIncludeFontPadding(false);
+        // The line's height from its own font, as Text's StaticLayout has it:
+        // fallback fonts' taller metrics (HyperOS's sans-serif has them) would
+        // put the centered text above the middle of the field.
+        if (Build.VERSION.SDK_INT >= 28) edit.setFallbackLineSpacing(false);
         edit.addTextChangedListener(new TextWatcher() {
             @Override
             public void beforeTextChanged(CharSequence s, int start, int count, int after) {}

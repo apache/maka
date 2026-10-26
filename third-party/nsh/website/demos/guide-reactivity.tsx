@@ -1,18 +1,12 @@
 import { batch, cleanup, computed, context, effect, mount, Scroll, signal, Text, untracked, View } from "nsh";
-import { size, tint, ui, wide } from "./palette";
+import { button, buttonText, focusRing, tint, ui, wide } from "./palette";
 
 /** The accent's palette key: a key, not a colour, so it follows the theme. */
 type Swatch = "accent" | "info" | "up" | "violet";
 const Accent = context(signal<Swatch>("accent"));
 
-/** A raised control, as in the gallery: a top highlight over a soft shadow. */
-const raised = () => ({ ...ui().raised, borderRadius: 10 });
-
-/** A button's box: as tall as a desktop control in a wide window. */
-const box = (phone: { padding?: number; paddingHorizontal?: number; paddingVertical?: number }) =>
-  wide() ? { height: size.control, paddingHorizontal: 12, borderRadius: 8, justifyContent: "center" as const } : phone;
-/** A button's label: a step smaller in a wide window. */
-const small = () => (wide() ? { fontSize: 13 } : {});
+/** A button filled with a palette colour instead of a surface. */
+const filled = (color: () => string) => () => ({ backgroundImage: "none", backgroundColor: color(), borderColor: "rgba(0,0,0,0)", boxShadow: "none" });
 
 /** A stopwatch: the effect starts a timer and its cleanup stops it. */
 function Stopwatch() {
@@ -29,11 +23,11 @@ function Stopwatch() {
       <Text style={{ flex: 1, fontSize: 28, fontWeight: "600", fontVariant: ["tabular-nums"], color: ui().text }}>
         {(tenths() / 10).toFixed(1)} s
       </Text>
-      <View onPress={() => running.set(!running())} activeStyle={{ opacity: 0.6 }} style={{ backgroundColor: ui()[accent()], borderRadius: 8, ...box({ paddingHorizontal: 14, paddingVertical: 8 }) }}>
-        <Text style={{ color: ui().page, fontWeight: "600", ...small() }}>{running() ? "Stop" : "Start"}</Text>
+      <View onPress={() => running.set(!running())} {...button("primary", { style: filled(() => ui()[accent()]) })}>
+        <Text style={{ ...buttonText(), color: ui().page }}>{running() ? "Stop" : "Start"}</Text>
       </View>
-      <View onPress={() => tenths.set(0)} activeStyle={{ opacity: 0.6 }} style={{ ...raised(), ...box({ paddingHorizontal: 14, paddingVertical: 8 }) }}>
-        <Text style={{ color: ui().text, ...small() }}>Reset</Text>
+      <View onPress={() => tenths.set(0)} {...button()}>
+        <Text style={buttonText()}>Reset</Text>
       </View>
     </View>
   );
@@ -87,14 +81,17 @@ function App() {
             {price()} × {quantity()} = <Text style={{ fontWeight: "700", color: ui()[accent()] }}>{total()}</Text>
           </Text>
           <View style={{ flexDirection: "row", gap: 8 }}>
-            <View onPress={() => step(1, 0)} activeStyle={{ opacity: 0.6 }} style={{ ...raised(), ...box({ padding: 8 }) }}>
-              <Text style={{ color: ui().text, ...small() }}>price +1</Text>
+            <View onPress={() => step(1, 0)} {...button()}>
+              <Text style={buttonText()}>price +1</Text>
             </View>
-            <View onPress={() => step(0, 1)} activeStyle={{ opacity: 0.6 }} style={{ ...raised(), ...box({ padding: 8 }) }}>
-              <Text style={{ color: ui().text, ...small() }}>qty +1</Text>
+            <View onPress={() => step(0, 1)} {...button()}>
+              <Text style={buttonText()}>qty +1</Text>
             </View>
-            <View onPress={() => step(1, 1)} activeStyle={{ opacity: 0.6 }} style={{ backgroundColor: tint(ui().warn, 0.14), borderWidth: 1, borderColor: tint(ui().warn, 0.3), borderRadius: 10, ...box({ padding: 8 }) }}>
-              <Text style={{ color: ui().warn, ...small() }}>both (batch)</Text>
+            <View
+              onPress={() => step(1, 1)}
+              {...button("secondary", { style: () => ({ backgroundImage: "none", backgroundColor: tint(ui().warn, 0.14), borderColor: tint(ui().warn, 0.3), boxShadow: "none" }) })}
+            >
+              <Text style={{ ...buttonText(), color: ui().warn }}>both (batch)</Text>
             </View>
           </View>
         </Section>
@@ -114,6 +111,9 @@ function App() {
                 <View
                   onPress={() => accent.set(c())}
                   style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: ui()[c()], borderWidth: 3, borderColor: accent() === c() ? ui().text : "transparent" }}
+                  hoverStyle={{ opacity: 0.88 }}
+                  focusStyle={focusRing()}
+                  activeStyle={{ opacity: 0.7 }}
                 />
               )}
             </Each>

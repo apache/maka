@@ -1096,6 +1096,11 @@ impl Registry {
         self.tokens.map(|source| source(json))
     }
 
+    /// How the set reads a theme file ([`Registry::tokens_from`]).
+    pub(crate) fn token_source(&self) -> Option<super::TokenSource> {
+        self.tokens
+    }
+
     /// The files [`Registry::assets`] ships.
     pub fn asset_files(&self) -> impl Iterator<Item = &'static super::AssetFile> + '_ {
         self.assets.iter().flat_map(|files| files.iter())

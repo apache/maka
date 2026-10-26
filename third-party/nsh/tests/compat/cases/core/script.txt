@@ -82,7 +82,8 @@ frame id:image 0 200 64 48
 frame id:video 0 248 160 90
 frame id:web 0 338 180 60
 frame id:map 0 398 100 50
-frame id:pan 0 448 50 50
+frame id:map-animated 0 448 100 50
+frame id:pan 0 498 50 50
 expect Missing module: ReferenceError
 expect Base module: object
 expect Same object: true

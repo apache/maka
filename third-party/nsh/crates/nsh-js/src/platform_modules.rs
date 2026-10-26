@@ -725,13 +725,16 @@ pub(crate) const NATIVE_TYPES: &str = r#"/** Handlers of a native component's ev
 export type NativeEventHandlers<E> = { [K in keyof E & string as `on${Capitalize<K>}`]?: (data: E[K]) => void };
 
 /** The props of a native component: a view's (style, classes, layout,
- * accessibility, `ref`), its own `P` and handlers of its events `E`. */
-export type NativeComponentProps<P, E> = Omit<ViewProps, "children"> & P & NativeEventHandlers<E>;
+ * accessibility, `ref`), its own `P` and handlers of its events `E`. Each
+ * number or string (color) prop may also be an animated value: the
+ * platform then pushes its value (a number or a color) to the component
+ * on every frame it changes, without JS. */
+export type NativeComponentProps<P, E> = Omit<ViewProps, "children"> & { [K in keyof P]: NonNullable<P[K]> extends number | string ? P[K] | AnimatedNode : P[K] } & NativeEventHandlers<E>;
 
 /** What a native component takes and emits. */
 export interface NativeComponentSpec<P, E> {
   /** Its own props: sent to the component (any JSON value), each when it
-   * changes. */
+   * changes; an animated value is pushed on every frame it changes. */
   props: readonly (keyof P & string)[];
   /** The events it emits. */
   events?: readonly (keyof E & string)[];

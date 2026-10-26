@@ -71,7 +71,9 @@ build to the same file) and takes `nsh.js` from the crate.
   (`document.baseURI`, `nsh_set_base_url`). The app's code ships as bytecode
   (`web::CODE`, `app.<digest>.nshc`), with the hardening's (`harden.<digest>.nshc`). The app is built split
   (`build::compile_split`): each chunk is written as `chunks/<name>.<digest>.nshc` (its bytecode) and the page's `chunks` maps its id to
-  that URL; nothing preloads them, the runtime fetches one the first time `import()` needs it. An app with a Rust crate of
+  that URL. The entry’s transitive static dependencies (`entryChunks`) and their fonts load before startup;
+  the page stages them through `preloadedChunks` / `nsh_bundle_chunk`. The runtime fetches other chunks when
+  `import()` first needs them. An app with a Rust crate of
   its own gets a runtime of its own ("Apps with Rust components"). `--run` serves the directory with `nsh_dev::SiteServer` (the cache headers a CDN should send) and
   prints its address.
 - **The development host** is a page the dev server serves (`DevServer::serve_web`: the page at `/`, `nsh.js` and

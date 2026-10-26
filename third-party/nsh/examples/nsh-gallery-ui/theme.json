@@ -1,5 +1,5 @@
 {
-  "name": "Gallery",
+  "name": "NSH Gallery UI",
   "cssVars": {
     "theme": {
       "radius": "12px",
@@ -40,7 +40,6 @@
       "sidebar-accent-foreground": "var(--foreground)",
       "sidebar-border": "var(--line)",
       "sidebar-ring": "var(--ring)",
-
       "inset": "#f0f0ec",
       "raised": "#fbfbf9",
       "field": "#e8e8e3",
@@ -60,7 +59,8 @@
       "warn-tint": "color-mix(in srgb, var(--warn) 11%, transparent)",
       "destructive-tint": "color-mix(in srgb, var(--destructive) 10%, transparent)",
       "up-tint": "color-mix(in srgb, var(--up) 10%, transparent)",
-      "down-tint": "color-mix(in srgb, var(--down) 10%, transparent)"
+      "down-tint": "color-mix(in srgb, var(--down) 10%, transparent)",
+      "violet": "#6e56c4"
     },
     "dark": {
       "background": "#101113",
@@ -75,7 +75,6 @@
       "destructive": "#ff6170",
       "border": "#2c2e33",
       "input": "#2c2e33",
-
       "inset": "#0c0d0f",
       "raised": "#24262a",
       "field": "#0c0d0f",
@@ -94,7 +93,28 @@
       "warn-tint": "color-mix(in srgb, var(--warn) 16%, transparent)",
       "destructive-tint": "color-mix(in srgb, var(--destructive) 16%, transparent)",
       "up-tint": "color-mix(in srgb, var(--up) 16%, transparent)",
-      "down-tint": "color-mix(in srgb, var(--down) 16%, transparent)"
+      "down-tint": "color-mix(in srgb, var(--down) 16%, transparent)",
+      "violet": "#b9a2ff",
+      "card-foreground": "var(--foreground)",
+      "popover-foreground": "var(--foreground)",
+      "accent-foreground": "var(--foreground)",
+      "secondary": "var(--raised)",
+      "secondary-foreground": "var(--foreground)",
+      "chart-1": "var(--brand)",
+      "chart-2": "var(--up)",
+      "chart-3": "var(--info)",
+      "chart-4": "var(--warn)",
+      "chart-5": "var(--down)",
+      "ring": "var(--brand)",
+      "sidebar": "var(--inset)",
+      "sidebar-foreground": "var(--foreground)",
+      "sidebar-accent": "var(--raised)",
+      "sidebar-accent-foreground": "var(--foreground)",
+      "sidebar-border": "var(--line)",
+      "sidebar-primary": "var(--primary)",
+      "sidebar-primary-foreground": "var(--primary-foreground)",
+      "sidebar-ring": "var(--ring)",
+      "down": "var(--destructive)"
     }
   }
 }
