@@ -29,6 +29,8 @@ use sha2::{Digest, Sha256};
 use std::{io, path::PathBuf, sync::Arc, time::Duration};
 use tokio::io::AsyncWriteExt;
 
+mod generation;
+
 type Connection = Client;
 
 #[derive(Default)]
@@ -45,29 +47,7 @@ impl UpdateAttempt {
         };
         let generation = self
             .generation
-            .get_or_try_init(|| {
-                let launcher = launcher.clone();
-                async move {
-                    tokio::task::spawn_blocking(move || {
-                        use std::io::Read;
-                        let mut file = std::fs::File::open(launcher)?;
-                        if !file.metadata()?.is_file() {
-                            return Err(HostError::from("Host launcher must be a regular file"));
-                        }
-                        let mut digest = Sha256::new();
-                        let mut buffer = [0_u8; 64 * 1024];
-                        loop {
-                            let length = file.read(&mut buffer)?;
-                            if length == 0 {
-                                break;
-                            }
-                            digest.update(&buffer[..length]);
-                        }
-                        Ok::<_, HostError>(format!("cli-sha256:{}", hex::encode(digest.finalize())))
-                    })
-                    .await?
-                }
-            })
+            .get_or_try_init(|| generation::hash(launcher.clone()))
             .await?;
         Ok(Some(generation))
     }
