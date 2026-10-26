@@ -95,7 +95,7 @@ TSX 从 `nsh/base` 导入，Rust 从 `nsh_base` crate 导入。它们负责行�
 | `<Switch>` | `nsh_base::switch()` | 带轨道和滑块的开 / 关控件 | [Switch](./switch.md) |
 | `<Collapsible>` | `nsh_base::collapsible()` | 内容可展开和收起的区域 | [Collapsible](./collapsible.md) |
 | `<Progress>` | `nsh_base::progress()` | 进度条：任务完成了多少，或正在进行 | [Progress](./progress.md) |
-| `<Plot>`、`<Line>`、`<Area>`、`<Grid>`（`nsh/base/plot`） | `nsh_base::plot::{plot, line, area, grid}` | 图表的框架与图形，根据应用的数据行原生绘制 | [Plot](./plot.md) |
+| `<Plot>`、`<Line>`、`<Area>`、`<Grid>`、`<Pie>`、`<Arc>`（`nsh/base/plot`） | `nsh_base::plot::{plot, line, area, grid, pie, arc}` | 图表的框架与图形，根据应用的数据行原生绘制 | [Plot](./plot.md) |
 | `<Dialog>` | `nsh_base::dialog()` | 把子元素呈现在其他一切之上 | [Dialog](./dialog.md) |
 | `<NavStack>`、`<NavPage>` | `nsh_base::nav_stack()`、`nsh_base::nav_page()` | 原生导航：带有平台标题栏和返回手势的页面栈 | [NavStack](./nav-stack.md) |
 | `AlertDialog` | `nsh_base::alert_dialog()` | 系统的提示框和操作表 | [AlertDialog](./alert-dialog.md) |
@@ -288,11 +288,13 @@ import { Menu } from "nsh/desktop";
 
 ### 键盘焦点
 
-在 macOS 和 Web 上，Tab 在可按压的视图（以及输入框）之间移动键盘焦点，按 Return 或空格会按下获得焦点的视图，焦点样式（`focus:`、`.focus(..)`）为它设置样式。点击会按下视图但不让它获得焦点，所以焦点样式只在键盘聚焦时生效。
+在 macOS 和 Web 上，Tab 按视图树的顺序在停靠点之间移动键盘焦点：输入框、可按压的视图，以及所有设置了 `focusable` 的视图。焦点样式（`focus:`、`.focus(..)`）为获得焦点的视图设置样式；它可按压时，按 Return 或空格会按下它。点击会按下视图但不让它获得焦点，所以焦点样式只在键盘聚焦时生效。
+
+焦点和按压相互独立。在获得焦点时接收按键的视图（图表、滑块、用方向键移动选中项的列表）设置 `focusable`，并在获得焦点期间绑定自己的按键（`onFocus` / `onBlur` 配合 [`keymap`](../modules/nsh.md#keymap)）；点击它时，按压照样交给外层可按压的视图，比如一张点开详情页的卡片。
 
 | 属性 | Rust | 类型 | 默认值 | 说明 |
 |---|---|---|---|---|
-| `focusable` | `.focusable(..)` | `boolean` | `true` | 可按压的视图是否是 Tab 的停靠点；`false` 把它留给指针（关闭浮层的背景层、用方向键切换的列表行）。 |
+| `focusable` | `.focusable(..)` | `boolean` | 可按压的视图为 `true` | 视图是否是 Tab 的停靠点。`true` 让任何视图成为停靠点，无论它自己接收按压，还是把按压留给外层视图；`false` 把可按压的视图留给指针（关闭浮层的背景层、用方向键切换的列表行）。 |
 | `onFocus` | `.on_focus(..)` | `() => void` | | Tab（或 `focus()`）让视图获得了键盘焦点。 |
 | `onBlur` | `.on_blur(..)` | `() => void` | | 键盘焦点离开了视图。 |
 
@@ -306,6 +308,16 @@ view()
 
 // 浮层的背景层：点击关闭浮层，Tab 直接越过它进入内容。
 view().absolute().inset_0().focusable(false).on_press(close)
+
+// 卡片里的图表：Tab 停在图表上，点击打开卡片的详情页。
+view().on_press(open_page).child(
+    view()
+        .h(px(160.0))
+        .focusable(true)
+        .focus(|s| s.bg(rgb(0xe0f2fe)))
+        .on_focus(move || focused.set(true))
+        .on_blur(move || focused.set(false)),
+)
 ```
 
 ```tsx tabs
@@ -315,6 +327,16 @@ view().absolute().inset_0().focusable(false).on_press(close)
 
 {/* 浮层的背景层：点击关闭浮层，Tab 直接越过它进入内容。 */}
 <View class="absolute inset-0" focusable={false} onPress={close} />
+
+{/* 卡片里的图表：Tab 停在图表上，点击打开卡片的详情页。 */}
+<View onPress={openPage}>
+  <View
+    class="h-40 focus:bg-sky-100"
+    focusable
+    onFocus={() => focused.set(true)}
+    onBlur={() => focused.set(false)}
+  />
+</View>
 ```
 
 ### 布局与标识

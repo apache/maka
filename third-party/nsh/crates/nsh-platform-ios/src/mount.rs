@@ -3,10 +3,12 @@
 
 use std::{
     cell::{Cell, RefCell},
+    ptr::NonNull,
     rc::Rc,
     sync::Arc,
 };
 
+use block2::RcBlock;
 use dispatch2::{DispatchQueue, MainThreadBound};
 use nsh_core::{
     Bounds, Color, Command, EventKind, EventMask, EventPayload, GestureValues, ImageSource,
@@ -32,7 +34,8 @@ use objc2_ui_kit::{
     UIPanGestureRecognizer, UIPinchGestureRecognizer, UIRefreshControl,
     UIRotationGestureRecognizer, UIScrollView, UIScrollViewContentInsetAdjustmentBehavior,
     UIScrollViewKeyboardDismissMode, UITraitEnvironment, UIUserInterfaceIdiom, UIView,
-    UIViewAnimationOptions,
+    UIViewAnimationOptions, UIViewControllerTransitionCoordinator,
+    UIViewControllerTransitionCoordinatorContext,
 };
 
 use crate::{
@@ -3447,9 +3450,21 @@ impl Mounter {
             else {
                 continue;
             };
-            if stack.nav.transitionCoordinator().is_some() {
+            if let Some(coordinator) = stack.nav.transitionCoordinator() {
                 if !self.deferred_stacks.contains(&id) {
                     self.deferred_stacks.push(id);
+                    // A modal presented or dismissed over the stack sets the
+                    // coordinator too, and its end never reaches `didShow`.
+                    let shared = self.shared.clone();
+                    let done = RcBlock::new(
+                        move |_: NonNull<
+                            ProtocolObject<dyn UIViewControllerTransitionCoordinatorContext>,
+                        >| { Self::finish_deferred(&shared, id) },
+                    );
+                    // Refused when the transition is already ending.
+                    if !coordinator.animateAlongsideTransition_completion(None, Some(&done)) {
+                        Self::finish_deferred(&self.shared, id);
+                    }
                 }
                 continue;
             }
@@ -3563,19 +3578,26 @@ impl Mounter {
     /// swipe) are reported so the app removes them.
     pub(crate) fn stack_did_show(&mut self, id: NodeId) {
         self.report_popped(id);
-        // Changes that arrived during the transition, once it is over (the
-        // transition coordinator outlives this callback).
-        if let Some(i) = self.deferred_stacks.iter().position(|&s| s == id) {
-            self.deferred_stacks.swap_remove(i);
-            let shared = self.shared.clone();
-            dispatch2::DispatchQueue::main().exec_async(move || {
-                let mtm = MainThreadMarker::new().expect("main queue");
-                if let Some(m) = shared.get(mtm).borrow_mut().as_mut() {
-                    m.dirty_stacks.push(id);
-                    m.finish_navigation();
-                }
-            });
+        if self.deferred_stacks.contains(&id) {
+            Self::finish_deferred(&self.shared, id);
         }
+    }
+
+    /// Applies the changes stack `id` deferred during a transition, on the
+    /// next main-queue turn (the transition coordinator outlives the
+    /// callbacks that end it), unless another callback already did.
+    fn finish_deferred(shared: &SharedMounter, id: NodeId) {
+        let shared = shared.clone();
+        DispatchQueue::main().exec_async(move || {
+            let mtm = MainThreadMarker::new().expect("main queue");
+            if let Some(m) = shared.get(mtm).borrow_mut().as_mut()
+                && let Some(i) = m.deferred_stacks.iter().position(|&s| s == id)
+            {
+                m.deferred_stacks.swap_remove(i);
+                m.dirty_stacks.push(id);
+                m.finish_navigation();
+            }
+        });
     }
 
     /// Reports the screens of stack `id` that the user popped natively.

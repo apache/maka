@@ -4,7 +4,8 @@ import { join } from 'node:path';
 
 // Content rules that the build cannot check on its own: frontmatter parses and
 // has what the schema needs, the Chinese pages mirror the English ones, and
-// every `demo:` names a file in demos/.
+// every `demo:` (and every section's `<!-- demo: … -->`) names a file in
+// demos/.
 
 const ROOT = join(import.meta.dir, '..');
 const SECTIONS = ['docs', 'elements', 'modules'];
@@ -95,4 +96,21 @@ test('every demo named in frontmatter exists in demos/', () => {
     }
   }
   expect(missing).toEqual([]);
+});
+
+test("every section's demo exists in demos/, on both languages' pages", () => {
+  const problems: string[] = [];
+  const sectionDemos = (file: string) =>
+    existsSync(file) ? [...readFileSync(file, 'utf8').matchAll(/^<!--\s*demo:\s*([\w-]+)\s*-->$/gm)].map((m) => m[1]) : [];
+  for (const section of SECTIONS) {
+    for (const name of english[section].keys()) {
+      const en = sectionDemos(join(ROOT, section, name));
+      const zh = sectionDemos(join(ROOT, 'zh-CN', section, name));
+      if (en.join() !== zh.join()) problems.push(`zh-CN/${section}/${name}: section demos ${zh} ≠ ${en}`);
+      for (const demo of en) {
+        if (!existsSync(join(ROOT, 'demos', `${demo}.tsx`))) problems.push(`${section}/${name}: demo ${demo}`);
+      }
+    }
+  }
+  expect(problems).toEqual([]);
 });

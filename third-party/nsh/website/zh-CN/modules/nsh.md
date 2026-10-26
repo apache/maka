@@ -319,13 +319,13 @@ CSS 的环境变量让内容避开系统界面，可用于任何视图的内边�
 
 ### safeArea 与 safeAreaInsets
 
-`safeArea()` 是界面的安全区（Rust 中为 `safe_area()`）；`safeAreaInsets()` 是组件渲染位置的边距（Rust 中为 `cx.insets()`），即 `safe-area-inset-*` 变量的值。两者都是响应式的 `Edges`（`{ top, right, bottom, left }`，单位为点）。见 [safeArea 与 safeAreaInsets](../elements/safe-area.md#safearea-and-safeareainsets)。
+`safeArea()` 是界面的安全区（Rust 中为 `safe_area()`）；`safeAreaInsets()` 是组件渲染位置的边距（Rust 中为 `cx.insets()`），即 `safe-area-inset-*` 变量的值。两者都是响应式的 `Edges`（`{ top, right, bottom, left }`，单位为点）。见 [safeArea 与 safeAreaInsets](../elements/safe-area.md#safearea-与-safeareainsets)。
 
 <a id="keyboard-and-keyboardframe"></a>
 
 ### Keyboard 与 keyboardFrame
 
-`Keyboard.dismiss()` 隐藏软键盘（Rust 中为 `dismiss_keyboard()`），`keyboardFrame()` 告诉你它覆盖了屏幕的多少（Rust 中为 `keyboard_height()` 和 `keyboard_duration()`）。见[隐藏键盘](../elements/keyboard.md#hiding-the-keyboard)和[键盘高度](../elements/keyboard.md#the-keyboards-height)。
+`Keyboard.dismiss()` 隐藏软键盘（Rust 中为 `dismiss_keyboard()`），`keyboardFrame()` 告诉你它覆盖了屏幕的多少（Rust 中为 `keyboard_height()` 和 `keyboard_duration()`）。见[隐藏键盘](../elements/keyboard.md#隐藏键盘)和[键盘高度](../elements/keyboard.md#键盘高度)。
 
 <a id="selectable-views"></a>
 

@@ -303,9 +303,10 @@ report it:
   environment's OS; on every environment (a hardware keyboard: phones and tablets have one too) the root's keymap
   (`MountItem::Keymap`, `Screen::keymap`) finds the binding that fires where the focus is (`Keymap::find`) and the
   root hears `KeyCommand`; else, on macOS and the web, Tab / Shift+Tab move the keyboard focus between the stops
-  (`Screen::tab_stops`: editable inputs and pressables not `focusable={false}`, in tree order, around), telling the
-  views `Blur` / `Focus` and the pressable its `FOCUSED` state, and Return or Space presses the pressable it is on (a
-  press of the pointer takes it off); else the focused input takes a character, Backspace or the return key, else
+  (`Screen::tab_stops`: editable inputs and the views `ViewProps::focus_stop` takes, pressables not
+  `focusable={false}` and `focusable={true}` views that take no presses, in tree order, around), telling the
+  views `Blur` / `Focus` and the view its `FOCUSED` state, and Return or Space presses the view it is on when it takes
+  presses (a press of the pointer takes it off); else the focused input takes a character, Backspace or the return key, else
   Escape goes back when there is something to go back from;
 - `wait`, `wait_for` / `wait_for_gone` / `wait_until` (until a selector matches, matches no more, a condition on the
   screen holds), `next_change` (one batch or animation frame: what `nsh/test`'s `waitUntil` waits for between calls
@@ -458,7 +459,14 @@ of app through one trait (`driver.rs` `Driver`): `Headless`, or `Remote`, which 
 `nsh_dev::protocol::TestStep` for the host (`TestRun::host`, a `StartHost` the CLI makes: `nsh-cli/src/test_host.rs`).
 For each `open`, the CLI builds the entry, starts a dev server of its own in a test session
 (`DevServer::test_session`: its hello says `test`), publishes the build and starts the host with `--dev-server`,
-`--window-size` and a fresh `--data-dir`, removed after it. A host whose hello says `tests` takes steps:
+`--window-size` and a fresh `--data-dir`, removed after it. The macOS host also gets `--display`: the display
+`nsh test --display <n>` names, else `secondary`, which centers its windows on the first display of `NSScreen.screens`
+besides the primary one whose frame is not the primary's (a mirror's is), the primary one when there is no other
+(`AppOptions::display`, `WindowDisplay`), so a run keeps off the screen in use; `nsh run` opens on the main display
+unless `--display` names one. It gets `--keep-window-size` too (`AppOptions::keep_size`): AppKit shrinks a window
+taller than its screen when it shows it, and a test's window keeps the size the test opens it at on any display. Synthesized input is
+window-relative on macOS (posted `NSEvent`s carry the window's number and a window point; wheels a location that
+makes their window point the agent's), so the tests run the same on any display. A host whose hello says `tests` takes steps:
 `DevServer::step` sends a `ServerMessage::Step` with an id to the test host that connected last and blocks for the
 `ClientMessage::StepDone` with that id; a host that leaves fails its waiting steps.
 

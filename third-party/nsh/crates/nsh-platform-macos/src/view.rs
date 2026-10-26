@@ -533,7 +533,7 @@ define_class!(
             // A click outside a field that edits leaves the focus in it, as
             // desktop apps do (`blur()` and Escape still hand it over).
             let view = NshView(self.retain());
-            (view.id() == ROOT_ID || crate::input::is_key_control(&view))
+            (view.id() == ROOT_ID || crate::input::is_key_stop(&view))
                 && self.keyboard_surface().is_some_and(|s| {
                     !(crate::text_input::editing(&s) && clicking(self.mtm()))
                 })
@@ -546,7 +546,7 @@ define_class!(
             if accepted && let Some(surface) = self.keyboard_surface() {
                 let view = NshView(self.retain());
                 crate::input::set_state(&surface, &view, nsh_core::tailwind::state::FOCUSED, true);
-                // Pressables reached by Tab report it, as inputs do.
+                // The stops Tab reaches report it, as inputs do.
                 if view.id() != ROOT_ID {
                     surface.event(view.id(), nsh_core::EventKind::Focus, nsh_core::EventPayload::None);
                 }
@@ -561,7 +561,7 @@ define_class!(
             if accepted && let Some(surface) = self.keyboard_surface() {
                 let view = NshView(self.retain());
                 crate::input::set_state(&surface, &view, nsh_core::tailwind::state::FOCUSED, false);
-                // Pressables reached by Tab report it, as inputs do.
+                // The stops Tab reaches report it, as inputs do.
                 if view.id() != ROOT_ID {
                     surface.event(view.id(), nsh_core::EventKind::Blur, nsh_core::EventPayload::None);
                 }
@@ -768,7 +768,7 @@ define_class!(
 );
 
 impl ViewObj {
-    // Only the root stores a surface. A focused pressable child uses its
+    // Only the root stores a surface. A focused child (a Tab stop) uses its
     // ancestors for keyboard handling; drawing and pointer hooks stay root-only.
     fn keyboard_surface(&self) -> Option<std::rc::Rc<Surface>> {
         if let Some(surface) = self.surface() {

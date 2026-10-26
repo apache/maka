@@ -1,5 +1,5 @@
 import { List, signal, Text, View } from "nsh";
-import { Area, Grid, Line, Plot } from "nsh/base/plot";
+import { Area, Grid, Line, Pie, Plot } from "nsh/base/plot";
 import { platform } from "nsh";
 import { alpha, Button, Caption, Card, colors, DemoPage, finish, mono, toneColor } from "../ui";
 
@@ -30,6 +30,25 @@ const TICKERS = Array.from({ length: 48 }, (_, n) => {
 });
 
 const count = (n: number) => n.toLocaleString("en-US");
+
+/** Revenue of a quarter by region, in thousands, the largest first. */
+const REGIONS = [
+  { name: "North America", revenue: 482 },
+  { name: "EMEA", revenue: 312 },
+  { name: "APAC", revenue: 268 },
+  { name: "Latin America", revenue: 104 },
+  { name: "Other", revenue: 74 },
+];
+const REVENUE = REGIONS.reduce((sum, r) => sum + r.revenue, 0);
+/** The theme's series colors: a slice's fill, its legend key's background. */
+const FILLS = ["fill-chart-1", "fill-chart-2", "fill-chart-3", "fill-chart-4", "fill-chart-5"];
+const KEYS = ["bg-chart-1", "bg-chart-2", "bg-chart-3", "bg-chart-4", "bg-chart-5"];
+const money = (k: number) => (k >= 1000 ? `$${(k / 1000).toFixed(2)}M` : `$${k}k`);
+const share = (k: number) => `${((k / REVENUE) * 100).toFixed(1)}%`;
+/** The ring's size, its rim 8 points in (room for the lift), the gaps
+ * between slices 2 points wide there. */
+const RING = pointer ? 168 : 176;
+const RIM = RING / 2 - 8;
 const WEEK_NAMES = ["Last week", "This week"];
 /** The top of the visitors' y scale: a step above the highest grid line,
  * room for the tooltip. */
@@ -76,11 +95,14 @@ function TipValue(props: { value: string; dashed?: boolean }) {
 }
 
 /**
- * Charts: `nsh/base/plot`'s `Plot` with `Line`, `Area` and `Grid`, drawn
+ * Charts: `nsh/base/plot`'s `Plot` with `Line`, `Area`, `Grid` and `Pie`, drawn
  * natively from the app's rows: a week of visitors over the other week
  * (dashed), with a legend, compact y labels and the hover's cross line,
  * dots (each series' own, in its color, ringed in the card's) and tooltip
- * gliding natively, and a list of sparklines, each with a wash in its tone
+ * gliding natively; a donut of revenue by region (2-point gaps, the hovered
+ * slice lifted and the others faded, its value in the hole, a legend with
+ * tabular values at the trailing edge) that turns into a pie; and a list of
+ * sparklines, each with a wash in its tone
  * and its change beside it, that draw in as their rows come. Washes fade
  * out toward the baseline (an area's background, a gradient inside its
  * shape). Grid lines are hairlines with a firmer baseline; the tooltip
@@ -180,6 +202,88 @@ export function Charts() {
     );
   }
 
+  function Shares() {
+    const hover = signal<number | null>(null);
+    const donut = signal(true);
+    const shown = () => (hover() == null ? undefined : REGIONS[hover()!]);
+    return (
+      <Card icon="stocks" title="Revenue by region" subtitle="A donut of shares, with a legend and the hovered slice lifted">
+        <View style={{ flexDirection: pointer ? "row" : "column", alignItems: "center", gap: pointer ? 24 : 16 }}>
+          <Plot
+            data={REGIONS}
+            accessibilityLabel={`Revenue by region, ${money(REVENUE)} in all; largest North America at ${share(482)}`}
+            accessibilityValue={{ text: shown() && `${shown()!.name}: ${money(shown()!.revenue)}, ${share(shown()!.revenue)}` }}
+            appearGeneration={1}
+            motion={{ appear: { duration: 900, easing: "easeOut" }, update: { duration: 450, easing: "easeInOut" }, enter: { duration: 120 }, exit: { duration: 180 }, pointer: { stiffness: 420, damping: 40 } }}
+            onHoverChange={(index) => {
+              hover.set(index);
+              last.set(index == null ? "Pie: left" : `Pie: ${REGIONS[index].name}, ${money(REGIONS[index].revenue)}`);
+            }}
+            style={{ width: RING, height: RING }}
+          >
+            <Pie
+              value="revenue"
+              innerRadius={donut() ? RIM * 0.62 : 0}
+              outerRadius={RIM}
+              padAngle={2 / RIM}
+              sliceClass={(_, i) => FILLS[i % FILLS.length]}
+              hoverLift={6}
+              hoverDim={0.64}
+            />
+            {/* The total in the hole fades as it opens and closes. */}
+            <View
+              class="transition-opacity duration-300 motion-reduce:transition-none"
+              pointerEvents="none"
+              style={{ position: "absolute", left: 0, top: 0, right: 0, bottom: 0, alignItems: "center", justifyContent: "center", gap: 2, opacity: donut() ? 1 : 0 }}
+            >
+              <Text style={{ fontSize: size.detail, color: colors.muted }}>{shown()?.name ?? "Total"}</Text>
+              <Text style={{ fontSize: 20, fontWeight: "600", color: colors.text, fontVariant: ["tabular-nums"] }}>
+                {money(shown()?.revenue ?? REVENUE)}
+              </Text>
+            </View>
+          </Plot>
+          {/* The legend: a key in each slice's color, the value and the share
+              at the trailing edge; the hovered region's row stands out. */}
+          <View style={{ alignSelf: "stretch", flex: pointer ? 1 : undefined, justifyContent: "center", gap: 2 }}>
+            {REGIONS.map((r, i) => (
+              <View
+                class="transition-opacity duration-150 motion-reduce:transition-none"
+                style={{
+                  flexDirection: "row",
+                  alignItems: "center",
+                  gap: 10,
+                  height: pointer ? 30 : 36,
+                  paddingHorizontal: 8,
+                  borderRadius: 6,
+                  backgroundColor: hover() === i ? alpha(colors.text, 0.05) : undefined,
+                  opacity: hover() == null || hover() === i ? 1 : 0.45,
+                }}
+              >
+                <View class={KEYS[i]} style={{ width: 8, height: 8, borderRadius: 2 }} />
+                <Text numberOfLines={1} style={{ flex: 1, fontSize: size.detail + 1, color: colors.text }}>{r.name}</Text>
+                <Text style={{ fontSize: size.detail + 1, color: colors.text, fontVariant: ["tabular-nums"], textAlign: "right" }}>{money(r.revenue)}</Text>
+                <Text style={{ width: 48, fontSize: size.detail + 1, color: colors.muted, fontVariant: ["tabular-nums"], textAlign: "right" }}>{share(r.revenue)}</Text>
+              </View>
+            ))}
+          </View>
+        </View>
+        <View style={{ flexDirection: "row", marginTop: size.gap, alignSelf: pointer ? "flex-start" : "stretch" }}>
+          <Button
+            label={donut() ? "Show as pie" : "Show as donut"}
+            variant="secondary"
+            size={size.switch}
+            flex={pointer ? undefined : 1}
+            onPress={() => {
+              donut.set(!donut());
+              hover.set(null);
+              last.set(`Pie: ${donut() ? "donut" : "pie"}`);
+            }}
+          />
+        </View>
+      </Card>
+    );
+  }
+
   function Sparklines() {
     return (
       <Card icon="stocks" title="Sparklines" subtitle="A plot per row of a list, drawn in as the row comes">
@@ -229,5 +333,5 @@ export function Charts() {
     );
   }
 
-  return <DemoPage cards={[Visitors, Sparklines, Last]} />;
+  return <DemoPage cards={[Visitors, Shares, Sparklines, Last]} />;
 }

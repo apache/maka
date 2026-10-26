@@ -253,7 +253,8 @@ struct View {
     role: AccessibilityRole,
     /// It takes no presses (`disabled`, its accessibility state).
     disabled: bool,
-    /// `focusable`: `Some(false)` keeps a pressable out of Tab's stops.
+    /// `focusable`: `Some(true)` makes it a stop of Tab, `Some(false)` keeps
+    /// a pressable out ([`nsh_core::ViewProps::focus_stop`]).
     focusable: Option<bool>,
     /// It is selected (`selected`, its accessibility state; a canvas node's
     /// `selected`).
@@ -1995,7 +1996,8 @@ impl Screen {
         self.focused = id;
     }
 
-    /// The pressable with the keyboard focus, while it is mounted.
+    /// The view (not an input) with the keyboard focus, while it is
+    /// mounted: a pressable or a `focusable` view Tab moved it to.
     pub(crate) fn key_focus(&self) -> Option<NodeId> {
         self.key_focus.filter(|&id| self.is_attached(id))
     }
@@ -2005,8 +2007,9 @@ impl Screen {
     }
 
     /// Tab's stops, in tree order, as macOS and the web have them: the
-    /// inputs that edit and the views that take presses, shown, enabled
-    /// and not `focusable={false}`.
+    /// inputs that edit and the views [`nsh_core::ViewProps::focus_stop`]
+    /// takes (those that take presses unless `focusable={false}`, and
+    /// `focusable={true}` ones whether or not they do), shown and enabled.
     pub(crate) fn tab_stops(&self) -> Vec<NodeId> {
         self.shown()
             .into_iter()
@@ -2017,9 +2020,13 @@ impl Screen {
                 if let Some(input) = &v.input {
                     return input.config.editable && !self.disabled_from(id, None);
                 }
+                // Disabled is the ancestors' too here (`disabled_from`).
+                let props = nsh_core::ViewProps {
+                    focusable: v.focusable,
+                    ..Default::default()
+                };
                 v.span.is_none()
-                    && v.events.contains(EventKind::Press)
-                    && v.focusable != Some(false)
+                    && props.focus_stop(v.events.contains(EventKind::Press))
                     && !self.disabled_from(id, None)
             })
             .collect()

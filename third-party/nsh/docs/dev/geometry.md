@@ -68,7 +68,9 @@ The rest of the Rust UI API (`nsh_core::element`) follows GPUI's element APIs:
 - **In JS values**: `Point<Points>`, `Size<Points>` and `Bounds<Points>` are `JsValue`s, TS's `Point`, `Size` and
   `Bounds` (`{ x, y }`, `{ width, height }`, `{ origin, size }`), as events carry them, so a Rust component's event
   payloads and ref methods take and return them typed (the `Editor`'s `caretBounds()`); `keymap::Modifiers` is TS's
-  `Modifiers` likewise.
+  `Modifiers` likewise. `Points`, `Radians` and `Percentage` are numbers (points, radians, a fraction), and
+  `DefiniteLength` is CSS's `number | \`${number}%\`` (points, or a percentage of a reference length the prop names),
+  so a Rust component's props take lengths, angles and fractions typed (`Pie`'s `startAngle`, `innerRadius`).
 
 ### Deviations from GPUI, and why
 

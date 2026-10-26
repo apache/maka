@@ -2212,10 +2212,12 @@ pub enum Prop {
     /// events.
     #[prop(js = "tooltip", with = crate::js::host_values::tooltip, reset = Prop::Tooltip(TooltipContent::None), ts = "JSX.Element")]
     Tooltip(TooltipContent),
-    /// `focusable`: whether a view that takes presses is a stop of the
-    /// keyboard focus (Tab, on the platforms that move it between
-    /// pressables); `false` leaves it to the pointer (a backdrop that
-    /// closes a popover). Default true.
+    /// `focusable`: whether the view is a stop of the keyboard focus (Tab,
+    /// on the platforms that move it between views): `true` makes any view
+    /// one, whether or not it takes presses (a chart or a slider in a
+    /// pressable card, which takes its keys while focused); `false` leaves
+    /// a view that takes presses to the pointer (a backdrop that closes a
+    /// popover). Unset, the views that take presses are stops.
     #[prop(js = "focusable")]
     Focusable(Option<bool>),
     /// `selectable` of a view: the texts in it share one selection, as a

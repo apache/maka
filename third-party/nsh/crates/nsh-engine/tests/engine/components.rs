@@ -2610,6 +2610,169 @@ fn a_base_collapsible_places_its_content_while_open() {
     );
 }
 
+const SLOT_TRIGGERS: &str = r##"import { mount, signal, Text, View } from "nsh";
+import { Menu, MenuItem } from "nsh/base";
+import { Disclosure } from "test/ui";
+
+function App() {
+  const locked = signal(false);
+  const presses = signal(0);
+  return (
+    <View>
+      <Menu
+        trigger={
+          <View testID="menu" accessibilityLabel="File menu">
+            <Text>File</Text>
+          </View>
+        }
+      >
+        <MenuItem>
+          <Text>Open</Text>
+        </MenuItem>
+      </Menu>
+      <Disclosure
+        disabled={locked()}
+        trigger={
+          <View
+            testID="toggle"
+            class="w-[40px] h-[20px] bg-[#ffffff] active:bg-[#ff0000] focus:bg-[#00ff00] disabled:opacity-50"
+            onPress={() => presses.set(presses() + 1)}
+          >
+            <Text>Toggle</Text>
+          </View>
+        }
+      />
+      <View testID="lock" onPress={() => locked.set(!locked())} />
+      <Text>{`Presses: ${presses()}`}</Text>
+    </View>
+  );
+}
+
+mount(App);
+"##;
+
+/// A Rust component's props on a slot a TSX app fills go to the app's
+/// element in it, live: `Menu`'s trigger says whether the menu is expanded
+/// as it opens and closes (its binding was read once), and a trigger the
+/// component makes a button takes its presses (the app's `onPress` too),
+/// its role, focus and `disabled` itself, so the app's own `active:`,
+/// `focus:` and `disabled:` classes on it follow them.
+#[test]
+fn a_slots_props_are_the_apps_elements_own_and_live() {
+    use nsh_core::{AccessibilityRole, ViewProps, tailwind::state};
+    let (engine, rx) = start(SLOT_TRIGGERS);
+    let first = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("first frame");
+    assert!(shows(&first, "Presses: 0"));
+    let by_test_id = |test_id: &str| {
+        first
+            .items
+            .iter()
+            .find_map(|i| match i {
+                MountItem::ViewProps { id, props } if props.test_id.as_deref() == Some(test_id) => {
+                    Some(*id)
+                }
+                _ => None,
+            })
+            .expect(test_id)
+    };
+    let (menu, toggle, lock) = (by_test_id("menu"), by_test_id("toggle"), by_test_id("lock"));
+    let props = |batches: &[MountBatch], view| -> Option<ViewProps> {
+        batches
+            .iter()
+            .rev()
+            .flat_map(|b| b.items.iter().rev())
+            .find_map(|i| match i {
+                MountItem::ViewProps { id, props } if *id == view => Some((**props).clone()),
+                _ => None,
+            })
+    };
+    let expanded = |batches: &[MountBatch], view| {
+        props(batches, view).and_then(|p| p.accessibility.state.expanded)
+    };
+    let listens = |batches: &[MountBatch], view| {
+        batches
+            .iter()
+            .rev()
+            .flat_map(|b| b.items.iter().rev())
+            .find_map(|i| match i {
+                MountItem::Events { id, events } if *id == view => {
+                    Some(events.contains(EventKind::Press))
+                }
+                _ => None,
+            })
+    };
+    let style = |batches: &[MountBatch], view| {
+        batches
+            .iter()
+            .rev()
+            .flat_map(|b| b.items.iter().rev())
+            .find_map(|i| match i {
+                MountItem::ViewStyle { id, style } if *id == view => Some(style.clone()),
+                _ => None,
+            })
+            .unwrap_or_default()
+    };
+    let press = |view| {
+        engine
+            .control()
+            .dispatch_event(view, EventKind::Press, EventPayload::None)
+    };
+    let initial = std::slice::from_ref(&first);
+
+    // `Menu`'s trigger: the app's element, with its label, listening to
+    // presses, collapsed.
+    let trigger = props(initial, menu).unwrap();
+    assert_eq!(trigger.accessibility.label.as_deref(), Some("File menu"));
+    assert_eq!(trigger.accessibility.state.expanded, Some(false));
+    assert_eq!(listens(initial, menu), Some(true));
+    // It opens and closes, and says so each time.
+    press(menu);
+    let opened = until(&rx, |b| {
+        expanded(std::slice::from_ref(b), menu) == Some(true)
+    });
+    assert_eq!(expanded(&opened, menu), Some(true));
+    press(menu);
+    let closed = until(&rx, |b| {
+        expanded(std::slice::from_ref(b), menu) == Some(false)
+    });
+    assert_eq!(expanded(&closed, menu), Some(false));
+
+    // The disclosure's trigger: a focusable button, collapsed, listening
+    // to presses (the component's and the app's).
+    let trigger = props(initial, toggle).unwrap();
+    assert_eq!(trigger.accessibility.role, AccessibilityRole::Button);
+    assert_eq!(trigger.focusable, Some(true));
+    assert_eq!(trigger.accessibility.state.expanded, Some(false));
+    assert_eq!(listens(initial, toggle), Some(true));
+    assert_eq!(style(initial, toggle).background_color.0, 0xffff_ffff);
+    // A press: the component's listener and the app's both run.
+    press(toggle);
+    let after = until(&rx, |b| shows(b, "Presses: 1"));
+    assert_eq!(expanded(&after, toggle), Some(true));
+    // Pressed and focused: its own classes.
+    engine.control().set_states(toggle, state::PRESSED);
+    let pressed = until(&rx, |b| {
+        style(std::slice::from_ref(b), toggle).background_color.0 == 0xff00_00ff
+    });
+    assert_eq!(style(&pressed, toggle).background_color.0, 0xff00_00ff);
+    engine.control().set_states(toggle, state::FOCUSED);
+    let focused = until(&rx, |b| {
+        style(std::slice::from_ref(b), toggle).background_color.0 == 0x00ff_00ff
+    });
+    assert_eq!(style(&focused, toggle).background_color.0, 0x00ff_00ff);
+    engine.control().set_states(toggle, 0);
+    // Disabled by the component: its `disabled:` classes, no presses
+    // mounted, disabled for screen readers.
+    press(lock);
+    let locked = until(&rx, |b| {
+        props(std::slice::from_ref(b), toggle).is_some_and(|p| p.accessibility.state.disabled)
+    });
+    assert_eq!(style(&locked, toggle).opacity, 0.5);
+    assert_eq!(listens(&locked, toggle), Some(false));
+}
+
 const BASE_PROGRESS: &str = r##"import { mount, signal, Text, View } from "nsh";
 import { Progress } from "nsh/base";
 
@@ -3880,4 +4043,578 @@ fn base_plot_refreshes_hover_geometry_without_new_pointer_events() {
     for id in [cross, dot, tip_anchor] {
         near(animated(&all, id).opacity, 0.0);
     }
+}
+
+const BASE_PLOT_RADIAL_POSITION: &str = r##"import { mount, signal, Text, View } from "nsh";
+import { Line, Pie, Plot } from "nsh/base/plot";
+function App() {
+  const radial = signal(true);
+  const rows = signal([{ x: NaN, v: 1 }, { x: NaN, v: 1 }]);
+  const hovered = signal<number | null>(null);
+  const events = signal(0);
+  return <View>
+    <Plot testID="plot" data={rows()} x="x" y="v"
+      xScale={{ type: "linear", domain: [0, 1] }}
+      crossLineStyle={{ width: 1, backgroundColor: "#0000ff" }}
+      tooltipPlacement="pointer"
+      tooltipContent={<View testID="tip" style={{ width: 20, height: 10 }} />}
+      onHoverChange={(index) => { hovered.set(index); events.update(n => n + 1); }}
+      style={{ width: 200, height: 100 }}>
+      <If when={radial()} else={<Line />}><Pie /></If>
+    </Plot>
+    <Text>{`mode=${radial()} events=${events()} row=${hovered()}`}</Text>
+    <View testID="line" onPress={() => {
+      rows.set([{ x: 0, v: 1 }, { x: 1, v: 1 }]); radial.set(false);
+    }} />
+    <View testID="pie" onPress={() => radial.set(true)} />
+  </View>;
+}
+mount(App);
+"##;
+
+#[test]
+fn base_plot_radial_position_does_not_use_the_cartesian_scale() {
+    use nsh_core::{Color, HoverEvent, animation::Animator, geometry::point};
+
+    let (engine, rx) = start(BASE_PLOT_RADIAL_POSITION);
+    let mut all = until_drawn(&rx, |_| true);
+    all.extend(until(&rx, |_| false));
+    let plot = test_view(&all, "plot");
+    let parent = |batches: &[MountBatch], child: u32| {
+        batches
+            .iter()
+            .flat_map(|batch| &batch.items)
+            .find_map(|item| match item {
+                MountItem::Insert {
+                    parent, child: id, ..
+                } if *id == child => Some(*parent),
+                _ => None,
+            })
+            .expect("mounted parent")
+    };
+    let cross_part = all
+        .iter()
+        .flat_map(|batch| &batch.items)
+        .find_map(|item| match item {
+            MountItem::ViewStyle { id, style } if style.background_color == Color(0x0000_ffff) => {
+                Some(*id)
+            }
+            _ => None,
+        })
+        .expect("cross line");
+    let cross = parent(&all, cross_part);
+    let tip = test_view(&all, "tip");
+    let tip_anchor = parent(&all, parent(&all, parent(&all, tip)));
+    let assert_position = |batches: &[MountBatch], x: f32| {
+        let mut animator = Animator::default();
+        for item in batches.iter().flat_map(|batch| &batch.items) {
+            animator.apply(item);
+        }
+        for view in [cross, tip_anchor] {
+            let mut actual = None;
+            animator.write(
+                |id| (id == view).then_some(id),
+                |_, values, _| actual = Some(values),
+            );
+            let actual = actual.expect("hover animation bindings");
+            let at = actual.transform[0].expect("bound x coordinate");
+            assert!((at - x).abs() < 0.01, "{at} != {x}");
+            assert_eq!(actual.opacity, Some(1.0));
+        }
+    };
+    let status = |batches: &[MountBatch]| {
+        batches
+            .iter()
+            .flat_map(|batch| &batch.items)
+            .filter_map(|item| match item {
+                MountItem::Text { text, .. } if text.text.starts_with("mode=") => {
+                    Some(text.text.clone())
+                }
+                _ => None,
+            })
+            .next_back()
+            .expect("status text")
+    };
+    let hover = |x: f32, y: f32| {
+        engine.control().dispatch_event(
+            plot,
+            EventKind::HoverMove,
+            EventPayload::Hover(HoverEvent {
+                position: point(px(x), px(y)),
+                ..Default::default()
+            }),
+        );
+    };
+    // The left half is row 1, even though neither row has a finite x.
+    hover(70.0, 50.0);
+    all.extend(until(&rx, |b| shows(b, "mode=true events=1 row=1")));
+    all.extend(until(&rx, |_| false));
+    assert_position(&all, 70.0);
+    // Within that slice: move the anchors, without another row event or draw.
+    hover(65.0, 60.0);
+    let moved = until(&rx, |_| false);
+    assert!(plot_drawings(&moved).is_empty());
+    all.extend(moved);
+    assert_eq!(status(&all), "mode=true events=1 row=1");
+    assert_position(&all, 65.0);
+
+    // The same selected row changes between Cartesian and radial placement.
+    engine.control().dispatch_event(
+        test_view(&all, "line"),
+        EventKind::Press,
+        EventPayload::None,
+    );
+    all.extend(until(&rx, |b| shows(b, "mode=false events=1 row=1")));
+    all.extend(until(&rx, |_| false));
+    hover(190.0, 50.0);
+    all.extend(until(&rx, |_| false));
+    assert_eq!(status(&all), "mode=false events=1 row=1");
+    assert_position(&all, 200.0);
+    engine
+        .control()
+        .dispatch_event(test_view(&all, "pie"), EventKind::Press, EventPayload::None);
+    all.extend(until(&rx, |b| shows(b, "mode=true events=1 row=1")));
+    all.extend(until(&rx, |_| false));
+    hover(70.0, 50.0);
+    all.extend(until(&rx, |_| false));
+    assert_eq!(status(&all), "mode=true events=1 row=1");
+    assert_position(&all, 70.0);
+}
+
+const BASE_PLOT_PIE: &str = r##"import { mount, signal, Text, View } from "nsh";
+import { Arc, Pie, Plot } from "nsh/base/plot";
+
+type Row = { name: string; share: number };
+const FILLS: Record<string, string> = { a: "fill-[#ff0000]", b: "fill-[#00ff00]", c: "fill-[#0000ff]" };
+
+function App() {
+  const hovered = signal<number | null>(null);
+  const rows: Row[] = [
+    { name: "a", share: 1 },
+    { name: "b", share: 1 },
+    { name: "none", share: 0 },
+    { name: "c", share: 2 },
+  ];
+  return (
+    <View>
+      <Plot
+        testID="plot"
+        data={rows}
+        accessibilityLabel="Shares"
+        onHoverChange={(index) => hovered.set(index)}
+        style={{ width: 200, height: 100 }}
+      >
+        <Arc innerRadius="50%" class="fill-[#999999]" />
+        <Pie
+          value="share"
+          innerRadius="50%"
+          padAngle={0.1}
+          hoverLift={6}
+          hoverDim={0.4}
+          sliceClass={(d: Row) => FILLS[d.name]}
+          sliceStyle={{ stroke: "#ffffff", strokeWidth: 2 }}
+        />
+        <Arc startAngle={-Math.PI / 2} endAngle={Math.PI / 2} innerRadius={10} outerRadius={20} />
+      </Plot>
+      <Text>{`hover ${hovered()}`}</Text>
+    </View>
+  );
+}
+
+mount(App);
+"##;
+
+/// An arc of a drawing: its center, radius (`None`: an animated one),
+/// start and end (`NaN`: animated) and whether it turns counterclockwise.
+type DrawnArc = ((f32, f32), Option<f32>, (f32, f32), bool);
+
+/// The arcs of a drawing, in order.
+fn drawn_arcs(ops: &[nsh_core::canvas::CanvasOp]) -> Vec<DrawnArc> {
+    use nsh_core::canvas::{CanvasOp, Num, PathOp};
+    let n = |n: &Num| match n {
+        Num::Const(n) => Some(*n),
+        _ => None,
+    };
+    ops.iter()
+        .filter_map(|op| match op {
+            CanvasOp::Path(PathOp::Arc {
+                x,
+                y,
+                radius,
+                start,
+                end,
+                ccw,
+            }) => Some((
+                (n(x)?, n(y)?),
+                n(radius),
+                (n(start).unwrap_or(f32::NAN), n(end).unwrap_or(f32::NAN)),
+                *ccw,
+            )),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Whether the arcs `got` are `want`, their angles to 1e-4.
+fn same_arcs(got: &[DrawnArc], want: &[DrawnArc]) -> bool {
+    let near = |a: f32, b: f32| (a - b).abs() < 1e-4;
+    got.len() == want.len()
+        && got.iter().zip(want).all(|(g, w)| {
+            g.0 == w.0 && g.1 == w.1 && near(g.2.0, w.2.0) && near(g.2.1, w.2.1) && g.3 == w.3
+        })
+}
+
+/// `nsh/base/plot`'s `Pie` and `Arc` (`gpui-base`'s `Pie` and `Arc`): a
+/// canvas per slice, each its share of the turn from 12 o'clock, a row
+/// worth nothing without one, the pad as wide at the hole as at the rim,
+/// each slice painted with its own classes (a function of its row) and
+/// the pie's style; an arc between two angles. The pointer over the pie
+/// finds the slice under it (none in the hole or outside), the slice
+/// grows by `hoverLift` and the others fade by `hoverDim` on the
+/// animator, and no slice is drawn again for the pointer.
+#[test]
+fn base_plot_pie_draws_a_slice_per_row_and_follows_the_pointer() {
+    use std::f32::consts::{FRAC_PI_2, PI};
+
+    use nsh_core::{
+        Color, HoverEvent,
+        animation::{AnimationValue, Animator},
+        canvas::{CanvasOp, FillRule, Paint},
+        geometry::point,
+    };
+    let (engine, rx) = start(BASE_PLOT_PIE);
+    // The slices' classes come a turn after the rows.
+    let mut all = until_drawn(&rx, |d| {
+        d.ops
+            .contains(&CanvasOp::FillStyle(Paint::Color(Color(0x0000_ffff))))
+    });
+    all.extend(until(&rx, |_| false));
+    let drawings = plot_drawings(&all);
+    // The ring and the gauge (made with the plot), and the slices (made
+    // once the rows' values are read), in the order of their rows.
+    let rim = |d: &nsh_core::canvas::Drawing| drawn_arcs(&d.ops).first().and_then(|a| a.1);
+    let ring = drawings.iter().find(|(_, d)| rim(d) == Some(50.0));
+    let gauge = drawings.iter().find(|(_, d)| rim(d) == Some(20.0));
+    let slices: Vec<_> = drawings.iter().filter(|(_, d)| rim(d).is_none()).collect();
+    let (Some((_, ring)), Some((_, gauge)), [(s0, a), (s1, b), (s3, c)]) =
+        (ring, gauge, &slices[..])
+    else {
+        panic!("a ring, three slices and a gauge: {drawings:?}")
+    };
+    // The slices reach past the plot by the strokes' room and their lift.
+    let mut bleeds = plot_bleeds(&all);
+    bleeds.sort_by(f32::total_cmp);
+    assert_eq!(bleeds, [8.0, 8.0, 14.0, 14.0, 14.0]);
+    // A ring at the plot's center, the largest circle it holds (50) down
+    // to the hole (50%: 25); its own fill.
+    assert!(same_arcs(
+        &drawn_arcs(&ring.ops),
+        &[
+            (
+                (100.0, 50.0),
+                Some(50.0),
+                (-FRAC_PI_2, 3.0 * FRAC_PI_2),
+                false
+            ),
+            (
+                (100.0, 50.0),
+                Some(25.0),
+                (3.0 * FRAC_PI_2, -FRAC_PI_2),
+                true
+            ),
+        ]
+    ));
+    assert_eq!(
+        ring.ops[0],
+        CanvasOp::FillStyle(Paint::Color(Color(0x9999_99ff)))
+    );
+    // The first slice: a quarter from 12 o'clock (1 of 1 + 1 + 2), its rim
+    // animated (the lift), the pad 0.1 wide at the rim (0.05 each side)
+    // and the gap as wide at the hole: its edges half the gap's width
+    // (`50 * sin(0.05)`) from the radials there too.
+    let inner = (50.0 * 0.05f32.sin() / 25.0).asin();
+    assert!(
+        same_arcs(
+            &drawn_arcs(&a.ops),
+            &[
+                ((100.0, 50.0), None, (-FRAC_PI_2 + 0.05, -0.05), false),
+                (
+                    (100.0, 50.0),
+                    Some(25.0),
+                    (-inner, -FRAC_PI_2 + inner),
+                    true
+                ),
+            ]
+        ),
+        "{:?}",
+        drawn_arcs(&a.ops)
+    );
+    assert!((drawn_arcs(&b.ops)[0].2.0 - 0.05).abs() < 1e-4);
+    // The last row's slice: the half after the empty row, which has none.
+    let last = drawn_arcs(&c.ops)[0].2;
+    assert!((last.0 - (FRAC_PI_2 + 0.05)).abs() < 1e-4, "{last:?}");
+    assert!((last.1 - (3.0 * FRAC_PI_2 - 0.05)).abs() < 1e-4, "{last:?}");
+    // Each slice's fill its row's, its stroke the pie's.
+    let fill = |d: &nsh_core::canvas::Drawing| {
+        d.ops.iter().find_map(|op| match op {
+            CanvasOp::FillStyle(Paint::Color(c)) => Some(*c),
+            _ => None,
+        })
+    };
+    assert_eq!(fill(a), Some(Color(0xff00_00ff)));
+    assert_eq!(fill(b), Some(Color(0x00ff_00ff)));
+    assert_eq!(fill(c), Some(Color(0x0000_ffff)));
+    assert!(
+        a.ops
+            .contains(&CanvasOp::StrokeStyle(Paint::Color(Color(0xffff_ffff))))
+    );
+    assert!(a.ops.contains(&CanvasOp::Fill(None, FillRule::NonZero)));
+    // The gauge: the upper half, from 9 o'clock, between 10 and 20.
+    assert!(same_arcs(
+        &drawn_arcs(&gauge.ops),
+        &[
+            ((100.0, 50.0), Some(20.0), (-PI, 0.0), false),
+            ((100.0, 50.0), Some(10.0), (0.0, -PI), true),
+        ]
+    ));
+
+    let plot = test_view(&all, "plot");
+    let hover = |x: f32, y: f32| {
+        engine.control().dispatch_event(
+            plot,
+            EventKind::HoverMove,
+            EventPayload::Hover(HoverEvent {
+                position: point(px(x), px(y)),
+                ..Default::default()
+            }),
+        )
+    };
+    // What the animator shows of a slice: its opacity and its rim.
+    let shown = |all: &[MountBatch], slice: u32| {
+        let mut animator = Animator::default();
+        for item in all.iter().flat_map(|b| b.items.iter()) {
+            animator.apply(item);
+        }
+        let mut out = (f32::NAN, f32::NAN);
+        animator.write(
+            |id| (id == slice).then_some(id),
+            |_, values, args| {
+                out.0 = values.opacity.unwrap_or(f32::NAN);
+                if let Some((_, AnimationValue::Number(r))) = args.first() {
+                    out.1 = *r;
+                }
+            },
+        );
+        out
+    };
+    // To the animator's float precision.
+    let is = |(o, r): (f32, f32), (wo, wr): (f32, f32)| {
+        assert!(
+            (o - wo).abs() < 1e-5 && (r - wr).abs() < 1e-4,
+            "({o}, {r}) is not ({wo}, {wr})"
+        )
+    };
+    is(shown(&all, *s0), (1.0, 50.0));
+    // Upper right: the first row's slice; it grows, the others fade.
+    hover(130.0, 30.0);
+    let over = until(&rx, |b| shows(b, "hover 0"));
+    assert!(plot_drawings(&over).is_empty(), "no slice drawn again");
+    all.extend(over);
+    all.extend(until(&rx, |_| false));
+    is(shown(&all, *s0), (1.0, 56.0));
+    is(shown(&all, *s1), (0.6, 50.0));
+    // Lower left: the last row's.
+    hover(70.0, 70.0);
+    all.extend(until(&rx, |b| shows(b, "hover 3")));
+    all.extend(until(&rx, |_| false));
+    is(shown(&all, *s0), (0.6, 50.0));
+    is(shown(&all, *s3), (1.0, 56.0));
+    // In the hole: none; back on a slice; outside the ring: none.
+    hover(100.0, 50.0);
+    all.extend(until(&rx, |b| shows(b, "hover null")));
+    hover(130.0, 30.0);
+    all.extend(until(&rx, |b| shows(b, "hover 0")));
+    hover(195.0, 5.0);
+    all.extend(until(&rx, |b| shows(b, "hover null")));
+    all.extend(until(&rx, |_| false));
+    // Gone: every slice whole again.
+    is(shown(&all, *s0), (1.0, 50.0));
+    is(shown(&all, *s3), (1.0, 50.0));
+}
+
+const BASE_PLOT_PIE_MOTION: &str = r##"import { mount, signal, Text, View } from "nsh";
+import { Pie, Plot } from "nsh/base/plot";
+
+function App() {
+  const hovered = signal<number | null>(null);
+  return (
+    <View>
+      <Plot
+        testID="plot"
+        data={[{ v: 1 }, { v: 3 }]}
+        y="v"
+        appearGeneration={1}
+        motion={{ appear: { duration: 300 }, enter: { duration: 120 }, pointer: { stiffness: 300, damping: 30 } }}
+        onHoverChange={(index) => hovered.set(index)}
+        style={{ width: 100, height: 100 }}
+      >
+        <Pie hoverLift={4} />
+      </Plot>
+      <Text>{`hover ${hovered()}`}</Text>
+    </View>
+  );
+}
+
+mount(App);
+"##;
+
+/// A pie's motion (`gpui-component`'s pie): the ring sweeps in from its
+/// first slice over the plot's appear, its angles animated values the
+/// platform moves; the slice under the pointer lifts on the pointer
+/// spring. With reduced motion the ring is whole at once.
+#[test]
+fn base_plot_pie_sweeps_in_and_lifts_on_the_pointer_spring() {
+    use nsh_core::{
+        HoverEvent,
+        animation::{AnimationOp, Driver},
+        geometry::point,
+    };
+    let (engine, rx) = start(BASE_PLOT_PIE_MOTION);
+    // Sweeping: the slices' angles are animated values.
+    let mut all = until_drawn(&rx, |d| {
+        drawn_arcs(&d.ops).first().is_some_and(|a| a.2.0.is_nan())
+    });
+    let appear = |b: &MountBatch| {
+        b.items.iter().any(|i| {
+            matches!(
+                i,
+                MountItem::Animation(AnimationOp::Start {
+                    driver: Driver::Timing { duration_ms, .. },
+                    ..
+                }) if *duration_ms == 300.0
+            )
+        })
+    };
+    if !all.iter().any(appear) {
+        all.extend(until(&rx, appear));
+    }
+    let plot = test_view(&all, "plot");
+    // The second row's slice, past 3 o'clock: it lifts on the spring.
+    engine.control().dispatch_event(
+        plot,
+        EventKind::HoverMove,
+        EventPayload::Hover(HoverEvent {
+            position: point(px(30.0), px(60.0)),
+            ..Default::default()
+        }),
+    );
+    let mut over = until(&rx, |b| shows(b, "hover 1"));
+    over.extend(until(&rx, |_| false));
+    assert!(over.iter().flat_map(|b| b.items.iter()).any(|i| matches!(
+        i,
+        MountItem::Animation(AnimationOp::Start {
+            driver: Driver::Spring { .. },
+            ..
+        })
+    )));
+
+    // Reduced motion: whole at once, no sweep.
+    let environment = Environment {
+        reduce_motion: true,
+        ..Environment::default()
+    };
+    let (_engine, rx) = start_in(BASE_PLOT_PIE_MOTION, environment);
+    let mut all = until(&rx, |b| shows(b, "hover null"));
+    all.extend(until(&rx, |_| false));
+    let drawings = plot_drawings(&all);
+    assert_eq!(drawings.len(), 2);
+    assert!(drawings.iter().all(|(_, d)| {
+        let arcs = drawn_arcs(&d.ops);
+        !arcs.is_empty() && arcs.iter().all(|a| !a.2.0.is_nan())
+    }));
+}
+
+const BASE_PLOT_PIE_UPDATE: &str = r##"import { mount, signal, Text, View } from "nsh";
+import { Arc, Pie, Plot } from "nsh/base/plot";
+
+function App() {
+  const donut = signal(true);
+  setTimeout(() => donut.set(false), 50);
+  return (
+    <View>
+      <Plot
+        testID="plot"
+        data={[{ v: 1 }, { v: 3 }]}
+        y="v"
+        motion={{ update: { duration: 250 } }}
+        style={{ width: 100, height: 100 }}
+      >
+        <Arc innerRadius={donut() ? "50%" : 0} />
+        <Pie innerRadius={donut() ? "50%" : 0} padAngle={0.1} />
+      </Plot>
+      <Text>{donut() ? "donut" : "pie"}</Text>
+    </View>
+  );
+}
+
+mount(App);
+"##;
+
+/// A donut turning into a pie (`motion.update`): the hole closes over the
+/// update's timing, its radius an animated value the platform moves, while
+/// the slices' angles stay put. With reduced motion the pie shows at once.
+#[test]
+fn base_plot_pie_radii_move_with_the_update_motion() {
+    use nsh_core::animation::{AnimationOp, Driver};
+    let updates = |b: &MountBatch| {
+        b.items.iter().any(|i| {
+            matches!(
+                i,
+                MountItem::Animation(AnimationOp::Start {
+                    driver: Driver::Timing { duration_ms, .. },
+                    ..
+                }) if *duration_ms == 250.0
+            )
+        })
+    };
+    // The inner edges of the drawings after the switch: each animated.
+    let inner_edges = |all: &[MountBatch]| -> Vec<DrawnArc> {
+        plot_drawings(all)
+            .iter()
+            .map(|(_, d)| *drawn_arcs(&d.ops).last().expect("an inner edge"))
+            .collect()
+    };
+
+    let (_engine, rx) = start(BASE_PLOT_PIE_UPDATE);
+    let mut all = until(&rx, |b| shows(b, "pie"));
+    all.extend(until(&rx, |_| false));
+    assert!(all.iter().any(updates), "the hole closes over the update");
+    let switched = all.iter().position(|b| shows(b, "pie")).unwrap();
+    let edges = inner_edges(&all[switched..]);
+    // The ring and both slices.
+    assert_eq!(edges.len(), 3, "{edges:?}");
+    assert!(edges.iter().all(|e| e.1.is_none() && e.3), "{edges:?}");
+    // The slices' outer edges keep their angles.
+    let rims: Vec<_> = plot_drawings(&all[switched..])
+        .iter()
+        .map(|(_, d)| drawn_arcs(&d.ops)[0])
+        .collect();
+    assert!(
+        rims.iter().all(|a| !a.2.0.is_nan() && a.1.is_some()),
+        "{rims:?}"
+    );
+
+    // Reduced motion: the pie at once, its slices meeting short of the
+    // center.
+    let environment = Environment {
+        reduce_motion: true,
+        ..Environment::default()
+    };
+    let (_engine, rx) = start_in(BASE_PLOT_PIE_UPDATE, environment);
+    let mut all = until(&rx, |b| shows(b, "pie"));
+    all.extend(until(&rx, |_| false));
+    assert!(!all.iter().any(updates));
+    let switched = all.iter().position(|b| shows(b, "pie")).unwrap();
+    let edges = inner_edges(&all[switched..]);
+    assert!(edges.iter().all(|e| e.1.is_some()), "{edges:?}");
 }

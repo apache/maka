@@ -7,7 +7,7 @@ demo: ui-navigation
 
 # nsh/base
 
-`nsh/base` 是应用界面的基础组件层：不带样式、负责行为、状态、焦点和无障碍的组件，各平台通用。它位于基础元素（`nsh`、`nsh/mobile` 和 `nsh/desktop`）与应用自己的组件库之间，就像 GPUI Kit 中 `gpui-base` 位于 `gpui` 与带样式的组件库之间（见[模块](./index.md#three-layers)）。它提供控件（`Button`、`Checkbox`、放在 `RadioGroup` 里的 `Radio`、`Switch`、放在 `Tabs` 里的 `Tab`）、可展开和收起的区域（`Collapsible`）、进度条（`Progress`）、构建图表的部件（`nsh/base/plot` 中的 `Plot` 及 `Line`、`Area`、`Grid`）、由用户自行安排的工作区（放在 `ResizablePanelGroup` 里的 `ResizablePanel`，以及 `DockArea` 的分栏、标签组和停靠区）、Markdown 或 HTML 文档（`TextView`）、代码编辑器（`Editor`）、文本之间的改动（`DiffView`）、表格（`Table` 及其部件、`DataTable`）、文本输入框（`Input`）、显示在一切之上的弹出层（`Popover`，`Menu` 和 `ContextMenu` 及其 `MenuItem`、`MenuSeparator` 和 `Submenu`，`Tooltip`，`Sheet`）、toast（放在 `ToastStack` 中的 `Toast`，生命周期由 `ToastManager` 管理）、导航（由 `createNavStack` 创建的状态驱动、由多个 `NavPage` 组成的 `NavStack`，以及在所有内容之上展示内容的 `Dialog`）和系统警告对话框（`AlertDialog`）。页面和对话框还决定状态栏（`statusBar`）。
+`nsh/base` 是应用界面的基础组件层：不带样式、负责行为、状态、焦点和无障碍的组件，各平台通用。它位于基础元素（`nsh`、`nsh/mobile` 和 `nsh/desktop`）与应用自己的组件库之间，就像 GPUI Kit 中 `gpui-base` 位于 `gpui` 与带样式的组件库之间（见[模块](./index.md#three-layers)）。它提供控件（`Button`、`Checkbox`、放在 `RadioGroup` 里的 `Radio`、`Switch`、放在 `Tabs` 里的 `Tab`）、可展开和收起的区域（`Collapsible`）、进度条（`Progress`）、构建图表的部件（`nsh/base/plot` 中的 `Plot` 及 `Line`、`Area`、`Grid`、`Pie`、`Arc`）、由用户自行安排的工作区（放在 `ResizablePanelGroup` 里的 `ResizablePanel`，以及 `DockArea` 的分栏、标签组和停靠区）、Markdown 或 HTML 文档（`TextView`）、代码编辑器（`Editor`）、文本之间的改动（`DiffView`）、表格（`Table` 及其部件、`DataTable`）、文本输入框（`Input`）、显示在一切之上的弹出层（`Popover`，`Menu` 和 `ContextMenu` 及其 `MenuItem`、`MenuSeparator` 和 `Submenu`，`Tooltip`，`Sheet`）、toast（放在 `ToastStack` 中的 `Toast`，生命周期由 `ToastManager` 管理）、导航（由 `createNavStack` 创建的状态驱动、由多个 `NavPage` 组成的 `NavStack`，以及在所有内容之上展示内容的 `Dialog`）和系统警告对话框（`AlertDialog`）。页面和对话框还决定状态栏（`statusBar`）。
 
 外观由应用决定：页面、对话框或标题栏里的内容都是你自己的 JSX，用基础元素配合样式、[Tailwind](../docs/tailwind.md) 类和主题绘制；或者是[你自己的 crate](../docs/rust.md) 中的 Rust 组件；也可以是社区基于 `nsh/base` 构建的组件库。每个宿主都提供 `nsh/base`；Rust 应用通过 `nsh-base` crate 使用同一套 API（`nsh_base::{button, dialog, …}`）。
 
@@ -197,7 +197,7 @@ import type {
 
 ### Plot（`nsh/base/plot`）
 
-构建图表的部件，对应 `gpui-base` 的 `plot`，位于单独的模块中：`import { Plot, Line, Area, Grid } from "nsh/base/plot"`。`Plot` 持有应用的数据行（`data`，对行的类型是泛型的，所以 `x` 和 `y` 是经过检查的键名或行的函数）、坐标轴的 `point` 或 `linear` 比例尺、指针下的行（`onHoverChange`）以及动效（`motion`：出现动效、悬停的淡入淡出和滑动）；它的图形根据数据行原生绘制，不为每个点运行 JS，使用 SVG 绘制属性（`stroke-*`、`fill-*`）着色，没有设置时使用 `currentColor`；`Area` 可以在形状内显示背景（渐变，`bg-linear-*`）。悬停的十字线、圆点（每个图形可用 `hoverDotClass` 设置自己的圆点）和提示框（`tooltipPlacement`，留在 plot 内）是由应用设置样式和内容的部件，原生移动；坐标轴标签是应用自己的元素。见 [Plot](../elements/plot.md)。
+构建图表的部件，对应 `gpui-base` 的 `plot`，位于单独的模块中：`import { Plot, Line, Area, Grid } from "nsh/base/plot"`。`Plot` 持有应用的数据行（`data`，对行的类型是泛型的，所以 `x` 和 `y` 是经过检查的键名或行的函数）、坐标轴的 `point` 或 `linear` 比例尺、指针下的行（`onHoverChange`）以及动效（`motion`：出现动效、悬停的淡入淡出和滑动）；它的图形根据数据行原生绘制，不为每个点运行 JS，使用 SVG 绘制属性（`stroke-*`、`fill-*`）着色，没有设置时使用 `currentColor`；`Area` 可以在形状内显示背景（渐变，`bg-linear-*`）。悬停的十字线、圆点（每个图形可用 `hoverDotClass` 设置自己的圆点）和提示框（`tooltipPlacement`，留在 plot 内）是由应用设置样式和内容的部件，原生移动；坐标轴标签是应用自己的元素。`Pie` 按每一行把一整圈分成扇区（设置 `innerRadius` 即为环形图），每个扇区用自己的类着色（`sliceClass`，行的函数）；`Arc` 绘制两个角度之间的一段扇形（仪表的轨道和数值）；在饼图上，plot 报告指针下的扇区，它会抬起（`hoverLift`），其他扇区变淡（`hoverDim`）。见 [Plot](../elements/plot.md)。
 
 <a id="workspaces"></a>
 

@@ -2023,12 +2023,14 @@ class Player {
     set("aria-hidden", p.hidden && "true");
   }
 
-  /** Pressables take the keyboard focus (Tab; Enter and Space press them),
-   * unless disabled, hidden from assistive technologies or `focusable`
-   * false. */
+  /** The stops of the keyboard focus (Tab), as `ViewProps::focus_stop`
+   * decides: pressables (Enter and Space press them) unless `focusable`
+   * false, and any `focusable` view, pressable or not (its keys reach it
+   * through the app's keymap); never disabled ones or those hidden from
+   * assistive technologies. */
   updateFocusable(el) {
     const p = el._props;
-    const focusable = el._pressable && !p?.disabled && !p?.hidden && p?.focusable !== false;
+    const focusable = (p?.focusable ?? !!el._pressable) && !p?.disabled && !p?.hidden;
     if (focusable) el.tabIndex = 0;
     // Programmatic focus only for what screen-reader focus moved to.
     else if (el._a11yFocus) el.tabIndex = -1;
@@ -5300,7 +5302,9 @@ class Player {
     if (this.pointers.size === 2) this.startTwoFinger();
     if (p.press) this.pressIn(p);
     for (const v of p.states) this.setState(v, PRESSED, true);
-    if (p.scroll || p.pan) e.preventDefault();
+    // A field in a draggable view still takes focus: preventing the default
+    // keeps the browser from focusing it.
+    if ((p.scroll || p.pan) && !isField) e.preventDefault();
   }
 
   pressIn(p) {

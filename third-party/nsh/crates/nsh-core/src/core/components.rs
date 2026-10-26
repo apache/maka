@@ -447,6 +447,11 @@ pub(super) struct Components {
     slot_names: FxHashMap<NodeId, Arc<str>>,
     /// Slot nodes in a host -> the host.
     pub(super) slot_hosts: FxHashMap<NodeId, NodeId>,
+    /// Slot nodes whose element gives them more than styles -> where that
+    /// goes ([`super::slots`]).
+    pub(super) slot_targets: FxHashMap<NodeId, super::slots::SlotTarget>,
+    /// The app's elements a slot's props go to -> their slot node.
+    pub(super) adopted: FxHashMap<NodeId, NodeId>,
     styles: FxHashMap<StyleRefinement, Arc<ClassList>>,
     /// The styles a component on another's host gets from each above it,
     /// merged (by the lists', which the entry keeps).
@@ -562,6 +567,8 @@ impl Default for Components {
             owners: FxHashMap::default(),
             slot_names: FxHashMap::default(),
             slot_hosts: FxHashMap::default(),
+            slot_targets: FxHashMap::default(),
+            adopted: FxHashMap::default(),
             styles: FxHashMap::default(),
             merges: FxHashMap::default(),
             filling: None,
@@ -908,6 +915,14 @@ impl<M: TextEngine> Core<M> {
     /// Ops from JS on a component's host take its place; others pass
     /// (`Some`).
     pub(super) fn intercept(&mut self, op: Op) -> Result<Option<Op>, ApplyError> {
+        // The app's elements that take a slot's props: their props combine
+        // with the component's ([`super::slots`]).
+        if !self.components.adopted.is_empty()
+            && let Op::SetProp { id, .. } | Op::Listen { id, .. } | Op::Release { id } = &op
+            && self.components.adopted.contains_key(id)
+        {
+            return Ok(self.js_slot_op(op));
+        }
         match op {
             // The app's style on a host goes after the root's own.
             Op::SetStyle { id, patch, .. } if self.is_host(id) => {
@@ -1004,6 +1019,8 @@ impl<M: TextEngine> Core<M> {
                     let host = self.components.slot_hosts[&parent];
                     self.components.mark(host);
                 }
+                // The slot's props follow its one element.
+                self.retarget_slot(parent, None);
                 Ok(None)
             }
             Op::Release { id } if self.components.slot_names.contains_key(&id) => {
@@ -1386,6 +1403,7 @@ impl<M: TextEngine> Core<M> {
 
     /// Slot node `id` leaves its host.
     fn unslot(&mut self, id: NodeId) {
+        self.drop_slot_target(id);
         if let Some(host) = self.components.slot_hosts.remove(&id) {
             if let Some(inst) = self.components.instances.get_mut(&host) {
                 inst.slots.retain(|(_, n)| *n != id);
@@ -2335,7 +2353,7 @@ impl<M: TextEngine> Core<M> {
         }
     }
 
-    fn apply_attrs(&mut self, id: NodeId, new: &Attrs, old: &Attrs) {
+    pub(super) fn apply_attrs(&mut self, id: NodeId, new: &Attrs, old: &Attrs) {
         self.apply_attrs_over(id, new, old, None);
     }
 
@@ -2765,7 +2783,7 @@ impl<M: TextEngine> Core<M> {
                         .is_some_and(|o| o.part == Part::Slot && o.id == node)
                 });
                 let prev = at.and_then(|j| old[j].take());
-                out.push(self.reconcile_slot(prev, node, el, inst));
+                out.push(self.reconcile_slot(prev, node, el, host, inst));
             }
             ElKind::Children => {
                 if placeholder.is_some() || inst.children_at != Placement::None {
@@ -2846,7 +2864,7 @@ impl<M: TextEngine> Core<M> {
                     let _ = self.apply_op(Op::SetProp { id: node, prop });
                 }
                 self.components.props = props;
-                let mut e = self.reconcile_slot(prev, node, el, inst);
+                let mut e = self.reconcile_slot(prev, node, el, host, inst);
                 e.list = config;
                 let rows = self.rows_of_list(node);
                 self.components.lists.insert(node, (list.row.clone(), rows));
@@ -3410,26 +3428,30 @@ impl<M: TextEngine> Core<M> {
         }
     }
 
-    /// Slot node `node` as element `el`: its styles, props and handlers
-    /// (its children are the app's JSX).
+    /// Slot node `node` as element `el` of `host`'s view: its styles, props
+    /// and handlers (its children are the app's JSX). Its bound parts are
+    /// bound as a node's of the view are; what is not a style goes to the
+    /// slot's target, the app's element when the node holds one
+    /// ([`super::slots`]).
     fn reconcile_slot(
         &mut self,
         prev: Option<Expanded>,
         node: NodeId,
         mut el: ElNode,
+        host: NodeId,
         inst: &mut Instance,
     ) -> Expanded {
-        el.resolve_once();
-        let (old_attrs, old_style, old_classes, old_events) = match prev {
-            Some(p) => (p.attrs, p.style, p.classes, p.events),
-            None => (
-                Attrs::default(),
-                StyleRefinement::default(),
-                (None, None),
-                EventMask::default(),
-            ),
+        let bound = super::views::Bound::take(&mut el);
+        // What its bindings applied since it was placed is what the node
+        // has (an `Expanded` keeps what was applied with it).
+        let applied = inst.bound.remove(&node);
+        let (old_attrs, old_style, old_classes) = match (prev, applied) {
+            (Some(_), Some(a)) => (a.attrs, a.style, a.classes),
+            (Some(p), None) => (p.attrs, p.style, p.classes),
+            (None, _) => (Attrs::default(), StyleRefinement::default(), (None, None)),
         };
-        self.apply_attrs(node, &el.attrs, &old_attrs);
+        let bound = bound.map(|bound| self.bind_parts(host, node, bound, &mut el));
+        self.apply_slot_attrs(node, host, &el.attrs, &old_attrs, Some(&mut *inst));
         let classes = self.apply_el_styles(
             node,
             &el.style,
@@ -3438,9 +3460,12 @@ impl<M: TextEngine> Core<M> {
             el.attrs.class.as_ref(),
             None,
         );
+        if bound.is_some() {
+            Self::keep_bound(inst, node, &el.attrs, &el.style, classes.clone(), None);
+        }
         // Its events are the component's first (`component_event` finds it
         // by its host); the node stays JS's or the placing view's.
-        let events = self.apply_handlers(node, &el, old_events, EventMask::default(), inst);
+        let events = self.apply_slot_handlers(node, host, &el, inst);
         Expanded {
             id: node,
             tag: Tag::View,
@@ -4089,6 +4114,7 @@ impl<M: TextEngine> Core<M> {
     pub(super) fn release_expanded(&mut self, e: Expanded) {
         match e.part {
             Part::Slot => {
+                self.drop_slot_target(e.id);
                 self.detach_id(e.id);
                 return;
             }
@@ -4170,6 +4196,7 @@ impl<M: TextEngine> Core<M> {
             }
         }
         for (_, node) in inst.slots {
+            self.drop_slot_target(node);
             self.components.slot_hosts.remove(&node);
             if !content.contains(&node) {
                 self.detach_id(node);
@@ -4263,8 +4290,14 @@ impl<M: TextEngine> Core<M> {
         }
         // A slot's node: the component it is a slot of handles its events,
         // then whoever made it: the component whose view has it, or JS (the
-        // app's list of an `Items` prop has the app's handlers).
-        let slot_of = self.components.slot_hosts.get(&id).copied();
+        // app's list of an `Items` prop has the app's handlers). So does the
+        // app's element that takes the slot's props, then JS.
+        let slot_of = self
+            .components
+            .slot_hosts
+            .get(&id)
+            .copied()
+            .or_else(|| self.adopted_host(id));
         let owner = self.components.owners.get(&id).copied();
         if let Some(host) = slot_of {
             self.handle(host, id, kind, payload);

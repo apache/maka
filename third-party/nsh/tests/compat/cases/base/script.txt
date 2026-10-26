@@ -1093,6 +1093,44 @@ event id:spark onHoverMove position.x=90 position.y=10
 tap id:more
 expect rows 5
 expect hovered null
+# A pie: the slice under the pointer, its row's index. Its angles run
+# clockwise from 12 o'clock: from 3 o'clock (`startAngle`) to 9
+# (`endAngle`), the third row's share the half after 6 o'clock, the
+# second's the quarter before it.
+expect slice null
+event id:pie onHoverMove position.x=55 position.y=80
+expect slice 1
+event id:pie onHoverMove position.x=75 position.y=55
+expect slice 0
+event id:pie onHoverMove position.x=35 position.y=75
+expect slice 2
+# Past its last angle, above 9 o'clock: none.
+event id:pie onHoverMove position.x=25 position.y=45
+expect slice null
+# In the hole (`innerRadius`, 40% of 50) and past the rim (`outerRadius`,
+# 80%): none.
+event id:pie onHoverMove position.x=55 position.y=80
+expect slice 1
+event id:pie onHoverMove position.x=55 position.y=55
+expect slice null
+event id:pie onHoverMove position.x=55 position.y=80
+expect slice 1
+event id:pie onHoverMove position.x=55 position.y=95
+expect slice null
+# The hole closes (`motion.update` moves the drawing): near the center is
+# the first slice now.
+event id:pie onHoverMove position.x=57 position.y=53
+expect slice null
+tap id:hole
+event id:pie onHoverMove position.x=57 position.y=53
+expect slice 0
+covers [nsh/base/plot] Pie
+covers [nsh/base/plot] Arc
+covers [props] Pie.startAngle
+covers [props] Pie.endAngle
+covers [props] Pie.innerRadius
+covers [props] Pie.outerRadius
+covers [props] Plot.motion
 covers [nsh/base/plot] Plot
 covers [nsh/base/plot] Line
 covers [nsh/base/plot] Area

@@ -16,7 +16,7 @@ come from two places:
   (`Toast`, `ToastStack` and the class `ToastManager`: "Toasts" below) and the
   module `AlertDialog`, beside the navigation `nsh-js` makes for it (`NavStack`, `NavPage`, `Dialog`, `createNavStack`); controls
   (toggles, sliders, selects, popovers, sheets, ...) join as their behavior is written. It is a UI set
-  (`Registry::ui_set("nsh/base")`), with the charts' parts `Plot`, `Line`, `Area` and `Grid` in its submodule `nsh/base/plot` (`Registry::submodule`, `js-modules.md`), every host serves by default (`set_ui_sets`' default; embedders with a list of their
+  (`Registry::ui_set("nsh/base")`), with the charts' parts `Plot`, `Line`, `Area`, `Grid`, `Pie` and `Arc` in its submodule `nsh/base/plot` (`Registry::submodule`, `js-modules.md`), every host serves by default (`set_ui_sets`' default; embedders with a list of their
   own add `nsh_base::registry()` to it); Rust apps use `nsh_base::{button, …}`, make navigation and
   dialogs with `nsh_base::{nav_stack, nav_page, dialog}` (on the core's `Stack`, `Screen` and `Modal` host
   elements, whose builders are hidden building blocks of these), and show system alerts with
@@ -181,7 +181,9 @@ reasons: `reactive-components.md`.
 - **The app's content is props too, placed by closures**: the component never creates or touches the app's elements,
   it only lays them out.
   - `header: Prop<Option<Slot>>` is `Some` while the app passes non-empty JSX for it: `props.header.place(|h|
-    h.px_4())` places it (a region; the closure styles the slot's own node).
+    h.px_4())` places it (a region; the closure styles the slot's own node and may give it props, listeners and a
+    ref: `|t| t.accessibility_state(move || ..).on_press(..)`; bindings there are live, as on the view's own nodes;
+    in a TSX app they go to the app's element in the slot, "Children, slots and rows" below).
   - `children: Prop<Children>`: `.child(props.children)` puts them all at one place among the view's own children;
     `.children_each(props.children, |child, at| view().py_3().child(child))` wraps each one (an `Each` keyed by
     the child's node: a child that stays keeps its wrapper; `at` is a `Position`: `index()`, `count()`,
@@ -743,8 +745,22 @@ what changed.
   component goes, they leave its view and stay (JS's, or the content of the view above).
 - Named slots: the JS face creates one holder view per slot **the app passes** (`componentSlot`), filled with that
   prop's JSX. `Prop<Option<Slot>>` is `Some` while the holder has children (the core sets it when it fills or
-  empties); `place(..)` is a region of it, and the slot's element *is* the holder: its styles and handlers apply to
-  it, the core places it but never releases it (it is JS's).
+  empties); `place(..)` is a region of it, and the slot's element is the holder: the core places it but never
+  releases it (it is JS's). Its bound parts are bindings (`Patch`es), as on the view's own nodes. The element's styles
+  (and what shapes the holder's box) apply to the holder; everything else it gives (accessibility, `disabled`,
+  `focusable` and other host props, listeners, touch responder, element ref: `core/slots.rs` `split`) goes to the
+  slot's target: the app's element when the holder holds exactly one (not raw text, a component's host or a list),
+  else the holder. So the app's `active:` / `focus:` / `disabled:` classes and state styles on its own element follow
+  the presses, focus and `disabled` the component gives it, and a ref measures the app's element. The target follows
+  the holder's content (JS inserting or removing in it, `Core::retarget_slot`). On the app's element the two sides
+  combine (`slots::merged`): the component's values win, the app's fill in what it leaves unset (field by field in
+  `accessibilityState`); `disabled`, the state flags and projected states hold when either sets them; both sides'
+  listeners run, the component's first. JS's ops on it go through the core (`Core::js_slot_op`), which keeps JS's
+  own values and sends the combination, and puts them back when the component's part leaves the element (another
+  element joins the holder, the element leaves it, the slot or the component goes). JS's values from before are read
+  from the node (accessibility, `disabled`, `pointerEvents`, `focusable`, projected states); another host prop the
+  component sets too returns to its default when it drops it, unless JS set it since. A slot a Rust view fills keeps
+  a node of the nested view's own around its content when the place gives it anything (below).
 - A slot a Rust view fills (`.fill(name, el)`) has no holder: its content is
   nodes of that view (an element, or a region whose nodes come and go), which the nested component keeps as the
   slot's `Fill` and its view places where it places the slot, as JS children are placed (`Placement`). A place that
@@ -794,9 +810,9 @@ what changed.
   it does: regions change them when they are reconciled. A node a region makes again (kept, the same id) drops the
   handlers, responders and `on_event` listeners its last run gave it, so it hears the new run's only. A listener runs
   in the graph like any other Rust code of the view: the signals it writes run their bindings once it returns.
-- A slot's node (JS's holder, the app's list of an `Items` prop, or another component's content) gets the
-  handlers of the component it is a slot of, then its maker's: JS's (the app's `onLoadMore` on a component with rows)
-  or the view's that passed it.
+- A slot's node (JS's holder or the app's element in it, the app's list of an `Items` prop, or another
+  component's content) gets the handlers of the component it is a slot of, then its maker's: JS's (the app's
+  `onPress` on its trigger, `onLoadMore` on a component with rows) or the view's that passed it.
 - A component's own list reports its viewable rows to it in the core, waiting for `minimum_view_time` when set
   (a task of the list's owner).
 - `cx.emit(event)` is routed after the code that emitted it: to JS as the event itself (`JsEvent::Component`, its

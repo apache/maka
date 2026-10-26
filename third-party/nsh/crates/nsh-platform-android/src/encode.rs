@@ -1149,6 +1149,8 @@ fn role_index(role: AccessibilityRole) -> i32 {
         Cell => 31,
         ColumnHeader => 32,
         RowGroup => 33,
+        Listbox => 34,
+        Option => 35,
     }
 }
 

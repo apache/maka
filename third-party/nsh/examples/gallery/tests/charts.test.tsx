@@ -1,7 +1,9 @@
 // The Charts demo: `nsh/base/plot`'s `Plot` with a line, an area and grid
 // lines over a week of visitors, the row under the pointer reported (the
 // cross line, dots and tooltip are the plot's parts), another week drawn
-// in, and a list of sparklines, one plot per row, that follow no pointer.
+// in, a donut of revenue by region that turns into a pie and reports the
+// slice under the pointer, and a list of sparklines, one plot per row,
+// that follow no pointer.
 import { beforeEach, expect, open, test } from "nsh/test";
 import type { App } from "nsh/test";
 
@@ -36,4 +38,20 @@ test("another week draws the plot again with its rows", async () => {
 test("the sparklines are rows of a list, each a plot of its own", async () => {
   expect(app.texts()).toContain("NSHL");
   expect(app.count("role:image")).toBeGreaterThan(4);
+});
+
+test("a pie reports the slice under the pointer, none in a donut's hole", async () => {
+  const pie = "role:image[Revenue by region, $1.24M in all; largest North America at 38.9%]";
+  expect(app.texts()).toContain("North America");
+  // The middle of the donut is its hole: no slice.
+  await app.hover(pie);
+  await app.wait(50);
+  expect(app.texts()).not.toContain("Pie: North America, $482k");
+  // A whole pie: its middle reads as 3 o'clock, inside the first slice.
+  await app.press("Show as pie");
+  await app.waitFor("Pie: pie");
+  await app.hover(pie);
+  await app.waitFor("Pie: North America, $482k");
+  await app.press("Show as donut");
+  await app.waitFor("Pie: donut");
 });

@@ -8,6 +8,7 @@ mod parent_viewport;
 mod reading;
 mod renders;
 mod services;
+mod slots;
 mod sticky;
 #[cfg(test)]
 mod tests;

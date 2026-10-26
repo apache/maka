@@ -48,9 +48,9 @@ nsh build my-app --release -o build
 dist/nsh/runtime/macos/nsh-macos-host --bundle build/bundle.nshc --window-size 1200x800   # 源码仓库中：target/debug/nsh-macos-host
 ```
 
-`--window-size` 是窗口的初始尺寸（TSX 应用）；窗口可以调整大小。
+`--window-size` 是窗口的初始尺寸（TSX 应用）；窗口可以调整大小。`--display <n>`（`nsh run` / `nsh test --target macos --display <n>`）让窗口在第 `n` 个显示器上居中打开：`1` 是主显示器，即带菜单栏的那个。
 
-`nsh test --target macos` 在 macOS 窗口中运行 TSX 应用的测试：测试打开的每个应用都有自己的窗口，步骤用系统的输入在选择器指向的视图上点击、输入和滚动（[测试](./testing-and-trace.md#在真实平台上运行)）。
+`nsh test --target macos` 在 macOS 窗口中运行 TSX 应用的测试，有副显示器时窗口开在副显示器上（主屏留给你用；`--display <n>` 可以另选）：测试打开的每个应用都有自己的窗口，尺寸就是测试要求的尺寸，显示器比窗口矮时也一样；步骤用系统的输入在选择器指向的视图上点击、输入和滚动（[测试](./testing-and-trace.md#在真实平台上运行)）。
 
 ### 性能监视器
 

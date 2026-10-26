@@ -10,9 +10,12 @@
 // painted with the paint style keys. A headless run paints nothing, so the
 // script checks the plot's layout, its role, label and value, the
 // tooltip's text, where the layout puts the tooltip and the hover's dots,
-// and what it reports.
+// and what it reports. A `Pie` (`value`, `startAngle`, `endAngle`,
+// `innerRadius`, `outerRadius`) over an `Arc` reports the slice under the
+// pointer, none in its hole, outside its ring or past its last angle; its
+// hole closes with `motion.update`, the pointer finding the new ring at once.
 import { Text, View, signal } from "nsh";
-import { Area, Grid, Line, Plot } from "nsh/base/plot";
+import { Arc, Area, Grid, Line, Pie, Plot } from "nsh/base/plot";
 
 type Row = { t: number; price: number; avg: number };
 
@@ -73,6 +76,42 @@ function App() {
       <Plot testID="spark" data={rows()} y="price" interactive={false} accessibilityLabel="Spark" onHoverChange={(index) => hovered.set(index)} style={{ width: 100, height: 20 }}>
         <Line />
       </Plot>
+      <PieCase />
+    </View>
+  );
+}
+
+/** Shares of 1, 1 and 2 over the lower half of a ring from 20 to 40 (the
+ * largest circle of a 100 by 100 plot is 50), from 3 o'clock to 9. */
+function PieCase() {
+  const slice = signal<number | null>(null);
+  const hole = signal(true);
+  return (
+    <View>
+      <Plot
+        testID="pie"
+        data={[{ share: 1 }, { share: 1 }, { share: 2 }]}
+        accessibilityLabel="Shares"
+        motion={{ update: { duration: 200, easing: "easeInOut" } }}
+        onHoverChange={(index) => slice.set(index)}
+        style={{ width: 100, height: 100 }}
+      >
+        <Arc innerRadius={hole() ? "40%" : 0} outerRadius="80%" class="fill-[#eeeeee]" />
+        <Pie
+          value="share"
+          startAngle={Math.PI / 2}
+          endAngle={(3 * Math.PI) / 2}
+          innerRadius={hole() ? "40%" : 0}
+          outerRadius="80%"
+          padAngle={0.02}
+          sliceClass={(_, i) => (i === 0 ? "fill-[#3366ff]" : "fill-[#99aaff]")}
+          sliceStyle={{ stroke: "#ffffff", strokeWidth: 2 }}
+          hoverLift={4}
+          hoverDim={0.3}
+        />
+      </Plot>
+      <Text>{`slice ${slice()}`}</Text>
+      <View testID="hole" onPress={() => hole.set(false)} style={{ height: 20 }} />
     </View>
   );
 }

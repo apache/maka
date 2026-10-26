@@ -10,7 +10,7 @@ demo: ui-navigation
 `nsh/base` is the base component layer of an app's UI: unstyled components that own behavior, state, focus and
 accessibility, on every platform. It sits between the primitives (`nsh`, `nsh/mobile` and `nsh/desktop`) and the
 app's own component library, as `gpui-base` sits between `gpui` and a styled library in GPUI Kit (see
-[Modules](./index.md#three-layers)). It provides controls (`Button`, `Checkbox`, `Radio` in a `RadioGroup`, `Switch`, `Tab` in `Tabs`), regions that expand and collapse (`Collapsible`), a progress bar (`Progress`), the parts charts are built from (`Plot` with `Line`, `Area` and `Grid`, in `nsh/base/plot`), workspaces the user arranges (`ResizablePanel`s in a
+[Modules](./index.md#three-layers)). It provides controls (`Button`, `Checkbox`, `Radio` in a `RadioGroup`, `Switch`, `Tab` in `Tabs`), regions that expand and collapse (`Collapsible`), a progress bar (`Progress`), the parts charts are built from (`Plot` with `Line`, `Area`, `Grid`, `Pie` and `Arc`, in `nsh/base/plot`), workspaces the user arranges (`ResizablePanel`s in a
 `ResizablePanelGroup`, and `DockArea`'s splits, tab groups and docks), documents of Markdown or HTML (`TextView`), a code editor (`Editor`) the changes between texts (`DiffView`) and tables of rows and columns (`Table` and its parts, `DataTable`), text inputs
 (`Input`), popups shown on top of everything (`Popover`, `Menu` and `ContextMenu` with their `MenuItem`,
 `MenuSeparator` and `Submenu`, `Tooltip`, `Sheet`), toasts (`Toast` in a `ToastStack`, their lifecycle in a `ToastManager`), navigation (a `NavStack` of `NavPage`s driven
@@ -227,7 +227,10 @@ and its motion (`motion`: the appear, the hover's fade and glide); its marks dra
 per point, and paint with the SVG paint properties (`stroke-*`, `fill-*`), `currentColor` where none is set; an
 `Area` shows a background (a gradient, `bg-linear-*`) inside its shape. The hover's cross line, dots (each mark's own
 with `hoverDotClass`) and tooltip (`tooltipPlacement`, kept inside the plot) are parts the app styles and fills, moved
-natively; axis labels are the app's own elements. See [Plot](../elements/plot.md).
+natively; axis labels are the app's own elements. A `Pie` splits the turn into a slice per row (a donut with an
+`innerRadius`), each painted with its own classes (`sliceClass`, a function of its row), and an `Arc` draws one sector
+between two angles (a gauge's track and value); over a pie the plot reports the slice under the pointer, which lifts
+(`hoverLift`) while the others fade (`hoverDim`). See [Plot](../elements/plot.md).
 
 ## Workspaces
 

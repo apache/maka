@@ -338,6 +338,13 @@ prop id:important-yes accessible true
 prop id:important-yes accessibilityElementsHidden false
 prop id:actions accessibilityActions activate, magicTap:Magic
 noprop id:plain accessibilityActions
+# A select's popup: a listbox of options, the chosen one selected.
+prop id:listbox role listbox
+prop id:listbox accessibilityLabel Fruit
+prop id:option role option
+prop id:option accessibilityState selected=true
+prop id:other-option role option
+prop id:other-option accessibilityState {}
 covers [props] accessible
 covers [props] accessibilityHint
 covers [props] accessibilityState
@@ -395,6 +402,7 @@ noprop id:plain delayLongPress
 prop id:pan panActivation activeOffsetX=20 failOffsetY=10
 noprop id:plain panActivation
 prop id:unfocusable focusable false
+prop id:stop focusable true
 noprop id:plain focusable
 covers [props] pointerEvents
 covers [props] hitSlop

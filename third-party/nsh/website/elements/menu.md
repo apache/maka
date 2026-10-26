@@ -172,4 +172,5 @@ it in `onOpenChange(open, reason)`: `"triggerPress"`, `"select"`, `"pressOutside
 ## Accessibility
 
 The popup or sheet is a menu and its items menu items for screen readers; the trigger tells whether the menu is
-expanded. Only the items of the level shown are on screen, so screen readers read what is there.
+expanded. In TSX the trigger is the element you pass: it takes the presses and the expanded state itself, so its own
+`active:` classes and `activeStyle` show while it is pressed, and its own `onPress` runs too. Only the items of the level shown are on screen, so screen readers read what is there.

@@ -7642,8 +7642,9 @@ mod components {
             .child(when(shown, || view().h(px(10.0))))
     }
 
-    /// What a view gives a slot's node (its handlers) stays while the node
-    /// is its slot, also once a region of the view runs again.
+    /// What a view gives a slot (its handlers) stays while the node is its
+    /// slot, also once a region of the view runs again. They are on the
+    /// app's element in the slot's node (node 6, in holder 4).
     #[test]
     fn a_slots_handlers_outlive_the_views_regions() {
         let mut c = mount_host::<Toggler>();
@@ -7651,7 +7652,7 @@ mod components {
         c.commit().unwrap();
         assert_eq!(child_ids(&c, 2), [4]);
         let press = |c: &mut Core<FakeEngine>| {
-            c.component_event(4, EventKind::Press, &EventPayload::None);
+            c.component_event(6, EventKind::Press, &EventPayload::None);
             let _ = c.commit();
         };
         press(&mut c);
@@ -7661,6 +7662,374 @@ mod components {
         assert_eq!(child_ids(&c, 2), [4], "the note is gone");
         press(&mut c);
         assert_eq!(child_ids(&c, 2).len(), 2, "and shows again");
+    }
+
+    /// A trigger the app passes, made a disclosure button: its role, focus,
+    /// `disabled` and expanded state, and presses that flip it; the slot's
+    /// node padded.
+    #[derive(Clone, Copy, PartialEq, Props)]
+    struct DisclosureProps {
+        #[prop(default)]
+        disabled: crate::element::Prop<bool>,
+        trigger: crate::element::Prop<Option<Slot>>,
+    }
+
+    #[component]
+    fn Disclosure(props: DisclosureProps) -> impl IntoElement {
+        let open = signal(false);
+        view().child(props.trigger.place(move |t| {
+            t.px_2()
+                .role(crate::AccessibilityRole::Button)
+                .focusable(true)
+                .disabled(props.disabled)
+                .accessibility_state(move || crate::AccessibilityState {
+                    expanded: Some(open.get()),
+                    ..crate::AccessibilityState::default()
+                })
+                .on_press(move |_: &()| open.update(|o| *o = !*o))
+        }))
+    }
+
+    /// Fills host 2's trigger: holder 4 holding the app's element 6 (with
+    /// classes, a label, a selected state and a press listener of JS's), as
+    /// the JS face does (the holder's content first).
+    fn fill_trigger() -> Vec<Op> {
+        use crate::{AccessibilityProp as A, AccessibilityState};
+        vec![
+            Op::Create {
+                id: 4,
+                tag: Tag::View,
+            },
+            Op::SetProp {
+                id: 4,
+                prop: Prop::ComponentSlot("trigger".into()),
+            },
+            Op::Create {
+                id: 6,
+                tag: Tag::View,
+            },
+            class_op(
+                6,
+                "w-[40px] h-[20px] bg-white active:bg-black disabled:opacity-50",
+            ),
+            Op::SetProp {
+                id: 6,
+                prop: Prop::Accessibility(A::Label(Some("Open".into()))),
+            },
+            Op::SetProp {
+                id: 6,
+                prop: Prop::Accessibility(A::State(AccessibilityState {
+                    selected: true,
+                    ..AccessibilityState::default()
+                })),
+            },
+            Op::Listen {
+                id: 6,
+                event: EventKind::Press,
+                enabled: true,
+            },
+            Op::Insert {
+                parent: 4,
+                child: 6,
+                before: None,
+            },
+            Op::Insert {
+                parent: 2,
+                child: 4,
+                before: None,
+            },
+        ]
+    }
+
+    /// The core's view props of node `id`.
+    fn props_of(c: &Core<FakeEngine>, id: NodeId) -> crate::ViewProps {
+        let key = c.key(id).unwrap();
+        c.nodes[key as usize]
+            .props
+            .as_deref()
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// The events node `id` listens to.
+    fn events_of(c: &Core<FakeEngine>, id: NodeId) -> EventMask {
+        c.nodes[c.key(id).unwrap() as usize].events
+    }
+
+    /// In a TSX app a slot's node is JS's holder of the app's JSX: the
+    /// slot's styles stay on it, and its props, listeners and bindings go
+    /// to the app's one element in it, combined with the app's own; its
+    /// bindings stay live (they were read once: an expanded state that
+    /// never followed the trigger's presses).
+    #[test]
+    fn a_slots_props_go_live_to_the_apps_element() {
+        use crate::AccessibilityRole;
+        let mut c = mount_host::<Disclosure>();
+        apply(&mut c, fill_trigger());
+        c.commit().unwrap();
+        let trigger = props_of(&c, 6);
+        assert_eq!(trigger.accessibility.role, AccessibilityRole::Button);
+        assert_eq!(trigger.accessibility.state.expanded, Some(false));
+        assert!(
+            trigger.accessibility.state.selected,
+            "the app's state stays"
+        );
+        assert_eq!(trigger.accessibility.label.as_deref(), Some("Open"));
+        assert_eq!(trigger.focusable, Some(true));
+        assert!(events_of(&c, 6).contains(EventKind::Press));
+        // The holder: the padding, nothing else.
+        let holder = props_of(&c, 4);
+        assert_eq!(holder.accessibility.role, AccessibilityRole::None);
+        assert_eq!(holder.accessibility.state.expanded, None);
+        assert_eq!(holder.focusable, None);
+        assert!(!events_of(&c, 4).contains(EventKind::Press));
+        let frame = c.nodes[c.key(6).unwrap() as usize].frame;
+        assert_eq!((frame.origin.x, frame.size.width), (px(8.0), px(40.0)));
+
+        // A press on the app's element runs the component's listener (and
+        // goes on to JS's: an id of JS's), and the expanded state follows.
+        let press = |c: &mut Core<FakeEngine>| {
+            assert!(!c.component_event(6, EventKind::Press, &EventPayload::None));
+            c.commit();
+        };
+        press(&mut c);
+        assert_eq!(props_of(&c, 6).accessibility.state.expanded, Some(true));
+        assert!(props_of(&c, 6).accessibility.state.selected);
+        press(&mut c);
+        assert_eq!(props_of(&c, 6).accessibility.state.expanded, Some(false));
+        press(&mut c);
+        assert_eq!(props_of(&c, 6).accessibility.state.expanded, Some(true));
+    }
+
+    /// On the app's element the component's props win and the app's fill
+    /// in the rest; `disabled` holds when either sets it, and the element's
+    /// own `disabled:` and `active:` classes follow it; both sides'
+    /// listeners stay. When the element leaves the slot, the app's own
+    /// props and listeners are back on it and the holder takes the
+    /// component's.
+    #[test]
+    fn the_apps_element_combines_its_props_with_the_slots() {
+        use crate::{AccessibilityProp as A, AccessibilityRole, AccessibilityState};
+        let mut c = mount_host::<Disclosure>();
+        apply(&mut c, fill_trigger());
+        c.commit().unwrap();
+
+        // JS changes the element: its label shows, its role and listener
+        // join the component's (which win), its state combines.
+        apply(
+            &mut c,
+            vec![
+                Op::SetProp {
+                    id: 6,
+                    prop: Prop::Accessibility(A::Label(Some("Close".into()))),
+                },
+                Op::SetProp {
+                    id: 6,
+                    prop: Prop::Accessibility(A::Role(AccessibilityRole::Link)),
+                },
+                Op::SetProp {
+                    id: 6,
+                    prop: Prop::Accessibility(A::State(AccessibilityState {
+                        selected: true,
+                        expanded: Some(true),
+                        ..AccessibilityState::default()
+                    })),
+                },
+                Op::Listen {
+                    id: 6,
+                    event: EventKind::Press,
+                    enabled: false,
+                },
+            ],
+        );
+        c.commit();
+        let trigger = props_of(&c, 6);
+        assert_eq!(trigger.accessibility.label.as_deref(), Some("Close"));
+        assert_eq!(trigger.accessibility.role, AccessibilityRole::Button);
+        assert_eq!(trigger.accessibility.state.expanded, Some(false));
+        assert!(trigger.accessibility.state.selected);
+        assert!(
+            events_of(&c, 6).contains(EventKind::Press),
+            "the component still listens"
+        );
+
+        // Pressed: the element's own `active:`.
+        c.set_states(6, crate::tailwind::state::PRESSED);
+        let batch = c.commit().unwrap();
+        assert_eq!(
+            view_style_of(&batch, 6).unwrap().background_color,
+            Color(0x0000_00ff)
+        );
+        c.set_states(6, 0);
+        c.commit();
+
+        // The component disables it: its `disabled:` classes, no presses
+        // mounted, disabled for screen readers.
+        apply(
+            &mut c,
+            vec![Op::SetProp {
+                id: 2,
+                prop: rust_prop::<DisclosureProps>("disabled", Some(json!(true))),
+            }],
+        );
+        let batch = c.commit().unwrap();
+        assert_eq!(view_style_of(&batch, 6).unwrap().opacity, 0.5);
+        assert!(batch.items.iter().any(|i| matches!(
+            i,
+            MountItem::Events { id: 6, events } if !events.contains(EventKind::Press)
+        )));
+        assert!(props_of(&c, 6).accessibility.state.disabled);
+        apply(
+            &mut c,
+            vec![Op::SetProp {
+                id: 2,
+                prop: rust_prop::<DisclosureProps>("disabled", Some(json!(false))),
+            }],
+        );
+        let batch = c.commit().unwrap();
+        assert_eq!(view_style_of(&batch, 6).unwrap().opacity, 1.0);
+
+        // Another element joins it: the slot's node holds two, so the
+        // holder takes the component's part, and the app's element has its
+        // own props and listeners back.
+        apply(
+            &mut c,
+            vec![
+                Op::Create {
+                    id: 8,
+                    tag: Tag::View,
+                },
+                Op::Insert {
+                    parent: 4,
+                    child: 8,
+                    before: None,
+                },
+            ],
+        );
+        c.commit();
+        let trigger = props_of(&c, 6);
+        assert_eq!(trigger.accessibility.role, AccessibilityRole::Link);
+        assert_eq!(trigger.accessibility.state.expanded, Some(true));
+        assert_eq!(trigger.focusable, None);
+        assert!(!events_of(&c, 6).contains(EventKind::Press));
+        let holder = props_of(&c, 4);
+        assert_eq!(holder.accessibility.role, AccessibilityRole::Button);
+        assert_eq!(holder.focusable, Some(true));
+        assert!(events_of(&c, 4).contains(EventKind::Press));
+        assert!(!c.component_event(6, EventKind::Press, &EventPayload::None));
+        c.component_event(4, EventKind::Press, &EventPayload::None);
+        c.commit();
+        assert_eq!(props_of(&c, 4).accessibility.state.expanded, Some(true));
+
+        // It leaves: the component's part is on the app's element again,
+        // live.
+        apply(
+            &mut c,
+            vec![Op::Remove {
+                parent: 4,
+                child: 8,
+            }],
+        );
+        c.commit();
+        assert_eq!(props_of(&c, 6).accessibility.state.expanded, Some(true));
+        assert_eq!(
+            props_of(&c, 6).accessibility.role,
+            AccessibilityRole::Button
+        );
+        assert_eq!(props_of(&c, 4).accessibility.role, AccessibilityRole::None);
+        assert!(!events_of(&c, 4).contains(EventKind::Press));
+        c.component_event(6, EventKind::Press, &EventPayload::None);
+        c.commit();
+        assert_eq!(props_of(&c, 6).accessibility.state.expanded, Some(false));
+
+        // The app empties the slot: its element keeps its own props alone.
+        apply(
+            &mut c,
+            vec![Op::Remove {
+                parent: 4,
+                child: 6,
+            }],
+        );
+        c.commit();
+        let trigger = props_of(&c, 6);
+        assert_eq!(trigger.accessibility.role, AccessibilityRole::Link);
+        assert_eq!(trigger.accessibility.state.expanded, Some(true));
+        assert_eq!(trigger.focusable, None);
+        assert!(!events_of(&c, 6).contains(EventKind::Press));
+        assert_eq!(props_of(&c, 4).accessibility.role, AccessibilityRole::None);
+        assert!(!c.component_event(6, EventKind::Press, &EventPayload::None));
+    }
+
+    #[test]
+    fn adopted_slot_ownership_does_not_follow_released_or_reused_node_ids() {
+        use crate::AccessibilityRole;
+
+        let mut c = mount_host::<Disclosure>();
+        apply(&mut c, fill_trigger());
+        c.commit().unwrap();
+        assert_eq!(c.components.adopted.get(&6), Some(&4));
+        c.component_event(6, EventKind::Press, &EventPayload::None);
+        c.commit();
+        assert_eq!(props_of(&c, 6).accessibility.state.expanded, Some(true));
+
+        // Release without a preceding Remove follows the same production
+        // interception as JS teardown. A fresh allocation of the id outside
+        // the slot must not inherit the old component handler or props.
+        apply(
+            &mut c,
+            vec![
+                Op::Release { id: 6 },
+                Op::Create {
+                    id: 6,
+                    tag: Tag::View,
+                },
+                Op::Insert {
+                    parent: ROOT_ID,
+                    child: 6,
+                    before: None,
+                },
+            ],
+        );
+        c.commit();
+        assert!(!c.components.adopted.contains_key(&6));
+        assert_eq!(props_of(&c, 6).accessibility.role, AccessibilityRole::None);
+        assert!(!events_of(&c, 6).contains_listener(EventKind::Press));
+        c.component_event(6, EventKind::Press, &EventPayload::None);
+        c.commit();
+        assert_eq!(props_of(&c, 4).accessibility.state.expanded, Some(true));
+
+        // The replacement is adopted only after a real insertion into this
+        // holder. Its listener toggles the existing component exactly once.
+        apply(
+            &mut c,
+            vec![Op::Insert {
+                parent: 4,
+                child: 6,
+                before: None,
+            }],
+        );
+        c.commit();
+        assert_eq!(c.components.adopted.get(&6), Some(&4));
+        assert!(events_of(&c, 6).contains_listener(EventKind::Press));
+        c.component_event(6, EventKind::Press, &EventPayload::None);
+        c.commit();
+        assert_eq!(props_of(&c, 6).accessibility.state.expanded, Some(false));
+
+        apply(
+            &mut c,
+            vec![
+                Op::Remove {
+                    parent: ROOT_ID,
+                    child: 2,
+                },
+                Op::Release { id: 2 },
+            ],
+        );
+        c.commit();
+        assert!(!c.components.adopted.contains_key(&6));
+        assert!(!c.components.slot_targets.contains_key(&4));
+        assert_eq!(props_of(&c, 6).accessibility.role, AccessibilityRole::None);
+        assert!(!events_of(&c, 6).contains_listener(EventKind::Press));
     }
 
     #[test]
@@ -11302,6 +11671,114 @@ fn focusable_is_a_view_prop() {
             |i| matches!(i, MountItem::ViewProps { id: 2, props } if props.focusable.is_none())
         )
     );
+}
+
+/// The keyboard focus's stops, decided from what is mounted: views that
+/// take presses, unless `focusable={false}`, and any view that is
+/// `focusable={true}`, without taking presses (a chart in a pressable
+/// card); never a disabled one. Tab goes through them in tree order.
+#[test]
+fn focusable_views_are_stops_without_taking_presses() {
+    let mut c = core();
+    let view = |id: NodeId, parent: NodeId| {
+        [
+            Op::Create { id, tag: Tag::View },
+            Op::Insert {
+                parent,
+                child: id,
+                before: None,
+            },
+        ]
+    };
+    let listen = |id: NodeId, event: EventKind| Op::Listen {
+        id,
+        event,
+        enabled: true,
+    };
+    let focusable = |id: NodeId, on: bool| Op::SetProp {
+        id,
+        prop: Prop::Focusable(Some(on)),
+    };
+    let (card, chart, plain, backdrop, button, off) = (2, 4, 6, 8, 10, 12);
+    let mut ops = Vec::new();
+    ops.extend(view(card, crate::ROOT_ID));
+    ops.push(listen(card, EventKind::Press));
+    ops.extend(view(chart, card));
+    ops.push(focusable(chart, true));
+    ops.push(listen(chart, EventKind::Focus));
+    ops.push(listen(chart, EventKind::Blur));
+    ops.extend(view(plain, crate::ROOT_ID));
+    ops.extend(view(backdrop, crate::ROOT_ID));
+    ops.push(listen(backdrop, EventKind::Press));
+    ops.push(focusable(backdrop, false));
+    ops.extend(view(button, crate::ROOT_ID));
+    ops.push(listen(button, EventKind::Press));
+    ops.extend(view(off, crate::ROOT_ID));
+    ops.push(focusable(off, true));
+    ops.push(Op::SetProp {
+        id: off,
+        prop: Prop::Native(NativeProp::Disabled(true)),
+    });
+    apply(&mut c, ops);
+    let batch = c.commit().unwrap();
+    let props = |id: NodeId| {
+        batch
+            .items
+            .iter()
+            .rev()
+            .find_map(|i| match i {
+                MountItem::ViewProps { id: i, props } if *i == id => Some(props.clone()),
+                _ => None,
+            })
+            .unwrap_or_default()
+    };
+    let events = |id: NodeId| {
+        batch
+            .items
+            .iter()
+            .rev()
+            .find_map(|i| match i {
+                MountItem::Events { id: i, events } if *i == id => Some(*events),
+                _ => None,
+            })
+            .unwrap_or_default()
+    };
+    // Focusable takes no presses: the card around it keeps them.
+    assert!(!events(chart).contains(EventKind::Press));
+    assert!(events(chart).contains(EventKind::Focus));
+    let order = [card, chart, plain, backdrop, button, off];
+    let stops: Vec<NodeId> = order
+        .into_iter()
+        .filter(|&id| props(id).focus_stop(events(id).contains(EventKind::Press)))
+        .collect();
+    assert_eq!(stops, [card, chart, button]);
+    // Tab from nowhere, then on and around.
+    let mut at = None;
+    let mut visited = Vec::new();
+    for _ in 0..4 {
+        at = crate::input::tab_stop(at, stops.len(), false, true);
+        visited.push(stops[at.unwrap()]);
+    }
+    assert_eq!(visited, [card, chart, button, card]);
+    // Unset again: the chart takes no presses, so it is no stop.
+    apply(
+        &mut c,
+        vec![Op::SetProp {
+            id: chart,
+            prop: Prop::Focusable(None),
+        }],
+    );
+    let batch = c.commit().unwrap();
+    let props = batch
+        .items
+        .iter()
+        .find_map(|i| match i {
+            MountItem::ViewProps { id, props } if *id == chart => Some(props.clone()),
+            _ => None,
+        })
+        .expect("the chart's props, sent again");
+    assert!(!props.focus_stop(false));
+    assert!(props.focus_stop(true));
 }
 
 /// Components that run once: their views mounted with bindings.

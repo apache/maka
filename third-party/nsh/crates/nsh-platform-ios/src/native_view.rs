@@ -371,7 +371,10 @@ fn traits(props: &ViewProps) -> UIAccessibilityTraits {
             | AccessibilityRole::Radio
             | AccessibilityRole::Switch
             | AccessibilityRole::Tab
-            | AccessibilityRole::Menuitem => UIAccessibilityTraitButton,
+            | AccessibilityRole::Menuitem
+            // UIKit has no option trait: an option is chosen by activating
+            // it, and the selected one carries the Selected trait below.
+            | AccessibilityRole::Option => UIAccessibilityTraitButton,
             AccessibilityRole::Link => UIAccessibilityTraitLink,
             AccessibilityRole::Search => UIAccessibilityTraitSearchField,
             AccessibilityRole::Image => UIAccessibilityTraitImage,

@@ -309,6 +309,83 @@ impl JsValue for crate::geometry::Points {
         self.0.to_js(host)
     }
 }
+
+/// An angle, a number of radians (as `Math.PI` and the canvas's `arc`
+/// take them).
+impl JsValue for crate::geometry::Radians {
+    fn ts_type(_types: &mut TsTypes) -> String {
+        "number".into()
+    }
+
+    fn from_js(value: JsIn<'_>) -> Result<Self, PropError> {
+        f32::from_js(value).map(Self)
+    }
+
+    fn to_js<'a>(&self, host: &'a dyn JsHost) -> Result<JsOwned<'a>, PropError> {
+        self.0.to_js(host)
+    }
+}
+
+/// A fraction, a number (`0.35` is 35%, as `opacity` takes it).
+impl JsValue for crate::geometry::Percentage {
+    fn ts_type(_types: &mut TsTypes) -> String {
+        "number".into()
+    }
+
+    fn from_js(value: JsIn<'_>) -> Result<Self, PropError> {
+        f32::from_js(value).map(Self)
+    }
+
+    fn to_js<'a>(&self, host: &'a dyn JsHost) -> Result<JsOwned<'a>, PropError> {
+        self.0.to_js(host)
+    }
+}
+
+/// A length of points or a percentage of a reference length the prop
+/// names, as CSS writes them: a number of points, or `"50%"` (TS
+/// ``number | `${number}%` ``). A length in rems, which only Rust makes,
+/// reads back as its CSS text (`"1.5rem"`).
+impl JsValue for crate::geometry::DefiniteLength {
+    fn ts_type(_types: &mut TsTypes) -> String {
+        "number | `${number}%`".into()
+    }
+
+    fn from_js(value: JsIn<'_>) -> Result<Self, PropError> {
+        use crate::geometry::{AbsoluteLength, DefiniteLength, Percentage, Points};
+        if let Some(n) = value.as_number() {
+            return Ok(DefiniteLength::Absolute(AbsoluteLength::Points(Points(
+                n as f32,
+            ))));
+        }
+        value
+            .as_string()
+            .as_deref()
+            .and_then(percent)
+            .map(|p| DefiniteLength::Fraction(Percentage(p / 100.0)))
+            .ok_or_else(|| value.expected("a number of points or a percentage (\"50%\")"))
+    }
+
+    fn to_js<'a>(&self, host: &'a dyn JsHost) -> Result<JsOwned<'a>, PropError> {
+        use crate::geometry::{AbsoluteLength, DefiniteLength};
+        match *self {
+            DefiniteLength::Absolute(AbsoluteLength::Points(p)) => p.to_js(host),
+            DefiniteLength::Absolute(AbsoluteLength::Rems(r)) => {
+                Ok(JsOwned::new(host, host.new_string(&format!("{}rem", r.0))?))
+            }
+            DefiniteLength::Fraction(f) => Ok(JsOwned::new(
+                host,
+                host.new_string(&format!("{}%", f.0 * 100.0))?,
+            )),
+        }
+    }
+}
+
+/// The number of a CSS percentage (`"62.5%"` is 62.5); `None` for
+/// anything else.
+fn percent(text: &str) -> Option<f32> {
+    let n: f32 = text.trim().strip_suffix('%')?.trim_end().parse().ok()?;
+    n.is_finite().then_some(n)
+}
 number!(whole: i16, i32, i64, u16, u32, u64, usize);
 
 /// A whole number of pixels (an image's size).
@@ -710,5 +787,22 @@ impl<T: JsValue> JsValue for Vec<T> {
         }
         let raws = items.into_iter().map(JsOwned::into_raw).collect();
         Ok(JsOwned::new(host, host.new_array(raws)?))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::percent;
+
+    /// A percentage as CSS writes it; anything else is not one.
+    #[test]
+    fn percentages_read_as_css_writes_them() {
+        assert_eq!(percent("50%"), Some(50.0));
+        assert_eq!(percent(" 62.5 %"), Some(62.5));
+        assert_eq!(percent("-10%"), Some(-10.0));
+        assert_eq!(percent("50"), None);
+        assert_eq!(percent("50px"), None);
+        assert_eq!(percent("%"), None);
+        assert_eq!(percent("NaN%"), None);
     }
 }

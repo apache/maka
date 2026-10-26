@@ -54,9 +54,12 @@ nsh build my-app --release -o build
 dist/nsh/runtime/macos/nsh-macos-host --bundle build/bundle.nshc --window-size 1200x800   # in a checkout: target/debug/nsh-macos-host
 ```
 
-`--window-size` is the window's initial size (TSX apps); the window can be resized.
+`--window-size` is the window's initial size (TSX apps); the window can be resized. `--display <n>` (`nsh run` / `nsh test
+--target macos --display <n>`) centers it on display `n`: `1` is the primary display, the one with the menu bar.
 
-`nsh test --target macos` runs a TSX app's tests in macOS windows: each app a test opens gets a window of its own, and
+`nsh test --target macos` runs a TSX app's tests in macOS windows, on a secondary display when there is one (the main
+screen stays yours; `--display <n>` picks another): each app a test opens gets a window of its own, at the size the
+test asks for even on a display shorter than it, and
 the steps click, type and scroll with the system's input at the views their selectors name
 ([Testing](./testing-and-trace.md#on-a-real-platform)).
 

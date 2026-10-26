@@ -7,7 +7,7 @@ type Edge = "top" | "right" | "bottom" | "left";
 const EDGES: Edge[] = ["top", "right", "bottom", "left"];
 
 // `calc(env(safe-area-inset-<edge>) + 16px)` on the edges chosen, 16 px on the others.
-const side = (edges: Edge[], e: Edge) => (edges.includes(e) ? `calc(env(safe-area-inset-${e}) + 16px)` : 16);
+const side = (edges: Edge[], e: Edge) => (edges.includes(e) ? (`calc(env(safe-area-inset-${e}) + 16px)` as const) : 16);
 const padding = (edges: Edge[]) => ({
   paddingTop: side(edges, "top"),
   paddingRight: side(edges, "right"),

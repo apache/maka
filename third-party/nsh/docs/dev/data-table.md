@@ -104,7 +104,8 @@ frame, and scrolling while they tick holds 143 of 144 frames, ~3 ms a frame.
 The table is one stop of Tab, as gpui-component's (a `tab_stop` focus handle): its hit layer's content box, whose
 `onFocus` / `onBlur` set the table's focus (`Dt::set_focus`), which binds its keys; its rows, titles and sort buttons
 are `focusable(false)`. While it has the keyboard Tab moves the selection, as gpui-component's, and Escape gives it
-back. A press, `focus()` and `blur()` set the same flag. Tab stops at pressables on macOS and the web.
+back. A press, `focus()` and `blur()` set the same flag. Tab stops at pressables and `focusable(true)` views on macOS
+and the web (`ViewProps::focus_stop`).
 
 ## Compared with gpui-component
 

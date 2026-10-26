@@ -1603,9 +1603,13 @@ pub trait Interactive: Element {
         self
     }
 
-    /// Whether a view that takes presses is a stop of the keyboard focus
-    /// (Tab; default true): false leaves it to the pointer, as a backdrop
-    /// that closes a popover is.
+    /// Whether the view is a stop of the keyboard focus (Tab): true makes
+    /// any view one, whether or not it takes presses (a component that
+    /// takes its keys while focused, through `on_focus` / `on_blur` and the
+    /// keymap, without taking the presses of a pressable around it); false
+    /// leaves a view that takes presses to the pointer, as a backdrop that
+    /// closes a popover is. Unset, the views that take presses are stops
+    /// ([`crate::ViewProps::focus_stop`]).
     fn focusable(mut self, focusable: impl IntoReactive<bool>) -> Self {
         super::host::bind_prop(self.node(), focusable, |focusable| {
             Prop::Focusable(Some(focusable))

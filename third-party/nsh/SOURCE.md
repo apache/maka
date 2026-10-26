@@ -26,7 +26,7 @@ at `de176695240d550f2b303643b8019146c7989e7f`. The upstream project is
 
 `upstream.json` keeps that initial `repository` and `revision`. Its
 `upstream_revision` records the latest integrated `longbridge/nsh` main revision:
-`76fa8a7fed47ea51aea01fa85bb40960be15d984`. The first upstream synchronization
+`1e912e1a9e079c2dc632db7bb505ce40bed1d5f9`. The first upstream synchronization
 starts from `6bb0b7908043132067456e4a21dd57c90a0bdce5`, already included in the
 initial fork import.
 
@@ -51,6 +51,17 @@ focus-return and root-retirement safety, native keymap support, input editing,
 and all fork-only resources remain part of the mixed-source tree. Deleted
 selection, device, keymap and native-service pages move their local contracts
 into the corresponding canonical documentation pages.
+
+The subsequent bounded synchronization adds live slot bindings and sole-child
+slot adoption, explicit nonpressable keyboard stops, listbox/option accessibility
+roles, native navigation fixes, and Pie/Arc marks. Slot adoption does not replace
+Maka's explicit Button trigger actions: Rust component hosts remain excluded.
+The terminal and GPUI view-stop adaptations retain native component focus
+capability, input exclusions, popup scopes and retirement ownership. Android
+accessibility role indices 34/35 are separate from the preserved mount opcodes
+34 (retire), 35 (project) and 36 (component slots). Cartesian stationary-hover
+geometry refresh remains separate from selection notifications, while radial
+placement follows the pointer without requiring a finite Cartesian x value.
 
 The trailing-whitespace measurement integration preserves `TextEngine::measure_canvas`
 for platform-specific advances (including the terminal font catalog), while

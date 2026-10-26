@@ -331,7 +331,7 @@ pub(crate) fn props_changed(surface: &Rc<Surface>, view: &NshView) {
 }
 
 fn release_invalid_control_focus(surface: &Surface, view: &NshView) {
-    if view.kind() == ViewKind::Input || is_key_control(view) {
+    if view.kind() == ViewKind::Input || is_key_stop(view) {
         return;
     }
     let Some(window) = view.ns().window() else {
@@ -473,6 +473,12 @@ fn set_cursor_at(surface: &Surface, x: f32, y: f32, always: bool) {
     }
 }
 
+/// Where the mouse last was (root coordinates), while it is over the root:
+/// where the pointer events the root got put it, the test agent's too.
+pub(crate) fn pointer_location(surface: &Surface) -> Option<(f32, f32)> {
+    surface.input.last.get()
+}
+
 /// Sets the cursor again where the mouse is (what is under it changed).
 fn refresh_cursor(surface: &Surface) {
     if let Some((x, y)) = surface.input.last.get() {
@@ -558,6 +564,19 @@ pub(crate) fn event(surface: &Rc<Surface>, event: &NSEvent) {
     let (x, y) = (p.x as f32, p.y as f32);
     let time = event.timestamp() * 1000.0;
     let input = &surface.input;
+    // Every button's press and release puts the mouse there, the secondary
+    // ones' too: a menu the app opens on a right click without a place
+    // (`Menu.popup()`) opens where that click was, not where an earlier
+    // press left it (`chrome::popup`).
+    if matches!(
+        ty,
+        NSEventType::RightMouseDown
+            | NSEventType::RightMouseUp
+            | NSEventType::OtherMouseDown
+            | NSEventType::OtherMouseUp
+    ) {
+        input.last.set(Some((x, y)));
+    }
     match ty {
         // Control-click is the secondary click on macOS.
         NSEventType::LeftMouseDown
@@ -565,6 +584,7 @@ pub(crate) fn event(surface: &Rc<Surface>, event: &NSEvent) {
                 .modifierFlags()
                 .contains(NSEventModifierFlags::Control) =>
         {
+            input.last.set(Some((x, y)));
             context_menu(surface, x, y, event.modifierFlags());
         }
         NSEventType::RightMouseDown => context_menu(surface, x, y, event.modifierFlags()),
@@ -740,15 +760,27 @@ pub(crate) fn key(surface: &Rc<Surface>, event: &NSEvent, down: bool) -> bool {
     crate::scroll::key_scroll(surface, &hit.view, horizontal, m)
 }
 
-/// A mounted ordinary view that can be reached and activated by keyboard.
+/// A mounted ordinary view the keyboard focus stops at (Tab): one that
+/// takes presses, or any `focusable` one ([`nsh_core::ViewProps::focus_stop`]),
+/// shown and reachable by the pointer.
+pub(crate) fn is_key_stop(view: &NshView) -> bool {
+    {
+        let state = view.state();
+        if state.kind == ViewKind::Input
+            || !state
+                .props
+                .focus_stop(state.events.contains(EventKind::Press))
+        {
+            return false;
+        }
+    }
+    view.can_target() && !view.ns().isHiddenOrHasHiddenAncestor()
+}
+
+/// A stop that Return and Space press ([`is_key_stop`] taking presses): a
+/// stop that takes none hears its keys through the app's keymap.
 pub(crate) fn is_key_control(view: &NshView) -> bool {
-    let state = view.state();
-    state.kind != ViewKind::Input
-        && state.events.contains(EventKind::Press)
-        && state.props.focusable != Some(false)
-        && !state.props.accessibility.state.disabled
-        && view.can_target()
-        && !view.ns().isHiddenOrHasHiddenAncestor()
+    is_key_stop(view) && view.state().events.contains(EventKind::Press)
 }
 
 /// Current AppKit keyboard focus, from the responder through its native
@@ -804,8 +836,8 @@ pub(crate) fn control_activation_target(surface: &Surface, event: &NSEvent) -> O
 }
 
 /// Tab / Shift+Tab (or with Control) with the root focused: moves into
-/// AppKit's key view loop (fields and pressable views), from the first or last, so
-/// focus never gets stuck on the root.
+/// AppKit's key view loop (fields and the views [`is_key_stop`] takes), from
+/// the first or last, so focus never gets stuck on the root.
 fn tab(surface: &Surface, event: &NSEvent) -> bool {
     const TAB: u16 = 48;
     let flags = event.modifierFlags();
@@ -823,7 +855,7 @@ fn tab(surface: &Surface, event: &NSEvent) -> bool {
     let from = responder
         .as_ref()
         .and_then(|responder| responder.downcast_ref::<objc2_app_kit::NSView>())
-        .filter(|view| NshView::from_ns(view).is_some_and(|view| is_key_control(&view)))
+        .filter(|view| NshView::from_ns(view).is_some_and(|view| is_key_stop(&view)))
         .unwrap_or(surface.root.ns());
     crate::text_input::tab(surface, from, flags.contains(NSEventModifierFlags::Shift));
     true

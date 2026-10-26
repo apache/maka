@@ -164,8 +164,10 @@ Things that were found the hard way. Read the section of the area you change bef
 - **`TextView` uses `UIViewContentMode::Redraw`**: list cells can get their text before their frame; without redrawing on
   resize the text stays drawn at zero size.
 - **UINavigationController breaks transitions started during another one**: stack changes that arrive while
-  `transitionCoordinator()` is set wait for `didShow` and are applied on the next main-queue turn (the coordinator outlives
-  the callback); only pages the controller actually had count as popped by the user.
+  `transitionCoordinator()` is set wait for the transition's end (`didShow`, or the coordinator's completion: a modal
+  presented or dismissed over the stack sets the coordinator too and never reaches `didShow`) and are applied on the next
+  main-queue turn (the coordinator outlives those callbacks); only pages the controller actually had count as popped by
+  the user.
 - **UIKit installs its own interactive-pop delegate while loading a navigation controller's view**: assigning NSH's
   delegate when the stack is created can be overwritten. Bind the current recognizer in `didShow`, after UIKit has
   configured the screen, so hidden headers use NSH's mounted `popOnSwipe` / `popOnBack` policy too. Verify the gesture

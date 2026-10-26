@@ -1,12 +1,13 @@
 //! `nsh/base/plot`: the parts charts are built from, as `gpui-base`'s
 //! `plot` module, with no look of their own. A [`Plot`] holds the rows of
 //! data, the scales of its two axes, the pointer over it and its motion;
-//! its marks ([`Line`], [`Area`], [`Grid`]) draw what it holds, each one
-//! canvas filling the plot, natively: the rows are read once when the app
-//! sets them, scaled, recorded and drawn in Rust, so no JS runs per point,
-//! and the pointer, the hover's glide and fade and the appear run in Rust
-//! and on the platform's animator (the app hears of a new index, nothing
-//! more). Marks paint with SVG's paint properties, CSS's on any element
+//! its marks ([`Line`], [`Area`], [`Grid`], and the radial [`Pie`] and
+//! [`Arc`]) draw what it holds, each a canvas filling the plot (a pie one
+//! per slice), natively: the rows are read once when the app sets them,
+//! scaled, recorded and drawn in Rust, so no JS runs per point, and the
+//! pointer, the hover's glide and fade and the appear run in Rust and on
+//! the platform's animator (the app hears of a new index, nothing more).
+//! Marks paint with SVG's paint properties, CSS's on any element
 //! (`fill-*`, `stroke-*`, `strokeWidth`, `strokeDasharray`),
 //! `currentColor` where the app sets none, and an `Area` shows the app's
 //! background (a gradient) inside its shape; the hover's cross line, dots
@@ -14,15 +15,16 @@
 //! fills, the tooltip placed and kept inside the plot natively.
 //!
 //! A module of its own (`nsh/base/plot`, a submodule of the `nsh/base`
-//! set) because `Line`, `Area` and `Grid` only make sense inside a plot.
+//! set) because its marks only make sense inside a plot.
 
 mod area;
 mod grid;
 mod line;
+mod pie;
 mod scale;
 mod series;
 
-use std::sync::Arc;
+use std::rc::Rc;
 
 use nsh_core::{
     AccessibilityValue,
@@ -34,6 +36,7 @@ pub use self::{
     area::{Area, AreaElement, AreaProps, area},
     grid::{Grid, GridElement, GridProps, grid},
     line::{Curve, Line, LineElement, LineProps, line},
+    pie::{Arc, ArcElement, ArcProps, Pie, PieElement, PieProps, SliceClass, arc, pie},
     scale::Scale,
 };
 use self::{
@@ -52,13 +55,15 @@ pub fn registry() -> Registry {
         .register::<Plot>()
         .register::<Line>()
         .register::<Area>()
-        .register::<Grid>();
+        .register::<Grid>()
+        .register::<Pie>()
+        .register::<Arc>();
     registry
 }
 
 /// The timing of a plot's motion (`gpui-base`'s `PlotMotion`): how its
-/// marks appear, how the hover fades in and out, and the spring the hover
-/// follows the pointer with. Each is the app's; none moves at once, as
+/// marks appear and change shape, how the hover fades in and out, and the
+/// spring the hover follows the pointer with. Each is the app's; none moves at once, as
 /// `gpui-base`'s zero durations do, and so does every one while the user
 /// asks for reduced motion.
 #[derive(Debug, Clone, Copy, Default, PartialEq, JsObject)]
@@ -76,6 +81,11 @@ pub struct PlotMotion {
     /// the plot is first shown with an `appearGeneration`, and again each
     /// time that changes.
     pub appear: Option<Timing>,
+    /// How marks move to a new shape when the app changes it, as d3's
+    /// update transitions do between `enter` and `exit`: a pie's or an
+    /// arc's radii (a donut's hole opening or closing). None by default:
+    /// the new shape shows at once. `gpui-base` has no such motion.
+    pub update: Option<Timing>,
 }
 
 /// What screen readers hear as the plot's value (TS `{ min?, max?, now?,
@@ -201,7 +211,8 @@ pub struct PlotProps {
 pub enum PlotEvent {
     /// The pointer came over another row (`gpui-base`'s
     /// `TooltipState::index`): the index of the row nearest to it along
-    /// the x axis, `null` once it leaves the plot.
+    /// the x axis, or of the slice of a `Pie` under it; `null` once it
+    /// leaves the plot (or, over a pie, its slices).
     #[args(index)]
     HoverChange(Option<u32>),
 }
@@ -229,7 +240,7 @@ impl XMap {
     }
 
     /// Where the rows `values` go (a row's index without values).
-    fn ticks(&self, len: usize, values: Option<&[f64]>) -> Arc<[f32]> {
+    fn ticks(&self, len: usize, values: Option<&[f64]>) -> std::sync::Arc<[f32]> {
         let at = |v: f64| self.tick(v).unwrap_or(f32::NAN);
         match (self, values) {
             (XMap::Linear(_), Some(values)) => values.iter().map(|&v| at(v)).collect(),
@@ -246,7 +257,7 @@ struct PlotContext {
     /// Where values go along the x axis.
     x_map: Memo<XMap>,
     /// Where each of the plot's rows goes along the x axis (NaN: nowhere).
-    xs: Memo<Arc<[f32]>>,
+    xs: Memo<std::sync::Arc<[f32]>>,
     /// Where values go along the y axis.
     y_map: Memo<Linear>,
     /// The plot's size.
@@ -260,6 +271,33 @@ struct PlotContext {
     reveal: AnimatedValue,
     /// The appear runs: the marks clip to `reveal`.
     appearing: Signal<bool>,
+    /// The plot's motion, for marks that move on hover (a pie's slices
+    /// lift on the pointer spring).
+    motion: Prop<Option<PlotMotion>>,
+    /// How far the hover has faded in, 0 to 1 (`PlotHover::progress`), on
+    /// the platform's animator: the hover's parts fade with it, a pie's
+    /// slices lift and dim with it.
+    fade: AnimatedValue,
+    /// The row under the pointer (`TooltipState::index`).
+    hovered: Signal<Option<u32>>,
+    /// The radial marks' tests of the row under a point (a pie's slice):
+    /// with any, the pointer is over what they find, not the row nearest
+    /// along the x axis.
+    hits: Signal<Vec<Hit>>,
+}
+
+/// A radial mark's test of the row under a point of the plot
+/// (`gpui-base`'s `Arc::contains`, `shape/arc.rs:191`), while it lives.
+#[derive(Clone)]
+struct Hit {
+    key: u64,
+    at: Rc<dyn Fn(Point<Points>) -> Option<u32>>,
+}
+
+impl PartialEq for Hit {
+    fn eq(&self, other: &Self) -> bool {
+        self.key == other.key
+    }
 }
 
 impl PlotContext {
@@ -294,6 +332,26 @@ impl PlotContext {
         });
     }
 
+    /// Tests what is under the pointer with `at` while the current owner
+    /// lives (a radial mark's slices).
+    fn add_hit(&self, at: impl Fn(Point<Points>) -> Option<u32> + 'static) {
+        let key = self.next.get();
+        self.next.replace(key + 1);
+        let hits = self.hits;
+        hits.update(|all| {
+            all.push(Hit {
+                key,
+                at: Rc::new(at),
+            })
+        });
+        cleanup(move || {
+            if let Some(mut all) = hits.try_get() {
+                all.retain(|h| h.key != key);
+                hits.try_set(all);
+            }
+        });
+    }
+
     /// Records the clip of the appear while it runs (before what a mark
     /// draws): the marks show from the leading edge to `reveal` of the
     /// plot's width.
@@ -318,8 +376,9 @@ impl PlotContext {
 /// A plot (`gpui-base`'s `Plot`): the rows of data a chart shows, the
 /// scales of its x and y axes, its size as their range, the pointer over
 /// it and its motion. It draws nothing itself: its marks, the children
-/// (`Line`, `Area`, `Grid`), each fill it and draw in order over each
-/// other. It reports the row nearest to the pointer (`onHoverChange`) and
+/// (`Line`, `Area`, `Grid`, `Pie`, `Arc`), each fill it and draw in order
+/// over each other. It reports the row nearest to the pointer, or the
+/// slice of a pie under it (`onHoverChange`), and
 /// shows the hover's parts the app styles (`crossLineClass`, `dotClass` or
 /// a mark's `hoverDotClass`, `tooltipContent`), moved and faded natively
 /// with `motion`, the tooltip placed by `tooltipPlacement` and kept inside
@@ -403,6 +462,13 @@ pub fn Plot(props: PlotProps, cx: Scope<PlotEvent>) -> impl IntoElement {
         }
     });
 
+    // The hover: the row under the pointer, where its parts are and how
+    // far they have faded in.
+    let cross_x = animated_value(0.0);
+    let fade = animated_value(0.0);
+    let hovered = signal(None::<u32>);
+    let hits = signal(Vec::<Hit>::new());
+
     provide_context(PlotContext {
         rows: data,
         y: props.y,
@@ -414,30 +480,38 @@ pub fn Plot(props: PlotProps, cx: Scope<PlotEvent>) -> impl IntoElement {
         next: stored(0),
         reveal,
         appearing,
+        motion,
+        fade,
+        hovered,
+        hits,
     });
-
-    // The hover: where its parts are and how far they have faded in.
-    let cross_x = animated_value(0.0);
-    let fade = animated_value(0.0);
-    let hovered = signal(None::<u32>);
     let placed = stored(None::<u32>);
+    // Radial marks follow the pointer, not the rows' Cartesian x scale.
+    let pointer_at_x = signal(None::<f32>);
     let place = TooltipPlace::new(cross_x, props.tooltip_placement, props.tooltip_offset);
-    let follow = move |index: Option<u32>| {
-        if hovered.get_untracked() != index {
-            hovered.set(index);
-            cx.emit(PlotEvent::HoverChange(index));
-        }
+    let follow = move |index: Option<u32>, pointer_x: Option<f32>| {
+        batch(|| {
+            pointer_at_x.set(index.and(pointer_x));
+            if hovered.get_untracked() != index {
+                hovered.set(index);
+                cx.emit(PlotEvent::HoverChange(index));
+            }
+        });
     };
     // Geometry can change under a stationary pointer. Only row selection
     // notifies the app; the anchors also follow the current scales/marks.
     effect(move || {
         let selected = hovered.get();
+        let pointer_x = pointer_at_x.get();
         let x = selected
-            .and_then(|index| xs.with(|xs| xs.get(index as usize).copied()))
+            .and_then(|index| match pointer_x {
+                Some(x) => data.with(|rows| ((index as usize) < rows.len()).then_some(x)),
+                None => xs.with(|xs| xs.get(index as usize).copied()),
+            })
             .filter(|x| x.is_finite());
         let index = selected.filter(|_| x.is_some());
         if selected != index {
-            follow(index);
+            follow(index, None);
         }
         let was = placed.get();
         placed.replace(index);
@@ -455,10 +529,10 @@ pub fn Plot(props: PlotProps, cx: Scope<PlotEvent>) -> impl IntoElement {
         place.row_at(x);
         // Entering: the parts take the row where they are, then fade in;
         // over the plot, they glide to the next one on the pointer spring
-        // (`PlotHover::glide`).
+        // (`PlotHover::glide`). Radial parts stay at the pointer itself.
         let entering = was.is_none();
-        let to = |value: AnimatedValue, target: f32| match m.pointer.filter(|_| !entering && !still)
-        {
+        let glide = !entering && !still && pointer_x.is_none();
+        let to = |value: AnimatedValue, target: f32| match m.pointer.filter(|_| glide) {
             Some(spring) => drop(value.spring(target, spring)),
             None => value.set(target),
         };
@@ -508,6 +582,14 @@ pub fn Plot(props: PlotProps, cx: Scope<PlotEvent>) -> impl IntoElement {
             }
             place.pointer_at(e.position.y.0);
             let at = e.position.x.0;
+            // Over a radial mark: the slice under the pointer, if any.
+            let found = hits.with_untracked(|all| {
+                (!all.is_empty()).then(|| all.iter().rev().find_map(|h| (h.at)(e.position)))
+            });
+            if let Some(index) = found {
+                follow(index, Some(at));
+                return;
+            }
             let nearest = xs.with_untracked(|xs| {
                 xs.iter()
                     .enumerate()
@@ -515,9 +597,9 @@ pub fn Plot(props: PlotProps, cx: Scope<PlotEvent>) -> impl IntoElement {
                     .min_by(|(_, a), (_, b)| (*a - at).abs().total_cmp(&(*b - at).abs()))
                     .map(|(i, _)| i as u32)
             });
-            follow(nearest);
+            follow(nearest, None);
         })
-        .on_hover_out(move || follow(None))
+        .on_hover_out(move || follow(None, None))
         .child(props.children)
         // The hover's parts, over the marks; they take no pointer, so the
         // plot keeps the hover.

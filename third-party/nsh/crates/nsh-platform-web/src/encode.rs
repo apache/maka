@@ -795,8 +795,9 @@ fn props_json(p: &ViewProps) -> String {
     if let Some(t) = &p.test_id {
         let _ = write!(s, ",\"testID\":{}", json_str(t));
     }
-    if p.focusable == Some(false) {
-        s.push_str(",\"focusable\":false");
+    // Unset leaves it to the presses (`ViewProps::focus_stop`).
+    if let Some(focusable) = p.focusable {
+        let _ = write!(s, ",\"focusable\":{focusable}");
     }
     if p.selectable_view {
         s.push_str(",\"selectableView\":true");

@@ -1,6 +1,6 @@
 ---
 title: Plot
-description: "The Plot component of nsh/base/plot and its marks Line, Area and Grid: charts drawn natively from the app's rows, with the scales of the axes, the row under the pointer, motion and no look of their own."
+description: "The Plot component of nsh/base/plot and its marks Line, Area, Grid, Pie and Arc: charts drawn natively from the app's rows, with the scales of the axes, the row or slice under the pointer, motion and no look of their own."
 order: 20.9
 group: base
 demo: el-plot
@@ -10,7 +10,7 @@ demo: el-plot
 
 A plot is the frame of a chart: the rows of data it shows, the scales of its x and y axes, the pointer over it and its
 motion. Its marks draw what it holds: a `Line` through a series, an `Area` between a series and a baseline, a `Grid` of
-lines across. Each mark is one canvas filling the plot, drawn natively from the rows: the app's rows are read once when
+lines across, a `Pie` of the rows' shares (a donut with a hole) and an `Arc` between two angles. Each mark is one canvas filling the plot, drawn natively from the rows: the app's rows are read once when
 it sets them, then scaled, recorded and drawn in Rust, so a chart of a thousand points runs no JS per point. The pointer
 is followed in Rust too: the hover's cross line, dots and tooltip move and fade on the platform's animator, and the app
 hears of a new row, nothing more. The look is the app's: marks paint with CSS's paint properties of SVG shapes
@@ -23,7 +23,7 @@ use nsh_base::{
     plot::{area, grid, line, plot},
     theme,
 };
-use nsh_core::element::{RowAccessor, Rows, prelude::*};
+use nsh_core::{element::{RowAccessor, Rows}, prelude::*};
 
 fn week(visitors: Vec<f64>, hovered: Signal<Option<u32>>) -> impl IntoElement {
     let rows = Rows::from_columns(visitors.len(), [("visitors".into(), visitors)]);
@@ -79,7 +79,7 @@ function App() {
 mount(App);
 ```
 
-`Plot`, `Line`, `Area` and `Grid` come from `nsh/base/plot`, a module of [`nsh/base`](../modules/nsh-base.md) of their
+`Plot`, `Line`, `Area`, `Grid`, `Pie` and `Arc` come from `nsh/base/plot`, a module of [`nsh/base`](../modules/nsh-base.md) of their
 own (in Rust, `nsh_base::plot`). In TypeScript a plot's props are generic over the type of its rows: field names are
 checked against them, and a function of a row gets the row's type. In Rust, `plot()` makes one with a setter per prop,
 the rows a `Rows` (columns of numbers by key), the values a `RowAccessor` (a key or a function of the row's index), and
@@ -109,7 +109,7 @@ the marks take the typed paint methods (`.stroke_color(..)`, `.fill_color(..)`, 
 
 | Event | Rust | Payload | When |
 |---|---|---|---|
-| `onHoverChange` | `.on_hover_change(..)` | `index: number \| null` | The pointer came over another row: the index of the row nearest to it along the x axis; `null` once it leaves the plot. |
+| `onHoverChange` | `.on_hover_change(..)` | `index: number \| null` | The pointer came over another row: the index of the row nearest to it along the x axis, or of the [pie](#pie-and-arc)'s slice under it; `null` once it leaves the plot (over a pie, its slices). |
 
 `Scale` is `{ type: "point" } | { type: "linear"; domain?: [number, number] }`. A `domain` is the extent of its two
 values, in either order; a domain of one value puts it in the middle.
@@ -151,17 +151,128 @@ gradient in a shape (a box's `background-image` under `clip-path`): `backgroundC
 to-transparent"` fades from the area's highest point to its baseline, in the theme's tokens and the appearance's
 colors like any view's background.
 
+## Pie and Arc
+
+A `Pie` splits a turn into a slice per row, each its share of the rows' values, clockwise from 12 o'clock in the rows'
+order, around the plot's center. An `innerRadius` makes it a donut. Each slice is a canvas of its own, the `slice`
+part, so each paints with its own classes: `sliceClass` is the same classes on every slice, or a function of the
+slice's row that gives each its own. Over a pie, the plot reports the row of the slice under the pointer (none in the
+hole or outside the ring), its tooltip follows the pointer, and that slice grows by `hoverLift` while the others fade
+by `hoverDim`, on the platform's animator with the plot's `motion`. An `Arc` draws one sector between two angles: a
+gauge's track and its value, or a ring behind a pie.
+
+<!-- demo: el-plot-pie -->
+
+```tsx
+import { signal, Text, View } from "nsh";
+import { Pie, Plot } from "nsh/base/plot";
+
+type Plan = { name: string; seats: number };
+
+const FILLS = ["fill-chart-1", "fill-chart-2", "fill-chart-3", "fill-chart-4"];
+const KEYS = ["bg-chart-1", "bg-chart-2", "bg-chart-3", "bg-chart-4"];
+
+export function Seats(props: { plans: Plan[] }) {
+  const hovered = signal<number | null>(null);
+  const total = () => props.plans.reduce((sum, p) => sum + p.seats, 0);
+  const shown = () => (hovered() == null ? undefined : props.plans[hovered()!]);
+  const share = (n: number) => `${((n / total()) * 100).toFixed(1)}%`;
+  return (
+    <View class="flex-row items-center gap-6 rounded-xl border border-border bg-card p-4">
+      <Plot
+        data={props.plans}
+        accessibilityLabel={`Seats by plan, ${total()} in all`}
+        accessibilityValue={{ text: shown() && `${shown()!.name}, ${shown()!.seats} seats, ${share(shown()!.seats)}` }}
+        appearGeneration={1}
+        motion={{ appear: { duration: 900, easing: "easeOut" }, enter: { duration: 120 }, exit: { duration: 160 }, pointer: { stiffness: 400, damping: 32 } }}
+        onHoverChange={(index) => hovered.set(index)}
+        class="size-44"
+      >
+        {/* A donut with 2-point gaps (0.025 of a turn at its 80-point rim). */}
+        <Pie
+          value="seats"
+          innerRadius="62%"
+          padAngle={0.025}
+          sliceClass={(_, i) => FILLS[i % FILLS.length]}
+          hoverLift={6}
+          hoverDim={0.64}
+        />
+        {/* The hovered plan, or the total, in the hole. */}
+        <View class="absolute inset-0 items-center justify-center gap-1">
+          <Text class="text-xs text-muted-foreground">{shown()?.name ?? "Total"}</Text>
+          <Text class="text-2xl font-semibold tabular-nums text-foreground">{shown()?.seats ?? total()}</Text>
+        </View>
+      </Plot>
+      {/* The legend: a key in each slice's color, the value and the share at the end. */}
+      <View class="flex-1 gap-1">
+        {props.plans.map((plan, i) => (
+          <View class="flex-row items-center gap-3 rounded-md px-2 py-1.5" style={{ opacity: hovered() == null || hovered() === i ? 1 : 0.45 }}>
+            <View class={`size-2 rounded-sm ${KEYS[i % KEYS.length]}`} />
+            <Text class="flex-1 text-sm text-foreground">{plan.name}</Text>
+            <Text class="text-right text-sm tabular-nums text-foreground">{plan.seats}</Text>
+            <Text class="w-14 text-right text-sm tabular-nums text-muted-foreground">{share(plan.seats)}</Text>
+          </View>
+        ))}
+      </View>
+    </View>
+  );
+}
+```
+
+```rust
+use nsh_base::plot::{SliceClass, pie, plot};
+use nsh_core::{element::{RowAccessor, Rows}, prelude::*};
+
+fn seats(seats: Vec<f64>) -> impl IntoElement {
+    let rows = Rows::from_columns(seats.len(), [("seats".into(), seats)]);
+    plot()
+        .data(rows)
+        .accessibility_label("Seats by plan")
+        .w(px(176.0))
+        .h(px(176.0))
+        .child(
+            pie()
+                .value(RowAccessor::key("seats"))
+                .inner_radius(relative(0.62))
+                .slice_class(SliceClass::from_fn(|i| format!("fill-chart-{}", i % 4 + 1).into())),
+        )
+}
+```
+
+| Mark | Prop | Rust | Type | Default | Description |
+|---|---|---|---|---|---|
+| `Pie` | `value` | `.value(..)` | `keyof T \| (d: T, index: number) => number` | the plot's `y` | What each row is worth. A row worth nothing, less, or no number has no slice. |
+| `Pie`, `Arc` | `startAngle`, `endAngle` | `.start_angle(..)`, `.end_angle(..)` | `number` (radians) | `0`, `2 * Math.PI` | Where the first slice starts and the last one ends (an arc's ends): radians from 12 o'clock, clockwise. An `endAngle` below `startAngle` lays a pie's slices out the other way. |
+| `Pie` | `padAngle` | `.pad_angle(..)` | `number` (radians) | `0` | The angle between neighbouring slices at the rim. Each gap keeps that width (about `padAngle * outerRadius` points) at every radius, its edges parallel, so it is as wide at the center or the hole as at the rim; a slice too narrow to reach the center ends where its edges meet. A pie of one slice has none. |
+| `Pie`, `Arc` | `innerRadius`, `outerRadius` | `.inner_radius(..)`, `.outer_radius(..)` | ``number \| `${number}%` `` | `0`, `"100%"` | The radii of the hole and of the rim: points, or a percentage of the largest circle the plot holds (half its smaller side). |
+| `Pie` | `sliceClass` | `.slice_class(..)` | `string \| (d: T, index: number) => string` | none | The classes of each slice (`fill-*`, `stroke-*`): the same on every slice, or a function of the slice's row and its index, called once per row when the rows or the function change. |
+| `Pie` | `sliceStyle` | `.slice_style(..)` | `StyleProp<ViewStyle>` | none | The style of every slice, over its classes (`fill`, `stroke`, `strokeWidth`). |
+| `Pie` | `hoverLift` | `.hover_lift(..)` | `number` | `0` | How far the slice under the pointer grows past the others, in points: on the plot's `pointer` spring, faded in and out with the hover. |
+| `Pie` | `hoverDim` | `.hover_dim(..)` | `number` (0 to 1) | `0` | How much the other slices fade while one is under the pointer, as a share of their opacity, with the hover's fade. |
+
+A slice and an arc fill with `fill` (`currentColor` where none is set) and stroke their edges with `stroke` (none where
+none is set), their own over the pie's and the plot's as CSS inherits them: a stroke in the surface's color
+(`stroke-card stroke-2`) cuts gaps between the slices too. Their values take no part in the plot's scales. A pie's
+slices are drawn again only when the rows, their values, the angles, the radii or the plot's size change; the pointer
+moves the lift and the fade on the animator.
+
+Plots with a pie usually place the tooltip by the pointer (`tooltipPlacement="pointer"`), since a pie's rows have no
+place along an axis: the cross line and the tooltip follow the pointer over it, and it shows no hover dots. A donut's
+center is the app's own element laid over the plot (the hovered slice's value, or the total), and so is its legend,
+with each key in its slice's color.
+
 ## Motion
 
 Motion is the app's, and none by default: everything shows at once. `motion` takes the timings of
-[`animated`](../modules/nsh.md#animated) (`{ duration, easing, delay }` and `{ stiffness, damping, mass }`):
+[`nsh`](../modules/nsh.md#animation) (`{ duration, easing, delay }` and `{ stiffness, damping, mass }`):
 
 | Key | Type | What moves |
 |---|---|---|
-| `appear` | timing | The marks draw in from the leading edge, with an `appearGeneration`. |
+| `appear` | timing | The marks draw in from the leading edge, with an `appearGeneration`; a pie's and an arc's ring sweeps in clockwise from its start. |
+| `update` | timing | Marks move to the new shape when the app changes it: a pie's and an arc's radii, so a donut's hole opens and closes. |
 | `enter` | timing | The hover's parts fade in when the pointer comes over the plot. |
 | `exit` | timing | They fade out after it leaves. |
-| `pointer` | spring | They glide from one row to the next while the pointer moves over the plot. |
+| `pointer` | spring | They glide from one row to the next while the pointer moves over the plot; a pie's slice lifts on it. |
 
 The motion runs on the platform's animator, with no JS per frame, and is complete at once for people who ask for
 reduced motion. A plot that a list makes again for a row that comes back draws in again; give it the row's key as its
@@ -254,6 +365,8 @@ A sparkline in a list row is a plot with `interactive={false}`: it draws its mar
 - The row under the pointer is reported with `onHoverChange` on platforms with a pointer (desktops, the web, an iPad
   with a trackpad). Touch screens report no hover: show the values a touch user needs in the app's own elements, or
   offer the rows as text or a list where the numbers matter.
+- Over a pie the row reported is the slice's under the pointer: give `accessibilityValue` its name, value and share
+  (`"Team, 340 seats, 34.0%"`), and say the total and the largest share in the label.
 - A plot takes no presses and no keyboard focus.
 
 See [Accessibility](../docs/accessibility.md) for labels and roles in general.
@@ -268,3 +381,6 @@ See [Accessibility](../docs/accessibility.md) for labels and roles in general.
 - An area's background is drawn in its own canvas, clipped to the area's shape, with the same gradient the platform
   draws for a view's `bg-linear-*`; a change of its classes (the appearance, `dark:`) sends the drawing again without
   recording it.
+- A pie draws each slice in its own canvas; the slice under the pointer is found in Rust from the slices' angles and
+  radii, its lift is a radius and the others' fade an opacity the animator moves, and the appear's sweep moves the
+  slices' angles the same way, so neither records a drawing again.
