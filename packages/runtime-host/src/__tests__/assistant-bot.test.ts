@@ -678,6 +678,8 @@ test('independent discovery retains the exact prompt and reports through Inbox, 
       if (prompt.includes('Phase: discovery')) {
         assert.ok(prompt.includes(DISCOVERY_TASK));
         assert.equal(f.service.toolCeiling(id), undefined);
+        assert.equal(f.service.admitsMemoryTriggers(id), false);
+        assert.equal(f.service.admitsMemoryTriggers('owner'), true);
         const unused = () => Promise.reject(Error('not used'));
         const foreign = [
           { name: 'FeishuSearch', categoryHint: 'read' },
@@ -705,23 +707,29 @@ test('independent discovery retains the exact prompt and reports through Inbox, 
         const names = compose(true);
         for (const name of ['Bash', 'Edit', 'Write', 'FeishuSend', 'FeishuUntyped'])
           assert.ok(!names.includes(name), name);
-        for (const name of ['Read', 'Grep', 'Glob', 'FeishuSearch', ...DISCOVERY_TOOLS])
+        for (const name of [
+          'Read',
+          'Grep',
+          'Glob',
+          'FeishuSearch',
+          'DiscoveryDraft',
+          ...DISCOVERY_TOOLS,
+        ])
           assert.ok(names.includes(name), name);
         const native = new Set(f.service.tools.map((tool) => tool.name));
         assert.deepEqual(new Set(names.filter((name) => native.has(name))), DISCOVERY_TOOLS);
-        await writeFile(
-          /完成后把增量操作写入 (.+)，格式：/.exec(prompt)![1],
-          JSON.stringify({
-            notes: [
-              {
-                topicId: 'calendar',
-                title: '日程',
-                text: '日程冲突，需要判断。',
-                sources: ['日历'],
-              },
-            ],
-          }),
-        );
+        // Without Write, the scoped draft tool is the only way to produce the result file.
+        const draft = await invoke('DiscoveryDraft', {
+          notes: [
+            {
+              topicId: 'calendar',
+              title: '日程',
+              text: '日程冲突，需要判断。',
+              sources: ['日历'],
+            },
+          ],
+        });
+        assert.equal(draft.path, /完成后把增量操作写入 (.+)，格式：/.exec(prompt)![1]);
         return;
       }
       await writeFile(
@@ -747,6 +755,7 @@ test('independent discovery retains the exact prompt and reports through Inbox, 
   });
   await f.service.call('assistant.control', { action: 'check' });
   await until(() => reported && processed);
+  await assert.rejects(f.invoke('DiscoveryDraft', { notes: [] }), /No exploration draft/);
   assert.equal(f.visible.length, 1);
   assert.equal(f.visible[0].text, '明天两个安排冲突，要一起调整吗？');
   assert.equal(

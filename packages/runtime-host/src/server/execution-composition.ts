@@ -1511,7 +1511,8 @@ export async function createExecutionRuntimeHostComposition(
             );
           },
         }),
-        ...(hostedExecutionRunProfile(backendContext.header.toolProfile)?.memoryExtraction === false
+        ...(hostedExecutionRunProfile(backendContext.header.toolProfile)?.memoryExtraction ===
+          false || !personalAssistant.admitsMemoryTriggers(backendContext.sessionId)
           ? {}
           : { memoryExtraction }),
         artifacts: openedArtifactStore,
