@@ -188,7 +188,8 @@ async fn native_aliases_normalize_at_the_app_boundary_for_each_platform() {
         let repl = Repl::new(
             maka_computer_use::facade_for(platform, false),
             CellLimits::default(),
-        );
+        )
+        .unwrap();
         let recorded = Arc::new(std::sync::Mutex::new(Vec::new()));
         let tools = Arc::new(NativeCommands(recorded.clone()));
         let distance = if platform == "mac" {
@@ -265,7 +266,7 @@ fn scroll_distance_distinguishes_missing_from_null_and_round_trips_missing() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn combined_observation_omits_unavailable_screenshot_for_apps_and_tabs() {
-    let repl = Repl::new(facade(), CellLimits::default());
+    let repl = Repl::new(facade(), CellLimits::default()).unwrap();
     let output = evaluate(&repl, "const app=await cua.getApp('without-screenshot'); const combined=await app.getAXStateAndScreenshot({emit:false}); nodeRepl.write({state:combined.state,hasScreenshot:Object.prototype.hasOwnProperty.call(combined,'screenshot')}); const tab=await cua.createBrowserTab('fixture'); const tabCombined=await tab.getAXStateAndScreenshot({emit:false}); nodeRepl.write({hasScreenshot:Object.prototype.hasOwnProperty.call(tabCombined,'screenshot')});").await;
     assert!(output.iter().any(|part| matches!(part, CellOutput::Text { text } if text == "{\"state\":\"Screenshot unavailable\",\"hasScreenshot\":false}")));
     assert!(output.iter().any(
@@ -276,7 +277,7 @@ async fn combined_observation_omits_unavailable_screenshot_for_apps_and_tabs() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn inventory_failures_remain_visible_and_auto_explicit_screenshot_output_is_once_per_call() {
-    let repl = Repl::new(facade(), CellLimits::default());
+    let repl = Repl::new(facade(), CellLimits::default()).unwrap();
     let output = evaluate(
         &repl,
         "const state=await cua.getState({emit:false}); nodeRepl.write(state.apps);",
@@ -325,7 +326,7 @@ async fn inventory_failures_remain_visible_and_auto_explicit_screenshot_output_i
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn rich_browser_tab_methods_return_lazy_objects_and_current_metadata_without_auto_output() {
-    let repl = Repl::new(facade(), CellLimits::default());
+    let repl = Repl::new(facade(), CellLimits::default()).unwrap();
     let output = evaluate(
         &repl,
         "const browser=await cua.getBrowser({id:'fixture'}); const listed=await browser.tabs.list(); const selected=await browser.tabs.get(listed[0].id); const opened=await browser.tabs.new(); nodeRepl.write({title:await selected.title(),url:await opened.url(),id:opened.id});",
@@ -349,7 +350,7 @@ async fn rich_browser_tab_methods_return_lazy_objects_and_current_metadata_witho
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn convenience_creation_preserves_omitted_and_explicit_urls_for_owned_navigation() {
-    let repl = Repl::new(facade(), CellLimits::default());
+    let repl = Repl::new(facade(), CellLimits::default()).unwrap();
     let output = evaluate(&repl,"const omitted=await cua.createBrowserTab('fixture'); const blank=await cua.createBrowserTab('fixture','about:blank'); const empty=await cua.createBrowserTab('fixture',''); const ftp=await cua.createBrowserTab('fixture','ftp://example.com'); nodeRepl.write([omitted.id,blank.id,empty.id,ftp.id]);").await;
     assert_eq!(output.len(), 2, "{output:?}");
     assert!(
@@ -360,7 +361,7 @@ async fn convenience_creation_preserves_omitted_and_explicit_urls_for_owned_navi
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn playwright_collection_reads_share_exact_selector_caches_and_keep_tab_identity() {
-    let repl = Repl::new(facade(), CellLimits::default());
+    let repl = Repl::new(facade(), CellLimits::default()).unwrap();
     let output = evaluate(&repl, r#"
         const browser=await cua.getBrowser({id:'fixture'});
         const tab=await browser.tabs.get('fixture:existing');
@@ -471,7 +472,7 @@ async fn persistent_repl_uses_each_evaluations_language_without_rewriting_user_o
             Language::En,
         )
         .unwrap();
-    let repl = Repl::new(facade(), CellLimits::default());
+    let repl = Repl::new(facade(), CellLimits::default()).unwrap();
     for (language, recovery) in [
         (Language::ZhCn, "重新绑定目标"),
         (Language::ZhTw, "重新綁定目標"),

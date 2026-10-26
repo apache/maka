@@ -201,7 +201,9 @@ final class TextBox extends android.view.ViewGroup implements Node {
     /** The long press: selects the word under the finger. */
     private void selectWordAtDown() {
         if (layout == null || layout.getText().length() == 0) return;
-        int offset = offsetAt(downX, downY);
+        long hit = hitAt(downX, downY);
+        // The character under the finger: the one before a caret at a wrapped line's end.
+        int offset = TextLayouts.hitOffset(hit) - (TextLayouts.hitUpstream(hit) ? 1 : 0);
         if (offset < 0) return;
         CharSequence text = layout.getText();
         int length = text.length();
@@ -221,12 +223,15 @@ final class TextBox extends android.view.ViewGroup implements Node {
         setSelection(start, end, false);
     }
 
+    /** The caret nearest to ({@code x}, {@code y}) (view pixels): see {@link TextLayouts#hitTest}. */
+    private long hitAt(float x, float y) {
+        return TextLayouts.hitTest(layout, x - contentX, y - contentY, 1f);
+    }
+
     /** The character offset nearest to ({@code x}, {@code y}) (view pixels), -1 without text. */
     private int offsetAt(float x, float y) {
         if (layout == null) return -1;
-        float ly = Math.max(0, Math.min(y - contentY, layout.getHeight() - 1));
-        int line = layout.getLineForVertical((int) ly);
-        return layout.getOffsetForHorizontal(line, x - contentX);
+        return TextLayouts.hitOffset(hitAt(x, y));
     }
 
     /** Selects [{@code start}, {@code end}); with {@code toolbar}, shows the toolbar too. */
@@ -473,10 +478,15 @@ final class TextBox extends android.view.ViewGroup implements Node {
         if (ly < -slack || ly > layout.getHeight() + slack) return -1;
         int line = layout.getLineForVertical((int) ly);
         if (lx < layout.getLineLeft(line) - slack || lx > layout.getLineRight(line) + slack) return -1;
-        int offset = layout.getOffsetForHorizontal(line, lx);
+        long hit = TextLayouts.hitTest(layout, lx, ly, 1f);
+        int offset = TextLayouts.hitOffset(hit);
         // The nearest caret: the character is the one before it when the
-        // point is left of the caret.
-        if (offset > layout.getLineStart(line) && lx < layout.getPrimaryHorizontal(offset)) offset--;
+        // point is left of the caret, and when it ends a wrapped line.
+        boolean before = TextLayouts.hitUpstream(hit);
+        if (!before && offset > layout.getLineStart(line)) {
+            before = lx < TextLayouts.caretRect(layout, offset, false, 1f)[0];
+        }
+        if (before) offset--;
         int best = -1;
         for (int i = 0; i < linkEvents.length; i++) {
             int start = links[i * 3], end = links[i * 3 + 1];

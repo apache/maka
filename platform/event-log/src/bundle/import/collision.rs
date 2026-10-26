@@ -110,7 +110,7 @@ pub(super) async fn check(
     for session in sessions {
         let collision: bool = sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM session_control WHERE id=?1)
-             OR EXISTS(SELECT 1 FROM event_log WHERE event_session=?1)
+             OR EXISTS(SELECT 1 FROM context_source_prefixes WHERE kind='session' AND owner=?1)
              OR EXISTS(SELECT 1 FROM session_history_copies WHERE session_id=?1 OR source_session_id=?1)
              OR EXISTS(SELECT 1 FROM session_retirements WHERE session_id=?1)
              OR EXISTS(SELECT 1 FROM plugin_sessions WHERE session_id=?1)

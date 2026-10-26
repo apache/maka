@@ -3170,8 +3170,10 @@ clap_lex@1.1.1 (MIT OR Apache-2.0)
 serde_spanned@0.6.9 (MIT OR Apache-2.0)
 serde_spanned@1.1.2 (MIT OR Apache-2.0)
 toml@0.8.23 (MIT OR Apache-2.0)
+toml@0.9.12+spec-1.1.0 (MIT OR Apache-2.0)
 toml@1.1.8+spec-1.1.0 (MIT OR Apache-2.0)
 toml_datetime@0.6.11 (MIT OR Apache-2.0)
+toml_datetime@0.7.5+spec-1.1.0 (MIT OR Apache-2.0)
 toml_datetime@1.1.2+spec-1.1.0 (MIT OR Apache-2.0)
 toml_edit@0.22.27 (MIT OR Apache-2.0)
 toml_edit@0.25.17+spec-1.1.0 (MIT OR Apache-2.0)
@@ -3188,8 +3190,10 @@ https://crates.io/api/v1/crates/clap_lex/1.1.1/download :: LICENSE-MIT
 https://crates.io/api/v1/crates/serde_spanned/0.6.9/download :: LICENSE-MIT
 https://crates.io/api/v1/crates/serde_spanned/1.1.2/download :: LICENSE-MIT
 https://crates.io/api/v1/crates/toml/0.8.23/download :: LICENSE-MIT
+https://crates.io/api/v1/crates/toml/0.9.12+spec-1.1.0/download :: LICENSE-MIT
 https://crates.io/api/v1/crates/toml/1.1.8+spec-1.1.0/download :: LICENSE-MIT
 https://crates.io/api/v1/crates/toml_datetime/0.6.11/download :: LICENSE-MIT
+https://crates.io/api/v1/crates/toml_datetime/0.7.5+spec-1.1.0/download :: LICENSE-MIT
 https://crates.io/api/v1/crates/toml_datetime/1.1.2+spec-1.1.0/download :: LICENSE-MIT
 https://crates.io/api/v1/crates/toml_edit/0.22.27/download :: LICENSE-MIT
 https://crates.io/api/v1/crates/toml_edit/0.25.17+spec-1.1.0/download :: LICENSE-MIT
@@ -3474,7 +3478,9 @@ quick-error@2.0.1 (MIT/Apache-2.0); authors declared by package: Paul Colomiets 
 serde_spanned@0.6.9 (MIT OR Apache-2.0)
 stringprep@0.1.5 (MIT/Apache-2.0); authors declared by package: Steven Fackler <sfackler@gmail.com>
 toml@0.8.23 (MIT OR Apache-2.0)
+toml@0.9.12+spec-1.1.0 (MIT OR Apache-2.0)
 toml_datetime@0.6.11 (MIT OR Apache-2.0)
+toml_datetime@0.7.5+spec-1.1.0 (MIT OR Apache-2.0)
 toml_edit@0.22.27 (MIT OR Apache-2.0)
 toml_write@0.1.2 (MIT OR Apache-2.0)
 unicode-general-category@1.1.0 (Apache-2.0); authors declared by package: YesLogic Pty. Ltd. <info@yeslogic.com>
@@ -3508,7 +3514,9 @@ https://crates.io/api/v1/crates/quick-error/2.0.1/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/serde_spanned/0.6.9/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/stringprep/0.1.5/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/toml/0.8.23/download :: LICENSE-APACHE
+https://crates.io/api/v1/crates/toml/0.9.12+spec-1.1.0/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/toml_datetime/0.6.11/download :: LICENSE-APACHE
+https://crates.io/api/v1/crates/toml_datetime/0.7.5+spec-1.1.0/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/toml_edit/0.22.27/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/toml_write/0.1.2/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/unicode-general-category/1.1.0/download :: LICENSE
@@ -13619,51 +13627,22 @@ DEALINGS IN THE SOFTWARE.
 
 ================================================================================
 
-cua-cursor-motion@0.38.0 (MIT); authors declared by package: trycua
+cua-driver-contract@0.32.0 (MIT)
+cua-driver-core@0.32.0 (MIT)
+cua-driver-sdk@0.32.0 (MIT); authors declared by package: trycua
+cursor-overlay@0.32.0 (MIT)
+pip-preview@0.32.0 (MIT)
+platform-linux@0.32.0 (MIT)
+platform-macos@0.32.0 (MIT)
+platform-windows@0.32.0 (MIT)
 
-git+https://github.com/maka-agent/cua?rev=5fd47a74035c7c09d70fe8e622ac335350315a8b#5fd47a74035c7c09d70fe8e622ac335350315a8b :: LICENSE
-
-MIT License
-
-Copyright (c) 2025 Cua AI, Inc.
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-
-================================================================================
-
-cua-cursor-motion@0.38.0 (MIT); authors declared by package: trycua
-cua-driver-contract@0.38.0 (MIT)
-cua-driver-core@0.38.0 (MIT)
-cua-driver-sdk@0.38.0 (MIT); authors declared by package: trycua
-cursor-overlay@0.38.0 (MIT)
-pip-preview@0.38.0 (MIT)
-platform-linux@0.38.0 (MIT)
-platform-macos@0.38.0 (MIT)
-platform-windows@0.38.0 (MIT)
-
-git+https://github.com/maka-agent/cua?rev=5fd47a74035c7c09d70fe8e622ac335350315a8b#5fd47a74035c7c09d70fe8e622ac335350315a8b
+git+https://github.com/maka-agent/cua?rev=afcdf58a76cb9998f4e2fed8c0124d81ac4f1fcf#afcdf58a76cb9998f4e2fed8c0124d81ac4f1fcf
 
 Cua Driver Rust SDK and its workspace crates
 Source: https://github.com/trycua/cua
 Fork: https://github.com/maka-agent/cua
-Revision: 5fd47a74035c7c09d70fe8e622ac335350315a8b
-The pinned fork includes the upstream 0.38 driver and retains Maka cursor
+Revision: afcdf58a76cb9998f4e2fed8c0124d81ac4f1fcf
+The pinned fork includes the upstream 0.32 driver and retains Maka cursor
 ownership and overlay adaptations.
 Linked as pinned Cargo Git dependencies. No Cua perception extension or model
 artifacts are included. Transitive dependencies retain their own licenses.
@@ -27354,8 +27333,8 @@ windows-strings@0.1.0 (MIT OR Apache-2.0); authors declared by package: Microsof
 windows-strings@0.3.1 (MIT OR Apache-2.0); authors declared by package: Microsoft
 windows-strings@0.4.2 (MIT OR Apache-2.0); authors declared by package: Microsoft
 windows-strings@0.5.1 (MIT OR Apache-2.0)
-windows-sys@0.52.0 (MIT OR Apache-2.0); authors declared by package: Microsoft
 windows-sys@0.59.0 (MIT OR Apache-2.0); authors declared by package: Microsoft
+windows-sys@0.60.2 (MIT OR Apache-2.0); authors declared by package: Microsoft
 windows-sys@0.61.2 (MIT OR Apache-2.0)
 windows-targets@0.52.6 (MIT OR Apache-2.0); authors declared by package: Microsoft
 windows-targets@0.53.5 (MIT OR Apache-2.0)
@@ -27401,8 +27380,8 @@ https://crates.io/api/v1/crates/windows-strings/0.1.0/download :: license-mit
 https://crates.io/api/v1/crates/windows-strings/0.3.1/download :: license-mit
 https://crates.io/api/v1/crates/windows-strings/0.4.2/download :: license-mit
 https://crates.io/api/v1/crates/windows-strings/0.5.1/download :: license-mit
-https://crates.io/api/v1/crates/windows-sys/0.52.0/download :: license-mit
 https://crates.io/api/v1/crates/windows-sys/0.59.0/download :: license-mit
+https://crates.io/api/v1/crates/windows-sys/0.60.2/download :: license-mit
 https://crates.io/api/v1/crates/windows-sys/0.61.2/download :: license-mit
 https://crates.io/api/v1/crates/windows-targets/0.52.6/download :: license-mit
 https://crates.io/api/v1/crates/windows-targets/0.53.5/download :: license-mit
@@ -33503,12 +33482,8 @@ quickjs-jit-core@0.14.1 (MIT); authors declared by package: Mees Delzenne <mees.
 quickjs-jit-macro@0.14.1 (MIT); authors declared by package: K. <kayo@illumium.org>, Mees Delzenne <mees.delzenne@gmail.com>
 quickjs-jit-runtime@0.14.1 (MIT); authors declared by package: Mees Delzenne <mees.delzenne@gmail.com>, K. <kayo@illumium.org>
 quickjs-jit@0.14.1 (MIT); authors declared by package: Mees Delzenne <mees.delzenne@gmail.com>, K. <kayo@illumium.org>
-rquickjs-core@0.14.0 (MIT); authors declared by package: Mees Delzenne <mees.delzenne@gmail.com>, K. <kayo@illumium.org>
-rquickjs@0.14.0 (MIT); authors declared by package: Mees Delzenne <mees.delzenne@gmail.com>, K. <kayo@illumium.org>
 
 https://crates.io/api/v1/crates/quickjs-jit/0.14.1/download :: LICENSE
-https://crates.io/api/v1/crates/rquickjs/0.14.0/download :: LICENSE
-https://raw.githubusercontent.com/DelSkayn/rquickjs/d7ef5eeae702fea24c03643064de454f1c1dd4b0/LICENSE
 https://raw.githubusercontent.com/longbridge/rquickjs/efea66cc2e8717fd2283346c97aef91be4f1a825/LICENSE
 
 MIT License
@@ -33554,10 +33529,8 @@ Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 ================================================================================
 
 quickjs-jit-sys@0.14.1 (MIT); authors declared by package: Mees Delzenne <mees.delzenne@gmail.com>
-rquickjs-sys@0.14.0 (MIT); authors declared by package: Mees Delzenne <mees.delzenne@gmail.com>
 
 https://crates.io/api/v1/crates/quickjs-jit-sys/0.14.1/download :: vendor/wasi-libc/NOTICE.md
-https://crates.io/api/v1/crates/rquickjs-sys/0.14.0/download :: vendor/wasi-libc/NOTICE.md
 
 # Vendored wasi-libc
 
@@ -33589,11 +33562,9 @@ then re-run `sh scripts/vendor-wasm-libc.sh` from the repo root.
 ================================================================================
 
 quickjs-jit-sys@0.14.1 (MIT); authors declared by package: Mees Delzenne <mees.delzenne@gmail.com>
-rquickjs-sys@0.14.0 (MIT); authors declared by package: Mees Delzenne <mees.delzenne@gmail.com>
 v8x@149.4.0-rc.4 (MIT OR Apache-2.0); authors declared by package: Divy Srivastava <me@littledivy.com>
 
 https://crates.io/api/v1/crates/quickjs-jit-sys/0.14.1/download :: quickjs/LICENSE
-https://crates.io/api/v1/crates/rquickjs-sys/0.14.0/download :: quickjs/LICENSE
 https://crates.io/api/v1/crates/v8x/149.4.0-rc.4/download :: vendor/quickjs-ng/LICENSE
 
 The MIT License (MIT)
@@ -45473,8 +45444,8 @@ windows-strings@0.1.0 (MIT OR Apache-2.0); authors declared by package: Microsof
 windows-strings@0.3.1 (MIT OR Apache-2.0); authors declared by package: Microsoft
 windows-strings@0.4.2 (MIT OR Apache-2.0); authors declared by package: Microsoft
 windows-strings@0.5.1 (MIT OR Apache-2.0)
-windows-sys@0.52.0 (MIT OR Apache-2.0); authors declared by package: Microsoft
 windows-sys@0.59.0 (MIT OR Apache-2.0); authors declared by package: Microsoft
+windows-sys@0.60.2 (MIT OR Apache-2.0); authors declared by package: Microsoft
 windows-sys@0.61.2 (MIT OR Apache-2.0)
 windows-targets@0.52.6 (MIT OR Apache-2.0); authors declared by package: Microsoft
 windows-targets@0.53.5 (MIT OR Apache-2.0)
@@ -45518,8 +45489,8 @@ https://crates.io/api/v1/crates/windows-strings/0.1.0/download :: license-apache
 https://crates.io/api/v1/crates/windows-strings/0.3.1/download :: license-apache-2.0
 https://crates.io/api/v1/crates/windows-strings/0.4.2/download :: license-apache-2.0
 https://crates.io/api/v1/crates/windows-strings/0.5.1/download :: license-apache-2.0
-https://crates.io/api/v1/crates/windows-sys/0.52.0/download :: license-apache-2.0
 https://crates.io/api/v1/crates/windows-sys/0.59.0/download :: license-apache-2.0
+https://crates.io/api/v1/crates/windows-sys/0.60.2/download :: license-apache-2.0
 https://crates.io/api/v1/crates/windows-sys/0.61.2/download :: license-apache-2.0
 https://crates.io/api/v1/crates/windows-targets/0.52.6/download :: license-apache-2.0
 https://crates.io/api/v1/crates/windows-targets/0.53.5/download :: license-apache-2.0

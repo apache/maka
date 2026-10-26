@@ -307,6 +307,17 @@ impl Buffer {
         self.rope.char_to_byte(self.rope.utf16_cu_to_char(unit))
     }
 
+    /// Whether bytes `range` are ASCII, so their UTF-16 columns are their
+    /// bytes. Answered at once when the whole text is ASCII.
+    pub(crate) fn is_ascii(&self, range: Range<usize>) -> bool {
+        self.rope.len_chars() == self.rope.len_bytes()
+            || self
+                .rope
+                .byte_slice(range)
+                .chunks()
+                .all(|chunk| chunk.is_ascii())
+    }
+
     /// Applies `edits` together: ranges of the text as it is now, sorted,
     /// not overlapping (an empty range inserts). `before` are the selections
     /// before the edit (what undo restores), `after` those after it (what

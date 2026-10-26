@@ -995,6 +995,18 @@ impl JsHost for CallHost<'_> {
         js::is_function(self.cx, v).then(|| new_callback(self.cx, v))
     }
 
+    fn retain(&self, v: JsRaw) -> Option<Rc<dyn CallbackHandle>> {
+        // The functions' table keeps any value; one that is no function is
+        // only ever handed back (`value`), never called.
+        Some(new_callback(self.cx, from_raw(v)))
+    }
+
+    fn owns_retained(&self, handle: &dyn CallbackHandle) -> bool {
+        (handle as &dyn Any)
+            .downcast_ref::<JsCallback>()
+            .is_some_and(|callback| Rc::ptr_eq(&callback.functions, &classes(self.cx).functions))
+    }
+
     fn free(&self, v: JsRaw) {
         // SAFETY: an owned value.
         unsafe { qjs::JS_FreeValue(self.cx, from_raw(v)) };
@@ -1283,6 +1295,15 @@ impl JsCallback {
 }
 
 impl CallbackHandle for JsCallback {
+    fn value(&self, host: &dyn nsh_core::ui::JsHost) -> Option<JsRaw> {
+        if !host.owns_retained(self) {
+            return None;
+        }
+        let (cx, v) = JsCallback::value(self)?;
+        // SAFETY: a new reference for the caller, of a value the table owns.
+        Some(to_raw(unsafe { qjs::JS_DupValue(cx, v) }))
+    }
+
     fn call_now(&self, call: JsCall) {
         let Some((cx, _)) = self.value() else {
             // The function or the VM is gone: the call is dropped (its
@@ -2115,6 +2136,97 @@ pub(crate) mod tests {
                 _ => None,
             })
             .collect())
+    }
+
+    fn retained_test_rows(host: &Host) -> nsh_core::ui::Rows {
+        use nsh_core::ui::{JsOwned, JsValue};
+
+        host.with_raw(|cx| {
+            let call = super::host_outside_calls(cx);
+            // SAFETY: this closure owns access to the host's live context;
+            // JsOwned releases the global's reference through that same host.
+            let global = JsOwned::new(
+                &call,
+                super::to_raw(unsafe { rquickjs::qjs::JS_GetGlobalObject(cx) }),
+            );
+            let value = global.get().field("retainedRows").unwrap();
+            nsh_core::ui::Rows::from_js(value.get()).unwrap()
+        })
+    }
+
+    fn retained_row_label(host: &Host, row: nsh_core::ui::RowRef) -> Option<String> {
+        use nsh_core::ui::Ret;
+
+        host.with_raw(|cx| {
+            let call = super::host_outside_calls(cx);
+            row.into_js(&call)
+                .unwrap()
+                .get()
+                .field("label")
+                .unwrap()
+                .get()
+                .as_string()
+        })
+    }
+
+    #[test]
+    fn retained_row_fields_replace_a_held_prop_with_equal_numeric_columns() {
+        use nsh_core::ui::{Prop, Reactive, Runtime, create_root};
+
+        let host = host();
+        host.eval_source("globalThis.retainedRows = [{n: 1, label: 'before'}];")
+            .unwrap();
+        let before = retained_test_rows(&host);
+        assert_eq!(before, before.clone());
+        let runtime = Runtime::default();
+        let _entered = runtime.enter();
+        let (owner, mut prop) = create_root(|| Prop::new(before).__hold());
+        host.eval_source("globalThis.retainedRows = [{n: 1, label: 'after'}];")
+            .unwrap();
+        let after = retained_test_rows(&host);
+        assert_eq!(prop.get().column("n"), after.column("n"));
+        assert!(prop.__set(Reactive::Static(after)));
+        assert!(!prop.__set(Reactive::Static(prop.get())));
+        host.eval_source("globalThis.retainedRows = undefined;")
+            .unwrap();
+        host.collect_garbage();
+        assert_eq!(
+            retained_row_label(&host, prop.get().row(0).unwrap()).as_deref(),
+            Some("after")
+        );
+        owner.dispose();
+    }
+
+    #[test]
+    fn retained_rows_reject_other_hosts_and_outlive_their_vm_harmlessly() {
+        use nsh_core::ui::{JsKind, Ret};
+
+        let source = host();
+        let destination = host();
+        source
+            .eval_source("globalThis.retainedRows = [{label: 'source'}];")
+            .unwrap();
+        let row = retained_test_rows(&source).row(0).unwrap();
+        assert_eq!(
+            retained_row_label(&source, row.clone()).as_deref(),
+            Some("source")
+        );
+        destination.with_raw(|cx| {
+            let call = super::host_outside_calls(cx);
+            let rejected = row.clone().into_js(&call).unwrap();
+            assert_eq!(rejected.get().kind(), JsKind::Undefined);
+        });
+        // Rejection neither consumes nor frees the source's retained value.
+        assert_eq!(
+            retained_row_label(&source, row.clone()).as_deref(),
+            Some("source")
+        );
+        drop(source);
+        destination.with_raw(|cx| {
+            let call = super::host_outside_calls(cx);
+            assert_eq!(row.into_js(&call).unwrap().get().kind(), JsKind::Undefined);
+        });
+        destination.collect_garbage();
     }
 
     #[test]

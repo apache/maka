@@ -76,9 +76,9 @@ async fn queue_management_preserves_the_stream_draft_and_original_message_identi
         replace_input(&mut view, "Message composer", original).await;
         support::wait_draft(&client, &fixture.session, original).await;
         support::click_button(&mut view, "Queue message").await;
-        // The same text is already in the composer before send completes.
-        // Its original queued receipt must arrive before reading the queue.
-        let queued = wait_view(&mut view, |screen| screen.contains("Message queued.") && screen.contains("QUEUED_LOCAL") && screen.contains("History question 00")).await;
+        // The queue's edit control distinguishes its message from the draft
+        // while the original send is still settling.
+        let queued = wait_view_state(&mut view, |view, screen| screen.contains("QUEUED_LOCAL") && screen.contains("History question 00") && view.accessibility_snapshot().iter().any(|node| node.role == nsh_core::AccessibilityRole::Button && node.label == "Edit queued message 1")).await;
         evidence("queue-send-keeps-history-reader", &queued);
         let queue = client.query("agent", "queue", json!({"sessionId":fixture.session})).await.unwrap();
         assert_eq!(queue["entries"].as_array().unwrap().len(), 1);

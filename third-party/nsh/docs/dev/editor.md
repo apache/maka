@@ -32,7 +32,7 @@ user-facing page is `website/elements/editor.md`; how each module works inside i
 | `fold.rs` | Where folds can start, by indentation |
 | `fold_set.rs` | Folds as sets of ranges: the app's `foldRanges` normalized and carried through edits, the folded set after an edit, levels, nesting, the outermost folds |
 | `search.rs` | Find and replace on `regex`: matches, replacements with groups, the next and previous match |
-| `diagnostics.rs` | `Mark<T>`: the app's ranges resolved to byte ranges once and carried through edits |
+| `diagnostics.rs` | `Mark<T>`: the app's ranges resolved to byte ranges once (line by line, an ASCII line's columns taken as bytes) and carried through edits (only the marks from the first change on, in order); the gutter's severities by binary search |
 | `highlight.rs` | `Highlighter`: the highlighting pipeline (tokens by line, jobs off the engine thread, guesses, edits), `Syntax` (what highlights a language), the built-in highlighter on syntect (feature `highlight`) |
 | `highlighter.rs` | `EditorHighlighter`, the trait of the app's highlighters, and what crosses it: `EditorText`, `EditorTextEdit`, `EditorTokens`; `EditorToken::from_scope` |
 | `languages.rs` | The engine's own languages and highlighters: `EditorLanguage`, `register_language`, `register_highlighter`, and `resolve` (registered first, then built in) |
@@ -258,8 +258,10 @@ given to the highlighter when it comes back; the lines it highlighted from the t
 the edits replaced are dropped). When the lines in view are more than 500 lines past the highlighter's frontier (a jump
 to the end of a long file), a `Guess` highlights them with a highlighter made for it, starting 40 lines before them,
 and shows that until the highlighting from the top reaches them; a highlighter that does not guess is not asked
-again. Lines in view with no tokens at all (a jump, a scroll faster than the guess) are guessed at once, in the commit
-that shows them (`highlight_shown_now`), so no frame shows them plain. An edit shifts the tokens of the lines it
+again. Nothing is parsed on the engine thread: syntect costs about a millisecond a line, so a guess of the lines in
+view there took tens of milliseconds an edit in a long file (held paste keys never let a frame out); lines with no
+tokens yet (pasted, or jumped to) show plain until the job or the guess brings theirs, a frame or two later, as
+gpui-component's highlighters leave a long document's new text until their background parse. An edit shifts the tokens of the lines it
 touches with the text (`LineEdit`): typed text takes the color of the token it extends and the rest of the line keeps
 its colors until the highlighter gives the line new ones, so colors do not flicker. Lines not highlighted again keep
 the tokens they had. On WebAssembly there are no threads: jobs run in place, 4 ms per frame. `highlighting={false}`
@@ -371,7 +373,7 @@ The defaults are the theme's tokens (`crate::theme()`), so a theme and the dark 
 | `content` | 4 points before the text |
 | `line` | Every row (nothing by default) |
 | `activeLine` | `muted` at 60 % behind the rows of lines with a caret |
-| `selection` | `primary` at 22 % |
+| `selection` | The theme's selection color: its `selection` color, else `primary` at 22 % |
 | `caret` | 2 points wide, `foreground`, blinking every 530 ms while focused |
 | `composition` | Underlined, on `background` |
 | `searchMatch` / `currentSearchMatch` | Amber (`#fbbf24` / `#d97706` dark) at 25 % / 55 % |

@@ -764,6 +764,71 @@ async fn native_tool_history_projects_invalid_json_and_unwraps_valid_arguments_o
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn prepared_messages_wire_preserves_the_exact_tool_receipt_and_call_identity() {
+    use maka_model::prompt::{AssistantPart, Message, ToolOutput};
+
+    tokio::time::timeout(Duration::from_secs(30), async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}/v1", listener.local_addr().unwrap());
+        let (first, last) = fixtures(ProviderKind::Anthropic, "done");
+        let response = first + &last;
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let wire = read_request(&mut socket).await;
+            socket.write_all(format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}",
+                response.len(),
+            ).as_bytes()).await.unwrap();
+            wire
+        });
+        let mut input = request(ProviderKind::Anthropic, base);
+        crate::edit_prompt(&mut input.prompt, |messages| {
+            messages.push(Message::Assistant {
+                content: vec![AssistantPart::ToolCall {
+                    tool_call_id: "echo-call-73".into(),
+                    tool_name: "echo".into(),
+                    input: maka_agent_facts::model::ToolInput::Json(json!({"token":"amber-native-42"})),
+                    provider_executed: Some(false),
+                    provider_options: None,
+                }],
+                provider_options: None,
+            });
+            messages.push(Message::tool(
+                "echo-call-73",
+                "echo",
+                ToolOutput::Text("cobalt-tool-receipt-73".into()),
+            ));
+        });
+        let reads = prepare_input(&mut input);
+        let executor = ModelExecutor::new(Duration::from_secs(10)).unwrap();
+        let mut stream = executor.stream(input, CancellationToken::new()).await.unwrap();
+        let mut builder = StepBuilder::default();
+        while let Some(event) = stream.next().await {
+            builder.push(event.unwrap().event).unwrap();
+        }
+        builder.finish().unwrap();
+        stream.cancel_and_wait().await.unwrap();
+        reads.assert_wire_only();
+
+        let wire = server.await.unwrap();
+        let (headers, body) = wire.split_once("\r\n\r\n").unwrap();
+        assert!(headers.starts_with("POST /v1/messages HTTP/1.1\r\n"));
+        let body: Value = serde_json::from_str(body).unwrap();
+        assert_eq!(body["messages"], json!([
+            {"role":"user","content":[{"type":"text","text":"hello"}]},
+            {"role":"assistant","content":[{
+                "type":"tool_use","id":"echo-call-73","name":"echo",
+                "input":{"token":"amber-native-42"}
+            }]},
+            {"role":"user","content":[{
+                "type":"tool_result","tool_use_id":"echo-call-73",
+                "content":"cobalt-tool-receipt-73"
+            }]}
+        ]));
+    }).await.expect("prepared Messages receipt must reach the HTTP receiver");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn invalid_http_error_body_cannot_authorize_provider_replay() {
     tokio::time::timeout(Duration::from_secs(15), async {
         for kind in [ProviderKind::OpenaiChatCompletions, ProviderKind::OpenaiCompatible { name: "fixture".into() }, ProviderKind::Anthropic] {

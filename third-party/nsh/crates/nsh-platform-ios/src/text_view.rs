@@ -654,51 +654,12 @@ impl TextView {
         let text = text.as_ref().filter(|t| !t.links.is_empty())?;
         let layout = self.ivars().layout.borrow();
         let (layout, content) = layout.as_ref()?;
-        let lines = &layout.downcast::<CoreTextLayout>()?.lines;
-        // CoreText's y-up space from the bottom of the box.
-        let x = point.x - content.origin.x.0 as CGFloat;
-        let y = (content.origin.y.0 + content.size.height.0) as CGFloat - point.y;
-        let mut best: Option<(&LaidLine, CGFloat)> = None;
-        for line in lines {
-            let (mut ascent, mut descent) = (0.0, 0.0);
-            // SAFETY: valid out pointers.
-            let width = unsafe {
-                line.line
-                    .typographic_bounds(&mut ascent, &mut descent, std::ptr::null_mut())
-            } as CGFloat;
-            let (top, bottom) = (line.origin.y + ascent, line.origin.y - descent);
-            if x < line.origin.x - 4.0 || x > line.origin.x + width + 4.0 {
-                continue;
-            }
-            let distance = if y > top {
-                y - top
-            } else if y < bottom {
-                bottom - y
-            } else {
-                0.0
-            };
-            // A little slack above and below the glyphs.
-            if distance <= 4.0 && best.is_none_or(|(_, d)| distance < d) {
-                best = Some((line, distance));
-            }
-        }
-        let (line, _) = best?;
-        let lx = x - line.origin.x;
-        // SAFETY: a valid line; no secondary offset wanted.
-        let index = unsafe {
-            let index = line.line.string_index_for_position(CGPoint::new(lx, 0.0));
-            // The caret index nearest to the point: the character is the
-            // one before it when the point is left of the caret.
-            let caret = line
-                .line
-                .offset_for_string_index(index, std::ptr::null_mut());
-            if lx < caret && index > 0 {
-                index - 1
-            } else {
-                index
-            }
-        };
-        text.link_at(index.max(0) as u32).cloned()
+        let layout = layout.downcast::<CoreTextLayout>()?;
+        let index = layout.char_at(CGPoint::new(
+            point.x - content.origin.x.0 as CGFloat,
+            point.y - content.origin.y.0 as CGFloat,
+        ))?;
+        text.link_at(u32::try_from(index).ok()?).cloned()
     }
 
     fn has_text(&self) -> bool {

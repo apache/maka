@@ -18,6 +18,7 @@
  */
 
 import { tr } from './locale';
+import { CompactionDivider } from './CompactionDivider';
 import { computed, inputAction, signal, Text, View } from 'nsh';
 import type { JSX } from 'nsh';
 import { Button } from 'nsh/base';
@@ -73,6 +74,8 @@ export function MessageRow({
   return (
     <Each of={[item()]} key={rowKey}>
       {(row) => {
+        if (row().role === 'compaction')
+          return <CompactionDivider durationMs={() => row().compaction!.durationMs} />;
         const expanded = viewState?.expanded ?? signal(false),
           sourceMode = viewState?.sourceMode ?? signal(false);
         const ownsRow = (action: MessageRowToggle) => {

@@ -181,12 +181,10 @@ fn mixed_root_pending_work_is_independent_of_completed_app_history() {
     let root = Connection::open(&root_path).unwrap();
     canonical_schema(&root);
     root.execute_batch(&crate::schema::fixture(|_, name| {
-        name.starts_with("interaction_pending") || name == "session_catalog_revision"
+        name.starts_with("interaction_pending")
+            || name.starts_with("computer_app_")
+            || name == "session_catalog_revision"
     }))
-    .unwrap();
-    root.execute_batch(include_str!(
-        "../../migrations/0002_computer_app_authority.sql"
-    ))
     .unwrap();
     root.execute("INSERT INTO session_catalog_revision VALUES(1,0)", [])
         .unwrap();

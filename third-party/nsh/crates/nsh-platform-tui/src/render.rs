@@ -2302,7 +2302,10 @@ fn paint_scrollbars(
         return;
     }
     let progress = node.scroll.physics.refresh_progress();
-    if !node.scroll.horizontal && (node.scroll.physics.refreshing || progress > 0.0) {
+    if node.scroll.behavior.refresh_indicator.is_none()
+        && !node.scroll.horizontal
+        && (node.scroll.physics.refreshing || progress > 0.0)
+    {
         let label = if node.scroll.physics.refreshing {
             format!(
                 "{} Refreshing",
@@ -4065,6 +4068,13 @@ mod tests {
         scroll.y = px(-48.0);
         refresh.focus = None;
         assert!(refresh.snapshot().contains("Refreshing"));
+        refresh
+            .node_mut(2)
+            .unwrap()
+            .scroll
+            .behavior
+            .refresh_indicator = Some(px(100.0));
+        assert!(!refresh.snapshot().contains("Refreshing"));
     }
 
     #[test]

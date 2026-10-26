@@ -66,7 +66,8 @@ async fn repl_retains_its_original_result_through_gc_and_releases_it_after_settl
         });
         "#,
         CellLimits::default(),
-    );
+    )
+    .unwrap();
 
     let (result, output) = evaluate(
         &repl,

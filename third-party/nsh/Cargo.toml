@@ -25,6 +25,7 @@ unreachable_pub = "deny"
 private_interfaces = "deny"
 
 [workspace.dependencies]
+unicode-bidi = "0.3.18"
 unicode-linebreak = "0.1.5"
 nsh-core = { version = "0.2.0", path = "crates/nsh-core" }
 nsh-package = { version = "0.2.0", path = "crates/nsh-package" }
@@ -51,7 +52,6 @@ ratatui = { version = "0.30", default-features = false, features = ["crossterm"]
 ratatui-image = { version = "11.1", default-features = false, features = ["crossterm"] }
 crossterm = { version = "0.29", features = ["event-stream", "bracketed-paste"] }
 unicode-width = "0.2"
-unicode-bidi = "0.3"
 tiny-skia = "0.12"
 fontdb = { version = "0.23", default-features = false, features = ["std", "fs", "fontconfig"] }
 rustybuzz = "0.20"

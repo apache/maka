@@ -778,7 +778,7 @@ fn sparse_summary_repair_does_not_walk_intervening_main_requests() {
     db.execute_batch(LEDGER).unwrap();
     // Competing production index previously won over the summary-only index.
     db.execute_batch("CREATE INDEX catalog_model_boundaries ON event_log(invocation_id,kind,sequence)
-        WHERE kind='model_requested' OR kind='model_completed' OR kind='model_interrupted' OR kind='executor_started';").unwrap();
+        WHERE kind='model_requested' OR kind='model_completed' OR kind='model_interrupted' OR kind='executor_started' OR kind='executor_completed';").unwrap();
     db.execute_batch(&obligation_schema()).unwrap();
     db.execute_batch(&execution_schema()).unwrap();
     db.execute("INSERT INTO event_log(event_id,invocation_id,kind,operation_id,event_json)

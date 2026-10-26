@@ -49,8 +49,10 @@ nsh-dev = { workspace = true, optional = true }
 log.workspace = true
 rustc-hash.workspace = true
 ttf-parser.workspace = true
+unicode-bidi.workspace = true
 
 # The text rules (`src/text/css.rs`, `src/text/wrap.rs`) depend on nothing
 # of the browser: `tests/text` builds them on the host and tests them there.
 [dev-dependencies]
 nsh-core.workspace = true
+unicode-bidi.workspace = true

@@ -886,7 +886,7 @@ mod tests {
                     }});",
                     CellLimits::default(),
                     old.admission.clone(),
-                ));
+                ).unwrap());
                 let epoch = old.epoch.clone();
                 let started = CancellationToken::new();
                 let release = CancellationToken::new();

@@ -78,7 +78,18 @@ row's width computed up front); a typed character, Enter or undo 1.4–2.4 ms (1
 engine thread (before: 4 ms per frame on it, 22 s of frames to reach the end); a jump to line 199 000 shows guessed
 colors in under 300 ms (12 ms of parsing per 100 lines). DiffView (a change every 500 lines): first frame 166 ms, of
 which 95 ms is JS and the commit with the line diff 72 ms (3083 items); scrolling 3000 points commits 8 times, 1.9 ms
-each, 16 ms in all (before: 150 commits, 51 ms).
+each, 16 ms in all (before: 150 commits, 51 ms). A round of the gallery's language server on 50 000 lines (macOS desktop
+size, release CLI, headless): the commit taking 50 006 diagnostics and 50 002 decorations 23 ms, 7.5 and 6 ms of it
+resolving them (before: 145 ms, 53 and 52 ms, four rope lookups per position; the gutter's severities and the
+diagnostics at a point scanned every mark).
+
+The gallery's Editor demo at 200 000 lines (its TypeScript sample pasted 3449 times, a macOS window of 1440×900,
+release CLI, `--target macos --trace`): the paste's commit 21 → 13.5 ms; a sample pasted into that file 8.4 → 5.7 ms
+(1832 items: the gutter measured its digit once per row, an element made again per row for each number); the commit
+taking the 6900 problems 12.4 → 7.4 ms (fields read by atom, not through a C string allocated each). The engine's idle
+collection walks the whole VM, 30–90 ms with the demo's language server holding the file's model: it ran every second
+between the turns of pastes and of the server's slices (21 collections in the run), now only after 0.3 s without a
+message or a due timer (7, none between pastes).
 
 - counter, headless (debug): first frame ~0.5–0.65ms (58 ops / 49 mount items), one tap ~0.15ms (12 ops / 8 items).
 - counter, Catalyst (release): first frame ~1.05–1.15ms (of which ~0.7ms is cold CoreText layout of 10 texts), one tap ~0.12ms.

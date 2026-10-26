@@ -137,7 +137,8 @@ async fn public_repl_records_generated_output_and_emits_identical_wav() {
     let repl = Repl::new(
         maka_computer_use::facade_for("linux", true),
         CellLimits::default(),
-    );
+    )
+    .unwrap();
     let started = run(
         &repl,
         bridge.clone(),

@@ -61,6 +61,16 @@ import {
 } from '../../../../plugins/shared/locale-messages.js';
 
 export const conversationMessages = {
+  Connection: ['Connection', '连接', '連線'],
+  'Back to models': ['Back to models', '返回模型', '返回模型'],
+  'Load more connections': ['Load more connections', '加载更多连接', '載入更多連線'],
+  'Filter by connection': ['Filter by connection', '按连接筛选', '依連線篩選'],
+  'All connections': ['All connections', '所有连接', '所有連線'],
+  'No models match this search and connection.': [
+    'No models match this search and connection.',
+    '此连接中没有符合搜索条件的模型。',
+    '此連線中沒有符合搜尋條件的模型。',
+  ],
   'MCP server configuration': ['MCP server configuration', 'MCP 服务器配置', 'MCP 伺服器設定'],
   'Trust project MCP configuration?': [
     'Trust project MCP configuration?',
@@ -548,7 +558,6 @@ export const conversationMessages = {
     '傳送訊息，或開始一項任務…',
   ],
   'Message queue': ['Message queue', '消息队列', '訊息佇列'],
-  'Message queued.': ['Message queued.', '消息已加入队列。', '訊息已加入佇列。'],
   'Messages waiting for a turn': [
     'Messages waiting for a turn',
     '等待处理的消息',
@@ -1285,7 +1294,6 @@ export const conversationMessages = {
   'Wrap code': ['Wrap code', '代码自动换行', '程式碼自動換行'],
   'Wrap long lines': ['Wrap long lines', '长行自动换行', '長行自動換行'],
   'Write file': msg_toolWriteAction,
-  'Writing response': ['Writing response', '正在撰写回复', '正在撰寫回覆'],
   'Your answer': ['Your answer', '你的答案', '你的答案'],
   bytes: msg_toolByteRange,
   'path and descendants': ['path and descendants', '此路径及其子路径', '此路徑及其子路徑'],

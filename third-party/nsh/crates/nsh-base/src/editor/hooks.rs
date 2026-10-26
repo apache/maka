@@ -230,8 +230,9 @@ fn editor_range(st: &State, range: &Range<usize>) -> EditorRange {
 /// The diagnostics marking the character at `offset`, their ranges as they
 /// are now.
 pub(crate) fn diagnostics_at(st: &State, offset: usize) -> Vec<EditorDiagnostic> {
-    st.diagnostics
-        .iter()
+    // An empty mark at the end of the line can mark the char before it.
+    let line_end = st.buffer.line_end(st.buffer.line_of(offset));
+    st.diagnostics_near(offset, line_end.max(offset))
         .filter(|mark| {
             let r = &mark.range;
             if !r.is_empty() {
@@ -770,7 +771,7 @@ mod tests {
             severity: EditorDiagnosticSeverity::Warning,
             ..Default::default()
         };
-        st.diagnostics = vec![
+        st.set_diagnostics(vec![
             Mark {
                 range: 4..7,
                 item: diagnostic("unused"),
@@ -785,7 +786,7 @@ mod tests {
                 range: 14..14,
                 item: diagnostic("at the end"),
             },
-        ];
+        ]);
         let messages = |offset| -> Vec<String> {
             diagnostics_at(&st, offset)
                 .into_iter()

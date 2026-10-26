@@ -234,7 +234,7 @@ impl EventLog {
         let expected_session = self.expected_session.clone();
         let request_id = request_id.to_owned();
         self.connection
-            .run(move |connection| {
+            .read_interruptible(move |connection| {
                 Box::pin(async move {
                     let record =
                         records::read_scoped(connection, &request_id, expected_session.as_deref())
@@ -259,7 +259,7 @@ impl EventLog {
         entity_id(session_id).map_err(invalid)?;
         let session_id = session_id.to_owned();
         self.connection
-            .run(move |connection| {
+            .read_interruptible(move |connection| {
                 Box::pin(async move {
                     let mut tx = connection.begin().await?;
                     let result = pending(&mut tx, &session_id).await?;
@@ -279,7 +279,7 @@ impl EventLog {
         let session_id = session_id.to_owned();
         let target = target.clone();
         self.connection
-            .run(move |connection| {
+            .read_interruptible(move |connection| {
                 Box::pin(async move {
                     let mut tx = connection.begin().await?;
                     let result = capability_grant(&mut tx, &session_id, &target).await?;

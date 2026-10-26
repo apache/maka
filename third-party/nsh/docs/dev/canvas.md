@@ -10,7 +10,9 @@
   browsers), `textAlign` / `textBaseline`),
   transforms, paths (`arc`, `arcTo`, `ellipse`, curves, `rect`, `roundRect`), `fill` / `stroke` / `clip` (also of a `Path2D`,
   which takes SVG path data; arcs become cubics), `fillRect` / `strokeRect` / `clearRect`, `fillText` / `strokeText` /
-  `measureText` (synchronous, through the engine's text engine; only `width`), `isPointInPath` / `isPointInStroke`
+  `measureText` (synchronous, through the engine's text engine; only `width`, trailing white space included as in a
+  browser: text engines lay a line out without it, so a text ending in white space is measured with a mark after it,
+  less the mark), `isPointInPath` / `isPointInStroke`
   (synchronous too, answered in Rust without the platform: `nsh_core::canvas::point_in_path` replays what was recorded
   for its transform, current path and line style and tests the flattened path; after `draw` returned a kept context
   answers from everything it drew, so press handlers can hit-test the shapes; strokes take joins as round and ignore

@@ -445,6 +445,38 @@ CREATE TABLE "client_capability_session_grants" (
     record_json TEXT NOT NULL
 );
 
+-- App consent uses the existing append-only interaction facts. Only profile
+-- persistence needs mutable authority: revocation advances its revision so a
+-- delayed response cannot restore the previously revoked Always grant.
+CREATE TABLE computer_app_profile_authority (
+    target_key TEXT PRIMARY KEY NOT NULL,
+    revision INTEGER NOT NULL CHECK(revision BETWEEN 0 AND 9007199254740991),
+    source_request TEXT REFERENCES interaction_requests(request_id)
+) STRICT;
+
+-- An observed app remains selectable between completed native calls in the same
+-- logical Turn. Its first source T1 is an immutable, host-resolved selection.
+CREATE TABLE computer_app_turn_activity (
+    session_id TEXT NOT NULL,
+    turn_id TEXT NOT NULL,
+    app_key TEXT NOT NULL,
+    source_event TEXT NOT NULL REFERENCES event_log(event_id),
+    operation_id TEXT NOT NULL,
+    record_json TEXT NOT NULL,
+    PRIMARY KEY(session_id,turn_id,app_key),
+    UNIQUE(session_id,operation_id)
+) STRICT;
+
+CREATE TABLE computer_app_turn_stops (
+    session_id TEXT NOT NULL,
+    turn_id TEXT NOT NULL,
+    app_key TEXT NOT NULL,
+    stopped_at INTEGER NOT NULL CHECK(stopped_at BETWEEN 0 AND 9007199254740991),
+    PRIMARY KEY(session_id,turn_id,app_key),
+    FOREIGN KEY(session_id,turn_id,app_key)
+        REFERENCES computer_app_turn_activity(session_id,turn_id,app_key) ON DELETE CASCADE
+) STRICT;
+
 CREATE TABLE "projects" (
     id TEXT PRIMARY KEY NOT NULL,
     identity TEXT NOT NULL UNIQUE,
@@ -769,8 +801,6 @@ CREATE UNIQUE INDEX pending_root_invocation ON message_admissions (
 CREATE INDEX event_material_owner ON event_log(event_session, sequence)
     WHERE event_json IS NOT NULL;
 
-CREATE INDEX event_proof_owner ON event_log(event_session, sequence);
-
 CREATE UNIQUE INDEX session_revision_family ON session_history_copies(
     CAST(json_extract(lineage_json, '$.root_session_id') AS TEXT),
     CAST(json_extract(lineage_json, '$.index') AS INTEGER)
@@ -926,7 +956,7 @@ WHERE kind = 'invocation_ended' AND event_json IS NOT NULL;
 
 CREATE INDEX catalog_model_boundaries ON event_log(invocation_id, kind, sequence)
 WHERE kind = 'model_requested' OR kind = 'model_completed'
-   OR kind = 'model_interrupted' OR kind = 'executor_started';
+   OR kind = 'model_interrupted' OR kind = 'executor_started' OR kind = 'executor_completed';
 
 CREATE INDEX model_step_terminals ON event_log(invocation_id, operation_id, sequence)
 WHERE kind IN ('model_completed', 'model_interrupted') AND event_json IS NOT NULL;
@@ -970,6 +1000,26 @@ CREATE INDEX shell_runs_active ON shell_runs(active) WHERE active = 1;
 
 CREATE INDEX interaction_session_pending ON interaction_requests(session_id, created_at, request_id);
 
+CREATE UNIQUE INDEX computer_app_native_effect ON interaction_requests(
+    session_id,
+    json_extract(record_json, '$.request.nativeOperationId')
+) WHERE json_extract(record_json, '$.request.kind') = 'computer_app';
+
+CREATE INDEX interaction_browser_origin_decision ON interaction_requests(
+    session_id,
+    json_extract(record_json,'$.request.target.providerId'),
+    json_extract(record_json,'$.request.target.contractId'),
+    json_extract(record_json,'$.request.target.serverId'),
+    json_extract(record_json,'$.request.target.toolName'),
+    json_extract(record_json,'$.request.target.scope.origin'),
+    json_extract(record_json,'$.request.basis.boundaryRevision'),
+    json_extract(record_json,'$.request.basis.binding.id'),
+    json_extract(record_json,'$.request.basis.binding.permissionEpoch'),
+    request_id
+) WHERE json_extract(record_json,'$.request.kind')='client_capability'
+    AND json_extract(record_json,'$.request.target.capability')='browser'
+    AND json_extract(record_json,'$.request.target.scope.kind')='browser_origin';
+
 CREATE INDEX interaction_permission_basis ON interaction_requests(
     session_id, json_extract(record_json, '$.request.baseRevision'), created_at, request_id
 ) WHERE json_extract(record_json, '$.request.kind') = 'permissions';
@@ -978,7 +1028,7 @@ CREATE INDEX project_identity_owner ON project_identities(project_id, id);
 
 CREATE INDEX artifacts_session_order ON artifacts(session_id, created_at DESC, id);
 
-CREATE UNIQUE INDEX context_source_ordinals ON context_source_prefixes(kind,owner,ordinal);
+CREATE UNIQUE INDEX context_source_ordinals ON context_source_prefixes(owner,ordinal) WHERE kind='invocation';
 
 CREATE INDEX context_run_opening ON event_log(
     json_extract(event_json,'$.invocation.session_id'),
@@ -1217,11 +1267,6 @@ BEGIN
     ON CONFLICT(owner) DO NOTHING;
 END;
 
-CREATE TRIGGER context_semantic_copy_member AFTER INSERT ON session_history_members
-BEGIN
-    SELECT context_semantic_copy(NEW.session_id,NEW.sequence,NEW.archive_sequence);
-END;
-
 CREATE TRIGGER context_obligations_append AFTER INSERT ON event_log
 WHEN NEW.invocation_id IS NOT NULL AND NEW.event_json IS NOT NULL AND (
     NEW.kind IN ('invocation_opened','invocation_ended','tool_dispatched','tool_rejected','tool_settled','model_requested','model_completed','model_interrupted')
@@ -1358,6 +1403,16 @@ END;
 CREATE TRIGGER context_execution_append AFTER INSERT ON event_log
 WHEN NEW.invocation_id IS NOT NULL AND NEW.event_json IS NOT NULL
   AND NEW.kind IN ('model_requested','model_observed','model_completed','model_interrupted','tool_dispatched','tool_rejected','tool_settled')
+  AND (NEW.kind != 'model_observed'
+    OR json_extract(NEW.event_json,'$.fact.event.kind') IN ('tool_call','provider_tool_result')
+    OR EXISTS(SELECT 1 FROM context_execution_steps
+      WHERE invocation_id=NEW.invocation_id
+        AND operation_id=CAST(json_extract(NEW.event_json,'$.fact.step_id') AS TEXT)
+        AND (observed_at IS NULL OR terminal_kind='model_interrupted'
+          OR (barrier_at IS NULL AND (json_extract(NEW.event_json,'$.fact.event.kind')='finished'
+            OR (json_extract(NEW.event_json,'$.fact.event.data.provider_options') IS NOT NULL
+              AND json_extract(NEW.event_json,'$.fact.event.data.provider_options')!='{}')))
+          OR (accepted_at IS NULL AND json_extract(NEW.event_json,'$.fact.event.kind') IN ('source','part_finished')))))
 BEGIN
     INSERT INTO context_execution_steps(invocation_id,operation_id,requested_at,purpose,item_acceptance)
     SELECT NEW.invocation_id,NEW.operation_id,NEW.sequence,json_extract(NEW.event_json,'$.fact.purpose'),
@@ -1388,7 +1443,10 @@ BEGIN
     INSERT INTO context_independent_tools
     SELECT NEW.invocation_id,NEW.operation_id,NEW.sequence
     WHERE NEW.kind IN ('tool_dispatched','tool_rejected')
-      AND ((NEW.kind='tool_dispatched' AND json_extract(NEW.event_json,'$.fact.call.origin.kind')='code_cell')
+      AND ((NEW.kind='tool_dispatched' AND (
+          json_extract(NEW.event_json,'$.fact.call.origin.kind')='code_cell'
+          OR (json_extract(NEW.event_json,'$.fact.call.origin.kind')='host_sdk'
+            AND json_extract(NEW.event_json,'$.fact.call.origin.parent_relationship.kind')='evaluation_observer')))
         OR EXISTS(SELECT 1 FROM context_independent_tools p WHERE p.invocation_id=NEW.invocation_id
           AND p.operation_id=json_extract(NEW.event_json,'$.fact.call.origin.parent_operation_id')));
 

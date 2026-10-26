@@ -20,6 +20,7 @@
 use super::*;
 use crate::sessions::{SessionCopy, SessionCopyResult, SessionMutation};
 use serde_json::json;
+use sqlx::Connection;
 
 async fn log() -> (tempfile::TempDir, EventLog) {
     let directory = tempfile::tempdir().unwrap();

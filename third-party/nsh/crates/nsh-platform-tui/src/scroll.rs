@@ -10,7 +10,6 @@ use nsh_core::{
 use crate::surface::{Node, Surface, SurfaceEvent};
 
 const DURATION: f64 = 0.3;
-const REFRESH_PULL: f32 = 64.0;
 const REFRESH_SPACE: f32 = 48.0;
 const MIN_GLIDE: f32 = 0.05;
 const STOP: f32 = 0.01;
@@ -162,12 +161,19 @@ fn target(node: &Node) -> Target {
     }
 }
 
+fn refresh_space(node: &Node) -> f32 {
+    node.scroll
+        .behavior
+        .refresh_indicator
+        .map_or(REFRESH_SPACE, |height| height.0)
+}
+
 fn limits(node: &Node, zoom: f32, refreshing: bool) -> ((f32, f32), (f32, f32)) {
     let inset = node.scroll.behavior.content_inset;
     let min_x = -inset.left.0;
     let min_y = -inset.top.0
         - if refreshing && !node.scroll.horizontal {
-            REFRESH_SPACE
+            refresh_space(node)
         } else {
             0.0
         };
@@ -292,6 +298,12 @@ impl Surface {
             node.scroll.scroll_value,
             node.scroll.horizontal,
         );
+        let pull = node.scroll.pull_value.map(|binding| {
+            (
+                binding,
+                (-node.scroll.behavior.content_inset.top.0 - value.y).max(0.0),
+            )
+        });
         if zoom_changed {
             self.events.push(SurfaceEvent::Zoom(id, value.zoom));
         }
@@ -302,6 +314,13 @@ impl Surface {
                 if horizontal { reported.x } else { reported.y },
                 &mut finished,
             );
+            if !finished.is_empty() {
+                self.events.push(SurfaceEvent::AnimationsFinished(finished));
+            }
+        }
+        if let Some((binding, distance)) = pull {
+            let mut finished = Vec::new();
+            self.animation.set(binding, distance, &mut finished);
             if !finished.is_empty() {
                 self.events.push(SurfaceEvent::AnimationsFinished(finished));
             }
@@ -435,12 +454,30 @@ impl Surface {
         let mut value = target(node);
         let lead = -node.scroll.behavior.content_inset.top.0;
         if refreshing && value.y <= lead + 0.5 {
-            value.y = lead - REFRESH_SPACE;
+            value.y = lead - refresh_space(node);
         } else if !refreshing && value.y < lead {
             value.y = lead;
         } else {
             return;
         }
+        self.interrupt_scroll(id);
+        self.animate_scroll(id, value, false, DURATION);
+    }
+
+    pub(crate) fn refresh_inset_changed(&mut self, id: NodeId) {
+        let Some(node) = self.node(id) else { return };
+        if node.scroll.horizontal
+            || !node.scroll.physics.refreshing
+            || node.scroll.physics.drag.is_some()
+        {
+            return;
+        }
+        let lead = -node.scroll.behavior.content_inset.top.0;
+        if node.scroll.y.0 > lead + 0.5 {
+            return;
+        }
+        let mut value = target(node);
+        value.y = lead - refresh_space(node);
         self.interrupt_scroll(id);
         self.animate_scroll(id, value, false, DURATION);
     }
@@ -819,7 +856,7 @@ impl Surface {
             node.scroll.physics.pull = if horizontal {
                 0.0
             } else {
-                ((min_y - sy) / REFRESH_PULL).max(0.0)
+                ((min_y - sy) / node.scroll.behavior.refresh_threshold().0).max(0.0)
             };
         }
         self.write_scroll(id, value, false);
@@ -878,10 +915,9 @@ impl Surface {
         if (current.x - bounded.x).abs() > 0.01 || (current.y - bounded.y).abs() > 0.01 || refresh {
             let to = if refresh {
                 Target {
-                    y: -self
-                        .node(id)
-                        .map_or(0.0, |n| n.scroll.behavior.content_inset.top.0)
-                        - REFRESH_SPACE,
+                    y: self.node(id).map_or(0.0, |n| {
+                        -n.scroll.behavior.content_inset.top.0 - refresh_space(n)
+                    }),
                     ..bounded
                 }
             } else {
@@ -1050,17 +1086,15 @@ impl Surface {
         {
             return true;
         }
-        if !self
-            .nodes
-            .iter()
-            .flatten()
-            .any(|node| node.scroll.physics.refreshing)
-        {
+        if !self.nodes.iter().flatten().any(|node| {
+            node.scroll.physics.refreshing && node.scroll.behavior.refresh_indicator.is_none()
+        }) {
             return false;
         }
         self.paint_ids().into_iter().any(|id| {
-            self.node(id)
-                .is_some_and(|node| node.scroll.physics.refreshing)
+            self.node(id).is_some_and(|node| {
+                node.scroll.physics.refreshing && node.scroll.behavior.refresh_indicator.is_none()
+            })
         })
     }
 }
@@ -1140,6 +1174,7 @@ mod tests {
                             horizontal: false,
                             scrollbar_visible: true,
                             scroll_value: Some(10),
+                            pull_value: None,
                             keyboard_dismiss: Default::default(),
                             mirrored: false,
                         },
@@ -1320,6 +1355,78 @@ mod tests {
         surface.set_refreshing(2, false);
         surface.tick_scroll(0.7);
         assert_eq!(surface.node(2).unwrap().scroll.y.0, 0.0);
+    }
+
+    #[test]
+    fn custom_refresh_keeps_its_height_and_reports_native_pull_value() {
+        use nsh_core::{MountBatch, MountItem, animation::AnimationOp};
+        let mut surface = scroll();
+        surface.apply(MountBatch {
+            items: vec![
+                MountItem::Animation(AnimationOp::CreateValue {
+                    node: 10,
+                    value: 0.0,
+                }),
+                MountItem::ScrollConfig {
+                    id: 2,
+                    horizontal: false,
+                    scrollbar_visible: true,
+                    scroll_value: None,
+                    pull_value: Some(10),
+                    keyboard_dismiss: Default::default(),
+                    mirrored: false,
+                },
+            ],
+        });
+        let node = surface.node_mut(2).unwrap();
+        node.events.set(EventKind::Refresh, true);
+        node.scroll.behavior.refresh_indicator = Some(Points(100.0));
+        surface.begin_scroll_drag(2, 40.0, 40.0, false);
+        surface.now = 0.1;
+        surface.move_scroll_drag(2, 40.0, 150.0);
+        assert!(-surface.node(2).unwrap().scroll.y.0 < 100.0);
+        surface.end_scroll_drag(2, false);
+        assert!(!surface.node(2).unwrap().scroll.physics.refreshing);
+        surface.tick_scroll(0.5);
+        surface.now = 0.5;
+        surface.begin_scroll_drag(2, 40.0, 40.0, false);
+        surface.now = 0.6;
+        surface.move_scroll_drag(2, 40.0, 1000.0);
+        let distance = -surface.node(2).unwrap().scroll.y.0;
+        assert!(distance > 100.0);
+        assert!((surface.animation.eval(10).number() - distance).abs() < 0.01);
+        surface.end_scroll_drag(2, false);
+        surface.tick_scroll(1.0);
+        assert!(surface.node(2).unwrap().scroll.physics.refreshing);
+        assert!((surface.node(2).unwrap().scroll.y.0 + 100.0).abs() < 0.01);
+        assert!((surface.animation.eval(10).number() - 100.0).abs() < 0.01);
+        assert!(
+            !surface.scroll_animating(),
+            "an app indicator needs no native spinner ticks"
+        );
+        for (at, height, expected) in [
+            (1.0, Some(200.0), 200.0),
+            (1.4, Some(80.0), 80.0),
+            (1.8, None, REFRESH_SPACE),
+        ] {
+            surface.now = at;
+            surface.apply(MountBatch {
+                items: vec![MountItem::ScrollBehavior {
+                    id: 2,
+                    behavior: Box::new(nsh_core::ScrollBehavior {
+                        refresh_indicator: height.map(Points),
+                        ..Default::default()
+                    }),
+                }],
+            });
+            surface.tick_scroll(at + 0.4);
+            assert!((surface.node(2).unwrap().scroll.y.0 + expected).abs() < 0.01);
+            assert!((surface.animation.eval(10).number() - expected).abs() < 0.01);
+        }
+        surface.now = 2.2;
+        surface.set_refreshing(2, false);
+        surface.tick_scroll(2.6);
+        assert_eq!(surface.animation.eval(10).number(), 0.0);
     }
 
     #[test]

@@ -299,6 +299,7 @@ struct ScrollState {
     scrollbar_visible: bool,
     refreshing: bool,
     scroll_value: Option<crate::animation::NodeId>,
+    pull_value: Option<crate::animation::NodeId>,
     keyboard_dismiss: KeyboardDismissMode,
     /// Last content size sent to the platform.
     content: Option<Size<Points>>,
@@ -342,6 +343,7 @@ impl Default for ScrollState {
             scrollbar_visible: true,
             refreshing: false,
             scroll_value: None,
+            pull_value: None,
             keyboard_dismiss: KeyboardDismissMode::None,
             content: None,
             content_item: None,
@@ -1841,6 +1843,11 @@ impl<M: TextEngine> Core<M> {
                 if node.drawing.as_deref() == Some(&*drawing) {
                     return Ok(());
                 }
+                // An empty drawing on a canvas that has drawn nothing shows
+                // nothing new (a component's canvas before its first layout).
+                if node.drawing.is_none() && drawing.ops.is_empty() && drawing.nodes.is_empty() {
+                    return Ok(());
+                }
                 node.drawing = Some(Arc::from(drawing));
                 let flags = dirty::CANVAS | if slots_changed { dirty::ANIMATION } else { 0 };
                 self.mark(key, flags);
@@ -2951,10 +2958,15 @@ impl<M: TextEngine> Core<M> {
                 | Prop::Scrollbar(_)
                 | Prop::Refreshing(_)
                 | Prop::ScrollValue(_)
+                | Prop::PullValue(_)
                 | Prop::Native(NativeProp::Scrollable(_))
         ) && let Some(list) = self.nodes[key as usize].list.as_mut().filter(|l| l.parent)
         {
             list.ignored |= match prop {
+                Prop::Scroll(ScrollProp::RefreshIndicator(None)) => 0,
+                Prop::Scroll(ScrollProp::RefreshIndicator(Some(_))) | Prop::PullValue(Some(_)) => {
+                    list::ignored::REFRESH
+                }
                 Prop::Scroll(_)
                 | Prop::KeyboardDismissMode(
                     KeyboardDismissMode::OnDrag | KeyboardDismissMode::Interactive,
@@ -3060,6 +3072,10 @@ impl<M: TextEngine> Core<M> {
                         ScrollProp::BouncesZoom(on) => b.bounces_zoom = on,
                         ScrollProp::Pinch(on) => b.pinch = on,
                         ScrollProp::CenterContent(on) => b.center_content = on,
+                        ScrollProp::RefreshIndicator(h) => {
+                            // No height, no indicator: every release would refresh.
+                            b.refresh_indicator = h.filter(|h| h.0 > 0.0);
+                        }
                         ScrollProp::Zoom(scale) => {
                             // After the limits (sent with this commit's
                             // behavior) are applied.
@@ -3099,6 +3115,12 @@ impl<M: TextEngine> Core<M> {
             Prop::ScrollValue(value) => {
                 if let Some(scroll) = node.scroll.as_mut() {
                     scroll.scroll_value = value;
+                    flags |= dirty::SCROLL;
+                }
+            }
+            Prop::PullValue(value) => {
+                if let Some(scroll) = node.scroll.as_mut() {
+                    scroll.pull_value = value;
                     flags |= dirty::SCROLL;
                 }
             }
@@ -4542,6 +4564,7 @@ impl<M: TextEngine> Core<M> {
                         horizontal: scroll.horizontal,
                         scrollbar_visible: scroll.scrollbar_visible,
                         scroll_value: scroll.scroll_value,
+                        pull_value: scroll.pull_value,
                         keyboard_dismiss: scroll.keyboard_dismiss,
                         mirrored: node.kind == Kind::List && scroll.horizontal && node.rtl,
                     });

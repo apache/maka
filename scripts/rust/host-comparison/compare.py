@@ -64,6 +64,26 @@ def clean_env():
     } | {"NODE_ENV": "production"}
 
 
+async def request_body(reader, fields):
+    headers = {key.lower(): value.strip() for key, value in fields.items()}
+    transfer = headers.get("transfer-encoding")
+    if transfer is None:
+        return await reader.readexactly(int(headers.get("content-length", "0")))
+    if transfer.lower() != "chunked" or "content-length" in headers:
+        raise ValueError("unsupported or ambiguous request framing")
+    body = bytearray()
+    while True:
+        line = await reader.readuntil(b"\r\n")
+        size = int(line.split(b";", 1)[0].strip(), 16)
+        if size == 0:
+            while await reader.readuntil(b"\r\n") != b"\r\n":
+                pass
+            return bytes(body)
+        body.extend(await reader.readexactly(size))
+        if await reader.readexactly(2) != b"\r\n":
+            raise ValueError("invalid request chunk terminator")
+
+
 class Provider:
     def __init__(self, text, chunks=20, interval=0.05):
         self.text, self.chunks, self.interval = text, chunks, interval
@@ -90,13 +110,16 @@ class Provider:
             lines = headers.decode("latin1").split("\r\n")
             verb, path, _ = lines[0].split()
             fields = dict(line.split(":", 1) for line in lines[1:] if ":" in line)
-            length = int(
-                next(
-                    (v for k, v in fields.items() if k.lower() == "content-length"), "0"
-                )
+            record["requestTransferEncoding"] = next(
+                (
+                    v.strip()
+                    for k, v in fields.items()
+                    if k.lower() == "transfer-encoding"
+                ),
+                None,
             )
-            body = await reader.readexactly(length)
-            record.update(method=verb, path=path, requestBytes=length)
+            body = await request_body(reader, fields)
+            record.update(method=verb, path=path, requestBytes=len(body))
             if verb == "GET" and path == "/v1/models":
                 data = json.dumps(
                     {

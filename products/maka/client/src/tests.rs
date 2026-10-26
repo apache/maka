@@ -616,7 +616,7 @@ async fn cancelling_a_sql_blocked_preparation_fences_confirmation_even_after_the
         let mut preparing = Box::pin(mutation.prepare());
         tokio::select! {
             result = &mut preparing => panic!("SQL writer is held: {result:?}"),
-            () = client.0.journal.1.notified() => {},
+            () = client.0.journal.preparing.notified() => {},
         }
         drop(preparing);
         assert_eq!(client.pending_requests().await, 1);

@@ -32,6 +32,8 @@ pub enum ModelsRead {
     Start {
         #[serde(default)]
         query: String,
+        #[serde(default, rename = "connectionId")]
+        connection_id: Option<String>,
     },
     Continue {
         #[schemars(range(max = 9_007_199_254_740_991u64))]
@@ -40,10 +42,12 @@ pub enum ModelsRead {
     },
 }
 #[derive(Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "SettingsModelCursor")]
 pub struct ModelCursor {
     pub query: String,
+    #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<String>")]
+    pub connection_id: Option<String>,
     pub connection: usize,
     pub model: usize,
 }

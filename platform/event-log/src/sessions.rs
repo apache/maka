@@ -371,7 +371,10 @@ pub(crate) async fn insert(
          WHERE NOT EXISTS (SELECT 1 FROM session_control WHERE id = ?)
            AND NOT EXISTS (SELECT 1 FROM session_history_copies WHERE session_id = ?)
            AND NOT EXISTS (SELECT 1 FROM session_retirements WHERE session_id = ?)
-           AND NOT EXISTS (SELECT 1 FROM event_log e JOIN imported_invocations i USING(invocation_id) WHERE e.event_session = ?)
+           AND NOT EXISTS (SELECT 1 FROM context_source_prefixes p
+             CROSS JOIN event_log e ON e.sequence=p.sequence
+             JOIN imported_invocations i ON i.invocation_id=e.invocation_id
+             WHERE p.kind='session' AND p.owner=?)
            AND NOT EXISTS (SELECT 1 FROM session_imports WHERE session_id = ? AND state != 'published')",
     )
     .bind(id)

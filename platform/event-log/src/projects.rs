@@ -21,6 +21,7 @@
 //! observation supplied by the Host; these records never become model history.
 
 mod mutation;
+pub(crate) use mutation::WriteRegistration;
 mod relink;
 
 use crate::{EventLog, StoreError};

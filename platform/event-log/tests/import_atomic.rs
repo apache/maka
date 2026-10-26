@@ -624,7 +624,7 @@ async fn second_record_projection_failure_leaves_no_partial_import_after_reopen(
                 .query_row("SELECT COUNT(*) FROM context_source_prefixes", [], |r| r
                     .get::<_, i64>(0))
                 .unwrap(),
-            9
+            6
         );
         assert_eq!(
             inspect
@@ -638,4 +638,83 @@ async fn second_record_projection_failure_leaves_no_partial_import_after_reopen(
         );
         reopened.close().await.unwrap();
     }
+}
+
+#[tokio::test]
+async fn retained_orphan_physical_proof_still_blocks_complete_import() {
+    use maka_agent_facts::event::{EventWrite, Invocation, InvocationInput, RuntimeEvent};
+
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("retained-owner.sqlite");
+    let log = EventLog::open(&path).await.unwrap();
+    let claim = owner("retained-owner");
+    let opening = RuntimeEvent::new(
+        Invocation {
+            session_id: claim.session_id.clone(),
+            turn_id: "existing-turn".into(),
+            run_id: "existing-run".into(),
+            invocation_id: "existing-invocation".into(),
+        },
+        Fact::InvocationOpened {
+            configuration: None,
+            input: InvocationInput::Code {
+                source: "physical proof".into(),
+            },
+        },
+    );
+    log.append(&EventWrite::plain(opening).unwrap())
+        .await
+        .unwrap();
+    log.close().await.unwrap();
+    let inspect = rusqlite::Connection::open(&path).unwrap();
+    inspect
+        .execute_batch(
+            "UPDATE event_log SET retained_json=event_json,body_digest='fixture',event_json=NULL",
+        )
+        .unwrap();
+    let log = EventLog::open(&path).await.unwrap();
+    assert!(
+        log.get_session::<Value>(&claim.session_id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        inspect
+            .query_row(
+                "SELECT COUNT(*) FROM context_source_prefixes WHERE kind='session' AND owner=?",
+                [&claim.session_id],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+        1
+    );
+    assert!(matches!(
+        log.import_session(
+            &claim,
+            &Source {
+                adapter: "fixture".into(),
+                session_id: "foreign".into()
+            },
+            &json!({}),
+            vec![record(0, "incoming".into())],
+            20,
+        )
+        .await,
+        Err(StoreError::SessionConflict),
+    ));
+    assert!(
+        log.session_creator(&claim.session_id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        inspect
+            .query_row("SELECT COUNT(*) FROM event_log", [], |row| row
+                .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    log.close().await.unwrap();
 }

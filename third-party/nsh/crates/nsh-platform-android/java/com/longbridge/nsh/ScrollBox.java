@@ -523,6 +523,28 @@ final class ScrollBox extends FrameLayout implements Node {
     private boolean zooms, bouncesZoom = true, pinch = true, centerContent;
     private float minZoom = 1, maxZoom = 1;
 
+    /** Pull to refresh: whether the spinner shows, where (dp) a pull refreshes and the room kept while refreshing. */
+    private boolean refreshIndicator = true;
+    private float refreshThreshold = 64, refreshInset = 56;
+
+    /** `refreshIndicator`: the app draws its own, {@code height} dp tall, in place of the spinner. */
+    void setRefresh(boolean own, float height) {
+        float inset = own ? height : 56;
+        boolean changed = refreshIndicator == own || inset != refreshInset;
+        refreshIndicator = !own;
+        refreshThreshold = own ? height : 64;
+        refreshInset = inset;
+        if (!changed) return;
+        if (own) {
+            spinner.setVisibility(GONE);
+        } else if (refreshing) {
+            spinner.setVisibility(VISIBLE);
+            spinner.setAlpha(1);
+        }
+        // A refresh in progress keeps the room of the indicator now showing.
+        if (refreshing && !pulling) animatePull(inset * mounter.density, null);
+    }
+
     void setZoom(boolean zooms, float min, float max, boolean bouncesZoom, boolean pinch, boolean center) {
         minZoom = min;
         maxZoom = max;
@@ -1021,13 +1043,15 @@ final class ScrollBox extends FrameLayout implements Node {
             case MotionEvent.ACTION_MOVE:
                 // Resistance like a rubber band.
                 setPull(Math.max(0, (e.getY() - startY) * 0.5f));
-                spinner.setVisibility(VISIBLE);
-                spinner.setAlpha(Math.min(1, pull / (64 * d)));
+                if (refreshIndicator) {
+                    spinner.setVisibility(VISIBLE);
+                    spinner.setAlpha(Math.min(1, pull / (refreshThreshold * d)));
+                }
                 return true;
             case MotionEvent.ACTION_UP:
             case MotionEvent.ACTION_CANCEL:
                 pulling = false;
-                if (pull >= 64 * d) {
+                if (pull >= refreshThreshold * d) {
                     setRefreshing(true);
                     mounter.event(id, Native.REFRESH);
                 } else {
@@ -1043,18 +1067,23 @@ final class ScrollBox extends FrameLayout implements Node {
         refreshing = on;
         float d = mounter.density;
         if (on) {
-            spinner.setVisibility(VISIBLE);
-            spinner.setAlpha(1);
-            animatePull(56 * d, null);
+            if (refreshIndicator) {
+                spinner.setVisibility(VISIBLE);
+                spinner.setAlpha(1);
+            }
+            animatePull(refreshInset * d, null);
         } else {
             animatePull(0, () -> spinner.setVisibility(GONE));
         }
     }
 
     private void setPull(float px) {
+        if (px == pull) return;
         pull = px;
         scroller.setTranslationY(px);
         spinner.setTranslationY(Math.max(0, px / 2 - spinner.getHeight() / 2f));
+        // The pull is a translation, not a scroll: the offset stays 0.
+        mounter.pull(id, px / mounter.density);
     }
 
     private void animatePull(float to, Runnable end) {

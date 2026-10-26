@@ -40,7 +40,7 @@
   (padding and gaps, numbers) / `contentClass` (`p-*`, `gap-*`), `initialScrollIndex`, `onLoadMore` + `loadMoreThreshold`,
   `onLoadMoreAtStart` + `loadMoreAtStartThreshold` (below), `onViewableItemsChange` +
   `viewabilityConfig` (`itemVisiblePercentThreshold` / `viewAreaCoveragePercentThreshold` / `minimumViewTime`), `keyExtractor`,
-  `refreshing` / `onRefresh`, `scrollValue`. Every other prop (`testID`, accessibility, `class`, `onLayout`, touch
+  `refreshing` / `onRefresh`, `refreshIndicator`, `pullValue`, `scrollValue`. Every other prop (`testID`, accessibility, `class`, `onLayout`, touch
   props, ...) goes to the scroll view as on a `<Scroll>` (`list.rs` `OWN`: the names are read once, when the list is
   made; their values follow their getters). Positions, columns, sticky travel and viewability are all computed in the core; sticky cells
   are pinned natively on every scroll (`MountItem::StickyCells`: translate by `clamp(offset + value - start, 0, end - start)`, `value` the cell's animated offset or 0);
@@ -95,7 +95,7 @@
   view's own (`ScrollState::issued`; platforms count every `ScrollBy` and `ScrollTo` from the view's creation) and
   replayed over stale reports, as a list does its own; scroll commands for a list not placed in its view yet wait
   for the update that places it. The scroll view's props (`onScroll` and the other scroll events, `scrollValue`,
-  `refreshing`, paging and snapping, `contentInset`, `scrollbar`, `scrollable`, `keyboardDismissMode`) and what
+  `refreshing`, `refreshIndicator`, `pullValue`, paging and snapping, `contentInset`, `scrollbar`, `scrollable`, `keyboardDismissMode`) and what
   needs a scroll view of the list's own (`inverted`, `maintainVisibleContentPosition`) are ignored there, each
   warned of once; a zoomable scroll view around it is not supported. Sticky rows stick to the view's viewport:
   their ranges are in the view's offsets, the last one stopping where its bottom meets the end of the list's

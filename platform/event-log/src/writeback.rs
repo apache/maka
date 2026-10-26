@@ -140,6 +140,12 @@ impl<S: Statement> Pending<S> {
 
 // This closed family is the admission contract. Arbitrary Run closures never join it.
 pub(crate) enum Request {
+    ProjectRegistration(Box<Pending<crate::projects::WriteRegistration>>),
+    WorkspaceAttachment(Box<Pending<crate::workspace_bindings::WriteAttachment>>),
+    Creation(Box<Pending<crate::root_store::creation::WriteCreation>>),
+    Reservation(Box<Pending<crate::root_store::creation::WriteReservation>>),
+    Publication(Box<Pending<crate::root_store::creation::WritePublication>>),
+
     Intent(Box<Pending<crate::applications::intents::WriteIntent>>),
     Dispatch(Box<Pending<crate::applications::operations::WriteDispatch>>),
     Admission(Box<Pending<crate::message_admissions::WriteAdmission>>),
@@ -149,6 +155,12 @@ pub(crate) enum Request {
 impl Request {
     fn reusable_after_rollback(&self) -> bool {
         match self {
+            Self::ProjectRegistration(value) => value.reusable_after_rollback,
+            Self::WorkspaceAttachment(value) => value.reusable_after_rollback,
+            Self::Creation(value) => value.reusable_after_rollback,
+            Self::Reservation(value) => value.reusable_after_rollback,
+            Self::Publication(value) => value.reusable_after_rollback,
+
             Self::Intent(value) => value.reusable_after_rollback,
             Self::Dispatch(value) => value.reusable_after_rollback,
             Self::Admission(value) => value.reusable_after_rollback,
@@ -158,6 +170,12 @@ impl Request {
     }
     fn enter(&mut self) {
         match self {
+            Self::ProjectRegistration(value) => value.enter(),
+            Self::WorkspaceAttachment(value) => value.enter(),
+            Self::Creation(value) => value.enter(),
+            Self::Reservation(value) => value.enter(),
+            Self::Publication(value) => value.enter(),
+
             Self::Intent(value) => value.enter(),
             Self::Dispatch(value) => value.enter(),
             Self::Admission(value) => value.enter(),
@@ -167,6 +185,12 @@ impl Request {
     }
     async fn prepare(&mut self, connection: &mut SqliteConnection) -> Result<bool, PrepareFailure> {
         match self {
+            Self::ProjectRegistration(value) => value.prepare(connection).await,
+            Self::WorkspaceAttachment(value) => value.prepare(connection).await,
+            Self::Creation(value) => value.prepare(connection).await,
+            Self::Reservation(value) => value.prepare(connection).await,
+            Self::Publication(value) => value.prepare(connection).await,
+
             Self::Intent(value) => value.prepare(connection).await,
             Self::Dispatch(value) => value.prepare(connection).await,
             Self::Admission(value) => value.prepare(connection).await,
@@ -176,6 +200,22 @@ impl Request {
     }
     fn isolated_rejection(&self, error: &StoreError) -> bool {
         match self {
+            Self::ProjectRegistration(_) => {
+                crate::projects::WriteRegistration::isolated_rejection(error)
+            }
+            Self::WorkspaceAttachment(_) => {
+                crate::workspace_bindings::WriteAttachment::isolated_rejection(error)
+            }
+            Self::Creation(_) => {
+                crate::root_store::creation::WriteCreation::isolated_rejection(error)
+            }
+            Self::Reservation(_) => {
+                crate::root_store::creation::WriteReservation::isolated_rejection(error)
+            }
+            Self::Publication(_) => {
+                crate::root_store::creation::WritePublication::isolated_rejection(error)
+            }
+
             Self::Intent(_) => crate::applications::intents::WriteIntent::isolated_rejection(error),
             Self::Dispatch(_) => {
                 crate::applications::operations::WriteDispatch::isolated_rejection(error)
@@ -191,6 +231,12 @@ impl Request {
     }
     fn reject(&mut self, error: StoreError, isolated: bool) {
         match self {
+            Self::ProjectRegistration(value) => value.reject(error, isolated),
+            Self::WorkspaceAttachment(value) => value.reject(error, isolated),
+            Self::Creation(value) => value.reject(error, isolated),
+            Self::Reservation(value) => value.reject(error, isolated),
+            Self::Publication(value) => value.reject(error, isolated),
+
             Self::Intent(value) => value.reject(error, isolated),
             Self::Dispatch(value) => value.reject(error, isolated),
             Self::Admission(value) => value.reject(error, isolated),
@@ -200,12 +246,43 @@ impl Request {
     }
     fn finish(self, result: &Result<(), Aborted>) {
         match self {
+            Self::ProjectRegistration(value) => value.finish(result),
+            Self::WorkspaceAttachment(value) => value.finish(result),
+            Self::Creation(value) => value.finish(result),
+            Self::Reservation(value) => value.finish(result),
+            Self::Publication(value) => value.finish(result),
+
             Self::Intent(value) => value.finish(result),
             Self::Dispatch(value) => value.finish(result),
             Self::Admission(value) => value.finish(result),
             Self::Append(value) => value.finish(result),
             Self::Settlement(value) => value.finish(result),
         }
+    }
+}
+impl From<Pending<crate::projects::WriteRegistration>> for Request {
+    fn from(value: Pending<crate::projects::WriteRegistration>) -> Self {
+        Self::ProjectRegistration(Box::new(value))
+    }
+}
+impl From<Pending<crate::workspace_bindings::WriteAttachment>> for Request {
+    fn from(value: Pending<crate::workspace_bindings::WriteAttachment>) -> Self {
+        Self::WorkspaceAttachment(Box::new(value))
+    }
+}
+impl From<Pending<crate::root_store::creation::WriteCreation>> for Request {
+    fn from(value: Pending<crate::root_store::creation::WriteCreation>) -> Self {
+        Self::Creation(Box::new(value))
+    }
+}
+impl From<Pending<crate::root_store::creation::WriteReservation>> for Request {
+    fn from(value: Pending<crate::root_store::creation::WriteReservation>) -> Self {
+        Self::Reservation(Box::new(value))
+    }
+}
+impl From<Pending<crate::root_store::creation::WritePublication>> for Request {
+    fn from(value: Pending<crate::root_store::creation::WritePublication>) -> Self {
+        Self::Publication(Box::new(value))
     }
 }
 impl From<Pending<crate::applications::intents::WriteIntent>> for Request {

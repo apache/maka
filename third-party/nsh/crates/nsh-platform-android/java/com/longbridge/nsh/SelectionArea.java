@@ -281,9 +281,9 @@ final class SelectionArea implements SelectionHandle.Owner {
         Layout layout = texts.get(i).layout();
         if (layout == null) return 0;
         float d = mounter.density;
-        float lx = x * d - origins[i * 2];
-        float ly = Math.max(0, Math.min(y * d - origins[i * 2 + 1], layout.getHeight() - 1));
-        return layout.getOffsetForHorizontal(layout.getLineForVertical((int) ly), lx);
+        // The area's dp to the text's content box in px, where the layout is.
+        return TextLayouts.hitOffset(
+                TextLayouts.hitTest(layout, x * d - origins[i * 2], y * d - origins[i * 2 + 1], 1f));
     }
 
     /** Runs a gesture of the model at the area point ({@code x}, {@code y}); redraws when it changed. */

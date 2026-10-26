@@ -99,6 +99,8 @@ interface ReadonlyListSource<T> {
 | `loadMoreAtStartThreshold` | `number` | `1` | 距离开头多近（以视口长度计）时触发 `onLoadMoreAtStart`。 |
 | `refreshing` | `boolean` | | 显示下拉刷新的加载指示器。 |
 | `onRefresh` | `() => void` | | 启用下拉刷新；加载期间设置 `refreshing`。 |
+| `refreshIndicator` | `{ height: number }` | | 应用自己绘制下拉刷新指示器，高 `height`，取代转圈。 |
+| `pullValue` | `AnimatedValue` | | 写入列表被拉过顶部的距离，用于绘制那个指示器。 |
 | `onViewableItemsChange` | `(info: { viewableItems: ViewToken<T>[]; changed: ViewToken<T>[] }) => void` | | 变为可见或不再可见的条目。 |
 | `viewabilityConfig` | `ViewabilityConfig` | | 条目何时算作可见。 |
 

@@ -20,6 +20,29 @@
 import type { Catalog } from '../../../../plugins/shared/locale.js';
 
 export const composerMessages = {
+  'Compacting context…': ['Compacting context…', '正在压缩', '正在壓縮'],
+  'Context compacted ({duration})': [
+    'Context compacted ({duration})',
+    '上下文已压缩（{duration}）',
+    '上下文已壓縮（{duration}）',
+  ],
+  'Instructions for this compaction only': [
+    'Instructions for this compaction only',
+    '提示词仅用于本次压缩',
+    '提示詞僅用於本次壓縮',
+  ],
+  'One-time compaction prompt': [
+    'One-time compaction prompt',
+    '一次性压缩提示词',
+    '一次性壓縮提示詞',
+  ],
+  'Cancel compaction': ['Cancel compaction', '取消压缩', '取消壓縮'],
+  'Retry compaction prompt': [
+    'Retry compaction prompt',
+    '重新加载压缩提示词',
+    '重新載入壓縮提示詞',
+  ],
+  'Compact now': ['Compact now', '开始压缩', '開始壓縮'],
   'Search files…': ['Search files…', '搜索文件…', '搜尋檔案…'],
   'Search skills…': ['Search skills…', '搜索技能…', '搜尋技能…'],
   'Add to message': ['Add to message', '添加到消息', '新增至訊息'],

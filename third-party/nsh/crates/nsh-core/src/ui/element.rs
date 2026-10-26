@@ -1304,6 +1304,24 @@ pub trait Interactive: Element {
         )
     }
 
+    /// It took the keyboard focus: an input, or a view that takes presses
+    /// reached by Tab (or `focus()`) on the platforms that move the focus
+    /// between pressables.
+    fn on_focus<M>(self, listener: impl IntoListener<(), M>) -> Self {
+        self.on(
+            EventKind::Focus,
+            events::typed(listener.into_listener(), events::unit),
+        )
+    }
+
+    /// It lost the keyboard focus.
+    fn on_blur<M>(self, listener: impl IntoListener<(), M>) -> Self {
+        self.on(
+            EventKind::Blur,
+            events::typed(listener.into_listener(), events::unit),
+        )
+    }
+
     /// Handles presses.
     fn on_press<M>(self, listener: impl IntoListener<(), M>) -> Self {
         self.on(

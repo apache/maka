@@ -43,6 +43,7 @@ mod stale_pruning;
 mod startup_recovery;
 mod startup_recovery_limits;
 mod tool_arguments;
+mod tool_scheduling;
 
 mod support {
     pub(crate) mod agent_loop;

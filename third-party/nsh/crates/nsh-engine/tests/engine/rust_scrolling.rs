@@ -1,8 +1,8 @@
 //! How a Rust component's scroll views and lists scroll on the engine:
 //! their behavior props reach the platform (and follow what they read),
-//! a list's sticky rows, keyboard dismissal and scroll value go with its
-//! configuration, and the zoom and pulls the platform reports reach the
-//! listeners.
+//! a list's sticky rows, keyboard dismissal, scroll and pull values go
+//! with its configuration, its own pull to refresh with its behavior, and
+//! the zoom and pulls the platform reports reach the listeners.
 
 use std::time::Duration;
 
@@ -23,6 +23,7 @@ use crate::ChannelSink;
 fn Scrolling() -> impl IntoElement {
     let unlocked = signal(true);
     let offset = animated_value(0.0);
+    let pulled = animated_value(0.0);
     let log = signal(String::from("idle"));
     view()
         .flex_1()
@@ -57,6 +58,8 @@ fn Scrolling() -> impl IntoElement {
             .sticky_header_indices([0])
             .keyboard_dismiss_mode(KeyboardDismissMode::Interactive)
             .scroll_value(&offset)
+            .pull_value(&pulled)
+            .refresh_indicator(Some(px(72.0)))
             .on_refresh(move |_: &()| log.set("refreshing".into())),
         )
         .child(text("Lock").on_press(move |_: &()| unlocked.set(false)))
@@ -163,6 +166,7 @@ fn rust_scroll_views_and_lists_send_how_they_scroll() {
     let MountItem::ScrollConfig {
         keyboard_dismiss,
         scroll_value,
+        pull_value,
         ..
     } = config
     else {
@@ -171,7 +175,13 @@ fn rust_scroll_views_and_lists_send_how_they_scroll() {
     assert_eq!(*keyboard_dismiss, KeyboardDismissMode::Interactive);
     assert_eq!(*scroll_value, seen.values.first().copied());
     assert!(scroll_value.is_some());
+    assert_eq!(*pull_value, seen.values.get(1).copied());
+    assert!(pull_value.is_some());
     let list = *list;
+    // It draws its own refresh indicator, 72 tall.
+    let behaviors = seen.behaviors();
+    let refresh = &behaviors.iter().find(|b| b.0 == list).unwrap().1;
+    assert_eq!(refresh.refresh_indicator, Some(px(72.0)));
 
     // The props follow what they read.
     engine

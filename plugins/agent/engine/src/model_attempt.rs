@@ -428,23 +428,37 @@ pub(super) async fn execute_once(
     if !item_acceptance && let Some(tools) = tools {
         // The successful request no longer needs its retry payload while tools run.
         drop(retry.take());
-        use futures_util::FutureExt;
+        use futures_util::{FutureExt, StreamExt, stream::FuturesUnordered};
         let mut step = tools.clone().into_step(&accepted.0);
+        let tool_cancellation = cancellation.child_token();
+        let mut running = FuturesUnordered::new();
         for call in accepted
             .1
             .tool_calls()
             .filter(|call| !call.provider_executed)
         {
-            let result = std::panic::AssertUnwindSafe(step.invoke(call, cancellation.clone()))
-                .catch_unwind()
-                .await
-                .unwrap_or_else(|_| {
-                    Err(maka_agent_facts::tools::ToolError::CleanupUnconfirmed(
-                        "tool panicked".into(),
-                    ))
-                });
-            tool_result(result)?;
+            let future = step.dispatch(call.clone(), tool_cancellation.clone());
+            running.push(async move {
+                std::panic::AssertUnwindSafe(future)
+                    .catch_unwind()
+                    .await
+                    .unwrap_or_else(|_| {
+                        Err(maka_agent_facts::tools::ToolError::CleanupUnconfirmed(
+                            "tool panicked".into(),
+                        ))
+                    })
+            });
         }
+        let mut cleanup = Ok(());
+        while let Some(result) = running.next().await {
+            if let Err(error) = tool_result(result) {
+                tool_cancellation.cancel();
+                if cleanup.is_ok() {
+                    cleanup = Err(error);
+                }
+            }
+        }
+        cleanup?;
     }
     Ok(accepted)
 }

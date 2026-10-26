@@ -22,7 +22,9 @@ use std::time::Duration;
 
 use maka_agent_facts::tools::ToolExecutor;
 use maka_agent_facts::tools::ToolFuture;
-use maka_code_runtime::{CellDiagnostic, CellDiagnosticKind, CellLimits, CellResult};
+use maka_code_runtime::{
+    CellContext, CellDiagnostic, CellDiagnosticKind, CellLimits, CellOutput, CellResult, CellStore,
+};
 use maka_js_runtime::CodeExecutor;
 use serde_json::{Value, json};
 use tokio::sync::{Barrier, Notify};
@@ -53,6 +55,131 @@ fn executor() -> CodeExecutor {
         ..Default::default()
     })
     .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn json_numbers_keep_javascript_semantics_in_tools_and_committed_scratch() {
+    let tools = Arc::new(Tools(|_name, input: Value, _cancel| -> ToolFuture {
+        Box::pin(async move {
+            Ok(if input.is_null() {
+                json!({
+                    "nested":[42,{"fraction":1.25,"negative":-7,"zero":0}],
+                    "safe":9_007_199_254_740_991_u64,
+                    "wide":1_u64 << 60,
+                    "controls":[null,true,"42"]
+                })
+            } else {
+                input
+            })
+        })
+    }));
+    let engine = executor();
+    let store = CellStore::temporary().unwrap();
+    // Check inside JavaScript: decoding a private-number object back into a Rust Value can hide corruption.
+    let check = r#"
+        const numbers = [value.nested[0], value.nested[1].fraction,
+            value.nested[1].negative, value.nested[1].zero, value.safe, value.wide];
+        if (!numbers.every(number => typeof number === 'number')) throw Error('number type changed');
+        if (value.safe !== Number.MAX_SAFE_INTEGER || value.wide !== 2 ** 60)
+            throw Error('exact integer changed');
+        text([value.nested[0] + 1, value.nested[1].fraction + 0.75,
+            value.nested[1].negative + 1, value.nested[1].zero, value.controls]);
+    "#;
+    for (index, source) in [
+        format!(
+            "const value = await tools.echo(null); store('numbers', value); store('empty', null); {check}"
+        ),
+        format!(
+            r#"
+            if (load('missing') !== undefined || load('empty') !== null)
+                throw Error('missing and null values must remain distinct');
+            const value = load('numbers');
+            {check}
+            const echoed = await tools.echo(value);
+            if (typeof echoed.nested[0] !== 'number' || echoed.nested[0] + 1 !== 43)
+                throw Error('nested echo changed');
+            text(echoed.nested[0]);
+        "#
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let context = CellContext::new(store.clone(), vec![]).unwrap();
+        let result = engine
+            .execute_with_context(
+                source,
+                tools.clone(),
+                CancellationToken::new(),
+                context.clone(),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(result, CellResult::Success { .. }), "{result:?}");
+        let output = context.take_output();
+        assert_eq!(output.len(), index + 1);
+        assert!(
+            matches!(&output[0], CellOutput::Text { text } if text == "[43,2,-6,0,[null,true,\"42\"]]")
+        );
+        if output.len() == 2 {
+            assert!(matches!(&output[1], CellOutput::Text { text } if text == "42"));
+        }
+        context.commit().unwrap();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn json_boundaries_reject_inexact_integers_and_preserve_tool_diagnostics() {
+    let tools = Arc::new(Tools(|name, _input, _cancel| -> ToolFuture {
+        Box::pin(async move {
+            if name == "wait" {
+                Err(maka_agent_facts::tools::ToolError::Failed(
+                    "native failure".into(),
+                ))
+            } else {
+                Ok(json!({"nested":[9_007_199_254_740_993_u64]}))
+            }
+        })
+    }));
+    let engine = executor();
+    let context = CellContext::new(CellStore::temporary().unwrap(), vec![]).unwrap();
+    context
+        .store(
+            "inexact".into(),
+            json!({"nested":[9_007_199_254_740_993_u64]}),
+        )
+        .unwrap();
+    let result = engine.execute_with_context(
+        r#"
+            for (const read of [() => load('inexact'), () => tools.echo(null)]) {
+                let rejected = false;
+                try { await read(); }
+                catch (error) { rejected = error.message.includes('represented exactly'); }
+                if (!rejected) throw Error('inexact integer must not become an object, BigInt or rounded Number');
+                text('rejected');
+            }
+        "#.into(),
+        tools.clone(), CancellationToken::new(), context.clone(),
+    ).await.unwrap();
+    assert!(matches!(result, CellResult::Success { .. }), "{result:?}");
+    assert_eq!(
+        serde_json::to_value(context.take_output()).unwrap(),
+        json!([{"kind":"text","text":"rejected"},{"kind":"text","text":"rejected"}])
+    );
+    let result = engine
+        .execute(
+            "await tools.wait(null);".into(),
+            tools,
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    let CellResult::Failure { error, tool_calls } = result else {
+        panic!("native failure must remain a diagnostic: {result:?}")
+    };
+    assert_eq!(error.kind, CellDiagnosticKind::ToolFailure);
+    assert!(error.message.contains("native failure"));
+    assert_eq!(tool_calls.len(), 1);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

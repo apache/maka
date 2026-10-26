@@ -642,7 +642,7 @@ impl http::Body for RawBody {
 async fn invalid_utf8_and_hidden_invalid_json_still_close_the_http_body() {
     for bytes in [
         b"{\"unknown\":\"\xff\"}".to_vec(),
-        br#"{"data":[],"unknown":1e400,"unknown":null}"#.to_vec(),
+        br#"{"data":[],"unknown":1e,"unknown":null}"#.to_vec(),
         br#"{"data":[],"unknown":"\ud800","unknown":null}"#.to_vec(),
     ] {
         let body = Arc::new(RawBody {
@@ -660,6 +660,38 @@ async fn invalid_utf8_and_hidden_invalid_json_still_close_the_http_body() {
             .await
             .is_err()
         );
+        assert!(body.cancelled.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(body.closed.load(std::sync::atomic::Ordering::SeqCst));
+    }
+}
+
+#[tokio::test]
+async fn numeric_overflow_follows_value_acceptance_and_closes_the_http_body() {
+    for input in [
+        r#"{"data":[],"unknown":1e400,"unknown":null}"#,
+        r#"{"data":[],"unknown":1e400}"#,
+    ] {
+        let expected = serde_json::from_str::<Value>(input);
+        let body = Arc::new(RawBody {
+            bytes: Mutex::new(Some(input.as_bytes().to_vec())),
+            cancelled: false.into(),
+            closed: false.into(),
+        });
+        let result = fetch(
+            Arc::new(RawResponse(body.clone())),
+            SOURCES[1].1,
+            None,
+            &CancellationToken::new(),
+        )
+        .await;
+        assert_eq!(result.is_ok(), expected.is_ok());
+        if let Ok(record) = result {
+            assert_eq!(record.body.as_raw().get(), input);
+            assert_eq!(
+                serde_json::from_str::<Value>(record.body.as_raw().get()).unwrap(),
+                expected.unwrap()
+            );
+        }
         assert!(body.cancelled.load(std::sync::atomic::Ordering::SeqCst));
         assert!(body.closed.load(std::sync::atomic::Ordering::SeqCst));
     }

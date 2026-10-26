@@ -600,7 +600,9 @@ fn role_for(a: &Accessibility, kind: ViewKind, pressable: bool) -> Ax {
         Role::Timer => Ax::Timer,
         Role::Toolbar => Ax::Toolbar,
         Role::List => Ax::List,
-        Role::Grid => Ax::Grid,
+        Role::Grid | Role::Table => Ax::Grid,
+        // Groups that read their children, a cell's text among them.
+        Role::Row | Role::Cell | Role::ColumnHeader | Role::RowGroup => Ax::Group,
     }
 }
 

@@ -360,7 +360,7 @@ fn selected_tint(dv: &Dv, row: usize, column: Column) -> impl IntoElement {
                     .absolute()
                     .inset_0()
                     .pointer_events(PointerEvents::None)
-                    .bg(move || theme().primary.opacity(0.12)),
+                    .bg(move || theme().selection()),
                 props,
                 DiffViewPart::LineSelected,
             )
@@ -610,6 +610,7 @@ fn line_row(
                 let lh = lh.clone();
                 el = el.child(
                     text("")
+                        .selection_color(selection_color)
                         .absolute()
                         .top(move || Length::from(lh() * index as f32))
                         .left(px(PAD))
@@ -619,6 +620,16 @@ fn line_row(
             Some(el)
         }))
         .child(tint_el)
+}
+
+/// The highlight of the code's selected text: the lines' selection color.
+fn selection_color() -> Hsla {
+    let color = theme().selection();
+    if nsh_core::ui::ambient::dark() {
+        color.dark
+    } else {
+        color.light
+    }
 }
 
 fn span_view(props: DiffViewProps, span: Span, tint: Tint) -> AnyElement {

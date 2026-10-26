@@ -115,7 +115,7 @@ impl Creation {
     }
 
     // A retry's wall clock is not request identity. All semantic inputs are.
-    fn identity(&self) -> Result<serde_json::Value, StoreError> {
+    pub(super) fn identity(&self) -> Result<serde_json::Value, StoreError> {
         let mut value = serde_json::to_value(self)?;
         value
             .as_object_mut()
@@ -209,33 +209,21 @@ impl RootStore {
         partition: usize,
         members: Vec<String>,
     ) -> Result<(usize, Creation), StoreError> {
-        let id = id.to_owned();
-        let fingerprint = fingerprint.to_owned();
-        self.control.connection.run(move |connection| Box::pin(async move {
-            let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
-            if let Some(row) = sqlx::query("SELECT creation_id,partition,fingerprint,command,failure FROM session_routes WHERE session_id=?")
-                .bind(&id).fetch_optional(&mut *tx).await? {
-                if row.get::<&str, _>("creation_id") != id { return Err(StoreError::SessionConflict); }
-                let previous: Creation = serde_json::from_str(row.get("command"))?;
-                if row.get::<&str, _>("fingerprint") != fingerprint || previous.identity()? != command.identity()? {
-                    return Err(StoreError::SessionConflict);
-                }
-                if let Some(failure) = row.get::<Option<String>, _>("failure") {
-                    return Err(StoreError::SessionCreationRejected(serde_json::from_str(&failure)?));
-                }
-                return Ok((row.get::<i64, _>("partition") as usize, previous));
-            }
-            let encoded = serde_json::to_string(&command)?;
-            for member in members {
-                let visible = match &command { Creation::Bundle { configurations, .. } => configurations.contains_key(&member), _ => true };
-                let occupied: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM session_routes WHERE session_id=?)").bind(&member).fetch_one(&mut *tx).await?;
-                if occupied { tx.rollback().await?; return Err(StoreError::SessionConflict); }
-                sqlx::query("INSERT INTO session_routes(session_id,creation_id,partition,fingerprint,command,ready,visible) VALUES(?,?,?,?,?,0,?)")
-                    .bind(&member).bind(&id).bind(partition as i64).bind(&fingerprint).bind((member == id).then_some(&encoded)).bind(visible).execute(&mut *tx).await?;
-            }
-            tx.commit().await.map_err(StoreError::CommitUnknown)?;
-            Ok((partition, command))
-        })).await
+        let reserved = self
+            .control
+            .connection
+            .write(
+                creation::WriteReservation {
+                    id: id.to_owned(),
+                    fingerprint: fingerprint.to_owned(),
+                    command,
+                    partition,
+                    members,
+                },
+                self.control.commits.notice(),
+            )
+            .await?;
+        Ok((reserved.partition, reserved.command))
     }
 
     pub(super) async fn finish_creation(
@@ -283,31 +271,20 @@ impl RootStore {
             } => creation::commit(&partition, id, fingerprint, configuration, created_at).await?,
             command => super::family::commit(self, &partition, command).await?,
         };
-        if let Some(rejection) = outcome {
-            let rejected = serde_json::to_string(&rejection)?;
-            let id = id.to_owned();
-            self.control.connection.run(move |connection| Box::pin(async move {
-                sqlx::query("UPDATE session_routes SET ready=2,failure=? WHERE creation_id=? AND ready=0")
-                    .bind(rejected).bind(id).execute(connection).await?;
-                Ok(())
-            })).await?;
-            return Err(StoreError::SessionCreationRejected(rejection));
-        }
-        let id = id.to_owned();
         self.control
             .connection
-            .run(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
-                    let newly_visible: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM session_routes WHERE creation_id=? AND ready=0 AND visible=1)")
-                        .bind(&id).fetch_one(&mut *tx).await?;
-                    sqlx::query("UPDATE session_routes SET ready=1 WHERE creation_id=? AND ready=0")
-                        .bind(id).execute(&mut *tx).await?;
-                    if newly_visible { crate::sessions::advance_catalog(&mut tx).await?; }
-                    tx.commit().await.map_err(StoreError::CommitUnknown)
-                })
-            })
-            .await
+            .write(
+                creation::WritePublication {
+                    id: id.to_owned(),
+                    rejection: outcome.clone(),
+                },
+                self.control.commits.notice(),
+            )
+            .await?;
+        match outcome {
+            Some(rejection) => Err(StoreError::SessionCreationRejected(rejection)),
+            None => Ok(()),
+        }
     }
 
     pub(super) async fn partition_has_routes(&self, partition: usize) -> Result<bool, StoreError> {

@@ -1353,3 +1353,120 @@ async fn draft_abandonment_serializes_with_acceptance_and_preserves_identity_aft
     );
     log.close().await.unwrap();
 }
+
+#[tokio::test]
+async fn copied_semantic_projection_failure_rolls_back_membership_and_receipt_after_reopen() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("copy-projection-rollback.sqlite");
+    let log = EventLog::open(&path).await.unwrap();
+    log.create_session("source", "source", &json!({}), 1)
+        .await
+        .unwrap();
+    turn(&log, "source", "first", false).await;
+    turn(&log, "source", "second", false).await;
+    let revision = log
+        .get_session::<Value>("source")
+        .await
+        .unwrap()
+        .unwrap()
+        .revision;
+    let request = SessionCopy {
+        source_session_id: "source".into(),
+        target_session_id: "target".into(),
+        expected_source_revision: revision,
+        purpose: maka_agent_facts::session::CopyPurpose::Branch {
+            turn_id: None,
+            side_conversation: false,
+        },
+    };
+    let inspect = rusqlite::Connection::open(&path).unwrap();
+    inspect
+        .execute_batch(
+            "CREATE TRIGGER fail_copy_projection BEFORE INSERT ON context_semantic_rows
+         WHEN NEW.owner_session_id='target' AND NEW.source_sequence=3
+         BEGIN SELECT RAISE(ABORT,'copy semantic projection fault'); END;",
+        )
+        .unwrap();
+    let failure = log
+        .copy_session(request.clone(), &json!({}), 20)
+        .await
+        .unwrap_err();
+    let StoreError::Sqlx(error) = failure else {
+        panic!("copy projection failure must retain SQLx database category")
+    };
+    let database = error.as_database_error().unwrap();
+    assert_eq!(database.message(), "copy semantic projection fault");
+    assert!(database.code().is_some());
+    log.close().await.unwrap();
+
+    let log = EventLog::open(&path).await.unwrap();
+    assert!(log.get_session::<Value>("target").await.unwrap().is_none());
+    assert!(log.session_copy_receipt("target").await.unwrap().is_none());
+    for (table, owner) in [
+        ("session_history_members", "session_id"),
+        ("context_semantic_rows", "owner_session_id"),
+        ("context_semantic_heads", "session_id"),
+    ] {
+        assert_eq!(
+            inspect
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM {table} WHERE {owner}='target'"),
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0,
+            "partial target {table}",
+        );
+    }
+    inspect
+        .execute_batch("DROP TRIGGER fail_copy_projection")
+        .unwrap();
+    copy(&log, request.clone()).await;
+    log.close().await.unwrap();
+
+    let log = EventLog::open(&path).await.unwrap();
+    assert_eq!(
+        log.session_copy_receipt("target")
+            .await
+            .unwrap()
+            .unwrap()
+            .request,
+        request
+    );
+    assert_eq!(
+        inspect
+            .query_row(
+                "SELECT COUNT(*) FROM session_history_members WHERE session_id='target'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+        4,
+    );
+    let rows = {
+        let mut query = inspect.prepare("SELECT row_json FROM context_semantic_rows WHERE owner_session_id='target' AND kind='user' ORDER BY source_sequence").unwrap();
+        query
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .map(|json| {
+                serde_json::from_str::<maka_agent_facts::history::semantic::SemanticRow>(
+                    &json.unwrap(),
+                )
+                .unwrap()
+            })
+            .collect::<Vec<_>>()
+    };
+    let inherited: Vec<String> = log
+        .context_semantic_resolve(&rows)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|row| match row.payload {
+            Some(maka_agent_facts::history::semantic::Payload::User(input)) => input.text,
+            payload => panic!("expected inherited user content, got {payload:?}"),
+        })
+        .collect();
+    assert_eq!(inherited, ["first", "second"]);
+    log.close().await.unwrap();
+}

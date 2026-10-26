@@ -325,7 +325,7 @@ const drafting = signal<DiffLineRange | null>(null);
 | `indicatorDeleted` | 删除行的竖条或 `−` | 红色，3pt 宽 |
 | `separator` | 折叠行的分隔行，或补丁的 hunk 标题 | `muted` 底色上的 `⋯` 和行数 |
 | `hunkActions` | 应用在一处改动上的操作所在的盒子 | 改动的右上角 |
-| `lineSelected` | 覆盖在选中各行所在一侧的行上 | 淡淡的 `primary` 色调 |
+| `lineSelected` | 覆盖在选中各行所在一侧的行上 | 主题的选区颜色（与 `Editor` 的选区一致） |
 | `annotation` | 一条批注的盒子，在所在行的下方 | 横跨所在行的一侧 |
 | `addAnnotation` | 添加控件的盒子，与行号栏同宽、一行高 | 控件在它的右侧 |
 | `fileHeader` | 补丁中一个文件的标题 | `secondary` 底色上的路径和行数，下方一条 `border` 线 |

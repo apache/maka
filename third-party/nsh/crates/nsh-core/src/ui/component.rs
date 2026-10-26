@@ -169,15 +169,20 @@ fn specs_of<A: Api>(types: &mut TsTypes) -> Vec<MethodSpec> {
         .map(|m| MethodSpec {
             name: m.name,
             doc: m.doc,
-            params: m.params.iter().map(|(n, ts)| (*n, ts(types))).collect(),
+            params: m
+                .params
+                .iter()
+                .map(|(n, ts, optional)| (*n, ts(types), *optional))
+                .collect(),
             returns: m.returns.map(|ts| ts(types)),
             call: m.call,
         })
         .collect()
 }
 
-/// A method's parameter: its JS name, and its TypeScript type.
-pub type Param = (&'static str, TsType);
+/// A method's parameter: its JS name, its TypeScript type, and whether JS
+/// may leave it out (an `Option` after which every parameter is optional).
+pub type Param = (&'static str, TsType, bool);
 
 /// One method, for the glue and its declarations.
 #[derive(Debug, Clone)]
@@ -186,8 +191,9 @@ pub struct MethodSpec {
     pub name: &'static str,
     /// Documentation.
     pub doc: &'static str,
-    /// Its parameters: JS names and TypeScript types.
-    pub params: Vec<(&'static str, String)>,
+    /// Its parameters: JS names, TypeScript types, and whether each is
+    /// optional.
+    pub params: Vec<(&'static str, String, bool)>,
     /// The TypeScript type of its result; `None`: nothing (`void`).
     pub returns: Option<String>,
     /// Its call (the arguments converted in the JS call).
@@ -1351,10 +1357,12 @@ pub fn declarations(registry: &Registry, omit: &[&str]) -> String {
     };
     for spec in &specs {
         // A component with rows is generic over their type, like `List`.
-        let (generic, extends) = match spec.items() {
-            Some(_) => ("<T>", ", ListItemsProps<T>"),
-            None if spec.generic => ("<T>", ""),
-            None => ("", ""),
+        // Props generic over their rows' type default it to `any`, so a mark
+        // without rows of its own takes any field name.
+        let (generic, params, extends) = match spec.items() {
+            Some(_) => ("<T>", "<T>", ", ListItemsProps<T>"),
+            None if spec.generic => ("<T>", "<T = any>", ""),
+            None => ("", "", ""),
         };
         // A component with methods: its ref is an object of them.
         let host = if spec.methods.is_empty() {
@@ -1370,7 +1378,9 @@ pub fn declarations(registry: &Registry, omit: &[&str]) -> String {
                 let params = m
                     .params
                     .iter()
-                    .map(|(n, ts)| format!("{n}: {ts}"))
+                    .map(|(n, ts, optional)| {
+                        format!("{n}{}: {ts}", if *optional { "?" } else { "" })
+                    })
                     .collect::<Vec<_>>()
                     .join(", ");
                 let returns = match &m.returns {
@@ -1384,7 +1394,7 @@ pub fn declarations(registry: &Registry, omit: &[&str]) -> String {
         };
         let _ = writeln!(
             out,
-            "export interface {}Props{generic} extends {host}{extends} {{",
+            "export interface {}Props{params} extends {host}{extends} {{",
             spec.export
         );
         if !spec.methods.is_empty() {
@@ -1432,7 +1442,7 @@ pub fn declarations(registry: &Registry, omit: &[&str]) -> String {
         } else {
             let _ = write!(
                 out,
-                "export declare const {0}: ((props: {0}Props) => JSX.Element){with};\n\n",
+                "export declare const {0}: ({params}(props: {0}Props{generic}) => JSX.Element){with};\n\n",
                 spec.export,
             );
         }

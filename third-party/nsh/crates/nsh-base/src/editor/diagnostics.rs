@@ -7,7 +7,7 @@ use std::ops::Range;
 
 use super::{
     buffer::{Bias, Buffer, Change, map_offset},
-    data::{EditorDiagnostic, EditorDiagnosticSeverity, EditorRange},
+    data::{EditorDiagnostic, EditorDiagnosticSeverity, EditorPosition, EditorRange},
 };
 
 /// A diagnostic or decoration as byte ranges of the text, carried through
@@ -28,31 +28,71 @@ pub(crate) fn resolve<T: Clone>(
     items: &[T],
     range_of: impl Fn(&T) -> EditorRange,
 ) -> Vec<Mark<T>> {
+    // A linter's or highlighter's marks come by line, several to a line:
+    // the line last looked up is kept (the next one starts after it), and
+    // on an ASCII line a column is a byte, with no lookup in the rope (four
+    // per position otherwise).
+    let mut line: Option<(u32, usize, usize, bool)> = None;
+    let mut offset_of = |position: EditorPosition| {
+        if position.line as usize >= buffer.line_count() {
+            return buffer.len();
+        }
+        let (_, start, end, ascii) = match line {
+            Some(cached) if cached.0 == position.line => cached,
+            _ => {
+                let at = position.line as usize;
+                let start = match line {
+                    Some((last, _, end, _)) if last + 1 == position.line => end + 1,
+                    _ => buffer.line_start(at),
+                };
+                let end = buffer.line_end(at);
+                let cached = (position.line, start, end, buffer.is_ascii(start..end));
+                line = Some(cached);
+                cached
+            }
+        };
+        if ascii {
+            (start + position.column as usize).min(end)
+        } else {
+            buffer.offset_of(position)
+        }
+    };
     let mut marks: Vec<Mark<T>> = items
         .iter()
         .map(|item| {
             let range = range_of(item);
-            let start = buffer.offset_of(range.start);
-            let end = buffer.offset_of(range.end);
+            let start = offset_of(range.start);
+            let end = offset_of(range.end);
             Mark {
                 range: start.min(end)..start.max(end),
                 item: item.clone(),
             }
         })
         .collect();
-    sort(&mut marks);
+    // Usually sorted already, so this only checks.
+    if !marks.is_sorted_by_key(|mark| (mark.range.start, mark.range.end)) {
+        sort(&mut marks);
+    }
     marks
 }
 
 /// `marks` carried through `changes` (an edit's, undo's or redo's). Text
 /// typed at a mark's start or end stays outside it, text typed inside
 /// grows it; a mark whose text was replaced entirely shrinks to an empty
-/// one where the replacement starts.
-pub(crate) fn adjust<T>(marks: &mut [Mark<T>], changes: &[Change]) {
-    if changes.is_empty() {
-        return;
-    }
-    for mark in marks.iter_mut() {
+/// one where the replacement starts. `reach` is at least the bytes of the
+/// longest mark (`app_highlight::reach`); returns that bound for the marks
+/// as they are now, which grow by what was typed into them at most.
+pub(crate) fn adjust<T>(marks: &mut [Mark<T>], reach: usize, changes: &[Change]) -> usize {
+    let Some(first) = changes.iter().map(|change| change.range.start).min() else {
+        return reach;
+    };
+    // The marks ending before every change stay as they are: by start,
+    // those starting more than `reach` bytes before the first one. A
+    // keystroke moves only the marks after it, and those keep their order
+    // unless a replacement collapsed some.
+    let from = marks.partition_point(|mark| mark.range.start.saturating_add(reach) < first);
+    let rest = &mut marks[from..];
+    for mark in rest.iter_mut() {
         let start = map_offset(changes, mark.range.start, Bias::Right);
         let end = map_offset(changes, mark.range.end, Bias::Left);
         mark.range = if end < start {
@@ -62,12 +102,17 @@ pub(crate) fn adjust<T>(marks: &mut [Mark<T>], changes: &[Change]) {
             start..end
         };
     }
-    sort(marks);
+    if !rest.is_sorted_by_key(|mark| (mark.range.start, mark.range.end)) {
+        sort(rest);
+    }
+    let typed: usize = changes.iter().map(|change| change.new_len).sum();
+    reach.saturating_add(typed)
 }
 
 /// The marks overlapping lines `lines` (for rows to draw), in order. A
 /// mark ending at a line's start (after the line break before it) is not on
 /// that line; an empty one is on the line it is in.
+#[cfg(test)]
 pub(crate) fn in_lines<'a, T>(
     marks: &'a [Mark<T>],
     buffer: &Buffer,
@@ -127,12 +172,21 @@ pub(crate) fn line_severities(
     buffer: &Buffer,
     lines: Range<usize>,
 ) -> Vec<(usize, EditorDiagnosticSeverity)> {
+    let lines = lines.start..lines.end.min(buffer.line_count());
+    if lines.is_empty() {
+        return Vec::new();
+    }
+    // The marks starting on the lines: two binary searches, as the gutter
+    // asks for every row it shows.
+    let low = buffer.line_start(lines.start);
+    let high = buffer.line_end(lines.end - 1);
+    let from = marks.partition_point(|mark| mark.range.start < low);
+    let to = marks
+        .partition_point(|mark| mark.range.start <= high)
+        .max(from);
     let mut severities: Vec<(usize, EditorDiagnosticSeverity)> = Vec::new();
-    for mark in in_lines(marks, buffer, lines.clone()) {
+    for mark in &marks[from..to] {
         let line = buffer.line_of(mark.range.start);
-        if !lines.contains(&line) {
-            continue;
-        }
         let severity = mark.item.severity;
         // Marks come by start, so a line's marks are next to each other.
         match severities.last_mut() {
@@ -185,6 +239,11 @@ mod tests {
         resolve(buffer, ranges, |r| *r)
     }
 
+    fn adjust_marks<T>(marks: &mut [Mark<T>], changes: &[Change]) {
+        let reach = super::super::app_highlight::reach(marks);
+        adjust(marks, reach, changes);
+    }
+
     fn ranges<T>(marks: &[Mark<T>]) -> Vec<Range<usize>> {
         marks.iter().map(|m| m.range.clone()).collect()
     }
@@ -223,18 +282,62 @@ mod tests {
         assert_eq!(ranges(&marks), vec![4..9, 12..12]);
         // Typed before: both shift.
         let changes = edit(&mut buffer, vec![(0..0, "pub ")]);
-        adjust(&mut marks, &changes);
+        adjust_marks(&mut marks, &changes);
         assert_eq!(ranges(&marks), vec![8..13, 16..16]);
         // Typed at the end: stays out; typed inside: grows.
         let changes = edit(&mut buffer, vec![(10..10, "LU"), (13..13, "s")]);
-        adjust(&mut marks, &changes);
+        adjust_marks(&mut marks, &changes);
         assert_eq!(ranges(&marks), vec![8..15, 19..19]);
         assert_eq!(buffer.slice(8..15), "vaLUlue");
         // Replaced entirely: empty where the replacement starts.
         let changes = edit(&mut buffer, vec![(7..16, " x")]);
-        adjust(&mut marks, &changes);
+        adjust_marks(&mut marks, &changes);
         assert_eq!(buffer.text(), "pub let x = 1;");
         assert_eq!(ranges(&marks), vec![7..7, 12..12]);
+    }
+
+    #[test]
+    fn resolve_line_by_line() {
+        // Marks by line, as a linter gives them: ASCII lines take columns
+        // as bytes, the others convert.
+        let buffer = Buffer::new("ab\né x\n\ncd");
+        let marks = marks_of(
+            &buffer,
+            &[
+                range(0, 1, 0, 9),
+                range(1, 1, 1, 3),
+                range(1, 2, 1, 2),
+                range(2, 0, 2, 4),
+                range(3, 1, 3, 2),
+                range(3, 0, 4, 0),
+            ],
+        );
+        assert_eq!(ranges(&marks), vec![1..2, 5..7, 6..6, 8..8, 9..11, 10..11]);
+    }
+
+    #[test]
+    fn edits_leave_the_marks_before_them() {
+        // A long mark starting first still reaches the edit; the short ones
+        // between end before it.
+        let mut buffer = Buffer::new("aaaa bbbb cccc dddd");
+        let mut marks = marks_of(
+            &buffer,
+            &[
+                range(0, 0, 0, 14),
+                range(0, 0, 0, 4),
+                range(0, 5, 0, 9),
+                range(0, 15, 0, 19),
+            ],
+        );
+        let reach = super::super::app_highlight::reach(&marks);
+        let changes = edit(&mut buffer, vec![(12..12, "XY")]);
+        let reach = adjust(&mut marks, reach, &changes);
+        assert_eq!(ranges(&marks), vec![0..4, 0..16, 5..9, 17..21]);
+        assert_eq!(reach, 16);
+        // Typed before every mark: all move, in order.
+        let changes = edit(&mut buffer, vec![(0..0, "_")]);
+        adjust(&mut marks, reach, &changes);
+        assert_eq!(ranges(&marks), vec![1..5, 1..17, 6..10, 18..22]);
     }
 
     #[test]
@@ -242,9 +345,9 @@ mod tests {
         let mut buffer = Buffer::new("ab");
         let mut marks = marks_of(&buffer, &[range(0, 1, 0, 1)]);
         let changes = edit(&mut buffer, vec![(1..1, "中")]);
-        adjust(&mut marks, &changes);
+        adjust_marks(&mut marks, &changes);
         assert_eq!(ranges(&marks), vec![1..1]);
-        adjust(&mut marks, &[]);
+        adjust_marks(&mut marks, &[]);
         assert_eq!(ranges(&marks), vec![1..1]);
     }
 
@@ -253,10 +356,10 @@ mod tests {
         let mut buffer = Buffer::new("a\nb\nc");
         let mut marks = marks_of(&buffer, &[range(2, 0, 2, 1)]);
         let changes = edit(&mut buffer, vec![(0..4, "")]);
-        adjust(&mut marks, &changes);
+        adjust_marks(&mut marks, &changes);
         assert_eq!(ranges(&marks), vec![0..1]);
         let (changes, _) = buffer.undo().unwrap();
-        adjust(&mut marks, &changes);
+        adjust_marks(&mut marks, &changes);
         assert_eq!(ranges(&marks), vec![4..5]);
         assert_eq!(buffer.slice(4..5), "c");
     }

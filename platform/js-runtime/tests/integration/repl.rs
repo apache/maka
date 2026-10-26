@@ -65,7 +65,7 @@ fn context() -> CellContext {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn repl_keeps_bindings_but_uses_current_call_and_preserves_output_on_exception() {
-    let repl = Repl::new(BOOTSTRAP, CellLimits::default());
+    let repl = Repl::new(BOOTSTRAP, CellLimits::default()).unwrap();
     for (source, authority, expected, success) in [
         (
             "const target = {value: await invoke()}; write(target.value)",
@@ -145,15 +145,18 @@ impl ReplAdmission for Admission {
 async fn observed_timeout_requires_admission_ack_and_retains_native_settlement() {
     let sealed = CancellationToken::new();
     let acknowledged = CancellationToken::new();
-    let repl = Arc::new(Repl::new_observed(
-        BOOTSTRAP,
-        CellLimits::default(),
-        Arc::new(Admission {
-            sealed: sealed.clone(),
-            acknowledged: acknowledged.clone(),
-            failure: false,
-        }),
-    ));
+    let repl = Arc::new(
+        Repl::new_observed(
+            BOOTSTRAP,
+            CellLimits::default(),
+            Arc::new(Admission {
+                sealed: sealed.clone(),
+                acknowledged: acknowledged.clone(),
+                failure: false,
+            }),
+        )
+        .unwrap(),
+    );
     let started = CancellationToken::new();
     let released = CancellationToken::new();
     let settled = Arc::new(AtomicUsize::new(0));
@@ -225,7 +228,7 @@ async fn observed_timeout_requires_admission_ack_and_retains_native_settlement()
         .is_err()
     );
 
-    let next = Repl::new(BOOTSTRAP, CellLimits::default());
+    let next = Repl::new(BOOTSTRAP, CellLimits::default()).unwrap();
     let output = context();
     next.evaluate(
         "write(typeof previousEpoch)".into(),
@@ -259,15 +262,18 @@ async fn rejected_observation_fence_drains_before_reporting_failure() {
     let sealed = CancellationToken::new();
     let acknowledged = CancellationToken::new();
     acknowledged.cancel();
-    let repl = Arc::new(Repl::new_observed(
-        BOOTSTRAP,
-        CellLimits::default(),
-        Arc::new(Admission {
-            sealed: sealed.clone(),
-            acknowledged,
-            failure: true,
-        }),
-    ));
+    let repl = Arc::new(
+        Repl::new_observed(
+            BOOTSTRAP,
+            CellLimits::default(),
+            Arc::new(Admission {
+                sealed: sealed.clone(),
+                acknowledged,
+                failure: true,
+            }),
+        )
+        .unwrap(),
+    );
     let started = CancellationToken::new();
     let released = CancellationToken::new();
     let settled = Arc::new(AtomicUsize::new(0));
@@ -334,7 +340,8 @@ async fn observed_native_late_failure_is_reported_to_the_retained_owner() {
             acknowledged,
             failure: false,
         }),
-    );
+    )
+    .unwrap();
     let started = CancellationToken::new();
     let released = CancellationToken::new();
     let result = repl
@@ -376,7 +383,7 @@ impl ToolExecutor for Held {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cancellation_waits_for_native_settlement_and_requires_reset() {
-    let repl = Arc::new(Repl::new(BOOTSTRAP, CellLimits::default()));
+    let repl = Arc::new(Repl::new(BOOTSTRAP, CellLimits::default()).unwrap());
     let stop = CancellationToken::new();
     let started = CancellationToken::new();
     let released = CancellationToken::new();
@@ -435,7 +442,7 @@ async fn loops_and_unresolved_await_are_bounded_and_do_not_reuse_the_heap() {
             heap_bytes: 8 * 1024 * 1024,
             ..CellLimits::default()
         };
-        let repl = Repl::new(BOOTSTRAP, limits);
+        let repl = Repl::new(BOOTSTRAP, limits).unwrap();
         let result = repl
             .evaluate(
                 source.into(),
@@ -535,7 +542,7 @@ fn wait_fixture(context: CellContext, suspend: bool, count: usize) -> Arc<WaitFi
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn guarded_host_wait_can_outlive_budget_but_ordinary_wait_cannot() {
     for suspend in [false, true] {
-        let repl = Arc::new(Repl::new(WAIT_BOOTSTRAP, CellLimits::default()));
+        let repl = Arc::new(Repl::new(WAIT_BOOTSTRAP, CellLimits::default()).unwrap());
         let output = context();
         let fixture = wait_fixture(output.clone(), suspend, 1);
         let mut evaluation = {
@@ -584,7 +591,7 @@ async fn guarded_host_wait_can_outlive_budget_but_ordinary_wait_cannot() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn nested_and_concurrent_guards_resume_only_after_last_host_wait() {
-    let repl = Arc::new(Repl::new(WAIT_BOOTSTRAP, CellLimits::default()));
+    let repl = Arc::new(Repl::new(WAIT_BOOTSTRAP, CellLimits::default()).unwrap());
     let output = context();
     let fixture = wait_fixture(output.clone(), true, 2);
     let mut evaluation = {
@@ -624,7 +631,7 @@ async fn nested_and_concurrent_guards_resume_only_after_last_host_wait() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn suspended_timeout_still_cancels_and_waits_for_guarded_work_to_settle() {
-    let repl = Arc::new(Repl::new(WAIT_BOOTSTRAP, CellLimits::default()));
+    let repl = Arc::new(Repl::new(WAIT_BOOTSTRAP, CellLimits::default()).unwrap());
     let output = context();
     let fixture = wait_fixture(output.clone(), true, 1);
     let cancellation = CancellationToken::new();
@@ -697,7 +704,7 @@ impl ToolExecutor for RemainingBudgetFixture {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn guard_drop_after_error_restores_only_the_remaining_budget() {
-    let repl = Arc::new(Repl::new(WAIT_BOOTSTRAP, CellLimits::default()));
+    let repl = Arc::new(Repl::new(WAIT_BOOTSTRAP, CellLimits::default()).unwrap());
     let output = context();
     let started = CancellationToken::new();
     let released = CancellationToken::new();
@@ -755,13 +762,16 @@ async fn unawaited_guarded_work_cannot_disable_compute_or_heap_limits() {
             true,
         ),
     ] {
-        let repl = Arc::new(Repl::new(
-            WAIT_BOOTSTRAP,
-            CellLimits {
-                heap_bytes: 8 * 1024 * 1024,
-                ..CellLimits::default()
-            },
-        ));
+        let repl = Arc::new(
+            Repl::new(
+                WAIT_BOOTSTRAP,
+                CellLimits {
+                    heap_bytes: 8 * 1024 * 1024,
+                    ..CellLimits::default()
+                },
+            )
+            .unwrap(),
+        );
         let output = context();
         let fixture = wait_fixture(output.clone(), true, 1);
         let evaluation = {
@@ -802,4 +812,52 @@ async fn unawaited_guarded_work_cannot_disable_compute_or_heap_limits() {
         fixture.settled[0].cancelled().await;
         Arc::try_unwrap(repl).ok().unwrap().close().await.unwrap();
     }
+}
+
+#[test]
+fn persistent_repl_does_not_starve_host_blocking_work() {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .max_blocking_threads(1)
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let repl = Repl::new(BOOTSTRAP, CellLimits::default()).unwrap();
+        let first = repl
+            .evaluate(
+                "globalThis.counter = await invoke();".into(),
+                Arc::new(Fixture(41)),
+                CancellationToken::new(),
+                context(),
+                Duration::from_secs(5),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(first, CellResult::Success { .. }), "{first:?}");
+        // Computer Use creates the next cell store on this same Host pool.
+        let store = tokio::task::spawn_blocking(CellStore::temporary);
+        let next = tokio::time::timeout(Duration::from_secs(5), async {
+            let output = CellContext::new(store.await.unwrap().unwrap(), vec![]).unwrap();
+            let result = repl
+                .evaluate(
+                    "write(++globalThis.counter);".into(),
+                    Arc::new(Fixture(0)),
+                    CancellationToken::new(),
+                    output.clone(),
+                    Duration::from_secs(5),
+                )
+                .await
+                .unwrap();
+            assert!(matches!(result, CellResult::Success { .. }), "{result:?}");
+            output.take_output()
+        })
+        .await;
+        repl.close().await.unwrap();
+        assert!(
+            matches!(next.expect("idle REPL must leave Host blocking workers available").as_slice(),
+            [CellOutput::Text { text }] if text == "42")
+        );
+    });
+    runtime.shutdown_timeout(Duration::from_secs(5));
 }

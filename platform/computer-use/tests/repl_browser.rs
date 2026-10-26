@@ -126,7 +126,7 @@ async fn linux_screenshot_only_keeps_exact_observed_elements_until_replacement()
         );
         tokio::time::sleep(Duration::from_millis(20)).await;
     };
-    let repl = Repl::new(facade(), CellLimits::default());
+    let repl = Repl::new(facade(), CellLimits::default()).unwrap();
     let (ok, output) = evaluate(
         &repl,
         bridge.clone(),
@@ -239,7 +239,8 @@ async fn linux_public_scroll_preserves_native_pixels_coordinates_and_target_fres
             heap_bytes: 128 * 1024 * 1024,
             ..Default::default()
         },
-    );
+    )
+    .unwrap();
     let (ok, output) = evaluate(
         &repl,
         bridge.clone(),
@@ -527,7 +528,8 @@ async fn native_form_retains_exact_ax_elements_and_verifies_submission() {
             heap_bytes: 128 * 1024 * 1024,
             ..Default::default()
         },
-    );
+    )
+    .unwrap();
     let (ok, output) = evaluate(
         &repl,
         bridge.clone(),
@@ -784,7 +786,8 @@ async fn native_observation_recovers_after_busy_and_preserves_external_edits() {
             heap_bytes: 128 * 1024 * 1024,
             ..Default::default()
         },
-    );
+    )
+    .unwrap();
     let (ok, output) = evaluate(
         &repl,
         bridge.clone(),
@@ -890,8 +893,8 @@ async fn native_cursors_are_visible_independent_and_retire_without_moving_system
         "cursor-b",
         Language::En,
     ));
-    let first = Repl::new(facade(), CellLimits::default());
-    let second = Repl::new(facade(), CellLimits::default());
+    let first = Repl::new(facade(), CellLimits::default()).unwrap();
+    let second = Repl::new(facade(), CellLimits::default()).unwrap();
     let mut cursor_handles = Vec::new();
     for (repl, bridge, label, color, point) in [
         (&first, a.clone(), "Maka A", "blue", [100, 90]),
@@ -1300,7 +1303,8 @@ async fn browser_form_uses_independent_repl_and_rejects_stale_document_and_tab()
             heap_bytes: 128 * 1024 * 1024,
             ..Default::default()
         },
-    );
+    )
+    .unwrap();
     let (ok, output) = evaluate(
         &repl,
         bridge.clone(),
@@ -1698,7 +1702,7 @@ async fn browser_cursor_scenario(
         "cursor-browser-b",
         Language::En,
     ));
-    let second = Repl::new(facade(), CellLimits::default());
+    let second = Repl::new(facade(), CellLimits::default()).unwrap();
     let (ok,output)=evaluate(first,a.clone(),"await cua.cursor.configure({label:'Maka A',color:'blue',reducedMotion:true}); await tab.getScreenshot();".into()).await;
     assert!(ok, "{}", texts(&output));
     // The screenshot precedes A's first movement. Linux font antialiasing can

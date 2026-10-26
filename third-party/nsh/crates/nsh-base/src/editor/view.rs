@@ -86,16 +86,6 @@ pub(crate) fn render(ed: Ed) -> impl IntoElement {
         hover: signal(None),
         pressed: signal(None),
     };
-    // Lines scrolled into view with no colors yet get them in the same
-    // commit (a jump, or a scroll faster than the parse and the guesses
-    // ahead of it).
-    let shown_ed = ed.clone();
-    effect(move || {
-        shown_ed.scroll_y.get();
-        shown_ed.viewport.get();
-        shown_ed.text_rev.get();
-        untracked(|| shown_ed.highlight_shown_now());
-    });
     view()
         .element_ref(&ed.hooks.outer)
         .on_layout(move |_: &Bounds<Points>| place_ed.measure_place())
@@ -183,9 +173,11 @@ struct GutterPointer {
 fn gutter(ed: Ed, layer: Layer, pointer: GutterPointer) -> impl IntoElement {
     let props = ed.props;
     let shown = move || props.line_numbers.get() || props.folding.get();
+    // Memos: every row reads them, and an edit would measure the digit
+    // again for each.
     let number_width = {
         let ed = ed.clone();
-        move || {
+        let width = computed(move || {
             ed.text_rev.get();
             if !props.line_numbers.get() {
                 return px(0.0);
@@ -193,18 +185,23 @@ fn gutter(ed: Ed, layer: Layer, pointer: GutterPointer) -> impl IntoElement {
             let st = ed.st.borrow();
             let digits = st.buffer.line_count().max(1).ilog10() as usize + 1;
             let zero = super::controller::text_width(&st.font.css(), "0");
-            zero * digits.max(2) as f32
-        }
+            // Whole points: the text engines of AppKit, UIKit and Win32 round
+            // a measured width up, so a number laid out in the exact width
+            // of its digits is a fraction too wide and shows as "…".
+            (zero * digits.max(2) as f32).ceil()
+        });
+        move || width.get()
     };
     let fold_width = {
         let ed = ed.clone();
-        move || {
+        let width = computed(move || {
             if !props.folding.get() {
                 return px(0.0);
             }
             ed.text_rev.get();
             ed.st.borrow().line_height()
-        }
+        });
+        move || width.get()
     };
     let height = {
         let ed = ed.clone();
@@ -213,16 +210,13 @@ fn gutter(ed: Ed, layer: Layer, pointer: GutterPointer) -> impl IntoElement {
     let rows = visible_rows(ed.clone());
     let top = ed.rows_top;
     when(shown, move || {
-        let (nw, fw) = (number_width.clone(), fold_width.clone());
-        let (number_width, fold_width) = (number_width.clone(), fold_width.clone());
         let height = height.clone();
         let row_ed = ed.clone();
         let press_ed = ed.clone();
-        let hit_nw = nw.clone();
         let inner = view()
             .relative()
             .mt(move || Length::from(top.get()))
-            .w(move || Length::from(nw() + fw()))
+            .w(move || Length::from(number_width() + fold_width()))
             .h(move || Length::from(height()));
         let inner = match layer {
             Layer::Paint => inner.child(each(
@@ -232,8 +226,8 @@ fn gutter(ed: Ed, layer: Layer, pointer: GutterPointer) -> impl IntoElement {
                     gutter_row(
                         row_ed.clone(),
                         row.get_untracked(),
-                        number_width.clone(),
-                        fold_width.clone(),
+                        number_width,
+                        fold_width,
                         pointer,
                     )
                 },
@@ -243,7 +237,7 @@ fn gutter(ed: Ed, layer: Layer, pointer: GutterPointer) -> impl IntoElement {
             Layer::Hit => inner
                 .on(EventKind::Press, move |p: &EventPayload| {
                     let EventPayload::Press(e) = p else { return };
-                    if !props.line_numbers.get_untracked() || e.position.x >= hit_nw() {
+                    if !props.line_numbers.get_untracked() || e.position.x >= number_width() {
                         return;
                     }
                     let row = {
@@ -262,8 +256,8 @@ fn gutter(ed: Ed, layer: Layer, pointer: GutterPointer) -> impl IntoElement {
                         fold_hit(
                             row_ed.clone(),
                             row.get_untracked(),
-                            number_width.clone(),
-                            fold_width.clone(),
+                            number_width,
+                            fold_width,
                             pointer,
                         )
                     },
@@ -385,13 +379,17 @@ fn gutter_row(
                 let number = move || info.get().number.map(|n| n.to_string()).unwrap_or_default();
                 let ed = press_ed.clone();
                 let number_width = number_width.clone();
+                // The row's number changes with each edit above it: the
+                // text follows it, the element is made again only for
+                // another part.
+                let active = computed(move || info.get().active);
                 dynamic(move || {
-                    let active = info.get().active;
+                    let active = active.get();
                     let el = text(number)
                         .w(Length::from(number_width()))
                         .text_right()
                         .text_color(move || {
-                            if info.get().active {
+                            if active {
                                 theme().foreground
                             } else {
                                 theme().muted_foreground
@@ -418,8 +416,9 @@ fn gutter_row(
             move || {
                 let ed = fold_ed.clone();
                 let width = fold_width.clone();
+                let fold = computed(move || info.get().fold);
                 dynamic(move || {
-                    let fold = info.get().fold;
+                    let fold = fold.get();
                     let ed = ed.clone();
                     let size = width();
                     let el = view()
@@ -835,7 +834,7 @@ fn selection_rects(ed: Ed) -> impl IntoElement {
             .into_iter()
             .map(|b| {
                 part(
-                    rect(b).bg(move || theme().primary.opacity(0.22)),
+                    rect(b).bg(move || theme().selection()),
                     props,
                     EditorPart::Selection,
                 )
@@ -1318,44 +1317,4 @@ fn whitespace_marks(ed: Ed) -> impl IntoElement {
             })
             .collect::<Vec<_>>()
     })
-}
-
-impl Ed {
-    /// Guesses the colors of the lines in view that have none yet, here:
-    /// what the parse and the guesses off the engine thread bring a few
-    /// frames later.
-    fn highlight_shown_now(&self) {
-        let changed = {
-            let mut st = self.st.borrow_mut();
-            let st = &mut *st;
-            let count = st.display.row_count();
-            let lh = st.line_height().0.max(1.0);
-            let height = self.viewport.get_untracked().height.0;
-            if count == 0 || height <= 0.0 {
-                return;
-            }
-            let y = (self.scroll_y.get_untracked() - self.rows_top.get_untracked())
-                .0
-                .max(0.0);
-            let first_row = ((y / lh).floor() as usize).min(count - 1);
-            let last_row = (((y + height) / lh).ceil() as usize).clamp(first_row + 1, count) - 1;
-            let first = st.display.row(first_row).line;
-            let last = st.display.row(last_row).line;
-            let Some(h) = &mut st.highlighter else {
-                return;
-            };
-            if (first..=last).all(|line| h.tokens(line).is_some()) {
-                return;
-            }
-            let start = first.saturating_sub(super::highlight::GUESS_CONTEXT);
-            let offset = st.buffer.line_start(start);
-            match h.guess(st.buffer.rope(), start, offset, last) {
-                Some(guess) => !h.guessed(guess.run()).is_empty(),
-                None => false,
-            }
-        };
-        if changed {
-            self.hl_rev.update(|r| *r += 1);
-        }
-    }
 }

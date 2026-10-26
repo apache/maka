@@ -32,6 +32,7 @@ import type {
   SettingsConnectionSummary,
   SettingsProvider,
   SettingsProviderSummary,
+  SettingsModelLimitSettings,
   ThinkingLevel,
 } from '../../../../packages/plugin-sdk/src/generated/runtime';
 
@@ -63,7 +64,30 @@ export type RemovalAction = ConnectionAction & {
   kind: 'connection' | 'key' | 'model';
   modelId: string | null;
 };
+export const modelLimitFields = [
+  {
+    key: 'contextWindow',
+    label: 'Context window (tokens)',
+    hint: 'Total input and output capacity. Empty uses the model default.',
+  },
+  {
+    key: 'inputLimit',
+    label: 'Input limit (tokens)',
+    hint: 'Independent input ceiling. Empty uses the model default.',
+  },
+  {
+    key: 'maxOutputTokens',
+    label: 'Maximum output (tokens)',
+    hint: 'Requested output budget per step, capped by the provider and remaining capacity. Empty uses the model default.',
+  },
+  {
+    key: 'compactionThreshold',
+    label: 'Compaction threshold (tokens)',
+    hint: 'Retained tokens that trigger automatic compaction. Empty uses 85% of the smaller context window and input limit.',
+  },
+] as const;
 export type ModelEditor = {
+  limits: Record<(typeof modelLimitFields)[number]['key'], string>;
   codeMode: boolean | null;
   codeModeLanguage: CodeLanguage | null;
   applyPatch: boolean | null;
@@ -75,6 +99,7 @@ export type ModelEditor = {
   effective: {
     thinkingLevels: ThinkingLevel[];
     defaultThinkingLevel: ThinkingLevel | null;
+    limits: SettingsModelLimitSettings | null;
   } | null;
 };
 export type SettingsPage = 'connections' | 'providers' | 'connection' | 'models' | 'model';
@@ -131,6 +156,7 @@ export function createModelSettings(
   const model = signal<ModelEditor | null>(null);
   const credential = signal<CredentialStatus | null>(null);
   const loading = signal(false);
+  const discovery = signal<'idle' | 'fetching' | 'ready' | 'failed'>('idle');
   const confirmation = signal<'connection' | 'key' | 'model' | null>(null);
   const connectionIndex = computed(() =>
     connections().map((item) => ({
@@ -304,6 +330,7 @@ export function createModelSettings(
   const newConnection = () => {
     if (busy()) return;
     editor.set(null);
+    discovery.set('idle');
     model.set(null);
     modelQuery.set('');
     error.set('');
@@ -351,6 +378,7 @@ export function createModelSettings(
         baseUrl: typeof configuration?.baseUrl === 'string' ? configuration.baseUrl : '',
       });
       credential.set(null);
+      discovery.set('idle');
       page.set('connection');
     } catch (reason) {
       if (generation === read) report(reason);
@@ -396,6 +424,7 @@ export function createModelSettings(
     error.set('');
     notice.set('');
     editor.set(null);
+    discovery.set('idle');
     model.set(null);
     modelQuery.set('');
     page.set('connections');
@@ -512,6 +541,10 @@ export function createModelSettings(
       if (!form.name.trim()) throw new UiError('Enter a connection name.');
       const body = overlay(form.overlay);
       const config = configuration(form);
+      const refreshModels =
+        !form.baseline ||
+        !!form.apiKey ||
+        JSON.stringify(config) !== JSON.stringify(form.baseline.target.configuration);
       let result: CatalogMutationResult | null = null;
       const original = form.baseline;
       const expectedCredential = credentialBasis(credential());
@@ -586,6 +619,7 @@ export function createModelSettings(
         changed();
       } else if (alive && !result) notice.set(message('No connection changes.'));
       await loadConnections();
+      if (refreshModels) await discoverSavedConnection(form.instance);
     });
   };
   const login = createConnectionLogin(operations, {
@@ -628,6 +662,9 @@ export function createModelSettings(
         'committed',
       );
     },
+    async discover(request) {
+      await discoverSavedConnection(request.editor);
+    },
   });
   const loginAction = (method: string): LoginAction => ({
     editor: editor()!.instance,
@@ -641,6 +678,36 @@ export function createModelSettings(
     const form = editor();
     if (current(request) && form && !busy()) editor.set({ ...form, enabled: request.enabled });
   };
+  const fetchModels = async (form: ConnectionEditor & { baseline: Detail }) => {
+    discovery.set('fetching');
+    try {
+      const result = await mutate('setup', 'discoverModels', form.baseline.target);
+      if (result.kind === 'failed')
+        throw new UiError(
+          'Could not fetch models. Check the provider credential, endpoint and network, or add a model manually.',
+        );
+      if (result.kind !== 'ready') throw rejection(result);
+      await adopt(result.connection, form.instance);
+      if (!alive || editor()?.instance !== form.instance) return;
+      discovery.set('ready');
+      await loadConnections();
+    } catch (reason) {
+      if (alive && editor()?.instance === form.instance) discovery.set('failed');
+      throw reason;
+    }
+  };
+  const discoverSavedConnection = async (instance: number) => {
+    const form = editor();
+    if (
+      !alive ||
+      form?.instance !== instance ||
+      !form.baseline ||
+      !form.provider.descriptor.discovery ||
+      (!form.provider.descriptor.anonymous && !credential()?.configured)
+    )
+      return;
+    await fetchModels({ ...form, baseline: form.baseline });
+  };
   const discover = (request: ConnectionAction) => {
     if (!current(request)) return;
     return run(async () => {
@@ -649,14 +716,7 @@ export function createModelSettings(
         throw new UiError('Save the connection changes before fetching models.');
       if (!form.provider.descriptor.anonymous && !credential()?.configured)
         throw new UiError('Add an API key or finish provider sign-in before fetching models.');
-      const result = await mutate('setup', 'discoverModels', form.baseline.target);
-      if (result.kind === 'failed')
-        throw new UiError(
-          'Could not fetch models. Check the provider credential, endpoint and network, or add a model manually.',
-        );
-      if (result.kind !== 'ready') throw rejection(result);
-      await adopt(result.connection, form.instance);
-      await loadConnections();
+      await fetchModels({ ...form, baseline: form.baseline });
       if (alive) notice.set(message('Models fetched and enabled.'));
     });
   };
@@ -674,6 +734,12 @@ export function createModelSettings(
       originalId: id,
       id: id ?? '',
       label: raw?.displayName ?? '',
+      limits: {
+        contextWindow: raw?.contextWindow?.toString() ?? '',
+        inputLimit: raw?.inputLimit?.toString() ?? '',
+        maxOutputTokens: raw?.maxOutputTokens?.toString() ?? '',
+        compactionThreshold: raw?.compactionThreshold?.toString() ?? '',
+      },
       codeMode: raw?.codeMode ?? null,
       codeModeLanguage: raw?.codeModeLanguage ?? null,
       applyPatch: raw?.applyPatch ?? null,
@@ -709,6 +775,7 @@ export function createModelSettings(
         effective: {
           thinkingLevels: [...result.choice.thinkingLevels],
           defaultThinkingLevel: result.choice.defaultThinkingLevel,
+          limits: result.choice.limits ?? null,
         },
       });
     } catch (reason) {
@@ -793,6 +860,18 @@ export function createModelSettings(
       else value.codeModeLanguage = current.codeModeLanguage;
       if (current.applyPatch === null) delete value.applyPatch;
       else value.applyPatch = current.applyPatch;
+      for (const { key, label } of modelLimitFields) {
+        const text = current.limits[key].trim();
+        if (!text) delete value[key];
+        else {
+          const tokens = Number(text);
+          if (!/^\d+$/.test(text) || !Number.isSafeInteger(tokens) || tokens <= 0)
+            throw new UiError('{field} must be a positive whole number of tokens.', {
+              field: message(label),
+            });
+          value[key] = tokens;
+        }
+      }
       overrides[id] = value;
       const result = await mutate('settings', 'update', {
         expected: basis(form.baseline),
@@ -989,6 +1068,7 @@ export function createModelSettings(
     model,
     credential,
     loading,
+    discovery,
     busy,
     error,
     notice,

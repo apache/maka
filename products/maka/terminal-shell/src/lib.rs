@@ -20,8 +20,8 @@
 //! Maka's first-party terminal application, using NSH and public Host services.
 
 mod attachment_paths;
-mod clipboard;
 pub mod bindings;
+mod clipboard;
 pub mod entry;
 pub mod terminal;
 

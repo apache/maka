@@ -86,7 +86,8 @@ async fn audio_opt_in_preserves_the_public_recording_bytes_and_media() {
     let repl = Repl::new(
         maka_computer_use::facade_for("linux", true),
         CellLimits::default(),
-    );
+    )
+    .unwrap();
     let output = evaluate(
         &repl,
         bridge.clone(),
@@ -148,7 +149,7 @@ async fn audio_opt_in_preserves_the_public_recording_bytes_and_media() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn default_facade_and_host_both_refuse_recording_without_opt_in() {
     let bridge = Arc::new(Fixture::default());
-    let repl = Repl::new(maka_computer_use::facade(), CellLimits::default());
+    let repl = Repl::new(maka_computer_use::facade(), CellLimits::default()).unwrap();
     let output = evaluate(
         &repl,
         bridge.clone(),

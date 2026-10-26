@@ -91,6 +91,17 @@ impl ScrollHost for Host<'_> {
         }
     }
 
+    fn pulled(&self, distance: Points) {
+        let pulled = self
+            .surface
+            .anim
+            .borrow_mut()
+            .pulled(self.view.id(), distance);
+        if pulled && self.surface.mounter.try_borrow().is_ok() {
+            self.surface.write_animations();
+        }
+    }
+
     fn relayout(&self) {
         self.view.moved();
     }

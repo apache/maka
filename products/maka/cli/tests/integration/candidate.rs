@@ -431,6 +431,13 @@ pub(super) struct CandidateFixture {
     pub root_id: String,
     pub registration: PathBuf,
     lock: PathBuf,
+    cleanup: FixtureCleanup,
+}
+
+enum FixtureCleanup {
+    Pending,
+    Confirmed,
+    Unconfirmed,
 }
 
 impl CandidateFixture {
@@ -443,6 +450,7 @@ impl CandidateFixture {
             root_id: owner.root_id().to_owned(),
             registration: owner.control_directory().join("registration.json"),
             lock: owner.lock_path().to_owned(),
+            cleanup: FixtureCleanup::Pending,
         }
     }
 
@@ -460,6 +468,7 @@ impl CandidateFixture {
             lock: namespaces
                 .ownership
                 .join(format!("{}.lock", location.root_id())),
+            cleanup: FixtureCleanup::Pending,
         }
     }
 
@@ -506,13 +515,19 @@ impl CandidateFixture {
                 .output();
         }
     }
-}
 
-impl Drop for CandidateFixture {
-    fn drop(&mut self) {
+    fn cleanup(&mut self) -> bool {
+        match self.cleanup {
+            FixtureCleanup::Confirmed => return true,
+            FixtureCleanup::Unconfirmed => return false,
+            FixtureCleanup::Pending => self.cleanup = FixtureCleanup::Unconfirmed,
+        }
         if let Some(mut child) = self.child.take() {
             let _ = child.kill();
-            let _ = child.wait();
+            if let Err(error) = child.wait() {
+                eprintln!("test fixture child reaping unconfirmed: {error}");
+                return false;
+            }
         }
         self.retire_registered();
         let control = self.registration.parent().unwrap();
@@ -531,28 +546,143 @@ impl Drop for CandidateFixture {
                     "refusing to unlink a possibly active test lease: {}",
                     self.lock.display()
                 );
-                return;
+                return false;
             }
             std::thread::sleep(Duration::from_millis(20));
         }
-        let _ = fs::remove_file(&self.registration);
-        let _ = fs::remove_file(control.join("host.stderr.log"));
         let deployment = namespaces
             .ownership
             .parent()
             .unwrap()
             .join("deployments")
             .join(&self.root_id);
-        if deployment.is_dir() {
-            // Only this fixture's freshly generated root; all owned children are reaped.
-            if let Ok(lease) =
-                maka_event_log::root::FileLease::acquire(&deployment.join("executor.lock"))
-            {
+        match fs::symlink_metadata(&deployment) {
+            Ok(metadata) if metadata.is_dir() => {
+                // Only this fixture's freshly generated root; all owned children are reaped.
+                let lease =
+                    maka_event_log::root::FileLease::acquire(&deployment.join("executor.lock"));
+                let lease = match lease {
+                    Ok(lease) => lease,
+                    Err(error) => {
+                        eprintln!("refusing to unlink a possibly active test deployment: {error}");
+                        return false;
+                    }
+                };
                 drop(lease);
-                let _ = fs::remove_dir_all(deployment);
+                if !Self::removed(&deployment, fs::remove_dir_all(&deployment)) {
+                    return false;
+                }
+            }
+            Ok(_) => {
+                eprintln!("refusing to unlink an unexpected test deployment path");
+                return false;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                eprintln!("test deployment inspection failed: {error}");
+                return false;
             }
         }
-        let _ = fs::remove_dir(control);
-        let _ = fs::remove_file(&self.lock);
+        let log = control.join("host.stderr.log");
+        for path in [&self.registration, &log] {
+            if !Self::removed(path, fs::remove_file(path)) {
+                return false;
+            }
+        }
+        if !Self::removed(control, fs::remove_dir(control))
+            || !Self::removed(&self.lock, fs::remove_file(&self.lock))
+        {
+            return false;
+        }
+        self.cleanup = FixtureCleanup::Confirmed;
+        true
+    }
+
+    fn removed(path: &Path, result: std::io::Result<()>) -> bool {
+        match result {
+            Ok(()) => true,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+            Err(error) => {
+                eprintln!(
+                    "test fixture removal failed for {}: {error}",
+                    path.display()
+                );
+                false
+            }
+        }
+    }
+}
+
+impl Drop for CandidateFixture {
+    fn drop(&mut self) {
+        self.cleanup();
+    }
+}
+
+pub(super) struct RootStartupFixture {
+    directory: Option<tempfile::TempDir>,
+    pub(super) root: PathBuf,
+    initialized: Option<CandidateFixture>,
+    admission_pending: bool,
+}
+
+impl RootStartupFixture {
+    fn new() -> Self {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("root");
+        Self {
+            directory: Some(directory),
+            root,
+            initialized: None,
+            admission_pending: true,
+        }
+    }
+
+    fn directory(&self) -> &Path {
+        self.directory.as_ref().unwrap().path()
+    }
+
+    pub(super) fn initialized(directory: tempfile::TempDir, fixture: CandidateFixture) -> Self {
+        Self {
+            root: fixture.root.clone(),
+            directory: Some(directory),
+            initialized: Some(fixture),
+            admission_pending: false,
+        }
+    }
+
+    pub(super) fn adopt(&mut self) -> &CandidateFixture {
+        let fixture = self
+            .initialized
+            .get_or_insert_with(|| CandidateFixture::adopt_existing(self.root.clone()));
+        self.admission_pending = false;
+        fixture
+    }
+
+    pub(super) fn begin_admission(&mut self) {
+        self.admission_pending = true;
+    }
+}
+
+impl Drop for RootStartupFixture {
+    fn drop(&mut self) {
+        let settled = if self.admission_pending {
+            if let Some(fixture) = &mut self.initialized {
+                fixture.cleanup = FixtureCleanup::Unconfirmed;
+            }
+            false
+        } else {
+            self.initialized
+                .as_mut()
+                .is_some_and(CandidateFixture::cleanup)
+        };
+        if !settled && let Some(directory) = self.directory.take() {
+            // A failed admission exposes no helper handle. It may still be
+            // initializing this Root, even before publishing its identity.
+            eprintln!(
+                "startup fixture cleanup unconfirmed; retaining {}",
+                directory.keep().display()
+            );
+        }
     }
 }

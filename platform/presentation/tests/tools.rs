@@ -22,6 +22,7 @@ use maka_agent_facts::event::Fact;
 use maka_agent_facts::event::InvocationOutcome;
 use maka_agent_facts::event::StoredEvent;
 use maka_agent_facts::event::ToolOutcome;
+use maka_agent_facts::tool_call::HostSdkParent;
 use maka_agent_facts::tool_call::ToolCallIdentity;
 use maka_agent_facts::tool_call::ToolOrigin;
 use maka_agent_facts::tool_call::ToolRejection;
@@ -180,6 +181,23 @@ fn accepted_tools_replay_with_distinct_ids_parentage_rejections() {
             _ => None,
         };
         let next = view.push_with_tool_output(stored, raw.as_ref()).unwrap();
+        if matches!(
+            stored.event.fact,
+            Fact::ToolDispatched { .. } | Fact::ToolRejected { .. } | Fact::ToolSettled { .. }
+        ) {
+            let dispatch = match &stored.event.fact {
+                Fact::ToolSettled { operation_id, .. } => events.iter().find_map(|prior| {
+                    (prior.sequence < stored.sequence && matches!(&prior.event.fact,
+                        Fact::ToolDispatched { operation_id: original, .. } if original == operation_id)).then_some(&prior.event)
+                }),
+                _ => None,
+            };
+            assert_eq!(
+                next,
+                maka_presentation::project_tool_boundary(stored, dispatch, raw.as_ref()).unwrap(),
+                "one boundary has the same rows as the full invocation reducer"
+            );
+        }
         let roundtrip = StoredEvent {
             sequence: stored.sequence,
             event: serde_json::from_value(serde_json::to_value(&stored.event).unwrap()).unwrap(),
@@ -296,5 +314,125 @@ fn success(output: &maka_agent_facts::tool_output::ToolOutput) -> ToolOutcome {
     match &write.event().fact {
         Fact::ToolSettled { outcome, .. } => outcome.clone(),
         _ => unreachable!(),
+    }
+}
+
+#[test]
+fn direct_tool_projection_preserves_hidden_failures_and_large_raw_results() {
+    use maka_agent_facts::tool_output::ToolOutput;
+    for origin in [
+        ToolOrigin::CodeMode {
+            parent_operation_id: "first:raw".into(),
+            parent_tool_call_id: "raw".into(),
+        },
+        ToolOrigin::CodeCell {
+            parent_operation_id: "first:raw".into(),
+            parent_tool_call_id: "raw".into(),
+        },
+        ToolOrigin::HostSdk {
+            package_id: "package".into(),
+            entry_id: "entry".into(),
+            activation: "activation".into(),
+            parent: Some(HostSdkParent::NestedEffect {
+                operation_id: "first:raw".into(),
+            }),
+        },
+        ToolOrigin::HostSdk {
+            package_id: "package".into(),
+            entry_id: "entry".into(),
+            activation: "activation".into(),
+            parent: Some(HostSdkParent::EvaluationObserver {
+                operation_id: "first:raw".into(),
+                epoch: "evaluation".into(),
+            }),
+        },
+        ToolOrigin::HostSdk {
+            package_id: "package".into(),
+            entry_id: "entry".into(),
+            activation: "activation".into(),
+            parent: None,
+        },
+    ] {
+        for mode in ["returned", "failed", "unknown", "rejected"] {
+            let raw = ToolOutput::Text("中🙂".repeat(64 * 1024));
+            let mut facts = vec![opening()];
+            step(&mut facts, "first", false, false);
+            facts.push(Fact::ToolDispatched {
+                presentation: None,
+                title: None,
+                operation_id: "first:raw".into(),
+                call: ToolCallIdentity::provider("first".into(), "raw".into()),
+                name: "exec".into(),
+                input: json!({"code":"Read()"}),
+            });
+            let identity = ToolCallIdentity {
+                tool_call_id: "child:opaque/🙂".into(),
+                origin: origin.clone(),
+            };
+            if mode == "rejected" {
+                facts.push(Fact::ToolRejected {
+                    operation_id: "operation:opaque/🙂".into(),
+                    call: identity,
+                    name: "Read".into(),
+                    input: json!({"path":"file"}).into(),
+                    reason: ToolRejection::Unavailable,
+                });
+            } else {
+                facts.push(Fact::ToolDispatched {
+                    presentation: Some("file.read".into()),
+                    title: Some(maka_agent_facts::display::Text::plain("Read file")),
+                    operation_id: "operation:opaque/🙂".into(),
+                    call: identity,
+                    name: "Read".into(),
+                    input: json!({"path":"file"}),
+                });
+                facts.push(Fact::ToolSettled {
+                    operation_id: "operation:opaque/🙂".into(),
+                    outcome: match mode {
+                        "returned" => success(&raw),
+                        "failed" => ToolOutcome::Failed {
+                            message: "read failed".into(),
+                        },
+                        _ => ToolOutcome::Unknown {
+                            message: "outcome unknown".into(),
+                            operation: None,
+                        },
+                    },
+                });
+            }
+            let events = stored(facts);
+            let mut view = InvocationView::new();
+            for stored in &events {
+                let resolved = matches!(
+                    stored.event.fact,
+                    Fact::ToolSettled {
+                        outcome: ToolOutcome::Succeeded { .. },
+                        ..
+                    }
+                )
+                .then_some(&raw);
+                let expected = view.push_with_tool_output(stored, resolved).unwrap();
+                if matches!(
+                    stored.event.fact,
+                    Fact::ToolDispatched { .. }
+                        | Fact::ToolRejected { .. }
+                        | Fact::ToolSettled { .. }
+                ) {
+                    let dispatch = match &stored.event.fact {
+                        Fact::ToolSettled { operation_id, .. } => events.iter().find_map(|prior| {
+                            (prior.sequence < stored.sequence && matches!(&prior.event.fact,
+                                Fact::ToolDispatched { operation_id: original, .. } if original == operation_id)).then_some(&prior.event)
+                        }),
+                        _ => None,
+                    };
+                    assert_eq!(
+                        maka_presentation::project_tool_boundary(stored, dispatch, resolved)
+                            .unwrap(),
+                        expected,
+                        "origin {origin:?}, outcome {mode}"
+                    );
+                }
+            }
+        }
     }
 }

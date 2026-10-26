@@ -174,6 +174,9 @@ pub struct Screen {
     contacts: Vec<Arc<Contact>>,
     /// Native input results retain their order within each consumed batch.
     input_results: Vec<InputResult>,
+    /// The view that takes presses Tab gave the keyboard focus to (macOS,
+    /// the web).
+    key_focus: Option<NodeId>,
     /// Scroll views a command moved, whose offset the engine is told
     /// ([`Screen::take_scrolled`]), as a platform reports it.
     scrolled: Vec<NodeId>,
@@ -250,6 +253,8 @@ struct View {
     role: AccessibilityRole,
     /// It takes no presses (`disabled`, its accessibility state).
     disabled: bool,
+    /// `focusable`: `Some(false)` keeps a pressable out of Tab's stops.
+    focusable: Option<bool>,
     /// It is selected (`selected`, its accessibility state; a canvas node's
     /// `selected`).
     selected: bool,
@@ -363,6 +368,8 @@ pub(crate) struct Scroll {
     content: Option<Size<Points>>,
     /// The user cannot scroll it (`scrollable={false}`).
     pub(crate) locked: bool,
+    /// How it scrolls (where a pull refreshes).
+    pub(crate) behavior: nsh_core::ScrollBehavior,
 }
 
 impl Screen {
@@ -508,6 +515,7 @@ impl Screen {
             MountItem::ScrollBehavior { id, behavior } => {
                 if let Some(scroll) = self.scroll_mut(*id) {
                     scroll.locked = !behavior.enabled;
+                    scroll.behavior = (**behavior).clone();
                 }
             }
             MountItem::Events { id, events } => self.nodes.entry(*id).or_default().events = *events,
@@ -517,6 +525,7 @@ impl Screen {
                 view.label = props.accessibility.label.clone();
                 view.role = props.accessibility.role;
                 view.disabled = props.accessibility.state.disabled;
+                view.focusable = props.focusable;
                 view.selected = props.accessibility.state.selected;
                 view.long_press_delay = props.long_press_delay;
                 view.selection_area = props.selection_area;
@@ -665,8 +674,11 @@ impl Screen {
                 self.js_grants.push(*block);
             }
             Command::ClearJsResponder => self.js_block = false,
-            Command::Focus if self.input(id).is_some() => self.focused = Some(id),
-            Command::Blur if id == ROOT || self.focused == Some(id) => self.focused = None,
+            Command::Focus if self.input(id).is_some() => self.set_focused(Some(id)),
+            Command::Blur if id == ROOT || self.focused == Some(id) => {
+                self.set_focused(None);
+                self.set_key_focus(None);
+            }
             Command::ScrollTo { x, y, .. } => {
                 let end = self.scroll_end(id);
                 if let Some(scroll) = self.scroll_mut(id) {
@@ -915,6 +927,12 @@ impl Screen {
     }
 
     fn revoke_focus(&mut self, id: NodeId) {
+        if self
+            .key_focus
+            .is_some_and(|focus| focus == id || self.is_inside(focus, id))
+        {
+            self.key_focus = None;
+        }
         if self
             .focused
             .is_some_and(|focus| focus == id || self.is_inside(focus, id))
@@ -1276,15 +1294,19 @@ impl Screen {
         first
     }
 
+    /// The view `selector` matches inside `target` (a text in the button
+    /// a press goes to); `None` when the match is `target` itself.
+    pub(crate) fn match_inside(&self, selector: &Selector, target: NodeId) -> Option<NodeId> {
+        self.resolve(selector)
+            .into_iter()
+            .find(|id| self.is_inside(*id, target))
+    }
+
     /// Where in `target` a press of what `selector` names lands: the
     /// center of the view it matches inside `target`, as a finger taps the
     /// text it reads. `None` when the match is `target` itself.
     pub(crate) fn press_point(&self, selector: &Selector, target: NodeId) -> Option<Point<Points>> {
-        let id = self
-            .resolve(selector)
-            .into_iter()
-            .find(|id| self.is_inside(*id, target))?;
-        let inner = self.bounds_in_root(id)?;
+        let inner = self.bounds_in_root(self.match_inside(selector, target)?)?;
         let outer = self.bounds_in_root(target)?;
         Some(nsh_core::geometry::point(
             inner.origin.x - outer.origin.x + inner.size.width / 2.0,
@@ -1955,7 +1977,7 @@ impl Screen {
     }
 
     pub(crate) fn focus_path(&self) -> Vec<NodeId> {
-        let Some(mut id) = self.focused else {
+        let Some(mut id) = self.focused.or_else(|| self.key_focus()) else {
             return Vec::new();
         };
         let mut path = vec![id];
@@ -1967,7 +1989,40 @@ impl Screen {
     }
 
     pub(crate) fn set_focused(&mut self, id: Option<NodeId>) {
+        if id.is_some() {
+            self.key_focus = None;
+        }
         self.focused = id;
+    }
+
+    /// The pressable with the keyboard focus, while it is mounted.
+    pub(crate) fn key_focus(&self) -> Option<NodeId> {
+        self.key_focus.filter(|&id| self.is_attached(id))
+    }
+
+    pub(crate) fn set_key_focus(&mut self, id: Option<NodeId>) {
+        self.key_focus = id;
+    }
+
+    /// Tab's stops, in tree order, as macOS and the web have them: the
+    /// inputs that edit and the views that take presses, shown, enabled
+    /// and not `focusable={false}`.
+    pub(crate) fn tab_stops(&self) -> Vec<NodeId> {
+        self.shown()
+            .into_iter()
+            .filter(|&id| {
+                let Some(v) = self.nodes.get(&id) else {
+                    return false;
+                };
+                if let Some(input) = &v.input {
+                    return input.config.editable && !self.disabled_from(id, None);
+                }
+                v.span.is_none()
+                    && v.events.contains(EventKind::Press)
+                    && v.focusable != Some(false)
+                    && !self.disabled_from(id, None)
+            })
+            .collect()
     }
 
     pub(crate) fn scroll(&self, id: NodeId) -> Option<&Scroll> {
@@ -2005,6 +2060,70 @@ impl Screen {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn detached_pressable_focus_does_not_revive_after_reinsertion_or_id_reuse() {
+        for delete in [false, true] {
+            let mut screen = Screen::default();
+            screen.apply(&batch(vec![
+                create(2, ViewKind::View),
+                create(4, ViewKind::View),
+                create(6, ViewKind::View),
+                project(ROOT, 2, &[]),
+                insert(2, 4),
+                project(ROOT, 6, &[]),
+            ]));
+            screen
+                .nodes
+                .get_mut(&4)
+                .unwrap()
+                .events
+                .set(EventKind::Press, true);
+            screen.set_key_focus(Some(4));
+            screen.apply(&batch(vec![MountItem::Remove { id: 6 }]));
+            assert_eq!(screen.key_focus(), Some(4), "unrelated removal keeps focus");
+            if delete {
+                screen.apply(&batch(vec![MountItem::Delete { id: 4 }]));
+                screen.apply(&batch(vec![create(4, ViewKind::View), insert(2, 4)]));
+                screen
+                    .nodes
+                    .get_mut(&4)
+                    .unwrap()
+                    .events
+                    .set(EventKind::Press, true);
+            } else {
+                screen.apply(&batch(vec![MountItem::Remove { id: 2 }]));
+                assert_eq!(screen.key_focus(), None);
+                screen.apply(&batch(vec![project(ROOT, 2, &[])]));
+            }
+            assert!(screen.hears(4, EventKind::Press));
+            assert_eq!(
+                screen.key_focus(),
+                None,
+                "attachment cannot restore keyboard focus"
+            );
+        }
+    }
+
+    #[test]
+    fn native_retirement_keeps_a_cell_with_pressable_keyboard_focus() {
+        let mut screen = Screen::default();
+        screen.apply(&batch(vec![
+            create(2, ViewKind::View),
+            create(4, ViewKind::View),
+            project(ROOT, 2, &[]),
+            insert(2, 4),
+        ]));
+        screen.set_key_focus(Some(4));
+        screen.apply(&batch(vec![MountItem::RetireListCell {
+            id: 2,
+            request: 1,
+            roots: vec![2],
+        }]));
+        assert!(screen.is_attached(4));
+        assert!(matches!(screen.take_input_results().as_slice(),
+            [InputResult::RetireListCell { focus_path: Some(path), .. }] if path == &[4, 2, ROOT]));
+    }
 
     /// A canvas over a pressable pad, both inside a plain container.
     fn canvas_screen() -> Screen {

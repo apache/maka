@@ -64,3 +64,37 @@ test('tabular digits are measured as wide as the DOM draws them', { skip: !chrom
     assert.equal(html.match(/data-result="([^"]*)"/)?.[1], 'passed');
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
+
+
+test('cluster boxes follow bidi reordering and preserve measurement styles', { skip: !chromium }, async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'nsh-text-bidi-'));
+  try {
+    const source = await readFile(new URL('./nsh.js', import.meta.url), 'utf8');
+    const module = 'data:text/javascript;base64,' + Buffer.from(source + '\nexport { textClusterBoxes, measureNumericText };').toString('base64');
+    await writeFile(join(dir, 'index.html'), `<!doctype html><meta charset="utf-8"><body><script type="module">
+      import { textClusterBoxes, measureNumericText } from '${module}';
+      try {
+        const font = '400 20px Arial';
+        const near = (a,b) => { if (Math.abs(a-b)>0.05) throw Error(a+' != '+b); };
+        const rtl = textClusterBoxes(font, '', 0, 'אב', [[0,1],[1,2]]);
+        if (!(rtl[0][0] > rtl[1][0])) throw Error('RTL clusters are reversed: '+JSON.stringify(rtl));
+        const mixed = textClusterBoxes(font, '', 0, 'abc אבג xyz', [[0,4],[4,5],[5,7]]);
+        if (!(mixed[0][1] < mixed[1][0] && mixed[2][1] <= mixed[1][0] + 0.05)) throw Error('bidi selection must have a gap');
+        const before = measureNumericText(font, 'tabular-nums', '111');
+        textClusterBoxes(font, '', 4, 'אב', [[0,1],[1,2]]);
+        near(measureNumericText(font, 'tabular-nums', '111'), before);
+        const spaced = textClusterBoxes(font, 'tabular-nums', 3, '123', [[0,1],[1,2],[2,3]]);
+        const run = document.createElement('span');
+        run.style.cssText = 'position:absolute;white-space:pre;font:'+font+';font-variant-numeric:tabular-nums;letter-spacing:3px';
+        run.textContent = '123'; document.body.append(run);
+        near(spaced[2][1], run.getBoundingClientRect().width);
+        document.body.dataset.result = 'passed';
+      } catch(e) { document.body.dataset.result = 'failed: '+e.message; }
+    </script>`);
+    const html = execFileSync(chromium, ['--headless', '--no-sandbox', '--disable-dev-shm-usage',
+      '--disable-gpu', '--no-first-run', '--no-default-browser-check', '--virtual-time-budget=1000',
+      '--user-data-dir=' + join(dir, 'profile'), '--dump-dom', pathToFileURL(join(dir, 'index.html')).href],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 20000, maxBuffer: 1024 * 1024 });
+    assert.equal(html.match(/data-result="([^"]*)"/)?.[1], 'passed');
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});

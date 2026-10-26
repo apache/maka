@@ -695,6 +695,7 @@ fn new_repl() -> Repl {
             ..Default::default()
         },
     )
+    .unwrap()
 }
 
 async fn evaluate(repl: &Repl, bridge: Arc<dyn ToolExecutor>, source: &str) -> Value {

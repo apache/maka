@@ -20,7 +20,7 @@
 //! RuntimeEvent ingress and both derived projections share the caller's
 //! transaction. No effect receipt can escape before that transaction commits.
 use crate::{StoreError, sequence_number};
-use maka_agent_facts::event::RuntimeEvent;
+use maka_agent_facts::event::{RuntimeEvent, StoredEvent};
 use sqlx::SqliteConnection;
 
 pub(crate) enum Position {
@@ -36,11 +36,7 @@ pub(crate) async fn insert(
     json: String,
     position: Position,
 ) -> Result<u64, StoreError> {
-    let id = event.id.clone();
-    let invocation = event.invocation.invocation_id.clone();
-    let session = event.invocation.session_id.clone();
-    let kind = event.fact.kind();
-    let operation = event.fact.operation_id().map(str::to_owned);
+    let event = event.clone();
     crate::connection::worker_query(connection, move |worker| Box::pin(async move {
         // SAFETY: this callback exclusively borrows the original SQLite worker;
         // inspect its actual state, including externally established transactions.
@@ -57,12 +53,14 @@ pub(crate) async fn insert(
                  SELECT ?1, ?2, ?3, ?4, ?5 WHERE NOT EXISTS (
                      SELECT 1 FROM session_message_sources WHERE owner_session_id = ?6 AND message_id = ?1
                      UNION ALL SELECT 1 FROM message_admissions WHERE session_id = ?6 AND message_id = ?1)",
-            ).bind(&id).bind(&invocation).bind(kind).bind(&operation).bind(&json).bind(&session)
+            ).bind(&event.id).bind(&event.invocation.invocation_id).bind(event.fact.kind())
+                .bind(event.fact.operation_id()).bind(&json).bind(&event.invocation.session_id)
                 .execute(&mut *worker).await?,
             Position::Imported(sequence) => sqlx::query(
                 "INSERT INTO event_log(sequence,event_id,invocation_id,kind,operation_id,event_json) VALUES(?,?,?,?,?,?)",
             ).bind(sequence.map(i64::try_from).transpose().map_err(|_| StoreError::PrefixTooLarge)?)
-                .bind(&id).bind(&invocation).bind(kind).bind(&operation).bind(&json)
+                .bind(&event.id).bind(&event.invocation.invocation_id).bind(event.fact.kind())
+                .bind(event.fact.operation_id()).bind(&json)
                 .execute(&mut *worker).await?,
         };
         if inserted.rows_affected() != 1 {
@@ -70,15 +68,9 @@ pub(crate) async fn insert(
         }
         // Capture before either projection issues INSERTs on this same handle.
         let sequence = sequence_number(inserted.last_insert_rowid())?;
-        // Each projector owns a separate SQLite statement, so its writes no
-        // longer enlarge the canonical INSERT's statement rollback journal.
-        // Keep the existing UDF/SQLx error path, including extended SQLite codes
-        // shared by coalesced receipts. All statements use this original worker.
-        sqlx::query("SELECT context_source_record(?,?,?,?,?)")
-            .bind(sequence as i64).bind(&session).bind(&invocation).bind(&json).bind(kind)
-            .execute(&mut *worker).await?;
-        sqlx::query("SELECT context_semantic_record(?,?)")
-            .bind(sequence as i64).bind(&json).execute(&mut *worker).await?;
+        let stored = StoredEvent { sequence, event };
+        crate::context::evidence::record(worker, &stored, &json).await?;
+        crate::context::semantic::record(worker, &stored).await?;
         Ok(sequence)
     })).await
 }

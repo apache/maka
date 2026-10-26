@@ -28,8 +28,13 @@ pub(super) async fn run(
     inner: &Arc<RunContext>,
     input: &RunSettings,
     cancellation: &CancellationToken,
+    inspected_through: &mut u64,
 ) -> Result<(), RunError> {
-    let mut cursor = None;
+    // The opening fixes selection for this Run. Settled projections cannot change;
+    // checkpoints and archives only remove candidates from later scans.
+    let mut cursor = Some(maka_event_log::archive::PruneCursor::After(
+        *inspected_through,
+    ));
     loop {
         if cancellation.is_cancelled() {
             return Err(RunError::Cancelled);
@@ -68,6 +73,7 @@ pub(super) async fn run(
         }
         cursor = batch.next;
         if cursor.is_none() {
+            *inspected_through = batch.through;
             return Ok(());
         }
         // The fixed upper fence excludes new results; advance even over small

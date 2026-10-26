@@ -100,6 +100,7 @@ expect Pasted: none
 event id:paste onPaste text=hello
 expect Pasted: hello files 0 uris 0
 covers [events] onPaste
+prop id:paste pasteBehavior report
 covers [props] pasteBehavior
 covers [events] onContentSizeChange
 covers [props] selectedRange
@@ -189,6 +190,13 @@ event id:action onAccessibilityAction actionName=increment
 expect Action: increment
 event id:action onAccessibilityAction actionName=activate
 expect Action: activate
+# Tab reaches a view that takes presses, then moves on.
+listens id:key-focus onFocus
+listens id:key-focus onBlur
+event id:key-focus onFocus
+expect Key focus: focused
+event id:key-focus onBlur
+expect Key focus: focused blurred
 covers [events] onPressDown
 covers [events] onPressUp
 covers [events] onHoverIn

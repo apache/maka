@@ -27,7 +27,7 @@ pub(crate) mod gc;
 #[path = "semantic/tests.rs"]
 mod tests;
 mod write;
-pub(crate) use write::register;
+pub(crate) use write::{copy_member, record};
 
 use crate::{EventLog, StoreError};
 use futures_util::TryStreamExt;

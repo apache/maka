@@ -53,12 +53,13 @@ import type { ComposerSession, SendAction } from './Composer';
 import type { QueueSession } from './QueueDock';
 import { sameRoute } from './modelSelection';
 import type { BackendIdentity, ModelDetails } from './modelSelection';
+import { CompactionDivider } from './CompactionDivider';
 import { MessageRow, type MessageViewState } from './MessageRow';
 import { FinalActions } from './FinalActions';
 import type { SessionAction } from './sessionLifecycle';
 import { createProjectMcp } from './projectMcp';
 import { createSessionPermissions } from './sessionPermissions';
-import { TurnPanel, TurnSummary, ActivityStatus, turnOutcome } from './TurnPanel';
+import { TurnPanel, TurnSummary, turnOutcome } from './TurnPanel';
 import type { GroupViewState, LiveActivity, TurnViewState } from './TurnPanel';
 import {
   projectProcessGroups,
@@ -194,6 +195,7 @@ export function Conversation(props: ConversationProps) {
   const archived = signal(false);
   const run = signal<ConversationStatus>('loading');
   const invocation = signal<string | null>(null);
+  const compacting = signal(false);
   const stoppingRun = signal<string | null>(null);
   const stopping = () => invocation() !== null && stoppingRun() === invocation();
   const workspace = signal('');
@@ -356,15 +358,18 @@ export function Conversation(props: ConversationProps) {
     return false;
   };
   type DisplayEntry =
+    | { kind: 'compacting'; key: string }
     | { kind: 'summary'; key: string; turnId: string }
     | { kind: 'process'; key: string; group: ProcessGroup }
     | { kind: 'row'; key: string; rowId: string };
   const display = computed<DisplayEntry[]>(() => {
     const result: DisplayEntry[] = [];
     const summaries = new Set<string>();
+    let compacted = false;
     for (const entry of projection().entries) {
       const row = entry.kind === 'message' ? projection().rowsById.get(entry.rowId) : undefined;
       const turnId = entry.kind === 'process' ? entry.turnId : row?.turnId;
+      if (row?.role === 'compaction' && row.turnId === runTurn()) compacted = true;
       const turn = turnId ? projection().turns.get(turnId) : undefined;
       if (
         turn &&
@@ -395,6 +400,8 @@ export function Conversation(props: ConversationProps) {
         result.push({ kind: 'row', key: entry.key, rowId: entry.rowId });
       }
     }
+    if (compacting() && invocation() && !compacted && atHistoryTail() && reading() === 'chat')
+      result.push({ kind: 'compacting', key: `compacting/${invocation()}` });
     return result;
   });
   let previouslyVisible = new Set<string>();
@@ -428,7 +435,7 @@ export function Conversation(props: ConversationProps) {
       });
     }
     for (const row of rows()) {
-      if (!row.turnId || !row.position) continue;
+      if (!row.turnId || !row.position || row.role === 'compaction') continue;
       const previous = items.get(row.turnId);
       const label =
         row.role === 'user'
@@ -718,6 +725,7 @@ export function Conversation(props: ConversationProps) {
     if (observed.through >= runThrough) {
       metrics.set(observed.metrics ?? null);
       run.set(observed.run?.state ?? 'idle');
+      compacting.set(observed.compacting ?? false);
       invocation.set(observed.run?.invocationId ?? null);
       runTurn.set(observed.run?.turnId ?? null);
       if (!observed.run) stoppingRun.set(null);
@@ -953,6 +961,7 @@ export function Conversation(props: ConversationProps) {
           if (event.sequence > runThrough) {
             run.set(fact.failed ? 'failed' : 'idle');
             invocation.set(null);
+            compacting.set(false);
             runTurn.set(null);
             stoppingRun.set(null);
             void observe().catch(report);
@@ -1494,11 +1503,7 @@ export function Conversation(props: ConversationProps) {
     if (text !== undefined && editEpoch === epoch && draft() === text) draft.set('');
     if (text !== undefined) attachments.sent(files.map((file) => file.id));
     notice.set(
-      accepted.kind === 'queued'
-        ? uiMessage('Message queued.')
-        : text === undefined
-          ? uiMessage('Message accepted.')
-          : '',
+      accepted.kind === 'started' && text === undefined ? uiMessage('Message accepted.') : '',
     );
     if (accepted.kind === 'queued') return;
     cancelNavigation();
@@ -1858,6 +1863,7 @@ export function Conversation(props: ConversationProps) {
       if (result.kind !== 'started')
         throw new UiError('Context compaction rejected: {reason}', { reason: result.reason });
       await observe();
+      ownHandle.jumpLatest(null);
     },
     refresh: observe,
   };
@@ -2222,6 +2228,7 @@ export function Conversation(props: ConversationProps) {
                       viewPosition: 0,
                       animated: false,
                     });
+                  if (initial.kind === 'compacting') return <CompactionDivider />;
                   if (initial.kind === 'summary') {
                     const first = projection().turns.get(initial.turnId);
                     if (!first) return <View />;
@@ -2283,48 +2290,37 @@ export function Conversation(props: ConversationProps) {
                   if (!first) return <View />;
                   const row = () => currentRow(initial.rowId) ?? first;
                   return (
-                    <View>
-                      <If
-                        when={
-                          activity().kind === 'response' &&
-                          activity().rowId === initial.rowId &&
-                          !latestToolActivity(toolActivity(), invocation(), row().turnId ?? '')
-                        }
-                      >
-                        <ActivityStatus title={() => tr('Writing response')} active={() => true} />
-                      </If>
-                      <MessageRow
-                        item={row}
-                        toolMaxHeight={() => readingSize().height}
-                        ownerKey={() => initial.rowId}
-                        viewState={rowState(initial.rowId)}
-                        sessionId={sessionId}
-                        through={() => latestKnown}
-                        previewImage={props.previewImage}
-                        openLink={props.openLink}
-                        userScroll={() => cancelNavigation()}
-                        onExpand={reveal}
-                        onToolReading={(key) => {
-                          if (
-                            !alive ||
-                            key !== initial.rowId ||
-                            displayByKey().get(key)?.kind !== 'row' ||
-                            !rowStates.get(key)?.expanded()
-                          )
-                            return;
-                          innerReader.set(key);
-                        }}
-                        finalActions={(row, ownerKey) => (
-                          <FinalActions
-                            row={row}
-                            ownerKey={ownerKey}
-                            sessionId={sessionId}
-                            through={() => latestKnown}
-                            fork={props.fork}
-                          />
-                        )}
-                      />
-                    </View>
+                    <MessageRow
+                      item={row}
+                      toolMaxHeight={() => readingSize().height}
+                      ownerKey={() => initial.rowId}
+                      viewState={rowState(initial.rowId)}
+                      sessionId={sessionId}
+                      through={() => latestKnown}
+                      previewImage={props.previewImage}
+                      openLink={props.openLink}
+                      userScroll={() => cancelNavigation()}
+                      onExpand={reveal}
+                      onToolReading={(key) => {
+                        if (
+                          !alive ||
+                          key !== initial.rowId ||
+                          displayByKey().get(key)?.kind !== 'row' ||
+                          !rowStates.get(key)?.expanded()
+                        )
+                          return;
+                        innerReader.set(key);
+                      }}
+                      finalActions={(row, ownerKey) => (
+                        <FinalActions
+                          row={row}
+                          ownerKey={ownerKey}
+                          sessionId={sessionId}
+                          through={() => latestKnown}
+                          fork={props.fork}
+                        />
+                      )}
+                    />
                   );
                 }}
               </Each>

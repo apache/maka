@@ -2,13 +2,14 @@ use std::{
     any::Any,
     fmt,
     hash::{Hash, Hasher},
+    ops::Range,
     sync::Arc,
 };
 
 use rustc_hash::FxHashMap;
 
 use crate::{
-    geometry::{Point, Points, Size, point, px, size},
+    geometry::{Bounds, Point, Points, Size, point, px, size},
     ops::{EventMask, NodeId},
     style::{
         Color, DecorationStyle, EllipsizeMode, FontFamily, FontVariant, TextAlign, TextDecoration,
@@ -701,6 +702,42 @@ pub trait TextEngine {
         Vec::new()
     }
 
+    /// The caret position nearest `point` (content box, y down) in a final
+    /// layout: on the line at that height (the first line above the text,
+    /// the last below it), at the character edge nearest its x. A point
+    /// past the end of a wrapped line gives the line's end with
+    /// [`Affinity::Upstream`], so the caret stays on that line.
+    ///
+    /// The default estimates it from [`TextEngine::lines`], each line's
+    /// characters spread evenly over its width; engines that know where
+    /// their glyphs are override it.
+    fn hit_test(&self, layout: &TextLayout, point: Point<Points>) -> TextPosition {
+        estimate::hit_test(&self.lines(layout), point)
+    }
+
+    /// The caret at `position` in a final layout: a box of no width as high
+    /// as its line (content box, y down), at the edge of the characters
+    /// `position` stands between; `None` when the layout has no lines.
+    ///
+    /// The default estimates it from [`TextEngine::lines`], as
+    /// [`TextEngine::hit_test`] does.
+    fn caret_rect(&self, layout: &TextLayout, position: TextPosition) -> Option<Bounds<Points>> {
+        estimate::caret_rect(&self.lines(layout), position)
+    }
+
+    /// Appends to `out` the boxes (content box, y down) that cover the
+    /// characters of `range` (UTF-16 offsets), line high: per line, one box
+    /// per stretch of adjacent characters (several where bidirectional text
+    /// splits the range), and through the line's end where the range goes
+    /// on past it. `out` is the caller's, so a selection drawn every frame
+    /// reuses one buffer.
+    ///
+    /// The default estimates them from [`TextEngine::lines`], as
+    /// [`TextEngine::hit_test`] does.
+    fn range_rects(&self, layout: &TextLayout, range: Range<u32>, out: &mut Vec<Bounds<Points>>) {
+        estimate::range_rects(&self.lines(layout), range, out);
+    }
+
     /// Makes the font in `data` (TrueType / OpenType) available by its
     /// family name. Fonts are registered before the text using them is
     /// measured.
@@ -747,6 +784,18 @@ impl<T: TextEngine> TextEngine for std::rc::Rc<T> {
         (**self).attachments(layout)
     }
 
+    fn hit_test(&self, layout: &TextLayout, point: Point<Points>) -> TextPosition {
+        (**self).hit_test(layout, point)
+    }
+
+    fn caret_rect(&self, layout: &TextLayout, position: TextPosition) -> Option<Bounds<Points>> {
+        (**self).caret_rect(layout, position)
+    }
+
+    fn range_rects(&self, layout: &TextLayout, range: Range<u32>, out: &mut Vec<Bounds<Points>>) {
+        (**self).range_rects(layout, range, out);
+    }
+
     fn register_font(&self, data: &[u8]) -> Result<(), String> {
         (**self).register_font(data)
     }
@@ -780,6 +829,133 @@ pub struct TextLine {
     pub x_height: Points,
 }
 
+/// Which side a caret offset is on where one offset is two places on
+/// screen: the end of a wrapped line and the start of the next.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum Affinity {
+    /// With the character before the offset: at the end of the earlier
+    /// line.
+    Upstream,
+    /// With the character after the offset: at the start of the later
+    /// line.
+    #[default]
+    Downstream,
+}
+
+/// A caret position in a text: a UTF-16 offset and the side it is on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[non_exhaustive]
+pub struct TextPosition {
+    /// The offset (UTF-16 units).
+    pub offset: u32,
+    /// Which line it is on where it ends one and starts the next.
+    pub affinity: Affinity,
+}
+
+impl TextPosition {
+    /// The position at `offset` on the side `affinity` says.
+    pub const fn new(offset: u32, affinity: Affinity) -> Self {
+        Self { offset, affinity }
+    }
+
+    /// The index of the line of `lines` (a final layout's, in order) the
+    /// caret at this position is on: the line holding the offset, the
+    /// earlier of two for [`Affinity::Upstream`] at a line's end; past every
+    /// line (the text's end, an empty last line), the last line starting at
+    /// or before it. `None` when there are no lines.
+    pub fn line(self, lines: &[TextLine]) -> Option<usize> {
+        self.line_in(lines.iter().map(|l| l.start..l.end))
+    }
+
+    /// [`TextPosition::line`] over the UTF-16 ranges of the lines, for
+    /// engines that keep their lines in a type of their own.
+    pub fn line_in<I>(self, ranges: I) -> Option<usize>
+    where
+        I: IntoIterator<Item = Range<u32>>,
+        I::IntoIter: Clone,
+    {
+        let ranges = ranges.into_iter();
+        let o = self.offset;
+        let holds = |r: &Range<u32>| match self.affinity {
+            Affinity::Upstream => r.start < o && o <= r.end,
+            Affinity::Downstream => r.start <= o && o < r.end,
+        };
+        ranges
+            .clone()
+            .position(|r| holds(&r))
+            .or_else(|| {
+                let starts = ranges.clone().enumerate();
+                starts.filter(|(_, r)| r.start <= o).last().map(|(i, _)| i)
+            })
+            .or_else(|| ranges.clone().next().map(|_| 0))
+    }
+}
+
+/// The hit testing of engines that only report their lines: each line's
+/// characters spread evenly over its width, left to right.
+mod estimate {
+    use super::*;
+
+    /// The line a point at height `y` lands on: the one at that height, the
+    /// first above the text, the last below it.
+    pub(super) fn line_at(lines: &[TextLine], y: Points) -> Option<&TextLine> {
+        lines.iter().find(|l| y < l.y + l.height).or(lines.last())
+    }
+
+    /// The x of offset `o` (clamped to the line).
+    fn x_of(l: &TextLine, o: u32) -> Points {
+        let count = l.end.saturating_sub(l.start);
+        if count == 0 {
+            return l.x;
+        }
+        let done = o.clamp(l.start, l.end) - l.start;
+        l.x + l.width * (done as f32 / count as f32)
+    }
+
+    pub(super) fn hit_test(lines: &[TextLine], p: Point<Points>) -> TextPosition {
+        let Some(l) = line_at(lines, p.y) else {
+            return TextPosition::default();
+        };
+        let count = l.end.saturating_sub(l.start);
+        let fraction = if l.width > Points::ZERO {
+            ((p.x - l.x) / l.width).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        // At most `count`: the cast cannot truncate.
+        let offset = l.start + (fraction * count as f32).round() as u32;
+        let affinity = if offset == l.end && count > 0 {
+            Affinity::Upstream
+        } else {
+            Affinity::Downstream
+        };
+        TextPosition::new(offset, affinity)
+    }
+
+    pub(super) fn caret_rect(lines: &[TextLine], position: TextPosition) -> Option<Bounds<Points>> {
+        let l = lines.get(position.line(lines)?)?;
+        Some(Bounds::new(
+            point(x_of(l, position.offset), l.y),
+            size(Points::ZERO, l.height),
+        ))
+    }
+
+    pub(super) fn range_rects(lines: &[TextLine], r: Range<u32>, out: &mut Vec<Bounds<Points>>) {
+        if r.start >= r.end {
+            return;
+        }
+        for l in lines.iter().filter(|l| l.start < r.end && r.start < l.end) {
+            let x1 = x_of(l, r.start);
+            let x2 = if r.end > l.end {
+                l.x + l.width
+            } else {
+                x_of(l, r.end)
+            };
+            out.push(Bounds::new(point(x1, l.y), size(x2 - x1, l.height)));
+        }
+    }
+}
+
 /// A deterministic, platform-free [`TextEngine`] for headless runs and
 /// tests: every character is `0.55 × font size` wide and lines are
 /// `1.2 × font size` tall, their baseline at the bottom (the font's ascent
@@ -789,8 +965,9 @@ pub struct TextLine {
 pub struct ApproxTextEngine;
 
 impl TextEngine for ApproxTextEngine {
-    /// `(character count, font size, max lines, attachments)`.
-    type Prepared = (usize, Points, u32, Vec<TextAttachment>);
+    /// `(character count, font size, max lines, attachments, the indices of
+    /// the characters two UTF-16 units long)`.
+    type Prepared = (usize, Points, u32, Vec<TextAttachment>, Vec<u32>);
 
     fn prepare(&self, text: &AttributedText) -> Self::Prepared {
         self.prepare_aligned(text, &AttachmentAlignments::default())
@@ -802,6 +979,14 @@ impl TextEngine for ApproxTextEngine {
         alignments: &AttachmentAlignments,
     ) -> Self::Prepared {
         let size = text.spans.first().map_or(px(14.0), |s| s.style.font_size);
+        // Empty (no allocation) for text in the Basic Multilingual Plane.
+        let astral = text
+            .text
+            .chars()
+            .enumerate()
+            .filter(|(_, c)| c.len_utf16() == 2)
+            .filter_map(|(i, _)| u32::try_from(i).ok())
+            .collect();
         (
             text.text.chars().count(),
             size,
@@ -816,12 +1001,13 @@ impl TextEngine for ApproxTextEngine {
                     }
                 })
                 .collect(),
+            astral,
         )
     }
 
     fn measure(
         &self,
-        &(chars, font, max_lines, _): &Self::Prepared,
+        &(chars, font, max_lines, ..): &Self::Prepared,
         max_width: Option<Points>,
     ) -> Size<Points> {
         // The order of the products is kept: it decides the last bit.
@@ -839,9 +1025,10 @@ impl TextEngine for ApproxTextEngine {
 
     fn layout(&self, prepared: &Self::Prepared, size: Size<Points>) -> TextLayout {
         // On one line, each character as wide as the others.
-        let (_, font, _, attachments) = prepared;
+        let (chars, font, _, attachments, astral) = prepared;
         let line = *font * 1.2;
-        let points: Vec<Option<Point<Points>>> = attachments
+        let advance = *font * 0.55;
+        let attachments = attachments
             .iter()
             .map(|a| {
                 Some(point(
@@ -852,30 +1039,115 @@ impl TextEngine for ApproxTextEngine {
             .collect();
         // Baseline at the bottom of the line: the ascent is the line and
         // the descent is 0, the same extent attachments are placed against.
-        let metrics = TextLine {
+        let units = chars.saturating_add(astral.len());
+        let line = TextLine {
+            end: u32::try_from(units).unwrap_or(u32::MAX),
             width: size.width,
             height: line,
             ascender: line,
             x_height: *font * 0.5,
             ..TextLine::default()
         };
-        TextLayout(Arc::new((size, points, metrics)))
+        TextLayout(Arc::new(ApproxLayout {
+            attachments,
+            line,
+            advance,
+            chars: u32::try_from(*chars).unwrap_or(u32::MAX),
+            astral: astral.clone(),
+        }))
     }
 
     fn lines(&self, layout: &TextLayout) -> Vec<TextLine> {
         layout
-            .downcast::<(Size<Points>, Vec<Option<Point<Points>>>, TextLine)>()
-            .map_or_else(Vec::new, |(_, _, line)| vec![line.clone()])
+            .downcast::<ApproxLayout>()
+            .map_or_else(Vec::new, |l| vec![l.line.clone()])
     }
 
     fn attachments(&self, layout: &TextLayout) -> Vec<Option<Point<Points>>> {
         layout
-            .downcast::<(Size<Points>, Vec<Option<Point<Points>>>, TextLine)>()
-            .map_or_else(Vec::new, |(_, p, _)| p.clone())
+            .downcast::<ApproxLayout>()
+            .map_or_else(Vec::new, |l| l.attachments.clone())
+    }
+
+    fn hit_test(&self, layout: &TextLayout, p: Point<Points>) -> TextPosition {
+        let Some(l) = layout.downcast::<ApproxLayout>() else {
+            return TextPosition::default();
+        };
+        let k = if l.advance > Points::ZERO {
+            // Clamped to `0..=chars` first: the cast cannot truncate.
+            (p.x / l.advance).round().clamp(0.0, l.chars as f32) as u32
+        } else {
+            0
+        };
+        TextPosition::new(l.unit_of(k), Affinity::Downstream)
+    }
+
+    fn caret_rect(&self, layout: &TextLayout, position: TextPosition) -> Option<Bounds<Points>> {
+        let l = layout.downcast::<ApproxLayout>()?;
+        Some(Bounds::new(
+            point(l.x_of(position.offset), l.line.y),
+            size(Points::ZERO, l.line.height),
+        ))
+    }
+
+    fn range_rects(&self, layout: &TextLayout, range: Range<u32>, out: &mut Vec<Bounds<Points>>) {
+        let Some(l) = layout.downcast::<ApproxLayout>() else {
+            return;
+        };
+        if range.start >= range.end || range.start >= l.line.end {
+            return;
+        }
+        let (x1, x2) = (l.x_of(range.start), l.x_of(range.end));
+        out.push(Bounds::new(
+            point(x1, l.line.y),
+            size(x2 - x1, l.line.height),
+        ));
     }
 
     fn register_font(&self, _: &[u8]) -> Result<(), String> {
         Ok(())
+    }
+}
+
+/// [`ApproxTextEngine`]'s final layout: one line.
+struct ApproxLayout {
+    attachments: Vec<Option<Point<Points>>>,
+    line: TextLine,
+    /// The width of every character.
+    advance: Points,
+    chars: u32,
+    /// The indices of the characters two UTF-16 units long, in order.
+    astral: Vec<u32>,
+}
+
+impl ApproxLayout {
+    /// The UTF-16 offset of character `k`.
+    fn unit_of(&self, k: u32) -> u32 {
+        let before = self.astral.partition_point(|&i| i < k);
+        k.saturating_add(u32::try_from(before).unwrap_or(u32::MAX))
+    }
+
+    /// The character at UTF-16 offset `o`: the one it starts, or the one
+    /// it is inside (between the two units of a surrogate pair).
+    fn char_at(&self, o: u32) -> u32 {
+        let mut k = o;
+        for (j, &i) in self.astral.iter().enumerate() {
+            let start = i.saturating_add(u32::try_from(j).unwrap_or(u32::MAX));
+            if start >= o {
+                break;
+            }
+            k = if start.saturating_add(1) == o {
+                i
+            } else {
+                k.saturating_sub(1)
+            };
+        }
+        k.min(self.chars)
+    }
+
+    /// The x of the caret at UTF-16 offset `o`.
+    fn x_of(&self, o: u32) -> Points {
+        self.advance * self.char_at(o) as f32
     }
 }
 
@@ -1071,5 +1343,127 @@ mod tests {
         assert_eq!(y(VerticalAlign::TextTop), Some((px(11.0), px(0.0))));
         assert_eq!(y(VerticalAlign::TextBottom), Some((px(11.0), px(6.0))));
         assert_eq!(y(VerticalAlign::Middle), Some((px(11.0), px(6.5))));
+    }
+
+    fn line(start: u32, end: u32, y: f32) -> TextLine {
+        TextLine {
+            start,
+            end,
+            x: px(0.0),
+            y: px(y),
+            width: px((end - start) as f32 * 10.0),
+            height: px(20.0),
+            ..TextLine::default()
+        }
+    }
+
+    #[test]
+    fn caret_positions_take_their_line_by_affinity() {
+        // "abcd" wrapped after its 4th character, then a hard break and an
+        // empty last line.
+        let lines = [line(0, 4, 0.0), line(4, 9, 20.0), line(9, 9, 40.0)];
+        let at = |o, a| TextPosition::new(o, a).line(&lines);
+        assert_eq!(at(4, Affinity::Upstream), Some(0));
+        assert_eq!(at(4, Affinity::Downstream), Some(1));
+        assert_eq!(at(0, Affinity::Upstream), Some(0));
+        assert_eq!(at(9, Affinity::Upstream), Some(1));
+        assert_eq!(at(9, Affinity::Downstream), Some(2));
+        assert_eq!(at(50, Affinity::Downstream), Some(2));
+        assert_eq!(TextPosition::default().line(&[]), None);
+    }
+
+    /// An engine that only reports its lines (the defaults' hit testing).
+    struct LinesOnly(Vec<TextLine>);
+
+    impl TextEngine for LinesOnly {
+        type Prepared = ();
+
+        fn prepare(&self, _: &AttributedText) {}
+
+        fn measure(&self, (): &(), _: Option<Points>) -> Size<Points> {
+            Size::default()
+        }
+
+        fn layout(&self, (): &(), _: Size<Points>) -> TextLayout {
+            TextLayout(Arc::new(()))
+        }
+
+        fn lines(&self, _: &TextLayout) -> Vec<TextLine> {
+            self.0.clone()
+        }
+    }
+
+    #[test]
+    fn line_only_engines_estimate_hits_carets_and_ranges() {
+        let engine = LinesOnly(vec![line(0, 4, 0.0), line(4, 8, 20.0)]);
+        let layout = engine.layout(&(), Size::default());
+        // Past the end of the wrapped first line: its end, on that line.
+        let end = engine.hit_test(&layout, point(px(70.0), px(5.0)));
+        assert_eq!(end, TextPosition::new(4, Affinity::Upstream));
+        assert_eq!(
+            engine.caret_rect(&layout, end),
+            Some(Bounds::new(
+                point(px(40.0), px(0.0)),
+                size(px(0.0), px(20.0))
+            ))
+        );
+        assert_eq!(
+            engine.caret_rect(&layout, TextPosition::new(4, Affinity::Downstream)),
+            Some(Bounds::new(
+                point(px(0.0), px(20.0)),
+                size(px(0.0), px(20.0))
+            ))
+        );
+        // Below the text: the last line, the nearest character edge.
+        let below = engine.hit_test(&layout, point(px(16.0), px(90.0)));
+        assert_eq!(below, TextPosition::new(6, Affinity::Downstream));
+        let mut rects = Vec::new();
+        engine.range_rects(&layout, 2..6, &mut rects);
+        assert_eq!(
+            rects,
+            [
+                Bounds::new(point(px(20.0), px(0.0)), size(px(20.0), px(20.0))),
+                Bounds::new(point(px(0.0), px(20.0)), size(px(20.0), px(20.0))),
+            ]
+        );
+        rects.clear();
+        engine.range_rects(&layout, 3..3, &mut rects);
+        assert!(rects.is_empty());
+    }
+
+    #[test]
+    fn approx_engine_hit_tests_whole_characters() {
+        let engine = ApproxTextEngine;
+        let mut t = AttributedText::default();
+        // Characters 5.5 wide; the emoji is two UTF-16 units (1..3).
+        t.push(
+            "a😀b",
+            ResolvedTextStyle {
+                font_size: px(10.0),
+                ..ResolvedTextStyle::default()
+            },
+        );
+        let layout = engine.layout(&engine.prepare(&t), size(px(100.0), px(12.0)));
+        assert_eq!(engine.lines(&layout)[0].end, 4);
+        let hit = |x| engine.hit_test(&layout, point(px(x), px(6.0))).offset;
+        assert_eq!([hit(-3.0), hit(5.0), hit(11.5), hit(99.0)], [0, 1, 3, 4]);
+        let caret_x = |o| {
+            engine
+                .caret_rect(&layout, TextPosition::new(o, Affinity::Downstream))
+                .map(|b| b.origin.x)
+        };
+        // Inside the surrogate pair: at the emoji's start.
+        assert_eq!(caret_x(2), Some(px(5.5)));
+        assert_eq!(caret_x(3), Some(px(11.0)));
+        assert_eq!(caret_x(9), Some(px(16.5)));
+        let mut rects = Vec::new();
+        engine.range_rects(&layout, 1..3, &mut rects);
+        assert_eq!(
+            rects,
+            [Bounds::new(
+                point(px(5.5), px(0.0)),
+                size(px(5.5), px(12.0))
+            )]
+        );
     }
 }

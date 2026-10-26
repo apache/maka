@@ -17,6 +17,7 @@ import PropsMediaImageVariants from "./props-media-image-variants";
 import PropsMediaSvg from "./props-media-svg";
 import PropsMediaVideo from "./props-media-video";
 import PropsMediaWebview from "./props-media-webview";
+import PropsRefreshIndicator from "./props-refresh-indicator";
 import PropsScrollBehavior from "./props-scroll-behavior";
 import PropsScrollZoom from "./props-scroll-zoom";
 import PropsTextLines from "./props-text-lines";
@@ -39,6 +40,7 @@ const cases: Record<string, () => JSX.Element> = {
   "props-media-svg": PropsMediaSvg,
   "props-media-video": PropsMediaVideo,
   "props-media-webview": PropsMediaWebview,
+  "props-refresh-indicator": PropsRefreshIndicator,
   "props-scroll-behavior": PropsScrollBehavior,
   "props-scroll-zoom": PropsScrollZoom,
   "props-text-lines": PropsTextLines,

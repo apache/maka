@@ -145,7 +145,11 @@ impl SetDescription {
                 add(m.name, ExportKind::Module);
             }
         }
-        for class in registry.class_specs() {
+        for class in registry
+            .class_specs()
+            .into_iter()
+            .filter(|c| !c.def.interface)
+        {
             add(class.name, ExportKind::Class);
         }
         for value in registry.value_specs() {
@@ -376,6 +380,51 @@ fn strings(object: &Map<String, Value>, key: &str, at: &str) -> Result<Vec<Strin
 mod tests {
     use super::*;
     use crate::ui::prelude::*;
+
+    #[class(interface)]
+    struct Capability;
+
+    #[class]
+    impl Capability {
+        pub(crate) fn is_live(&self) -> bool {
+            true
+        }
+    }
+
+    #[class]
+    struct ClassValue;
+
+    #[class]
+    impl ClassValue {
+        pub(crate) fn value(&self) -> u32 {
+            1
+        }
+    }
+
+    #[test]
+    fn interface_classes_keep_their_types_without_a_runtime_value_export() {
+        let mut registry = Registry::ui_set("test/class-description");
+        registry.class::<Capability>().class::<ClassValue>();
+        let described = SetDescription::of(&registry).unwrap();
+        assert_eq!(
+            described.exports_of(ExportKind::Class).collect::<Vec<_>>(),
+            ["ClassValue"]
+        );
+        assert!(
+            described
+                .declarations
+                .contains("export interface Capability")
+        );
+        assert!(described.declarations.contains("isLive(): boolean;"));
+        assert!(
+            described
+                .declarations
+                .contains("export declare class ClassValue")
+        );
+        assert!(described.declarations.contains("value(): number;"));
+        let round_trip = Description::from_json(&Description::of(&[registry]).to_json()).unwrap();
+        assert_eq!(round_trip.sets[0], described);
+    }
 
     /// A component of the test set.
     #[component]

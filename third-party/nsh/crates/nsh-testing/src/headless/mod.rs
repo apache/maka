@@ -210,6 +210,10 @@ enum Pumped {
     Exited,
 }
 
+/// How soon a press follows the last on the same view to count as its next
+/// click: the platforms' default double-click time.
+const CLICK_INTERVAL: Duration = Duration::from_millis(500);
+
 /// An app on a headless engine ([`start`]) and what it shows ([`Screen`]),
 /// driven by steps: press views, type into inputs, scroll, go back, wait
 /// for what it shows.
@@ -264,6 +268,9 @@ pub struct Headless {
     /// The embedding app's channel with the app (`EngineConfig::host`),
     /// which the test plays.
     host: nsh_engine::HostChannel,
+    /// The last press: its view and when, for counting a double press as
+    /// the platforms do ([`CLICK_INTERVAL`]).
+    last_press: Option<(NodeId, nsh_core::time::Instant, u32)>,
     /// Where the app's `nsh/host` calls go (the web page's host).
     #[cfg(feature = "js")]
     host_calls: Option<HostCalls>,
@@ -302,6 +309,7 @@ impl Headless {
             clock,
             wanted,
             host,
+            last_press: None,
             #[cfg(feature = "js")]
             host_calls: None,
         })
@@ -574,13 +582,26 @@ impl Headless {
     }
 
     fn apply(&mut self, batch: &MountBatch) {
-        let focused = self.screen.focused();
+        let focused = self
+            .screen
+            .focused()
+            .or(self.screen.key_focus())
+            .filter(|old| {
+                !batch
+                    .items
+                    .iter()
+                    .any(|item| matches!(item, MountItem::Delete { id } if id == old))
+            });
         self.screen.apply(batch);
         // The app moved the focus (`focus()`, `blur()`): platforms tell the
         // views as when the user moves it.
-        let now = self.screen.focused();
+        let now = self.screen.focused().or(self.screen.key_focus());
         if now != focused {
+            self.engine
+                .control()
+                .set_focus_path(self.screen.focus_path());
             if let Some(old) = focused {
+                self.set_focused_state(old, false);
                 self.send(old, EventKind::Blur, EventPayload::None);
             }
             if let Some(new) = now {
@@ -808,8 +829,8 @@ impl Headless {
 
     /// The step `idle`: applies batches until none comes for `quiet`, or
     /// for 10 s at most (false then). Long enough, it lets the engine's
-    /// idle collection run (every second at most), so what the app keeps
-    /// alive shows.
+    /// idle collection run (every second at most, after 0.3 s without
+    /// work), so what the app keeps alive shows.
     pub fn idle(&mut self, quiet: Duration) -> Result<bool, String> {
         self.step("idle");
         let quiet = self.quiet(quiet, MAX_IDLE);
@@ -1162,12 +1183,27 @@ impl Headless {
     }
 
     /// A press at `at` in `view` (else the view's center), in that view
-    /// and in the root, as one click with no modifier keys. `None` when the
-    /// view has no bounds.
-    fn press_payload(&self, view: NodeId, at: Option<Point<Points>>) -> EventPayload {
+    /// and in the root, with no modifier keys. Presses on one view within
+    /// [`CLICK_INTERVAL`] of each other count up (`clicks` 2 is a double
+    /// press), as the platforms count them. `None` when the view has no
+    /// bounds.
+    fn press_payload(&mut self, view: NodeId, at: Option<Point<Points>>) -> EventPayload {
+        // A pointer's press takes the keyboard focus off the pressable Tab
+        // gave it to.
+        if self.screen.key_focus().is_some_and(|id| id != view) {
+            self.move_focus(None);
+        }
         let Some(bounds) = self.screen.bounds_in_root(view) else {
             return EventPayload::None;
         };
+        let now = self.clock.now();
+        let clicks = match self.last_press {
+            Some((last, at, clicks)) if last == view && now.duration_since(at) < CLICK_INTERVAL => {
+                clicks + 1
+            }
+            _ => 1,
+        };
+        self.last_press = Some((view, now, clicks));
         let position = at.unwrap_or_else(|| {
             point(
                 Points(bounds.size.width.0 / 2.0),
@@ -1181,7 +1217,7 @@ impl Headless {
                 Points(bounds.origin.y.0 + position.y.0),
             ),
             modifiers: nsh_core::keymap::Modifiers::default(),
-            clicks: 1,
+            clicks,
         })
     }
 
@@ -1326,17 +1362,7 @@ impl Headless {
         if self.screen.input(id).is_some_and(|i| !i.config.editable) {
             return Err(format!("the input `{selector}` is not editable"));
         }
-        if self.screen.focused() != Some(id) {
-            let previous = self.screen.focused();
-            self.screen.set_focused(Some(id));
-            self.engine
-                .control()
-                .set_focus_path(self.screen.focus_path());
-            if let Some(old) = previous {
-                self.send(old, EventKind::Blur, EventPayload::None);
-            }
-            self.send(id, EventKind::Focus, EventPayload::None);
-        }
+        self.move_focus(Some(id));
         Ok(id)
     }
 
@@ -1829,6 +1855,104 @@ mod tests {
         let mut app = Headless::start(EngineConfig::new(Root::of::<Metrics>())).unwrap();
         app.first_render().unwrap();
         app.wait_for("33 24 0 24").unwrap();
+    }
+
+    #[component]
+    fn FocusTransfer() -> impl IntoElement {
+        let blurs = signal(0_u32);
+        let presses = signal(0_u32);
+        view()
+            .child(
+                view()
+                    .test_id("button")
+                    .w(px(100.0))
+                    .h(px(30.0))
+                    .on_press(move || presses.update(|n| *n += 1))
+                    .on_blur(move || blurs.update(|n| *n += 1)),
+            )
+            .child(input().test_id("field"))
+            .child(text(move || {
+                format!("Blurs {} Presses {}", blurs.get(), presses.get())
+            }))
+    }
+
+    #[test]
+    fn input_steps_transfer_pressable_focus_without_reviving_it_after_submit() {
+        let mut config = EngineConfig::new(Root::of::<FocusTransfer>());
+        config.environment.os = nsh_core::platform::Os::MacOs;
+        config.environment.idiom = nsh_core::platform::Idiom::Desktop;
+        let mut app = Headless::start(config).unwrap();
+        app.first_render().unwrap();
+        app.press_key("tab").unwrap();
+        assert!(app.screen.key_focus().is_some());
+        app.type_text("id:field", "Ada").unwrap();
+        app.wait_for("Blurs 1 Presses 0").unwrap();
+        app.submit("id:field").unwrap();
+        app.press_key("enter").unwrap();
+        app.press_key("space").unwrap();
+        assert!(app.shows("Blurs 1 Presses 0"));
+        assert_eq!(app.screen.key_focus(), None);
+    }
+
+    #[test]
+    fn input_focus_commands_release_pressable_focus_before_blur() {
+        let mut config = EngineConfig::new(Root::of::<FocusTransfer>());
+        config.environment.os = nsh_core::platform::Os::MacOs;
+        config.environment.idiom = nsh_core::platform::Idiom::Desktop;
+        let mut app = Headless::start(config).unwrap();
+        app.first_render().unwrap();
+        app.press_key("tab").unwrap();
+        let field = app.screen.resolve(&Selector::parse("id:field").unwrap())[0];
+        app.apply(&MountBatch {
+            items: vec![MountItem::Command {
+                id: field,
+                command: Command::Focus,
+            }],
+            ..Default::default()
+        });
+        app.done().unwrap();
+        app.wait_for("Blurs 1 Presses 0").unwrap();
+        app.apply(&MountBatch {
+            items: vec![MountItem::Command {
+                id: field,
+                command: Command::Blur,
+            }],
+            ..Default::default()
+        });
+        app.done().unwrap();
+        app.press_key("enter").unwrap();
+        assert!(app.shows("Blurs 1 Presses 0"));
+        assert_eq!(app.screen.key_focus(), None);
+    }
+
+    #[test]
+    fn replacing_a_focused_id_does_not_send_the_old_blur_to_its_replacement() {
+        let mut config = EngineConfig::new(Root::of::<FocusTransfer>());
+        config.environment.os = nsh_core::platform::Os::MacOs;
+        let mut app = Headless::start(config).unwrap();
+        app.first_render().unwrap();
+        app.press_key("tab").unwrap();
+        let old = app.screen.key_focus().unwrap();
+        let mut events = nsh_core::EventMask::default();
+        events.set(EventKind::Blur, true);
+        app.apply(&MountBatch {
+            items: vec![
+                MountItem::Delete { id: old },
+                MountItem::Create {
+                    id: old,
+                    kind: nsh_core::ViewKind::View,
+                },
+                MountItem::Insert {
+                    parent: ROOT_ID,
+                    child: old,
+                    before: None,
+                },
+                MountItem::Events { id: old, events },
+            ],
+        });
+        app.done().unwrap();
+        assert!(app.shows("Blurs 0 Presses 0"));
+        assert_eq!(app.screen.key_focus(), None);
     }
 
     /// A name field that says hello and keeps what was sent.
@@ -2351,6 +2475,34 @@ mount(() => {
         app.press("Reopen older modal").unwrap();
         app.press("text:Choose >> nth=0").unwrap();
         app.wait_for("picked newer,newer,older").unwrap();
+    }
+
+    /// A list with a refresh indicator of its own, 100 tall.
+    #[component]
+    fn FarPull() -> impl IntoElement {
+        let refreshes = signal(0_u32);
+        view()
+            .flex_1()
+            .child(text(move || format!("Refreshes {}", refreshes.get())))
+            .child(
+                scroll()
+                    .test_id("list")
+                    .flex_1()
+                    .refresh_indicator(Some(px(100.0)))
+                    .on_refresh(move |_: &()| refreshes.update(|r| *r += 1))
+                    .children((0..30).map(|i| view().h(px(50.0)).child(text(format!("Row {i}"))))),
+            )
+    }
+
+    #[test]
+    fn a_pull_refreshes_at_its_threshold() {
+        let mut app = Headless::start(EngineConfig::new(Root::of::<FarPull>())).unwrap();
+        app.first_render().unwrap();
+        // 150 points of finger rubber-band to less than 100 (past 64).
+        app.drag("Row 2", point(px(0.0), px(150.0))).unwrap();
+        assert!(app.shows("Refreshes 0"));
+        app.drag("Row 2", point(px(0.0), px(1000.0))).unwrap();
+        app.wait_for("Refreshes 1").unwrap();
     }
 
     /// A shortcut counting its presses, and a field.

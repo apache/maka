@@ -218,15 +218,25 @@ async fn copies(
             if rows.is_empty() {
                 break;
             }
-            for (sequence, archive) in rows {
-                sqlx::query("INSERT INTO session_history_members VALUES(?,?,?)")
-                    .bind(&session)
-                    .bind(sequence)
-                    .bind(archive)
-                    .execute(&mut *destination)
-                    .await?;
-                member = sequence;
-            }
+            let owner = session.clone();
+            member = crate::connection::worker_query(destination, move |worker| {
+                Box::pin(async move {
+                    let mut last = member;
+                    for (sequence, archive) in rows {
+                        sqlx::query("INSERT INTO session_history_members VALUES(?,?,?)")
+                            .bind(&owner)
+                            .bind(sequence)
+                            .bind(archive)
+                            .execute(&mut *worker)
+                            .await?;
+                        crate::context::semantic::copy_member(worker, &owner, sequence, archive)
+                            .await?;
+                        last = sequence;
+                    }
+                    Ok(last)
+                })
+            })
+            .await?;
         }
         let mut member = 0i64;
         loop {

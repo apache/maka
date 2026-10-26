@@ -42,7 +42,7 @@ use tokio_util::sync::CancellationToken;
 pub struct Repl {
     sender: mpsc::Sender<Evaluation>,
     stopped: CancellationToken,
-    worker: tokio::task::JoinHandle<Result<(), CellAbort>>,
+    worker: oneshot::Receiver<Result<(), CellAbort>>,
 }
 
 /// A trusted Host admission fence for the native effects caused by one VM.
@@ -87,24 +87,30 @@ extern "C" fn retain_evaluation_promise(
 
 impl Repl {
     pub fn is_closed(&self) -> bool {
-        self.stopped.is_cancelled() || self.worker.is_finished()
+        self.stopped.is_cancelled() || self.sender.is_closed()
     }
 
     /// `bootstrap` is trusted facade source, evaluated once. It can capture the
     /// two bridge functions `call(name, input)` and `emit(CellOutput)`; these
     /// are not globals and contain no persistent invocation authority.
-    pub fn new(bootstrap: impl Into<String>, limits: CellLimits) -> Self {
+    ///
+    /// # Errors
+    /// Returns an error if the dedicated worker thread cannot be started.
+    pub fn new(bootstrap: impl Into<String>, limits: CellLimits) -> Result<Self, CellAbort> {
         Self::spawn(bootstrap.into(), limits, None)
     }
 
     /// Return an interrupted VM's result after the Host confirms admission
     /// custody. The Host must retain this REPL and join `close()` to observe
     /// actual effect settlement and any late persistence or cleanup failure.
+    ///
+    /// # Errors
+    /// Returns an error if the dedicated worker thread cannot be started.
     pub fn new_observed(
         bootstrap: impl Into<String>,
         limits: CellLimits,
         admission: Arc<dyn ReplAdmission>,
-    ) -> Self {
+    ) -> Result<Self, CellAbort> {
         Self::spawn(bootstrap.into(), limits, Some(admission))
     }
 
@@ -112,24 +118,33 @@ impl Repl {
         bootstrap: String,
         limits: CellLimits,
         admission: Option<Arc<dyn ReplAdmission>>,
-    ) -> Self {
+    ) -> Result<Self, CellAbort> {
         crate::initialize_platform();
         let (sender, receiver) = mpsc::channel(1);
         let stopped = CancellationToken::new();
         let stop = stopped.clone();
         let host = Handle::current();
-        let worker = tokio::task::spawn_blocking(move || {
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .map_err(|e| CellAbort::Internal(e.to_string()))?
-                .block_on(serve(bootstrap, limits, receiver, stop, host, admission))
-        });
-        Self {
+        let (finished, worker) = oneshot::channel();
+        // Persistent isolates must not occupy the pool used by their Host tools.
+        std::thread::Builder::new()
+            .name("maka-repl-js".into())
+            .spawn(move || {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .map_err(|e| CellAbort::Internal(e.to_string()))?
+                        .block_on(serve(bootstrap, limits, receiver, stop, host, admission))
+                }))
+                .unwrap_or_else(|_| Err(CellAbort::Internal("REPL worker panicked".into())));
+                let _ = finished.send(result);
+            })
+            .map_err(|error| CellAbort::Internal(format!("cannot start REPL worker: {error}")))?;
+        Ok(Self {
             sender,
             stopped,
             worker,
-        }
+        })
     }
 
     pub async fn evaluate(

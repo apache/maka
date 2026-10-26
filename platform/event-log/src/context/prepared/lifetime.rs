@@ -232,15 +232,17 @@ impl PreparedCache {
             .execute(&mut *connection)
             .await?;
             sqlx::raw_sql(include_str!("schema.sql"))
-                .execute(connection)
+                .execute(&mut *connection)
                 .await?;
         } else {
             sqlx::raw_sql(
                 "PRAGMA prepared_cache.cache_size=-1024; PRAGMA prepared_cache.mmap_size=0;",
             )
-            .execute(connection)
+            .execute(&mut *connection)
             .await?;
         }
+        use sqlx::Connection;
+        connection.clear_cached_statements().await?;
         Ok(())
     }
 }

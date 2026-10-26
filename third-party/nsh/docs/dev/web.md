@@ -563,7 +563,9 @@ backends); zoom changes go to `nsh_zoom` (`EngineControl::zoom`) before the offs
 
 - **Pull to refresh** (vertical views with `onRefresh` or `refreshing`): past the top, a drag moves the content down
   at half speed over an 8-spoke spinner; released past 64 points it fires `onRefresh` and keeps 56 points for the
-  turning spinner until `refreshing` turns false (the Linux and macOS backends' numbers). Only touches pull (mouse
+  turning spinner until `refreshing` turns false (the Linux and macOS backends' numbers). With the app's own indicator
+  (`refreshIndicator`) there is no spinner, and its height is where a pull refreshes and the room kept. Each change of
+  the pull goes to `nsh_pull` (`pullValue`). Only touches pull (mouse
   drags never scroll), through non-passive touch events on the view, since the browser scrolls touches itself: a move past the top is prevented while it can be, and a gesture the browser
   already scrolls stays the browser's.
 - **Zooming**: a zoomable view is `touch-action: none` and pans touches (both axes, with a glide; the mouse does not

@@ -188,6 +188,13 @@ enum OpenPurpose {
 }
 
 impl EventLog {
+    /// Observe original SQLite actors, including their attached database caches.
+    pub async fn sqlite_resource_stats(
+        &self,
+    ) -> Result<connection::ConnectionResourceStats, StoreError> {
+        self.connection.resource_stats().await
+    }
+
     /// Root/SessionStore-only ingress carrying an already acquired SQL pin.
     /// All journals, notices and actual workers remain the original owner's.
     fn scoped(&self, custody: connection::custody::Custody) -> Self {
@@ -333,7 +340,8 @@ impl EventLog {
         let options = match purpose {
             OpenPurpose::Execution | OpenPurpose::RootControl => SqliteConnectOptions::new()
                 .filename(&path)
-                .create_if_missing(true),
+                .create_if_missing(true)
+                .query_planner_stability(true),
             OpenPurpose::ApplicationInspection => application_inspection::options(&path)?,
         };
         let cache = if purpose == OpenPurpose::Execution {

@@ -22,7 +22,7 @@ use crate::{CONTROL_KIND, CONTROL_METHODS, Result, SETTINGS_KIND, SETTINGS_METHO
 use maka_plugin_core::{
     composition::InstanceId,
     deployment::DeploymentRef,
-    operation::{OperationCleanup, OperationOutcome, Receipt, RecoveryRef},
+    operation::{OperationOutcome, Receipt, RecoveryRef},
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -66,10 +66,12 @@ pub struct Operation {
 
 /// Opened by the trusted launcher in the client's own data directory, never from guest input.
 #[derive(Clone)]
-pub struct Journal(
-    pub(crate) SqlitePool,
-    #[cfg(test)] pub(crate) std::sync::Arc<tokio::sync::Notify>,
-);
+pub struct Journal {
+    pub(crate) pool: SqlitePool,
+    writes: tokio::sync::mpsc::Sender<write::Pending>,
+    #[cfg(test)]
+    pub(crate) preparing: std::sync::Arc<tokio::sync::Notify>,
+}
 
 /// Stable product owner, independent of endpoint aliases, VM instances and UI nodes.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -175,7 +177,105 @@ pub struct DraftReference {
     pub revision: u64,
 }
 
+mod recovery;
+mod write;
+
 impl Journal {
+    async fn write(&self, command: write::Command) -> Result<write::Output> {
+        let (reply, received) = tokio::sync::oneshot::channel();
+        self.writes
+            .send(write::Pending { command, reply })
+            .await
+            .map_err(|_| "client journal writer stopped".to_owned())?;
+        received
+            .await
+            .map_err(|_| "client journal writer stopped before replying".to_owned())?
+    }
+    pub(crate) async fn save_draft(
+        &self,
+        key: &DraftKey,
+        expected: Option<u64>,
+        edit: DraftEdit,
+    ) -> Result<Draft> {
+        let write::Output::Draft(draft) = self
+            .write(write::Command::SaveDraft {
+                key: key.clone(),
+                expected,
+                edit,
+            })
+            .await?
+        else {
+            unreachable!("draft command returns a draft")
+        };
+        Ok(draft)
+    }
+    pub(crate) async fn reserve(&self, operation: &Operation) -> Result<()> {
+        self.write(write::Command::Reserve(write::Reservation::new(operation)?))
+            .await
+            .map(|_| ())
+    }
+    pub(crate) async fn reserve_settings(&self, operation: &Operation) -> Result<()> {
+        self.write(write::Command::ReserveSettings(write::Reservation::new(
+            operation,
+        )?))
+        .await
+        .map(|_| ())
+    }
+    pub(crate) async fn prepared(&self, id: Uuid, reference: &RecoveryRef) -> Result<()> {
+        #[cfg(test)]
+        self.preparing.notify_one();
+        self.write(write::Command::Prepared {
+            id,
+            reference: reference.clone(),
+        })
+        .await
+        .map(|_| ())
+    }
+    pub(crate) async fn abandon(&self, host: &DeploymentRef, id: Uuid) -> Result<Operation> {
+        let write::Output::Operation(operation) = self
+            .write(write::Command::Abandon {
+                host: host.clone(),
+                id,
+            })
+            .await?
+        else {
+            unreachable!("abandon command returns an operation")
+        };
+        Ok(*operation)
+    }
+    pub(crate) async fn abandon_undispatched(
+        &self,
+        host: &DeploymentRef,
+        id: Uuid,
+        reference: &RecoveryRef,
+    ) -> Result<()> {
+        self.write(write::Command::AbandonUndispatched {
+            host: host.clone(),
+            id,
+            reference: reference.clone(),
+        })
+        .await
+        .map(|_| ())
+    }
+    pub(crate) async fn observe(&self, operation: &Operation, receipt: &Receipt) -> Result<()> {
+        if !matches!(
+            receipt,
+            Receipt::Recorded {
+                outcome: OperationOutcome::Returned { .. },
+                ..
+            }
+        ) {
+            return Ok(());
+        }
+        self.write(write::Command::Observe {
+            id: operation.id,
+            draft: operation.draft.clone(),
+            receipt: receipt.clone(),
+        })
+        .await
+        .map(|_| ())
+    }
+
     pub async fn open(path: &Path) -> Result<Self> {
         Self::open_inner(
             path,
@@ -192,6 +292,8 @@ impl Journal {
         let options = SqliteConnectOptions::new()
             .filename(path)
             .create_if_missing(true)
+            .command_buffer_size(write::COMMAND_BUFFER_SIZE)
+            .query_planner_stability(true)
             .synchronous(SqliteSynchronous::Full);
         let pool_options = SqlitePoolOptions::new().max_connections(1);
         // WAL admission shares the pool's existing startup budget. In-flight
@@ -241,6 +343,10 @@ impl Journal {
                 .execute(&mut *transaction).await.map_err(|error| format!("client journal creating operations table: {error}"))?;
             sqlx::query("CREATE INDEX IF NOT EXISTS operations_pending ON operations(domain,deployment,draft_owner) WHERE receipt IS NULL AND abandoned=0")
                 .execute(&mut *transaction).await.map_err(|error| format!("client journal creating pending operations index: {error}"))?;
+            for index in recovery::INDEXES {
+                sqlx::query(index).execute(&mut *transaction).await
+                    .map_err(|error| format!("client journal creating recovery index: {error}"))?;
+            }
             sqlx::query("CREATE TABLE IF NOT EXISTS drafts (owner TEXT PRIMARY KEY, revision INTEGER NOT NULL, text TEXT NOT NULL, consumed INTEGER NOT NULL DEFAULT 0, attachments TEXT NOT NULL DEFAULT '[]')")
                 .execute(&mut *transaction).await.map_err(|error| format!("client journal creating drafts table: {error}"))?;
             transaction
@@ -258,16 +364,18 @@ impl Journal {
             });
         }
         drop(connection);
-        Ok(Self(
+        let writes = write::start(pool.clone());
+        Ok(Self {
             pool,
+            writes,
             #[cfg(test)]
-            std::sync::Arc::new(tokio::sync::Notify::new()),
-        ))
+            preparing: std::sync::Arc::new(tokio::sync::Notify::new()),
+        })
     }
     pub(crate) async fn load_draft(&self, key: &DraftKey) -> Result<Option<Draft>> {
         let row = sqlx::query("SELECT revision,CASE WHEN consumed=1 THEN '' ELSE text END AS text,CASE WHEN consumed=1 THEN '[]' ELSE attachments END AS attachments FROM drafts WHERE owner=?")
             .bind(serde_json::to_string(key).map_err(error)?)
-            .fetch_optional(&self.0)
+            .fetch_optional(&self.pool)
             .await
             .map_err(error)?;
         row.map(|row| {
@@ -280,154 +388,7 @@ impl Journal {
         })
         .transpose()
     }
-    pub(crate) async fn save_draft(
-        &self,
-        key: &DraftKey,
-        expected: Option<u64>,
-        edit: DraftEdit,
-    ) -> Result<Draft> {
-        if expected.is_some_and(|revision| revision == 0 || revision >= 9_007_199_254_740_991) {
-            return Err("invalid draft revision".into());
-        }
-        let attachments = serde_json::to_string(&edit.attachments).map_err(error)?;
-        if edit
-            .attachments
-            .iter()
-            .any(|attachment| attachment.id.is_empty() || attachment.name.is_empty())
-            || edit
-                .attachments
-                .iter()
-                .enumerate()
-                .any(|(index, attachment)| {
-                    edit.attachments[..index]
-                        .iter()
-                        .any(|other| other.id == attachment.id)
-                })
-        {
-            return Err("invalid draft attachments".into());
-        }
-        let encoded_key = serde_json::to_string(key).map_err(error)?;
-        let mut connection = self.0.acquire().await.map_err(error)?;
-        let mut transaction = sqlx::Connection::begin_with(&mut *connection, "BEGIN IMMEDIATE")
-            .await
-            .map_err(error)?;
-        // A save queued before a send receipt may still follow its consumption
-        // at this same revision, as text edits already can. Keep its verified
-        // metadata available for that CAS; consumed load still returns [].
-        let previous: Option<String> =
-            sqlx::query_scalar("SELECT attachments FROM drafts WHERE owner=?")
-                .bind(&encoded_key)
-                .fetch_optional(&mut *transaction)
-                .await
-                .map_err(error)?;
-        let mut admitted: Vec<DraftAttachment> = previous
-            .as_deref()
-            .map(serde_json::from_str)
-            .transpose()
-            .map_err(error)?
-            .unwrap_or_default();
-        for id in &edit.settled_uploads {
-            let row = sqlx::query("SELECT context,reference,receipt,abandoned FROM operations WHERE id=? AND domain=? AND deployment=? AND draft_owner=?")
-                .bind(id.to_string()).bind(&key.state_domain).bind(key.deployment.to_string())
-                .bind(&encoded_key).fetch_optional(&mut *transaction).await.map_err(error)?
-                .ok_or("original attachment upload not found for this draft")?;
-            let original = decode_operation(row)?;
-            validate_upload(&original, key)?;
-            let attachment = uploaded_attachment(&original)?;
-            if let Some(attachment) = attachment {
-                admitted.push(attachment);
-            }
-            sqlx::query("UPDATE operations SET upload_adopted=1 WHERE id=?")
-                .bind(id.to_string())
-                .execute(&mut *transaction)
-                .await
-                .map_err(error)?;
-        }
-        if edit
-            .attachments
-            .iter()
-            .any(|attachment| !admitted.contains(attachment))
-        {
-            return Err("draft attachment differs from its original upload receipt".into());
-        }
-        let row = if let Some(revision) = expected {
-            sqlx::query("UPDATE drafts SET revision=revision+1,text=?,attachments=?,consumed=0 WHERE owner=? AND revision=? RETURNING revision,text,attachments")
-                .bind(edit.text).bind(attachments).bind(encoded_key).bind(revision as i64)
-                .fetch_optional(&mut *transaction).await.map_err(error)?
-        } else {
-            sqlx::query("INSERT INTO drafts (owner,revision,text,attachments) VALUES (?,1,?,?) ON CONFLICT DO NOTHING RETURNING revision,text,attachments")
-                .bind(encoded_key).bind(edit.text).bind(attachments)
-                .fetch_optional(&mut *transaction).await.map_err(error)?
-        }.ok_or("draft revision conflicts with a newer saved value")?;
-        let draft = Draft {
-            revision: row.try_get::<i64, _>("revision").map_err(error)? as u64,
-            text: row.try_get("text").map_err(error)?,
-            attachments: serde_json::from_str(row.try_get("attachments").map_err(error)?)
-                .map_err(error)?,
-        };
-        transaction.commit().await.map_err(error)?;
-        Ok(draft)
-    }
-    pub(crate) async fn reserve(&self, operation: &Operation) -> Result<()> {
-        let context = encode_operation(operation)?;
-        let inserted = sqlx::query(
-            "INSERT OR IGNORE INTO operations (id,domain,deployment,context,draft_owner) VALUES (?,?,?,?,?)",
-        )
-        .bind(operation.id.to_string())
-        .bind(&operation.host.state_domain)
-        .bind(operation.host.deployment.to_string())
-        .bind(context)
-        .bind(operation.draft.as_ref().map(|draft| &draft.key).or_else(|| operation.upload.as_ref().map(|upload| &upload.key)).map(serde_json::to_string).transpose().map_err(error)?)
-        .execute(&self.0)
-        .await
-        .map_err(error)?;
-        if inserted.rows_affected() != 1 {
-            return Err("client operation already exists; recover the original attempt".into());
-        }
-        Ok(())
-    }
-    pub(crate) async fn reserve_settings(&self, operation: &Operation) -> Result<()> {
-        let context = encode_operation(operation)?;
-        let inserted = sqlx::query(concat!(
-            "INSERT OR IGNORE INTO operations (id,domain,deployment,context,draft_owner) SELECT ?,?,?,?,NULL WHERE NOT EXISTS (SELECT 1 FROM operations WHERE domain=? AND deployment=? AND ",
-            settings_owner_sql!(),
-            " AND receipt IS NULL AND abandoned=0)"
-        ))
-            .bind(operation.id.to_string())
-            .bind(&operation.host.state_domain)
-            .bind(operation.host.deployment.to_string())
-            .bind(context)
-            .bind(&operation.host.state_domain)
-            .bind(operation.host.deployment.to_string())
-            .bind(serde_json::json!({"kind": SETTINGS_KIND}).to_string())
-            .bind(serde_json::to_string(&SETTINGS_METHODS).map_err(error)?)
-            .execute(&self.0)
-            .await
-            .map_err(error)?;
-        if inserted.rows_affected() != 1 {
-            return Err("settings operation already exists or has an unresolved original".into());
-        }
-        Ok(())
-    }
-    pub(crate) async fn prepared(&self, id: Uuid, reference: &RecoveryRef) -> Result<()> {
-        let encoded = serde_json::to_string(reference).map_err(error)?;
-        #[cfg(test)]
-        self.1.notify_one();
-        let updated = sqlx::query(
-            "UPDATE operations SET reference=? WHERE id=? AND reference IS NULL AND abandoned=0",
-        )
-        .bind(encoded)
-        .bind(id.to_string())
-        .execute(&self.0)
-        .await
-        .map_err(error)?;
-        if updated.rows_affected() != 1 {
-            return Err(
-                "original client preparation was already recorded or is unavailable".into(),
-            );
-        }
-        Ok(())
-    }
+
     pub(crate) async fn load(&self, host: &DeploymentRef, id: Uuid) -> Result<Operation> {
         self.find(host, id)
             .await?
@@ -436,41 +397,22 @@ impl Journal {
     pub(crate) async fn find(&self, host: &DeploymentRef, id: Uuid) -> Result<Option<Operation>> {
         let row = sqlx::query("SELECT context,reference,receipt,abandoned FROM operations WHERE id=? AND domain=? AND deployment=?")
             .bind(id.to_string()).bind(&host.state_domain).bind(host.deployment.to_string())
-            .fetch_optional(&self.0).await.map_err(error)?;
+            .fetch_optional(&self.pool).await.map_err(error)?;
         row.map(decode_operation).transpose()
     }
-    pub(crate) async fn abandon(&self, host: &DeploymentRef, id: Uuid) -> Result<Operation> {
-        sqlx::query("UPDATE operations SET abandoned=1 WHERE id=? AND domain=? AND deployment=? AND reference IS NULL AND receipt IS NULL")
-            .bind(id.to_string()).bind(&host.state_domain).bind(host.deployment.to_string())
-            .execute(&self.0).await.map_err(error)?;
-        self.load(host, id).await
-    }
-    // Only the original Call's undispatched, clean Aborted reply authorizes this path.
-    pub(crate) async fn abandon_undispatched(
-        &self,
-        host: &DeploymentRef,
-        id: Uuid,
-        reference: &RecoveryRef,
-    ) -> Result<()> {
-        // The prepare observer may have disappeared before its reference write.
-        // This same fence also rejects that write if it arrives after the abort.
-        let updated = sqlx::query("UPDATE operations SET abandoned=1 WHERE id=? AND domain=? AND deployment=? AND (reference IS NULL OR reference=?) AND receipt IS NULL")
-            .bind(id.to_string()).bind(&host.state_domain).bind(host.deployment.to_string())
-            .bind(serde_json::to_string(reference).map_err(error)?)
-            .execute(&self.0).await.map_err(error)?;
-        if updated.rows_affected() != 1 {
-            return Err("original undispatched preparation is unavailable".into());
-        }
-        Ok(())
-    }
+
     pub(crate) async fn pending(
         &self,
         host: &DeploymentRef,
         key: &DraftKey,
     ) -> Result<Vec<Operation>> {
-        let rows = sqlx::query("SELECT context,reference,receipt,abandoned FROM operations WHERE domain=? AND deployment=? AND draft_owner=? AND json_type(context,'$.draft')='object' AND receipt IS NULL AND abandoned=0 ORDER BY rowid DESC")
-            .bind(&host.state_domain).bind(host.deployment.to_string())
-            .bind(serde_json::to_string(key).map_err(error)?).fetch_all(&self.0).await.map_err(error)?;
+        let rows = sqlx::query(recovery::DRAFTS)
+            .bind(&host.state_domain)
+            .bind(host.deployment.to_string())
+            .bind(serde_json::to_string(key).map_err(error)?)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(error)?;
         rows.into_iter().map(decode_operation).collect()
     }
     pub(crate) async fn pending_uploads(
@@ -478,9 +420,13 @@ impl Journal {
         host: &DeploymentRef,
         key: &DraftKey,
     ) -> Result<Vec<Operation>> {
-        let rows = sqlx::query("SELECT context,reference,receipt,abandoned FROM operations WHERE domain=? AND deployment=? AND draft_owner=? AND json_type(context,'$.upload')='object' AND upload_adopted=0 AND abandoned=0 ORDER BY rowid")
-            .bind(&host.state_domain).bind(host.deployment.to_string())
-            .bind(serde_json::to_string(key).map_err(error)?).fetch_all(&self.0).await.map_err(error)?;
+        let rows = sqlx::query(recovery::UPLOADS)
+            .bind(&host.state_domain)
+            .bind(host.deployment.to_string())
+            .bind(serde_json::to_string(key).map_err(error)?)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(error)?;
         let operations = rows
             .into_iter()
             .map(decode_operation)
@@ -492,12 +438,20 @@ impl Journal {
     }
     pub(crate) async fn pending_controls(&self, host: &DeploymentRef) -> Result<Vec<Operation>> {
         let correlation = serde_json::json!({"kind": CONTROL_KIND}).to_string();
-        let rows = sqlx::query("SELECT context,reference,receipt,abandoned FROM operations WHERE domain=? AND deployment=? AND draft_owner IS NULL AND json_extract(context,'$.endpoint')='agent' AND json_extract(context,'$.method') IN (SELECT value FROM json_each(?)) AND json_type(context,'$.correlation')='object' AND CASE json_extract(context,'$.method') WHEN 'stop' THEN json_type(context,'$.correlation.invocationId')='text' AND length(CAST(json_extract(context,'$.correlation.invocationId') AS BLOB)) > 0 AND json_extract(json_remove(context,'$.correlation.invocationId'),'$.correlation')=? WHEN 'stopComputerApp' THEN json_type(context,'$.correlation.operationId')='text' AND length(CAST(json_extract(context,'$.correlation.operationId') AS BLOB)) > 0 AND json_extract(json_remove(context,'$.correlation.operationId'),'$.correlation')=? WHEN 'respond' THEN json_type(context,'$.correlation.requestId')='text' AND length(CAST(json_extract(context,'$.correlation.requestId') AS BLOB)) > 0 AND json_extract(json_remove(context,'$.correlation.requestId'),'$.correlation')=? WHEN 'metadata' THEN json_type(context,'$.correlation.expectedRevision')='integer' AND json_extract(context,'$.correlation.expectedRevision') BETWEEN 1 AND 9007199254740991 AND json_extract(json_remove(context,'$.correlation.expectedRevision'),'$.correlation')=? WHEN 'changeSession' THEN json_type(context,'$.correlation.expectedRevision')='integer' AND json_extract(context,'$.correlation.expectedRevision') BETWEEN 1 AND 9007199254740991 AND json_extract(context,'$.correlation.action') IN ('archive','restore','remove') AND json_extract(json_remove(context,'$.correlation.expectedRevision','$.correlation.action'),'$.correlation')=? WHEN 'fork' THEN json_type(context,'$.correlation.expectedRevision')='integer' AND json_extract(context,'$.correlation.expectedRevision') BETWEEN 1 AND 9007199254740991 AND (json_type(context,'$.correlation.turnId')='null' OR (json_type(context,'$.correlation.turnId')='text' AND length(CAST(json_extract(context,'$.correlation.turnId') AS BLOB)) > 0)) AND json_extract(json_remove(context,'$.correlation.expectedRevision','$.correlation.turnId'),'$.correlation')=? ELSE json_extract(context,'$.correlation')=? END AND receipt IS NULL AND abandoned=0 ORDER BY rowid DESC")
-            .bind(&host.state_domain).bind(host.deployment.to_string())
+        let rows = sqlx::query(recovery::CONTROLS)
+            .bind(&host.state_domain)
+            .bind(host.deployment.to_string())
             .bind(serde_json::to_string(&CONTROL_METHODS).map_err(error)?)
-            .bind(&correlation).bind(&correlation).bind(&correlation)
-            .bind(&correlation).bind(&correlation).bind(&correlation).bind(&correlation)
-            .fetch_all(&self.0).await.map_err(error)?;
+            .bind(&correlation)
+            .bind(&correlation)
+            .bind(&correlation)
+            .bind(&correlation)
+            .bind(&correlation)
+            .bind(&correlation)
+            .bind(&correlation)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(error)?;
         rows.into_iter().map(decode_operation).collect()
     }
     pub(crate) async fn pending_terminals(
@@ -505,86 +459,26 @@ impl Journal {
         host: &DeploymentRef,
         session: &str,
     ) -> Result<Vec<Operation>> {
-        let rows = sqlx::query("SELECT context,reference,receipt,abandoned FROM operations WHERE domain=? AND deployment=? AND draft_owner IS NULL AND json_extract(context,'$.endpoint')='terminal' AND json_extract(context,'$.sessionId')=? AND json_extract(context,'$.correlation')=? AND json_extract(context,'$.method') IN ('start','stop','control','release') AND (receipt IS NULL OR json_extract(receipt,'$.cleanup.kind')!='confirmed') AND abandoned=0 ORDER BY rowid DESC")
-            .bind(&host.state_domain).bind(host.deployment.to_string())
-            .bind(session).bind(serde_json::json!({"kind":"terminal"}).to_string())
-            .fetch_all(&self.0).await.map_err(error)?;
+        let rows = sqlx::query(recovery::TERMINALS)
+            .bind(&host.state_domain)
+            .bind(host.deployment.to_string())
+            .bind(session)
+            .bind(serde_json::json!({"kind":"terminal"}).to_string())
+            .fetch_all(&self.pool)
+            .await
+            .map_err(error)?;
         rows.into_iter().map(decode_operation).collect()
     }
     pub(crate) async fn pending_settings(&self, host: &DeploymentRef) -> Result<Vec<Operation>> {
-        let rows = sqlx::query(concat!(
-            "SELECT context,reference,receipt,abandoned FROM operations WHERE domain=? AND deployment=? AND ",
-            settings_owner_sql!(),
-            " AND receipt IS NULL AND abandoned=0 ORDER BY rowid DESC"
-        ))
+        let rows = sqlx::query(recovery::SETTINGS)
             .bind(&host.state_domain)
             .bind(host.deployment.to_string())
             .bind(serde_json::json!({"kind": SETTINGS_KIND}).to_string())
             .bind(serde_json::to_string(&SETTINGS_METHODS).map_err(error)?)
-            .fetch_all(&self.0)
+            .fetch_all(&self.pool)
             .await
             .map_err(error)?;
         rows.into_iter().map(decode_operation).collect()
-    }
-    pub(crate) async fn observe(&self, operation: &Operation, receipt: &Receipt) -> Result<()> {
-        let Receipt::Recorded {
-            outcome: OperationOutcome::Returned { .. },
-            ..
-        } = receipt
-        else {
-            // A failed observer and an absent/unresolved journal cannot erase a returned result.
-            return Ok(());
-        };
-        let mut connection = self.0.acquire().await.map_err(error)?;
-        let mut transaction = sqlx::Connection::begin_with(&mut *connection, "BEGIN IMMEDIATE")
-            .await
-            .map_err(error)?;
-        let row = sqlx::query("SELECT receipt FROM operations WHERE id=?")
-            .bind(operation.id.to_string())
-            .fetch_one(&mut *transaction)
-            .await
-            .map_err(error)?;
-        let previous: Option<Receipt> = row
-            .try_get::<Option<&str>, _>("receipt")
-            .map_err(error)?
-            .map(serde_json::from_str)
-            .transpose()
-            .map_err(error)?;
-        let mut next = receipt.clone();
-        if let Some(Receipt::Recorded {
-            outcome: before,
-            cleanup: previous_cleanup,
-        }) = previous
-        {
-            let Receipt::Recorded { outcome, cleanup } = &mut next else {
-                unreachable!()
-            };
-            if before != *outcome {
-                return Err("original operation returned conflicting receipts".into());
-            }
-            if previous_cleanup == OperationCleanup::Confirmed {
-                *cleanup = previous_cleanup;
-            }
-        }
-        sqlx::query("UPDATE operations SET receipt=? WHERE id=?")
-            .bind(serde_json::to_string(&next).map_err(error)?)
-            .bind(operation.id.to_string())
-            .execute(&mut *transaction)
-            .await
-            .map_err(error)?;
-        if let Some(draft) = &operation.draft
-            && accepted_send(&next, &draft.key.session_id)
-        {
-            // Receipt and conditional draft clearing are one durable product
-            // transition. A later edit or unknown outcome cannot clear this text.
-            sqlx::query("UPDATE drafts SET consumed=1,text='' WHERE owner=? AND revision=?")
-                .bind(serde_json::to_string(&draft.key).map_err(error)?)
-                .bind(draft.revision as i64)
-                .execute(&mut *transaction)
-                .await
-                .map_err(error)?;
-        }
-        transaction.commit().await.map_err(error)
     }
 }
 fn encode_operation(operation: &Operation) -> Result<String> {
@@ -699,6 +593,7 @@ pub(crate) fn uploaded_attachment(operation: &Operation) -> Result<Option<DraftA
 #[cfg(test)]
 mod tests {
     use super::*;
+    use maka_plugin_core::operation::OperationCleanup;
     use sqlx::{Connection, SqliteConnection};
 
     #[tokio::test]
@@ -749,7 +644,7 @@ mod tests {
                 _ => expected.push(operation.id),
             }
         }
-        journal.0.close().await;
+        journal.pool.close().await;
         let journal = Journal::open(&path).await.unwrap();
         let pending = journal.pending_terminals(&host, "session").await.unwrap();
         expected.reverse();
@@ -760,7 +655,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             expected
         );
-        journal.0.close().await;
+        journal.pool.close().await;
     }
 
     async fn seeded_journal() -> (tempfile::TempDir, std::path::PathBuf, DraftKey) {
@@ -892,17 +787,17 @@ mod tests {
         let loaded = second.load_draft(&key).await.unwrap().unwrap();
         for journal in [&first, &second] {
             let mode: String = sqlx::query_scalar("PRAGMA journal_mode")
-                .fetch_one(&journal.0)
+                .fetch_one(&journal.pool)
                 .await
                 .unwrap();
             let synchronous: i64 = sqlx::query_scalar("PRAGMA synchronous")
-                .fetch_one(&journal.0)
+                .fetch_one(&journal.pool)
                 .await
                 .unwrap();
             assert_eq!((mode.as_str(), synchronous), ("wal", 2));
         }
-        first.0.close().await;
-        second.0.close().await;
+        first.pool.close().await;
+        second.pool.close().await;
         assert!(stale.is_err());
         assert_eq!(
             (
@@ -937,7 +832,7 @@ mod tests {
             .expect("startup returned before cancellation");
         let journal = Journal::open(&path).await.unwrap();
         let draft = journal.load_draft(&key).await.unwrap().unwrap();
-        journal.0.close().await;
+        journal.pool.close().await;
         assert_eq!(
             (draft.revision, draft.text.as_str(), draft.attachments.len()),
             (7, "original unsent text", 0)
@@ -964,7 +859,7 @@ mod tests {
         assert!(elapsed >= SqlitePoolOptions::new().get_acquire_timeout());
         let journal = Journal::open(&path).await.unwrap();
         let draft = journal.load_draft(&key).await.unwrap().unwrap();
-        journal.0.close().await;
+        journal.pool.close().await;
         assert_eq!(
             (draft.revision, draft.text.as_str(), draft.attachments.len()),
             (7, "original unsent text", 0)

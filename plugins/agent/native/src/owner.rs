@@ -662,8 +662,9 @@ impl Owner {
         if let Some(reason) = metadata_rejection(&input.title, &input.labels) {
             return Ok(Created::Rejected { reason });
         }
-        let runs = self.runs.lock().await;
-        if runs.closing {
+        let id = self.operation_id(operation);
+        let admission = self.runs.session(&id).await;
+        if admission.state().await.closing {
             return Ok(Created::Rejected {
                 reason: Rejection::Closed,
             });
@@ -773,7 +774,6 @@ impl Owner {
             .attach_workspace(&self.prefix, &selected)
             .await
             .map_err(|_| "agent_workspace_binding_unavailable")?;
-        let id = self.operation_id(operation);
         let record = self
             .store
             .create_session(

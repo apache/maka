@@ -767,15 +767,15 @@ pub const EVENTS: &[(EventKind, u32, &str, &str)] = &[
     ),
     (
         EventKind::Focus,
-        on::INPUT | on::SCROLL | on::LIST,
+        on::ALL,
         "() => void",
-        "",
+        "It took the keyboard focus: an input, scroll view, list, or a view that takes presses reached by Tab on the platforms that move the focus between pressables (macOS, the web).",
     ),
     (
         EventKind::Blur,
-        on::INPUT | on::SCROLL | on::LIST,
+        on::ALL,
         "() => void",
-        "",
+        "It lost the keyboard focus.",
     ),
     (
         EventKind::SelectionChange,

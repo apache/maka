@@ -591,6 +591,15 @@ pub enum SceneQuery {
         /// The canvas node's selector.
         selector: String,
     },
+    /// The view `selector` matches inside view `id` (a text in the button a
+    /// press goes to), whose middle the press lands on, or `null` when the
+    /// match is `id` itself.
+    MatchInside {
+        /// The step's selector.
+        selector: String,
+        /// The view the step acts on.
+        id: u32,
+    },
 
     /// The text input `id` holds.
     InputText {

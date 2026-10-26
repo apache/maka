@@ -527,16 +527,6 @@ impl Input {
         )
     }
 
-    /// It became focused.
-    pub fn on_focus<M>(self, listener: impl IntoListener<(), M>) -> Self {
-        self.listen(EventKind::Focus, listener.into_listener(), events::unit)
-    }
-
-    /// It lost focus.
-    pub fn on_blur<M>(self, listener: impl IntoListener<(), M>) -> Self {
-        self.listen(EventKind::Blur, listener.into_listener(), events::unit)
-    }
-
     /// The selection or caret moved.
     pub fn on_selection_change<M>(self, listener: impl IntoListener<Selection, M>) -> Self {
         self.listen(

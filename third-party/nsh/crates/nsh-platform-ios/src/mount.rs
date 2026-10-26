@@ -162,15 +162,19 @@ struct PanScroll {
 }
 
 /// Pull-to-refresh. `UIRefreshControl` throws under Mac Catalyst's Mac
-/// idiom, so there the pull is detected in the scroll delegate and shown
-/// with a spinner revealed by a content inset.
+/// idiom, and cannot give way to the app's own indicator, so there (and
+/// when the app draws its own) the pull is detected in the scroll delegate
+/// and shown with a spinner (none for the app's indicator), revealed by a
+/// content inset.
 enum Refresh {
     Native(Retained<UIRefreshControl>),
     Custom {
-        spinner: Retained<UIActivityIndicatorView>,
+        spinner: Option<Retained<UIActivityIndicatorView>>,
         refreshing: bool,
         /// Qualification of the already-scheduled native reveal task.
         reveal_pending: Rc<Cell<bool>>,
+        /// Latest (resting inset, refresh room) for a queued reveal.
+        reveal_geometry: Rc<Cell<(CGFloat, CGFloat)>>,
     },
 }
 
@@ -219,6 +223,35 @@ fn reaches_beyond(root: &UIView, limit: CGFloat) -> bool {
         }
     }
     false
+}
+
+/// The content width a vertical scroll view keeps. `reaches` says whether
+/// anything inside it is wider than `viewport`; the caller asks that once the
+/// batch has applied every frame, so a child that only just arrived counts —
+/// a first mount sends the content size before its children's frames.
+fn settled_content_width(viewport: CGFloat, content: CGFloat, reaches: bool) -> CGFloat {
+    if viewport > 0.0 && content > viewport && !reaches {
+        viewport
+    } else {
+        content
+    }
+}
+
+/// The width a narrowed scroll view keeps. Its content was narrowed to the
+/// viewport; the core's width comes back once something inside reaches past
+/// the viewport again — a later batch widened a row, and the core sends no
+/// new content size for it.
+fn narrowed_width(viewport: CGFloat, core: CGFloat, reaches: bool) -> CGFloat {
+    if reaches { core } else { viewport }
+}
+
+/// Whether the width judgement applies to a scroll view at all: one that
+/// scrolls vertically and is not zoomed. A node switched to horizontal (or
+/// given a zoom view) holds something the vertical extent never described,
+/// so the width narrowed while it was vertical is stale — restoring it would
+/// cut the content short.
+fn still_judged(horizontal: bool, zoomable: bool) -> bool {
+    !horizontal && !zoomable
 }
 
 /// The innermost visible subview of `view` at `point` (in `view`),
@@ -390,13 +423,27 @@ fn set_bottom_inset(
     });
 }
 
-/// How far past the top a release must be to trigger a custom refresh.
-const REFRESH_PULL: CGFloat = 64.0;
-/// Space kept above the content while a custom refresh runs.
-const REFRESH_INSET: CGFloat = 56.0;
+fn place_spinner(spinner: &UIActivityIndicatorView, width: f32, inset: Points) {
+    spinner.setCenter(CGPoint::new(
+        width as CGFloat / 2.0,
+        -inset.0 as CGFloat / 2.0,
+    ));
+}
 
-fn place_spinner(spinner: &UIActivityIndicatorView, width: f32) {
-    spinner.setCenter(CGPoint::new(width as CGFloat / 2.0, -REFRESH_INSET / 2.0));
+/// Where the content of `scroll` rests below its top edge: the app's top
+/// inset `base` and what UIKit adds itself (a large title's bar), without
+/// the room a refresh keeps.
+fn rest_top(scroll: &UIScrollView, base: CGFloat) -> CGFloat {
+    scroll.adjustedContentInset().top - scroll.contentInset().top + base
+}
+
+/// The room a refreshing scroll view keeps above its content.
+fn refresh_inset(s: &Slot) -> Points {
+    s.behavior
+        .as_deref()
+        .cloned()
+        .unwrap_or_default()
+        .refresh_inset()
 }
 
 struct Slot {
@@ -419,6 +466,10 @@ struct Slot {
     /// A cell of such a list: mirrored back.
     in_mirrored: bool,
     scroll_value: Option<nsh_core::animation::NodeId>,
+    /// `pullValue` (vertical scroll views), with the distance it was last
+    /// fed.
+    pull_value: Option<nsh_core::animation::NodeId>,
+    pull: CGFloat,
     /// How a scroll view scrolls (scroll views only).
     behavior: Option<Box<nsh_core::ScrollBehavior>>,
     horizontal: bool,
@@ -473,6 +524,8 @@ impl Slot {
             mirrored: false,
             in_mirrored: false,
             scroll_value: None,
+            pull_value: None,
+            pull: 0.0,
             behavior: None,
             horizontal: false,
             image: None,
@@ -542,6 +595,20 @@ pub(crate) struct Mounter {
     touch_listeners: usize,
     /// Scroll views a JS responder keeps from scrolling.
     blocked_scrolls: Vec<Retained<UIScrollView>>,
+    /// Vertical scroll views whose content size arrived in this batch, with
+    /// the height that came with it. A batch applies a scroll view's content
+    /// size before the frames of the children it measures (`ScrollContent` is
+    /// queued when the scroll view is, its children after it), so a size that
+    /// looks too wide is only judged after the whole batch is in place.
+    content_sizes: Vec<(NodeId, CGFloat)>,
+    /// The core's width and height for every vertical scroll view the platform
+    /// narrowed, by id. The core does not resend a content size it did not
+    /// change, so a later batch that widens what such a scroll view holds has
+    /// to give that width back from here.
+    narrowed: Vec<(NodeId, CGFloat, CGFloat)>,
+    /// Whether this batch moved any frame: nothing under a narrowed scroll
+    /// view can have grown otherwise, so the judgement is skipped.
+    frames_applied: bool,
     /// The surface lays out right to left: native controls mirror.
     rtl: bool,
     /// Sticky cells of lists, by list.
@@ -617,6 +684,9 @@ impl Mounter {
             touch_trackers: Vec::new(),
             touch_listeners: 0,
             blocked_scrolls: Vec::new(),
+            content_sizes: Vec::new(),
+            narrowed: Vec::new(),
+            frames_applied: false,
             rtl: false,
             components,
             areas: Vec::new(),
@@ -660,6 +730,77 @@ impl Mounter {
             area.batch_applied();
         }
         self.focused_caret_moved();
+        self.settle_content_sizes();
+    }
+
+    /// Narrows the content size of a vertical scroll view to its width when
+    /// nothing inside reaches past it — a stale extent left by an earlier
+    /// layout makes the page pan sideways over nothing. Judged here, after
+    /// the batch put every child's frame in place: a first mount sends the
+    /// size before its children exist, and asking then would narrow a row
+    /// that really is wider than the viewport.
+    fn settle_content_sizes(&mut self) {
+        let frames_applied = std::mem::take(&mut self.frames_applied);
+        for (id, height) in std::mem::take(&mut self.content_sizes) {
+            let mut narrowed = None;
+            if let Some(Slot {
+                native: Native::Scroll(scroll),
+                ..
+            }) = self.slot(id)
+            {
+                let viewport = scroll.bounds().size.width;
+                let content = scroll.contentSize().width;
+                // Content that fits cannot be narrowed; walking the subtree
+                // to learn that would cost the page on every batch.
+                if viewport > 0.0 && content > viewport {
+                    let width = settled_content_width(
+                        viewport,
+                        content,
+                        reaches_beyond(scroll, viewport + 0.5),
+                    );
+                    if width != content {
+                        scroll.setContentSize(CGSize::new(width, height));
+                        narrowed = Some((content, height));
+                    }
+                }
+            }
+            self.narrowed.retain(|&(n, ..)| n != id);
+            if let Some((width, height)) = narrowed {
+                self.narrowed.push((id, width, height));
+            }
+        }
+        if frames_applied {
+            self.rejudge_narrowed();
+        }
+    }
+
+    /// Gives back the width the core sent once a later batch widens what a
+    /// narrowed scroll view holds. The core does not resend a content size it
+    /// did not change, so without this the tail stays out of reach — the bug
+    /// this judgement fixes, in the other order.
+    fn rejudge_narrowed(&mut self) {
+        let mut i = 0;
+        while i < self.narrowed.len() {
+            let (id, core, height) = self.narrowed[i];
+            let mut done = true;
+            if let Some(slot) = self.slot(id)
+                && let Native::Scroll(scroll) = &slot.native
+                && still_judged(slot.horizontal, slot.zoom_view().is_some())
+            {
+                let viewport = scroll.bounds().size.width;
+                let reaches = reaches_beyond(scroll, viewport + 0.5);
+                let width = narrowed_width(viewport, core, reaches);
+                if width != scroll.contentSize().width {
+                    scroll.setContentSize(CGSize::new(width, height));
+                }
+                done = width == core;
+            }
+            if done {
+                self.narrowed.swap_remove(i);
+            } else {
+                i += 1;
+            }
+        }
     }
 
     /// Reports the focused input's caret if the batch moved it (the input
@@ -949,6 +1090,7 @@ impl Mounter {
                 }
             }
             MountItem::Frame { id, frame } => {
+                self.frames_applied = true;
                 if let Some(Slot {
                     native: Native::HeaderItem(view),
                     ..
@@ -1005,8 +1147,12 @@ impl Mounter {
                         }
                         _ => set_frame(view, frame),
                     }
-                    if let Some(Refresh::Custom { spinner, .. }) = &s.gestures.refresh {
-                        place_spinner(spinner, frame.size.width.0);
+                    if let Some(Refresh::Custom {
+                        spinner: Some(spinner),
+                        ..
+                    }) = &s.gestures.refresh
+                    {
+                        place_spinner(spinner, frame.size.width.0, refresh_inset(s));
                     }
                     if let Native::Video(video) = &s.native {
                         video.layout();
@@ -1094,9 +1240,18 @@ impl Mounter {
                 horizontal,
                 scrollbar_visible,
                 scroll_value,
+                pull_value,
                 keyboard_dismiss,
                 mirrored,
             } => {
+                // A node that stops being vertical drops the width narrowed
+                // while it was: the extent it holds is measured the other way.
+                let vertical = self
+                    .slot(id)
+                    .is_some_and(|s| still_judged(horizontal, s.zoom_view().is_some()));
+                if !vertical {
+                    self.narrowed.retain(|&(n, ..)| n != id);
+                }
                 if let Some(s) = self.slot_mut(id)
                     && s.mirrored != mirrored
                 {
@@ -1132,6 +1287,7 @@ impl Mounter {
                     scroll.setShowsHorizontalScrollIndicator(scrollbar_visible && horizontal);
                     s.horizontal = horizontal;
                     s.scroll_value = scroll_value;
+                    s.pull_value = pull_value.filter(|_| !horizontal);
                 }
             }
             MountItem::ScrollContent { id, size } => {
@@ -1142,25 +1298,14 @@ impl Mounter {
                     },
                 ) = self.slot(id)
                 {
-                    let mut size = CGSize::new(size.width.0 as CGFloat, size.height.0 as CGFloat);
-                    // A vertical scroll view's content is laid out at the scroll
-                    // view's width (the module's contract). A content size wider
-                    // than that, with nothing inside reaching it, is a stale
-                    // extent from an earlier pass: the page would pan sideways
-                    // over nothing. What does reach it (an absolutely placed
-                    // row) keeps the size.
-                    let viewport = scroll.bounds().size.width;
-                    if !s.horizontal
-                        && s.zoom_view().is_none()
-                        && viewport > 0.0
-                        && size.width > viewport
-                        && !reaches_beyond(scroll, viewport + 0.5)
-                    {
-                        size = CGSize::new(viewport, size.height);
-                    }
+                    let size = CGSize::new(size.width.0 as CGFloat, size.height.0 as CGFloat);
+                    let vertical = still_judged(s.horizontal, s.zoom_view().is_some());
                     match s.zoom_view() {
                         Some(zoom) => crate::zoom::layout(scroll, &zoom, size, s.centers()),
                         None => scroll.setContentSize(size),
+                    }
+                    if vertical {
+                        self.content_sizes.push((id, size.height));
                     }
                 }
             }
@@ -1224,10 +1369,29 @@ impl Mounter {
                     let new = ui_insets(b.content_inset);
                     let mut inset = scroll.contentInset();
                     inset.top += new.top - old.top;
+                    if let Some(Refresh::Custom {
+                        refreshing: true, ..
+                    }) = s.gestures.refresh
+                    {
+                        inset.top += (b.refresh_inset().0 - refresh_inset(s).0) as CGFloat;
+                    }
                     inset.left += new.left - old.left;
                     inset.bottom += new.bottom - old.bottom;
                     inset.right += new.right - old.right;
                     scroll.setContentInset(inset);
+                    if let Some(Refresh::Custom {
+                        refreshing: true,
+                        reveal_geometry,
+                        ..
+                    }) = &s.gestures.refresh
+                    {
+                        let lead = if b.refresh_indicator.is_some() {
+                            rest_top(scroll, b.content_inset.top.0 as CGFloat)
+                        } else {
+                            0.0
+                        };
+                        reveal_geometry.set((lead, b.refresh_inset().0 as CGFloat));
+                    }
                     // Zooming (UIKit asks the delegate for the zoom view).
                     scroll.setMinimumZoomScale(b.min_zoom as CGFloat);
                     scroll.setMaximumZoomScale(b.max_zoom.max(b.min_zoom) as CGFloat);
@@ -1242,6 +1406,7 @@ impl Mounter {
                         crate::zoom::layout(scroll, &zoom, zoom.bounds().size, center);
                     }
                 }
+                self.sync_refresh(id);
             }
             MountItem::Refreshing { id, refreshing } => self.set_refreshing(id, refreshing),
             MountItem::Canvas { id, drawing } => self.set_drawing(id, drawing),
@@ -2855,7 +3020,7 @@ impl Mounter {
     fn set_view_events(&mut self, id: NodeId, events: EventMask) {
         let target = self.target.clone();
         let control = self.control.clone();
-        let (mtm, mac_idiom) = (self.mtm, self.mac_idiom);
+        let mtm = self.mtm;
         let Some(slot) = self.views.get_mut(id as usize).and_then(Option::as_mut) else {
             return;
         };
@@ -2978,45 +3143,100 @@ impl Mounter {
         if let Some(nsh) = slot.native.nsh() {
             nsh.set_pressable(events.contains(EventKind::Press), &control);
         }
-        if let Native::Scroll(scroll) = &slot.native {
-            let wants_refresh = events.contains(EventKind::Refresh);
-            match (&slot.gestures.refresh, wants_refresh) {
-                (None, true) if mac_idiom => {
+        self.sync_refresh(id);
+    }
+
+    /// Gives scroll view `id` the pull to refresh its events and behavior
+    /// ask for: `UIRefreshControl`, or a pull detected here (Mac idiom, or
+    /// the app's own indicator) with a spinner unless the app draws its
+    /// own. Swapping keeps a refresh that runs.
+    fn sync_refresh(&mut self, id: NodeId) {
+        let target = self.target.clone();
+        let (mtm, mac_idiom) = (self.mtm, self.mac_idiom);
+        let Some(slot) = self.views.get_mut(id as usize).and_then(Option::as_mut) else {
+            return;
+        };
+        let Native::Scroll(scroll) = &slot.native else {
+            return;
+        };
+        let behavior = slot.behavior.as_deref().cloned().unwrap_or_default();
+        // None: off; Some(None): UIRefreshControl; Some(Some(spinner)): custom.
+        let wanted = slot.events.contains(EventKind::Refresh).then(|| {
+            let own = behavior.refresh_indicator.is_some();
+            (mac_idiom || own).then_some(!own)
+        });
+        let current = slot.gestures.refresh.as_ref().map(|r| match r {
+            Refresh::Native(_) => None,
+            Refresh::Custom { spinner, .. } => Some(spinner.is_some()),
+        });
+        if wanted == current {
+            return;
+        }
+        let previous = slot.gestures.refresh.take();
+        let refreshing = match previous.as_ref() {
+            Some(Refresh::Native(control)) => {
+                let refreshing = control.isRefreshing();
+                scroll.setRefreshControl(None);
+                refreshing
+            }
+            Some(Refresh::Custom {
+                spinner,
+                refreshing,
+                ..
+            }) => {
+                if let Some(spinner) = spinner {
+                    spinner.removeFromSuperview();
+                }
+                if *refreshing {
+                    let mut inset = scroll.contentInset();
+                    inset.top = behavior.content_inset.top.0 as CGFloat;
+                    scroll.setContentInset(inset);
+                }
+                *refreshing
+            }
+            None => false,
+        };
+        drop(previous);
+        match wanted {
+            Some(Some(shows)) => {
+                let spinner = shows.then(|| {
                     let spinner = UIActivityIndicatorView::initWithActivityIndicatorStyle(
                         UIActivityIndicatorView::alloc(mtm),
                         UIActivityIndicatorViewStyle::Medium,
                     );
                     spinner.setHidesWhenStopped(true);
-                    place_spinner(&spinner, scroll.bounds().size.width as f32);
+                    place_spinner(
+                        &spinner,
+                        scroll.bounds().size.width as f32,
+                        behavior.refresh_inset(),
+                    );
                     scroll.addSubview(&spinner);
-                    slot.gestures.refresh = Some(Refresh::Custom {
-                        spinner,
-                        refreshing: false,
-                        reveal_pending: Rc::new(Cell::new(false)),
-                    });
-                }
-                (None, true) => {
-                    let control = UIRefreshControl::new(mtm);
-                    // SAFETY: `handleRefresh:` is implemented by the target.
-                    unsafe {
-                        control.addTarget_action_forControlEvents(
-                            Some(&target),
-                            sel!(handleRefresh:),
-                            UIControlEvents::ValueChanged,
-                        )
-                    };
-                    scroll.setRefreshControl(Some(&control));
-                    slot.gestures.refresh = Some(Refresh::Native(control));
-                }
-                (Some(refresh), false) => {
-                    match refresh {
-                        Refresh::Native(_) => scroll.setRefreshControl(None),
-                        Refresh::Custom { spinner, .. } => spinner.removeFromSuperview(),
-                    }
-                    slot.gestures.refresh = None;
-                }
-                _ => {}
+                    spinner
+                });
+                slot.gestures.refresh = Some(Refresh::Custom {
+                    spinner,
+                    refreshing: false,
+                    reveal_pending: Rc::new(Cell::new(false)),
+                    reveal_geometry: Rc::new(Cell::new((0.0, 0.0))),
+                });
             }
+            Some(None) => {
+                let control = UIRefreshControl::new(mtm);
+                // SAFETY: `handleRefresh:` is implemented by the target.
+                unsafe {
+                    control.addTarget_action_forControlEvents(
+                        Some(&target),
+                        sel!(handleRefresh:),
+                        UIControlEvents::ValueChanged,
+                    )
+                };
+                scroll.setRefreshControl(Some(&control));
+                slot.gestures.refresh = Some(Refresh::Native(control));
+            }
+            None => {}
+        }
+        if refreshing && wanted.is_some() {
+            self.set_refreshing(id, true);
         }
     }
 
@@ -3919,6 +4139,11 @@ impl Mounter {
         let Native::Scroll(scroll) = &s.native else {
             return;
         };
+        let room = refresh_inset(s).0 as CGFloat;
+        let own = s
+            .behavior
+            .as_ref()
+            .is_some_and(|b| b.refresh_indicator.is_some());
         match &mut s.gestures.refresh {
             Some(Refresh::Native(control)) if control.isRefreshing() != on => {
                 if on {
@@ -3931,6 +4156,7 @@ impl Mounter {
                 spinner,
                 refreshing,
                 reveal_pending,
+                reveal_geometry,
             }) if *refreshing != on => {
                 *refreshing = on;
                 reveal_pending.set(on);
@@ -3939,31 +4165,41 @@ impl Mounter {
                     .behavior
                     .as_ref()
                     .map_or(0.0, |b| b.content_inset.top.0 as CGFloat);
-                inset.top = base + if on { REFRESH_INSET } else { 0.0 };
+                // The app's indicator is revealed below what UIKit adds; the
+                // Mac idiom's spinner where it always was.
+                let lead = if own { rest_top(scroll, base) } else { 0.0 };
+                reveal_geometry.set((lead, room));
+                inset.top = base + if on { room } else { 0.0 };
                 if on {
-                    spinner.startAnimating();
+                    if let Some(spinner) = spinner {
+                        spinner.startAnimating();
+                    }
                     scroll.setContentInset(inset);
-                    // Reveal the spinner if the list is at the top. On the
+                    // Reveal the spinner if the list rests at its top. On the
                     // next turn: a release past the top has already started
                     // its bounce towards the old inset, which this replaces.
                     let scroll = MainThreadBound::new(scroll.clone(), mtm);
                     let pending = MainThreadBound::new(reveal_pending.clone(), mtm);
+                    let geometry = MainThreadBound::new(reveal_geometry.clone(), mtm);
                     DispatchQueue::main().exec_async(move || {
                         let mtm = MainThreadMarker::new().expect("main queue");
                         if !pending.get(mtm).replace(false) {
                             return;
                         }
                         let scroll = scroll.get(mtm);
+                        let (lead, room) = geometry.get(mtm).get();
                         let offset = scroll.contentOffset();
-                        if offset.y <= 0.0 && !scroll.isDragging() {
+                        if offset.y <= -lead && !scroll.isDragging() {
                             scroll.setContentOffset_animated(
-                                CGPoint::new(offset.x, -REFRESH_INSET),
+                                CGPoint::new(offset.x, -(lead + room)),
                                 true,
                             );
                         }
                     });
                 } else {
-                    spinner.stopAnimating();
+                    if let Some(spinner) = spinner {
+                        spinner.stopAnimating();
+                    }
                     let scroll = scroll.clone();
                     let block = block2::RcBlock::new(move || scroll.setContentInset(inset));
                     UIView::animateWithDuration_animations(0.25, &block, mtm);
@@ -3974,13 +4210,23 @@ impl Mounter {
     }
 
     /// The user released a drag: a far enough pull past the top starts a
-    /// custom (Mac idiom) refresh.
+    /// custom refresh (the app's indicator measures it from where the
+    /// content rests).
     pub(crate) fn drag_ended(&mut self, id: NodeId, offset: CGPoint) {
         let Some(s) = self.slot(id) else { return };
+        let Native::Scroll(scroll) = &s.native else {
+            return;
+        };
+        let behavior = s.behavior.as_deref().cloned().unwrap_or_default();
+        let pulled = if behavior.refresh_indicator.is_some() {
+            offset.y + rest_top(scroll, behavior.content_inset.top.0 as CGFloat)
+        } else {
+            offset.y
+        };
         if let Some(Refresh::Custom {
             refreshing: false, ..
         }) = s.gestures.refresh
-            && offset.y <= -REFRESH_PULL
+            && behavior.refreshes(Points(pulled as f32))
         {
             self.set_refreshing(id, true);
             self.control
@@ -4060,9 +4306,28 @@ impl Mounter {
             area.scrolled();
         }
         let Some(s) = self.slot(id) else { return };
+        let mut fed = false;
         if let Some(node) = s.scroll_value {
             let value = if s.horizontal { offset.x } else { offset.y };
             self.animator.set(node, value as f32);
+            fed = true;
+        }
+        if let Some(s) = self.slot_mut(id)
+            && let Some(node) = s.pull_value
+            && let Native::Scroll(scroll) = &s.native
+        {
+            let base = s
+                .behavior
+                .as_ref()
+                .map_or(0.0, |b| b.content_inset.top.0 as CGFloat);
+            let pull = (-offset.y - rest_top(scroll, base)).max(0.0);
+            if pull != s.pull {
+                s.pull = pull;
+                self.animator.set(node, pull as f32);
+                fed = true;
+            }
+        }
+        if fed {
             self.apply_animations();
             self.report_finished();
         }
@@ -4506,4 +4771,82 @@ fn disappear(
         Some(&done),
         mtm,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A first mount's children arrive after the content size does; judged
+    /// once they are in place, a row wider than the viewport keeps its width.
+    #[test]
+    fn a_row_wider_than_the_viewport_keeps_its_width() {
+        assert_eq!(settled_content_width(320.0, 400.0, true), 400.0);
+    }
+
+    /// A width left behind by an earlier layout, with nothing inside reaching
+    /// it, narrows to the viewport: the page would pan over nothing.
+    #[test]
+    fn a_stale_extent_narrows_to_the_viewport() {
+        assert_eq!(settled_content_width(320.0, 500.0, false), 320.0);
+    }
+
+    /// A narrowed scroll view keeps the viewport while nothing reaches it, and
+    /// takes the core's width back once a later batch widens a row. The core
+    /// sends no new size for that batch, so the judgement is made again here.
+    #[test]
+    fn a_narrowed_view_takes_the_core_width_back_once_a_row_grows() {
+        assert_eq!(narrowed_width(320.0, 500.0, false), 320.0);
+        assert_eq!(narrowed_width(320.0, 500.0, true), 500.0);
+    }
+
+    /// A node switched to horizontal (or given a zoom view) is no longer
+    /// judged: the width narrowed while it was vertical describes nothing it
+    /// holds now, and giving 500 back to 600 points of horizontal content
+    /// would leave the last 100 unreachable.
+    #[test]
+    fn a_scroll_view_that_stops_being_vertical_is_not_judged() {
+        assert!(still_judged(false, false));
+        assert!(!still_judged(true, false));
+        assert!(!still_judged(false, true));
+    }
+
+    /// Content that fits is left alone.
+    #[test]
+    fn content_within_the_viewport_is_left_alone() {
+        assert_eq!(settled_content_width(320.0, 100.0, false), 100.0);
+    }
+
+    /// The judgement reads the children's frames, so it only means anything
+    /// after they are in place: the same scroll view keeps a 400pt row it was
+    /// sent a size for before the row existed, and narrows a 500pt size over
+    /// children that fit.
+    #[test]
+    fn the_judgement_reads_the_frames_that_are_in_place() {
+        // No window is involved: frames and a content size only. UIKit still
+        // wants the main thread, so this skips where the test thread is not
+        // it (a plain `cargo test`) and runs under `nsh test`.
+        let Some(mtm) = MainThreadMarker::new() else {
+            eprintln!("skipped: UIKit views need the main thread");
+            return;
+        };
+        let scroll = UIScrollView::new(mtm);
+        scroll.setFrame(CGRect::new(CGPoint::ZERO, CGSize::new(320.0, 200.0)));
+        let row = UIView::new(mtm);
+        scroll.addSubview(&row);
+
+        // The content size arrived before the row's frame did.
+        row.setFrame(CGRect::new(CGPoint::ZERO, CGSize::new(400.0, 50.0)));
+        assert_eq!(
+            settled_content_width(320.0, 400.0, reaches_beyond(&scroll, 320.5)),
+            400.0
+        );
+
+        // A wider size over a row that fits: narrowed to the viewport.
+        row.setFrame(CGRect::new(CGPoint::ZERO, CGSize::new(300.0, 50.0)));
+        assert_eq!(
+            settled_content_width(320.0, 500.0, reaches_beyond(&scroll, 320.5)),
+            320.0
+        );
+    }
 }

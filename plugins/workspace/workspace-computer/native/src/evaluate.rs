@@ -121,14 +121,17 @@ impl Computer {
         .with_image_deduplication();
         let admission = kernel.admission.clone();
         let observed = interaction.supports_epoch_retirement();
-        let runtime = kernel.repl.get_or_insert_with(|| {
+        if kernel.repl.is_none() {
             let bootstrap = maka_computer_use::facade_for(platform, self.configuration.audio);
-            if observed {
+            let runtime = if observed {
                 Repl::new_observed(bootstrap, limits, admission.clone())
             } else {
                 Repl::new(bootstrap, limits)
             }
-        });
+            .map_err(failed)?;
+            kernel.repl = Some(runtime);
+        }
+        let runtime = kernel.repl.as_ref().expect("REPL initialized");
         let bridge = Arc::new(Bridge {
             owner: self.clone(),
             call: call.clone(),
@@ -720,7 +723,8 @@ mod tests {
             "Object.defineProperty(globalThis,'audio',{value:()=>call('queued_audio',{})});",
             CellLimits::default(),
             admission.clone(),
-        );
+        )
+        .unwrap();
         let context =
             CellContext::new(maka_code_runtime::CellStore::temporary().unwrap(), vec![]).unwrap();
         let result = tokio::time::timeout(

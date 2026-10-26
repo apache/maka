@@ -382,7 +382,7 @@ async fn linux_shared_capture_geometry_fixture() {
         .unwrap();
     let bridge = Arc::new(Bridge(Arc::new(Mutex::new(session))));
     wait_for_inventory(&bridge, &ready).await;
-    let repl = Repl::new(facade(), CellLimits::default());
+    let repl = Repl::new(facade(), CellLimits::default()).unwrap();
     let mut calls = 0;
     for stage in stages {
         let id = stage["id"].as_str().unwrap();

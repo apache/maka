@@ -91,6 +91,7 @@ export function initializeUiScale() {
 }
 
 export const uiScale = {
+  factor: () => current() / 100,
   supported,
   ready,
   text,

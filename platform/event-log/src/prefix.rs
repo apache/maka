@@ -50,10 +50,17 @@ impl EventLog {
         self.connection.run(move |connection| Box::pin(async move {
         let mut transaction = connection.begin().await?;
         let selection = Selection::resolve(&mut transaction, &scope).await?;
-        let collected: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM event_log WHERE invocation_id IS NOT NULL
-             AND event_json IS NULL AND (?1 IS NULL OR event_session=?1))"
-        ).bind(&selection.session).fetch_one(&mut *transaction).await?;
+        let collected: bool = match &selection.session {
+            Some(session) => sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM context_source_prefixes p
+                 JOIN event_log e ON e.sequence=p.sequence
+                 WHERE p.kind='session' AND p.owner=? AND e.event_json IS NULL)",
+            ).bind(session).fetch_one(&mut *transaction).await?,
+            None => sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM event_log INDEXED BY invocation_sequence
+                 WHERE invocation_id IS NOT NULL AND event_json IS NULL)",
+            ).fetch_one(&mut *transaction).await?,
+        };
         if collected { return Err(StoreError::MaterialCollected); }
         let lineage = Selection::predicate("runtime_events", "?2");
         let source = if selection.session.is_some() { "session_history_events" } else { "runtime_events" };
@@ -70,6 +77,7 @@ impl EventLog {
         {
             return Err(StoreError::PrefixTooLarge);
         }
+        let mut root_digest = selection.session.is_none().then(crate::context::evidence::RootDigest::new);
         let mut events = Vec::new();
         {
             let statement = sqlx::query(sqlx::AssertSqlSafe(format!(
@@ -79,6 +87,9 @@ impl EventLog {
             while let Some(row) = rows.try_next().await? {
                 let sequence: i64 = row.try_get(0)?;
                 let json: &str = row.try_get(1)?;
+                if let Some(digest) = &mut root_digest {
+                    digest.record(sequence, json);
+                }
                 let sequence = sequence_number(sequence)?;
                 let event = serde_json::from_str(json)?;
                 events.push(StoredEvent {
@@ -87,8 +98,11 @@ impl EventLog {
                 });
             }
         }
-        let digest = crate::context::evidence::selected(
-            &mut transaction, &selection, sequence_number(high_water)?).await?.digest;
+        let digest = match root_digest {
+            Some(digest) => digest.finish(high_water)?,
+            None => crate::context::evidence::selected(
+                &mut transaction, &selection, sequence_number(high_water)?).await?.digest,
+        };
         transaction.commit().await?;
         Ok(LogPrefix {
             scope,

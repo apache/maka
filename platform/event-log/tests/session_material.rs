@@ -124,6 +124,7 @@ async fn collection_waits_for_the_last_history_owner_and_preserves_frozen_accoun
     .unwrap();
     let before = log.usage_summary(query()).await.unwrap().summary;
     let frozen_before = log.usage_summary(frozen.clone()).await.unwrap().summary;
+    let root_before_copy = log.prefix(100, 1_000_000).await.unwrap();
     let revision = log
         .get_session::<Value>("source")
         .await
@@ -145,6 +146,9 @@ async fn collection_waits_for_the_last_history_owner_and_preserves_frozen_accoun
     )
     .await
     .unwrap();
+    let root_after_copy = log.prefix(100, 1_000_000).await.unwrap();
+    assert_eq!(root_after_copy.digest, root_before_copy.digest);
+    assert_eq!(root_after_copy.high_water, root_before_copy.high_water);
     let inherited = log
         .scoped_prefix(LogScope::Session { id: "copy".into() }, 100, 1_000_000)
         .await
@@ -189,6 +193,10 @@ async fn collection_waits_for_the_last_history_owner_and_preserves_frozen_accoun
     );
     assert!(matches!(
         log.prefix(100, 1_000_000).await,
+        Err(StoreError::MaterialCollected)
+    ));
+    assert!(matches!(
+        log.prefix(0, 0).await,
         Err(StoreError::MaterialCollected)
     ));
     assert!(

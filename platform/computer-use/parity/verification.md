@@ -22,7 +22,7 @@
 The [case manifest](../../../scripts/computer-use-parity/cases.json) is a 33-case
 ledger for comparing Maka with the original runtime used by LCU. It covers named
 native, browser, audio, approval and lifecycle scenarios. The controlled
-Linux/x64 geometry result below matches one explicitly selected case. It does
+Linux/x64 results below match one explicitly selected case. They do
 not complete the ledger or establish parity for the original product.
 The [static capability inventory](inventory.md) enumerates the original member
 surface separately and keeps declarations without behavioral coverage visible.
@@ -141,19 +141,37 @@ constructor use 1-by-1 sampling for all three components, without chroma
 subsampling. Extracted code, assembly, tables and generated fragments stay
 private.
 
-Two further original-only runs characterize input boundaries and pointer API
-shape. `run-20261026T075804Z` observed click/scroll refusal outside current
+### Linux coordinate boundaries and pointer API shape
+
+Original run `run-20261026T075804Z` observed click/scroll refusal outside current
 window bounds and native parsing refusal for fractional or out-of-i16
-coordinates. Those refused calls produced no fixture input.
-`run-20261026T085724Z` observed that the
-selected app object has no `moveCursor` function; drag refused invalid bounds
-and numeric types, while a valid drag delivered its target press/release.
-Their capture SHA-256 values are
-`12f822dea5a041e28135fa865da5c2e74b0ce9643a5ddef2fa03d23469b8c62a`
-and `6a0d2829ca0c9d7f3c3e09147d32c5bbe6a65a61011f038e3ab3d8a3730a01ee`,
-respectively. These are reference observations only. Candidate changes for
-these probes have not yet been desktop-tested and are outside the matched
-scope above.
+coordinates. Those refused calls produced no fixture input. Its capture SHA-256
+is `12f822dea5a041e28135fa865da5c2e74b0ce9643a5ddef2fa03d23469b8c62a`.
+Candidate run `run-20261026T094949Z` independently completed all 14 actions with
+positive controls against the same immutable boundary fixture and exited `0`.
+The strict comparator reports `matched_for_recorded_scope`, with no errors, for
+Linux/x64 and only `native.capture-scale-and-window-move`, using the same explicit
+one-case manifest identified above. All four exact oracles match, including
+fractional, out-of-range, negative and window-edge refusals and their absence of
+fixture input. This adds boundary coverage within that case; it does not satisfy
+the full ledger.
+
+The boundary candidate ELF SHA-256 is
+`f505ada37370187b98b5adb44f42c239f72f1743a011e0e28c3fdb043af1bc64`.
+Its capture SHA-256 is
+`14664fa09f14de33f69ab0b23ae33e74512699a8e96f3e355f1d5448c6f71d59`,
+and its comparator report SHA-256 is
+`f89f5ca16f5af39a8791f71aaad73c1ca428d41192e0c39fc36aaa45be1a0a89`.
+Later source edits require their own execution evidence.
+
+Original run `run-20261026T085724Z` observed that the selected app object has no
+`moveCursor` function; drag refused invalid bounds and numeric types, while a
+valid drag delivered its target press/release. Its capture SHA-256 is
+`6a0d2829ca0c9d7f3c3e09147d32c5bbe6a65a61011f038e3ab3d8a3730a01ee`.
+The candidate pointer/drag probe `run-20261026T095321Z` exited `101` with an
+incomplete capture and a `Promise was collected` REPL error. It is not a passing
+comparison. Pointer/drag parity remains pending a fresh desktop run of the fixed
+runtime; the original observations do not establish a candidate result.
 
 ### Kernel reset and native settlement
 
@@ -208,11 +226,12 @@ caller's sandbox and approval policy. macOS behavior requires macOS; cross
 compilation or a Linux container cannot establish AX, Quartz or permission
 behavior.
 
-A runner writes one JSON record per side. Capture execution and record assembly
-must be explicit: the controlled geometry result above used an independently
-recorded capture per side and an explicit one-case manifest. Other existing
-desktop tests below do not emit this record format and must not be presented as
-though they had completed a differential comparison.
+A runner writes one JSON record per side. This comparison scaffold does not
+automatically execute live tests. Capture execution and record assembly must be
+explicit: the controlled results above used independently recorded captures per
+side and an explicit one-case manifest. Other existing desktop tests below do
+not emit this record format and must not be presented as though they had
+completed a differential comparison.
 Record the command actually executed, its working directory and exit code; do
 not substitute an intended command. Do not log passwords, tokens or the complete
 environment.

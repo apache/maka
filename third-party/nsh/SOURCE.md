@@ -26,7 +26,7 @@ at `de176695240d550f2b303643b8019146c7989e7f`. The upstream project is
 
 `upstream.json` keeps that initial `repository` and `revision`. Its
 `upstream_revision` records the latest integrated `longbridge/nsh` main revision:
-`dcc67ba3e11461ec4abd25162522a9818844adb0`. The first upstream synchronization
+`e5fe48b4c70ff82b302bfa4883a87a73a6666526`. The first upstream synchronization
 starts from `6bb0b7908043132067456e4a21dd57c90a0bdce5`, already included in the
 initial fork import.
 
@@ -38,6 +38,12 @@ the README retains the terminal backend description). This is a mixed-source
 vendor tree, not a claim that one upstream revision contains the fork features.
 The source, tests, resources, original licenses and independent workspaces are
 retained. `SOURCE.md` and `upstream.json` are Maka's provenance files.
+The trailing-whitespace measurement integration preserves `TextEngine::measure_canvas`
+for platform-specific advances (including the terminal font catalog), while
+using upstream whitespace-inclusive measurement when that hook is absent.
+Upstream selection/link geometry regressions and the local canvas override
+regression are both retained.
+
 The Editor / DiffView import adds their headless regressions, shared syntax
 highlighting, per-engine registry setup, and pointer-event payload support.
 Maka already passes `nsh_base::registry()` to its bundler and engine; these
@@ -47,6 +53,37 @@ forwarding upstream touch positions, modifiers and click counts. The shared
 Unicode segmentation dependency follows upstream 1.13 for both the editor and
 terminal backend. These integrations do not replace the local terminal input,
 IME, completion or fallback-key capabilities described below.
+
+The DataTable / Table import adds virtualized row and column views, table
+accessibility roles, and pressable focus notifications through the existing
+registry. The focus declarations retain the terminal scroll/list events and
+input `focusable` behavior; headless keyboard focus coexists with the local
+native contact and input-result tracking. Editor scheduling and idle collection
+follow upstream's large-file work, without claiming its benchmark figures as
+Maka measurements. The terminal input and lifecycle adaptations remain intact.
+
+The pull-to-refresh import retains the terminal backend's existing physics and
+48-point default refresh inset. A custom indicator uses its supplied height,
+hides terminal spinner text, and receives pull distance through the existing
+native animation value path. The iOS refresh replacement keeps pending-reveal
+invalidation and the owned link-target representation. Shared text-engine hit
+testing does not replace terminal cell-aware selection, IME or focus handling;
+the new trait defaults estimate positions when a backend has no exact override.
+
+The row-accessor import adds retained JS row values and typed key/function
+accessors, plus timing and spring props. Generic component props default to
+`any` when no rows infer their type; the local array/list-source overloads keep
+their existing inference behavior. Component methods mark trailing `Option`
+arguments optional in TypeScript. Their `Param` and `MethodSpec::params` tuples
+now include the optional flag; Maka's bindings use the deriving macros rather
+than constructing those tuples. Empty first canvas recordings are suppressed,
+while an empty recording still clears an existing drawing.
+The retained-row adaptation also treats a different JS retention handle as a
+prop change even when numeric columns match, preserving arbitrary row fields.
+QuickJS returns retained values only to their owning function table; foreign
+hosts receive no value. Custom `JsHost` implementations that retain values must
+implement `owns_retained` for their own handles. Rust-created rows retain their
+numeric equality semantics; this is not deep JavaScript object comparison.
 
 The local hint-observation integration retains an allocation lifetime separate
 from the upstream layout tree's reusable slab index. This prevents a delayed
@@ -110,6 +147,13 @@ paths use an ordinary UNC spelling only when re-canonicalizing it proves the
 same native file identity. This keeps entry, working-directory and plugin paths
 consistent for Rolldown without copying sources or changing the import baseline.
 The conversion preserves native path components, including non-Unicode names.
+
+A manual dispatch of Maka's existing CI also runs the nested NSH core, base,
+engine, JS, headless (with `agent`) and terminal tests, followed by Web's portable
+`text` integration test. This separate runner starts after Maka's test job,
+even if that job fails; root workspace tests alone do not select these suites.
+The portable Web test does not validate browser rendering, and this job does
+not validate native platform runtimes or the `bundle`-gated testing suite.
 
 Develop and verify changes in this tree together with their Maka callers. Send
 reusable changes to `longbridge/nsh`. When synchronizing the fork or upstream,

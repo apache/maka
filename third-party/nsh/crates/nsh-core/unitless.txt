@@ -361,5 +361,10 @@ animation::animator::Animator::value ->                          # a generic ani
 scroll::ScrollState::sticky_shifts_with(value)                  # a generic animated value read from the graph (a sticky cell's offset)
 ui::rows::Rows::column ->                                        # the app's data: numbers of any unit, which a component scales
 ui::rows::Rows::from_columns(columns)                            # the app's data: numbers of any unit, which a component scales
+ui::rows::RowAccessor::Js.0                                      # the app's data: numbers of any unit, which a component scales
+ui::rows::RowAccessor::Rust.0                                    # the app's data: numbers of any unit, which a component scales
+ui::rows::RowAccessor::from_fn(f)                                # the app's data: numbers of any unit, which a component scales
+ui::rows::RowAccessor::values ->                                 # the app's data: numbers of any unit, which a component scales
+ui::rows::RowAccessor::values_now ->                             # the app's data: numbers of any unit, which a component scales
 
 style::TextStyle.line_height_em                                  # a line-height length in multiples of the element font size

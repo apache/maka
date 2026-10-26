@@ -412,13 +412,12 @@ fn browser_decision_lookup_uses_exact_identity_index_as_unrelated_history_grows(
     db.execute_batch(&crate::schema::fixture(|_, name| {
         matches!(
             name,
-            "interaction_requests" | "interaction_outcomes" | "interaction_session_pending"
+            "interaction_requests"
+                | "interaction_outcomes"
+                | "interaction_session_pending"
+                | "interaction_browser_origin_decision"
         )
     }))
-    .unwrap();
-    db.execute_batch(include_str!(
-        "../../../migrations/0003_browser_origin_decisions.sql"
-    ))
     .unwrap();
     let basis = PermissionBasis {
         boundary_revision: 4,

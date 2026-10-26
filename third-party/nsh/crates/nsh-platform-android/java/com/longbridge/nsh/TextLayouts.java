@@ -459,6 +459,259 @@ final class TextLayouts {
         return out;
     }
 
+    // Hit testing of a final layout: the caret at a point, a caret's box and the
+    // boxes of a range (`TextEngine::hit_test`, `caret_rect` and `range_rects`).
+    // The engine thread asks through JNI in dp; the UI thread (TextBox,
+    // SelectionArea, TestAgent) asks the same methods in px (`density` 1), so one
+    // implementation answers both. Coordinates are the layout's own, which is the
+    // content box: the layouts are made without padding and TextBox draws them
+    // translated to the box's corner.
+
+    /** A hit: the offset in the low 32 bits, bit 32 for a caret at the end of a wrapped line. */
+    private static long packHit(int offset, boolean upstream) {
+        return (upstream ? 1L << 32 : 0L) | (offset & 0xffffffffL);
+    }
+
+    /** The offset (UTF-16) of a {@link #hitTest} result. */
+    static int hitOffset(long hit) {
+        return (int) hit;
+    }
+
+    /**
+     * Whether a {@link #hitTest} result is the end of a wrapped line, on that
+     * line (`Affinity::Upstream`): its offset is the next line's start too.
+     */
+    static boolean hitUpstream(long hit) {
+        return (hit >>> 32) != 0;
+    }
+
+    /**
+     * The caret nearest ({@code x}, {@code y}) of a final layout, as {@link
+     * #hitOffset} and {@link #hitUpstream} read it: on the line at that height
+     * (the first above the text, the last below it), at the caret edge nearest x
+     * (bidirectional text in visual order). A point past the end of a wrapped
+     * line gives its end, upstream; a line that ends in a break character stops
+     * before it. {@code density}: px per unit of {@code x} and {@code y}.
+     */
+    static long hitTest(Object layout, float x, float y, float density) {
+        if (!(layout instanceof Layout)) return 0;
+        Layout l = (Layout) layout;
+        int lines = l.getLineCount();
+        if (lines == 0) return 0;
+        x *= density;
+        y *= density;
+        int line = l.getLineForVertical((int) y);
+        // Android's nearest caret. On a line that is not the text's last it stops
+        // before the line's last character (to Android the line's end is the next
+        // line's start), which also keeps it before a break character.
+        int offset = l.getOffsetForHorizontal(line, x);
+        int end = l.getLineEnd(line);
+        if (line < lines - 1 && end > l.getLineStart(line) && breakStart(l, line) == end
+                && l.isRtlCharAt(end - 1) == (l.getParagraphDirection(line) == Layout.DIR_RIGHT_TO_LEFT)) {
+            // A wrapped line whose last character is at the line's far edge: the
+            // end of the line, its other edge, is the nearer caret from past the
+            // character's middle on. Lines that end in the other direction keep
+            // Android's caret: the nearest one on screen.
+            float endX = wrappedEndX(l, line);
+            if (offset == l.getOffsetForHorizontal(line, endX)
+                    && Math.abs(x - endX) < Math.abs(x - l.getPrimaryHorizontal(offset))) {
+                return packHit(end, true);
+            }
+        }
+        return packHit(offset, false);
+    }
+
+    /**
+     * The caret at {@code offset} (UTF-16) of a final layout, a box without
+     * width as high as its line: x, y, height; empty without lines.
+     * {@code upstream}: at the end of a wrapped line, the caret on that line
+     * rather than at the start of the next. {@code density}: px per unit of the
+     * result.
+     */
+    static float[] caretRect(Object layout, int offset, boolean upstream, float density) {
+        if (!(layout instanceof Layout)) return new float[0];
+        Layout l = (Layout) layout;
+        if (l.getLineCount() == 0) return new float[0];
+        offset = Math.max(0, Math.min(offset, l.getText().length()));
+        int line = l.getLineForOffset(offset);
+        if (upstream && line > 0 && offset == l.getLineStart(line)) line--;
+        // Never after a break character; the end of a wrapped line is not an
+        // offset of its own to Android.
+        int at = Math.min(offset, breakStart(l, line));
+        float x = at == l.getLineEnd(line) && line < l.getLineCount() - 1
+                ? wrappedEndX(l, line)
+                : l.getPrimaryHorizontal(at);
+        int top = l.getLineTop(line);
+        return new float[] {x / density, top / density, (l.getLineBottom(line) - top) / density};
+    }
+
+    /**
+     * The boxes of the characters {@code start}..{@code end} (UTF-16) of a final
+     * layout, line high: per line one for each stretch of adjacent characters
+     * (bidirectional text splits a range), through the line's end where the
+     * range goes on past it; x, y, width, height each. Break characters and what
+     * an ellipsis replaced have none. {@code density}: px per unit of the result.
+     */
+    static float[] rangeRects(Object layout, int start, int end, float density) {
+        if (!(layout instanceof Layout)) return new float[0];
+        Layout l = (Layout) layout;
+        start = Math.max(0, start);
+        end = Math.min(end, l.getText().length());
+        int lines = l.getLineCount();
+        if (start >= end || lines == 0) return new float[0];
+        Boxes boxes = new Boxes();
+        for (int line = l.getLineForOffset(start); line < lines; line++) {
+            int lineStart = l.getLineStart(line);
+            if (lineStart >= end) break;
+            int a = Math.max(start, lineStart), b = Math.min(end, breakStart(l, line));
+            int first = boxes.count;
+            if (l.getEllipsisCount(line) > 0) {
+                int ellipsis = lineStart + l.getEllipsisStart(line);
+                addRuns(l, line, a, Math.min(b, ellipsis), boxes);
+                addRuns(l, line, Math.max(a, ellipsis + l.getEllipsisCount(line)), b, boxes);
+            } else {
+                addRuns(l, line, a, b, boxes);
+            }
+            boxes.merge(first);
+        }
+        return boxes.rects(density);
+    }
+
+    /**
+     * Where a line's break begins: its end, or before the character that ends
+     * it (a newline, a carriage return, a line or paragraph separator; "\r\n"
+     * as one). Carets stay before it.
+     */
+    private static int breakStart(Layout l, int line) {
+        int start = l.getLineStart(line), end = l.getLineEnd(line);
+        if (end <= start) return end;
+        CharSequence text = l.getText();
+        char c = text.charAt(end - 1);
+        if (c != '\n' && c != '\r' && c != '\u0085' && c != '\u2028' && c != '\u2029') return end;
+        return c == '\n' && end - 1 > start && text.charAt(end - 2) == '\r' ? end - 2 : end - 1;
+    }
+
+    /**
+     * The x of the end of a line that wrapped, past its last character and the
+     * white space that hangs after it: the far edge of the line in its
+     * paragraph's direction, as far from where Android starts the line as the
+     * line is wide.
+     */
+    private static float wrappedEndX(Layout l, int line) {
+        float width = l.getLineWidth(line);
+        float start = l.getPrimaryHorizontal(l.getLineStart(line));
+        return l.getParagraphDirection(line) == Layout.DIR_RIGHT_TO_LEFT ? start - width : start + width;
+    }
+
+    /**
+     * The carets of {@code offset} on a line: Android's primary and secondary
+     * ones, which differ where the direction changes (the end of one run, the
+     * start of the next). A wrapped line's end is one of its own.
+     */
+    private static float[] edges(Layout l, int line, int offset) {
+        if (offset == l.getLineEnd(line) && line < l.getLineCount() - 1) return new float[] {wrappedEndX(l, line)};
+        float primary = l.getPrimaryHorizontal(offset), secondary = l.getSecondaryHorizontal(offset);
+        return primary == secondary ? new float[] {primary} : new float[] {primary, secondary};
+    }
+
+    /** The boxes of the characters {@code a}..{@code b} of a line: one per run of one direction. */
+    private static void addRuns(Layout l, int line, int a, int b, Boxes out) {
+        float top = l.getLineTop(line), bottom = l.getLineBottom(line);
+        int i = a;
+        while (i < b) {
+            boolean rtl = l.isRtlCharAt(i);
+            int j = i + 1;
+            while (j < b && l.isRtlCharAt(j) == rtl) j++;
+            // The run's first character starts at one of the carets before it and its
+            // last ends at one of those after it: the left edge is the first's and the
+            // right edge the last's (the other way round right to left).
+            float[] before = edges(l, line, i), after = edges(l, line, j);
+            if (!addBox(rtl ? after : before, rtl ? before : after, top, bottom, out)
+                    && j == l.getLineEnd(line) && line < l.getLineCount() - 1) {
+                // A last run against the paragraph's direction does not end at the line's
+                // end: its far edge is among the carets before it.
+                float[] all = new float[before.length + after.length];
+                System.arraycopy(before, 0, all, 0, before.length);
+                System.arraycopy(after, 0, all, before.length, after.length);
+                addBox(all, all, top, bottom, out);
+            }
+            i = j;
+        }
+    }
+
+    /**
+     * Adds the narrowest box from one of {@code lefts} to one of {@code rights}:
+     * carets of other runs, which lie outside this one, make wider ones. False
+     * when there is none (no width).
+     */
+    private static boolean addBox(float[] lefts, float[] rights, float top, float bottom, Boxes out) {
+        float width = Float.MAX_VALUE, left = 0, right = 0;
+        for (float lo : lefts) {
+            for (float hi : rights) {
+                if (hi > lo && hi - lo < width) {
+                    width = hi - lo;
+                    left = lo;
+                    right = hi;
+                }
+            }
+        }
+        if (width == Float.MAX_VALUE) return false;
+        out.add(left, top, right, bottom);
+        return true;
+    }
+
+    /** Boxes being collected (left, top, right, bottom, px). */
+    private static final class Boxes {
+        float[] v = new float[16];
+        int count;
+
+        void add(float left, float top, float right, float bottom) {
+            if ((count + 1) * 4 > v.length) v = java.util.Arrays.copyOf(v, v.length * 2);
+            int o = count++ * 4;
+            v[o] = left;
+            v[o + 1] = top;
+            v[o + 2] = right;
+            v[o + 3] = bottom;
+        }
+
+        /** Joins the boxes from {@code first} on that touch (those of one line), left to right. */
+        void merge(int first) {
+            for (int i = first + 1; i < count; i++) {
+                for (int j = i; j > first && v[(j - 1) * 4] > v[j * 4]; j--) {
+                    for (int k = 0; k < 4; k++) {
+                        float t = v[j * 4 + k];
+                        v[j * 4 + k] = v[(j - 1) * 4 + k];
+                        v[(j - 1) * 4 + k] = t;
+                    }
+                }
+            }
+            int out = first;
+            for (int i = first; i < count; i++) {
+                // Runs measured from different carets meet within a rounding error.
+                if (out > first && v[i * 4] <= v[(out - 1) * 4 + 2] + 0.5f) {
+                    v[(out - 1) * 4 + 2] = Math.max(v[(out - 1) * 4 + 2], v[i * 4 + 2]);
+                } else {
+                    System.arraycopy(v, i * 4, v, out * 4, 4);
+                    out++;
+                }
+            }
+            count = out;
+        }
+
+        /** x, y, width, height of each box, in units of {@code density} px. */
+        float[] rects(float density) {
+            float[] out = new float[count * 4];
+            for (int i = 0; i < count; i++) {
+                int o = i * 4;
+                out[o] = v[o] / density;
+                out[o + 1] = v[o + 1] / density;
+                out[o + 2] = (v[o + 2] - v[o]) / density;
+                out[o + 3] = (v[o + 3] - v[o + 1]) / density;
+            }
+            return out;
+        }
+    }
+
     /**
      * An attachment's placeholder: its size, placed in its line by its
      * `verticalAlign` (as `TextAttachment::ascent` in nsh-core places it, with

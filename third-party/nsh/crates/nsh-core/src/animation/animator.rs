@@ -54,6 +54,8 @@ pub struct Animator {
     gestures: FxHashMap<u32, Gestures>,
     /// Scroll view id -> (value node, horizontal).
     scrolls: FxHashMap<u32, (NodeId, bool)>,
+    /// Vertical scroll view id -> pull value node.
+    pulls: FxHashMap<u32, NodeId>,
     /// Scroll views with sticky cells that stick an animated value further
     /// in (`StickyCell::offset`): pinned again on the graph's frames.
     sticky: Vec<u32>,
@@ -86,15 +88,26 @@ impl Animator {
                 id,
                 horizontal,
                 scroll_value,
+                pull_value,
                 ..
-            } => match scroll_value {
-                Some(node) => {
-                    self.scrolls.insert(*id, (*node, *horizontal));
+            } => {
+                match scroll_value {
+                    Some(node) => {
+                        self.scrolls.insert(*id, (*node, *horizontal));
+                    }
+                    None => {
+                        self.scrolls.remove(id);
+                    }
                 }
-                None => {
-                    self.scrolls.remove(id);
+                match pull_value.filter(|_| !*horizontal) {
+                    Some(node) => {
+                        self.pulls.insert(*id, node);
+                    }
+                    None => {
+                        self.pulls.remove(id);
+                    }
                 }
-            },
+            }
             MountItem::StickyCells { id, cells } => {
                 let animated = cells.iter().any(|c| c.offset.is_some());
                 let at = self.sticky.iter().position(|v| v == id);
@@ -110,6 +123,7 @@ impl Animator {
                 self.bindings.remove(id);
                 self.gestures.remove(id);
                 self.scrolls.remove(id);
+                self.pulls.remove(id);
                 self.sticky.retain(|v| v != id);
             }
             _ => {}
@@ -147,6 +161,17 @@ impl Animator {
         };
         let value = if horizontal { offset.x } else { offset.y };
         self.graph.set(node, value.0, &mut self.finished);
+        true
+    }
+
+    /// A vertical scroll view is pulled `distance` past its top (0 when
+    /// not): feeds its pull value. False if no value is bound to it.
+    pub fn pulled(&mut self, id: u32, distance: Points) -> bool {
+        let Some(&node) = self.pulls.get(&id) else {
+            return false;
+        };
+        self.graph
+            .set(node, distance.0.max(0.0), &mut self.finished);
         true
     }
 
@@ -309,6 +334,7 @@ mod tests {
             horizontal: false,
             scrollbar_visible: true,
             scroll_value: Some(2),
+            pull_value: None,
             keyboard_dismiss: Default::default(),
             mirrored: false,
         });
@@ -341,6 +367,7 @@ mod tests {
             horizontal: false,
             scrollbar_visible: true,
             scroll_value: Some(2),
+            pull_value: None,
             keyboard_dismiss: Default::default(),
             mirrored: false,
         });

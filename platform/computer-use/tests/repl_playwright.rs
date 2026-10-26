@@ -342,7 +342,8 @@ async fn public_playwright_reads_cover_semantic_locators_frames_redaction_and_co
             heap_bytes: 128 * 1024 * 1024,
             ..Default::default()
         },
-    );
+    )
+    .unwrap();
     let result=evaluate(&repl,bridge.clone(),&format!(r#"
         const browser=await cua.getBrowser({{id:'fixture'}});const tab=await browser.tabs.get({});const pw=tab.playwright;
         const role=pw.getByRole('button',{{name:'Save',exact:true}});

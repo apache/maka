@@ -231,6 +231,14 @@ impl Theme {
         self.tokens.color(name)
     }
 
+    /// The highlight of a selection, the one every component draws: the
+    /// app's `selection` color if the theme sets one, else `primary` at
+    /// 22 %.
+    pub fn selection(&self) -> AdaptiveColor {
+        self.color("selection")
+            .unwrap_or_else(|| self.primary.opacity(0.22))
+    }
+
     /// The number named `name` (any the theme sets).
     pub fn number(&self, name: &str) -> Option<f32> {
         self.tokens.number(name)

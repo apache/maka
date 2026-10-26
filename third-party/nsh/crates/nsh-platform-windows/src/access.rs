@@ -293,7 +293,8 @@ pub(crate) fn control_for(a: &Accessibility, kind: ViewKind, pressable: bool) ->
         Role::Timer => Control::Timer,
         Role::Toolbar => Control::ToolBar,
         Role::List => Control::List,
-        Role::Grid => Control::Grid,
+        Role::Grid | Role::Table => Control::Grid,
+        Role::Row | Role::Cell | Role::ColumnHeader | Role::RowGroup => Control::Group,
     })
 }
 

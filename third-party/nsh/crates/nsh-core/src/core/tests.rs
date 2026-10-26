@@ -10733,6 +10733,33 @@ mod painter {
         assert_eq!(plain.ops[2], CanvasOp::LineWidth(Num::Const(1.0)));
         assert_eq!(plain.ops[3], CanvasOp::LineDash([].into()));
     }
+    /// A canvas that has drawn nothing and records an empty drawing (a
+    /// component's canvas before its first layout) sends nothing; one
+    /// that has drawn sends what it draws.
+    #[component]
+    fn EmptyAndDrawn() -> impl IntoElement {
+        view()
+            .child(canvas(Painter::new()))
+            .child(canvas(Painter::new().fill_rect(0.0, 0.0, 10.0, 10.0)))
+    }
+
+    #[test]
+    fn an_empty_first_drawing_sends_nothing() {
+        let mut c = core();
+        c.mount_root(&crate::ui::Root::new::<EmptyAndDrawn>(|| ()));
+        let batch = c.commit().unwrap();
+        let drawings: Vec<_> = batch
+            .items
+            .iter()
+            .filter_map(|i| match i {
+                MountItem::Canvas { drawing, .. } => Some(drawing.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(drawings.len(), 1, "{drawings:?}");
+        assert!(!drawings[0].ops.is_empty());
+    }
+
     /// A label placed by its measured width, gradients, a stroked SVG path
     /// and an operation built by hand reading an animated value.
     #[component]

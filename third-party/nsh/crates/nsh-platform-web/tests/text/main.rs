@@ -6,9 +6,14 @@
 #[allow(dead_code)]
 mod css;
 
+#[path = "../../src/text/hit.rs"]
+#[allow(dead_code, reason = "the wasm-only layout uses the rest")]
+mod hit;
+
 #[path = "../../src/text/wrap.rs"]
 #[allow(dead_code)]
 mod wrap;
 
 mod fonts;
+mod hit_testing;
 mod lines;

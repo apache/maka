@@ -56,7 +56,7 @@ const ARIA_ROLES = {
   search: "searchbox", text: null, summary: "status", togglebutton: "button", dropdownlist: "combobox",
 };
 
-/** How far a refreshable scroll view is pulled to refresh, and the room its spinner takes while refreshing (as on Linux and macOS). */
+/** How far a refreshable scroll view is pulled to refresh, and the room its spinner takes while refreshing (as on Linux and macOS), unless the app draws its own indicator (`refreshIndicator`: its height is both). */
 const REFRESH_PULL = 64;
 const REFRESH_SPACE = 56;
 /** Desktop scroll bars (`showBar`): thickness, margin, the band along the
@@ -507,10 +507,29 @@ function measureNumericText(font, numeric, text) {
     document.body.append(box);
   }
   // `font` resets the variant: set it first, as the run's CSS does.
+  numericSpan.style.letterSpacing = "normal";
   numericSpan.style.font = font;
   numericSpan.style.fontVariantNumeric = numeric;
   numericSpan.textContent = text;
   return numericSpan.getBoundingClientRect().width;
+}
+
+/** Cluster rectangles in a complete drawn run. Reuse the measuring span;
+ * range queries keep shaping and bidi ordering exactly as the DOM draws them.
+ * Only the first hit test of a layout pays for these measurements. */
+function textClusterBoxes(font, numeric, spacing, text, ranges) {
+  measureNumericText(font, numeric || "normal", text);
+  numericSpan.style.direction = "ltr";
+  numericSpan.style.letterSpacing = `${spacing}px`;
+  const origin = numericSpan.getBoundingClientRect().left;
+  const node = numericSpan.firstChild;
+  const range = document.createRange();
+  return ranges.map(([start, end]) => {
+    range.setStart(node, start);
+    range.setEnd(node, end);
+    const box = range.getBoundingClientRect();
+    return [box.left - origin, box.right - origin];
+  });
 }
 
 /** Whether `locale`'s script is written right to left. */
@@ -641,6 +660,14 @@ class Player {
           if (width != null) return width;
           this.measure.font = font;
           return this.measure.measureText(text).width;
+        },
+        text_cluster_boxes: (fp, fl, np, nl, spacing, tp, tl, rp, op, count) => {
+          const input = new Uint32Array(this.wasm.memory.buffer, rp, count * 2);
+          const ranges = Array.from({ length: count }, (_, i) => [input[2*i], input[2*i+1]]);
+          const boxes = textClusterBoxes(this.str(fp, fl), this.str(np, nl), spacing, this.str(tp, tl), ranges);
+          // DOM layout cannot grow wasm memory, so this view stays valid.
+          const output = new Float32Array(this.wasm.memory.buffer, op, count * 2);
+          boxes.forEach(([left, right], i) => { output[2*i] = left; output[2*i+1] = right; });
         },
         font_ascent: (fp, fl) => this.metrics(this.str(fp, fl))[0],
         font_descent: (fp, fl) => this.metrics(this.str(fp, fl))[1],
@@ -2009,10 +2036,20 @@ class Player {
     if (!focusable && !el._a11yFocus && document.activeElement === el) el.blur();
     if (focusable && !el._focusListeners) {
       el._focusListeners = true;
-      // `focus:` classes follow the keyboard focus (the browser draws a
-      // ring only then), not the focus a click would give.
-      el.addEventListener("focus", () => el.matches(":focus-visible") && this.setState(el, FOCUSED, true));
-      el.addEventListener("blur", () => this.setState(el, FOCUSED, false));
+      // `focus:` classes and `onFocus` follow the keyboard focus (the
+      // browser draws a ring only then), not the focus a click would give.
+      el.addEventListener("focus", () => {
+        if (!el.matches(":focus-visible")) return;
+        el._keyFocus = true;
+        this.setState(el, FOCUSED, true);
+        this.event(el._id, "onFocus");
+      });
+      el.addEventListener("blur", () => {
+        this.setState(el, FOCUSED, false);
+        if (!el._keyFocus) return;
+        el._keyFocus = false;
+        this.event(el._id, "onBlur");
+      });
     }
     this.updateAria(el);
   }
@@ -2294,7 +2331,11 @@ class Player {
   op_sbh([, id, behavior]) {
     const el = this.view(id);
     if (!el) return;
+    const refresh = el._behavior?.refreshIndicator?.height !== behavior.refreshIndicator?.height;
     el._behavior = behavior;
+    // A refresh in progress keeps the room of the indicator now showing.
+    if (refresh && el._refreshing && !el._pulling && el._pull > 0) this.animatePull(el, this.refreshSpace(el));
+    if (refresh) this.updateSpinner(el);
     if (this.zooms(el)) {
       this.ensureLayer(el);
       el._zoom = Math.min(Math.max(el._zoom, behavior.minZoom), behavior.maxZoom);
@@ -2779,10 +2820,18 @@ class Player {
     this.ensureLayer(el);
     el._refreshing = refreshing;
     if (!el._pulling) {
-      if (refreshing && el.scrollTop <= 0.5) this.animatePull(el, REFRESH_SPACE);
+      if (refreshing && el.scrollTop <= 0.5) this.animatePull(el, this.refreshSpace(el));
       else if (!refreshing && el._pull > 0) this.animatePull(el, 0);
     }
     this.updateSpinner(el);
+  }
+
+  refreshThreshold(el) {
+    return el._behavior?.refreshIndicator?.height ?? REFRESH_PULL;
+  }
+
+  refreshSpace(el) {
+    return el._behavior?.refreshIndicator?.height ?? REFRESH_SPACE;
   }
 
   refreshable(el) {
@@ -2841,16 +2890,17 @@ class Player {
     el.scrollTop = 0;
     const over = -v;
     // Refreshing, the spinner's room is the pull's start.
-    this.setPull(el, el._refreshing ? Math.min(over, REFRESH_SPACE) + Math.max(0, over - REFRESH_SPACE) * 0.5 : over * 0.5);
+    const space = this.refreshSpace(el);
+    this.setPull(el, el._refreshing ? Math.min(over, space) + Math.max(0, over - space) * 0.5 : over * 0.5);
   }
 
   releasePull(el) {
-    if (!el._refreshing && el._events.has("onRefresh") && el._pull >= REFRESH_PULL) {
+    if (!el._refreshing && el._events.has("onRefresh") && el._pull >= this.refreshThreshold(el)) {
       // Shown right away, as UIRefreshControl does; JS turns it off.
       el._refreshing = true;
       this.event(el._id, "onRefresh");
     }
-    this.animatePull(el, el._refreshing && el._pull > 0 ? REFRESH_SPACE : 0);
+    this.animatePull(el, el._refreshing && el._pull > 0 ? this.refreshSpace(el) : 0);
   }
 
   setPull(el, pull) {
@@ -2859,6 +2909,7 @@ class Player {
     this.placeLayer(el);
     this.updateSpinner(el);
     this.scrolled(el);
+    this.call((w) => w.nsh_pull(el._id, pull));
   }
 
   animatePull(el, target) {
@@ -2876,7 +2927,8 @@ class Player {
 
   /** The spinner above the content: its spokes appear as it is pulled, and turn while refreshing. */
   updateSpinner(el) {
-    const shown = el._pull > 0;
+    // Off, the app draws its own (from `pullValue`).
+    const shown = el._pull > 0 && !el._behavior?.refreshIndicator;
     let spinner = el._spinner;
     if (!shown) {
       spinner?.classList.add("nsh-gone");
@@ -2891,8 +2943,8 @@ class Player {
       el.append(spinner);
     }
     spinner.classList.remove("nsh-gone");
-    spinner.style.top = `${el._pull - REFRESH_SPACE / 2 - 10}px`;
-    const progress = el._refreshing ? 1 : Math.min(1, el._pull / REFRESH_PULL);
+    spinner.style.top = `${el._pull - this.refreshSpace(el) / 2 - 10}px`;
+    const progress = el._refreshing ? 1 : Math.min(1, el._pull / this.refreshThreshold(el));
     const count = Math.min(8, Math.ceil(progress * 8));
     [...spinner.children].forEach((spoke, i) => spoke.classList.toggle("nsh-hidden", i >= count));
     // Pulled all the way, the spokes fade behind the lead one.

@@ -33,7 +33,11 @@ impl WriteAppend {
     pub(crate) fn from_events(events: &[EventWrite]) -> Option<Self> {
         (!events.is_empty()
             && events.iter().all(|write| match &write.event().fact {
-                Fact::InvocationOpened { .. } | Fact::ModelObserved { .. } => true,
+                Fact::InvocationOpened { .. }
+                | Fact::ModelObserved { .. }
+                | Fact::ToolDispatched { .. }
+                | Fact::ToolRejected { .. }
+                | Fact::ToolSettled { .. } => true,
                 Fact::ModelRequested {
                     purpose: maka_agent_facts::context::ModelPurpose::Main,
                     checkpoint_event_id: None,
@@ -68,7 +72,7 @@ impl Statement for WriteAppend {
     }
     fn reusable_after_rollback(&self) -> bool {
         // These requests previously used Run. Preserve recovery after a failed
-        // opening/main request; pure observation storage faults retire the owner.
+        // opening/main/tool request; pure observation storage faults retire the owner.
         !self
             .events
             .iter()
@@ -82,6 +86,8 @@ impl Statement for WriteAppend {
                 | StoreError::Sealed
                 | StoreError::ImportedInvocation
                 | StoreError::EventConflict
+                | StoreError::ArtifactConflict
+                | StoreError::TranscriptConflict
                 | StoreError::SessionRetired
                 | StoreError::PermissionRevoked
                 | StoreError::InvalidTransition(_)

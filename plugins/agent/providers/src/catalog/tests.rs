@@ -22,7 +22,7 @@ use maka_agent_facts::configuration::{
     ModelCapabilities, ModelInfo, ModelModalities, ModelModality,
 };
 use maka_agent_facts::execution::ThinkingLevel::{High, Low, Max, Off};
-use serde_json::json;
+use serde_json::{Value, json};
 
 fn from_values(
     models: Option<&serde_json::Value>,
@@ -481,9 +481,30 @@ fn raw_sources_resolve_decoded_duplicates_before_schema_validation() {
     assert!(Snapshot::from_sources(Some(&bad_model), None).is_err());
     // Hidden JSON-invalid metadata cannot cross the validated input boundary.
     for input in [
-        r#"{"x":1e400,"x":{}}"#,
+        r#"{"x":1e,"x":{}}"#,
         r#"{"data":[],"unknown":"\ud800","unknown":null}"#,
     ] {
         assert!(PublicCatalogBody::from_json(input.into()).is_err());
+    }
+}
+
+#[test]
+fn raw_source_numeric_overflow_follows_value_acceptance_before_schema_validation() {
+    use maka_agent_facts::public_catalog::PublicCatalogBody;
+    let input =
+        r#"{"x":1e400,"x":{"id":"x","models":{"m":{"id":"m","name":"Final","unknown":1e400}}}}"#;
+    let expected = serde_json::from_str::<Value>(input);
+    let body = PublicCatalogBody::from_json(input.into());
+    assert_eq!(body.is_ok(), expected.is_ok());
+    if let Ok(body) = body {
+        assert_eq!(body.as_raw().get(), input);
+        let actual = Snapshot::from_sources(Some(&body), None).unwrap();
+        let expected = from_values(Some(&expected.unwrap()), None).unwrap();
+        assert_eq!(actual.models, expected.models);
+        assert_eq!(actual.descriptions, expected.descriptions);
+        assert_eq!(
+            actual.get("x", "m").unwrap().display_name.as_deref(),
+            Some("Final")
+        );
     }
 }

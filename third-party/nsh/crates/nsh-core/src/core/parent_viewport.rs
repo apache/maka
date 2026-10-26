@@ -614,10 +614,18 @@ impl<M: TextEngine> Core<M> {
             if scroll.scroll_value.is_some() {
                 bits |= ignored::SCROLL_VALUE;
             }
-            if scroll.refreshing {
+            if scroll.refreshing
+                || scroll.pull_value.is_some()
+                || scroll.behavior.refresh_indicator.is_some()
+            {
                 bits |= ignored::REFRESH;
             }
-            if scroll.behavior != ScrollBehavior::default()
+            // The app's refresh indicator counts as refresh above.
+            let behavior = ScrollBehavior {
+                refresh_indicator: None,
+                ..scroll.behavior.clone()
+            };
+            if behavior != ScrollBehavior::default()
                 || scroll.keyboard_dismiss != crate::ops::KeyboardDismissMode::None
             {
                 bits |= ignored::BEHAVIOR;
@@ -662,7 +670,11 @@ const IGNORED: [(u16, &str, &str); 7] = [
         AROUND,
     ),
     (ignored::SCROLL_VALUE, "`scrollValue`", AROUND),
-    (ignored::REFRESH, "`refreshing` and `onRefresh`", AROUND),
+    (
+        ignored::REFRESH,
+        "`refreshing`, `onRefresh`, `pullValue` and `refreshIndicator`",
+        AROUND,
+    ),
     (
         ignored::BEHAVIOR,
         "paging, snapping, `contentInset`, `contentOffset`, `bounces`, `scrollable` and `keyboardDismissMode`",

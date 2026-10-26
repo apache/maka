@@ -77,6 +77,60 @@ const span = (line: number, start: number, end: number): EditorRange => ({ start
 // Answers come back after a server's round trip.
 const later = <T>(ms: number, value: T) => new Promise<T>((resolve) => setTimeout(() => resolve(value), ms));
 
+/** Lines a pass reads between the points where it may give the thread back. */
+const SLICE = 64;
+
+/** Thrown into a pass whose text changed while it ran. */
+const STALE = new Error("the text changed");
+
+/** The passes under way: each takes a step, `true` once it is done. */
+const passes: (() => boolean)[] = [];
+let ticking = false;
+
+/** Steps the passes in turn for a few milliseconds, all of them together,
+ * then gives the thread back until the next turn. */
+function tick() {
+  const until = Date.now() + 8;
+  while (passes.length > 0 && Date.now() < until) {
+    for (let i = 0; i < passes.length; ) {
+      if (passes[i]()) passes.splice(i, 1);
+      else i++;
+    }
+  }
+  ticking = passes.length > 0;
+  if (ticking) setTimeout(tick, 0);
+}
+
+/**
+ * Runs `pass` a few milliseconds at a time, the thread free between its
+ * slices: the app's JS runs on the engine's thread, and reading a long file
+ * in one go would hold every frame of the editor until it is done (a real
+ * server runs in a process of its own). `stale` stops a pass whose text
+ * changed meanwhile.
+ */
+function slices<T>(pass: Generator<void, T>, stale: () => boolean = () => false): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    passes.push(() => {
+      if (stale()) {
+        reject(STALE);
+        return true;
+      }
+      try {
+        const step = pass.next();
+        if (step.done) resolve(step.value);
+        return step.done === true;
+      } catch (e) {
+        reject(e);
+        return true;
+      }
+    });
+    if (!ticking) {
+      ticking = true;
+      setTimeout(tick, 0);
+    }
+  });
+}
+
 const KEYWORDS = [
   "as", "async", "await", "break", "case", "catch", "class", "const", "continue", "default", "delete", "do", "else",
   "export", "extends", "false", "finally", "for", "function", "if", "import", "in", "instanceof", "interface", "let",
@@ -181,35 +235,61 @@ export function wordAt(line: string, column: number): { word: string; start: num
 }
 
 /**
- * The text with string literals and comments blanked out (their
- * characters as spaces, the line breaks kept), so the rules below look at
- * code only.
+ * Where what `open` opened (a string, a template or a block comment) ends
+ * on `text`, from `from`: just past its closing, or -1 when it runs on past
+ * the line (a template or a block comment; a quote ends with its line).
  */
-function mask(text: string): string {
-  let out = "";
-  let i = 0;
-  while (i < text.length) {
-    const c = text[i];
-    const next = text[i + 1];
-    if (c === "/" && next === "/") {
-      while (i < text.length && text[i] !== "\n") (out += " "), i++;
-    } else if (c === "/" && next === "*") {
-      const end = text.indexOf("*/", i + 2);
-      const stop = end < 0 ? text.length : end + 2;
-      for (; i < stop; i++) out += text[i] === "\n" ? "\n" : " ";
-    } else if (c === '"' || c === "'" || c === "`") {
-      out += " ";
-      i++;
-      while (i < text.length && text[i] !== c && (c === "`" || text[i] !== "\n")) {
-        if (text[i] === "\\") (out += " "), i++;
-        out += text[i] === "\n" ? "\n" : " ";
-        i++;
+function closing(open: string, text: string, from: number): number {
+  if (open === "/*") {
+    const close = text.indexOf("*/", from);
+    return close < 0 ? -1 : close + 2;
+  }
+  let end = from;
+  while (end < text.length && text[end] !== open) end += text[end] === "\\" ? 2 : 1;
+  if (end < text.length) return end + 1;
+  return open === "`" ? -1 : text.length;
+}
+
+/**
+ * The lines with string literals and comments blanked out (their
+ * characters as spaces), so the rules below look at code only. A pass of
+ * its own ([`slices`]), a line at a time: a regular expression jumps to the
+ * next comment or quote, as reading a long file a character at a time in
+ * QuickJS took tens of milliseconds between yields; a template or a block
+ * comment left open runs on into the next lines.
+ */
+function* mask(lines: string[]): Generator<void, string[]> {
+  const out: string[] = new Array(lines.length);
+  const blank = (n: number) => " ".repeat(n);
+  const starts = /\/\/|\/\*|["'`]/g;
+  let open: string | null = null;
+  for (let line = 0; line < lines.length; line++) {
+    if (line % SLICE === 0) yield;
+    const text = lines[line];
+    let masked = "";
+    let code = 0;
+    if (open) {
+      const end = closing(open, text, 0);
+      if (end < 0) {
+        out[line] = blank(text.length);
+        continue;
       }
-      if (i < text.length && text[i] === c) (out += " "), i++;
-    } else {
-      out += c;
-      i++;
+      masked = blank(end);
+      code = end;
+      open = null;
     }
+    starts.lastIndex = code;
+    let m: RegExpExecArray | null;
+    while ((m = starts.exec(text))) {
+      const at = m.index;
+      masked += text.slice(code, at);
+      const end = m[0] === "//" ? text.length : closing(m[0], text, at + m[0].length);
+      if (end < 0) open = m[0];
+      code = end < 0 ? text.length : end;
+      masked += blank(code - at);
+      starts.lastIndex = code;
+    }
+    out[line] = code === 0 ? text : masked + text.slice(code);
   }
   return out;
 }
@@ -250,12 +330,25 @@ interface Model {
   types: Map<string, { symbol: SymbolInfo; members: SymbolInfo[]; start: number; end: number }>;
   /** Lines that declare a method (whose names are no calls). */
   declarations: Set<number>;
+  /** `symbols` by name: what `lookup` searches, once per name and not
+   * through every symbol. */
+  byName: Map<string, Named>;
 }
 
-/** Reads the file's declarations. */
-function analyze(text: string): Model {
+/** The symbols of one name, for `lookup`: the first without a scope, and
+ * those with one by where their scope starts, with the furthest end any of
+ * them up to each reaches (`reach`), so a lookup searches a few of them and
+ * not every one (a long file repeats its names). */
+interface Named {
+  global?: SymbolInfo;
+  scoped: SymbolInfo[];
+  reach: number[];
+}
+
+/** Reads the file's declarations, a slice of lines at a time ([`slices`]). */
+function* analyze(text: string): Generator<void, Model> {
   const lines = text.split("\n");
-  const code = mask(text).split("\n");
+  const code = yield* mask(lines);
   const symbols: SymbolInfo[] = [];
   const types: Model["types"] = new Map();
   const declarations = new Set<number>();
@@ -267,6 +360,7 @@ function analyze(text: string): Model {
   };
 
   for (let line = 0; line < lines.length; line++) {
+    if (line % SLICE === 0) yield;
     const source = lines[line];
     let m: RegExpExecArray | null;
     if ((m = /^(\s*(?:export\s+)?)(interface|class)\s+([A-Za-z_$][\w$]*)/.exec(code[line]))) {
@@ -316,8 +410,17 @@ function analyze(text: string): Model {
   }
 
   // Variables, once the functions (their scopes) are known.
-  const returns = (name: string) => symbols.find((s) => s.kind === "function" && s.name === name)?.type;
+  const returnTypes = new Map<string, string | undefined>();
+  for (const s of symbols) if (s.kind === "function" && !returnTypes.has(s.name)) returnTypes.set(s.name, s.type);
+  const returns = (name: string) => returnTypes.get(name);
+  // The innermost function around each line: the one starting last, as
+  // they nest.
+  const scopes: ({ start: number; end: number } | undefined)[] = new Array(lines.length);
+  for (const f of [...functions].sort((a, b) => a.start - b.start)) {
+    for (let line = f.start; line <= f.end && line < lines.length; line++) scopes[line] = f;
+  }
   for (let line = 0; line < lines.length; line++) {
+    if (line % SLICE === 0) yield;
     const re = /\b(const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::\s*([\w$[\]<>|]+))?\s*=\s*(.*)/g;
     let m: RegExpExecArray | null;
     while ((m = re.exec(code[line]))) {
@@ -336,7 +439,7 @@ function analyze(text: string): Model {
         else if ((call = /^([A-Za-z_$][\w$]*)\s*\(/.exec(value))) type = returns(call[1]);
       }
       const column = m.index + m[0].indexOf(name, keyword.length);
-      const scope = functions.filter((f) => f.start <= line && line <= f.end).sort((a, b) => b.start - a.start)[0];
+      const scope = scopes[line];
       symbols.push({
         name,
         kind: keyword === "const" && /^[A-Z][A-Z0-9_]+$/.test(name) ? "constant" : "variable",
@@ -348,18 +451,42 @@ function analyze(text: string): Model {
       });
     }
   }
-  return { lines, code, symbols, types, declarations };
+  const byName: Model["byName"] = new Map();
+  for (let i = 0; i < symbols.length; i++) {
+    if (i % (SLICE * 16) === 0) yield;
+    const s = symbols[i];
+    let named = byName.get(s.name);
+    if (!named) byName.set(s.name, (named = { scoped: [], reach: [] }));
+    if (s.scope) named.scoped.push(s);
+    else named.global ??= s;
+  }
+  for (const named of byName.values()) {
+    // Stable: of scopes starting on one line, the last declared wins.
+    named.scoped.sort((a, b) => a.scope!.start - b.scope!.start);
+    let reach = -1;
+    named.reach = named.scoped.map((s) => (reach = Math.max(reach, s.scope!.end)));
+  }
+  return { lines, code, symbols, types, declarations, byName };
 }
 
 /** The symbol `name` means on line `line`: the innermost one visible there. */
 function lookup(model: Model, name: string, line: number): SymbolInfo | undefined {
-  let found: SymbolInfo | undefined;
-  for (const s of model.symbols) {
-    if (s.name !== name) continue;
-    if (s.scope && (line < s.scope.start || line > s.scope.end)) continue;
-    if (!found || (s.scope && (!found.scope || s.scope.start >= found.scope.start))) found = s;
+  const named = model.byName.get(name);
+  if (!named) return undefined;
+  const { scoped, reach } = named;
+  // The last scope starting at or before `line`, then back while one before
+  // may still reach it: the first that does starts last (the innermost).
+  let low = 0;
+  let high = scoped.length;
+  while (low < high) {
+    const mid = (low + high) >> 1;
+    if (scoped[mid].scope!.start <= line) low = mid + 1;
+    else high = mid;
   }
-  return found;
+  for (let i = low - 1; i >= 0 && reach[i] >= line; i--) {
+    if (scoped[i].scope!.end >= line) return scoped[i];
+  }
+  return named.global;
 }
 
 /** The members after a `.` on a value of `type`. */
@@ -416,11 +543,13 @@ function closest(word: string, names: Iterable<string>): string | undefined {
   return best;
 }
 
-/** The linter: the problems of the file and their fixes. */
-function lint(model: Model): Problem[] {
+/** The linter: the problems of the file and their fixes, a slice of lines
+ * at a time ([`slices`]). */
+function* lint(model: Model): Generator<void, Problem[]> {
   const { lines, code } = model;
-  const problems: Problem[] = [];
-  const text = lines.join("\n");
+  // The problems of each line: put in order a line at a time, not sorted
+  // all together at the end.
+  const byLine: Problem[][] = [];
   const problem = (
     range: EditorRange,
     severity: EditorDiagnostic["severity"],
@@ -434,11 +563,16 @@ function lint(model: Model): Problem[] {
     // ESLint's rules each have a page.
     if (source === "eslint" && code) diagnostic.codeDescription = { href: `https://eslint.org/docs/latest/rules/${code}` };
     if (tags) diagnostic.tags = tags;
-    problems.push({ diagnostic, fixes });
+    (byLine[range.start.line] ??= []).push({ diagnostic, fixes });
   };
   const replace = (title: string, range: EditorRange, by: string): CodeAction => ({ title, kind: "quickfix", edits: [{ range, text: by }] });
+  // The functions' names, which a call of an unknown name may misspell;
+  // listed the first time one is needed.
+  let functions: string[] | undefined;
+  const functionNames = () => (functions ??= [...new Set(model.symbols.filter((s) => s.kind === "function").map((s) => s.name))]);
 
   for (let line = 0; line < lines.length; line++) {
+    if (line % SLICE === 0) yield;
     let m: RegExpExecArray | null;
     // A TODO left in a comment.
     if ((m = /\/\/\s*((?:TODO|FIXME)\b:?\s*(.*))$/.exec(lines[line])) && code[line].slice(m.index).trim() === "") {
@@ -482,24 +616,44 @@ function lint(model: Model): Problem[] {
         if (["String", "Number", "Boolean", "Array", "Object", "Date", "Promise", "setTimeout", "parseInt", "parseFloat"].includes(name)) continue;
         const start = m.index + m[0].indexOf(name);
         const range = span(line, start, start + name.length);
-        const guess = closest(name, model.symbols.filter((s) => s.kind === "function").map((s) => s.name));
+        const guess = closest(name, functionNames());
         problem(range, "error", `Cannot find name '${name}'.${guess ? ` Did you mean '${guess}'?` : ""}`, "ts", "2304", guess ? [replace(`Change spelling to '${guess}'`, range, guess)] : []);
       }
     }
   }
 
-  // Variables declared and never read.
-  for (const s of model.symbols) {
+  // Variables declared and never read. Every name of the text counted in
+  // one pass, not the whole text searched once per variable.
+  const uses = new Map<string, number>();
+  const names = /(?<![\w$.])[A-Za-z_$][\w$]*/g;
+  for (let line = 0; line < lines.length; line++) {
+    if (line % SLICE === 0) yield;
+    // `exec`, not `matchAll`, which compiles a copy of the expression per
+    // call.
+    names.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = names.exec(lines[line]))) uses.set(m[0], (uses.get(m[0]) ?? 0) + 1);
+  }
+  for (let i = 0; i < model.symbols.length; i++) {
+    if (i % SLICE === 0) yield;
+    const s = model.symbols[i];
     if (s.kind !== "variable" && s.kind !== "constant") continue;
-    const uses = text.match(new RegExp(`(?<![\\w$.])${s.name.replace(/\$/g, "\\$")}(?![\\w$])`, "g"))?.length ?? 0;
-    if (uses > 1) continue;
+    if ((uses.get(s.name) ?? 0) > 1) continue;
     const line = s.range.start.line;
     const next = line + 1 < lines.length ? pos(line + 1, 0) : pos(line, lines[line].length);
     problem(s.range, "warning", `'${s.name}' is declared but its value is never read.`, "ts", "6133", [
       { title: `Remove unused declaration '${s.name}'`, kind: "quickfix", edits: [{ range: { start: pos(line, 0), end: next }, text: "" }] },
     ], ["unnecessary"]);
   }
-  return problems.sort((a, b) => a.diagnostic.range.start.line - b.diagnostic.range.start.line || a.diagnostic.range.start.column - b.diagnostic.range.start.column);
+  const problems: Problem[] = [];
+  for (let line = 0; line < byLine.length; line++) {
+    if (line % SLICE === 0) yield;
+    const here = byLine[line];
+    if (!here) continue;
+    if (here.length > 1) here.sort((a, b) => a.diagnostic.range.start.column - b.diagnostic.range.start.column);
+    for (const p of here) problems.push(p);
+  }
+  return problems;
 }
 
 const kindOf = (kind: SymbolKind | Builtin["kind"]): EditorCompletionItem["kind"] => (kind === "parameter" ? "variable" : kind);
@@ -507,42 +661,60 @@ const kindOf = (kind: SymbolKind | Builtin["kind"]): EditorCompletionItem["kind"
 /** The simulated server: one file, kept up to date by `change`. */
 export class LanguageServer {
   private text = "";
-  private cached: Model | undefined;
+  // Counts the texts: comparing a long text with the one a pass reads
+  // would compare every character, once a slice.
+  private version = 0;
+  private analyzed: Promise<Model> | undefined;
 
-  private get model(): Model {
-    return (this.cached ??= analyze(this.text));
+  /** What the server knows of the current text, read in slices once per
+   * text: a request made while an older text is read gets the newer one's. */
+  private model(): Promise<Model> {
+    if (!this.analyzed) {
+      const version = this.version;
+      this.analyzed = slices(analyze(this.text), () => version !== this.version).catch((e) => {
+        if (e === STALE) return this.model();
+        throw e;
+      });
+    }
+    return this.analyzed;
   }
 
   /** The file's new text (`textDocument/didChange`). */
   change(text: string) {
     if (text === this.text) return;
     this.text = text;
-    this.cached = undefined;
+    this.version++;
+    this.analyzed = undefined;
   }
 
   /** The file's problems (`textDocument/publishDiagnostics`). */
-  diagnostics(): Promise<Problem[]> {
-    return later(40, lint(this.model));
+  async diagnostics(): Promise<Problem[]> {
+    return later(40, await slices(lint(await this.model())));
   }
 
   /** The hex color literals of the file (`textDocument/documentColor`). */
-  colors(): Promise<DocumentColor[]> {
-    const out: DocumentColor[] = [];
-    this.model.lines.forEach((text, line) => {
-      const re = /#(?:[0-9a-fA-F]{6}|[0-9a-fA-F]{3})(?![\w$])/g;
-      let m: RegExpExecArray | null;
-      while ((m = re.exec(text))) {
-        let hex = m[0].slice(1).toLowerCase();
-        if (hex.length === 3) hex = [...hex].map((c) => c + c).join("");
-        out.push({ range: span(line, m.index, m.index + m[0].length), color: `#${hex}` });
+  async colors(): Promise<DocumentColor[]> {
+    const { lines } = await this.model();
+    function* find(): Generator<void, DocumentColor[]> {
+      const out: DocumentColor[] = [];
+      for (let line = 0; line < lines.length; line++) {
+        if (line % SLICE === 0) yield;
+        const re = /#(?:[0-9a-fA-F]{6}|[0-9a-fA-F]{3})(?![\w$])/g;
+        let m: RegExpExecArray | null;
+        while ((m = re.exec(lines[line]))) {
+          let hex = m[0].slice(1).toLowerCase();
+          if (hex.length === 3) hex = [...hex].map((c) => c + c).join("");
+          out.push({ range: span(line, m.index, m.index + m[0].length), color: `#${hex}` });
+        }
       }
-    });
-    return later(30, out);
+      return out;
+    }
+    return later(30, await slices(find()));
   }
 
   /** The symbol at `position`, and the range of its word. */
-  private symbolAt(position: EditorPosition): { symbol?: SymbolInfo | Builtin; global?: string; range: EditorRange } | null {
-    const model = this.model;
+  private async symbolAt(position: EditorPosition): Promise<{ symbol?: SymbolInfo | Builtin; global?: string; range: EditorRange } | null> {
+    const model = await this.model();
     const lineText = model.code[position.line] ?? "";
     const w = wordAt(lineText, position.column);
     if (!w || KEYWORD_SET.has(w.word)) return null;
@@ -564,8 +736,8 @@ export class LanguageServer {
   }
 
   /** What hover shows at `position` (`textDocument/hover`). */
-  hover(position: EditorPosition): Promise<Hover | null> {
-    const found = this.symbolAt(position);
+  async hover(position: EditorPosition): Promise<Hover | null> {
+    const found = await this.symbolAt(position);
     let hover: Hover | null = null;
     if (found?.global) {
       const g = GLOBALS[found.global];
@@ -579,15 +751,15 @@ export class LanguageServer {
 
   /** Where the symbol at `position` is declared (`textDocument/definition`):
    * `null` for what the file does not declare. */
-  definition(position: EditorPosition): Promise<{ name: string; range: EditorRange } | null> {
-    const found = this.symbolAt(position);
+  async definition(position: EditorPosition): Promise<{ name: string; range: EditorRange } | null> {
+    const found = await this.symbolAt(position);
     const s = found?.symbol;
     return later(30, s && "range" in s ? { name: s.name, range: s.range } : null);
   }
 
   /** The completion items at `position` (`textDocument/completion`). */
-  completion(request: CompletionQuery): Promise<{ items: EditorCompletionItem[]; incomplete: boolean }> {
-    const model = this.model;
+  async completion(request: CompletionQuery): Promise<{ items: EditorCompletionItem[]; incomplete: boolean }> {
+    const model = await this.model();
     const { line, column } = request.position;
     const queryStart = column - request.query.length;
     const code = model.code[line] ?? "";
@@ -641,8 +813,8 @@ export class LanguageServer {
 
   /** The rest of the line to suggest after `position`, shown as ghost text
    * (`textDocument/inlineCompletion`). */
-  inlineCompletion(position: EditorPosition): Promise<string | null> {
-    const model = this.model;
+  async inlineCompletion(position: EditorPosition): Promise<string | null> {
+    const model = await this.model();
     const text = model.lines[position.line] ?? "";
     const before = text.slice(0, position.column);
     let suggestion: string | null = null;

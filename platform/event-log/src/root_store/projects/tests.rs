@@ -21,6 +21,40 @@ use super::*;
 use maka_agent_facts::workspace::BindingRef;
 use serde_json::json;
 
+#[tokio::test]
+async fn concurrent_project_use_preserves_identity_and_cannot_overtake_archive() {
+    use futures_util::poll;
+
+    let (_directory, store) = fixture().await;
+    let (first, second) = tokio::join!(
+        store.register_available_project(registration("physical", "/workspace"), 1),
+        store.register_available_project(registration("physical", "/workspace"), 2),
+    );
+    let first = first.unwrap();
+    let second = second.unwrap();
+    assert_eq!(first.id, second.id);
+    assert_eq!(second.last_used_at, 2);
+
+    let gate = store.project_mutations.clone().lock_owned().await;
+    let mut archive = Box::pin(store.mutate_project(&first.id, ProjectMutation::Archive, 3));
+    assert!(poll!(archive.as_mut()).is_pending());
+    let mut use_project =
+        Box::pin(store.register_available_project(registration("physical", "/new-location"), 4));
+    assert!(poll!(use_project.as_mut()).is_pending());
+    drop(gate);
+    let archived = archive.await.unwrap();
+    assert!(matches!(
+        use_project.await,
+        Err(StoreError::Project(ProjectError::Archived))
+    ));
+    assert_eq!(
+        store.get_project(&first.id).await.unwrap().unwrap(),
+        archived
+    );
+    assert_eq!(archived.locations.len(), 1);
+    store.close().await.unwrap();
+}
+
 async fn fixture() -> (tempfile::TempDir, RootStore) {
     let directory = tempfile::tempdir().unwrap();
     let p = directory.path();

@@ -570,7 +570,8 @@ async fn public_clipboard_shares_real_page_values_and_owns_turn_and_epoch_cleanu
             heap_bytes: 128 * 1024 * 1024,
             ..Default::default()
         },
-    );
+    )
+    .unwrap();
     assert_eq!(evaluate(&repl,bridge.clone(),&format!("globalThis.browser=await cua.getBrowser({{id:'fixture'}});globalThis.tab=await browser.tabs.get({});nodeRepl.write(JSON.stringify(Object.keys(tab.clipboard).sort()));",json!(browser.target))).await,json!(["read","readText","write","writeText"]));
     assert_eq!(evaluate(&repl,bridge.clone(),"nodeRepl.write(JSON.stringify({result:(await tab.clipboard.writeText('Café 日本語 🐧'))===undefined,text:await tab.clipboard.readText()}));").await,json!({"result":true,"text":"Café 日本語 🐧"}));
     assert_eq!(
@@ -980,7 +981,7 @@ async fn public_clipboard_shares_real_page_values_and_owns_turn_and_epoch_cleanu
         authority: bridge.authority.clone(),
         effects: effects.clone(),
     });
-    let fresh_repl = Repl::new(facade(), CellLimits::default());
+    let fresh_repl = Repl::new(facade(), CellLimits::default()).unwrap();
     assert_eq!(evaluate(&fresh_repl,fresh_bridge,&format!("globalThis.browser=await cua.getBrowser({{id:'fixture'}});globalThis.tab=await browser.tabs.get({});nodeRepl.write(JSON.stringify(await tab.clipboard.read()));",json!(browser.target))).await,json!([]));
     assert_eq!(
         browser.page(None, "navigator.clipboard.readText()").await,

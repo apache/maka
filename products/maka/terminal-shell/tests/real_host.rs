@@ -23,6 +23,10 @@ mod attachment_draft;
 mod attachment_intake;
 #[path = "real_host/attachments.rs"]
 mod attachments;
+#[path = "real_host/compaction.rs"]
+mod compaction;
+#[path = "real_host/composer_completion.rs"]
+mod composer_completion;
 #[path = "real_host/final_actions.rs"]
 mod final_actions;
 #[path = "real_host/interactions.rs"]
@@ -35,6 +39,8 @@ mod markdown_links;
 mod mcp;
 #[path = "real_host/oauth.rs"]
 mod oauth;
+#[path = "real_host/panel_resize.rs"]
+mod panel_resize;
 #[path = "real_host/plugin_settings.rs"]
 mod plugin_settings;
 #[path = "real_host/queue.rs"]
@@ -63,6 +69,57 @@ use std::time::Instant;
 use std::{sync::atomic::Ordering, time::Duration};
 use support::{EDITOR, Fixture, ReplyGate, evidence, wait_view, wait_view_state};
 use uuid::Uuid;
+
+#[derive(Clone, Copy)]
+enum WorkbenchDivider {
+    Browser,
+    Preview,
+}
+
+fn workbench_divider(
+    view: &AppView,
+    count: usize,
+    side: WorkbenchDivider,
+) -> Option<AccessibleNode> {
+    let nodes = view.accessibility_snapshot();
+    let mut dividers: Vec<_> = nodes
+        .iter()
+        .filter(|node| {
+            node.role == nsh_core::AccessibilityRole::Adjustable
+                && node.label == "Resize workspace panels"
+        })
+        .collect();
+    if dividers.len() != count {
+        return None;
+    }
+    dividers.sort_by(|a, b| a.frame.origin.x.0.total_cmp(&b.frame.origin.x.0));
+    let composer = nodes.iter().find(|node| node.label == "Message composer")?;
+    let divider = match side {
+        WorkbenchDivider::Browser => {
+            let divider = *dividers.first()?;
+            if !nodes
+                .iter()
+                .any(|node| node.label == "Collapse session browser")
+                || divider.frame.origin.x.0 >= composer.frame.origin.x.0
+            {
+                return None;
+            }
+            divider
+        }
+        WorkbenchDivider::Preview => {
+            let divider = *dividers.last()?;
+            if !nodes.iter().any(|node| {
+                node.role == nsh_core::AccessibilityRole::Button && node.label == "Browse files"
+            }) || divider.frame.origin.x.0
+                < composer.frame.origin.x.0 + composer.frame.size.width.0
+            {
+                return None;
+            }
+            divider
+        }
+    };
+    Some(divider.clone())
+}
 
 fn shortcut(view: &mut AppView, key: char) {
     view.handle_event(Event::Key(KeyEvent::new(
@@ -573,20 +630,13 @@ async fn empty_settings_configure_a_real_connection_and_manual_reasoning_model_b
         assert!(!view.snapshot().contains(support::PROVIDER_KEY), "the raw key was painted by the form");
         fill(&mut view, "Advanced request JSON", r#"{"provider":{"only":["openrouter","deepseek"]},"temperature":0.22}"#).await;
         activate(&mut view, "Save connection").await;
-        wait_view(&mut view, |screen| screen.contains("Connection and API key saved.") && !screen.contains("Saving…")).await;
-        // Saving the key advances the connection revision. Fetch immediately
-        // through the same editor, without reopening or refreshing its basis.
-        activate(&mut view, "Fetch models").await;
-        wait_view(&mut view, |screen| screen.contains("Models fetched and enabled.") && screen.contains("Models · 1")).await;
-        tokio::time::timeout(Duration::from_secs(20), async {
-            while fixture.discovery_count.load(Ordering::SeqCst) != 1 {
-                support::tick(&mut view);
-                tokio::time::sleep(Duration::from_millis(5)).await;
-            }
-        }).await.expect("Fetch models did not perform exactly one real discovery request");
+        // Saving the key advances the connection revision. The same editor must
+        // discover models automatically using that committed credential basis.
+        wait_view(&mut view, |screen| screen.contains("Connection and API key saved.")).await;
         assert_eq!(fixture.request_count.load(Ordering::SeqCst), 0);
         activate(&mut view, "Manage models").await;
         wait_view(&mut view, |screen| screen.contains("Connection models") && screen.contains("fixture-discovered-model")).await;
+        assert_eq!(fixture.discovery_count.load(Ordering::SeqCst), 1, "saving the connection must automatically perform exactly one real discovery request");
         let discovered = client.query("settings", "models", json!({"kind":"start","query":"fixture-discovered-model"})).await.unwrap();
         let discovered_choice = &discovered["choices"][0];
         assert_eq!(discovered_choice["thinkingLevels"], json!(["max","high","low","off"]));
@@ -606,6 +656,10 @@ async fn empty_settings_configure_a_real_connection_and_manual_reasoning_model_b
         wait_view(&mut view, |screen| screen.contains("Model settings") && screen.contains("Model ID")).await;
         fill(&mut view, "Model ID", "manual-ui-agent").await;
         fill(&mut view, "Model display name", "Manual UI Agent").await;
+        fill(&mut view, "Context window (tokens)", "65536").await;
+        fill(&mut view, "Input limit (tokens)", "32768").await;
+        fill(&mut view, "Maximum output (tokens)", "2048").await;
+        fill(&mut view, "Compaction threshold (tokens)", "18000").await;
         activate(&mut view, "Code Mode: Enabled").await;
         activate(&mut view, "Apply Patch: Disabled").await;
         activate(&mut view, "Code Mode language: Python").await;
@@ -630,11 +684,15 @@ async fn empty_settings_configure_a_real_connection_and_manual_reasoning_model_b
         assert_eq!(catalog["defaultTarget"], target);
         let detail = client.query("settings", "connection", json!({"connectionId":basis["connectionId"],"revision":basis["revision"],"includeEditingFacts":true})).await.unwrap();
         assert_eq!(detail["target"]["configuration"], json!({"baseUrl":fixture.base_url}));
-        assert_eq!(detail["editing"], json!({"enabledModelIds":["fixture-discovered-model","manual-ui-agent"],"modelOverrides":{"manual-ui-agent":{"displayName":"Manual UI Agent","codeMode":true,"codeModeLanguage":"python","applyPatch":false,"thinkingLevels":["high"],"defaultThinkingLevel":"high"}},"requestBodyOverlay":{"provider":{"only":["openrouter","deepseek"]},"temperature":0.22}}));
+        assert_eq!(detail["editing"], json!({"enabledModelIds":["fixture-discovered-model","manual-ui-agent"],"modelOverrides":{"manual-ui-agent":{"displayName":"Manual UI Agent","codeMode":true,"codeModeLanguage":"python","applyPatch":false,"thinkingLevels":["high"],"defaultThinkingLevel":"high","contextWindow":65536,"inputLimit":32768,"maxOutputTokens":2048,"compactionThreshold":18000}},"requestBodyOverlay":{"provider":{"only":["openrouter","deepseek"]},"temperature":0.22}}));
         let models = client.query("settings", "models", json!({"kind":"start","query":"manual-ui-agent"})).await.unwrap();
         assert_eq!(models["choices"].as_array().unwrap().len(), 1);
         assert_eq!(models["choices"][0]["thinkingLevels"], json!(["high"]));
         assert_eq!(models["choices"][0]["defaultThinkingLevel"], "high");
+        assert_eq!(models["choices"][0]["limits"]["overrides"], json!({"contextWindow":65536,"inputLimit":32768,"maxOutputTokens":2048,"compactionThreshold":18000}));
+        assert_eq!(models["choices"][0]["limits"]["contextWindow"], 65536);
+        assert_eq!(models["choices"][0]["limits"]["inputLimit"], 32768);
+        assert_eq!(models["choices"][0]["limits"]["maxOutputTokens"], Value::Null);
         assert_eq!(models["defaultModel"]["kind"], "ready");
         assert_eq!(models["defaultModel"]["choice"]["selection"]["modelId"], "manual-ui-agent");
         // Put the searched connection beyond the public catalog's first page.
@@ -932,6 +990,7 @@ async fn empty_settings_configure_a_real_connection_and_manual_reasoning_model_b
         view.handle_event(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
         let mut request = fixture.next_request().await;
         assert_eq!(request.body["model"], "manual-ui-agent");
+        assert_eq!(request.body["max_tokens"], 2048);
         assert_eq!(request.body["reasoning_effort"], "high");
         assert_eq!(request.body["provider"], json!({"only":["openrouter","deepseek"]}));
         assert_eq!(request.body["temperature"], 0.22);
@@ -1125,7 +1184,7 @@ async fn the_home_palette_creates_switches_models_and_stops_a_real_session_witho
         // editor or changing its draft. A viewport resize does not exercise it.
         for delta in [4_i16, -4] {
             let nodes = view.accessibility_snapshot();
-            let divider = nodes.iter().find(|node| node.label == "Resize session browser").unwrap().frame;
+            let divider = workbench_divider(&view, 1, WorkbenchDivider::Browser).unwrap().frame;
             let editor = nodes.iter().find(|node| node.id == composer).unwrap().frame;
             let column = (divider.origin.x.0 / 8.0).round() as u16;
             let target = (column as i16 + delta) as u16;
@@ -1139,7 +1198,7 @@ async fn the_home_palette_creates_switches_models_and_stops_a_real_session_witho
             tokio::time::timeout(Duration::from_secs(20), async {
                 loop {
                     support::tick(&mut view);
-                    if view.accessibility_snapshot().iter().any(|node| node.label == "Resize session browser" && node.frame.origin.x.0 == divider.origin.x.0 + f32::from(delta) * 8.0) {
+                    if workbench_divider(&view, 1, WorkbenchDivider::Browser).is_some_and(|node| node.frame.origin.x.0 == divider.origin.x.0 + f32::from(delta) * 8.0) {
                         break;
                     }
                     tokio::time::sleep(Duration::from_millis(5)).await;
@@ -1155,7 +1214,7 @@ async fn the_home_palette_creates_switches_models_and_stops_a_real_session_witho
         // A height-only resize ends the native gesture at its applied width.
         // The next drag must start there, not at the pre-drag preference.
         let nodes = view.accessibility_snapshot();
-        let divider = nodes.iter().find(|node| node.label == "Resize session browser").unwrap().frame;
+        let divider = workbench_divider(&view, 1, WorkbenchDivider::Browser).unwrap().frame;
         let editor = nodes.iter().find(|node| node.id == composer).unwrap().frame;
         let selection = view.surface().input_context().unwrap().selection;
         let viewport = view.surface().viewport();
@@ -1168,14 +1227,14 @@ async fn the_home_palette_creates_switches_models_and_stops_a_real_session_witho
         ] {
             view.handle_event(Event::Mouse(MouseEvent {kind,column,row:1,modifiers:KeyModifiers::NONE}));
         }
-        wait_view_state(&mut view, |view, _| view.accessibility_snapshot().iter().any(|node| node.label == "Resize session browser" && node.frame.origin.x.0 == dragged_x)).await;
+        wait_view_state(&mut view, |view, _| workbench_divider(view, 1, WorkbenchDivider::Browser).is_some_and(|node| node.frame.origin.x.0 == dragged_x)).await;
         assert_eq!(view.surface().focused(), Some(composer));
         assert_eq!(view.surface().input_context().unwrap().selection, selection);
         view.resize((viewport.width.0 / 8.0) as u16, (viewport.height.0 / 16.0) as u16 + 1);
         // The full-height divider proves the new native layout was applied;
         // the empty conversation's composer is vertically centered.
-        wait_view_state(&mut view, |view, _| view.accessibility_snapshot().iter().any(|node| node.label == "Resize session browser" && node.frame.size.height.0 == divider.size.height.0 + 16.0)).await;
-        assert!(view.accessibility_snapshot().iter().any(|node| node.label == "Resize session browser" && node.frame.origin.x.0 == dragged_x));
+        wait_view_state(&mut view, |view, _| workbench_divider(view, 1, WorkbenchDivider::Browser).is_some_and(|node| node.frame.size.height.0 == divider.size.height.0 + 16.0)).await;
+        assert!(workbench_divider(&view, 1, WorkbenchDivider::Browser).is_some_and(|node| node.frame.origin.x.0 == dragged_x));
         view.handle_event(Event::Mouse(MouseEvent {kind:MouseEventKind::Up(MouseButton::Left),column:target,row:1,modifiers:KeyModifiers::NONE}));
         assert_eq!(view.surface().focused(), Some(composer));
         let context = view.surface().input_context().unwrap();
@@ -1188,9 +1247,9 @@ async fn the_home_palette_creates_switches_models_and_stops_a_real_session_witho
         ] {
             view.handle_event(Event::Mouse(MouseEvent {kind,column,row:1,modifiers:KeyModifiers::NONE}));
         }
-        wait_view_state(&mut view, |view, _| view.accessibility_snapshot().iter().any(|node| node.label == "Resize session browser" && node.frame.origin.x.0 != dragged_x)).await;
+        wait_view_state(&mut view, |view, _| workbench_divider(view, 1, WorkbenchDivider::Browser).is_some_and(|node| node.frame.origin.x.0 != dragged_x)).await;
         let nodes = view.accessibility_snapshot();
-        let widened = nodes.iter().find(|node| node.label == "Resize session browser").unwrap().frame;
+        let widened = workbench_divider(&view, 1, WorkbenchDivider::Browser).unwrap().frame;
         assert_eq!(widened.origin.x.0, dragged_x + 16.0, "the next drag must continue from the width applied before the native gesture ended");
         let resized = nodes.iter().find(|node| node.id == composer).unwrap().frame;
         assert_eq!(resized.origin.x.0, editor.origin.x.0 + 40.0);
@@ -1198,7 +1257,7 @@ async fn the_home_palette_creates_switches_models_and_stops_a_real_session_witho
         assert_eq!(view.surface().focused(), Some(composer), "divider drag moved editor focus");
         assert_eq!(view.surface().input_context().unwrap().selection, selection);
         view.resize((viewport.width.0 / 8.0) as u16, (viewport.height.0 / 16.0) as u16);
-        wait_view_state(&mut view, |view, _| view.accessibility_snapshot().iter().any(|node| node.label == "Resize session browser" && node.frame.size.height.0 == divider.size.height.0)).await;
+        wait_view_state(&mut view, |view, _| workbench_divider(view, 1, WorkbenchDivider::Browser).is_some_and(|node| node.frame.size.height.0 == divider.size.height.0)).await;
         support::wait_draft(&client, &fixture.session, "Draft A stays in its own conversation").await;
 
         shortcut(&mut view, 'p');
@@ -1478,7 +1537,7 @@ async fn the_home_palette_creates_switches_models_and_stops_a_real_session_witho
         assert!(request.body["messages"].as_array().unwrap().iter().any(|message| message["role"] == "user" && message["content"].to_string().contains("Message B uses the selected model")));
         assert!(!request.body.to_string().contains("Draft A stays in its own conversation"));
         request.delta("REAL_WORKBENCH_RUN_TO_STOP").await;
-        let writing = wait_view(&mut view, |screen| screen.contains("REAL_WORKBENCH_RUN_TO_STOP") && screen.contains("Writing response")).await;
+        let writing = wait_view(&mut view, |screen| screen.contains("REAL_WORKBENCH_RUN_TO_STOP")).await;
         assert_eq!(writing.matches("REAL_WORKBENCH_RUN_TO_STOP").count(), 1);
         support::evidence_cells("workbench-streaming", &view);
         request.tool_prefix("todo_write", "{\"todos\":[").await;
@@ -1501,7 +1560,7 @@ async fn the_home_palette_creates_switches_models_and_stops_a_real_session_witho
         let transferred = wait_view_state(&mut view, |view, screen| {
             let nodes = view.accessibility_snapshot();
             screen.contains("All workspaces")
-                && !nodes.iter().any(|node| node.label == "Resize session browser" || node.label == "Message composer")
+                && !nodes.iter().any(|node| node.role == nsh_core::AccessibilityRole::Adjustable || node.label == "Message composer")
         }).await;
         evidence("workbench-focused-browser-transfers-to-dialog", &transferred);
         // Escape must work after the automatic transfer, before navigation can repair focus.
@@ -1515,7 +1574,7 @@ async fn the_home_palette_creates_switches_models_and_stops_a_real_session_witho
                 support::tick(&mut view);
                 if view.surface().focused().is_some()
                     && view.surface().input_context().is_none()
-                    && view.accessibility_snapshot().iter().any(|node| node.label == "Resize session browser")
+                    && workbench_divider(&view, 1, WorkbenchDivider::Browser).is_some()
                 {
                     break;
                 }
@@ -2567,10 +2626,10 @@ async fn real_agent_history_and_live_stream_render_and_the_app_sends_once() {
         support::evidence_cells("real-tool-and-checklist", &view);
 
         request.delta("REAL_PROVIDER_STREAM_VISIBLE").await;
-        let streaming = wait_view(&mut view, |screen| screen.contains("REAL_PROVIDER_STREAM_VISIBLE") && screen.contains("Writing response")).await;
+        let streaming = wait_view(&mut view, |screen| screen.contains("REAL_PROVIDER_STREAM_VISIBLE")).await;
         evidence("streaming", &streaming);
         request.delta(" and committed.").await;
-        let appended = wait_view(&mut view, |screen| screen.contains("REAL_PROVIDER_STREAM_VISIBLE") && screen.contains("committed.") && screen.contains("Writing response")).await;
+        let appended = wait_view(&mut view, |screen| screen.contains("REAL_PROVIDER_STREAM_VISIBLE") && screen.contains("committed.")).await;
         evidence("streaming-second-fragment", &appended);
         request.finish().await;
         fixture.idle(&client, &fixture.session).await;
@@ -3109,15 +3168,27 @@ async fn current_workspace_previews_keep_real_contents_drafts_and_session_owners
         // Resize the actual right divider with both side panes docked. Its
         // drag changes layout without replacing the captured reader or editor.
         view.resize(160, 40);
-        wait_view_state(&mut view, |view, screen| screen.contains("AFTER_CURRENT_EDIT") && view.accessibility_snapshot().iter().any(|node| node.label == "Resize session browser")).await;
+        wait_view_state(&mut view, |view, screen| screen.contains("AFTER_CURRENT_EDIT") && workbench_divider(view, 2, WorkbenchDivider::Browser).is_some()).await;
         tab_to_label(&mut view, "Message composer").await;
         assert_eq!(view.surface().focused(), Some(composer));
         let selection = view.surface().input_context().unwrap().selection;
         let reader = view.accessibility_snapshot().into_iter().find(|node| node.label == "Captured file text").unwrap().id;
         for delta in [-4_i16, 4] {
             let nodes = view.accessibility_snapshot();
-            let divider = nodes.iter().find(|node| node.label == "Resize workspace preview").unwrap().frame;
-            let browser = nodes.iter().find(|node| node.label == "Resize session browser").unwrap().frame;
+            let divider = workbench_divider(&view, 2, WorkbenchDivider::Preview).unwrap_or_else(|| {
+                let layout: Vec<_> = nodes.iter().filter(|node| {
+                    node.role == nsh_core::AccessibilityRole::Adjustable
+                        || node.label == "Message composer"
+                        || node.label == "Browse files"
+                        || node.label == "Collapse session browser"
+                        || node.label == "Captured file text"
+                }).collect();
+                panic!(
+                    "preview divider did not match the two-divider layout before drag: viewport={:?}, metrics={:?}, focused={:?}, app_error={:?}; relevant AX nodes={layout:#?}\n{}",
+                    view.surface().viewport(), view.surface().metrics(), view.surface().focused(), view.last_error(), view.snapshot()
+                );
+            }).frame;
+            let browser = workbench_divider(&view, 2, WorkbenchDivider::Browser).unwrap().frame;
             let editor = nodes.iter().find(|node| node.id == composer).unwrap().frame;
             let column = (divider.origin.x.0 / 8.0).round() as u16;
             let target = (column as i16 + delta) as u16;
@@ -3128,12 +3199,12 @@ async fn current_workspace_previews_keep_real_contents_drafts_and_session_owners
             ] {
                 view.handle_event(Event::Mouse(MouseEvent {kind,column,row:1,modifiers:KeyModifiers::NONE}));
             }
-            wait_view_state(&mut view, |view, screen| screen.contains("AFTER_CURRENT_EDIT") && view.accessibility_snapshot().iter().any(|node| node.label == "Resize workspace preview" && node.frame.origin.x.0 == divider.origin.x.0 + f32::from(delta) * 8.0)).await;
+            wait_view_state(&mut view, |view, screen| screen.contains("AFTER_CURRENT_EDIT") && workbench_divider(view, 2, WorkbenchDivider::Preview).is_some_and(|node| node.frame.origin.x.0 == divider.origin.x.0 + f32::from(delta) * 8.0)).await;
             let nodes = view.accessibility_snapshot();
             let resized = nodes.iter().find(|node| node.id == composer).unwrap().frame;
             assert_eq!(resized.origin.x.0, editor.origin.x.0);
             assert_eq!(resized.size.width.0, editor.size.width.0 + f32::from(delta) * 8.0);
-            assert_eq!(nodes.iter().find(|node| node.label == "Resize session browser").unwrap().frame, browser);
+            assert_eq!(workbench_divider(&view, 2, WorkbenchDivider::Browser).unwrap().frame, browser);
             assert!(nodes.iter().any(|node| node.id == reader && node.label == "Captured file text"));
             assert!(nodes.iter().any(|node| node.label == first_version));
             assert_eq!(view.surface().focused(), Some(composer));
@@ -3145,15 +3216,15 @@ async fn current_workspace_previews_keep_real_contents_drafts_and_session_owners
 
         // A viewport change invalidates the captured drag origin. Continuing
         // that old physical gesture must not overwrite the width preference.
-        let divider = view.accessibility_snapshot().into_iter().find(|node| node.label == "Resize workspace preview").unwrap().frame;
+        let divider = workbench_divider(&view, 2, WorkbenchDivider::Preview).unwrap().frame;
         let column = (divider.origin.x.0 / 8.0).round() as u16;
         view.handle_event(Event::Mouse(MouseEvent {kind:MouseEventKind::Down(MouseButton::Left),column,row:1,modifiers:KeyModifiers::NONE}));
         let (committed, received) = tokio::sync::oneshot::channel();
         view.control().unwrap().advance_clock(Duration::ZERO, move || { let _ = committed.send(()); });
         received.await.unwrap();
         view.resize(152, 40);
-        wait_view_state(&mut view, |view, screen| screen.contains("AFTER_CURRENT_EDIT") && view.accessibility_snapshot().iter().any(|node| node.label == "Resize workspace preview" && node.frame.origin.x.0 == 840.0)).await;
-        let before_move = view.accessibility_snapshot().into_iter().find(|node| node.label == "Resize workspace preview").unwrap().frame;
+        wait_view_state(&mut view, |view, screen| screen.contains("AFTER_CURRENT_EDIT") && workbench_divider(view, 2, WorkbenchDivider::Preview).is_some_and(|node| node.frame.origin.x.0 != divider.origin.x.0)).await;
+        let before_move = workbench_divider(&view, 2, WorkbenchDivider::Preview).unwrap().frame;
         for kind in [MouseEventKind::Drag(MouseButton::Left), MouseEventKind::Up(MouseButton::Left)] {
             view.handle_event(Event::Mouse(MouseEvent {kind,column:column + 4,row:1,modifiers:KeyModifiers::NONE}));
         }
@@ -3161,7 +3232,7 @@ async fn current_workspace_previews_keep_real_contents_drafts_and_session_owners
         view.control().unwrap().advance_clock(Duration::ZERO, move || { let _ = committed.send(()); });
         received.await.unwrap();
         support::tick(&mut view);
-        assert_eq!(view.accessibility_snapshot().into_iter().find(|node| node.label == "Resize workspace preview").unwrap().frame, before_move);
+        assert_eq!(workbench_divider(&view, 2, WorkbenchDivider::Preview).unwrap().frame, before_move);
         assert_eq!(view.surface().focused(), Some(composer));
         assert_eq!(view.surface().input_context().unwrap().selection, selection);
         view.resize(120, 40);
@@ -3228,7 +3299,7 @@ async fn current_workspace_previews_keep_real_contents_drafts_and_session_owners
         assert!(view.accessibility_snapshot().iter().any(|node| node.label == captured_version));
         assert!(view.accessibility_snapshot().iter().any(|node| node.focused && node.label == "Browse files"), "closing the full-screen image must restore the preview navigation; focused native nodes: {:?}", view.accessibility_snapshot().into_iter().filter(|node| node.focused).map(|node| (node.label, node.frame)).collect::<Vec<_>>());
         view.resize(120, 40);
-        wait_view_state(&mut view, |view, screen| screen.contains("64 × 48 · Captured image") && screen.contains("UNSENT_PREVIEW_DRAFT") && view.accessibility_snapshot().iter().any(|node| node.label == "Resize workspace preview")).await;
+        wait_view_state(&mut view, |view, screen| screen.contains("64 × 48 · Captured image") && screen.contains("UNSENT_PREVIEW_DRAFT") && workbench_divider(view, 1, WorkbenchDivider::Preview).is_some()).await;
         support::click_button(&mut view, "Close workspace preview").await;
         wait_view_state(&mut view, |view, screen| !screen.contains("Captured image") && !view.accessibility_snapshot().iter().any(|node| node.role == nsh_core::AccessibilityRole::Button && node.label == "Close workspace preview")).await;
         assert!(view.accessibility_snapshot().iter().any(|node| node.focused && node.label == "Browse workspace files"));
@@ -3433,7 +3504,6 @@ async fn immutable_tool_images_render_and_preview_without_stopping_the_running_t
         // Closing the preview preserves its opener's reading position. The
         // response is outside that reader; Ctrl+L explicitly returns to latest.
         terminal.send(b"\x0c");
-        terminal.wait_for("Writing response").await;
         terminal.wait_for("IMAGE_RUN_CONTINUES_AFTER_ESCAPE").await;
         request.finish().await;
         fixture.idle(&client, &fixture.session).await;

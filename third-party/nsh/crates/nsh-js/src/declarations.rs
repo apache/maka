@@ -747,6 +747,27 @@ fn member_names(members: &str) -> Vec<String> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn element_focus_handlers_are_inherited_from_shared_host_props() {
+        let types = element_types();
+        let start = types.find("export interface HostProps {").unwrap();
+        let end = start + types[start..].find("\n}").unwrap();
+        for event in ["onFocus", "onBlur"] {
+            assert!(types[start..end].contains(&format!("  {event}?: () => void;")));
+        }
+        for inheritance in [
+            "export interface CommonProps extends TouchProps, HostProps, StateStyleProps {",
+            "export interface ViewProps extends CommonProps {",
+            "export interface InputProps extends CommonProps, InputHostProps {",
+            "export interface ScrollProps extends CommonProps, ScrollingHostProps, ScrollHostProps {",
+        ] {
+            assert!(types.contains(inheritance), "{inheritance}");
+        }
+        assert!(crate::list::TYPES.contains(
+            "export interface ListProps<T> extends Omit<ViewProps, \"children\">, ScrollingHostProps, ListHostProps {"
+        ));
+    }
+
     #[derive(Default, nsh_core::ui::JsObject)]
     struct Pick {
         value: bool,

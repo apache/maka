@@ -544,7 +544,12 @@ define_class!(
             // SAFETY: NSView's standard responder transition.
             let accepted: bool = unsafe { msg_send![super(self), becomeFirstResponder] };
             if accepted && let Some(surface) = self.keyboard_surface() {
-                crate::input::set_state(&surface, &NshView(self.retain()), nsh_core::tailwind::state::FOCUSED, true);
+                let view = NshView(self.retain());
+                crate::input::set_state(&surface, &view, nsh_core::tailwind::state::FOCUSED, true);
+                // Pressables reached by Tab report it, as inputs do.
+                if view.id() != ROOT_ID {
+                    surface.event(view.id(), nsh_core::EventKind::Focus, nsh_core::EventPayload::None);
+                }
             }
             accepted
         }
@@ -554,7 +559,12 @@ define_class!(
             // SAFETY: NSView's standard responder transition.
             let accepted: bool = unsafe { msg_send![super(self), resignFirstResponder] };
             if accepted && let Some(surface) = self.keyboard_surface() {
-                crate::input::set_state(&surface, &NshView(self.retain()), nsh_core::tailwind::state::FOCUSED, false);
+                let view = NshView(self.retain());
+                crate::input::set_state(&surface, &view, nsh_core::tailwind::state::FOCUSED, false);
+                // Pressables reached by Tab report it, as inputs do.
+                if view.id() != ROOT_ID {
+                    surface.event(view.id(), nsh_core::EventKind::Blur, nsh_core::EventPayload::None);
+                }
             }
             accepted
         }

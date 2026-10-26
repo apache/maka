@@ -105,7 +105,7 @@ pub(crate) struct Inbox {
     pub published: Option<FrameToken>,
     frames: VecDeque<FrameJob>,
     frame_capacity: usize,
-    /// Last image whose entire upload-and-retirement transaction was flushed.
+    /// Last image whose upload was flushed and acknowledged by the terminal.
     pub last_fully_written_image: Option<u32>,
     /// The terminal geometry of the last whole image transaction's flush.
     pub last_fully_written_geometry: Option<u64>,
@@ -120,11 +120,13 @@ pub(crate) struct Inbox {
     pub(in crate::terminal) text_input: super::text_input::Wire,
     pub(super) cursor: super::cursor::Cursor,
     pub restore_sixel_mode: bool,
+    pub(super) kitty: super::kitty::Transfer,
 }
 
 impl Inbox {
     pub fn new(capabilities: Capabilities, tracing: bool) -> Self {
         Self {
+            kitty: super::kitty::Transfer::default(),
             capabilities,
             events: VecDeque::new(),
             tracing,
@@ -373,6 +375,7 @@ impl Inbox {
     }
 
     pub fn push(&mut self, event: Event) -> Result<bool, String> {
+        self.kitty.observe(&event, Instant::now())?;
         if self.text_input.consume(&event) {
             return Ok(false);
         }
