@@ -266,7 +266,17 @@ export class QuickDiscoveryController {
     if (!s.checkRequested && !s.pending && !changed && now < last + s.idleMs) return;
     const agent = await this.worker(s);
     const snapshot = await agent.snapshot();
-    if (snapshot?.agent?.status === 'running' || awaitingUser(snapshot)) return;
+    if (snapshot?.agent?.status === 'running') return;
+    if (awaitingUser(snapshot)) {
+      // The worker session is paused waiting for a user, which a hidden session never
+      // gets. Record the pause on the check watermark so the gates above hold the loop
+      // to the normal cadence instead of re-admitting a worker on every tick.
+      this.store.update((state) => {
+        state.lastFinishedAt = now;
+        state.pausedAt = now;
+      });
+      return;
+    }
     this.ready();
     const current = this.store.update((state) => {
       if ((!state.enabled && !state.checkRequested) || state.active) return;
@@ -362,6 +372,9 @@ export class QuickDiscoveryController {
   }
   async run(agent: any, state: any) {
     const active = state.active;
+    // A wake whose worker ended waiting for the user is a pause, not a failure; only
+    // the execution phase can observe it, so the finalization below needs the flag.
+    let paused = false;
     try {
       this.forward();
       if (!active.executionCompleted) {
@@ -388,10 +401,11 @@ export class QuickDiscoveryController {
         }
         await agent.whenIdle(this.abort.signal);
         const snapshot = await agent.snapshot();
-        if (
-          awaitingUser(snapshot) ||
-          ['failed', 'aborted', 'blocked', 'waiting_for_user'].includes(snapshot?.agent?.status)
-        )
+        // An interaction pause is an expected outcome, not a failure: the hidden worker
+        // ended its turn asking the user a question, and no user can ever answer it, so
+        // a retry could never succeed. Consume the wake with the success watermarks.
+        paused = awaitingUser(snapshot);
+        if (!paused && ['failed', 'aborted', 'blocked'].includes(snapshot?.agent?.status))
           throw Error(`Quick discovery ended with ${snapshot?.agent?.status}`);
         this.ready();
         this.store.update((s) => {
@@ -409,7 +423,11 @@ export class QuickDiscoveryController {
         s.retryAt = null;
         s.active = null;
         s.pending = null;
-        this.store.log('quick-completed', { id: active.id, checkedThrough: active.to });
+        s.pausedAt = paused ? this.now() : null;
+        this.store.log(paused ? 'quick-paused' : 'quick-completed', {
+          id: active.id,
+          checkedThrough: active.to,
+        });
       });
     } catch (error) {
       if (!this.abort.signal.aborted)

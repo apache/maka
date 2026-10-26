@@ -32,6 +32,7 @@ async function setup() {
     revision = '1',
     calls = 0,
     scans = 0,
+    resumes = 0,
     fail = false,
     notebookRefreshes = 0;
   const delivered = new Map<string, any>(),
@@ -78,7 +79,10 @@ async function setup() {
         sessions.push({ id: 'worker', ...input });
         return agent;
       },
-      resume: async () => agent,
+      resume: async () => {
+        resumes++;
+        return agent;
+      },
     },
     bot: {
       post: (_: string, message: any) => {
@@ -98,6 +102,7 @@ async function setup() {
     prompts,
     calls: () => calls,
     scans: () => scans,
+    resumes: () => resumes,
     advance: (ms: number) => {
       now += ms;
     },
@@ -196,6 +201,77 @@ test('failed execution preserves the range and reusable Session; pause creates n
     assert.equal(f.calls(), 2);
   } finally {
     await f.close();
+  }
+});
+test('a wake ending in an interaction pause completes cleanly instead of scheduling an unreachable retry', async () => {
+  for (const shape of [
+    { agent: { status: 'waiting_for_user' } },
+    { agent: { status: 'blocked' }, pendingInteractions: 1 },
+  ]) {
+    const f = await setup();
+    try {
+      // The hidden worker answers its wake by asking the user a question and stays
+      // there: nobody can ever answer a background session, so a retry cannot succeed.
+      f.agent.snapshot = async () => (f.calls() > 0 ? shape : { agent: { status: 'idle' } });
+      f.advance(15 * 60000);
+      await f.run();
+      assert.equal(f.calls(), 1);
+      const s = f.q.state();
+      assert.equal(s.pending, null, 'an interaction pause is not a retryable failure');
+      assert.equal(s.retryAt, null, 'an interaction pause arms no retry deadline');
+      assert.equal(s.lastError, null, 'an interaction pause is not an error');
+      assert.equal(s.checkedThrough, s.observation.at, 'the pause consumes the wake bounds');
+      assert.deepEqual(s.checkedTokens, s.observation.tokens, 'the pause consumes the wake tokens');
+      assert.ok(s.pausedAt, 'the pause is surfaced');
+    } finally {
+      await f.close();
+    }
+  }
+});
+test('after an interaction pause the tick loop idles on the normal cadence', async () => {
+  const f = await setup();
+  try {
+    f.agent.snapshot = async () =>
+      f.calls() > 0 ? { agent: { status: 'waiting_for_user' } } : { agent: { status: 'idle' } };
+    f.advance(15 * 60000);
+    await f.run();
+    assert.equal(f.calls(), 1);
+    const scans = f.scans(),
+      resumes = f.resumes();
+    for (const step of [15 * 60000, 5000, 5000]) {
+      f.advance(step);
+      await f.run();
+    }
+    assert.equal(f.calls(), 1, 'no wake is admitted while the worker session is paused');
+    assert.equal(f.resumes(), resumes, 'the paused worker is not re-admitted on cadence ticks');
+    assert.equal(f.scans(), scans + 1, 'idle cadence keeps one observation per window');
+  } finally {
+    await f.close();
+  }
+});
+test('failed and interaction-free blocked terminals keep the pending retry', async () => {
+  for (const shape of [
+    { shape: { agent: { status: 'failed' } }, label: 'failed' },
+    { shape: { agent: { status: 'aborted' } }, label: 'aborted' },
+    { shape: { agent: { status: 'blocked' }, pendingInteractions: 0 }, label: 'blocked' },
+  ]) {
+    const f = await setup();
+    try {
+      f.agent.snapshot = async () => (f.calls() > 0 ? shape.shape : { agent: { status: 'idle' } });
+      f.advance(15 * 60000);
+      await f.run();
+      const pending = f.q.state().pending;
+      assert.ok(pending, `${shape.label}: a failed wake stays retryable`);
+      assert.match(f.q.state().lastError, /Quick discovery ended with/);
+      assert.equal(f.q.state().checkedThrough, undefined);
+      f.agent.snapshot = async () => ({ agent: { status: 'idle' } });
+      f.advance(15 * 60000);
+      await f.run();
+      assert.equal(f.q.state().checkedThrough, pending.to, 'the retry consumes its captured range');
+      assert.equal(f.q.state().pending, null);
+    } finally {
+      await f.close();
+    }
   }
 });
 test('reports are idempotent Bot handoffs, not notebook edits or delegated tasks', async () => {
