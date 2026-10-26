@@ -307,6 +307,7 @@ import { HostSessionTodoCoordinator } from './session-todo-coordinator.js';
 import { HostTurnControlCoordinator } from './turn-control-coordinator.js';
 import type { TurnOperationHandlerMap } from './operation-dispatcher.js';
 import { HostUsagePricingCoordinator } from './usage-pricing-coordinator.js';
+import { readSessionUsageWindow } from './canonical-usage-reader.js';
 import { HostWebSearchCoordinator } from './web-search-coordinator.js';
 import { HostWorkHubCoordinationCoordinator } from './workhub-coordination-coordinator.js';
 import {
@@ -604,6 +605,8 @@ export async function createExecutionRuntimeHostComposition(
         sessionQuery: pluginSessionQuery,
         sources: pluginSources,
         resolveTools: (sessionId, core) => pluginTools.resolve(sessionId, core),
+        readSessionUsage: (sessionId, from, to) =>
+          readSessionUsageWindow(openedUsageStores, sessionId, from, to),
       },
     ));
     const isAssistantSession = (header: { labels?: readonly string[] }) =>

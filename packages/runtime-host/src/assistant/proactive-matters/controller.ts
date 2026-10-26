@@ -24,6 +24,7 @@ import { isPendingActivationTurnId } from './matter.js';
 import type { Matter, MatterStore } from './matter.js';
 import type { MatterServices, MakaToolContext } from './host-types.js';
 import { buildMatterPrompt, buildMatterStepContext } from './prompt.js';
+import type { AssistantRunOutcome } from '../run-cost.js';
 
 import { awaitingUser, executionFailure } from '../execution-outcome.js';
 
@@ -147,6 +148,9 @@ export class MatterController {
     const activationId = m.activation!.id;
     let queued = false;
     let failureKind: string | undefined;
+    // Observation only (#6309): undefined means no model execution was admitted.
+    const startedAt = m.activation!.startedAt;
+    let outcome: AssistantRunOutcome | undefined = 'failed';
     try {
       if (!alreadyStarted) {
         const result = await agent.followup(
@@ -154,6 +158,7 @@ export class MatterController {
         );
         if (result.disposition === 'blocked') {
           this.store.deferAdmission(m.id, activationId, 'Host 暂未接收唤醒，将自动重试。');
+          outcome = undefined;
           return;
         }
         if (result.disposition === 'turn_started') {
@@ -186,6 +191,7 @@ export class MatterController {
               failureKind = failure?.kind;
               if (failure?.retryable) {
                 this.store.retryExecution(m.id, activationId, failure);
+                outcome = 'retried';
                 return;
               }
               throw Error(
@@ -205,6 +211,8 @@ export class MatterController {
         throw new Error(
           'Queued wake ended without claiming its activation; inspect conversation before resuming',
         );
+      const live = this.store.get(m.id).matter.activation;
+      outcome = live?.id !== activationId ? 'interrupted' : live.settled ? 'completed' : 'failed';
       this.store.finish(m.id, activationId);
     } catch (e) {
       this.lastError = String(e);
@@ -215,6 +223,7 @@ export class MatterController {
         /Runtime Host is not ready for Plugin Agent messages/.test(String(e))
       ) {
         this.store.deferAdmission(m.id, activationId, String(e));
+        outcome = undefined;
         return;
       }
       if (live.activation?.id === activationId) {
@@ -222,6 +231,18 @@ export class MatterController {
         this.store.finish(m.id, activationId, String(e), failureKind);
         await agent.cancel().catch(() => {});
       }
+    } finally {
+      // The ledger swallows its own failures and nothing reads it back.
+      if (outcome)
+        await this.ctx.runCost?.record({
+          kind: 'matter_activation',
+          runId: activationId,
+          matterId: m.id,
+          startedAt,
+          endedAt: Date.now(),
+          outcome,
+          segments: [{ sessionId: m.sessionId, from: startedAt, to: Date.now() }],
+        });
     }
   }
   async enroll(input: { title: string; request: string }, call: MakaToolContext) {
