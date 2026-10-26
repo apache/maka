@@ -502,6 +502,8 @@ async fn reader_writer_observation_inherits_custody_after_reader_finishes() {
     let gate = Arc::new(RwLock::new(()));
     let scoped = scoped(&log, &gate).await;
     let writer = scoped.connection.writer();
+    let reader_gate = Arc::new(RwLock::new(()));
+    let reader = scoped.scoped(Arc::new(reader_gate.clone().read_owned().await));
     let (blocked, blocker_ready) = oneshot::channel();
     let (release_blocker, blocker_gate) = oneshot::channel();
     let mut blocker = Box::pin(log.connection.run(move |_| {
@@ -515,7 +517,7 @@ async fn reader_writer_observation_inherits_custody_after_reader_finishes() {
     reached(blocker_ready).await;
     let (entered, observation_ready) = oneshot::channel();
     let (release, wait) = oneshot::channel();
-    scoped
+    reader
         .connection
         .read(move |_| {
             Box::pin(async move {
@@ -534,7 +536,12 @@ async fn reader_writer_observation_inherits_custody_after_reader_finishes() {
         })
         .await
         .unwrap();
+    drop(reader);
     drop(scoped);
+    // The read reply precedes cleanup; only the reader owns this extra pin.
+    tokio::time::timeout(Duration::from_secs(5), reader_gate.write_owned())
+        .await
+        .expect("reader cleanup must release its independent pin");
     release_blocker.send(()).unwrap();
     blocker.await.unwrap();
     reached(observation_ready).await;
