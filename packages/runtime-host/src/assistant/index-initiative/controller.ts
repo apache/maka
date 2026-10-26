@@ -152,14 +152,14 @@ export class InitiativeController {
     this.abort.signal.throwIfAborted();
     this.store.fence();
   }
-  asOwner<T>(s: any, fn: () => T): T {
+  asOwner<T>(s: any, fn: () => T, signal?: AbortSignal): T {
     return this.ctx.agents.withInvocation(
       {
         sessionId: s.sessionId,
         cwd: s.cwd,
         turnId: `initiative-${this.store.owner}`,
         toolCallId: randomUUID(),
-        abortSignal: this.abort.signal,
+        abortSignal: signal ? AbortSignal.any([this.abort.signal, signal]) : this.abort.signal,
       },
       fn,
     );

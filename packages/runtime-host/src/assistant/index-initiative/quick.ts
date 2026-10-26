@@ -162,7 +162,7 @@ export class QuickDiscoveryController {
     });
   }
   private owner<T>(s: any, fn: () => T): T {
-    return this.parent.asOwner(s, fn);
+    return this.parent.asOwner(s, fn, this.abort.signal);
   }
   async activity(s: any) {
     return this.owner(s, async () => {
@@ -197,6 +197,9 @@ export class QuickDiscoveryController {
                 'No lightweight observation; idle fallback applies outside configured quiet hours';
             else tokens[source.id] = hash([source.scope, token]);
           } catch (error) {
+            // Cancellation is not an unavailable source observation and must not admit a worker.
+            this.abort.signal.throwIfAborted();
+            this.parent.abort.signal.throwIfAborted();
             unavailable[source.id] = String(error);
           }
         }),

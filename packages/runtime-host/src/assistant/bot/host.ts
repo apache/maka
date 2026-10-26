@@ -185,7 +185,8 @@ export function initializeBot(
         .default([]),
     }),
     (input: { notNotified: { inboxId: string; reason: string }[] }, call: any) => {
-      store.recordNotNotified(call.toolCallId, input.notNotified);
+      // Provider call IDs can repeat; retries share the Runtime-owned durable operation.
+      store.recordNotNotified(call.operationId, input.notNotified);
       return bot.sleep(call.turnId);
     },
     false,

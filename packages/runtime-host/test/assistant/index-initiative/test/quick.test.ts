@@ -23,6 +23,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { QuickDiscoveryController } from '../../../../src/assistant/index-initiative/quick.js';
+import { InitiativeController } from '../../../../src/assistant/index-initiative/controller.js';
 import { fixture, until } from './fixture.js';
 
 async function setup() {
@@ -52,6 +53,7 @@ async function setup() {
     cancel: async () => {},
   };
   const parent = {
+    abort: new AbortController(),
     bindingReady: Promise.resolve(),
     refreshNotebook: () => {
       notebookRefreshes++;
@@ -519,3 +521,115 @@ test('parallel source completion order is not an activity change', async () => {
     await f.close();
   }
 });
+
+test('disabling the native assistant cancels concurrent pending quick activity probes', async () => {
+  const f = await fixture();
+  const signals: AbortSignal[] = [];
+  const releases: (() => void)[] = [];
+  let disable: Promise<any> | undefined;
+  const source = f.ctx.extend({
+    maka: {
+      rootId: 'profile',
+      packageId: 'cancel-probes',
+      entryId: 'cancel-probes',
+      generation: 1,
+    },
+  }).sources;
+  for (const id of ['cancel.one', 'cancel.two'])
+    source.register({
+      id,
+      description: 'cancellable probe',
+      queryHelp: '',
+      scope: {},
+      enumerate: async () => ({ items: [] }),
+      query: async () => ({ items: [] }),
+      authorize: async () => [],
+      read: async () => {
+        throw Error('no body reads');
+      },
+      activityToken: async (caller: any) => {
+        const signal = caller.invocation.abortSignal;
+        signals.push(signal);
+        await new Promise<void>((resolve, reject) => {
+          const abort = () => reject(signal.reason);
+          releases.push(() => {
+            signal.removeEventListener('abort', abort);
+            resolve();
+          });
+          signal.addEventListener('abort', abort, { once: true });
+          if (signal.aborted) abort();
+        });
+        return 'unchanged';
+      },
+    });
+  try {
+    await f.remote('assistant.bind', { sessionId: 'owner' });
+    await f.remote('assistant.quick-discovery', { action: 'check' });
+    await until(() => signals.length === 2);
+    disable = f.remote('assistant.set-enabled', { enabled: false });
+    await until(() => signals.every((signal) => signal.aborted), 1000);
+    await disable;
+    assert.equal(signals.length, 2, 'shutdown must not start another observation');
+    assert.ok([...f.workers.values()].every((worker: any) => worker.status !== 'running'));
+  } finally {
+    for (const release of releases) release();
+    await disable;
+    await f.close();
+  }
+});
+
+for (const phase of ['list', 'historyList', 'activityToken']) {
+  for (const cancel of ['parent', 'quick']) {
+    test(`${cancel} cancellation reaches a pending quick ${phase} without cancelling the other owner`, async () => {
+      const f = await setup();
+      const parentAbort = new AbortController();
+      const parent = f.q.parent as any;
+      parent.abort = parentAbort;
+      parent.ctx = f.ctx;
+      parent.asOwner = InitiativeController.prototype.asOwner;
+      let invocation: any;
+      (f.ctx.agents as any).withInvocation = (call: any, fn: any) => {
+        invocation = call;
+        return fn();
+      };
+      let observed: AbortSignal | undefined;
+      let release!: () => void;
+      const blocked = async () => {
+        observed = invocation.abortSignal;
+        await new Promise<void>((resolve, reject) => {
+          const abort = () => reject(observed!.reason);
+          release = () => {
+            observed!.removeEventListener('abort', abort);
+            resolve();
+          };
+          observed!.addEventListener('abort', abort, { once: true });
+          if (observed!.aborted) abort();
+        });
+        return phase === 'activityToken' ? 'unchanged' : [];
+      };
+      if (phase === 'activityToken') f.ctx.sources.activityToken = blocked as any;
+      else (f.ctx.sessionQuery as any)[phase] = blocked;
+      let closing: Promise<void> | undefined;
+      try {
+        f.advance(15 * 60000);
+        const tick = f.q.tick();
+        await until(() => !!observed);
+        const reason = Error(`${cancel} stopped`);
+        if (cancel === 'quick') closing = f.q.close();
+        else parentAbort.abort(reason);
+        assert.equal(observed!.aborted, true);
+        if (cancel === 'parent') {
+          assert.equal(observed!.reason, reason);
+          assert.equal(f.q.abort.signal.aborted, false);
+        } else assert.equal(parentAbort.signal.aborted, false);
+        await tick;
+        await closing;
+        assert.equal(f.calls(), 0, 'cancelled observation cannot admit a worker');
+      } finally {
+        release?.();
+        await closing;
+        await f.close();
+      }
+    });
+  }
+}

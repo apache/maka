@@ -87,7 +87,7 @@ async function fixture(readAvatarImage?: AssistantDependencies['readAvatarImage'
       }
     },
   };
-  const invoke = async (id: string, name: string, raw: any, turnId: string) => {
+  const invoke = async (id: string, name: string, raw: any, turnId: string, identity: any = {}) => {
     const tool = service.tools.find((tool) => tool.name === name)!;
     assert.ok(tool, name);
     return tool.impl((tool.parameters as any).parse(raw), {
@@ -95,6 +95,8 @@ async function fixture(readAvatarImage?: AssistantDependencies['readAvatarImage'
       turnId,
       cwd: directory,
       toolCallId: randomUUID(),
+      operationId: randomUUID(),
+      ...identity,
       abortSignal: new AbortController().signal,
       emitOutput() {},
     });
@@ -147,7 +149,8 @@ async function fixture(readAvatarImage?: AssistantDependencies['readAvatarImage'
             id,
             turnId,
             prompt: String(message),
-            invoke: (name: string, raw: any = {}) => invoke(id, name, raw, turnId),
+            invoke: (name: string, raw: any = {}, identity: any = {}) =>
+              invoke(id, name, raw, turnId, identity),
             finish: () =>
               service.beforeFinish({ sessionId: id, turnId, signal: new AbortController().signal }),
           };
@@ -1625,4 +1628,54 @@ test('Sleep records omissions without sending; unread arrivals still prevent sle
   await until(() => done);
   assert.equal(f.visible.filter((m) => m.type === 'assistant').length, 0);
   await assert.rejects(f.invoke('Sleep', { notNotified: [] }), /belongs/);
+});
+
+test('Sleep decisions use durable operation identity, not reused provider call IDs', async (t) => {
+  const f = await fixture();
+  t.after(f.close);
+  let done = false;
+  let failure: unknown;
+  f.runner(async ({ invoke, finish }) => {
+    try {
+      await invoke('InboxCheck');
+      await f.send('later-input', '还有新消息');
+      const decision = (reason: string) => ({
+        notNotified: [{ inboxId: 'decision-input', reason }],
+      });
+      const identity = (operationId: string) => ({ toolCallId: 'provider-reused', operationId });
+      const read = async () => (await invoke('InboxRead', { id: 'decision-input' })).notNotified;
+      assert.equal((await invoke('Sleep', decision('已处理'), identity('op-a'))).sleeping, false);
+      const first = await read();
+      await invoke('Sleep', decision('已处理'), {
+        ...identity('op-a'),
+        toolCallId: 'retry-provider',
+      });
+      assert.deepEqual(await read(), first, 'same durable operation is an idempotent retry');
+      await invoke('Sleep', decision('已处理'), identity('op-b'));
+      assert.equal((await read()).length, 2, 'another operation may reuse the provider call ID');
+      await invoke('Sleep', decision('复核后仍无变化'), identity('op-c'));
+      const saved = await read();
+      assert.equal(saved.length, 3);
+      await assert.rejects(
+        invoke('Sleep', decision('不同的重试理由'), identity('op-c')),
+        /different reason/,
+      );
+      assert.deepEqual(
+        await read(),
+        saved,
+        'conflicting retry cannot append or replace a decision',
+      );
+      assert.equal((await finish()).allow, false, 'unread input still prevents finish');
+      await invoke('InboxCheck');
+      assert.equal((await invoke('Sleep')).sleeping, true);
+      assert.equal((await finish()).allow, true);
+      done = true;
+    } catch (error) {
+      failure = error;
+      throw error;
+    }
+  });
+  await f.send('decision-input', '这件事处理好了');
+  await until(() => done || !!failure);
+  if (failure) throw failure;
 });
