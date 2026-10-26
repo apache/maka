@@ -63,10 +63,14 @@ syncBuiltinESMExports();
     async run(mode, failure) {
       await writeFile(calls, '');
       // Exercise the public entrypoint, replacing only the external checker.
-      const result = spawnSync(process.execPath, ['--import', pathToFileURL(preload).href, entry, mode], {
-        encoding: 'utf8',
-        env: { ...process.env, CHECKER_FAILURE: failure ?? '' },
-      });
+      const result = spawnSync(
+        process.execPath,
+        ['--import', pathToFileURL(preload).href, entry, mode],
+        {
+          encoding: 'utf8',
+          env: { ...process.env, CHECKER_FAILURE: failure ?? '' },
+        },
+      );
       const invocations = (await readFile(calls, 'utf8'))
         .trimEnd()
         .split('\n')
