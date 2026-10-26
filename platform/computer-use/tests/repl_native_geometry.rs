@@ -24,7 +24,7 @@
 
 use maka_agent_facts::{
     language::Language,
-    tools::{ToolExecutor, ToolFuture},
+    tools::{ToolError, ToolExecutor, ToolFuture},
 };
 use maka_capabilities::computer::Desktop;
 use maka_code_runtime::{CellContext, CellLimits, CellOutput, CellResult, CellStore};
@@ -62,11 +62,13 @@ impl ToolExecutor for Bridge {
     fn invoke(&self, _: String, input: Value, cancellation: CancellationToken) -> ToolFuture {
         let session = self.0.clone();
         Box::pin(async move {
+            let command = serde_json::from_value(input)
+                .map_err(|error| ToolError::Failed(error.to_string()))?;
             session
                 .lock()
                 .await
                 .invoke(
-                    serde_json::from_value(input).unwrap(),
+                    command,
                     &InvocationContext::new("native-geometry-fixture", "fixture-turn"),
                     &cancellation,
                     Language::En,
