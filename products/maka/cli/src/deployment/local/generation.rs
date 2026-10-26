@@ -18,7 +18,7 @@
  */
 
 use super::HostError;
-use sha2::{Digest, Sha256};
+use aws_lc_rs::digest::{Context, SHA256};
 use std::{fs::File, io, io::Read, path::PathBuf};
 use tokio_util::sync::CancellationToken;
 
@@ -46,7 +46,7 @@ async fn hash_with<R: Read>(
 }
 
 fn hash_reader(reader: &mut impl Read, cancelled: &CancellationToken) -> Result<String, HostError> {
-    let mut digest = Sha256::new();
+    let mut digest = Context::new(&SHA256);
     let mut buffer = [0_u8; 64 * 1024];
     loop {
         // Cancellation cannot interrupt an active filesystem read. Check again
@@ -59,7 +59,7 @@ fn hash_reader(reader: &mut impl Read, cancelled: &CancellationToken) -> Result<
         }
         digest.update(&buffer[..length]);
     }
-    let generation = format!("cli-sha256:{}", hex::encode(digest.finalize()));
+    let generation = format!("cli-sha256:{}", hex::encode(digest.finish()));
     check_cancelled(cancelled)?;
     Ok(generation)
 }
@@ -78,6 +78,7 @@ fn check_cancelled(cancelled: &CancellationToken) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sha2::{Digest, Sha256};
     use std::sync::mpsc;
     use tokio::sync::{OnceCell, oneshot};
 
@@ -164,6 +165,33 @@ mod tests {
             error.downcast_ref::<io::Error>().unwrap().kind(),
             io::ErrorKind::Interrupted
         );
+    }
+
+    #[test]
+    fn known_vectors_and_chunk_boundaries_match_sha256() {
+        for (bytes, expected) in [
+            (
+                b"".as_slice(),
+                "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            ),
+            (
+                b"abc".as_slice(),
+                "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+            ),
+        ] {
+            assert_eq!(
+                hash_reader(&mut io::Cursor::new(bytes), &CancellationToken::new()).unwrap(),
+                format!("cli-sha256:{expected}")
+            );
+        }
+        for length in [55, 56, 63, 64, 65, 65535, 65536, 65537, 131089] {
+            let bytes: Vec<u8> = (0..length).map(|n| (n % 251) as u8).collect();
+            assert_eq!(
+                hash_reader(&mut io::Cursor::new(&bytes), &CancellationToken::new()).unwrap(),
+                format!("cli-sha256:{}", hex::encode(Sha256::digest(&bytes))),
+                "length={length}"
+            );
+        }
     }
 
     #[tokio::test]

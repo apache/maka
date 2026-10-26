@@ -61,6 +61,7 @@ maka-acp.workspace = true
 maka-config.workspace = true
 maka-terminal-shell.workspace = true
 maka-plugin-core.workspace = true
+aws-lc-rs = { version = "1.18.2", default-features = false, features = ["aws-lc-sys", "prebuilt-nasm"] }
 base64 = "0.23.1"
 clap.workspace = true
 flate2 = "1.1.10"

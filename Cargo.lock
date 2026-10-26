@@ -8420,6 +8420,7 @@ name = "maka-cli"
 version = "0.2.0"
 dependencies = [
  "agent-client-protocol",
+ "aws-lc-rs",
  "base64 0.23.1",
  "clap",
  "crossterm",
