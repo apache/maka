@@ -101,6 +101,14 @@ pub trait JsHost {
         None
     }
 
+    /// Whether this host owns a retained handle's values. Hosts that cannot
+    /// establish ownership reject it before any raw value is accessed.
+    /// A host supporting retained values must recognize its own handles;
+    /// this does not grant permission to transfer values from another VM.
+    fn owns_retained(&self, _handle: &dyn CallbackHandle) -> bool {
+        false
+    }
+
     /// Frees owned value `v`.
     fn free(&self, v: JsRaw);
     /// `undefined`.

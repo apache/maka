@@ -78,6 +78,12 @@ arguments optional in TypeScript. Their `Param` and `MethodSpec::params` tuples
 now include the optional flag; Maka's bindings use the deriving macros rather
 than constructing those tuples. Empty first canvas recordings are suppressed,
 while an empty recording still clears an existing drawing.
+The retained-row adaptation also treats a different JS retention handle as a
+prop change even when numeric columns match, preserving arbitrary row fields.
+QuickJS returns retained values only to their owning function table; foreign
+hosts receive no value. Custom `JsHost` implementations that retain values must
+implement `owns_retained` for their own handles. Rust-created rows retain their
+numeric equality semantics; this is not deep JavaScript object comparison.
 
 The local hint-observation integration retains an allocation lifetime separate
 from the upstream layout tree's reusable slab index. This prevents a delayed

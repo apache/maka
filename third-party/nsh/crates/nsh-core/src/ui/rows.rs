@@ -90,11 +90,18 @@ impl Rows {
     }
 }
 
-/// Equal rows hold the same numbers (gaps included, which `NaN`'s own
-/// comparison would tell apart): a prop set to equal rows changes nothing.
+/// Equal rows hold the same numbers (including gaps) and retained JS rows.
+/// Arbitrary JS fields matter too: a different retained array must replace
+/// the prop even when its numeric columns are unchanged.
 impl PartialEq for Rows {
     fn eq(&self, other: &Self) -> bool {
-        self.len == other.len
+        let same_rows = match (&self.js, &other.js) {
+            (None, None) => true,
+            (Some(a), Some(b)) => Rc::ptr_eq(a, b),
+            _ => false,
+        };
+        same_rows
+            && self.len == other.len
             && self.columns.len() == other.columns.len()
             && self.columns.iter().zip(&other.columns).all(|(a, b)| {
                 a.0 == b.0
