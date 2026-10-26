@@ -112,7 +112,7 @@ export const FilesystemWorkerOperationSchema = z.union([
       kind: z.literal('read'),
       cwd,
       path,
-      imagePurpose: z.literal('chat').optional(),
+      imagePurpose: z.enum(['chat', 'pet']).optional(),
       offset: z.number().int().nonnegative().optional(),
       limit: z.number().int().positive().optional(),
       continuation: readContinuationSchema.optional(),

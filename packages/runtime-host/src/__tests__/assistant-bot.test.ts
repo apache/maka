@@ -19,6 +19,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { z } from 'zod';
 import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -33,21 +34,35 @@ import { HostPluginDataRuntime } from '../server/plugin-data-runtime.js';
 import { DatabaseSync } from 'node:sqlite';
 import { BotController } from '../assistant/bot/controller.js';
 import { BotStore } from '../assistant/bot/store.js';
-import { PROACTIVE_TASK } from '../assistant/index-initiative/prompt.js';
+import { DISCOVERY_TASK } from '../assistant/index-initiative/prompt.js';
 import { MESSAGE_OPERATION_SPECS } from '../protocol/message.js';
 
-async function until(fn: () => unknown | Promise<unknown>) {
-  const deadline = Date.now() + 7000;
+async function until(fn: () => unknown | Promise<unknown>, timeout = 7000) {
+  const deadline = Date.now() + timeout;
   while (!(await fn())) {
     if (Date.now() > deadline) throw Error('Test condition timed out');
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
 }
-async function fixture(readAvatarImage?: AssistantDependencies['readAvatarImage']) {
+async function fixture(
+  readAvatarImage?: AssistantDependencies['readAvatarImage'],
+  readCompactionRevision?: AssistantDependencies['readCompactionRevision'],
+  publishCharacterImage?: AssistantDependencies['publishCharacterImage'],
+  freshCharacter = false,
+) {
   const directory = await mkdtemp(join(tmpdir(), 'maka-bot-中文-'));
   const ctx = new Context();
   const agents = new PluginAgentService(ctx);
   const llm = new PluginLlmService(ctx, agents);
+  llm.bindRuntime({
+    generate: async () => ({
+      text: JSON.stringify({
+        approved: true,
+        feedback: 'Synthetic review approved',
+      }),
+      modelId: 'controlled-review',
+    }),
+  });
   const sessionQuery = new PluginSessionQueryService(ctx, agents);
   const sources = new PluginSourceService(ctx, agents);
   const sessions = new Map<string, any>([
@@ -69,9 +84,13 @@ async function fixture(readAvatarImage?: AssistantDependencies['readAvatarImage'
   const submittedIds: string[] = [];
   let invocation: any;
   let service: PersonalAssistantService;
+  const runtimeEvents = new Map<string, any[]>();
   const dependencies = {
+    readRuntimeEvents: async (id: string) => runtimeEvents.get(id) ?? [],
     prepareBotWake: (ownerId: string, workerId: string) => prepareBotWake(ownerId, workerId),
     readAvatarImage,
+    readCompactionRevision,
+    publishCharacterImage,
     agents,
     llm,
     sessionQuery,
@@ -87,14 +106,43 @@ async function fixture(readAvatarImage?: AssistantDependencies['readAvatarImage'
       }
     },
   };
-  const invoke = async (id: string, name: string, raw: any, turnId: string) => {
+  const invoke = async (id: string, name: string, raw: any, turnId: string, identity: any = {}) => {
     const tool = service.tools.find((tool) => tool.name === name)!;
     assert.ok(tool, name);
+    const toolCallId = randomUUID();
+    if (name === 'MatterSettle') {
+      const prompt = await service.prompt({
+        sessionId: id,
+        turnId,
+        cwd: directory,
+        signal: new AbortController().signal,
+      });
+      runtimeEvents.set(id, [
+        ...prompt.contexts.map((context) => ({
+          sessionId: id,
+          turnId,
+          role: 'system',
+          author: 'host',
+          content: {
+            kind: 'text',
+            text: context.text,
+            runtimeContextName: context.name,
+          },
+        })),
+        {
+          sessionId: id,
+          turnId,
+          content: { kind: 'function_call', id: toolCallId },
+        },
+      ]);
+    }
     return tool.impl((tool.parameters as any).parse(raw), {
       sessionId: id,
       turnId,
       cwd: directory,
-      toolCallId: randomUUID(),
+      toolCallId,
+      operationId: randomUUID(),
+      ...identity,
       abortSignal: new AbortController().signal,
       emitOutput() {},
     });
@@ -147,7 +195,8 @@ async function fixture(readAvatarImage?: AssistantDependencies['readAvatarImage'
             id,
             turnId,
             prompt: String(message),
-            invoke: (name: string, raw: any = {}) => invoke(id, name, raw, turnId),
+            invoke: (name: string, raw: any = {}, identity: any = {}) =>
+              invoke(id, name, raw, turnId, identity),
             finish: () =>
               service.beforeFinish({ sessionId: id, turnId, signal: new AbortController().signal }),
           };
@@ -161,6 +210,7 @@ async function fixture(readAvatarImage?: AssistantDependencies['readAvatarImage'
           },
           (error) => {
             worker.status = 'blocked';
+            worker.error = String(error);
             throw error;
           },
         );
@@ -199,6 +249,10 @@ async function fixture(readAvatarImage?: AssistantDependencies['readAvatarImage'
     await service.recover(legacy, []);
     service.start();
   };
+  // These Bot-loop fixtures represent an existing customized installation.
+  const packDir = join(native, 'index-initiative', 'character-pack');
+  await mkdir(packDir, { recursive: true });
+  if (!freshCharacter) await writeFile(join(packDir, 'persona.md'), '# 既有人设\n自然交流。');
   await initialize();
   await service!.call('assistant.bind', { sessionId: 'owner' });
   return {
@@ -298,6 +352,11 @@ test('Bot receives bodies in batches, may consult history, sends multiple messag
     ['第一条', '第二条', '好，我来安排。', '有结果再告诉你。'],
   );
   const tools = f.service.toolCeiling(f.invocation.id)!.map((tool) => tool.name);
+  const available = f.service
+    .filterTools(f.invocation.id, f.service.tools)
+    .map((tool) => tool.name);
+  assert.ok(available.includes('MatterDelegate'));
+  assert.ok(available.includes('InboxCheck'));
   assert.ok(tools.includes('MatterDelegate'));
   assert.ok(tools.includes('SendUser'));
   assert.ok(tools.includes('InboxCheck'));
@@ -398,7 +457,7 @@ test('message identities survive ambiguous publication and repeated input; forei
     }),
     /belongs/,
   );
-  await assert.rejects(f.invoke('InboxList'), /belongs/);
+  await assert.rejects(f.invoke('InboxList'), /belongs|unavailable/);
   assert.equal(await f.service.receiveUser('unrelated', 'u', { text: 'ordinary' }), false);
 });
 
@@ -409,8 +468,29 @@ test('independent discovery retains the exact prompt and reports through Inbox, 
     processed = false;
   f.runner(async ({ prompt, invoke }) => {
     if (prompt.includes('Runtime heartbeat')) {
-      assert.ok(prompt.includes(PROACTIVE_TASK));
-      await invoke('DiscoveryReport', { text: '已核实：明天的两个日程冲突。' });
+      if (prompt.includes('Phase: discovery')) {
+        assert.ok(prompt.includes(DISCOVERY_TASK));
+        await writeFile(
+          /完成后把增量操作写入 (.+)，格式：/.exec(prompt)![1],
+          JSON.stringify({
+            notes: [
+              {
+                topicId: 'calendar',
+                title: '日程',
+                text: '日程冲突，需要判断。',
+                sources: ['日历'],
+              },
+            ],
+          }),
+        );
+        return;
+      }
+      await writeFile(
+        /完成后把增量操作写入 (.+)，格式：/.exec(prompt)![1],
+        JSON.stringify({
+          messages: [{ text: '已核实：明天的两个日程冲突。', topicIds: ['calendar'] }],
+        }),
+      );
       reported = true;
     } else {
       const rows = await invoke('InboxCheck');
@@ -430,7 +510,11 @@ test('independent discovery retains the exact prompt and reports through Inbox, 
   await until(() => reported && processed);
   assert.equal(f.visible.length, 1);
   assert.equal(f.visible[0].text, '明天两个安排冲突，要一起调整吗？');
-  assert.equal(f.sessions.size, 3, 'visible chat, Bot, and exploration have separate Sessions');
+  assert.equal(
+    f.sessions.size,
+    4,
+    'visible chat, Bot, discovery and judgement have separate Sessions',
+  );
 });
 
 test('Inbox persistence preserves all types and history; batches return bounded bodies without processing state', async (t) => {
@@ -782,21 +866,28 @@ test('Bot avatar is validated, worker-only, readable without waking and durable 
   const read = async () => (await f.service.call('assistant.avatar', {})) as any;
   assert.deepEqual((await read()).avatar, { emoji: '🤖', background: '#E5EDFF' });
   assert.equal(f.starts(), 0, 'reading appearance does not wake a model');
-  await assert.rejects(f.invoke('AssistantSetAvatar', { emoji: '🐱' }), /belongs/);
+  await assert.rejects(
+    f.invoke('AssistantCharacterPack', { action: 'set_avatar', emoji: '🐱' }),
+    /belongs|unavailable/,
+  );
   let done = false;
   f.runner(async ({ id, invoke }) => {
     await invoke('InboxCheck');
-    assert.ok(f.service.toolCeiling(id)?.some((t) => t.name === 'AssistantSetAvatar'));
+    assert.ok(f.service.toolCeiling(id)?.some((t) => t.name === 'AssistantCharacterPack'));
     for (const raw of [
       { emoji: 'cats' },
       { emoji: '🐱🦊' },
       { emoji: '<svg>' },
       { emoji: '🐱', background: 'url(https://example.com)' },
     ]) {
-      await assert.rejects(invoke('AssistantSetAvatar', raw));
+      await assert.rejects(invoke('AssistantCharacterPack', { action: 'set_avatar', ...raw }));
     }
     assert.equal((await read()).avatar.emoji, '🤖', 'invalid writes preserve the current avatar');
-    const result = await invoke('AssistantSetAvatar', { emoji: '🦊', background: '#FFE4C4' });
+    const result = await invoke('AssistantCharacterPack', {
+      action: 'set_avatar',
+      emoji: '🦊',
+      background: '#FFE4C4',
+    });
     assert.equal(result.updated, true);
     await invoke('Sleep');
     done = true;
@@ -813,7 +904,7 @@ test('Bot avatar is validated, worker-only, readable without waking and durable 
   );
   await f.service.call('assistant.set-enabled', { enabled: false });
   assert.equal(
-    f.service.tools.some((t) => t.name === 'AssistantSetAvatar'),
+    f.service.tools.some((t) => t.name === 'AssistantCharacterPack'),
     false,
   );
 });
@@ -840,7 +931,10 @@ test('Image avatars preserve bytes, paginate without model payloads, and survive
   let done = false;
   f.runner(async ({ invoke }) => {
     await invoke('InboxCheck');
-    const result = await invoke('AssistantSetAvatar', { image: path });
+    const result = await invoke('AssistantCharacterPack', {
+      action: 'set_avatar',
+      image: path,
+    });
     metadata = result.avatar;
     assert.ok(metadata.image.id);
     assert.ok(JSON.stringify(result).length < 500, 'model receives metadata, not image bytes');
@@ -850,14 +944,17 @@ test('Image avatars preserve bytes, paginate without model payloads, and survive
       { image: 'https://example.com/fox.png', emoji: '🦊' },
       {},
     ]) {
-      await assert.rejects(invoke('AssistantSetAvatar', raw));
+      await assert.rejects(invoke('AssistantCharacterPack', { action: 'set_avatar', ...raw }));
     }
     await writeFile(path, '<svg onload="alert(1)"></svg>');
-    await assert.rejects(invoke('AssistantSetAvatar', { image: path }));
+    await assert.rejects(invoke('AssistantCharacterPack', { action: 'set_avatar', image: path }));
     await writeFile(path, Buffer.alloc(2 * 1024 * 1024 + 1));
-    await assert.rejects(invoke('AssistantSetAvatar', { image: path }));
+    await assert.rejects(invoke('AssistantCharacterPack', { action: 'set_avatar', image: path }));
     assert.deepEqual(((await f.service.call('assistant.avatar', {})) as any).avatar, metadata);
-    await invoke('AssistantSetAvatar', { image: 'https://example.com/fox.png' });
+    await invoke('AssistantCharacterPack', {
+      action: 'set_avatar',
+      image: 'https://example.com/fox.png',
+    });
     await invoke('Sleep');
     done = true;
   });
@@ -1335,4 +1432,776 @@ test('connector input retains sender provenance through protocol, mailbox and vi
       }),
     /external connector source/,
   );
+});
+
+test('only explicitly linked replies to delivered discoveries reach the notebook, across restart', async (t) => {
+  const f = await fixture();
+  t.after(f.close);
+  let round = 0;
+  let deliveries = 0;
+  let handled = 0;
+  let visibleId = '';
+  let feedbackId = '';
+  const discoveryContext = () => {
+    const store = new BotStore(join(f.directory, 'native', 'index-initiative'));
+    try {
+      return {
+        deliveries: store.discoveryDeliveries(),
+        feedback: store.discoveryFeedback(),
+      };
+    } finally {
+      store.close();
+    }
+  };
+  const installRunner = () =>
+    f.runner(async ({ prompt, invoke }) => {
+      if (prompt.includes('Runtime heartbeat')) {
+        const notebook = await readFile(/记事本：([^\n]+)/.exec(prompt)![1], 'utf8');
+        assert.doesNotMatch(notebook, /普通聊天只问天气|普通聊天的回答/);
+        let draft: any = {};
+        if (prompt.includes('Phase: discovery')) {
+          round++;
+          if (round === 1) {
+            assert.match(notebook, /暂无用户反馈/);
+            draft = {
+              notes: [
+                {
+                  topicId: 'tea',
+                  title: '茶',
+                  text: '附近有茶展',
+                  sources: ['公告'],
+                },
+              ],
+            };
+          } else {
+            assert.match(notebook, /我不喝茶了/);
+            assert.match(notebook, /主题：tea/);
+            feedbackId = /｜(feedback:[^｜\n]+)｜待理解/.exec(notebook)![1];
+            // Leave the second discovery in flight so the wait cannot rely on round alone.
+            await new Promise((resolve) => setTimeout(resolve, 50));
+          }
+        } else if (round === 1) {
+          draft = {
+            messages: [{ text: '附近的茶展本周开放。', topicIds: ['tea'] }],
+          };
+        } else {
+          draft = {
+            feedbackDecisions: [
+              {
+                feedbackId,
+                understanding: '用户不喝茶了',
+                rules: [
+                  {
+                    quote: '我不喝茶了',
+                    status: 'closed',
+                    reason: '用户不喝茶了',
+                    topicIds: ['tea'],
+                    tags: [],
+                  },
+                ],
+              },
+            ],
+          };
+        }
+        await writeFile(
+          /完成后把增量操作写入 (.+)，格式：/.exec(prompt)![1],
+          JSON.stringify(draft),
+        );
+        return;
+      }
+      const batch = await invoke('InboxCheck');
+      for (const item of batch.items) {
+        if (item.type === 'discovery') {
+          const result = await invoke('SendUser', {
+            messageId: 'tea-delivery',
+            messages: [{ text: '附近的茶展本周开放。', discoveryIds: [item.id] }],
+          });
+          visibleId = result.messageIds[0];
+          deliveries++;
+        } else if (item.id === 'reply') {
+          const args = { userMessageId: 'reply', messageId: visibleId };
+          await invoke('DiscoveryFeedback', args);
+          await invoke('DiscoveryFeedback', args);
+        } else {
+          await invoke('SendUser', {
+            messageId: 'ordinary',
+            messages: [{ text: '普通聊天的回答' }],
+          });
+        }
+        handled++;
+      }
+      await invoke('Sleep');
+    });
+  installRunner();
+  await f.send('ordinary', '普通聊天只问天气');
+  await until(() => handled === 1);
+  assert.deepEqual(discoveryContext(), { deliveries: [], feedback: [] });
+  await f.service.call('assistant.control', { action: 'check' });
+  await until(() => deliveries === 1);
+  await until(async () => {
+    const status: any = await f.service.call('assistant.status', {});
+    return !status.state.active;
+  });
+  assert.equal(
+    ((await f.service.call('assistant.status', {})) as any).state.lastRun.outcome,
+    'reported',
+  );
+  assert.equal(discoveryContext().feedback.length, 0);
+  await f.send('reply', '我不喝茶了');
+  await until(() => handled === 3);
+  assert.equal(discoveryContext().feedback.length, 1);
+  await f.restart();
+  installRunner();
+  assert.equal(discoveryContext().deliveries.length, 1);
+  assert.equal(discoveryContext().feedback.length, 1);
+  await f.service.call('assistant.control', { action: 'check' });
+  await until(async () => {
+    const status: any = await f.service.call('assistant.status', {});
+    if (status.state.lastError) throw Error(status.state.lastError);
+    return round === 2 && !status.state.active;
+  });
+  assert.equal(
+    ((await f.service.call('assistant.status', {})) as any).state.lastRun.outcome,
+    'quiet',
+  );
+  const book = new DatabaseSync(join(f.directory, 'native', 'index-initiative', 'notebook.sqlite'));
+  t.after(() => book.close());
+  const events = book.prepare('SELECT kind,payload FROM events').all();
+  assert.equal(events.filter((e) => e.kind === 'feedback').length, 1);
+  assert.equal(events.filter((e) => e.kind === 'delivery').length, 1);
+  assert.equal(events.filter((e) => e.kind === 'conversation').length, 0);
+  assert.equal(events.filter((e) => e.kind === 'feedback-resolution').length, 1);
+});
+
+test('discovery feedback rejects unsent, ordinary, fabricated and external messages; send retries preserve links', async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'bot-feedback-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const store = new BotStore(dir);
+  t.after(() => store.close());
+  store.post({ id: 'd', type: 'discovery', source: 'judge', content: '茶展' });
+  store.post({
+    id: 'other-d',
+    type: 'discovery',
+    source: 'judge',
+    content: '书展',
+  });
+  const messages = [{ text: '茶展消息', discoveryIds: ['d'] }];
+  const [id] = store.queueVisibleBatch('d-send', messages);
+  const user = (id: string, source = 'user') =>
+    store.post(
+      { id, type: 'user_message', source, content: { text: '反馈' } },
+      {
+        id,
+        type: 'user',
+        text: '反馈',
+        displayText: '真实用户反馈',
+        turnId: id,
+        ts: Date.now(),
+      },
+    );
+  user('u');
+  assert.throws(() => store.linkDiscoveryFeedback('u', id), /delivered discovery/);
+  assert.deepEqual(store.discoveryDeliveries(), []);
+  store.delivered(id);
+  user('after');
+  store.linkDiscoveryFeedback('after', id);
+  store.linkDiscoveryFeedback('after', id);
+  assert.equal(store.discoveryFeedback().length, 1);
+  assert.equal(store.discoveryFeedback()[0].text, '真实用户反馈');
+  assert.deepEqual(store.queueVisibleBatch('d-send', messages), [id]);
+  assert.throws(
+    () => store.queueVisibleBatch('d-send', [{ text: '茶展消息', discoveryIds: ['other-d'] }]),
+    /different batch/,
+  );
+  assert.throws(() => store.queueVisibleBatch('d-send', [{ text: '茶展消息' }]), /different batch/);
+  assert.throws(
+    () => store.queueVisibleBatch('invalid', [{ text: '无效关联', discoveryIds: ['missing'] }]),
+    /discoveryIds/,
+  );
+  assert.throws(() => store.linkDiscoveryFeedback('missing', id), /owner user message/);
+  user('external', 'external_connector');
+  assert.throws(() => store.linkDiscoveryFeedback('external', id), /owner user message/);
+  const [ordinary] = store.queueVisibleBatch('chat', [{ text: '普通聊天' }]);
+  store.delivered(ordinary);
+  assert.throws(() => store.linkDiscoveryFeedback('after', ordinary), /delivered discovery/);
+});
+test('Bot character pack edits personality, reuses saved images and survives restart without injecting the guide', async (t) => {
+  const png = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==',
+    'base64',
+  );
+  let imageLoads = 0;
+  const f = await fixture(async (_id, source) => {
+    imageLoads++;
+    return { bytes: await readFile(source), mimeType: 'image/png' };
+  });
+  t.after(f.close);
+  const imagePath = join(f.directory, '生成的头像.png');
+  await writeFile(imagePath, png);
+  await assert.rejects(
+    f.invoke('AssistantCharacterPack', { action: 'list' }),
+    /belongs|unavailable/,
+  );
+  let done = false;
+  let assetId: string;
+  let personaPath: string;
+  let workerId: string;
+  const prompt = (sessionId: string) =>
+    f.service.prompt({
+      sessionId,
+      turnId: 'pack-test',
+      cwd: f.directory,
+      signal: new AbortController().signal,
+    });
+  f.runner(async ({ id, invoke }) => {
+    workerId = id;
+    await invoke('InboxCheck');
+    assert.ok(f.service.toolCeiling(id)?.some((tool) => tool.name === 'AssistantCharacterPack'));
+    assert.ok(f.service.toolCeiling(id)?.some((tool) => tool.name === 'AssistantStickerSearch'));
+    assert.ok(f.service.toolCeiling(id)?.some((tool) => tool.name === 'AssistantPetPack'));
+    assert.match(
+      (await invoke('AssistantPetPack', { action: 'requirements' })).requirements,
+      /spriteSheetPath/,
+    );
+    assert.deepEqual(await invoke('AssistantStickerSearch', {}), {
+      items: [],
+      total: 0,
+    });
+    const packTool = f.service.tools.find((tool) => tool.name === 'AssistantCharacterPack')!;
+    assert.equal(z.toJSONSchema(packTool.parameters as z.ZodType).type, 'object');
+    for (const invalid of [
+      { action: 'read' },
+      { action: 'write', document: 'persona', content: 'missing revision' },
+      { action: 'add_image', source: imagePath },
+      { action: 'asset' },
+    ])
+      await assert.rejects(invoke('AssistantCharacterPack', invalid));
+    const guide = await invoke('AssistantCharacterPack', {
+      action: 'read',
+      document: 'guide',
+    });
+    assert.match(guide.content, /自主创作/);
+    const persona = await invoke('AssistantCharacterPack', {
+      action: 'read',
+      document: 'persona',
+    });
+    personaPath = persona.path;
+    await invoke('AssistantCharacterPack', {
+      action: 'write',
+      document: 'persona',
+      revision: persona.revision,
+      content: '# 名字\n小橘\n说话自然简短。',
+    });
+    const active = await prompt(id);
+    assert.match(active.text!, /小橘/);
+    assert.doesNotMatch(active.text!, /不需要每次创作/);
+    assert.doesNotMatch((await prompt('owner')).text ?? '', /小橘|角色人格/);
+    assert.doesNotMatch((await prompt('ordinary')).text ?? '', /小橘|角色人格/);
+    const saved = await invoke('AssistantCharacterPack', {
+      action: 'add_image',
+      source: imagePath,
+      title: '小橘头像',
+      kind: 'avatar',
+    });
+    assetId = saved.asset.id;
+    assert.equal(JSON.stringify(saved).includes(png.toString('base64')), false);
+    await rm(imagePath);
+    await assert.rejects(
+      invoke('AssistantCharacterPack', {
+        action: 'set_avatar',
+        assetId,
+        emoji: '🐱',
+      }),
+    );
+    await invoke('AssistantCharacterPack', { action: 'set_avatar', assetId });
+    assert.equal(imageLoads, 1, 'saved assets need no further network or source-file reads');
+    assert.equal((await invoke('AssistantCharacterPack', { action: 'list' })).total, 1);
+    const changed = await invoke('AssistantCharacterPack', {
+      action: 'update_asset',
+      assetId,
+      title: '自己挑的新名字',
+    });
+    assert.equal(changed.asset.kind, 'avatar');
+    assert.equal(changed.asset.title, '自己挑的新名字');
+    await invoke('AssistantCharacterPack', { action: 'remove_asset', assetId });
+    assert.equal((await invoke('AssistantCharacterPack', { action: 'list' })).total, 0);
+    await assert.rejects(
+      invoke('AssistantCharacterPack', { action: 'set_avatar', assetId }),
+      /Unknown/,
+    );
+
+    await invoke('Sleep');
+    done = true;
+  });
+  await f.send('pack', '叫小橘，用这张图当头像');
+  await until(() => done);
+  assert.equal(f.visible.filter((message) => message.type === 'assistant').length, 0);
+  await f.restart();
+  assert.match((await prompt(workerId!)).text!, /小橘/);
+  await writeFile(personaPath!, '名字改成小云。');
+  assert.match((await prompt(workerId!)).text!, /小云/);
+  const avatar = (await f.service.call('assistant.avatar', {})) as any;
+  assert.equal(avatar.avatar.image.id, assetId!);
+  const chunk = (await f.service.call('assistant.avatar-image', {
+    id: assetId!,
+    offset: 0,
+  })) as any;
+  assert.deepEqual(Buffer.from(chunk.data, 'base64'), png);
+  await f.service.call('assistant.set-enabled', { enabled: false });
+  assert.equal(
+    f.service.tools.some((tool) => tool.name === 'AssistantCharacterPack'),
+    false,
+  );
+  assert.doesNotMatch((await prompt(workerId!)).text ?? '', /小云/);
+});
+
+test('Bot sticker shelf follows durable compaction and tolerates lookup failures without touching other Sessions', async (t) => {
+  let checkpoint = 'checkpoint-a';
+  let failing = false;
+  const checked: string[] = [];
+  const png = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==',
+    'base64',
+  );
+  let image = 0;
+  const f = await fixture(
+    async () => ({
+      bytes: Buffer.concat([png, Buffer.from([image++])]),
+      mimeType: 'image/png',
+    }),
+    async (id) => {
+      checked.push(id);
+      if (failing) throw Error('checkpoint temporarily unavailable');
+      return checkpoint;
+    },
+  );
+  t.after(f.close);
+  let done = false;
+  f.runner(async ({ id, invoke }) => {
+    await invoke('InboxCheck');
+    const prompt = (sessionId = id) =>
+      f.service.prompt({ sessionId, turnId: 'shelf-turn', cwd: f.directory });
+    for (let i = 0; i < 21; i++)
+      await invoke('AssistantCharacterPack', {
+        action: 'add_image',
+        source: 'fixture.png',
+        title: `庆祝 ${i}`,
+        kind: 'sticker',
+        usage: '开心',
+      });
+    const first = await prompt();
+    assert.match(first.text!, /可用表情素材/);
+    assert.equal((await invoke('AssistantStickerSearch', { query: '开心' })).items.length, 10);
+    failing = true;
+    assert.equal((await prompt()).text, first.text);
+    failing = false;
+    checkpoint = 'checkpoint-b';
+    assert.notEqual((await prompt()).text, first.text);
+    assert.ok(checked.every((worker) => worker === id));
+    const count = checked.length;
+    assert.doesNotMatch((await prompt('ordinary')).text ?? '', /可用表情素材/);
+    assert.equal(checked.length, count);
+    await invoke('Sleep');
+    done = true;
+  });
+  await f.send('shelf', 'hello');
+  await until(() => done);
+});
+
+test('sticker lookup publishes a saved image to the owner conversation without leaking its private cache path', async (t) => {
+  const png = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==',
+    'base64',
+  );
+  const f = await fixture(
+    async () => ({ bytes: png, mimeType: 'image/png' }),
+    undefined,
+    async (owner, id, image, kind) => {
+      assert.equal(owner, 'owner');
+      assert.equal(kind, 'sticker');
+      assert.deepEqual(Buffer.from(image.bytes), png);
+      return `maka://runtime/attachments/sticker-${id}`;
+    },
+  );
+  t.after(f.close);
+  await assert.rejects(f.invoke('AssistantStickerSearch', {}), /belongs|unavailable/);
+  let done = false;
+  f.runner(async ({ invoke }) => {
+    await invoke('InboxCheck');
+    const saved = await invoke('AssistantCharacterPack', {
+      action: 'add_image',
+      source: 'image.png',
+      title: '开心',
+      kind: 'sticker',
+    });
+    const result = await invoke('AssistantStickerSearch', { query: '开心' });
+    assert.equal(result.items[0].imageUrl, saved.asset.imageUrl);
+    assert.equal('path' in result.items[0], false);
+    assert.equal('path' in saved.asset, false);
+    assert.match(saved.asset.imageUrl, /^maka:\/\/runtime\/attachments\//);
+    const read = await invoke('AssistantCharacterPack', {
+      action: 'asset',
+      assetId: saved.asset.id,
+    });
+    assert.equal(read.imageUrl, saved.asset.imageUrl);
+    await invoke('Sleep');
+    done = true;
+  });
+  await f.send('sticker', 'hello');
+  await until(() => done);
+});
+
+test('SendUser publishes sticker IDs atomically and replays the saved batch after asset removal and restart', async (t) => {
+  const png = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==',
+    'base64',
+  );
+  let failPublish = false;
+  let publishes = 0;
+  const f = await fixture(
+    async () => ({ bytes: png, mimeType: 'image/png' }),
+    undefined,
+    async (owner, id) => {
+      assert.equal(owner, 'owner');
+      publishes++;
+      if (failPublish) throw Error('publish failed');
+      return `maka://runtime/attachments/sticker-${id}`;
+    },
+  );
+  t.after(f.close);
+  let request: any;
+  let done = false;
+  f.runner(async ({ invoke }) => {
+    await invoke('InboxCheck');
+    const saved = await invoke('AssistantCharacterPack', {
+      action: 'add_image',
+      source: 'image.png',
+      title: '开心',
+      kind: 'avatar',
+    });
+    const id = saved.asset.id;
+    await assert.rejects(
+      invoke('SendUser', {
+        messageId: 'not-sticker',
+        messages: [{ stickerId: id }],
+      }),
+      /sticker asset/,
+    );
+    await invoke('AssistantCharacterPack', {
+      action: 'update_asset',
+      assetId: id,
+      kind: 'sticker',
+    });
+    request = {
+      messageId: 'direct-sticker',
+      messages: [{ text: '正文保留', summary: '摘要保留', stickerId: id }, { stickerId: id }],
+    };
+    await assert.rejects(
+      invoke('SendUser', { messageId: 'empty', messages: [{}] }),
+      /text or stickerId/,
+    );
+    await assert.rejects(
+      invoke('SendUser', {
+        messageId: 'invalid',
+        messages: [{ text: '不能提前发' }, { stickerId: '0'.repeat(64) }],
+      }),
+    );
+    failPublish = true;
+    await assert.rejects(invoke('SendUser', request), /publish failed/);
+    assert.equal(f.visible.filter((m) => m.type === 'assistant').length, 0);
+    failPublish = false;
+    const sent = await invoke('SendUser', request);
+    assert.equal(sent.messageIds.length, 2);
+    const output = f.visible.filter((m) => m.type === 'assistant');
+    assert.equal(output[0].summary, '摘要保留');
+    assert.equal(output[0].text, `正文保留\n\n![表情](maka://runtime/attachments/sticker-${id})`);
+    assert.equal(output[1].text, `![表情](maka://runtime/attachments/sticker-${id})`);
+    await invoke('AssistantCharacterPack', { action: 'remove_asset', assetId: id });
+    const before = publishes;
+    assert.deepEqual(await invoke('SendUser', request), sent);
+    assert.equal(publishes, before, 'retry does not need the deleted asset');
+    await assert.rejects(
+      invoke('SendUser', {
+        ...request,
+        messages: [{ text: 'changed', stickerId: id }],
+      }),
+      /different batch/,
+    );
+    await invoke('Sleep');
+    done = true;
+  });
+  await f.send('direct', 'hello');
+  await until(() => done);
+  done = false;
+  const before = publishes;
+  f.runner(async ({ invoke }) => {
+    await invoke('InboxCheck');
+    await invoke('SendUser', request);
+    await invoke('Sleep');
+    done = true;
+  });
+  await f.restart();
+  await f.send('retry', 'retry');
+  await until(() => done);
+  assert.equal(publishes, before);
+  assert.equal(f.visible.filter((m) => m.type === 'assistant').length, 2);
+});
+
+for (const userHasSpoken of [false, true])
+  test(`first-run character Matter finishes and Bot greets appropriately (prior user=${userHasSpoken})`, async (t) => {
+    const f = await fixture(undefined, undefined, undefined, true);
+    t.after(f.close);
+    const characterEvents: any[] = [];
+    f.runner(async ({ id, prompt, invoke }) => {
+      if (
+        f.sessions.get(id)?.labels?.some((label: string) => label.startsWith('matter-creation:'))
+      ) {
+        const wake = JSON.parse(
+          prompt.slice(
+            prompt.indexOf('Matter workspace (paths and host metadata):\n') +
+              'Matter workspace (paths and host metadata):\n'.length,
+          ),
+        );
+        await invoke('MatterRead', { activationId: wake.activationId });
+        assert.ok(
+          f.service
+            .filterTools(id, f.service.tools)
+            .some((tool) => tool.name === 'AssistantCharacterPack'),
+        );
+        assert.ok(
+          f.service
+            .filterTools(id, f.service.tools)
+            .some((tool) => tool.name === 'AssistantPetPack'),
+        );
+        assert.match(
+          (await invoke('AssistantPetPack', { action: 'requirements' })).requirements,
+          /needs-input/,
+        );
+        assert.ok(!f.service.tools.some((tool) => tool.name === 'AssistantSetAvatar'));
+        await assert.rejects(
+          invoke('AssistantCharacterPack', { action: 'finish_initialization' }),
+          /persona/,
+        );
+        const persona = await invoke('AssistantCharacterPack', {
+          action: 'read',
+          document: 'persona',
+        });
+        assert.equal(persona.content, '');
+        await invoke('AssistantCharacterPack', {
+          action: 'write',
+          document: 'persona',
+          revision: persona.revision,
+          content: '# 名字\n月球茶摊老板。用一本正经的冷笑话陪你喝茶。',
+        });
+        await assert.rejects(
+          invoke('AssistantCharacterPack', { action: 'finish_initialization' }),
+          /avatar/,
+        );
+        await invoke('AssistantCharacterPack', {
+          action: 'set_avatar',
+          emoji: '🫖',
+        });
+        await invoke('AssistantCharacterPack', {
+          action: 'finish_initialization',
+        });
+        await invoke('MatterSettle', {
+          disposition: 'complete',
+          progressSummary: '人物包已保存',
+          summary: '人物包保存完成，离线用茶壶头像，未下载图片。',
+          update: '我成了月球茶摊老板。',
+        });
+      } else {
+        const batch = await invoke('InboxCheck');
+        for (const row of batch.items) {
+          const payload = JSON.parse(row.content);
+          if (payload.kind === 'assistant' && row.source === 'appearance-setup') {
+            await invoke('AssistantSetup', {
+              kind: 'assistant',
+              action: 'create',
+              preferences: '月球茶摊老板，用户已同意',
+            });
+          }
+          if (payload.characterIntroduction) {
+            characterEvents.push(payload);
+            await invoke('SendUser', {
+              messageId: 'character-intro',
+              messages: [
+                {
+                  text:
+                    payload.introduction === 'introduce'
+                      ? '初次见面，我是月球茶摊老板。'
+                      : '我给自己换成月球茶摊老板啦。',
+                },
+              ],
+            });
+          }
+        }
+        await invoke('Sleep');
+      }
+    });
+    if (userHasSpoken) await f.send('before-init', '你好，我喜欢喝茶。');
+    await until(
+      () =>
+        characterEvents.length === 1 &&
+        f.visible.some((message) => message.text?.includes('月球茶摊老板')),
+      20000,
+    ).catch(async (error) => {
+      throw new Error(
+        JSON.stringify({
+          status: await f.service.call('assistant.character-status', {}),
+          workers: [...f.sessions.values()].map(({ id, status, error }) => ({
+            id,
+            status,
+            error,
+          })),
+        }),
+        { cause: error },
+      );
+    });
+    assert.equal(characterEvents.length, 1);
+    assert.equal(characterEvents[0].introduction, userHasSpoken ? 'explain_change' : 'introduce');
+    const status: any = await f.service.call('assistant.character-status', {});
+    assert.equal(status.phase, 'completed');
+    const tasks: any = await f.invoke('MatterTasks', {});
+    assert.equal(tasks.items.length, 1);
+    assert.equal(tasks.items[0].status, 'completed');
+    const count = f.sessions.size;
+    await f.restart();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.equal(f.sessions.size, count);
+    assert.equal(f.visible.filter((message) => message.type === 'assistant').length, 2);
+    assert.equal(
+      f.visible.filter((message) => message.text === '我在配置我自己，稍等一下。').length,
+      1,
+    );
+  });
+
+test('notification omissions persist, retries are idempotent and later delivery remains possible', async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'bot-notification-decisions-'));
+  let store = new BotStore(dir);
+  t.after(async () => {
+    store.close();
+    await rm(dir, { recursive: true, force: true });
+  });
+  store.post({ id: 'd', type: 'discovery', source: 'judge', content: '是否暂停用车询问' });
+  const decisions = [{ inboxId: 'd', reason: '用车询问已按用户要求停用，无需重复询问。' }];
+  const head = store.head();
+  store.recordNotNotified('call-1', decisions);
+  const saved = store.read('d').notNotified;
+  assert.equal(saved.length, 1);
+  assert.ok(Number(saved[0].at) > 0);
+  store.recordNotNotified('call-1', decisions);
+  assert.deepEqual(store.read('d').notNotified, saved);
+  assert.throws(
+    () => store.recordNotNotified('call-1', [{ inboxId: 'd', reason: '不同理由' }]),
+    /different reason/,
+  );
+  assert.throws(
+    () =>
+      store.recordNotNotified('call-bad', [
+        ...decisions,
+        { inboxId: 'missing', reason: '未知消息' },
+      ]),
+    /Unknown inbox/,
+  );
+  assert.deepEqual(store.read('d').notNotified, saved);
+  assert.equal(store.head(), head);
+  assert.equal(store.batch(0).items.length, 1);
+  store.close();
+  store = new BotStore(dir);
+  assert.deepEqual(store.read('d').notNotified, saved);
+  store.recordNotNotified('call-2', [{ inboxId: 'd', reason: '复核后暂未变化。' }]);
+  assert.equal(store.read('d').notNotified.length, 2);
+  assert.deepEqual(store.read('d').notNotified[0], saved[0]);
+  const [messageId] = store.queueVisibleBatch('later', [
+    { text: '有了新情况。', discoveryIds: ['d'] },
+  ]);
+  store.delivered(messageId);
+  assert.equal(store.discoveryDeliveries().length, 1);
+  assert.equal(store.read('d').notNotified.length, 2);
+});
+
+test('Sleep records omissions without sending; unread arrivals still prevent sleep', async (t) => {
+  const f = await fixture();
+  t.after(f.close);
+  let done = false;
+  f.runner(async ({ invoke, finish }) => {
+    await invoke('InboxCheck');
+    await assert.rejects(
+      invoke('Sleep', {
+        notNotified: [{ inboxId: 'missing', reason: '不存在的消息' }],
+      }),
+      /Unknown inbox/,
+    );
+    await f.send('new-input', '还有一件事');
+    const result = await invoke('Sleep', {
+      notNotified: [{ inboxId: 'first-input', reason: '用户告知已经处理，不需要重复建议。' }],
+    });
+    assert.equal(result.sleeping, false);
+    const original = await invoke('InboxRead', { id: 'first-input' });
+    assert.equal(original.notNotified.length, 1);
+    assert.equal(original.notNotified[0].reason, '用户告知已经处理，不需要重复建议。');
+    const next = await invoke('InboxCheck');
+    assert.deepEqual(
+      next.items.map((m: any) => m.id),
+      ['new-input'],
+    );
+    assert.equal((await invoke('Sleep')).sleeping, true);
+    assert.equal((await finish()).allow, true);
+    done = true;
+  });
+  await f.send('first-input', '这件事我已经处理了');
+  await until(() => done);
+  assert.equal(f.visible.filter((m) => m.type === 'assistant').length, 0);
+  await assert.rejects(f.invoke('Sleep', { notNotified: [] }), /belongs/);
+});
+
+test('Sleep decisions use durable operation identity, not reused provider call IDs', async (t) => {
+  const f = await fixture();
+  t.after(f.close);
+  let done = false;
+  let failure: unknown;
+  f.runner(async ({ invoke, finish }) => {
+    try {
+      await invoke('InboxCheck');
+      await f.send('later-input', '还有新消息');
+      const decision = (reason: string) => ({
+        notNotified: [{ inboxId: 'decision-input', reason }],
+      });
+      const identity = (operationId: string) => ({ toolCallId: 'provider-reused', operationId });
+      const read = async () => (await invoke('InboxRead', { id: 'decision-input' })).notNotified;
+      assert.equal((await invoke('Sleep', decision('已处理'), identity('op-a'))).sleeping, false);
+      const first = await read();
+      await invoke('Sleep', decision('已处理'), {
+        ...identity('op-a'),
+        toolCallId: 'retry-provider',
+      });
+      assert.deepEqual(await read(), first, 'same durable operation is an idempotent retry');
+      await invoke('Sleep', decision('已处理'), identity('op-b'));
+      assert.equal((await read()).length, 2, 'another operation may reuse the provider call ID');
+      await invoke('Sleep', decision('复核后仍无变化'), identity('op-c'));
+      const saved = await read();
+      assert.equal(saved.length, 3);
+      await assert.rejects(
+        invoke('Sleep', decision('不同的重试理由'), identity('op-c')),
+        /different reason/,
+      );
+      assert.deepEqual(
+        await read(),
+        saved,
+        'conflicting retry cannot append or replace a decision',
+      );
+      assert.equal((await finish()).allow, false, 'unread input still prevents finish');
+      await invoke('InboxCheck');
+      assert.equal((await invoke('Sleep')).sleeping, true);
+      assert.equal((await finish()).allow, true);
+      done = true;
+    } catch (error) {
+      failure = error;
+      throw error;
+    }
+  });
+  await f.send('decision-input', '这件事处理好了');
+  await until(() => done || !!failure);
+  if (failure) throw failure;
 });

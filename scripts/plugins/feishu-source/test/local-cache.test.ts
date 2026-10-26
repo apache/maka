@@ -338,3 +338,24 @@ for (const phase of ['discover', 'search', 'publish']) {
     assert.equal(cache.boundary(), 1, 'unchanged existing originals are not published again');
   });
 }
+
+test('activity observation is permission checked, published-only and never reads original bodies', async (t) => {
+  const { cache } = fixture(t);
+  let allowed = true,
+    checks = 0;
+  const source = cache.source('feishu.local.messages', async () => {
+    checks++;
+    if (!allowed) throw Error('permission denied');
+  });
+  const first = await source.activityToken(caller());
+  assert.equal(typeof first, 'string');
+  cache.db.prepare('INSERT INTO sync_members VALUES(?,?,?)').run('pending', 'staged-only', '1');
+  assert.equal(await source.activityToken(caller()), first);
+  cache.db
+    .prepare('INSERT INTO publications(id,revision,created_at,kind,object) VALUES(?,?,?,?,?)')
+    .run('published-new', '1', 4000, 'message', '{}');
+  assert.notEqual(await source.activityToken(caller()), first);
+  allowed = false;
+  await assert.rejects(source.activityToken(caller()), /permission denied/);
+  assert.equal(checks, 4);
+});

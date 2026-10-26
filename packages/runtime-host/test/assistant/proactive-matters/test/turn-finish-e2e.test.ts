@@ -105,6 +105,7 @@ test('native finish hook and four review rejections keep the same Maka turn runn
                     wakes: [{ kind: 'at', at: Date.now() + 60_000 }],
                     reason: '等待负责人反馈',
                     summary: '记录了当前情况并保存下一步。',
+                    progressSummary: '记录了当前情况并保存下一步。',
                     next: '收到验收结果后重新判断',
                     update: '已检查当前情况，正在等待验收结果。',
                   }),

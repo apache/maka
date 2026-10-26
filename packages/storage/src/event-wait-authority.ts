@@ -17,14 +17,12 @@
  * under the License.
  */
 
-import type {
-  RegisterGoalWaitInput,
-  SettleGoalWaitInput,
-  QueueGoalWaitInput,
-  GoalWaitSnapshot,
-} from './event-wait-bridge.js';
 import {
   decodeEventWaitRecord,
+  decodeAnyEventWaitRecord,
+  type AnyEventWaitRecord,
+  type ConsumerEventWaitRecord,
+  type EventWaitConsumerKind,
   type EventWaitRecord,
   type EventWaitStatus,
 } from '@maka/core/event-wait';
@@ -42,6 +40,44 @@ export interface EventWaitSnapshot {
   readonly authorityRevision: number;
   readonly record: EventWaitRecord;
 }
+export interface AnyEventWaitSnapshot {
+  readonly authorityRevision: number;
+  readonly record: AnyEventWaitRecord;
+}
+export interface AnyEventWaitPage {
+  readonly items: readonly AnyEventWaitSnapshot[];
+  readonly nextCursor: string | null;
+}
+export interface ListAnyEventWaitsInput extends ListEventWaitPageInput {
+  readonly sessionId?: string;
+  readonly status?: EventWaitStatus;
+  readonly consumerKind?: EventWaitConsumerKind;
+  readonly deliveryOutstanding?: true;
+}
+export interface CommitAnyEventWaitInput extends Omit<CommitEventWaitInput, 'record'> {
+  readonly record: AnyEventWaitRecord;
+}
+export type CommitAnyEventWaitResult =
+  | Exclude<CommitEventWaitResult, { kind: 'committed' }>
+  | { readonly kind: 'committed'; readonly snapshot: AnyEventWaitSnapshot };
+export interface RegisterInvocationWaitInput {
+  readonly record: ConsumerEventWaitRecord;
+}
+export interface AcknowledgeInvocationWaitResultInput extends ReadEventWaitInput {
+  readonly operationId: string;
+  readonly resultEventId: string;
+  readonly at: number;
+}
+export interface RetireInvocationWaitInput extends ReadEventWaitInput {
+  readonly operationId: string;
+  readonly reason: string;
+  readonly at: number;
+}
+export interface AcknowledgeGoalWaitingAdmissionInput extends ReadEventWaitInput {
+  readonly turnId: string;
+  readonly runId: string;
+  readonly at: number;
+}
 export interface CommitEventWaitInput {
   readonly sessionId: string;
   readonly waitId: string;
@@ -51,23 +87,21 @@ export interface CommitEventWaitInput {
 export type CommitEventWaitResult =
   | { readonly kind: 'committed'; readonly snapshot: EventWaitSnapshot }
   | { readonly kind: 'revision_conflict'; readonly actualAuthorityRevision: number | null }
-  | { readonly kind: 'active_wait_conflict'; readonly waitId: string }
   | { readonly kind: 'session_unavailable' };
 export interface ReadEventWaitInput {
   readonly sessionId: string;
   readonly waitId: string;
 }
-export interface ListPendingEventWaitsInput {
+export interface ListEventWaitPageInput {
   readonly afterWaitId?: string;
   readonly limit: number;
 }
-export interface ListSessionEventWaitsInput extends ListPendingEventWaitsInput {
+export interface ListSessionEventWaitsInput extends ListEventWaitPageInput {
   readonly sessionId: string;
 }
 /** A fact query, not an acknowledgement or a delivery queue. */
-export interface ListEventWaitsByStatusInput extends ListPendingEventWaitsInput {
+export interface ListEventWaitsByStatusInput extends ListEventWaitPageInput {
   readonly status: EventWaitStatus;
-  readonly deliveryOutstanding?: true;
 }
 export interface EventWaitPage {
   readonly items: readonly EventWaitSnapshot[];
@@ -100,9 +134,24 @@ export type CompleteEventWaitSourceDispatchInput = ReserveEventWaitSourceDispatc
 type MaybePromise<T> = T | Promise<T>;
 /** Internal backend port. Root leases authorize storage, not future observation or admission. */
 export interface EventWaitAuthorityRepository {
+  readAny(input: ReadEventWaitInput): MaybePromise<AnyEventWaitSnapshot | null>;
+  listAny(input: ListAnyEventWaitsInput): MaybePromise<AnyEventWaitPage>;
+  listAnyForObservation(
+    input: ListEventWaitsForObservationInput,
+  ): MaybePromise<readonly AnyEventWaitSnapshot[]>;
+  commitAny(input: CommitAnyEventWaitInput): MaybePromise<CommitAnyEventWaitResult>;
+  registerInvocationWait(input: RegisterInvocationWaitInput): MaybePromise<AnyEventWaitSnapshot>;
+  acknowledgeInvocationWaitResult(
+    input: AcknowledgeInvocationWaitResultInput,
+  ): MaybePromise<AnyEventWaitSnapshot | null>;
+  retireInvocationWait(input: RetireInvocationWaitInput): MaybePromise<AnyEventWaitSnapshot | null>;
+  registerGoalWaitingWait(input: RegisterInvocationWaitInput): MaybePromise<AnyEventWaitSnapshot>;
+  acknowledgeGoalWaitingAdmission(
+    input: AcknowledgeGoalWaitingAdmissionInput,
+  ): MaybePromise<AnyEventWaitSnapshot | null>;
+
   read(input: ReadEventWaitInput): MaybePromise<EventWaitSnapshot | null>;
   listSession(input: ListSessionEventWaitsInput): MaybePromise<EventWaitPage>;
-  listPending(input: ListPendingEventWaitsInput): MaybePromise<EventWaitPage>;
   listByStatus(input: ListEventWaitsByStatusInput): MaybePromise<EventWaitPage>;
   listForObservation(
     input: ListEventWaitsForObservationInput,
@@ -114,20 +163,32 @@ export interface EventWaitAuthorityRepository {
   reserveSourceDispatch(input: ReserveEventWaitSourceDispatchInput): MaybePromise<boolean>;
   completeSourceDispatch(input: CompleteEventWaitSourceDispatchInput): MaybePromise<number>;
   commit(input: CommitEventWaitInput): MaybePromise<CommitEventWaitResult>;
-  registerGoalWait(input: RegisterGoalWaitInput): MaybePromise<GoalWaitSnapshot>;
-  settleGoalWait(input: SettleGoalWaitInput): MaybePromise<GoalWaitSnapshot>;
-  queueGoalWait(input: QueueGoalWaitInput): MaybePromise<GoalWaitSnapshot>;
   close(): MaybePromise<void>;
 }
 const writerBrand: unique symbol = Symbol('InteractiveEventWaitAuthorityWriter');
 const writers = new WeakSet<object>();
 export interface InteractiveEventWaitAuthorityWriter {
+  readAny(input: ReadEventWaitInput): Promise<AnyEventWaitSnapshot | null>;
+  listAny(input: ListAnyEventWaitsInput): Promise<AnyEventWaitPage>;
+  listAnyForObservation(
+    input: ListEventWaitsForObservationInput,
+  ): Promise<readonly AnyEventWaitSnapshot[]>;
+  commitAny(input: CommitAnyEventWaitInput): Promise<CommitAnyEventWaitResult>;
+  registerInvocationWait(input: RegisterInvocationWaitInput): Promise<AnyEventWaitSnapshot>;
+  acknowledgeInvocationWaitResult(
+    input: AcknowledgeInvocationWaitResultInput,
+  ): Promise<AnyEventWaitSnapshot | null>;
+  retireInvocationWait(input: RetireInvocationWaitInput): Promise<AnyEventWaitSnapshot | null>;
+  registerGoalWaitingWait(input: RegisterInvocationWaitInput): Promise<AnyEventWaitSnapshot>;
+  acknowledgeGoalWaitingAdmission(
+    input: AcknowledgeGoalWaitingAdmissionInput,
+  ): Promise<AnyEventWaitSnapshot | null>;
+
   readonly kind: 'interactive';
   readonly access: 'write';
   readonly [writerBrand]: true;
   read(input: ReadEventWaitInput): Promise<EventWaitSnapshot | null>;
   listSession(input: ListSessionEventWaitsInput): Promise<EventWaitPage>;
-  listPending(input: ListPendingEventWaitsInput): Promise<EventWaitPage>;
   listByStatus(input: ListEventWaitsByStatusInput): Promise<EventWaitPage>;
   listForObservation(
     input: ListEventWaitsForObservationInput,
@@ -139,9 +200,6 @@ export interface InteractiveEventWaitAuthorityWriter {
   reserveSourceDispatch(input: ReserveEventWaitSourceDispatchInput): Promise<boolean>;
   completeSourceDispatch(input: CompleteEventWaitSourceDispatchInput): Promise<number>;
   commit(input: CommitEventWaitInput): Promise<CommitEventWaitResult>;
-  registerGoalWait(input: RegisterGoalWaitInput): Promise<GoalWaitSnapshot>;
-  settleGoalWait(input: SettleGoalWaitInput): Promise<GoalWaitSnapshot>;
-  queueGoalWait(input: QueueGoalWaitInput): Promise<GoalWaitSnapshot>;
   close(): Promise<void>;
 }
 export function authenticateInteractiveEventWaitAuthorityWriter(
@@ -160,9 +218,17 @@ export async function openInteractiveEventWaitAuthorityForWrite(
   if (
     !repository ||
     [
+      'readAny',
+      'listAny',
+      'listAnyForObservation',
+      'commitAny',
+      'registerInvocationWait',
+      'acknowledgeInvocationWaitResult',
+      'retireInvocationWait',
+      'registerGoalWaitingWait',
+      'acknowledgeGoalWaitingAdmission',
       'read',
       'listSession',
-      'listPending',
       'listByStatus',
       'listForObservation',
       'readSourceCooldown',
@@ -170,9 +236,6 @@ export async function openInteractiveEventWaitAuthorityForWrite(
       'reserveSourceDispatch',
       'completeSourceDispatch',
       'commit',
-      'registerGoalWait',
-      'settleGoalWait',
-      'queueGoalWait',
       'close',
     ].some((k) => typeof Reflect.get(repository, k) !== 'function')
   ) {
@@ -196,6 +259,45 @@ export async function openInteractiveEventWaitAuthorityForWrite(
     return pending;
   };
   const writer: InteractiveEventWaitAuthorityWriter = Object.freeze({
+    readAny: (input: ReadEventWaitInput) => {
+      validateEventWaitRead(input);
+      const captured = { ...input };
+      return run(() => repository.readAny(captured));
+    },
+    listAny: (input: ListAnyEventWaitsInput) => {
+      validateAnyEventWaitPage(input);
+      const captured = { ...input };
+      return run(() => repository.listAny(captured));
+    },
+    listAnyForObservation: (input: ListEventWaitsForObservationInput) => {
+      validateEventWaitObservationList(input);
+      const captured = structuredClone(input);
+      return run(() => repository.listAnyForObservation(captured));
+    },
+    commitAny: (input: CommitAnyEventWaitInput) => {
+      const captured = normalizeAnyEventWaitCommit(input);
+      return run(() => repository.commitAny(captured));
+    },
+    registerInvocationWait: (input: RegisterInvocationWaitInput) => {
+      const captured = structuredClone(input);
+      return run(() => repository.registerInvocationWait(captured));
+    },
+    acknowledgeInvocationWaitResult: (input: AcknowledgeInvocationWaitResultInput) => {
+      const captured = structuredClone(input);
+      return run(() => repository.acknowledgeInvocationWaitResult(captured));
+    },
+    retireInvocationWait: (input: RetireInvocationWaitInput) => {
+      const captured = structuredClone(input);
+      return run(() => repository.retireInvocationWait(captured));
+    },
+    registerGoalWaitingWait: (input: RegisterInvocationWaitInput) => {
+      const captured = structuredClone(input);
+      return run(() => repository.registerGoalWaitingWait(captured));
+    },
+    acknowledgeGoalWaitingAdmission: (input: AcknowledgeGoalWaitingAdmissionInput) => {
+      const captured = structuredClone(input);
+      return run(() => repository.acknowledgeGoalWaitingAdmission(captured));
+    },
     kind: 'interactive' as const,
     access: 'write' as const,
     [writerBrand]: true as const,
@@ -208,11 +310,6 @@ export async function openInteractiveEventWaitAuthorityForWrite(
       validateEventWaitPage(input, true);
       const captured = { ...input };
       return run(() => repository.listSession(captured));
-    },
-    listPending: async (input: ListPendingEventWaitsInput) => {
-      validateEventWaitPage(input);
-      const captured = { ...input };
-      return run(() => repository.listPending(captured));
     },
     listByStatus: async (input: ListEventWaitsByStatusInput) => {
       validateEventWaitStatusPage(input);
@@ -258,18 +355,6 @@ export async function openInteractiveEventWaitAuthorityForWrite(
       const normalized = normalizeEventWaitCommit(input);
       return run(() => repository.commit(normalized));
     },
-    registerGoalWait: (input: RegisterGoalWaitInput) => {
-      const captured = structuredClone(input);
-      return run(() => repository.registerGoalWait(captured));
-    },
-    settleGoalWait: (input: SettleGoalWaitInput) => {
-      const captured = structuredClone(input);
-      return run(() => repository.settleGoalWait(captured));
-    },
-    queueGoalWait: (input: QueueGoalWaitInput) => {
-      const captured = structuredClone(input);
-      return run(() => repository.queueGoalWait(captured));
-    },
     close: () =>
       (closeTask ??= (async () => {
         closed = true;
@@ -314,7 +399,7 @@ function assertEventWaitStorageId(value: unknown): asserts value is string {
   // The shared validator's end anchor also matches before a final newline.
   if (/[^A-Za-z0-9_-]/.test(value)) throw new TypeError('Invalid event wait storage identity');
 }
-export function validateEventWaitPage(input: ListPendingEventWaitsInput, session = false): void {
+export function validateEventWaitPage(input: ListEventWaitPageInput, session = false): void {
   exactInput(input, session ? ['sessionId', 'limit'] : ['limit'], ['afterWaitId']);
   if (session) assertEventWaitStorageId((input as ListSessionEventWaitsInput).sessionId);
   if (Object.hasOwn(input, 'afterWaitId')) assertEventWaitStorageId(input.afterWaitId);
@@ -373,9 +458,7 @@ export function normalizeEventWaitCommit(input: CommitEventWaitInput): CommitEve
   };
 }
 export function validateEventWaitStatusPage(input: ListEventWaitsByStatusInput): void {
-  exactInput(input, ['status', 'limit'], ['afterWaitId', 'deliveryOutstanding']);
-  if (input.deliveryOutstanding !== undefined && input.deliveryOutstanding !== true)
-    throw new TypeError('Invalid delivery filter');
+  exactInput(input, ['status', 'limit'], ['afterWaitId']);
   if (!['waiting', 'resolved', 'expired', 'cancelled'].includes(input.status))
     throw new TypeError('Invalid event wait status');
   validateEventWaitPage({
@@ -437,4 +520,53 @@ export function validateEventWaitSourceDispatch(
     throw new TypeError('Invalid event wait dispatch time');
   assertEventWaitStorageId(input.token);
   if (input.token.length > 128) throw new TypeError('Invalid event wait dispatch token');
+}
+
+export function normalizeAnyEventWaitCommit(
+  input: CommitAnyEventWaitInput,
+): CommitAnyEventWaitInput {
+  exactInput(input, ['sessionId', 'waitId', 'expectedAuthorityRevision', 'record']);
+  validateEventWaitRead({ sessionId: input.sessionId, waitId: input.waitId });
+  if (
+    input.expectedAuthorityRevision !== null &&
+    (!Number.isSafeInteger(input.expectedAuthorityRevision) || input.expectedAuthorityRevision < 0)
+  )
+    throw new TypeError('Invalid event wait revision');
+  const record = decodeAnyEventWaitRecord(input.record);
+  if (record.sessionId !== input.sessionId || record.waitId !== input.waitId)
+    throw new TypeError('Event wait identity mismatch');
+  return { ...input, record };
+}
+export function validateAnyEventWaitPage(input: ListAnyEventWaitsInput): void {
+  exactInput(
+    input,
+    ['limit'],
+    ['afterWaitId', 'sessionId', 'status', 'consumerKind', 'deliveryOutstanding'],
+  );
+  validateEventWaitPage({
+    limit: input.limit,
+    ...(input.afterWaitId === undefined ? {} : { afterWaitId: input.afterWaitId }),
+  });
+  if (input.sessionId !== undefined) assertEventWaitStorageId(input.sessionId);
+  if (
+    input.status !== undefined &&
+    !['waiting', 'resolved', 'expired', 'cancelled'].includes(input.status)
+  )
+    throw new TypeError('Invalid event wait status');
+  if (
+    input.consumerKind !== undefined &&
+    !['observation', 'tool_invocation', 'goal_waiting'].includes(input.consumerKind)
+  )
+    throw new TypeError('Invalid event wait consumer filter');
+  if (input.deliveryOutstanding !== undefined && input.deliveryOutstanding !== true)
+    throw new TypeError('Invalid event wait delivery filter');
+}
+export function anyEventWaitPage(
+  items: readonly AnyEventWaitSnapshot[],
+  limit: number,
+): AnyEventWaitPage {
+  return {
+    items: items.slice(0, limit),
+    nextCursor: items.length > limit ? items[limit - 1]!.record.waitId : null,
+  };
 }

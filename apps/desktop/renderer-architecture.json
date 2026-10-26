@@ -27,7 +27,6 @@
     "src/renderer/computer-use-overlay/engine/cursor-engine.ts",
     "src/renderer/computer-use-overlay/engine/palette.ts",
     "src/renderer/custom-pet-companion-model.ts",
-    "src/renderer/custom-pet-companion.tsx",
     "src/renderer/daily-review-actions.ts",
     "src/renderer/desktop-execution-boundary-surface.ts",
     "src/renderer/error-boundary.tsx",
@@ -421,6 +420,7 @@
         "MemoryOriginalHost",
         "PersonalAssistantEntry",
         "PersonalAssistantTaskLayout",
+        "PetDesktopBridge",
         "createInternalUriDispatcher"
       ],
       "composition": [
@@ -650,7 +650,7 @@
         "nonTriviaTokens": 780
       },
       "src/renderer/app-shell.tsx": {
-        "importDeclarations": 34,
+        "importDeclarations": 33,
         "bridgePaths": {},
         "environmentCapabilities": {
           "window.requestAnimationFrame": 3
@@ -693,7 +693,6 @@
           "./chat-message-surface": 1,
           "./composer-defaults": 1,
           "./composer-mentions": 1,
-          "./custom-pet-companion": 1,
           "./desktop-execution-boundary-surface": 1,
           "./error-boundary": 1,
           "./features/app-update/index.js": 1,
@@ -739,8 +738,8 @@
           "@maka/ui": 1,
           "react": 1
         },
-        "importSpecifiers": 43,
-        "nonTriviaTokens": 7274
+        "importSpecifiers": 42,
+        "nonTriviaTokens": 7271
       },
       "src/renderer/use-app-shell-session-list.ts": {
         "importDeclarations": 3,
@@ -988,47 +987,6 @@
         "actionFactories": [],
         "dependencyPaths": {
           "./features/conversation/index.js": 2
-        }
-      },
-      "src/renderer/custom-pet-companion-model.ts": {
-        "bridgePaths": {},
-        "environmentCapabilities": {},
-        "hookCalls": {},
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {}
-      },
-      "src/renderer/custom-pet-companion.tsx": {
-        "bridgePaths": {
-          "window.maka.pets": 1,
-          "window.maka.pets.subscribeChanges": 1
-        },
-        "environmentCapabilities": {
-          "document": 1,
-          "document.documentElement": 5,
-          "document.documentElement.dataset.makaE2eFixture": 1,
-          "document.documentElement.dataset.makaReducedMotion": 1,
-          "MutationObserver": 1,
-          "window": 1,
-          "window.cancelAnimationFrame": 1,
-          "window.matchMedia": 3,
-          "window.requestAnimationFrame": 2
-        },
-        "hookCalls": {
-          "useEffect": 4,
-          "useMountedRef": 1,
-          "useRef": 4,
-          "useState": 3
-        },
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {
-          "./custom-pet-companion-model.js": 1,
-          "@maka/core/pet": 1,
-          "@maka/ui": 1,
-          "react": 1
         }
       },
       "src/renderer/daily-review-actions.ts": {
@@ -2006,6 +1964,7 @@
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
+          "../features/conversation/index.js": 1,
           "../features/jev-settings": 1,
           "../features/network-proxy/index.js": 1,
           "../features/personal-assistant/index.js": 1,

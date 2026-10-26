@@ -76,7 +76,7 @@ import type { TranscriptViewportNavigation } from './transcript-viewport-navigat
 import { placeChatConversationItems } from './chat-conversation-items.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
-import { SessionContextLayer, type SessionContextGoal } from './session-context-layer.js';
+import { SessionContextLayer, type SessionContextGoal, type SessionContextEventWait } from './session-context-layer.js';
 import {
   SessionAttachmentProvider,
   type ReadAttachmentBytes,
@@ -130,6 +130,7 @@ export interface ChatViewGoalIndicatorProps {
    * turn.
    */
   goalIndicator?: SessionContextGoal;
+  eventWaitIndicators?: readonly SessionContextEventWait[];
 }
 
 /**
@@ -557,7 +558,8 @@ export function ChatView(props: {
         <PendingTurnAnswer
           turnId={pendingTurnId}
           startedAt={activeContent?.startedAt}
-          running={runningStatus}
+          running={awaitingHost || runningStatus}
+          activityLabel={awaitingHost ? conversationCopy.messages.processing : undefined}
           providerRetry={activeContent?.providerRetry}
         />
       )}
@@ -966,6 +968,7 @@ export function ChatView(props: {
         memoryActive={props.memoryActive}
         onOpenMemorySettings={props.onOpenMemorySettings}
         goal={props.goalIndicator}
+        eventWaits={props.eventWaitIndicators}
         actions={hasConversationHeaderActions ? (
           <MakaClientSlotOutlet
             name="conversation.header.actions"

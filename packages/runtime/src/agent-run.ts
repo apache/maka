@@ -1497,7 +1497,7 @@ export class AgentRun {
       return {
         kind: 'goal',
         goalId: origin.goalId,
-        ...(origin.eventWait ? { eventWait: origin.eventWait } : {}),
+        ...(origin.goalWaiting ? { goalWaiting: origin.goalWaiting } : {}),
       };
     if (origin?.kind === 'agent_graph') {
       return {

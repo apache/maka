@@ -28,17 +28,18 @@ import {
 import type { AssistantModuleServices } from '../service.js';
 import type { BotStore } from './store.js';
 import type { BotController } from './controller.js';
+import type { CharacterPack } from './character-pack.js';
 
 export function initializeAvatar(
   ctx: AssistantModuleServices,
   store: BotStore,
   bot: BotController,
-  register: (name: string, description: string, parameters: any, impl: any) => void,
+  characterPack: CharacterPack,
 ) {
   const current = () =>
     store.get('avatar') as ({ imageData?: string } & Record<string, unknown>) | undefined;
   const avatar = () => {
-    const { imageData: _, ...metadata } = current() ?? {};
+    const { imageData: _, assetId: _assetId, ...metadata } = current() ?? {};
     return assistantAvatarSchema.safeParse(metadata).data ?? DEFAULT_ASSISTANT_AVATAR;
   };
   ctx.api.register('assistant.avatar', () => ({ avatar: avatar() }));
@@ -59,13 +60,16 @@ export function initializeAvatar(
       nextOffset: offset + data.length < saved.imageData.length ? offset + data.length : null,
     };
   });
-  register(
-    'AssistantSetAvatar',
-    '更换你自己的头像，入口和聊天消息同步显示，重启后保留。image 填生成或找到的图片的当前工具会话工作目录内的本地路径或公网 HTTP(S) 图片网址（PNG/JPEG/WebP/GIF，最多 2 MiB），不要传 base64。也可用 emoji 填一个 emoji；两者选一。background 可填 #RRGGBB。图片会保存副本；此工具只设置头像，生成或找图使用已有工具，必要时委派任务。不会发送消息。',
-    z
+  return {
+    current: avatar,
+    parameters: z
       .object({
         emoji: assistantEmojiSchema.optional(),
         image: z.string().trim().min(1).max(8192).optional(),
+        assetId: z
+          .string()
+          .regex(/^[a-f0-9]{64}$/)
+          .optional(),
         background: z
           .string()
           .regex(/^#[0-9a-fA-F]{6}$/)
@@ -73,27 +77,35 @@ export function initializeAvatar(
       })
       .strict()
       .refine(
-        (value) => Boolean(value.emoji) !== Boolean(value.image),
-        'Provide exactly one of emoji or image',
+        (value) => [value.emoji, value.image, value.assetId].filter(Boolean).length === 1,
+        'Provide exactly one of emoji, image or assetId',
       ),
-    async (
-      input: { emoji?: string; image?: string; background: string },
+    set: async (
+      input: { emoji?: string; image?: string; assetId?: string; background: string },
       call: { sessionId: string; abortSignal: AbortSignal },
     ) => {
       let saved;
-      if (input.image) {
-        if (!ctx.readAvatarImage) throw Error('Image loading is unavailable on this Host');
+      if (input.image || input.assetId) {
+        if (input.image && !ctx.readAvatarImage)
+          throw Error('Image loading is unavailable on this Host');
         const worker = bot.worker();
         const owner = bot.owner();
-        const result = await ctx.readAvatarImage(call.sessionId, input.image, call.abortSignal);
+        const result = input.assetId
+          ? characterPack.image(input.assetId)
+          : await ctx.readAvatarImage!(call.sessionId, input.image!, call.abortSignal);
         call.abortSignal.throwIfAborted();
         bot.ready();
-        if (bot.worker() !== worker || bot.owner() !== owner)
+        if ((call.sessionId === worker && bot.worker() !== worker) || bot.owner() !== owner)
           throw Error('Assistant binding changed');
+        const assetId =
+          input.assetId ??
+          characterPack.addImage({ title: '头像', kind: 'avatar', usage: '当前头像' }, result.bytes)
+            .asset.id;
         const image = validateImageBytes(result.bytes, 'chat');
         const bytes = Buffer.from(image.bytes);
         const imageData = bytes.toString('base64');
         saved = {
+          assetId,
           background: input.background,
           image: {
             id: createHash('sha256').update(bytes).digest('hex'),
@@ -107,5 +119,5 @@ export function initializeAvatar(
       store.set('avatar', saved);
       return { updated: true, avatar: avatar() };
     },
-  );
+  };
 }

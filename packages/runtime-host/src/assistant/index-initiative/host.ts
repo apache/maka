@@ -22,8 +22,10 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { InitiativeStore } from './store.js';
 import { InitiativeController } from './controller.js';
+import { initializeQuickDiscovery } from './quick.js';
 import { initializeBot } from '../bot/host.js';
 import { registerAssistant } from './assistant.js';
+import { DISCOVERY_EXCLUDED_TOOLS } from './discovery-capabilities.js';
 export async function initializeInitiative(
   ctx: AssistantModuleServices,
   directory: string,
@@ -36,7 +38,11 @@ export async function initializeInitiative(
   const location = { value: directory };
   const store = new InitiativeStore(location.value, randomUUID());
   const controller = new InitiativeController(ctx, store, limits);
-  ctx.onClose(() => store.close());
+
+  ctx.onClose(() => {
+    controller.notebook.close();
+    store.close();
+  });
   const activate = () => {
     controller.start();
     return () => controller.close();
@@ -44,32 +50,18 @@ export async function initializeInitiative(
   ctx.onStart(activate);
   initializeBot(ctx, directory, store);
   registerAssistant(ctx, store, controller);
+  const quick = initializeQuickDiscovery(ctx, controller, directory, limits.tickMs);
   ctx.backgroundSessions.register(() =>
-    store.get()?.discoverySession ? [store.get().discoverySession] : [],
+    [store.get()?.discoverySession, store.get()?.judgementSession].filter(Boolean),
   );
-  ctx.tools.register({
-    name: 'DiscoveryReport',
-    description:
-      '此方法用于提交准备向用户发送的主动发现。请按直接与用户交流的标准组织内容，自行判断哪些信息值得用户知道，并保留必要依据和不确定性。Bot 会负责转达和适配当前对话，不要向 Bot 写“精选几条、其余可以不说”等表达建议。提交成功只表示已交给 Bot，不代表用户已经收到。',
-    parameters: z.object({ text: z.string().trim().min(1).max(24000) }),
-    categoryHint: 'file_write',
-    executionSemantics: 'exclusive_step',
-    impl: (input: any, call: any) => {
-      controller.ready();
-      const state = store.get();
-      if (!state?.active || state.discoverySession !== call.sessionId)
-        throw Error('Not the active exploration worker');
-      const id = `discovery:${state.active.id}:${call.toolCallId}`;
-      const reported = ctx.bot.post(state.sessionId, {
-        id,
-        type: 'discovery',
-        source: call.sessionId,
-        content: input.text,
-      });
-      if (!reported) throw Error('Bot did not accept the discovery report');
-      return { reported, sentToUser: false };
-    },
-  });
+  // Discovery investigates and reports; it must not hold conversation-mutating tools.
+  if (!ctx.tools.filter)
+    throw Error('Assistant tool filtering is required to bound discovery Sessions');
+  ctx.tools.filter((sessionId, tools) =>
+    store.get()?.discoverySession === sessionId
+      ? tools.filter((tool) => !DISCOVERY_EXCLUDED_TOOLS.has(tool.name))
+      : tools,
+  );
   ctx.tools.register({
     name: 'DiscoveryContext',
     description:
@@ -82,7 +74,12 @@ export async function initializeInitiative(
     executionSemantics: 'parallel',
     impl: async (input: any, call: any) => {
       const state = store.get();
-      if (!state || call.sessionId !== state.discoverySession)
+      if (
+        !state ||
+        ![state.discoverySession, state.judgementSession, quick.state()?.workerSession].includes(
+          call.sessionId,
+        )
+      )
         throw Error('Not the exploration worker');
       return controller.asOwner(state, async () => {
         const snapshot: any = await ctx.sessionQuery.read(state.sessionId);
@@ -174,8 +171,8 @@ export async function initializeInitiative(
     name: 'index-initiative.discovery',
     order: 810,
     text: ({ sessionId }) =>
-      store.get()?.discoverySession === sessionId
-        ? '你是独立的主动探索 Agent。通过可用工具调查。值得交流的发现用 DiscoveryReport 交给个人助手 Bot，由它和用户交流；没有合适内容可以直接结束。这里不是用户聊天框，不要委派执行任务。'
+      [store.get()?.discoverySession, store.get()?.judgementSession].includes(sessionId)
+        ? '你在主动助手的后台会话中运行。通过普通文件工具读取共享记事本、写本轮增量；用户交流由 Bot 负责。只读调查，不委派执行任务，不自行安排心跳。'
         : undefined,
   });
 }

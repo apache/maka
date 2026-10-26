@@ -22,7 +22,6 @@ import {
   GOAL_REASON_TEXT_LIMIT,
   type GoalState,
 } from '@maka/runtime/goal-state';
-import { GOAL_EVENT_WAIT_SUMMARY_LIMITS } from '../protocol/goal.js';
 import { decodeGoalProjection, type GoalProjection } from '../protocol/index.js';
 
 export function projectGoalState(goal: GoalState): GoalProjection {
@@ -42,7 +41,6 @@ export function projectGoalState(goal: GoalState): GoalProjection {
     lastReason: goal.lastReason ?? null,
     achievedAt: goal.achievedAt ?? null,
     pausedAt: goal.pausedAt ?? null,
-    eventWait: null,
   });
 }
 
@@ -64,24 +62,5 @@ export function worstCaseGoalProjection(sessionId: string): GoalProjection {
     lastReason: '\u0000'.repeat(GOAL_REASON_TEXT_LIMIT.codeUnits),
     achievedAt: Number.MAX_SAFE_INTEGER,
     pausedAt: Number.MAX_SAFE_INTEGER,
-    eventWait: {
-      waitId: 'w'.repeat(128),
-      controlGeneration: Number.MAX_SAFE_INTEGER,
-      waitRevision: Number.MAX_SAFE_INTEGER,
-      resource: {
-        providerId: 'p'.repeat(128),
-        resourceType: 't'.repeat(128),
-        resourceId: '\u0000'.repeat(GOAL_EVENT_WAIT_SUMMARY_LIMITS.resourceIdBytes),
-      },
-      reason: '\u0000'.repeat(GOAL_REASON_TEXT_LIMIT.codeUnits),
-      deadlineAt: Number.MAX_SAFE_INTEGER,
-      phase: 'observing',
-      observation: {
-        state: 'unknown',
-        lastObservedAt: Number.MAX_SAFE_INTEGER,
-        reasonCode: '\u0000'.repeat(GOAL_EVENT_WAIT_SUMMARY_LIMITS.reasonCodeBytes),
-      },
-      outcome: null,
-    },
   };
 }

@@ -3255,6 +3255,7 @@ class FakeConnection {
   readonly requests: Array<{ operation: string; input: unknown }> = [];
   readonly sessionQueries: Array<SessionCatalogProjection | Promise<SessionCatalogProjection>> = [];
   readonly sessionCatalogPages: Array<OperationOutput<'session.catalog.query'>> = [];
+  readonly eventWaitPages: Array<OperationOutput<'session.event-waits.query'>> = [];
   openedSubscriptions = 0;
   interactionQuery: unknown;
   runtimeResourceQuery: unknown;
@@ -3369,11 +3370,15 @@ class FakeConnection {
         sessionId: (input as OperationInput<'session.remove'>).sessionId,
       } as OperationOutput<K>;
     }
-    if (operation === 'goal.event-wait.cancel') {
+    if (operation === 'session.event-waits.query') {
+      const page = this.eventWaitPages.shift();
+      if (!page) throw new Error('Unexpected event wait page request');
+      return page as OperationOutput<K>;
+    }
+    if (operation === 'session.event-wait.cancel') {
       return {
-        sessionId: (input as OperationInput<'goal.event-wait.cancel'>).sessionId,
-        outcome: 'already_admitted',
-        goal: null,
+        sessionId: (input as OperationInput<'session.event-wait.cancel'>).sessionId,
+        outcome: 'conflict',
       } as OperationOutput<K>;
     }
     if (operation === 'goal.control') {
@@ -3678,7 +3683,6 @@ function goalProjection(overrides: Partial<GoalProjection> = {}): GoalProjection
     lastReason: null,
     achievedAt: null,
     pausedAt: null,
-    eventWait: null,
     ...overrides,
   };
 }
@@ -4629,24 +4633,31 @@ function toolResultFrame(sequence: number, subscriptionId = 'subscription-1'): S
   };
 }
 
-test('CLI receives wait-only changes and sends cancellation to the original target once', async () => {
-  const wait = {
+test('CLI receives Session wait changes and cancels the captured consumer once', async () => {
+  const wait: import('@maka/runtime-host/protocol').SessionEventWaitProjection = {
+    sessionId: 'session-1',
     waitId: 'wait',
-    controlGeneration: 1,
-    waitRevision: 1,
+    sourceTurnId: 'turn-1',
+    consumer: {
+      kind: 'tool_invocation',
+      runId: 'run-1',
+      invocationId: 'invocation-1',
+      operationId: 'operation-1',
+    },
     resource: {
       providerId: 'shell_run',
       resourceType: 'background_task',
       resourceId: 'maka://runtime/background-tasks/task',
     },
-    reason: 'Inspect tests',
     deadlineAt: 100,
-    phase: 'observing' as const,
-    observation: { state: 'pending' as const, lastObservedAt: 10, reasonCode: null },
-    outcome: null,
+    phase: 'observing',
+    observation: 'pending',
+    reasonCode: null,
   };
-  const goal = goalProjection({ eventWait: wait });
-  const subscription = new FakeSubscription(continuitySnapshot({ goal }), Promise.resolve([]));
+  const subscription = new FakeSubscription(
+    continuitySnapshot({ eventWaits: { items: [wait], nextCursor: null } }),
+    Promise.resolve([]),
+  );
   const connection = new FakeConnection([subscription]);
   const driver = createRuntimeHostMakaSessionDriver({
     connection: connection.value,
@@ -4657,7 +4668,9 @@ test('CLI receives wait-only changes and sends cancellation to the original targ
     newId: () => 'session-id',
   });
   const changes: Array<string | undefined> = [];
-  const unsubscribe = driver.subscribeGoalChanges!((g) => changes.push(g?.eventWait?.phase));
+  const unsubscribe = driver.subscribeGoalChanges!(() =>
+    changes.push(driver.getEventWaits!()[0]?.phase),
+  );
   try {
     await driver.createSession({
       cwd: '/repo',
@@ -4666,12 +4679,29 @@ test('CLI receives wait-only changes and sends cancellation to the original targ
       model: 'gpt-5',
       permissionMode: 'ask',
     });
+    const tail = {
+      ...wait,
+      waitId: 'tail',
+      consumer: { ...wait.consumer, operationId: 'tail-operation' },
+    };
+    connection.eventWaitPages.push(
+      { sessionId: driver.getSessionId()!, items: [wait], nextCursor: wait.waitId },
+      { sessionId: driver.getSessionId()!, items: [tail], nextCursor: null },
+    );
+    assert.deepEqual(await driver.queryEventWaits!(), [wait, tail]);
+    assert.deepEqual(
+      connection.requests
+        .filter((r) => r.operation === 'session.event-waits.query')
+        .map((r) => r.input),
+      [
+        { sessionId: driver.getSessionId()! },
+        { sessionId: driver.getSessionId()!, afterWaitId: wait.waitId },
+      ],
+    );
     const target = {
       sessionId: driver.getSessionId()!,
-      goalId: goal.goalId,
-      controlGeneration: 1,
-      waitId: 'wait',
-      expectedGoalRevision: goal.revision,
+      waitId: wait.waitId,
+      consumer: wait.consumer,
     };
     subscription.push({
       kind: 'subscription.session_projection',
@@ -4679,29 +4709,24 @@ test('CLI receives wait-only changes and sends cancellation to the original targ
       subscriptionId: 'subscription-1',
       sequence: 1,
       snapshot: continuitySnapshot({
-        goal: {
-          ...goal,
-          eventWait: {
-            ...wait,
-            waitRevision: 2,
-            phase: 'awaiting_admission',
-            observation: null,
-            outcome: 'satisfied',
-          },
+        eventWaits: {
+          items: [{ ...wait, phase: 'result_ready', observation: null }],
+          nextCursor: null,
         },
         projectionRevision: 2,
       }),
     });
-    await waitFor(() => changes.includes('awaiting_admission'));
-    const result = await driver.cancelGoalEventWait!(target);
-    assert.equal(result.outcome, 'already_admitted');
+    await waitFor(() => changes.includes('result_ready'));
+    const result = await driver.cancelSessionEventWait!(target);
+    assert.equal(result.outcome, 'conflict');
     assert.deepEqual(
       connection.requests
-        .filter((r) => r.operation === 'goal.event-wait.cancel')
+        .filter((r) => r.operation === 'session.event-wait.cancel')
         .map((r) => r.input),
       [target],
     );
-    assert.deepEqual(changes, ['observing', 'awaiting_admission']);
+    assert.deepEqual(changes, ['observing', 'result_ready']);
+    assert.equal(driver.getGoal!(), null);
   } finally {
     unsubscribe();
     await driver.startNewSession();

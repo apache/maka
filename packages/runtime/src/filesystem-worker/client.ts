@@ -439,6 +439,13 @@ export class FilesystemWorkerClient {
 
     const launch = await this.input.getLaunchSpec(operation);
     if (!launch.ok) throw clientError(launch.reason, 'launch', requestId, launch.message);
+    const windowsNonFollowingReadRoot =
+      platform === 'win32' &&
+      operation.kind === 'glob' &&
+      target.scope === 'subtree' &&
+      target.targetType === 'directory'
+        ? target.enforcementPath
+        : undefined;
     const searchMetadata: {
       path: string;
       canonicalPath: string;
@@ -599,6 +606,7 @@ export class FilesystemWorkerClient {
             ...pathContext,
             runtimeReadableRoots: launch.spec.runtimeReadableRoots,
             executableRoots: launch.spec.executableRoots,
+            ...(windowsNonFollowingReadRoot ? { windowsNonFollowingReadRoot } : {}),
             ...(pinnedTarget || pinnedMetadata.length
               ? {
                   pinnedProfilePaths: [

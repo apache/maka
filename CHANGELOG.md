@@ -27,6 +27,8 @@
 
 - A personal assistant with indexed memory, durable tasks and an inbox bot for coordinating work (#6004, #6124), and durable observation of event waits (#6113).
 - Import Cursor sessions through their SQLite history adapter (#6039).
+- Let Goals resume from durable event waits, including background ShellRun completion, and add condition waits plus web and IM access for the personal assistant (#6147, #6156, #6193, #6206).
+- Interact with running CLI Sessions, inspect their recaps and retain the selected model across commands (#6133, #6169, #6170).
 - Configured external agents in the model picker, alongside unified model and effort options (#6103, #5789).
 - Automatic rendering and archiving of chat images, and clearer project, task and execution-location controls (#5969, #6088).
 
@@ -42,6 +44,7 @@
 - Preserve Windows browser launcher paths and SSH operator arguments, and validate project roots for the target platform (#6121, #6123, #6122).
 - Source patches no longer include the unchanged QuickJS WebAssembly binary; installation reuses it from the pinned npm dependency. Source verification also rejects Base64-encoded WASM.
 - Correct stale source-license component and dependency references, preserve the cursor files' upstream MIT scope, and identify the historical 0.2.0 RC1 in DISCLAIMER-WIP.
+- Update the standalone CLI's bundled Node runtime and refresh shipped dependencies for published security advisories (#6229, #6236).
 
 ### Changed
 
@@ -54,7 +57,8 @@
 ### Upgrade notes
 
 - CLI scripts that parse structured errors must pass `--json`: errors then appear only on stdout, without a duplicate on stderr. Without `--json`, failed `maka run` results print a brief error only on stderr. Use the exit code to detect failure (#6171).
-- Update Desktop, CLI and remote Runtime Hosts together. The Runtime Host compatibility epoch is 224 (217 in 0.2.1); mismatched peers cannot connect.
+- Update Desktop, CLI and remote Runtime Hosts together. The Runtime Host compatibility epoch is 228 (217 in 0.2.1); mismatched peers cannot connect.
+- MCP and OAuth endpoints that redirect to a different origin must be configured with their final URL. The updated MCP SDK restricts cross-origin redirects (#6229).
 - Back up configuration and workspace data before upgrading if rollback is needed. This release adds durable assistant and event-wait state; older releases must not reuse data written by a newer Host without a verified downgrade path.
 - This release continues the TypeScript Runtime Host and Electron desktop. The Rust Host and GPUI desktop remain on the separate `rust-preview` development branch.
 

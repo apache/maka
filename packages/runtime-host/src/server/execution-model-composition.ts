@@ -26,7 +26,7 @@ import type { ModelCallAttempt } from '@maka/core/model-call-attempt';
 import type { ModelCallCommit } from '@maka/core/agent-run';
 import type { PermissionMode } from '@maka/core/permission';
 import { resolveCollaborationPermissionMode } from '@maka/core/collaboration';
-import { AiSdkBackend } from '@maka/runtime/ai-sdk-backend';
+import { AiSdkBackend, type AiSdkBackendInput } from '@maka/runtime/ai-sdk-backend';
 import {
   buildDefaultContextBudgetPolicy,
   resolveSelectedModelContextWindow,
@@ -319,8 +319,8 @@ async function buildHostAiSdkBackend(
   };
   const recordRunComposition = input.context.recordRunComposition;
   const recordRequestComposition = input.context.recordRequestComposition;
-  const resolveModelTools = (): readonly MakaTool[] =>
-    modelComposition.resolveTools?.() ?? modelComposition.tools;
+  const resolveModelTools: NonNullable<AiSdkBackendInput['resolveTools']> = (identity) =>
+    modelComposition.resolveTools?.(identity) ?? modelComposition.tools;
   // RunComposition remains the immutable C0 baseline. Dynamic Tool changes
   // belong exclusively to RequestComposition epochs, so never re-sample them
   // while committing the baseline immediately before provider dispatch.
@@ -397,7 +397,7 @@ async function buildHostAiSdkBackend(
         apiKey,
         modelId: target.model,
         modelFactory,
-        tools: [...resolveModelTools()],
+        tools: [...initialModelTools],
         resolveTools: resolveModelTools,
         toolAvailability: modelComposition.toolAvailability,
         ...(modelComposition.planTraceContext
@@ -408,15 +408,20 @@ async function buildHostAiSdkBackend(
         contextBudget: buildDefaultContextBudgetPolicy({
           name: 'runtime-host-default-history-budget',
           modelId: target.model,
-          // The persistent Bot cannot depend on a provider rejecting its ever-growing
-          // history. Ordinary sessions retain their existing opt-in policy. The
-          // runtime gives an explicit user threshold precedence over this fallback.
+          // Keep the three discovery workers compact without resetting their
+          // Sessions or in-flight work. Explicit model thresholds still win.
           ...(input.context.header.labels?.includes(ASSISTANT_BACKGROUND_SESSION_LABEL) &&
-          input.context.header.labels.some((label) => label.startsWith('assistant-bot:')) &&
           contextWindow !== undefined
-            ? {
-                fallbackCompactionThresholdTokens: Math.floor(contextWindow * 0.8),
-              }
+            ? input.context.header.labels.some((label) =>
+                /^(assistant-quick-discovery|assistant-discovery|assistant-judgement):/.test(label),
+              )
+              ? {
+                  fallbackCompactionThresholdTokens: Math.floor(contextWindow * 0.7),
+                }
+              : input.context.header.labels.some((label) => label.startsWith('assistant-bot:')) &&
+                  contextWindow !== undefined
+                ? { fallbackCompactionThresholdTokens: Math.floor(contextWindow * 0.8) }
+                : {}
             : {}),
         }),
         supportsVision: resolveModelVisionSupport(

@@ -91,6 +91,7 @@ import {
   type HostOAuthExecutionBinding,
 } from './oauth-execution-authority.js';
 import { toRuntimePolicyProxy } from './runtime-policy-proxy.js';
+import type { HostCheckinModelResult, HostSessionCheckinPorts } from './session-checkin.js';
 
 export interface HostGoalEvaluatorInput {
   readonly runtimePolicy: RuntimePolicyStoresWriter;
@@ -431,6 +432,49 @@ export function createHostPromptSuggestionModel(input: HostSessionEffectModelInp
       }),
     });
     return result.finishReason === 'length' ? undefined : result.text;
+  };
+}
+
+const CHECKIN_MAX_OUTPUT_TOKENS = 2_048;
+const CHECKIN_REASONING_MAX_OUTPUT_TOKENS = 8_192;
+
+/**
+ * Creates the root-scoped check-in call. It reads many Sessions, so it runs on
+ * the user's default model (resolved by the coordinator before any read)
+ * rather than borrowing any one Session's.
+ */
+export function createHostCheckinModel(input: HostSessionEffectModelInput) {
+  const authority = createAuxiliaryModelCallAuthority(input);
+  return async ({
+    target,
+    prompt,
+    abortSignal,
+  }: Parameters<HostSessionCheckinPorts['generate']>[0]): Promise<HostCheckinModelResult> => {
+    try {
+      const callId = authority.newId();
+      const result = await runHostAuxiliaryModelCall(authority, {
+        transportContextId: callId,
+        header: target,
+        callKind: 'session_checkin',
+        callId: `session_checkin_${callId}`,
+        abortSignal,
+        reasoning: 'least',
+        buildRequest: (_target, thinkingLevel) => ({
+          prompt,
+          maxOutputTokens:
+            thinkingLevel === 'off'
+              ? CHECKIN_MAX_OUTPUT_TOKENS
+              : CHECKIN_REASONING_MAX_OUTPUT_TOKENS,
+          maxRetries: 0,
+        }),
+      });
+      return result.finishReason === 'length'
+        ? { ok: false, errorClass: 'invalid_response' }
+        : { ok: true, text: result.text };
+    } catch (error) {
+      const errorClass = auxiliaryModelErrorClass(error, abortSignal);
+      return { ok: false, errorClass: errorClass === 'persistence' ? 'unknown' : errorClass };
+    }
   };
 }
 
@@ -1056,16 +1100,28 @@ async function resolveDailyReviewHeader(
       thinkingLevel: 'off',
     };
   }
+  const header = await resolveDefaultModelHeader(runtimePolicy);
+  if (!header) {
+    throw new AuxiliaryModelCallConfigurationError(
+      'Daily Review has no canonical default model target',
+    );
+  }
+  return header;
+}
+
+/** The connection and model the user chose as default, or undefined when none is set. */
+export async function resolveDefaultModelHeader(
+  runtimePolicy: RuntimePolicyStoresWriter,
+): Promise<
+  | Pick<SessionHeader, 'llmConnectionId' | 'llmConnectionSlug' | 'model' | 'thinkingLevel'>
+  | undefined
+> {
   const catalog = await runtimePolicy.connectionCatalog.getSnapshot();
   const target = catalog.defaultTarget;
   const connection = target
     ? catalog.connections.find((candidate) => candidate.connectionId === target.connectionId)
     : undefined;
-  if (!target || !connection) {
-    throw new AuxiliaryModelCallConfigurationError(
-      'Daily Review has no canonical default model target',
-    );
-  }
+  if (!target || !connection) return undefined;
   return {
     llmConnectionId: connection.connectionId,
     llmConnectionSlug: connection.slug,

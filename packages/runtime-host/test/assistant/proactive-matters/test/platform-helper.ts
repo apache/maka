@@ -144,6 +144,9 @@ export async function fixture(options: any = {}) {
   );
   const { tools, prompts: systemPrompt, turns, remote, platform } = native;
   await until(async () => (await remote('matters.list')).ready);
+  // Business-flow fixtures explicitly admit their coordinator; ordinary callers remain denied.
+  if (!(await remote('matters.list')).matters.some((m: any) => m.sessionId === 'session-1'))
+    await remote('matters.authorize-session', { sessionId: 'session-1' });
   const invoke = async (
     name: string,
     input: any = {},
@@ -153,7 +156,11 @@ export async function fixture(options: any = {}) {
     if (name === 'MatterStart') await remote('matters.authorize-session', { sessionId: session });
     const tool = tools.resolve(session, []).tools.find((t: any) => t.name === name);
     if (!tool) throw Error('Missing tool ' + name);
-    return tool.impl(tool.parameters.parse(input), {
+    // Existing scenario drivers supply a short model-authored list preview.
+    const args = ['MatterSettle', 'MatterCheckpoint'].includes(name)
+      ? { progressSummary: '已核查当前进展', ...input }
+      : input;
+    return tool.impl(tool.parameters.parse(args), {
       sessionId: session,
       turnId: turn,
       toolCallId: randomUUID(),

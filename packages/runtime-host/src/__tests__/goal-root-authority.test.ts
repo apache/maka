@@ -17,35 +17,37 @@
  * under the License.
  */
 
-import { createRunCompositionSnapshot } from '@maka/core/run-composition';
+import { decodeAnyEventWaitRecord, type AnyEventWaitRecord } from '@maka/core/event-wait';
+import { HostEventWaitObserver } from '../server/event-wait-manager.js';
+import { interactiveEventWaitObservationStore } from '../server/event-wait-observation-store.js';
+import { HostInvocationEventWaitCoordinator } from '../server/invocation-event-waits.js';
+import { ShellRunEventWaitAccess } from '../server/shell-run-event-wait-access.js';
+import { ShellRunEventWaitAdapter } from '../server/shell-run-event-wait-adapter.js';
+import { openInteractiveShellRunStoreForWrite } from '@maka/storage/shell-run-authority';
+import type { SubscriptionFrame } from '../protocol/index.js';
+
 import { readLogicalRuntimeExecution } from '@maka/core/runtime-logical-execution';
-import type { BackendSendInput } from '@maka/core/backend-types';
-import type { SessionEvent } from '@maka/core/events';
+
 import { createMemoryExecutionPersistenceProvider } from '@maka/storage/test-only/memory-execution-persistence';
 import type { ExecutionPersistenceProvider } from '@maka/storage/execution-persistence-provider';
 import type { RootTurnAdmission } from '@maka/storage/agent-run-store';
-import { openInteractiveEventWaitAuthorityForWrite } from '@maka/storage/event-wait-authority';
-import { deferred, withTimeout } from '@maka/core/test-only/async-primitives';
+
+import { deferred } from '@maka/core/test-only/async-primitives';
 import { MockLanguageModelV4, convertArrayToReadableStream } from 'ai/test';
 import type { LanguageModelV4StreamPart } from '@ai-sdk/provider';
 import { AiSdkBackend } from '@maka/runtime/ai-sdk-backend';
-import { buildBuiltinTools } from '@maka/runtime/builtin-tools';
-import { ShellRunProcessManager } from '@maka/runtime/shell-run-manager';
-import { defaultShellPlan } from '@maka/runtime/shell-detect';
-import { openInteractiveShellRunStoreForWrite } from '@maka/storage/shell-run-authority';
-import { ShellRunEventWaitAccess } from '../server/shell-run-event-wait-access.js';
-import { ShellRunEventWaitAdapter } from '../server/shell-run-event-wait-adapter.js';
+
 import { createExternalExecutionBoundary } from '@maka/core/sandbox-boundary';
 import { EventWaitAdapterRegistry } from '../server/event-wait-adapter.js';
-import type { HostGoalEventWaitSources } from '../server/goal-event-waits.js';
+import type { HostEventWaitSources } from '../server/event-wait-sources.js';
 import { waitFor } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { spawn } from 'node:child_process';
+
 import { once } from 'node:events';
-import { fileURLToPath } from 'node:url';
-import { mkdir, mkdtemp, rm, writeFile, readFile } from 'node:fs/promises';
-import { backup, DatabaseSync } from 'node:sqlite';
+
+import { mkdtemp, rm } from 'node:fs/promises';
+
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -555,8 +557,9 @@ test('restart rejects a Goal Run carrying delegated execution lineage', async ()
 });
 
 interface Fixture {
-  readonly shellRuns?: ShellRunProcessManager;
-  readonly shellStore?: Awaited<ReturnType<typeof openInteractiveShellRunStoreForWrite>>;
+  readonly errors: unknown[];
+  readonly waitObserver?: HostEventWaitObserver;
+  readonly invocationWaits?: HostInvocationEventWaitCoordinator;
   readonly owner: InteractiveRootOwner;
   readonly base: string;
   readonly stores: InteractiveExecutionStoresWriter;
@@ -581,17 +584,16 @@ type GoalStatus = GoalState['status'];
 async function createFixture(
   options: {
     base?: string;
+    keepRoot?: boolean;
     sessionId?: string;
     recoverAdmissions?: boolean;
     persistenceProvider?: ExecutionPersistenceProvider | 'local';
     registerBackend?: (backends: BackendRegistry) => void;
     model?: MockLanguageModelV4;
-    eventWaitSources?: HostGoalEventWaitSources;
-    shellRuns?: boolean;
-    shellRunWaitReader?: Pick<NonNullable<Fixture['shellStore']>, 'readShellRun'>;
+    eventWaitSources?: HostEventWaitSources;
+    onEventWaitChanged?: (wait: AnyEventWaitRecord) => void;
     onEvaluate?: () => unknown;
     onGoalProjection?: (goal: HostGoalCoordinator, sessionId: string) => void;
-    afterWaitMutation?: (stage: 'register' | 'settle' | 'queue') => Promise<void>;
     afterRootAdmission?: (admission: RootTurnAdmission) => Promise<void>;
     beforeReadContext?: () => Promise<void>;
   } = {},
@@ -602,69 +604,9 @@ async function createFixture(
   assert.ok(owner);
   if (!owner) throw new Error('Unable to acquire test root');
   const provider =
-    options.persistenceProvider === 'local'
-      ? undefined
-      : (options.persistenceProvider ??
-        (options.afterWaitMutation ? createMemoryExecutionPersistenceProvider() : undefined));
+    options.persistenceProvider === 'local' ? undefined : options.persistenceProvider;
   const stores = await openInteractiveExecutionStoresForWrite(owner.lease, provider);
-  const shellStore = options.shellRuns
-    ? await openInteractiveShellRunStoreForWrite(owner.lease)
-    : undefined;
-  const shellRuns = shellStore
-    ? new ShellRunProcessManager({ store: shellStore, newId: randomUUID, now: Date.now })
-    : undefined;
-  const shellAccess = shellStore
-    ? new ShellRunEventWaitAccess(
-        options.shellRunWaitReader ?? shellStore,
-        stores.runtimeEventStore,
-      )
-    : undefined;
-  const waitSources =
-    options.eventWaitSources ??
-    (shellRuns && shellAccess
-      ? {
-          adapters: new EventWaitAdapterRegistry([
-            new ShellRunEventWaitAdapter(shellAccess, shellRuns),
-          ]),
-          authorize: (wait: import('@maka/core/event-wait').EventWaitRecord, signal: AbortSignal) =>
-            shellAccess.authorize(wait, signal),
-          policy: { minIntervalMs: 10, pollIntervalMs: 30, jitterRatio: 0 },
-        }
-      : undefined);
-  const waits = stores.eventWaitStore;
-  const goalStores = options.afterWaitMutation
-    ? {
-        ...stores,
-        eventWaitStore: await openInteractiveEventWaitAuthorityForWrite(owner.lease, {
-          read: waits.read.bind(waits),
-          listPending: waits.listPending.bind(waits),
-          listSession: waits.listSession.bind(waits),
-          listForObservation: waits.listForObservation.bind(waits),
-          listByStatus: waits.listByStatus.bind(waits),
-          readSourceCooldown: waits.readSourceCooldown.bind(waits),
-          extendSourceCooldown: waits.extendSourceCooldown.bind(waits),
-          reserveSourceDispatch: waits.reserveSourceDispatch.bind(waits),
-          completeSourceDispatch: waits.completeSourceDispatch.bind(waits),
-          commit: waits.commit.bind(waits),
-          close() {},
-          registerGoalWait: async (registration) => {
-            const result = await waits.registerGoalWait(registration);
-            await options.afterWaitMutation!('register');
-            return result;
-          },
-          settleGoalWait: async (settlement) => {
-            const result = await waits.settleGoalWait(settlement);
-            await options.afterWaitMutation!('settle');
-            return result;
-          },
-          queueGoalWait: async (queue) => {
-            const result = await waits.queueGoalWait(queue);
-            await options.afterWaitMutation!('queue');
-            return result;
-          },
-        }),
-      }
-    : stores;
+  const waitSources = options.eventWaitSources;
   const goalStore = await openInteractiveGoalAuthorityForWrite(owner.lease);
   const session = options.sessionId
     ? await stores.sessionStore.readHeaderSnapshot(options.sessionId)
@@ -673,7 +615,7 @@ async function createFixture(
         llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
         llmConnectionSlug: 'fake',
         model: 'fake-model',
-        permissionMode: options.shellRuns ? 'bypass' : 'ask',
+        permissionMode: 'ask',
       });
   const admission = new SessionAdmissionGate();
   const rootAdmissions = new RootAdmissionOwner(
@@ -694,7 +636,51 @@ async function createFixture(
   let continuity: SessionContinuityCoordinator | undefined;
   let projection: CanonicalSessionProjectionReader | undefined;
   let goal: HostGoalCoordinator | undefined;
+  const errors: unknown[] = [];
   let requestedDrain = false;
+  let invocationWaits: HostInvocationEventWaitCoordinator | undefined;
+  const eventWaitsChanged = (sessionId: string) => {
+    requireContinuity(continuity).enqueueCanonicalRefresh(sessionId);
+    requireContinuity(continuity).enqueueSessionDomainChanged(sessionId, 'event_wait');
+  };
+  const waitObserver = waitSources
+    ? new HostEventWaitObserver({
+        store: interactiveEventWaitObservationStore(stores.eventWaitStore),
+        decodeRecord: decodeAnyEventWaitRecord,
+        adapters: waitSources.adapters,
+        authorize: async (wait, signal) => {
+          if (wait.schemaVersion !== 2) return { kind: 'revoked', reason: 'unsupported_consumer' };
+          if (wait.consumer.kind === 'tool_invocation')
+            return invocationWaits!.authorizeObservation(wait, signal);
+          return requireGoal(goal).goalWaitingBridge!.authorizeObservation(wait, signal);
+        },
+        onChanged: (wait) => {
+          invocationWaits?.changed(wait);
+          if (wait.schemaVersion === 2 && wait.consumer.kind === 'goal_waiting')
+            void goal?.goalWaitingBridge?.reconcile();
+          eventWaitsChanged(wait.sessionId);
+          options.onEventWaitChanged?.(wait);
+        },
+        onError: (error) => {
+          errors.push(error);
+          requestedDrain = true;
+        },
+        ...(waitSources.clock ? { clock: waitSources.clock } : {}),
+        ...(waitSources.policy ? { policy: waitSources.policy } : {}),
+      })
+    : undefined;
+  if (waitObserver && waitSources)
+    invocationWaits = new HostInvocationEventWaitCoordinator({
+      stores,
+      observer: waitObserver,
+      sources: waitSources,
+      onChanged: eventWaitsChanged,
+      onError: (error) => {
+        errors.push(error);
+        requestedDrain = true;
+      },
+      ...(waitSources.clock ? { clock: waitSources.clock } : {}),
+    });
   const goalChangeListeners = new Set<() => void>();
   const rootPort: HostMessageRootPort = {
     readLatestRootTurnLineage: async (identity) => identity,
@@ -736,6 +722,10 @@ async function createFixture(
     rootAdmissions,
     messages,
     readGoal: (sessionId) => requireGoal(goal).readProjection(sessionId),
+    readEventWaits: async (sessionId) => {
+      const { items, nextCursor } = await requireGoal(goal).readEventWaits(sessionId);
+      return { items, nextCursor };
+    },
   });
   projection = canonical;
   continuity = new SessionContinuityCoordinator(
@@ -776,14 +766,14 @@ async function createFixture(
             providerStateIdentity: `sha256:${'a'.repeat(64)}`,
             tools: [
               ...requireGoal(goal).tools,
-              ...(shellRuns
-                ? buildBuiltinTools({
-                    shellRuns,
-                    runtimeResources: shellRuns,
-                    backgroundTasks: shellRuns,
-                    ptyControls: shellRuns,
-                    declareSandboxBoundary: false,
-                  })
+              ...(invocationWaits
+                ? [
+                    invocationWaits.createTool(context.sessionId, () =>
+                      ['active', 'waiting'].includes(
+                        requireGoal(goal).manager.get(context.sessionId)?.status ?? '',
+                      ),
+                    ).tool,
+                  ]
                 : []),
             ],
             runtimeCommitSink: stores.runtimeEventStore,
@@ -797,7 +787,22 @@ async function createFixture(
         : new FakeBackend(context),
     );
   const authority: RuntimeHostedRootAuthority = {
-    bindRun: (identity) => messages.bindRun(identity),
+    bindRun: (identity) => {
+      const owner = messages.bindRun(identity);
+      invocationWaits?.admitRun(
+        identity,
+        ['active', 'waiting'].includes(
+          requireGoal(goal).manager.get(identity.sessionId)?.status ?? '',
+        ),
+      );
+      return {
+        ...owner,
+        release: () => {
+          owner.release();
+          invocationWaits?.releaseRun(identity);
+        },
+      };
+    },
     executeRoot: (input) =>
       executeHostedExecutionToSettlement(requireCoordinator(coordinator), input),
     stopRoot: (identity, input) => requireCoordinator(coordinator).stopRoot(identity, input),
@@ -846,8 +851,10 @@ async function createFixture(
   );
   const rootCoordinator = coordinator;
   const goalExecutions = new HostGoalExecutionCoordinator({
-    authorizeEventWait: async (sessionId, pending) =>
-      (await requireGoal(goal).eventWaitBridge?.authorizeAdmission(sessionId, pending)) ?? false,
+    preflightGoalWaiting: async (sessionId, pending) =>
+      (await requireGoal(goal).goalWaitingBridge?.preflightAdmission(sessionId, pending)) ?? false,
+    authorizeGoalWaiting: async (sessionId, pending) =>
+      (await requireGoal(goal).goalWaitingBridge?.authorizeAdmission(sessionId, pending)) ?? false,
     executions: rootCoordinator,
     runtime: manager,
     matchesActive: (sessionId, checkpoint, controlLease) =>
@@ -855,9 +862,11 @@ async function createFixture(
     newId: randomUUID,
   });
   goal = new HostGoalCoordinator({
+    cancelInvocationWait: (target) => invocationWaits?.cancel(target) ?? Promise.resolve(false),
+    ...(waitObserver ? { eventWaitObserver: waitObserver } : {}),
     ...(waitSources ? { eventWaitSources: waitSources } : {}),
     store: goalStore,
-    stores: goalStores,
+    stores,
     readSessionContext: async (sessionId) => {
       await options.beforeReadContext?.();
       return { messages: await manager.getMessages(sessionId) };
@@ -872,11 +881,11 @@ async function createFixture(
       },
       close: async () => {},
     },
-    admitTurn: (sessionId, text, checkpoint, controlLease, eventWait) =>
-      goalExecutions.admitTurn(sessionId, text, checkpoint, controlLease, eventWait),
+    admitTurn: (sessionId, text, checkpoint, controlLease, goalWaiting) =>
+      goalExecutions.admitTurn(sessionId, text, checkpoint, controlLease, goalWaiting),
     acquireResidency,
     onProjectionChanged: (sessionId) => {
-      requireContinuity(continuity).enqueueCanonicalRefresh(sessionId);
+      eventWaitsChanged(sessionId);
       for (const listener of goalChangeListeners) listener();
       if (goal) options.onGoalProjection?.(goal, sessionId);
     },
@@ -886,9 +895,13 @@ async function createFixture(
   });
   await goal.prepareRecovery();
   const goalCoordinator = goal;
+  await waitObserver?.start();
+  await invocationWaits?.start();
 
   return {
-    ...(shellRuns ? { shellRuns, shellStore: shellStore! } : {}),
+    errors,
+    ...(waitObserver ? { waitObserver } : {}),
+    ...(invocationWaits ? { invocationWaits } : {}),
     owner,
     base,
     stores,
@@ -919,6 +932,17 @@ async function createFixture(
           reject(new Error(`Goal did not reach ${status}`));
         }, 10_000);
         check();
+      }).then(async (current) => {
+        // Projection notifications precede authority commits. The public query
+        // waits for the Goal mutation and persistence lanes before acknowledging.
+        const reply = await goalCoordinator.handlers['goal.query'](
+          { sessionId: session.id },
+          operationContext(),
+        );
+        assert.ok(reply.ok);
+        assert.equal(reply.result.goal?.goalId, current.id);
+        assert.equal(reply.result.goal?.status, status);
+        return current;
       }),
     async close() {
       goalExecutions.beginDrain();
@@ -926,18 +950,17 @@ async function createFixture(
       rootCoordinator.beginDrain();
       try {
         await goalCoordinator.close();
+        await invocationWaits?.close();
+        await waitObserver?.close();
       } finally {
-        if (goalStores !== stores) await goalStores.eventWaitStore.close();
         await rootCoordinator.close();
         await messages.close();
         await interactions.close();
         continuity?.close();
-        await shellRuns?.terminateAll();
-        await shellStore?.close();
         await goalStore.close();
         await stores.sessionStore.close?.();
         await owner.close();
-        await rm(base, { recursive: true, force: true });
+        if (!options.keepRoot) await rm(base, { recursive: true, force: true });
       }
     },
   };
@@ -998,347 +1021,6 @@ function requireGoal(value: HostGoalCoordinator | undefined): HostGoalCoordinato
   return value;
 }
 
-for (const [alreadySatisfied, busy, deferAccess, cancel] of [
-  [false, false, false, false],
-  [true, false, false, false],
-  [false, true, false, false],
-  [false, false, true, false],
-  [false, false, false, true],
-])
-  test(`event wait yields through real Root admission (alreadySatisfied=${alreadySatisfied}, busy=${busy}, deferred=${deferAccess}, cancel=${cancel})`, {
-    timeout: 15000,
-  }, async () => {
-    let modelCalls = 0,
-      evaluatorCalls = 0,
-      observations = 0;
-    let releaseUser!: () => void;
-    const userBarrier = new Promise<void>((resolve) => {
-      releaseUser = resolve;
-    });
-    let resultAuthorizations = 0;
-    const sources: HostGoalEventWaitSources = {
-      adapters: new EventWaitAdapterRegistry([
-        {
-          providerId: 'test',
-          resourceType: 'job',
-          conditionType: 'done',
-          conditionVersion: 1,
-          reconciliation: 'snapshot',
-          validate() {},
-          read: async () => {
-            observations++;
-            return alreadySatisfied
-              ? { kind: 'satisfied', receiptKey: 'receipt', evidenceRefs: ['ref'] }
-              : { kind: 'pending' };
-          },
-        },
-      ]),
-      authorize: async (wait) => {
-        if (deferAccess && wait.status === 'resolved' && ++resultAuthorizations === 2)
-          return { kind: 'unknown', reason: 'temporarily unavailable' };
-        return { kind: 'allowed', context: null };
-      },
-    };
-    const model = new MockLanguageModelV4({
-      doStream: async () => {
-        modelCalls++;
-        if (busy && modelCalls === 2) await userBarrier;
-        return {
-          stream: convertArrayToReadableStream<LanguageModelV4StreamPart>([
-            { type: 'stream-start', warnings: [] },
-            ...(modelCalls === 1
-              ? [
-                  {
-                    type: 'tool-call' as const,
-                    toolCallId: 'wait-call',
-                    toolName: 'WaitForEvent',
-                    input: JSON.stringify({
-                      resource: {
-                        providerId: 'test',
-                        connectionId: null,
-                        resourceType: 'job',
-                        resourceId: 'job',
-                      },
-                      condition: { typeId: 'done', version: 1, parameters: {} },
-                      reason: 'Waiting for the job',
-                      timeoutMs: 60000,
-                    }),
-                  },
-                ]
-              : []),
-            {
-              type: 'finish',
-              finishReason: { unified: modelCalls === 1 ? 'tool-calls' : 'stop', raw: 'stop' },
-              usage: {
-                inputTokens: { total: 10, noCache: 10, cacheRead: 0, cacheWrite: 0 },
-                outputTokens: { total: 2, text: 2, reasoning: 0 },
-              },
-            },
-          ]),
-        };
-      },
-    });
-    let sourceSettlement: { iterations: number; models: number; evaluations: number } | undefined;
-    const f = await createFixture({
-      onGoalProjection: (coordinator, sessionId) => {
-        const g = coordinator.manager.get(sessionId);
-        if (g?.iterations === 1 && !sourceSettlement)
-          sourceSettlement = {
-            iterations: g.iterations,
-            models: modelCalls,
-            evaluations: evaluatorCalls,
-          };
-      },
-      model,
-      eventWaitSources: sources,
-      onEvaluate: () => evaluatorCalls++,
-    });
-    try {
-      await f.goal.recover();
-      f.goal.manager.create(f.sessionId, 'Wait for the job and verify its result', { armed: true });
-      await f.goal.handlers['goal.query']({ sessionId: f.sessionId }, operationContext());
-      const submitted = await f.messages.handlers['turn.message.submit'](
-        {
-          originHostEpoch: 'goal-root-epoch',
-          sessionId: f.sessionId,
-          messageId: 'start-wait',
-          content: { text: 'Start waiting' },
-          placement: 'current_turn',
-        },
-        operationContext(),
-      );
-      assert.equal(submitted.ok, true);
-      await waitFor(
-        async () => {
-          if (sourceSettlement) return true;
-          const a = await f.goalStore.read(f.sessionId);
-          if (a?.record.goal.status === 'paused' || a?.record.goal.status === 'achieved')
-            throw new Error(
-              JSON.stringify({
-                authority: a,
-                modelCalls,
-                runs: await f.stores.runtimeEventStore.listSessionInvocations(f.sessionId),
-              }),
-            );
-          return !!a?.record.activeEventWait?.settled;
-        },
-        { timeoutMs: 5000 },
-      );
-      assert.deepEqual(sourceSettlement, { iterations: 1, models: 1, evaluations: 0 });
-      if (!alreadySatisfied) {
-        assert.equal(modelCalls, 1);
-        assert.equal(evaluatorCalls, 0);
-      }
-      assert.equal(f.goal.manager.get(f.sessionId)?.iterations, 1);
-      await waitFor(() => f.coordinator.readRootState(f.sessionId).kind === 'idle', {
-        timeoutMs: 5000,
-      });
-      const wait = (
-        await f.stores.eventWaitStore.listSession({ sessionId: f.sessionId, limit: 10 })
-      ).items[0]!;
-      const source = (await f.stores.runtimeEventStore.listSessionInvocations(f.sessionId)).find(
-        (r) => r.turnId === wait.record.sourceTurnId,
-      )!;
-      assert.equal(source.terminalEvent?.actions?.stateDelta?.stopReason, 'event_wait');
-      if (cancel) {
-        const goal = f.goal.manager.get(f.sessionId)!;
-        const result = await f.goal.handlers['goal.event-wait.cancel'](
-          {
-            sessionId: f.sessionId,
-            goalId: goal.id,
-            expectedGoalRevision: goal.revision,
-            waitId: wait.record.waitId,
-            controlGeneration: wait.record.goalControlLease.generation,
-          },
-          operationContext(),
-        );
-        assert.equal(result.ok && result.result.outcome, 'cancelled');
-        for (let i = 0; i < 3; i++) await f.goal.eventWaitBridge!.reconcile();
-        assert.equal(f.goal.manager.get(f.sessionId)?.status, 'paused');
-        assert.equal(
-          (
-            await f.stores.eventWaitStore.read({
-              sessionId: f.sessionId,
-              waitId: wait.record.waitId,
-            })
-          )?.record.delivery?.kind,
-          'suppressed',
-        );
-        assert.equal(modelCalls, 1);
-        assert.equal(evaluatorCalls, 0);
-        assert.equal(f.drainRequested(), false);
-        return;
-      }
-      if (!alreadySatisfied) {
-        await waitFor(() => observations > 0, { timeoutMs: 5000 });
-        for (let i = 0; i < 4; i++) await f.goal.eventWaitBridge!.reconcile();
-        assert.equal(modelCalls, 1);
-        assert.equal(evaluatorCalls, 0);
-        if (busy) {
-          const user = await f.messages.handlers['turn.message.submit'](
-            {
-              originHostEpoch: 'goal-root-epoch',
-              sessionId: f.sessionId,
-              messageId: 'new-user-work',
-              content: { text: 'New user work' },
-              placement: 'current_turn',
-            },
-            operationContext(),
-          );
-          assert.equal(user.ok, true);
-          await waitFor(() => modelCalls === 2, { timeoutMs: 5000 });
-        }
-        const current = (await f.stores.eventWaitStore.read({
-          sessionId: f.sessionId,
-          waitId: wait.record.waitId,
-        }))!;
-        const at = Math.max(Date.now(), current.record.updatedAt);
-        await f.stores.eventWaitStore.commit({
-          sessionId: f.sessionId,
-          waitId: wait.record.waitId,
-          expectedAuthorityRevision: current.authorityRevision,
-          record: {
-            ...current.record,
-            status: 'resolved',
-            updatedAt: at,
-            resolvedAt: at,
-            resolution: {
-              outcome: 'satisfied',
-              receiptKey: 'receipt',
-              observedAt: at,
-              evidenceRefs: ['ref'],
-            },
-          },
-        });
-      }
-      await f.goal.eventWaitBridge!.reconcile();
-      if (busy) {
-        // Result authorization observes the source cooldown left by the last read.
-        await waitFor(
-          async () => !!(await f.goalStore.read(f.sessionId))?.record.pendingContinuation,
-          { timeoutMs: 5000 },
-        );
-        const queued = (await f.goalStore.read(f.sessionId))!.record.pendingContinuation;
-        assert.ok(queued?.eventWait);
-        for (let i = 0; i < 3; i++) await f.goal.eventWaitBridge!.reconcile();
-        assert.deepEqual((await f.goalStore.read(f.sessionId))!.record.pendingContinuation, queued);
-        assert.equal(modelCalls, 2);
-        assert.equal(evaluatorCalls, 0);
-        releaseUser();
-      }
-      try {
-        await f.waitForGoalStatus('achieved');
-      } catch (error) {
-        throw new Error(
-          JSON.stringify({
-            goal: await f.goalStore.read(f.sessionId),
-            modelCalls,
-            evaluatorCalls,
-            observations,
-            waits: await f.stores.eventWaitStore.listSession({ sessionId: f.sessionId, limit: 10 }),
-            runs: await f.stores.runtimeEventStore.listSessionInvocations(f.sessionId),
-            drain: f.drainRequested(),
-          }),
-          { cause: error },
-        );
-      }
-      assert.equal(modelCalls, busy ? 3 : 2);
-      assert.equal(evaluatorCalls, 1);
-      if (deferAccess) assert.ok(resultAuthorizations >= 4);
-      const delivered = (await f.stores.eventWaitStore.read({
-        sessionId: f.sessionId,
-        waitId: wait.record.waitId,
-      }))!.record;
-      assert.equal(delivered.delivery?.kind, 'admitted');
-      for (let i = 0; i < 3; i++) await f.goal.eventWaitBridge!.reconcile();
-      assert.equal(modelCalls, busy ? 3 : 2);
-      const admissions = await f.stores.agentRunStore.listRootTurnAdmissionsForRecovery(
-        f.sessionId,
-      );
-      assert.equal(admissions.length, busy ? 3 : 2);
-      const successor = admissions.find((a) => a.execution.kind === 'goal')!;
-      assert.equal(
-        successor.execution.kind === 'goal' && successor.execution.eventWait?.waitId,
-        wait.record.waitId,
-      );
-      const next = await f.stores.runtimeEventStore.readRunInvocation(f.sessionId, successor.runId);
-      assert.equal(
-        next?.opening.root.kind === 'goal' && next.opening.root.eventWait?.waitId,
-        wait.record.waitId,
-      );
-      assert.ok(observations > 0);
-      assert.equal(f.drainRequested(), false);
-    } finally {
-      releaseUser();
-      await f.close();
-    }
-  });
-
-function eventWaitModel(onCall: () => unknown = () => {}, firstOnly = false, inputTokens = 10) {
-  let calls = 0;
-  return new MockLanguageModelV4({
-    doStream: async () => {
-      const waits = !firstOnly || ++calls === 1;
-      await onCall();
-      return {
-        stream: convertArrayToReadableStream<LanguageModelV4StreamPart>([
-          { type: 'stream-start', warnings: [] },
-          ...(waits
-            ? [
-                {
-                  type: 'tool-call' as const,
-                  toolCallId: 'wait-call',
-                  toolName: 'WaitForEvent',
-                  input: JSON.stringify({
-                    resource: {
-                      providerId: 'test',
-                      connectionId: null,
-                      resourceType: 'job',
-                      resourceId: 'job',
-                    },
-                    condition: { typeId: 'done', version: 1, parameters: {} },
-                    reason: 'Waiting for the job',
-                    timeoutMs: 60000,
-                  }),
-                },
-              ]
-            : []),
-          {
-            type: 'finish',
-            finishReason: { unified: waits ? 'tool-calls' : 'stop', raw: 'stop' },
-            usage: {
-              inputTokens: {
-                total: inputTokens,
-                noCache: inputTokens,
-                cacheRead: 0,
-                cacheWrite: 0,
-              },
-              outputTokens: { total: 2, text: 2, reasoning: 0 },
-            },
-          },
-        ]),
-      };
-    },
-  });
-}
-function eventWaitSources(
-  authorize: HostGoalEventWaitSources['authorize'],
-): HostGoalEventWaitSources {
-  return {
-    adapters: new EventWaitAdapterRegistry([
-      {
-        providerId: 'test',
-        resourceType: 'job',
-        conditionType: 'done',
-        conditionVersion: 1,
-        reconciliation: 'snapshot',
-        validate() {},
-        read: async () => ({ kind: 'pending' }),
-      },
-    ]),
-    authorize,
-  };
-}
 async function startEventWait(f: Fixture, maxIterations = 50) {
   await f.goal.recover();
   f.goal.manager.create(f.sessionId, 'Wait for the job', { armed: true, maxIterations });
@@ -1356,2629 +1038,1938 @@ async function startEventWait(f: Fixture, maxIterations = 50) {
   assert.equal(submitted.ok, true);
 }
 
-test('Goal drain stops event wait observation before waiting for close', async () => {
-  const readEntered = deferred();
-  const releaseRead = deferred();
-  let readSignal: AbortSignal | undefined;
-  let subscriptionsClosed = 0;
-  let reads = 0;
-  let modelCalls = 0;
-  const f = await createFixture({
-    model: eventWaitModel(() => modelCalls++),
-    eventWaitSources: {
-      authorize: async () => ({ kind: 'allowed', context: null }),
-      adapters: new EventWaitAdapterRegistry([
-        {
-          providerId: 'test',
-          resourceType: 'job',
-          conditionType: 'done',
-          conditionVersion: 1,
-          reconciliation: 'snapshot',
-          validate() {},
-          subscribe: async () => ({
-            close() {
-              subscriptionsClosed++;
-            },
-          }),
-          read: async ({ signal }) => {
-            reads++;
-            readSignal = signal;
-            readEntered.resolve();
-            await releaseRead.promise;
-            return { kind: 'satisfied', receiptKey: 'late-terminal', evidenceRefs: [] };
-          },
-        },
-      ]),
-    },
-  });
-  try {
-    await startEventWait(f);
-    await readEntered.promise;
-    await waitFor(
-      async () => (await f.goalStore.read(f.sessionId))?.record.activeEventWait?.settled === true,
-      { timeoutMs: 5000 },
-    );
-    await f.coordinator.whenIdle(f.sessionId);
-    const before = (
-      await f.stores.eventWaitStore.listSession({ sessionId: f.sessionId, limit: 10 })
-    ).items[0]!;
-    const callsBeforeDrain = modelCalls;
-
-    // Host operation draining can delay close. Observation must stop at this
-    // synchronous boundary, without turning shutdown into business cancellation.
-    f.goal.beginDrain();
-    f.goal.beginDrain();
-    assert.equal(readSignal?.aborted, true);
-    assert.equal(subscriptionsClosed, 1);
-    releaseRead.resolve();
-    await f.goal.close();
-
-    const after = (await f.stores.eventWaitStore.read({
-      sessionId: f.sessionId,
-      waitId: before.record.waitId,
-    }))!;
-    assert.equal(after.record.status, 'waiting');
-    assert.equal(after.record.observation?.attempts, before.record.observation?.attempts);
-    assert.equal(after.record.delivery, undefined);
-    assert.equal(reads, 1);
-    assert.equal(modelCalls, callsBeforeDrain);
-    assert.equal(subscriptionsClosed, 1);
-  } finally {
-    releaseRead.resolve();
-    await f.close();
-  }
-});
-
-test('observer cancellation releases the Goal gate without restarting work', async () => {
-  let calls = 0,
-    authorizations = 0;
-  const f = await createFixture({
-    model: eventWaitModel(() => calls++),
-    eventWaitSources: eventWaitSources(async () =>
-      ++authorizations === 1
-        ? { kind: 'allowed', context: null }
-        : { kind: 'revoked', reason: 'resource permission revoked' },
-    ),
-  });
-  try {
-    await startEventWait(f);
-    await waitFor(
-      async () =>
-        (
-          await f.stores.eventWaitStore.listSession({
-            sessionId: f.sessionId,
-            limit: 10,
-          })
-        ).items[0]?.record.status === 'cancelled',
-      { timeoutMs: 5000 },
-    );
-    await f.goal.eventWaitBridge!.reconcile();
-    const authority = (await f.goalStore.read(f.sessionId))!.record;
-    assert.equal(authority.goal.status, 'paused');
-    assert.equal(authority.activeEventWait, undefined);
-    const wait = (await f.stores.eventWaitStore.listSession({ sessionId: f.sessionId, limit: 10 }))
-      .items[0]!;
-    assert.equal(wait.record.delivery?.kind, 'suppressed');
-    for (let i = 0; i < 3; i++) await f.goal.eventWaitBridge!.reconcile();
-    assert.equal(calls, 1);
-    assert.equal(f.drainRequested(), false);
-  } finally {
-    await f.close();
-  }
-});
-
-for (const action of ['pause', 'clear'] as const)
-  test(`Goal ${action} acknowledgement waits for deferred durable control`, async () => {
-    const entered = deferred(),
-      release = deferred();
-    const f = await createFixture({
-      model: eventWaitModel(),
-      eventWaitSources: eventWaitSources(async () => ({ kind: 'allowed', context: null })),
-      afterWaitMutation: async (stage) => {
-        if (stage !== 'register') return;
-        entered.resolve();
-        await release.promise;
-      },
-    });
-    try {
-      await startEventWait(f);
-      await entered.promise;
-      const before = f.goal.manager.get(f.sessionId)!;
-      let returned = false;
-      const control = f.goal.handlers['goal.control'](
-        {
-          sessionId: f.sessionId,
-          goalId: before.id,
-          expectedRevision: before.revision,
-          action,
-        },
-        operationContext(),
-      ).then((result) => {
-        returned = true;
-        return result;
-      });
-      // The control request is ordered after registration, including its live state change.
-      await new Promise<void>((resolve) => setImmediate(resolve));
-      assert.equal(returned, false, 'Control must not acknowledge while its write is deferred');
-      assert.equal(f.goal.manager.get(f.sessionId)?.status, 'active');
-      release.resolve();
-      const response = await control;
-      assert.equal(response.ok, true);
-      const durable = (await f.goalStore.read(f.sessionId))!.record;
-      assert.equal(durable.goal.status, action === 'pause' ? 'paused' : 'cleared');
-      assert.equal(durable.controlLease.generation, 1);
-      assert.equal(durable.activeEventWait, undefined);
-      assert.equal(f.drainRequested(), false);
-    } finally {
-      release.resolve();
-      await f.close();
-    }
-  });
-
-test('bridge result scans honor source Retry-After without admitting or charging work', {
-  timeout: 10000,
-}, async () => {
-  let calls = 0,
-    resultAuthorizations = 0,
-    throttledAt = 0;
-  const f = await createFixture({
-    model: eventWaitModel(() => calls++),
-    eventWaitSources: eventWaitSources(async (wait) => {
-      if (wait.status !== 'resolved') return { kind: 'allowed', context: null };
-      resultAuthorizations++;
-      throttledAt = Date.now();
-      return { kind: 'unknown', reason: 'throttled', retryAfterMs: 60000 };
-    }),
-  });
-  try {
-    await startEventWait(f);
-    await waitFor(
-      async () => !!(await f.goalStore.read(f.sessionId))?.record.activeEventWait?.settled,
-      { timeoutMs: 5000 },
-    );
-    const wait = (await f.stores.eventWaitStore.listSession({ sessionId: f.sessionId, limit: 10 }))
-      .items[0]!;
-    const at = Math.max(Date.now(), wait.record.updatedAt);
-    await f.stores.eventWaitStore.commit({
-      sessionId: f.sessionId,
-      waitId: wait.record.waitId,
-      expectedAuthorityRevision: wait.authorityRevision,
-      record: {
-        ...wait.record,
-        status: 'resolved',
-        updatedAt: at,
-        resolvedAt: at,
-        resolution: {
-          outcome: 'satisfied',
-          receiptKey: 'receipt',
-          observedAt: at,
-          evidenceRefs: [],
-        },
-      },
-    });
-    await waitFor(
-      async () => {
-        await f.goal.eventWaitBridge!.reconcile();
-        return resultAuthorizations > 0;
-      },
-      { timeoutMs: 5000 },
-    );
-    for (let i = 0; i < 4; i++) await f.goal.eventWaitBridge!.reconcile();
-    assert.equal(resultAuthorizations, 1);
-    const cooldown = await f.stores.eventWaitStore.readSourceCooldown({
-      providerId: 'test',
-      connectionId: null,
-    });
-    assert.ok(cooldown! >= throttledAt + 60000);
-    assert.equal(calls, 1);
-    assert.equal(f.goal.manager.get(f.sessionId)?.iterations, 1);
-    assert.equal((await f.goalStore.read(f.sessionId))?.record.pendingContinuation, null);
-    assert.equal(f.drainRequested(), false);
-  } finally {
-    await f.close();
-  }
-});
-
-for (const action of ['pause', 'clear'] as const)
-  for (const maxIterations of [1, 50])
-    test(`Goal ${action} cannot overwrite committed wait settlement (limit=${maxIterations})`, {
-      timeout: 10000,
-    }, async () => {
-      const entered = deferred(),
-        release = deferred();
-      let calls = 0;
-      const f = await createFixture({
-        model: eventWaitModel(() => calls++),
-        eventWaitSources: eventWaitSources(async () => ({ kind: 'allowed', context: null })),
-        afterWaitMutation: async (stage) => {
-          if (stage !== 'settle') return;
-          entered.resolve();
-          await release.promise;
-        },
-      });
-      try {
-        await startEventWait(f, maxIterations);
-        await entered.promise;
-        const stale = f.goal.manager.get(f.sessionId)!;
-        const committed = (await f.goalStore.read(f.sessionId))!.record.goal;
-        assert.equal(committed.iterations, 1);
-        assert.equal(committed.tokensNow, 12);
-        assert.equal(committed.tokensBaselinePending, false);
-        const control = f.goal.handlers['goal.control'](
-          {
-            sessionId: f.sessionId,
-            goalId: stale.id,
-            expectedRevision: stale.revision,
-            action,
-          },
-          operationContext(),
-        );
-        release.resolve();
-        const response = await control;
-        assert.equal(response.ok, false, 'A stale control revision must not overwrite settlement');
-        if (!response.ok) assert.equal(response.error.code, 'operation_conflict');
-        assert.deepEqual((await f.goalStore.read(f.sessionId))!.record.goal, committed);
-        assert.deepEqual(f.goal.manager.get(f.sessionId), committed);
-        if (maxIterations === 50) {
-          const retry = await f.goal.handlers['goal.control'](
-            {
-              sessionId: f.sessionId,
-              goalId: committed.id,
-              expectedRevision: committed.revision,
-              action,
-            },
-            operationContext(),
-          );
-          assert.equal(retry.ok, true);
-          const controlled = (await f.goalStore.read(f.sessionId))!.record.goal;
-          assert.equal(controlled.iterations, 1);
-          assert.equal(controlled.tokensNow, 12);
-          assert.equal(controlled.tokensAtStart, committed.tokensAtStart);
-          assert.equal(controlled.tokensBaselinePending, false);
-        } else {
-          assert.equal(committed.status, 'max_iterations');
-        }
-        assert.equal(calls, 1);
-        assert.equal(f.drainRequested(), false);
-      } finally {
-        release.resolve();
-        await f.close();
-      }
-    });
-
-test('late queue acknowledgement cannot restore a gate after Root admission', {
-  timeout: 15000,
-}, async () => {
-  const admissionAccess = deferred(),
-    releaseAdmission = deferred(),
-    queueEntered = deferred(),
-    releaseQueue = deferred(),
-    successorEntered = deferred(),
-    releaseSuccessor = deferred();
-  let calls = 0,
-    authorizations = 0,
-    queues = 0;
-  const sources = eventWaitSources(async (wait) => {
-    if (wait.status === 'resolved' && ++authorizations === 2) {
-      admissionAccess.resolve();
-      await releaseAdmission.promise;
-    }
-    return { kind: 'allowed', context: null };
-  });
-  const f = await createFixture({
-    model: eventWaitModel(async () => {
-      if (++calls === 2) {
-        successorEntered.resolve();
-        await releaseSuccessor.promise;
-      }
-    }, true),
-    eventWaitSources: { ...sources, policy: { maxPerSource: 2 } },
-    afterWaitMutation: async (stage) => {
-      if (stage === 'queue' && ++queues === 2) {
-        queueEntered.resolve();
-        await releaseQueue.promise;
-      }
-    },
-  });
-  try {
-    await startEventWait(f);
-    await waitFor(
-      async () => !!(await f.goalStore.read(f.sessionId))?.record.activeEventWait?.settled,
-      { timeoutMs: 5000 },
-    );
-    await waitFor(() => f.coordinator.readRootState(f.sessionId).kind === 'idle', {
-      timeoutMs: 5000,
-    });
-    const wait = (await f.stores.eventWaitStore.listSession({ sessionId: f.sessionId, limit: 10 }))
-      .items[0]!;
-    const at = Math.max(Date.now(), wait.record.updatedAt);
-    await f.stores.eventWaitStore.commit({
-      sessionId: f.sessionId,
-      waitId: wait.record.waitId,
-      expectedAuthorityRevision: wait.authorityRevision,
-      record: {
-        ...wait.record,
-        status: 'resolved',
-        updatedAt: at,
-        resolvedAt: at,
-        resolution: {
-          outcome: 'satisfied',
-          receiptKey: 'receipt',
-          observedAt: at,
-          evidenceRefs: [],
-        },
-      },
-    });
-    // The bridge's rescan timer is unref'd. Keep this wait alive until the
-    // admission authorization barrier is reached, and fail if it never arrives.
-    await withTimeout(admissionAccess.promise, 5000, 'Root admission authorization did not start');
-    const scan = f.goal.eventWaitBridge!.reconcile();
-    await queueEntered.promise;
-    releaseAdmission.resolve();
-    await successorEntered.promise;
-    const admitted = (await f.goalStore.read(f.sessionId))!;
-    assert.equal(admitted.record.activeEventWait, undefined);
-    assert.equal(admitted.record.pendingContinuation, null);
-    assert.ok(admitted.record.currentExecution);
-    releaseQueue.resolve();
-    await scan;
-    releaseSuccessor.resolve();
-    await f.waitForGoalStatus('achieved');
-    assert.equal(f.drainRequested(), false);
-    await waitFor(
-      async () => (await f.goalStore.read(f.sessionId))?.record.currentExecution === null,
-      { timeoutMs: 5000 },
-    );
-    const finished = (await f.goalStore.read(f.sessionId))!;
-    assert.ok(finished.authorityRevision > admitted.authorityRevision);
-    assert.equal(finished.record.activeEventWait, undefined);
-    assert.equal(finished.record.currentExecution, null);
-    assert.equal(
-      (await f.stores.agentRunStore.listRootTurnAdmissionsForRecovery(f.sessionId)).length,
-      2,
-    );
-    assert.equal(
-      (await f.stores.eventWaitStore.read({ sessionId: f.sessionId, waitId: wait.record.waitId }))
-        ?.record.delivery?.kind,
-      'admitted',
-    );
-    assert.equal(calls, 2);
-  } finally {
-    releaseAdmission.resolve();
-    releaseQueue.resolve();
-    releaseSuccessor.resolve();
-    await f.close();
-  }
-});
-
-for (const provider of ['memory', 'local'] as const)
-  test(`event wait admission with a lost store acknowledgement stays fenced (${provider})`, {
-    timeout: 15000,
-  }, async () => {
-    let storageCalls = 0,
-      modelCalls = 0,
-      gateCalls = 0;
-    let committed: RootTurnAdmission | undefined;
-    const f = await createFixture({
-      persistenceProvider:
-        provider === 'memory' ? createMemoryExecutionPersistenceProvider() : 'local',
-      model: eventWaitModel(() => modelCalls++, true),
-      eventWaitSources: eventWaitSources(async () => ({ kind: 'allowed', context: null })),
-      afterRootAdmission: async (admission) => {
-        if (admission.execution.kind === 'goal' && admission.execution.eventWait) {
-          storageCalls++;
-          committed = admission;
-          // The real transaction committed; only its acknowledgement is lost.
-          throw new Error('Acknowledgement lost after event wait admission commit');
-        }
-      },
-    });
-    try {
-      await startEventWait(f);
-      await waitFor(
-        async () => (await f.goalStore.read(f.sessionId))?.record.activeEventWait?.settled === true,
-        { timeoutMs: 5000 },
-      );
-      await waitFor(() => f.coordinator.readRootState(f.sessionId).kind === 'idle', {
-        timeoutMs: 5000,
-      });
-      const wait = (
-        await f.stores.eventWaitStore.listSession({ sessionId: f.sessionId, limit: 10 })
-      ).items[0]!;
-      const at = Math.max(Date.now(), wait.record.updatedAt);
-      await f.stores.eventWaitStore.commit({
-        sessionId: f.sessionId,
-        waitId: wait.record.waitId,
-        expectedAuthorityRevision: wait.authorityRevision,
-        record: {
-          ...wait.record,
-          status: 'resolved',
-          updatedAt: at,
-          resolvedAt: at,
-          resolution: {
-            outcome: 'satisfied',
-            receiptKey: 'receipt',
-            observedAt: at,
-            evidenceRefs: [],
-          },
-        },
-      });
-      await waitFor(
-        async () => {
-          await f.goal.eventWaitBridge!.reconcile();
-          return f.drainRequested();
-        },
-        { timeoutMs: 5000 },
-      );
-      assert.ok(committed);
-      const successor = committed;
-      assert.equal(
-        (await f.stores.eventWaitStore.read({ sessionId: f.sessionId, waitId: wait.record.waitId }))
-          ?.record.delivery?.kind,
-        'admitted',
-      );
-      assert.throws(
-        () => f.rootAdmissions.assertKnownAdmission(successor),
-        /identity changed within one Host Epoch/,
-      );
-      // Even an explicit same-identity retry is rejected before the execution gate.
-      await assert.rejects(
-        () =>
-          f.coordinator.admit({
-            sessionId: f.sessionId,
-            turnId: successor.turnId,
-            runId: successor.runId,
-            userMessageId: successor.userMessageId,
-            execution: successor.execution,
-            content: successor.normalizedInput,
-            admitExecution: async () => {
-              gateCalls++;
-              return 'executing';
-            },
-            start: () => assert.fail('An unacknowledged admission must not start'),
-          }),
-        /identity changed within one Host Epoch/,
-      );
-      assert.equal(gateCalls, 0);
-      assert.equal(storageCalls, 1);
-      assert.equal(modelCalls, 1);
-      assert.equal(
-        await f.stores.runtimeEventStore.readRunInvocation(f.sessionId, successor.runId),
-        undefined,
-      );
-      assert.equal(
-        (await f.stores.agentRunStore.listRootTurnAdmissionsForRecovery(f.sessionId)).length,
-        2,
-      );
-    } finally {
-      if (f.drainRequested()) {
-        // Cleanup cannot overwrite the committed Goal state with the unconfirmed revision.
-        await assert.rejects(() => f.close(), /Goal authority revision conflict/);
-      } else {
-        await f.close();
-      }
-    }
-  });
-
-test('handoff successor registers and settles a wait through the existing Goal and Root owners', {
-  timeout: 15000,
-}, async () => {
-  const entered = deferred<void>(),
-    boundary = deferred<void>(),
-    registered = deferred<void>(),
-    yieldSource = deferred<void>();
-  const composition = createRunCompositionSnapshot({
-    composerId: 'test.handoff',
-    composerRevision: '1',
-    sourceRevisions: [],
-    baseSystemPromptHash: `sha256:${'0'.repeat(64)}`,
-    toolCatalogHash: `sha256:${'0'.repeat(64)}`,
-    toolAvailabilityHash: `sha256:${'0'.repeat(64)}`,
-    baseProviderOptionsHash: `sha256:${'0'.repeat(64)}`,
-    toolNames: [],
-    contextWindow: null,
-  });
-  let f!: Fixture,
-    source!: { runId: string; turnId: string },
-    calls = 0,
-    evaluations = 0;
-  f = await createFixture({
-    onEvaluate: () => {
-      evaluations++;
-    },
-    eventWaitSources: eventWaitSources(async () => ({ kind: 'allowed', context: null })),
-    registerBackend: (backends) =>
-      backends.register(
-        'ai-sdk',
-        (context) =>
-          new (class extends FakeBackend {
-            async prepareRunComposition(input: { runId: string; turnId: string }) {
-              await context.recordRunComposition!(input.runId, composition);
-            }
-            override async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
-              await this.prepareRunComposition({ runId: input.runId!, turnId: input.turnId });
-              calls++;
-              yield {
-                type: 'token_usage',
-                id: randomUUID(),
-                turnId: input.turnId,
-                ts: Date.now(),
-                input: calls * 10,
-                output: 0,
-                total: calls * 10,
-              };
-              if (calls === 1) {
-                source = { runId: input.runId!, turnId: input.turnId };
-                entered.resolve();
-                await boundary.promise;
-                if ((await input.handoffBoundary!(new AbortController().signal, 2)) === 'pause')
-                  return;
-              }
-              if (input.continuation) {
-                await f.goal.eventWaitBridge!.register(
-                  {
-                    resource: {
-                      providerId: 'test',
-                      connectionId: null,
-                      resourceType: 'job',
-                      resourceId: 'job',
-                    },
-                    condition: { typeId: 'done', version: 1, parameters: {} },
-                    reason: 'Wait after handoff',
-                    timeoutMs: 60000,
-                  },
-                  {
-                    sessionId: f.sessionId,
-                    turnId: input.turnId,
-                    runId: input.runId!,
-                    toolCallId: 'handoff-wait',
-                    cwd: f.base,
-                    abortSignal: new AbortController().signal,
-                    emitOutput: () => {},
-                  },
-                );
-                registered.resolve();
-                await yieldSource.promise;
-              }
-              yield {
-                type: 'complete',
-                id: randomUUID(),
-                turnId: input.turnId,
-                ts: Date.now(),
-                stopReason: input.continuation ? 'event_wait' : 'end_turn',
-              };
-            }
-          })(context),
-      ),
-  });
-  try {
-    await startEventWait(f);
-    await entered.promise;
-    const handoff = f.manager.requestRunHandoff(
-      f.sessionId,
-      source.runId,
-      {
-        protocol: 'runtime_handoff_pause_v1',
-        handoffId: 'handoff',
-        hostEpoch: 'goal-root-epoch',
-        rootRunId: source.runId,
-        successorRunId: 'physical-successor',
-        successorInvocationId: 'physical-successor',
-        claimId: 'handoff-claim',
-      },
-      new AbortController().signal,
-    );
-    assert.ok(handoff);
-    boundary.resolve();
-    assert.equal(await handoff.ready, true);
-    assert.equal(handoff.commit(), true);
-    assert.equal(await handoff.sealed, true);
-    await registered.promise;
-    const before = (await f.goalStore.read(f.sessionId))!.record;
-    assert.equal(before.currentExecution?.execution.runId, source.runId);
-    assert.equal(before.activeEventWait?.sourceExecution.runId, 'physical-successor');
-    assert.equal(before.activeEventWait?.settled, false);
-    yieldSource.resolve();
-    await f.coordinator.whenIdle(f.sessionId);
-    await waitFor(
-      async () => (await f.goalStore.read(f.sessionId))?.record.activeEventWait?.settled === true,
-      { timeoutMs: 5000 },
-    );
-    assert.equal(f.goal.manager.get(f.sessionId)?.iterations, 1);
-    assert.equal(f.goal.manager.get(f.sessionId)?.tokensAtStart, 30);
-    assert.equal(f.goal.manager.get(f.sessionId)?.tokensNow, 30);
-    assert.equal(evaluations, 0);
-    assert.equal(calls, 2);
-    const wait = (await f.stores.eventWaitStore.listSession({ sessionId: f.sessionId, limit: 10 }))
-      .items[0]!;
-    const now = Date.now();
-    await f.stores.eventWaitStore.commit({
-      sessionId: f.sessionId,
-      waitId: wait.record.waitId,
-      expectedAuthorityRevision: wait.authorityRevision,
-      record: {
-        ...wait.record,
-        status: 'resolved',
-        updatedAt: now,
-        resolvedAt: now,
-        resolution: {
-          outcome: 'satisfied',
-          receiptKey: 'ready',
-          observedAt: now,
-          evidenceRefs: [],
-        },
-      },
-    });
-    await f.goal.eventWaitBridge!.reconcile();
-    await f.waitForGoalStatus('achieved');
-    await waitFor(
-      async () => (await f.goalStore.read(f.sessionId))?.record.currentExecution === null,
-      { timeoutMs: 5000 },
-    );
-    assert.equal(calls, 3);
-    assert.equal(f.drainRequested(), false);
-    assert.equal(
-      (await f.stores.eventWaitStore.read({ sessionId: f.sessionId, waitId: wait.record.waitId }))
-        ?.record.delivery?.kind,
-      'admitted',
-    );
-  } finally {
-    boundary.resolve();
-    yieldSource.resolve();
-    await f.close();
-  }
-});
-
-for (const maxIterations of [3, 4])
-  test(`recovery preserves accounting when a wait replaces a completed Goal Turn (limit=${maxIterations})`, {
-    timeout: 15000,
-  }, async () => {
-    const evaluating = deferred<void>(),
-      releaseEvaluation = deferred<void>();
-    const accounting = deferred<void>(),
-      releaseAccounting = deferred<void>();
-    let calls = 0,
-      evaluations = 0,
-      admissions = 0;
-    let hasGate = async () => false;
-    const waiting = eventWaitModel();
-    const ordinary = new MockLanguageModelV4({
-      doStream: async () => ({
-        stream: convertArrayToReadableStream<LanguageModelV4StreamPart>([
-          { type: 'stream-start', warnings: [] },
-          {
-            type: 'finish',
-            finishReason: { unified: 'stop', raw: 'stop' },
-            usage: {
-              inputTokens: { total: 10, noCache: 10, cacheRead: 0, cacheWrite: 0 },
-              outputTokens: { total: 2, text: 2, reasoning: 0 },
-            },
-          },
-        ]),
-      }),
-    });
-    const f = await createFixture({
-      model: new MockLanguageModelV4({
-        doStream: (input) => (++calls === 3 ? waiting : ordinary).doStream(input),
-      }),
-      eventWaitSources: eventWaitSources(async () => ({ kind: 'allowed', context: null })),
-      beforeReadContext: async () => {
-        if (await hasGate()) {
-          accounting.resolve();
-          await releaseAccounting.promise;
-        }
-      },
-      onEvaluate: async () => {
-        if (++evaluations === 2) {
-          evaluating.resolve();
-          await releaseEvaluation.promise;
-        }
-        return JSON.stringify({
-          met: false,
-          impossible: false,
-          progress: true,
-          waiting: false,
-          reason: 'More work',
-        });
-      },
-    });
-    hasGate = async () => !!(await f.goalStore.read(f.sessionId))?.record.activeEventWait;
-    let recovered: HostGoalCoordinator | undefined;
-    let copied: InteractiveExecutionStoresWriter | undefined;
-    let copiedOwner: InteractiveRootOwner | null | undefined;
-    const submit = (messageId: string) =>
-      f.messages.handlers['turn.message.submit'](
-        {
-          originHostEpoch: 'goal-root-epoch',
-          sessionId: f.sessionId,
-          messageId,
-          content: { text: messageId },
-          placement: 'current_turn',
-        },
-        operationContext(),
-      );
-    try {
-      await f.goal.recover();
-      f.goal.manager.create(f.sessionId, 'Count all real work before waking', {
-        armed: true,
-        maxIterations,
-      });
-      await f.goal.handlers['goal.query']({ sessionId: f.sessionId }, operationContext());
-      assert.equal((await submit('first')).ok, true);
-      await evaluating.promise;
-      await waitFor(() => f.coordinator.readRootState(f.sessionId).kind === 'idle', {
-        timeoutMs: 5000,
-      });
-      const prior = (await f.goalStore.read(f.sessionId))!.record;
-      assert.equal(prior.goal.iterations, 1);
-      assert.equal(
-        (
-          await f.stores.runtimeEventStore.readRunInvocation(
-            f.sessionId,
-            prior.currentExecution!.execution.runId,
-          )
-        )?.terminalEvent?.status,
-        'completed',
-      );
-      assert.equal((await submit('new-user')).ok, true);
-      await accounting.promise;
-      await waitFor(
-        async () => {
-          const runs = await f.stores.runtimeEventStore.listSessionInvocations(f.sessionId);
-          return (
-            runs.length === 3 && runs.every((run) => run.terminalEvent?.status === 'completed')
-          );
-        },
-        { timeoutMs: 5000 },
-      );
-      const before = (await f.goalStore.read(f.sessionId))!.record;
-      assert.equal(before.activeEventWait?.settled, false);
-      assert.notEqual(
-        before.currentExecution?.execution.turnId,
-        prior.currentExecution!.execution.turnId,
-      );
-      const copyRoot = join(f.base, 'recovery-root');
-      await mkdir(copyRoot);
-      const db = new DatabaseSync(join(f.base, 'root', 'runtime.sqlite'));
-      try {
-        await backup(db, join(copyRoot, 'runtime.sqlite'));
-      } finally {
-        db.close();
-      }
-      copiedOwner = await tryAcquireInteractiveRootOwner(
-        await resolveStorageRoot({ path: copyRoot, kind: 'interactive' }),
-      );
-      assert.ok(copiedOwner);
-      copied = await openInteractiveExecutionStoresForWrite(copiedOwner.lease);
-      const stores = copied;
-      const wait = (await stores.eventWaitStore.listSession({ sessionId: f.sessionId, limit: 10 }))
-        .items[0]!;
-      const at = Math.max(Date.now(), wait.record.updatedAt);
-      await stores.eventWaitStore.commit({
-        sessionId: f.sessionId,
-        waitId: wait.record.waitId,
-        expectedAuthorityRevision: wait.authorityRevision,
-        record: {
-          ...wait.record,
-          status: 'resolved',
-          updatedAt: at,
-          resolvedAt: at,
-          resolution: {
-            outcome: 'satisfied',
-            receiptKey: 'ready',
-            observedAt: at,
-            evidenceRefs: [],
-          },
-        },
-      });
-      recovered = new HostGoalCoordinator({
-        store: stores.goalStore,
-        stores,
-        readSessionContext: async () => ({
-          messages: await readLedgerMessages(stores.runtimeEventStore, f.sessionId),
-        }),
-        executions: {
-          reconcile: async (identity) => {
-            const run = await stores.runtimeEventStore.readRunInvocation(
-              identity.sessionId,
-              identity.runId,
-            );
-            assert.equal(run?.terminalEvent?.status, 'completed');
-            return { ...identity, status: 'completed', terminalEventId: run!.terminalEvent!.id };
-          },
-          subscribe: () => () => {},
-        },
-        sessionAdmission: new SessionAdmissionGate(),
-        evaluator: {
-          evaluate: async () => assert.fail('Explicit wait recovery must not evaluate'),
-          close: async () => {},
-        },
-        admitTurn: () => {
-          admissions++;
-          return { kind: 'busy', whenIdle: new Promise<void>(() => {}) };
-        },
-        acquireResidency: () => ({ release() {} }),
-        onProjectionChanged() {},
-        requestDrain: () => assert.fail('Unexpected drain'),
-        eventWaitSources: eventWaitSources(async () => ({ kind: 'allowed', context: null })),
-      });
-      await recovered.prepareRecovery();
-      await recovered.recover();
-      await waitFor(
-        async () => {
-          const record = (await stores.goalStore.read(f.sessionId))!.record;
-          return record.activeEventWait?.settled === true || record.goal.status !== 'active';
-        },
-        { timeoutMs: 5000 },
-      );
-      await recovered.eventWaitBridge!.reconcile();
-      releaseEvaluation.resolve();
-      releaseAccounting.resolve();
-      await waitFor(
-        async () => (await f.goalStore.read(f.sessionId))?.record.goal.iterations === 3,
-        { timeoutMs: 5000 },
-      );
-      const live = (await f.goalStore.read(f.sessionId))!.record;
-      const after = (await stores.goalStore.read(f.sessionId))!.record;
-      assert.equal(after.goal.iterations, live.goal.iterations);
-      assert.equal(after.goal.tokensAtStart, 12);
-      assert.equal(after.goal.tokensNow, 36);
-      assert.equal(after.goal.status, maxIterations === 3 ? 'max_iterations' : 'active');
-      if (maxIterations === 3) {
-        assert.equal(after.activeEventWait, undefined);
-        assert.equal(after.pendingContinuation, null);
-        assert.equal(admissions, 0);
-        assert.equal(
-          (await stores.eventWaitStore.read({ sessionId: f.sessionId, waitId: wait.record.waitId }))
-            ?.record.delivery?.kind,
-          'suppressed',
-        );
-      } else {
-        await waitFor(() => admissions > 0, { timeoutMs: 5000 });
-        assert.equal(
-          (await stores.goalStore.read(f.sessionId))?.record.pendingContinuation?.eventWait
-            ?.provenance.waitId,
-          wait.record.waitId,
-        );
-      }
-    } finally {
-      await recovered?.close();
-      await copied?.goalStore.close();
-      await copied?.sessionStore.close?.();
-      await copiedOwner?.close();
-      releaseEvaluation.resolve();
-      releaseAccounting.resolve();
-      await f.close();
-    }
-  });
-
-for (const previous of ['waiting', 'pending', 'current'] as const)
-  test(`a user Turn registers an explicit wait over older ordinary ${previous}`, {
-    timeout: 15000,
-  }, async () => {
-    const evaluating = deferred<void>(),
-      releaseEvaluation = deferred<void>();
-    const sourceStarted = deferred<void>(),
-      releaseSource = deferred<void>();
-    let calls = 0,
-      evaluations = 0;
-    const sourceCall = previous === 'current' ? 3 : 2;
-    const ordinary = new MockLanguageModelV4({
-      doStream: async () => ({
-        stream: convertArrayToReadableStream<LanguageModelV4StreamPart>([
-          { type: 'stream-start', warnings: [] },
-          {
-            type: 'finish',
-            finishReason: { unified: 'stop', raw: 'stop' },
-            usage: {
-              inputTokens: { total: 10, noCache: 10, cacheRead: 0, cacheWrite: 0 },
-              outputTokens: { total: 2, text: 2, reasoning: 0 },
-            },
-          },
-        ]),
-      }),
-    });
-    const waiting = eventWaitModel();
-    const f = await createFixture({
-      model: new MockLanguageModelV4({
-        doStream: async (input) => {
-          if (++calls !== sourceCall) return ordinary.doStream(input);
-          sourceStarted.resolve();
-          if (previous === 'pending') await releaseSource.promise;
-          return waiting.doStream(input);
-        },
-      }),
-      eventWaitSources: eventWaitSources(async () => ({ kind: 'allowed', context: null })),
-      onEvaluate: async () => {
-        evaluations++;
-        if (previous !== 'waiting' && evaluations === sourceCall - 1) {
-          evaluating.resolve();
-          await releaseEvaluation.promise;
-        }
-        return JSON.stringify({
-          met: false,
-          impossible: false,
-          progress: true,
-          waiting: previous === 'waiting',
-          reason: 'External work remains outstanding',
-        });
-      },
-    });
-    const submit = (messageId: string) =>
-      f.messages.handlers['turn.message.submit'](
-        {
-          originHostEpoch: 'goal-root-epoch',
-          sessionId: f.sessionId,
-          messageId,
-          content: { text: messageId },
-          placement: 'current_turn',
-        },
-        operationContext(),
-      );
-    try {
-      await f.goal.recover();
-      f.goal.manager.create(f.sessionId, 'Wait after ordinary work', { armed: true });
-      await f.goal.handlers['goal.query']({ sessionId: f.sessionId }, operationContext());
-      assert.equal((await submit('first')).ok, true);
-      if (previous === 'waiting') await f.waitForGoalStatus('waiting');
-      else await evaluating.promise;
-      await waitFor(() => f.coordinator.readRootState(f.sessionId).kind === 'idle', {
-        timeoutMs: 5000,
-      });
-      await f.goal.handlers['goal.query']({ sessionId: f.sessionId }, operationContext());
-      if (previous === 'current') {
-        const old = (await f.goalStore.read(f.sessionId))!.record.currentExecution!;
-        assert.equal(
-          (await f.stores.runtimeEventStore.readRunInvocation(f.sessionId, old.execution.runId))
-            ?.terminalEvent?.status,
-          'completed',
-        );
-      }
-      assert.equal((await submit('new-user')).ok, true);
-      await sourceStarted.promise;
-      if (previous === 'pending') {
-        releaseEvaluation.resolve();
-        await waitFor(
-          async () => !!(await f.goalStore.read(f.sessionId))?.record.pendingContinuation,
-          { timeoutMs: 5000 },
-        );
-        releaseSource.resolve();
-      }
-      await waitFor(
-        async () =>
-          (await f.manager.getMessages(f.sessionId)).some(
-            (message) => message.type === 'tool_result',
-          ),
-        { timeoutMs: 5000 },
-      );
-      const waits = await f.stores.eventWaitStore.listSession({
-        sessionId: f.sessionId,
-        limit: 10,
-      });
-      assert.equal(waits.items.length, 1);
-      releaseEvaluation.resolve();
-      await waitFor(
-        async () => (await f.goalStore.read(f.sessionId))?.record.activeEventWait?.settled === true,
-        { timeoutMs: 5000 },
-      );
-      const after = (await f.goalStore.read(f.sessionId))!.record;
-      assert.equal(after.goal.status, 'active');
-      assert.equal(after.goal.iterations, sourceCall);
-      assert.equal(after.goal.tokensAtStart, 12);
-      assert.equal(after.goal.tokensNow, 12 * sourceCall);
-      assert.equal(after.currentExecution, null);
-      assert.equal(after.pendingContinuation, null);
-      assert.equal(calls, sourceCall);
-      assert.equal(evaluations, sourceCall - 1);
-    } finally {
-      releaseSource.resolve();
-      releaseEvaluation.resolve();
-      await f.close();
-    }
-  });
-
-test('recovery settles a wait source after an older Turn advances the Goal revision', {
-  timeout: 15000,
-}, async () => {
-  const firstRead = deferred<void>(),
-    releaseFirst = deferred<void>(),
-    sourceRead = deferred<void>(),
-    releaseSource = deferred<void>();
-  let calls = 0,
-    reads = 0,
-    admissions = 0,
-    evaluations = 0;
-  const waiting = eventWaitModel();
-  const ordinary = new MockLanguageModelV4({
-    doStream: async () => ({
-      stream: convertArrayToReadableStream<LanguageModelV4StreamPart>([
-        { type: 'stream-start', warnings: [] },
-        {
-          type: 'finish',
-          finishReason: { unified: 'stop', raw: 'stop' },
-          usage: {
-            inputTokens: { total: 10, noCache: 10, cacheRead: 0, cacheWrite: 0 },
-            outputTokens: { total: 2, text: 2, reasoning: 0 },
-          },
-        },
-      ]),
-    }),
-  });
-  const f = await createFixture({
-    model: new MockLanguageModelV4({
-      doStream: (input) => (++calls === 2 ? waiting : ordinary).doStream(input),
-    }),
-    eventWaitSources: eventWaitSources(async () => ({ kind: 'allowed', context: null })),
-    beforeReadContext: async () => {
-      if (++reads === 1) {
-        firstRead.resolve();
-        await releaseFirst.promise;
-      }
-      if (reads === 3) {
-        sourceRead.resolve();
-        await releaseSource.promise;
-      }
-    },
-  });
-  let recovered: HostGoalCoordinator | undefined;
-  let copied: InteractiveExecutionStoresWriter | undefined;
-  let copiedOwner: InteractiveRootOwner | null | undefined;
-  const submit = (messageId: string) =>
-    f.messages.handlers['turn.message.submit'](
-      {
-        originHostEpoch: 'goal-root-epoch',
-        sessionId: f.sessionId,
-        messageId,
-        content: { text: messageId },
-        placement: 'current_turn',
-      },
-      operationContext(),
-    );
-  try {
-    await f.goal.recover();
-    f.goal.manager.create(f.sessionId, 'Wait after older work', { armed: true });
-    await f.goal.handlers['goal.query']({ sessionId: f.sessionId }, operationContext());
-    assert.equal((await submit('first')).ok, true);
-    await firstRead.promise;
-    await waitFor(() => f.coordinator.readRootState(f.sessionId).kind === 'idle', {
-      timeoutMs: 5000,
-    });
-    assert.equal((await submit('second')).ok, true);
-    await waitFor(
-      async () => {
-        const runs = await f.stores.runtimeEventStore.listSessionInvocations(f.sessionId);
-        return runs.length === 2 && runs.every((run) => run.terminalEvent?.status === 'completed');
-      },
-      { timeoutMs: 5000 },
-    );
-    releaseFirst.resolve();
-    await sourceRead.promise;
-    const before = (await f.goalStore.read(f.sessionId))!.record;
-    assert.equal(before.goal.revision, 1);
-    assert.equal(before.currentExecution?.checkpoint.revision, 0);
-    assert.equal(before.activeEventWait?.settled, false);
-
-    // Preserve a real reachable crash window without letting the original Host settle it.
-    const copyRoot = join(f.base, 'recovery-root');
-    await mkdir(copyRoot);
-    const database = new DatabaseSync(join(f.base, 'root', 'runtime.sqlite'));
-    try {
-      await backup(database, join(copyRoot, 'runtime.sqlite'));
-    } finally {
-      database.close();
-    }
-    copiedOwner = await tryAcquireInteractiveRootOwner(
-      await resolveStorageRoot({ path: copyRoot, kind: 'interactive' }),
-    );
-    assert.ok(copiedOwner);
-    copied = await openInteractiveExecutionStoresForWrite(copiedOwner.lease);
-    const stores = copied;
-    const wait = (await stores.eventWaitStore.listSession({ sessionId: f.sessionId, limit: 10 }))
-      .items[0]!;
-    const now = Math.max(Date.now(), wait.record.updatedAt);
-    await stores.eventWaitStore.commit({
-      sessionId: f.sessionId,
-      waitId: wait.record.waitId,
-      expectedAuthorityRevision: wait.authorityRevision,
-      record: {
-        ...wait.record,
-        status: 'resolved',
-        updatedAt: now,
-        resolvedAt: now,
-        resolution: {
-          outcome: 'satisfied',
-          receiptKey: 'ready',
-          observedAt: now,
-          evidenceRefs: [],
-        },
-      },
-    });
-    recovered = new HostGoalCoordinator({
-      store: stores.goalStore,
-      stores,
-      readSessionContext: async () => ({
-        messages: await readLedgerMessages(stores.runtimeEventStore, f.sessionId),
-      }),
-      // Terminal status matches the real immutable source facts above; the bridge rechecks its yield.
-      executions: {
-        reconcile: async (identity) => {
-          const invocation = await stores.runtimeEventStore.readRunInvocation(
-            identity.sessionId,
-            identity.runId,
-          );
-          assert.equal(invocation?.terminalEvent?.status, 'completed');
-          return {
-            ...identity,
-            status: 'completed',
-            terminalEventId: invocation!.terminalEvent!.id,
-          };
-        },
-        subscribe: () => () => {},
-      },
-      sessionAdmission: new SessionAdmissionGate(),
-      evaluator: {
-        evaluate: async () => {
-          evaluations++;
-          return '{"met":true}';
-        },
-        close: async () => {},
-      },
-      admitTurn: () => {
-        admissions++;
-        return { kind: 'busy', whenIdle: new Promise<void>(() => {}) };
-      },
-      acquireResidency: () => ({ release() {} }),
-      onProjectionChanged() {},
-      requestDrain: () => assert.fail('Recovery must not drain'),
-      eventWaitSources: eventWaitSources(async () => ({ kind: 'allowed', context: null })),
-    });
-    await recovered.prepareRecovery();
-    await recovered.recover();
-    await waitFor(
-      async () =>
-        (await stores.goalStore.read(f.sessionId))?.record.activeEventWait?.settled === true,
-      { timeoutMs: 5000 },
-    );
-    await recovered.eventWaitBridge!.reconcile();
-    await waitFor(() => admissions > 0, { timeoutMs: 5000 });
-    const after = (await stores.goalStore.read(f.sessionId))!.record;
-    assert.equal(after.goal.iterations, 2);
-    assert.equal(after.goal.tokensAtStart, 12);
-    assert.equal(after.goal.tokensNow, 24);
-    assert.equal(after.currentExecution, null);
-    assert.equal(after.pendingContinuation?.eventWait?.provenance.waitId, wait.record.waitId);
-    assert.equal(evaluations, 0);
-  } finally {
-    await recovered?.close();
-    await copied?.goalStore.close();
-    await copied?.sessionStore.close?.();
-    await copiedOwner?.close();
-    releaseFirst.resolve();
-    releaseSource.resolve();
-    await f.close();
-  }
-});
-
-for (const sourceFirst of [false, true])
-  for (const tokenBudget of [undefined, 1000])
-    test(`event wait accounting keeps completed Turn boundaries across delayed reads (sourceFirst=${sourceFirst}, budget=${tokenBudget})`, {
-      timeout: 15000,
-    }, async () => {
-      const reading = deferred<void>(),
-        releaseRead = deferred<void>();
-      let calls = 0,
-        reads = 0,
-        evaluations = 0;
-      const laterTokens = tokenBudget === undefined ? 12 : 1002;
-      const waiting = eventWaitModel(() => {}, false, sourceFirst ? 10 : laterTokens - 2);
-      const ordinaryTokens = sourceFirst ? laterTokens : 12;
-      const ordinary = new MockLanguageModelV4({
-        doStream: async () => ({
-          stream: convertArrayToReadableStream<LanguageModelV4StreamPart>([
-            { type: 'stream-start', warnings: [] },
-            {
-              type: 'finish',
-              finishReason: { unified: 'stop', raw: 'stop' },
-              usage: {
-                inputTokens: {
-                  total: ordinaryTokens - 2,
-                  noCache: ordinaryTokens - 2,
-                  cacheRead: 0,
-                  cacheWrite: 0,
-                },
-                outputTokens: { total: 2, text: 2, reasoning: 0 },
-              },
-            },
-          ]),
-        }),
-      });
-      const model = new MockLanguageModelV4({
-        doStream: (input) =>
-          (++calls === (sourceFirst ? 1 : 2) ? waiting : ordinary).doStream(input),
-      });
-      const f = await createFixture({
-        model,
-        eventWaitSources: eventWaitSources(async () => ({ kind: 'allowed', context: null })),
-        beforeReadContext: async () => {
-          if (++reads === 1) {
-            reading.resolve();
-            await releaseRead.promise;
-          }
-        },
-        onEvaluate: () => evaluations++,
-      });
-      const submit = (messageId: string) =>
-        f.messages.handlers['turn.message.submit'](
-          {
-            originHostEpoch: 'goal-root-epoch',
-            sessionId: f.sessionId,
-            messageId,
-            content: { text: messageId },
-            placement: 'current_turn',
-          },
-          operationContext(),
-        );
-      try {
-        await f.goal.recover();
-        f.goal.manager.create(f.sessionId, 'Wait without losing earlier usage', {
-          armed: true,
-          ...(tokenBudget === undefined ? {} : { tokenBudget }),
-        });
-        await f.goal.handlers['goal.query']({ sessionId: f.sessionId }, operationContext());
-        assert.equal((await submit('first')).ok, true);
-        await reading.promise;
-        await waitFor(() => f.coordinator.readRootState(f.sessionId).kind === 'idle', {
-          timeoutMs: 5000,
-        });
-        assert.equal((await submit('second')).ok, true);
-        await waitFor(
-          async () => {
-            const runs = await f.stores.runtimeEventStore.listSessionInvocations(f.sessionId);
-            return (
-              runs.length === 2 && runs.every((run) => run.terminalEvent?.status === 'completed')
-            );
-          },
-          { timeoutMs: 5000 },
-        );
-        releaseRead.resolve();
-        await waitFor(
-          async () => {
-            const state = (await f.goalStore.read(f.sessionId))?.record.goal;
-            return state?.tokensNow === 12 + laterTokens;
-          },
-          { timeoutMs: 5000 },
-        );
-        const current = (await f.goalStore.read(f.sessionId))!.record;
-        assert.equal(current.goal.tokensAtStart, 12);
-        assert.equal(current.goal.tokensNow, 12 + laterTokens);
-        assert.equal(current.goal.status, tokenBudget === undefined ? 'active' : 'budget_limited');
-        // GoalManager stops incrementing work iterations once the token limit is reached.
-        assert.equal(current.goal.iterations, tokenBudget === undefined ? 2 : 1);
-        assert.equal(evaluations, 0);
-        assert.equal(calls, 2);
-        assert.equal(f.drainRequested(), false);
-        const wait = (
-          await f.stores.eventWaitStore.listSession({ sessionId: f.sessionId, limit: 10 })
-        ).items[0]!;
-        assert.equal(
-          wait.record.delivery?.kind,
-          tokenBudget === undefined ? undefined : 'suppressed',
-        );
-        assert.equal(
-          current.activeEventWait?.settled,
-          tokenBudget === undefined ? true : undefined,
-        );
-        assert.equal(current.pendingContinuation, null);
-      } finally {
-        releaseRead.resolve();
-        await f.close();
-      }
-    });
-
-for (const [otherSession, gateFirst, verdict, maxIterations] of [
-  [false, false, 'continue', 50],
-  [false, true, 'continue', 50],
-  [false, false, 'achieved', 50],
-  [false, false, 'waiting', 50],
-  [false, true, 'continue', 2],
-  [true, false, 'continue', 1],
-  [true, false, 'waiting', 50],
-] as const)
-  test(`wait registration serializes prior evaluation (other=${otherSession}, gateFirst=${gateFirst}, verdict=${verdict}, budget=${maxIterations})`, {
-    timeout: 15000,
-  }, async () => {
-    const evaluating = deferred<void>(),
-      releaseEvaluation = deferred<void>(),
-      registered = deferred<void>(),
-      releaseRegistration = deferred<void>();
-    let calls = 0,
-      evaluations = 0;
-    const waiting = eventWaitModel();
-    const ordinary = new MockLanguageModelV4({
-      doStream: async () => ({
-        stream: convertArrayToReadableStream<LanguageModelV4StreamPart>([
-          { type: 'stream-start', warnings: [] },
-          {
-            type: 'finish',
-            finishReason: { unified: 'stop', raw: 'stop' },
-            usage: {
-              inputTokens: { total: 10, noCache: 10, cacheRead: 0, cacheWrite: 0 },
-              outputTokens: { total: 2, text: 2, reasoning: 0 },
-            },
-          },
-        ]),
-      }),
-    });
-    const model = new MockLanguageModelV4({
-      doStream: (input) => (++calls === 2 ? waiting.doStream(input) : ordinary.doStream(input)),
-    });
-    const f = await createFixture({
-      model,
-      eventWaitSources: eventWaitSources(async () => ({ kind: 'allowed', context: null })),
-      onEvaluate: async () => {
-        evaluations++;
-        evaluating.resolve();
-        await releaseEvaluation.promise;
-        return JSON.stringify({
-          met: verdict === 'achieved',
-          impossible: false,
-          progress: true,
-          waiting: verdict === 'waiting',
-          reason: 'earlier evaluation',
-        });
-      },
-      afterWaitMutation: async (stage) => {
-        if (stage === 'register') {
-          registered.resolve();
-          await releaseRegistration.promise;
-        }
-      },
-    });
-    const submit = (sessionId: string, messageId: string) =>
-      f.messages.handlers['turn.message.submit'](
-        {
-          originHostEpoch: 'goal-root-epoch',
-          sessionId,
-          messageId,
-          content: { text: messageId },
-          placement: 'current_turn',
-        },
-        operationContext(),
-      );
-    try {
-      await f.goal.recover();
-      const firstSession = otherSession
-        ? (
-            await f.stores.sessionStore.create({
-              cwd: f.base,
-              llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
-              llmConnectionSlug: 'fake',
-              model: 'fake-model',
-              permissionMode: 'ask',
-            })
-          ).id
-        : f.sessionId;
-      if (otherSession) {
-        await f.rootAdmissions.recoverSession(firstSession);
-        f.goal.manager.create(firstSession, 'Earlier Goal', { armed: true, maxIterations });
-      }
-      f.goal.manager.create(f.sessionId, 'Wait for result', {
-        armed: true,
-        maxIterations: otherSession ? 50 : maxIterations,
-      });
-      await f.goal.handlers['goal.query']({ sessionId: f.sessionId }, operationContext());
-      assert.equal((await submit(firstSession, 'first')).ok, true);
-      await evaluating.promise;
-      await waitFor(() => f.coordinator.readRootState(firstSession).kind === 'idle', {
-        timeoutMs: 5000,
-      });
-      assert.equal((await submit(f.sessionId, 'second')).ok, true);
-      await registered.promise;
-      if (!gateFirst) {
-        releaseEvaluation.resolve();
-        // Drain evaluator promise callbacks while the registration acknowledgement is held.
-        await new Promise<void>((resolve) => setImmediate(resolve));
-      }
-      releaseRegistration.resolve();
-      await f.coordinator.whenIdle(f.sessionId);
-      await waitFor(
-        async () => {
-          const goal = (await f.goalStore.read(f.sessionId))?.record;
-          return (
-            goal?.activeEventWait?.settled === true ||
-            (!!goal && !['active', 'waiting'].includes(goal.goal.status))
-          );
-        },
-        { timeoutMs: 5000 },
-      );
-      const current = (await f.goalStore.read(f.sessionId))!.record;
-      assert.equal(
-        current.goal.status,
-        !otherSession && maxIterations === 2 ? 'max_iterations' : 'active',
-      );
-      assert.equal(current.goal.iterations, otherSession ? 1 : 2);
-      assert.equal(current.goal.tokensAtStart, 12);
-      assert.equal(current.goal.tokensNow, otherSession ? 12 : 24);
-      assert.equal(evaluations, 1);
-      assert.equal(calls, 2);
-      assert.equal(f.drainRequested(), false);
-      if (otherSession) {
-        const earlier = (await f.goalStore.read(firstSession))!.record.goal;
-        assert.equal(earlier.status, maxIterations === 1 ? 'max_iterations' : 'waiting');
-        assert.equal(earlier.iterations, 1);
-      }
-      const wait = (
-        await f.stores.eventWaitStore.listSession({ sessionId: f.sessionId, limit: 10 })
-      ).items[0]!.record;
-      assert.equal(
-        wait.delivery?.kind,
-        !otherSession && maxIterations === 2 ? 'suppressed' : undefined,
-      );
-    } finally {
-      releaseEvaluation.resolve();
-      releaseRegistration.resolve();
-      await f.close();
-    }
-  });
-
-for (const provider of ['memory', 'sqlite'] as const)
-  for (const acknowledgeFirst of [true, false])
-    test(`revoked Goal completion preserves a new wait (${provider}, registration ack ${acknowledgeFirst ? 'before' : 'after'} old callback)`, {
-      timeout: 20_000,
-    }, async (t) => {
-      const oldObservation = deferred();
-      const releaseOldObservation = deferred();
-      const oldObservationReturned = deferred();
-      const registerCommitted = deferred();
-      const releaseRegisterAck = deferred();
-      let modelCalls = 0;
-      let evaluatorCalls = 0;
-      let heldOldObservation = false;
-      const finish: Extract<LanguageModelV4StreamPart, { type: 'finish' }> = {
-        type: 'finish',
-        finishReason: { unified: 'stop', raw: 'stop' },
-        usage: {
-          inputTokens: { total: 10, noCache: 10, cacheRead: 0, cacheWrite: 0 },
-          outputTokens: { total: 2, text: 2, reasoning: 0 },
-        },
-      };
-      const waiting = eventWaitModel();
-      const f = await createFixture({
-        persistenceProvider:
-          provider === 'memory' ? createMemoryExecutionPersistenceProvider() : 'local',
-        model: new MockLanguageModelV4({
-          doStream: async (input) => {
-            modelCalls++;
-            assert.ok(modelCalls <= 4, 'The gate must prevent additional model work');
-            if (modelCalls <= 2)
-              return {
-                stream: convertArrayToReadableStream<LanguageModelV4StreamPart>([
-                  { type: 'stream-start', warnings: [] },
-                  finish,
-                ]),
-              };
-            if (modelCalls === 3)
-              return {
-                stream: convertArrayToReadableStream<LanguageModelV4StreamPart>([
-                  { type: 'stream-start', warnings: [] },
-                  {
-                    type: 'tool-call',
-                    toolCallId: 'resume-goal',
-                    toolName: 'GoalResume',
-                    input: '{}',
-                  },
-                  { ...finish, finishReason: { unified: 'tool-calls', raw: 'tool-calls' } },
-                ]),
-              };
-            return waiting.doStream(input);
-          },
-        }),
-        eventWaitSources: eventWaitSources(async () => ({ kind: 'allowed', context: null })),
-        onEvaluate: () => {
-          evaluatorCalls++;
-          return '{"met":false,"impossible":false,"progress":true,"waiting":false,"reason":"Continue"}';
-        },
-        afterWaitMutation: async (stage) => {
-          if (stage !== 'register') return;
-          registerCommitted.resolve();
-          await releaseRegisterAck.promise;
-        },
-      });
-      const reconcile = f.coordinator.reconcile.bind(f.coordinator);
-      f.coordinator.reconcile = async (execution) => {
-        const snapshot = await reconcile(execution);
-        const admission = await f.stores.agentRunStore.readRootTurnAdmission(
-          execution.sessionId,
-          execution.turnId,
-        );
-        if (!heldOldObservation && admission?.execution.kind === 'goal') {
-          heldOldObservation = true;
-          oldObservation.resolve();
-          await releaseOldObservation.promise;
-          oldObservationReturned.resolve();
-        }
-        return snapshot;
-      };
-      const submit = (messageId: string) =>
-        f.messages.handlers['turn.message.submit'](
-          {
-            originHostEpoch: 'goal-root-epoch',
-            sessionId: f.sessionId,
-            messageId,
-            content: { text: messageId },
-            placement: 'current_turn',
-          },
-          operationContext(),
-        );
-      let verified = false;
-      try {
-        await f.goal.recover();
-        f.goal.manager.create(f.sessionId, 'Continue after control changes', { armed: true });
-        await f.goal.handlers['goal.query']({ sessionId: f.sessionId }, operationContext());
-        assert.equal((await submit('initial')).ok, true);
-        await oldObservation.promise;
-        await f.coordinator.whenIdle(f.sessionId);
-        const before = (await f.goalStore.read(f.sessionId))!.record;
-        assert.ok(before.currentExecution);
-        assert.equal(before.goal.iterations, 1);
-        assert.equal(before.goal.tokensAtStart, 12);
-        assert.equal(
-          (
-            await f.goal.handlers['goal.control'](
-              {
-                sessionId: f.sessionId,
-                goalId: before.goal.id,
-                expectedRevision: before.goal.revision,
-                action: 'pause',
-              },
-              operationContext(),
-            )
-          ).ok,
-          true,
-        );
-        assert.equal((await submit('resume-and-wait')).ok, true);
-        await registerCommitted.promise;
-        const committed = (await f.goalStore.read(f.sessionId))!.record;
-        assert.ok(committed.activeEventWait);
-        assert.equal(committed.activeEventWait.settled, false);
-        assert.deepEqual(
-          committed.currentExecution?.execution,
-          committed.activeEventWait.sourceExecution,
-        );
-        assert.notEqual(
-          committed.currentExecution?.execution.turnId,
-          before.currentExecution.execution.turnId,
-        );
-        assert.equal(committed.controlLease.generation, before.controlLease.generation + 2);
-        if (acknowledgeFirst) {
-          releaseRegisterAck.resolve();
-          // Query flushes the joint lane, so the new authority has been adopted before cleanup.
-          await f.goal.handlers['goal.query']({ sessionId: f.sessionId }, operationContext());
-        }
-        releaseOldObservation.resolve();
-        await oldObservationReturned.promise;
-        // The old Root is already idle. Flush its resolved completion/settlement callbacks
-        // while the late-ack case still holds the registration acknowledgement.
-        await new Promise<void>((resolve) => setImmediate(resolve));
-        const afterCleanup = (await f.goalStore.read(f.sessionId))!.record;
-        assert.deepEqual(
-          afterCleanup.activeEventWait?.sourceExecution,
-          committed.activeEventWait.sourceExecution,
-        );
-        assert.equal(afterCleanup.activeEventWait?.waitId, committed.activeEventWait.waitId);
-        if (!acknowledgeFirst)
-          assert.deepEqual(afterCleanup.currentExecution, committed.currentExecution);
-        releaseRegisterAck.resolve();
-        await waitFor(
-          async () =>
-            f.drainRequested() ||
-            (await f.goalStore.read(f.sessionId))?.record.activeEventWait?.settled === true,
-          { timeoutMs: 5000 },
-        );
-        assert.equal(
-          f.drainRequested(),
-          false,
-          'Late cleanup must not fence the Host or discard the new wait',
-        );
-        await f.coordinator.whenIdle(f.sessionId);
-        await f.goal.handlers['goal.query']({ sessionId: f.sessionId }, operationContext());
-        const settled = (await f.goalStore.read(f.sessionId))!.record;
-        assert.deepEqual(settled.activeEventWait, {
-          ...committed.activeEventWait,
-          settled: true,
-        });
-        assert.equal(settled.currentExecution, null);
-        assert.equal(settled.pendingContinuation, null);
-        assert.equal(settled.goal.status, 'active');
-        assert.equal(settled.goal.iterations, 2);
-        assert.equal(settled.goal.tokensAtStart, 12);
-        assert.equal(settled.goal.tokensNow, 48);
-        const invocations = await f.stores.runtimeEventStore.listSessionInvocations(f.sessionId);
-        const source = invocations.find(
-          (invocation) => invocation.runId === committed.activeEventWait!.sourceExecution.runId,
-        );
-        assert.ok(source);
-        assert.equal(runtimeInvocationOutcome(source), 'completed');
-        assert.equal(source.terminalEvent?.actions?.stateDelta?.stopReason, 'event_wait');
-        assert.equal(invocations.length, 3);
-        for (let i = 0; i < 2; i++) await f.goal.eventWaitBridge!.reconcile();
-        assert.equal(modelCalls, 4);
-        assert.equal(evaluatorCalls, 1);
-        assert.equal(f.drainRequested(), false);
-        verified = true;
-      } finally {
-        releaseOldObservation.resolve();
-        releaseRegisterAck.resolve();
-        try {
-          await f.close();
-        } catch (error) {
-          if (verified) throw error;
-          t.diagnostic(`Cleanup after the failed assertion: ${String(error)}`);
-        }
-      }
-    });
-
-// Match the actual platform shell while preserving Node paths containing spaces.
-function shellNodeCommand(script: string): string {
-  const payload = Buffer.from(script).toString('base64');
-  const bootstrap = `eval(Buffer.from('${payload}','base64').toString('utf8'))`;
-  const shell = defaultShellPlan();
-  if (shell.kind === 'powershell' || shell.kind === 'pwsh') {
-    const quote = (value: string) => `'${value.replaceAll("'", "''")}'`;
-    return `& ${quote(process.execPath)} -e ${quote(bootstrap)}`;
-  }
-  if (shell.kind === 'cmd') return `"${process.execPath}" -e "${bootstrap}"`;
-  const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
-  return `${quote(process.execPath)} -e ${quote(bootstrap)}`;
-}
-
-for (const scenario of ['success', 'failure', 'timeout', 'stop', 'cancel-wait', 'pty'] as const) {
-  test(`builtin background Bash event wait: ${scenario}`, { timeout: 20000 }, async () => {
-    let calls = 0,
-      evaluations = 0;
-    let f: Fixture;
-    let ref = '';
-    const model = new MockLanguageModelV4({
-      doStream: async () => {
-        calls++;
-        let name: string | undefined, args: unknown;
-        if (calls === 1) {
-          name = 'Bash';
-          const script = `const fs=require("fs");fs.appendFileSync("starts","1");const t=setInterval(()=>{if(fs.existsSync("release")){clearInterval(t);console.log("task-output");process.exit(${scenario === 'failure' ? 7 : 0})}},10)`;
-          args = {
-            command: shellNodeCommand(script),
-            run_in_background: true,
-            ...(scenario === 'pty' ? { pty: true } : {}),
-            timeout_ms: scenario === 'timeout' ? 1000 : 10000,
-          };
-        } else if (calls === 2) {
-          ref = (await f.shellStore!.listSessionShellRuns(f.sessionId))[0]!.shellRunId;
-          ref = `maka://runtime/background-tasks/${ref}`;
-          name = 'WaitForEvent';
-          args = {
-            resource: {
-              providerId: 'shell_run',
-              resourceType: 'background_task',
-              connectionId: null,
-              resourceId: ref,
-            },
-            condition: { typeId: 'terminal', version: 1, parameters: {} },
-            reason: 'Inspect the finished tests',
-            timeoutMs: 60000,
-          };
-        } else if (calls === 3) {
-          name = 'Read';
-          args = { path: ref };
-        }
-        return {
-          stream: convertArrayToReadableStream<LanguageModelV4StreamPart>([
-            { type: 'stream-start', warnings: [] },
-            ...(name
-              ? [
-                  {
-                    type: 'tool-call' as const,
-                    toolCallId: `call-${calls}`,
-                    toolName: name,
-                    input: JSON.stringify(args),
-                  },
-                ]
-              : []),
-            {
-              type: 'finish',
-              finishReason: { unified: name ? 'tool-calls' : 'stop', raw: 'stop' },
-              usage: {
-                inputTokens: { total: 10, noCache: 10, cacheRead: 0, cacheWrite: 0 },
-                outputTokens: { total: 2, text: 2, reasoning: 0 },
-              },
-            },
-          ]),
-        };
-      },
-    });
-    f = await createFixture({ shellRuns: true, model, onEvaluate: () => evaluations++ });
-    try {
-      await f.goal.recover();
-      f.goal.manager.create(f.sessionId, 'Run tests and inspect the result', { armed: true });
-      await f.goal.handlers['goal.query']({ sessionId: f.sessionId }, operationContext());
-      const started = await f.messages.handlers['turn.message.submit'](
-        {
-          originHostEpoch: 'goal-root-epoch',
-          sessionId: f.sessionId,
-          messageId: 'shell-wait-start',
-          content: { text: 'Start tests and wait' },
-          placement: 'current_turn',
-        },
-        operationContext(),
-      );
-      assert.equal(started.ok, true);
-      await waitFor(
-        async () => {
-          const a = await f.goalStore.read(f.sessionId);
-          if (a?.record.goal.status === 'paused' || a?.record.goal.status === 'achieved')
-            throw new Error(JSON.stringify(a));
-          return a?.record.activeEventWait?.settled === true;
-        },
-        { timeoutMs: 10000 },
-      );
-      const projection = await f.goal.readProjection(f.sessionId);
-      assert.ok(projection?.eventWait);
-      assert.equal(calls, 2);
-      assert.equal(evaluations, 0);
-      await waitFor(() => f.coordinator.readRootState(f.sessionId).kind === 'idle', {
-        timeoutMs: 5000,
-      });
-      const waitId = projection.eventWait.waitId;
-      if (scenario === 'success' || scenario === 'pty' || scenario === 'cancel-wait') {
-        await waitFor(
-          async () => {
-            const wait = await f.stores.eventWaitStore.read({ sessionId: f.sessionId, waitId });
-            return (wait?.record.observation?.attempts ?? 0) >= 3;
-          },
-          { timeoutMs: 5000 },
-        );
-        assert.equal(calls, 2, 'Repeated observation cannot invoke the work model');
-        assert.equal(evaluations, 0, 'Repeated observation cannot invoke the Goal evaluator');
-        assert.equal(f.coordinator.readRootState(f.sessionId).kind, 'idle');
-      }
-      const originalTarget = {
-        sessionId: f.sessionId,
-        goalId: projection.goalId,
-        controlGeneration: projection.eventWait.controlGeneration,
-        waitId,
-        expectedGoalRevision: projection.revision,
-      };
-      const stale = await f.goal.handlers['goal.event-wait.cancel'](
-        { ...originalTarget, expectedGoalRevision: projection.revision + 1 },
-        operationContext(),
-      );
-      assert.equal(stale.ok && stale.result.outcome, 'conflict');
-      assert.equal(f.goal.manager.get(f.sessionId)?.status, 'active');
-      if (scenario === 'cancel-wait') {
-        const target = {
-          sessionId: f.sessionId,
-          goalId: projection.goalId,
-          controlGeneration: projection.eventWait.controlGeneration,
-          waitId,
-          expectedGoalRevision: projection.revision,
-        };
-        const cancelled = await f.goal.handlers['goal.event-wait.cancel'](
-          target,
-          operationContext(),
-        );
-        assert.equal(cancelled.ok && cancelled.result.outcome, 'cancelled');
-        const repeat = await f.goal.handlers['goal.event-wait.cancel'](target, operationContext());
-        assert.equal(repeat.ok && repeat.result.outcome, 'already_cancelled');
-        assert.equal(f.shellRuns!.liveCount(), 1);
-      } else if (scenario === 'stop')
-        await f.shellRuns!.stopBackgroundTask(f.sessionId, ref, new AbortController().signal);
-      if (scenario !== 'timeout' && scenario !== 'stop')
-        await writeFile(join(f.owner.capability.canonicalPath, 'release'), 'ready');
-      await waitFor(
-        async () =>
-          (await f.shellStore!.listSessionShellRuns(f.sessionId)).every(
-            (r) => !['starting', 'running'].includes(r.status),
-          ),
-        { timeoutMs: 10000 },
-      );
-      if (scenario !== 'cancel-wait') {
-        await f.waitForGoalStatus('achieved');
-        assert.equal(calls, 4);
-        const wait = await f.stores.eventWaitStore.read({ sessionId: f.sessionId, waitId });
-        assert.equal(wait?.record.status, 'resolved');
-        assert.equal(wait?.record.delivery?.kind, 'admitted');
-        const already = await f.goal.handlers['goal.event-wait.cancel'](
-          originalTarget,
-          operationContext(),
-        );
-        assert.equal(already.ok && already.result.outcome, 'already_admitted');
-        assert.equal(f.goal.manager.get(f.sessionId)?.status, 'achieved');
-        const task = (await f.shellStore!.listSessionShellRuns(f.sessionId))[0]!;
-        assert.equal(
-          task.status,
-          scenario === 'failure'
-            ? 'failed'
-            : scenario === 'timeout'
-              ? 'timed_out'
-              : scenario === 'stop'
-                ? 'cancelled'
-                : 'completed',
-        );
-        const events = await f.stores.runtimeEventStore.readSessionRuntimeEvents(f.sessionId);
-        const result = events.find(
-          (e) => e.content?.kind === 'function_response' && e.content.name === 'Read',
-        )?.content;
-        assert.ok(result?.kind === 'function_response' && !result.isError, JSON.stringify(result));
-        await f.goal.eventWaitBridge!.reconcile();
-        assert.equal(calls, 4);
-      } else {
-        await f.goal.eventWaitBridge!.reconcile();
-        assert.equal(calls, 2);
-      }
-      assert.equal(await readFile(join(f.owner.capability.canonicalPath, 'starts'), 'utf8'), '1');
-      assert.equal(f.drainRequested(), false);
-    } finally {
-      await f.close();
-    }
-  });
-}
-
-// This subprocess owns the real Root, Goal, SQLite and process manager. SIGKILL
-// bypasses graceful cleanup; the durable marker detects command redispatch.
-test('ShellRun crash fixture', { skip: !process.env.MAKA_SHELL_WAIT_CRASH_ROOT }, async () => {
-  const base = process.env.MAKA_SHELL_WAIT_CRASH_ROOT!;
-  let f: Fixture,
-    calls = 0;
-  const model = new MockLanguageModelV4({
-    doStream: async () => {
-      calls++;
-      const script =
-        'const fs=require("fs");fs.appendFileSync("starts","1");fs.writeFileSync("process-id",String(process.pid));const t=setInterval(()=>{if(fs.existsSync("release")){clearInterval(t);fs.writeFileSync("done","1");console.log("recovered-result")}},10)';
-      const task =
-        calls === 2 ? (await f.shellStore!.listSessionShellRuns(f.sessionId))[0] : undefined;
-      const name = calls === 1 ? 'Bash' : 'WaitForEvent';
-      const args =
-        calls === 1
-          ? {
-              command: shellNodeCommand(script),
-              run_in_background: true,
-              timeout_ms: 120000,
-            }
-          : {
-              resource: {
-                providerId: 'shell_run',
-                resourceType: 'background_task',
-                connectionId: null,
-                resourceId: `maka://runtime/background-tasks/${task!.shellRunId}`,
-              },
-              condition: { typeId: 'terminal', version: 1, parameters: {} },
-              reason: 'Verify after recovery',
-              timeoutMs: 120000,
-            };
-      assert.ok(calls <= 2, 'The child must not continue before the crash');
-      return modelToolStep(name, args, `crash-call-${calls}`);
-    },
-  });
-  f = await createFixture({ base, shellRuns: true, model });
-  await f.goal.recover();
-  f.goal.manager.create(f.sessionId, 'Verify the original task', { armed: true });
-  await f.goal.handlers['goal.query']({ sessionId: f.sessionId }, operationContext());
-  assert.equal(
-    (
-      await f.messages.handlers['turn.message.submit'](
-        {
-          originHostEpoch: 'goal-root-epoch',
-          sessionId: f.sessionId,
-          messageId: 'crash-start',
-          content: { text: 'Start once' },
-          placement: 'current_turn',
-        },
-        operationContext(),
-      )
-    ).ok,
-    true,
-  );
+async function waitForInvocationDelivery(f: Fixture, waitId: string, kind: 'consumed' | 'retired') {
+  // Run termination and a joined reconciliation scan are not delivery commit barriers.
   await waitFor(
-    async () => (await f.goalStore.read(f.sessionId))?.record.activeEventWait?.settled === true,
-    { timeoutMs: 10000 },
+    async () =>
+      (await f.stores.eventWaitStore.readAny({ sessionId: f.sessionId, waitId }))?.record.delivery
+        ?.kind === kind,
+    { timeoutMs: 5000 },
   );
-  await waitFor(() => f.coordinator.readRootState(f.sessionId).kind === 'idle', {
-    timeoutMs: 5000,
-  });
-  const task = (await f.shellStore!.listSessionShellRuns(f.sessionId))[0]!;
-  const wait = (await f.stores.eventWaitStore.listSession({ sessionId: f.sessionId, limit: 10 }))
-    .items[0]!.record;
-  // Hold observation at a real durable boundary, before terminal notification.
-  await f.goal.eventWaitBridge!.close();
-  if (process.env.MAKA_SHELL_WAIT_CRASH_PHASE === 'terminal') {
-    await writeFile(join(f.owner.capability.canonicalPath, 'release'), 'ready');
-    await waitFor(
-      async () =>
-        (await f.shellStore!.readShellRun(f.sessionId, task.shellRunId)).status === 'completed',
-      { timeoutMs: 5000 },
-    );
-  }
-  await writeFile(
-    join(base, 'ready.json'),
-    JSON.stringify({
-      sessionId: f.sessionId,
-      waitId: wait.waitId,
-      ref: `maka://runtime/background-tasks/${task.shellRunId}`,
-      taskId: task.shellRunId,
-    }),
-  );
-  const keepAlive = setInterval(() => {}, 1000);
-  try {
-    await new Promise<void>(() => {});
-  } finally {
-    clearInterval(keepAlive);
-  }
-});
+  const snapshot = await f.stores.eventWaitStore.readAny({ sessionId: f.sessionId, waitId });
+  assert.ok(snapshot);
+  return snapshot;
+}
 
-for (const phase of ['running', 'terminal'] as const)
-  test(`ShellRun process crash recovery from ${phase} does not redispatch`, {
-    timeout: 25000,
-  }, async () => {
-    const base = await mkdtemp(join(tmpdir(), 'maka-shell-crash-'));
-    const child = spawn(
-      process.execPath,
-      [
-        '--test',
-        // Node 22 exposes the same isolation mode under its experimental flag.
-        process.versions.node.startsWith('22.')
-          ? '--experimental-test-isolation=none'
-          : '--test-isolation=none',
-        '--test-name-pattern=^ShellRun crash fixture$',
-        fileURLToPath(import.meta.url),
-      ],
-      {
-        env: {
-          ...process.env,
-          MAKA_SHELL_WAIT_CRASH_ROOT: base,
-          MAKA_SHELL_WAIT_CRASH_PHASE: phase,
-        },
-        stdio: ['ignore', 'pipe', 'pipe'],
-      },
-    );
-    let output = '';
-    child.stdout.on('data', (chunk) => (output += chunk));
-    child.stderr.on('data', (chunk) => (output += chunk));
-    let f: Fixture | undefined;
-    try {
-      let marker: { sessionId: string; waitId: string; ref: string; taskId: string } | undefined;
-      await waitFor(
-        async () => {
-          if (child.exitCode !== null) throw new Error(output);
-          try {
-            marker = JSON.parse(await readFile(join(base, 'ready.json'), 'utf8'));
-            return true;
-          } catch (error) {
-            if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
-            throw error;
-          }
-        },
-        { timeoutMs: 12000 },
-      );
-      assert.ok(marker);
-      const exited = once(child, 'exit');
-      child.kill('SIGKILL');
-      await exited;
-      let calls = 0;
-      f = await createFixture({
-        base,
-        sessionId: marker.sessionId,
-        shellRuns: true,
-        recoverAdmissions: false,
-        model: new MockLanguageModelV4({
-          doStream: async () =>
-            ++calls === 1
-              ? modelToolStep('Read', { path: marker!.ref }, 'recovery-read')
-              : modelToolStep(),
-        }),
-      });
-      assert.equal(
-        await f.shellRuns!.recoverOrphanedSession(f.sessionId),
-        phase === 'running' ? 1 : 0,
-      );
-      await f.coordinator.prepareRecovery();
-      await f.manager.recoverInterruptedSessionsStrict(f.stores);
-      await f.coordinator.recover();
-      await f.messages.recoverPendingAfterHostRestart([f.sessionId]);
-      await f.goal.recover();
-      await f.waitForGoalStatus('achieved');
-      const wait = (await f.stores.eventWaitStore.read({
-        sessionId: f.sessionId,
-        waitId: marker.waitId,
-      }))!.record;
-      assert.equal(wait.status, 'resolved');
-      assert.equal(
-        wait.status === 'resolved' && wait.resolution.outcome,
-        phase === 'running' ? 'source_unavailable' : 'satisfied',
-      );
-      assert.equal(wait.delivery?.kind, 'admitted');
-      assert.equal(calls, 2);
-      assert.equal(
-        (await f.shellStore!.readShellRun(f.sessionId, marker.taskId)).status,
-        phase === 'running' ? 'orphaned' : 'completed',
-      );
-      await f.goal.eventWaitBridge!.reconcile();
-      assert.equal(calls, 2);
-      assert.equal(await readFile(join(base, 'root', 'starts'), 'utf8'), '1');
-      // An orphan may still be alive: release the original process using its fixture
-      // signal, not Runtime PID takeover. The test process may have died with its
-      // parent; either its own completion marker or ESRCH establishes test cleanup.
-      await writeFile(join(base, 'root', 'release'), 'ready');
-      const processId = Number(await readFile(join(base, 'root', 'process-id'), 'utf8'));
-      await waitFor(
-        async () => {
-          try {
-            if ((await readFile(join(base, 'root', 'done'), 'utf8')) === '1') return true;
-          } catch {
-            /* Not finished. */
-          }
-          try {
-            process.kill(processId, 0);
-            return false;
-          } catch (error) {
-            if ((error as NodeJS.ErrnoException).code === 'ESRCH') return true;
-            throw error;
-          }
-        },
-        { timeoutMs: 5000 },
-      );
-    } finally {
-      if (child.exitCode === null && child.signalCode === null) {
-        const exited = once(child, 'exit');
-        child.kill('SIGKILL');
-        await exited;
-      }
-      if (f) await f.close();
-      else {
-        await writeFile(join(base, 'root', 'release'), 'ready').catch(() => {});
-        await rm(base, { recursive: true, force: true });
-      }
-    }
-  });
-
-function modelToolStep(name?: string, args?: unknown, id = 'call') {
+function observationSources(
+  read: () => Promise<import('../server/event-wait-adapter.js').EventWaitObservationResult>,
+): HostEventWaitSources {
   return {
-    stream: convertArrayToReadableStream<LanguageModelV4StreamPart>([
-      { type: 'stream-start', warnings: [] },
-      ...(name
-        ? [
-            {
-              type: 'tool-call' as const,
-              toolCallId: id,
-              toolName: name,
-              input: JSON.stringify(args),
-            },
-          ]
-        : []),
+    authorize: async () => ({ kind: 'allowed', context: null }),
+    policy: { minIntervalMs: 1, pollIntervalMs: 5, jitterRatio: 0 },
+    adapters: new EventWaitAdapterRegistry([
       {
-        type: 'finish',
-        finishReason: { unified: name ? 'tool-calls' : 'stop', raw: 'stop' },
-        usage: {
-          inputTokens: { total: 10, noCache: 10, cacheRead: 0, cacheWrite: 0 },
-          outputTokens: { total: 2, text: 2, reasoning: 0 },
-        },
+        providerId: 'test',
+        resourceType: 'job',
+        conditionType: 'done',
+        conditionVersion: 1,
+        reconciliation: 'snapshot',
+        validate() {},
+        read,
       },
     ]),
   };
 }
-
-test('a real background completion without wait registration does not invoke a model or evaluator', {
-  timeout: 15000,
-}, async () => {
-  let calls = 0,
-    evaluations = 0;
-  const f = await createFixture({
-    shellRuns: true,
-    onEvaluate: () => evaluations++,
-    model: new MockLanguageModelV4({
-      doStream: async () => {
-        calls++;
-        return calls === 1
-          ? modelToolStep('Bash', {
-              command: shellNodeCommand(
-                'const fs=require("fs");fs.appendFileSync("starts","1");const t=setInterval(()=>{if(fs.existsSync("release"))clearInterval(t)},10)',
-              ),
-              run_in_background: true,
-              timeout_ms: 10000,
-            })
-          : modelToolStep();
-      },
-    }),
-  });
-  try {
-    await f.goal.recover();
-    assert.equal(
-      (
-        await f.messages.handlers['turn.message.submit'](
+const naturalCondition = {
+  resource: { providerId: 'test', connectionId: null, resourceType: 'job', resourceId: 'job' },
+  condition: { typeId: 'done', version: 1, parameters: {} },
+  deadlineAt: null,
+};
+function scriptedWaitModel(
+  script: (call: number) => readonly string[],
+  onCall?: (call: number) => unknown,
+) {
+  let calls = 0;
+  return new MockLanguageModelV4({
+    doStream: async () => {
+      const call = ++calls;
+      await onCall?.(call);
+      const ids = script(call);
+      return {
+        stream: convertArrayToReadableStream<LanguageModelV4StreamPart>([
+          { type: 'stream-start', warnings: [] },
+          ...ids.map((id) => ({
+            type: 'tool-call' as const,
+            toolCallId: id,
+            toolName: 'WaitForEvent',
+            input: JSON.stringify({
+              resource: naturalCondition.resource,
+              condition: naturalCondition.condition,
+              reason: 'Observe the job',
+            }),
+          })),
           {
-            originHostEpoch: 'goal-root-epoch',
-            sessionId: f.sessionId,
-            messageId: 'ordinary-background',
-            content: { text: 'Run a task' },
-            placement: 'current_turn',
+            type: 'finish',
+            finishReason: { unified: ids.length ? 'tool-calls' : 'stop', raw: 'stop' },
+            usage: {
+              inputTokens: { total: 10, noCache: 10, cacheRead: 0, cacheWrite: 0 },
+              outputTokens: { total: 2, text: 2, reasoning: 0 },
+            },
           },
-          operationContext(),
-        )
-      ).ok,
-      true,
-    );
-    await f.coordinator.whenIdle(f.sessionId);
-    assert.equal(calls, 2);
-    await writeFile(join(f.owner.capability.canonicalPath, 'release'), 'ready');
-    await waitFor(
-      async () =>
-        (await f.shellStore!.listSessionShellRuns(f.sessionId))[0]?.status === 'completed',
-      { timeoutMs: 5000 },
-    );
-    await f.goal.eventWaitBridge!.reconcile();
-    assert.equal(calls, 2);
-    assert.equal(evaluations, 0);
+        ]),
+      };
+    },
+  });
+}
+
+for (const provider of ['local', 'memory'] as const)
+  for (const cancel of [false, true])
+    test(`natural Goal waiting uses one atomic next Root admission (${provider}, cancel=${cancel})`, {
+      timeout: 15_000,
+    }, async () => {
+      let satisfied = false,
+        evaluations = 0;
+      const firstRead = deferred();
+      const f = await createFixture({
+        persistenceProvider:
+          provider === 'local' ? 'local' : createMemoryExecutionPersistenceProvider(),
+        model: scriptedWaitModel(() => []),
+        eventWaitSources: observationSources(async () => {
+          firstRead.resolve();
+          return satisfied
+            ? { kind: 'satisfied', receiptKey: 'job-done', evidenceRefs: ['job/result'] }
+            : { kind: 'pending' };
+        }),
+        onEvaluate: () =>
+          ++evaluations === 1
+            ? JSON.stringify({
+                met: false,
+                impossible: false,
+                progress: true,
+                waiting: true,
+                reason: 'Waiting for job',
+                waitingCondition: naturalCondition,
+              })
+            : '{"met":true,"impossible":false,"progress":true,"waiting":false,"reason":"verified"}',
+      });
+      try {
+        await startEventWait(f);
+        await firstRead.promise;
+        const waiting = await f.goalStore.read(f.sessionId);
+        assert.equal(waiting?.record.goal.status, 'waiting');
+        assert.equal(waiting?.record.goal.iterations, 1);
+        const pending = waiting?.record.pendingContinuation;
+        assert.ok(pending?.observation);
+        const sourceAdmissions = await f.stores.agentRunStore.listRootTurnAdmissionsForRecovery(
+          f.sessionId,
+        );
+        assert.equal(sourceAdmissions.length, 1);
+        const source = await f.stores.runtimeEventStore.readRunInvocation(
+          f.sessionId,
+          sourceAdmissions[0]!.runId,
+        );
+        assert.equal(source?.terminalEvent?.status, 'completed');
+        assert.notEqual(source?.terminalEvent?.actions?.stateDelta?.stopReason, 'event_wait');
+        if (cancel) {
+          const projection = await f.goal.readEventWaits(f.sessionId);
+          assert.equal(projection.items.length, 1);
+          const { sessionId, waitId, consumer } = projection.items[0]!;
+          const result = await f.goal.handlers['session.event-wait.cancel'](
+            { sessionId, waitId, consumer },
+            operationContext(),
+          );
+          assert.ok(result.ok && result.result.outcome === 'cancelled');
+        } else {
+          satisfied = true;
+          await f.waitObserver!.reconcile();
+        }
+        try {
+          await f.waitForGoalStatus('achieved');
+        } catch (error) {
+          throw new Error(
+            JSON.stringify({
+              goal: await f.goalStore.read(f.sessionId),
+              waits: await f.stores.eventWaitStore.listAny({ sessionId: f.sessionId, limit: 10 }),
+              admissions: await f.stores.agentRunStore.listRootTurnAdmissionsForRecovery(
+                f.sessionId,
+              ),
+              evaluations,
+              drain: f.drainRequested(),
+            }),
+            { cause: error },
+          );
+        }
+        const admissions = await f.stores.agentRunStore.listRootTurnAdmissionsForRecovery(
+          f.sessionId,
+        );
+        assert.equal(admissions.length, 2);
+        const successor = admissions.find((a) => a.execution.kind === 'goal')!;
+        assert.ok(successor.execution.kind === 'goal' && successor.execution.goalWaiting);
+        const wait = (await f.stores.eventWaitStore.readAny({
+          sessionId: f.sessionId,
+          waitId: pending.observation.waitId,
+        }))!.record;
+        assert.equal(wait.delivery?.kind, 'admitted');
+        assert.equal(wait.status, cancel ? 'cancelled' : 'resolved');
+        assert.equal(f.goal.manager.get(f.sessionId)?.iterations, 1);
+        assert.equal(evaluations, 2);
+        await f.goal.goalWaitingBridge!.reconcile();
+        assert.equal(
+          (await f.stores.agentRunStore.listRootTurnAdmissionsForRecovery(f.sessionId)).length,
+          2,
+        );
+        assert.equal(f.drainRequested(), false, f.errors.map(String).join('\n'));
+      } finally {
+        await f.close();
+      }
+    });
+
+for (const provider of ['local', 'memory'] as const)
+  for (const cancel of [false, true])
+    test(`natural admission retries the current result after source preflight (${provider}, cancel=${cancel})`, {
+      timeout: 15_000,
+    }, async () => {
+      let evaluations = 0;
+      let f: Fixture | undefined;
+      let held = false;
+      const entered = deferred();
+      const release = deferred();
+      const transitions: GoalStatus[] = [];
+      f = await createFixture({
+        persistenceProvider:
+          provider === 'local' ? 'local' : createMemoryExecutionPersistenceProvider(),
+        model: scriptedWaitModel(() => []),
+        eventWaitSources: {
+          ...observationSources(async () => ({
+            kind: 'satisfied',
+            receiptKey: 'done',
+            evidenceRefs: ['job/result'],
+          })),
+          authorize: async (wait) => {
+            // Pause real source I/O after ready has frozen the successor identity,
+            // while Root is reserved but the Session admission lane is still free.
+            if (
+              f &&
+              !held &&
+              wait.status === 'resolved' &&
+              f.goal.manager.get(f.sessionId)?.status === 'active' &&
+              f.coordinator.readRootState(f.sessionId).kind === 'reserved'
+            ) {
+              held = true;
+              entered.resolve();
+              await release.promise;
+            }
+            return { kind: 'allowed', context: null };
+          },
+        },
+        onGoalProjection: (goal, sessionId) => {
+          const status = goal.manager.get(sessionId)?.status;
+          if (status) transitions.push(status);
+        },
+        onEvaluate: () =>
+          ++evaluations === 1
+            ? JSON.stringify({
+                met: false,
+                impossible: false,
+                progress: true,
+                waiting: true,
+                reason: 'Waiting for job',
+                waitingCondition: naturalCondition,
+              })
+            : '{"met":true,"impossible":false,"progress":true,"waiting":false,"reason":"verified"}',
+      });
+      try {
+        await startEventWait(f);
+        await entered.promise;
+        const before = (await f.stores.goalStore.read(f.sessionId))!.record;
+        const expected = before.pendingContinuation!.goalWaiting!;
+        const target = (await f.goal.readEventWaits(f.sessionId)).items[0]!;
+        assert.equal(target.phase, 'result_ready');
+        if (cancel) {
+          const outcome = await f.goal.handlers['session.event-wait.cancel'](
+            { sessionId: f.sessionId, waitId: target.waitId, consumer: target.consumer },
+            operationContext(),
+          );
+          assert.ok(outcome.ok && outcome.result.outcome === 'cancelled');
+          // A stale result at either gate must remain retryable under this owner.
+          assert.equal(
+            await f.goal.goalWaitingBridge!.preflightAdmission(f.sessionId, expected),
+            'defer',
+          );
+          assert.equal(
+            await f.goal.goalWaitingBridge!.authorizeAdmission(f.sessionId, expected),
+            'defer',
+          );
+        }
+        release.resolve();
+        await waitFor(() => transitions.includes('paused') || transitions.includes('achieved'));
+        await f.goal.handlers['goal.query']({ sessionId: f.sessionId }, operationContext());
+        assert.equal(
+          transitions.includes('paused'),
+          false,
+          'an unadmitted attempt is not a failed Turn',
+        );
+        await f.waitForGoalStatus('achieved');
+        const after = (await f.stores.goalStore.read(f.sessionId))!.record;
+        assert.deepEqual(after.controlLease, before.controlLease);
+        const admissions = await f.stores.agentRunStore.listRootTurnAdmissionsForRecovery(
+          f.sessionId,
+        );
+        assert.equal(admissions.length, 2);
+        const successor = admissions.find((a) => a.turnId === expected.execution.turnId)!;
+        assert.ok(successor);
+        assert.equal(successor.runId, expected.execution.runId);
+        assert.equal(successor.userMessageId, expected.userMessageId);
+        assert.match(
+          successor.normalizedInput!.text!,
+          new RegExp(`"outcome":"${cancel ? 'cancelled' : 'satisfied'}"`),
+        );
+        const wait = (await f.stores.eventWaitStore.readAny({
+          sessionId: f.sessionId,
+          waitId: target.waitId,
+        }))!.record;
+        assert.equal(wait.status, cancel ? 'cancelled' : 'resolved');
+        assert.equal(wait.delivery?.kind, 'admitted');
+        assert.equal(after.goal.iterations, 1);
+        assert.equal(evaluations, 2);
+        assert.equal(f.drainRequested(), false, f.errors.map(String).join('\n'));
+      } finally {
+        release.resolve();
+        await f.close();
+      }
+    });
+
+for (const provider of ['local', 'memory'] as const)
+  for (const control of ['drain', 'clear'] as const)
+    test(`natural observation distinguishes Host drain from Goal clear (${provider}, ${control})`, {
+      timeout: 15_000,
+    }, async () => {
+      const observed = deferred();
+      const afterDrain = deferred();
+      let draining = false;
+      const f = await createFixture({
+        persistenceProvider:
+          provider === 'local' ? 'local' : createMemoryExecutionPersistenceProvider(),
+        model: scriptedWaitModel(() => []),
+        eventWaitSources: observationSources(async () => ({ kind: 'pending' })),
+        onEventWaitChanged: (wait) => {
+          if (wait.observation?.outcome === 'pending') observed.resolve();
+          if (draining && (wait.status === 'cancelled' || wait.observation?.outcome === 'unknown'))
+            afterDrain.resolve();
+        },
+        onEvaluate: () =>
+          JSON.stringify({
+            met: false,
+            impossible: false,
+            progress: true,
+            waiting: true,
+            reason: 'Waiting for job',
+            waitingCondition: naturalCondition,
+          }),
+      });
+      try {
+        await startEventWait(f);
+        await observed.promise;
+        const target = (await f.goal.readEventWaits(f.sessionId)).items[0]!;
+        const read = () =>
+          f.stores.eventWaitStore.readAny({ sessionId: f.sessionId, waitId: target.waitId });
+        const original = (await read())!.record;
+        assert.equal(original.schemaVersion, 2);
+        if (original.schemaVersion !== 2) throw new Error('Expected consumer wait');
+        if (control === 'drain') {
+          draining = true;
+          f.goalExecutions.beginDrain();
+          f.goal.beginDrain();
+          // Deliberately keep the observer alive to exercise the authorization
+          // fallback independently of the production observer drain ordering.
+          await afterDrain.promise;
+          const current = (await read())!.record;
+          assert.equal(current.status, 'waiting', 'Host shutdown is not a business cancellation');
+          assert.equal(current.delivery, undefined);
+          assert.equal((await f.stores.goalStore.read(f.sessionId))!.record.goal.status, 'waiting');
+          assert.equal(
+            (
+              await f.goal.goalWaitingBridge!.authorizeObservation(
+                original,
+                new AbortController().signal,
+              )
+            ).kind,
+            'unknown',
+          );
+        } else {
+          f.goal.manager.clear(f.sessionId);
+          await f.goal.handlers['goal.query']({ sessionId: f.sessionId }, operationContext());
+          assert.equal(
+            (
+              await f.goal.goalWaitingBridge!.authorizeObservation(
+                original,
+                new AbortController().signal,
+              )
+            ).kind,
+            'revoked',
+          );
+          assert.equal((await read())!.record.delivery?.kind, 'retired');
+        }
+        assert.equal(
+          (await f.stores.agentRunStore.listRootTurnAdmissionsForRecovery(f.sessionId)).length,
+          1,
+        );
+        assert.equal(f.drainRequested(), false, f.errors.map(String).join('\n'));
+      } finally {
+        await f.close();
+      }
+    });
+
+test('natural waiting survives SQLite close and reopen after Goal drain', {
+  timeout: 15_000,
+}, async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-goal-drain-reopen-'));
+  const observed = deferred();
+  const afterDrain = deferred();
+  let draining = false;
+  let first: Fixture | undefined;
+  let reopened: Fixture | undefined;
+  let firstClosed = false;
+  try {
+    first = await createFixture({
+      base,
+      keepRoot: true,
+      model: scriptedWaitModel(() => []),
+      eventWaitSources: observationSources(async () => ({ kind: 'pending' })),
+      onEventWaitChanged: (wait) => {
+        if (wait.observation?.outcome === 'pending') observed.resolve();
+        if (draining && (wait.status === 'cancelled' || wait.observation?.outcome === 'unknown'))
+          afterDrain.resolve();
+      },
+      onEvaluate: () =>
+        JSON.stringify({
+          met: false,
+          impossible: false,
+          progress: true,
+          waiting: true,
+          reason: 'Waiting for job',
+          waitingCondition: naturalCondition,
+        }),
+    });
+    await startEventWait(first);
+    await observed.promise;
+    const sessionId = first.sessionId;
+    const waitId = (await first.goal.readEventWaits(sessionId)).items[0]!.waitId;
+    draining = true;
+    first.goalExecutions.beginDrain();
+    first.goal.beginDrain();
+    await afterDrain.promise;
+    await first.close();
+    firstClosed = true;
+    const reobserved = deferred();
+    let satisfied = false;
+    reopened = await createFixture({
+      base,
+      sessionId,
+      keepRoot: true,
+      model: scriptedWaitModel(() => []),
+      eventWaitSources: observationSources(async () =>
+        satisfied
+          ? { kind: 'satisfied', receiptKey: 'real-result-after-reopen', evidenceRefs: [] }
+          : { kind: 'pending' },
+      ),
+      onEventWaitChanged: (wait) => {
+        if (wait.observation?.outcome === 'pending') reobserved.resolve();
+      },
+    });
     assert.equal(
-      (await f.stores.eventWaitStore.listSession({ sessionId: f.sessionId, limit: 10 })).items
-        .length,
-      0,
+      (await reopened.stores.eventWaitStore.readAny({ sessionId, waitId }))!.record.status,
+      'waiting',
     );
-    assert.equal(await readFile(join(f.owner.capability.canonicalPath, 'starts'), 'utf8'), '1');
+    await reopened.goal.recover();
+    await reobserved.promise;
+    assert.equal(
+      (await reopened.stores.agentRunStore.listRootTurnAdmissionsForRecovery(sessionId)).length,
+      1,
+    );
+    satisfied = true;
+    await reopened.waitObserver!.reconcile();
+    await reopened.waitForGoalStatus('achieved');
+    const wait = (await reopened.stores.eventWaitStore.readAny({ sessionId, waitId }))!.record;
+    assert.equal(wait.status, 'resolved');
+    assert.equal(wait.delivery?.kind, 'admitted');
+    assert.equal(
+      (await reopened.stores.agentRunStore.listRootTurnAdmissionsForRecovery(sessionId)).length,
+      2,
+    );
+    assert.equal(reopened.drainRequested(), false, reopened.errors.map(String).join('\n'));
   } finally {
-    await f.close();
+    if (reopened) await reopened.close();
+    if (first && !firstClosed) await first.close();
+    await rm(base, { recursive: true, force: true });
   }
 });
 
-test('a stale wait cancellation cannot pause a replacement Goal and wait', {
-  timeout: 15000,
+test('natural cancellation checks its revision after an earlier ready mutation commits', {
+  timeout: 15_000,
 }, async () => {
-  let calls = 0;
-  const f = await createFixture({
-    model: new MockLanguageModelV4({
-      doStream: async () =>
-        modelToolStep(
-          'WaitForEvent',
-          {
-            resource: {
-              providerId: 'test',
-              connectionId: null,
-              resourceType: 'job',
-              resourceId: 'job',
-            },
-            condition: { typeId: 'done', version: 1, parameters: {} },
-            reason: 'Wait for this Goal',
-            timeoutMs: 60000,
+  let satisfied = false;
+  let evaluations = 0;
+  let holdReadyRead = false;
+  let readyReadHeld = false;
+  let observeCancelHeader = false;
+  const initialRead = deferred();
+  const readyRead = deferred();
+  const releaseReadyRead = deferred();
+  const cancelHeader = deferred();
+  const backing = createMemoryExecutionPersistenceProvider();
+  const persistenceProvider: ExecutionPersistenceProvider = {
+    open: async (input) => {
+      const stores = await backing.open(input);
+      return {
+        ...stores,
+        sessionStore: {
+          ...stores.sessionStore,
+          readHeaderSnapshot: async (sessionId) => {
+            const header = await stores.sessionStore.readHeaderSnapshot(sessionId);
+            if (observeCancelHeader) {
+              observeCancelHeader = false;
+              cancelHeader.resolve();
+            }
+            return header;
           },
-          `replacement-wait-${++calls}`,
-        ),
+        },
+        eventWaitStore: {
+          ...stores.eventWaitStore,
+          readAny: async (identity) => {
+            const snapshot = await stores.eventWaitStore.readAny(identity);
+            if (holdReadyRead && snapshot?.record.status === 'resolved') {
+              holdReadyRead = false;
+              readyReadHeld = true;
+              readyRead.resolve();
+              await releaseReadyRead.promise;
+            }
+            return snapshot;
+          },
+        },
+      };
+    },
+  };
+  const sources: HostEventWaitSources = {
+    ...observationSources(async () => {
+      initialRead.resolve();
+      return satisfied
+        ? { kind: 'satisfied', receiptKey: 'finished', evidenceRefs: [] }
+        : { kind: 'pending' };
     }),
-    eventWaitSources: eventWaitSources(async () => ({ kind: 'allowed', context: null })),
+    authorize: async (wait) => {
+      // The scan has read the resolved record; its next read is ready's
+      // revalidation under the Goal mutation lane.
+      if (wait.status === 'resolved' && !readyReadHeld) holdReadyRead = true;
+      return { kind: 'allowed', context: null };
+    },
+  };
+  const f = await createFixture({
+    persistenceProvider,
+    model: scriptedWaitModel(() => []),
+    eventWaitSources: sources,
+    onEvaluate: () =>
+      ++evaluations === 1
+        ? JSON.stringify({
+            met: false,
+            impossible: false,
+            progress: true,
+            waiting: true,
+            reason: 'Waiting for job',
+            waitingCondition: naturalCondition,
+          })
+        : '{"met":true,"impossible":false,"progress":true,"waiting":false,"reason":"verified"}',
   });
   try {
     await startEventWait(f);
-    await waitFor(
-      async () => (await f.goalStore.read(f.sessionId))?.record.activeEventWait?.settled === true,
-      { timeoutMs: 5000 },
+    await initialRead.promise;
+    const { sessionId, waitId, consumer } = (await f.goal.readEventWaits(f.sessionId)).items[0]!;
+    assert.equal(consumer.kind, 'goal_waiting');
+    satisfied = true;
+    await f.waitObserver!.reconcile();
+    await readyRead.promise;
+    observeCancelHeader = true;
+    const cancellation = f.goal.handlers['session.event-wait.cancel'](
+      { sessionId, waitId, consumer },
+      operationContext(),
     );
-    await waitFor(() => f.coordinator.readRootState(f.sessionId).kind === 'idle', {
-      timeoutMs: 5000,
-    });
-    const before = (await f.goal.readProjection(f.sessionId))!;
-    const target = {
-      sessionId: f.sessionId,
-      goalId: before.goalId,
-      expectedGoalRevision: before.revision,
-      controlGeneration: before.eventWait!.controlGeneration,
-      waitId: before.eventWait!.waitId,
-    };
-    assert.equal(
-      (await f.goal.handlers['goal.event-wait.cancel'](target, operationContext())).ok,
-      true,
-    );
-    const paused = f.goal.manager.get(f.sessionId)!;
-    assert.equal(
-      (
-        await f.goal.handlers['goal.control'](
-          {
-            sessionId: f.sessionId,
-            goalId: paused.id,
-            expectedRevision: paused.revision,
-            action: 'clear',
-          },
-          operationContext(),
-        )
-      ).ok,
-      true,
-    );
-    assert.equal(
-      f.goal.manager.create(f.sessionId, 'Replacement work', { armed: true }).kind,
-      'created',
-    );
-    await f.goal.handlers['goal.query']({ sessionId: f.sessionId }, operationContext());
-    // Registration shares the observer's source budget. The prior observation
-    // reserves a minimum interval even when its wait is cancelled.
-    await waitFor(
-      async () =>
-        Date.now() >=
-        ((await f.stores.eventWaitStore.readSourceCooldown({
-          providerId: 'test',
-          connectionId: null,
-        })) ?? 0),
-      { timeoutMs: 5000 },
-    );
-    assert.equal(
-      (
-        await f.messages.handlers['turn.message.submit'](
-          {
-            originHostEpoch: 'goal-root-epoch',
-            sessionId: f.sessionId,
-            messageId: 'replacement-wait',
-            content: { text: 'Wait again' },
-            placement: 'current_turn',
-          },
-          operationContext(),
-        )
-      ).ok,
-      true,
-    );
-    await waitFor(
-      async () => {
-        const gate = (await f.goalStore.read(f.sessionId))?.record.activeEventWait;
-        return !!gate?.settled && gate.waitId !== target.waitId;
-      },
-      { timeoutMs: 5000 },
-    );
-    const current = await f.goal.readProjection(f.sessionId);
-    const retry = await f.goal.handlers['goal.event-wait.cancel'](target, operationContext());
-    assert.equal(retry.ok && retry.result.outcome, 'already_cancelled');
-    assert.equal(f.goal.manager.get(f.sessionId)?.status, 'active');
-    assert.equal(
-      (await f.goal.readProjection(f.sessionId))?.eventWait?.waitId,
-      current?.eventWait?.waitId,
-    );
+    await cancelHeader.promise;
+    // Drain runnable continuations while the exact ready read remains held.
+    // A stale pre-read implementation can now cancel outside the Goal lane.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    releaseReadyRead.resolve();
+    const outcome = await cancellation;
+    assert.ok(outcome.ok && outcome.result.outcome === 'conflict');
+    await f.waitForGoalStatus('achieved');
+    const final = (await f.stores.eventWaitStore.readAny({ sessionId, waitId }))!.record;
+    assert.equal(final.status, 'resolved');
+    assert.equal(final.delivery?.kind, 'admitted');
+    assert.equal(f.drainRequested(), false, f.errors.map(String).join('\n'));
   } finally {
+    releaseReadyRead.resolve();
     await f.close();
   }
 });
 
-test('an already failed background task from an earlier Turn can register and deliver', {
-  timeout: 15000,
-}, async () => {
-  let f: Fixture,
-    calls = 0,
-    ref = '';
-  f = await createFixture({
-    shellRuns: true,
-    model: new MockLanguageModelV4({
-      doStream: async () => {
-        calls++;
-        if (calls === 1)
-          return modelToolStep(
-            'Bash',
-            { command: shellNodeCommand('process.exit(7)'), run_in_background: true },
-            'earlier-bash',
-          );
-        if (calls === 3)
-          return modelToolStep(
-            'WaitForEvent',
-            {
-              resource: {
-                providerId: 'shell_run',
-                resourceType: 'background_task',
-                connectionId: null,
-                resourceId: ref,
-              },
-              condition: { typeId: 'terminal', version: 1, parameters: {} },
-              reason: 'Inspect earlier failure',
-              timeoutMs: 60000,
-            },
-            'later-wait',
-          );
-        if (calls === 4) return modelToolStep('Read', { path: ref }, 'read-failure');
-        return modelToolStep();
+for (const change of ['none', 'pause', 'clear'] as const)
+  test(`in-turn wait retains Root and tool capability after ${change} (${change === 'none' ? 'last iteration' : 'second wait'})`, {
+    timeout: 15_000,
+  }, async () => {
+    let satisfied = false,
+      reads = 0,
+      modelCalls = 0,
+      evaluations = 0;
+    const firstRead = deferred();
+    const f = await createFixture({
+      model: scriptedWaitModel(
+        (call) => (call <= (change === 'none' ? 1 : 2) ? [`wait-${call}`] : []),
+        (call) => {
+          modelCalls = call;
+        },
+      ),
+      eventWaitSources: observationSources(async () => {
+        reads++;
+        firstRead.resolve();
+        return satisfied
+          ? { kind: 'satisfied', receiptKey: `job-done-${reads}`, evidenceRefs: [] }
+          : { kind: 'pending' };
+      }),
+      onEvaluate: () => {
+        evaluations++;
       },
+    });
+    try {
+      await startEventWait(f, 1);
+      await firstRead.promise;
+      const first = (
+        await f.stores.eventWaitStore.listAny({
+          sessionId: f.sessionId,
+          consumerKind: 'tool_invocation',
+          limit: 10,
+        })
+      ).items[0]!.record;
+      const before = await f.goalStore.read(f.sessionId);
+      assert.equal(before?.record.goal.iterations, 0);
+      assert.equal(before?.record.pendingContinuation, null);
+      assert.equal(modelCalls, 1);
+      assert.equal(evaluations, 0);
+      const admissions = await f.stores.agentRunStore.listRootTurnAdmissionsForRecovery(
+        f.sessionId,
+      );
+      assert.equal(admissions.length, 1);
+      const running = await f.stores.runtimeEventStore.readRunInvocation(
+        f.sessionId,
+        admissions[0]!.runId,
+      );
+      assert.equal(running?.terminalEvent, undefined);
+      if (change === 'pause') f.goal.manager.pause(f.sessionId, { reason: 'User paused the Goal' });
+      if (change === 'clear') f.goal.manager.clear(f.sessionId);
+      await f.goal.handlers['goal.query']({ sessionId: f.sessionId }, operationContext());
+      if (change === 'clear') {
+        const projection = await f.goal.readEventWaits(f.sessionId);
+        assert.equal(projection.items.length, 1);
+        assert.equal(projection.items[0]!.waitId, first.waitId);
+        assert.equal((await f.goal.readProjection(f.sessionId))?.status, 'cleared');
+      }
+      satisfied = true;
+      await f.waitObserver!.reconcile();
+      await waitFor(
+        async () =>
+          !!(await f.stores.runtimeEventStore.readRunInvocation(f.sessionId, admissions[0]!.runId))
+            ?.terminalEvent,
+        { timeoutMs: 5000 },
+      );
+      const ended = await f.stores.runtimeEventStore.readRunInvocation(
+        f.sessionId,
+        admissions[0]!.runId,
+      );
+      assert.equal(ended?.terminalEvent?.status, 'completed');
+      assert.notEqual(ended?.terminalEvent?.actions?.stateDelta?.stopReason, 'event_wait');
+      assert.equal(
+        (await f.stores.agentRunStore.listRootTurnAdmissionsForRecovery(f.sessionId)).length,
+        1,
+      );
+      const registeredWaits = (
+        await f.stores.eventWaitStore.listAny({
+          sessionId: f.sessionId,
+          consumerKind: 'tool_invocation',
+          limit: 10,
+        })
+      ).items;
+      assert.equal(registeredWaits.length, change === 'none' ? 1 : 2);
+      const waits = await Promise.all(
+        registeredWaits.map(({ record }) =>
+          waitForInvocationDelivery(f, record.waitId, 'consumed'),
+        ),
+      );
+      assert.ok(
+        waits.every(
+          (s) => s.record.status === 'resolved' && s.record.delivery?.kind === 'consumed',
+        ),
+      );
+      assert.ok(waits.every((s) => s.record.sourceTurnId === first.sourceTurnId));
+      assert.equal(modelCalls, change === 'none' ? 2 : 3);
+      assert.equal(f.drainRequested(), false, f.errors.map(String).join('\n'));
+    } finally {
+      await f.close();
+    }
+  });
+
+test('natural outbox releases its completed Root while registration is pending', {
+  timeout: 15_000,
+}, async () => {
+  let evaluations = 0,
+    sourceReads = 0;
+  const registering = deferred(),
+    releaseRegistration = deferred();
+  const backing = createMemoryExecutionPersistenceProvider();
+  const persistenceProvider: ExecutionPersistenceProvider = {
+    open: async (input) => {
+      const stores = await backing.open(input);
+      return {
+        ...stores,
+        eventWaitStore: {
+          ...stores.eventWaitStore,
+          registerGoalWaitingWait: async (input) => {
+            registering.resolve();
+            await releaseRegistration.promise;
+            return stores.eventWaitStore.registerGoalWaitingWait(input);
+          },
+        },
+      };
+    },
+  };
+  const f = await createFixture({
+    persistenceProvider,
+    model: scriptedWaitModel(() => []),
+    eventWaitSources: observationSources(async () => {
+      sourceReads++;
+      return { kind: 'pending' };
     }),
+    onEvaluate: () =>
+      ++evaluations === 1
+        ? JSON.stringify({
+            met: false,
+            impossible: false,
+            progress: true,
+            waiting: true,
+            reason: 'Wait for the source',
+            waitingCondition: naturalCondition,
+          })
+        : '{"met":true,"impossible":false,"progress":true,"waiting":false,"reason":"New user work completed"}',
   });
   try {
-    await f.goal.recover();
-    const submit = (messageId: string) =>
-      f.messages.handlers['turn.message.submit'](
-        {
-          originHostEpoch: 'goal-root-epoch',
-          sessionId: f.sessionId,
-          messageId,
-          content: { text: messageId },
-          placement: 'current_turn',
-        },
-        operationContext(),
-      );
-    assert.equal((await submit('earlier-task')).ok, true);
-    await f.coordinator.whenIdle(f.sessionId);
-    await waitFor(
-      async () => (await f.shellStore!.listSessionShellRuns(f.sessionId))[0]?.status === 'failed',
-      { timeoutMs: 5000 },
+    await startEventWait(f);
+    await registering.promise;
+    const authority = (await f.goalStore.read(f.sessionId))!.record;
+    assert.equal(authority.goal.status, 'waiting');
+    assert.equal(authority.goal.iterations, 1);
+    assert.equal(authority.pendingContinuation?.observationPreparation, undefined);
+    assert.equal(authority.pendingContinuation?.observation?.deadlineAt, null);
+    await waitFor(() => f.coordinator.readRootState(f.sessionId).kind === 'idle');
+    const reply = await f.messages.handlers['turn.message.submit'](
+      {
+        originHostEpoch: 'goal-root-epoch',
+        sessionId: f.sessionId,
+        messageId: 'work-during-registration',
+        content: { text: 'Use this newer result now' },
+        placement: 'current_turn',
+      },
+      operationContext(),
     );
-    const task = (await f.shellStore!.listSessionShellRuns(f.sessionId))[0]!;
-    ref = `maka://runtime/background-tasks/${task.shellRunId}`;
-    f.goal.manager.create(f.sessionId, 'Read the earlier result', { armed: true });
-    await f.goal.handlers['goal.query']({ sessionId: f.sessionId }, operationContext());
-    assert.equal((await submit('later-wait')).ok, true);
+    assert.equal(reply.ok, true);
     await f.waitForGoalStatus('achieved');
-    const wait = (await f.stores.eventWaitStore.listSession({ sessionId: f.sessionId, limit: 10 }))
-      .items[0]!.record;
-    assert.notEqual(wait.sourceTurnId, task.sourceTurnId);
-    assert.equal(wait.status, 'resolved');
-    assert.equal(wait.status === 'resolved' && wait.resolution.outcome, 'satisfied');
-    assert.equal(wait.delivery?.kind, 'admitted');
-    assert.equal(calls, 5);
-    const source = (await f.stores.runtimeEventStore.listSessionInvocations(f.sessionId)).find(
-      (r) => r.turnId === wait.sourceTurnId,
-    )!;
-    assert.equal(source.terminalEvent?.actions?.stateDelta?.stopReason, 'event_wait');
-    assert.equal((await f.shellStore!.listSessionShellRuns(f.sessionId)).length, 1);
+    releaseRegistration.resolve();
+    await f.goal.goalWaitingBridge!.reconcile();
+    const admissions = await f.stores.agentRunStore.listRootTurnAdmissionsForRecovery(f.sessionId);
+    assert.equal(admissions.length, 2);
+    assert.ok(admissions.every((admission) => admission.execution.kind === 'external_message'));
+    assert.equal(evaluations, 2);
+    assert.equal(sourceReads, 0);
+    assert.deepEqual(
+      (await f.stores.eventWaitStore.listAny({ sessionId: f.sessionId, limit: 10 })).items,
+      [],
+    );
+    assert.equal(f.drainRequested(), false, f.errors.map(String).join('\n'));
+  } finally {
+    releaseRegistration.resolve();
+    await f.close();
+  }
+});
+
+for (const [expired, phase] of [
+  [false, 'prepared'],
+  [true, 'prepared'],
+  [true, 'raw'],
+] as const)
+  test(`natural preparation waits for its durable ${phase} commit before registration (expired=${expired})`, {
+    timeout: 15_000,
+  }, async () => {
+    let evaluations = 0;
+    const read = deferred();
+    const committing = deferred(),
+      releaseCommit = deferred();
+    const backing = createMemoryExecutionPersistenceProvider();
+    const persistenceProvider: ExecutionPersistenceProvider = {
+      open: async (input) => {
+        const stores = await backing.open(input);
+        return {
+          ...stores,
+          goalStore: {
+            ...stores.goalStore,
+            commit: async (input) => {
+              const pending = input.record?.pendingContinuation;
+              if (
+                pending?.observation &&
+                pending.observationPreparation === (phase === 'raw' ? 'pending' : undefined) &&
+                !pending.goalWaiting
+              ) {
+                committing.resolve();
+                await releaseCommit.promise;
+              }
+              return stores.goalStore.commit(input);
+            },
+          },
+        };
+      },
+    };
+    const sources: HostEventWaitSources = {
+      ...observationSources(async () => {
+        const pending = (await f.goalStore.read(f.sessionId))!.record.pendingContinuation!;
+        assert.equal(pending.observationPreparation, undefined);
+        assert.deepEqual(pending.observation!.condition, naturalCondition.condition);
+        read.resolve();
+        return { kind: 'pending' };
+      }),
+    };
+    const f = await createFixture({
+      persistenceProvider,
+      model: scriptedWaitModel(() => []),
+      eventWaitSources: sources,
+      onEvaluate: () =>
+        ++evaluations > 1
+          ? '{"met":true,"impossible":false,"progress":true,"waiting":false,"reason":"verified"}'
+          : JSON.stringify({
+              met: false,
+              impossible: false,
+              progress: true,
+              waiting: true,
+              reason: 'Wait for a later event',
+              waitingCondition: {
+                ...naturalCondition,
+                deadlineAt: expired ? Date.now() - 1 : null,
+              },
+            }),
+    });
+    try {
+      await startEventWait(f);
+      await committing.promise;
+      const persisted = (await f.goalStore.read(f.sessionId))!.record.pendingContinuation;
+      if (phase === 'raw') assert.equal(persisted, null);
+      else assert.equal(persisted!.observationPreparation, 'pending');
+      await f.goal.goalWaitingBridge!.reconcile();
+      assert.deepEqual(
+        (await f.stores.eventWaitStore.listAny({ sessionId: f.sessionId, limit: 10 })).items,
+        [],
+      );
+      assert.equal(f.drainRequested(), false, f.errors.map(String).join('\n'));
+      releaseCommit.resolve();
+      if (expired) await f.waitForGoalStatus('achieved');
+      else await read.promise;
+      for (let i = 0; i < 3; i++) await f.goal.goalWaitingBridge!.reconcile();
+      const records = (await f.stores.eventWaitStore.listAny({ sessionId: f.sessionId, limit: 10 }))
+        .items;
+      assert.equal(records.length, 1);
+      if (expired) assert.equal(records[0]!.record.status, 'expired');
+      else assert.deepEqual(records[0]!.record.condition, naturalCondition.condition);
+      assert.equal(f.drainRequested(), false, f.errors.map(String).join('\n'));
+    } finally {
+      releaseCommit.resolve();
+      await f.close();
+    }
+  });
+
+test('natural waiting is superseded by a newer real Turn and does not hide its evaluator', {
+  timeout: 15_000,
+}, async () => {
+  let evaluations = 0;
+  const firstRead = deferred();
+  const f = await createFixture({
+    model: scriptedWaitModel(() => []),
+    eventWaitSources: observationSources(async () => {
+      firstRead.resolve();
+      return { kind: 'pending' };
+    }),
+    onEvaluate: () =>
+      ++evaluations === 1
+        ? JSON.stringify({
+            met: false,
+            impossible: false,
+            progress: true,
+            waiting: true,
+            reason: 'Wait',
+            waitingCondition: naturalCondition,
+          })
+        : '{"met":true,"impossible":false,"progress":true,"waiting":false,"reason":"New user work completed"}',
+  });
+  try {
+    await startEventWait(f);
+    await firstRead.promise;
+    const waitId = (await f.goalStore.read(f.sessionId))!.record.pendingContinuation!.observation!
+      .waitId;
+    const reply = await f.messages.handlers['turn.message.submit'](
+      {
+        originHostEpoch: 'goal-root-epoch',
+        sessionId: f.sessionId,
+        messageId: 'new-work',
+        content: { text: 'Use my newer result' },
+        placement: 'current_turn',
+      },
+      operationContext(),
+    );
+    assert.equal(reply.ok, true);
+    await f.waitForGoalStatus('achieved');
+    const old = (await f.stores.eventWaitStore.readAny({ sessionId: f.sessionId, waitId }))!.record;
+    assert.equal(old.delivery?.kind, 'retired');
+    assert.equal(evaluations, 2);
+    const admissions = await f.stores.agentRunStore.listRootTurnAdmissionsForRecovery(f.sessionId);
+    assert.equal(admissions.length, 2);
+    assert.ok(admissions.every((a) => a.execution.kind === 'external_message'));
+    assert.equal(f.drainRequested(), false);
   } finally {
     await f.close();
   }
 });
 
-for (const outcome of ['pending', 'unknown'] as const) {
-  test(`ShellRun reconnect during ${outcome} recheck retains the last observation without polling frames`, {
-    timeout: 15000,
+for (const interrupt of ['steering', 'stop'] as const)
+  test(`parallel in-turn waits preserve original operations on ${interrupt}`, {
+    timeout: 15_000,
   }, async () => {
-    const readStarted = deferred<void>();
-    const releaseRead = deferred<void>();
-    let f: Fixture;
-    let calls = 0,
-      projections = 0,
-      projectionFrames = 0;
-    let mode: 'normal' | 'fault' | 'held' = 'normal';
-    f = await createFixture({
-      shellRuns: true,
-      shellRunWaitReader: {
-        readShellRun: async (sessionId, shellRunId) => {
-          if (mode === 'held') {
-            readStarted.resolve();
-            await releaseRead.promise;
-          }
-          if (mode !== 'normal') throw new Error('Transient source read failure');
-          return f.shellStore!.readShellRun(sessionId, shellRunId);
+    let modelCalls = 0,
+      evaluations = 0;
+    const f = await createFixture({
+      model: scriptedWaitModel(
+        (call) => (call === 1 ? ['parallel-a', 'parallel-b'] : []),
+        (call) => {
+          modelCalls = call;
         },
+      ),
+      eventWaitSources: observationSources(async () => ({ kind: 'pending' })),
+      onEvaluate: () => {
+        evaluations++;
       },
-      onGoalProjection: () => projections++,
-      model: new MockLanguageModelV4({
-        doStream: async () => {
-          calls++;
-          if (calls === 1)
-            return modelToolStep(
-              'Bash',
-              {
-                command: shellNodeCommand(
-                  'const fs=require("fs");const t=setInterval(()=>{if(fs.existsSync("release"))clearInterval(t)},10)',
-                ),
-                run_in_background: true,
-                timeout_ms: 30000,
-              },
-              'recheck-bash',
-            );
-          if (calls === 2) {
-            const task = (await f.shellStore!.listSessionShellRuns(f.sessionId))[0]!;
-            return modelToolStep(
-              'WaitForEvent',
-              {
-                resource: {
-                  providerId: 'shell_run',
-                  connectionId: null,
-                  resourceType: 'background_task',
-                  resourceId: `maka://runtime/background-tasks/${task.shellRunId}`,
-                },
-                condition: { typeId: 'terminal', version: 1, parameters: {} },
-                reason: 'Inspect the background result',
-                timeoutMs: 60000,
-              },
-              'recheck-wait',
-            );
-          }
-          return modelToolStep();
-        },
-      }),
     });
     try {
       await startEventWait(f);
       await waitFor(
-        async () => (await f.goalStore.read(f.sessionId))?.record.activeEventWait?.settled === true,
+        async () =>
+          (
+            await f.stores.eventWaitStore.listAny({
+              sessionId: f.sessionId,
+              consumerKind: 'tool_invocation',
+              limit: 10,
+            })
+          ).items.length === 2,
         { timeoutMs: 5000 },
       );
-      await waitFor(() => f.coordinator.readRootState(f.sessionId).kind === 'idle', {
-        timeoutMs: 5000,
-      });
-      mode = outcome === 'unknown' ? 'fault' : 'normal';
+      const registeredWaits = (
+        await f.stores.eventWaitStore.listAny({
+          sessionId: f.sessionId,
+          consumerKind: 'tool_invocation',
+          limit: 10,
+        })
+      ).items;
+      assert.equal(registeredWaits.length, 2);
+      const admissions = await f.stores.agentRunStore.listRootTurnAdmissionsForRecovery(
+        f.sessionId,
+      );
+      assert.equal(admissions.length, 1);
+      const source = admissions[0]!;
+      assert.equal(evaluations, 0);
+      if (interrupt === 'stop') await f.coordinator.stopSession(f.sessionId);
+      else {
+        const reply = await f.messages.handlers['turn.message.submit'](
+          {
+            originHostEpoch: 'goal-root-epoch',
+            sessionId: f.sessionId,
+            messageId: 'steer-waits',
+            content: { text: 'Here is newer context, continue now' },
+            placement: 'current_turn',
+          },
+          operationContext(),
+        );
+        assert.equal(reply.ok, true);
+      }
       await waitFor(
         async () =>
-          (await f.goal.readProjection(f.sessionId))?.eventWait?.observation?.state === outcome,
+          !!(await f.stores.runtimeEventStore.readRunInvocation(f.sessionId, source.runId))
+            ?.terminalEvent,
         { timeoutMs: 5000 },
       );
-      const first = (await f.goal.readProjection(f.sessionId))!.eventWait!;
-      assert.equal(
-        first.observation?.reasonCode,
-        outcome === 'unknown' ? 'observation_failed' : null,
+      await f.invocationWaits!.reconcile();
+      await Promise.all(
+        registeredWaits.map(({ record }) =>
+          waitForInvocationDelivery(
+            f,
+            record.waitId,
+            interrupt === 'stop' ? 'retired' : 'consumed',
+          ),
+        ),
       );
-      mode = 'held';
-      await withTimeout(readStarted.promise, 5000, 'recheck did not start');
-      const reserved = (await f.stores.eventWaitStore.read({
+      const waits = (
+        await f.stores.eventWaitStore.listAny({
+          sessionId: f.sessionId,
+          consumerKind: 'tool_invocation',
+          limit: 10,
+        })
+      ).items.map((w) => w.record);
+      assert.equal(waits.length, 2);
+      assert.ok(waits.every((w) => w.sourceTurnId === source.turnId && w.status === 'cancelled'));
+      assert.ok(
+        waits.every((w) => w.delivery?.kind === (interrupt === 'stop' ? 'retired' : 'consumed')),
+      );
+      assert.equal(
+        (await f.stores.agentRunStore.listRootTurnAdmissionsForRecovery(f.sessionId)).length,
+        1,
+      );
+      assert.equal(modelCalls, interrupt === 'stop' ? 1 : 2);
+      const proofs = await Promise.all(
+        waits.map(async (w) =>
+          w.schemaVersion === 2 && w.consumer.kind === 'tool_invocation'
+            ? f.stores.runtimeEventStore.readToolProvenanceEvents(
+                f.sessionId,
+                w.consumer.runId,
+                w.consumer.toolCallId,
+                { maxRecords: 64, maxBytes: 1_048_576 },
+              )
+            : null,
+        ),
+      );
+      assert.equal(
+        f.drainRequested(),
+        false,
+        JSON.stringify({ errors: f.errors.map(String), proofs }),
+      );
+    } finally {
+      await f.close();
+    }
+  });
+
+test('a Goal Run paused before its first wait keeps its admitted waiting capability', {
+  timeout: 15_000,
+}, async () => {
+  const providerEntered = deferred();
+  const releaseProvider = deferred();
+  let calls = 0;
+  const f = await createFixture({
+    model: scriptedWaitModel(
+      (call) => (call === 1 ? ['first-after-pause'] : []),
+      async (call) => {
+        calls = call;
+        if (call === 1) {
+          providerEntered.resolve();
+          await releaseProvider.promise;
+        }
+      },
+    ),
+    eventWaitSources: observationSources(async () => ({
+      kind: 'satisfied',
+      receiptKey: 'done',
+      evidenceRefs: [],
+    })),
+  });
+  try {
+    await startEventWait(f);
+    await providerEntered.promise;
+    f.goal.manager.pause(f.sessionId, { reason: 'Pause autonomous continuation' });
+    await f.goal.handlers['goal.query']({ sessionId: f.sessionId }, operationContext());
+    releaseProvider.resolve();
+    await waitFor(
+      async () =>
+        (await f.stores.runtimeEventStore.listSessionInvocations(f.sessionId)).some(
+          (i) => i.terminalEvent,
+        ),
+      { timeoutMs: 5000 },
+    );
+    const registeredWaits = (
+      await f.stores.eventWaitStore.listAny({ sessionId: f.sessionId, limit: 10 })
+    ).items;
+    assert.equal(registeredWaits.length, 1);
+    const waits = await Promise.all(
+      registeredWaits.map(({ record }) => waitForInvocationDelivery(f, record.waitId, 'consumed')),
+    );
+    assert.equal(waits[0]!.record.delivery?.kind, 'consumed');
+    assert.equal(calls, 2);
+    assert.equal(f.goal.manager.get(f.sessionId)?.status, 'paused');
+    assert.equal(f.drainRequested(), false, f.errors.map(String).join('\n'));
+  } finally {
+    releaseProvider.resolve();
+    await f.close();
+  }
+});
+
+test('invalid wait registration remains an ordinary tool error without draining the Host', {
+  timeout: 15_000,
+}, async () => {
+  const f = await createFixture({
+    model: scriptedWaitModel((call) => (call === 1 ? ['unsupported-wait'] : [])),
+    eventWaitSources: {
+      adapters: new EventWaitAdapterRegistry([]),
+      authorize: async () => ({ kind: 'allowed', context: null }),
+    },
+  });
+  try {
+    await startEventWait(f);
+    await waitFor(
+      async () =>
+        (await f.stores.runtimeEventStore.listSessionInvocations(f.sessionId)).some(
+          (i) => i.terminalEvent,
+        ),
+      { timeoutMs: 5000 },
+    );
+    assert.equal(
+      (await f.stores.eventWaitStore.listAny({ sessionId: f.sessionId, limit: 10 })).items.length,
+      0,
+    );
+    assert.equal(f.drainRequested(), false, f.errors.map(String).join('\n'));
+  } finally {
+    await f.close();
+  }
+});
+
+test('natural waiting preserves its deadline across a pending registration', {
+  timeout: 15_000,
+}, async () => {
+  let evaluations = 0,
+    sourceReads = 0;
+  const registering = deferred(),
+    releaseRegistration = deferred();
+  let deadlineAt = 0;
+  const backing = createMemoryExecutionPersistenceProvider();
+  const persistenceProvider: ExecutionPersistenceProvider = {
+    open: async (input) => {
+      const stores = await backing.open(input);
+      return {
+        ...stores,
+        eventWaitStore: {
+          ...stores.eventWaitStore,
+          registerGoalWaitingWait: async (input) => {
+            registering.resolve();
+            await releaseRegistration.promise;
+            return stores.eventWaitStore.registerGoalWaitingWait(input);
+          },
+        },
+      };
+    },
+  };
+  const f = await createFixture({
+    persistenceProvider,
+    model: scriptedWaitModel(() => []),
+    eventWaitSources: observationSources(async () => {
+      sourceReads++;
+      return { kind: 'pending' };
+    }),
+    onEvaluate: () => {
+      if (++evaluations > 1)
+        return '{"met":true,"impossible":false,"progress":true,"waiting":false,"reason":"verified"}';
+      deadlineAt = Date.now() + 100;
+      return JSON.stringify({
+        met: false,
+        impossible: false,
+        progress: true,
+        waiting: true,
+        reason: 'Wait briefly',
+        waitingCondition: { ...naturalCondition, deadlineAt },
+      });
+    },
+  });
+  try {
+    await startEventWait(f);
+    await registering.promise;
+    assert.deepEqual(
+      (await f.stores.eventWaitStore.listAny({ sessionId: f.sessionId, limit: 10 })).items,
+      [],
+    );
+    await waitFor(() => Date.now() >= deadlineAt);
+    releaseRegistration.resolve();
+    await f.waitForGoalStatus('achieved');
+    const rows = (
+      await f.stores.eventWaitStore.listAny({
         sessionId: f.sessionId,
-        waitId: first.waitId,
-      }))!;
-      assert.equal(reserved.record.observation?.outcome, 'checking');
-      f.continuity.attachConnection('recheck-client', {
-        send: async (frame) => {
-          if (frame.kind === 'subscription.session_projection') projectionFrames++;
+        consumerKind: 'goal_waiting',
+        limit: 10,
+      })
+    ).items;
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0]!.record.deadlineAt, deadlineAt);
+    assert.equal(rows[0]!.record.status, 'expired');
+    assert.equal(rows[0]!.record.delivery?.kind, 'admitted');
+    assert.equal(sourceReads, 0);
+    assert.equal(evaluations, 2);
+    assert.equal(f.drainRequested(), false, f.errors.map(String).join('\n'));
+  } finally {
+    releaseRegistration.resolve();
+    await f.close();
+  }
+});
+
+for (const [control, delayedCommit] of [
+  ['new Turn', false],
+  ['new Turn', true],
+  ['clear', false],
+  ['drain', false],
+] as const)
+  test(`natural initial authorization releases Root and respects ${control}${delayedCommit ? ' with delayed persistence' : ''}`, {
+    timeout: 15_000,
+  }, async () => {
+    const entered = deferred(),
+      release = deferred();
+    const committing = deferred(),
+      releaseCommit = deferred();
+    const backing = createMemoryExecutionPersistenceProvider();
+    const persistenceProvider: ExecutionPersistenceProvider | undefined = delayedCommit
+      ? {
+          open: async (input) => {
+            const stores = await backing.open(input);
+            return {
+              ...stores,
+              goalStore: {
+                ...stores.goalStore,
+                commit: async (input) => {
+                  if (input.record?.goal.status === 'achieved') {
+                    committing.resolve();
+                    await releaseCommit.promise;
+                  }
+                  return stores.goalStore.commit(input);
+                },
+              },
+            };
+          },
+        }
+      : undefined;
+    let evaluations = 0;
+    const f = await createFixture({
+      persistenceProvider,
+      model: scriptedWaitModel(() => []),
+      eventWaitSources: {
+        ...observationSources(async () => assert.fail('The superseded source must not be read')),
+        authorize: async () => {
+          entered.resolve();
+          await release.promise;
+          return { kind: 'allowed', context: null };
+        },
+      },
+      onEvaluate: () =>
+        ++evaluations === 1
+          ? JSON.stringify({
+              met: false,
+              impossible: false,
+              progress: true,
+              waiting: true,
+              reason: 'Wait for the source',
+              waitingCondition: naturalCondition,
+            })
+          : '{"met":true,"impossible":false,"progress":true,"waiting":false,"reason":"New work completed"}',
+    });
+    try {
+      await startEventWait(f);
+      await entered.promise;
+      await waitFor(() => f.coordinator.readRootState(f.sessionId).kind === 'idle');
+      const original = (await f.goalStore.read(f.sessionId))!.record.pendingContinuation;
+      assert.equal(original?.observationPreparation, 'pending');
+      if (control === 'new Turn') {
+        const reply = await f.messages.handlers['turn.message.submit'](
+          {
+            originHostEpoch: 'goal-root-epoch',
+            sessionId: f.sessionId,
+            messageId: 'work-during-source-authorization',
+            content: { text: 'Use this newer result' },
+            placement: 'current_turn',
+          },
+          operationContext(),
+        );
+        assert.equal(reply.ok, true);
+        let reachedGoal = false;
+        const completion = f.waitForGoalStatus('achieved').then((goal) => {
+          reachedGoal = true;
+          return goal;
+        });
+        void completion.catch(() => undefined);
+        if (delayedCommit) {
+          await committing.promise;
+          await new Promise<void>((resolve) => setImmediate(resolve));
+          assert.equal(f.goal.manager.get(f.sessionId)?.status, 'achieved');
+          assert.equal((await f.goalStore.read(f.sessionId))!.record.goal.status, 'active');
+          assert.equal(reachedGoal, false, 'Goal status must wait for the authority commit');
+          releaseCommit.resolve();
+        }
+        await completion;
+      } else if (control === 'clear') {
+        f.goal.manager.clear(f.sessionId);
+        await f.goal.handlers['goal.query']({ sessionId: f.sessionId }, operationContext());
+      } else {
+        f.goalExecutions.beginDrain();
+        f.goal.beginDrain();
+      }
+      release.resolve();
+      await f.goal.goalWaitingBridge!.close();
+      const current = (await f.goalStore.read(f.sessionId))!.record;
+      assert.equal(
+        current.goal.status,
+        control === 'new Turn' ? 'achieved' : control === 'clear' ? 'cleared' : 'waiting',
+      );
+      if (control === 'drain') assert.deepEqual(current.pendingContinuation, original);
+      else assert.equal(current.pendingContinuation, null);
+      assert.deepEqual(
+        (await f.stores.eventWaitStore.listAny({ sessionId: f.sessionId, limit: 10 })).items,
+        [],
+      );
+      const admissions = await f.stores.agentRunStore.listRootTurnAdmissionsForRecovery(
+        f.sessionId,
+      );
+      assert.equal(admissions.length, control === 'new Turn' ? 2 : 1);
+      assert.ok(admissions.every((a) => a.execution.kind === 'external_message'));
+      assert.equal(evaluations, control === 'new Turn' ? 2 : 1);
+      assert.equal(f.drainRequested(), false, f.errors.map(String).join('\n'));
+    } finally {
+      releaseCommit.resolve();
+      release.resolve();
+      await f.close();
+    }
+  });
+
+for (const provider of ['local', 'memory'] as const)
+  for (const rejection of ['missing', 'user visibility'] as const)
+    test(`natural initial source rejection retains waiting backoff (${provider}, ${rejection})`, {
+      timeout: 15_000,
+    }, async () => {
+      let f: Fixture;
+      let shellStore: Awaited<ReturnType<typeof openInteractiveShellRunStoreForWrite>>;
+      let evaluations = 0,
+        evaluatedAt = 0,
+        resumedAt = 0;
+      const access = new ShellRunEventWaitAccess(
+        { readShellRun: (...args) => shellStore.readShellRun(...args) },
+        {
+          readRunInvocation: (...args) => f.stores.runtimeEventStore.readRunInvocation(...args),
+          readToolProvenanceEvents: (...args) =>
+            f.stores.runtimeEventStore.readToolProvenanceEvents(...args),
+        },
+      );
+      const adapter = new ShellRunEventWaitAdapter(access, {
+        subscribeChanges() {
+          assert.fail('A rejected initial source must not be observed');
         },
       });
-      const context = {
-        ...operationContext(),
-        connectionId: 'recheck-client',
-        principal: 'local_owner',
-        principalKind: 'local_owner' as const,
-      };
+      f = await createFixture({
+        persistenceProvider:
+          provider === 'local' ? 'local' : createMemoryExecutionPersistenceProvider(),
+        model: scriptedWaitModel(() => []),
+        eventWaitSources: {
+          adapters: new EventWaitAdapterRegistry([adapter]),
+          authorize: (wait, signal) => access.authorize(wait, signal),
+        },
+        onEvaluate: () => {
+          if (++evaluations > 1) {
+            resumedAt = Date.now();
+            return '{"met":true,"impossible":false,"progress":true,"waiting":false,"reason":"verified"}';
+          }
+          evaluatedAt = Date.now();
+          return JSON.stringify({
+            met: false,
+            impossible: false,
+            progress: true,
+            waiting: true,
+            reason: 'Wait for the referenced job',
+            waitingCondition: {
+              resource: {
+                providerId: 'shell_run',
+                resourceType: 'background_task',
+                connectionId: null,
+                resourceId: 'maka://runtime/background-tasks/rejected-task',
+              },
+              condition: { typeId: 'terminal', version: 1, parameters: {} },
+              deadlineAt: null,
+            },
+          });
+        },
+      });
+      shellStore = await openInteractiveShellRunStoreForWrite(f.owner.lease);
+      try {
+        if (rejection === 'user visibility') {
+          const at = Date.now();
+          await shellStore.createShellRun({
+            sessionId: f.sessionId,
+            shellRunId: 'rejected-task',
+            sourceRunId: 'user-run',
+            sourceTurnId: 'user-turn',
+            sourceToolCallId: 'user-shell',
+            visibility: 'user',
+            cwd: f.owner.capability.canonicalPath,
+            command: 'private user terminal',
+            status: 'running',
+            startedAt: at,
+            updatedAt: at,
+            revision: 1,
+            output: {
+              mode: 'pipes',
+              stdout: 'private output',
+              stderr: '',
+              stdoutTruncated: false,
+              stderrTruncated: false,
+              redacted: false,
+            },
+          });
+        }
+        await startEventWait(f);
+        await waitFor(async () => {
+          const state = (await f.goalStore.read(f.sessionId))!.record;
+          return (
+            state.goal.status === 'achieved' ||
+            (!!state.pendingContinuation &&
+              !state.pendingContinuation.observation &&
+              !state.currentExecution)
+          );
+        });
+        const state = (await f.goalStore.read(f.sessionId))!.record;
+        assert.equal(state.goal.status, 'waiting');
+        assert.equal(state.goal.iterations, 1);
+        assert.equal(evaluations, 1);
+        assert.equal(state.pendingContinuation?.observation, undefined);
+        assert.match(
+          state.pendingContinuation!.prompt,
+          rejection === 'missing' ? /shell_run_missing/ : /shell_run_access_revoked/,
+        );
+        assert.deepEqual(
+          (await f.stores.eventWaitStore.listAny({ sessionId: f.sessionId, limit: 10 })).items,
+          [],
+        );
+        assert.equal(
+          (await f.stores.agentRunStore.listRootTurnAdmissionsForRecovery(f.sessionId)).length,
+          1,
+        );
+        await f.waitForGoalStatus('achieved');
+        assert.ok(resumedAt - evaluatedAt >= 5_000, 'Only the normal waiting timer may resume');
+        assert.equal(evaluations, 2);
+        assert.equal(
+          (await f.stores.agentRunStore.listRootTurnAdmissionsForRecovery(f.sessionId)).length,
+          2,
+        );
+        assert.equal(f.drainRequested(), false, f.errors.map(String).join('\n'));
+      } finally {
+        await f.close();
+        await shellStore.close();
+      }
+    });
+
+for (const unavailable of ['authorization unknown', 'shared capacity'] as const)
+  test(`natural waiting keeps ${unavailable} in its preparation outbox`, {
+    timeout: 15_000,
+  }, async () => {
+    let allowed = unavailable === 'shared capacity',
+      evaluations = 0,
+      sourceReads = 0;
+    const sources: HostEventWaitSources = {
+      ...observationSources(async () => {
+        sourceReads++;
+        return { kind: 'satisfied', receiptKey: 'done', evidenceRefs: [] };
+      }),
+      policy: {
+        minIntervalMs: 1,
+        pollIntervalMs: 5,
+        jitterRatio: 0,
+        maxConcurrent: 1,
+        maxPerSource: 1,
+      },
+      authorize: async () =>
+        allowed
+          ? { kind: 'allowed', context: null }
+          : { kind: 'unknown', reason: 'temporarily_unavailable' },
+    };
+    const f = await createFixture({
+      model: scriptedWaitModel(() => []),
+      eventWaitSources: sources,
+      onEvaluate: () =>
+        ++evaluations === 1
+          ? JSON.stringify({
+              met: false,
+              impossible: false,
+              progress: true,
+              waiting: true,
+              reason: 'Waiting for job',
+              waitingCondition: naturalCondition,
+            })
+          : '{"met":true,"impossible":false,"progress":true,"waiting":false,"reason":"verified"}',
+    });
+    const capacityEntered = deferred(),
+      releaseCapacity = deferred();
+    const accessAbort = new AbortController();
+    let capacity: Promise<unknown> | undefined;
+    try {
+      if (unavailable === 'shared capacity') {
+        const at = Date.now();
+        const heldWait = decodeAnyEventWaitRecord({
+          schemaVersion: 2,
+          waitId: 'held-wait',
+          sessionId: f.sessionId,
+          sourceTurnId: 'held-turn',
+          consumer: {
+            kind: 'tool_invocation',
+            runId: 'held-run',
+            invocationId: 'held-invocation',
+            operationId: 'held-operation',
+            toolCallId: 'held-call',
+          },
+          ...naturalCondition,
+          deliveryKey: 'event-wait/held-wait',
+          createdAt: at,
+          updatedAt: at,
+          status: 'waiting',
+        });
+        capacity = f.waitObserver!.checkSourceAccess(heldWait, accessAbort.signal, async () => {
+          capacityEntered.resolve();
+          await releaseCapacity.promise;
+          return { kind: 'allowed', context: null };
+        });
+        await capacityEntered.promise;
+      }
+      await startEventWait(f);
+      await waitFor(async () => {
+        const state = (await f.goalStore.read(f.sessionId))!.record;
+        return (
+          state.pendingContinuation?.observationPreparation === 'pending' &&
+          f.coordinator.readRootState(f.sessionId).kind === 'idle'
+        );
+      });
+      const authority = (await f.goalStore.read(f.sessionId))!.record;
+      assert.equal(authority.goal.status, 'waiting');
+      assert.ok(authority.pendingContinuation?.observation);
+      const originalObservation = authority.pendingContinuation.observation;
+      assert.deepEqual(
+        (await f.stores.eventWaitStore.listAny({ sessionId: f.sessionId, limit: 10 })).items,
+        [],
+      );
+      assert.equal(evaluations, 1);
+      assert.equal(sourceReads, 0);
+      assert.equal(
+        (await f.stores.agentRunStore.listRootTurnAdmissionsForRecovery(f.sessionId)).length,
+        1,
+      );
+      allowed = true;
+      releaseCapacity.resolve();
+      await capacity;
+      await f.waitObserver!.reconcile();
+      await f.waitForGoalStatus('achieved');
+      const registered = (
+        await f.stores.eventWaitStore.listAny({ sessionId: f.sessionId, limit: 10 })
+      ).items;
+      assert.equal(registered.length, 1);
+      assert.equal(registered[0]!.record.waitId, originalObservation.waitId);
+      assert.equal(registered[0]!.record.deadlineAt, originalObservation.deadlineAt);
+      assert.equal(evaluations, 2);
+      assert.equal(sourceReads, 1);
+      assert.equal(f.drainRequested(), false, f.errors.map(String).join('\n'));
+    } finally {
+      releaseCapacity.resolve();
+      accessAbort.abort();
+      await capacity;
+      await f.close();
+    }
+  });
+
+test('Session cancel targets one original invocation after Goal clear and rejects stale proof', {
+  timeout: 15_000,
+}, async () => {
+  let satisfied = false,
+    modelCalls = 0;
+  const f = await createFixture({
+    model: scriptedWaitModel(
+      (call) => (call === 1 ? ['wait-a', 'wait-b'] : []),
+      (call) => {
+        modelCalls = call;
+      },
+    ),
+    eventWaitSources: observationSources(async () =>
+      satisfied ? { kind: 'satisfied', receiptKey: 'done', evidenceRefs: [] } : { kind: 'pending' },
+    ),
+  });
+  try {
+    await startEventWait(f);
+    await waitFor(async () => (await f.goal.readEventWaits(f.sessionId)).items.length === 2);
+    f.goal.manager.clear(f.sessionId);
+    await f.goal.handlers['goal.query']({ sessionId: f.sessionId }, operationContext());
+    const page = await f.goal.readEventWaits(f.sessionId);
+    assert.equal(page.items.length, 2);
+    const target = page.items[0]!;
+    assert.equal(target.consumer.kind, 'tool_invocation');
+    if (target.consumer.kind !== 'tool_invocation') throw new Error('wrong consumer');
+    const stale = await f.goal.handlers['session.event-wait.cancel'](
+      {
+        sessionId: f.sessionId,
+        waitId: target.waitId,
+        consumer: { ...target.consumer, operationId: 'a-different-operation' },
+      },
+      operationContext(),
+    );
+    assert.ok(stale.ok && stale.result.outcome === 'conflict');
+    const cancelled = await f.goal.handlers['session.event-wait.cancel'](
+      {
+        sessionId: f.sessionId,
+        waitId: target.waitId,
+        consumer: target.consumer,
+      },
+      operationContext(),
+    );
+    assert.ok(cancelled.ok && cancelled.result.outcome === 'cancelled');
+    const other = page.items[1]!;
+    assert.equal(
+      (await f.stores.eventWaitStore.readAny({ sessionId: f.sessionId, waitId: other.waitId }))
+        ?.record.status,
+      'waiting',
+    );
+    assert.equal(modelCalls, 1, 'one cancelled wait does not finish its pending parallel peer');
+    satisfied = true;
+    await f.waitObserver!.reconcile();
+    const admissions = await f.stores.agentRunStore.listRootTurnAdmissionsForRecovery(f.sessionId);
+    await waitFor(
+      async () =>
+        !!(await f.stores.runtimeEventStore.readRunInvocation(f.sessionId, admissions[0]!.runId))
+          ?.terminalEvent,
+    );
+    await f.invocationWaits!.reconcile();
+    await Promise.all(
+      page.items.map(({ waitId }) => waitForInvocationDelivery(f, waitId, 'consumed')),
+    );
+    const rows = (
+      await f.stores.eventWaitStore.listAny({
+        sessionId: f.sessionId,
+        consumerKind: 'tool_invocation',
+        limit: 10,
+      })
+    ).items;
+    assert.equal(rows.length, 2);
+    assert.equal(
+      rows.find((row) => row.record.waitId === target.waitId)?.record.status,
+      'cancelled',
+    );
+    assert.equal(rows.find((row) => row.record.waitId === other.waitId)?.record.status, 'resolved');
+    assert.ok(rows.every((row) => row.record.delivery?.kind === 'consumed'));
+    assert.equal(
+      (await f.stores.agentRunStore.listRootTurnAdmissionsForRecovery(f.sessionId)).length,
+      1,
+    );
+    assert.equal(f.goal.manager.get(f.sessionId)?.status, 'cleared');
+    assert.equal(modelCalls, 2);
+    assert.equal(f.drainRequested(), false, f.errors.map(String).join('\n'));
+  } finally {
+    await f.close();
+  }
+});
+
+for (const provider of ['local', 'memory'] as const)
+  test(`expired natural wait cancellation preserves pending admission (${provider})`, {
+    timeout: 15_000,
+  }, async () => {
+    let now = Date.now();
+    let deadlineAt = now + 500;
+    let evaluations = 0;
+    const firstRead = deferred();
+    const f = await createFixture({
+      persistenceProvider:
+        provider === 'local' ? 'local' : createMemoryExecutionPersistenceProvider(),
+      model: scriptedWaitModel(() => []),
+      eventWaitSources: {
+        ...observationSources(async () => {
+          firstRead.resolve();
+          return { kind: 'pending' };
+        }),
+        clock: {
+          now: () => now,
+          schedule(callback, delay) {
+            const timer = setTimeout(callback, delay);
+            timer.unref();
+            return () => clearTimeout(timer);
+          },
+        },
+      },
+      onEvaluate: () => {
+        now = Date.now();
+        deadlineAt = now + 500;
+        return ++evaluations === 1
+          ? JSON.stringify({
+              met: false,
+              impossible: false,
+              progress: true,
+              waiting: true,
+              reason: 'Wait briefly',
+              waitingCondition: { ...naturalCondition, deadlineAt },
+            })
+          : '{"met":true,"impossible":false,"progress":true,"waiting":false,"reason":"verified"}';
+      },
+    });
+    let reservation: ReturnType<RootTurnCoordinator['prepare']> | undefined;
+    try {
+      await startEventWait(f);
+      await firstRead.promise;
+      await waitFor(() => f.coordinator.readRootState(f.sessionId).kind === 'idle');
+      reservation = f.coordinator.prepare(f.sessionId);
+      assert.equal(reservation.kind, 'prepared');
+      now = deadlineAt;
+      await f.waitObserver!.reconcile();
+      await waitFor(
+        async () =>
+          (
+            await f.stores.eventWaitStore.listAny({
+              sessionId: f.sessionId,
+              limit: 10,
+            })
+          ).items[0]?.record.status === 'expired',
+      );
+      await f.goal.goalWaitingBridge!.reconcile();
+      const { sessionId, waitId, consumer } = (await f.goal.readEventWaits(f.sessionId)).items[0]!;
+      const result = await f.goal.handlers['session.event-wait.cancel'](
+        { sessionId, waitId, consumer },
+        operationContext(),
+      );
+      assert.ok(result.ok && result.result.outcome === 'conflict');
+      const expired = (await f.stores.eventWaitStore.readAny({ sessionId, waitId }))!.record;
+      assert.equal(expired.status, 'expired');
+      assert.equal(expired.delivery, undefined);
+      if (reservation.kind === 'prepared') reservation.admission.release();
+      await f.waitForGoalStatus('achieved');
+      const admitted = (await f.stores.eventWaitStore.readAny({ sessionId, waitId }))!.record;
+      assert.equal(admitted.status, 'expired');
+      assert.equal(admitted.delivery?.kind, 'admitted');
+      assert.equal(
+        (await f.stores.agentRunStore.listRootTurnAdmissionsForRecovery(sessionId)).length,
+        2,
+      );
+      assert.equal(f.drainRequested(), false, f.errors.map(String).join('\n'));
+    } finally {
+      if (reservation?.kind === 'prepared') reservation.admission.release();
+      await f.close();
+    }
+  });
+
+for (const count of [2, 66])
+  test(`durable wait consumption invalidates the collection with ${count} parallel waits`, {
+    timeout: 30_000,
+  }, async () => {
+    let completedOperation: string | undefined;
+    const notifications = new Map<string, () => void>();
+    const observed = new Set<string>();
+    const deliveryGate = deferred<void>();
+    const f = await createFixture({
+      onEventWaitChanged: (wait) => {
+        if (wait.observation?.lastObservedAt != null) observed.add(wait.waitId);
+      },
+      model: scriptedWaitModel((call) =>
+        call === 1 ? Array.from({ length: count }, (_, i) => `page-call-${i}`) : [],
+      ),
+      eventWaitSources: {
+        authorize: async (wait) => {
+          if (wait.status === 'resolved') await deliveryGate.promise;
+          return { kind: 'allowed', context: null };
+        },
+        policy: { scanIntervalMs: 1, minIntervalMs: 1, pollIntervalMs: 60_000, jitterRatio: 0 },
+        adapters: new EventWaitAdapterRegistry([
+          {
+            providerId: 'test',
+            resourceType: 'job',
+            conditionType: 'done',
+            conditionVersion: 1,
+            reconciliation: 'snapshot',
+            validate() {},
+            async subscribe({ wait }, changed) {
+              notifications.set(wait.waitId, changed);
+              return {
+                close() {
+                  notifications.delete(wait.waitId);
+                },
+              };
+            },
+            async read({ wait }) {
+              return wait.schemaVersion === 2 &&
+                wait.consumer.kind === 'tool_invocation' &&
+                wait.consumer.operationId === completedOperation
+                ? { kind: 'satisfied', receiptKey: 'done', evidenceRefs: ['done-ref'] }
+                : { kind: 'pending' };
+            },
+          },
+        ]),
+      },
+    });
+    const frames: SubscriptionFrame[] = [];
+    const connection = f.continuity.attachConnection('connection-1', {
+      async send(frame) {
+        frames.push(frame);
+      },
+    });
+    try {
+      await startEventWait(f);
+      await waitFor(() => observed.size === count, { timeoutMs: 10_000 });
+      const context = { ...operationContext(), principalKind: 'local_owner' as const };
       const opened = await f.continuity.handlers['subscription.open'](
         { sessionId: f.sessionId, transcript: { kind: 'none' } },
         context,
       );
       assert.ok(opened.ok);
-      assert.deepEqual(opened.result.snapshot.goal?.eventWait?.observation, first.observation);
       await f.continuity.handlers['subscription.ready'](
         { subscriptionId: opened.result.subscriptionId },
         context,
       );
-      const count = projections;
-      mode = outcome === 'unknown' ? 'fault' : 'normal';
-      releaseRead.resolve();
+      const first = opened.result.snapshot.eventWaits!;
+      const last = first.nextCursor
+        ? await f.goal.readEventWaits(f.sessionId, first.nextCursor)
+        : first;
+      const target = last.items.at(-1)!;
+      assert.equal(target.consumer.kind, 'tool_invocation');
+      if (target.consumer.kind !== 'tool_invocation') return;
+      completedOperation = target.consumer.operationId;
+      assert.ok(notifications.has(target.waitId));
+      notifications.get(target.waitId)!();
+      const snapshots = () =>
+        frames
+          .filter((frame) => frame.kind === 'subscription.session_projection')
+          .map((frame) => frame.snapshot);
       await waitFor(
-        async () => {
-          const row = await f.stores.eventWaitStore.read({
-            sessionId: f.sessionId,
-            waitId: first.waitId,
-          });
-          return (
-            row?.record.observation?.attempts === reserved.record.observation!.attempts &&
-            row.record.observation.outcome === outcome
-          );
-        },
-        { timeoutMs: 5000 },
+        async () =>
+          (await f.stores.eventWaitStore.readAny({ sessionId: f.sessionId, waitId: target.waitId }))
+            ?.record.status === 'resolved',
       );
-      const current = (await f.goal.readProjection(f.sessionId))!.eventWait!;
-      assert.equal(current.observation?.state, outcome);
-      assert.equal(current.observation?.reasonCode, first.observation?.reasonCode);
-      assert.equal(projections, count);
-      assert.equal(projectionFrames, 0);
-      assert.equal(calls, 2);
-      assert.equal(f.shellRuns!.liveCount(), 1);
-      assert.equal(f.drainRequested(), false);
+      if (count === 2)
+        await waitFor(() =>
+          snapshots().some((s) =>
+            s.eventWaits?.items.some(
+              (w) => w.waitId === target.waitId && w.phase === 'result_ready',
+            ),
+          ),
+        );
+      // Drain the pre-T2 publication lane, so the next invalidation must cover consumption.
+      await f.continuity.refreshCanonical(f.sessionId);
+      frames.length = 0;
+      deliveryGate.resolve();
+      await waitFor(
+        async () =>
+          (await f.stores.eventWaitStore.readAny({ sessionId: f.sessionId, waitId: target.waitId }))
+            ?.record.delivery?.kind === 'consumed',
+      );
+      await waitFor(() =>
+        frames.some(
+          (frame) =>
+            frame.kind === 'subscription.session_domain_changed' && frame.domain === 'event_wait',
+        ),
+      );
+      const after = await f.goal.readEventWaits(f.sessionId);
+      if (count === 66) {
+        assert.deepEqual(
+          { items: after.items, nextCursor: after.nextCursor },
+          first,
+          'later-page changes leave the bounded continuity page unchanged',
+        );
+        assert.equal((await f.goal.readEventWaits(f.sessionId, after.nextCursor!)).items.length, 1);
+      } else {
+        await waitFor(() => snapshots().at(-1)?.eventWaits?.items.length === 1);
+        assert.equal(
+          snapshots()
+            .at(-1)!
+            .eventWaits!.items.some((w) => w.waitId === target.waitId),
+          false,
+        );
+      }
+      assert.equal(
+        (await f.stores.agentRunStore.listRootTurnAdmissionsForRecovery(f.sessionId)).length,
+        1,
+      );
+      assert.equal(f.drainRequested(), false, f.errors.map(String).join('\n'));
     } finally {
-      releaseRead.resolve();
-      await writeFile(join(f.owner.capability.canonicalPath, 'release'), 'ready');
+      deliveryGate.resolve();
+      connection.close();
+      await f.coordinator.stopSession(f.sessionId);
       await f.close();
     }
   });
-}
 
-for (const [sourceChange, expectedReason] of [
-  ['missing', 'The awaited background task record is missing. The command was not restarted.'],
-  ['revoked', 'Access to the awaited background task was revoked.'],
-  ['provenance', 'The awaited background Bash source can no longer be verified.'],
-] as const) {
-  test(`final ShellRun admission preserves the ${sourceChange} source diagnostic`, {
-    timeout: 15000,
+for (const provider of ['local', 'memory'] as const)
+  test(`pending waits preserve an accepted queue when the continuity preview exceeds capacity (${provider})`, {
+    timeout: 30_000,
   }, async () => {
-    let f: Fixture;
-    let calls = 0,
-      evaluations = 0,
-      sourceChanged = false;
-    let successorTurnId: string | undefined;
-    f = await createFixture({
-      shellRuns: true,
-      shellRunWaitReader: {
-        readShellRun: async (sessionId, shellRunId) => {
-          if (sourceChanged && sourceChange === 'missing')
-            throw Object.assign(new Error('Task row disappeared'), { code: 'ENOENT' });
-          const record = await f.shellStore!.readShellRun(sessionId, shellRunId);
-          if (!sourceChanged) return record;
-          return sourceChange === 'revoked'
-            ? { ...record, visibility: 'user' }
-            : { ...record, sourceToolCallId: 'unverifiable-call' };
-        },
-      },
-      onEvaluate: () => evaluations++,
-      model: new MockLanguageModelV4({
-        doStream: async () => {
-          calls++;
-          if (calls === 1)
-            return modelToolStep(
-              'Bash',
-              {
-                command: shellNodeCommand('process.exit(0)'),
-                run_in_background: true,
-              },
-              'source-bash',
-            );
-          if (calls === 2) {
-            const task = (await f.shellStore!.listSessionShellRuns(f.sessionId))[0]!;
-            return modelToolStep(
-              'WaitForEvent',
-              {
-                resource: {
-                  providerId: 'shell_run',
-                  connectionId: null,
-                  resourceType: 'background_task',
-                  resourceId: `maka://runtime/background-tasks/${task.shellRunId}`,
-                },
-                condition: { typeId: 'terminal', version: 1, parameters: {} },
-                reason: 'Inspect the background result',
-                timeoutMs: 60000,
-              },
-              'source-wait',
-            );
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    const f = await createFixture({
+      persistenceProvider:
+        provider === 'local' ? 'local' : createMemoryExecutionPersistenceProvider(),
+      model: scriptedWaitModel(
+        (call) => (call === 1 ? Array.from({ length: 64 }, (_, i) => `capacity-${i}`) : []),
+        async (call) => {
+          if (call === 1) {
+            entered.resolve();
+            await release.promise;
           }
-          return modelToolStep();
         },
-      }),
+      ),
+      eventWaitSources: observationSources(async () => ({ kind: 'pending' })),
     });
-    const bridge = f.goal.eventWaitBridge!;
-    const authorize = bridge.authorizeAdmission.bind(bridge);
-    bridge.authorizeAdmission = async (sessionId, pending) => {
-      // The result is already queued. Synchronize with the durable read budget,
-      // then change only the source reader before the real final access check.
-      await waitFor(
-        async () =>
-          Date.now() >=
-          ((await f.stores.eventWaitStore.readSourceCooldown({
-            providerId: 'shell_run',
-            connectionId: null,
-          })) ?? 0),
-        { timeoutMs: 5000 },
-      );
-      successorTurnId = pending.execution.turnId;
-      sourceChanged = true;
-      return authorize(sessionId, pending);
-    };
+    const frames: SubscriptionFrame[] = [];
+    const connection = f.continuity.attachConnection('connection-1', {
+      async send(frame) {
+        frames.push(frame);
+      },
+    });
     try {
-      await f.goal.recover();
-      f.goal.manager.create(f.sessionId, 'Inspect background command', { armed: true });
-      await f.goal.handlers['goal.query']({ sessionId: f.sessionId }, operationContext());
-      const submitted = await f.messages.handlers['turn.message.submit'](
+      await startEventWait(f);
+      await entered.promise;
+      const text = 'x'.repeat(33_000);
+      const queued = await f.messages.handlers['turn.message.submit'](
         {
           originHostEpoch: 'goal-root-epoch',
           sessionId: f.sessionId,
-          messageId: 'admission-source-change',
-          content: { text: 'Run and wait' },
-          placement: 'current_turn',
+          messageId: 'large-next-turn',
+          placement: 'next_turn',
+          content: { text },
         },
         operationContext(),
       );
-      assert.equal(submitted.ok, true);
-      await f.waitForGoalStatus('paused');
-      await f.goal.handlers['goal.query']({ sessionId: f.sessionId }, operationContext());
-      const persisted = (await f.goalStore.read(f.sessionId))!.record;
-      assert.equal(sourceChanged, true);
-      assert.equal(persisted.goal.lastReason, expectedReason);
-      assert.equal(persisted.goal.iterations, 1);
-      assert.equal(persisted.activeEventWait, undefined);
-      assert.equal(persisted.pendingContinuation, null);
-      const wait = (
-        await f.stores.eventWaitStore.listSession({
-          sessionId: f.sessionId,
-          limit: 10,
-        })
-      ).items[0]!.record;
-      assert.equal(wait.delivery?.kind, 'suppressed');
-      assert.ok(successorTurnId);
-      assert.equal(
-        await f.stores.agentRunStore.readRootTurnAdmission(f.sessionId, successorTurnId),
-        undefined,
+      assert.ok(queued.ok);
+      const context = { ...operationContext(), principalKind: 'local_owner' as const };
+      const opened = await f.continuity.handlers['subscription.open'](
+        { sessionId: f.sessionId, transcript: { kind: 'none' } },
+        context,
       );
-      assert.equal(calls, 2);
-      assert.equal(evaluations, 0);
-      assert.equal(f.drainRequested(), false);
+      assert.ok(opened.ok);
+      await f.continuity.handlers['subscription.ready'](
+        { subscriptionId: opened.result.subscriptionId },
+        context,
+      );
+      release.resolve();
+      await waitFor(async () => (await f.goal.readEventWaits(f.sessionId)).items.length === 64, {
+        timeoutMs: 10_000,
+        pollMs: 10,
+      });
+      await f.continuity.refreshCanonical(f.sessionId);
+      const latest = frames
+        .filter((frame) => frame.kind === 'subscription.session_projection')
+        .at(-1)!.snapshot;
+      assert.equal(latest.eventWaits, undefined, 'only the optional cache is omitted');
+      assert.equal(latest.queue.followup[0]?.content.text, text);
+      const queried = await f.goal.handlers['session.event-waits.query'](
+        { sessionId: f.sessionId },
+        context,
+      );
+      assert.ok(queried.ok);
+      assert.equal(queried.result.items.length, 64, 'all consumers remain independently queryable');
+      const target = queried.result.items.at(-1)!;
+      const cancelled = await f.goal.handlers['session.event-wait.cancel'](
+        { sessionId: f.sessionId, waitId: target.waitId, consumer: target.consumer },
+        context,
+      );
+      assert.ok(cancelled.ok && cancelled.result.outcome === 'cancelled');
+      await waitFor(
+        async () =>
+          (await f.stores.eventWaitStore.readAny({ sessionId: f.sessionId, waitId: target.waitId }))
+            ?.record.delivery?.kind === 'consumed',
+      );
+      await f.continuity.refreshCanonical(f.sessionId);
+      assert.equal((await f.goal.readEventWaits(f.sessionId)).items.length, 63);
+      assert.equal(
+        (await f.stores.agentRunStore.listRootTurnAdmissionsForRecovery(f.sessionId)).length,
+        1,
+      );
+      assert.equal(f.drainRequested(), false, f.errors.map(String).join('\n'));
     } finally {
+      release.resolve();
+      connection.close();
+      await f.coordinator.stopSession(f.sessionId);
       await f.close();
     }
   });
-}

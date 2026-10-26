@@ -125,13 +125,14 @@ const row = (id: string): DesktopSessionSummary => ({
 const userTurn = (turnId: string, text: string): StoredMessage => ({ type: 'user', id: `message-${turnId}`, text, turnId, ts: 1 });
 
 /** Gate inputs with a ready executor selected; `overrides` adjust its selection state. */
-function selectedExecutor(overrides: { changing?: boolean } = {}) {
+function selectedExecutor(overrides: { changing?: boolean; readiness?: 'ready' | 'restorable' | 'restore_failed' | 'restoring' } = {}) {
+  const { readiness = 'ready', ...state } = overrides;
   const gateInputs = stubComposerGateInputs();
   gateInputs.executorComposer.selection = {
     ...gateInputs.executorComposer.selection,
     selection: { executorId: 'codex' },
-    entry: { id: 'codex', readiness: 'ready' },
-    ...overrides,
+    entry: { id: 'codex', readiness },
+    ...state,
   } as unknown as typeof gateInputs.executorComposer.selection;
   return gateInputs;
 }
@@ -334,6 +335,41 @@ describe('ComposerSubmissionProvider', () => {
     assert.equal(h.region.executorPicker?.disabled, false);
     assert.equal(h.region.sendBlocked, false);
   });
+
+  for (const readiness of ['restorable', 'restore_failed', 'restoring'] as const) {
+    test(`saves an external message immediately without waiting for ${readiness} execution`, async () => {
+      const submitted: unknown[] = [];
+      const saved = deferred<Awaited<ReturnType<ComposerSubmissionServices['submitMessage']>>>();
+      const h = harness({
+        gateInputs: selectedExecutor({ readiness }),
+        newTask: {
+          executorSelection: { executorId: 'codex', configuration: { model: 'saved-model' } },
+          executorEntry: { readiness, supportsAttachments: false, models: [] },
+        },
+        services: {
+          submitMessage: async (sessionId, _placement, command) => {
+            submitted.push({ sessionId, text: command.text });
+            return saved.promise;
+          },
+        },
+      });
+      await act(async () => h.target.setActiveId('A'));
+      await act(async () => h.published[0]!([userTurn('turn-1', 'earlier')]));
+      assert.equal(h.region.sendBlocked, false);
+      let sending!: Promise<boolean | void>;
+      await act(async () => { sending = h.region.onSend('continue this task'); });
+      assert.ok(h.conversation.workspace.publication.getSnapshot().transientMessages
+        .some(message => message.text === 'continue this task'), 'the message is visible before saving finishes');
+      assert.equal(h.region.newTaskSendPending, true);
+      await act(async () => {
+        saved.resolve({ ok: true, disposition: 'locally_saved', attachments: [], inlineReferences: [],
+          skillInvocation: { loaded: [], failed: [], receipts: [] } });
+        assert.equal(await sending, true);
+      });
+      assert.deepEqual(submitted, [{ sessionId: 'A', text: 'continue this task' }]);
+      assert.equal(h.region.newTaskSendPending, false, 'local save releases the Composer before external execution');
+    });
+  }
 
   test('retains existing executor and send gates while no submission is pending', () => {
     const gateInputs = selectedExecutor({ changing: true });

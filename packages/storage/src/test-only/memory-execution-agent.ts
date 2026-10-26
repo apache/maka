@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { admitMemoryGoalWait } from './memory-event-wait-bridge.js';
+import { admitMemoryNaturalGoalWaiting } from './memory-event-wait-bridge.js';
 import {
   normalizeAdmitRootTurnInput,
   normalizeRootTurnStartRejection,
@@ -225,7 +225,7 @@ export function createMemoryAgentRunStore(a: MemoryExecutionAuthority): DurableA
               'Root source message identity already belongs to ' + owner.admission.turnId,
             );
         }
-        admitMemoryGoalWait(s, admission);
+        admitMemoryNaturalGoalWaiting(s, admission);
         roots(s).set(id, admission);
         return { kind: 'admitted', admission };
       }),

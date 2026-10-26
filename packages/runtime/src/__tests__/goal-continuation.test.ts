@@ -39,11 +39,7 @@ import {
 import type { GoalEvaluation } from '../goal-evaluator.js';
 import type { MakaToolContext } from '../tool-runtime.js';
 import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
-import {
-  sameGoalControlLease,
-  type GoalControlLease,
-  type GoalPendingContinuation,
-} from '@maka/core/goal';
+import { type GoalPendingContinuation } from '@maka/core/goal';
 
 const SESSION = 'sess-1';
 function controlledCall<T>() {
@@ -190,78 +186,6 @@ function setup(opts?: {
     queueEvaluations: (...next: Partial<GoalEvaluation>[]) => evaluationQueue.push(...next),
   };
 }
-
-for (const stage of [
-  'before_recovery',
-  'before_completion',
-  'while_queued',
-  'control_changed',
-] as const)
-  test(`recovered event wait source preserves generation ownership (${stage})`, async () => {
-    const { manager, coordinator, deps, attemptedPrompts } = setup();
-    const goal = manager.create(SESSION, 'Finish the wait').goal;
-    const controlLease = manager.getControlLease(SESSION)!;
-    const entered = deferred<void>(),
-      release = deferred<void>();
-    let settlements = 0;
-    const eventWait = {
-      isGated: () => true,
-      ownsSource: (sessionId: string, turnId: string, lease: GoalControlLease) =>
-        sessionId === SESSION && turnId === 'source' && sameGoalControlLease(lease, controlLease),
-      settleCompleted: async (_sessionId: string, turnId: string) => {
-        if (turnId === 'older') {
-          entered.resolve();
-          await release.promise;
-        } else {
-          assert.equal(turnId, 'source');
-          settlements++;
-        }
-      },
-    };
-    deps.eventWait = eventWait;
-    deps.evaluator.evaluate = async () => assert.fail('Explicit waits must not evaluate');
-    const advance = () => {
-      const current = manager.get(SESSION)!;
-      manager.settleTurn(SESSION, {
-        checkpoint: { goalId: current.id, revision: current.revision },
-        verdict: 'continue',
-        reason: 'Earlier work settled without revoking the wait source.',
-      });
-    };
-    let olderSettlement: Promise<void> | undefined;
-    try {
-      if (stage === 'while_queued') {
-        const older = coordinator.beginObservedTurn(SESSION, 'older');
-        assert.equal(older.kind, 'registered');
-        if (older.kind !== 'registered') return;
-        olderSettlement = older.settle({ kind: 'completed', turnId: 'older' });
-        await entered.promise;
-      }
-      if (stage === 'before_recovery') advance();
-      const source = coordinator.recoverCurrentExecution({
-        execution: { sessionId: SESSION, turnId: 'source', runId: 'source-run' },
-        checkpoint: { goalId: goal.id, revision: goal.revision },
-        controlLease,
-      });
-      assert.equal(source.kind, 'registered');
-      if (source.kind !== 'registered') return;
-      if (stage === 'before_completion') advance();
-      if (stage === 'control_changed') {
-        const paused = manager.pause(SESSION)!;
-        manager.resume(SESSION, { goalId: paused.id, revision: paused.revision });
-      }
-      const settlement = source.settle({ kind: 'completed', turnId: 'source' });
-      if (stage === 'while_queued') advance();
-      release.resolve();
-      await olderSettlement;
-      await settlement;
-      assert.equal(settlements, stage === 'control_changed' ? 0 : 1);
-      assert.equal(attemptedPrompts.length, 0);
-    } finally {
-      release.resolve();
-      await coordinator.close();
-    }
-  });
 
 test('Goal activity covers evaluation through settlement but not a paused durable Goal', async () => {
   const { manager, coordinator, deps, admitted } = setup();
@@ -1610,6 +1534,152 @@ describe('GoalContinuationCoordinator admission and completion', () => {
 });
 
 describe('GoalContinuationCoordinator waiting and task gate', () => {
+  const waitingCondition = {
+    resource: { providerId: 'test', connectionId: null, resourceType: 'job', resourceId: 'job-1' },
+    condition: { typeId: 'done', version: 1, parameters: {} },
+    deadlineAt: null,
+  };
+  const observation = {
+    ...waitingCondition,
+    waitId: 'wait-natural',
+    sourceRunId: 'run-source',
+    completionEventId: 'event-complete',
+  };
+
+  test('structured natural waiting keeps the completed Turn settled but has no retry timer', async () => {
+    const pending: GoalPendingContinuation[] = [];
+    const f = setup({
+      evaluations: [{ waiting: true, waitingCondition }],
+      durability: {
+        ...volatileGoalDurability,
+        recordPendingContinuation: async (value) => {
+          pending.push(value);
+        },
+      },
+    });
+    f.deps.observedWaiting = { prepare: async () => ({ observation }) };
+    f.manager.create(SESSION, 'Wait for external work');
+    await settleExternal(f.coordinator, SESSION, { kind: 'completed', turnId: 'source' });
+    assert.equal(f.manager.get(SESSION)?.status, 'waiting');
+    assert.equal(f.manager.get(SESSION)?.iterations, 1);
+    assert.deepEqual(pending[0]?.observation, observation);
+    assert.deepEqual(f.scheduler.pendingDelays(), []);
+    assert.equal(f.admitted.length, 0);
+
+    const current = f.manager.get(SESSION)!;
+    const woken = f.manager.wakeWaiting(SESSION, {
+      goalId: current.id,
+      revision: current.revision,
+    })!;
+    const ready: GoalPendingContinuation = {
+      ...pending[0]!,
+      checkpoint: { goalId: woken.id, revision: woken.revision },
+      prompt: 'One observed result',
+      goalWaiting: {
+        waitId: observation.waitId,
+        sourceTurnId: 'source',
+        execution: { sessionId: SESSION, turnId: 'resume', runId: 'run-resume' },
+        userMessageId: 'msg-resume',
+        resultDigest: `sha256:${'a'.repeat(64)}`,
+      },
+    };
+    f.coordinator.recoverPendingContinuation(ready);
+    await waitFor(
+      () => f.admitted.length === 1,
+      'observed result did not replace its waiting intent',
+    );
+    assert.equal(f.admitted[0]?.prompt, 'One observed result');
+    assert.equal(f.manager.get(SESSION)?.iterations, 1);
+    await f.coordinator.close();
+  });
+
+  test('new real completion replaces an observed wait without gating its evaluator', async () => {
+    const pending: GoalPendingContinuation[] = [];
+    let clears = 0;
+    const f = setup({
+      evaluations: [{ waiting: true, waitingCondition }, { waiting: true }],
+      durability: {
+        ...volatileGoalDurability,
+        recordPendingContinuation: async (value) => {
+          pending.push(value);
+        },
+        clearPendingContinuation: async () => {
+          clears++;
+        },
+      },
+    });
+    f.deps.observedWaiting = { prepare: async () => ({ observation }) };
+    f.manager.create(SESSION, 'Wait for external work');
+    await settleExternal(f.coordinator, SESSION, { kind: 'completed', turnId: 'source' });
+    await settleExternal(f.coordinator, SESSION, { kind: 'completed', turnId: 'user-evidence' });
+    assert.equal(clears, 1);
+    assert.equal(pending.at(-1)?.triggeringTurnId, 'user-evidence');
+    assert.equal(pending.at(-1)?.observation, undefined);
+    assert.equal(f.manager.get(SESSION)?.iterations, 2);
+    assert.equal(f.scheduler.pendingDelays().length, 1);
+    await f.coordinator.close();
+  });
+
+  test('unsupported explicit condition retains a diagnosed legacy waiting fallback', async () => {
+    const f = setup({ evaluations: [{ waiting: true, waitingCondition }] });
+    f.deps.observedWaiting = { prepare: async () => ({ reason: 'adapter unavailable' }) };
+    f.manager.create(SESSION, 'Wait for external work');
+    await settleExternal(f.coordinator, SESSION, { kind: 'completed', turnId: 'source' });
+    assert.match(f.manager.get(SESSION)!.lastReason!, /adapter unavailable/);
+    assert.equal(f.scheduler.pendingDelays().length, 1);
+    await f.coordinator.close();
+  });
+
+  for (const condition of [
+    { ...waitingCondition, deadlineAt: -1 },
+    { ...waitingCondition, userAuthorized: true },
+    { reason: 'Wait for the background job' },
+    null,
+  ]) {
+    test(`malformed natural condition retains waiting backoff: ${JSON.stringify(condition)}`, async () => {
+      const f = setup();
+      f.deps.evaluator.evaluate = async () =>
+        JSON.stringify({
+          met: false,
+          impossible: false,
+          progress: false,
+          waiting: true,
+          waitingCondition: condition,
+          reason: 'Background work is running',
+        });
+      f.deps.observedWaiting = {
+        prepare: async () => assert.fail('invalid optional data must not register observation'),
+      };
+      f.manager.create(SESSION, 'Wait for external work');
+      try {
+        await settleExternal(f.coordinator, SESSION, { kind: 'completed', turnId: 'source' });
+        await waitFor(
+          () => f.scheduler.pendingDelays().length > 0 || f.attemptedPrompts.length > 0,
+        );
+        assert.equal(f.manager.get(SESSION)?.status, 'waiting');
+        assert.equal(f.manager.get(SESSION)?.iterations, 1);
+        assert.match(f.manager.get(SESSION)!.lastReason!, /invalid waiting condition/i);
+        assert.match(f.manager.get(SESSION)!.lastReason!, /Background work is running/);
+        assert.deepEqual(f.scheduler.pendingDelays(), [5_000]);
+        assert.equal(f.attemptedPrompts.length, 0);
+        assert.equal(f.admitted.length, 0);
+
+        f.scheduler.fireNext();
+        await waitFor(() => f.admitted.length === 1);
+        assert.equal(f.manager.get(SESSION)?.status, 'active');
+        assert.match(f.admitted[0]!.prompt, /invalid waiting condition/i);
+        f.admitted[0]!.completion.resolve({ kind: 'completed', turnId: f.admitted[0]!.turnId });
+        await waitFor(() => f.scheduler.pendingDelays()[0] === 10_000);
+        assert.equal(f.manager.get(SESSION)?.status, 'waiting');
+        assert.equal(f.manager.get(SESSION)?.iterations, 2);
+        assert.equal(f.manager.get(SESSION)?.consecutiveNoProgress, 0);
+        assert.equal(f.admitted.length, 1);
+      } finally {
+        await f.coordinator.close();
+      }
+    });
+  }
+
   test('waiting is visible and uses 5s → 10s backoff instead of immediate turns', async () => {
     const { manager, coordinator, scheduler, admitted, queueEvaluations } = setup({
       evaluations: [{ waiting: true, progress: false, reason: 'CI running' }],

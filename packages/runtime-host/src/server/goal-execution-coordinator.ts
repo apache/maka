@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { GoalEventWaitContinuation } from '@maka/core/goal';
+import type { GoalWaitingContinuation } from '@maka/core/goal';
 import { randomUUID } from 'node:crypto';
 import type { GoalCheckpoint, GoalControlLease } from '@maka/runtime/goal-state';
 import type { GoalTurnAdmission, GoalTurnOutcome } from '@maka/runtime/goal-continuation';
@@ -40,9 +40,13 @@ export interface HostGoalExecutionCoordinatorOptions {
     controlLease: GoalControlLease,
   ) => boolean;
   readonly newId?: () => string;
-  readonly authorizeEventWait?: (
+  readonly preflightGoalWaiting?: (
     sessionId: string,
-    eventWait: GoalEventWaitContinuation,
+    waiting: GoalWaitingContinuation,
+  ) => Promise<boolean | 'defer'>;
+  readonly authorizeGoalWaiting?: (
+    sessionId: string,
+    waiting: GoalWaitingContinuation,
   ) => Promise<boolean | 'defer'>;
 }
 
@@ -56,11 +60,13 @@ export class HostGoalExecutionCoordinator {
     Extract<ReturnType<GoalExecutionAuthority['prepare']>, { kind: 'prepared' }>['admission']
   >();
   #draining = false;
-  readonly #authorizeEventWait: HostGoalExecutionCoordinatorOptions['authorizeEventWait'];
+  readonly #preflightGoalWaiting: HostGoalExecutionCoordinatorOptions['preflightGoalWaiting'];
+  readonly #authorizeGoalWaiting: HostGoalExecutionCoordinatorOptions['authorizeGoalWaiting'];
 
   constructor(options: HostGoalExecutionCoordinatorOptions) {
     this.#executions = options.executions;
-    this.#authorizeEventWait = options.authorizeEventWait;
+    this.#preflightGoalWaiting = options.preflightGoalWaiting;
+    this.#authorizeGoalWaiting = options.authorizeGoalWaiting;
     this.#runtime = options.runtime;
     this.#matchesActive = options.matchesActive;
     this.#newId = options.newId ?? randomUUID;
@@ -71,7 +77,7 @@ export class HostGoalExecutionCoordinator {
     text: string,
     checkpoint: GoalCheckpoint,
     controlLease: GoalControlLease,
-    eventWait?: GoalEventWaitContinuation,
+    goalWaiting?: GoalWaitingContinuation,
   ): GoalTurnAdmission {
     if (this.#draining) {
       return {
@@ -83,16 +89,25 @@ export class HostGoalExecutionCoordinator {
     if (preparation.kind === 'busy') return preparation;
     if (preparation.kind === 'unavailable') return preparation;
 
-    const execution = eventWait?.execution ?? {
+    const execution = goalWaiting?.execution ?? {
       sessionId,
       turnId: this.#newId(),
       runId: this.#newId(),
     };
-    const userMessageId = eventWait?.userMessageId ?? this.#newId();
+    const userMessageId = goalWaiting?.userMessageId ?? this.#newId();
     const origin = {
       kind: 'goal' as const,
       goalId: checkpoint.goalId,
-      ...(eventWait ? { eventWait: eventWait.provenance } : {}),
+      ...(goalWaiting
+        ? {
+            goalWaiting: {
+              waitId: goalWaiting.waitId,
+              sourceTurnId: goalWaiting.sourceTurnId,
+              generation: controlLease.generation,
+              resultDigest: goalWaiting.resultDigest,
+            },
+          }
+        : {}),
     };
     let started = false;
     let gateCancelled = false;
@@ -123,14 +138,27 @@ export class HostGoalExecutionCoordinator {
           };
         }
         try {
+          const preflight =
+            goalWaiting && this.#preflightGoalWaiting
+              ? await this.#preflightGoalWaiting(sessionId, goalWaiting)
+              : true;
+          if (preflight === false || preflight === 'defer') {
+            prepared.release();
+            if (preflight === 'defer') return { kind: 'deferred' };
+            return {
+              kind: 'errored',
+              turnId: execution.turnId,
+              reason: 'Event wait target is no longer available.',
+            };
+          }
           const initial = await prepared.admit({
             ...execution,
             userMessageId,
             execution: origin,
             content: { text },
             admitExecution: async () => {
-              const authorization = eventWait
-                ? await this.#authorizeEventWait?.(sessionId, eventWait)
+              const authorization = goalWaiting
+                ? await this.#authorizeGoalWaiting?.(sessionId, goalWaiting)
                 : true;
               gateDeferred = authorization === 'defer';
               const authorized = authorization === true;

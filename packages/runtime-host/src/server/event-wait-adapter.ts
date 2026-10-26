@@ -17,9 +17,11 @@
  * under the License.
  */
 
-import type { ObservedEventWaitRecord } from '@maka/core/event-wait';
+import type { AnyEventWaitRecord } from '@maka/core/event-wait';
 
 export type EventWaitObservationResult = {
+  /** Bounded source diagnostic, including terminal observations. */
+  readonly reason?: string;
   /** Checkpoint only after the returned facts have been processed. */
   readonly cursor?: string;
   readonly eventKey?: string;
@@ -53,7 +55,7 @@ export type EventWaitObservationAccess =
     };
 
 export interface EventWaitReadContext {
-  readonly wait: ObservedEventWaitRecord;
+  readonly wait: AnyEventWaitRecord;
   readonly access: unknown;
   readonly cursor: string | null;
   readonly signal: AbortSignal;
@@ -75,8 +77,11 @@ export interface EventWaitSourceAdapter {
    * A transient notification-only source cannot implement this contract.
    */
   readonly reconciliation: 'snapshot' | 'history';
+  /** Trusted source pacing; does not change consumer deadlines or shared cooldowns. */
+  readonly pollIntervalMs?: number;
+  readonly readTimeoutMs?: number;
   /** Synchronous bounded parameter validation; no I/O or model reasoning. */
-  validate(wait: ObservedEventWaitRecord): void;
+  validate(wait: AnyEventWaitRecord): void;
   read(input: EventWaitReadContext): Promise<EventWaitObservationResult>;
   /**
    * Resolves only after notification intake is ready. The manager then reads authoritative
@@ -104,6 +109,12 @@ export class EventWaitAdapterRegistry {
         )
       )
         throw new TypeError('Invalid event wait adapter');
+      for (const value of [adapter.pollIntervalMs, adapter.readTimeoutMs])
+        if (
+          value !== undefined &&
+          (!Number.isSafeInteger(value) || value < 1 || value > 2_147_483_647)
+        )
+          throw new TypeError('Invalid event wait adapter timing');
       const id = key(
         adapter.providerId,
         adapter.resourceType,
@@ -114,7 +125,7 @@ export class EventWaitAdapterRegistry {
       this.#adapters.set(id, adapter);
     }
   }
-  get(wait: ObservedEventWaitRecord): EventWaitSourceAdapter | undefined {
+  get(wait: AnyEventWaitRecord): EventWaitSourceAdapter | undefined {
     return this.#adapters.get(
       key(
         wait.resource.providerId,
@@ -124,7 +135,7 @@ export class EventWaitAdapterRegistry {
       ),
     );
   }
-  validate(wait: ObservedEventWaitRecord): EventWaitSourceAdapter {
+  validate(wait: AnyEventWaitRecord): EventWaitSourceAdapter {
     const adapter = this.get(wait);
     if (!adapter) throw new TypeError('Unsupported event wait condition');
     adapter.validate(wait);

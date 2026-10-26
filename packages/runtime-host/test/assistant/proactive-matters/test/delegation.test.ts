@@ -143,6 +143,7 @@ test('delegate retries reuse child; wait and user amendment stay independent of 
       ).allow,
       true,
     );
+    await f.remote('matters.authorize-session', { sessionId: 'other' });
     await assert.rejects(f.invoke('MatterTasks', { id: a.id }, 'x', 'other'), /outside/);
     assert.deepEqual((await f.invoke('MatterTasks', {}, 'x', 'other')).items, []);
     await f.invoke('MatterTaskMessage', { id: a.id, text: '改为只验证测试环境，不用生产环境。' });
@@ -171,6 +172,7 @@ test('parent cancellation stops only its task and rejects late worker writes', a
   try {
     const a = await f.invoke('MatterDelegate', { taskKey: 'a', title: 'A', request: '只读跟进 A' });
     await until(() => d.calls.some((x: any) => x.op === 'followup'));
+    await f.remote('matters.authorize-session', { sessionId: 'other' });
     await assert.rejects(
       f.invoke('MatterTaskControl', { id: a.id, action: 'cancel' }, 'x', 'other'),
       /outside/,
@@ -270,12 +272,47 @@ test('legacy task adoption is explicit and cannot steal another conversation tas
   const { d } = driver(),
     f = await fixture({ driver: d });
   try {
-    const v = await f.invoke('MatterStart', { title: '旧任务', request: '历史任务' });
+    const v = await f.invoke('MatterStart', { title: '旧任务', request: '历史委托'.repeat(1000) });
     const id = (await f.remote('matters.list')).matters[0].id;
+    await f.invoke('MatterWriteFile', {
+      path: v.files.draft,
+      content: '完整工作报告'.repeat(1000),
+    });
+    await f.invoke('MatterCheckpoint', {
+      expectedRevision: v.revision,
+      stateFile: v.files.draft,
+      progressSummary: '已完成资料核查',
+    });
+    await f.remote('matters.authorize-session', { sessionId: 'other' });
+    await f.remote('matters.authorize-session', { sessionId: 'assistant' });
     assert.equal((await f.invoke('MatterOverview', {}, 'read', 'assistant')).legacy.length, 1);
     await f.invoke('MatterAdopt', { id }, 'adopt', 'assistant');
     assert.equal((await f.invoke('MatterTasks', {}, 'read', 'assistant')).items.length, 1);
     assert.equal((await f.invoke('MatterOverview', {}, 'read', 'assistant')).legacy.length, 0);
+    const overview = await f.invoke('MatterOverview', {}, 'read', 'assistant');
+    assert.equal(overview.items[0].summary, '已完成资料核查');
+    assert.deepEqual(
+      Object.keys(overview.items[0]).sort(),
+      [
+        'id',
+        'sessionId',
+        'title',
+        'status',
+        'summary',
+        'updatedAt',
+        'retryAt',
+        'runtimeStatus',
+      ].sort(),
+    );
+    assert.ok(Buffer.byteLength(JSON.stringify(overview)) < 2000);
+    const details = await f.invoke('MatterTasks', { id }, 'read', 'assistant');
+    assert.ok(details.request.length > 3000);
+    assert.ok(details.state.length > 5000);
+    assert.ok(Buffer.byteLength(JSON.stringify({ items: Array(72).fill(details) })) > 480 * 1024);
+    assert.ok(
+      Buffer.byteLength(JSON.stringify({ items: Array(72).fill(overview.items[0]) })) < 32 * 1024,
+    );
+
     await assert.rejects(f.invoke('MatterAdopt', { id }, 'adopt', 'other'), /另一段对话/);
   } finally {
     await f.close();
@@ -419,6 +456,7 @@ test('busy parent defers feedback; an accepted but missing reply survives restar
       (n: any) => n.phase === 'awaiting_reply',
     );
     assert.ok(notification);
+    await f.remote('matters.authorize-session', { sessionId: 'other' });
     await assert.rejects(
       f.invoke('MatterFeedbackRetry', { notificationId: notification.id }, 'retry', 'other'),
       /不属于/,

@@ -233,6 +233,11 @@ export interface MakaTool<P = any, R = unknown> {
   impl: (args: P, ctx: MakaToolContext) => Promise<R> | R;
   /** Explicit call status for tools with a declared result envelope. */
   resultOutcome?(output: R): ToolCallOutcome;
+  /**
+   * Notification after authoritative T2. It cannot gate continuation or change the
+   * committed outcome; consumers reconcile missed acknowledgements from the ledger.
+   */
+  onDurableOutcomeCommitted?: (outcome: MakaToolDurableOutcome) => void | Promise<void>;
   /** Best-effort compensation after T2 rejects a result that already produced side effects. */
   compensateDurableOutcomeCommitFailure?: (input: {
     readonly result: unknown;
@@ -248,9 +253,22 @@ export interface MakaTool<P = any, R = unknown> {
   }) => ToolResultOutput | undefined;
 }
 
+export interface MakaToolDurableOutcome {
+  readonly sessionId: string;
+  readonly turnId: string;
+  readonly runId: string;
+  readonly invocationId: string;
+  readonly operationId: string;
+  readonly toolCallId: string;
+  readonly resultEventId: string;
+  readonly result: unknown;
+  readonly isError: boolean;
+}
+
 export interface MakaToolContext {
   sessionId: string;
   runId?: string;
+  invocationId?: string;
   orchestrationMode?: OrchestrationMode;
   turnId: string;
   /** Session working directory. */
@@ -262,6 +280,8 @@ export interface MakaToolContext {
   /** Runtime-owned durable identity of this tool operation, when enabled. */
   operationId?: string;
   abortSignal: AbortSignal;
+  /** Notification of effective current-Turn input; never consumes a message. */
+  waitForSteering?: (signal: AbortSignal) => Promise<void>;
   emitOutput: (stream: ToolOutputStream, chunk: string) => void;
   /** Live-only bounded progress for multi-step tools. */
   emitProgress?: (current: number, total: number) => void;
@@ -397,6 +417,7 @@ export interface ToolRuntimeInput {
    */
   turnId: string;
   hostedInteraction?: HostedInteractionBridge;
+  waitForSteering?: (signal: AbortSignal) => Promise<void>;
   /**
    * Durable identity of the ONE run this ToolRuntime serves, fixed at
    * construction. It is deliberately a value and not a getter: a backend
@@ -1565,6 +1586,8 @@ export class ToolRuntime {
           sessionId: this.input.sessionId,
           turnId,
           ...(runId ? { runId } : {}),
+          ...(invocationId ? { invocationId } : {}),
+          ...(this.input.waitForSteering ? { waitForSteering: this.input.waitForSteering } : {}),
           ...(this.input.orchestrationMode
             ? { orchestrationMode: this.input.orchestrationMode }
             : {}),
@@ -2158,6 +2181,29 @@ export class ToolRuntime {
           operationId,
           ts: responseEvent.ts,
         };
+        // T2 is already authoritative. A local consumer ACK failure must neither
+        // rewrite success nor block a model step. The consumer owns bounded
+        // retries and startup reconciliation against this exact response.
+        const hook = input.tool.onDurableOutcomeCommitted;
+        if (hook) {
+          try {
+            void Promise.resolve(
+              hook({
+                sessionId: this.input.sessionId,
+                turnId: input.startEvent.turnId,
+                runId,
+                invocationId,
+                operationId,
+                toolCallId: input.startEvent.toolUseId,
+                resultEventId: responseEvent.id,
+                result: structuredClone(result),
+                isError,
+              }),
+            ).catch(() => undefined);
+          } catch {
+            // The durable response is the recovery proof for a missed notification.
+          }
+        }
         this.durableToolAttempts.delete(
           durableAttemptKey(input.startEvent.turnId, input.startEvent.toolUseId),
         );

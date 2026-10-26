@@ -19,11 +19,10 @@
 
 import type { DatabaseSync } from 'node:sqlite';
 import { decodeGoalAuthorityRecord } from '@maka/core/goal';
-import { decodeEventWaitRecord } from '@maka/core/event-wait';
-import type { RuntimeEvent } from '@maka/core/runtime-event';
+import { decodeAnyEventWaitRecord } from '@maka/core/event-wait';
 import type { GoalAuthoritySnapshot } from './goal-authority.js';
-import type { EventWaitSnapshot } from './event-wait-authority.js';
-import { suppressGoalWait, type GoalWaitSnapshot } from './event-wait-bridge.js';
+import type { AnyEventWaitSnapshot } from './event-wait-authority.js';
+import { retireNaturalGoalWaiting, type NaturalGoalWaitSnapshot } from './event-wait-bridge.js';
 
 export function readBridgeGoal(db: DatabaseSync, sessionId: string): GoalAuthoritySnapshot | null {
   const row = db
@@ -43,14 +42,14 @@ export function readBridgeGoal(db: DatabaseSync, sessionId: string): GoalAuthori
     throw new Error('Corrupt Goal authority');
   return { authorityRevision: row.authority_revision, record };
 }
-export function readBridgeWait(
+export function readAnyBridgeWait(
   db: DatabaseSync,
   sessionId: string,
   waitId: string,
-): EventWaitSnapshot | null {
+): AnyEventWaitSnapshot | null {
   const row = db.prepare('SELECT * FROM workflow_event_waits WHERE wait_id = ?').get(waitId);
   if (!row) return null;
-  const record = decodeEventWaitRecord(JSON.parse(String(row.record_json)));
+  const record = decodeAnyEventWaitRecord(JSON.parse(String(row.record_json)));
   if (
     record.sessionId !== sessionId ||
     row.session_id !== sessionId ||
@@ -65,18 +64,6 @@ export function readBridgeWait(
     throw new Error('Event wait ownership or indexed authority mismatch');
   return { authorityRevision: row.authority_revision, record };
 }
-export function readBridgeTermination(
-  db: DatabaseSync,
-  sessionId: string,
-  runId: string,
-): RuntimeEvent[] {
-  return db
-    .prepare(
-      "SELECT payload_json FROM runtime_events WHERE session_id = ? AND run_id = ? AND json_extract(payload_json, '$.status') IN ('completed', 'failed', 'cancelled', 'aborted') ORDER BY event_seq DESC LIMIT 1",
-    )
-    .all(sessionId, runId)
-    .map((row) => JSON.parse(String(row.payload_json)) as RuntimeEvent);
-}
 export function assertBridgeSession(db: DatabaseSync, sessionId: string): void {
   if (
     !db
@@ -87,7 +74,7 @@ export function assertBridgeSession(db: DatabaseSync, sessionId: string): void {
   )
     throw new Error('Event wait Session is unavailable');
 }
-export function writeBridgeWait(db: DatabaseSync, wait: EventWaitSnapshot): void {
+export function writeBridgeWait(db: DatabaseSync, wait: AnyEventWaitSnapshot): void {
   const r = wait.record;
   db.prepare(`INSERT INTO workflow_event_waits(wait_id, session_id, authority_revision, status, delivery_key, deadline_at, record_json) VALUES (?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(wait_id) DO UPDATE SET authority_revision = excluded.authority_revision, status = excluded.status, record_json = excluded.record_json`).run(
@@ -100,10 +87,10 @@ export function writeBridgeWait(db: DatabaseSync, wait: EventWaitSnapshot): void
     JSON.stringify(r),
   );
 }
-export function writeBridgeSnapshot(
+export function writeBridgeSnapshot<T extends NaturalGoalWaitSnapshot>(
   db: DatabaseSync,
-  snapshot: GoalWaitSnapshot,
-): GoalWaitSnapshot {
+  snapshot: T,
+): T {
   writeBridgeWait(db, snapshot.wait);
   const { goal, authorityRevision } = {
     goal: snapshot.goal.record,
@@ -121,21 +108,23 @@ export function writeBridgeSnapshot(
   );
   return snapshot;
 }
-export function suppressPreviousBridgeWait(
+export function retirePreviousSqliteGoalWaiting(
   db: DatabaseSync,
   sessionId: string,
   next: import('@maka/core/goal').GoalAuthorityRecord | null,
 ): void {
   const old = readBridgeGoal(db, sessionId)?.record;
-  const gate = old?.activeEventWait;
+  const observation = old?.pendingContinuation?.observation;
   if (
-    !gate ||
-    (next?.activeEventWait?.waitId === gate.waitId &&
-      next.controlLease.goalId === gate.controlLease.goalId &&
-      next.controlLease.generation === gate.controlLease.generation &&
-      ['active', 'waiting'].includes(next.goal.status))
-  )
-    return;
-  const wait = readBridgeWait(db, sessionId, gate.waitId);
-  if (wait) writeBridgeWait(db, suppressGoalWait(wait, Date.now()));
+    observation &&
+    !(
+      next?.pendingContinuation?.observation?.waitId === observation.waitId &&
+      next.controlLease.goalId === old.controlLease.goalId &&
+      next.controlLease.generation === old.controlLease.generation &&
+      ['active', 'waiting'].includes(next.goal.status)
+    )
+  ) {
+    const wait = readAnyBridgeWait(db, sessionId, observation.waitId);
+    if (wait) writeBridgeWait(db, retireNaturalGoalWaiting(wait, Date.now()));
+  }
 }

@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { useLayoutEffect, type ReactNode } from 'react';
+import { useLayoutEffect, useMemo, type ReactNode } from 'react';
 import { CatalogRowWatch } from '../../../application/contracts/session-catalog/catalog-row-watch.js';
 import { useSessionCatalogController } from '../../../application/contracts/session-catalog/session-catalog-state.js';
 import { StagedLocalMessages } from './staged-local-messages.js';
@@ -30,7 +30,11 @@ import type {
   ComposerSubmissionShell,
   ComposerSurfaceOwner,
 } from '../model/composer-submission-contract.js';
-import { ComposerSubmissionContext, ComposerTurnContext } from './composer-submission-context.js';
+import {
+  ComposerSubmissionContext,
+  ComposerTurnContext,
+  ConversationNavigationContext,
+} from './composer-submission-context.js';
 
 /**
  * Sole owner of the Composer's submission: the send-pending flag, the
@@ -59,6 +63,11 @@ export function ComposerSubmissionProvider<Owner extends ComposerSurfaceOwner>(p
   });
   const catalog = useSessionCatalogController();
   const { shellCommands } = submission;
+  const openSession = props.shell.openSession;
+  const navigation = useMemo(
+    () => ({ openSession: (sessionId: string) => openSession(sessionId) }),
+    [openSession],
+  );
   useLayoutEffect(() => {
     const binding = submissionBindings.get(props.commands);
     if (!binding) throw new Error('Unknown Composer submission commands');
@@ -74,7 +83,9 @@ export function ComposerSubmissionProvider<Owner extends ComposerSurfaceOwner>(p
           directoryHostId={props.directoryHostId}
           enabled={props.recoveryEnabled && !submission.reader.revisionDraft}
           restoreContext={props.staging.restoreContext} />
-        {props.children}
+        <ConversationNavigationContext.Provider value={navigation}>
+          {props.children}
+        </ConversationNavigationContext.Provider>
       </ComposerTurnContext.Provider>
     </ComposerSubmissionContext.Provider>
   );

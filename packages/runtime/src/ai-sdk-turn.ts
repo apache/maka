@@ -23,7 +23,7 @@
  * construction and cross-turn routing remain in AiSdkBackend.
  */
 
-import { EVENT_WAIT_TOOL_NAME, isEventWaitYieldReceipt } from './event-wait-tool.js';
+import { isEventWaitSteeringInterruption } from './event-wait-tool.js';
 import type {
   AbortEvent,
   CompleteEvent,
@@ -81,6 +81,7 @@ import {
   type CodeModeExecutionResult,
   DEFAULT_CODE_MODE_EXECUTION_POLICY,
   executeCodeCell,
+  CodeModeSteeringInterruption,
 } from './code-mode.js';
 import {
   StreamWatchdog,
@@ -619,12 +620,7 @@ export class AiSdkTurn {
   readonly activeTools: Map<string, string>;
   aborted = false;
   private stopRequested = false;
-  private turnYield:
-    | 'event_wait'
-    | 'plan_handoff'
-    | 'graph_yield'
-    | 'permission_handoff'
-    | undefined;
+  private turnYield: 'plan_handoff' | 'graph_yield' | 'permission_handoff' | undefined;
   private handoffPaused = false;
   watchdog: StreamWatchdog | null = null;
   runTrace: RunTrace | null = null;
@@ -838,6 +834,7 @@ export class AiSdkTurn {
         'Use tools.<name>(args), await dependent calls, and Promise.all for independent calls.',
         'The sandbox has no process, filesystem, network, timer, eval, import, or cross-cell state.',
         'Terminate by returning a JSON-serializable value. Failures return a structured diagnostic.',
+        'After a user-input interruption, toolCalls includes each interruptedResult with its input and result. Use the returned waitId as resumeWaitId to resume that exact wait.',
       ].join(' '),
       parameters: z.object({ code: z.string() }),
       executionSemantics: 'exclusive_step',
@@ -2226,13 +2223,6 @@ export class AiSdkTurn {
               await loadDurableTurnEvents();
             }
             const toolsByName = new Map(providerTools.map((tool) => [tool.name, tool]));
-            // A wait controls the lifetime of the whole Turn. Refuse the entire
-            // mixed step before dispatch, rather than letting the first call win
-            // the ordinary exclusive-step gate and leaving a registered orphan.
-            const mixedEventWait =
-              returnedToolCalls.length > 1 &&
-              toolsByName.has(EVENT_WAIT_TOOL_NAME) &&
-              returnedToolCalls.some((call) => call.toolName === EVENT_WAIT_TOOL_NAME);
             const settlementOutcomes = await Promise.allSettled(
               returnedToolCalls.map(async (toolCall) => {
                 if (toolCall.providerExecuted) {
@@ -2247,20 +2237,17 @@ export class AiSdkTurn {
                 if (deniedBoundaryRequest) {
                   toolRuntime.forceSandboxBoundaryFinalization();
                 }
-                const blockedToolCall =
-                  mixedEventWait || sandboxBoundaryFinalizationStep || deniedBoundaryRequest;
+                const blockedToolCall = sandboxBoundaryFinalizationStep || deniedBoundaryRequest;
                 const requestedTool = blockedToolCall
                   ? undefined
                   : toolsByName.get(toolCall.toolName);
                 const tool = requestedTool ?? toolsByName.get(INVALID_TOOL_NAME);
                 if (!tool) throw new Error('Runtime invalid-tool fallback is unavailable');
-                const unavailableError = mixedEventWait
-                  ? 'WaitForEvent requires a step containing exactly one tool call. No tools in this mixed step ran.'
-                  : sandboxBoundaryFinalizationStep
-                    ? 'Sandbox boundary finalization does not permit tool execution.'
-                    : deniedBoundaryRequest
-                      ? SANDBOX_BOUNDARY_DENIED_FOR_TURN
-                      : 'returned tool is unavailable';
+                const unavailableError = sandboxBoundaryFinalizationStep
+                  ? 'Sandbox boundary finalization does not permit tool execution.'
+                  : deniedBoundaryRequest
+                    ? SANDBOX_BOUNDARY_DENIED_FOR_TURN
+                    : 'returned tool is unavailable';
                 return await toolRuntime.settleToolCall({
                   tool,
                   turnId,
@@ -2308,13 +2295,6 @@ export class AiSdkTurn {
                 !settlement.providerError
               )
                 toolRequestedFinish = true;
-              if (
-                returnedToolCalls.length === 1 &&
-                !settlement.providerError &&
-                isEventWaitYieldReceipt(settlement.result)
-              ) {
-                this.turnYield = 'event_wait';
-              }
               if (isPlanToolResult(settlement.result)) {
                 this.handlePlanToolResult(settlement.result, queue);
               }
@@ -2756,6 +2736,8 @@ export class AiSdkTurn {
           if (settlement.providerError !== undefined) {
             throw new Error(settlement.providerError);
           }
+          if (isEventWaitSteeringInterruption(settlement.result))
+            throw new CodeModeSteeringInterruption(settlement.result);
           if (nestedOutputLimitExceeded) {
             throw new Error('Code Mode nested output byte limit exceeded');
           }

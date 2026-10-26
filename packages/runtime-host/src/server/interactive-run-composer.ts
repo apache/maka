@@ -166,7 +166,9 @@ export interface InteractiveRunComposerInput {
   ) => Promise<ResolvedRunPrompt>;
   readonly scheduledTaskTool?: MakaTool;
   readonly goalTools?: readonly MakaTool[];
-  readonly eventWaitAvailable?: () => boolean;
+  readonly eventWaitAvailable?: (
+    identity?: Parameters<NonNullable<HostRunComposer['resolveTools']>>[0],
+  ) => boolean;
   readonly parentAgentTools?: readonly MakaTool[];
   readonly plan?: {
     readonly store: PlanStore;
@@ -219,16 +221,18 @@ export function createInteractiveRunComposer(input: InteractiveRunComposerInput)
       : input.returnMissingInformation === true;
   const topicGate =
     input.toolProfile === 'workhub-coordination-v2' ? createWorkHubTopicGate() : undefined;
-  const resolveTools = (): readonly MakaTool[] => {
+  const resolveTools: NonNullable<HostRunComposer['resolveTools']> = (
+    identity,
+  ): readonly MakaTool[] => {
     const stableHostTools = [...defaultTools, ...clientCapabilityTools].filter(
-      (tool) => tool.name !== 'WaitForEvent' || input.eventWaitAvailable?.() === true,
+      (tool) => tool.name !== 'WaitForEvent' || input.eventWaitAvailable?.(identity) === true,
     );
     const additionalTools = hasToolCeiling
       ? []
       : (input.resolveAdditionalTools?.(stableHostTools) ?? []);
     const candidateTools = projectHostedExecutionTools(
       // This control tool must retain the Host implementation and its trusted
-      // yield receipt; a dynamic plugin cannot fill a temporarily hidden slot.
+      // operation identity; a dynamic plugin cannot fill a temporarily hidden slot.
       [...stableHostTools, ...additionalTools.filter((tool) => tool.name !== 'WaitForEvent')].map(
         (tool) =>
           tool.name === 'AskUserQuestion'

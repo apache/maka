@@ -20,11 +20,11 @@
 import { Fragment, memo, useEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type ReactNode } from 'react';
 import { ICON_SIZE, GitBranch, Pencil, RefreshCcw, Timer } from './icons.js';
 import { useClipboardCopyFeedback } from './clipboard-feedback.js';
-import { MessageSummary } from './message-summary.js';
 import { TranscriptDisclosure } from './transcript-disclosure.js';
 import { Markdown } from './markdown.js';
 import { formatTurnDuration } from './chat-display-helpers.js';
 import { formatAbsoluteTimestamp } from '@maka/core/relative-time';
+import { isAssistantInputTurnId } from '@maka/core/assistant-turn-ids';
 import { isTimeDrivenMotionEnabled, isProgressiveStreamingEnabled } from './streaming-presentation.js';
 import { ImageMessageProvider } from './image-delivery.js';
 import { computerRunningLabel } from './tool-activity/computer-action-label.js';
@@ -538,7 +538,7 @@ export const TurnView = memo(function TurnView(props: {
     turn.timeline.length > 0 ||
     !!props.liveStreaming ||
     (turn.user !== undefined &&
-      !turn.turnId.startsWith('assistant-input:') &&
+      !isAssistantInputTurnId(turn.turnId) &&
       turn.statusSource === 'recorded' && turn.status !== 'running');
   const runningToolLabel = computerRunningLabel(turn.tools, locale);
   const conversationSegments = useMemo(
@@ -997,6 +997,8 @@ export function PendingTurnAnswer(props: {
   turnId?: string;
   startedAt?: number;
   running: boolean;
+  /** Local submission is already processing before the Host names its Turn. */
+  activityLabel?: string;
   providerRetry?: LiveProviderRetry;
 }) {
   const locale = useUiLocale();
@@ -1010,7 +1012,7 @@ export function PendingTurnAnswer(props: {
       className="maka-chat-message maka-assistant-answer"
     >
       <VStack gap={2} width="100%" className="maka-assistant-answer-content">
-        <TurnStatusBar status="running" running={props.running} startedAt={startedAt} providerRetry={props.providerRetry} />
+        <TurnStatusBar status="running" running={props.running} startedAt={startedAt} activityLabel={props.activityLabel} providerRetry={props.providerRetry} />
         {props.providerRetry && <ModelProviderRetryIndicator retry={props.providerRetry} />}
       </VStack>
       <TurnFooter turnId={props.turnId} actions={[]} live context={context} />
@@ -1369,10 +1371,11 @@ const AssistantAnswerBubble = memo(function AssistantAnswerBubble(props: Assista
           : 'maka-chat-message-bubble maka-chat-message-bubble-assistant maka-bubble-streaming'
       }
     >
-      <MessageSummary summary={props.summary}>
       <ImageMessageProvider identity={props.imageIdentity} streaming={isProgressiveStreamingEnabled(props.phase === 'streaming')}>
         <Markdown
           text={props.text}
+          summary={props.summary}
+          separateStickers
           imageDisplay={props.imageDisplay}
           streaming={props.phase === 'streaming'}
           settledText={settledText}
@@ -1389,7 +1392,6 @@ const AssistantAnswerBubble = memo(function AssistantAnswerBubble(props: Assista
           density="compact"
         />
       </ImageMessageProvider>
-      </MessageSummary>
       {truncated && (
         <Tooltip content={copy.outputTruncatedTitle}>
           {/* Colour-name archive, not the semantic one: Astryx paints

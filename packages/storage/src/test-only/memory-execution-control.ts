@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { suppressPreviousMemoryWait } from './memory-event-wait-bridge.js';
+import { retirePreviousMemoryGoalWaiting } from './memory-event-wait-bridge.js';
 import {
   decodeInteractionCanonicalOutcome,
   isInteractionCanonicalOutcomeValidForRequest,
@@ -224,7 +224,7 @@ export function createMemoryGoalStore(a: MemoryExecutionAuthority): GoalAuthorit
           actual = old?.authorityRevision ?? null;
         if (actual !== input.expectedAuthorityRevision)
           return { kind: 'revision_conflict', actualAuthorityRevision: actual };
-        suppressPreviousMemoryWait(s, input.sessionId, record);
+        retirePreviousMemoryGoalWaiting(s, input.sessionId, record);
         if (!record) {
           table.delete(input.sessionId);
           return { kind: 'committed', snapshot: null };

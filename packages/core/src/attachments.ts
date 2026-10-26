@@ -27,6 +27,12 @@ export type AttachmentByteReader = (
 
 export const ATTACHMENT_RESOURCE_PREFIX = 'maka://runtime/attachments';
 
+/** Presentation-only marker on Host-published sticker attachments; never a read grant. */
+export const STICKER_ARTIFACT_PREFIX = 'assistant_sticker_';
+export function isStickerArtifactId(id: string): boolean {
+  return /^assistant_sticker_[a-f0-9]{64}$/.test(id);
+}
+
 /**
  * Convert a durable Session attachment into the opaque ref accepted by Read.
  * The Session remains implicit in the tool invocation so a ref cannot grant

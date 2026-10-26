@@ -24,6 +24,7 @@ import { existsSync, mkdirSync, readFileSync, realpathSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { MatterReviewInvalidated } from './review.js';
 import { MatterFiles } from './files.js';
+import { PENDING_ACTIVATION_TURN_PREFIX, isPendingActivationTurnId } from './matter.js';
 import { join, isAbsolute } from 'node:path';
 import { createRequire } from 'node:module';
 import { randomUUID } from 'node:crypto';
@@ -546,7 +547,7 @@ class SqliteMatterStore implements MatterStore {
       if (!events.length) return null;
       const activation = {
         id: this.newId(),
-        turnId: `pending:${this.newId()}`,
+        turnId: `${PENDING_ACTIVATION_TURN_PREFIX}${this.newId()}`,
         eventCursor: events.at(-1)!.sequence,
         startedAt: this.now(),
         settled: false,
@@ -569,7 +570,7 @@ class SqliteMatterStore implements MatterStore {
       const m = this.assertActive(id, activationId);
       if (m.activation!.turnId === turnId) return m;
       // Only the unbound dispatch marker may be replaced by a real Host turn.
-      if (!m.activation!.turnId.startsWith('pending:'))
+      if (!isPendingActivationTurnId(m.activation!.turnId))
         throw new Error('Activation is already bound to another turn');
       m.activation!.turnId = turnId;
       m.retryAt = null;
@@ -656,18 +657,32 @@ class SqliteMatterStore implements MatterStore {
     revision: number,
     body: string,
     operationId: string,
+    progressSummary?: string,
   ): Matter {
     const content = stateText(body);
+    if (progressSummary !== undefined) this.validateProgressSummary(progressSummary);
     return this.mutate(
       id,
       activationId,
       revision,
       operationId,
-      JSON.stringify(['checkpoint', id, activationId, revision, content]),
+      JSON.stringify([
+        'checkpoint',
+        id,
+        activationId,
+        revision,
+        content,
+        ...(progressSummary === undefined ? [] : [progressSummary]),
+      ]),
       (m) => {
         m.stateText = content;
+        if (progressSummary !== undefined) m.progressSummary = progressSummary.trim();
       },
     );
+  }
+  private validateProgressSummary(value: string): void {
+    if (!value.trim() || Array.from(value.trim()).length > 30)
+      throw new Error('Progress summary must contain 1–30 characters');
   }
   private reviewBasis(id: string, activationId: string, draftPath?: string): string {
     return createHash('sha256')
@@ -841,6 +856,8 @@ class SqliteMatterStore implements MatterStore {
         stateText(input.stateText);
         text(input.reason, 2000, 'reason');
         text(input.summary, 4000, 'summary');
+        if (input.progressSummary !== undefined)
+          this.validateProgressSummary(input.progressSummary);
         if (input.next !== undefined) text(input.next, 2000, 'next');
         if (!['continue', 'wait', 'complete'].includes(input.disposition))
           throw new Error('Invalid disposition');
@@ -874,6 +891,7 @@ class SqliteMatterStore implements MatterStore {
           );
         }
         m.stateText = input.stateText;
+        if (input.progressSummary !== undefined) m.progressSummary = input.progressSummary.trim();
         m.activation!.settled = true;
         m.executionFailures = 0;
         m.lastFailure = null;
@@ -931,7 +949,7 @@ class SqliteMatterStore implements MatterStore {
       const m = this.read(id);
       if (
         m.activation?.id !== activationId ||
-        !m.activation.turnId.startsWith('pending:') ||
+        !isPendingActivationTurnId(m.activation.turnId) ||
         m.activation.settled
       )
         throw Error('Only an explicitly rejected, unbound wake can be retried');

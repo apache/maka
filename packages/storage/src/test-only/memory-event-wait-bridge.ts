@@ -19,9 +19,13 @@
 
 import type { GoalAuthorityRecord } from '@maka/core/goal';
 import type { GoalAuthoritySnapshot } from '../goal-authority.js';
-import type { EventWaitSnapshot } from '../event-wait-authority.js';
+import type { AnyEventWaitSnapshot } from '../event-wait-authority.js';
 import type { RootTurnAdmission } from '../agent-run-store-contract.js';
-import { admitGoalWait, suppressGoalWait, type GoalWaitSnapshot } from '../event-wait-bridge.js';
+import {
+  admitNaturalGoalWaiting,
+  retireNaturalGoalWaiting,
+  type NaturalGoalWaitSnapshot,
+} from '../event-wait-bridge.js';
 import { rows, type MemoryState } from './memory-execution-state.js';
 import type { SessionHeaderSnapshot } from '../session-store-contract.js';
 export function assertMemoryBridgeSession(s: MemoryState, sessionId: string): void {
@@ -29,35 +33,44 @@ export function assertMemoryBridgeSession(s: MemoryState, sessionId: string): vo
   if (!session || session.header.isArchived || rows(s, 'tombstones').has(sessionId))
     throw new Error('Event wait Session is unavailable');
 }
-export function writeMemoryBridge(s: MemoryState, snapshot: GoalWaitSnapshot): GoalWaitSnapshot {
-  rows<EventWaitSnapshot>(s, 'eventWaits').set(snapshot.wait.record.waitId, snapshot.wait);
+export function writeMemoryBridge<T extends NaturalGoalWaitSnapshot>(
+  s: MemoryState,
+  snapshot: T,
+): T {
+  rows<AnyEventWaitSnapshot>(s, 'eventWaits').set(snapshot.wait.record.waitId, snapshot.wait);
   rows<GoalAuthoritySnapshot>(s, 'goals').set(snapshot.goal.record.goal.sessionId, snapshot.goal);
   return snapshot;
 }
-export function admitMemoryGoalWait(s: MemoryState, admission: RootTurnAdmission): void {
-  if (admission.execution.kind !== 'goal' || !admission.execution.eventWait) return;
-  assertMemoryBridgeSession(s, admission.sessionId);
-  const goal = rows<GoalAuthoritySnapshot>(s, 'goals').get(admission.sessionId) ?? null;
-  const wait = rows<EventWaitSnapshot>(s, 'eventWaits').get(admission.execution.eventWait.waitId);
-  if (!wait) throw new Error('Event wait missing at admission');
-  writeMemoryBridge(s, admitGoalWait(admission, goal, wait));
+export function admitMemoryNaturalGoalWaiting(s: MemoryState, admission: RootTurnAdmission): void {
+  if (admission.execution.kind === 'goal' && admission.execution.goalWaiting) {
+    assertMemoryBridgeSession(s, admission.sessionId);
+    const goal = rows<GoalAuthoritySnapshot>(s, 'goals').get(admission.sessionId) ?? null;
+    const wait = rows<AnyEventWaitSnapshot>(s, 'eventWaits').get(
+      admission.execution.goalWaiting.waitId,
+    );
+    if (!wait) throw new Error('Natural Goal wait missing at admission');
+    writeMemoryBridge(s, admitNaturalGoalWaiting(admission, goal, wait));
+    return;
+  }
 }
-export function suppressPreviousMemoryWait(
+export function retirePreviousMemoryGoalWaiting(
   s: MemoryState,
   sessionId: string,
   next: GoalAuthorityRecord | null,
 ): void {
   const old = rows<GoalAuthoritySnapshot>(s, 'goals').get(sessionId)?.record;
-  const gate = old?.activeEventWait;
+  const observation = old?.pendingContinuation?.observation;
   if (
-    !gate ||
-    (next?.activeEventWait?.waitId === gate.waitId &&
-      next.controlLease.goalId === gate.controlLease.goalId &&
-      next.controlLease.generation === gate.controlLease.generation &&
-      ['active', 'waiting'].includes(next.goal.status))
-  )
-    return;
-  const waits = rows<EventWaitSnapshot>(s, 'eventWaits'),
-    wait = waits.get(gate.waitId);
-  if (wait) waits.set(gate.waitId, suppressGoalWait(wait, Date.now()));
+    observation &&
+    !(
+      next?.pendingContinuation?.observation?.waitId === observation.waitId &&
+      next.controlLease.goalId === old.controlLease.goalId &&
+      next.controlLease.generation === old.controlLease.generation &&
+      ['active', 'waiting'].includes(next.goal.status)
+    )
+  ) {
+    const waits = rows<AnyEventWaitSnapshot>(s, 'eventWaits');
+    const wait = waits.get(observation.waitId);
+    if (wait) waits.set(observation.waitId, retireNaturalGoalWaiting(wait, Date.now()));
+  }
 }

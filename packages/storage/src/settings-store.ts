@@ -27,6 +27,12 @@ import { createDefaultSettings, mergeSettings, normalizeSettings } from '@maka/c
 import { sanitizeOnboardingMilestones } from '@maka/core/onboarding';
 import { AtomicFileWriteCommitUnknownError, writeAtomicFile } from './atomic-file-write.js';
 import { syncDirectory } from './stable-storage.js';
+import { setTimeout as delay } from 'node:timers/promises';
+import {
+  openStableNativeLockFile,
+  releaseNativeFileLock,
+  tryAcquireNativeFileLock,
+} from './native-file-lock.js';
 
 export interface CorruptSettingsRecovery {
   readonly settingsPath: string;
@@ -411,7 +417,24 @@ class FileSettingsStore implements SettingsStore {
   }
 
   private withQueue(operation: () => Promise<void>): Promise<void> {
-    const next = this.queue.then(operation, operation);
+    const locked = async () => {
+      // Desktop and the Host use distinct store instances, often in distinct
+      // processes. Atomic rename alone cannot protect read-modify-write.
+      await mkdir(dirname(this.settingsPath), { recursive: true });
+      const lock = await openStableNativeLockFile(`${this.settingsPath}.lock`);
+      try {
+        const deadline = Date.now() + 30_000;
+        while (!tryAcquireNativeFileLock(lock)) {
+          if (Date.now() >= deadline) throw new Error('Timed out waiting for the settings writer');
+          await delay(10);
+        }
+        await operation();
+      } finally {
+        releaseNativeFileLock(lock);
+        await lock.close();
+      }
+    };
+    const next = this.queue.then(locked, locked);
     this.queue = next.catch(() => {});
     return next;
   }
