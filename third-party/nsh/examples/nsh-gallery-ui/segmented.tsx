@@ -87,4 +87,3 @@ export function Segmented<T extends string>(props: {
     </Tabs>
   );
 }
-

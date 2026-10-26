@@ -190,4 +190,3 @@ export const hovered = (): ViewStyle => ({ backgroundColor: alpha(colors.text, 0
  * outside, around a filled button).
  */
 export const focusRing = (offset = -2): ViewStyle => ({ outlineStyle: "solid", outlineWidth: 2, outlineColor: colors.info, outlineOffset: offset });
-
