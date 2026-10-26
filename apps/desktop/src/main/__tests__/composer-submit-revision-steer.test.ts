@@ -23,7 +23,7 @@ import {
   revisionAwareSend,
   type RevisionDraftIdentity,
   type RevisionSendPorts,
-} from '../../renderer/features/conversation/controller/composer-submit.js';
+} from '../../renderer/features/conversation/testing.js';
 
 const SESSION_1 = JSON.stringify(['host-1', 'session-1']);
 
