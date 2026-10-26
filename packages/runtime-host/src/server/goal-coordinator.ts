@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { runtimeInvocationOutcome } from '@maka/core/runtime-invocation';
 import type { HostEventWaitSources } from './event-wait-sources.js';
 import type { HostEventWaitObserver } from './event-wait-manager.js';
 import { HostGoalWaitingCoordinator } from './goal-waiting.js';
@@ -142,6 +143,7 @@ export class HostGoalCoordinator {
     'goal.control': (input) => this.#control(input),
   };
 
+  readonly #readSessionContext: HostGoalCoordinatorOptions['readSessionContext'];
   readonly #cancelInvocationWait: HostGoalCoordinatorOptions['cancelInvocationWait'];
   readonly manager: GoalManager;
   readonly continuation: GoalContinuationCoordinator;
@@ -183,6 +185,7 @@ export class HostGoalCoordinator {
   #draining = false;
 
   constructor(options: HostGoalCoordinatorOptions) {
+    this.#readSessionContext = options.readSessionContext;
     this.#cancelInvocationWait = options.cancelInvocationWait;
     this.#store = authenticateInteractiveGoalAuthorityWriter(options.store);
     this.#stores = options.stores;
@@ -331,6 +334,10 @@ export class HostGoalCoordinator {
   async recover(): Promise<void> {
     if (!this.#prepared) throw new Error('Goal recovery was not prepared');
     for (const snapshot of this.#authorityBySession.values()) {
+      if (snapshot.record.legacyEventWaitSettlement) {
+        await this.#settleRetiredEventWait(snapshot);
+        continue;
+      }
       if (snapshot.record.currentExecution) {
         await this.#recoverCurrentExecution(snapshot.record.currentExecution);
       } else if (snapshot.record.pendingContinuation) {
@@ -340,6 +347,47 @@ export class HostGoalCoordinator {
       }
     }
     await this.goalWaitingBridge?.start();
+  }
+
+  /** Complete only the old source Turn's accounting after Runtime recovery. */
+  async #settleRetiredEventWait(snapshot: GoalAuthoritySnapshot): Promise<void> {
+    const { legacyEventWaitSettlement: source, ...record } = snapshot.record;
+    if (!source || !this.#stores.runtimeEventStore)
+      throw new Error('Missing legacy wait recovery facts');
+    const run = await this.#stores.runtimeEventStore.readRunInvocation(
+      source.sessionId,
+      source.runId,
+    );
+    if (!run || run.turnId !== source.turnId || !runtimeInvocationOutcome(run))
+      throw new Error('Legacy wait source has not finished Runtime recovery');
+    let goal = record.goal;
+    if (
+      run.terminalEvent?.status === 'completed' &&
+      run.terminalEvent.actions?.stateDelta?.stopReason === 'event_wait'
+    ) {
+      const { messages } = await this.#readSessionContext(source.sessionId);
+      const manager = new GoalManager({ now: () => goal.pausedAt!, generateId: this.#newId });
+      manager.restore({ ...goal, status: 'active' }, record.controlLease);
+      const settled = manager.settleTurn(source.sessionId, {
+        checkpoint: { goalId: goal.id, revision: goal.revision },
+        verdict: 'continue',
+        reason: goal.lastReason!,
+        tokensNow: tokenCount(messages, source.turnId),
+      });
+      if (!settled) throw new Error('Retired wait source accounting changed');
+      goal = { ...settled, status: settled.status === 'active' ? 'paused' : settled.status };
+    }
+    // This commit removes the obligation together with the accounting result.
+    // A crash before it repeats the calculation; a crash after it cannot charge again.
+    const next = { ...record, goal, currentExecution: null };
+    const committed = await this.#store.commit({
+      sessionId: source.sessionId,
+      expectedAuthorityRevision: snapshot.authorityRevision,
+      record: next,
+    });
+    if (committed.kind !== 'committed' || !committed.snapshot)
+      throw new Error('Retired wait settlement authority changed');
+    this.#adoptGoalAdmission(committed.snapshot);
   }
 
   async readEventWaits(

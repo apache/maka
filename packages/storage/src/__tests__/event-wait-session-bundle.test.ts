@@ -303,8 +303,13 @@ async function withRoots(
   }
 }
 
-for (const mode of ['portable', 'snapshot'] as const) {
-  test(`${mode} Session Bundle removes natural Goal observation linkage as well as consumer rows`, async () => {
+for (const [mode, legacySettlement] of [
+  ['portable', false],
+  ['portable', true],
+  ['snapshot', false],
+  ['snapshot', true],
+] as const) {
+  test(`${mode} Session Bundle removes wait linkage (legacy settlement: ${legacySettlement})`, async () => {
     await withRoots(async ({ source, target, configRoot, bundleRoot }) => {
       const session = await source.stores.sessionStore.create(
         sessionInput(source.root, 'Natural waiting'),
@@ -329,7 +334,7 @@ for (const mode of ['portable', 'snapshot'] as const) {
           goalRevision: 1,
         },
       };
-      const goal: GoalAuthorityRecord = {
+      let goal: GoalAuthorityRecord = {
         schemaVersion: 1,
         controlLease: goalControlLease,
         currentExecution: null,
@@ -363,6 +368,26 @@ for (const mode of ['portable', 'snapshot'] as const) {
           },
         },
       };
+      if (legacySettlement)
+        goal = {
+          ...goal,
+          goal: { ...goal.goal, status: 'paused', pausedAt: 11 },
+          pendingContinuation: null,
+          currentExecution: {
+            execution: {
+              sessionId: session.id,
+              turnId: record.sourceTurnId,
+              runId: 'source-run',
+            },
+            checkpoint: { goalId: 'goal', revision: 1 },
+            controlLease: goalControlLease,
+          },
+          legacyEventWaitSettlement: {
+            sessionId: session.id,
+            turnId: record.sourceTurnId,
+            runId: 'source-run',
+          },
+        };
       await source.stores.runtimeEventStore.appendRuntimeEvent(session.id, 'source-run', {
         id: 'completed',
         sessionId: session.id,
@@ -386,7 +411,7 @@ for (const mode of ['portable', 'snapshot'] as const) {
         ).kind,
         'committed',
       );
-      await source.stores.eventWaitStore.registerGoalWaitingWait({ record });
+      if (!legacySettlement) await source.stores.eventWaitStore.registerGoalWaitingWait({ record });
       await exportSessionBundleState({
         stateRoot: source.root,
         configRoot,
@@ -410,6 +435,8 @@ for (const mode of ['portable', 'snapshot'] as const) {
       const imported = (await target.stores.goalStore.read(session.id))!.record;
       assert.equal(imported.goal.status, 'paused');
       assert.equal(imported.pendingContinuation, null);
+      assert.equal(imported.legacyEventWaitSettlement, undefined);
+      assert.equal(imported.currentExecution, null);
       assert.equal(imported.controlLease.generation, goalControlLease.generation + 1);
       assert.deepEqual(
         (await target.stores.eventWaitStore.listAny({ sessionId: session.id, limit: 10 })).items,
@@ -423,7 +450,7 @@ for (const mode of ['portable', 'snapshot'] as const) {
             waitId: record.waitId,
           })
         )?.record.status,
-        'waiting',
+        legacySettlement ? undefined : 'waiting',
       );
     });
   });

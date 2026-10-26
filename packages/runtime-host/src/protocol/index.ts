@@ -109,7 +109,9 @@ export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
 // Re-check against main before merging; sibling PRs may use the same next epoch.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 233 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 236 as const;
+// 236: Goal event wait consumers include the assistant character and pet operations from main.
+// 235: Goal event wait consumers include the quick-discovery operations from main.
 // 233: Goal event wait consumers include the Session check-in operations from main.
 // 232: event_wait domain invalidations refresh paginated Session wait collections,
 // including changes beyond the first continuity page and durable consumption.

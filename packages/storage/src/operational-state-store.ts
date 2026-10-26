@@ -21,6 +21,7 @@ import { existsSync, mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { createRequire } from 'node:module';
 import type { DatabaseSync } from 'node:sqlite';
+import { retireLegacyGoalEventWaits } from './legacy-goal-event-wait-migration.js';
 import {
   configureSqliteRuntimeDatabase,
   configureSqliteRuntimeAutoVacuumForNewDatabase,
@@ -494,6 +495,7 @@ export function migrateOperationalStateDatabaseInternal(db: DatabaseSync, now: (
     migrateSqliteSessionMetadataDatabase(db, { transaction: 'caller' });
     migrateSqliteCoreExecutionDatabase(db);
     migrateSqliteWorkflowDatabase(db);
+    retireLegacyGoalEventWaits(db, now());
     insertMigratedScheduledTasks(db, legacyScheduledTasks);
     migrateSqliteUsageDatabase(db);
     migrateSqliteArtifactDatabase(db);

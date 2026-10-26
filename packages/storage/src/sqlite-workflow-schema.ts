@@ -20,7 +20,8 @@
 import type { DatabaseSync } from 'node:sqlite';
 
 // v16 adds consumer-scoped waits and permits absence of a semantic deadline.
-export const SQLITE_WORKFLOW_SCHEMA_VERSION = 16;
+// v17 retires PR3/PR4 Goal-owned waits while preserving execution history.
+export const SQLITE_WORKFLOW_SCHEMA_VERSION = 17;
 
 const RELEASED_WORKFLOW_PROJECTION_TABLES = [
   {

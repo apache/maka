@@ -4198,6 +4198,7 @@ export class SessionManager {
         kind: 'goal',
         goalId: input.execution.goalId,
         ...(input.execution.goalWaiting ? { goalWaiting: input.execution.goalWaiting } : {}),
+        ...(input.execution.eventWait ? { eventWait: input.execution.eventWait } : {}),
       };
       recoveryReason = 'goal_internal_admission_without_run';
       diagnostic = {

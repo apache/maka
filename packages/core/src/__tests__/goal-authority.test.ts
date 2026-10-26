@@ -166,3 +166,26 @@ function goalAuthorityRecord(): GoalAuthorityRecord {
     pendingContinuation: null,
   };
 }
+
+test('retired wait settlement belongs only to the paused original Goal Turn', () => {
+  const base = goalAuthorityRecord();
+  const record = {
+    ...base,
+    goal: { ...base.goal, status: 'paused', pausedAt: 5 },
+    legacyEventWaitSettlement: base.currentExecution!.execution,
+  };
+  assert.deepEqual(decodeGoalAuthorityRecord(record), record);
+  for (const invalid of [
+    { ...record, goal: { ...record.goal, status: 'active' } },
+    { ...record, currentExecution: null },
+    {
+      ...record,
+      legacyEventWaitSettlement: { ...record.legacyEventWaitSettlement, turnId: 'other' },
+    },
+    {
+      ...record,
+      legacyEventWaitSettlement: { ...record.legacyEventWaitSettlement, sessionId: 'other' },
+    },
+  ])
+    assert.throws(() => decodeGoalAuthorityRecord(invalid));
+});

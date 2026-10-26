@@ -394,6 +394,7 @@ export function hostedExecutionMessageOrigin(execution: RootExecutionDescriptor)
         kind: 'goal' as const,
         goalId: execution.goalId,
         ...(execution.goalWaiting ? { goalWaiting: execution.goalWaiting } : {}),
+        ...(execution.eventWait ? { eventWait: execution.eventWait } : {}),
       };
     case 'agent_graph_supervisor_wake':
       return {

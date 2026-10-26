@@ -152,6 +152,8 @@ export interface GoalAuthorityRecord {
   readonly controlLease: GoalControlLease;
   readonly currentExecution: GoalCurrentExecution | null;
   readonly pendingContinuation: GoalPendingContinuation | null;
+  /** One-time PR3/PR4 retirement accounting; never permits continuation. */
+  readonly legacyEventWaitSettlement?: GoalExecutionRef;
 }
 
 const GOAL_STATE_SHAPE = defineObjectShape<GoalState>()(
@@ -191,10 +193,10 @@ const GOAL_PENDING_CONTINUATION_SHAPE = defineObjectShape<GoalPendingContinuatio
 );
 const GOAL_AUTHORITY_RECORD_SHAPE = defineObjectShape<GoalAuthorityRecord>()(
   ['schemaVersion', 'goal', 'controlLease', 'currentExecution', 'pendingContinuation'],
-  [],
+  ['legacyEventWaitSettlement'],
 );
 const GOAL_AUTHORITY_RECORD_V1_SHAPE = defineObjectShape<
-  Omit<GoalAuthorityRecord, 'pendingContinuation'>
+  Omit<GoalAuthorityRecord, 'pendingContinuation' | 'legacyEventWaitSettlement'>
 >()(['schemaVersion', 'goal', 'controlLease', 'currentExecution'], []);
 const GOAL_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 
@@ -217,6 +219,19 @@ export function decodeGoalAuthorityRecord(value: unknown): GoalAuthorityRecord {
     value.pendingContinuation === undefined || value.pendingContinuation === null
       ? null
       : decodeGoalPendingContinuation(value.pendingContinuation, goal, controlLease);
+  const legacyEventWaitSettlement =
+    value.legacyEventWaitSettlement === undefined
+      ? undefined
+      : decodeGoalExecutionRef(value.legacyEventWaitSettlement);
+  if (
+    legacyEventWaitSettlement &&
+    (goal.status !== 'paused' ||
+      pendingContinuation ||
+      !currentExecution ||
+      legacyEventWaitSettlement.sessionId !== goal.sessionId ||
+      legacyEventWaitSettlement.turnId !== currentExecution.execution.turnId)
+  )
+    throw new TypeError('Invalid retired Goal wait settlement');
   if (currentExecution && pendingContinuation) {
     throw new TypeError('Goal authority cannot have current and pending execution together');
   }
@@ -229,6 +244,7 @@ export function decodeGoalAuthorityRecord(value: unknown): GoalAuthorityRecord {
     controlLease,
     currentExecution,
     pendingContinuation,
+    ...(legacyEventWaitSettlement ? { legacyEventWaitSettlement } : {}),
   });
 }
 
