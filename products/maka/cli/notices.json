@@ -1346,7 +1346,7 @@
     "third-party/nsh/crates/nsh-core/src/runtime/storage.rs": "dc098b443ecfd5edf0141d7d42a8152fae2f7ce16fc78cc30aca808972eccc76",
     "third-party/nsh/crates/nsh-core/src/runtime/websocket.rs": "7fbe877b04b24a1ca2ffae32f6f3ee68a974e26e0ac8aa41a740ef6909bebe58",
     "third-party/nsh/crates/nsh-core/src/runtime/websocket/native.rs": "03cb9ef690cd2a8a7602081ff30c30a160d082c06689b019bfd4bc8b9611d7c8",
-    "third-party/nsh/crates/nsh-core/src/scroll.rs": "b4b6da97afed5bc47865a991e53ec5c1207b75de07e4d8638e6e36fa6009521e",
+    "third-party/nsh/crates/nsh-core/src/scroll.rs": "5f8f58e180aa6077f249f0358dcb1df4df61ec7cca42d68c76da0fcf8d881a89",
     "third-party/nsh/crates/nsh-core/src/selection.rs": "3069ec87a5dcce2b0676caa08bd41fa3ee4f0e2a546bb2dcd8b1ae466eb684e3",
     "third-party/nsh/crates/nsh-core/src/shape.rs": "83ae1d63179f16796ac750ecae9fb38dde64cac64820db915d47659e8c7f362b",
     "third-party/nsh/crates/nsh-core/src/storage.rs": "8d1d46f2d486e61f644152c315c62535e4e652a4a51ae03ea379a8777d314386",
