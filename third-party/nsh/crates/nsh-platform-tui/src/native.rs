@@ -123,6 +123,17 @@ pub trait NativeComponent {
         ComponentResponse::default()
     }
 
+    /// An animated numeric prop changed. Defaults to [`Self::set_prop`].
+    fn set_animated_number(&mut self, name: &str, value: f64) -> ComponentResponse {
+        let value = serde_json::Number::from_f64(value).map_or(JsonValue::Null, JsonValue::Number);
+        self.set_prop(name, Some(&value))
+    }
+
+    /// An animated color changed, in `0xAARRGGBB` order. Defaults to [`Self::set_prop`].
+    fn set_animated_color(&mut self, name: &str, argb: u32) -> ComponentResponse {
+        self.set_prop(name, Some(&JsonValue::from(argb)))
+    }
+
     /// Handles the app's `ref.command(name, args)` call.
     fn command(&mut self, name: &str, args: &JsonValue) -> ComponentResponse {
         let _ = (name, args);
@@ -450,5 +461,351 @@ mod tests {
             items: vec![MountItem::Delete { id: 2 }],
         });
         assert_eq!(surface.focused(), None);
+    }
+    type PropWrites = Arc<std::sync::Mutex<Vec<(String, JsonValue)>>>;
+
+    struct AnimatedProbe {
+        writes: PropWrites,
+        width: f32,
+    }
+
+    impl NativeComponent for AnimatedProbe {
+        fn render(&self, _: &ComponentContext, _: &mut Buffer) {}
+
+        fn set_prop(&mut self, name: &str, value: Option<&JsonValue>) -> ComponentResponse {
+            let value = value.cloned().unwrap_or(JsonValue::Null);
+            if name == "width" {
+                self.width = value.as_f64().unwrap_or(1.0) as f32;
+            }
+            self.writes
+                .lock()
+                .unwrap()
+                .push((name.into(), value.clone()));
+            ComponentResponse::event("change", value)
+        }
+
+        fn intrinsic_size(&self) -> Option<Size<Points>> {
+            Some(Size::new(px(self.width), px(16.0)))
+        }
+    }
+
+    fn animated_probe() -> (crate::Surface, PropWrites) {
+        use nsh_core::{EventKind, EventMask, MountBatch, MountItem, ROOT_ID, ViewKind};
+
+        let writes = PropWrites::default();
+        let captured = writes.clone();
+        let mut registry = Components::default();
+        registry.register("host.animated", move || {
+            Box::new(AnimatedProbe {
+                writes: captured.clone(),
+                width: 1.0,
+            })
+        });
+        let mut surface = crate::Surface::new(12, 4, CellMetrics::default());
+        surface.set_components(registry);
+        let mut events = EventMask::default();
+        events.set(EventKind::NativeEvent, true);
+        surface.apply(MountBatch {
+            items: vec![
+                MountItem::Create {
+                    id: 2,
+                    kind: ViewKind::Native,
+                },
+                MountItem::Insert {
+                    parent: ROOT_ID,
+                    child: 2,
+                    before: None,
+                },
+                MountItem::Events { id: 2, events },
+                MountItem::Component {
+                    id: 2,
+                    name: "host.animated".into(),
+                },
+            ],
+        });
+        surface.drain_events().for_each(drop);
+        (surface, writes)
+    }
+
+    fn width_binding() -> nsh_core::MountItem {
+        nsh_core::MountItem::AnimationBindings {
+            id: 2,
+            bindings: vec![(nsh_core::animation::AnimationProp::ComponentSlot(0), 10)],
+        }
+    }
+
+    #[test]
+    fn animated_component_props_deliver_changes_events_and_measurements() {
+        use nsh_core::{EventKind, MountBatch, MountItem, animation::AnimationOp};
+
+        use crate::SurfaceEvent;
+
+        let (mut surface, writes) = animated_probe();
+        surface.apply(MountBatch {
+            items: vec![
+                MountItem::Animation(AnimationOp::CreateValue {
+                    node: 10,
+                    value: 4.0,
+                }),
+                MountItem::ComponentPropSlots {
+                    id: 2,
+                    names: vec!["width".into()],
+                },
+                width_binding(),
+            ],
+        });
+        assert_eq!(*writes.lock().unwrap(), vec![("width".into(), json!(4.0))]);
+        let events: Vec<_> = surface.drain_events().collect();
+        assert!(events.iter().any(|event| matches!(event,
+            SurfaceEvent::ComponentSize(2, size) if *size == Size::new(px(4.0), px(16.0))
+        )));
+        assert!(events.iter().any(|event| matches!(event,
+            SurfaceEvent::Event(2, EventKind::NativeEvent, EventPayload::Native { data, .. })
+                if data == &json!(4.0)
+        )));
+        surface.tick(1.0);
+        assert_eq!(writes.lock().unwrap().len(), 1);
+        surface.apply(MountBatch {
+            items: vec![MountItem::Animation(AnimationOp::Set {
+                node: 10,
+                value: 8.0,
+            })],
+        });
+        assert_eq!(
+            writes.lock().unwrap().last(),
+            Some(&("width".into(), json!(8.0)))
+        );
+        assert!(surface.drain_events().any(|event| matches!(event,
+            SurfaceEvent::ComponentSize(2, size) if size == Size::new(px(8.0), px(16.0))
+        )));
+        surface.apply(MountBatch {
+            items: vec![
+                MountItem::AnimationBindings {
+                    id: 2,
+                    bindings: vec![],
+                },
+                MountItem::ComponentProps {
+                    id: 2,
+                    props: vec![("width".into(), Some(json!(3)))],
+                },
+            ],
+        });
+        surface.tick(2.0);
+        assert_eq!(
+            writes.lock().unwrap().last(),
+            Some(&("width".into(), json!(3)))
+        );
+        assert_eq!(writes.lock().unwrap().len(), 3);
+        surface.apply(MountBatch {
+            items: vec![width_binding()],
+        });
+        assert_eq!(
+            writes.lock().unwrap().last(),
+            Some(&("width".into(), json!(8.0)))
+        );
+        assert_eq!(writes.lock().unwrap().len(), 4);
+    }
+
+    #[test]
+    fn animated_component_props_convert_colors_and_suppress_unchanged_nan() {
+        use nsh_core::{
+            MountBatch, MountItem,
+            animation::{AnimationOp, AnimationProp, Easing, Extrapolate, Output},
+        };
+
+        let (mut surface, writes) = animated_probe();
+        surface.apply(MountBatch {
+            items: vec![
+                MountItem::Animation(AnimationOp::CreateValue {
+                    node: 10,
+                    value: 1.0,
+                }),
+                MountItem::Animation(AnimationOp::CreateInterpolate {
+                    node: 11,
+                    input: 10,
+                    input_range: vec![0.0, 1.0],
+                    output: Output::Colors(vec![0, 0x12345678]),
+                    extrapolate_left: Extrapolate::Clamp,
+                    extrapolate_right: Extrapolate::Clamp,
+                    easing: Easing::Linear,
+                }),
+                MountItem::ComponentPropSlots {
+                    id: 2,
+                    names: vec!["tint".into()],
+                },
+                MountItem::AnimationBindings {
+                    id: 2,
+                    bindings: vec![(AnimationProp::ComponentSlot(0), 11)],
+                },
+            ],
+        });
+        assert_eq!(
+            *writes.lock().unwrap(),
+            vec![("tint".into(), json!(0x78123456u32))]
+        );
+        surface.tick(1.0);
+        assert_eq!(writes.lock().unwrap().len(), 1);
+        surface.apply(MountBatch {
+            items: vec![
+                MountItem::Animation(AnimationOp::Set {
+                    node: 10,
+                    value: f32::NAN,
+                }),
+                width_binding(),
+            ],
+        });
+        assert_eq!(
+            writes.lock().unwrap().last(),
+            Some(&("tint".into(), JsonValue::Null))
+        );
+        let count = writes.lock().unwrap().len();
+        surface.tick(2.0);
+        assert_eq!(writes.lock().unwrap().len(), count);
+    }
+
+    #[test]
+    fn animated_component_props_reset_for_replacement_and_deleted_id_reuse() {
+        use nsh_core::{MountBatch, MountItem, ROOT_ID, ViewKind, animation::AnimationOp};
+
+        let (mut surface, writes) = animated_probe();
+        surface.apply(MountBatch {
+            items: vec![
+                MountItem::Animation(AnimationOp::CreateValue {
+                    node: 10,
+                    value: 4.0,
+                }),
+                MountItem::ComponentPropSlots {
+                    id: 2,
+                    names: vec!["width".into()],
+                },
+                width_binding(),
+            ],
+        });
+        surface.apply(MountBatch {
+            items: vec![MountItem::Component {
+                id: 2,
+                name: "host.animated".into(),
+            }],
+        });
+        assert_eq!(writes.lock().unwrap().len(), 2);
+        surface.apply(MountBatch {
+            items: vec![
+                MountItem::Delete { id: 2 },
+                MountItem::Create {
+                    id: 2,
+                    kind: ViewKind::Native,
+                },
+                MountItem::Insert {
+                    parent: ROOT_ID,
+                    child: 2,
+                    before: None,
+                },
+                MountItem::Component {
+                    id: 2,
+                    name: "host.animated".into(),
+                },
+            ],
+        });
+        surface.tick(1.0);
+        assert_eq!(writes.lock().unwrap().len(), 2);
+        surface.apply(MountBatch {
+            items: vec![
+                MountItem::ComponentPropSlots {
+                    id: 2,
+                    names: vec!["width".into()],
+                },
+                width_binding(),
+            ],
+        });
+        assert_eq!(writes.lock().unwrap().len(), 3);
+        assert_eq!(
+            writes.lock().unwrap().last(),
+            Some(&("width".into(), json!(4.0)))
+        );
+    }
+    #[test]
+    fn deleting_an_animated_component_stops_callbacks_during_its_exit() {
+        use nsh_core::{
+            LayoutAnimation, LayoutCurve, LayoutProperty, LayoutTransition, MountBatch, MountItem,
+            animation::AnimationOp,
+        };
+        let (mut surface, writes) = animated_probe();
+        surface.apply(MountBatch {
+            items: vec![
+                MountItem::Animation(AnimationOp::CreateValue {
+                    node: 10,
+                    value: 4.0,
+                }),
+                MountItem::ComponentPropSlots {
+                    id: 2,
+                    names: vec!["width".into()],
+                },
+                width_binding(),
+            ],
+        });
+        surface.apply(MountBatch {
+            items: vec![
+                MountItem::LayoutAnimation(LayoutAnimation {
+                    delete: Some(LayoutTransition {
+                        curve: LayoutCurve::Linear,
+                        property: LayoutProperty::Opacity,
+                        duration_ms: 1000.0,
+                        delay_ms: 0.0,
+                    }),
+                    ..Default::default()
+                }),
+                MountItem::Delete { id: 2 },
+                MountItem::Animation(AnimationOp::Set {
+                    node: 10,
+                    value: 8.0,
+                }),
+            ],
+        });
+        assert!(surface.node(2).is_some());
+        surface.tick(0.5);
+        assert_eq!(writes.lock().unwrap().len(), 1);
+        surface.tick(1.1);
+        assert!(surface.node(2).is_none());
+        assert_eq!(writes.lock().unwrap().len(), 1);
+    }
+    #[test]
+    fn adding_a_component_slot_does_not_redeliver_unchanged_existing_props() {
+        use nsh_core::{
+            MountBatch, MountItem,
+            animation::{AnimationOp, AnimationProp},
+        };
+        let (mut surface, writes) = animated_probe();
+        surface.apply(MountBatch {
+            items: vec![
+                MountItem::Animation(AnimationOp::CreateValue {
+                    node: 10,
+                    value: 4.0,
+                }),
+                MountItem::ComponentPropSlots {
+                    id: 2,
+                    names: vec!["width".into()],
+                },
+                width_binding(),
+            ],
+        });
+        surface.apply(MountBatch {
+            items: vec![
+                MountItem::ComponentPropSlots {
+                    id: 2,
+                    names: vec!["width".into(), "height".into()],
+                },
+                MountItem::AnimationBindings {
+                    id: 2,
+                    bindings: vec![
+                        (AnimationProp::ComponentSlot(0), 10),
+                        (AnimationProp::ComponentSlot(1), 10),
+                    ],
+                },
+            ],
+        });
+        assert_eq!(
+            *writes.lock().unwrap(),
+            vec![("width".into(), json!(4.0)), ("height".into(), json!(4.0)),]
+        );
     }
 }

@@ -64,28 +64,28 @@ pub struct Storage;
 impl Storage {
     /// The value of `key`, `None` when it has none (TS: `getItem`).
     pub fn get_item(key: &str) -> Option<String> {
-        crate::ui::ambient::with_storage(|s| s.get(key))
+        crate::element::ambient::with_storage(|s| s.get(key))
     }
 
     /// Sets `key` to `value` (TS: `setItem`); fails when the storage would
     /// grow past [`QUOTA`], keeping what it held.
     pub fn set_item(key: impl Into<String>, value: impl Into<String>) -> Result<(), StorageFull> {
-        crate::ui::ambient::with_storage(|s| s.set(key.into(), value.into()))
+        crate::element::ambient::with_storage(|s| s.set(key.into(), value.into()))
     }
 
     /// Removes `key` (TS: `removeItem`).
     pub fn remove_item(key: &str) {
-        crate::ui::ambient::with_storage(|s| s.remove(key));
+        crate::element::ambient::with_storage(|s| s.remove(key));
     }
 
     /// Every key, in order (TS: `keys`).
     pub fn get_all_keys() -> Vec<String> {
-        crate::ui::ambient::with_storage(|s| s.keys())
+        crate::element::ambient::with_storage(|s| s.keys())
     }
 
     /// Removes every key (TS: `clear`).
     pub fn clear() {
-        crate::ui::ambient::with_storage(|s| s.clear());
+        crate::element::ambient::with_storage(|s| s.clear());
     }
 }
 

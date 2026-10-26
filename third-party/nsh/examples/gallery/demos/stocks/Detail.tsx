@@ -1,6 +1,7 @@
 import { Canvas, cleanup, computed, effect, Scroll, signal, Text, untracked, View } from "nsh";
-import { createAnimatedValue } from "nsh/animated";
-import { Dialog, NavPage, safeAreaInsets } from "nsh/base";
+import { createAnimatedValue } from "nsh";
+import { Dialog, NavPage } from "nsh/base";
+import { safeAreaInsets } from "nsh";
 import { Icon } from "../../icons";
 import { Button, colors, finish, header, PageHeader, Press, Sheet, Stat } from "../../ui";
 import { Depth, OrderBook } from "./Book";

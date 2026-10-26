@@ -1,5 +1,5 @@
-//! A selection across the texts of a selection area (`SelectionArea` of
-//! `nsh/base`, a selectable `TextView`): one range from a point in one text
+//! A selection across the texts of a selectable view (a `View` with
+//! `selectable`, a selectable `TextView`): one range from a point in one text
 //! to a point in another, in document order, as a browser selects across
 //! the elements of a page.
 //!
@@ -51,7 +51,7 @@ impl TextPosition {
     }
 }
 
-/// What a backend knows of the texts of one selection area, in document
+/// What a backend knows of the texts of one selectable view, in document
 /// order (the area's subtree, depth first): their content, where they are
 /// and which character is where. Coordinates are the area's (its top left
 /// is the origin, y down), scroll offsets of the views between applied.

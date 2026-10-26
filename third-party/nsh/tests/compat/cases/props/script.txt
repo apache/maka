@@ -412,7 +412,7 @@ prop id:view-box src asset:/svg/star.svg
 frame id:view-box 0 84 24 24
 prop id:one-side src asset:/svg/mark.svg
 frame id:one-side 0 108 32 16
-covers [nsh/image] Image
+covers [nsh] Image
 covers [props] src
 # props-media-image-variants
 tap id:case-props-media-image-variants

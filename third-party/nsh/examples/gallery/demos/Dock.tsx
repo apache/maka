@@ -1,7 +1,7 @@
 import type { JSX } from "nsh";
 import { signal, Text, untracked, View } from "nsh";
 import { Button, DockArea, type DockAreaLayout, type DockAreaRef } from "nsh/base";
-import { platform, windowSize } from "nsh/device";
+import { platform, windowSize } from "nsh";
 import { Icon } from "../icons";
 import { colors, desktop, finish, handleThumb, hint, IconTile, radius } from "../ui";
 

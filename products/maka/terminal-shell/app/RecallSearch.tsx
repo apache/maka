@@ -17,11 +17,13 @@
  * under the License.
  */
 
-import { batch, cleanup, computed, Input, inputAction, List, signal, Text, View } from 'nsh';
+import { textTooltip } from './ui';
+import { batch, cleanup, computed, inputAction, List, signal, Text, View } from 'nsh';
+import { Input } from 'nsh/base';
 import type { YNode } from 'nsh';
 import { Button, Dialog } from 'nsh/base';
-import { keymap } from 'nsh/keymap';
-import { windowSize } from 'nsh/device';
+import { keymap } from 'nsh';
+import { windowSize } from 'nsh';
 import type {
   AgentRecallPage,
   AgentRecallPassage,
@@ -320,7 +322,7 @@ export function RecallSearch(props: {
           </Text>
           <Button
             accessibilityLabel={tr('Close conversation search')}
-            tooltip={tr('Close · Esc')}
+            tooltip={textTooltip(() => tr('Close · Esc'))}
             onPress={close}
             style={{
               ...controlStyle,

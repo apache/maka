@@ -2,7 +2,7 @@
 // crates/gpui/nsh-platform-gpui/examples/embed.rs) run. The badge is a native
 // view of the host app, registered as `embed.badge` (`NshAppView.register(component:)`,
 // `NshView.registerComponent`); the rest talks to the host app through its
-// channel (`nsh/host`): the host's launch parameters, its messages, a call it
+// channel (`nsh`): the host's launch parameters, its messages, a call it
 // answers and posts it hears. The documentation link opens through the host
 // (`openUrl`): a host app may route it itself (`onOpenURL`,
 // `setOpenUrlHandler`), else the system opens it. `App.test.tsx` plays the
@@ -10,10 +10,9 @@
 // The theme pill takes the host's brand through setThemeOverrides.
 
 import { mount, signal, Text, View, type YNode } from "nsh";
-import { nativeComponent } from "nsh/native";
-import { host } from "nsh/host";
-import { openUrl } from "nsh/device";
-import { SafeAreaView } from "nsh/base";
+import { nativeComponent } from "nsh";
+import { host } from "nsh";
+import { openUrl } from "nsh";
 
 /** The host app's badge: a label it draws, sized to its text. */
 const Badge = nativeComponent<{ text: string; color?: string }, { tap: { count: number } }>("embed.badge", {
@@ -42,7 +41,7 @@ function App() {
     }
   };
   return (
-    <SafeAreaView style={{ flex: 1, padding: 20, gap: 16, backgroundColor: "#f6f8fa" }}>
+    <View style={{ flex: 1, padding: 20, paddingTop: "calc(env(safe-area-inset-top) + 20px)", paddingRight: "calc(env(safe-area-inset-right) + 20px)", paddingBottom: "calc(env(safe-area-inset-bottom) + 20px)", paddingLeft: "calc(env(safe-area-inset-left) + 20px)", gap: 16, backgroundColor: "#f6f8fa" }}>
       <Text style={{ fontSize: 22, fontWeight: "700" }}>{`Hello, ${user}`}</Text>
       <Text style={{ color: "#57606a" }}>
         The badge below is a native view of the host app: nsh lays it out, sends it props and gets its events.
@@ -79,7 +78,7 @@ function App() {
       >
         Read the documentation
       </Text>
-    </SafeAreaView>
+    </View>
   );
 }
 

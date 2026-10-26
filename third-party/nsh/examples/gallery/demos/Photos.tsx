@@ -1,6 +1,6 @@
 import { computed, Image, List, signal, Text, untracked, View } from "nsh";
-import { createAnimatedValue } from "nsh/animated";
-import { platform } from "nsh/device";
+import { createAnimatedValue } from "nsh";
+import { platform } from "nsh";
 import logo from "../logo@2x.png";
 import { Icon } from "../icons";
 import { Badge, bindRefresh, Button, colors, columnsFor, desktop, finish, paneWidth, Press, radius, Stat, type Tone, toneColor } from "../ui";

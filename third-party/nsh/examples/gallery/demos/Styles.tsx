@@ -1,5 +1,5 @@
 import { cleanup, Image, type JSX, List, Scroll, signal, Text, View, type ViewStyle } from "nsh";
-import { Animated, createAnimatedValue, Easing } from "nsh/animated";
+import { Animated, createAnimatedValue, Easing } from "nsh";
 import { alpha, Badge, Button, Caption, Card, colors, DemoPage, finish, hint, isDark, mono, Press, radius, Segmented, tints, Toggle } from "../ui";
 
 /** The stage every specimen stands on: the card's light, without its drop shadow. */

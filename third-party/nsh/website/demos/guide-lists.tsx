@@ -1,6 +1,6 @@
 import { effect, List, mount, signal, Text, View, type YNode } from "nsh";
-import { windowSize } from "nsh/device";
-import { size, tint, ui, wide } from "./palette";
+import { windowSize } from "nsh";
+import { focusRing, hoverFill, size, tint, ui, wide } from "./palette";
 
 /** In a wide window the lists sit in one centered region, 760 points across. */
 const REGION = 760;
@@ -58,10 +58,10 @@ function Feed() {
           <Text style={{ flex: 1, color: ui().muted, fontSize: wide() ? 13 : undefined }}>
             {posts().length} posts, visible {visible()}
           </Text>
-          <Text onPress={() => list.scrollToIndex({ index: 30, viewPosition: 0.5 })} style={{ color: ui().accent, fontSize: wide() ? 13 : undefined }}>
+          <Text onPress={() => list.scrollToIndex({ index: 30, viewPosition: 0.5 })} style={{ color: ui().accent, fontSize: wide() ? 13 : undefined }} hoverStyle={hoverFill()} focusStyle={focusRing()} activeStyle={{ opacity: 0.7 }}>
             #30
           </Text>
-          <Text onPress={() => list.scrollToOffset({ offset: 0 })} style={{ color: ui().accent, fontSize: wide() ? 13 : undefined }}>
+          <Text onPress={() => list.scrollToOffset({ offset: 0 })} style={{ color: ui().accent, fontSize: wide() ? 13 : undefined }} hoverStyle={hoverFill()} focusStyle={focusRing()} activeStyle={{ opacity: 0.7 }}>
             Top
           </Text>
         </View>
@@ -168,6 +168,9 @@ function App() {
         backgroundImage: tab() === id ? ui().raised.backgroundImage : "none",
         boxShadow: tab() === id ? ui().raised.boxShadow : "none",
       }}
+      hoverStyle={{ opacity: 0.88 }}
+      focusStyle={focusRing()}
+      activeStyle={{ opacity: 0.7 }}
     >
       {label}
     </Text>

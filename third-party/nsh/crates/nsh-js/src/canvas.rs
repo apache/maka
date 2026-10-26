@@ -23,12 +23,12 @@ use std::{
 use nsh_core::{
     EventKind, FontVariant, Op, Tag,
     canvas::{CanvasFont, CanvasOp, FillRule, PathOp, point_in_path, point_in_stroke},
+    element::TsTypes,
     js::{
         canvas::*,
         host::{HostInput, HostList},
         ops::{JsOps, OpMethod, OpProperty},
     },
-    ui::TsTypes,
 };
 use rquickjs::qjs;
 

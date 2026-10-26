@@ -258,7 +258,7 @@ pub(crate) fn focus(view: &NshView) {
     }
 }
 
-/// Has VoiceOver read `text` (`announce`, toasts, live
+/// Has VoiceOver read `text` (`announce`, live
 /// regions).
 pub(crate) fn announce(element: &NSView, text: &str, priority: NSAccessibilityPriorityLevel) {
     let text = NSString::from_str(text);

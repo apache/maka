@@ -1,10 +1,8 @@
-import { Input, type JSX, mount, Scroll, signal, Text, View, type YNode } from "nsh";
-import { desktop, Inspector, Panel, size, Stage, ui, wide } from "./palette";
+import { type JSX, mount, Scroll, signal, Text, View, type YNode } from "nsh";
+import { Input } from "nsh/base";
+import { button, buttonText, desktop, field, Inspector, Panel, Stage, ui, wide } from "./palette";
 
-const field = () => ({ ...ui().inset, fontSize: 16, color: ui().text, placeholderColor: ui().faint, borderRadius: 12, paddingHorizontal: 12, paddingVertical: 10 });
 const label = () => ({ fontSize: 13, color: ui().muted });
-// A desktop field: 32 points high, the text a step smaller.
-const desk = () => ({ ...field(), fontSize: size.label, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 6, minHeight: size.control });
 
 function App() {
   const name = signal("");
@@ -21,10 +19,10 @@ function App() {
   let tries = 0;
   const submit = () => sent.set(`#${++tries}: signed up ${name() || "nobody"} <${email() || "no e-mail"}>`);
 
-  type Style = () => ReturnType<typeof field>;
-  const nameInput = (style: Style) => (
+  type Style = () => object;
+  const nameInput = (style?: Style) => (
     <Input
-      style={style()}
+      {...field({ style })}
       value={name()}
       onChange={(t) => name.set(t)}
       placeholder="Ada Lovelace"
@@ -36,10 +34,10 @@ function App() {
       onFocus={() => focused.set("name")}
     />
   );
-  const emailField = (style: Style) => (
+  const emailField = (style?: Style) => (
     <Input
       ref={emailInput}
-      style={style()}
+      {...field({ style })}
       value={email()}
       onChange={(t) => email.set(t.trim().toLowerCase())}
       placeholder="ada@example.com"
@@ -53,10 +51,10 @@ function App() {
       onFocus={() => focused.set("e-mail")}
     />
   );
-  const passwordField = (style: Style) => (
+  const passwordField = (style?: Style) => (
     <Input
       ref={passwordInput}
-      style={style()}
+      {...field({ style })}
       masked
       autoComplete="new-password"
       placeholder="At least 8 characters"
@@ -66,9 +64,9 @@ function App() {
       onFocus={() => focused.set("password")}
     />
   );
-  const codeField = (style: Style) => (
+  const codeField = (style?: Style) => (
     <Input
-      style={style()}
+      {...field({ style })}
       value={code()}
       onChange={(t) => code.set(t.replace(/[^0-9]/g, ""))}
       keyboardType="number-pad"
@@ -77,7 +75,7 @@ function App() {
       onFocus={() => focused.set("code")}
     />
   );
-  const notesField = (style: Style) => (
+  const notesField = (style?: Style) => (
     <Input
       ref={notesInput}
       multiline
@@ -86,7 +84,7 @@ function App() {
       onChange={(t) => notes.set(t)}
       onContentSizeChange={(e) => notesHeight.set(Math.min(e.height, 120))}
       placeholder="Return adds a line"
-      style={style()}
+      {...field({ style })}
       onFocus={() => focused.set("notes")}
       onBlur={() => focused.set("nothing")}
     />
@@ -100,32 +98,23 @@ function App() {
         <Text style={label()}>Focused: {focused()}</Text>
 
         <Text style={label()}>Name (controlled, return goes to the next field)</Text>
-        {nameInput(field)}
+        {nameInput()}
 
         <Text style={label()}>E-mail</Text>
-        {emailField(field)}
+        {emailField()}
 
         <Text style={label()}>Password (uncontrolled)</Text>
-        {passwordField(field)}
+        {passwordField()}
 
         <Text style={label()}>Code (number pad, 6 digits)</Text>
-        {codeField(() => ({ ...field(), letterSpacing: 8, textAlign: "center", fontSize: 22 }))}
+        {codeField(() => ({ letterSpacing: 8, textAlign: "center", fontSize: 22 }))}
 
         <Text style={label()}>About you (grows with its text, 200 max)</Text>
-        {notesField(() => ({ ...field(), height: Math.max(notesHeight(), 22) + 20 }))}
+        {notesField(() => ({ height: Math.max(notesHeight(), 22) + 20 }))}
         <Text style={{ ...label(), textAlign: "right" }}>{`${notes().length}/200`}</Text>
 
-        <View
-          onPress={submit}
-          activeStyle={{ opacity: 0.6 }}
-          style={{
-            padding: 14,
-            borderRadius: 10,
-            ...ui().primary,
-            alignItems: "center",
-          }}
-        >
-          <Text style={{ color: ui().onPrimary, fontWeight: "600" }}>Sign up</Text>
+        <View onPress={submit} {...button("primary")}>
+          <Text style={buttonText("primary")}>Sign up</Text>
         </View>
         <Text style={{ color: ui().up }}>{sent()}</Text>
       </View>
@@ -146,21 +135,17 @@ function App() {
       <Text style={{ fontSize: 22, fontWeight: "700", color: ui().text }}>Sign up</Text>
       <View style={{ flex: 1, flexDirection: "row", gap: 16 }}>
         <Stage width={360} gap={14}>
-          {group("Name", nameInput(desk), <Text style={label()}>Controlled; Return goes to the next field</Text>)}
-          {group("E-mail", emailField(desk))}
-          {group("Password", passwordField(desk), <Text style={label()}>Uncontrolled</Text>)}
-          {group("Code", codeField(() => ({ ...desk(), width: 160, letterSpacing: 6, textAlign: "center", fontSize: 16 })), <Text style={label()}>6 digits</Text>)}
+          {group("Name", nameInput(), <Text style={label()}>Controlled; Return goes to the next field</Text>)}
+          {group("E-mail", emailField())}
+          {group("Password", passwordField(), <Text style={label()}>Uncontrolled</Text>)}
+          {group("Code", codeField(() => ({ width: 160, letterSpacing: 6, textAlign: "center", fontSize: 16 })), <Text style={label()}>6 digits</Text>)}
           {group(
             "About you",
-            notesField(() => ({ ...desk(), height: Math.max(notesHeight(), 20) + 14 })),
+            notesField(() => ({ height: Math.max(notesHeight(), 20) + 14 })),
             <Text style={{ ...label(), textAlign: "right", fontVariant: ["tabular-nums"] }}>{`${notes().length}/200`}</Text>,
           )}
-          <View
-            onPress={submit}
-            activeStyle={{ opacity: 0.6 }}
-            style={{ ...ui().primary, alignSelf: "flex-start", height: size.control, paddingHorizontal: 14, borderRadius: 8, justifyContent: "center" }}
-          >
-            <Text style={{ fontSize: 13, color: ui().onPrimary, fontWeight: "600" }}>Sign up</Text>
+          <View onPress={submit} {...button("primary")}>
+            <Text style={buttonText("primary")}>Sign up</Text>
           </View>
         </Stage>
         <Inspector>

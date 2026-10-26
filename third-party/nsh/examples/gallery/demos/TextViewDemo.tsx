@@ -1,5 +1,5 @@
 import { cleanup, signal, Text, View } from "nsh";
-import { SelectionArea, TextView, type TextViewImage } from "nsh/base";
+import { TextView, type TextViewImage } from "nsh/base";
 import { Button, Caption, Card, colors, DemoPage } from "../ui";
 import { ImageViewer } from "./ImageViewer";
 
@@ -378,15 +378,15 @@ const ANSWER = `Every one with a native backend:
 /** Two documents and a plain text that select as one, around a label that stays out. */
 function Selection() {
   return (
-    <Card icon="text" title="SelectionArea" subtitle="One selection across texts and TextViews">
-      <SelectionArea class="gap-3">
+    <Card icon="text" title="Selectable view" subtitle="One selection across texts and TextViews">
+      <View selectable class="gap-3">
         <TextView markdown={QUESTION} />
         <TextView markdown={ANSWER} />
         <View class="flex-row items-baseline gap-2">
           <Text selectable={false} style={{ fontSize: 13, color: colors.faint }}>Not selectable</Text>
           <Text style={{ fontSize: 15, color: colors.text }}>A plain Text joins the selection too.</Text>
         </View>
-      </SelectionArea>
+      </View>
       <Caption label="Drag from the question into the answer, or long press and move the handles" />
     </Card>
   );

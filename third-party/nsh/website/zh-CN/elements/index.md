@@ -11,7 +11,7 @@ Native Shell 用一小组元素构建每个界面：`View`、`Text`、`Image` �
 这些页面上的每个示例都同时给出 Rust 和 TSX：选择一个标签页，页面上的所有示例都会随之切换。
 
 ```rust tabs
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 fn app() -> impl IntoElement {
     let count = signal(0_u32);
@@ -52,36 +52,34 @@ function App() {
 mount(App);
 ```
 
-在 Rust 中，原语是 `nsh_core::ui::prelude` 中的函数（`view()`、`text(..)`、`image(..)`），基础组件来自 `nsh_base` crate。样式是有类型的方法（`.flex_1()`、`.gap_3()`、`.px(px(20.0))`、`.bg(..)`），状态样式接收一个闭包（`.active(|s| s.opacity(0.6))`），监听器是接收事件的闭包（`.on_press(move || ..)`、`.on_change(move |text: &str| ..)`），`.child(..)` 添加子元素。一段 UI 就是一个返回 `impl IntoElement` 的普通函数，只运行一次；它在闭包里读取的 signal（`text(move || ..)`、`.bg(move || ..)`）会更新所绑定的内容。参见[用 Rust 构建](../docs/rust.md)。
+在 Rust 中，原语是 `nsh_core::prelude` 中的函数（`view()`、`text(..)`、`image(..)`），基础组件来自 `nsh_base` crate。样式是有类型的方法（`.flex_1()`、`.gap_3()`、`.px(px(20.0))`、`.bg(..)`），状态样式接收一个闭包（`.active(|s| s.opacity(0.6))`），监听器是接收事件的闭包（`.on_press(move || ..)`、`.on_change(move |text: &str| ..)`），`.child(..)` 添加子元素。一段 UI 就是一个返回 `impl IntoElement` 的普通函数，只运行一次；它在闭包里读取的 signal（`text(move || ..)`、`.bg(move || ..)`）会更新所绑定的内容。参见[用 Rust 构建](../docs/rust.md)。
 
 在 TSX 中，每个标签都使用 PascalCase，并指向作用域中的绑定：原语从 `nsh` 导入，基础组件从 `nsh/base` 导入。只有 `<If>` 和 `<Each>` 是无需导入的全局组件。`<view>` 这样的小写标签会导致构建错误，因为 TypeScript 只能对照每个名称一个的全局类型来检查它，`List`、`Each` 这类泛型组件就无法推断条目类型。编译器通过导入识别这些元素并就地创建原生视图，所以导入它们在运行时没有任何开销。参见 [JSX 与组件](../docs/jsx-and-components.md)。
 
 ```tsx
-import { Canvas, Image, Input, List, Overlay, Scroll, Text, Video, View, WebView } from "nsh";
-import { Button, Dialog, Menu, NavPage, NavStack, Popover, SafeAreaView, Sheet, Tooltip } from "nsh/base";
+import { Canvas, Image, List, Overlay, Scroll, Text, Video, View, WebView } from "nsh";
+import { Button, Dialog, Menu, NavPage, NavStack, Popover, Sheet, Tooltip, Input } from "nsh/base";
 ```
-
-> [!NOTE]
-> 为早期版本构建的应用从 `nsh/image`、`nsh/list`、`nsh/canvas`、`nsh/webview` 和 `nsh/video` 导入 `Image`、`List`、`Canvas`、`WebView` 和 `Video`；这些导入继续有效，指向同样的元素。
 
 ## 原语
 
-TSX 从 `nsh` 导入，Rust 从 `nsh_core::ui::prelude` 导入。
+TSX 从 `nsh` 导入，Rust 从 `nsh_core::prelude` 导入。
 
 | 元素 | Rust | 原生视图（iOS / Android） | 页面 |
 |---|---|---|---|
-| `<View>` | `view()` | UIView / ViewGroup | [View](./view.md) |
+| `<View>` | `view()` | UIView / ViewGroup；设置 `selectable` 后，其中的文字一起选择 | [View](./view.md)、[文字选择](./text-selection.md) |
 | `<Text>` | `text(content)` | CoreText 视图 / StaticLayout 视图 | [Text](./text.md) |
 | `<Image>` | `image(src)` | 带图片图层的视图 / 图片视图 | [Image](./image.md) |
 | `<Scroll>` | `scroll()` | UIScrollView / ScrollView | [Scroll](./scroll.md) |
-| `<Input>` | `input()` | UITextField 或 UITextView / EditText | [Input](./input.md) |
 | `<List>` | `virtual_list(count, \|at\| row)` | 复用单元格的 UIScrollView / ScrollView | [List](./list.md) |
 | `<Canvas>` | `canvas(painter)` | 回放 2D 绘制的视图 | [Canvas](./canvas.md) |
 | `<WebView>` | `web_view(url)`、`web_view_html(html, base)` | WKWebView / android.webkit.WebView | [WebView](./web-view.md) |
 | `<Video>` | `video(url)` | AVPlayerLayer / TextureView 上的 MediaPlayer | [Video](./video.md) |
 | `<Overlay>` | `overlay()` | 窗口（或所在对话框）之上的视图，相对锚点放置 | [Overlay](./overlay.md) |
 | `<If>`、`<Each>` | `when(..)`、`each(..)`、`dynamic(..)` | 控制流：它们选出的元素 | [控制流](./control-flow.md) |
-| `<InputAccessoryView>`（`nsh/ios`） | `input_accessory_view(id)` | iOS 上键盘上方的工具栏 | [nsh/ios](../modules/nsh-ios.md) |
+| `<InputAccessoryView>`（`nsh/mobile`） | `input_accessory_view(id)` | iOS 上键盘上方的工具栏 | [`InputAccessoryView`](../modules/nsh-mobile.md#inputaccessoryview) |
+
+padding 和 margin 用 CSS 的 `env()` 让内容避开系统 UI：`env(safe-area-inset-top)` 及其他边（[安全区](./safe-area.md)），以及 `env(keyboard-inset-height)`（[键盘](./keyboard.md)）。
 
 ## Base
 
@@ -90,23 +88,22 @@ TSX 从 `nsh/base` 导入，Rust 从 `nsh_base` crate 导入。它们负责行�
 | 组件 | Rust | 作用 | 页面 |
 |---|---|---|---|
 | `<Button>` | `nsh_base::button()` | 带有状态和角色的可按压控件 | [Button](./button.md) |
+| `<Input>` | `nsh_base::input()` | 原生文本输入框（UITextField 或 UITextView / EditText） | [Input](./input.md) |
 | `<Checkbox>` | `nsh_base::checkbox()` | 带指示器的勾选 / 未勾选 / 半选控件 | [Checkbox](./checkbox.md) |
 | `<Radio>`、`<RadioGroup>` | `nsh_base::radio()`、`radio_group()` | 一组只能选一个的选项中的一项，以及这一组 | [Radio](./radio.md) |
 | `<Tab>`、`<Tabs>` | `nsh_base::tab()`、`tabs()` | 标签列表中的一个标签页，以及这个列表 | [Tabs](./tabs.md) |
 | `<Switch>` | `nsh_base::switch()` | 带轨道和滑块的开 / 关控件 | [Switch](./switch.md) |
 | `<Collapsible>` | `nsh_base::collapsible()` | 内容可展开和收起的区域 | [Collapsible](./collapsible.md) |
 | `<Progress>` | `nsh_base::progress()` | 进度条：任务完成了多少，或正在进行 | [Progress](./progress.md) |
+| `<Plot>`、`<Line>`、`<Area>`、`<Grid>`（`nsh/base/plot`） | `nsh_base::plot::{plot, line, area, grid}` | 图表的框架与图形，根据应用的数据行原生绘制 | [Plot](./plot.md) |
 | `<Dialog>` | `nsh_base::dialog()` | 把子元素呈现在其他一切之上 | [Dialog](./dialog.md) |
 | `<NavStack>`、`<NavPage>` | `nsh_base::nav_stack()`、`nsh_base::nav_page()` | 原生导航：带有平台标题栏和返回手势的页面栈 | [NavStack](./nav-stack.md) |
-| `<SafeAreaView>` | `nsh_base::safe_area_view()` | 让内容避开刘海、系统栏和主屏幕指示条 | [SafeAreaView](./safe-area-view.md) |
-| `<KeyboardAvoidingView>` | `nsh_base::keyboard_avoiding_view()` | 让内容保持在软键盘之上 | [KeyboardAvoidingView](./keyboard-avoiding-view.md) |
 | `AlertDialog` | `nsh_base::alert_dialog()` | 系统的提示框和操作表 | [AlertDialog](./alert-dialog.md) |
 | `<TextView>` | `nsh_base::text_view()` | 用文本和视图显示 Markdown 或 HTML 文档 | [TextView](./text-view.md) |
 | `<Editor>` | `nsh_base::editor()` | 带高亮、多光标、折叠和搜索的代码编辑器 | [Editor](./editor.md) |
 | `<DiffView>` | `nsh_base::diff_view()` | 两段文本之间或补丁中的改动，并排或合并显示 | [DiffView](./diff-view.md) |
 | `<Table>` 及其部件 | `nsh_base::table()`、`table_row()` 等 | 由应用写出行和单元格的表格，带有表格的角色 | [Table](./table.md) |
 | `<DataTable>` | `nsh_base::data_table()` | 行列数量不限的表格，可选择、排序，列可调整宽度和移动 | [DataTable](./data-table.md) |
-| `<SelectionArea>` | `nsh_base::selection_area()` | 让其中的文字一起选择 | [SelectionArea](./selection-area.md) |
 | `<Popover>` | `nsh_base::popover()` | 锚定在触发元素上、显示在一切之上的内容 | [Popover](./popover.md) |
 | `<Menu>`、`<ContextMenu>`、`<MenuItem>`、`<MenuSeparator>`、`<Submenu>` | `nsh_base::menu()`、... | 菜单：桌面上是带级联子菜单的弹出层，手机上是 sheet | [Menu](./menu.md) |
 | `<Tooltip>` | `nsh_base::tooltip()` | 悬停或手指按住时显示在触发元素旁的提示 | [Tooltip](./tooltip.md) |
@@ -233,19 +230,36 @@ const at = signal<number | null>(null);
 
 | 属性 | Rust | 类型 | 说明 |
 |---|---|---|---|
-| `tooltip` | `.tooltip(..)` | `string \| JSX.Element` | 文字，显示在用主题 `popover` 令牌（`bg-popover`、`text-popover-foreground`、`border-border`，外观由主题决定）绘制的小气泡中；或一个元素，按原样显示（`nsh/base` 的 `Tooltip` 就是工具提示本身）。 |
+| `tooltip` | `.tooltip(..)` | `JSX.Element` | 提示，一个由应用设置样式的元素：`nsh/base` 的 [`Tooltip`](tooltip.md) 就是工具提示本身，带有它的位置、延迟和事件；其他元素按原样显示。 |
 
 ```rust tabs
-view().on_press(save).tooltip("保存文档").child(text("💾"))
+view()
+    .on_press(save)
+    .tooltip(
+        tooltip()
+            .rounded_md()
+            .bg(rgb(0x111827))
+            .px_2()
+            .py_1()
+            .child(text("保存文档").text_color(white())),
+    )
+    .child(text("💾"))
 ```
 
 ```tsx tabs
-<View onPress={save} tooltip="保存文档">
+<View
+  onPress={save}
+  tooltip={
+    <Tooltip class="rounded-md bg-gray-900 px-2 py-1">
+      <Text class="text-white">保存文档</Text>
+    </Tooltip>
+  }
+>
   <Text>💾</Text>
 </View>
 ```
 
-需要自己的外观、位置、延迟或事件时，把 `nsh/base` 的 [`Tooltip`](tooltip.md) 作为 `tooltip` 传入，与 GPUI 的 `.tooltip(..)` 相同。
+`Tooltip` 决定自己的外观、位置、延迟和事件，与 GPUI 的 `.tooltip(..)` 相同。提示较多的应用可以写一个自己的小组件，把文字包进它的 `Tooltip`。
 
 ### 上下文菜单
 
@@ -315,7 +329,7 @@ view().absolute().inset_0().focusable(false).on_press(close)
 
 ### 驱动动画值的手势
 
-这些属性把手势绑定到[原生动画值](../modules/nsh-animated.md)，值在 UI 线程上变化，每帧都不经过应用代码。参见[触摸与手势](../docs/touch-and-gestures.md)。
+这些属性把手势绑定到[原生动画值](../modules/nsh.md#animation)，值在 UI 线程上变化，每帧都不经过应用代码。参见[触摸与手势](../docs/touch-and-gestures.md)。
 
 | 属性 | Rust | 类型 | 说明 |
 |---|---|---|---|
@@ -341,7 +355,7 @@ stopPropagation() }`）；`…ShouldSetResponder` 回调还会收到 `gestureSta
 `onResponderGrant` 返回 `true` 可阻止原生滚动视图接管触摸。`panActivation`
 （`{ activeOffsetX, activeOffsetY, failOffsetX, failOffsetY }`）让视图只在平台激活它的拖动后才成为响应者，
 滚动视图里的拖动因此把另一个轴留给滚动视图（[触摸与手势](../docs/touch-and-gestures.md#滚动视图里的拖动panactivation)）。
-[`nsh/gesture`](../modules/nsh-gesture.md) 中的 `PanResponder` 就构建在它们之上。在 Rust 中，`.on_touch(..)` 接收每次触摸（`TouchEvent`），`.claim_touches(..)` 决定视图何时接管触摸，`.on_responder_grant(..)`、`.on_responder_move(..)`、`.on_responder_release(..)` 等跟随响应者状态。
+[`PanResponder`](../modules/nsh.md#panresponder) 中的 `PanResponder` 就构建在它们之上。在 Rust 中，`.on_touch(..)` 接收每次触摸（`TouchEvent`），`.claim_touches(..)` 决定视图何时接管触摸，`.on_responder_grant(..)`、`.on_responder_move(..)`、`.on_responder_release(..)` 等跟随响应者状态。
 
 ### 无障碍
 
@@ -417,7 +431,7 @@ view()
 | `scrollToEnd({ animated? })` | `scroll_to_end(animated)` | `List` | 滚动到内容末尾。 |
 | `reload()`、`goBack()`、`goForward()`、`stopLoading()`、`injectJavaScript(script)`、`postMessage(data)` | `reload()`、`go_back()`、`go_forward()`、`stop_loading()`、`inject_java_script(..)`、`post_message(..)` | `WebView` | 控制页面。 |
 | `seek(seconds)` | `seek(seconds)` | `Video` | 跳转到某个时间点。 |
-| `command(name, args?)` | `command(name, args)` | 原生组件 | 调用已注册原生组件的命令（[`nsh/native`](../modules/nsh-native.md)）。 |
+| `command(name, args?)` | `command(name, args)` | 原生组件 | 调用已注册原生组件的命令（[`nativeComponent`](../modules/nsh.md#nativecomponent-and-nativemodule)）。 |
 
 ```rust tabs
 let field = element_ref();
@@ -428,7 +442,8 @@ view()
 ```
 
 ```tsx tabs
-import { Input, View, type YNode } from "nsh";
+import { View, type YNode } from "nsh";
+import { Input } from "nsh/base";
 
 let input!: YNode;
 <View onPress={() => input.focus()}>

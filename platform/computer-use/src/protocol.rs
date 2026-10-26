@@ -19,6 +19,12 @@
 
 use serde::{Deserialize, Serialize};
 
+mod browser_mutation;
+pub use browser_mutation::{
+    BrowserCheckOptions, BrowserClickOptions, BrowserKeyboardModifier, BrowserMouseButton,
+    BrowserMutationOperation, BrowserSelectOption, BrowserTextOptions,
+};
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(
     tag = "kind",
@@ -127,6 +133,11 @@ pub enum Command {
         operation: BrowserReadOperation,
         #[serde(default)]
         options: BrowserReadOptions,
+    },
+    BrowserMutation {
+        handle: Handle,
+        locator: LocatorPlan,
+        operation: BrowserMutationOperation,
     },
     GetTab {
         reference: TabReference,
@@ -331,6 +342,15 @@ pub enum Action {
     Click {
         target: Position,
         options: ClickOptions,
+    },
+    LinuxClick {
+        input: serde_json::Value,
+    },
+    LinuxScroll {
+        input: serde_json::Value,
+    },
+    LinuxDrag {
+        input: serde_json::Value,
     },
     Drag {
         from: [f64; 2],

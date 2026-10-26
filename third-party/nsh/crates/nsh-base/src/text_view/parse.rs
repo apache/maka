@@ -19,10 +19,16 @@
 
 //! One component-owned parser worker. Source effects replace the latest work;
 //! an already-started blocking parse is allowed to finish before the next starts.
-use super::markdown::{Projection, ProjectionKind};
-use super::view::{TextViewEvent, TextViewProps};
-use super::{Block, Document, Inline, MarkdownExtension, MarkdownOptions, MarkdownPlugins, Parser};
-use nsh_core::ui::{Owner, Stored, prelude::*, stored};
+use nsh_core::{
+    element::{Owner, Stored, stored},
+    prelude::*,
+};
+
+use super::{
+    Block, Document, Inline, MarkdownExtension, MarkdownOptions, MarkdownPlugins, Parser,
+    markdown::{Projection, ProjectionKind},
+    view::{TextViewEvent, TextViewProps},
+};
 
 #[derive(Clone, Debug, PartialEq)]
 enum Input {

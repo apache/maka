@@ -5,7 +5,7 @@
 // off and the swipes back and forward. Its script
 // checks each.
 import { Text, View, signal } from "nsh";
-import { WebView } from "nsh/webview";
+import { WebView } from "nsh";
 
 function App() {
   const html = signal(false);

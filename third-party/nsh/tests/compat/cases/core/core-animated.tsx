@@ -1,4 +1,4 @@
-// A case of the API's test suite (docs/dev/compatibility.md): `nsh/animated`.
+// A case of the API's test suite (docs/dev/compatibility.md): `nsh`.
 // The animations themselves run on the UI thread, which a headless run has
 // not, so the script checks what JS sees synchronously: the curves the
 // native drivers run (`Easing.sample`, `Animated.sampleSpring` /
@@ -7,14 +7,7 @@
 // ends where its commit puts it. Its script checks
 // each.
 import { Text, View, signal } from "nsh";
-import {
-  Animated,
-  AnimatedNode,
-  AnimatedValue,
-  Easing,
-  LayoutAnimation,
-  createAnimatedValue,
-} from "nsh/animated";
+import { Animated, AnimatedNode, AnimatedValue, Easing, LayoutAnimation, createAnimatedValue } from "nsh";
 
 const fixed = (values: number[]) => values.map((v) => v.toFixed(3)).join(" ");
 

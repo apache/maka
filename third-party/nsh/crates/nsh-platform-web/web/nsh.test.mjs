@@ -182,3 +182,28 @@ test("a browser-cancelled pan reports cancellation rather than a release", () =>
     assert.equal(player.pointers.size, 0);
   }
 });
+
+test("run stages static source and bytecode chunks before starting the entry", () => {
+  const { player } = fakePlayer();
+  const calls = [];
+  const text = (ptr, len) => new TextDecoder().decode(new Uint8Array(player.wasm.memory.buffer, ptr, len));
+  player.reset = () => [800, 600];
+  player.begin = () => calls.push(["start"]);
+  player.wasm.nsh_bundle_options = () => calls.push(["options"]);
+  player.wasm.nsh_bundle_chunk = (np, nl, cp, cl, bytecode) => {
+    calls.push([text(np, nl), bytecode, [...new Uint8Array(player.wasm.memory.buffer, cp, cl)]]);
+  };
+  player.run("entry", {
+    chunkBase: "https://example.test/",
+    preloadedChunks: {
+      "source.js": "export {}",
+      "bytecode.js": new Uint8Array([1, 2, 3]).buffer,
+    },
+  });
+  assert.deepEqual(calls, [
+    ["options"],
+    ["source.js", 0, [...new TextEncoder().encode("export {}")]],
+    ["bytecode.js", 1, [1, 2, 3]],
+    ["start"],
+  ]);
+});

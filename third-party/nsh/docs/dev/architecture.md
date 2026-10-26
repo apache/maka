@@ -89,7 +89,7 @@ NSH is layered as GPUI Kit is (an architecture rule, `AGENTS.md`):
 
 | NSH | GPUI Kit | What | JS |
 |---|---|---|---|
-| `nsh-core` (with `nsh-js`, the runtime) | `gpui` | Primitives, the environment, layout, rendering, the reactive graph | `nsh`, `nsh/<module>` |
+| `nsh-core` (with `nsh-js`, the runtime) | `gpui` | Primitives, the environment, layout, rendering, the reactive graph | `nsh`, `nsh/mobile`, `nsh/desktop` |
 | `nsh-base` | `gpui-base` | Unstyled base components: behavior, state, focus, keyboard, accessibility; the look is the app's | `nsh/base` |
 | an app's own UI set, or a community crate | `gpui-component` | A styled component library | the crate's specifier (`app/native`) |
 

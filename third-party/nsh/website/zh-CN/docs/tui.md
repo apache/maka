@@ -113,11 +113,11 @@ Ctrl+Y 撤销和重做。安全输入框隐藏内容并保护复制与剪切。�
 初始使用界面实例自己的剪贴板；嵌入宿主可通过 `HostServices` 连接自己的剪贴板。NSH 传送完整文本，
 由操作系统的辅助程序或终端处理剪贴板的接收。
 
-应用的 [`nsh/keymap`](../modules/nsh-keymap.md) 绑定先于默认处理执行。终端模拟器决定哪些按键和修饰键会传给
+应用的 [`keymap`](../modules/nsh.md#keymap) 绑定先于默认处理执行。终端模拟器决定哪些按键和修饰键会传给
 应用；请选择目标终端能够转发的快捷键。
 
 可选择文本支持鼠标选择，行内文本链接通过指针命中测试激活。
-[`SelectionArea`](../elements/selection-area.md) 让同一个选区跨越文本节点、多行文本和 `TextView` 文档块。
+[`View selectable`](../elements/text-selection.md) 让同一个选区跨越文本节点、多行文本和 `TextView` 文档块。
 拖动或 Shift+点击可扩展选区；按住指针拖出 Scroll 边缘时会自动滚动。Ctrl+A 选中区域内的全部文字，
 Ctrl+C 或 Ctrl+Insert 复制，Escape 清除非空选区。`selectable={false}` 的文字不参与选择，可用于排除标签和
 控件文字。复制使用底层文本及其中的换行和 Unicode 内容，经由上述同一套宿主剪贴板与 OSC 52 路径输出。
@@ -142,7 +142,7 @@ Tab 选择链接并滚动到可见区域，Enter 跟随链接。Alt+Left 和 Alt
 
 ## 应用数据
 
-[`nsh/storage`](../modules/nsh-storage.md) 跨启动和开发重载保留字符串值。每个应用的 `nsh.json` `id` 在系统数据
+[`nsh`](../modules/nsh-storage.md) 跨启动和开发重载保留字符串值。每个应用的 `nsh.json` `id` 在系统数据
 目录下标识自己的 `storage.json` 目录：macOS 使用 Application Support，Windows 使用 `%APPDATA%`，Linux 使用
 `$XDG_DATA_HOME`（或 `~/.local/share`）。包和 Rust 根组件携带同一应用标识，两种入口使用同一份数据。发行应用在
 `nsh.json` 中声明自己的 `id`。
@@ -225,7 +225,7 @@ view.render(area, frame.buffer_mut());
 并将 Rust 类实例提供给 TSX：
 
 ```rust
-use nsh_core::ui::{Instance, Registry};
+use nsh_core::element::{Instance, Registry};
 
 let mut native = Registry::ui_set("my-app/native");
 native.value("service", move || Instance::new(Service::from(client.clone())));
@@ -237,7 +237,7 @@ let options = AppOptions {
 
 其中 `Service` 是宿主的 `#[class]` 包装类型。其方法（包括异步方法）自动生成 TypeScript 声明；TSX 通过
 `import { service } from "my-app/native"` 使用它。省略类构造函数可将客户端创建保留在宿主侧。
-首次导入或通过 [`nativeModule`](../modules/nsh-native.md#nativemodule) 查找模块时，工厂在该虚拟机中运行一次；
+首次导入或通过 [`nativeModule`](../modules/nsh.md#nativemodule) 查找模块时，工厂在该虚拟机中运行一次；
 两种路径共享同一个值，重载会创建新值。取消、订阅清理及服务操作回执由宿主管理。
 `None` 使用进程的默认模块，`Some(vec![])` 则选择空集合。
 

@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { textTooltip } from './ui';
 import { createText, UiError, errorText, message as uiMessage } from './text';
 import { tr } from './locale';
 import { cleanup, computed, inputAction, signal, Text, View } from 'nsh';
@@ -146,7 +147,7 @@ export function FinalActions(props: {
         <Button
           style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
           accessibilityLabel={tr('Fork from this turn')}
-          tooltip={pending() ? tr('Creating fork…') : tr('Fork from this turn')}
+          tooltip={textTooltip(() => pending() ? tr('Creating fork…') : tr('Fork from this turn'))}
           disabled={pending() || target() === null}
           onPress={inputAction(fork, target())}
           hoverStyle={{ backgroundColor: C.surface }}
@@ -157,7 +158,7 @@ export function FinalActions(props: {
         <Button
           style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
           accessibilityLabel={tr("View this turn's model usage")}
-          tooltip={tr("View this turn's model usage")}
+          tooltip={textTooltip(() => tr("View this turn's model usage"))}
           disabled={target() === null}
           onPress={inputAction(showUsage, target())}
           hoverStyle={{ backgroundColor: C.surface }}

@@ -1,6 +1,6 @@
 import { Canvas, cleanup, type GestureResponderEvent, Image, signal, Text, View } from "nsh";
-import { Animated, createAnimatedValue, Easing } from "nsh/animated";
-import { PanResponder } from "nsh/gesture";
+import { Animated, createAnimatedValue, Easing } from "nsh";
+import { PanResponder } from "nsh";
 import { Icon, type IconName } from "../icons";
 import { alpha, Badge, Button, Caption, Card, colors, DemoPage, finish, hint, IconTile, isDark, mono, Press, radius, Row, Stat, tints } from "../ui";
 

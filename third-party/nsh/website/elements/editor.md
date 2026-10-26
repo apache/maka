@@ -23,7 +23,7 @@ Rust makes one with `nsh_base::editor()`, TSX with `<Editor>` from `nsh/base`.
 
 ```rust tabs
 use nsh_base::editor;
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 const MAIN: &str = "fn main() {\n    println!(\"Hello, world!\");\n}\n";
 
@@ -103,7 +103,7 @@ crate registers them for the TSX app in the setup of its UI set, which every eng
 
 ```rust
 use nsh_base::editor::{EditorLanguage, register_highlighter, register_language};
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 static NIMBLE: EditorLanguage = EditorLanguage::new("Nimble")
     .extensions(&["nb"])
@@ -158,7 +158,7 @@ The editor works as code editors do:
 ## Keys
 
 The editor's keys work while it has the focus; other inputs keep theirs. `mod` is Command on macOS and iOS and Control
-elsewhere (`nsh/keymap`'s keystrokes).
+elsewhere (`keymap`'s keystrokes).
 
 | Keys (macOS) | Keys (Windows, Linux) | Command |
 |---|---|---|
@@ -201,10 +201,10 @@ macOS and iOS also have Cocoa's text keys: `ctrl+b` / `ctrl+f` / `ctrl+p` / `ctr
 delete.
 
 The commands without default keys, and the app's own, take the keys the app binds with
-[`nsh/keymap`](../modules/nsh-keymap.md), running them through the ref's `run`:
+[`keymap`](../modules/nsh.md#keymap), running them through the ref's `run`:
 
 ```tsx
-import { keymap } from "nsh/keymap";
+import { keymap } from "nsh";
 
 let editor!: EditorRef;
 
@@ -233,8 +233,8 @@ its query.
 The find bar is the app's own:
 
 ```tsx
-import { Input, signal, Text, View } from "nsh";
-import { Button, Editor, type EditorRef, type EditorSearchResult } from "nsh/base";
+import { signal, Text, View } from "nsh";
+import { Button, Editor, type EditorRef, type EditorSearchResult, Input } from "nsh/base";
 
 function Find(props: { source: string; onChange: (value: string) => void }) {
   let editor!: EditorRef;
@@ -677,7 +677,7 @@ is set with `fontFamily`, `fontSize` and `lineHeight`, which the editor measures
 | `foldMarker` | The marker of a line where a fold starts | `⌄`, `›` folded, `muted-foreground` |
 | `content` | The text area beside the gutter | 4pt before the text |
 | `line` | Every row of text | |
-| `activeLine` | Behind the rows of the lines with a caret | `muted`, faint |
+| `activeLine` | Behind the rows of the lines with a caret, below the scroll indicators | `muted`, faint |
 | `selection` | Behind selected text | A tint of `primary` |
 | `caret` | The carets | 2pt wide, `foreground`, blinking |
 | `composition` | The text an input method is composing | Underlined |
@@ -779,5 +779,5 @@ services (input methods, dictation, soft keyboards) work in it.
 - [TextView](./text-view.md): documents of Markdown and HTML, whose code blocks share the editor's syntax colors.
 - [DiffView](./diff-view.md): the changes between two texts, in the editor's syntax colors.
 - [Input](./input.md): single and multiline text fields with the platform's own editing.
-- [`nsh/keymap`](../modules/nsh-keymap.md): the app's keys for the editor's commands.
+- [`keymap`](../modules/nsh.md#keymap): the app's keys for the editor's commands.
 - [`nsh/base`](../modules/nsh-base.md): the other base components.

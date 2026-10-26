@@ -3757,7 +3757,7 @@ kurbo@0.11.3 (Apache-2.0 OR MIT); authors declared by package: Raph Levien <raph
 kurbo@0.13.1 (Apache-2.0 OR MIT)
 lru-slab@0.1.3 (MIT OR Apache-2.0 OR Zlib); authors declared by package: Benjamin Saunders <ben.e.saunders@gmail.com>
 nohash-hasher@0.2.0 (Apache-2.0 OR MIT); authors declared by package: Parity Technologies <admin@parity.io>
-nsh-js@0.2.0 (Apache-2.0)
+nsh-js@0.3.0 (Apache-2.0)
 ntapi@0.4.3 (Apache-2.0 OR MIT); authors declared by package: MSxDOS <melcodos@gmail.com>
 numtoa@0.2.4 (MIT OR Apache-2.0); authors declared by package: Michael Aaron Murphy <mmstickman@gmail.com>
 polycool@0.4.0 (MIT OR Apache-2.0)
@@ -13621,7 +13621,7 @@ DEALINGS IN THE SOFTWARE.
 
 cua-cursor-motion@0.38.0 (MIT); authors declared by package: trycua
 
-git+https://github.com/maka-agent/cua?rev=85456f431b72b6b252093fa49bfa64f703918854#85456f431b72b6b252093fa49bfa64f703918854 :: LICENSE
+git+https://github.com/maka-agent/cua?rev=a27e9367343cd08667a4ea8fa98534a9d6050d3b#a27e9367343cd08667a4ea8fa98534a9d6050d3b :: LICENSE
 
 MIT License
 
@@ -13658,12 +13658,12 @@ platform-linux@0.38.0 (MIT)
 platform-macos@0.38.0 (MIT)
 platform-windows@0.38.0 (MIT)
 
-git+https://github.com/maka-agent/cua?rev=85456f431b72b6b252093fa49bfa64f703918854#85456f431b72b6b252093fa49bfa64f703918854
+git+https://github.com/maka-agent/cua?rev=a27e9367343cd08667a4ea8fa98534a9d6050d3b#a27e9367343cd08667a4ea8fa98534a9d6050d3b
 
 Cua Driver Rust SDK and its workspace crates
 Source: https://github.com/trycua/cua
 Fork: https://github.com/maka-agent/cua
-Revision: 85456f431b72b6b252093fa49bfa64f703918854
+Revision: a27e9367343cd08667a4ea8fa98534a9d6050d3b
 The pinned fork includes the upstream 0.38 driver and retains Maka cursor
 ownership and overlay adaptations.
 Linked as pinned Cargo Git dependencies. No Cua perception extension or model
@@ -27355,6 +27355,7 @@ windows-strings@0.1.0 (MIT OR Apache-2.0); authors declared by package: Microsof
 windows-strings@0.3.1 (MIT OR Apache-2.0); authors declared by package: Microsoft
 windows-strings@0.4.2 (MIT OR Apache-2.0); authors declared by package: Microsoft
 windows-strings@0.5.1 (MIT OR Apache-2.0)
+windows-sys@0.52.0 (MIT OR Apache-2.0); authors declared by package: Microsoft
 windows-sys@0.59.0 (MIT OR Apache-2.0); authors declared by package: Microsoft
 windows-sys@0.61.2 (MIT OR Apache-2.0)
 windows-targets@0.52.6 (MIT OR Apache-2.0); authors declared by package: Microsoft
@@ -27401,6 +27402,7 @@ https://crates.io/api/v1/crates/windows-strings/0.1.0/download :: license-mit
 https://crates.io/api/v1/crates/windows-strings/0.3.1/download :: license-mit
 https://crates.io/api/v1/crates/windows-strings/0.4.2/download :: license-mit
 https://crates.io/api/v1/crates/windows-strings/0.5.1/download :: license-mit
+https://crates.io/api/v1/crates/windows-sys/0.52.0/download :: license-mit
 https://crates.io/api/v1/crates/windows-sys/0.59.0/download :: license-mit
 https://crates.io/api/v1/crates/windows-sys/0.61.2/download :: license-mit
 https://crates.io/api/v1/crates/windows-targets/0.52.6/download :: license-mit
@@ -27701,7 +27703,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 nom@1.2.4 (MIT); authors declared by package: contact@geoffroycouprie.com
 
-git+https://github.com/maka-agent/cua?rev=85456f431b72b6b252093fa49bfa64f703918854#85456f431b72b6b252093fa49bfa64f703918854 :: LICENSE
+git+https://github.com/maka-agent/cua?rev=a27e9367343cd08667a4ea8fa98534a9d6050d3b#a27e9367343cd08667a4ea8fa98534a9d6050d3b :: LICENSE
 
 Copyright (c) 2015 Geoffroy Couprie
 
@@ -28852,15 +28854,15 @@ For these and/or other purposes and motivations, and without any expectation of 
 
 ================================================================================
 
-nsh-base@0.2.0 (Apache-2.0)
-nsh-bundler@0.2.0 (Apache-2.0)
-nsh-core@0.2.0 (Apache-2.0)
-nsh-engine@0.2.0 (Apache-2.0)
-nsh-gpui-terminal@0.2.0 (Apache-2.0)
-nsh-macros@0.2.0 (Apache-2.0)
-nsh-package@0.2.0 (Apache-2.0)
-nsh-platform-gpui@0.2.0 (Apache-2.0)
-nsh-platform-tui@0.2.0 (Apache-2.0)
+nsh-base@0.3.0 (Apache-2.0)
+nsh-bundler@0.3.0 (Apache-2.0)
+nsh-core@0.3.0 (Apache-2.0)
+nsh-engine@0.3.0 (Apache-2.0)
+nsh-gpui-terminal@0.3.0 (Apache-2.0)
+nsh-macros@0.3.0 (Apache-2.0)
+nsh-package@0.3.0 (Apache-2.0)
+nsh-platform-gpui@0.3.0 (Apache-2.0)
+nsh-platform-tui@0.3.0 (Apache-2.0)
 
 https://raw.githubusercontent.com/M4n5ter/nsh/de176695240d550f2b303643b8019146c7989e7f/LICENSE-APACHE
 
@@ -49776,6 +49778,7 @@ windows-strings@0.1.0 (MIT OR Apache-2.0); authors declared by package: Microsof
 windows-strings@0.3.1 (MIT OR Apache-2.0); authors declared by package: Microsoft
 windows-strings@0.4.2 (MIT OR Apache-2.0); authors declared by package: Microsoft
 windows-strings@0.5.1 (MIT OR Apache-2.0)
+windows-sys@0.52.0 (MIT OR Apache-2.0); authors declared by package: Microsoft
 windows-sys@0.59.0 (MIT OR Apache-2.0); authors declared by package: Microsoft
 windows-sys@0.61.2 (MIT OR Apache-2.0)
 windows-targets@0.52.6 (MIT OR Apache-2.0); authors declared by package: Microsoft
@@ -49820,6 +49823,7 @@ https://crates.io/api/v1/crates/windows-strings/0.1.0/download :: license-apache
 https://crates.io/api/v1/crates/windows-strings/0.3.1/download :: license-apache-2.0
 https://crates.io/api/v1/crates/windows-strings/0.4.2/download :: license-apache-2.0
 https://crates.io/api/v1/crates/windows-strings/0.5.1/download :: license-apache-2.0
+https://crates.io/api/v1/crates/windows-sys/0.52.0/download :: license-apache-2.0
 https://crates.io/api/v1/crates/windows-sys/0.59.0/download :: license-apache-2.0
 https://crates.io/api/v1/crates/windows-sys/0.61.2/download :: license-apache-2.0
 https://crates.io/api/v1/crates/windows-targets/0.52.6/download :: license-apache-2.0

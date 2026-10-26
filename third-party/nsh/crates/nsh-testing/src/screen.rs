@@ -18,7 +18,7 @@ use std::{
 use nsh_core::{
     AccessibilityRole, Bounds, Command, Dialog, EventKind, EventMask, GestureValues, InputConfig,
     MountBatch, MountItem, NodeId, PanActivation, Point, PointerEvents, Points, Size, ViewKind,
-    ui::PropEnum,
+    element::PropEnum,
 };
 
 use crate::selector::{Matcher, Selector, TextMatch};
@@ -261,9 +261,9 @@ struct View {
     /// How long a press must last to be a long one (`delayLongPress`), in
     /// milliseconds.
     long_press_delay: Option<f32>,
-    /// A selection area (`SelectionArea` of `nsh/base`): its texts share
+    /// A selectable view (a `View` with `selectable`): its texts share
     /// one selection.
-    selection_area: bool,
+    selectable_view: bool,
     /// The interaction states it tracks (`TrackStates`: pressed, hovered).
     tracked: u8,
     /// The interaction states it is in (of those it tracks).
@@ -528,7 +528,7 @@ impl Screen {
                 view.focusable = props.focusable;
                 view.selected = props.accessibility.state.selected;
                 view.long_press_delay = props.long_press_delay;
-                view.selection_area = props.selection_area;
+                view.selectable_view = props.selectable_view;
                 view.pan_activation = props.pan_activation;
                 view.pointer_events = props.pointer_events;
             }
@@ -1418,17 +1418,17 @@ impl Screen {
         }
     }
 
-    /// Whether the view `selector` names is in a selection area (it or a
-    /// view around it is one: `SelectionArea` of `nsh/base`, a selectable
+    /// Whether the view `selector` names is in a selectable view (it or a
+    /// view around it is one: a `View` with `selectable`, a selectable
     /// `TextView`); an error when none or several match.
-    pub fn in_selection_area(&self, selector: &str) -> Result<bool, String> {
+    pub fn in_selectable_view(&self, selector: &str) -> Result<bool, String> {
         let parsed = Selector::parse(selector)?;
         match self.resolve(&parsed)[..] {
             [mut id] => loop {
                 let Some(view) = self.nodes.get(&id) else {
                     return Ok(false);
                 };
-                if view.selection_area {
+                if view.selectable_view {
                     return Ok(true);
                 }
                 match view.parent {

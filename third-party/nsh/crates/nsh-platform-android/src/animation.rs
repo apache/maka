@@ -24,6 +24,11 @@ const SHADOW_RADIUS: f32 = 14.0;
 const STICKY_OFFSET: f32 = 15.0;
 /// Canvas animated value slot `n` is `CANVAS_ARG + n` (a color as ARGB bits).
 const CANVAS_ARG: f32 = 1000.0;
+/// A native component's animated prop slot `n` holding a number is
+/// `COMPONENT_NUMBER + n` (past the canvas slots' codes; exact in an f32).
+const COMPONENT_NUMBER: f32 = 70000.0;
+/// The same holding a color (ARGB bits) is `COMPONENT_COLOR + n`.
+const COMPONENT_COLOR: f32 = 140000.0;
 /// A color value as Java's ARGB bits.
 fn argb(value: AnimationValue) -> f32 {
     match value {
@@ -317,6 +322,17 @@ impl UiAnimation {
                     }
                     // The scroll view's (`sticky` below), never bound.
                     AnimationProp::StickyTop | AnimationProp::StickyLeft => {}
+                    // Java hands it to the component when it changed.
+                    AnimationProp::ComponentSlot(k) => match self.graph.eval(node) {
+                        AnimationValue::Color(c) => out.extend_from_slice(&[
+                            v,
+                            COMPONENT_COLOR + k as f32,
+                            f32::from_bits(c.rotate_right(8)),
+                        ]),
+                        other => {
+                            out.extend_from_slice(&[v, COMPONENT_NUMBER + k as f32, other.number()])
+                        }
+                    },
                 }
             }
             if let Some(s) = shadow {

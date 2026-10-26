@@ -44,7 +44,7 @@ Use these boundaries:
 - **app component:** a repeated domain-aware pattern;
 - **component library:** styled, general-purpose UI, the app's own or the community's, built on `nsh/base`;
 - **`nsh/base`:** reusable behavior without product presentation: navigation, dialogs, popovers, menus, sheets, a
-  press target, safe areas, the keyboard;
+  press target;
 - **`nsh`:** the primitives, styles, layout, reactivity and the environment.
 
 ### Lay out an app's files
@@ -293,7 +293,7 @@ Put each state in the narrowest owner that can keep it correct:
 - reusable behavioral state belongs to the component designed for it (a `Menu` or `Popover` without `open` keeps its
   own);
 - state a subtree shares is a signal provided through [context](./reactivity.md#context);
-- what outlives a run belongs in [storage](../modules/nsh-storage.md) or on a server.
+- what outlives a run belongs in [storage](../modules/nsh.md#storage) or on a server.
 
 Prefer controlled values for ordinary selection and toggles: pass the current value into the component, receive a
 requested change, update the owner, and the bindings follow. A callback reports intent; it should not create a second
@@ -322,7 +322,7 @@ in Rust and placed from Rust and TSX:
 
 ```rust tabs
 use nsh_base::{button, theme};
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 /// The props of [`QuantityStepper`].
 #[derive(Debug, Clone, PartialEq, Props)]
@@ -734,7 +734,7 @@ Make focus ownership explicit:
 - `Button`, `Switch` and menu items are keyboard focus stops on the desktops and the web; build controls on them rather
   than on bare views;
 - move focus with a ref's `focus()` from an event or an effect that follows a state change, and move the screen
-  reader's with `set_accessibility_focus()` (Rust) or `nsh/accessibility` (TSX);
+  reader's with `set_accessibility_focus()` (Rust) or `setAccessibilityFocus` from `nsh` (TSX);
 - render a visible `focus:` state;
 - do not request focus unconditionally while rendering.
 
@@ -836,8 +836,8 @@ Every scrollable region must have one owner. Avoid accidental nested scrolling o
 the element that owns the full page, panel or list, so its indicator resolves against the region's edge, and put the
 content's inset inside it (`contentClass` / `contentStyle`) rather than wrapping the scroll view in a padded
 container. An indicator floating between content and the page boundary usually reveals the wrong scroll owner or
-padding on the wrong layer. Read the safe area and the keyboard through `SafeAreaView`, `KeyboardAvoidingView` and
-their accessors, which follow rotation and the keyboard natively.
+padding on the wrong layer. Keep clear of the safe area and the keyboard with `env(safe-area-inset-*)` and `env(keyboard-inset-height)` in
+padding and margin (read the values with their accessors), which follow rotation and the keyboard natively.
 
 ## Lists, tables, and large data
 
@@ -936,7 +936,7 @@ the fallback behavior:
 
 - a prop two platforms have is a top-level prop; a prop of one platform goes in `ios={{…}}`, `android={{…}}`,
   `desktop={{…}}` or `web={{…}}` (a builder method in Rust), and only the current platform's object is applied;
-- APIs of one platform come from `nsh/ios`, `nsh/android` and `nsh/desktop`;
+- APIs of mobile platforms come from `nsh/mobile`, those of the desktops from `nsh/desktop`;
 - styles per platform are `ios:`, `android:` and `web:` classes.
 
 A platform branch must preserve the semantic contract even if presentation differs. For example, a dialog is a sheet

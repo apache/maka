@@ -1,12 +1,12 @@
 //! The languages and highlighters an engine knows besides the built-in
 //! ones: the app registers them (a Rust app before it mounts its editors,
 //! an app's crate in its UI set's setup, `Registry::setup`), each engine
-//! keeps its own (a value of its surface, `nsh_core::ui::global`), and
+//! keeps its own (a value of its surface, `nsh_core::element::global`), and
 //! `language="…"` finds them before the built-in table.
 
 use std::rc::Rc;
 
-use nsh_core::ui::prelude::{global, try_global};
+use nsh_core::prelude::{global, try_global};
 
 use super::{
     highlight::{Factory, Syntax},

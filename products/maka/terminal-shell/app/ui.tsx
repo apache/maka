@@ -20,10 +20,19 @@
 import { tr } from './locale';
 import { Text, View } from 'nsh';
 import type { YNode } from 'nsh';
-import { Button } from 'nsh/base';
-import { platform, windowSize } from 'nsh/device';
+import { Button, Tooltip } from 'nsh/base';
+import { platform, windowSize } from 'nsh';
 import { Icon } from './Icon';
 import { sessionStatusCaption } from './sessionStatus';
+
+
+export function textTooltip(text: () => string | undefined): YNode {
+  return (
+    <Tooltip disabled={!text()} class="rounded-md border border-border bg-popover px-2 py-1">
+      <Text class="text-xs text-popover-foreground">{text()}</Text>
+    </Tooltip>
+  );
+}
 
 export const C = {
   background: '#161719',
@@ -109,9 +118,7 @@ export function Header(props: {
         accessibilityLabel={
           props.browser.expanded ? tr('Collapse session browser') : tr('Expand session browser')
         }
-        tooltip={
-          props.browser.expanded ? tr('Collapse session browser') : tr('Expand session browser')
-        }
+        tooltip={textTooltip(() => props.browser.expanded ? tr('Collapse session browser') : tr('Expand session browser'))}
         selected={props.browser.expanded}
         style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
         hoverStyle={{ backgroundColor: C.surface }}
@@ -135,7 +142,7 @@ export function Header(props: {
       <Button
         onPress={props.commands}
         accessibilityLabel={tr('Open commands')}
-        tooltip={tr('Commands · Ctrl+P')}
+        tooltip={textTooltip(() => tr('Commands · Ctrl+P'))}
         style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
         hoverStyle={{ backgroundColor: C.surface }}
         focusStyle={{ backgroundColor: C.raised }}
@@ -149,7 +156,7 @@ export function Header(props: {
       <If when={props.files}>
         <Button
           accessibilityLabel={tr('Browse workspace files')}
-          tooltip={props.workspace || tr('Browse workspace files')}
+          tooltip={textTooltip(() => props.workspace || tr('Browse workspace files'))}
           ref={props.filesOpener}
           onPress={props.files}
           style={{

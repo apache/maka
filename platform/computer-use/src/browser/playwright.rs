@@ -18,6 +18,9 @@
  */
 
 use super::*;
+
+mod mutation;
+pub(super) use mutation::validate_mutation;
 use std::{collections::HashSet, future::Future, pin::Pin, sync::Mutex};
 use tokio_util::sync::CancellationToken;
 
@@ -44,6 +47,11 @@ impl From<ToolError> for AttemptError {
     }
 }
 type Attempt<T> = Result<T, AttemptError>;
+struct SelectorScope {
+    frame: frames::Frame,
+    used: Vec<frames::Frame>,
+    segment: Segment,
+}
 struct ReadValue {
     value: Value,
     used: Vec<frames::Frame>,
@@ -59,15 +67,17 @@ struct Segment {
     text: String,
     parsed: Value,
 }
-struct ReadResources {
+struct Resources {
     group: String,
     sessions: Mutex<HashSet<Option<String>>>,
+    mutated: std::sync::atomic::AtomicBool,
 }
-impl ReadResources {
+impl Resources {
     fn new() -> Self {
         Self {
             group: format!("maka-playwright-{}", uuid::Uuid::new_v4()),
             sessions: Mutex::new(HashSet::new()),
+            mutated: std::sync::atomic::AtomicBool::new(false),
         }
     }
     fn register(&self, frame: &frames::Frame) {
@@ -128,7 +138,7 @@ impl Tab {
     async fn playwright_engine(
         &self,
         frame: &frames::Frame,
-        resources: &ReadResources,
+        resources: &Resources,
     ) -> Result<String, ToolError> {
         resources.register(frame);
         let world = self
@@ -159,26 +169,25 @@ impl Tab {
         frame: &frames::Frame,
         request: Value,
         by_value: bool,
-        resources: &ReadResources,
+        resources: &Resources,
     ) -> Result<Value, ToolError> {
         let engine = self.playwright_engine(frame, resources).await?;
         cdp_value(self.frame_observation(frame.session.as_deref(),"Runtime.callFunctionOn",json!({"objectId":engine,"functionDeclaration":READ,"arguments":[{"value":request}],"returnByValue":by_value,"awaitPromise":true,"objectGroup":resources.group})).await?)
     }
 
-    async fn playwright_frame(
+    async fn playwright_element(
         &self,
-        parent: &frames::Frame,
+        frame: &frames::Frame,
         segment: &Segment,
-        catalog: &frames::Catalog,
-        resources: &ReadResources,
-    ) -> Attempt<frames::Frame> {
-        let envelope=self.playwright_script(parent,json!({"selector":segment.text,"parsedSelector":segment.parsed,"operation":{"kind":"frame"}}),false,resources).await?;
+        resources: &Resources,
+    ) -> Attempt<String> {
+        let envelope=self.playwright_script(frame,json!({"selector":segment.text,"parsedSelector":segment.parsed,"operation":{"kind":"frame"}}),false,resources).await?;
         let envelope_id = envelope["objectId"]
             .as_str()
             .ok_or_else(|| failed("frame locator did not return an object"))?;
         let properties = self
             .frame_request(
-                parent.session.as_deref(),
+                frame.session.as_deref(),
                 "Runtime.getProperties",
                 json!({"objectId":envelope_id,"ownProperties":true}),
             )
@@ -213,6 +222,17 @@ impl Tab {
         let node = property("value")
             .and_then(|value| value["objectId"].as_str())
             .ok_or_else(|| failed("frame locator did not resolve an element"))?;
+        Ok(node.to_owned())
+    }
+
+    async fn playwright_frame(
+        &self,
+        parent: &frames::Frame,
+        segment: &Segment,
+        catalog: &frames::Catalog,
+        resources: &Resources,
+    ) -> Attempt<frames::Frame> {
+        let node = self.playwright_element(parent, segment, resources).await?;
         let described = self
             .frame_request(
                 parent.session.as_deref(),
@@ -241,12 +261,11 @@ impl Tab {
             .await?)
     }
 
-    async fn playwright_attempt(
+    async fn playwright_scope(
         &mut self,
         query: &str,
-        operation: &BrowserReadOperation,
-        resources: &ReadResources,
-    ) -> Attempt<ReadValue> {
+        resources: &Resources,
+    ) -> Attempt<SelectorScope> {
         let main = self.main_frame().await?;
         let split = self
             .playwright_script(
@@ -277,7 +296,28 @@ impl Tab {
                 used.push(frame.clone());
             }
         }
-        let segment = segments.last().unwrap();
+        let segment = segments
+            .into_iter()
+            .last()
+            .expect("nonempty selector segments");
+        Ok(SelectorScope {
+            frame,
+            used,
+            segment,
+        })
+    }
+
+    async fn playwright_attempt(
+        &mut self,
+        query: &str,
+        operation: &BrowserReadOperation,
+        resources: &Resources,
+    ) -> Attempt<ReadValue> {
+        let SelectorScope {
+            frame,
+            used,
+            segment,
+        } = self.playwright_scope(query, resources).await?;
         let relative = match operation {
             BrowserReadOperation::Rows {
                 relative: Some(relative),
@@ -301,7 +341,7 @@ impl Tab {
         language: Language,
     ) -> Result<Value, ToolError> {
         validate(&operation, &options)?;
-        let resources = ReadResources::new();
+        let resources = Resources::new();
         let timeout = options.timeout_ms.unwrap_or(3000).min(3000);
         let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout);
         // Lazy tab bindings do not have a debugger socket yet. The connection
@@ -379,7 +419,7 @@ impl Tab {
         &self,
         frame: frames::Frame,
         mut ancestors: Vec<frames::Frame>,
-        resources: &ReadResources,
+        resources: &Resources,
         cancellation: &CancellationToken,
     ) -> Attempt<Snapshot> {
         check_input(cancellation)?;
@@ -421,7 +461,7 @@ impl Tab {
         document: crate::BrowserDocument,
         cancellation: &CancellationToken,
         language: Language,
-        resources: &ReadResources,
+        resources: &Resources,
         budget: Duration,
         deadline: tokio::time::Instant,
     ) -> Result<Value, ToolError> {
@@ -474,7 +514,7 @@ impl Tab {
         snapshot: Snapshot,
         catalog: &'a frames::Catalog,
         cancellation: &'a CancellationToken,
-        resources: &'a ReadResources,
+        resources: &'a Resources,
         budget: Duration,
     ) -> Pin<Box<dyn Future<Output = String> + Send + 'a>> {
         Box::pin(async move {

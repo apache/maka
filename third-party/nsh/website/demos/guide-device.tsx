@@ -1,5 +1,5 @@
 import { mount, signal, Text, View } from "nsh";
-import { colorScheme, fontScale, pixelRatio, platform, windowSize } from "nsh/device";
+import { colorScheme, fontScale, pixelRatio, platform, windowSize } from "nsh";
 
 function Row(props: { label: string; value: string }) {
   return (
@@ -40,7 +40,7 @@ function App() {
         <View class="flex-1 rounded-xl bg-[#4a6a0a] dark:bg-[#c8f26d] p-4">
           <Text class="text-white dark:text-[#13160c] font-semibold">dark: classes follow the system</Text>
         </View>
-        <View class="flex-1 rounded-xl bg-white border border-[#e1e1db] dark:bg-[#24262a] dark:border-[#2c2e33] p-4">
+        <View class="flex-1 rounded-xl bg-white border border-[#e1e1db] dark:bg-[#24262a] dark:border-[#2c2e33] p-4 hover:bg-zinc-50 dark:hover:bg-[#1d1e22] focus-visible:outline-2 focus-visible:outline-sky-500">
           <Text class="text-[#15161a] dark:text-[#eceef1] font-semibold">A row only when the window is 600 pt or wider</Text>
         </View>
       </View>
@@ -49,7 +49,7 @@ function App() {
         onPress={() => rtl.set(!rtl())}
         activeStyle={{ opacity: 0.6 }}
         style={{ direction: rtl() ? "rtl" : "ltr" }}
-        class="flex-row items-center gap-3 rounded-2xl bg-white border border-[#e1e1db] dark:bg-[#18191c] dark:border-[#2c2e33] p-4"
+        class="flex-row items-center gap-3 rounded-2xl bg-white border border-[#e1e1db] dark:bg-[#18191c] dark:border-[#2c2e33] p-4 hover:bg-zinc-50 dark:hover:bg-[#1d1e22] focus-visible:outline-2 focus-visible:outline-sky-500"
       >
         <Text class="text-lg text-[#4a6a0a] dark:text-[#c8f26d]">⇄</Text>
         <Text class="flex-1 text-[#15161a] dark:text-[#eceef1]">Lay out right to left: {rtl() ? "on" : "off"}</Text>

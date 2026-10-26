@@ -73,7 +73,7 @@
   `data:` URI decode it on the platform (`nsh_core::image::decode_data_uri`, the one decoder every backend uses).
   The terminal backend passes these shared bytes to its bounded bitmap image workers, including placeholders;
   its raw-URI `getSize` and canvas paths use the same data-URI decoder.
-- **Picked images** (`nsh/picker`, `nsh_core::picker`): `Picker.pickImages` sends the root `Command::PickImages` with a
+- **Picked images** (`nsh`, `nsh_core::picker`): `Picker.pickImages` sends the root `Command::PickImages` with a
   `PickRequest` checked in Rust (`limit`: 1 for a single pick, at most `MAX_PICKED` = 100; `max_dimension`, `quality`
   as a `Percentage`, `PickFormat::Compatible` / `Current`); the `picker` capability gates it (denied: `[]` and a log
   line). What each image becomes is decided by `PickRequest::needs_encoding` from its type and its size with its

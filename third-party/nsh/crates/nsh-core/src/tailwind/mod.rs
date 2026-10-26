@@ -819,7 +819,7 @@ impl Tailwind {
     /// to resolve again: none ([`None`]) when the tokens did not change,
     /// those that name tokens ([`deps::THEME`]) when only their values
     /// did, else all (`u16::MAX`: unknown classes may name new ones).
-    pub(crate) fn set_tokens(&mut self, theme: &crate::ui::Tokens) -> Option<u16> {
+    pub(crate) fn set_tokens(&mut self, theme: &crate::element::Tokens) -> Option<u16> {
         let tokens = ClassTokens::new(theme);
         let current = self.theme.tokens();
         if *current == tokens {

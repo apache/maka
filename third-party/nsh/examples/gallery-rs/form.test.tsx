@@ -92,7 +92,7 @@ test("the message bar sends what is typed", async () => {
   for (const text of [
     "Today",
     "The bar below sits outside the scroll view.",
-    "KeyboardAvoidingView lifts it with the keyboard. Say something.",
+    "Its bottom padding, env(keyboard-inset-height), lifts it with the keyboard. Say something.",
   ]) {
     await app.waitFor(text);
   }

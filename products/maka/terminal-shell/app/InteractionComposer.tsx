@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { textTooltip } from './ui';
 import {
   createText,
   UiError,
@@ -26,11 +27,12 @@ import {
   message as uiMessage,
 } from './text';
 import { tr } from './locale';
-import { cleanup, effect, inputAction, Input, signal, Scroll, Text, View } from 'nsh';
+import { cleanup, effect, inputAction, signal, Scroll, Text, View } from 'nsh';
+import { Input } from 'nsh/base';
 import type { YNode } from 'nsh';
 import { host } from './host';
-import { keymap } from 'nsh/keymap';
-import { windowSize } from 'nsh/device';
+import { keymap } from 'nsh';
+import { windowSize } from 'nsh';
 import { Button } from 'nsh/base';
 import type {
   InteractionAnswer,
@@ -96,7 +98,7 @@ function InteractionAction(props: {
       disabled={props.disabled}
       selected={props.selected}
       onPress={props.onPress}
-      tooltip={props.tooltip}
+      tooltip={textTooltip(() => props.tooltip)}
       style={{
         ...controlStyle,
         minWidth: 32,

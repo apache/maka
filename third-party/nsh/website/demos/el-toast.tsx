@@ -1,6 +1,7 @@
 import { mount, Overlay, signal, Text, View } from "nsh";
-import { safeArea, Toast, type ToastEntry, ToastManager, ToastStack } from "nsh/base";
-import { desktop, Log, size, ui, wide } from "./palette";
+import { Toast, type ToastEntry, ToastManager, ToastStack } from "nsh/base";
+import { safeArea } from "nsh";
+import { button, buttonText, desktop, Log, size, ui, wide } from "./palette";
 
 /** What the demo's toasts show. */
 type Content = { title: string; description?: string; undo?: boolean };
@@ -32,13 +33,9 @@ function App() {
     sync();
   };
   /** A button of the demo. */
-  const button = (label: string, onPress: () => void) => (
-    <View
-      onPress={onPress}
-      activeStyle={{ opacity: 0.7 }}
-      style={{ ...ui().raised, height: wide() ? size.control : 42, paddingHorizontal: 14, borderRadius: wide() ? 8 : 10, justifyContent: "center" }}
-    >
-      <Text style={{ fontSize: wide() ? 13 : 14, fontWeight: "600", color: ui().text }}>{label}</Text>
+  const action = (label: string, onPress: () => void) => (
+    <View onPress={onPress} {...button()}>
+      <Text style={buttonText()}>{label}</Text>
     </View>
   );
 
@@ -49,9 +46,9 @@ function App() {
         {desktop ? "Show a few; rest the pointer on the stack to expand it and stop their time" : "Show a few; touch the stack to expand it, swipe one right to dismiss it"}
       </Text>
       <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
-        {button("Copy the link", () => push({ title: "Copied", description: "The link is on the clipboard" }))}
-        {button("Delete the draft", () => push({ title: "Draft deleted", undo: true }))}
-        {button("Dismiss all", () => {
+        {action("Copy the link", () => push({ title: "Copied", description: "The link is on the clipboard" }))}
+        {action("Delete the draft", () => push({ title: "Draft deleted", undo: true }))}
+        {action("Dismiss all", () => {
           manager.dismissAll();
           sync();
         })}
@@ -92,8 +89,8 @@ function App() {
                     </If>
                   </View>
                   <If when={content().undo}>
-                    <View onPress={() => dismiss(t().id)} activeStyle={{ opacity: 0.7 }} style={{ ...ui().primary, height: 28, paddingHorizontal: 10, borderRadius: 8, justifyContent: "center" }}>
-                      <Text style={{ fontSize: 13, fontWeight: "600", color: ui().onPrimary }}>Undo</Text>
+                    <View onPress={() => dismiss(t().id)} {...button("primary", { size: "sm" })}>
+                      <Text style={buttonText("primary")}>Undo</Text>
                     </View>
                   </If>
                 </Toast>

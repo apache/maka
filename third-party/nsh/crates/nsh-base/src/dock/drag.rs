@@ -5,8 +5,8 @@
 //! (`DockArea`'s `renderDropIndicator`).
 
 use nsh_core::{
+    element::Placement,
     geometry::{Bounds, Point, Points, Size, point, px, size},
-    ui::Placement,
 };
 
 /// The bounds a drop placeholder should occupy within a tab group, given

@@ -384,7 +384,7 @@ async fn prepared_handles_and_wire_views_are_session_bound() {
     assert!(a.prepared_dirty_groups(&build, None, 1).await.is_err());
     assert!(a.finish_prepared(&build).await.is_err());
     let view = b.finish_prepared(&build).await.unwrap();
-    assert!(a.prepared_semantic_page(&view, 0, 1).await.is_err());
+    assert!(a.prepared_semantic_group(&view, 0).await.is_err());
     assert!(
         a.prepare_wire_view(&view, WireFormat::Responses, "codec")
             .await

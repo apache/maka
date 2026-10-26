@@ -17,7 +17,7 @@ indicator; the panels are the app's views.
 
 ```rust tabs
 use nsh_base::{h_resizable, resizable_panel, theme};
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 fn workspace() -> impl IntoElement {
     h_resizable()
@@ -84,7 +84,7 @@ While the user drags a handle, the group moves the room between the panels in th
 When a drag ends having changed the sizes, the group reports every visible panel's size, in the order they are laid
 out (`onResize` on the group), and each panel whose size changed reports its own (`onResize` on the panel). The panels
 a drag moved keep the user's sizes until the app passes a new `size`; the app keeps them beyond the group's life by
-passing the reported sizes back as `size`, so a layout it restores from [storage](../modules/nsh-storage.md) opens at
+passing the reported sizes back as `size`, so a layout it restores from [storage](../modules/nsh.md#storage) opens at
 the sizes the user left. Only drags and screen readers' steps report: a window resized or a panel shown or hidden
 reports nothing.
 

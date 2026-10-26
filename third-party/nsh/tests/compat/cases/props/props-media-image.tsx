@@ -4,7 +4,7 @@
 // as the `object-*` classes say), the placeholder until it loads, a blur
 // and how long it fades in. Its script checks each.
 import { Text, View, signal } from "nsh";
-import { Image } from "nsh/image";
+import { Image } from "nsh";
 
 function App() {
   const photo = signal("https://example.com/a.png");

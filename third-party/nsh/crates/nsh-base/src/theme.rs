@@ -28,8 +28,8 @@ use std::sync::{Arc, LazyLock};
 use nsh_core::{
     Color, JsonValue,
     color::Hsla,
+    element::{AdaptiveColor, FONT_MONO, FONT_SANS, SharedString, Tokens},
     geometry::{Points, px},
-    ui::{AdaptiveColor, FONT_MONO, FONT_SANS, SharedString, Tokens},
 };
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -62,7 +62,7 @@ thread_local! {
 /// The theme the app is drawn with (reading it subscribes: a new theme
 /// reaches what read it).
 pub fn theme() -> Arc<Theme> {
-    let tokens = nsh_core::ui::ambient::tokens();
+    let tokens = nsh_core::element::ambient::tokens();
     CURRENT.with_borrow_mut(|current| match current {
         Some(theme) if Arc::ptr_eq(&theme.tokens, &tokens) => theme.clone(),
         _ => current.insert(Arc::new(Theme::of(tokens))).clone(),
@@ -71,7 +71,7 @@ pub fn theme() -> Arc<Theme> {
 
 /// The tokens of theme file `json` over the default's (`None`: the
 /// default's): how the core reads `nsh.json`'s `"theme"`
-/// ([`nsh_core::ui::Registry::tokens_from`]).
+/// ([`nsh_core::element::Registry::tokens_from`]).
 pub fn tokens_of(json: Option<&str>) -> Result<Tokens, String> {
     match json {
         Some(json) => Theme::from_json(json)
@@ -270,7 +270,7 @@ impl Theme {
         &self.tokens
     }
 
-    /// Its design tokens, for the core ([`nsh_core::ui::Root::tokens`],
+    /// Its design tokens, for the core ([`nsh_core::element::Root::tokens`],
     /// an engine's host theme).
     pub fn into_tokens(self) -> Tokens {
         Arc::unwrap_or_clone(self.tokens)

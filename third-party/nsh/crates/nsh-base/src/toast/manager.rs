@@ -9,7 +9,7 @@ use nsh_core::{Points, time::Instant};
 
 /// The lifecycle phase of a toast, which the app's presentation follows
 /// (a [`super::Toast`]'s `transitionStatus`).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, nsh_core::ui::PropEnum)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, nsh_core::element::PropEnum)]
 pub enum ToastTransitionStatus {
     /// Just added: it may run its enter transition.
     #[default]

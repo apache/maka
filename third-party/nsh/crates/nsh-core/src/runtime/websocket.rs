@@ -12,7 +12,7 @@ use std::{
 use super::{MAX_WEBSOCKETS, WEBSOCKETS};
 use crate::{
     JsonValue,
-    ui::{
+    element::{
         Held, JsError, JsHost, JsIn, JsOwned, JsValue, Later, PropError, System, TsTypes, class,
         module,
     },
@@ -296,7 +296,8 @@ impl WebSocketConnection {
                                 }
                             }
                             // Browsers expose pending bytes but no drain event.
-                            crate::ui::ambient::timer(std::time::Duration::from_millis(10)).await;
+                            crate::element::ambient::timer(std::time::Duration::from_millis(10))
+                                .await;
                         }
                     })
                     .await;
@@ -402,9 +403,9 @@ async fn timeout<T>(
 ) -> Result<T, String> {
     use std::future::Future;
     let mut work = std::pin::pin!(work);
-    let mut timer = std::pin::pin!(crate::ui::ambient::timer(std::time::Duration::from_secs(
-        30
-    )));
+    let mut timer = std::pin::pin!(crate::element::ambient::timer(
+        std::time::Duration::from_secs(30)
+    ));
     poll_fn(|cx| {
         if let Poll::Ready(result) = work.as_mut().poll(cx) {
             return Poll::Ready(result);

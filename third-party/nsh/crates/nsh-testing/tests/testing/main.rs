@@ -86,7 +86,7 @@ fn headless_preserves_environment_and_data_and_stops_on_process_exit() {
     std::fs::create_dir_all(&root).unwrap();
     let expected = root.join("com.example.trace-exit");
     let source = format!(
-        "import process from 'process'; import {{platform}} from 'nsh/device';\n\
+        "import process from 'process'; import {{platform}} from 'nsh';\n\
          if (platform.os !== 'macos') throw new Error('trace OS was lost');\n\
          if (process.dataDir !== {}) throw new Error('trace data directory was lost: ' + process.dataDir);\n\
          process.exit(0);",

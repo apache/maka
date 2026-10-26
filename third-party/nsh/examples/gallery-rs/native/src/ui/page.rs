@@ -3,7 +3,7 @@
 
 use std::rc::Rc;
 
-use nsh_core::ui::{Reactive, prelude::*};
+use nsh_core::{element::Reactive, prelude::*};
 
 use super::{
     animated::appear,

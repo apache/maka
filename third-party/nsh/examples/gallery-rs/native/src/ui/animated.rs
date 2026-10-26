@@ -1,7 +1,7 @@
 //! The gallery's motion: [`Press`] sinks under the finger, [`Appear`]
 //! brings content in. Both run natively: only press in / out reach Rust.
 
-use nsh_core::ui::{PropEnum, prelude::*};
+use nsh_core::{element::PropEnum, prelude::*};
 
 use super::theme::motion;
 

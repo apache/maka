@@ -615,8 +615,8 @@ pub(crate) struct Mounter {
     sticky: rustc_hash::FxHashMap<NodeId, Vec<StickyCell>>,
     /// The native components the app registered.
     components: crate::component::Components,
-    /// Selection areas (`ViewProps::selection_area`) and their selections.
-    areas: Vec<(NodeId, Retained<crate::selection_area::AreaResponder>)>,
+    /// Selectable views (`ViewProps::selectable_view`) and their selections.
+    areas: Vec<(NodeId, Retained<crate::selectable_view::AreaResponder>)>,
     /// The performance monitor, while it measures ([`Mounter::measure`]).
     fps: Option<std::rc::Rc<crate::fps::Fps>>,
     mtm: MainThreadMarker,
@@ -923,12 +923,9 @@ impl Mounter {
                         self.control.clone(),
                         self.access.clone(),
                     ))),
-                    ViewKind::Native => {
-                        Native::Component(Box::new(crate::component::ComponentHost {
-                            container: NshView::new(self.mtm),
-                            component: None,
-                        }))
-                    }
+                    ViewKind::Native => Native::Component(Box::new(
+                        crate::component::ComponentHost::new(NshView::new(self.mtm)),
+                    )),
                     ViewKind::Video => Native::Video(Box::new(VideoHost::new(
                         self.mtm,
                         id,
@@ -1426,6 +1423,13 @@ impl Mounter {
                     if let Some(s) = self.slot(id) {
                         apply_dynamic(s, &self.animator);
                     }
+                    // A component gets what is bound again.
+                    if let Some(Some(s)) = self.views.get_mut(id as usize)
+                        && let Native::Component(host) = &mut s.native
+                    {
+                        host.forget();
+                        host.push(&s.bindings, &self.animator);
+                    }
                     return true;
                 }
             }
@@ -1516,6 +1520,23 @@ impl Mounter {
                 ) = (made, self.slot_mut(id))
                 {
                     host.attach(component);
+                }
+                // Bindings may have come first: the new component gets them.
+                if let Some(Some(s)) = self.views.get_mut(id as usize)
+                    && let Native::Component(host) = &mut s.native
+                {
+                    host.forget();
+                    host.push(&s.bindings, &self.animator);
+                }
+            }
+            MountItem::ComponentPropSlots { id, names } => {
+                if let Some(Slot {
+                    native: Native::Component(host),
+                    ..
+                }) = self.slot_mut(id)
+                {
+                    host.slots = names;
+                    host.forget();
                 }
             }
             MountItem::ComponentProps { id, props } => {
@@ -1681,8 +1702,6 @@ impl Mounter {
                 input.select(start, end)
             }
             (Command::ClearJsResponder, _) => self.clear_js_responder(),
-            // Toasts are Android only.
-            (Command::Toast { .. }, _) => {}
             (Command::Announce(text), _) => crate::system::announce(&text),
             (Command::ImageInfo { id, uri }, _) => self.images.info(id, &uri),
             (Command::SetClipboard(text), _) => crate::system::set_clipboard(&text),
@@ -3700,7 +3719,7 @@ impl Mounter {
         }
         // Only views that keep their props (which texts below look up).
         let area =
-            (props.selection_area && s.native.nsh().is_some()).then(|| s.native.view().retain());
+            (props.selectable_view && s.native.nsh().is_some()).then(|| s.native.view().retain());
         let was_area = self.areas.iter().any(|(a, _)| *a == id);
         let Some(s) = self.slot_mut(id) else { return };
         match s.native.nsh() {
@@ -3725,9 +3744,10 @@ impl Mounter {
         }
         // After the props: the texts below read whether they are in an area.
         match (area, was_area) {
-            (Some(view), false) => self
-                .areas
-                .push((id, crate::selection_area::AreaResponder::attach(&view, mtm))),
+            (Some(view), false) => self.areas.push((
+                id,
+                crate::selectable_view::AreaResponder::attach(&view, mtm),
+            )),
             (None, true) => {
                 if let Some(i) = self.areas.iter().position(|(a, _)| *a == id) {
                     self.areas.remove(i).1.detach();
@@ -4358,6 +4378,15 @@ impl Mounter {
         for &id in &self.animated {
             if let Some(s) = self.views.get(id as usize).and_then(Option::as_ref) {
                 apply_dynamic(s, animator);
+            }
+        }
+        // Components get their bound props' changes (no view borrowed while
+        // they run but their own slot).
+        for &id in &self.animated {
+            if let Some(Some(s)) = self.views.get_mut(id as usize)
+                && let Native::Component(host) = &mut s.native
+            {
+                host.push(&s.bindings, animator);
             }
         }
         // Sticky cells that stick an animated value further in follow it.

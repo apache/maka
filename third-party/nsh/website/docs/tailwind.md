@@ -11,7 +11,7 @@ demo: guide-tailwind
 NSH's styles follow Tailwind CSS 4. In Rust, Tailwind's utilities are typed style methods with the same names and values (`.p_4()` is `p-4`, `.rounded_2xl()` is `rounded-2xl`, `ZINC.shade(900)` is `zinc-900`); in TSX, every element accepts the classes themselves in `class`, resolved natively against Tailwind 4's default theme. Each example below shows the typed methods first and the classes second:
 
 ```rust tabs
-use nsh_core::ui::palette::ZINC;
+use nsh_core::element::palette::ZINC;
 
 view()
     .flex_row()
@@ -70,7 +70,7 @@ How conflicts resolve:
 3. **`style` wins over classes.**
 4. `!` makes a class important: `!p-0`.
 
-Rust components (`SafeAreaView`, `KeyboardAvoidingView` and those of an app's own crate) accept `class` and `classList` from TSX too; your classes are merged after the component's own styles and win at equal rank.
+Rust components (`nsh/base`'s and those of an app's own crate) accept `class` and `classList` from TSX too; your classes are merged after the component's own styles and win at equal rank.
 
 ## Variants
 
@@ -162,7 +162,7 @@ Breakpoints compare against the window (the surface NSH renders into), not the d
 - **Classes for settings that are props in NSH**: `line-clamp-*`, `truncate`, `whitespace-nowrap`, `pointer-events-*`, `object-*` (image resize mode), `select-text`, `caret-*` and `placeholder:text-*` work, and lose to the explicit props (`numberOfLines`, `pointerEvents`, `resizeMode`, ...) when both are set. In Rust these are the element's methods (`.number_of_lines(..)`, `.resize_mode(..)`, ...).
 - **The supported set**: utilities and variants of Tailwind 4 that have a native meaning. `peer-*` variants, pseudo-elements (`before:`, `after:`) and arbitrary properties (`[mask-type:luminance]`) are reported as unknown classes, and so is every utility NSH has no native meaning for, so a class never means something else than in a browser. Rendering hints (`antialiased`, `will-change-transform`, `appearance-none`, `box-border`, ...) are accepted and change nothing.
 
-Everything else works as documented by Tailwind 4: the color palette, opacity modifiers (`bg-black/40`), arbitrary values (`bg-[#34c759]`, `w-[72px]`, `grid-cols-[1fr_2fr]`), fractions (`w-1/2`, `translate-x-1/2`), shadows and rings, gradients (`bg-linear-to-r`, `bg-radial`, `bg-conic` with `from-` / `via-` / `to-`), filters, `backdrop-blur-*`, `mix-blend-*`, transforms, `transition-*` and `duration-*`, `animate-spin` / `ping` / `pulse` / `bounce`, and grid, each with its typed method in Rust. The platform limits of [filters and blending](./styling.md#filters-and-blending) apply to classes too.
+Everything else works as documented by Tailwind 4: the color palette, opacity modifiers (`bg-black/40`), arbitrary values (`bg-[#34c759]`, `w-[72px]`, `grid-cols-[1fr_2fr]`; on `p`, `px`, `py`, `pt`, `pr`, `pb`, `pl` and the `m` utilities also the environment variables, `pt-[env(safe-area-inset-top)]`, `pb-[calc(env(keyboard-inset-height)+49px)]`, see [Safe area](../elements/safe-area.md) and [Keyboard](../elements/keyboard.md)), fractions (`w-1/2`, `translate-x-1/2`), shadows and rings, gradients (`bg-linear-to-r`, `bg-radial`, `bg-conic` with `from-` / `via-` / `to-`), filters, `backdrop-blur-*`, `mix-blend-*`, transforms, `transition-*` and `duration-*`, `animate-spin` / `ping` / `pulse` / `bounce`, and grid, each with its typed method in Rust. The platform limits of [filters and blending](./styling.md#filters-and-blending) apply to classes too.
 
 ## Theme
 

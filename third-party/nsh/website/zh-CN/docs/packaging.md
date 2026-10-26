@@ -52,7 +52,7 @@ nsh package App.tsx --target ios-simulator --run
 | 键 | 类型 | 默认值 | 用途 |
 |---|---|---|---|
 | `name` | string | 入口文件所在目录的名称 | 图标下方显示的名称（`CFBundleDisplayName`、Android 的 `android:label`），也用作输出文件名。 |
-| `id` | string | 必填 | Bundle identifier / Android 包名，使用你拥有的域名的反向 DNS 形式。它也决定应用[存储](../modules/nsh-storage.md)的位置，因此每个应用各有一份。`nsh package` 和 `nsh publish` 遇到 `com.example.` 占位 id 时会给出警告。 |
+| `id` | string | 必填 | Bundle identifier / Android 包名，使用你拥有的域名的反向 DNS 形式。它也决定应用[存储](../modules/nsh.md#storage)的位置，因此每个应用各有一份。`nsh package` 和 `nsh publish` 遇到 `com.example.` 占位 id 时会给出警告。 |
 | `version` | string | `"1.0.0"` | 用户可见的版本号（`CFBundleShortVersionString`、`versionName`）。 |
 | `build` | number | `1` | 构建号（`CFBundleVersion`、`versionCode`）。每次上传新版本都要递增。 |
 | `icon` | string | 无 | 一张正方形 PNG，最好是 1024×1024，路径相对于 `nsh.json`。 |

@@ -4,7 +4,7 @@
 // them. Its script checks where they are laid out and the travel the
 // scroll view gets.
 import { Scroll, Text, View } from "nsh";
-import { createAnimatedValue } from "nsh/animated";
+import { createAnimatedValue } from "nsh";
 
 function App() {
   const bar = createAnimatedValue(20);

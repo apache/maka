@@ -1,10 +1,10 @@
-// A case of the API's test suite (docs/dev/compatibility.md): `nsh/keymap`
+// A case of the API's test suite (docs/dev/compatibility.md): `nsh`
 // on the headless runtime (iOS, an Apple platform): the labels of keystrokes,
 // bindings made and removed in both forms, and the keystrokes `bind`
 // refuses. Its
 // script checks each.
 import { Text, View, signal } from "nsh";
-import { keymap } from "nsh/keymap";
+import { keymap } from "nsh";
 
 function refused(keystroke: string): string {
   try {

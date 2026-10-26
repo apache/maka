@@ -19,10 +19,7 @@
 
 use std::{cell::RefCell, ops::Range, rc::Rc};
 
-use nsh_core::{
-    keymap::Modifiers,
-    ui::{Os, prelude::*},
-};
+use nsh_core::{element::Os, keymap::Modifiers, prelude::*};
 
 use super::{
     EditorBounds, EditorEvent, EditorPart, EditorPosition, EditorRange,

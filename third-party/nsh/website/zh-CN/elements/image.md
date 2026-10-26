@@ -11,7 +11,7 @@ demo: el-image
 `Image` 显示来自应用资源或 URL 的图片。图片在主线程之外下载和解码，按视图显示的尺寸降采样，并缓存在内存中。动态 GIF、WebP 和 APNG 图片会自动播放。Rust 用 `image(src)` 创建，TSX 用从 `nsh` 导入的 `<Image>`。
 
 ```rust tabs
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 // 应用 crate 中的 assets/logo.png。
 const LOGO: ImageAsset = asset!("logo.png");

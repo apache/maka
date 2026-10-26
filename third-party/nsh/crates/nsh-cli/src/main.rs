@@ -35,7 +35,7 @@ use std::{
 
 use anyhow::Context as _;
 use clap::{Args, Parser, Subcommand};
-use nsh_core::ui::{Registry, description::SetDescription};
+use nsh_core::element::{Registry, description::SetDescription};
 
 /// The UI sets this command line links: `nsh/base`.
 pub(crate) fn own_sets() -> &'static [Registry] {
@@ -55,7 +55,7 @@ pub(crate) fn ui_sets() -> Arc<[SetDescription]> {
     }
     let sets: Arc<[SetDescription]> = own_sets()
         .iter()
-        .flat_map(nsh_core::ui::Registry::sets)
+        .flat_map(nsh_core::element::Registry::sets)
         .map(SetDescription::from)
         .collect();
     *UI_SETS.write().unwrap_or_else(|e| e.into_inner()) = Some(sets.clone());
@@ -67,7 +67,7 @@ pub(crate) fn ui_sets() -> Arc<[SetDescription]> {
 pub(crate) fn set_app_sets(app: Vec<SetDescription>) {
     let sets: Arc<[SetDescription]> = own_sets()
         .iter()
-        .flat_map(nsh_core::ui::Registry::sets)
+        .flat_map(nsh_core::element::Registry::sets)
         .map(SetDescription::from)
         .chain(app)
         .collect();

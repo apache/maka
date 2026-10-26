@@ -10,7 +10,7 @@
 
 use std::sync::{LazyLock, OnceLock};
 
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 use tokio::sync::{mpsc, oneshot, watch};
 
 /// The symbols the desk trades, with their sample prices.

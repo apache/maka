@@ -63,15 +63,11 @@ pub struct PreparedView {
     lease: lifetime::Lease,
 }
 #[derive(Clone, Debug)]
-pub struct PreparedGroupSlice {
-    pub group: PreparedGroup,
+pub struct PreparedSemanticGroup {
+    pub rows: Vec<ResolvedRow>,
+    pub manifest: maka_agent_facts::history::media::MediaManifest,
+    /// Messages before the requested cursor within this complete logical group.
     pub skip: usize,
-    pub take: usize,
-}
-#[derive(Clone, Debug)]
-pub struct PreparedSemanticPage {
-    pub groups: Vec<PreparedGroupSlice>,
-    pub next_cursor: Option<usize>,
 }
 pub use wire::{
     PreparedWireBuild, PreparedWireCursor, PreparedWireMetadataPage, PreparedWirePage,
@@ -313,19 +309,20 @@ impl EventLog {
         })).await
     }
 
-    pub async fn prepared_semantic_page(
+    /// Resolve one complete logical group and its frozen media snapshot with
+    /// one tree search in the selected view's original read transaction.
+    pub async fn prepared_semantic_group(
         &self,
         view: &PreparedView,
         cursor: usize,
-        limit: usize,
-    ) -> Result<PreparedSemanticPage, StoreError> {
+    ) -> Result<Option<PreparedSemanticGroup>, StoreError> {
         self.validate_root()?;
         let expected_session = self.expected_session.clone();
         let scope_id = view.build_id.clone();
         view.lease.validate(&self.prepared)?;
         self.check_bound_session(&view.selection.session)?;
-        if limit == 0 || cursor > view.message_count {
-            return Err(invalid("invalid prepared semantic page"));
+        if cursor > view.message_count {
+            return Err(invalid("invalid prepared semantic cursor"));
         }
         let view = view.clone();
         self.connection
@@ -336,28 +333,20 @@ impl EventLog {
                     require_build_session(connection, expected_session.as_deref(), &scope_id)
                         .await?;
                     let _lease = view.lease;
-                    let end = cursor
-                        .saturating_add(limit.min(256))
-                        .min(view.message_count);
-                    let mut position = cursor;
-                    let mut groups = Vec::new();
-                    while position < end {
-                        let (sequence, base, group) =
-                            tree::seek(connection, view.root.as_deref(), position).await?;
-                        let take = (end - position).min(group.messages.len() - (position - base));
-                        groups.push(PreparedGroupSlice {
-                            group: PreparedGroup {
-                                id: sequence.to_string(),
-                            },
-                            skip: position - base,
-                            take,
-                        });
-                        position += take;
+                    if cursor == view.message_count {
+                        return Ok(None);
                     }
-                    Ok(PreparedSemanticPage {
-                        groups,
-                        next_cursor: (end < view.message_count).then_some(end),
-                    })
+                    let (_, base, group) =
+                        tree::seek(connection, view.root.as_deref(), cursor).await?;
+                    let mut rows = Vec::new();
+                    for member in group.members {
+                        rows.extend(group_metadata(connection, &view.selection, member).await?);
+                    }
+                    Ok(Some(PreparedSemanticGroup {
+                        rows: semantic::resolve(connection, rows).await?,
+                        manifest: group.manifest,
+                        skip: cursor - base,
+                    }))
                 })
             })
             .await

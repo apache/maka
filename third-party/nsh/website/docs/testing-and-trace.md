@@ -161,7 +161,7 @@ starts it on a 390×844 viewport and resolves once it rendered and is quiet.
 
 | Option | Default | Description |
 |---|---|---|
-| `storage` | empty | What `nsh/storage` holds at the start: `{ todos: "[]" }`. |
+| `storage` | empty | What `Storage` holds at the start: `{ todos: "[]" }`. |
 | `network` | none | What the app's requests get, by route: see [Stubbing the network](#stubbing-the-network). `"live"`: the real network. |
 | `width`, `height` | 390, 844 | The viewport in points. |
 | `safeArea` | 0 | The safe area insets in points: `{ top: 47, bottom: 34 }`. |
@@ -175,7 +175,7 @@ starts it on a 390×844 viewport and resolves once it rendered and is quiet.
 
 ### Playing the host app
 
-An app embedded in a native app talks to it through [`nsh/host`](../modules/nsh-host.md). In a test, the test plays
+An app embedded in a native app talks to it through [`host`](../modules/nsh.md#host). In a test, the test plays
 the host app: `host.params` gives the launch parameters the app reads at start, and `host.handlers` answers the app's
 `host.call` and hears its `host.post`, by name. A handler is a value, which answers every call, or a function of the
 call's data that returns the answer (or a promise of it). What the function throws rejects the call, as a host app's
@@ -203,7 +203,7 @@ expect(app.shows("Conversation c-43")).toBe(true);
 `app.host.send(name, data)` sends an event, then waits until the app is quiet. `app.host.calls()` and
 `app.host.posts()` list what the handlers got, in order: `name` and `data`.
 
-The URLs the app opens ([`openUrl`](../modules/nsh-device.md#openurl), a `TextView`'s links with `links="open"`) are
+The URLs the app opens ([`openUrl`](../modules/nsh.md#openurl), a `TextView`'s links with `links="open"`) are
 recorded and reported to the app as opened, and nothing opens on this machine. `app.openedUrls()` lists them:
 
 ```tsx
@@ -356,7 +356,7 @@ one: a selector matching several fails the step, and the error says how to narro
 | `app.menu()` | The actions of the context menu the app shows (`Menu.popup`): `label` (a submenu's after its own, `"Share > Mail"`), `disabled`, and `checked` for a checkable item; `null` when none is open. |
 | `await app.chooseMenuItem(label)` | Chooses the open context menu's action, as a click on it does: the app hears `onMenu` (its `onSelect` runs), then the menu closes. Rejects when the item is disabled or missing. |
 | `await app.closeMenu()` | Closes the open context menu with nothing chosen, as Escape does. |
-| `await app.keyboard.press(keys)` | Presses a key with its modifiers, as `nsh/keymap` names it (`"mod+k"`, `"shift+/"`, `"escape"`; `mod` is the platform's command key), on a hardware keyboard, on every platform (phones and tablets have one too): the app's shortcut of it hears it (`keymap.bind`, `onKeyCommand`), else on macOS and the web Tab and Shift+Tab move the keyboard focus between the inputs and the views that take presses (`onFocus`, `onBlur`, `focus:` styles) and Return or Space presses the view it is on, else the focused input takes a character, Backspace or the return key, else Escape goes back. |
+| `await app.keyboard.press(keys)` | Presses a key with its modifiers, as `keymap` names it (`"mod+k"`, `"shift+/"`, `"escape"`; `mod` is the platform's command key), on a hardware keyboard, on every platform (phones and tablets have one too): the app's shortcut of it hears it (`keymap.bind`, `onKeyCommand`), else on macOS and the web Tab and Shift+Tab move the keyboard focus between the inputs and the views that take presses (`onFocus`, `onBlur`, `focus:` styles) and Return or Space presses the view it is on, else the focused input takes a character, Backspace or the return key, else Escape goes back. |
 | `await app.drag(selector, { x, y })` | A finger lands on the middle of the view, rests for 100 ms, moves by `x`, `y` points, 10 per frame, and lifts, as the platform's input takes it: a pan follows it (`pan={{ x, y }}`, `onPanStart`, `onPanEnd` with the release velocity), the views listening to touches hear it (`onTouchStart`, `PanResponder`), a scroll view scrolls with it and, pulled far enough past its top, refreshes (`onRefresh`), and a press under it is cancelled once it moves away. On the desktops and the web it is the mouse. |
 | `await app.wait(ms)` | Lets the app run for `ms` milliseconds: timers, animations, requests. On a manual clock, moves it by `ms` (`app.clock.runFor`). |
 | `await app.waitFor(selector, options?)` | Resolves once a view matches, or with `{ state: "gone" }` once none does; rejects after `timeout` ms (5000). |
@@ -404,7 +404,7 @@ that only a real platform can do:
 - **Dialogs are answered**: by the test's `onDialog`, else by their cancel button, else they are closed when they can
   be; a dialog that only its other buttons answer fails the step that showed it until the test says which to press.
 - **The clipboard holds text**: what the app copies, read back when it pastes (`clipboard` to start with some).
-- **The page's host answers `nsh/host`** when the app's `nsh.json` names one in `web.host` ([The page's
+- **The page's host answers `host`** when the app's `nsh.json` names one in `web.host` ([The page's
   host](#the-pages-host)).
 - **The app runs under its capabilities**: what its `nsh.json` declares in `capabilities` is enforced as on a device,
   so what it does not declare is refused.
@@ -419,7 +419,7 @@ that only a real platform can do:
 An app published to the web gets its host from its page: `nsh.json` `web.host`, a module exporting
 `createHost(player)` ([Web](./web.md#the-hosts-functions)). Headless runs load that module for each app a test opens,
 before the app starts, in a JavaScript context of its own (timers and `console`, nothing of the browser's, no
-imports): its `call` answers the app's [`host.call`](../modules/nsh-host.md), its `player.hostEvent` reaches
+imports): its `call` answers the app's [`host.call`](../modules/nsh.md#host), its `player.hostEvent` reaches
 `host.on`, and `host.available()` is `true`. A `call` that throws, rejects or returns what is not JSON rejects the
 app's call with its message, as on the page, and events sent before the app starts reach its top-level listeners
 once it does. `--web-host <module>` names another module. The app's `capabilities.host` must list what it calls, as on
@@ -714,7 +714,7 @@ view()
 | iOS | The view's `accessibilityIdentifier` (`app.otherElements["add-to-cart"]` in XCUITest). |
 | Android | The accessibility node's view id resource name (`By.res("add-to-cart")` in UI Automator). |
 
-The test id is a method of every element in Rust, and `testID` a prop of every element and of every Rust component (`SafeAreaView`, `KeyboardAvoidingView`, ...). It does not change what screen readers
+The test id is a method of every element in Rust, and `testID` a prop of every element and of every Rust component (`Button`, `Dialog`, ...). It does not change what screen readers
 say; use `accessibilityLabel` for that (see [Accessibility](./accessibility.md)). In `--trace` output it appears in
 the view's `ViewProps` item as `test_id: Some("add-to-cart")`.
 

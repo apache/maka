@@ -13,7 +13,7 @@ group: ui
 
 ```rust tabs
 use nsh_base::{nav_page, nav_stack};
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 #[derive(Debug, Clone, PartialEq)]
 enum Route {
@@ -175,7 +175,7 @@ mount(App);
 ```rust tabs
 use std::rc::Rc;
 
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 /// 一个压入的页面：它的 key（在栈中唯一）和创建它的函数。
 #[derive(Clone)]
@@ -350,25 +350,25 @@ nav_page()
 </NavPage>
 ```
 
-不显示标题栏的页面四周仍有系统栏；用 [`SafeAreaView`](../modules/nsh-base.md#safeareaview) 给内容留出边距：
+不显示标题栏的页面四周仍有系统栏；按[安全区域](../elements/safe-area.md)的 inset 给内容留出边距：
 
 ```rust tabs
-use nsh_base::{nav_page, safe_area_view};
+use nsh_base::nav_page;
 
 nav_page()
     .header_visible(false)
-    .child(safe_area_view().flex_1().p(px(16.0)) /* … */)
+    .child(view().flex_1().p_safe_area() /* … */)
 ```
 
 ```tsx tabs
 <NavPage headerVisible={false}>
-  <SafeAreaView style={{ flex: 1, padding: 16 }}>…</SafeAreaView>
+  <View class="flex-1 pt-[calc(env(safe-area-inset-top)+16px)] pb-[calc(env(safe-area-inset-bottom)+16px)] px-4">…</View>
 </NavPage>
 ```
 
 ### 标题栏下的安全区域
 
-在页面内部，`SafeAreaView` 和页面的 inset（Rust 中是 `Scope::insets`，TSX 中是 `safeAreaInsets()`）是系统标题栏下方、页面之内的 inset。使用透明标题栏时，内容从页面顶部开始，顶部 inset 等于标题栏高度，因此 `SafeAreaView` 能让文字避开标题栏，同时背景图铺满整个页面。使用大标题时，把滚动视图直接放在页面里，标题才能随滚动收起。在桌面和 Web 上，内容从页面的标题栏插槽下方开始。
+在页面内部，`env(safe-area-inset-*)` 变量和页面的 inset（Rust 中是 `Scope::insets`，TSX 中是 `safeAreaInsets()`）是系统标题栏下方、页面之内的 inset。使用透明标题栏时，内容从页面顶部开始，顶部 inset 等于标题栏高度，因此按 `env(safe-area-inset-top)` 加的内边距能让文字避开标题栏，同时背景图铺满整个页面。使用大标题时，把滚动视图直接放在页面里，标题才能随滚动收起。在桌面和 Web 上，内容从页面的标题栏插槽下方开始。
 
 <a id="keeping-the-user-on-a-page-poponback"></a>
 
@@ -378,7 +378,7 @@ nav_page()
 
 ```rust tabs
 use nsh_base::{alert_dialog, nav_page};
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 fn edit_note(routes: Signal<Vec<Route>>) -> Screen {
     let draft = signal(String::new());
@@ -415,8 +415,8 @@ fn edit_note(routes: Signal<Vec<Route>>) -> Screen {
 ```
 
 ```tsx tabs
-import { Input, signal } from "nsh";
-import { AlertDialog, NavPage } from "nsh/base";
+import { signal } from "nsh";
+import { AlertDialog, NavPage, Input } from "nsh/base";
 
 function EditNote() {
   const text = signal("");
@@ -454,7 +454,7 @@ function EditNote() {
 
 ```rust tabs
 use nsh_base::dialog;
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 pub fn files() -> impl IntoElement {
     let open = signal(false);
@@ -527,21 +527,21 @@ function Files() {
 
 Escape、Android 返回键、点击背景（TSX 的背景，Rust 中是原生表单的背景）和在表单上下滑都会以原生方式关闭它（`close_on_escape`、`close_on_backdrop_press` 和 `close_on_swipe`，TSX 的 `closeOnEscape`、`closeOnBackdropPress` 和 `closeOnSwipe`，默认都是 true）。在 Rust 中，`on_cancel` 报告每一次尝试，`on_close` 报告关闭，所以在那里把对话框移出视图；应用自己画的背景用它自己的按压处理关闭对话框，如上所示。在 TSX 中，`onOpenChange(false, reason)` 通知你，所以在那里把 `open` 设为 `false`。要先确认，就把对应开关设为 false 并处理取消事件（`on_cancel`、`onCancel`，它报告每一次尝试），然后自己关闭对话框。在 iOS 上，`.presentation(ModalPresentation::PageSheet)` 或 `FormSheet`（`presentation="pageSheet"` 或 `"formSheet"`）呈现一个保留后面内容可见的表单。
 
-全部属性见 [Dialog](../elements/dialog.md)。在对话框内部，`SafeAreaView` 和 inset 都是对话框自己的。系统对话框（带操作的提示框、操作表）请用 `nsh_base`（TSX：`nsh/base`）的 [`AlertDialog`](../modules/nsh-base.md#alertdialog)。
+全部属性见 [Dialog](../elements/dialog.md)。在对话框内部，`env(safe-area-inset-*)` 变量和 inset 都是对话框自己的。系统对话框（带操作的提示框、操作表）请用 `nsh_base`（TSX：`nsh/base`）的 [`AlertDialog`](../modules/nsh-base.md#alertdialog)。
 
 ## Android 返回键
 
 在 Android 上，返回键（或返回手势）按以下顺序处理：
 
 1. 最上层的对话框：报告取消（`on_cancel`、`onCancel`），`close_on_escape` / `closeOnEscape` 为 true（默认）时关闭。
-2. 你的返回监听器（Rust 中是 `on_back_press`，TSX 中是 `nsh/android` 的 `BackHandler`），最近添加的最先执行。
+2. 你的返回监听器（Rust 中是 `on_back_press`，TSX 中是 `nsh/mobile` 的 `BackHandler`），最近添加的最先执行。
 3. 最上层的栈：栈顶页面报告返回事件，`pop_on_back` / `popOnBack` 为 true 时弹出。
 4. 都没有处理：应用退出。
 
 监听器处理了按键时返回 `true`，栈就不会弹出。注册了监听器时，Android 的返回手势不会预览弹出效果（手势结束后应用才给出答复），所以只在监听器可能处理按键时才注册它：
 
 ```rust tabs
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 pub fn editor() -> impl IntoElement {
     let selecting = signal(false);
@@ -561,7 +561,7 @@ pub fn editor() -> impl IntoElement {
 
 ```tsx tabs
 import { effect, signal } from "nsh";
-import { BackHandler } from "nsh/android";
+import { BackHandler } from "nsh/mobile";
 
 function Editor() {
   const selecting = signal(false);
@@ -578,7 +578,7 @@ function Editor() {
 }
 ```
 
-在 effect 中创建的监听器一直有效，直到 effect 再次运行或它的组件消失；在 TSX 中，调用 `BackHandler.onBackPress` 返回的函数也会停止它。在 TSX 中，`BackHandler.exitApp()` 退出应用；在 iOS 上也可以导入 `nsh/android`，它的调用什么都不做，所以同一份代码可以在两个平台上运行。见[平台特定代码](./platform-specific.md)。
+在 effect 中创建的监听器一直有效，直到 effect 再次运行或它的组件消失；在 TSX 中，调用 `BackHandler.onBackPress` 返回的函数也会停止它。在 TSX 中，`BackHandler.exitApp()` 退出应用；在 iOS 上也可以导入 `nsh/mobile`，`BackHandler` 的调用会立即返回，所以同一份代码可以在两个平台上运行。见[平台特定代码](./platform-specific.md)。
 
 ## 标签页与其他布局
 
@@ -586,7 +586,7 @@ function Editor() {
 
 ## 相关内容
 
-- [`nsh/base`](../modules/nsh-base.md)：`nav_stack`、`nav_page`、`dialog`、`createNavStack`、`NavStack`、`NavPage`、`Dialog` 和 `SafeAreaView` 参考。
+- [`nsh/base`](../modules/nsh-base.md)：`nav_stack`、`nav_page`、`dialog`、`createNavStack`、`NavStack`、`NavPage` 和 `Dialog` 参考；inset 见[安全区域](../elements/safe-area.md)。
 - 页面和对话框的[状态栏](../modules/nsh-base.md#status-bar)。
 - [`AlertDialog`](../modules/nsh-base.md#alertdialog)。
-- [`nsh/android`](../modules/nsh-android.md)：`BackHandler`。
+- [`BackHandler`](../modules/nsh-mobile.md#backhandler)：`BackHandler`。

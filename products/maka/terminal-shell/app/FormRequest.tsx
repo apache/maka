@@ -17,7 +17,8 @@
  * under the License.
  */
 
-import { Input, Text, View } from 'nsh';
+import { Text, View } from 'nsh';
+import { Input } from 'nsh/base';
 import { Button } from 'nsh/base';
 import type { FormField } from '../../../../packages/plugin-sdk/src/generated/runtime';
 import type { FormDraft, FormRequest as Request } from './interaction-form';

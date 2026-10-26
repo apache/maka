@@ -54,7 +54,7 @@ Rust 应用的根是它的 crate 中的一个组件，`nsh.json` 的 `"root"` �
 // src/lib.rs; nsh.json: { "rust": ".", "root": "App" }
 mod screens;
 
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 /// What a TSX entry may import from the crate.
 #[native_module("my-app/native")]
@@ -120,7 +120,7 @@ mount(App);
 | 键 | 类型 | 使用者 | 说明 |
 |---|---|---|---|
 | `name` | string | `package` | 应用图标下显示的名称。默认：入口所在目录的名称。 |
-| `id` | string | `package`, `publish`, `nsh/storage` | Bundle identifier / application id，反向 DNS 形式，例如 `com.yourcompany.app`；`package` 和 `publish` 必须提供。没有时 `nsh run` 使用 `com.example.<name>`。 |
+| `id` | string | `package`, `publish`, `Storage` | Bundle identifier / application id，反向 DNS 形式，例如 `com.yourcompany.app`；`package` 和 `publish` 必须提供。没有时 `nsh run` 使用 `com.example.<name>`。 |
 | `version` | string | `package`, `publish` | 用户可见的版本号，例如 `1.2.0`（`CFBundleShortVersionString`，Android 的 `versionName`）。 |
 | `build` | number | `package`, `publish` | 构建号（`CFBundleVersion`，Android 的 `versionCode`）。签名包要求它在每次发布时递增。 |
 | `minRuntime` | string | `publish` | 能运行该签名包的最低 NSH 运行时版本，例如 `0.2.0`。默认：CLI 的版本（[签名包](./signed-packages.md#哪些运行时能运行包)）。 |
@@ -131,7 +131,7 @@ mount(App);
 | `capabilities` | object | 每次构建 | 应用可以访问 VM 之外的哪些资源：网络主机、网页视图主机、状态栏（[沙箱与权限](./sandbox-and-capabilities.md)）。 |
 | `resolve` | object | 每次构建 | 裸导入如何解析：npm 包的导出条件和别名（[npm 包](#npm-包)）。 |
 | `rust` | string 或 string[] | 每个命令 | 应用的 Rust crate 或 crate 列表，路径相对于 `nsh.json`：其中的组件和模块，TSX 按每个 crate 的 `#[native_module]` 名称导入（[用 Rust 开发](./rust.md#多个-crate)）。 |
-| `web` | object | `package` | Web 包给页面添加的内容。`web.host`：一个 JS 模块，路径相对于 `nsh.json`，导出 `createHost(player)`，应答应用的 [`nsh/host`](../modules/nsh-host.md) 调用；`web.connect`：该模块自己的请求访问的主机，写法同 `capabilities.network.hosts` 的模式，页面的 Content-Security-Policy 允许它们（[Web](./web.md#宿主的函数)）。 |
+| `web` | object | `package` | Web 包给页面添加的内容。`web.host`：一个 JS 模块，路径相对于 `nsh.json`，导出 `createHost(player)`，应答应用的 [`host`](../modules/nsh.md#host) 调用；`web.connect`：该模块自己的请求访问的主机，写法同 `capabilities.network.hosts` 的模式，页面的 Content-Security-Policy 允许它们（[Web](./web.md#宿主的函数)）。 |
 | `root` | string | `run`, `package` | Rust 应用的根组件，即它在 `rust` crate（列表时为第一个）中的路径（`App`、`shell::Gallery`）：对应用目录执行 `nsh run` 和 `nsh package` 时，在所有平台上直接挂载它，不使用 QuickJS；`nsh run App.tsx` 仍然运行 TSX 入口（[用 Rust 开发](./rust.md)）。 |
 
 `nsh package` 和 `nsh publish` 的参数（`--name`、`--id`、`--app-version`、`--build`、`--icon`、`--min-runtime`）会覆盖文件中的值（[CLI](./cli.md)）。
@@ -182,7 +182,7 @@ NSH 不需要 `node_modules`。取而代之的是，每个构建应用的命令�
 | `globals.d.ts` | `If` 和 `Each`；`console`、定时器、`requestAnimationFrame`、`fetch` 及其他[全局 API](../modules/globals.md) |
 | `assets.d.ts` | 导入图片或字体得到的值 |
 | `tokens.d.ts` | `Tokens`：应用的设计令牌，来自它的 `"theme"`，为 [`token()`](../modules/nsh.md#token) 提供类型 |
-| `animated.d.ts`、`device.d.ts` 等 | 每个模块一个文件（`nsh/animated`、`nsh/device` 等） |
+| `mobile.d.ts`、`desktop.d.ts` | 每个模块一个文件（`nsh/mobile`、`nsh/desktop`） |
 | `base.d.ts` | `nsh/base` |
 
 `lib` 是不含 `DOM` 的 `ES2023`：没有 `document` 或 `window`。`.nsh` 中的文件会被重新生成（只在内容变化时），所以不要编辑，也不要提交；`.gitignore` 已经排除了 `.nsh/`。如果克隆项目后编辑器提示找不到 `nsh`，运行任意一个构建命令即可，例如 `nsh check`。
@@ -193,7 +193,7 @@ NSH 不需要 `node_modules`。取而代之的是，每个构建应用的命令�
 
 ## 模块
 
-Rust 应用的代码就是它的 crate 的模块（`mod screens;`），依赖和任何 crate 一样来自 crates.io；NSH 自己的 crate 是 `nsh-core`（基础元素、signal 和带类型的样式，`use nsh_core::ui::prelude::*`）和 `nsh-base`（基础组件和主题）。
+Rust 应用的代码就是它的 crate 的模块（`mod screens;`），依赖和任何 crate 一样来自 crates.io；NSH 自己的 crate 是 `nsh-core`（基础元素、signal 和带类型的样式，`use nsh_core::prelude::*`）和 `nsh-base`（基础组件和主题）。
 
 在 TSX 中，可以把应用拆成任意多个 `.ts` 和 `.tsx` 模块，用相对路径导入；扩展名可以省略：
 
@@ -224,14 +224,10 @@ const open = async () => {
 
 | 模块 | 内容 |
 |---|---|
-| `nsh` | 响应式（`signal`、`computed`、`effect` 等）、`mount`、`split`、`context`；基础元素 `View`、`Text`、`Scroll`、`Input`、`Image`、`List`、`Canvas`、`WebView`、`Video`（[参考](../modules/nsh.md)） |
-| `nsh/base` | 应用界面的无样式基础：导航栈及其页面（`NavStack`、`NavPage`、`createNavStack`）、对话框（`Dialog`）、按压目标（`Button`）、安全区域（`SafeAreaView`、`safeArea`、`safeAreaInsets`）、系统警告对话框（`AlertDialog`）、软键盘（`Keyboard`、`keyboardFrame`、`KeyboardAvoidingView`）；页面和对话框设置状态栏（`statusBar`）（[参考](../modules/nsh-base.md)） |
-| `nsh/animated` | 原生动画 |
-| `nsh/gesture` | `PanResponder` |
-| `nsh/device` | `platform`、`windowSize`、`colorScheme`、`fontScale`、`pixelRatio`、`locale` |
-| `nsh/accessibility` | 读屏与减少动态效果的状态、朗读通知 |
-| `nsh/native` | 嵌入应用注册的组件和函数 |
-| `nsh/ios`, `nsh/android` | 平台专属 API |
+| `nsh` | 响应式（`signal`、`computed`、`effect` 等）、`mount`、`split`、`context`；基础元素 `View`、`Text`、`Scroll`、`Image`、`List`、`Canvas`、`WebView`、`Video`（`View` 的 `selectable` 用于文本选择）；安全区域边距（`safeArea`、`safeAreaInsets`）和软键盘（`Keyboard`、`keyboardFrame`）；原生动画；`PanResponder`；环境（`platform`、`windowSize`、`colorScheme`、`fontScale`、`pixelRatio`、`locale`）；读屏与减少动态效果的状态、朗读通知；剪贴板、照片选择器、存储、宿主通道、键盘快捷键；嵌入应用注册的组件和函数（[参考](../modules/nsh.md)） |
+| `nsh/base` | 应用界面的无样式基础：导航栈及其页面（`NavStack`、`NavPage`、`createNavStack`）、对话框（`Dialog`）、按压目标（`Button`）、文本输入框（`Input`）和系统警告对话框（`AlertDialog`）；页面和对话框设置状态栏（`statusBar`）（[参考](../modules/nsh-base.md)） |
+| `nsh/mobile` | iOS 和 Android 的 API：`TabBar`、`InputAccessoryView`（iOS）、`BackHandler`（Android）（[参考](../modules/nsh-mobile.md)） |
+| `nsh/desktop` | macOS、Windows 和 Linux 的 API：`Window`、`titleBar`、`Menu`（[参考](../modules/nsh-desktop.md)） |
 
 [模块参考](../modules/index.md) 逐一介绍了它们。导入 NSH 没有的模块（`nsh/foo`）会导致构建错误。代码用到、但模块没有导出的名字（`import { Buton } from "nsh/base"`）同样是构建错误：错误指向这条导入，并给出最接近的导出名（``did you mean `Button`?``）。只当作类型用的名字由 `nsh check` 检查。
 
@@ -260,7 +256,7 @@ declare module "node-polyfill";
 图片和字体随应用一起发布。Rust crate 在编译时用 `asset!` 读取它的 `assets/` 目录中的每个文件，并在它的 `#[native_module]` 函数中用 `registry.assets(assets!())` 把它们全部发布；TSX 像模块一样导入它们，打包器会记录每个被导入的文件（以及图片的像素密度变体）。`nsh build` 把它们复制到 `.nsh/out/assets/`，`nsh package` 把它们放进应用，开发期间则提供给应用。
 
 ```rust tabs
-use nsh_core::ui::{FontAsset, ImageAsset, asset};
+use nsh_core::element::{FontAsset, ImageAsset, asset};
 
 const LOGO: ImageAsset = asset!("logo@2x.png");      // its url, and its size: 64×64 points
 const INTER: FontAsset = asset!("Inter.ttf");        // its uri, and its family: "Inter"

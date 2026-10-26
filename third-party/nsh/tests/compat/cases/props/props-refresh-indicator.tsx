@@ -4,7 +4,7 @@
 // for it (`pullValue`), on a scroll view and through a list; a height of
 // 0 is none. Its script checks what the platform receives.
 import { List, Scroll, Text, View } from "nsh";
-import { createAnimatedValue } from "nsh/animated";
+import { createAnimatedValue } from "nsh";
 
 function App() {
   const pulled = createAnimatedValue(3);

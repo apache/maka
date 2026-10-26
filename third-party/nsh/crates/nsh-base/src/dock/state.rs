@@ -1,6 +1,6 @@
 use nsh_core::{
+    element::PropEnum,
     geometry::{Axis, Points},
-    ui::PropEnum,
 };
 use serde::{Deserialize, Serialize};
 

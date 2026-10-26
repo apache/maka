@@ -109,6 +109,20 @@ pub trait NativeComponent {
     fn command(&mut self, name: &str, args: &JsonValue) {
         let _ = (name, args);
     }
+
+    /// Prop `name`, bound to an animated value, moved to `value` (on the
+    /// frames it changes, without JS). By default, [`Self::set_prop`] with
+    /// a JSON number.
+    fn set_animated_number(&mut self, name: &str, value: f64) {
+        let json = serde_json::Number::from_f64(value).map_or(JsonValue::Null, JsonValue::Number);
+        self.set_prop(name, Some(&json));
+    }
+
+    /// Prop `name`, bound to an animated color, moved to `argb`
+    /// (`0xAARRGGBB`). By default, [`Self::set_prop`] with a JSON number.
+    fn set_animated_color(&mut self, name: &str, argb: u32) {
+        self.set_prop(name, Some(&JsonValue::from(argb)));
+    }
 }
 
 /// What a component can tell its app. Cheap to clone; usable from any
@@ -617,6 +631,36 @@ fn same_rect(a: NSRect, b: NSRect) -> bool {
         && (a.origin.y - b.origin.y).abs() < 0.5
         && (a.size.width - b.size.width).abs() < 0.5
         && (a.size.height - b.size.height).abs() < 0.5
+}
+
+/// Whether view `id` holds a made component (its animated props wait until
+/// it does).
+pub(crate) fn has_component(surface: &Surface, id: NodeId) -> bool {
+    matches!(
+        surface.native.hosts.borrow().get(&id),
+        Some(Host::Component(Some(_)))
+    )
+}
+
+/// Bound props that moved (`Animator::write_components`): handed to their
+/// components.
+pub(crate) fn component_animated(
+    surface: &Surface,
+    moved: Vec<(NodeId, Arc<str>, nsh_core::animation::AnimatedPropValue)>,
+) {
+    use nsh_core::animation::AnimatedPropValue;
+    for (id, name, value) in moved {
+        // Taken out while the app's code runs, so it may reach the surface.
+        let Some(mut component) = take_component(surface, id) else {
+            continue;
+        };
+        match value {
+            AnimatedPropValue::Number(n) => component.set_animated_number(&name, n),
+            AnimatedPropValue::Color(argb) => component.set_animated_color(&name, argb),
+            _ => {}
+        }
+        put_component(surface, id, component);
+    }
 }
 
 fn take_component(surface: &Surface, id: NodeId) -> Option<Box<dyn NativeComponent>> {

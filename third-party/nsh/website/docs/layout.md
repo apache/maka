@@ -227,7 +227,7 @@ const width = signal(0);
 </View>
 ```
 
-The frame is in points: `Bounds<Points>` in Rust, `Bounds` (`{ origin: { x, y }, size: { width, height } }`) in TSX. For the whole window, read `window()` in Rust or `windowSize()` from [`nsh/device`](../modules/nsh-device.md) in TSX; both follow rotation and window resizing, and a style that reads them changes with the window:
+The frame is in points: `Bounds<Points>` in Rust, `Bounds` (`{ origin: { x, y }, size: { width, height } }`) in TSX. For the whole window, read `window()` in Rust or `windowSize()` from [`nsh`](../modules/nsh.md#device) in TSX; both follow rotation and window resizing, and a style that reads them changes with the window:
 
 ```rust tabs
 view().style_when(|| window().width > px(600.0), |s| s.flex_row())
@@ -235,7 +235,7 @@ view().style_when(|| window().width > px(600.0), |s| s.flex_row())
 
 ```tsx tabs
 import { View } from "nsh";
-import { windowSize } from "nsh/device";
+import { windowSize } from "nsh";
 
 <View style={{ flexDirection: windowSize().width > 600 ? "row" : "column" }} />
 ```
@@ -244,7 +244,7 @@ Tailwind's breakpoints (`sm:`, `md:`, ...) and `portrait:` / `landscape:` give t
 
 ## Safe areas
 
-The root view covers the whole screen, under the status bar and the home indicator. Wrap screens in [`SafeAreaView`](../modules/nsh-base.md#safeareaview) from `nsh_base` (`safe_area_view()` in Rust, `nsh/base` in TSX), which pads its content by the safe area insets, or read the insets with `safe_area()` in Rust or `safeArea()` / `safeAreaInsets()` in TSX and apply them yourself. Pages of a [navigation stack](./navigation.md) already sit below their header.
+The root view covers the whole screen, under the status bar and the home indicator. Pad screens by the safe area insets with CSS's `env()` (`paddingTop: "env(safe-area-inset-top)"`, Tailwind `pt-[env(safe-area-inset-top)]`, `.p_safe_area()` in Rust; see [Safe area](../elements/safe-area.md)), or read the insets with `safe_area()` in Rust or `safeArea()` / `safeAreaInsets()` in TSX and apply them yourself. Pages of a [navigation stack](./navigation.md) already sit below their header.
 
 ## Right to left
 

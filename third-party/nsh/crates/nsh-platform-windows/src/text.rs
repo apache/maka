@@ -1993,8 +1993,8 @@ pub(crate) struct DrawnText {
     pub(crate) content: Bounds<Points>,
     /// The selection of `selectable` text, kept across new content.
     selection: Option<Rc<Selection>>,
-    /// The part of a selection area's selection in this text (UTF-16,
-    /// `start < end`), which [`crate::selection_area`] sets.
+    /// The part of a selectable view's selection in this text (UTF-16,
+    /// `start < end`), which [`crate::selectable_view`] sets.
     pub(crate) area_range: Cell<Option<(u32, u32)>>,
     /// The text shadow's effect, made on first draw (and again on a new
     /// device).
@@ -2522,7 +2522,7 @@ pub(crate) fn char_at(state: &ViewState, x: f32, y: f32) -> Option<u32> {
 }
 
 /// The caret position (UTF-16 offset) nearest `(x, y)` (view
-/// coordinates) in a text view's layout (selection areas).
+/// coordinates) in a text view's layout (selectable views).
 pub(crate) fn caret_at(state: &ViewState, x: f32, y: f32) -> Option<u32> {
     let drawn = state.text.as_ref()?;
     let layout = drawn.layout.downcast::<WinLayout>()?;
@@ -2600,8 +2600,8 @@ fn select(surface: u64, view: &NshView, range: Option<(u32, u32)>) {
     }
     view.changed();
     if range.is_some() {
-        // One selection at a time, a selection area's too.
-        crate::selection_area::clear();
+        // One selection at a time, a selectable view's too.
+        crate::selectable_view::clear();
     }
     let previous = SELECTED.with_borrow_mut(|selected| match range {
         Some(_) => selected.replace((surface, view.clone())),
@@ -2622,7 +2622,7 @@ fn select(surface: u64, view: &NshView, range: Option<(u32, u32)>) {
     }
 }
 
-/// Clears the selection of a single text, if any (a selection area
+/// Clears the selection of a single text, if any (a selectable view
 /// selects).
 pub(crate) fn clear_selected() {
     let selected = SELECTED.with_borrow(|s| s.clone());

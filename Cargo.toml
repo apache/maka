@@ -128,8 +128,8 @@ maka-web-api = { path = "plugins/workspace/workspace-web/api" }
 maka-agent-api = { path = "plugins/agent/api" }
 gpui-shell = { path = "third-party/gpui-kit/crates/shell", default-features = false, features = ["gpui-fast", "quickjs"] }
 maka-transport = { path = "platform/transport" }
-cua-driver-sdk = { git = "https://github.com/maka-agent/cua", rev = "85456f431b72b6b252093fa49bfa64f703918854" }
-cua-driver-contract = { git = "https://github.com/maka-agent/cua", rev = "85456f431b72b6b252093fa49bfa64f703918854" }
+cua-driver-sdk = { git = "https://github.com/maka-agent/cua", rev = "a27e9367343cd08667a4ea8fa98534a9d6050d3b" }
+cua-driver-contract = { git = "https://github.com/maka-agent/cua", rev = "a27e9367343cd08667a4ea8fa98534a9d6050d3b" }
 agent-client-protocol = { version = "3.5.0", default-features = false, features = ["unstable_protocol_v2"] }
 apply-patch = { path = "plugins/workspace/workspace-files/patch" }
 cap-fs-ext = "4.0.3"
@@ -254,7 +254,7 @@ opt-level = 3
 opt-level = 3
 
 [patch.crates-io]
-nom = { git = "https://github.com/maka-agent/cua", rev = "85456f431b72b6b252093fa49bfa64f703918854" }
+nom = { git = "https://github.com/maka-agent/cua", rev = "a27e9367343cd08667a4ea8fa98534a9d6050d3b" }
 reqwest = { path = "third-party/reqwest" }
 gix-index = { path = "third-party/gix-index" }
 gix-discover = { path = "third-party/gix-discover" }

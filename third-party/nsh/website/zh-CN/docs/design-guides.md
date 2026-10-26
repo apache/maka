@@ -409,7 +409,7 @@ function SelectAll(props: { selected: number; total: number; onChange: (all: boo
 }
 ```
 
-操作进行中禁用重复提交，保留用户输入，并在操作附近显示结果。让输入框保持在软键盘上方（`KeyboardAvoidingView`）。Dialog 只用于短而聚焦的决策；需要探索或大量字段的流程使用完整页面或 sheet。
+操作进行中禁用重复提交，保留用户输入，并在操作附近显示结果。让输入框保持在软键盘上方（`env(keyboard-inset-height)`）。Dialog 只用于短而聚焦的决策；需要探索或大量字段的流程使用完整页面或 sheet。
 
 加载表现必须对应真实的等待。设置面板内容已经可用时，切换应立即完成；只有内容确实在加载且轮廓已知时，才使用骨架图。
 
@@ -499,7 +499,7 @@ function FormActions(props: { onCancel: () => void; onCreate: () => void }) {
 | 加载 | | 保持上下文、防止重复操作，并解释较长等待 |
 | 错误 | | 说明发生了什么以及如何恢复 |
 
-需要键盘访问的命令在桌面与 Web 上用 [`nsh/keymap`](../modules/nsh-keymap.md) 绑定。遵循熟悉的平台快捷键（`"mod+k"` 在 macOS 上是 Command，在其他平台上是 Control），在菜单或工具提示中展示，并在浮层打开或关闭后把焦点放到合理位置。
+需要键盘访问的命令在桌面与 Web 上用 [`keymap`](../modules/nsh.md#keymap) 绑定。遵循熟悉的平台快捷键（`"mod+k"` 在 macOS 上是 Command，在其他平台上是 Control），在菜单或工具提示中展示，并在浮层打开或关闭后把焦点放到合理位置。
 
 选中状态是信息模型的一部分，不是可选润色。标签页、分段选择、可选行、筛选项与导航入口必须持续显示选中状态（`selected`，读屏软件会读出）。拥有菜单的按钮在弹出层关闭前必须保持按下或打开外观；悬停无法说明触发按钮与弹出层之间的关系。
 
@@ -557,14 +557,14 @@ Hover 应克制，因为触摸、键盘和 accessibility 操作没有 hover。�
 - 主要或高频操作使用带文字的按钮或熟悉的工具栏控件，并保持可见；
 - 当前区域的次要操作放入具有可见触发按钮的 [`Menu`](../elements/menu.md)；
 - 作用于指针或手指下对象的命令放入 `ContextMenu`：桌面上右键点击，触摸屏上长按；
-- 有自然键盘形式的重要命令同时提供快捷键（[`nsh/keymap`](../modules/nsh-keymap.md)），并放进应用菜单（[`nsh/desktop`](../modules/nsh-desktop.md) 的 `Menu.setApplicationMenu`）；
+- 有自然键盘形式的重要命令同时提供快捷键（[`keymap`](../modules/nsh.md#keymap)），并放进应用菜单（[`nsh/desktop`](../modules/nsh-desktop.md) 的 `Menu.setApplicationMenu`）；
 - 悬停时出现的图标只能是快捷入口，同一命令必须在其他位置仍可到达。
 
 这不只是视觉偏好。`nsh/base` 的菜单已经拥有在触发者旁的定位、桌面上层叠展开的子菜单与手机上原地替换的表单页子菜单、通过选中项目、点按外部、Escape 或返回键关闭，以及面向读屏软件的 menu 与 menu item 角色。自定义 hover button strip 必须重新实现这些行为，而且触摸、keyboard-only 与许多 assistive technology workflow 根本看不到它。
 
 ```rust tabs
 use nsh_base::{menu, menu_item, menu_separator, theme};
-use nsh_core::{color::black, ui::StyleRefinement};
+use nsh_core::{color::black, element::StyleRefinement};
 
 /// 应用的弹出层表面，菜单、弹出框和工具提示共用。
 fn popup(s: StyleRefinement) -> StyleRefinement {
@@ -805,7 +805,7 @@ NSH 应用运行在手机、平板、桌面和 Web 上，也经常运行在宿�
 
 - **系统界面保留平台的外观。** 在 iOS 和 Android 上，页面的标题栏是系统的（`NavPage` 的 `title` 和标题栏选项）；桌面与 Web 显示页面的 `header` 插槽，由应用绘制。每个页面都同时提供两者（[导航](./navigation.md#navpage-与标题栏)）。确认使用 `AlertDialog`；状态栏跟随最上层的页面或对话框（`statusBar`）。
 - **宿主的主题。** 嵌入的应用可以拿到宿主的主题；读取 token 的类名和 Rust 绑定会以原生方式跟随它（[主题 token](./tailwind.md#主题-token)）。
-- **安全区域与键盘。** 内容留在安全区域内（`SafeAreaView`、`safeAreaInsets()`），输入框留在软键盘上方（`KeyboardAvoidingView`）（[设备与环境](./device-and-environment.md)）。
+- **安全区域与键盘。** 内容留在安全区域内（`env(safe-area-inset-*)`、`safeAreaInsets()`），输入框留在软键盘上方（`env(keyboard-inset-height)`）（[设备与环境](./device-and-environment.md)）。
 - **外观、文字大小与动效。** 每个界面都在浅色和深色（`dark:`、`colorScheme()`）、用户的文字大小和减少动态效果（`motion-reduce:`、`reduceMotion()`）下可用。
 - **从右到左。** 布局方向跟随语言区域，`direction` 样式可以为一个视图及其子树单独设置；start 与 end 属性随之镜像（[从右到左](./layout.md#从右到左)）。
 - **触摸与指针。** 触摸目标至少 44 × 44 点；悬停和工具提示只在有指针时出现。

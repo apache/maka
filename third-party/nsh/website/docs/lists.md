@@ -13,7 +13,7 @@ A list (`virtual_list(..)` in Rust, `List` from `nsh` in TSX) renders long data 
 ```rust tabs
 use std::rc::Rc;
 
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 #[component]
 pub fn App() -> impl IntoElement {
@@ -312,8 +312,6 @@ const shown = hidden.mul(-1).add(56);
 `inverted` lays the list out from the end: item 0 is at the bottom, the list starts scrolled to the end, and it keeps its distance from the end as items change. Keep the newest message first; prepend to add one, append to load older ones with `onLoadMore` (the "end" of an inverted list is the top). A chat opened at an old message loads the newer ones with [`onLoadMoreAtStart`](#loading-at-the-start-onloadmoreatstart); with it, the list keeps its distance from the bottom while it is there and keeps the messages on screen in place when scrolled up.
 
 ```rust tabs
-use nsh_base::keyboard_avoiding_view;
-
 #[derive(Clone, PartialEq)]
 struct Message {
     id: u32,
@@ -377,8 +375,9 @@ pub fn chat() -> impl IntoElement {
     .on_load_more(load_older)
     .load_more_threshold(0.5)
     .flex_1();
-    keyboard_avoiding_view()
+    view()
         .flex_1()
+        .pb_keyboard()
         .child(list)
         .child(
             view().flex_row().gap_2().p_2().child(
@@ -403,8 +402,8 @@ pub fn chat() -> impl IntoElement {
 ```
 
 ```tsx tabs
-import { Input, List, mount, signal, Text, View } from "nsh";
-import { KeyboardAvoidingView } from "nsh/base";
+import { List, mount, signal, Text, View } from "nsh";
+import { Input } from "nsh/base";
 
 type Message = { id: number; text: string; mine: boolean };
 
@@ -420,7 +419,7 @@ function Chat() {
   };
   const loadOlder = () => messages.update((m) => [...m, ...Array.from({ length: 20 }, (_, i) => message(`Older ${i}`, false))]);
   return (
-    <KeyboardAvoidingView style={{ flex: 1 }}>
+    <View style={{ flex: 1, paddingBottom: "env(keyboard-inset-height)" }}>
       <List
         each={messages()}
         inverted
@@ -458,7 +457,7 @@ function Chat() {
           style={{ flex: 1, maxHeight: 120, borderWidth: 1, borderColor: "#d0d7de", borderRadius: 18, paddingHorizontal: 12, paddingVertical: 8 }}
         />
       </View>
-    </KeyboardAvoidingView>
+    </View>
   );
 }
 
@@ -769,7 +768,7 @@ The look of a list is the app's own: the list places and recycles the rows, and 
 ```rust tabs
 use std::rc::Rc;
 
-use nsh_core::ui::{palette::NEUTRAL, prelude::*};
+use nsh_core::{element::palette::NEUTRAL, prelude::*};
 
 pub struct Setting {
     pub id: &'static str,

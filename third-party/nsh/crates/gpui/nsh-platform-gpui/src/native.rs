@@ -154,6 +154,20 @@ pub trait NativeComponent {
     fn command(&mut self, name: &str, args: &JsonValue, window: &mut Window, cx: &mut App) {
         let _ = (name, args, window, cx);
     }
+
+    /// Prop `name`, bound to an animated value, moved to `value` (on the
+    /// frames it changes, without JS; delivered as props are). By default,
+    /// [`Self::set_prop`] with a JSON number.
+    fn set_animated_number(&mut self, name: &str, value: f64, window: &mut Window, cx: &mut App) {
+        let json = serde_json::Number::from_f64(value).map_or(JsonValue::Null, JsonValue::Number);
+        self.set_prop(name, Some(&json), window, cx);
+    }
+
+    /// Prop `name`, bound to an animated color, moved to `argb`
+    /// (`0xAARRGGBB`). By default, [`Self::set_prop`] with a JSON number.
+    fn set_animated_color(&mut self, name: &str, argb: u32, window: &mut Window, cx: &mut App) {
+        self.set_prop(name, Some(&JsonValue::from(argb)), window, cx);
+    }
 }
 
 /// What a component can tell its app. Cheap to clone; usable from any
@@ -694,6 +708,50 @@ fn empty(b: &Bounds<Pixels>) -> bool {
     b.size.width <= px(0.0) || b.size.height <= px(0.0)
 }
 
+/// Whether view `id` holds a made component (its animated props wait until
+/// it does).
+pub(crate) fn has_component(surface: &Surface, id: NodeId) -> bool {
+    component_item(surface, id).is_some_and(|item| item.component.borrow().is_some())
+}
+
+/// Bound props that moved (`Animator::write_components`): queued for their
+/// components, delivered with the next frame as props are.
+pub(crate) fn component_animated(
+    surface: &Surface,
+    moved: Vec<(NodeId, Arc<str>, nsh_core::animation::AnimatedPropValue)>,
+) {
+    for (id, name, value) in moved {
+        let Some(item) = component_item(surface, id) else {
+            continue;
+        };
+        queue_animated(&mut item.pending.borrow_mut(), name, value);
+        if let Some(view) = surface.mounter.borrow().views.get(id) {
+            view.changed();
+        }
+    }
+}
+
+/// Coalesces bound props within the trailing animated segment. Static
+/// props and commands are ordering barriers: they must observe the values
+/// that preceded them, not a later animation frame.
+fn queue_animated(
+    pending: &mut Vec<Pending>,
+    name: Arc<str>,
+    value: nsh_core::animation::AnimatedPropValue,
+) {
+    for p in pending.iter_mut().rev() {
+        match p {
+            Pending::Animated(queued, v) if *queued == name => {
+                *v = value;
+                return;
+            }
+            Pending::Animated(..) => {}
+            Pending::Prop(..) | Pending::Command(..) => break,
+        }
+    }
+    pending.push(Pending::Animated(name, value));
+}
+
 fn component_item(surface: &Surface, id: NodeId) -> Option<Rc<ComponentItem>> {
     match surface.native.hosts.borrow().get(&id) {
         Some(Host::Component(item)) => Some(item.clone()),
@@ -738,6 +796,8 @@ struct ComponentItem {
 enum Pending {
     Prop(Arc<str>, Option<JsonValue>),
     Command(Arc<str>, JsonValue),
+    /// A bound prop that moved.
+    Animated(Arc<str>, nsh_core::animation::AnimatedPropValue),
 }
 
 impl ComponentItem {
@@ -770,6 +830,15 @@ impl ComponentItem {
             match p {
                 Pending::Prop(name, value) => component.set_prop(name, value.as_ref(), window, cx),
                 Pending::Command(name, args) => component.command(name, args, window, cx),
+                Pending::Animated(name, value) => match *value {
+                    nsh_core::animation::AnimatedPropValue::Number(n) => {
+                        component.set_animated_number(name, n, window, cx)
+                    }
+                    nsh_core::animation::AnimatedPropValue::Color(argb) => {
+                        component.set_animated_color(name, argb, window, cx)
+                    }
+                    _ => {}
+                },
             }
         }
         self.put(component);
@@ -969,6 +1038,101 @@ fn placeholder(cx: &mut DrawCx<'_>, size: (f32, f32), text: &'static str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn animated_props_queue_their_latest_value() {
+        use nsh_core::animation::AnimatedPropValue;
+        let mut pending = vec![Pending::Command("go".into(), JsonValue::Null)];
+        for v in [0.1, 0.2, 0.3] {
+            queue_animated(
+                &mut pending,
+                "progress".into(),
+                AnimatedPropValue::Number(v),
+            );
+        }
+        queue_animated(
+            &mut pending,
+            "tint".into(),
+            AnimatedPropValue::Color(0xff00_00ff),
+        );
+        let animated: Vec<_> = pending
+            .iter()
+            .filter_map(|p| match p {
+                Pending::Animated(name, value) => Some((name.to_string(), *value)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            animated,
+            [
+                ("progress".to_string(), AnimatedPropValue::Number(0.3)),
+                ("tint".to_string(), AnimatedPropValue::Color(0xff00_00ff)),
+            ]
+        );
+        assert_eq!(pending.len(), 3, "the command stays");
+    }
+
+    #[test]
+    fn animated_props_preserve_static_prop_barriers() {
+        use nsh_core::animation::AnimatedPropValue;
+        let mut pending = Vec::new();
+        queue_animated(
+            &mut pending,
+            "progress".into(),
+            AnimatedPropValue::Number(1.0),
+        );
+        pending.push(Pending::Prop("progress".into(), Some(JsonValue::from(2))));
+        queue_animated(
+            &mut pending,
+            "progress".into(),
+            AnimatedPropValue::Number(3.0),
+        );
+        queue_animated(
+            &mut pending,
+            "progress".into(),
+            AnimatedPropValue::Number(4.0),
+        );
+        assert!(matches!(pending.as_slice(), [
+            Pending::Animated(first, AnimatedPropValue::Number(1.0)),
+            Pending::Prop(middle, Some(value)),
+            Pending::Animated(last, AnimatedPropValue::Number(4.0)),
+        ] if &**first == "progress" && &**middle == "progress"
+            && value == &JsonValue::from(2) && &**last == "progress"));
+    }
+
+    #[test]
+    fn animated_props_preserve_command_observation_order() {
+        use nsh_core::animation::AnimatedPropValue;
+        let mut pending = Vec::new();
+        queue_animated(
+            &mut pending,
+            "progress".into(),
+            AnimatedPropValue::Number(1.0),
+        );
+        pending.push(Pending::Command("snapshot".into(), JsonValue::Null));
+        queue_animated(
+            &mut pending,
+            "progress".into(),
+            AnimatedPropValue::Number(3.0),
+        );
+        queue_animated(
+            &mut pending,
+            "tint".into(),
+            AnimatedPropValue::Color(0xff00_00ff),
+        );
+        queue_animated(
+            &mut pending,
+            "progress".into(),
+            AnimatedPropValue::Number(4.0),
+        );
+        assert!(matches!(pending.as_slice(), [
+            Pending::Animated(first, AnimatedPropValue::Number(1.0)),
+            Pending::Command(command, JsonValue::Null),
+            Pending::Animated(last, AnimatedPropValue::Number(4.0)),
+            Pending::Animated(tint, AnimatedPropValue::Color(0xff00_00ff)),
+        ] if &**first == "progress" && &**command == "snapshot"
+            && &**last == "progress" && &**tint == "tint"));
+    }
 
     #[test]
     fn locates_sources() {

@@ -65,7 +65,7 @@ NSH 用 Rust 构建，Rust 也是用它编写应用的一等语言：
 同一个计数器，分别用 Rust 和 TSX 编写：
 
 ```rust tabs
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 #[component]
 pub fn Counter() -> impl IntoElement {

@@ -10,7 +10,7 @@ use super::units::{DevicePixels, Half, IsZero, Points, ScaledPixels};
 
 /// A direction in two dimensions (`"vertical"` or `"horizontal"` in JS:
 /// a prop that names one, a split's or a resizable group's).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, crate::ui::PropEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, crate::element::PropEnum)]
 pub enum Axis {
     /// Up and down.
     Vertical,

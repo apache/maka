@@ -279,7 +279,7 @@ pub(crate) fn root_began(target: &EventTarget, presses: &AnyObject) -> bool {
                 .is_some_and(|p| r.class().conforms_to(p));
             // The app's own texts take keys only to select (`TextView`).
             text && r.downcast_ref::<crate::native_view::NshView>().is_none()
-                && r.downcast_ref::<crate::selection_area::AreaResponder>()
+                && r.downcast_ref::<crate::selectable_view::AreaResponder>()
                     .is_none()
         }
         None => false,

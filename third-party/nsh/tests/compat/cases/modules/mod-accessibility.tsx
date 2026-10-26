@@ -1,9 +1,9 @@
 // A case of the API's test suite (docs/dev/compatibility.md):
-// `nsh/accessibility` as the headless runtime reports it (no screen reader,
+// `nsh` as the headless runtime reports it (no screen reader,
 // full motion), and the calls that speak or move a screen reader's focus
 // going through. Its script checks each.
 import { Text, View, signal } from "nsh";
-import { announce, reduceMotion, screenReaderEnabled, setAccessibilityFocus } from "nsh/accessibility";
+import { announce, reduceMotion, screenReaderEnabled, setAccessibilityFocus } from "nsh";
 
 function App() {
   const calls = signal("not called");

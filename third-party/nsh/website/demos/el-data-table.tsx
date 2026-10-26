@@ -1,6 +1,6 @@
 import { mount, signal, Text, View } from "nsh";
 import { DataTable, type DataTableColumn, type DataTableSelection, type DataTableSort } from "nsh/base";
-import { Log, Segmented, Split, ui, wide } from "./palette";
+import { dataTableClasses, dataTableFitPadding, Log, Segmented, Split, ui, wide } from "./palette";
 
 const NAMES = ["Ada", "Alan", "Grace", "Linus", "Margaret", "Dennis", "Barbara", "Ken"];
 const CITIES = ["Oslo", "Lima", "Kyoto", "Cairo", "Perth", "Quito", "Turin", "Hanoi"];
@@ -55,9 +55,10 @@ function App() {
       >
         <View style={{ height: wide() ? 360 : 320, ...ui().card, borderRadius: 14, overflow: "hidden" }}>
           <DataTable
-            columns={columns}
+            columns={columns.map((column) => ({ ...column, fitPadding: dataTableFitPadding }))}
+            classes={dataTableClasses}
             data={rows()}
-            rowHeader
+            rowHeader={false}
             stripe
             cellSelectable={mode() === "cell"}
             sort={sort()}

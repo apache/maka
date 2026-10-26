@@ -4,7 +4,7 @@
 // taken from the `viewBox`'s aspect ratio. Its script checks each source and
 // size.
 import { View } from "nsh";
-import { Image } from "nsh/image";
+import { Image } from "nsh";
 import badge from "./svg/badge.svg";
 import mark from "./svg/mark.svg";
 import star from "./svg/star.svg";

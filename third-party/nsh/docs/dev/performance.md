@@ -150,7 +150,7 @@ message or a due timer (7, none between pastes).
 
   JS does half the work or less. Running once costs the first frame ~40% more core time than rendering did: each
   bound part of an element is a computation of the graph that runs as the view is made (its first value is applied
-  with the element's static parts, `core/views.rs`), and each prop a signal (`ui/prop.rs`); the rest of the core's
+  with the element's static parts, `core/views.rs`), and each prop a signal (`element/prop.rs`); the rest of the core's
   time (node creation, styles, Taffy) is the same in both. Updates cost what they change: an update of one title runs
   its text's and label's bindings, and a large view with one changing value costs what that value costs
   (`bench_view_tick`, below). The components' JS face must stay one effect per instance reading the props directly:

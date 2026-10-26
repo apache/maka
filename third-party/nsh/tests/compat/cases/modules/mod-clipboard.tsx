@@ -1,9 +1,9 @@
 // A case of the API's test suite (docs/dev/compatibility.md):
-// `nsh/clipboard` on the headless runtime, where no system clipboard
+// `nsh` on the headless runtime, where no system clipboard
 // answers: writes and reads return promises (reads stay pending
 // there). Its script checks each.
 import { Text, View, signal } from "nsh";
-import { Clipboard } from "nsh/clipboard";
+import { Clipboard } from "nsh";
 
 function App() {
   const calls = signal("not called");

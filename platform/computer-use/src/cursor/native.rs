@@ -758,9 +758,11 @@ impl crate::protocol::Action {
         use cursor_overlay::CursorAction as Cue;
         match self {
             Action::MoveCursor { .. } => Cue::Idle,
-            Action::Click { .. } | Action::Secondary { .. } => Cue::Click,
-            Action::Drag { .. } => Cue::Drag,
-            Action::Scroll { .. } => Cue::Scroll,
+            Action::Click { .. } | Action::LinuxClick { .. } | Action::Secondary { .. } => {
+                Cue::Click
+            }
+            Action::Drag { .. } | Action::LinuxDrag { .. } => Cue::Drag,
+            Action::Scroll { .. } | Action::LinuxScroll { .. } => Cue::Scroll,
             Action::TypeText { .. }
             | Action::Paste { .. }
             | Action::SetValue { .. }

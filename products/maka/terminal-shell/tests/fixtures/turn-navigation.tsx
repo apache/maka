@@ -18,8 +18,8 @@
  */
 
 import { mount, signal, View } from 'nsh';
-import { Clipboard } from 'nsh/clipboard';
-import { keymap } from 'nsh/keymap';
+import { Clipboard } from 'nsh';
+import { keymap } from 'nsh';
 import { TurnNavigation } from '../../app/TurnNavigation';
 import { uiScale } from '../../app/uiScale';
 

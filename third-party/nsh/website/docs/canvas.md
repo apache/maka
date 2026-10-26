@@ -13,7 +13,7 @@ A canvas is a view you draw into with the operations of the HTML Canvas 2D API: 
 ```rust tabs
 use std::f32::consts::TAU;
 
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 #[component]
 pub fn App() -> impl IntoElement {
@@ -357,7 +357,7 @@ use std::f32::consts::{FRAC_PI_2, TAU};
 
 use nsh_core::{
     canvas::{CanvasTextAlign, CanvasTextBaseline, LineCap},
-    ui::prelude::*,
+    prelude::*,
 };
 
 pub fn ring() -> impl IntoElement {
@@ -406,7 +406,7 @@ pub fn ring() -> impl IntoElement {
 
 ```tsx tabs
 import { Canvas, mount, signal, Text, View } from "nsh";
-import { createAnimatedValue, Easing } from "nsh/animated";
+import { createAnimatedValue, Easing } from "nsh";
 
 function Ring() {
   const progress = createAnimatedValue(0.3);

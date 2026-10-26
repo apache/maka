@@ -3,7 +3,7 @@
 //! with messages both ways, a web site with its navigation state, back and
 //! forward, and a video with controls of the demo's own or the system's.
 
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 use crate::ui::{
     Badge, Button, ButtonVariant, Card, DemoPage, Finish, Finished, IconName, Meter, RoundButton,

@@ -12,7 +12,7 @@
 //! - `--name <name>` names the app (the menu bar, the window title; `nsh
 //!   run` passes the app's name), "nsh" by default.
 //! - `--app-id <id>` sets the application id (`com.example.app`); `nsh run`
-//!   passes the app's (`nsh.json` `"id"`). The app's data (`nsh/storage`)
+//!   passes the app's (`nsh.json` `"id"`). The app's data (`Storage` of `nsh`)
 //!   is kept under the id its bundle carries, in the system's data
 //!   directory.
 //!

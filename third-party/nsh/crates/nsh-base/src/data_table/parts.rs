@@ -1,8 +1,8 @@
 //! The parts of a [`super::DataTable`] the app styles: Tailwind classes
 //! ([`DataTableClasses`]) and inline styles ([`DataTableStyles`]) by part,
-//! over the table's defaults (the theme's tokens).
+//! supplying the table's appearance.
 
-use nsh_core::ui::{Style, prelude::*};
+use nsh_core::{element::Style, prelude::*};
 
 use crate::text_view::PartStyle;
 
@@ -59,15 +59,22 @@ parts! {
     group_cell => GroupCell,
     /// Every column's title cell.
     header_cell => HeaderCell,
+    /// The label and sort button's layout row inside a title cell.
+    header_content => HeaderContent,
+    /// A title being dragged, after `headerCell`.
+    header_cell_dragging => HeaderCellDragging,
     /// The title cell of the column the table is sorted by, after
     /// `headerCell`.
     header_cell_sorted => HeaderCellSorted,
     /// The title cell of the selected column (a title pressed),
     /// after `headerCell`.
     header_cell_selected => HeaderCellSelected,
-    /// The sort button of a sortable column: up and down chevrons, the
-    /// sorted direction's in the text color.
+    /// The sort button of a sortable column.
     sort_indicator => SortIndicator,
+    /// Its ascending chevron; `selected:` applies while sorted ascending.
+    sort_ascending => SortAscending,
+    /// Its descending chevron; `selected:` applies while sorted descending.
+    sort_descending => SortDescending,
     /// The line at a column's trailing edge that a drag resizes (the band
     /// that takes the drag is wider).
     resize_handle => ResizeHandle,

@@ -92,6 +92,33 @@ first exact `text/plain` entry's text, or an empty string for a base64-only entr
 the page's `readText()` decodes that entry through a Blob. Turn cleanup removes
 page bridges and preserves stored data. Reset creates a fresh empty context.
 
+`tab.playwright` resolves DOM locators without requiring a preceding AX observation.
+Use `locator(selector)`, `getByRole`, `getByText`, `getByLabel`, `getByPlaceholder`
+or `getByTestId`; `frameLocator(selector)` enters a frame. Locators support
+`first/last/nth`, `filter`, `and/or`, `count`, `all`, `allTextContents`,
+`textContent`, `innerText`, `getAttribute`, `isEnabled` and `isVisible`.
+`domSnapshot()` returns the page's DOM accessibility text.
+
+Locator input methods return undefined: `click(options?)`, `dblclick(options?)`,
+`fill(text, options?)`, `type(text, options?)`, `press(key, options?)`,
+`pressSequentially(text, options?)`, `selectOption(valueOrValues, options?)`,
+`setChecked(boolean, options?)`, `check(options?)` and `uncheck(options?)`.
+Click options accept `button: 'left'|'right'|'middle'`, `modifiers`, `force` and
+`timeoutMs`; check options accept `force` and `timeoutMs`. Modifiers are `Alt`,
+`Control`, `ControlOrMeta`, `Meta` and `Shift`; `ControlOrMeta` uses the selected
+browser's platform. Other input options accept `timeoutMs`. Timeouts are positive
+integers; preparation defaults to 3000 ms and is capped there, or at 5000 ms for
+sequential input. An option selection accepts a value string or a descriptor with
+`value`, `label` or a nonnegative integer `index`; arrays select multiple options.
+
+Locator mutations use a unique match or the sole visible match. Ambiguous matches
+throw. Ordinary text fill/type use a virtual paste event, respect a page handler's
+cancellation and preserve the stored clipboard. An empty paste does not erase a
+value by default. Clipboard keyboard shortcuts use the same virtual clipboard;
+unsupported combinations throw before sending native keys. Successful writes clear
+only the calling locator collection's cached reads. Input results must still be
+checked in the page; an uncertain result is not automatically replayed.
+
 `await tab.getJsDialog()` returns undefined or the current dialog object with
 `type` and `dismiss()`. Confirm dialogs also have `accept()`; prompt dialogs have
 `accept(text)`, including an empty string. Old dialog objects cannot act on a

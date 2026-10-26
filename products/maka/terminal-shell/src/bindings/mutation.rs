@@ -19,7 +19,8 @@
 
 use super::{Owner, execute};
 use maka_app_client::{Mutation, MutationEvent};
-use nsh_core::{JsonValue, ui::prelude::*};
+use nsh_core::JsonValue;
+use nsh_core::prelude::*;
 use serde_json::json;
 use std::sync::Arc;
 

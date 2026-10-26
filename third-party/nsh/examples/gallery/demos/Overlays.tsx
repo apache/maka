@@ -1,8 +1,8 @@
 import { Overlay, signal, Text, View, type YNode } from "nsh";
 import { Popover, Sheet, Tooltip } from "nsh/base";
 import { dismissToast, toast } from "../toast";
-import { platform } from "nsh/device";
-import { Badge, Button, Caption, Card, colors, DemoPage, finish, mono, radius } from "../ui";
+import { platform } from "nsh";
+import { Badge, Button, Caption, Card, colors, DemoPage, finish, mono, radius, Tip } from "../ui";
 
 /** The popups' look: the gallery's, as `nsh/base` draws none. */
 const popup = () => ({
@@ -103,8 +103,8 @@ export function Overlays() {
     return (
       <Card icon="text" title="Tooltip" subtitle={platform.idiom === "desktop" ? "Rest the pointer on a button" : "Tooltips follow a pointer: pin one to see it"}>
         <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
-          {/* A text: the core's bubble, drawn with the theme's popover tokens. */}
-          <View tooltip="Saves the document">
+          {/* A short text in a `Tooltip` of the gallery's look. */}
+          <View tooltip={<Tip label="Saves the document" />}>
             <Button label="Save" variant="secondary" onPress={() => last.set("pressed Save")} />
           </View>
           {/* `Tooltip` of `nsh/base` as the tooltip: the bubble is the app's, and it reports. */}

@@ -17,12 +17,14 @@
  * under the License.
  */
 
+import { textTooltip } from './ui';
 import { errorText, message, renderText, type UiText } from './text';
 import { tr } from './locale';
-import { cleanup, effect, Input, inputAction, Scroll, signal, Text, View } from 'nsh';
+import { cleanup, effect, inputAction, Scroll, signal, Text, View } from 'nsh';
+import { Input } from 'nsh/base';
 import type { YNode } from 'nsh';
 import { Button, Dialog, Popover } from 'nsh/base';
-import { windowSize } from 'nsh/device';
+import { windowSize } from 'nsh';
 import { host } from './host';
 import { forkTitle, sessionActionTarget, SessionRevisionConflict } from './sessionLifecycle';
 import type { SessionAction, SessionActionTarget } from './sessionLifecycle';
@@ -286,7 +288,7 @@ export function SessionActions(props: {
               <Button
                 disabled={pending()}
                 accessibilityLabel={tr('Back from conversation actions')}
-                tooltip={tr('Back · Esc')}
+                tooltip={textTooltip(() => tr('Back · Esc'))}
                 onPress={inputAction(back, page())}
                 style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
                 hoverStyle={controlHoverStyle}
@@ -310,7 +312,7 @@ export function SessionActions(props: {
               <Button
                 disabled={pending()}
                 accessibilityLabel={tr('Close conversation actions')}
-                tooltip={tr('Close')}
+                tooltip={textTooltip(() => tr('Close'))}
                 onPress={inputAction(dismiss, page())}
                 style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
                 hoverStyle={controlHoverStyle}

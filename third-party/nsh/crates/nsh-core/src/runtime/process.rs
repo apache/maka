@@ -15,7 +15,7 @@ use std::{
     rc::Rc,
 };
 
-use crate::ui::{
+use crate::element::{
     CallCx, Callback, Instance, JsError, JsObject, JsValue, Later, Local, PropEnum, PropError,
     System, TsTypes, class, module,
 };
@@ -240,14 +240,14 @@ impl JsValue for Payload {
         format!("string | {}", ExitResult::ts_type(types))
     }
 
-    fn from_js(value: crate::ui::JsIn<'_>) -> Result<Self, PropError> {
+    fn from_js(value: crate::element::JsIn<'_>) -> Result<Self, PropError> {
         Err(value.expected("no value (a payload goes to JS only)"))
     }
 
     fn to_js<'a>(
         &self,
-        host: &'a dyn crate::ui::JsHost,
-    ) -> Result<crate::ui::JsOwned<'a>, PropError> {
+        host: &'a dyn crate::element::JsHost,
+    ) -> Result<crate::element::JsOwned<'a>, PropError> {
         match self {
             Payload::Text(text) => text.to_js(host),
             Payload::Exit(exit) => exit.to_js(host),
@@ -400,14 +400,14 @@ mod native {
     use super::{Child, ChildEvent, ChildProcess, CommandOutput, ExitResult, Payload};
     use crate::{
         access::{Access, env_names_match},
-        ui::{CallCx, Held, JsError, Later, System},
+        element::{CallCx, Held, JsError, Later, System},
     };
 
     /// Output one VM holds in flight, and what `run` captures per stream
     /// (and the longest line `lines: true` delivers).
     const QUEUE_BYTES: usize = 8 * 1024 * 1024;
     const MAX_CHILDREN: usize = 32;
-    /// The [`crate::ui::Quotas`] kind children count under.
+    /// The [`crate::element::Quotas`] kind children count under.
     const CHILDREN: &str = "process.children";
     /// How long a child has to exit after it is asked to before it is killed.
     const GRACE: Duration = Duration::from_millis(250);
@@ -706,7 +706,7 @@ mod native {
         }
         let child = cmd.spawn().map_err(|e| {
             let message = format!("could not launch process: {e}");
-            match crate::ui::io_code(&e) {
+            match crate::element::io_code(&e) {
                 Some(code) => JsError::Error(message).with_code(code),
                 None => JsError::Error(message),
             }
@@ -854,7 +854,7 @@ mod native {
         children: Rc<super::Children>,
         id: u64,
         lines: bool,
-        cleanup: crate::ui::Cleanup,
+        cleanup: crate::element::Cleanup,
     ) {
         let queued = children.inner.queued.clone();
         let mut pending = [String::new(), String::new()];
@@ -1578,7 +1578,7 @@ mod native {
 
 #[cfg(target_arch = "wasm32")]
 mod native {
-    use crate::ui::{JsError, System};
+    use crate::element::{JsError, System};
 
     pub(super) struct Launch;
 
@@ -1603,7 +1603,7 @@ mod tests {
             .iter()
             .find(|registry| registry.specifier() == Some("process"))
             .unwrap();
-        let d = crate::ui::declarations(registry, &[]);
+        let d = crate::element::declarations(registry, &[]);
         for expected in [
             "export declare function run(command: string, args?: (string)[] | null, options?: RunOptions | null): Promise<CommandOutput>;",
             "export declare function spawn(command: string, args?: (string)[] | null, options?: SpawnOptions | null): ChildProcess;",

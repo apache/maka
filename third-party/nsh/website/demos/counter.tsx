@@ -1,20 +1,10 @@
 import { mount, signal, Text, View } from "nsh";
-import { ui } from "./palette";
+import { button, buttonText, ui } from "./palette";
 
 function Button(props: { label: string; accent?: boolean; onPress: () => void }) {
   return (
-    <View
-      onPress={props.onPress}
-      activeStyle={{ opacity: 0.75 }}
-      style={{
-        ...(props.accent ? ui().accentFill : ui().raised),
-        borderRadius: 12,
-        paddingVertical: 12,
-        paddingHorizontal: 28,
-        alignItems: "center",
-      }}
-    >
-      <Text style={{ color: props.accent ? ui().onAccent : ui().text, fontSize: 18, fontWeight: "bold" }}>{props.label}</Text>
+    <View onPress={props.onPress} {...button(props.accent ? "accent" : "secondary", { align: "center", style: { minWidth: 96 } })}>
+      <Text style={buttonText(props.accent ? "accent" : "secondary")}>{props.label}</Text>
     </View>
   );
 }

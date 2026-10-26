@@ -19,7 +19,7 @@ Toast 是在应用上方显示一段时间的简短消息："已复制"、"草�
 ```rust tabs
 use std::time::Duration;
 
-use nsh_core::{time::now, ui::prelude::*};
+use nsh_core::{time::now, prelude::*};
 
 use nsh_base::{
     Anchor, ToastManager, ToastMotion, ToastOptions, ToastStackState, theme, toast, toast_stack,
@@ -81,8 +81,8 @@ fn toasts() -> impl IntoElement {
 ```
 
 ```tsx tabs
-import { Overlay, signal, Text } from "nsh";
-import { safeArea, Toast, type ToastEntry, ToastManager, ToastStack } from "nsh/base";
+import { Overlay, signal, Text, safeArea } from "nsh";
+import { Toast, type ToastEntry, ToastManager, ToastStack } from "nsh/base";
 
 const manager = new ToastManager();
 const shown = signal<ToastEntry[]>([]);
@@ -125,7 +125,7 @@ export function Toaster() {
 }
 ```
 
-`Toast`、`ToastStack` 和 `ToastManager` 来自 [`nsh/base`](../modules/nsh-base.md)。在 Rust 中请按名称导入 `toast`：prelude 中的 `toast` 是 Android 的系统 toast（[`nsh/android`](../modules/nsh-android.md) 的 `Toast.show`）。
+`Toast`、`ToastStack` 和 `ToastManager` 来自 [`nsh/base`](../modules/nsh-base.md)。在 Rust 中它们是 `nsh_base` 的 `toast`、`toast_stack` 和 `ToastManager`。
 
 <a id="toastmanager"></a>
 

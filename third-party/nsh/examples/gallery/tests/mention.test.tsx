@@ -1,5 +1,5 @@
 // A hardware keyboard's arrows and return move through @-mention
-// candidates while the message input keeps the focus (`nsh/keymap` with
+// candidates while the message input keeps the focus (`nsh` with
 // `when: "always"`): on phones and tablets as on the desktops.
 import { open, test } from "nsh/test";
 

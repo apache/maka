@@ -32,7 +32,7 @@ NSH 使用各平台的视图、文本与输入基础设施，并根据设备适�
 | 渲染、布局、响应式与环境 | `nsh-core`、`nsh` 及运行时模块 | 视图、文本、signal、样式 |
 | 共享行为与无障碍结构 | `nsh-base`，TSX 中导入 `nsh/base` | `Button`、`Checkbox`、`Switch`、`Tabs` |
 | 视觉设计与带样式的组件 | 应用或社区组件库 | 品牌控件、卡片、表单行 |
-| 平台专属能力 | `nsh/mobile`、`nsh/desktop`、`nsh/ios`、`nsh/android` | 移动导航栏、桌面窗口控制 |
+| 平台专属能力 | `nsh/mobile`、`nsh/desktop` | 移动导航栏、桌面窗口控制 |
 
 通用控件在 `nsh/base` 中有统一的跨平台归属。平台模块按用途与平台语义划定范围。[`TabBar`](../modules/nsh-mobile.md#tabbar) 服务于移动应用的顶层导航；[`Tabs`](../elements/tabs.md) 在各平台切换标签内容。两者的职责不同。`nsh/mobile` 接受具有移动平台专属交互语义的能力；通用控件在外观、尺寸、颜色或动画上的差别，应在共享组件与应用样式中处理。通知或 Toast 这类用途可以共享的能力，应优先设计统一的跨平台契约，并在内部适配呈现方式。
 

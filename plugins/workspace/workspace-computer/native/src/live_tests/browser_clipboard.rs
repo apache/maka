@@ -228,7 +228,9 @@ async fn product_clipboard_page_callbacks_outlive_completed_agent_calls_and_foll
     tokio::time::timeout(Duration::from_secs(90),async {
         let browser=Browser::open().await;
         let mut run=product(&browser.endpoint).await;
-        let outer=write(&run,&browser,"clipboard_agent_write","Agent Café 日本語 🐧").await;
+        let physical=run.owner.sessions.input.clone().lock_owned().await;
+        let outer=tokio::time::timeout(Duration::from_secs(10),write(&run,&browser,"clipboard_agent_write","Agent Café 日本語 🐧")).await.expect("an authorized browser clipboard write must not queue behind the native physical-device owner");
+        drop(physical);
         let before=facts(&run.store,&run.invocation.session_id).await;
         assert_eq!(browser.page("navigator.clipboard.readText()").await,"Agent Café 日本語 🐧");
         assert_eq!(browser.page("navigator.clipboard.writeText('Page Γειά 世界 🦀').then(()=>true)").await,true);

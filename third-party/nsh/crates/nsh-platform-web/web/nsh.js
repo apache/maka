@@ -193,7 +193,7 @@ img.nsh-fill { pointer-events: none; }
 .nsh-desktop .nsh-press .nsh-autoselect, .nsh-desktop .nsh-press .nsh-autoselect *,
 .nsh-desktop .nsh-autoselect.nsh-press, .nsh-desktop .nsh-autoselect.nsh-press * { -webkit-user-select: none; user-select: none; }
 .nsh-autoselect ::selection { background: var(--nsh-selection, Highlight); }
-/* A selection area (nsh-area) is selectable as a whole, with every idiom
+/* A selectable view (nsh-area) is selectable as a whole, with every idiom
    and inside views that take presses too: one browser selection spans its
    texts, and a drag may start between them. Texts set off (nsh-noselect),
    images and videos are not. Repeated classes outweigh the rules above. */
@@ -273,11 +273,6 @@ img.nsh-fill { pointer-events: none; }
 .nsh-desktop.nsh-dark .nsh-sheet > div { background: #171717; color: #fafafa; border-color: #262626; }
 .nsh-desktop.nsh-dark .nsh-sheet .nsh-sheet-head { color: #a3a3a3; border-bottom-color: #262626; }
 .nsh-desktop.nsh-dark .nsh-sheet button.destructive { color: #f87171; }
-.nsh-toast { position: absolute; left: 50%; bottom: 64px; transform: translateX(-50%); max-width: min(480px, calc(100% - 32px));
-  width: max-content; padding: 9px 16px; border-radius: 18px; background: rgba(23,23,23,.92); color: #fafafa; text-align: center;
-  font: 14px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; pointer-events: none; z-index: 1500;
-  overflow-wrap: anywhere; transition: opacity .2s; }
-.nsh-dark .nsh-toast { background: rgba(250,250,250,.92); color: #0a0a0a; }
 .nsh-live { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .nsh-layer { position: absolute; left: 0; top: 0; width: 0; height: 0; transform-origin: 0 0; }
 .nsh-spinner { position: absolute; left: 50%; width: 20px; height: 20px; margin-left: -10px; pointer-events: none; z-index: 5; }
@@ -1022,7 +1017,8 @@ class Player {
    * `"memory=128MB,call=2s"`, `""` for the embedding defaults; without it
    * the app runs on its own, with none), and where a split bundle's chunks are: `chunks[id]`
    * (a URL), else `id` relative to `chunkBase` (default: the page); the
-   * chunks of a bytecode bundle are bytecode too.
+   * chunks of a bytecode bundle are bytecode too. Static entry dependencies
+   * are supplied as preloadedChunks[id] (source or bytecode).
    */
   run(code, {
     release = false,
@@ -1031,6 +1027,7 @@ class Player {
     sourceMap = "",
     appId = "",
     limits = null,
+    preloadedChunks = {},
     chunks = this.options.chunks,
     chunkBase = this.options.chunkBase,
   } = {}) {
@@ -1040,6 +1037,11 @@ class Player {
     this.chunks = { map: chunks ?? {}, base: chunkBase ?? document.baseURI, bytecode };
     this.call(() => this.withStrings([capabilities ?? "", sourceMap ?? "", appId ?? ""], (cp, cl, mp, ml, ip, il) =>
       this.wasm.nsh_bundle_options(release ? 1 : 0, cp, cl, mp, ml, ip, il)));
+    for (const [id, source] of Object.entries(preloadedChunks)) {
+      const bytes = source instanceof ArrayBuffer ? new Uint8Array(source) : source;
+      this.call(() => this.withStrings([id, bytes], (np, nl, cp, cl) =>
+        this.wasm.nsh_bundle_chunk(np, nl, cp, cl, typeof bytes === "string" ? 0 : 1)));
+    }
     if (harden) this.call(() => this.withStrings([new Uint8Array(harden)], (p, l) => this.wasm.nsh_bundle_harden(p, l)));
     if (limits != null) this.call(() => this.withStrings([limits], (p, l) => this.wasm.nsh_bundle_limits(p, l)));
     this.begin(width, (environment) => {
@@ -1987,7 +1989,7 @@ class Player {
     const pe = props.pointerEvents;
     el.classList.toggle("nsh-inert", pe === "none");
     el.classList.toggle("nsh-box-none", pe === "box-none");
-    el.classList.toggle("nsh-area", !!props.selectionArea);
+    el.classList.toggle("nsh-area", !!props.selectableView);
     this.updateFocusable(el);
     this.updateTouchAction(el);
   }
@@ -3947,7 +3949,6 @@ class Player {
       }
       case "zoomTo": if (el) this.zoomCommand(el, ...args); break;
       case "dialog": this.dialog(args[0], args[1], args[2], args[3], args[4] ?? [], args[5] ?? true, args[6] ?? false); break;
-      case "toast": this.toast(args[0], args[1]); break;
       case "reload": {
         const frame = el?._frameEl;
         if (!frame) break;
@@ -4630,7 +4631,7 @@ class Player {
     return this.idiom === "desktop";
   }
 
-  /** Classes system UI (dialogs, toasts, spinners) styles itself with. */
+  /** Classes system UI (dialogs, spinners) styles itself with. */
   updateRootClasses() {
     this.root.classList.toggle("nsh-dark", this.shownDark);
     this.root.classList.toggle("nsh-desktop", this.desktopUI);
@@ -4640,24 +4641,6 @@ class Player {
   /** The user asked for less motion (`Environment::reduce_motion`). */
   reduceMotion() {
     return !!this.reducedMotion?.matches;
-  }
-
-  /** A short message at the bottom (`Toast.show`), as the desktop backends show it; one at a time. */
-  toast(text, long) {
-    this.root.querySelector(":scope > .nsh-toast")?.remove();
-    const el = document.createElement("div");
-    el.className = "nsh-toast";
-    el.textContent = text;
-    el.style.opacity = "0";
-    this.root.append(el);
-    // Read out as `announce` does.
-    this.live.textContent = "";
-    setTimeout(() => { this.live.textContent = text; }, 50);
-    requestAnimationFrame(() => { el.style.opacity = ""; });
-    setTimeout(() => {
-      el.style.opacity = "0";
-      setTimeout(() => el.remove(), 200);
-    }, long ? 3500 : 2000);
   }
 
   /** Registered native components are the native apps' own: the web has none, so the box stays empty (said once per name). */
@@ -4806,7 +4789,7 @@ class Player {
     return !!target?.closest?.(".nsh-field, .nsh-selectable, iframe, video") || !!this.textAt(target) || this.areaGap(target);
   }
 
-  /** Whether `target` is in a selection area outside its texts, where a
+  /** Whether `target` is in a selectable view outside its texts, where a
    * drag starts a selection as between a web page's paragraphs: not in a
    * view inside the area that takes presses (they keep theirs) nor in a
    * text set off. */
@@ -4818,7 +4801,7 @@ class Player {
   }
 
   /** The text at `target` that is selectable by default: not set off, and
-   * in a selection area, or (desktop idiom) in nothing that takes presses
+   * in a selectable view, or (desktop idiom) in nothing that takes presses
    * or touches. */
   textAt(target) {
     const text = target?.closest?.(".nsh-autoselect");
@@ -4827,7 +4810,7 @@ class Player {
     return this.desktopUI && !text.closest(".nsh-press") ? text : null;
   }
 
-  /** The selection area `el` is in: the outermost, as an area inside
+  /** The selectable view `el` is in: the outermost, as an area inside
    * another is part of it. */
   areaOf(el) {
     let area = null;
@@ -4947,7 +4930,7 @@ class Player {
   /** What copying the selection in text gives: its runs in order, each
    * line's break after its last run (`_after`) and a newline between
    * texts; absolutely placed runs would each be a line of their own. In a
-   * selection area, texts on one row (their boxes overlap vertically: a
+   * selectable view, texts on one row (their boxes overlap vertically: a
    * table's cells) are joined by a tab instead, and attachments (U+FFFC)
    * are left out, as the native platforms copy. */
   copyText(e) {
@@ -4999,7 +4982,7 @@ class Player {
     if (!text) return false;
     if (e.key === "a" && (e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey) {
       e.preventDefault();
-      // In a selection area: all of its texts.
+      // In a selectable view: all of its texts.
       sel.selectAllChildren(this.areaOf(text) ?? text);
       return true;
     }

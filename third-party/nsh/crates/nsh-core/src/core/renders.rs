@@ -1,5 +1,5 @@
 //! The app's JS functions Rust components render with
-//! ([`crate::ui::Renderer`]): which (prop, key) of which component's host
+//! ([`crate::element::Renderer`]): which (prop, key) of which component's host
 //! is placed where, the value JS rendered last for each, and the holder
 //! view JS rendered it into.
 //!
@@ -21,7 +21,7 @@ use rustc_hash::FxHashMap;
 use super::{Core, NO_KEY};
 use crate::{
     NodeId, Op, TextEngine,
-    ui::{
+    element::{
         JsEvent, RenderValue, SharedString,
         renderer::{RenderAt, RenderPlace},
     },

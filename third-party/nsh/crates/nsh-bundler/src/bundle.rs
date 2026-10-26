@@ -30,7 +30,7 @@ pub struct BundleOptions {
     pub split: bool,
     /// The UI sets the hosts serve, described (`nsh_base::registry()`
     /// and an app's own, as `SetDescription`s): their modules stay imports.
-    pub ui_sets: Vec<nsh_core::ui::description::SetDescription>,
+    pub ui_sets: Vec<nsh_core::element::description::SetDescription>,
 }
 
 /// A failed build, formatted for people.
@@ -83,12 +83,17 @@ pub struct Bundle {
     pub code: String,
     /// Source map (JSON) from `code` back to the app sources.
     pub source_map: Option<String>,
-    /// The chunks `import()` loads, with [`BundleOptions::split`] (else
+    /// Shared and lazy chunks, with [`BundleOptions::split`] (else
     /// none), in a stable order.
     pub chunks: Vec<Chunk>,
+    /// Static dependency closure needed before evaluating the entry.
+    pub entry_imports: Vec<String>,
     /// Asset files the app imports, relative to the entry directory
     /// (`asset:/<path>` URIs refer to them).
     pub assets: Vec<PathBuf>,
+    /// Source and configuration files read by the build, as absolute paths.
+    /// Development servers watch these even outside the entry directory.
+    pub watch_files: Vec<PathBuf>,
     /// The native modules the app imports (`nsh`, `nsh/list`,
     /// `nsh/base`, an app's own UI set), sorted: what a host must
     /// serve to run it.
@@ -100,7 +105,7 @@ pub struct Bundle {
     pub elapsed_ms: f64,
 }
 
-/// A chunk of a split bundle: modules that `import()` loads (with what
+/// A chunk of a split bundle: shared or lazy modules (with what
 /// they share with other such chunks), an ES module of its own.
 ///
 /// Chunks import each other and the entry chunk statically, by relative
@@ -257,7 +262,7 @@ impl ResolveSetup {
 
 /// The design tokens of the app in `dir`: its `nsh.json` `"theme"` over
 /// the default's (`nsh_base::Theme`), or the default's when it has none.
-pub fn theme_tokens(dir: &std::path::Path) -> Result<nsh_core::ui::Tokens, BundleError> {
+pub fn theme_tokens(dir: &std::path::Path) -> Result<nsh_core::element::Tokens, BundleError> {
     let Ok(text) = std::fs::read_to_string(dir.join("nsh.json")) else {
         return Ok(nsh_base::Theme::default().into_tokens());
     };
@@ -462,7 +467,11 @@ pub async fn bundle_async(options: &BundleOptions) -> Result<Bundle, BundleError
         };
         let map = chunk.map.as_ref().map(|m| m.to_json_string());
         if chunk.is_entry {
-            entry_chunk = Some((chunk.code.clone(), map));
+            entry_chunk = Some((
+                chunk.code.clone(),
+                map,
+                chunk_imports(chunk.imports.iter().map(|i| i.as_str()), &chunk.filename),
+            ));
         } else {
             chunks.push(Chunk {
                 id: chunk.filename.to_string(),
@@ -472,9 +481,10 @@ pub async fn bundle_async(options: &BundleOptions) -> Result<Bundle, BundleError
             });
         }
     }
-    let (code, source_map) =
+    let (code, source_map, imports) =
         entry_chunk.ok_or_else(|| BundleError::other("bundle produced no entry chunk"))?;
     chunks.sort_by(|a, b| a.id.cmp(&b.id));
+    let entry_imports = entry_dependencies(imports, &chunks);
     let mut assets: Vec<PathBuf> = std::mem::take(&mut *assets.lock().expect("assets lock"))
         .into_iter()
         .filter_map(|p| p.strip_prefix(&cwd_root).ok().map(PathBuf::from))
@@ -482,33 +492,90 @@ pub async fn bundle_async(options: &BundleOptions) -> Result<Bundle, BundleError
     assets.sort();
     assets.dedup();
     let natives = std::mem::take(&mut *natives.lock().expect("natives lock"));
-    if let Some(warning) = ungranted_host(&natives, capabilities.as_ref()) {
+    let codes = std::iter::once(code.as_str()).chain(chunks.iter().map(|c| c.code.as_str()));
+    if let Some(warning) = ungranted_host(codes, capabilities.as_ref()) {
         log::warn!(target: "nsh::build", "{warning}");
     }
     Ok(Bundle {
         code,
         source_map,
         chunks,
+        entry_imports,
         assets,
+        watch_files: watch_files(&bundler, &cwd_root),
         natives: natives.into_iter().collect(),
         capabilities,
         elapsed_ms: start.elapsed().as_secs_f64() * 1000.0,
     })
 }
 
-/// The warning for an app that imports `nsh/host` and grants itself none
-/// of the host's functions (`capabilities.host`): each of its calls is
+/// The bundler's imported files and the theme read by NSH's setup.
+/// Follow static edges only; lazy entry points remain on demand.
+fn entry_dependencies(mut pending: Vec<String>, chunks: &[Chunk]) -> Vec<String> {
+    let mut seen = std::collections::BTreeSet::new();
+    while let Some(id) = pending.pop() {
+        let Some(chunk) = chunks.iter().find(|chunk| chunk.id == id) else {
+            continue;
+        };
+        if seen.insert(id) {
+            pending.extend(chunk.imports.iter().cloned());
+        }
+    }
+    seen.into_iter().collect()
+}
+
+fn watch_files(bundler: &rolldown::Bundler, dir: &std::path::Path) -> Vec<PathBuf> {
+    let mut files: Vec<PathBuf> = bundler
+        .watch_files()
+        .iter()
+        .map(|path| PathBuf::from(path.key().as_str()))
+        .filter(|path| path.is_file())
+        .collect();
+    if let Ok(config) = std::fs::read_to_string(dir.join("nsh.json"))
+        && let Ok(config) = serde_json::from_str::<serde_json::Value>(&config)
+        && let Some(theme) = config.get("theme").and_then(|v| v.as_str())
+        && let Ok(path) = dunce::canonicalize(dir.join(theme))
+    {
+        files.push(path);
+    }
+    files.sort();
+    files.dedup();
+    files
+}
+
+/// The warning for an app that imports `host` from `nsh` (in the bundle's
+/// `codes`, where native imports stay imports) and grants itself none of
+/// the host's functions (`capabilities.host`): each of its calls is
 /// refused, as the host's functions are never granted by default.
 fn ungranted_host<'a>(
-    natives: impl IntoIterator<Item = &'a String>,
+    codes: impl IntoIterator<Item = &'a str>,
     capabilities: Option<&nsh_core::access::Capabilities>,
 ) -> Option<String> {
-    let imports = natives.into_iter().any(|n| n == "nsh/host");
+    let imports = codes.into_iter().any(imports_host);
     let granted = capabilities.is_some_and(|c| !c.host.is_empty());
     (imports && !granted).then(|| {
-        "the app imports nsh/host and nsh.json declares no `capabilities.host`: every `host.call` is refused \
+        "the app imports `host` from nsh and nsh.json declares no `capabilities.host`: every `host.call` is refused \
          (list the host's functions it calls, prefixes ending in `*`, or `true`)"
             .to_owned()
+    })
+}
+
+/// Whether `code` imports `host` from `nsh` (`import { host } from "nsh"`,
+/// renamed or not).
+fn imports_host(code: &str) -> bool {
+    code.match_indices("from \"nsh\"").any(|(at, _)| {
+        let head = &code[..at];
+        let Some(open) = head.rfind('{') else {
+            return false;
+        };
+        head[open + 1..]
+            .trim_end()
+            .strip_suffix('}')
+            .is_some_and(|names| {
+                names
+                    .split(',')
+                    .any(|n| n.split_whitespace().next() == Some("host"))
+            })
     })
 }
 
@@ -534,6 +601,8 @@ pub struct HotBundle {
     preloads: Vec<String>,
     /// Asset files the app imports (as in [`Bundle::assets`]).
     pub assets: Vec<PathBuf>,
+    /// Source and configuration files read by the build, as absolute paths.
+    pub watch_files: Vec<PathBuf>,
     /// As in [`Bundle::capabilities`].
     pub capabilities: Option<nsh_core::access::Capabilities>,
     /// Wall time spent bundling, in milliseconds.
@@ -674,7 +743,7 @@ fn append_module(
 /// the current thread (`ui_sets` as in [`BundleOptions::ui_sets`]).
 pub fn bundle_hot(
     entry: &std::path::Path,
-    ui_sets: &[nsh_core::ui::description::SetDescription],
+    ui_sets: &[nsh_core::element::description::SetDescription],
 ) -> Result<HotBundle, BundleError> {
     tokio::runtime::Builder::new_current_thread()
         .build()
@@ -685,7 +754,7 @@ pub fn bundle_hot(
 /// Bundles an app for development with hot module replacement.
 pub async fn bundle_hot_async(
     entry: &std::path::Path,
-    ui_sets: &[nsh_core::ui::description::SetDescription],
+    ui_sets: &[nsh_core::element::description::SetDescription],
 ) -> Result<HotBundle, BundleError> {
     let start = Instant::now();
     let entry = canonical_bundler_entry(entry)
@@ -771,7 +840,10 @@ pub async fn bundle_hot_async(
     assets.sort();
     assets.dedup();
     let natives = std::mem::take(&mut *natives.lock().expect("natives lock"));
-    if let Some(warning) = ungranted_host(&natives, capabilities.as_ref()) {
+    if let Some(warning) = ungranted_host(
+        modules.iter().map(|m| m.code.as_str()),
+        capabilities.as_ref(),
+    ) {
         log::warn!(target: "nsh::build", "{warning}");
     }
     Ok(HotBundle {
@@ -782,6 +854,7 @@ pub async fn bundle_hot_async(
             .collect(),
         entry: entry_id.ok_or_else(|| BundleError::other("bundle produced no entry chunk"))?,
         assets,
+        watch_files: watch_files(&bundler, &cwd),
         capabilities,
         elapsed_ms: start.elapsed().as_secs_f64() * 1000.0,
     })
@@ -847,19 +920,18 @@ mod tests {
     #[test]
     fn apps_calling_the_host_without_a_grant_are_warned() {
         use nsh_core::access::Capabilities;
-        let natives = |names: &[&str]| names.iter().map(|n| n.to_string()).collect::<Vec<_>>();
         let caps = |json| Capabilities::from_json(&serde_json::from_str(json).unwrap()).unwrap();
-        let host = natives(&["nsh", "nsh/host"]);
+        let host = ["import { View, host as h } from \"nsh\";"];
         assert!(
-            super::ungranted_host(&host, None)
+            super::ungranted_host(host, None)
                 .unwrap()
                 .contains("capabilities.host")
         );
-        assert!(super::ungranted_host(&host, Some(&caps("{}"))).is_some());
-        assert!(super::ungranted_host(&host, Some(&caps(r#"{"host": false}"#))).is_some());
-        assert!(super::ungranted_host(&host, Some(&caps(r#"{"host": ["a"]}"#))).is_none());
-        assert!(super::ungranted_host(&host, Some(&caps(r#"{"host": true}"#))).is_none());
-        assert!(super::ungranted_host(&natives(&["nsh"]), None).is_none());
+        assert!(super::ungranted_host(host, Some(&caps("{}"))).is_some());
+        assert!(super::ungranted_host(host, Some(&caps(r#"{"host": false}"#))).is_some());
+        assert!(super::ungranted_host(host, Some(&caps(r#"{"host": ["a"]}"#))).is_none());
+        assert!(super::ungranted_host(host, Some(&caps(r#"{"host": true}"#))).is_none());
+        assert!(super::ungranted_host(["import { View } from \"nsh\";"], None).is_none());
     }
 
     use super::*;
@@ -947,6 +1019,25 @@ mod tests {
     }
 
     #[test]
+    fn entry_dependencies_include_static_cycles_but_leave_lazy_chunks_deferred() {
+        let chunk = |id: &str, imports: &[&str]| Chunk {
+            id: id.to_owned(),
+            code: String::new(),
+            source_map: None,
+            imports: imports.iter().map(|id| (*id).to_owned()).collect(),
+        };
+        let chunks = vec![
+            chunk("ui.js", &["theme.js"]),
+            chunk("theme.js", &["ui.js"]),
+            chunk("screen.js", &["ui.js"]),
+        ];
+        assert_eq!(
+            entry_dependencies(vec!["ui.js".into(), "nsh".into()], &chunks),
+            vec!["theme.js", "ui.js"]
+        );
+    }
+
+    #[test]
     fn split_bundles_load_dynamic_imports_as_chunks() {
         let dir = app("chunks");
         let bundle = bundle_app(&dir, true);
@@ -1017,9 +1108,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("nsh-svg-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let mut app = String::from(
-            "import { mount, View } from \"nsh\";\nimport { Image } from \"nsh/image\";\n",
-        );
+        let mut app = String::from("import { Image, mount, View } from \"nsh\";\n");
         for (i, (file, svg)) in files.iter().enumerate() {
             std::fs::write(dir.join(file), svg).unwrap();
             app.push_str(&format!(
@@ -1123,6 +1212,38 @@ mod tests {
         let (code, _) = bundle_hot(&dir.join("App.tsx"), &[]).unwrap().script();
         assert!(code.contains("require(\"./Screen.js\")"), "{code}");
         assert!(!code.contains("import("), "{code}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn shared_sources_and_external_themes_are_watched() {
+        let dir = app("shared-watch");
+        let entry_dir = dir.join("example");
+        let ui = dir.join("ui");
+        std::fs::create_dir_all(&entry_dir).unwrap();
+        std::fs::create_dir_all(&ui).unwrap();
+        std::fs::write(ui.join("index.ts"), "export const label = 'shared';").unwrap();
+        std::fs::write(
+            ui.join("theme.json"),
+            r#"{"cssVars":{"theme":{},"light":{},"dark":{}}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            entry_dir.join("nsh.json"),
+            r#"{"theme":"../ui/theme.json"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            entry_dir.join("App.tsx"),
+            "import { mount, Text } from 'nsh'; import { label } from '../ui'; mount(() => <Text>{label}</Text>);",
+        )
+        .unwrap();
+        let built = bundle_app(&entry_dir, false);
+        let hot = bundle_hot(&entry_dir.join("App.tsx"), &[]).unwrap();
+        for files in [&built.watch_files, &hot.watch_files] {
+            assert!(files.contains(&dunce::canonicalize(ui.join("index.ts")).unwrap()));
+            assert!(files.contains(&dunce::canonicalize(ui.join("theme.json")).unwrap()));
+        }
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -1285,13 +1406,13 @@ mod tests {
         let dir = single(
             "missing",
             "import { mount, Text } from \"nsh\";\n\
-             import { AnimatedValu } from \"nsh/animated\";\n\
+             import { AnimatedValu } from \"nsh\";\n\
              mount(() => <Text>{String(AnimatedValu)}</Text>);\n",
         );
         let error = bundling(&dir).unwrap_err().plain;
         assert!(error.contains("App.tsx"), "{error}");
         assert!(
-            error.contains("`nsh/animated` has no export `AnimatedValu`"),
+            error.contains("`nsh` has no export `AnimatedValu`"),
             "{error}"
         );
         assert!(error.contains("2:"), "{error}");
@@ -1305,9 +1426,9 @@ mod tests {
             "present",
             "import { mount, Text, type NoSuchType, NoSuchProps } from \"nsh\";\n\
              let props: NoSuchProps | NoSuchType | undefined;\n\
-             import { AnimatedValue as V } from \"nsh/animated\";\n\
-             import type { Gone } from \"nsh/animated\";\n\
-             import * as animated from \"nsh/animated\";\n\
+             import { AnimatedValue as V } from \"nsh\";\n\
+             import type { Gone } from \"nsh\";\n\
+             import * as animated from \"nsh\";\n\
              mount(() => <Text>{String(V)}{String(animated)}</Text>);\n",
         );
         bundling(&dir).unwrap();

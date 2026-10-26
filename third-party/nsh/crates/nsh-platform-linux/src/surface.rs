@@ -135,9 +135,9 @@ pub(crate) struct Surface {
     pub(crate) keymap: crate::keymap::KeymapState,
     /// The window's chrome: title bar, menus ([`crate::chrome`]).
     pub(crate) chrome: crate::chrome::Chrome,
-    /// Selections across the texts of selection areas
-    /// ([`crate::selection_area`]).
-    pub(crate) selection: crate::selection_area::State,
+    /// Selections across the texts of selectable views
+    /// ([`crate::selectable_view`]).
+    pub(crate) selection: crate::selectable_view::State,
     /// The performance monitor, while it measures ([`crate::fps`]).
     fps: RefCell<Option<Rc<crate::fps::Fps>>>,
 }
@@ -304,7 +304,7 @@ impl Surface {
         *self.anim.borrow_mut() = UiAnimation::default();
         self.nav.borrow_mut().reset();
         crate::input::reset(self);
-        crate::selection_area::reset(self);
+        crate::selectable_view::reset(self);
         crate::keymap::clear(self);
         self.js_frame.set(false);
     }
@@ -434,11 +434,18 @@ impl Surface {
     /// Writes the animated values to the views and reports finished
     /// animations.
     pub(crate) fn write_animations(&self) {
-        let finished = {
+        let (finished, moved) = {
             let mut anim = self.anim.borrow_mut();
             anim.write(&self.mounter.borrow());
-            std::mem::take(&mut anim.finished)
+            let mut moved = Vec::new();
+            anim.write_components(
+                |id| crate::native::has_component(self, id),
+                |id, name, value| moved.push((id, std::sync::Arc::<str>::from(name), value)),
+            );
+            (std::mem::take(&mut anim.finished), moved)
         };
+        // No surface state borrowed while the app's components run.
+        crate::native::component_animated(self, moved);
         crate::scroll::pin_animated_sticky(self);
         if !finished.is_empty() {
             self.control(|c| c.animations_finished(finished));

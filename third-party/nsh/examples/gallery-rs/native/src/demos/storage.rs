@@ -4,11 +4,8 @@
 //! gallery's own last demo among them), all still there after a restart
 //! (as the TSX gallery's `demos/Storage.tsx`).
 
-use nsh_base::alert_dialog;
-use nsh_core::{
-    storage::Storage,
-    ui::{AnyElement, prelude::*},
-};
+use nsh_base::{alert_dialog, input};
+use nsh_core::{element::AnyElement, prelude::*, storage::Storage};
 
 use crate::ui::{
     Badge, Button, ButtonVariant, Card, DemoPage, Figure, Finish, Finished, IconName, MONO, Row,

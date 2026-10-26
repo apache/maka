@@ -20,6 +20,7 @@
 // The enclosing bootstrap supplies call/emit; neither is exposed to model code.
 const ErrorClass = Error;
 const stringify = JSON.stringify;
+const parse = JSON.parse;
 const output = (value) => {
   const error = emit(value);
   if (error) throw new ErrorClass(error.message);
@@ -145,6 +146,58 @@ const playwrightFor = (handle, identity) => {
       operation,
       options: optionsFor(options),
     });
+  const mutationOptions = (options, method) => {
+    if (!options || typeof options !== 'object' || Array.isArray(options))
+      throw new ErrorClass('locator.' + method + ' options must be an object');
+    const timeoutMs = options.timeoutMs;
+    if (timeoutMs !== undefined && (!Number.isInteger(timeoutMs) || timeoutMs <= 0))
+      throw new ErrorClass('timeoutMs must be a positive integer');
+    return { timeoutMs };
+  };
+  const pointerOptions = (options, method, checked = false) => {
+    const result = mutationOptions(options, method);
+    if (options.force !== undefined) {
+      if (typeof options.force !== 'boolean') throw new ErrorClass('force must be a boolean');
+      result.force = options.force;
+    }
+    if (checked) return result;
+    if (options.button !== undefined) {
+      if (!['left', 'right', 'middle'].includes(options.button))
+        throw new ErrorClass('button must be left, right, or middle');
+      result.button = options.button;
+    }
+    if (options.modifiers !== undefined) {
+      if (!Array.isArray(options.modifiers)
+          || options.modifiers.some((value) => !['Alt', 'Control', 'ControlOrMeta', 'Meta', 'Shift'].includes(value)))
+        throw new ErrorClass('Unsupported keyboard modifier');
+      result.modifiers = options.modifiers;
+    }
+    return result;
+  };
+  const selectValues = (value) => {
+    const values = Array.isArray(value) ? value : [value];
+    if (!values.length) throw new ErrorClass('locator.selectOption requires at least one value');
+    return values.map((value) => {
+      if (typeof value === 'string') return { value };
+      if (!value || typeof value !== 'object' || Array.isArray(value))
+        throw new ErrorClass('locator.selectOption requires option values or descriptors');
+      const result = {};
+      for (const property of ['value', 'label']) {
+        if (value[property] !== undefined) {
+          if (typeof value[property] !== 'string') throw new ErrorClass(property + ' must be a string');
+          result[property] = value[property];
+        }
+      }
+      if (value.index !== undefined) {
+        if (!Number.isInteger(value.index) || value.index < 0)
+          throw new ErrorClass('index must be a non-negative integer');
+        result.index = value.index;
+      }
+      if (!Object.keys(result).length)
+        throw new ErrorClass('locator.selectOption requires a value, label, or index');
+      return result;
+    });
+  };
   const compatible = (other) => {
     const binding = locatorBindings.get(other);
     if (!binding) throw new ErrorClass('Expected a PlaywrightLocator');
@@ -199,6 +252,19 @@ const playwrightFor = (handle, identity) => {
     return selector;
   };
   const locatorFor = (selector, collection) => {
+    const mutate = async (operation) => {
+      await invoke('browserMutation', { handle, locator: { selector }, operation });
+      collection?.cache.rows.clear();
+    };
+    const textMutation = (kind, value, options = {}) => {
+      if (typeof value !== 'string')
+        throw new ErrorClass('locator.' + kind + ' requires a string value');
+      return mutate({ kind, value, options: mutationOptions(options, kind) });
+    };
+    const setChecked = (checked, options = {}) => {
+      if (typeof checked !== 'boolean') throw new ErrorClass('checked must be a boolean');
+      return mutate({ kind: 'setChecked', checked, options: pointerOptions(options, 'setChecked', true) });
+    };
     const cachedRow = async (options) => {
       if (!collection) return null;
       const key = collection.relative ?? '';
@@ -279,6 +345,16 @@ const playwrightFor = (handle, identity) => {
       },
       isEnabled: () => request(selector, { kind: 'isEnabled' }),
       isVisible: () => request(selector, { kind: 'isVisible' }),
+      click: (options = {}) => mutate({ kind: 'click', options: pointerOptions(options, 'click') }),
+      dblclick: (options = {}) => mutate({ kind: 'doubleClick', options: pointerOptions(options, 'dblclick') }),
+      fill: (value, options) => textMutation('fill', value, options),
+      type: (value, options) => textMutation('type', value, options),
+      press: (value, options) => textMutation('press', value, options),
+      pressSequentially: (value, options) => textMutation('pressSequentially', value, options),
+      selectOption: (value, options = {}) => mutate({ kind: 'selectOption', values: selectValues(value), options: mutationOptions(options, 'selectOption') }),
+      setChecked,
+      check: (options) => setChecked(true, options),
+      uncheck: (options) => setChecked(false, options),
     };
     const result = Object.freeze(locatorTarget);
     locatorBindings.set(result, { identity, handle, selector });
@@ -385,10 +461,13 @@ const bind = async (method, args) => {
     const pending = invoke('action', { handle, action: { kind, ...args } });
     if (nativePlatform !== 'linux' || result.kind !== 'app') return pending;
     return pending.catch((error) => {
-      const prefix = 'tool failed: ';
       const message = error?.message;
-      if (typeof message === 'string' && message.startsWith(prefix))
-        throw new ErrorClass(message.slice(prefix.length));
+      if (typeof message === 'string') {
+        for (const prefix of ['tool failed: ', 'tool effect outcome unknown: ']) {
+          if (message.startsWith(prefix))
+            throw new ErrorClass(message.slice(prefix.length));
+        }
+      }
       throw error;
     });
   };
@@ -472,18 +551,59 @@ const bind = async (method, args) => {
       close: () => action('close', {}),
     });
   } else {
+    if (nativePlatform === 'linux') {
+      Object.assign(target, {
+        click: (position, options = {}) => {
+          const input = Array.isArray(position)
+            ? { x: position[0], y: position[1] }
+            : { element_id: String(position) };
+          const projected = {};
+          const mouseButton = options?.mouseButton;
+          if (mouseButton !== undefined) projected.mouseButton = mouseButton;
+          const clickCount = options?.clickCount;
+          if (clickCount !== undefined) projected.clickCount = clickCount;
+          const normalized = nativeClickOptions(projected);
+          if (normalized.mouseButton !== undefined) input.mouse_button = normalized.mouseButton;
+          if (normalized.clickCount !== undefined) input.click_count = normalized.clickCount;
+          return action('linuxClick', { input: parse(stringify(input)) });
+        },
+        drag: (from, to) => {
+          const input = { path: [{ x: from[0], y: from[1] }, { x: to[0], y: to[1] }] };
+          return action('linuxDrag', { input: parse(stringify(input)) });
+        },
+        scroll: (position, direction, distance) => {
+          if (typeof distance === 'number')
+            throw new ErrorClass('Linux scroll accepts { pixels }, not pages.');
+          const input = { direction: nativeDirection(direction) };
+          if (Array.isArray(position)) {
+            input.x = position[0];
+            input.y = position[1];
+          } else input.element_id = String(position);
+          if (distance !== undefined) {
+            const pixels = distance.pixels;
+            if (!Number.isFinite(pixels) || pixels <= 0)
+              throw new ErrorClass('pixels must be a positive finite number.');
+            input.pixels = pixels;
+          }
+          return action('linuxScroll', { input: parse(stringify(input)) });
+        },
+      });
+    } else {
+      Object.assign(target, {
+        click: (position, options = {}) =>
+          action('click', {
+            target: position,
+            options: nativeClickOptions(options),
+          }),
+        scroll: (position, direction, distance) =>
+          action('scroll', {
+            target: position,
+            direction: nativeDirection(direction),
+            distance,
+          }),
+      });
+    }
     Object.assign(target, {
-      click: (position, options = {}) =>
-        action('click', {
-          target: position,
-          options: nativeClickOptions(options),
-        }),
-      scroll: (position, direction, distance) =>
-        action('scroll', {
-          target: position,
-          direction: nativeDirection(direction),
-          distance,
-        }),
       typeText: (text) => action('typeText', { text }),
       paste: (text, options = {}) => action('paste', { text, options }),
       pressKey: (key) => action('pressKey', { key }),

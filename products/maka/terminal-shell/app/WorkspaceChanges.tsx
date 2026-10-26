@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { textTooltip } from './ui';
 import { errorText, renderText, type UiText } from './text';
 import { tr } from './locale';
 import { cleanup, effect, inputAction, signal, Text, untracked, View, List } from 'nsh';
@@ -109,9 +110,7 @@ export function WorkspaceChanges(props: {
         <Button
           accessibilityLabel={tr('Refresh current changes')}
           onPress={inputAction(refresh, props.sessionId)}
-          tooltip={
-            state().kind === 'error' ? tr('Retry current changes') : tr('Refresh current changes')
-          }
+          tooltip={textTooltip(() => state().kind === 'error' ? tr('Retry current changes') : tr('Refresh current changes'))}
           style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
           hoverStyle={controlHoverStyle}
           focusStyle={controlFocusStyle}

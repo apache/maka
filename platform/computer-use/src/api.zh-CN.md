@@ -46,6 +46,30 @@ Tab 导航：`goto(url)`、`back()`、`forward()`、`reload()`、`close()`。导
 确切 `text/plain` 条目的文本；仅有 base64 时返回空字符串，页面的 `readText()` 则通过 Blob 解码。
 Turn 清理移除页面桥接并保留数据；重置会创建新的空上下文。
 
+`tab.playwright` 可以直接解析 DOM 定位器，不要求先读取 AX。
+使用 `locator(selector)`、`getByRole`、`getByText`、`getByLabel`、
+`getByPlaceholder` 或 `getByTestId`；`frameLocator(selector)` 进入 iframe。
+定位器提供 `first/last/nth`、`filter`、`and/or`、`count`、`all`、
+`allTextContents`、`textContent`、`innerText`、`getAttribute`、`isEnabled`
+和 `isVisible`；`domSnapshot()` 返回页面的 DOM 无障碍文本。
+
+定位器输入方法返回 undefined：`click(options?)`、`dblclick(options?)`、
+`fill(text, options?)`、`type(text, options?)`、`press(key, options?)`、
+`pressSequentially(text, options?)`、`selectOption(valueOrValues, options?)`、
+`setChecked(boolean, options?)`、`check(options?)` 和 `uncheck(options?)`。
+点击选项为 `button: 'left'|'right'|'middle'`、`modifiers`、`force`、`timeoutMs`；
+勾选选项为 `force`、`timeoutMs`。修饰键为 `Alt`、`Control`、`ControlOrMeta`、
+`Meta`、`Shift`；`ControlOrMeta` 按所选浏览器的平台解析。其他输入选项为
+`timeoutMs`，它必须是正整数；准备阶段默认且最多 3000 毫秒，逐字符输入最多
+5000 毫秒。选项选择接受 value 字符串，或带 `value`、`label`、非负整数
+`index` 的描述对象；数组用于选择多个选项。
+
+定位器选择唯一匹配，或多个匹配中唯一可见的元素；歧义会报错。
+普通文本 fill/type 派发虚拟粘贴事件，尊重页面事件处理器的取消，并保留原剪贴板数据。
+空粘贴默认不会清空值。剪贴板快捷键复用同一虚拟剪贴板；不支持的组合会在发送原生按键前拒绝。
+成功写操作仅清除调用定位器所属集合的读取缓存。仍需在页面核对实际结果；
+不确定的输入结果不会自动重放。
+
 `await tab.getJsDialog()` 返回 undefined 或含 `type`、`dismiss()` 的当前对话框对象。
 confirm 还有 `accept()`，prompt 有 `accept(text)`，允许空字符串。旧对象不能操作替换后的新对话框。
 先处理对话框，再读取页面或输入。`getAXState()` 显示消息和索引控件；prompt 控件支持

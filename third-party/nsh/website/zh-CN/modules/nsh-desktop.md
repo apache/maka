@@ -6,15 +6,12 @@ order: 12.5
 
 # nsh/desktop
 
-`nsh/desktop` 在 macOS、Windows 和 Linux 上提供图形桌面窗口、标题栏、应用菜单和右键菜单。终端界面通过同一个模块提供标题和菜单。这个模块在所有平台上都可以导入，因此同一个 bundle 可以在所有平台运行。`isAvailable` 标识提供这些标题和菜单 API 的界面。 Rust 代码用 `nsh_core::ui::desktop`（`set_title_bar`、`title_bar`、`close_window`）绘制自己的标题栏、关闭窗口，并用 `.window_drag(true)` 标记可拖动的视图；TSX 导入 `nsh/desktop`，其中还有窗口的其他函数和菜单。
+`nsh/desktop` 在 macOS、Windows 和 Linux 上提供图形桌面窗口、标题栏、应用菜单和右键菜单。终端界面通过同一个模块提供标题和菜单。这个模块在所有平台上都可以导入，因此同一个 bundle 可以在所有平台运行。`isAvailable` 标识提供这些标题和菜单 API 的界面。 Rust 代码用 `nsh_core::element::desktop`（`set_title_bar`、`title_bar`、`close_window`）绘制自己的标题栏、关闭窗口，并用 `.window_drag(true)` 标记可拖动的视图；TSX 导入 `nsh/desktop`，其中还有窗口的其他函数和菜单。
 
 ```rust tabs
 use nsh_core::{
     desktop::TitleBarStyle,
-    ui::{
-        desktop::{close_window, set_title_bar, title_bar},
-        prelude::*,
-    },
+    element::{desktop::{close_window, set_title_bar, title_bar}}, prelude::*,
 };
 ```
 
@@ -53,7 +50,7 @@ const Window: {
 };
 ```
 
-Rust 列给出 `nsh_core::ui::desktop` 中的函数。
+Rust 列给出 `nsh_core::element::desktop` 中的函数。
 
 | 成员 | Rust | 说明 |
 |---|---|---|
@@ -82,10 +79,7 @@ Rust 列给出 `nsh_core::ui::desktop` 中的函数。
 ```rust tabs
 use nsh_core::{
     desktop::TitleBarStyle,
-    ui::{
-        desktop::{set_title_bar, title_bar},
-        prelude::*,
-    },
+    element::{desktop::{set_title_bar, title_bar}}, prelude::*,
 };
 
 #[component]
@@ -108,7 +102,8 @@ fn TitleBar() -> impl IntoElement {
 ```
 
 ```tsx tabs
-import { Input, Text, View } from "nsh";
+import { Text, View } from "nsh";
+import { Input } from "nsh/base";
 import { titleBar, Window } from "nsh/desktop";
 
 Window.setTitleBar("hidden", 40); // 40 点高的标题栏
@@ -192,8 +187,8 @@ type MenuItem =
 |---|---|
 | `label` | 菜单项显示的文字。带 role 的菜单项省略时使用自己的默认文字。 |
 | `onSelect` | 菜单项被选中时调用，无论是点击还是快捷键。 |
-| `shortcut` | 快捷键：修饰键和一个按键用 `+` 连接，例如 `"mod+n"`、`"mod+shift+z"`、`"alt+f4"` 或 `"f11"`。修饰键见下表。按键可以是字母、数字和标点，写作它在美式键盘上不按 Shift 时输入的字符（`,`、`/`；`?` 写作 `"shift+/"`），也可以是名称：`plus`（`=` / `+` 键，也可写 `=`）、`minus`（也可写 `-`）、`space`、`enter`（`return`）、`escape`（`esc`）、`tab`、`backspace`、`delete`（`del`）、`insert`、方向键 `up`、`down`、`left`、`right`（`arrowup` 等）、`home`、`end`、`pageup`、`pagedown`、`f1`–`f24`。大小写不影响（`"Mod+Shift+N"` 就是 `"mod+shift+n"`；大写字母表示同一个键，并不意味着 Shift），推荐全小写的写法。无效的快捷键（`"mod-n"`、`"mod++"`、`"mod+?"`）会抛出错误并给出正确的写法。`nsh/keymap` 使用同样的按键写法。菜单按各平台自己的样式显示快捷键（macOS 上是 `⇧⌘N`，Windows 上是 `Ctrl+Shift+N`）。 |
-| `when` | 在 GPUI 后端上，输入框获得键盘焦点时快捷键何时选中该菜单项：`"always"`（默认）、`"auto"`（除非输入框自己使用这个按键：输入字符、移动光标或删除的键，以及编辑快捷键，和 [`nsh/keymap`](./nsh-keymap) 的绑定相同）或 `"notEditing"`。菜单项让出的键交给输入框。 |
+| `shortcut` | 快捷键：修饰键和一个按键用 `+` 连接，例如 `"mod+n"`、`"mod+shift+z"`、`"alt+f4"` 或 `"f11"`。修饰键见下表。按键可以是字母、数字和标点，写作它在美式键盘上不按 Shift 时输入的字符（`,`、`/`；`?` 写作 `"shift+/"`），也可以是名称：`plus`（`=` / `+` 键，也可写 `=`）、`minus`（也可写 `-`）、`space`、`enter`（`return`）、`escape`（`esc`）、`tab`、`backspace`、`delete`（`del`）、`insert`、方向键 `up`、`down`、`left`、`right`（`arrowup` 等）、`home`、`end`、`pageup`、`pagedown`、`f1`–`f24`。大小写不影响（`"Mod+Shift+N"` 就是 `"mod+shift+n"`；大写字母表示同一个键，并不意味着 Shift），推荐全小写的写法。无效的快捷键（`"mod-n"`、`"mod++"`、`"mod+?"`）会抛出错误并给出正确的写法。`keymap` 使用同样的按键写法。菜单按各平台自己的样式显示快捷键（macOS 上是 `⇧⌘N`，Windows 上是 `Ctrl+Shift+N`）。 |
+| `when` | 在 GPUI 后端上，输入框获得键盘焦点时快捷键何时选中该菜单项：`"always"`（默认）、`"auto"`（除非输入框自己使用这个按键：输入字符、移动光标或删除的键，以及编辑快捷键，和 [`keymap`](./nsh.md#keymap) 的绑定相同）或 `"notEditing"`。菜单项让出的键交给输入框。 |
 | `disabled` | `true` 时菜单项变灰（默认 `false`）。 |
 | `checked` | 设置（为 `true` 或 `false`）后菜单项带勾选标记。 |
 | `submenu` | 让菜单项成为子菜单（需要 `label`）。 |
@@ -224,13 +219,13 @@ Role：
 
 带 role 的菜单项默认使用平台的文字和快捷键，除非自己设置（macOS 会在 `about`、`hide` 和 `quit` 中加上应用名）。
 
-菜单快捷键的优先级最高，和原生应用一样：菜单项占用的按键不会再传给获得焦点的输入框，也不会触发 NSH 自己的按键处理。只有 [`nsh/keymap`](./nsh-keymap) 中相同按键组合的绑定排在它们前面。所以编辑快捷键（`mod+c`、`mod+v`、`mod+x`、`mod+a`、`mod+z`）只交给编辑类 role（它们会把按键转给输入框），也不要使用不带修饰键的键（`escape`、方向键、字母），否则输入框和返回导航就收不到它们了。在 GPUI 后端上，`when: "auto"` 让菜单项和输入框共用按键：没有输入框获得焦点时，`delete` 或 `mod+z` 选中菜单项；有输入框获得焦点时，它们编辑文本。
+菜单快捷键的优先级最高，和原生应用一样：菜单项占用的按键不会再传给获得焦点的输入框，也不会触发 NSH 自己的按键处理。只有 [`keymap`](./nsh.md#keymap) 中相同按键组合的绑定排在它们前面。所以编辑快捷键（`mod+c`、`mod+v`、`mod+x`、`mod+a`、`mod+z`）只交给编辑类 role（它们会把按键转给输入框），也不要使用不带修饰键的键（`escape`、方向键、字母），否则输入框和返回导航就收不到它们了。在 GPUI 后端上，`when: "auto"` 让菜单项和输入框共用按键：没有输入框获得焦点时，`delete` 或 `mod+z` 选中菜单项；有输入框获得焦点时，它们编辑文本。
 
-在 GPUI 后端上，拥有键盘焦点的原生组件先看到每个按键。它自己处理的按键不会到达快捷键表或菜单。它放过的按键按输入框获得焦点时的规则进入 `nsh/keymap`，然后再到菜单。
+在 GPUI 后端上，拥有键盘焦点的原生组件先看到每个按键。它自己处理的按键不会到达快捷键表或菜单。它放过的按键按输入框获得焦点时的规则进入 `keymap` 的快捷键，然后再到菜单。
 
 ```tsx
 import { effect, signal } from "nsh";
-import { platform } from "nsh/device";
+import { platform } from "nsh";
 import { Menu } from "nsh/desktop";
 
 const mac = platform.os === "macos";

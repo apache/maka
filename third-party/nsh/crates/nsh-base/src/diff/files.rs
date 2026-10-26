@@ -21,7 +21,7 @@
 
 use std::{collections::HashSet, ops::Range};
 
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 use ropey::Rope;
 
 use super::{

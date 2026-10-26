@@ -1,5 +1,5 @@
 //! Touches for Rust components: their `on_touch` handlers and the touch
-//! responder ([`crate::ui::TouchClaim`]), as `nsh-js` runs them for JS's
+//! responder ([`crate::element::TouchClaim`]), as `nsh-js` runs them for JS's
 //! handlers (`touch.rs` there).
 //!
 //! The platform reports touches on the root, each finger with the nodes
@@ -16,7 +16,7 @@ use super::Core;
 use crate::{
     Command, EventKind, EventPayload, NodeId, ROOT_ID, TextEngine, TouchEvent, TouchPhase,
     TouchPoint,
-    ui::{
+    element::{
         ClaimRequest, Listener, PanGesture, ResponderEvent,
         responder::{ClaimPhase, ResponderEl},
     },
@@ -295,7 +295,7 @@ impl<M: TextEngine> Core<M> {
 
     /// Whether node `id` claims the touches in `phase` (its claims of that
     /// kind, in order): with whether it blocks native scroll views. An
-    /// element waiting for its pan ([`crate::ui::TouchClaim::on_pan`]) only
+    /// element waiting for its pan ([`crate::element::TouchClaim::on_pan`]) only
     /// claims when the platform activates it.
     fn claims(
         &mut self,

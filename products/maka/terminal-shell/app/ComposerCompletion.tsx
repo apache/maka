@@ -17,22 +17,12 @@
  * under the License.
  */
 
-import {
-  cleanup,
-  computed,
-  effect,
-  Input,
-  inputAction,
-  List,
-  Overlay,
-  signal,
-  Text,
-  View,
-} from 'nsh';
+import { cleanup, computed, effect, inputAction, List, Overlay, signal, Text, View } from 'nsh';
+import { Input } from 'nsh/base';
 import type { YNode } from 'nsh';
 import { Button } from 'nsh/base';
-import { keymap } from 'nsh/keymap';
-import { windowSize } from 'nsh/device';
+import { keymap } from 'nsh';
+import { windowSize } from 'nsh';
 import { host } from './host';
 import { tr } from './locale';
 import { createText, errorText } from './text';

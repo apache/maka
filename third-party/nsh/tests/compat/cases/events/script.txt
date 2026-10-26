@@ -81,7 +81,7 @@ style id:secret selectionColor #ff6600ff
 style id:pick selectionColor #00aa00ff
 # The selection the app sets.
 prop id:secret selectedRange start=0 end=2
-covers [nsh] Input
+covers [nsh/base] Input
 covers [props] multiline
 covers [props] masked
 covers [props] readonly
@@ -148,9 +148,9 @@ event id:web onLoad url=https://example.com/a title="Page A" loading=false canGo
 event id:web onMessage data="hello there"
 event id:web onError message="offline"
 expect Web: start https://example.com/ "" loading true back false forward false | nav https://example.com/a "Page A" loading false back true forward false | load https://example.com/a "Page A" loading false back true forward false | message hello there | error offline
-covers [nsh/image] Image
-covers [nsh/video] Video
-covers [nsh/webview] WebView
+covers [nsh] Image
+covers [nsh] Video
+covers [nsh] WebView
 covers [events] onLoadStart
 covers [events] onProgress
 covers [events] onLoad

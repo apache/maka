@@ -5,7 +5,7 @@
 //! For many rows, sorting, selection and resizing, `DataTable` is the
 //! table; these parts lay out a few rows the app writes as children.
 
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 /// The props of [`Table`].
 #[derive(Debug, Clone, PartialEq, Props)]

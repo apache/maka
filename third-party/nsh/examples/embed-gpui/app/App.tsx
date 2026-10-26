@@ -9,7 +9,7 @@
 // or an order placed here shows in the host and in the other tickets.
 
 import { effect, mount, Scroll, signal, Text, View } from "nsh";
-import { nativeComponent, nativeModule } from "nsh/native";
+import { nativeComponent, nativeModule } from "nsh";
 import { Button, Card, Stepper, TextField } from "./ui";
 
 type Side = "buy" | "sell";

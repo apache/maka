@@ -1,6 +1,6 @@
 import { mount, Scroll, signal, Text, View, type YNode } from "nsh";
-import { createAnimatedValue } from "nsh/animated";
-import { desktop, size, tint, ui, wide } from "./palette";
+import { createAnimatedValue } from "nsh";
+import { button, buttonText, desktop, size, tint, ui, wide } from "./palette";
 
 // Tints of the info, violet, danger, warn and up colours under the text colour.
 const hues = ["info", "violet", "down", "warn", "up", "faint"] as const;
@@ -141,19 +141,9 @@ function App() {
           </View>
           <View
             onPress={() => scroll.scrollTo({ y: 0 })}
-            activeStyle={{ opacity: 0.6 }}
-            style={
-              desktop
-                ? { alignSelf: "flex-start", height: size.control, justifyContent: "center", paddingHorizontal: 12, borderRadius: 8, ...ui().primary }
-                : {
-                    padding: 14,
-                    borderRadius: 10,
-                    ...ui().primary,
-                    alignItems: "center",
-                  }
-            }
+            {...button("primary")}
           >
-            <Text style={{ color: ui().onPrimary, fontWeight: "600", fontSize: desktop ? 13 : undefined }}>Back to the top (ref.scrollTo)</Text>
+            <Text style={buttonText("primary")}>Back to the top (ref.scrollTo)</Text>
           </View>
         </View>
       </Scroll>

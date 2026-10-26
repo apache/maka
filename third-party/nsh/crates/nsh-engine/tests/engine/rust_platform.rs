@@ -2,7 +2,7 @@
 //! the UI sets' crates ship are registered before the first render, tasks
 //! wait for display frames, components set the layout direction and read
 //! the pixel ratio, the device and the locale; they speak, move the screen
-//! reader, show toasts and set the status bar with their dialogs.
+//! reader and set the status bar with their dialogs.
 
 use std::{
     collections::HashMap,
@@ -18,8 +18,9 @@ use nsh_base::dialog;
 use nsh_core::{
     ApproxTextEngine, AttributedText, Command, EventKind, EventPayload, MountBatch, MountItem,
     Points, ROOT_ID, Size, StatusBarSetting, StatusBarStyle, TextEngine, TextLayout,
+    element::{AssetFile, AssetKind, Registry, Root},
     platform::{Idiom, Locale, Os},
-    ui::{AssetFile, AssetKind, Registry, Root, prelude::*},
+    prelude::*,
 };
 use nsh_engine::{App, Assets, Engine, EngineConfig, Environment, MountSink};
 
@@ -357,7 +358,6 @@ fn Services() -> impl IntoElement {
         .flex_1()
         .child(text("Announce").on_press(|_: &()| announce_for_accessibility("Saved")))
         .child(text("Focus").on_press(move |_: &()| note.set_accessibility_focus()))
-        .child(text("Toast").on_press(|_: &()| toast("Hello", ToastDuration::Long)))
         .child(text("Open").on_press(move |_: &()| open.set(true)))
         .child(text("The note").element_ref(&note))
         .child(dynamic(move || {
@@ -374,7 +374,7 @@ fn Services() -> impl IntoElement {
 }
 
 #[test]
-fn components_speak_move_the_reader_toast_and_set_the_status_bar() {
+fn components_speak_move_the_reader_and_set_the_status_bar() {
     let (engine, rx, _) = start::<Services>(Environment::default());
     let mut texts = HashMap::new();
     // Presses the text `label` (none: only the first render) and returns
@@ -418,16 +418,6 @@ fn components_speak_move_the_reader_toast_and_set_the_status_bar() {
     assert_eq!(
         focused.iter().map(|c| &c.1).collect::<Vec<_>>(),
         [&Command::AccessibilityFocus]
-    );
-    assert_eq!(
-        step(Some("Toast")),
-        [(
-            ROOT_ID,
-            Command::Toast {
-                text: "Hello".into(),
-                long: true
-            }
-        )]
     );
     // The dialog's setting while it shows; the default again once it
     // closed.

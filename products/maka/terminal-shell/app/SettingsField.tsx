@@ -17,8 +17,9 @@
  * under the License.
  */
 
-import { Input, Text, View } from 'nsh';
-import { windowSize } from 'nsh/device';
+import { Text, View } from 'nsh';
+import { Input } from 'nsh/base';
+import { windowSize } from 'nsh';
 import { C, compact, inputBorderRadius, inputTextStyle } from './ui';
 
 type SettingsInputProps = {

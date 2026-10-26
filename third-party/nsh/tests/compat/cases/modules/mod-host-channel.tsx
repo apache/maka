@@ -1,9 +1,9 @@
-// A case of the API's test suite (docs/dev/compatibility.md): `nsh/host`
+// A case of the API's test suite (docs/dev/compatibility.md): `nsh`
 // on the headless runtime, which runs the app without an embedding app: the
 // launch parameters are empty, a listener is added and removed, a post goes
 // nowhere and a call fails at once with the reason. Its script checks each.
 import { Text, View, signal } from "nsh";
-import { host } from "nsh/host";
+import { host } from "nsh";
 
 function App() {
   const calls = signal("not called");

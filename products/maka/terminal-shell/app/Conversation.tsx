@@ -33,8 +33,8 @@ import {
 } from 'nsh';
 import type { YNode } from 'nsh';
 import { Button } from 'nsh/base';
-import { keymap } from 'nsh/keymap';
-import { AnimatedValue } from 'nsh/animated';
+import { keymap } from 'nsh';
+import { AnimatedValue } from 'nsh';
 import {
   host,
   loadDraft,

@@ -1,13 +1,6 @@
 import { cleanup, signal, Text, View } from "nsh";
-import {
-  Button,
-  DataTable,
-  type DataTableColumn,
-  type DataTableRef,
-  type DataTableSelection,
-  type DataTableSort,
-} from "nsh/base";
-import { Segmented } from "../ui";
+import { Button, DataTable, type DataTableColumn, type DataTableRef, type DataTableSelection, type DataTableSort } from "nsh/base";
+import { dataTableClasses, dataTableFitPadding, Segmented } from "../ui";
 
 // `nsh/base`'s `DataTable` over a million stocks of sixty columns the app
 // does not hold, with live quotes as gpui-component's data table story: a
@@ -120,7 +113,7 @@ function opening(id: number): Float64Array {
 const right = { align: "end" as const, width: 110 };
 const tone = { positiveClass: "text-green-600", negativeClass: "text-red-600" };
 const columns: DataTableColumn[] = [
-  { key: "id", title: "ID", width: 90, align: "end", fixed: true, sortable: true },
+  { key: "id", title: "ID", width: 90, align: "end" as const, fixed: true, sortable: true },
   { key: "symbol", title: "Symbol", width: 110, fixed: true },
   { key: "name", title: "Name", width: 150 },
   { key: "market", title: "Market", width: 80 },
@@ -147,7 +140,7 @@ const columns: DataTableColumn[] = [
     ...right,
     ...tone,
   })),
-];
+].map((column) => ({ ...column, fitPadding: dataTableFitPadding }));
 
 /** The cells of stock `id`'s row with quote `n`, in the columns' order. */
 function row(id: number, n: Float64Array): (string | number)[] {
@@ -196,7 +189,7 @@ function Tool(props: { label: string; name: string; onPress: () => void }) {
 }
 
 /**
- * Data table: a million stocks of sixty columns whose quotes in view tick
+ * DataTable: a million stocks of sixty columns whose quotes in view tick
  * every 33 ms, the ID and Symbol columns fixed at the left, the ID column
  * sortable, rows, cells or columns selected, columns resized and moved.
  */
@@ -322,6 +315,7 @@ export function DataTableDemo() {
         ref={(r) => (table = r)}
         testID="table"
         class="flex-1"
+        classes={dataTableClasses}
         columns={columns}
         data={page().rows}
         dataStart={page().start}
@@ -329,6 +323,7 @@ export function DataTableDemo() {
         rowHeight={28}
         fontSize={13}
         stripe={stripe()}
+        rowHeader={false}
         cellSelectable={mode() === "cell"}
         sort={sort()}
         onSortChange={(next) => {

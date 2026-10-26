@@ -1,9 +1,6 @@
 //! `Button`: a press target with no look of its own.
 
-use nsh_core::{
-    AccessibilityState,
-    ui::{Style, prelude::*},
-};
+use nsh_core::{AccessibilityState, element::Style, prelude::*};
 
 /// The props of [`Button`].
 #[derive(Debug, Clone, PartialEq, Props)]

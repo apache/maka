@@ -4,9 +4,9 @@
 use std::sync::Arc;
 
 use crate::{
+    element::PropEnum,
     geometry::{Edges, Points, px},
     js::host::HostProps,
-    ui::PropEnum,
 };
 
 /// Edge insets in points.
@@ -287,11 +287,11 @@ pub struct ViewProps {
     /// the real opener before a batch, focus popup controls after it, and
     /// restore a still-valid opener when their popup closes.
     pub focus_return_parent: Option<crate::NodeId>,
-    /// The view is a selection area (`SelectionArea` of `nsh/base`): the
+    /// The view is a selectable view (`View` with `selectable`): the
     /// texts in its subtree that are not `selectable={false}` share one
     /// selection, from text to text ([`crate::selection`]); an area inside
     /// another is part of the outer one. Texts outside areas select alone.
-    pub selection_area: bool,
+    pub selectable_view: bool,
 }
 
 /// When a pan on a view activates (`panActivation`; react-native-gesture-

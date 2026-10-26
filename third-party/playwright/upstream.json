@@ -21,6 +21,14 @@
     "injected.js": "3bf8f5e6652ddce12c7ef927549eaa73b57fe892482090055d66855e010a5b63",
     "LICENSE": "45873d00a0dd243596deb4aa23b2493b3d1f0671921bf2538ea431d7380220eb",
     "NOTICE": "6d602191187b35b9b01d2cffa01c8469c2c8d9de8a96f1bf868e0f264f51c81d",
-    "ThirdPartyNotices.txt": "36aa7e5d56f9a7d4cdb85e570500e0dcdd36799c0e937199dd6cb9813a8fdce9"
+    "ThirdPartyNotices.txt": "36aa7e5d56f9a7d4cdb85e570500e0dcdd36799c0e937199dd6cb9813a8fdce9",
+    "keyboard.json": "615d4adb7af5f48d331c3f7cfb8787a95d6d1199de050578ad1919b514e0666c"
+  },
+  "keyboard": {
+    "source": "package/lib/server/usKeyboardLayout.js",
+    "source_sha256": "d0c424c2856f64c1abfafb1b01985e32c027c364d41af29519a891a1b5ec4ed0",
+    "export": "USKeyboardLayout",
+    "output": "keyboard.json",
+    "method": "Parse the restricted string-keyed object literal as data, excluding package execution; preserve all published key fields."
   }
 }

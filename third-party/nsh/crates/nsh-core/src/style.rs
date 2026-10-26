@@ -11,13 +11,13 @@ use crate::{
         BackdropMaterial, BlendMode, BoxShadow, Cursor, Effects, Filter, GlassEffect, Gradient,
         KeyframeAnimation, Keyframes, Outline, Transition, TransitionProps,
     },
+    element::PropEnum,
     geometry::{
         AbsoluteLength, Corners, DefiniteLength, Edges, Percentage, Point, Points, REM_SIZE, Size,
         percentage, point, px,
     },
     grid,
     transform::{Transform, TransformKind},
-    ui::PropEnum,
 };
 
 /// An sRGB color packed as `0xRRGGBBAA`.
@@ -1053,6 +1053,9 @@ pub(crate) struct Pending {
     animation_easing: Option<[f32; 4]>,
     /// `animationIterationCount` (`None` inside: forever).
     animation_iterations: Option<Option<u32>>,
+    /// The `env()` terms of the padding and margin, added by the core to
+    /// the lengths their declarations set.
+    pub(crate) env: EnvEdges,
 }
 
 /// Bookkeeping, not what the style shows: styles that look the same print
@@ -1080,6 +1083,146 @@ impl Pending {
         }
         animation
     }
+}
+
+/// A CSS environment variable (`env()`) a padding or margin may use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EnvVar {
+    /// `safe-area-inset-top`: the top inset of the root view the node
+    /// renders in.
+    SafeAreaInsetTop,
+    /// `safe-area-inset-right`.
+    SafeAreaInsetRight,
+    /// `safe-area-inset-bottom`.
+    SafeAreaInsetBottom,
+    /// `safe-area-inset-left`.
+    SafeAreaInsetLeft,
+    /// `keyboard-inset-height` (the VirtualKeyboard API's): the software
+    /// keyboard's height over the surface, 0 while it is hidden.
+    KeyboardInsetHeight,
+}
+
+impl EnvVar {
+    /// The variable named `name`, if NSH has it.
+    pub(crate) fn parse(name: &str) -> Option<Self> {
+        Some(match name {
+            "safe-area-inset-top" => Self::SafeAreaInsetTop,
+            "safe-area-inset-right" => Self::SafeAreaInsetRight,
+            "safe-area-inset-bottom" => Self::SafeAreaInsetBottom,
+            "safe-area-inset-left" => Self::SafeAreaInsetLeft,
+            "keyboard-inset-height" => Self::KeyboardInsetHeight,
+            _ => return None,
+        })
+    }
+}
+
+/// The `env()` terms of a node's padding and margin by physical edge (top,
+/// right, bottom, left).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct EnvEdges {
+    /// The padding's.
+    pub(crate) padding: [Option<EnvVar>; 4],
+    /// The margin's.
+    pub(crate) margin: [Option<EnvVar>; 4],
+}
+
+impl EnvEdges {
+    /// Whether no edge has a term.
+    pub(crate) fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// Left and right swapped, as their declarations are in right-to-left
+    /// layouts ([`swap_sides`]).
+    pub(crate) fn swapped(mut self) -> Self {
+        self.padding.swap(1, 3);
+        self.margin.swap(1, 3);
+        self
+    }
+}
+
+/// A padding or margin value using `env()`: `env(name)`, `env(name,
+/// <length>)`, `calc(env(name) + <length>)` or `calc(<length> +
+/// env(name))`. `None` when `s` uses no `env()`; else the length part (in
+/// points) and the variable (none when an unknown name's fallback stands
+/// in for it), or an error for anything else.
+pub(crate) fn env_length(s: &str) -> Option<Result<(f32, Option<EnvVar>), StyleError>> {
+    if !s.contains("env(") {
+        return None;
+    }
+    // One term: `env(...)` or a length.
+    fn term(s: &str) -> Option<(f32, Option<EnvVar>)> {
+        let Some(args) = s.strip_prefix("env(").and_then(|r| r.strip_suffix(')')) else {
+            return Some((css::length(s)?, None));
+        };
+        let (name, fallback) = match args.split_once(',') {
+            Some((name, fallback)) => (name.trim(), Some(fallback.trim())),
+            None => (args.trim(), None),
+        };
+        match EnvVar::parse(name) {
+            Some(var) => Some((0.0, Some(var))),
+            // CSS: an unknown variable is its fallback.
+            None => Some((css::length(fallback?)?, None)),
+        }
+    }
+    let parse = |s: &str| {
+        let s = s.trim();
+        let Some(inner) = s.strip_prefix("calc(").and_then(|r| r.strip_suffix(')')) else {
+            return term(s);
+        };
+        // `a + b`, the `+` outside parentheses and between white space, as
+        // CSS requires.
+        let mut depth = 0i32;
+        let mut plus = None;
+        for (i, c) in inner.char_indices() {
+            match c {
+                '(' => depth += 1,
+                ')' => depth -= 1,
+                '+' if depth == 0 => {
+                    let spaced = inner[..i].ends_with(char::is_whitespace)
+                        && inner[i + 1..].starts_with(char::is_whitespace);
+                    if !spaced || plus.is_some() {
+                        return None;
+                    }
+                    plus = Some(i);
+                }
+                _ => {}
+            }
+        }
+        let at = plus?;
+        let (a, b) = (term(inner[..at].trim())?, term(inner[at + 1..].trim())?);
+        if a.1.is_some() && b.1.is_some() {
+            return None;
+        }
+        Some((a.0 + b.0, a.1.or(b.1)))
+    };
+    Some(parse(s).ok_or(StyleError::InvalidValue))
+}
+
+/// A padding edge: its length and its `env()` term.
+fn padding_edge(v: StyleValue<'_>) -> Result<(LengthPercentage, Option<EnvVar>), StyleError> {
+    if let StyleValue::Str(s) = v
+        && let Some(env) = env_length(s)
+    {
+        let (length, var) = env?;
+        // Padding is never negative.
+        if length < 0.0 {
+            return Err(StyleError::InvalidValue);
+        }
+        return Ok((LengthPercentage::length(length), var));
+    }
+    Ok((lp_or_zero(v)?, None))
+}
+
+/// A margin edge: its length and its `env()` term.
+fn margin_edge(v: StyleValue<'_>) -> Result<(LengthPercentageAuto, Option<EnvVar>), StyleError> {
+    if let StyleValue::Str(s) = v
+        && let Some(env) = env_length(s)
+    {
+        let (length, var) = env?;
+        return Ok((LengthPercentageAuto::length(length), var));
+    }
+    Ok((lpa_or_zero(v)?, None))
 }
 
 /// Properties named by start and end (`marginStart`, `borderTopEndRadius`
@@ -1346,20 +1489,20 @@ style_keys! {
     Right = "right": Layout "DimensionValue",
     Bottom = "bottom": Layout "DimensionValue",
     Left = "left": Layout "DimensionValue | AnimatedNode" "An animated value only for a `position: \"sticky\"` view in a horizontal scroll view, as `top`.",
-    Margin = "margin": Layout "DimensionValue",
-    MarginHorizontal = "marginHorizontal": Layout "DimensionValue",
-    MarginVertical = "marginVertical": Layout "DimensionValue",
-    MarginTop = "marginTop": Layout "DimensionValue",
-    MarginRight = "marginRight": Layout "DimensionValue",
-    MarginBottom = "marginBottom": Layout "DimensionValue",
-    MarginLeft = "marginLeft": Layout "DimensionValue",
-    Padding = "padding": Layout "LengthValue",
-    PaddingHorizontal = "paddingHorizontal": Layout "LengthValue",
-    PaddingVertical = "paddingVertical": Layout "LengthValue",
-    PaddingTop = "paddingTop": Layout "LengthValue",
-    PaddingRight = "paddingRight": Layout "LengthValue",
-    PaddingBottom = "paddingBottom": Layout "LengthValue",
-    PaddingLeft = "paddingLeft": Layout "LengthValue",
+    Margin = "margin": Layout "DimensionValue | EnvValue",
+    MarginHorizontal = "marginHorizontal": Layout "DimensionValue | EnvValue",
+    MarginVertical = "marginVertical": Layout "DimensionValue | EnvValue",
+    MarginTop = "marginTop": Layout "DimensionValue | EnvValue",
+    MarginRight = "marginRight": Layout "DimensionValue | EnvValue",
+    MarginBottom = "marginBottom": Layout "DimensionValue | EnvValue",
+    MarginLeft = "marginLeft": Layout "DimensionValue | EnvValue",
+    Padding = "padding": Layout "LengthValue | EnvValue",
+    PaddingHorizontal = "paddingHorizontal": Layout "LengthValue | EnvValue",
+    PaddingVertical = "paddingVertical": Layout "LengthValue | EnvValue",
+    PaddingTop = "paddingTop": Layout "LengthValue | EnvValue",
+    PaddingRight = "paddingRight": Layout "LengthValue | EnvValue",
+    PaddingBottom = "paddingBottom": Layout "LengthValue | EnvValue",
+    PaddingLeft = "paddingLeft": Layout "LengthValue | EnvValue",
     Gap = "gap": Layout "LengthValue",
     RowGap = "rowGap": Layout "LengthValue",
     ColumnGap = "columnGap": Layout "LengthValue",
@@ -2314,47 +2457,67 @@ impl Style {
             StyleKey::Bottom => l.inset.bottom = Len::parse(value)?.lpa(),
             StyleKey::Left => l.inset.left = Len::parse(value)?.lpa(),
             StyleKey::Margin => {
-                let v = lpa_or_zero(value)?;
+                let (v, e) = margin_edge(value)?;
                 l.margin = taffy::Rect {
                     left: v,
                     right: v,
                     top: v,
                     bottom: v,
                 };
+                self.pending.env.margin = [e; 4];
             }
             StyleKey::MarginHorizontal => {
-                let v = lpa_or_zero(value)?;
+                let (v, e) = margin_edge(value)?;
                 (l.margin.left, l.margin.right) = (v, v);
+                (self.pending.env.margin[1], self.pending.env.margin[3]) = (e, e);
             }
             StyleKey::MarginVertical => {
-                let v = lpa_or_zero(value)?;
+                let (v, e) = margin_edge(value)?;
                 (l.margin.top, l.margin.bottom) = (v, v);
+                (self.pending.env.margin[0], self.pending.env.margin[2]) = (e, e);
             }
-            StyleKey::MarginTop => l.margin.top = lpa_or_zero(value)?,
-            StyleKey::MarginRight => l.margin.right = lpa_or_zero(value)?,
-            StyleKey::MarginBottom => l.margin.bottom = lpa_or_zero(value)?,
-            StyleKey::MarginLeft => l.margin.left = lpa_or_zero(value)?,
+            StyleKey::MarginTop => (l.margin.top, self.pending.env.margin[0]) = margin_edge(value)?,
+            StyleKey::MarginRight => {
+                (l.margin.right, self.pending.env.margin[1]) = margin_edge(value)?
+            }
+            StyleKey::MarginBottom => {
+                (l.margin.bottom, self.pending.env.margin[2]) = margin_edge(value)?
+            }
+            StyleKey::MarginLeft => {
+                (l.margin.left, self.pending.env.margin[3]) = margin_edge(value)?
+            }
             StyleKey::Padding => {
-                let v = lp_or_zero(value)?;
+                let (v, e) = padding_edge(value)?;
                 l.padding = taffy::Rect {
                     left: v,
                     right: v,
                     top: v,
                     bottom: v,
                 };
+                self.pending.env.padding = [e; 4];
             }
             StyleKey::PaddingHorizontal => {
-                let v = lp_or_zero(value)?;
+                let (v, e) = padding_edge(value)?;
                 (l.padding.left, l.padding.right) = (v, v);
+                (self.pending.env.padding[1], self.pending.env.padding[3]) = (e, e);
             }
             StyleKey::PaddingVertical => {
-                let v = lp_or_zero(value)?;
+                let (v, e) = padding_edge(value)?;
                 (l.padding.top, l.padding.bottom) = (v, v);
+                (self.pending.env.padding[0], self.pending.env.padding[2]) = (e, e);
             }
-            StyleKey::PaddingTop => l.padding.top = lp_or_zero(value)?,
-            StyleKey::PaddingRight => l.padding.right = lp_or_zero(value)?,
-            StyleKey::PaddingBottom => l.padding.bottom = lp_or_zero(value)?,
-            StyleKey::PaddingLeft => l.padding.left = lp_or_zero(value)?,
+            StyleKey::PaddingTop => {
+                (l.padding.top, self.pending.env.padding[0]) = padding_edge(value)?
+            }
+            StyleKey::PaddingRight => {
+                (l.padding.right, self.pending.env.padding[1]) = padding_edge(value)?
+            }
+            StyleKey::PaddingBottom => {
+                (l.padding.bottom, self.pending.env.padding[2]) = padding_edge(value)?
+            }
+            StyleKey::PaddingLeft => {
+                (l.padding.left, self.pending.env.padding[3]) = padding_edge(value)?
+            }
             StyleKey::Gap => {
                 let v = lp_or_zero(value)?;
                 l.gap = taffy::Size {
@@ -2915,6 +3078,83 @@ mod tests {
         assert_eq!(Color::parse("white"), Some(Color(0xffff_ffff)));
         assert_eq!(Color::parse("#12"), None);
         assert_eq!(Color::parse("nope"), None);
+    }
+
+    #[test]
+    fn env_on_padding_and_margin() {
+        use EnvVar::*;
+        let mut s = Style::default();
+        let k = StyleValue::Str;
+        s.set("paddingBottom", k("env(keyboard-inset-height)"))
+            .unwrap();
+        assert_eq!(
+            s.pending.env.padding,
+            [None, None, Some(KeyboardInsetHeight), None]
+        );
+        assert_eq!(s.layout.padding.bottom, LengthPercentage::length(0.0));
+        // `calc()` adds a length, on either side.
+        s.set("paddingTop", k("calc(env(safe-area-inset-top) + 8px)"))
+            .unwrap();
+        assert_eq!(s.pending.env.padding[0], Some(SafeAreaInsetTop));
+        assert_eq!(s.layout.padding.top, LengthPercentage::length(8.0));
+        s.set("marginLeft", k("calc(0.5rem + env(safe-area-inset-left))"))
+            .unwrap();
+        assert_eq!(s.pending.env.margin[3], Some(SafeAreaInsetLeft));
+        assert_eq!(s.layout.margin.left, LengthPercentageAuto::length(8.0));
+        // Margins may go below zero.
+        s.set("marginBottom", k("calc(env(keyboard-inset-height) + -4px)"))
+            .unwrap();
+        assert_eq!(s.layout.margin.bottom, LengthPercentageAuto::length(-4.0));
+        // Shorthands set every edge they cover.
+        s.set("paddingHorizontal", k("env(safe-area-inset-right)"))
+            .unwrap();
+        assert_eq!(s.pending.env.padding[1], Some(SafeAreaInsetRight));
+        assert_eq!(s.pending.env.padding[3], Some(SafeAreaInsetRight));
+        s.set("margin", k("env(safe-area-inset-top)")).unwrap();
+        assert_eq!(s.pending.env.margin, [Some(SafeAreaInsetTop); 4]);
+        // An unknown variable is its fallback.
+        s.set("paddingRight", k("env(titlebar-area-x, 12px)"))
+            .unwrap();
+        assert_eq!(s.pending.env.padding[1], None);
+        assert_eq!(s.layout.padding.right, LengthPercentage::length(12.0));
+        // A known one ignores its fallback.
+        s.set("paddingRight", k("env(safe-area-inset-right, 12px)"))
+            .unwrap();
+        assert_eq!(s.pending.env.padding[1], Some(SafeAreaInsetRight));
+        assert_eq!(s.layout.padding.right, LengthPercentage::length(0.0));
+        // A plain value or a reset drops the term.
+        s.set("paddingTop", StyleValue::Number(4.0)).unwrap();
+        s.set("paddingBottom", StyleValue::Null).unwrap();
+        s.set("margin", StyleValue::Null).unwrap();
+        assert_eq!(s.pending.env.padding[0], None);
+        assert_eq!(s.pending.env.padding[2], None);
+        assert_eq!(s.pending.env.margin, [None; 4]);
+        // Anything else is rejected.
+        for v in [
+            "env(titlebar-area-x)",
+            "env(safe-area-inset-top) + 8px",
+            "calc(env(safe-area-inset-top)+8px)",
+            "calc(env(safe-area-inset-top) - 8px)",
+            "calc(env(safe-area-inset-top) + env(keyboard-inset-height))",
+            "calc(env(safe-area-inset-top) + 10%)",
+            "calc(env(safe-area-inset-top) + 1px + 2px)",
+            "max(env(safe-area-inset-top), 8px)",
+        ] {
+            assert_eq!(
+                s.set("paddingTop", k(v)),
+                Err(StyleError::InvalidValue),
+                "{v}"
+            );
+        }
+        // Padding is never negative.
+        assert_eq!(
+            s.set("paddingTop", k("calc(env(safe-area-inset-top) + -8px)")),
+            Err(StyleError::InvalidValue)
+        );
+        // Only padding and margin's physical edges take `env()`.
+        for key in ["paddingStart", "marginEnd", "top", "width", "gap"] {
+            assert!(s.set(key, k("env(safe-area-inset-top)")).is_err(), "{key}");
+        }
     }
 
     #[test]

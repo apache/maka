@@ -20,15 +20,18 @@
 
 use std::{cell::Cell, rc::Rc};
 
-use nsh_core::ui::{EventKind, EventPayload, Style, prelude::*};
+use nsh_core::{
+    element::{EventKind, EventPayload, Style},
+    prelude::*,
+};
 
 use super::{
     DataTableAlign, DataTableCell, DataTableHeaderCell, DataTablePart, DataTableProps,
     DataTableSortDirection,
-    controller::{CELL_PAD, Dt, MOVE_SLOP, PressRegion, SORT_WIDTH},
+    controller::{Dt, MOVE_SLOP, PressRegion, SORT_WIDTH},
     selection::Selection,
 };
-use crate::{HandleEdge, theme};
+use crate::HandleEdge;
 
 /// The thickness of the desktops' horizontal scroll bar's band.
 const STRIP: f32 = 12.0;
@@ -169,23 +172,13 @@ pub(crate) fn render(dt: Dt) -> impl IntoElement {
     let (body_dt, header_dt, hit_dt, strip_dt, over_dt) =
         (dt.clone(), dt.clone(), dt.clone(), dt.clone(), dt.clone());
     let (body_dt2, header_dt2) = (dt.clone(), dt.clone());
-    let family = move || {
-        props
-            .font_family
-            .get()
-            .or_else(|| theme().font_sans.clone())
-    };
+    let family = move || props.font_family.get();
     part(
         view()
             .role(AccessibilityRole::Grid)
             .optional_label(props.accessibility_label)
             .relative()
             .overflow_hidden()
-            .rounded(move || theme().radius)
-            .border_1()
-            .border_color(move || theme().border)
-            .bg(move || theme().background)
-            .text_color(move || theme().foreground)
             .text_size(move || Length::from(props.font_size.get()))
             .map(move |v| match family() {
                 Some(f) => v.font_family(f),
@@ -504,13 +497,13 @@ fn body(dt: Dt, custom: bool) -> impl IntoElement {
         .overflow_hidden()
         .pointer_events(PointerEvents::None)
         .child(region(scroll_dt, Region::Scroll, w, custom))
+        .child(edge(dt.clone(), props, false))
         .child(region(fixed_dt, Region::Fixed, w, custom))
         .child(region(lead_dt, Region::Lead, w, custom))
-        .child(edge(dt.clone(), props))
 }
 
 /// The line at the fixed columns' trailing edge.
-fn edge(dt: Dt, props: DataTableProps) -> impl IntoElement {
+fn edge(dt: Dt, props: DataTableProps, in_row: bool) -> impl IntoElement {
     let left_dt = dt.clone();
     let shown = {
         let dt = dt.clone();
@@ -526,9 +519,12 @@ fn edge(dt: Dt, props: DataTableProps) -> impl IntoElement {
                 .w(px(1.0))
                 .left(move || {
                     let g = dt.geo();
-                    Length::from(px(g.lead + g.fixed - 1.0))
-                })
-                .bg(move || theme().border),
+                    Length::from(px(if in_row {
+                        g.fixed - 1.0
+                    } else {
+                        g.lead + g.fixed - 1.0
+                    }))
+                }),
             props,
             DataTablePart::FixedEdge,
         )
@@ -697,32 +693,6 @@ fn row_active(dt: &Dt, row: Memo<Option<usize>>) -> Memo<bool> {
     })
 }
 
-/// The default look of a row's background, by what it is.
-fn row_background(
-    dt: &Dt,
-    row: Memo<Option<usize>>,
-) -> impl Fn() -> AdaptiveColor + Clone + 'static {
-    let props = dt.props;
-    let hover = dt.hover;
-    let active = row_active(dt, row);
-    let dt = dt.clone();
-    move || {
-        let Some(row) = row.get() else {
-            return AdaptiveColor::TRANSPARENT;
-        };
-        let selected = matches!(dt.selection(), Selection::Row(r) if r == row);
-        if selected {
-            theme().primary.opacity(0.12)
-        } else if hover.get() == Some(row) || active.get() {
-            theme().muted.opacity(0.6)
-        } else if props.stripe.get() && row % 2 == 1 {
-            theme().muted.opacity(0.35)
-        } else {
-            AdaptiveColor::TRANSPARENT
-        }
-    }
-}
-
 /// How a press in a row of `which` region finds its column.
 fn region_of(which: Region, w: Windows) -> PressRegion {
     match which {
@@ -744,7 +714,6 @@ fn body_row(
     let props = dt.props;
     let (top_dt, height_dt, width_dt) = (dt.clone(), dt.clone(), dt.clone());
     let list = row_parts(&dt, row);
-    let background = row_background(&dt, row);
     let row_selected = {
         let dt = dt.clone();
         computed(move || matches!(dt.selection(), Selection::Row(r) if Some(r) == row.get()))
@@ -784,9 +753,6 @@ fn body_row(
                 Length::from(px((row - origin) as f32 * top_dt.row_height()))
             })
             .h(move || Length::from(px(height_dt.row_height())))
-            .border_b_1()
-            .border_color(move || theme().border.opacity(0.6))
-            .bg(background)
             .accessibility_state(move || AccessibilityState {
                 selected: row_selected.get(),
                 ..AccessibilityState::default()
@@ -801,6 +767,9 @@ fn body_row(
             .child(row_number(dt, row)),
         Region::Fixed => el
             .w(move || Length::from(px(width_dt.geo().fixed)))
+            // Above the row background, below the cells: a selected cell's
+            // trailing border must cover the fixed-column separator.
+            .child(edge(dt.clone(), props, true))
             .child(each(
                 w.fixed_cols,
                 |def: &usize| *def,
@@ -845,8 +814,7 @@ fn row_number(dt: Dt, row: Memo<Option<usize>>) -> impl IntoElement {
             .inset_0()
             .flex_row()
             .items_center()
-            .justify_center()
-            .text_color(move || theme().muted_foreground),
+            .justify_center(),
         props,
         DataTablePart::RowHeader,
     )
@@ -947,7 +915,6 @@ fn cell(
             })
             .flex_row()
             .items_center()
-            .px(px(CELL_PAD))
             .overflow_hidden()
             .style_when(
                 move || align.get() == DataTableAlign::Center,
@@ -956,21 +923,6 @@ fn cell(
             .style_when(
                 move || align.get() == DataTableAlign::End,
                 |s| s.justify_end(),
-            )
-            .style_when(
-                move || flags.get().selected,
-                |s| s.border_1().border_color(move || theme().primary),
-            )
-            .style_when(
-                move || flags.get().column_selected,
-                |s| s.bg(move || theme().primary.opacity(0.08)),
-            )
-            .style_when(
-                move || flags.get().active,
-                |s| {
-                    s.border_1()
-                        .border_color(move || theme().primary.opacity(0.5))
-                },
             ),
         &col_dt,
         def,
@@ -1088,11 +1040,7 @@ fn header(dt: Dt, custom: bool) -> impl IntoElement {
             .left_0()
             .right_0()
             .h(move || Length::from(px(height_dt.geo().header)))
-            .overflow_hidden()
-            .border_b_1()
-            .border_color(move || theme().border)
-            .bg(move || theme().muted.opacity(0.5))
-            .text_color(move || theme().muted_foreground),
+            .overflow_hidden(),
         props,
         DataTablePart::Header,
     )
@@ -1116,8 +1064,7 @@ fn corner(dt: Dt) -> impl IntoElement {
                     .top_0()
                     .bottom_0()
                     .left_0()
-                    .w(move || Length::from(px(width_dt.geo().lead)))
-                    .bg(move || theme().muted.opacity(0.5)),
+                    .w(move || Length::from(px(width_dt.geo().lead))),
                 props,
                 DataTablePart::RowHeaderCorner,
             )
@@ -1237,10 +1184,6 @@ fn group_cell(dt: Dt, group: GroupCell, which: Region, w: Windows) -> impl IntoE
             .flex_row()
             .items_center()
             .justify_center()
-            .px(px(CELL_PAD))
-            .border_r_1()
-            .border_b_1()
-            .border_color(move || theme().border)
             .overflow_hidden(),
         props,
         DataTablePart::GroupCell,
@@ -1291,6 +1234,9 @@ fn title(dt: Dt, def: usize, which: Region, w: Windows, custom: bool) -> impl In
         if selected.get() {
             list.push(DataTablePart::HeaderCellSelected);
         }
+        if dragging.get() {
+            list.push(DataTablePart::HeaderCellDragging);
+        }
         list
     };
     let (left_dt, width_dt, top_dt, hgt_dt) = (dt.clone(), dt.clone(), dt.clone(), dt.clone());
@@ -1338,21 +1284,12 @@ fn title(dt: Dt, def: usize, which: Region, w: Windows, custom: bool) -> impl In
             })
             .flex_row()
             .items_center()
-            .px(px(CELL_PAD))
-            .gap(px(4.0))
-            .border_r_1()
-            .border_color(move || theme().border)
             .overflow_hidden()
             .map(move |v| match align {
                 DataTableAlign::Start => v.justify_start(),
                 DataTableAlign::Center => v.justify_center(),
                 DataTableAlign::End => v.justify_end(),
             })
-            .style_when(
-                move || selected.get(),
-                |s| s.bg(move || theme().primary.opacity(0.12)),
-            )
-            .style_when(move || dragging.get(), |s| s.opacity(0.5))
             .focusable(false)
             .on(EventKind::Press, move |p: &EventPayload| {
                 // A drag that moved the column is not a press.
@@ -1464,21 +1401,19 @@ fn title_content(
             .into_element()
     };
     let indicator_dt = dt;
-    view()
-        .flex_1()
-        .flex_row()
-        .items_center()
-        .min_w(px(0.0))
-        .gap(px(4.0))
-        .child(label)
-        .when(sortable, move |v| {
-            v.child(sort_button(indicator_dt.clone(), def, sorted))
-        })
+    part(
+        view().flex_1().flex_row().items_center().min_w(px(0.0)),
+        props,
+        DataTablePart::HeaderContent,
+    )
+    .child(label)
+    .when(sortable, move |v| {
+        v.child(sort_button(indicator_dt.clone(), def, sorted))
+    })
 }
 
-/// The sort button at the end of a sortable title, as gpui-component's: a
-/// small ghost button, dimmed while its column is unsorted, pressing which
-/// asks for the next sort.
+/// The sort button at the end of a sortable title: its hit area and
+/// direction, pressing which asks for the next sort. The app styles it.
 fn sort_button(
     dt: Dt,
     def: usize,
@@ -1486,8 +1421,6 @@ fn sort_button(
 ) -> impl IntoElement {
     let props = dt.props;
     let id = format!("sort:{}", dt.st.borrow().defs[def].key);
-    let hovered = theme().foreground.opacity(0.08);
-    let pressed = theme().foreground.opacity(0.14);
     part(
         view()
             .flex_none()
@@ -1495,51 +1428,64 @@ fn sort_button(
             .h(px(SORT_WIDTH))
             .items_center()
             .justify_center()
-            .rounded(move || theme().radius / 2.0)
             .cursor_pointer()
-            .hover(|s| s.bg(hovered))
-            .active(|s| s.bg(pressed))
             .role(AccessibilityRole::Button)
             .test_id(&id)
             .focusable(false)
             .on_press(move || dt.sort_next(def))
-            .child(sort_icon(sorted)),
+            .child(sort_icon(props, sorted)),
         props,
         DataTablePart::SortIndicator,
     )
 }
 
-/// The sort button's icon, gpui-component's: two chevrons, up over down
-/// (Lucide's `chevrons-up-down`), both faint while unsorted and the one of
-/// the direction in the text color once sorted.
-fn sort_icon(sorted: Memo<Option<DataTableSortDirection>>) -> impl IntoElement {
-    // Lucide's 24 unit grid, drawn at 12 pt.
+/// The original pair of Lucide chevrons. Paint follows the app's inherited
+/// stroke/text color; each direction exposes its selected state for styling.
+fn sort_icon(
+    props: DataTableProps,
+    sorted: Memo<Option<DataTableSortDirection>>,
+) -> impl IntoElement {
     const K: f32 = 12.0 / 24.0;
-    canvas(move || {
-        let theme = theme();
-        let (on, off) = (theme.foreground, theme.muted_foreground.opacity(0.6));
-        let (up, down) = match sorted.get() {
-            None => (off, off),
-            Some(DataTableSortDirection::Ascending) => (on, off),
-            Some(DataTableSortDirection::Descending) => (off, on),
-        };
-        let chevron = |painter: Painter, points: [f32; 6], paint: AdaptiveColor| {
-            painter
-                .stroke_style(color(paint))
-                .line_width(2.0 * K)
-                .line_cap(nsh_core::canvas::LineCap::Round)
-                .line_join(nsh_core::canvas::LineJoin::Round)
-                .begin_path()
-                .move_to(points[0] * K, points[1] * K)
-                .line_to(points[2] * K, points[3] * K)
-                .line_to(points[4] * K, points[5] * K)
-                .stroke()
-        };
-        let painter = chevron(Painter::new(), [7.0, 9.0, 12.0, 4.0, 17.0, 9.0], up);
-        chevron(painter, [7.0, 15.0, 12.0, 20.0, 17.0, 15.0], down)
-    })
-    .w(px(12.0))
-    .h(px(12.0))
+    let chevron = move |points: [f32; 6], direction, which| {
+        part(
+            canvas(move || {
+                Painter::new()
+                    .stroke_style_from_view(nsh_core::SvgPaint::CurrentColor)
+                    .line_width(2.0 * K)
+                    .line_cap(nsh_core::canvas::LineCap::Round)
+                    .line_join(nsh_core::canvas::LineJoin::Round)
+                    .begin_path()
+                    .move_to(points[0] * K, points[1] * K)
+                    .line_to(points[2] * K, points[3] * K)
+                    .line_to(points[4] * K, points[5] * K)
+                    .stroke()
+            })
+            .absolute()
+            .inset_0()
+            .accessible(false)
+            .pointer_events(PointerEvents::None)
+            .accessibility_state(move || AccessibilityState {
+                selected: sorted.get() == Some(direction),
+                ..AccessibilityState::default()
+            }),
+            props,
+            which,
+        )
+    };
+    view()
+        .relative()
+        .w(px(12.0))
+        .h(px(12.0))
+        .child(chevron(
+            [7.0, 9.0, 12.0, 4.0, 17.0, 9.0],
+            DataTableSortDirection::Ascending,
+            DataTablePart::SortAscending,
+        ))
+        .child(chevron(
+            [7.0, 15.0, 12.0, 20.0, 17.0, 15.0],
+            DataTableSortDirection::Descending,
+            DataTablePart::SortDescending,
+        ))
 }
 
 /// The band at a title's trailing edge that a drag resizes the column
@@ -1565,7 +1511,7 @@ fn handle(props: DataTableProps, start: Dt, drag: Dt, end: Dt, def: usize) -> im
         .on_drag_move(move |offset: &Points| drag.resize_move(*offset))
         .on_drag_end(move |offset: &Points| end.resize_end(*offset))
         .child(part(
-            view().test_id(&id).w(px(1.0)).bg(move || theme().border),
+            view().test_id(&id).w(px(1.0)),
             props,
             DataTablePart::ResizeHandle,
         ))
@@ -1590,7 +1536,6 @@ fn move_line(dt: Dt) -> impl IntoElement {
                 .top_0()
                 .bottom_0()
                 .w(px(DROP_LINE))
-                .bg(move || theme().primary)
                 .left(move || {
                     let Some(drag) = dt.column_drag.get() else {
                         return Length::from(px(0.0));

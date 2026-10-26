@@ -19,8 +19,8 @@
 use std::collections::{HashMap, HashSet};
 
 use nsh_core::{
+    element::Placement,
     geometry::{Axis, Points},
-    ui::Placement,
 };
 
 use super::{

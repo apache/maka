@@ -5,7 +5,7 @@
 // the value it starts at. Its script
 // checks each.
 import { Text, View } from "nsh";
-import { createAnimatedValue } from "nsh/animated";
+import { createAnimatedValue } from "nsh";
 
 function App() {
   const x = createAnimatedValue(11);

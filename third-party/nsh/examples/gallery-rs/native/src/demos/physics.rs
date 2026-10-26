@@ -5,7 +5,7 @@
 
 use std::f32::consts::TAU;
 
-use nsh_core::{Bounds, Points, ui::prelude::*};
+use nsh_core::{Bounds, Points, prelude::*};
 
 use crate::ui::{
     Badge, Finish, Finished, IconName, IconTile, MONO, Segment, SegmentedSize, Stat, Tone, appear,

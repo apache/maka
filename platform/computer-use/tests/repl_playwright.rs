@@ -19,6 +19,11 @@
 
 #![cfg(feature = "native-desktop")]
 
+#[path = "repl_playwright/mutations.rs"]
+mod mutations;
+#[path = "repl_playwright/text_events.rs"]
+mod text_events;
+
 use cua_driver_core::browser::cdp_ws::CdpConnection;
 use maka_agent_facts::{
     language::Language,
@@ -116,6 +121,9 @@ struct Browser {
 }
 impl Browser {
     async fn open() -> Self {
+        Self::open_with_headless(true).await
+    }
+    async fn open_with_headless(headless: bool) -> Self {
         let executable = std::env::var("MAKA_CUA_TEST_CHROME")
             .expect("MAKA_CUA_TEST_CHROME must name a task-owned test browser");
         let profile = tempfile::tempdir().unwrap();
@@ -144,7 +152,10 @@ impl Browser {
                             break;
                         }
                     }
-                    let body=match path.as_str() {
+                    let body = if let Some(case) = path.strip_prefix("/case?case=") {
+                        text_events::fixture_html(case)
+                    } else {
+                        match path.as_str() {
                         "/frame/local"=>r#"<!doctype html><title>Local child</title><button>Local action</button><p>Local child content</p>"#,
                         "/frame/remote"=>r#"<!doctype html><title>Remote child</title><button>Remote action</button><p>Remote child content</p><iframe id="nested" src="http://127.0.0.1:FIXTURE_PORT/frame/nested"></iframe>"#,
                         "/frame/nested"=>r#"<!doctype html><title>Nested child</title><button>Nested action</button>"#,
@@ -162,7 +173,8 @@ impl Browser {
 <div id="shadow-host"></div><script>document.getElementById('shadow-host').attachShadow({mode:'open'}).innerHTML='<button data-testid="shadow">Shadow action</button>';</script>
 <iframe id="local" src="/frame/local"></iframe><iframe id="remote" src="http://localhost:FIXTURE_PORT/frame/remote"></iframe>
 <script>globalThis.mutations=0;new MutationObserver(records=>globalThis.mutations+=records.length).observe(document.body,{subtree:true,attributes:true,childList:true,characterData:true});</script>"#,
-                    }.replace("FIXTURE_PORT",&port.to_string());
+                    }.replace("FIXTURE_PORT",&port.to_string())
+                    };
                     let response = format!(
                         "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                         body.len()
@@ -172,8 +184,8 @@ impl Browser {
             }
         });
         let mut chrome = tokio::process::Command::new(executable)
+            .args(headless.then_some("--headless=new"))
             .args([
-                "--headless=new",
                 "--site-per-process",
                 "--no-first-run",
                 "--no-default-browser-check",
@@ -294,14 +306,34 @@ impl Browser {
         reply["result"]["value"].clone()
     }
     async fn close(mut self) {
-        self.chrome.kill().await.unwrap();
-        let _ = self.chrome.wait().await;
-        self.logging.abort();
+        // Let Chrome stop its renderer processes and profile writers before
+        // removing the owned profile. A CDP socket can close before its reply.
+        let requested = self.observer.call(None, "Browser.close", json!({})).await;
+        let status = tokio::time::timeout(Duration::from_secs(20), self.chrome.wait()).await;
+        let exited = matches!(&status, Ok(Ok(status)) if status.success());
+        let fallback = if !exited {
+            Some(self.chrome.kill().await)
+        } else {
+            None
+        };
+        let logging = tokio::time::timeout(Duration::from_secs(10), &mut self.logging).await;
+        let log_closed = matches!(&logging, Ok(Ok(())));
+        if logging.is_err() {
+            self.logging.abort();
+            let _ = (&mut self.logging).await;
+        }
         self.server.abort();
-        self.profile.close().unwrap();
+        let server = self.server.await;
+        let server_closed =
+            server.is_ok() || server.as_ref().is_err_and(|error| error.is_cancelled());
+        let profile = self.profile.close();
+        assert!(
+            exited && log_closed && server_closed && profile.is_ok(),
+            "owned browser cleanup failed: request={requested:?}, exit={status:?}, fallback={fallback:?}, stderr={logging:?}, server={server:?}, profile={profile:?}"
+        );
     }
 }
-async fn evaluate(repl: &Repl, bridge: Arc<Bridge>, source: &str) -> Value {
+async fn evaluate(repl: &Repl, bridge: Arc<dyn ToolExecutor>, source: &str) -> Value {
     let context = CellContext::new(CellStore::temporary().unwrap(), vec![]).unwrap();
     let result = repl
         .evaluate(

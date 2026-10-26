@@ -3,7 +3,7 @@
 
 use std::sync::OnceLock;
 
-use nsh_core::ui::Registry;
+use nsh_core::element::Registry;
 use nsh_engine::{Bundle, EngineConfig};
 use nsh_testing::Headless;
 

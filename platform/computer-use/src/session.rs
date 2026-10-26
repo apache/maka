@@ -606,8 +606,24 @@ impl Session {
         if !matches!(self.state, EpochState::Open) || self.id.is_none() {
             return Ok(());
         }
+        #[cfg(target_os = "windows")]
+        let audio = self.discard_audio().await;
         let cursor = self.owner.cursor();
-        self.browsers.finish_turn(turn, &cursor, language).await
+        let browsers = self.browsers.finish_turn(turn, &cursor, language).await;
+        #[cfg(target_os = "windows")]
+        {
+            match (audio, browsers) {
+                (Ok(()), Ok(())) => Ok(()),
+                (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+                (Err(audio), Err(browsers)) => Err(ToolError::CleanupUnconfirmed(format!(
+                    "{audio}; browser turn cleanup: {browsers}"
+                ))),
+            }
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            browsers
+        }
     }
     async fn windows(
         &mut self,
@@ -832,11 +848,44 @@ impl Session {
         };
         #[cfg(not(target_os = "macos"))]
         let frozen_result: Option<CallResult> = None;
+        #[cfg(all(target_os = "linux", not(target_env = "musl")))]
+        let linux_observation = if ax && !own_ax && Driver::linux_x11_selected() {
+            Some(
+                Driver::observe_native_window(
+                    &self.native,
+                    platform_linux::atspi::native_observation::NativeObservationRequest {
+                        pid: window.pid.ok_or_else(|| failed("window has no process"))?,
+                        window_id: window.window_id,
+                        deadline: None,
+                    },
+                    cua_driver_sdk::NativeObservationOptions {
+                        include_screenshot: capture_image,
+                        max_image_dimension: Some(0),
+                    },
+                    self.epoch,
+                    cancellation,
+                    language,
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
+        #[cfg(not(all(target_os = "linux", not(target_env = "musl"))))]
+        let linux_observation: Option<CallResult> = None;
         let result = if let Some(result) = frozen_result {
+            result
+        } else if let Some(result) = linux_observation {
             result
         } else if !own_ax || capture_image {
             let max_image_dimension = if cfg!(target_os = "linux") { 0 } else { 1600 };
-            self.invoke_native("get_window_state", json!({"pid":window.pid,"window_id":window.window_id,"include_accessibility_tree":ax && !own_ax,"include_screenshot":capture_image,"tree_format":"both","max_elements":1000,"max_image_dimension":max_image_dimension}), cancellation, language).await?
+            let mut arguments = json!({"pid":window.pid,"window_id":window.window_id,"include_accessibility_tree":ax && !own_ax,"include_screenshot":capture_image,"tree_format":"both","max_elements":1000,"max_image_dimension":max_image_dimension});
+            if cfg!(target_os = "linux") {
+                arguments.as_object_mut().unwrap().remove("max_elements");
+                arguments["full_output"] = json!(true);
+            }
+            self.invoke_native("get_window_state", arguments, cancellation, language)
+                .await?
         } else {
             CallResult {
                 content: vec![],
@@ -964,6 +1013,234 @@ impl Session {
         target.capture = capture;
         Ok(Value::Object(output))
     }
+    #[cfg(all(target_os = "linux", not(target_env = "musl")))]
+    async fn linux_click(
+        &mut self,
+        handle: &str,
+        input: Value,
+        session: &str,
+        cancellation: &CancellationToken,
+        language: Language,
+    ) -> Result<Value, ToolError> {
+        use crate::linux_input::ClickTarget;
+        use platform_linux::input::native_window::{
+            NativeClickButton, NativeWindowInput, NativeWindowInputRequest,
+        };
+
+        let alias = self
+            .linux_alias_window(handle, &input, session, cancellation, language)
+            .await?;
+        let click = crate::linux_input::Click::parse(input).map_err(failed)?;
+        let (window, index) = match alias {
+            Some((window, index)) => (window, Some(index)),
+            None => (
+                self.verify(handle, session, cancellation, language).await?,
+                None,
+            ),
+        };
+        let point = match click.target {
+            ClickTarget::Coordinates(point) => point,
+            ClickTarget::Element(id) => {
+                if !id
+                    .as_deref()
+                    .is_some_and(crate::linux_input::public_element_id)
+                {
+                    return Err(failed(crate::linux_input::Error::ElementNotInWindow));
+                }
+                let index =
+                    index.ok_or_else(|| failed(crate::linux_input::Error::ElementNotInWindow))?;
+                let target = self.targets.get(handle).unwrap();
+                let args = json!({
+                    "target":{"kind":"window","pid":window.pid,"window_id":window.window_id},
+                    "element_token":target.element(index, language)?.element_token,
+                    "button":click.button.name(),"count":click.count,"delivery_mode":"background",
+                });
+                return self
+                    .invoke_native("click", args, cancellation, language)
+                    .await
+                    .map(|result| result.structured_content.unwrap_or(Value::Null));
+            }
+        };
+        let cue = if click.count == 0 {
+            cursor_overlay::CursorAction::Idle
+        } else {
+            cursor_overlay::CursorAction::Click
+        };
+        self.linux_cue(&window, point, cue, cancellation).await?;
+        let request = NativeWindowInputRequest {
+            pid: window.pid.ok_or_else(|| failed("window has no process"))?,
+            window_id: u32::try_from(window.window_id).map_err(failed)?,
+            input: NativeWindowInput::Click {
+                point: point.coordinates(),
+                button: match click.button {
+                    MouseButton::Left => NativeClickButton::Left,
+                    MouseButton::Right => NativeClickButton::Right,
+                    MouseButton::Middle => NativeClickButton::Middle,
+                },
+                count: click.count,
+            },
+        };
+        // The SDK checks live bounds after native target setup, even for zero clicks.
+        Driver::input_native_window(&self.native, request, self.epoch, cancellation, language)
+            .await?;
+        Ok(Value::Null)
+    }
+
+    #[cfg(all(target_os = "linux", not(target_env = "musl")))]
+    async fn linux_alias_window(
+        &mut self,
+        handle: &str,
+        input: &Value,
+        session: &str,
+        cancellation: &CancellationToken,
+        language: Language,
+    ) -> Result<Option<(WindowInfo, u64)>, ToolError> {
+        let Some(id) = input
+            .get("element_id")
+            .and_then(Value::as_str)
+            .filter(|id| crate::linux_input::public_element_id(id))
+        else {
+            return Ok(None);
+        };
+        let window = self.verify(handle, session, cancellation, language).await?;
+        let index = self.targets.get(handle).unwrap().linux_element_index(id)?;
+        Ok(Some((window, index)))
+    }
+
+    #[cfg(all(target_os = "linux", not(target_env = "musl")))]
+    async fn linux_cue(
+        &self,
+        window: &WindowInfo,
+        point: crate::linux_input::Point,
+        cue: cursor_overlay::CursorAction,
+        cancellation: &CancellationToken,
+    ) -> Result<(), ToolError> {
+        if point.check_window(&window.bounds).is_err() {
+            return Ok(());
+        }
+        let point = point.coordinates();
+        let cursor = self.owner.cursor();
+        if cursor.enabled && self.native.lock().await.cursors.registered() {
+            tokio::select! {
+                biased;
+                _ = cancellation.cancelled() => return Err(failed("Computer Use cancelled before input dispatch")),
+                _ = async {
+                    let mut native = self.native.lock().await;
+                    let _ = native.cursors.update(
+                        &cursor,
+                        Some([
+                            window.bounds.x + f64::from(point[0]),
+                            window.bounds.y + f64::from(point[1]),
+                        ]),
+                        cue,
+                        Some(window.window_id),
+                    ).await;
+                } => {}
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(all(target_os = "linux", not(target_env = "musl")))]
+    async fn linux_scroll(
+        &mut self,
+        handle: &str,
+        input: Value,
+        session: &str,
+        cancellation: &CancellationToken,
+        language: Language,
+    ) -> Result<Value, ToolError> {
+        use platform_linux::input::native_window::{
+            NativeScrollDirection, NativeWindowInput, NativeWindowInputRequest,
+        };
+        let alias = self
+            .linux_alias_window(handle, &input, session, cancellation, language)
+            .await?;
+        let scroll = crate::linux_input::Scroll::parse(input).map_err(failed)?;
+        let (window, index) = match alias {
+            Some((window, index)) => (window, Some(index)),
+            None => (
+                self.verify(handle, session, cancellation, language).await?,
+                None,
+            ),
+        };
+        if scroll.element_id.is_some() {
+            let index =
+                index.ok_or_else(|| failed(crate::linux_input::Error::ElementNotInWindow))?;
+            let target = self.targets.get(handle).unwrap();
+            let args = json!({
+                "pid":window.pid,"window_id":window.window_id,
+                "element_token":target.element(index, language)?.element_token,
+                "direction":scroll.direction.name(),"pixels":scroll.pixels,"delivery_mode":"background",
+            });
+            return self
+                .invoke_native("scroll", args, cancellation, language)
+                .await
+                .map(|result| result.structured_content.unwrap_or(Value::Null));
+        }
+        if let (Some(x), Some(y)) = (scroll.x, scroll.y) {
+            self.linux_cue(
+                &window,
+                crate::linux_input::Point::from_coordinates([x, y]),
+                cursor_overlay::CursorAction::Scroll,
+                cancellation,
+            )
+            .await?;
+        }
+        let request = NativeWindowInputRequest {
+            pid: window.pid.ok_or_else(|| failed("window has no process"))?,
+            window_id: u32::try_from(window.window_id).map_err(failed)?,
+            input: NativeWindowInput::Scroll {
+                x: scroll.x,
+                y: scroll.y,
+                pixels: scroll.pixels,
+                direction: match scroll.direction {
+                    Direction::Up => NativeScrollDirection::Up,
+                    Direction::Down => NativeScrollDirection::Down,
+                    Direction::Left => NativeScrollDirection::Left,
+                    Direction::Right => NativeScrollDirection::Right,
+                },
+            },
+        };
+        Driver::input_native_window(&self.native, request, self.epoch, cancellation, language)
+            .await?;
+        Ok(Value::Null)
+    }
+
+    #[cfg(all(target_os = "linux", not(target_env = "musl")))]
+    async fn linux_drag(
+        &mut self,
+        handle: &str,
+        input: Value,
+        session: &str,
+        cancellation: &CancellationToken,
+        language: Language,
+    ) -> Result<Value, ToolError> {
+        let drag = crate::linux_input::Drag::parse(input).map_err(failed)?;
+        let [from, to] = drag.path.as_slice() else {
+            return Err(failed("Linux app drag requires two projected points"));
+        };
+        let window = self.verify(handle, session, cancellation, language).await?;
+        from.check_window(&window.bounds).map_err(failed)?;
+        to.check_window(&window.bounds).map_err(failed)?;
+        self.linux_cue(
+            &window,
+            *from,
+            cursor_overlay::CursorAction::Drag,
+            cancellation,
+        )
+        .await?;
+        let [from_x, from_y] = from.coordinates();
+        let [to_x, to_y] = to.coordinates();
+        let args = json!({
+            "target":{"kind":"window","pid":window.pid,"window_id":window.window_id},
+            "from_x":from_x,"from_y":from_y,"to_x":to_x,"to_y":to_y,"delivery_mode":"background",
+        });
+        self.invoke_native_window_pixels("drag", args, cancellation, language)
+            .await
+            .map(|result| result.structured_content.unwrap_or(Value::Null))
+    }
+
     async fn action(
         &mut self,
         handle: &str,
@@ -972,6 +1249,58 @@ impl Session {
         cancellation: &CancellationToken,
         language: Language,
     ) -> Result<Value, ToolError> {
+        let action = match action {
+            Action::LinuxClick { input } => {
+                #[cfg(all(target_os = "linux", not(target_env = "musl")))]
+                {
+                    if Driver::linux_x11_selected() {
+                        return self
+                            .linux_click(handle, input, session, cancellation, language)
+                            .await;
+                    }
+                    linux_generic_pointer_action(LinuxPointerTool::Click, input)?
+                }
+                #[cfg(not(all(target_os = "linux", not(target_env = "musl"))))]
+                {
+                    let _ = input;
+                    return Err(failed(
+                        "Linux native coordinate clicks require a GNU/Linux runtime",
+                    ));
+                }
+            }
+            Action::LinuxScroll { input } => {
+                #[cfg(all(target_os = "linux", not(target_env = "musl")))]
+                {
+                    if Driver::linux_x11_selected() {
+                        return self
+                            .linux_scroll(handle, input, session, cancellation, language)
+                            .await;
+                    }
+                    linux_generic_pointer_action(LinuxPointerTool::Scroll, input)?
+                }
+                #[cfg(not(all(target_os = "linux", not(target_env = "musl"))))]
+                {
+                    let _ = input;
+                    return Err(failed(
+                        "Linux native scrolling requires a GNU/Linux runtime",
+                    ));
+                }
+            }
+            Action::LinuxDrag { input } => {
+                #[cfg(all(target_os = "linux", not(target_env = "musl")))]
+                {
+                    return self
+                        .linux_drag(handle, input, session, cancellation, language)
+                        .await;
+                }
+                #[cfg(not(all(target_os = "linux", not(target_env = "musl"))))]
+                {
+                    let _ = input;
+                    return Err(failed("Linux native dragging requires a GNU/Linux runtime"));
+                }
+            }
+            action => action,
+        };
         let cursor = self.owner.cursor();
         validate_native_action(crate::desktop::local_platform(), &action)?;
         let window = self.verify(handle, session, cancellation, language).await?;
@@ -1417,7 +1746,67 @@ impl Session {
         }
     }
 }
+#[cfg(all(target_os = "linux", not(target_env = "musl")))]
+#[derive(Clone, Copy)]
+enum LinuxPointerTool {
+    Click,
+    Scroll,
+}
+
+#[cfg(all(target_os = "linux", not(target_env = "musl")))]
+fn linux_generic_pointer_action(tool: LinuxPointerTool, input: Value) -> Result<Action, ToolError> {
+    let target = if input.get("x").is_some() || input.get("y").is_some() {
+        json!([input.get("x"), input.get("y")])
+    } else {
+        let id = input
+            .get("element_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| failed(crate::linux_input::Error::ElementNotInWindow))?;
+        let index = id
+            .parse::<u64>()
+            .ok()
+            .filter(|index| index.to_string() == id)
+            .ok_or_else(|| failed(crate::linux_input::Error::UnknownElementId(id.into())))?;
+        json!(index)
+    };
+    let mut action = match tool {
+        LinuxPointerTool::Click => json!({
+            "kind":"click", "target":target,
+            "options":{"mouseButton":input.get("mouse_button"),"clickCount":input.get("click_count")},
+        }),
+        LinuxPointerTool::Scroll => json!({
+            "kind":"scroll", "target":target,"direction":input.get("direction"),
+        }),
+    };
+    if matches!(tool, LinuxPointerTool::Scroll)
+        && let Some(pixels) = input.get("pixels")
+    {
+        action["distance"] = json!({"pixels":pixels});
+    }
+    serde_json::from_value(action).map_err(failed)
+}
+
 impl Target {
+    #[cfg(all(target_os = "linux", not(target_env = "musl")))]
+    fn linux_element_index(&self, id: &str) -> Result<u64, ToolError> {
+        let index = id
+            .parse::<u64>()
+            .ok()
+            .filter(|index| index.to_string() == id);
+        index
+            .filter(|index| {
+                self.snapshot
+                    .as_ref()
+                    .and_then(|snapshot| snapshot.elements.as_ref())
+                    .is_some_and(|elements| {
+                        elements.iter().any(|element| {
+                            element.element_index == *index && element.element_token.is_some()
+                        })
+                    })
+            })
+            .ok_or_else(|| failed(crate::linux_input::Error::UnknownElementId(id.into())))
+    }
+
     fn invalidate_observation(&mut self) {
         self.snapshot = None;
         self.capture = None;
@@ -1721,6 +2110,39 @@ fn launch_args(app: &str, inventory: &[AppInfo], language: Language) -> Result<V
 mod tests {
     use super::*;
 
+    #[cfg(all(target_os = "linux", not(target_env = "musl")))]
+    #[test]
+    fn linux_public_ids_match_current_window_rows_without_normalizing_or_reviving_them() {
+        let mut target = Target {
+            window: serde_json::from_value(json!({
+                "window_id":1,"pid":1,"app_name":"fixture","title":"fixture",
+                "bounds":{"x":0.0,"y":0.0,"width":100.0,"height":80.0},
+                "is_on_screen":true,"z_index":null
+            }))
+            .unwrap(),
+            process: "fixture".into(),
+            snapshot: Some(
+                serde_json::from_value(json!({
+                    "pid":1,"window_id":1,"elements":[
+                        {"element_index":1,"role":"button","depth":1,"element_token":"s00000001:1"},
+                        {"element_index":2,"role":"button","depth":1}
+                    ]
+                }))
+                .unwrap(),
+            ),
+            capture: None,
+            previous: None,
+        };
+        assert_eq!(target.linux_element_index("1").unwrap(), 1);
+        for id in ["01", "2", "8", "18446744073709551616"] {
+            assert!(
+                matches!(target.linux_element_index(id), Err(ToolError::Failed(message)) if message == format!("Unknown element ID {id} for this window; refresh get_window_state()"))
+            );
+        }
+        target.invalidate_observation();
+        assert!(target.linux_element_index("1").is_err());
+    }
+
     #[cfg(target_os = "macos")]
     #[test]
     fn native_geometry_survives_observation_invalidation() {
@@ -1975,5 +2397,64 @@ mod tests {
             launch_args("Maka_fixture!App", &[packaged], Language::En).unwrap(),
             json!({"aumid":"Maka_fixture!App"})
         );
+    }
+}
+
+#[cfg(all(test, target_os = "linux", not(target_env = "musl")))]
+mod generic_linux_pointer_tests {
+    use super::{Action, Distance, LinuxPointerTool, Position, json, linux_generic_pointer_action};
+
+    #[test]
+    fn generic_click_keeps_fractional_points_for_existing_dispatch() {
+        let action = linux_generic_pointer_action(
+            LinuxPointerTool::Click,
+            json!({"x":37.9,"y":41.25,"mouse_button":"right","click_count":2}),
+        )
+        .unwrap();
+        let Action::Click {
+            target: Position::Point(point),
+            options,
+        } = action
+        else {
+            panic!("generic click must retain the shared point action");
+        };
+        assert_eq!(point, [37.9, 41.25]);
+        assert_eq!(options.mouse_button.unwrap().name(), "right");
+        assert_eq!(options.click_count, Some(2));
+    }
+
+    #[test]
+    fn generic_scroll_without_pixels_keeps_the_existing_default_distance() {
+        let action = linux_generic_pointer_action(
+            LinuxPointerTool::Scroll,
+            json!({"x":37.9,"y":41.25,"direction":"down"}),
+        )
+        .unwrap();
+        let Action::Scroll { distance, .. } = action else {
+            panic!("missing pixels must retain the generic scroll action");
+        };
+        assert!(
+            distance.is_none(),
+            "the generic dispatcher owns its default distance"
+        );
+    }
+
+    #[test]
+    fn generic_scroll_keeps_fractional_points_and_pixel_distance() {
+        let action = linux_generic_pointer_action(
+            LinuxPointerTool::Scroll,
+            json!({"x":37.9,"y":41.25,"direction":"down","pixels":37.5}),
+        )
+        .unwrap();
+        let Action::Scroll {
+            target: Position::Point(point),
+            distance: Some(Distance::Pixels { pixels }),
+            ..
+        } = action
+        else {
+            panic!("generic scroll must retain the shared point/pixel action");
+        };
+        assert_eq!(point, [37.9, 41.25]);
+        assert_eq!(pixels, 37.5);
     }
 }

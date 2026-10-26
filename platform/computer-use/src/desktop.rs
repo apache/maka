@@ -408,6 +408,7 @@ impl Session {
                 Command::Observe { handle, .. }
                 | Command::Action { handle, .. }
                 | Command::BrowserRead { handle, .. }
+                | Command::BrowserMutation { handle, .. }
                 | Command::ClipboardRead { handle }
                 | Command::ClipboardReadText { handle }
                 | Command::ClipboardWrite { handle, .. }

@@ -211,7 +211,7 @@ const DRAW: &str = r##"(cx, size) => {
 }"##;
 
 const DRAW_IMPORTS: &str = r##"import { Canvas, CanvasGradient, CanvasRenderingContext2D, Path2D } from "nsh";
-import { createAnimatedValue } from "nsh/animated";
+import { createAnimatedValue } from "nsh";
 
 const v = createAnimatedValue(3);
 const color = v.interpolate({ inputRange: [0, 1], outputRange: ["#000000", "#ffffff"] });
@@ -288,7 +288,7 @@ fn canvases_redraw_when_what_they_read_changes() {
 /// A `draw` that derives a node from an animated value, run again: the same
 /// node (no new one in the graph each time), the same slot.
 const DERIVED: &str = r#"import { signal, mount } from "nsh";
-import { createAnimatedValue } from "nsh/animated";
+import { createAnimatedValue } from "nsh";
 import { Canvas } from "nsh";
 
 const n = signal(1);
@@ -345,7 +345,7 @@ fn redrawing_derives_the_same_nodes() {
 /// afterwards; `fontVariantNumeric` records with the font kept apart.
 /// (Imported from `nsh/canvas`, where they were first: they still are.)
 const HIT: &str = r#"import { signal, mount } from "nsh";
-import { Canvas, Path2D, CanvasRenderingContext2D } from "nsh/canvas";
+import { Canvas, Path2D, CanvasRenderingContext2D } from "nsh";
 
 const later = signal("");
 const p = new Path2D();

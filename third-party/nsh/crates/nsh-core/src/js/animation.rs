@@ -16,7 +16,7 @@ use crate::{
         MotionSpec, NodeId, PRESETS as MOTIONS, PlaybackDirection, StaggerFrom, StepPosition,
         keyframes,
     },
-    ui::TsTypes,
+    element::TsTypes,
 };
 
 /// A curve of `Easing`: its name, its parameter (name and default) and

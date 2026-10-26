@@ -2649,7 +2649,7 @@ dependencies = [
 [[package]]
 name = "cua-cursor-motion"
 version = "0.38.0"
-source = "git+https://github.com/maka-agent/cua?rev=85456f431b72b6b252093fa49bfa64f703918854#85456f431b72b6b252093fa49bfa64f703918854"
+source = "git+https://github.com/maka-agent/cua?rev=a27e9367343cd08667a4ea8fa98534a9d6050d3b#a27e9367343cd08667a4ea8fa98534a9d6050d3b"
 dependencies = [
  "serde",
 ]
@@ -2657,7 +2657,7 @@ dependencies = [
 [[package]]
 name = "cua-driver-contract"
 version = "0.38.0"
-source = "git+https://github.com/maka-agent/cua?rev=85456f431b72b6b252093fa49bfa64f703918854#85456f431b72b6b252093fa49bfa64f703918854"
+source = "git+https://github.com/maka-agent/cua?rev=a27e9367343cd08667a4ea8fa98534a9d6050d3b#a27e9367343cd08667a4ea8fa98534a9d6050d3b"
 dependencies = [
  "schemars 1.2.3",
  "serde",
@@ -2668,7 +2668,7 @@ dependencies = [
 [[package]]
 name = "cua-driver-core"
 version = "0.38.0"
-source = "git+https://github.com/maka-agent/cua?rev=85456f431b72b6b252093fa49bfa64f703918854#85456f431b72b6b252093fa49bfa64f703918854"
+source = "git+https://github.com/maka-agent/cua?rev=a27e9367343cd08667a4ea8fa98534a9d6050d3b#a27e9367343cd08667a4ea8fa98534a9d6050d3b"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2708,7 +2708,7 @@ dependencies = [
 [[package]]
 name = "cua-driver-sdk"
 version = "0.38.0"
-source = "git+https://github.com/maka-agent/cua?rev=85456f431b72b6b252093fa49bfa64f703918854#85456f431b72b6b252093fa49bfa64f703918854"
+source = "git+https://github.com/maka-agent/cua?rev=a27e9367343cd08667a4ea8fa98534a9d6050d3b#a27e9367343cd08667a4ea8fa98534a9d6050d3b"
 dependencies = [
  "async-trait",
  "core-foundation 0.10.1",
@@ -2737,7 +2737,7 @@ checksum = "f27ae1dd37df86211c42e150270f82743308803d90a6f6e6651cd730d5e1732f"
 [[package]]
 name = "cursor-overlay"
 version = "0.38.0"
-source = "git+https://github.com/maka-agent/cua?rev=85456f431b72b6b252093fa49bfa64f703918854#85456f431b72b6b252093fa49bfa64f703918854"
+source = "git+https://github.com/maka-agent/cua?rev=a27e9367343cd08667a4ea8fa98534a9d6050d3b#a27e9367343cd08667a4ea8fa98534a9d6050d3b"
 dependencies = [
  "anyhow",
  "cua-cursor-motion",
@@ -3217,7 +3217,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users 0.5.3",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3629,7 +3629,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4128,7 +4128,7 @@ checksum = "94e7099f6313ecacbe1256e8ff9d617b75d1bcb16a6fddef94866d225a01a14a"
 dependencies = [
  "io-lifetimes 2.0.4",
  "rustix 1.1.5",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -6915,7 +6915,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.61.2",
+ "windows-core 0.57.0",
 ]
 
 [[package]]
@@ -7346,7 +7346,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "20fd6de4ccfcc187e38bc21cfa543cb5a302cb86a8b114eb7f0bf0dc9f8ac00f"
 dependencies = [
  "io-lifetimes 3.0.1",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -10263,7 +10263,7 @@ checksum = "2bf50223579dc7cdcfb3bfcacf7069ff68243f8c363f62ffa99cf000a6b9c451"
 [[package]]
 name = "nom"
 version = "1.2.4"
-source = "git+https://github.com/maka-agent/cua?rev=85456f431b72b6b252093fa49bfa64f703918854#85456f431b72b6b252093fa49bfa64f703918854"
+source = "git+https://github.com/maka-agent/cua?rev=a27e9367343cd08667a4ea8fa98534a9d6050d3b#a27e9367343cd08667a4ea8fa98534a9d6050d3b"
 
 [[package]]
 name = "nom"
@@ -10355,7 +10355,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-base"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "html5ever 0.27.0",
  "imara-diff",
@@ -10375,7 +10375,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-bundler"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "dunce",
@@ -10399,7 +10399,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "cap-std",
  "crc32fast",
@@ -10428,7 +10428,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-engine"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "crossbeam-channel",
  "libc",
@@ -10446,7 +10446,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-gpui-terminal"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -10463,7 +10463,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-js"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "futures-util",
  "getrandom 0.4.3",
@@ -10483,7 +10483,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-macros"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "imagesize 0.15.0",
  "proc-macro2",
@@ -10494,7 +10494,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-package"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "base64 0.22.1",
  "ed25519-dalek 2.2.0",
@@ -10508,7 +10508,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-platform-gpui"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "crossbeam-channel",
@@ -10538,7 +10538,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-platform-tui"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "base64 0.22.1",
  "crossbeam-channel",
@@ -10582,7 +10582,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -11274,7 +11274,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d8fae84b431384b68627d0f9b3b1245fcf9f46f6c0e3dc902e9dce64edd1967"
 dependencies = [
  "libc",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -12145,7 +12145,7 @@ checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 [[package]]
 name = "pip-preview"
 version = "0.38.0"
-source = "git+https://github.com/maka-agent/cua?rev=85456f431b72b6b252093fa49bfa64f703918854#85456f431b72b6b252093fa49bfa64f703918854"
+source = "git+https://github.com/maka-agent/cua?rev=a27e9367343cd08667a4ea8fa98534a9d6050d3b#a27e9367343cd08667a4ea8fa98534a9d6050d3b"
 dependencies = [
  "serde_json",
 ]
@@ -12206,7 +12206,7 @@ checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 [[package]]
 name = "platform-linux"
 version = "0.38.0"
-source = "git+https://github.com/maka-agent/cua?rev=85456f431b72b6b252093fa49bfa64f703918854#85456f431b72b6b252093fa49bfa64f703918854"
+source = "git+https://github.com/maka-agent/cua?rev=a27e9367343cd08667a4ea8fa98534a9d6050d3b#a27e9367343cd08667a4ea8fa98534a9d6050d3b"
 dependencies = [
  "anyhow",
  "ashpd",
@@ -12253,7 +12253,7 @@ dependencies = [
 [[package]]
 name = "platform-macos"
 version = "0.38.0"
-source = "git+https://github.com/maka-agent/cua?rev=85456f431b72b6b252093fa49bfa64f703918854#85456f431b72b6b252093fa49bfa64f703918854"
+source = "git+https://github.com/maka-agent/cua?rev=a27e9367343cd08667a4ea8fa98534a9d6050d3b#a27e9367343cd08667a4ea8fa98534a9d6050d3b"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -12293,7 +12293,7 @@ dependencies = [
 [[package]]
 name = "platform-windows"
 version = "0.38.0"
-source = "git+https://github.com/maka-agent/cua?rev=85456f431b72b6b252093fa49bfa64f703918854#85456f431b72b6b252093fa49bfa64f703918854"
+source = "git+https://github.com/maka-agent/cua?rev=a27e9367343cd08667a4ea8fa98534a9d6050d3b#a27e9367343cd08667a4ea8fa98534a9d6050d3b"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -12956,7 +12956,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -14480,7 +14480,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.4.15",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -14493,7 +14493,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -14582,7 +14582,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -16210,7 +16210,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix 1.1.5",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -18352,7 +18352,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -19043,7 +19043,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d6f32a0ff4a9f6f01231eb2059cc85479330739333e0e58cadf03b6af2cca10"
 dependencies = [
  "cfg-if",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -19068,7 +19068,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3f3fd376f71958b862e7afb20cfe5a22830e1963462f3a17f49d82a6c1d1f42d"
 dependencies = [
  "bitflags 2.13.2",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

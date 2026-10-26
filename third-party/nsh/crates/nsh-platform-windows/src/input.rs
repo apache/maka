@@ -323,7 +323,7 @@ enum Item {
     Input(NshView),
     /// Selectable text (mouse selection).
     Text(NshView),
-    /// A selection area (mouse selection across its texts), with the view
+    /// A selectable view (mouse selection across its texts), with the view
     /// pressed in it.
     Area(NshView, NshView),
 }
@@ -378,7 +378,7 @@ impl Item {
             Item::Input(view) => crate::text_input::pointer(surface, view, &event),
             Item::Text(view) => crate::text::pointer(surface, view, &event),
             Item::Area(area, target) => {
-                crate::selection_area::pointer(surface, area, target, &event)
+                crate::selectable_view::pointer(surface, area, target, &event)
             }
         }
     }
@@ -826,7 +826,7 @@ pub(crate) fn cursor(surface: &Rc<Surface>, x: f32, y: f32) -> Cursor {
         if let Some(c) = view_cursor(&v.state()) {
             return c;
         }
-        if crate::selection_area::is_area_text(&v) {
+        if crate::selectable_view::is_area_text(&v) {
             return Cursor::Text;
         }
         view = v.parent_view();
@@ -881,7 +881,7 @@ fn context_menu(surface: &Rc<Surface>, x: f32, y: f32, modifiers: Modifiers) {
                 s.events.contains(EventKind::ContextMenu),
                 s.kind == ViewKind::Input,
                 crate::text::selectable(&s),
-                s.props.selection_area,
+                s.props.selectable_view,
             )
         };
         if listens {
@@ -899,9 +899,9 @@ fn context_menu(surface: &Rc<Surface>, x: f32, y: f32, modifiers: Modifiers) {
             return;
         }
         if selectable || area {
-            // Text in a selection area has the area's menu.
-            match crate::selection_area::area_of(&v) {
-                Some(area) => crate::selection_area::context_menu(surface, &area),
+            // Text in a selectable view has the area's menu.
+            match crate::selectable_view::area_of(&v) {
+                Some(area) => crate::selectable_view::context_menu(surface, &area),
                 None => crate::text::context_menu(surface, &v),
             }
             return;
@@ -936,7 +936,7 @@ pub(crate) fn pointer(surface: &Rc<Surface>, event: PointerEvent) {
             }
             // Any press elsewhere clears a text selection.
             crate::text::window_pressed(surface, x, y);
-            crate::selection_area::window_pressed(surface, x, y);
+            crate::selectable_view::window_pressed(surface, x, y);
             if mouse {
                 surface.input.last.set(Some((x, y)));
                 match event.button {
@@ -1009,7 +1009,7 @@ fn raw_pointer(surface: &Rc<Surface>, key: Key, event: &PointerEvent) -> bool {
     if event.kind == PointerKind::Down {
         // A press anywhere clears a text selection.
         crate::text::window_pressed(surface, x, y);
-        crate::selection_area::window_pressed(surface, x, y);
+        crate::selectable_view::window_pressed(surface, x, y);
     }
     let (lx, ly) = local(view, x, y);
     native.item.pointer(&ItemPointer {
@@ -1121,7 +1121,7 @@ pub(crate) fn key(surface: &Rc<Surface>, event: KeyEvent) -> bool {
         || crate::chrome::shortcut(surface, &event)
         || crate::text_input::key(surface, &event)
         || crate::text::key(surface, &event)
-        || crate::selection_area::key(surface, &event)
+        || crate::selectable_view::key(surface, &event)
         || crate::navigation::key_pressed(surface, &event)
         || {
             let (x, y) = input.last.get().unwrap_or((-1.0, -1.0));
@@ -1394,8 +1394,8 @@ fn down(
     if item.is_none() {
         let candidate = if hit.view.kind() == ViewKind::Input {
             Some(Item::Input(hit.view.clone()))
-        } else if !touch && let Some(area) = crate::selection_area::target(&hit.view) {
-            // Mouse drags in a selection area select across its texts.
+        } else if !touch && let Some(area) = crate::selectable_view::target(&hit.view) {
+            // Mouse drags in a selectable view select across its texts.
             Some(Item::Area(area, hit.view.clone()))
         } else if !touch && crate::text::selectable(&hit.view.state()) {
             // Mouse drags over selectable text select it rather than

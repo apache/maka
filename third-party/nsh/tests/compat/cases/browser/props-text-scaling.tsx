@@ -3,7 +3,8 @@
 // texts and inputs, unless `allowFontScaling` is false, up to
 // `maxFontSizeMultiplier`. Its script
 // checks each.
-import { Input, Text, View } from "nsh";
+import { Text, View } from "nsh";
+import { Input } from "nsh/base";
 
 function App() {
   return (

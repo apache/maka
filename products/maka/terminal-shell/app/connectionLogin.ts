@@ -18,7 +18,7 @@
  */
 
 import { cleanup, signal } from 'nsh';
-import { Clipboard } from 'nsh/clipboard';
+import { Clipboard } from 'nsh';
 import type {
   SettingsCredentialLogin,
   SettingsCredentialLoginResult,

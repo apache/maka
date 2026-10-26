@@ -1,9 +1,8 @@
 # Elements and interaction
 
-Every tag is a component in scope (`native-pipeline.md`): the primitives `View`, `Text`, `Scroll`, `Input`, `Overlay`, `Image`,
-`List`, `Canvas`, `WebView` and `Video` from `nsh`, `Dialog` (and `NavStack` / `NavPage`) from `nsh/base`,
-`InputAccessoryView` from `nsh/ios`; only `If` and `Each` are globals. (`nsh/image`, `nsh/list`, `nsh/canvas`,
-`nsh/webview` and `nsh/video`, where some primitives were first, still export them, deprecated.)
+Every tag is a component in scope (`native-pipeline.md`): the primitives `View`, `Text`, `Scroll`, `Overlay`, `Image`,
+`List`, `Canvas`, `WebView` and `Video` from `nsh`, `Input`, `Dialog` (and `NavStack` / `NavPage`) from `nsh/base`,
+`InputAccessoryView` from `nsh/mobile`; only `If` and `Each` are globals.
 
 | JSX | Native (Apple) | Notes |
 |---|---|---|
@@ -19,7 +18,7 @@ Every tag is a component in scope (`native-pipeline.md`): the primitives `View`,
 | `<Overlay>` | a `NshView` in the root view (the surface's, or the dialog's around it) | its children on top of that root view, outside the parent's layout and clipping; `anchor` (a ref, `{ x, y }` or `{ origin, size }`), `placement`, `align`, `offset`, `margin`, `onPosition`, `onPressOutside`, `onCancel` ("Overlays" below) |
 | `<InputAccessoryView>` | a NshView set as `inputAccessoryView` | `nativeID`; inputs name it with `ios={{ inputAccessoryViewID }}`. A layout root as wide as the window and as tall as its content; the core resolves the id (`InputConfig::accessory`). Renders nothing on Android |
 | `<WebView>` | WKWebView (WebKit loaded on first use) | `src` (a URL) or `html` (inline HTML, shown instead of `src`) + `baseUrl`, `injectedJavaScript(BeforeContentLoaded)`, `onMessage` (pages call `window.nsh.postMessage`), `onLoad*`, `onNavigationStateChange`; ref: `reload()`, `goBack()`, `goForward()`, `postMessage(data)`, `injectJavaScript(js)` |
-| `nativeComponent` (`nsh/native`) | a `NshView` box filled by the registered component's view | see [embedding.md](embedding.md) |
+| `nativeComponent` (`nsh`'s `nativeComponent`) | a `NshView` box filled by the registered component's view; own props may be bound to animated values | see [embedding.md](embedding.md) |
 | `<Video>` | AVPlayerLayer / AVPlayerViewController (AVFoundation loaded on first use) | `src` (a URL), `paused`, `muted`, `volume`, `rate`, `repeat`, `resizeMode`, `controls`, `onLoad` / `onProgress` / `onEnd` / `onBuffer` / `onError`; ref: `seek(seconds)` |
 
 On Android the same elements map to `Box` (ViewGroup), `TextBox`, `ImageBox`, `ScrollBox` (ScrollView), `InputBox` (EditText),
@@ -54,8 +53,8 @@ the app's own: drawn in TSX with views, classes, canvases and native animations,
 (UISwitch / SeekBar wrappers and the like), and do not add styled widgets or compositions of existing primitives to
 the runtime (buttons, section lists, touchables, drawers, ...). React Native is a reference for which capabilities
 exist, not an API to be compatible with. Components that need core or native support are primitives of their own
-(`List`, `Canvas`, `WebView`, `Video`, `Overlay`; in `nsh/base` `NavStack`, `Dialog`, `SafeAreaView`,
-`KeyboardAvoidingView`; `InputAccessoryView` in `nsh/ios`). Tags are PascalCase names
+(`List`, `Canvas`, `WebView`, `Video`, `Overlay`; in
+`nsh/base` `Input`, `NavStack`, `Dialog`; `InputAccessoryView` in `nsh/mobile`). Tags are PascalCase names
 of what is in scope: a host element's primitive is imported from its home (`import { View } from "nsh"`) and compiled
 in place, a component is imported (`import { Chart } from "app/native"`) or local; lowercase tags are errors
 (`native-pipeline.md`).
@@ -89,10 +88,12 @@ misses the deadline is not waited for again until it catches up (`docs/dev/macos
   keeps its `group-active:` look; `Core::hold_pressed`); later
   states win, `disabled` over all (`docs/dev/styles.md`). Press feedback is the app's: the platforms add no fade or
   underlay of their own. Background colors that would be hidden by a gradient replace it (`docs/dev/styles.md`,
-  Effects). `KeyboardAvoidingView` (Rust; `behavior`: `padding` → inset padding, `height` → inset margin; `offset`).
-- **Platform modules**: `platform` (`nsh/device`, a constant: `os`: `ios` / `android` / `macos` / `windows` / `linux` / `web`, from the platform's
+  Effects). Safe areas and the keyboard are CSS environment variables in padding and margin
+  (`env(safe-area-inset-top)`, `env(keyboard-inset-height)`, `docs/dev/styles.md` "Environment variables"); a view
+  with `selectable` makes its texts select together (`text.md` "Selectable views").
+- **Platform modules**: `platform` (`nsh`'s environment, a constant: `os`: `ios` / `android` / `macos` / `windows` / `linux` / `web`, from the platform's
   `Environment::os` (`nsh_engine::Os`; the default is the build's mobile OS, so `nsh test` is iOS); `version` (a string,
-  Android's API level), `idiom` (`phone` / `pad` / `mac` / `tv` / `desktop`), `catalyst`, `renderer` (`native` / `web` / `terminal`, from `Environment::renderer`), `isTerminal`, `select` (terminals: `terminal`, OS, `native`, `default`; graphical surfaces: the OS, then `mobile` / `desktop`, `native` (not on the web), `default`); `desktop` and `desktop={{…}}` follow `Environment::desktop()`: a graphical desktop OS, or the web in the desktop idiom), `pixelRatio()` (an accessor: the window moving to another screen writes it), `nsh/accessibility`'s
+  Android's API level), `idiom` (`phone` / `pad` / `mac` / `tv` / `desktop`), `catalyst`, `renderer` (`native` / `web` / `terminal`, from `Environment::renderer`), `isTerminal`, `select` (terminals: `terminal`, OS, `native`, `default`; graphical surfaces: the OS, then `mobile` / `desktop`, `native` (not on the web), `default`); `desktop` and `desktop={{…}}` follow `Environment::desktop()`: a graphical desktop OS, or the web in the desktop idiom), `pixelRatio()` (an accessor: the window moving to another screen writes it), `nsh`'s
   `announce(message)` and `setAccessibilityFocus(ref)` (Rust, the node passed as `{ $node: id }`), reactive `screenReaderEnabled()` / `reduceMotion()`. The environment carries `pixelRatio`,
   `screenReader`, `osVersion` and `idiom` (VoiceOver / TalkBack changes are observed natively).
 - **`disabled`** on any element applies `disabled:` classes and removes its press and `onContextMenu` listeners from what
@@ -147,7 +148,7 @@ misses the deadline is not waited for again until it catches up (`docs/dev/macos
 - **`onPanEnd` / `onPanStart`** carry `valueX` / `valueY`: the bound pan values at that moment (a drag may grab a value mid
   animation), for snapping.
 - **Imperative calls**: nodes have `focus()`, `blur()` and `scrollTo({ x, y, animated })` (use `ref`); lists also
-  `scrollToIndex({ index, viewPosition, viewOffset, animated })`, `scrollToEnd()`, `scrollToOffset()`; `Keyboard.dismiss()`.
+  `scrollToIndex({ index, viewPosition, viewOffset, animated })`, `scrollToEnd()`, `scrollToOffset()`; `Keyboard.dismiss()` (`nsh`).
   Commands run after the commit's other mount items; list scrolls are resolved by the core with the current item sizes.
 - **`measure()`** (on any node's ref) resolves, once the turn's changes are laid out, to `{ bounds, pagePosition }`
   or `null` (not in the tree, never shown). `bounds` is the frame in the parent, as
@@ -185,7 +186,7 @@ misses the deadline is not waited for again until it catches up (`docs/dev/macos
   views around stop taking the touches (UIKit: their pan recognizer is disabled; Android: `ScrollBox.jsBlocked`); a native
   scroll view that starts dragging first cancels the JS touches. The `…ShouldSetResponder` handlers also get a
   `gestureState` (`ResponderGestureState`: `dx`, `dy`, `vx`, `vy`, `moveX`, `moveY`, `x0`, `y0`, `numberActiveTouches`,
-  since the first finger went down; `nsh_core::ui::PanGesture`, the same the core gives Rust claims). Rust components'
+  since the first finger went down; `nsh_core::element::PanGesture`, the same the core gives Rust claims). Rust components'
   nodes on the path hear the same event first and negotiate their own responder in the core (`claim_touches`,
   `docs/dev/components.md`); the core sends both sides' blocks.
 - **Pans that coexist with scroll views** (`panActivation={{ activeOffsetX, activeOffsetY, failOffsetX, failOffsetY }}`,
@@ -209,11 +210,11 @@ misses the deadline is not waited for again until it catches up (`docs/dev/macos
   a label changing alone on mounted props (one that follows app state: a count, a price), which goes as
   `MountItem::AccessibilityLabel`.
 - **Frames**: `requestAnimationFrame` / `cancelAnimationFrame` follow the display (CADisplayLink / Choreographer).
-- **Back button** (`nsh/android`): `BackHandler.onBackPress(listener)` (returns the function that removes it; a
+- **Back button** (`nsh/mobile`): `BackHandler.onBackPress(listener)` (returns the function that removes it; a
   listener added while a component renders goes with it, as `keymap.bind`'s bindings do), after modals, the top
   overlay listening to `onCancel` and stacks; the app exits when nothing handles it. Rust components listen with `cx.on_back_press(..)`, before JS's listeners; the root wants
   the button while either side listens (`docs/dev/components.md`).
-- **Keyboard shortcuts** (`nsh/keymap`): the root's `Prop::Keymap` mounts the surface's whole table
+- **Keyboard shortcuts** (`nsh`'s `keymap`): the root's `Prop::Keymap` mounts the surface's whole table
   (`MountItem::Keymap`); the platform matches a key against it on the spot, consumes it and reports the root's
   `KeyCommand` (the binding's id), so the main thread never waits for JS (`docs/dev/js-modules.md`, the macOS and
   Linux pages' "Keyboard"). iOS and Android match a hardware keyboard's keys: iOS in `pressesBegan:` of its text
@@ -234,7 +235,7 @@ misses the deadline is not waited for again until it catches up (`docs/dev/macos
   `Command::StatusBar`, the desktops and the web ignore it. `AlertDialog.show({ title, description, actions, presentation })`
   (`nsh/base`: a promise of the chosen action's `id`, its `label` without one, `null` when closed without an action;
   `presentation: "actionSheet"` is a list dialog on Android; every label is the app's: NSH adds no strings of its
-  own, and an iPad / Mac action sheet gets an untitled cancel action), `Toast` (`nsh/android`). Answers come back as the
+  own, and an iPad / Mac action sheet gets an untitled cancel action). Answers come back as the
   root's `Dialog` event, which the core resolves. Embedding apps forward their controller's status bar to `nsh_status_bar_style()` / `_hidden()` / `_animation()`.
 - **Right to left**: the user's language sets the root's direction (again at once when it changes);
   `direction` (`inherit` / `ltr` / `rtl`) overrides it per view. The core resolves each node's direction (inherited, also for
@@ -250,10 +251,10 @@ misses the deadline is not waited for again until it catches up (`docs/dev/macos
   negative offsets), starting at the right end and keeping their distance from it; horizontal lists are flipped natively
   (`ScrollConfig::mirrored`: the scroll view and each cell get scaleX −1, composed with their transforms), so the list's
   offset logic stays left to right.
-- **Environment** (reactive accessors; `nsh/device` and `nsh/base` (`safeArea()`, `keyboardFrame()`)): `windowSize()`, `safeArea()`, `keyboardFrame()` (`{ height, duration }`: how
+- **Environment** (reactive accessors; `nsh` (`safeArea()`, `safeAreaInsets()`, `keyboardFrame()`)): `windowSize()`, `safeArea()`, `keyboardFrame()` (`{ height, duration }`: how
   far the keyboard reaches into the surface, the bottom safe area under it included, on every platform),
-  `colorScheme()`, `fontScale()`. `KeyboardAvoidingView` pads its bottom by `keyboardFrame().height`, animated with the keyboard,
-  for content outside scroll views (message bars). Inputs inside a scroll view are kept clear of the keyboard natively (bottom inset + scroll to the
+  `colorScheme()`, `fontScale()`. `padding-bottom: env(keyboard-inset-height)` pads a view by the keyboard's height, animated with the keyboard
+  natively, for content outside scroll views (message bars). Inputs inside a scroll view are kept clear of the keyboard natively (bottom inset + scroll to the
   focused input), with no JS involved.
   Both move as one with the keyboard: `LayoutCurve::Keyboard` (`type: "keyboard"`) is the system keyboard's own curve,
   started when the keyboard started to move, however late the batch arrives. iOS takes the notification's curve (7, a
@@ -367,10 +368,9 @@ dialog around it (`Modal`). It is the one mechanism popups are built on (`nsh/ba
   not take the pointer (`pointerEvents: "none"`).
 - **`tooltip`** (every element; `Prop::Tooltip`, `TooltipContent`; Rust `Interactive::tooltip`): the core makes a hint
   overlay inside the element itself (`Core::set_tooltip`, odd ids, inserted directly so a component host's children
-  placement never moves it), placed on top with a 4 pt gap: a text in a bubble of the theme's tokens
-  (`bg-popover`, `text-popover-foreground`, `border-border`, `rounded-md`, `px-2 py-1`, `text-xs`; NSH's one default
-  look of this kind, all the theme's), or the element JS made (retained by the node, moved into the overlay, detached
-  again when the prop changes). An element that is a hint overlay itself (`nsh/base`'s `Tooltip`, once its view
+  placement never moves it), placed on top with a 4 pt gap, holding the element JS made (retained by the node, moved
+  into the overlay, detached again when the prop changes). The prop takes elements only: the core draws no bubble, the
+  look is the app's. An element that is a hint overlay itself (`nsh/base`'s `Tooltip`, once its view
   made its root one) replaces the core's overlay, with its own placement, delay, look and events
   (`adopt_hint_tooltips`, each commit before the overlays are shown). Released with the element. It counts for nothing else: text skips overlays, and
   positional classes (`first:`, `last:`) skip a tooltip's overlay. Rust's element tooltips are an overlay child of the

@@ -11,23 +11,11 @@ demo: el-tooltip
 工具提示是显示在所说明内容旁边的简短提示：图标按钮的作用、被截断的标签的完整文字。在桌面平台和桌面浏览器中，指针在触发元素上停留
 `delay`（500 毫秒）后显示，指针离开或按下触发元素时隐藏。手机和平板只在应用打开它（`open`）时显示。它从不接收指针或按压，所以触发元素的行为与没有它时完全一样。
 
-最简单的工具提示是每个元素都有的 `tooltip` 属性：文字显示在用主题 `popover` 令牌绘制的小气泡中，元素则按原样显示（见[通用属性](index.md#tooltips)）。
-
-```rust tabs
-view().on_press(save).tooltip("保存文档").child(text("💾"))
-```
-
-```tsx tabs
-<View onPress={save} tooltip="保存文档">
-  <Text>💾</Text>
-</View>
-```
-
-需要自定义样式、位置并跟踪状态时，把 [`nsh/base`](../modules/nsh-base.md) 的 `Tooltip` 作为元素的 `tooltip` 传入（与 GPUI 的 `.tooltip(..)` 相同）：该元素就是指针停留的对象，也是它定位的参照。工具提示本身就是气泡：用 `class` / `style` 设置样式，子元素是它的内容。
+把 [`nsh/base`](../modules/nsh-base.md) 的 `Tooltip` 作为每个元素都有的 `tooltip` 属性传入（见[通用属性](index.md#tooltips)），与 GPUI 的 `.tooltip(..)` 相同：该元素就是指针停留的对象，也是它定位的参照。工具提示本身就是气泡：用 `class` / `style` 设置样式，子元素是它的内容。
 
 ```rust tabs
 use nsh_base::tooltip;
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 fn save_button(on_save: impl Fn() + 'static) -> impl IntoElement {
     view()

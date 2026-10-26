@@ -655,15 +655,14 @@ impl SessionStore {
         self.scoped().await?.finish_prepared(build).await
     }
 
-    pub async fn prepared_semantic_page(
+    pub async fn prepared_semantic_group(
         &self,
         view: &PreparedView,
         cursor: usize,
-        limit: usize,
-    ) -> Result<PreparedSemanticPage, StoreError> {
+    ) -> Result<Option<PreparedSemanticGroup>, StoreError> {
         self.scoped()
             .await?
-            .prepared_semantic_page(view, cursor, limit)
+            .prepared_semantic_group(view, cursor)
             .await
     }
 

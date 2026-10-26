@@ -26,7 +26,7 @@ at `de176695240d550f2b303643b8019146c7989e7f`. The upstream project is
 
 `upstream.json` keeps that initial `repository` and `revision`. Its
 `upstream_revision` records the latest integrated `longbridge/nsh` main revision:
-`e5fe48b4c70ff82b302bfa4883a87a73a6666526`. The first upstream synchronization
+`76fa8a7fed47ea51aea01fa85bb40960be15d984`. The first upstream synchronization
 starts from `6bb0b7908043132067456e4a21dd57c90a0bdce5`, already included in the
 initial fork import.
 
@@ -38,6 +38,20 @@ the README retains the terminal backend description). This is a mixed-source
 vendor tree, not a claim that one upstream revision contains the fork features.
 The source, tests, resources, original licenses and independent workspaces are
 retained. `SOURCE.md` and `upstream.json` are Maka's provenance files.
+
+The 0.3 API-home migration uses `nsh_core::element` and the root Rust prelude;
+JavaScript host services live in `nsh`, mobile services in `nsh/mobile`, and
+Input in `nsh/base`. Legacy external module names are not aliases. Selectable
+views replace SelectionArea while retaining terminal cell-aware selection and
+popup scope behavior. Application-owned Tooltip elements retain Maka's prior
+bubble styling and reactive text; the obsolete string tooltip constructor is
+not retained. Removal of the legacy Toast command does not remove terminal
+`Surface::announce` visual accessibility announcements. Local retained-host,
+focus-return and root-retirement safety, native keymap support, input editing,
+and all fork-only resources remain part of the mixed-source tree. Deleted
+selection, device, keymap and native-service pages move their local contracts
+into the corresponding canonical documentation pages.
+
 The trailing-whitespace measurement integration preserves `TextEngine::measure_canvas`
 for platform-specific advances (including the terminal font catalog), while
 using upstream whitespace-inclusive measurement when that hook is absent.
@@ -149,11 +163,17 @@ consistent for Rolldown without copying sources or changing the import baseline.
 The conversion preserves native path components, including non-Unicode names.
 
 A manual dispatch of Maka's existing CI also runs the nested NSH core, base,
-engine, JS, headless (with `agent`) and terminal tests, followed by Web's portable
-`text` integration test. This separate runner starts after Maka's test job,
-even if that job fails; root workspace tests alone do not select these suites.
-The portable Web test does not validate browser rendering, and this job does
-not validate native platform runtimes or the `bundle`-gated testing suite.
+engine, JS, headless (with `agent`), terminal, bundler and development-tooling
+(client/server) tests, followed by Web's portable `text` integration test.
+This separate runner starts after Maka's test job, even if that job fails;
+root workspace tests alone do not select these suites. A final, capacity-guarded
+step selects the three animated-prop queue tests in the owning GPUI workspace,
+verifies their discovery and runs them without opening a native window. That
+workspace uses its own lock and patches, not Maka's root dependency graph;
+sharing a target directory does not imply equivalent cached artifacts.
+The portable Web test does not validate browser rendering, and these selected
+tests do not validate native platform runtimes or the `bundle`-gated testing
+suite. A storage guard or timeout leaves the GPUI coverage incomplete.
 
 Develop and verify changes in this tree together with their Maka callers. Send
 reusable changes to `longbridge/nsh`. When synchronizing the fork or upstream,
@@ -161,3 +181,18 @@ review local differences against the recorded revision, use upstream APIs and
 recommended patterns where appropriate, and remove patches that upstream has
 superseded. Refresh the recorded source hashes to the newly imported revision;
 they describe the import, not later Maka modifications.
+
+
+The Plot and shared-gallery import keeps the base library unstyled: shared demo
+finishes live in the private `examples/nsh-gallery-ui` source package, without
+new external dependencies. Native component animated props use stable named
+slots. The terminal backend evaluates those slots through its existing Graph,
+retains prop-response events and intrinsic sizing, and resets delivered values
+when bindings or component identity change. Android reserves opcode 36 for
+component slots, preserving the local retirement and root-projection opcodes
+34 and 35. These are local wire adaptations, not upstream source hashes.
+Host theme tokens are available before first JS evaluation without dropping
+other queued engine messages. The existing terminal lifecycle, retained-row
+host-identity checks and focus regressions remain in place. Native platform
+runtime and gallery appearance checks require their supported environments;
+Linux core tests are not evidence of those visual checks.

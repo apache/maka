@@ -54,7 +54,7 @@ pub use highlighter::{
 pub use hooks::{EditorBounds, EditorHoverEvent, EditorTextPressEvent};
 pub use languages::{EditorLanguage, register_highlighter, register_language};
 pub use layout::EditorScrollBeyond;
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 pub use parts::{EditorClasses, EditorPart, EditorStyles};
 pub use touch::EditorRect;
 

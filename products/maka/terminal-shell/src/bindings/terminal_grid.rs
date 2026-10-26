@@ -25,7 +25,8 @@ use maka_agent_facts::terminal::{
 };
 use maka_process::terminal::{Screen, display::Viewport};
 use maka_workspace_api::terminal::OutputEvent as Output;
-use nsh_core::{JsonValue, ui::prelude::*};
+use nsh_core::JsonValue;
+use nsh_core::prelude::*;
 use serde_json::json;
 
 /// Native styled cells for a single terminal; the Host retains process ownership.

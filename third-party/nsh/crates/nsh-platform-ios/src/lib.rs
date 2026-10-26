@@ -38,7 +38,7 @@ mod navigation;
 mod net;
 mod picker;
 mod press;
-mod selection_area;
+mod selectable_view;
 mod surface;
 #[cfg(feature = "dev")]
 mod synth;
@@ -58,13 +58,13 @@ mod zoom;
 pub use nsh_engine::{Bundle, ByteSize, CacheLocation, CacheOptions, CachePolicy, Root};
 
 /// The UI sets apps import ([`set_ui_sets`]; by default `nsh/base`).
-static UI_SETS: std::sync::RwLock<Option<Vec<nsh_core::ui::Registry>>> =
+static UI_SETS: std::sync::RwLock<Option<Vec<nsh_core::element::Registry>>> =
     std::sync::RwLock::new(None);
 
 /// Sets the UI sets the engines started from now on serve: `nsh/base`
 /// and an app's own Rust components (`nsh.json` `"rust"`), which a host
 /// built for the app passes before it starts.
-pub fn set_ui_sets(sets: Vec<nsh_core::ui::Registry>) {
+pub fn set_ui_sets(sets: Vec<nsh_core::element::Registry>) {
     *UI_SETS.write().unwrap_or_else(|e| e.into_inner()) = Some(sets);
 }
 
@@ -89,7 +89,7 @@ fn root() -> Option<nsh_engine::Root> {
 }
 
 /// The UI sets engines serve.
-fn ui_sets() -> Vec<nsh_core::ui::Registry> {
+fn ui_sets() -> Vec<nsh_core::element::Registry> {
     UI_SETS
         .read()
         .unwrap_or_else(|e| e.into_inner())

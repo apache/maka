@@ -1,10 +1,7 @@
 //! `ToastStack`: measures its toasts and lays them out as overlapping
 //! layers or, expanded, a list, moving them with springs.
 
-use nsh_core::{
-    TouchEvent, TouchPhase, TransformKind,
-    ui::{Spring, prelude::*},
-};
+use nsh_core::{TouchEvent, TouchPhase, TransformKind, element::Spring, prelude::*};
 
 use super::ToastMotion;
 

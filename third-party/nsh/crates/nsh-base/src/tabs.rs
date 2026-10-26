@@ -1,10 +1,7 @@
 //! `Tab` and `Tabs`: the tabs of a tab list and the list, with no look of
 //! their own.
 
-use nsh_core::{
-    AccessibilityState,
-    ui::{Style, prelude::*},
-};
+use nsh_core::{AccessibilityState, element::Style, prelude::*};
 
 /// The props of [`Tab`].
 #[derive(Debug, Clone, PartialEq, Props)]

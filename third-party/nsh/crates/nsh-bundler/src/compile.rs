@@ -6,7 +6,7 @@
 
 use std::path::Path;
 
-use nsh_core::ui::description::{ExportKind, SetDescription};
+use nsh_core::element::description::{ExportKind, SetDescription};
 use oxc::{
     allocator::Allocator,
     codegen::{Codegen, CodegenOptions},
@@ -25,7 +25,8 @@ pub(crate) struct NativeModules {
     /// The names each module exports, to check named imports against
     /// (empty without feature `bundle`: nothing is checked).
     exports: std::collections::BTreeMap<String, Vec<String>>,
-    /// The UI sets' components (export, module), for hints about tags.
+    /// The runtime's and the UI sets' components (export, module), for
+    /// hints about tags.
     pub(crate) components: Vec<(String, String)>,
 }
 
@@ -44,6 +45,11 @@ impl NativeModules {
         for r in nsh_core::runtime::registries() {
             if let Some(spec) = r.specifier() {
                 out.specifiers.insert(spec.to_owned());
+                out.components.extend(
+                    r.specs()
+                        .iter()
+                        .map(|c| (c.export.clone(), spec.to_owned())),
+                );
             }
         }
         for set in ui_sets {
@@ -166,7 +172,7 @@ pub(crate) fn position(source: &str, offset: u32) -> (usize, usize) {
 }
 
 /// The first named import of a native module that it does not export:
-/// `import { createNativeValue } from "nsh/animated"` bundles fine and only
+/// `import { createNativeValue } from "nsh"` bundles fine and only
 /// fails when the app runs, so it is reported with its place in the source.
 /// Only names the code uses as values count (`scoping` is that of the
 /// program once TypeScript and the JSX are compiled): the declarations also

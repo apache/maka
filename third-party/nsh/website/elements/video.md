@@ -13,7 +13,7 @@ Android. Playback is controlled with props (`paused`, `muted`, `rate`, …), so 
 other view. Rust makes one with `video(url)`, TSX with `<Video>` from `nsh`.
 
 ```rust tabs
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 fn player() -> impl IntoElement {
     let paused = signal(true);

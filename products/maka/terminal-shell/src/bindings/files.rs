@@ -26,7 +26,8 @@ use base64::{
 use maka_agent_api::contract::{FileContent, FileRead, FileReadPart, WorkspacePath};
 use maka_agent_facts::artifact::content_digest;
 use maka_app_client::{Subscription, SubscriptionEvent};
-use nsh_core::{JsonValue, ui::prelude::*};
+use nsh_core::JsonValue;
+use nsh_core::prelude::*;
 use serde_json::json;
 
 pub(super) const PREFIX: &str = "asset:/workspace-file/";

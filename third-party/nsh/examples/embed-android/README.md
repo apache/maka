@@ -10,7 +10,7 @@ its own native views.
 3. Create a `com.longbridge.nsh.NshView`, add it to a layout and call
    `loadAssetBundle("nsh")`. Call `destroy()` when the activity goes away.
 
-Native components: the app's own views, used from JS with `nativeComponent` (`nsh/native`).
+Native components: the app's own views, used from JS with `nativeComponent` (`nsh`).
 `MainActivity` registers `embed.badge`, which `examples/embedded` shows:
 
 ```java
@@ -20,7 +20,7 @@ nsh.registerComponent("embed.badge", context -> new Badge(this, context));  // B
 The component gets its props (`setProp`, JSON as maps and lists) and commands, emits events with
 `context.emit("tap", data)` and may report its size (dp) with `context.setSize(w, h)`.
 
-The app and its host also talk without a view, through the view's channel (`nsh/host` in the app):
+The app and its host also talk without a view, through the view's channel (`nsh` in the app):
 
 ```java
 nsh.setParams(Map.of("user", "Ada"));                               // host.params, read when the app starts

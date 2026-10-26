@@ -120,7 +120,7 @@ struct RootState {
     status_bar: Option<crate::StatusBarSetting>,
     /// Its entry in the surface's status bars, while the node is in the
     /// tree ([`Core::sync_status_bars`]).
-    status_bar_entry: Option<crate::ui::status_bar::StatusBarEntry>,
+    status_bar_entry: Option<crate::element::status_bar::StatusBarEntry>,
     /// Placement and root view (overlays).
     overlay: Option<Box<overlay::OverlayState>>,
 }
@@ -291,6 +291,23 @@ struct ComponentState {
     props: Vec<(Arc<str>, crate::JsonValue)>,
     /// Properties changed since the last commit.
     changed: Vec<Arc<str>>,
+    /// The names of its animated prop slots (`AnimationProp::ComponentSlot`):
+    /// a name keeps its slot once given one.
+    slots: Vec<Arc<str>>,
+    /// The bound slots and their animation nodes. A bound prop's value in
+    /// `props` is kept but not sent until it is unbound.
+    bound: Vec<(u16, crate::animation::NodeId)>,
+    /// `slots` changed since the platform was last told (a `Cell`: the
+    /// commit clears it while it reads the node).
+    slots_changed: std::cell::Cell<bool>,
+}
+
+impl ComponentState {
+    fn is_bound(&self, name: &str) -> bool {
+        self.bound
+            .iter()
+            .any(|(s, _)| &*self.slots[*s as usize] == name)
+    }
 }
 
 #[derive(Debug)]
@@ -459,6 +476,9 @@ struct Node {
     sticky: Option<Box<taffy::Rect<taffy::LengthPercentageAuto>>>,
     /// The inset padding and margin components set: added to the style's.
     insets: Option<Box<[EdgeInsets; 2]>>,
+    /// Its padding's and margin's `env()` terms and the insets they came
+    /// to when its style was last applied ([`Core::sync_env`]).
+    env: Option<Box<(crate::style::EnvEdges, [EdgeInsets; 2])>>,
     events: EventMask,
     /// `zIndex`: native views are ordered by it (stable) among siblings.
     z_index: i32,
@@ -596,6 +616,13 @@ impl Node {
         if self.spare {
             style.hidden = true;
         }
+        // A canvas whose drawing fills with its background shows it there
+        // only (`Painter::fill_background_from_view`).
+        if self.kind == Kind::Canvas && self.drawing.as_ref().is_some_and(|d| d.paints_background())
+        {
+            style.background_color = crate::style::Color::TRANSPARENT;
+            style.clear_background_images();
+        }
         if style.transform.has_fractions() {
             let size = if self.frame.size.width.is_nan() {
                 Size::default()
@@ -662,6 +689,7 @@ impl Node {
             pointer_auto_inside: false,
             sticky: None,
             insets: None,
+            env: None,
             events: EventMask::default(),
             z_index: 0,
             vertical_align: crate::style::VerticalAlign::Baseline,
@@ -884,7 +912,7 @@ pub struct Core<M: TextEngine> {
     paced_scratch: Vec<(u32, u32)>,
     /// The events for JS, in order (the platform's and the core's events,
     /// Rust components' events, calls' results).
-    events: Vec<crate::ui::JsEvent>,
+    events: Vec<crate::element::JsEvent>,
     /// Reused buffer of `(item index, cell)` for list updates.
     cells_scratch: Vec<(u32, Key)>,
     root: Key,
@@ -897,6 +925,10 @@ pub struct Core<M: TextEngine> {
     commands: Vec<(NodeId, Command)>,
     /// Animates the layout changes of the next commit.
     layout_animation: Option<LayoutAnimation>,
+    /// The nodes whose padding or margin uses `env()` (`Node::env`).
+    env_styled: rustc_hash::FxHashSet<NodeId>,
+    /// Scratch of [`Core::sync_env`].
+    env_scratch: Vec<NodeId>,
     /// The screens and modals with a `statusBar`, in the order they got
     /// it: few, so attaching and detaching only flag them for the commit.
     status_bar_nodes: Vec<Key>,
@@ -1030,6 +1062,8 @@ impl<M: TextEngine> Core<M> {
             batches: 0,
             commands: Vec::new(),
             layout_animation: None,
+            env_styled: Default::default(),
+            env_scratch: Vec::new(),
             status_bar_nodes: Vec::new(),
             status_bars_moved: false,
             pointer_none_classes: 0,
@@ -1632,7 +1666,7 @@ impl<M: TextEngine> Core<M> {
     /// Moves what the core hands JS (events it raised, such as
     /// `onLoadMore` and `onLayout`, Rust components' events, calls'
     /// results) into `out`, in order.
-    pub fn take_events(&mut self, out: &mut Vec<crate::ui::JsEvent>) {
+    pub fn take_events(&mut self, out: &mut Vec<crate::element::JsEvent>) {
         out.append(&mut self.events);
     }
 
@@ -1758,7 +1792,7 @@ impl<M: TextEngine> Core<M> {
                 if event == EventKind::Layout && enabled && !before.contains(event) {
                     let f = node.frame;
                     if !f.origin.x.0.is_nan() {
-                        self.events.push(crate::ui::JsEvent::Event(
+                        self.events.push(crate::element::JsEvent::Event(
                             id,
                             event,
                             EventPayload::Layout(f),
@@ -1848,8 +1882,14 @@ impl<M: TextEngine> Core<M> {
                 if node.drawing.is_none() && drawing.ops.is_empty() && drawing.nodes.is_empty() {
                     return Ok(());
                 }
+                // Whether the view draws its background (it does not where
+                // the drawing fills with it).
+                let background_moved = node.drawing.as_ref().is_some_and(|d| d.paints_background())
+                    != drawing.paints_background();
                 node.drawing = Some(Arc::from(drawing));
-                let flags = dirty::CANVAS | if slots_changed { dirty::ANIMATION } else { 0 };
+                let flags = dirty::CANVAS
+                    | if slots_changed { dirty::ANIMATION } else { 0 }
+                    | if background_moved { dirty::VIEW } else { 0 };
                 self.mark(key, flags);
                 Ok(())
             }
@@ -1950,6 +1990,7 @@ impl<M: TextEngine> Core<M> {
         self.sync_keys();
         // Platforms animate the frames, insertions and removals that follow
         // in the batch; ops may already have queued some.
+        self.sync_env();
         if let Some(animation) = self.layout_animation.take() {
             self.mount.insert(0, MountItem::LayoutAnimation(animation));
         }
@@ -2557,8 +2598,39 @@ impl<M: TextEngine> Core<M> {
                 self.fixed_changed.push((key, id));
             }
         }
+        // `env()`'s terms, on the edges their declarations went to.
+        let env = if rtl {
+            pending.env.swapped()
+        } else {
+            pending.env
+        };
+        let env = (!env.is_empty()).then(|| (env, self.env_insets(key, &env)));
         let node = &mut self.nodes[key as usize];
-        if let Some([padding, margin]) = node.insets.as_deref() {
+        let id = node.id;
+        match env {
+            Some(env) => {
+                node.env = Some(Box::new(env));
+                self.env_styled.insert(id);
+            }
+            None => {
+                if node.env.take().is_some() {
+                    self.env_styled.remove(&id);
+                }
+            }
+        }
+        let node = &mut self.nodes[key as usize];
+        let mut extra = node.insets.as_deref().copied();
+        if let Some((_, applied)) = node.env.as_deref() {
+            let sum = |a: EdgeInsets, b: EdgeInsets| EdgeInsets {
+                top: a.top + b.top,
+                right: a.right + b.right,
+                bottom: a.bottom + b.bottom,
+                left: a.left + b.left,
+            };
+            let [p, m] = extra.unwrap_or_default();
+            extra = Some([sum(p, applied[0]), sum(m, applied[1])]);
+        }
+        if let Some([padding, margin]) = extra.as_ref() {
             // On top of points; percentages cannot take an addition.
             let add = |p: &mut taffy::LengthPercentage, d: f32| {
                 if let taffy::style::ExpandedLengthPercentage::Length(v) = p.expand() {
@@ -2652,6 +2724,15 @@ impl<M: TextEngine> Core<M> {
         let mut flags = 0;
         if view_changed {
             flags |= dirty::VIEW;
+            // A drawing filling with the view's background paints the new
+            // one.
+            if self.nodes[key as usize]
+                .drawing
+                .as_ref()
+                .is_some_and(|d| d.paints_background())
+            {
+                flags |= dirty::CANVAS;
+            }
         }
         if position_changed && self.nodes[key as usize].image.is_some() {
             flags |= dirty::IMAGE;
@@ -2851,7 +2932,7 @@ impl<M: TextEngine> Core<M> {
         // source (JS finds the handler when the event is delivered).
         let refuse = |core: &mut Self, what: &str, uri: &str, capability: &str| {
             let message = not_granted(what, uri, capability);
-            core.events.push(crate::ui::JsEvent::Event(
+            core.events.push(crate::element::JsEvent::Event(
                 id,
                 EventKind::Error,
                 EventPayload::Error {
@@ -3503,10 +3584,10 @@ impl<M: TextEngine> Core<M> {
                     flags |= dirty::VIEW_PROPS;
                 }
             }
-            Prop::SelectionArea(value) => {
+            Prop::SelectableView(value) => {
                 let props = node.props.get_or_insert_default();
-                if props.selection_area != value {
-                    props.selection_area = value;
+                if props.selectable_view != value {
+                    props.selectable_view = value;
                     flags |= dirty::VIEW_PROPS;
                 }
             }
@@ -3691,6 +3772,10 @@ impl<M: TextEngine> Core<M> {
                                 component.props.iter().map(|(k, _)| k.clone()).collect();
                             self.mount.push(MountItem::Component { id, name });
                             flags |= dirty::COMPONENT;
+                            if !component.slots.is_empty() {
+                                component.slots_changed.set(true);
+                                flags |= dirty::ANIMATION;
+                            }
                         }
                         None => component.name = Some(name),
                         Some(old) if *old != name => log::warn!(
@@ -3698,6 +3783,36 @@ impl<M: TextEngine> Core<M> {
                             "a native component cannot change from `{old}` to `{name}`; render a new element"
                         ),
                         Some(_) => {}
+                    }
+                }
+            }
+            Prop::ComponentPropBinding(name, value) => {
+                if let Some(component) = node.component.as_mut() {
+                    let slot = match component.slots.iter().position(|k| *k == name) {
+                        Some(s) => Some(s as u16),
+                        None if value.is_none() => None,
+                        None => {
+                            component.slots.push(name.clone());
+                            component.slots_changed.set(true);
+                            Some((component.slots.len() - 1) as u16)
+                        }
+                    };
+                    if let Some(slot) = slot {
+                        let at = component.bound.iter().position(|(s, _)| *s == slot);
+                        match (at, value) {
+                            (Some(i), Some(n)) => component.bound[i].1 = n,
+                            (None, Some(n)) => component.bound.push((slot, n)),
+                            (Some(i), None) => {
+                                component.bound.remove(i);
+                                // Its static value (or its removal) is sent again.
+                                if !component.changed.contains(&name) {
+                                    component.changed.push(name);
+                                }
+                                flags |= dirty::COMPONENT;
+                            }
+                            (None, None) => {}
+                        }
+                        flags |= dirty::ANIMATION;
                     }
                 }
             }
@@ -4375,7 +4490,10 @@ impl<M: TextEngine> Core<M> {
                 flags |= dirty::REFRESHING;
             }
         }
-        if !node.animated.is_empty() || node.drawing.as_ref().is_some_and(|d| !d.slots.is_empty()) {
+        if !node.animated.is_empty()
+            || node.drawing.as_ref().is_some_and(|d| !d.slots.is_empty())
+            || node.component.as_ref().is_some_and(|c| !c.slots.is_empty())
+        {
             flags |= dirty::ANIMATION;
         }
         if node.drawing.is_some() {
@@ -4423,8 +4541,9 @@ impl<M: TextEngine> Core<M> {
                     name: name.clone(),
                 });
             }
-            // The new component gets every property.
+            // The new component gets every property, and its slots' names.
             component.changed = component.props.iter().map(|(k, _)| k.clone()).collect();
+            component.slots_changed.set(!component.slots.is_empty());
             flags |= dirty::COMPONENT;
         }
         if let Some(item) = self.creation_tracking(key) {
@@ -4618,6 +4737,22 @@ impl<M: TextEngine> Core<M> {
                             .map(|(i, &n)| (AnimationProp::CanvasArg(i as u16), n)),
                     );
                 }
+                if let Some(component) = &node.component {
+                    bindings.extend(
+                        component
+                            .bound
+                            .iter()
+                            .map(|&(s, n)| (AnimationProp::ComponentSlot(s), n)),
+                    );
+                }
+                if let Some(component) = &node.component
+                    && component.slots_changed.replace(false)
+                {
+                    self.mount.push(MountItem::ComponentPropSlots {
+                        id,
+                        names: component.slots.clone(),
+                    });
+                }
                 self.mount
                     .push(MountItem::AnimationBindings { id, bindings });
             }
@@ -4628,7 +4763,12 @@ impl<M: TextEngine> Core<M> {
                     drawing.clone()
                 } else {
                     let (paint, current) = self.resolved_paint(key);
-                    Arc::new(drawing.painted(&paint, current))
+                    let style = &node.view_style;
+                    let images = style
+                        .effects
+                        .as_deref()
+                        .map_or(&[][..], |e| &e.background_images[..]);
+                    Arc::new(drawing.painted(&paint, current, style.background_color, images))
                 };
                 self.mount.push(MountItem::Canvas { id, drawing });
             }
@@ -4668,8 +4808,11 @@ impl<M: TextEngine> Core<M> {
                 && let Some(component) = self.nodes[key as usize].component.as_mut()
                 && !component.changed.is_empty()
             {
-                let props = std::mem::take(&mut component.changed)
+                let changed = std::mem::take(&mut component.changed);
+                let props: Vec<_> = changed
                     .into_iter()
+                    // A bound prop's value waits until it is unbound.
+                    .filter(|name| !component.is_bound(name))
                     .map(|name| {
                         let value = component
                             .props
@@ -4679,7 +4822,9 @@ impl<M: TextEngine> Core<M> {
                         (name, value)
                     })
                     .collect();
-                self.mount.push(MountItem::ComponentProps { id, props });
+                if !props.is_empty() {
+                    self.mount.push(MountItem::ComponentProps { id, props });
+                }
             }
             let node = &self.nodes[key as usize];
             if flags & dirty::NATIVE != 0
@@ -4791,7 +4936,7 @@ impl<M: TextEngine> Core<M> {
         }
         input.content_size = Some(size);
         let id = node.id;
-        self.events.push(crate::ui::JsEvent::Event(
+        self.events.push(crate::element::JsEvent::Event(
             id,
             EventKind::ContentSizeChange,
             EventPayload::Map(vec![
@@ -5803,7 +5948,7 @@ impl<M: TextEngine> Core<M> {
                 cx.source_geometry = None;
                 refresh_source_geometry(engine, cx);
                 if report_lines {
-                    self.events.push(crate::ui::JsEvent::Event(
+                    self.events.push(crate::element::JsEvent::Event(
                         id,
                         EventKind::TextLayout,
                         text_lines(engine, &text, &text_layout),
@@ -5833,7 +5978,7 @@ impl<M: TextEngine> Core<M> {
                         .get_or_insert_with(|| engine.prepare_aligned(&cx.text, &cx.alignments));
                     let layout = engine.layout(prepared, size);
                     if report_lines {
-                        self.events.push(crate::ui::JsEvent::Event(
+                        self.events.push(crate::element::JsEvent::Event(
                             id,
                             EventKind::TextLayout,
                             text_lines(engine, &cx.text, &layout),
@@ -6026,7 +6171,7 @@ impl<M: TextEngine> Core<M> {
             node.frame = frame;
             let (id, is_text) = (node.id, node.kind == Kind::Text);
             if node.events.contains(EventKind::Layout) {
-                self.events.push(crate::ui::JsEvent::Event(
+                self.events.push(crate::element::JsEvent::Event(
                     id,
                     EventKind::Layout,
                     EventPayload::Layout(frame),
@@ -6518,14 +6663,14 @@ impl<M: TextEngine> Core<M> {
         let mut binds = Vec::new();
         let edges = list.update_window(&mut binds, source_row);
         if edges.end {
-            self.events.push(crate::ui::JsEvent::Event(
+            self.events.push(crate::element::JsEvent::Event(
                 id,
                 EventKind::LoadMore,
                 EventPayload::None,
             ));
         }
         if edges.start && events.contains(EventKind::LoadMoreAtStart) {
-            self.events.push(crate::ui::JsEvent::Event(
+            self.events.push(crate::element::JsEvent::Event(
                 id,
                 EventKind::LoadMoreAtStart,
                 EventPayload::None,
@@ -6577,7 +6722,7 @@ impl<M: TextEngine> Core<M> {
             if viewable != list.viewable {
                 list.viewable = viewable;
                 let (first, last) = viewable.map_or((-1.0, -1.0), |(f, l)| (f as f64, l as f64));
-                self.events.push(crate::ui::JsEvent::Event(
+                self.events.push(crate::element::JsEvent::Event(
                     id,
                     EventKind::ViewableItemsChange,
                     EventPayload::Map(vec![

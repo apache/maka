@@ -1,6 +1,6 @@
 import { mount, signal, Text, View } from "nsh";
 import { Sheet } from "nsh/base";
-import { desktop, Inspector, Log, Panel, size, Stage, ui, wide } from "./palette";
+import { button, buttonText, desktop, Inspector, Log, Panel, size, Stage, ui, wide } from "./palette";
 
 type Side = "bottom" | "top" | "left" | "right";
 
@@ -29,19 +29,8 @@ function App() {
   };
   /** A button that opens the sheet at side `s`. */
   const opener = (s: Side) => (
-    <View
-      onPress={() => show(s)}
-      activeStyle={{ opacity: 0.7 }}
-      style={{
-        ...(s === side() ? ui().accentFill : ui().raised),
-        height: wide() ? size.control : 42,
-        paddingHorizontal: wide() ? 12 : 0,
-        borderRadius: wide() ? 8 : 10,
-        alignItems: "center",
-        justifyContent: "center",
-      }}
-    >
-      <Text style={{ fontSize: wide() ? 13 : 14, fontWeight: "600", color: s === side() ? ui().onAccent : ui().text }}>side="{s}"</Text>
+    <View onPress={() => show(s)} {...button("secondary", { on: () => s === side() })}>
+      <Text style={buttonText("secondary", { on: () => s === side() })}>side="{s}"</Text>
     </View>
   );
   const changes = () => <Log title="onOpenChange(open, reason) · onCancel" lines={events()} minHeight={130} />;
@@ -107,14 +96,9 @@ function App() {
             open.set(false);
             log("Done pressed");
           }}
-          activeStyle={{ opacity: 0.7 }}
-          style={
-            wide()
-              ? { ...ui().primary, alignSelf: "flex-end", height: size.control, paddingHorizontal: 14, borderRadius: 8, justifyContent: "center" }
-              : { ...ui().primary, height: 42, borderRadius: 10, alignItems: "center", justifyContent: "center" }
-          }
+          {...button("primary", { align: "flex-end" })}
         >
-          <Text style={{ fontSize: wide() ? 13 : 14, fontWeight: "600", color: ui().onPrimary }}>Done</Text>
+          <Text style={buttonText("primary")}>Done</Text>
         </View>
       </Sheet>
     </View>

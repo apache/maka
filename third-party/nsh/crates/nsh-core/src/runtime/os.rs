@@ -2,7 +2,7 @@
 #[cfg(not(target_arch = "wasm32"))]
 use std::path::PathBuf;
 
-use crate::ui::module;
+use crate::element::module;
 
 /// Native OS metadata. Returned paths confer no filesystem access.
 #[module]
@@ -83,9 +83,9 @@ mod tests {
                 .unwrap();
             assert!(function.params.is_empty());
             assert_eq!(function.returns.as_deref(), Some("string"));
-            assert_eq!(function.kind, crate::ui::FunctionKind::Sync);
+            assert_eq!(function.kind, crate::element::FunctionKind::Sync);
         }
-        let declarations = crate::ui::declarations(registry, &[]);
+        let declarations = crate::element::declarations(registry, &[]);
         for name in ["platform", "arch", "homedir"] {
             assert!(
                 declarations.contains(&format!("function {name}(): string")),

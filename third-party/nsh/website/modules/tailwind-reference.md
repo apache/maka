@@ -10,13 +10,10 @@ Every element takes Tailwind CSS classes in its `class` prop (and conditional on
 
 Each utility sets exactly what Tailwind CSS 4 generates for it, with the same meaning as in a browser. This page lists what is supported. For an introduction see [Tailwind](../docs/tailwind.md); for the style keys the utilities set, see the [Style reference](./style-reference.md).
 
-Rust components take no class strings: they style elements with the typed methods of `Styled` (`nsh_core::ui::prelude`), named after these utilities and resolving to the same values, Tailwind's default scales included (`px-4` is `.px_4()`, `rounded-2xl` `.rounded_2xl()`, `shadow-md` `.shadow_md()`, `bg-linear-to-br` `.bg_linear_to_br()`). Colors are values: theme colors, or Tailwind's palette as `nsh_core::ui::palette` (`ZINC.shade(800)` is `zinc-800`). Variants are methods taking a closure of styles: `.active(|s| …)`, `.hover(…)`, `.focus(…)`, `.disabled_style(…)`, `.dark(…)`, `.group_active(…)`, and `.style_when(condition, …)` for the rest. The [Style reference](./style-reference.md) names the method of each style key.
+Rust components take no class strings: they style elements with the typed methods of `Styled` (`nsh_core::prelude`), named after these utilities and resolving to the same values, Tailwind's default scales included (`px-4` is `.px_4()`, `rounded-2xl` `.rounded_2xl()`, `shadow-md` `.shadow_md()`, `bg-linear-to-br` `.bg_linear_to_br()`). Colors are values: theme colors, or Tailwind's palette as `nsh_core::element::palette` (`ZINC.shade(800)` is `zinc-800`). Variants are methods taking a closure of styles: `.active(|s| …)`, `.hover(…)`, `.focus(…)`, `.disabled_style(…)`, `.dark(…)`, `.group_active(…)`, and `.style_when(condition, …)` for the rest. The [Style reference](./style-reference.md) names the method of each style key.
 
 ```rust tabs
-use nsh_core::ui::{
-    palette::{RED, ZINC},
-    prelude::*,
-};
+use nsh_core::{element::palette::{RED, ZINC}, prelude::*};
 
 view()
     .flex_row()

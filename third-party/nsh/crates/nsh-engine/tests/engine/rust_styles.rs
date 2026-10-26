@@ -9,12 +9,12 @@ use crossbeam_channel::Receiver;
 use nsh_core::{
     ApproxTextEngine, AttributedText, EventKind, EventPayload, MountBatch, MountItem, Size,
     ViewStyle,
-    tailwind::state,
-    ui::{
+    element::{
         Root,
         palette::{SKY, VIOLET, ZINC},
-        prelude::*,
     },
+    prelude::*,
+    tailwind::state,
 };
 use nsh_engine::{App, Engine, EngineConfig, Environment};
 

@@ -12,7 +12,7 @@ demo: el-radio
 
 ```rust tabs
 use nsh_base::{radio, radio_group, theme};
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 fn plans() -> impl IntoElement {
     let plan = signal("basic");

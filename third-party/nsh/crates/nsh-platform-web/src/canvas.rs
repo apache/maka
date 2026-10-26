@@ -10,7 +10,7 @@ use nsh_core::{
         CanvasFont, CanvasOp, Composite, Drawing, FillRule, GradientShape, LineCap, LineJoin, Num,
         Paint, PathOp,
     },
-    ui::PropEnum,
+    element::PropEnum,
 };
 
 use crate::encode::css_color;

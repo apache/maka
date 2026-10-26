@@ -24,6 +24,12 @@
 [official npm package](https://registry.npmjs.org/playwright-core/1.58.2), independently
 of any reference application. The corresponding upstream revision is recorded in
 [upstream.json](upstream.json), together with archive integrity and file hashes.
+`keyboard.json` contains the same package's public `USKeyboardLayout` data from
+`lib/server/usKeyboardLayout.js`. The updater parses its restricted object literal
+as data, retaining the physical codes, sided modifier locations, text, and shifted
+key fields. It never imports or evaluates that package module. Rust resolves the
+layout and keyboard shortcuts in process; no Node runtime is needed.
+
 Upstream's Apache-2.0 license, notice, and bundled third-party notices are preserved.
 
 Maka loads these utilities into an isolated world on its existing CDP connection.

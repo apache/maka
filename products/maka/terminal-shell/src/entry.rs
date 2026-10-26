@@ -190,7 +190,7 @@ pub fn application_bundle() -> Bundle {
 }
 
 fn configuration(
-    registry: nsh_core::ui::Registry,
+    registry: nsh_core::element::Registry,
     runtime: tokio::runtime::Handle,
 ) -> EngineConfig {
     let viewport = Size::new(Points(960.0), Points(640.0));

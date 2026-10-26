@@ -17,19 +17,9 @@
  * under the License.
  */
 
-import {
-  batch,
-  cleanup,
-  computed,
-  effect,
-  Input,
-  inputAction,
-  Scroll,
-  signal,
-  Text,
-  View,
-  List,
-} from 'nsh';
+import { textTooltip } from './ui';
+import { batch, cleanup, computed, effect, inputAction, Scroll, signal, Text, View, List } from 'nsh';
+import { Input } from 'nsh/base';
 import type { YNode } from 'nsh';
 import type {
   ModelSelection,
@@ -38,8 +28,8 @@ import type {
   ThinkingLevel,
 } from '../../../../packages/plugin-sdk/src/generated/runtime';
 import { Button, Popover } from 'nsh/base';
-import { keymap } from 'nsh/keymap';
-import { platform, windowSize } from 'nsh/device';
+import { keymap } from 'nsh';
+import { platform, windowSize } from 'nsh';
 import { host } from './host';
 import { tr } from './locale';
 import { createText, errorText, UiError } from './text';
@@ -126,7 +116,7 @@ export function ModelSelect(props: {
       trigger={
         <Button
           accessibilityLabel={tr('Choose model and effort')}
-          tooltip={`${label()} · ${tr('Choose model and effort · Ctrl+G')}`}
+          tooltip={textTooltip(() => `${label()} · ${tr('Choose model and effort · Ctrl+G')}`)}
           onPress={inputAction(props.toggle, {
             sessionId: owner.sessionId,
             instance: props.instance(),
@@ -526,7 +516,7 @@ function ModelMenu(props: {
                 ? inputAction(close, { instance: props.instance, from: pane() })
                 : inputAction(changePane, { instance: props.instance, from: pane(), to: 'root' })
           }
-          tooltip={pane() === 'root' ? tr('Close') : tr('Back')}
+          tooltip={textTooltip(() => pane() === 'root' ? tr('Close') : tr('Back'))}
           style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
           hoverStyle={controlHoverStyle}
           focusStyle={controlFocusStyle}

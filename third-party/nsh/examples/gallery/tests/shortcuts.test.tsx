@@ -1,4 +1,4 @@
-// App-level keyboard shortcuts (nsh/keymap): the System demo's, on a
+// App-level keyboard shortcuts (nsh): the System demo's, on a
 // desktop (headless, the app runs as macOS; on a real platform, as it).
 import { open, test } from "nsh/test";
 

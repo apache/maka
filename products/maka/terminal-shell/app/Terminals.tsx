@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { textTooltip } from './ui';
 import { tr } from './locale';
 import { inputAction, Text, View, List } from 'nsh';
 import { Button } from 'nsh/base';
@@ -60,7 +61,7 @@ export function Terminals(props: { model: TerminalsModel; sessionId: string }) {
         <Button
           onPress={inputAction(model.refresh, null)}
           accessibilityLabel={tr('Refresh terminals')}
-          tooltip={tr('Refresh terminals')}
+          tooltip={textTooltip(() => tr('Refresh terminals'))}
           style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
           hoverStyle={controlHoverStyle}
           focusStyle={controlFocusStyle}

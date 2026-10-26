@@ -105,7 +105,7 @@ impl Mounter {
         crate::navigation::end_batch(surface);
         crate::system::end_batch(surface);
         crate::input::content_moved(surface, false);
-        crate::selection_area::end_batch(surface);
+        crate::selectable_view::end_batch(surface);
         surface.control(|control| control.set_focus_path(crate::input::focus_path(surface)));
     }
 
@@ -381,7 +381,9 @@ impl Mounter {
             }
             MountItem::Command { id, command } => self.command(surface, *id, command),
             // The animator's (`Surface::apply`).
-            MountItem::Animation(_) | MountItem::AnimationBindings { .. } => {}
+            MountItem::Animation(_)
+            | MountItem::AnimationBindings { .. }
+            | MountItem::ComponentPropSlots { .. } => {}
         }
     }
 

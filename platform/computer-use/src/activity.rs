@@ -124,6 +124,9 @@ pub(crate) fn command(command: &Command, bound_target: Option<&str>) -> Text {
         Command::TabMetadata { .. } | Command::BrowserRead { .. } | Command::GetJsDialog { .. } => {
             ("Inspect page", "查看网页", "查看網頁", bound_target)
         }
+        Command::BrowserMutation { .. } => {
+            ("Interact with page", "操作网页", "操作網頁", bound_target)
+        }
         Command::ClipboardRead { .. } | Command::ClipboardReadText { .. } => (
             "Read browser clipboard",
             "读取浏览器剪贴板",
@@ -159,9 +162,9 @@ pub(crate) fn command(command: &Command, bound_target: Option<&str>) -> Text {
         Command::Action { action, .. } => {
             let (en, cn, tw) = match action {
                 Action::MoveCursor { .. } => ("Move cursor", "移动光标", "移動游標"),
-                Action::Click { .. } => ("Click", "点击", "點擊"),
-                Action::Drag { .. } => ("Drag", "拖动", "拖曳"),
-                Action::Scroll { .. } => ("Scroll", "滚动", "捲動"),
+                Action::Click { .. } | Action::LinuxClick { .. } => ("Click", "点击", "點擊"),
+                Action::Drag { .. } | Action::LinuxDrag { .. } => ("Drag", "拖动", "拖曳"),
+                Action::Scroll { .. } | Action::LinuxScroll { .. } => ("Scroll", "滚动", "捲動"),
                 Action::SetValue { .. } | Action::TypeText { .. } => {
                     ("Enter text", "输入文本", "輸入文字")
                 }

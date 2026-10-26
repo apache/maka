@@ -264,6 +264,8 @@ impl UiAnimation {
                     }
                     // The scroll view's (`sticky` below), never bound.
                     AnimationProp::StickyTop | AnimationProp::StickyLeft => {}
+                    // No registered native components on the web.
+                    AnimationProp::ComponentSlot(_) => {}
                 }
             }
             if let Some(s) = shadow {

@@ -1,6 +1,6 @@
 import { signal, Text, untracked, View } from "nsh";
 import { Button, ResizablePanel, ResizablePanelGroup } from "nsh/base";
-import { windowSize } from "nsh/device";
+import { windowSize } from "nsh";
 import { handleThumb, hint } from "../ui";
 
 // `nsh/base`'s resizable panels own the drags (run natively, frame by

@@ -17,7 +17,7 @@ demo: el-menu
 
 ```rust tabs
 use nsh_base::{menu, menu_item, menu_separator, submenu};
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 fn item(label: &'static str, on_select: impl Fn() + 'static) -> impl IntoElement {
     menu_item()
@@ -80,7 +80,7 @@ function FileMenu() {
 }
 ```
 
-这五个组件都来自 [`nsh/base`](../modules/nsh-base.md)。条目会自己找到所属的菜单，所以你可以自由地编排它们：放在视图里分组、加标签、用 `If` 让条目出现和消失。`popupClass` 在桌面上设置弹出层的样式，在手机上设置 sheet 的样式；两者需要不同样式时，可以把 `platform.idiom`（`nsh/device`）与 `"desktop"` 比较。
+这五个组件都来自 [`nsh/base`](../modules/nsh-base.md)。条目会自己找到所属的菜单，所以你可以自由地编排它们：放在视图里分组、加标签、用 `If` 让条目出现和消失。`popupClass` 在桌面上设置弹出层的样式，在手机上设置 sheet 的样式；两者需要不同样式时，可以把 `platform.idiom`（`nsh`）与 `"desktop"` 比较。
 
 <a id="context-menus"></a>
 

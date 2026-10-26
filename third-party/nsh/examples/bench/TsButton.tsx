@@ -23,7 +23,7 @@ export interface ButtonProps {
 
 const base = "flex-row items-center justify-center rounded-xl px-4 py-3 disabled:opacity-50";
 
-// The default theme's colors (`nsh_core::ui::Theme`).
+// The default theme's colors (`nsh_core::element::Theme`).
 const variants: Record<NonNullable<ButtonProps["variant"]>, string> = {
   primary:
     "bg-neutral-900 active:bg-neutral-950 text-neutral-50 dark:bg-neutral-50 dark:active:bg-neutral-200 dark:text-neutral-900",

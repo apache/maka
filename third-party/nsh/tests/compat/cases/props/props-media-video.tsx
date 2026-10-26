@@ -4,7 +4,7 @@
 // fits its box, how often it reports progress and what its sound does to
 // other apps' audio. Its script checks each.
 import { Text, View, signal } from "nsh";
-import { Video } from "nsh/video";
+import { Video } from "nsh";
 
 function App() {
   const paused = signal(true);

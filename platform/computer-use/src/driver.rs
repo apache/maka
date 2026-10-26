@@ -445,6 +445,69 @@ impl Driver {
         .await
     }
 
+    /// Match the selected Cua dispatch backend; DISPLAY alone is not XID proof.
+    #[cfg(all(target_os = "linux", not(target_env = "musl")))]
+    pub(crate) fn linux_x11_selected() -> bool {
+        !platform_linux::wayland::is_wayland()
+    }
+
+    #[cfg(all(target_os = "linux", not(target_env = "musl")))]
+    pub(crate) async fn observe_native_window(
+        driver: &Arc<Mutex<Self>>,
+        request: platform_linux::atspi::native_observation::NativeObservationRequest,
+        options: cua_driver_sdk::NativeObservationOptions,
+        epoch: NativeEpochId,
+        cancellation: &CancellationToken,
+        language: Language,
+    ) -> Result<CallResult, ToolError> {
+        if !Self::linux_x11_selected() {
+            return Err(ToolError::Failed("native_profile_requires_x11".into()));
+        }
+        if cancellation.is_cancelled() {
+            return Err(ToolError::Failed(
+                "Computer Use observation cancelled".into(),
+            ));
+        }
+        let bound = driver.lock().await.bind_epoch(epoch, language)?;
+        let session = bound.ready(language).await?;
+        let result = tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => return Err(ToolError::Failed("Computer Use observation cancelled".into())),
+            result = session.observe_native_window(request, options) => result,
+        }.map_err(|error| native_error(error, language))?;
+        native_input_result(result, language)
+    }
+
+    #[cfg(all(target_os = "linux", not(target_env = "musl")))]
+    pub(crate) async fn input_native_window(
+        driver: &Arc<Mutex<Self>>,
+        request: platform_linux::input::native_window::NativeWindowInputRequest,
+        epoch: NativeEpochId,
+        cancellation: &CancellationToken,
+        language: Language,
+    ) -> Result<CallResult, ToolError> {
+        if !Self::linux_x11_selected() {
+            return Err(ToolError::Failed("native_profile_requires_x11".into()));
+        }
+        if cancellation.is_cancelled() {
+            return Err(ToolError::Failed(
+                "Computer Use cancelled before native input dispatch".into(),
+            ));
+        }
+        let bound = driver.lock().await.bind_epoch(epoch, language)?;
+        let session = bound.ready(language).await?;
+        if cancellation.is_cancelled() {
+            return Err(ToolError::Failed(
+                "Computer Use cancelled before native input dispatch".into(),
+            ));
+        }
+        let result = session
+            .input_native_window(request)
+            .await
+            .map_err(|error| native_error(error, language))?;
+        native_input_result(result, language)
+    }
+
     #[cfg(target_os = "macos")]
     pub(crate) async fn capture_prepared_window(
         driver: &Arc<Mutex<Self>>,
@@ -678,7 +741,10 @@ fn native_identity_error(error: std::num::TryFromIntError) -> ToolError {
     ))
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(
+    target_os = "macos",
+    all(target_os = "linux", not(target_env = "musl"))
+))]
 fn native_input_result(
     result: cua_driver_sdk::ToolResult,
     language: Language,
@@ -688,6 +754,29 @@ fn native_input_result(
             .error_code
             .as_deref()
             .unwrap_or("computer_use_refused");
+        #[cfg(all(target_os = "linux", not(target_env = "musl")))]
+        if matches!(code, "point_outside_window" | "incomplete_point") {
+            #[derive(serde::Deserialize)]
+            struct NativeErrorEffect {
+                effect: cua_driver_contract::ActionEffect,
+            }
+            let effect = result
+                .structured_json
+                .as_deref()
+                .and_then(|value| serde_json::from_str::<NativeErrorEffect>(value).ok())
+                .map(|value| value.effect);
+            let message = match code {
+                "incomplete_point" => crate::linux_input::Error::IncompleteScrollPoint.to_string(),
+                _ => crate::linux_input::Error::OutsideWindow.to_string(),
+            };
+            return Err(
+                if effect == Some(cua_driver_contract::ActionEffect::Refused) {
+                    ToolError::Failed(message)
+                } else {
+                    ToolError::OutcomeUnknown(message)
+                },
+            );
+        }
         let message = format!("{code}: {}", refusal(code, &result.text, language));
         return Err(
             if matches!(
@@ -747,6 +836,87 @@ fn native_error(error: DriverError, language: Language) -> ToolError {
 mod tests {
     use super::*;
     use cua_driver_contract::{EndSessionInput, GetSessionInput, StartSessionInput};
+
+    #[cfg(all(target_os = "linux", not(target_env = "musl")))]
+    #[test]
+    fn linux_bounds_error_preserves_original_body_from_the_sdk_code() {
+        let original = "background pointer position is outside the target window".to_owned();
+        for (code, text, effect, unknown, expected) in [
+            (
+                "point_outside_window",
+                "opaque native diagnostic",
+                Some("unverifiable"),
+                true,
+                original.clone(),
+            ),
+            (
+                "point_outside_window",
+                "opaque native diagnostic",
+                Some("partial"),
+                true,
+                original.clone(),
+            ),
+            (
+                "point_outside_window",
+                "opaque native diagnostic",
+                Some("refused"),
+                false,
+                original.clone(),
+            ),
+            (
+                "point_outside_window",
+                "opaque native diagnostic",
+                None,
+                true,
+                original.clone(),
+            ),
+            (
+                "incomplete_point",
+                "opaque native diagnostic",
+                Some("unverifiable"),
+                true,
+                "x and y must be provided together".into(),
+            ),
+            (
+                "incomplete_point",
+                "opaque native diagnostic",
+                Some("refused"),
+                false,
+                "x and y must be provided together".into(),
+            ),
+            (
+                "other_native_error",
+                original.as_str(),
+                Some("unverifiable"),
+                false,
+                format!("other_native_error: {original}"),
+            ),
+        ] {
+            let result = cua_driver_sdk::ToolResult {
+                text: text.into(),
+                images: Vec::new(),
+                structured_json: effect
+                    .map(|effect| serde_json::json!({"code":code,"effect":effect}).to_string()),
+                is_error: true,
+                error_code: Some(code.into()),
+                action: None,
+                verification: None,
+                degraded: false,
+                raw_json: "{}".into(),
+            };
+            match native_input_result(result, Language::En).unwrap_err() {
+                ToolError::OutcomeUnknown(message) => {
+                    assert!(unknown);
+                    assert_eq!(message, expected);
+                }
+                ToolError::Failed(message) => {
+                    assert!(!unknown);
+                    assert_eq!(message, expected);
+                }
+                other => panic!("unexpected native error: {other}"),
+            }
+        }
+    }
 
     #[tokio::test]
     async fn dropping_an_epoch_close_observer_keeps_the_original_cleanup() {

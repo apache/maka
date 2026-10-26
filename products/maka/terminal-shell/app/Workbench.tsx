@@ -19,8 +19,8 @@
 
 import { tr } from './locale';
 import { effect, inputAction, signal, View, type JSX } from 'nsh';
-import { windowSize } from 'nsh/device';
-import { keymap } from 'nsh/keymap';
+import { windowSize } from 'nsh';
+import { keymap } from 'nsh';
 import { Dialog, ResizablePanel, ResizablePanelGroup } from 'nsh/base';
 import { C } from './ui';
 import { WorkspaceBrowser, type WorkspaceBrowserProps } from './WorkspaceBrowser';

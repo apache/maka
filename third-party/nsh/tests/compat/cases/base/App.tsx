@@ -17,12 +17,13 @@ import BaseEditor from "./base-editor";
 import BaseNavPage from "./base-nav-page";
 import BaseNavStack from "./base-nav-stack";
 import BasePopups from "./base-popups";
+import BasePlot from "./base-plot";
 import BaseProgress from "./base-progress";
 import BaseTable from "./base-table";
 import BaseRadio from "./base-radio";
 import BaseResizable from "./base-resizable";
 import BaseSafeAreaKeyboard from "./base-safe-area-keyboard";
-import BaseSelectionArea from "./base-selection-area";
+import BaseSelectableView from "./base-selectable-view";
 import BaseSwitch from "./base-switch";
 import BaseTabs from "./base-tabs";
 import BaseTextView from "./base-text-view";
@@ -44,13 +45,14 @@ const cases: Record<string, () => JSX.Element> = {
   "base-popups": BasePopups,
   "base-safe-area-keyboard": BaseSafeAreaKeyboard,
   "base-text-view": BaseTextView,
-  "base-selection-area": BaseSelectionArea,
+  "base-selectable-view": BaseSelectableView,
   "base-switch": BaseSwitch,
   "base-checkbox": BaseCheckbox,
   "base-radio": BaseRadio,
   "base-resizable": BaseResizable,
   "base-tabs": BaseTabs,
   "base-collapsible": BaseCollapsible,
+  "base-plot": BasePlot,
   "base-progress": BaseProgress,
   "base-table": BaseTable,
   "base-toast": BaseToast,

@@ -605,6 +605,24 @@ fn browser_command(command: &maka_computer_use::protocol::Command) -> bool {
             | Command::GetBrowser { .. }
             | Command::BrowserTab { .. }
             | Command::BrowserRead { .. }
+            | Command::BrowserMutation {
+                handle: Handle::Tab(_),
+                ..
+            }
+            | Command::ClipboardRead {
+                handle: Handle::Tab(_)
+            }
+            | Command::ClipboardReadText {
+                handle: Handle::Tab(_)
+            }
+            | Command::ClipboardWrite {
+                handle: Handle::Tab(_),
+                ..
+            }
+            | Command::ClipboardWriteText {
+                handle: Handle::Tab(_),
+                ..
+            }
             | Command::TabMetadata { .. }
             | Command::GetTab { .. }
             | Command::CreateBrowserTab { .. }
@@ -688,6 +706,31 @@ fn partial(error: ToolError, context: &CellContext, reset: bool, language: Langu
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn clipboard_and_locator_commands_retain_the_exact_browser_owner() {
+        for handle in [
+            json!({"kind":"tab","id":"owned"}),
+            json!({"kind":"app","id":"owned"}),
+        ] {
+            for payload in [
+                json!({"method":"clipboardRead","handle":handle}),
+                json!({"method":"clipboardReadText","handle":handle}),
+                json!({"method":"clipboardWriteText","handle":handle,"text":"fixture"}),
+                json!({"method":"clipboardWrite","handle":handle,"items":[{"entries":[{"mimeType":"text/plain","text":"fixture"}]}]}),
+                json!({"method":"browserMutation","handle":handle,"locator":{"selector":"button"},"operation":{"kind":"click"}}),
+            ] {
+                let command =
+                    serde_json::from_value(payload.clone()).expect("public Computer Use command");
+                assert_eq!(
+                    browser_command(&command),
+                    handle["kind"] == "tab",
+                    "{payload}"
+                );
+            }
+        }
+    }
 
     struct QueuedAudio {
         native: Arc<tokio::sync::Mutex<maka_computer_use::Session>>,

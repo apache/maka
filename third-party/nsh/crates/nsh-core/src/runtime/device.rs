@@ -2,7 +2,7 @@
 //! ([`crate::open_url`]). Needs the `openUrl` capability when the app
 //! declares capabilities.
 
-use crate::ui::{JsError, Later, System, module};
+use crate::element::{JsError, Later, System, module};
 
 /// What the app asks of the system it runs on.
 #[module]
@@ -23,7 +23,7 @@ impl Device {
             return Err(JsError::Type(crate::open_url::not_granted(&url)));
         }
         Ok(Later::new(async move {
-            Ok::<bool, JsError>(crate::ui::prelude::open_url(url).await)
+            Ok::<bool, JsError>(crate::prelude::open_url(url).await)
         }))
     }
 }

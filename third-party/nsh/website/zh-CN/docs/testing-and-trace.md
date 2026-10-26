@@ -152,7 +152,7 @@ describe("the cart", () => {
 
 | 选项 | 默认值 | 说明 |
 |---|---|---|
-| `storage` | 空 | `nsh/storage` 初始保存的内容：`{ todos: "[]" }`。 |
+| `storage` | 空 | `Storage` 初始保存的内容：`{ todos: "[]" }`。 |
 | `network` | 无 | 应用的请求按路由得到的结果，见[模拟网络](#模拟网络)。`"live"`：使用真实网络。 |
 | `width`、`height` | 390、844 | 视口大小，单位为点。 |
 | `safeArea` | 0 | 安全区域内边距，单位为点：`{ top: 47, bottom: 34 }`。 |
@@ -166,7 +166,7 @@ describe("the cart", () => {
 
 ### 扮演宿主应用
 
-嵌入在原生应用中的应用通过 [`nsh/host`](../modules/nsh-host.md) 与宿主应用通信。在测试里由测试扮演宿主应用：`host.params` 是应用启动时读取的启动参数，`host.handlers` 按名称回答应用的 `host.call`、接收它的 `host.post`。处理函数可以是一个值，用它回答每次调用；也可以是一个函数，接收调用的数据并返回回答（或回答的 promise）。函数抛出的错误会让调用失败，与宿主应用出错时一样。`handlers` 没有列出的名称的调用会失败，与不处理任何调用的宿主应用一样。
+嵌入在原生应用中的应用通过 [`host`](../modules/nsh.md#host) 与宿主应用通信。在测试里由测试扮演宿主应用：`host.params` 是应用启动时读取的启动参数，`host.handlers` 按名称回答应用的 `host.call`、接收它的 `host.post`。处理函数可以是一个值，用它回答每次调用；也可以是一个函数，接收调用的数据并返回回答（或回答的 promise）。函数抛出的错误会让调用失败，与宿主应用出错时一样。`handlers` 没有列出的名称的调用会失败，与不处理任何调用的宿主应用一样。
 
 ```tsx
 const app = await open("./App.tsx", {
@@ -189,7 +189,7 @@ expect(app.shows("Conversation c-43")).toBe(true);
 
 `app.host.send(name, data)` 发送一个事件，然后等待应用空闲。`app.host.calls()` 和 `app.host.posts()` 按顺序列出处理函数收到的调用和投递：`name` 和 `data`。
 
-应用打开的 URL（[`openUrl`](../modules/nsh-device.md#openurl)，以及 `links="open"` 的 `TextView` 中的链接）会被记录下来，并以“已打开”回报给应用，本机上不会真正打开任何东西。`app.openedUrls()` 列出它们：
+应用打开的 URL（[`openUrl`](../modules/nsh.md#openurl)，以及 `links="open"` 的 `TextView` 中的链接）会被记录下来，并以“已打开”回报给应用，本机上不会真正打开任何东西。`app.openedUrls()` 列出它们：
 
 ```tsx
 await app.press("Contact us");
@@ -335,7 +335,7 @@ expect(app.texts()).toContain("Saved at 09:00:10");
 | `app.menu()` | 应用显示的上下文菜单（`Menu.popup`）中的操作：`label`（子菜单中的项写在子菜单名之后，如 `"Share > Mail"`）、`disabled`，可勾选项还有 `checked`；没有打开的菜单时为 `null`。 |
 | `await app.chooseMenuItem(label)` | 选择已打开上下文菜单中的操作，如同点击它：应用收到 `onMenu`（其 `onSelect` 运行），然后菜单关闭。该项被禁用或不存在时 reject。 |
 | `await app.closeMenu()` | 关闭已打开的上下文菜单，不选择任何项，如同按下 Escape。 |
-| `await app.keyboard.press(keys)` | 按下一个带修饰键的按键，写法同 `nsh/keymap`（`"mod+k"`、`"shift+/"`、`"escape"`；`mod` 是平台的命令键），如同硬件键盘，在所有平台上都可用（手机和平板也可以接硬件键盘）：由应用的对应快捷键接收（`keymap.bind`、`onKeyCommand`），否则在 macOS 和 Web 上由 Tab 和 Shift+Tab 在输入框和可按压的视图之间移动键盘焦点（`onFocus`、`onBlur`、`focus:` 样式），Return 或空格按下焦点所在的视图，否则由获得焦点的输入框接收字符、Backspace 或回车，否则 Escape 执行返回。 |
+| `await app.keyboard.press(keys)` | 按下一个带修饰键的按键，写法同 `keymap`（`"mod+k"`、`"shift+/"`、`"escape"`；`mod` 是平台的命令键），如同硬件键盘，在所有平台上都可用（手机和平板也可以接硬件键盘）：由应用的对应快捷键接收（`keymap.bind`、`onKeyCommand`），否则在 macOS 和 Web 上由 Tab 和 Shift+Tab 在输入框和可按压的视图之间移动键盘焦点（`onFocus`、`onBlur`、`focus:` 样式），Return 或空格按下焦点所在的视图，否则由获得焦点的输入框接收字符、Backspace 或回车，否则 Escape 执行返回。 |
 | `await app.drag(selector, { x, y })` | 手指落在视图中央，停留 100 ms，再移动 `x`、`y` 点（每帧 10 点）后抬起，由平台的输入系统处理：pan 跟随手指（`pan={{ x, y }}`、`onPanStart`，以及带松手速度的 `onPanEnd`），监听触摸的视图会收到触摸事件（`onTouchStart`、`PanResponder`），滚动视图随手指滚动，拉过顶部足够远时触发刷新（`onRefresh`），手指移开后其下的按压会被取消。在桌面和 web 上由鼠标完成。 |
 | `await app.wait(ms)` | 让应用运行 `ms` 毫秒：定时器、动画、请求。在手动时钟上，把时钟推进 `ms`（`app.clock.runFor`）。 |
 | `await app.waitFor(selector, options?)` | 有视图匹配时 resolve；传 `{ state: "gone" }` 时，等到没有视图匹配才 resolve；`timeout` 毫秒（5000）后 reject。 |
@@ -379,7 +379,7 @@ expect(app.texts()).toContain("Saved at 09:00:10");
 - **对话框会被回答**：由测试的 `onDialog` 回答，否则按它的取消按钮，否则在可以关闭时直接关闭；只能用其他按钮回答的对话框，
   会让弹出它的步骤失败，直到测试指定要按哪个按钮。
 - **剪贴板保存文字**：应用复制的内容，粘贴时可以读回来（用 `clipboard` 设定初始内容）。
-- **页面的宿主应答 `nsh/host`**：应用的 `nsh.json` 在 `web.host` 中指定了宿主时（[页面的宿主](#页面的宿主)）。
+- **页面的宿主应答 `host`**：应用的 `nsh.json` 在 `web.host` 中指定了宿主时（[页面的宿主](#页面的宿主)）。
 - **应用在它的能力下运行**：`nsh.json` 的 `capabilities` 与设备上一样生效，没有声明的都会被拒绝。
 - **URL 只被记录**：应用打开的 URL 以“已打开”回报，`app.openedUrls()` 列出它们。
 - **选取会被回答**：用测试给的文件（`onPick`），否则视为取消，`Picker.pickImages` resolve 为 `[]`。
@@ -392,7 +392,7 @@ expect(app.texts()).toContain("Saved at 09:00:10");
 发布到 Web 的应用从页面得到宿主：`nsh.json` 的 `web.host`，一个导出 `createHost(player)` 的模块
 （[Web](./web.md#宿主的函数)）。无界面运行时，测试每打开一个应用，都会在应用启动前，在独立的 JavaScript 上下文中加载
 这个模块（有定时器和 `console`，没有浏览器的 API，不能 import）：它的 `call` 应答应用的
-[`host.call`](../modules/nsh-host.md)，它的 `player.hostEvent` 送到 `host.on`，`host.available()` 为 `true`。
+[`host.call`](../modules/nsh.md#host)，它的 `player.hostEvent` 送到 `host.on`，`host.available()` 为 `true`。
 `call` 抛出异常、Promise 被拒绝或返回值不是 JSON 时，应用的调用以它的消息被拒绝，与页面上一致；应用启动前发送的事件
 会在应用启动后送到它顶层注册的监听器。`--web-host <module>` 指定另一个模块。应用调用的函数必须列在它的 `capabilities.host` 中，
 与页面上一致。调用的超时和宿主自己的定时器都按应用的时间计算，手动时钟（`app.clock.runFor`）会推进它们。在浏览器中（`--target web`），开发页面像发布的页面一样为每个应用运行 `nsh.json` 的 `web.host`；在其他平台上（`--target`）应用没有宿主：`host.available()` 为 `false`。
@@ -663,7 +663,7 @@ view()
 | iOS | 视图的 `accessibilityIdentifier`（在 XCUITest 中为 `app.otherElements["add-to-cart"]`）。 |
 | Android | 无障碍节点的 view id 资源名（在 UI Automator 中为 `By.res("add-to-cart")`）。 |
 
-在 Rust 中测试 id 是每个元素的方法；`testID` 是每个元素以及每个 Rust 组件（`SafeAreaView`、`KeyboardAvoidingView` 等）都有的 prop。它不会改变屏幕阅读器读出的内容；那应该用
+在 Rust 中测试 id 是每个元素的方法；`testID` 是每个元素以及每个 Rust 组件（`Button`、`Dialog` 等）都有的 prop。它不会改变屏幕阅读器读出的内容；那应该用
 `accessibilityLabel`（参见[无障碍](./accessibility.md)）。在 `--trace` 的输出中，它出现在视图的 `ViewProps` item 里，
 形如 `test_id: Some("add-to-cart")`。
 

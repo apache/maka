@@ -513,26 +513,7 @@ impl Browsers {
                 tab.last_turn = turn.to_owned();
                 tab.authorize(None, invocation, cancellation, language)
                     .await?;
-                let authorization = tab.clipboard_authorization.clone().ok_or_else(|| {
-                    failed("Browser clipboard requires current attachment authorization")
-                })?;
-                let host = tab
-                    .dialog_host
-                    .clone()
-                    .ok_or_else(|| failed("Browser clipboard requires Host effect custody"))?;
-                tab.verify(language).await?;
-                if tab
-                    .clipboard
-                    .as_ref()
-                    .is_some_and(|bridge| !bridge.is_open())
-                {
-                    tab.cleanup_clipboard().await?;
-                }
-                if tab.clipboard.is_none() {
-                    let store = tab.clipboard_store.clone();
-                    clipboard_bridge::Bridge::install(tab, store, authorization, host, turn)
-                        .await?;
-                }
+                tab.ensure_clipboard_bridge(turn, language).await?;
                 check_input(cancellation)?;
                 let store = &tab.clipboard_store;
                 store
@@ -565,6 +546,33 @@ impl Browsers {
                         }
                     })
                     .await
+            }
+            Command::BrowserMutation {
+                handle: Handle::Tab(handle),
+                locator,
+                operation,
+            } => {
+                playwright::validate_mutation(&operation)?;
+                let identity = self
+                    .targets
+                    .get(&handle)
+                    .ok_or_else(|| failed("stale_tab: bind it again"))?
+                    .identity()?;
+                self.use_tab(&identity, turn).await?;
+                let tab = self.targets.get_mut(&handle).unwrap();
+                tab.last_turn = turn.to_owned();
+                tab.authorize(None, invocation, cancellation, language)
+                    .await?;
+                let document = tab.document();
+                tab.playwright_mutation(
+                    &locator,
+                    operation,
+                    document,
+                    cursor,
+                    cancellation,
+                    language,
+                )
+                .await
             }
             Command::BrowserRead {
                 handle: Handle::Tab(handle),
@@ -1227,6 +1235,33 @@ impl Default for Browsers {
     }
 }
 impl Tab {
+    async fn ensure_clipboard_bridge(
+        &mut self,
+        turn: &str,
+        language: Language,
+    ) -> Result<(), ToolError> {
+        let authorization = self
+            .clipboard_authorization
+            .clone()
+            .ok_or_else(|| failed("Browser clipboard requires current attachment authorization"))?;
+        let host = self
+            .dialog_host
+            .clone()
+            .ok_or_else(|| failed("Browser clipboard requires Host effect custody"))?;
+        self.verify(language).await?;
+        if self
+            .clipboard
+            .as_ref()
+            .is_some_and(|bridge| !bridge.is_open())
+        {
+            self.cleanup_clipboard().await?;
+        }
+        if self.clipboard.is_none() {
+            let store = self.clipboard_store.clone();
+            clipboard_bridge::Bridge::install(self, store, authorization, host, turn).await?;
+        }
+        Ok(())
+    }
     async fn cleanup_clipboard(&mut self) -> Result<(), ToolError> {
         if let Some(bridge) = self.clipboard.as_mut() {
             bridge.cleanup().await?;
@@ -1727,6 +1762,12 @@ impl Tab {
         cancellation: &tokio_util::sync::CancellationToken,
         language: Language,
     ) -> Result<Value, ToolError> {
+        if matches!(
+            action,
+            Action::LinuxClick { .. } | Action::LinuxScroll { .. } | Action::LinuxDrag { .. }
+        ) {
+            return Err(failed("Linux native input requires an application target"));
+        }
         if let Some(dialog) = self.active_dialog().await {
             return self
                 .dialog_action(dialog, action, invocation, cancellation)
@@ -1773,6 +1814,9 @@ impl Tab {
         check_input(cancellation)?;
         match action {
             Action::MoveCursor { .. } => unreachable!("handled before input dispatch"),
+            Action::LinuxClick { .. } | Action::LinuxScroll { .. } | Action::LinuxDrag { .. } => {
+                unreachable!("refused before browser input")
+            }
             Action::Navigate { url } => {
                 validate_url(&url)?;
                 let source_frame = self.frame().await?;

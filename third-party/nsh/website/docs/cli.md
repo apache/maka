@@ -144,7 +144,7 @@ Runs the app's tests headless ([Testing](./testing-and-trace.md)): the test file
 | `--junit <FILE>` | Also writes the results to `FILE` as a JUnit XML report, the format CI services show test results from: a `testsuite` per test file, a `testcase` per test. |
 | `--target <TARGET>` | Runs the apps the tests open on this platform's development host instead of headless (`macos`, `linux`, `windows`, `gpui`, `web`, `ios` and `android`; `web` runs them in a headless Chrome, Edge or Chromium): the steps act with the platform's own input ([Testing](./testing-and-trace.md#on-a-real-platform)). The crates' Rust tests run on this machine, in runs without `--target`. |
 | `--browser <PATH>` | The Chrome, Edge or Chromium executable `--target web` runs the apps in (default: the one installed on this machine). |
-| `--web-host <JS>` | The web page's host module the apps opened headless get (default: `nsh.json` `web.host`; it exports `createHost(player)`): it answers their [`nsh/host`](../modules/nsh-host.md) calls and its `player.hostEvent` reaches `host.on` ([Testing](./testing-and-trace.md#the-pages-host)). Headless runs only; `--target web` runs `nsh.json`'s `web.host`. |
+| `--web-host <JS>` | The web page's host module the apps opened headless get (default: `nsh.json` `web.host`; it exports `createHost(player)`): it answers their [`host`](../modules/nsh.md#host) calls and its `player.hostEvent` reaches `host.on` ([Testing](./testing-and-trace.md#the-pages-host)). Headless runs only; `--target web` runs `nsh.json`'s `web.host`. |
 
 ## nsh check
 

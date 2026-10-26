@@ -50,7 +50,7 @@ nsh package --target web       # or ios, ios-simulator, android, macos, linux, w
 
 ```rust
 use nsh_base::{button, theme};
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 /// The components available to TSX through `app/native`.
 #[native_module("app/native")]
@@ -140,7 +140,7 @@ native targets' threads.
 
 ## Desktop title bars
 
-Rust apps draw their own title bars with `nsh_core::ui::desktop`. Call
+Rust apps draw their own title bars with `nsh_core::element::desktop`. Call
 `set_title_bar(TitleBarStyle::Hidden, Some(height))`, mark the bar's background
 with `.window_drag(true)`, and reserve the native window controls' space with
 `title_bar()`. Its `top` is the bar's height, and `left` and `right` are the widths
@@ -151,7 +151,7 @@ behavior; `.window_drag(false)` keeps a child out of its parent's drag region.
 ```rust
 use nsh_core::{
     desktop::TitleBarStyle,
-    ui::{desktop::{close_window, set_title_bar, title_bar}, prelude::*},
+    element::{desktop::{close_window, set_title_bar, title_bar}}, prelude::*,
 };
 
 fn window_bar() -> impl IntoElement {

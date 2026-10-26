@@ -1,7 +1,10 @@
 //! `AlertDialog`: the platform's alert or action sheet (UIAlertController,
 //! AlertDialog, a list dialog on Android).
 
-use nsh_core::ui::{Dialog, DialogButton, DialogButtonStyle, prelude::*};
+use nsh_core::{
+    element::{Dialog, DialogButton, DialogButtonStyle},
+    prelude::*,
+};
 
 /// The system's alert dialog (UIAlertController, AlertDialog).
 #[module]
@@ -173,9 +176,7 @@ impl AlertDialogOptions {
             let sheet = self.presentation == AlertDialogPresentation::ActionSheet;
             let cancelable = self.close_on_escape.unwrap_or(sheet)
                 || self.close_on_backdrop_press.unwrap_or(sheet);
-            // The core's request, which this builder replaces for apps.
-            #[allow(deprecated)]
-            dialog(Dialog {
+            nsh_core::element::ambient::dialog(Dialog {
                 id: 0,
                 title: self.title.as_ref().map(|t| t.to_string()),
                 message: self.description.as_ref().map(|m| m.to_string()),

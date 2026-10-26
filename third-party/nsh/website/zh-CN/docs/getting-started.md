@@ -69,8 +69,8 @@ TSX 应用是一个或多个带入口的 `.tsx` 文件：它是 `nsh run` 运行
 
 ```rust tabs
 // src/lib.rs
-use nsh_base::{safe_area_view, theme};
-use nsh_core::ui::prelude::*;
+use nsh_base::theme;
+use nsh_core::prelude::*;
 
 /// crate 的 UI 集合：TSX 入口可以从 `my-app/native` 导入的内容。
 #[native_module("my-app/native")]
@@ -87,8 +87,9 @@ pub fn App() -> impl IntoElement {
         .bg(move || theme().background)
         .text_color(move || theme().foreground)
         .child(
-            safe_area_view()
+            view()
                 .flex_1()
+                .p_safe_area()
                 .child(
                     view()
                         .flex_1()
@@ -118,12 +119,11 @@ pub fn App() -> impl IntoElement {
 ```tsx tabs
 // App.tsx
 import { mount, signal, Text, View } from "nsh";
-import { SafeAreaView } from "nsh/base";
 
 function App() {
   const count = signal(0);
   return (
-    <SafeAreaView class="flex-1 items-center justify-center gap-4 bg-background">
+    <View class="flex-1 items-center justify-center gap-4 bg-background pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]">
       <Text class="text-3xl font-semibold text-foreground">{count()}</Text>
       <View
         onPress={() => count.update((c) => c + 1)}
@@ -132,7 +132,7 @@ function App() {
       >
         <Text class="text-lg text-primary-foreground">Tap</Text>
       </View>
-    </SafeAreaView>
+    </View>
   );
 }
 
@@ -141,8 +141,8 @@ mount(App);
 
 Rust 版：
 
-- **`use nsh_core::ui::prelude::*`** 引入基本元素（`view()`、`text()`、`scroll()`、`input()`、`image()` 等）、[signal](./reactivity.md)
-  和带类型的样式方法；**`nsh_base`** 提供无样式的基础组件（[`safe_area_view()`](../modules/nsh-base.md#safeareaview)、`button()`、键盘、对话框）以及
+- **`use nsh_core::prelude::*`** 引入基本元素（`view()`、`text()`、`scroll()`、`input()`、`image()` 等）、[signal](./reactivity.md)
+  和带类型的样式方法（`.p_safe_area()` 按[安全区域](../elements/safe-area.md)为视图加内边距）；**`nsh_base`** 提供无样式的基础组件（`button()`、键盘、对话框）以及
   `theme()`，即应用组件绘制时使用的颜色和圆角（[主题](./rust.md#主题)）。
 - **`#[component] pub fn App()`** 是一个组件：只运行**一次**、返回自己元素的函数。`nsh.json` 中的 `"root": "App"` 指向它，`nsh run`
   挂载它。`signal(0_u32)` 创建一个会随时间变化的值。
@@ -159,8 +159,8 @@ TSX 版：
 - **`import { mount, signal, Text, View } from "nsh"`**：`nsh` 是核心模块，提供 signal、`mount`、其他响应式原语以及宿主元素。它由原生运行时提供，不会被打包。**`nsh/base`**
   提供基础组件，相当于 Rust 中的 `nsh_base`。
 - **`function App()`** 是一个只运行**一次**的组件。**`{count()}`** 在 JSX 中读取 signal：编译器看到这是一次调用，就让这段文本跟随该 signal。
-- **`<View onPress>`** 是一个响应按压的原生视图；`active:` 类是它按下时的样式。`View`、`Text`、`Image`、`Scroll`、`Input`
-  等[宿主元素](../elements/index.md)都从 `nsh` 导入；只有 `If` 和 `Each` 无需导入。
+- **`<View onPress>`** 是一个响应按压的原生视图；`active:` 类是它按下时的样式。`View`、`Text`、`Image`、`Scroll`
+  等[宿主元素](../elements/index.md)都从 `nsh` 导入（`Input` 从 `nsh/base` 导入）；只有 `If` 和 `Each` 无需导入。
 - **`class`** 接受 [Tailwind](./tailwind.md) 类；`style={{ … }}` 接受由 camelCase 样式属性组成的对象，数字的单位是点。
   `bg-background`、`bg-primary`、`text-primary-foreground` 和 `rounded-(--radius)` 引用应用主题的令牌（[主题 token](./tailwind.md#主题-token)）：
   它们自动跟随深色模式，`nsh.json` 中的 `"theme"` 可以改变它们的样式。

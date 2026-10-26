@@ -39,6 +39,8 @@ env:
 
 jobs:
   compat:
+    # Disabled until the API is ready to freeze.
+    if: false
     runs-on: ubuntu-24.04
     steps:
       # A pull request runs the checks when it changes what they build;

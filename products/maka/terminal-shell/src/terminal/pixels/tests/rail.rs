@@ -22,7 +22,8 @@ use super::super::{
     probe::{Capabilities, MouseCoordinates},
 };
 use gpui::{AppContext, Application, Bounds, Focusable, WindowBounds, WindowOptions, point, px};
-use nsh_core::ui::prelude::*;
+use nsh_base::input;
+use nsh_core::prelude::*;
 use nsh_engine::{App, Bundle, EngineConfig};
 use nsh_gpui_terminal::{SubmittedFrame, TerminalPlatform};
 use nsh_platform_gpui::{AppOptions, AppView};

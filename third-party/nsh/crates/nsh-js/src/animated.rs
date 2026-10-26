@@ -2441,7 +2441,7 @@ mod tests {
         let host = Host::new().unwrap();
         host.eval_source(
             r#"
-            import { Animated, AnimatedValue } from "nsh/animated";
+            import { Animated, AnimatedValue } from "nsh";
             import { text } from "nsh:rt";
             const v = new AnimatedValue(0);
             globalThis.log = [];
@@ -2516,7 +2516,7 @@ mod tests {
         let host = Host::new().unwrap();
         host.eval_source(
             r#"
-            import { AnimatedValue } from "nsh/animated";
+            import { AnimatedValue } from "nsh";
             import { text } from "nsh:rt";
             const v = new AnimatedValue(1);
             globalThis.log = [];
@@ -2581,7 +2581,7 @@ mod tests {
         let host = Host::new().unwrap();
         host.eval_source(
             r#"
-            import { AnimatedValue } from "nsh/animated";
+            import { AnimatedValue } from "nsh";
             import { text } from "nsh:rt";
             const v = new AnimatedValue(0);
             const config = { inputRange: [0, 1], outputRange: ["red", "blue"] };
@@ -2641,7 +2641,7 @@ mod tests {
         let host = Host::new().unwrap();
         host.eval_source(
             r#"
-            import { Animated, AnimatedValue } from "nsh/animated";
+            import { Animated, AnimatedValue } from "nsh";
             globalThis.v = new AnimatedValue(0);
             Animated.loop(Animated.timing(v, { toValue: 1 })).start();
             "#,
@@ -2670,7 +2670,7 @@ mod tests {
         let host = Host::new().unwrap();
         host.eval_source(
             r#"
-            import { Animated, AnimatedValue } from "nsh/animated";
+            import { Animated, AnimatedValue } from "nsh";
             import { text } from "nsh:rt";
             const scroll = new AnimatedValue(0);
             const plain = scroll.diffClamp(0, 56);
@@ -2702,7 +2702,7 @@ mod tests {
         let host = Host::new().unwrap();
         host.eval_source(
             r#"
-            import { Animated, Easing } from "nsh/animated";
+            import { Animated, Easing } from "nsh";
             import { text } from "nsh:rt";
             const quad = Easing.sample(Easing.quad, 3);
             const spring = Animated.sampleSpring({ toValue: 1, from: 0, damping: 40 });
@@ -2729,7 +2729,7 @@ mod tests {
         let host = Host::new().unwrap();
         host.eval_source(
             r#"
-            import { Animated, AnimatedValue, Easing, createMotion, motions } from "nsh/animated";
+            import { Animated, AnimatedValue, Easing, createMotion, motions } from "nsh";
             import { text } from "nsh:rt";
             const v = new AnimatedValue(0);
             v.keyframes([0, { value: 10, offset: 0.25, easing: Easing.steps(2) }, 0], { duration: 400 });

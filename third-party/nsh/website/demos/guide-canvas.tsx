@@ -1,22 +1,14 @@
 import { Canvas, type GestureResponderEvent, mount, Path2D, signal, Text, View } from "nsh";
-import { createAnimatedValue, Easing } from "nsh/animated";
-import { desktop, Inspector, Panel, size, tint, ui, wide } from "./palette";
+import { createAnimatedValue, Easing } from "nsh";
+import { button, buttonText, Inspector, Panel, tint, ui, wide } from "./palette";
 
 const TAU = Math.PI * 2;
 const heart = new Path2D("M12 21s-7-4.35-9.5-8.5C.5 8.5 3 4 7 4c2 0 3.5 1 5 3 1.5-2 3-3 5-3 4 0 6.5 4.5 4.5 8.5C19 16.65 12 21 12 21z");
 
 function Button(props: { label: string; onPress: () => void }) {
   return (
-    <View
-      onPress={props.onPress}
-      activeStyle={{ opacity: 0.6 }}
-      style={
-        desktop
-          ? { ...ui().raised, alignSelf: "flex-start", height: size.control, justifyContent: "center", paddingHorizontal: 12, borderRadius: 8 }
-          : { ...ui().raised, paddingHorizontal: 14, paddingVertical: 9, borderRadius: 10 }
-      }
-    >
-      <Text style={{ color: ui().text, fontWeight: "600", fontSize: desktop ? 13 : undefined }}>{props.label}</Text>
+    <View onPress={props.onPress} {...button()}>
+      <Text style={buttonText()}>{props.label}</Text>
     </View>
   );
 }

@@ -432,7 +432,7 @@ mount(App);
 fn list_passes_host_props_to_its_scroll_view() {
     let app = r#"
 import { mount, signal, Text, View } from "nsh";
-import { List } from "nsh/list";
+import { List } from "nsh";
 const label = signal("Feed");
 const size = signal("none");
 function App() {

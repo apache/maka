@@ -1,5 +1,5 @@
 //! Opening a URL outside the app (`openUrl` of `nsh/device`,
-//! [`crate::ui::open_url`]): a web page in the browser, a `mailto:` link in
+//! [`crate::element::open_url`]): a web page in the browser, a `mailto:` link in
 //! the mail app, a `tel:` link in the phone app, any scheme another app
 //! registered.
 //!

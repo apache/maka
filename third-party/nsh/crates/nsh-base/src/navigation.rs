@@ -3,10 +3,7 @@
 //! same layer. The elements are the core's host elements ([`Stack`],
 //! [`Screen`], [`Modal`]); these are where apps make them.
 
-// The core's builders, deprecated for apps in favor of these.
-#![allow(deprecated)]
-
-use nsh_core::ui::{Modal, Screen, Stack};
+use nsh_core::element::{Modal, Screen, Stack};
 
 /// A native navigation stack (TSX: `NavStack`): its children are its
 /// [`nav_page`]s, bottom to top. Put a page in to push it, leave it out to
@@ -15,7 +12,7 @@ use nsh_core::ui::{Modal, Screen, Stack};
 /// system header), a stack with a toolbar and predictive back on Android,
 /// the app's `header` on the desktops and the web.
 pub fn nav_stack() -> Stack {
-    nsh_core::ui::stack()
+    nsh_core::element::stack()
 }
 
 /// One page of a [`nav_stack`] (TSX: `NavPage`): the page's content (its
@@ -24,7 +21,7 @@ pub fn nav_stack() -> Stack {
 /// below the header (`Scope::insets`). `on_dismiss` tells the app the user
 /// went back, for it to drop the route.
 pub fn nav_page() -> Screen {
-    nsh_core::ui::screen()
+    nsh_core::element::screen()
 }
 
 /// A dialog (TSX: `Dialog`): presents its children over everything else,
@@ -35,5 +32,5 @@ pub fn nav_page() -> Screen {
 /// Android back button, a press on the backdrop, a swipe down on an iOS
 /// sheet).
 pub fn dialog() -> Modal {
-    nsh_core::ui::modal()
+    nsh_core::element::modal()
 }
