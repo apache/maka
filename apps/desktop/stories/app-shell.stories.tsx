@@ -5146,7 +5146,7 @@ export const AssistantCards: Story = {
     expect(getComputedStyle(bubble).paddingLeft).toBe('12px');
     expect(getComputedStyle(bubble).backgroundColor).not.toBe('rgba(0, 0, 0, 0)');
     expect(getComputedStyle(bubble, '::before').display).not.toBe('none');
-    expect(getComputedStyle(canvasElement.querySelector('.personal-assistant-chat')!).getPropertyValue('--maka-reading-measure').trim()).toBe('800px');
+    expect(getComputedStyle(card.closest<HTMLElement>('.maka-turn')!).maxWidth).toBe('800px');
     const choices = [...card.querySelectorAll<HTMLButtonElement>('button')];
     expect(choices).toHaveLength(3);
     expect(new Set(choices.map(button => getComputedStyle(button).backgroundColor)).size).toBe(1);
