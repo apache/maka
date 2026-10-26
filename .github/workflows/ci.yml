@@ -191,9 +191,9 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-          key: nsh-cargo-${{ runner.os }}-${{ hashFiles('third-party/nsh/Cargo.lock') }}
+          key: nsh-cargo-${{ runner.os }}-${{ hashFiles('third-party/nsh/Cargo.lock', 'third-party/nsh/crates/gpui/Cargo.lock') }}
           restore-keys: nsh-cargo-${{ runner.os }}-
-      - name: Test NSH core, JS, headless and terminal integration
+      - name: Test NSH core, JS, headless, terminal and development tooling
         run: |
           df -h "$RUNNER_TEMP"
           df -i "$RUNNER_TEMP"
@@ -201,13 +201,47 @@ jobs:
           test "$available" -ge 8589934592 || { echo "NSH tests require 8 GiB free before compilation" >&2; exit 1; }
           cargo test --locked --manifest-path third-party/nsh/Cargo.toml \
             -p nsh-core -p nsh-base -p nsh-engine -p nsh-js \
-            -p nsh-testing -p nsh-platform-tui --features nsh-testing/agent
+            -p nsh-testing -p nsh-platform-tui -p nsh-dev -p nsh-bundler \
+            --features nsh-testing/agent,nsh-dev/client,nsh-dev/server
       - name: Test portable Web text layout and hit testing
         run: |
           available=$(df -B1 --output=avail "$RUNNER_TEMP" | tail -n 1 | tr -d ' ')
           test "$available" -ge 4294967296 || { echo "Web text tests require 4 GiB free before compilation" >&2; exit 1; }
           cargo test --locked --manifest-path third-party/nsh/Cargo.toml \
             -p nsh-platform-web --no-default-features --test text
+      # This owning workspace has a distinct lock/patch graph; root build
+      # artifacts are not assumed reusable. Queue tests open no native window.
+      - name: Check GPUI test build reserve
+        run: |
+          available=$(df -B1 --output=avail "$RUNNER_TEMP" | tail -n 1 | tr -d ' ')
+          inodes=$(df --output=iavail "$RUNNER_TEMP" | tail -n 1 | tr -d ' ')
+          test "$available" -ge 17179869184 || { echo "GPUI queue tests require 16 GiB free before setup" >&2; exit 1; }
+          test "$inodes" -ge 100000 || { echo "GPUI queue tests require 100000 free inodes" >&2; exit 1; }
+      - name: Install GPUI queue test native dependencies
+        timeout-minutes: 10
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            clang libclang-dev build-essential pkg-config \
+            libasound2-dev libfontconfig1-dev libfreetype6-dev libssl-dev \
+            libvulkan1 mesa-vulkan-drivers libwayland-dev libx11-xcb-dev libxcb1-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev libzstd-dev
+      - name: Test GPUI animated prop ordering
+        shell: bash
+        timeout-minutes: 30
+        run: |
+          available=$(df -B1 --output=avail "$RUNNER_TEMP" | tail -n 1 | tr -d ' ')
+          inodes=$(df --output=iavail "$RUNNER_TEMP" | tail -n 1 | tr -d ' ')
+          test "$available" -ge 17179869184 || { echo "GPUI queue tests require 16 GiB free before compilation" >&2; exit 1; }
+          test "$inodes" -ge 100000 || { echo "GPUI queue tests require 100000 free inodes" >&2; exit 1; }
+          args=(--locked --manifest-path third-party/nsh/crates/gpui/Cargo.toml
+            -p nsh-platform-gpui --no-default-features --features nsh-platform-gpui/js
+            --lib native::tests::animated_props_)
+          cargo test "${args[@]}" -- --list | tee "$RUNNER_TEMP/nsh-gpui-queue-tests.txt"
+          for name in animated_props_queue_their_latest_value animated_props_preserve_static_prop_barriers animated_props_preserve_command_observation_order; do
+            grep -Fx "native::tests::$name: test" "$RUNNER_TEMP/nsh-gpui-queue-tests.txt"
+          done
+          cargo test "${args[@]}" -- --test-threads=1
       - name: Report NSH storage
         if: ${{ always() }}
         run: |
