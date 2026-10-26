@@ -280,10 +280,9 @@ test('WorkHub suggestion geometry runs at both widths in both themes', () => {
   );
 });
 
-test('the provider model-row viewport story runs in a short window', () => {
-  const shortWindow = storyViewport(
-    'product-settings-providers--large-connection-detail-short-window',
-  );
+test('the provider model-row viewport story runs in two short windows', () => {
+  const storyId = 'product-settings-providers--large-connection-detail-short-window';
+  const shortWindow = storyViewport(storyId);
   assert.deepEqual(shortWindow, { width: 480, height: 800 });
   // The height is what the story is for: the rows are capped at
   // min(32rem, 60vh), and only under ~853px tall does 60vh become the
@@ -294,4 +293,23 @@ test('the provider model-row viewport story runs in a short window', () => {
     width: 1280,
     height: 900,
   });
+
+  // Smoke runs the same story twice. The second window is the shortest the
+  // shell supports, where the sticky Save bar takes a fifth of the pane:
+  // that is the window in which the story's keyboard-focus assertions catch
+  // a focused model control landing under the bar, and 480x800 does not.
+  const jobs = catalogJobs(storyIndex(storyId));
+  assert.deepEqual(
+    jobs.map(({ viewport }) => viewport),
+    [
+      { width: 480, height: 800 },
+      { width: 600, height: 320 },
+    ],
+  );
+  const [, short] = jobs;
+  assert.ok(short.viewport.height < shortWindow.height);
+  // Both runs stay bound by the window rather than by the 32rem cap.
+  for (const job of jobs) {
+    assert.ok(job.viewport.height * 0.6 < 32 * 16);
+  }
 });
