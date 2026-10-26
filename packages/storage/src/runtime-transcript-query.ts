@@ -359,7 +359,9 @@ export class RuntimeTranscriptQuery {
         JOIN runtime_events pe ON pe.invocation_id = e.invocation_id
         JOIN runtime_session_event_ordinals po ON po.event_id = pe.event_id
         WHERE o.session_id = ? AND o.ordinal = ?
-          AND pe.event_kind = 'text' AND json_extract(pe.payload_json, '$.role') = 'user'
+          AND pe.event_kind = 'text'
+          AND json_valid(pe.payload_json)
+          AND json_extract(pe.payload_json, '$.role') = 'user'
         ORDER BY pe.event_seq LIMIT 1
       `)
         .get(sessionId, row.first_ordinal) as { ordinal: number; event_id: string } | undefined;

@@ -594,6 +594,98 @@ describe('SqliteRuntimeStore', () => {
     });
   });
 
+  it('labels transcript Turns without failing on a malformed text payload', async () => {
+    await withStore(async (store, dbPath) => {
+      await appendSettledTurn(store, 1);
+      await appendSettledTurn(store, 2);
+      assert.deepEqual(
+        (await store.readTranscriptTurns('session-1', { throughOrdinal: 6, limit: 2 })).map(
+          (turn) => ({
+            turnId: turn.turnId,
+            firstOrdinal: turn.firstOrdinal,
+            lastOrdinal: turn.lastOrdinal,
+            promptId: turn.prompt?.event.id,
+            promptOrdinal: turn.prompt?.ordinal,
+          }),
+        ),
+        [
+          {
+            turnId: 'turn-1',
+            firstOrdinal: 1,
+            lastOrdinal: 3,
+            promptId: 'prompt-1',
+            promptOrdinal: 2,
+          },
+          {
+            turnId: 'turn-2',
+            firstOrdinal: 4,
+            lastOrdinal: 6,
+            promptId: 'prompt-2',
+            promptOrdinal: 5,
+          },
+        ],
+      );
+
+      const database = new DatabaseSync(dbPath);
+      try {
+        database.exec("UPDATE runtime_events SET payload_json = '{' WHERE event_id = 'prompt-2'");
+      } finally {
+        database.close();
+      }
+
+      // One malformed text payload must not take the whole Session's transcript
+      // with it: the Turn still shows, its label just skips the unreadable row.
+      const sampled = await store.readTranscriptTurns('session-1', {
+        throughOrdinal: 6,
+        limit: 2,
+      });
+      const lookedUp = await store.readTranscriptTurns('session-1', { turnId: 'turn-2' });
+      assert.deepEqual(
+        sampled.map((turn) => ({
+          turnId: turn.turnId,
+          firstOrdinal: turn.firstOrdinal,
+          lastOrdinal: turn.lastOrdinal,
+          promptId: turn.prompt?.event.id,
+          promptOrdinal: turn.prompt?.ordinal,
+        })),
+        [
+          {
+            turnId: 'turn-1',
+            firstOrdinal: 1,
+            lastOrdinal: 3,
+            promptId: 'prompt-1',
+            promptOrdinal: 2,
+          },
+          {
+            turnId: 'turn-2',
+            firstOrdinal: 4,
+            lastOrdinal: 6,
+            promptId: undefined,
+            promptOrdinal: undefined,
+          },
+        ],
+      );
+      assert.deepEqual(
+        lookedUp.map((turn) => ({
+          turnId: turn.turnId,
+          firstOrdinal: turn.firstOrdinal,
+          lastOrdinal: turn.lastOrdinal,
+          promptId: turn.prompt?.event.id,
+          promptOrdinal: turn.prompt?.ordinal,
+        })),
+        [
+          {
+            turnId: 'turn-2',
+            firstOrdinal: 4,
+            lastOrdinal: 6,
+            promptId: undefined,
+            promptOrdinal: undefined,
+          },
+        ],
+      );
+    });
+  });
+
   it('pages the transcript without reading rows the page does not contain', async () => {
     await withStore(async (store, dbPath) => {
       for (let turn = 0; turn < 4; turn += 1) await appendSettledTurn(store, turn);
