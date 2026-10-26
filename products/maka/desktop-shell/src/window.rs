@@ -186,6 +186,11 @@ fn open(
                 cx,
             )
         });
+        let moved = placement.clone();
+        view.update(cx, |_, cx| {
+            cx.observe_window_bounds(window, move |_, window, _| moved.follow(window))
+                .detach();
+        });
         let app = view.read(cx);
         app.own_window(window, cx);
         // Quit and close both close the window, which records its place;
