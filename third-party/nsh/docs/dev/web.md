@@ -384,7 +384,16 @@ dropped.
 Text (`src/text.rs`) is broken into lines here, with widths and font metrics from the `measure_text`,
 `font_ascent` and `font_descent` imports (canvas `measureText`, cached per font and string); runs are drawn at the
 positions computed here with a line height equal to the font's ascent + descent, so the baseline lands where layout
-put it.
+put it. Canvas text has no numeric variants (its `font` takes only `small-caps`; there is no `fontVariantNumeric`),
+so text with one (`tabular-nums`, ...) is measured by `measure_numeric_text` instead: a hidden span with the run's
+`font` and `font-variant-numeric`, as the run is drawn. Measuring there lays the page out, so a figure (digits and the
+signs numbers are written with: `css::measured_by_char`) is the sum of its characters' widths, each measured once and
+cached, and a live value that changes every frame lays nothing out; text with letters is measured whole, kerning
+included (`web/text-browser.test.mjs` checks both against what Chrome draws). The CSS of runs (`src/text/css.rs`: the `font` shorthand,
+generic families such as `monospace` left unquoted,
+names the app quoted kept only when their quotes close them) and line breaking (`src/text/wrap.rs`: break opportunities, the
+line start and end rules of CJK punctuation, the filling of lines) depend on nothing of the browser and are tested on
+the host (`tests/text`).
 
 ## Styles as classes
 
@@ -478,9 +487,11 @@ browsers' touches into what phones report:
   (`grabBar`: `onScrollDragStart` / `EndDrag`, snapping off while it is held, a snapping view then settles on the
   nearest snap point). Phones and tablets keep the browser's own overlay scroll bars.
 - **Keys** (`keyDown`), in this order: the app's shortcuts (`nsh/keymap`: the mounted `MountItem::Keymap` stays in
-  Rust, `nsh_key` matches a key on the spot with `Keymap::find` and `nsh_key_command` reports the binding; keys are
-  passed as the character they type without modifiers, else the US layout's character of their `code`; `mod` was
-  resolved by the browser's platform, `appleKeyboard` in the environment JSON); an open dialog (Escape presses its
+  Rust, `nsh_key` matches a key on the spot with `Keymap::find` and `nsh_key_command` reports the binding.
+  Its `f64` result preserves the full `u32` ID range, including Rust shortcuts and overlay Escape, apart from
+  the `-1` (unmatched) and `-2` (held repeat) sentinels. Keys are passed as the character they type without
+  modifiers, else the US layout's character of their `code`; `mod` was resolved by the browser's platform,
+  `appleKeyboard` in the environment JSON); an open dialog (Escape presses its
   cancel button); a focused field (Escape leaves it); selectable text with a selection (select all, in a selection area the whole area; Escape); a focused
   pressable (Return presses it, Space when released); going back (Escape, Alt+Left, Cmd+[, BrowserBack); scrolling the
   scroll view around the focus or under the mouse (arrows by 40 points, Page Up / Down and Space by 0.875 of a page,
@@ -552,7 +563,9 @@ backends); zoom changes go to `nsh_zoom` (`EngineControl::zoom`) before the offs
 
 - **Pull to refresh** (vertical views with `onRefresh` or `refreshing`): past the top, a drag moves the content down
   at half speed over an 8-spoke spinner; released past 64 points it fires `onRefresh` and keeps 56 points for the
-  turning spinner until `refreshing` turns false (the Linux and macOS backends' numbers). Only touches pull (mouse
+  turning spinner until `refreshing` turns false (the Linux and macOS backends' numbers). With the app's own indicator
+  (`refreshIndicator`) there is no spinner, and its height is where a pull refreshes and the room kept. Each change of
+  the pull goes to `nsh_pull` (`pullValue`). Only touches pull (mouse
   drags never scroll), through non-passive touch events on the view, since the browser scrolls touches itself: a move past the top is prevented while it can be, and a gesture the browser
   already scrolls stays the browser's.
 - **Zooming**: a zoomable view is `touch-action: none` and pans touches (both axes, with a glide; the mouse does not
@@ -572,12 +585,20 @@ with the content, and a cell no longer sticky goes back to its frame. Entering a
 animation already running on the cell, so its content coordinates cannot override the sticky insets. The cells of a
 list in the scroll view's viewport (`viewport="parent"`) are in that list: their tracks go there, the list isolates
 their z-index, and their insets add where the list is in the scroll view's content (`trackOrigin`, the frames
-between them); the core bounds their travel by the list's end. Views clip with `overflow: clip`, which, unlike
+between them); the core bounds their travel by the list's end. A cell's animated offset (an animated
+`stickyHeaderOffset` or sticky `top`) comes as the animator's `sticky-offset` output for the cell each frame
+(`op_a`): it is kept on the cell (`_stickyOffset`) and added to the track's inset. Views clip with `overflow: clip`, which, unlike
 `hidden`, makes no scroll container, so `position: sticky` reaches the scroll view through the list.
 
 A smooth scroll of the core's (`scrollTo` with `animated`) in flight moves with a `ScrollBy` (`op_sb` retargets it),
 as the native backends move theirs: setting `scrollTop` would stop the browser's smooth scroll. The user's wheel,
-pointer, touch or key takes it over.
+pointer, touch or key takes it over. The glides of the wheel and the keys are nsh's (`scrollSmoothly`, on animation
+frames), and each frame writes the glide's offset: a `ScrollBy` moves the glide with the content, and `scrollTo` /
+`scrollToEnd` stop it where it is (`stopGlide`) before they scroll, as the native backends interrupt theirs. The
+scroll they stop ends with theirs (the browser's `scrollend`), or at once when they leave the view where it is.
+The stationary check uses exact clamped offsets: fractional movement can reach another physical pixel. If a
+fractional target instead rounds back to the current offset, a 200 ms quiet-period fallback ends the scroll;
+scroll events postpone it, and the browser's `scrollend` cancels it.
 
 ## Platform services
 

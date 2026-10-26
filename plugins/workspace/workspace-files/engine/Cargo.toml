@@ -23,8 +23,8 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
-base64 = "0.22.1"
-notify = "8.2.0"
+base64 = "0.23.1"
+notify = "8.2.1"
 maka-agent-facts.workspace = true
 maka-plugin-core.workspace = true
 maka-sandbox.workspace = true
@@ -49,7 +49,7 @@ uuid.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
-rustix = { version = "1.1.4", features = ["fs"] }
+rustix = { version = "1.1.5", features = ["fs"] }
 
 [dev-dependencies]
 tempfile.workspace = true

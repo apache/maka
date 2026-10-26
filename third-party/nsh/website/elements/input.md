@@ -74,11 +74,47 @@ view styles apply):
 | `defaultValue` | `.default_value(..)` | `string` | | The initial text. |
 | `placeholder` | `.placeholder(..)` | `string` | | Shown while the input is empty. |
 | `multiline` | `.multiline(..)` | `boolean` | `false` | Several lines; return inserts a line break unless `submitBehavior` says otherwise. |
+| `tokens` | `.tokens(..)` | `InputTokenRule[]` | `[]` | Native styled and optionally atomic source ranges (GPUI and terminal backends). |
 | `maxLength` | `.max_length(..)` | `number` | | The most characters the user can enter. |
 | `readonly` | `.readonly(..)` | `boolean` | `false` | The user can select and copy the text but not change it. |
 | `masked` | `.masked(..)` | `boolean` | `false` | The text is hidden (passwords). |
 | `allowFontScaling` | | `boolean` | `true` | Follow the system text size. |
 | `maxFontSizeMultiplier` | | `number` | `0` | The upper bound of the system scale (0 is none). |
+
+### Styled and atomic tokens
+
+The GPUI and terminal editors match `tokens` against their current committed
+plain text. A rule uses Rust regular-expression syntax and must have a named
+`token` capture; context outside that capture is neither styled nor selected
+with the token. The earliest source match wins when rules overlap; declaration
+order breaks ties. Empty captures and captures that split a grapheme are ignored.
+No replacement label or hidden
+text is introduced: copying, `value`, and `onChange` retain the original text.
+
+```tsx
+<Input
+  multiline
+  tokens={[{
+    pattern: String.raw`(?:^|\s)(?P<token>#[A-Za-z0-9_-]+)`,
+    atomic: true,
+    style: { color: "#8ab8f8", backgroundColor: "#8ab8f820", borderRadius: 4 },
+  }]}
+/>
+```
+
+`atomic` defaults to `false`. Confirmed atomic tokens have caret stops only at
+their edges; partial selections and replacements expand to the whole token.
+Backspace, Delete and Cut use the same native boundaries. A token currently
+being typed remains editable until a delimiter, an explicit replacement or
+paste, or moving the caret outside it confirms the token. Removing a trailing
+delimiter does not reopen a confirmed token. Undo restores text, selection and
+the unfinished token together; replaying the same controlled `value` preserves
+that native state.
+
+Token styles affect painting only. The Unicode renderer uses foreground and
+background colors; GPUI also draws the background radius. Masked inputs do not
+show token styles. IME preedit text remains the input method's editable text
+and is never matched or styled as a committed token.
 
 ### Keyboard
 
@@ -89,6 +125,7 @@ view styles apply):
 | `autoCapitalize` | `.auto_capitalize(AutoCapitalize::None)` | `"none" \| "sentences" \| "words" \| "characters"` | `"sentences"` | Automatic capitalization. |
 | `autoCorrect` | `.auto_correct(..)` | `boolean` | `true` | The system's corrections. |
 | `autoComplete` | `.auto_fill(AutoFill::OneTimeCode)` | `AutoComplete \| TextContentType` | | What the input holds, for autofill: `"username"`, `"current-password"`, `"new-password"`, `"one-time-code"`, `"email"`, `"tel"`, `"postal-code"`, `"cc-number"`, `"off"`, … |
+| `pasteBehavior` | `.paste_behavior(PasteBehavior::Report)` | `"insert" \| "report"` | `"insert"` | What a paste does: `"insert"` inserts the pasted text, `"report"` inserts nothing, for the app to handle what `onPaste` reports. Images and files are never inserted. |
 | `submitBehavior` | `.submit_behavior(SubmitBehavior::Submit)` | `"submit" \| "blurAndSubmit" \| "newline"` | `"blurAndSubmit"` (single line), `"newline"` (multiline) | What return does: `"submit"` reports `onSubmit` and keeps the focus, `"blurAndSubmit"` also unfocuses, `"newline"` inserts a line break (multiline; a single line submits). A multiline input that submits still takes line breaks from Shift+Return or Option / Alt+Return on hardware keyboards. `"submit"` keeps the keyboard up (e.g. to send several messages). |
 | `autoFocus` | `.auto_focus(..)` | `boolean` | `false` | Focused when it appears. |
 
@@ -148,6 +185,8 @@ input().auto_fill(AutoFill::OneTimeCode).keyboard_type(KeyboardType::Number)
 | `onSubmit` | `.on_submit(\|text: &str\| ..)` | `{ text }` | The return key was pressed in an input that submits (single line, or `submitBehavior` `"submit"` / `"blurAndSubmit"`). |
 | `onFocus` / `onBlur` | `.on_focus` / `.on_blur` | none | The input gained / lost focus. |
 | `onSelectionChange` | `.on_selection_change(\|s: &Selection\| ..)` | `{ start, end }` | The caret or selection moved (UTF-16 units). |
+| `onPaste` | `.on_paste(\|e: &PasteEvent\| ..)` | `{ text, files, uris }` | The user pasted: the text, images (a screenshot) as `File`s, local files' `file:` URLs. Before the `onChange` of the text it inserts ([forms and keyboard](../docs/forms-and-keyboard.md#pasting-images-and-files)). |
+| `onCaretMove` | `.on_caret_move(\|e: &CaretEvent\| ..)` | `{ bounds, pageBounds }` | The caret moved, with the selection or as the text scrolled or wrapped: `bounds` is where it is in the input, `pageBounds` in the window, an `Overlay`'s `anchor` ([forms and keyboard](../docs/forms-and-keyboard.md#the-caret)). |
 | `onKeyPress` | `.on_key_press(\|key: &str\| ..)` | `{ key }` | Before the text changes: `key` is the typed text, `"Backspace"` or `"Enter"`. |
 | `onContentSizeChange` | `.on_content_size_change(\|size: &Size<Points>\| ..)` | `{ width, height }` | The size of the text changed (at the input's width when multiline), as it is typed; an empty input reports one empty line, whatever its placeholder. |
 | `onCompositionChange` | `.on_composition_change(\|e: &Composition\| ..)` | `{ composing, text }` | An input method's composition started, changed or ended: `text` is what is being composed (pinyin before a character is chosen, kana before conversion), `""` once it ends. The committed text reaches `onChange` before the end. |
@@ -183,6 +222,7 @@ const height = signal(40);
 | `focus()` | `focus()` | Focuses the input and shows the keyboard. |
 | `blur()` | `blur()` | Unfocuses it. |
 | `setSelection(start, end?)` | `set_selection(start, end)` | Selects `start..end` (UTF-16 units); a caret when they are equal. |
+| `replaceRange({ start, end, text, expectedText, expectedSelection })` | `replace_range(range, text, expected_text, expected_selection)` | GPUI and terminal: replaces a UTF-16 range as one native undo step. Applies only to the focused editable input while its text and selection still match, no IME composition is active, and no newer native edit occurred. The caret moves after the literal replacement; multiline inputs preserve line breaks. |
 
 Moving focus to the next field on return:
 
@@ -208,6 +248,8 @@ let password!: YNode;
 
 ## Platform notes
 
+- On macOS, single-line text, placeholders and carets share the native field's font metrics and are centered together
+  inside the content box. `lineHeight` participates in layout; multiline editors also use it for paragraph spacing.
 - Inputs inside a [scroll view](./scroll.md#keyboard) are kept clear of the keyboard natively. Elsewhere use
   [`KeyboardAvoidingView`](./keyboard-avoiding-view.md).
 - `disabled` disables the input (no focus) as well as applying the disabled styles; a `readonly` input keeps its

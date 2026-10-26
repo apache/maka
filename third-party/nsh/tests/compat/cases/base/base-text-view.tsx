@@ -15,7 +15,7 @@
 // document's texts are its own, so the script finds them. Its script
 // checks each.
 import { Text, View, signal } from "nsh";
-import { TextView } from "nsh/base";
+import { Button, TextView } from "nsh/base";
 
 const MARKDOWN = `# Markdown title
 
@@ -110,7 +110,14 @@ function App() {
         markdown={"```js\nconst b = 2;\n```\n\nEnergy $E=mc^2$ here.\n\n$$\nx^2\n$$\n\n![Logo](https://example.com/logo.png)"}
         renderCodeBlock={(code) => <Text>{`Code ${code.language}: ${code.code}`}</Text>}
         renderMath={(math) => <Text>{`Math ${math.display ? "block" : "inline"}: ${math.tex}`}</Text>}
-        renderImage={(image) => <Text>{`Image ${image.alt}: ${image.src}`}</Text>}
+        renderImage={({ image: selected }) => (
+          <Button accessibilityLabel={selected.alt} onPress={() => image.set(selected.alt ?? "")}>
+            <Text>{`Image ${selected.alt}: ${selected.src}`}</Text>
+          </Button>
+        )}
+      />
+      <TextView
+        document={{ blocks: [{ type: "paragraph", content: [{ type: "image", src: "https://example.com/default.png", alt: "Default logo", width: 24, height: 24 }] }] }}
         onImagePress={(pressed) => image.set(pressed.alt ?? "")}
       />
       <TextView

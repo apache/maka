@@ -37,7 +37,14 @@ export type IconName =
   | "spark"
   | "sidebar"
   | "sun"
-  | "moon";
+  | "moon"
+  | "code"
+  | "sliders"
+  | "panel-bottom"
+  | "replace"
+  | "replace-all"
+  | "diagnostics"
+  | "close";
 
 type Draw = (cx: CanvasRenderingContext2D) => void;
 
@@ -243,6 +250,44 @@ const glyphs: Record<IconName, Draw> = {
       const a = (i * Math.PI) / 4;
       line(c, [10 + Math.cos(a) * 6, 10 + Math.sin(a) * 6, 10 + Math.cos(a) * 7.8, 10 + Math.sin(a) * 7.8]);
     }
+  },
+  code: (c) => {
+    line(c, [7, 6, 3, 10, 7, 14]);
+    line(c, [13, 6, 17, 10, 13, 14]);
+    line(c, [11.5, 4.5, 8.5, 15.5]);
+  },
+  sliders: (c) => {
+    for (const [y, x] of [[6, 12.5], [14, 7.5]]) {
+      line(c, [3, y, 17, y]);
+      c.beginPath();
+      c.arc(x, y, 2, 0, Math.PI * 2);
+      c.fill();
+    }
+  },
+  "panel-bottom": (c) => {
+    rect(c, 3, 4, 14, 12, 3);
+    line(c, [3, 12, 17, 12]);
+  },
+  replace: (c) => {
+    // An arrow turning into the box of the new text.
+    line(c, [4, 4, 4, 11, 11.5, 11]);
+    line(c, [9, 8.5, 11.5, 11, 9, 13.5]);
+    rect(c, 13.5, 8, 3.5, 6, 1);
+  },
+  "replace-all": (c) => {
+    line(c, [4, 4, 4, 10, 11.5, 10]);
+    line(c, [9, 7.5, 11.5, 10, 9, 12.5]);
+    rect(c, 13.5, 3.5, 3.5, 5.5, 1);
+    rect(c, 13.5, 11, 3.5, 5.5, 1);
+  },
+  diagnostics: (c) => {
+    line(c, [10, 3.5, 17, 16, 3, 16, 10, 3.5]);
+    line(c, [10, 8, 10, 11.5]);
+    circle(c, 10, 13.8, 0.7, true);
+  },
+  close: (c) => {
+    line(c, [5.5, 5.5, 14.5, 14.5]);
+    line(c, [14.5, 5.5, 5.5, 14.5]);
   },
   moon: (c) => {
     // A disc less the one up and to its right: the arcs meet where the circles cross.

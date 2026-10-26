@@ -608,6 +608,80 @@ impl DamageScan {
     }
 }
 
+/// The index of the first operation of `ops` that reads an animated value
+/// slot (`ops.len()` when none does). What the operations before it paint
+/// is the same whatever the slots hold: a platform may keep those pixels
+/// and, when slots change, replay only the painting from there on (the
+/// operations before it still set the state: transforms, styles, paths,
+/// clips).
+pub fn first_animated(ops: &[CanvasOp]) -> usize {
+    let dep = |v: &Num| matches!(v, Num::Slot(_));
+    let paint = |p: &Paint| matches!(p, Paint::Slot(_));
+    let path = |p: &Option<super::Path>| {
+        p.as_deref()
+            .is_some_and(|ops| ops.iter().any(|op| path_op_dep(op, &dep)))
+    };
+    ops.iter()
+        .position(|op| match op {
+            CanvasOp::Translate(x, y) | CanvasOp::Scale(x, y) => dep(x) || dep(y),
+            CanvasOp::Rotate(v)
+            | CanvasOp::LineWidth(v)
+            | CanvasOp::LineDashOffset(v)
+            | CanvasOp::GlobalAlpha(v) => dep(v),
+            CanvasOp::Transform(v) | CanvasOp::SetTransform(v) => v.iter().any(dep),
+            CanvasOp::Path(op) => path_op_dep(op, &dep),
+            CanvasOp::Fill(p, _) | CanvasOp::Stroke(p) | CanvasOp::Clip(p, _) => path(p),
+            CanvasOp::FillRect(r) | CanvasOp::StrokeRect(r) | CanvasOp::ClearRect(r) => {
+                r.iter().any(dep)
+            }
+            CanvasOp::FillStyle(p) | CanvasOp::StrokeStyle(p) => paint(p),
+            CanvasOp::FillText { x, y, .. } | CanvasOp::StrokeText { x, y, .. } => dep(x) || dep(y),
+            CanvasOp::DrawImage { dest, .. } => dest.iter().any(dep),
+            CanvasOp::Save
+            | CanvasOp::Restore
+            | CanvasOp::BeginPath
+            | CanvasOp::LineCap(_)
+            | CanvasOp::LineJoin(_)
+            | CanvasOp::MiterLimit(_)
+            | CanvasOp::LineDash(_)
+            | CanvasOp::Composite(_)
+            | CanvasOp::ShadowColor(_)
+            | CanvasOp::ShadowBlur(_)
+            | CanvasOp::ShadowOffset(_)
+            | CanvasOp::Font(_)
+            | CanvasOp::FontVariantNumeric(_)
+            | CanvasOp::TextAlign(_)
+            | CanvasOp::TextBaseline(_) => false,
+        })
+        .unwrap_or(ops.len())
+}
+
+/// Whether the current path the operations of `ops` before `split` build
+/// matters from `split` on: a clip by it before `split` keeps it, and so
+/// does an operation from `split` on that uses it before a `beginPath`
+/// starts anew. A platform replaying only from [`first_animated`] on skips
+/// the path operations before it when it does not.
+pub fn prefix_path_needed(ops: &[CanvasOp], split: usize) -> bool {
+    let split = split.min(ops.len());
+    if ops[..split]
+        .iter()
+        .any(|op| matches!(op, CanvasOp::Clip(None, _)))
+    {
+        return true;
+    }
+    ops[split..]
+        .iter()
+        .find_map(|op| match op {
+            CanvasOp::BeginPath => Some(false),
+            CanvasOp::Path(_)
+            | CanvasOp::Fill(None, _)
+            | CanvasOp::Stroke(None)
+            | CanvasOp::Clip(None, _) => Some(true),
+            _ => None,
+        })
+        .unwrap_or(false)
+}
+
 /// Whether `op` reads a changed value.
 fn path_op_dep(op: &PathOp, dep: &impl Fn(&Num) -> bool) -> bool {
     match op {
@@ -743,6 +817,14 @@ mod tests {
             arc(100.0, 50.0, c(3.0)),
             CanvasOp::Fill(None, FillRule::NonZero),
         ]
+    }
+
+    #[test]
+    fn the_animated_part_starts_at_the_first_slot_read() {
+        // The static line, then the alpha read from slot 1.
+        assert_eq!(first_animated(&pulse()), 5);
+        assert_eq!(first_animated(&pulse()[..5]), 5);
+        assert_eq!(first_animated(&[]), 0);
     }
 
     #[test]

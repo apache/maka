@@ -17,12 +17,22 @@
  * under the License.
  */
 
-import { createText, errorText, UiError } from './text';
+import { createText, errorText, message, UiError } from './text';
 import { tr } from './locale';
-import { batch, cleanup, computed, effect, Input, inputAction, signal, Text, View } from 'nsh';
+import {
+  batch,
+  cleanup,
+  computed,
+  effect,
+  Input,
+  inputAction,
+  signal,
+  Text,
+  View,
+  List,
+} from 'nsh';
 import type { Signal, YNode } from 'nsh';
 import { Button, Dialog } from 'nsh/base';
-import { List } from 'nsh/list';
 import { keymap } from 'nsh/keymap';
 import { windowSize } from 'nsh/device';
 import { host } from './host';
@@ -31,6 +41,7 @@ import type {
   AgentDirectoryPage,
   AgentDirectorySelection,
   AgentWorkspaceSelection,
+  DirectoryRootSpec,
 } from '../../../../packages/plugin-sdk/src/index.js';
 import {
   C,
@@ -43,6 +54,7 @@ import {
   shortcut,
 } from './ui';
 import { Icon } from './Icon';
+import { WorkspaceLocations } from './WorkspaceLocations';
 import { dialogTop } from './chrome';
 
 type Location = {
@@ -61,7 +73,23 @@ export function WorkspacePicker(props: {
   current(): boolean;
   close(instance: number): boolean;
   create(workspace: AgentWorkspaceSelection): Promise<void>;
+  changed(): void;
 }) {
+  const managing = signal(false);
+  const awaitingRoots = signal<DirectoryRootSpec[] | null>(null);
+  let refreshTimer: ReturnType<typeof setTimeout> | undefined;
+  let refreshSession = false;
+  const sameRoots = (left: DirectoryRootSpec[], right: DirectoryRootSpec[]) =>
+    left.length === right.length &&
+    left.every(
+      (root, index) => root.label === right[index]?.label && root.path === right[index]?.path,
+    );
+  const scheduleRefresh = (read: Location) => {
+    clearTimeout(refreshTimer);
+    refreshTimer = setTimeout(() => {
+      if (owns(read) && awaitingRoots()) void load(read);
+    }, 500);
+  };
   const query = signal('');
   const selected = signal(0);
   const loading = signal(false);
@@ -81,7 +109,7 @@ export function WorkspacePicker(props: {
   let list: YNode | undefined;
   let removeKeys = () => {};
   let removeSearchKeys = () => {};
-  const owns = (read: Location) => alive && props.current() && location() === read;
+  const owns = (read: Location) => alive && props.current() && !managing() && location() === read;
   const matches = computed(() => {
     const needle = query().trim().toLowerCase();
     return entries().filter((directory) => directory.name.toLowerCase().includes(needle));
@@ -104,6 +132,7 @@ export function WorkspacePicker(props: {
     loading.set(true);
     error.set('');
     try {
+      if (!read.trail.length) await host.refresh();
       const directory = read.trail.at(-1);
       const after = previous?.kind === 'children' ? previous.after : null;
       const page: AgentDirectoryPage = await host.query(
@@ -116,6 +145,23 @@ export function WorkspacePicker(props: {
         throw new UiError('The Host returned a different directory view. Reopen the folder.');
       if (page.kind === 'children' && page.after !== null && page.after === after)
         throw new UiError('Folder paging did not advance. Reopen the folder.');
+      if (page.kind === 'roots' && awaitingRoots()) {
+        const published = page.roots.map((root) => ({ label: root.name, path: root.path }));
+        if (!sameRoots(published, awaitingRoots()!)) {
+          const desired = await host.query('settings', 'workspaceLocations', {});
+          if (!owns(read)) return;
+          if (desired) awaitingRoots.set(desired.roots);
+          if (desired && !sameRoots(published, desired.roots)) {
+            scheduleRefresh(read);
+            return;
+          }
+        }
+        awaitingRoots.set(null);
+      }
+      if (page.kind === 'roots' && refreshSession) {
+        refreshSession = false;
+        props.changed();
+      }
       const rows = new Map(read.entries().map((entry) => [selectionKey(entry.selection), entry]));
       for (const entry of page.kind === 'roots' ? page.roots : page.children)
         rows.set(selectionKey(entry.selection), entry);
@@ -124,7 +170,15 @@ export function WorkspacePicker(props: {
         read.entries.set([...rows.values()]);
       });
     } catch (reason) {
-      if (owns(read)) error.set(errorText(reason));
+      if (owns(read) && awaitingRoots()) scheduleRefresh(read);
+      if (owns(read))
+        error.set(
+          reason instanceof Error && reason.message.includes('agent_directory_unavailable')
+            ? message(
+                'This folder is unavailable or cannot be opened. Choose another location or retry.',
+              )
+            : errorText(reason),
+        );
     } finally {
       read.reading = false;
       if (owns(read)) loading.set(false);
@@ -191,10 +245,11 @@ export function WorkspacePicker(props: {
     if (directory) browse({ location: read.id, selection: directory.selection });
   };
   effect(() => {
-    if (!loading() && !error() && matches().length < count()) void load();
+    if (!awaitingRoots() && !loading() && !error() && matches().length < count()) void load();
   });
   cleanup(() => {
     alive = false;
+    clearTimeout(refreshTimer);
     removeKeys();
     removeSearchKeys();
   });
@@ -202,7 +257,12 @@ export function WorkspacePicker(props: {
   return (
     <Dialog
       animation="none"
-      onOpenChange={() => props.close(props.instance)}
+      closeOnEscape={!managing()}
+      closeOnBackdropPress={!managing()}
+      closeOnSwipe={!managing()}
+      onOpenChange={() => {
+        if (!managing()) props.close(props.instance);
+      }}
       style={{
         flex: 1,
         justifyContent: 'center',
@@ -212,23 +272,40 @@ export function WorkspacePicker(props: {
         paddingTop: dialogTop(16),
       }}
     >
-      <Each of={[location().id]} key={(id: number) => id}>
+      <If when={managing()}>
+        <WorkspaceLocations
+          close={(roots) =>
+            batch(() => {
+              refreshSession = true;
+              awaitingRoots.set(roots);
+              managing.set(false);
+              navigate([]);
+            })
+          }
+        />
+      </If>
+      <Each of={managing() ? [] : [location().id]} key={(id: number) => id}>
         {() => {
           const read = location();
           const status = () => (
             <View style={{ gap: 8, padding: 12 }}>
-              <If when={loading()}>
+              <If when={awaitingRoots()}>
+                <Text style={{ color: C.muted, fontSize: 13, lineHeight: 16 }}>
+                  {tr('Locations saved. Waiting for the Host to apply them…')}
+                </Text>
+              </If>
+              <If when={loading() && !awaitingRoots()}>
                 <Text style={{ color: C.muted, fontSize: 13, lineHeight: 16 }}>
                   {tr('Loading folders…')}
                 </Text>
               </If>
-              <If when={!loading() && !error() && !matches().length}>
+              <If when={!awaitingRoots() && !loading() && !error() && !matches().length}>
                 <Text style={{ color: C.muted, fontSize: 13, lineHeight: 16 }}>
                   {query()
                     ? tr('No matching folders.')
                     : read.trail.length
                       ? tr('This folder has no subfolders.')
-                      : tr('No workspace locations are published by this Host.')}
+                      : tr('No workspace locations are available.')}
                 </Text>
               </If>
               <If when={error()}>
@@ -308,7 +385,12 @@ export function WorkspacePicker(props: {
                   accessibilityLabel={tr('Close workspace picker')}
                   tooltip={tr('Close · Esc')}
                   onPress={inputAction(props.close, props.instance)}
-                  style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
+                  style={{
+                    ...controlStyle,
+                    width: 32,
+                    paddingHorizontal: 8,
+                    alignItems: 'center',
+                  }}
                   hoverStyle={controlHoverStyle}
                   focusStyle={controlFocusStyle}
                   disabledStyle={controlDisabledStyle}
@@ -343,6 +425,20 @@ export function WorkspacePicker(props: {
                 >
                   <Icon name="folder" color={C.secondary} />
                   <Text style={{ color: C.secondary, fontSize: 13 }}>{tr('Locations')}</Text>
+                </Button>
+                <Button
+                  accessibilityLabel={tr('Manage workspace locations')}
+                  onPress={inputAction(() => {
+                    removeKeys();
+                    removeSearchKeys();
+                    managing.set(true);
+                  }, null)}
+                  style={controlStyle}
+                  hoverStyle={controlHoverStyle}
+                  focusStyle={controlFocusStyle}
+                  disabledStyle={controlDisabledStyle}
+                >
+                  <Text style={{ color: C.accent, fontSize: 13 }}>{tr('Manage locations')}</Text>
                 </Button>
               </View>
               <View style={{ paddingHorizontal: 16, paddingBottom: 12 }}>

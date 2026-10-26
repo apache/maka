@@ -17,7 +17,7 @@
  * under the License.
  */
 
-use super::{PlaintextResponses, prompt::Message};
+use super::{PlaintextResponses, prompt::Prompt};
 use crate::tools::ToolDefinition;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -96,15 +96,12 @@ pub struct Provider {
 
 /// Typed adapter input. Wire encoding and optional provider extensions belong
 /// to the selected implementation, not to the canonical log.
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone)]
 pub struct Request {
     pub language: crate::language::Language,
     pub provider: Provider,
-    pub prompt: Vec<Message>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub prompt: Prompt,
     pub tools: Vec<ToolDefinition>,
     pub provider_options: Value,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub max_output_tokens: Option<u64>,
 }

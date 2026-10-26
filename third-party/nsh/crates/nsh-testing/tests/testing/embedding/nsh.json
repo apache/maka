@@ -1,0 +1,6 @@
+{
+  "capabilities": {
+    "host": true,
+    "openUrl": { "schemes": ["https", "mailto"] }
+  }
+}

@@ -250,7 +250,7 @@ async fn anthropic_hosted_result_replays_from_canonical_parts_with_opaque_conten
             let mut input = request(ProviderKind::Anthropic, base.clone());
             input.tools[0].name = "Research".into();
             input.tools[0].provider = Some(ProviderTool { id: "anthropic.web_search_20250305".into(), args: json!({"maxUses":8}) });
-            input.prompt.extend(history.clone());
+            crate::edit_prompt(&mut input.prompt, |messages| messages.extend(history.clone()));
             let mut stream = executor.stream(input, CancellationToken::new()).await.unwrap();
             let mut builder = StepBuilder::default();
             while let Some(event) = stream.next().await { builder.push(event.unwrap().event).unwrap(); }

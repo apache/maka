@@ -52,6 +52,7 @@ impl Transport for NoNetwork {
     fn request(
         &self,
         _: maka_capabilities::http::Request,
+        _: tokio_util::sync::CancellationToken,
     ) -> BoxFuture<'_, Result<maka_capabilities::http::Response, Error>> {
         Box::pin(async {
             Err(Error::Adapter(

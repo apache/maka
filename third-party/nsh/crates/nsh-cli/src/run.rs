@@ -142,8 +142,15 @@ pub(crate) fn run(
     window: HostWindow<'_>,
 ) -> anyhow::Result<()> {
     let HostFlags { limits, trace, fps } = flags;
-    if fps && target != Target::Macos {
-        bail!("--fps needs --target macos (the other hosts have no performance monitor yet)");
+    if fps
+        && !matches!(
+            target,
+            Target::Macos | Target::Linux | Target::Ios | Target::Windows
+        )
+    {
+        bail!(
+            "--fps needs --target macos, linux, windows or ios (the other hosts have no performance monitor yet)"
+        );
     }
     window.check(target, crate::rust_app::is_root(entry))?;
     let work = dunce::canonicalize(entry)?
@@ -948,6 +955,7 @@ fn info_plist(target: Target) -> String {
              <key>MinimumOSVersion</key><string>15.0</string>\n    \
              <key>CFBundleSupportedPlatforms</key><array><string>iPhoneSimulator</string></array>\n    \
              <key>UILaunchScreen</key><dict/>\n    \
+             <key>CADisableMinimumFrameDurationOnPhone</key><true/>\n    \
              <key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict>"
         }
     };

@@ -59,6 +59,9 @@
       "trailingCommas": "all"
     }
   },
+  "markdown": {
+    "formatter": { "enabled": false }
+  },
   "linter": {
     "enabled": true,
     // Admission bar for this gate (PR #1019 review). This is an EXPLICIT

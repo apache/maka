@@ -9,13 +9,13 @@ use nsh_core::{
     platform::{Appearance, clipboard},
 };
 use nsh_engine::EngineControl;
-use objc2::{MainThreadOnly, rc::Retained};
+use objc2::{MainThreadMarker, MainThreadOnly, rc::Retained, runtime::Bool};
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
-use objc2_foundation::{NSData, NSString};
+use objc2_foundation::{NSData, NSDictionary, NSString, NSURL};
 use objc2_ui_kit::{
-    UIAlertAction, UIAlertActionStyle, UIAlertController, UIAlertControllerStyle, UIDevice,
-    UIPopoverArrowDirection, UIStatusBarAnimation, UIStatusBarStyle, UIUserInterfaceIdiom,
-    UIUserInterfaceStyle, UIView, UIViewController,
+    UIAlertAction, UIAlertActionStyle, UIAlertController, UIAlertControllerStyle, UIApplication,
+    UIDevice, UIPopoverArrowDirection, UIStatusBarAnimation, UIStatusBarStyle,
+    UIUserInterfaceIdiom, UIUserInterfaceStyle, UIView, UIViewController,
 };
 
 thread_local! {
@@ -260,6 +260,40 @@ fn find_label(view: &UIView, text: &str) -> Option<Retained<objc2_ui_kit::UILabe
     view.subviews().iter().find_map(|v| find_label(&v, text))
 }
 
+/// `openUrl`: opens `url` with `UIApplication.open` (the app's own
+/// application, the embedding app's when NSH is embedded) and reports
+/// whether the system opened it ([`EventKind::OpenUrl`] `id`). A scheme no
+/// app handles reports `false`.
+pub(crate) fn open_url(id: u32, url: &str, control: &EngineControl) {
+    let control = control.clone();
+    let answer = move |opened: bool| {
+        control.dispatch_event(
+            nsh_core::ROOT_ID,
+            EventKind::OpenUrl,
+            EventPayload::Map(vec![
+                ("id", PayloadValue::Number(id as f64)),
+                ("opened", PayloadValue::Bool(opened)),
+            ]),
+        );
+    };
+    let (Some(mtm), Some(url)) = (
+        MainThreadMarker::new(),
+        NSURL::URLWithString(&NSString::from_str(url)),
+    ) else {
+        return answer(false);
+    };
+    let completion = RcBlock::new(move |opened: Bool| answer(opened.as_bool()));
+    // SAFETY: an empty dictionary is valid options; UIKit calls the
+    // completion on the main thread.
+    unsafe {
+        UIApplication::sharedApplication(mtm).openURL_options_completionHandler(
+            &url,
+            &NSDictionary::new(),
+            Some(&completion),
+        )
+    };
+}
+
 /// `Clipboard.writeText`: puts `text` on the general pasteboard.
 pub(crate) fn set_clipboard(text: &str) {
     // SAFETY: a plain setter of the general pasteboard.
@@ -325,6 +359,49 @@ pub(crate) fn read_clipboard_image(id: u32, has_only: bool) -> EventPayload {
         .or_else(|| unsafe { board.image() }.and_then(|image| image.png_representation()));
     let bytes = data.map(|d| d.to_vec()).unwrap_or_default();
     clipboard::image_answer(id, true, clipboard::Image::sniff(&bytes))
+}
+
+/// What `board` holds, read as the user pastes into an input (`onPaste`):
+/// its text, its images (as they are in [`IMAGE_TYPES`], else PNG) and its
+/// local files' `file:` URLs (Mac Catalyst).
+pub(crate) fn pasted(board: &objc2_ui_kit::UIPasteboard) -> nsh_core::PasteEvent {
+    // SAFETY: plain getters of the pasteboard, read on the user's paste.
+    unsafe {
+        let mut paste = nsh_core::PasteEvent::new(
+            board
+                .hasStrings()
+                .then(|| board.string())
+                .flatten()
+                .map(|s| s.to_string())
+                .unwrap_or_default(),
+        );
+        if board.hasImages() {
+            let first = IMAGE_TYPES
+                .iter()
+                .find_map(|(_, kind)| board.dataForPasteboardType(&NSString::from_str(kind)));
+            match first {
+                Some(data) if board.numberOfItems() <= 1 => {
+                    paste.files.push(nsh_core::PastedFile::image(data.to_vec()));
+                }
+                _ => {
+                    for image in board.images().map(|i| i.to_vec()).unwrap_or_default() {
+                        if let Some(png) = image.png_representation() {
+                            paste.files.push(nsh_core::PastedFile::image(png.to_vec()));
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(urls) = board.hasURLs().then(|| board.URLs()).flatten() {
+            paste.uris = urls
+                .iter()
+                .filter(|url| url.isFileURL())
+                .filter_map(|url| url.absoluteString())
+                .map(|s| s.to_string())
+                .collect();
+        }
+        paste
+    }
 }
 
 /// `Clipboard.readFiles`: the `file:` URLs on the general pasteboard

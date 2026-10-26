@@ -108,7 +108,13 @@ async fn atomic_import_publishes_once_in_its_namespace() {
         .collect();
     assert_eq!(imported, records.iter().collect::<Vec<_>>());
     let original_digest = published.digest;
-    assert!(log.unfinished_invocations(16).await.unwrap().is_empty());
+    assert!(
+        log.unfinished_invocations(0, 16)
+            .await
+            .unwrap()
+            .invocations
+            .is_empty()
+    );
     let through = *log.subscribe_commits().borrow();
     let retry = log
         .import_session(
@@ -528,4 +534,108 @@ async fn import_retry_verifies_original_bytes_before_new_call_uniqueness() {
     assert_eq!(*notices.borrow(), high);
     assert!(!notices.has_changed().unwrap());
     log.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn second_record_projection_failure_leaves_no_partial_import_after_reopen() {
+    for trigger in [
+        "CREATE TRIGGER fail_import_projection BEFORE INSERT ON context_source_prefixes
+         WHEN NEW.kind='session' AND NEW.sequence=2
+         BEGIN SELECT RAISE(ABORT,'import source fault'); END;",
+        "CREATE TRIGGER fail_import_projection BEFORE INSERT ON context_semantic_fragment_pieces
+         WHEN NEW.source_sequence=2
+         BEGIN SELECT RAISE(ABORT,'import semantic fault'); END;",
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("projection-rollback.sqlite");
+        let log = EventLog::open(&path).await.unwrap();
+        rusqlite::Connection::open(&path)
+            .unwrap()
+            .execute_batch(trigger)
+            .unwrap();
+        let claim = owner("rollback-projection");
+        let source = Source {
+            adapter: "fixture".into(),
+            session_id: "foreign".into(),
+        };
+        let records = vec![
+            record(0, "first".into()),
+            record(1, "second".into()),
+            record(2, "third".into()),
+        ];
+        let notices = log.subscribe_commits();
+        let failure = log
+            .import_session(&claim, &source, &json!({}), records.clone(), 20)
+            .await
+            .unwrap_err();
+        let StoreError::Sqlx(error) = failure else {
+            panic!("projection failure must retain SQLx database category")
+        };
+        let database = error.as_database_error().unwrap();
+        assert!(database.message().contains("import ") && database.message().contains(" fault"));
+        assert!(database.code().is_some());
+        assert!(!notices.has_changed().unwrap());
+        log.close().await.unwrap();
+        let reopened = EventLog::open(&path).await.unwrap();
+        assert!(
+            reopened
+                .get_session::<Value>(&claim.session_id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            reopened
+                .session_creator(&claim.session_id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let inspect = rusqlite::Connection::open(&path).unwrap();
+        for table in [
+            "event_log",
+            "session_imports",
+            "context_source_prefixes",
+            "context_semantic_rows",
+            "context_semantic_frontiers",
+            "catalog_messages",
+            "transcript_directory",
+        ] {
+            assert_eq!(
+                inspect
+                    .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r
+                        .get::<_, i64>(0))
+                    .unwrap(),
+                0,
+                "partial {table}"
+            );
+        }
+        inspect
+            .execute_batch("DROP TRIGGER fail_import_projection")
+            .unwrap();
+        reopened
+            .import_session(&claim, &source, &json!({}), records.clone(), 20)
+            .await
+            .unwrap();
+        let published = reopened.prefix(16, 64 * 1024).await.unwrap();
+        assert_eq!(published.events.len(), 3);
+        assert_eq!(
+            inspect
+                .query_row("SELECT COUNT(*) FROM context_source_prefixes", [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            9
+        );
+        assert_eq!(
+            inspect
+                .query_row(
+                    "SELECT through_sequence FROM context_semantic_heads WHERE session_id=?",
+                    [&claim.session_id],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+            3
+        );
+        reopened.close().await.unwrap();
+    }
 }

@@ -13,7 +13,10 @@
 
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 
-use nsh_core::{EventKind, EventPayload, JsonValue, NodeId, Points, Size};
+use nsh_core::{
+    EventKind, EventPayload, JsonValue, NodeId, Points, Size,
+    platform::{TAB_BAR_COMPONENT, is_reserved_component},
+};
 use nsh_engine::EngineControl;
 use objc2_ui_kit::UIView;
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -80,8 +83,9 @@ const _: () = {
 pub type ComponentFactory = Rc<dyn Fn(ComponentContext) -> Box<dyn NativeComponent>>;
 
 /// The components registered with a surface (shared with its mounter, so
-/// registrations apply to elements created from then on).
-#[derive(Clone, Default)]
+/// registrations apply to elements created from then on), NSH's own among
+/// them.
+#[derive(Clone)]
 pub struct Components {
     factories: Rc<RefCell<FxHashMap<Arc<str>, ComponentFactory>>>,
     /// Names already reported as unknown.
@@ -96,9 +100,31 @@ impl std::fmt::Debug for Components {
     }
 }
 
+impl Default for Components {
+    fn default() -> Self {
+        let components = Components {
+            factories: Rc::default(),
+            missing: Rc::default(),
+        };
+        // NSH's own: what `nsh/base`'s exports render.
+        components.insert(TAB_BAR_COMPONENT, crate::system_tab_bar::factory());
+        components
+    }
+}
+
 impl Components {
-    /// Registers `factory` under `name` (replacing an earlier one).
+    /// Registers `factory` under `name` (replacing an earlier one). Names
+    /// under `nsh/` are NSH's own: registering one logs a warning and
+    /// changes nothing.
     pub fn register(&self, name: &str, factory: ComponentFactory) {
+        if is_reserved_component(name) {
+            log::warn!("native component `{name}` is not registered: names under `nsh/` are NSH's");
+            return;
+        }
+        self.insert(name, factory);
+    }
+
+    fn insert(&self, name: &str, factory: ComponentFactory) {
         self.factories.borrow_mut().insert(name.into(), factory);
         self.missing.borrow_mut().remove(name);
     }

@@ -133,6 +133,139 @@ fn listing_keeps_hidden_raw_names_and_dangling_links_but_prunes_original_private
         f.open(Some(&private)).err().unwrap().to_string(),
         "files_private"
     );
+
+    fs::create_dir_all(f.root.join("src")).unwrap();
+    fs::create_dir_all(f.root.join("src/nested")).unwrap();
+    fs::create_dir_all(f.root.join("skipped")).unwrap();
+    fs::create_dir_all(f.root.join(".git/info")).unwrap();
+    fs::write(f.root.join(".gitignore"), "ignored.rs\n*.cache\nskipped/\n").unwrap();
+    fs::write(f.root.join(".ignore"), "ignored-by-ignore.rs\n").unwrap();
+    fs::write(f.root.join(".rgignore"), "ignored-by-rg.rs\n!keep.cache\n").unwrap();
+    fs::write(f.root.join(".git/info/exclude"), "from-exclude.rs\n").unwrap();
+    fs::write(f.root.join("src/nested/.gitignore"), "!ignored.rs\n").unwrap();
+    for name in [
+        "src/visible.rs",
+        "src/nested/ignored.rs",
+        "src/UPPER.RS",
+        "src/ignored.rs",
+        "src/ignored-by-ignore.rs",
+        "src/ignored-by-rg.rs",
+        "src/from-exclude.rs",
+        "src/keep.cache",
+        "src/skip.cache",
+        "skipped/leaked.rs",
+        "business-root/private-secret.rs",
+        "control/private-control.rs",
+    ] {
+        fs::write(f.root.join(name), "not read by candidate search").unwrap();
+    }
+    let outside = f.temp.path().join("outside");
+    fs::create_dir(&outside).unwrap();
+    fs::write(outside.join("leaked.rs"), "outside sentinel").unwrap();
+    symlink(&outside, f.root.join("linked-directory")).unwrap();
+    symlink("src/visible.rs", f.root.join("visible-link.rs")).unwrap();
+    let collect = |directory: &Directory, query: &str| {
+        let mut entries = Vec::new();
+        directory
+            .candidates(query, &AtomicBool::new(false), |entry| {
+                entries.push(entry);
+                Ok(())
+            })
+            .unwrap();
+        entries
+    };
+    for query in ["", " \t "] {
+        assert_eq!(
+            collect(&directory, query)
+                .into_iter()
+                .map(|entry| (entry.path.bytes().unwrap(), entry.kind))
+                .collect::<Vec<_>>(),
+            vec![
+                (b".gitignore".to_vec(), FileKind::File),
+                (b".hidden".to_vec(), FileKind::File),
+                (b".ignore".to_vec(), FileKind::File),
+                (b".rgignore".to_vec(), FileKind::File),
+                (b"dangling".to_vec(), FileKind::Symlink),
+                (b"linked-directory".to_vec(), FileKind::Symlink),
+                (raw.to_vec(), FileKind::File),
+                (b"src".to_vec(), FileKind::Directory),
+                (b"visible-link.rs".to_vec(), FileKind::Symlink),
+            ],
+            "an empty search browses root entries without descending into src"
+        );
+    }
+    let candidates = collect(&directory, ".rS");
+    assert_eq!(
+        candidates
+            .iter()
+            .map(|entry| (entry.path.bytes().unwrap(), entry.kind))
+            .collect::<Vec<_>>(),
+        vec![
+            (b"src/UPPER.RS".to_vec(), FileKind::File),
+            (b"src/nested/ignored.rs".to_vec(), FileKind::File),
+            (b"src/visible.rs".to_vec(), FileKind::File),
+            (b"visible-link.rs".to_vec(), FileKind::Symlink),
+        ]
+    );
+    for (query, expected) in [
+        ("RAW", raw.to_vec()),
+        (".cache", b"src/keep.cache".to_vec()),
+    ] {
+        assert_eq!(
+            collect(&directory, query)
+                .into_iter()
+                .map(|entry| entry.path.bytes().unwrap())
+                .collect::<Vec<_>>(),
+            vec![expected]
+        );
+    }
+    let source_path = WorkspacePath::from_bytes(b"src").unwrap();
+    let source = f.open(Some(&source_path)).unwrap();
+    assert_eq!(
+        collect(&source, "")
+            .into_iter()
+            .map(|entry| (entry.path.bytes().unwrap(), entry.kind))
+            .collect::<Vec<_>>(),
+        vec![
+            (b"src/UPPER.RS".to_vec(), FileKind::File),
+            (b"src/keep.cache".to_vec(), FileKind::File),
+            (b"src/nested".to_vec(), FileKind::Directory),
+            (b"src/visible.rs".to_vec(), FileKind::File),
+        ],
+        "browsing a selected directory retains its ancestors' ignore rules"
+    );
+    assert_eq!(
+        collect(&source, "visible")
+            .into_iter()
+            .map(|entry| entry.path.bytes().unwrap())
+            .collect::<Vec<_>>(),
+        vec![b"src/visible.rs".to_vec()],
+        "a selected directory search cannot return its sibling file link"
+    );
+    fs::remove_file(f.root.join(".rgignore")).unwrap();
+    fs::write(outside.join("unsafe-ignore"), "*.rs\n").unwrap();
+    symlink(outside.join("unsafe-ignore"), f.root.join(".rgignore")).unwrap();
+    assert_eq!(
+        collect(&directory, ".rs")
+            .into_iter()
+            .map(|entry| entry.path.bytes().unwrap())
+            .collect::<Vec<_>>(),
+        vec![
+            b"src/UPPER.RS".to_vec(),
+            b"src/ignored-by-rg.rs".to_vec(),
+            b"src/nested/ignored.rs".to_vec(),
+            b"src/visible.rs".to_vec(),
+            b"visible-link.rs".to_vec(),
+        ],
+        "an external ignore symlink cannot supply rules"
+    );
+    assert_eq!(
+        directory
+            .candidates("", &AtomicBool::new(true), |_| Ok(()))
+            .unwrap_err()
+            .to_string(),
+        "files_cancelled"
+    );
 }
 
 #[tokio::test]

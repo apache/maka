@@ -25,6 +25,9 @@ use maka_fs_tools::files::{Directory, FileCapture, Watch};
 use maka_host_runtime::application::Context;
 use std::{io, path::Path};
 
+// The existing readFile byte quantum also targets path-observation batches.
+const FILE_STREAM_BYTES: usize = 32 * 1024;
+
 impl Owner {
     pub async fn read_file(
         self: &Arc<Self>,
@@ -78,7 +81,7 @@ impl Owner {
                     .then(|| std::str::from_utf8(&snapshot.data).expect("captured text is UTF-8"));
                 let mut offset = 0;
                 while offset < snapshot.data.len() {
-                    let mut end = (offset + 32 * 1024).min(snapshot.data.len());
+                    let mut end = (offset + FILE_STREAM_BYTES).min(snapshot.data.len());
                     if let Some(text) = text {
                         while !text.is_char_boundary(end) {
                             end -= 1;
@@ -154,6 +157,93 @@ impl Owner {
         .await
     }
 
+    pub async fn file_candidates(
+        self: &Arc<Self>,
+        input: FileCandidatesRead,
+        context: Context,
+    ) -> Result<Value, String> {
+        let scope = context.scope().clone();
+        self.resource_work(&scope, move |owner, scope| {
+            Box::pin(async move {
+                let (original, directory) = owner
+                    .file_directory(&input.session_id, input.directory, &scope)
+                    .await?;
+                // One batch can wait for the emitter; its consumer's backpressure
+                // stops the filesystem producer without capping the result set.
+                let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
+                let scan = worktrees::blocking(&scope, &owner.stop, move |cancel| {
+                    let mut entries = Vec::new();
+                    let mut bytes = 0;
+                    directory
+                        .candidates(&input.query, &cancel, |entry| {
+                            bytes += serde_json::to_vec(&entry)
+                                .map_err(io::Error::other)?
+                                .len();
+                            entries.push(entry);
+                            if bytes >= FILE_STREAM_BYTES {
+                                sender
+                                    .blocking_send(FileCandidates {
+                                        entries: std::mem::take(&mut entries),
+                                    })
+                                    .map_err(|_| io::Error::other("files_cancelled"))?;
+                                bytes = 0;
+                            }
+                            Ok(())
+                        })
+                        .map_err(file_failure)?;
+                    if !entries.is_empty() {
+                        sender
+                            .blocking_send(FileCandidates { entries })
+                            .map_err(|_| "agent_files_cancelled".to_owned())?;
+                    }
+                    Ok(())
+                });
+                tokio::pin!(scan);
+                let mut completed = None;
+                let emitted = loop {
+                    let batch = tokio::select! {
+                        biased;
+                        _ = scope.cancellation.cancelled() => break Err("agent_files_cancelled".to_owned()),
+                        _ = owner.stop.cancelled() => break Err("agent_files_cancelled".to_owned()),
+                        result = &mut scan, if completed.is_none() => {
+                            let failed = result.is_err();
+                            completed = Some(result);
+                            if failed { break Ok(()); }
+                            continue;
+                        },
+                        batch = receiver.recv() => batch,
+                    };
+                    let Some(batch) = batch else { break Ok(()) };
+                    let value = match serde_json::to_value(batch) {
+                        Ok(value) => value,
+                        Err(_) => break Err("agent_files_output_unavailable".to_owned()),
+                    };
+                    let result = tokio::select! {
+                        biased;
+                        _ = scope.cancellation.cancelled() => Err("agent_files_cancelled".to_owned()),
+                        _ = owner.stop.cancelled() => Err("agent_files_cancelled".to_owned()),
+                        result = context.emit(value) => result,
+                    };
+                    if result.is_err() { break result; }
+                };
+                // Release a producer blocked in blocking_send before waiting for
+                // physical worker settlement, including cancellation and errors.
+                drop(receiver);
+                let scanned = match completed {
+                    Some(result) => result,
+                    None => scan.await,
+                };
+                emitted?;
+                scanned?;
+                owner
+                    .check_file_session(&input.session_id, &original, &scope)
+                    .await?;
+                Ok(Value::Null)
+            })
+        })
+        .await
+    }
+
     pub async fn watch_files(
         self: &Arc<Self>,
         input: FileWatch,
@@ -194,7 +284,7 @@ impl Owner {
         session: &str,
         path: Option<WorkspacePath>,
         scope: &Scope,
-    ) -> Result<(SessionConfiguration, Arc<Directory>), String> {
+    ) -> Result<(ResolvedConfiguration, Arc<Directory>), String> {
         if let Some(path) = &path {
             path.validate().map_err(|_| "agent_files_invalid_path")?;
         }
@@ -228,7 +318,7 @@ impl Owner {
     async fn check_file_session(
         &self,
         session: &str,
-        original: &SessionConfiguration,
+        original: &ResolvedConfiguration,
         scope: &Scope,
     ) -> Result<(), String> {
         if scope.cancellation.is_cancelled() || self.stop.is_cancelled() {
@@ -242,7 +332,7 @@ impl Owner {
         .await?;
         let current = self.session(session).await?.configuration;
         if current.workspace != original.workspace
-            || current.boundary_revision != original.boundary_revision
+            || current.permission_basis() != original.permission_basis()
         {
             return Err("agent_files_changed".into());
         }
@@ -255,7 +345,7 @@ impl Owner {
     async fn observe_files(
         &self,
         session: &str,
-        original: &SessionConfiguration,
+        original: &ResolvedConfiguration,
         directory: &Arc<Directory>,
         watch: &mut Watch,
         context: &Context,
@@ -265,7 +355,7 @@ impl Owner {
         let result = async {
             // Subscribe before revalidating the captured Session. Earlier changes
             // are caught by the read; later changes remain pending on this receiver.
-            let mut commits = self.store.subscribe_commits();
+            let mut commits = self.store.session(session).await.map_err(|error| error.to_string())?.subscribe_commits().map_err(|error| error.to_string())?;
             commits.borrow_and_update();
             #[cfg(not(all(test, target_os = "macos")))]
             let native_hints = true;

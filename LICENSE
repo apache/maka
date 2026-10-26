@@ -205,10 +205,10 @@ THIRD-PARTY COMPONENTS
 
 Zod dependency patch
 
-Source: https://www.npmjs.com/package/zod/v/4.6.5
+Source: https://www.npmjs.com/package/zod/v/4.6.7
 Repository: https://github.com/colinhacks/zod
-Version: 4.6.5
-Dependency patch: patches/zod+4.6.5.patch
+Version: 4.6.7
+Dependency patch: patches/zod+4.6.7.patch
 Copyright (c) 2025 Colin McDonnell
 License: MIT
 
@@ -311,7 +311,7 @@ GPUI Fast platform source (adapted, Apache License 2.0)
 
 third-party/gpui-fast contains five crates from
 https://github.com/longbridge/gpui-fast at revision
-b836dd970b26830f2124b7cf91b0e19018fd12da.
+124f79b0f14c688ae87877e370c015a9dc9d7ce5.
 Copyright 2022 - 2025 Zed Industries, Inc.
 Original license texts, finite file provenance and modifications are recorded in
 third-party/gpui-fast/{LICENSE,LICENSE-APACHE,upstream.json,SOURCE.md}.
@@ -353,8 +353,16 @@ third-party/termina/{LICENSE-MIT,LICENSE-MPL,README.md,upstream.json,SOURCE.md}.
 
 gix-index long-path source (adapted, Apache License 2.0 OR MIT)
 
-third-party/gix-index contains gix-index 0.55.0 from
+third-party/gix-index contains gix-index 0.58.0 from
 https://github.com/GitoxideLabs/gitoxide at revision
-d2af4ed5532ea660fbd643e48d8925cd88de5ee0. Original license texts,
+dd39fb66e3b1551c9fe849043e39b357a9799ca1. Original license texts,
 finite source hashes and the version 2/3 pathname-padding correction are in
 third-party/gix-index/{LICENSE-APACHE,LICENSE-MIT,upstream.json,SOURCE.md}.
+
+gix-discover repository discovery source (adapted, Apache License 2.0 OR MIT)
+
+third-party/gix-discover contains gix-discover 0.57.1 from
+https://github.com/GitoxideLabs/gitoxide at revision
+dd39fb66e3b1551c9fe849043e39b357a9799ca1. Original license texts,
+finite source hashes and the repository I/O error preservation are in
+third-party/gix-discover/{LICENSE-APACHE,LICENSE-MIT,upstream.json,SOURCE.md}.

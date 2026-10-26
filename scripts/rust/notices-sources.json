@@ -57,10 +57,10 @@
       "source": "https://github.com/dsherret/sys_traits/blob/75cbf3ea478624cc78275b0264e78e9ae13ce3f5/macros/Cargo.toml"
     }
   ],
-  "sys_traits@0.1.28": [
+  "sys_traits@0.1.29": [
     {
       "file": "scripts/rust/licenses/declared-mit.txt",
-      "source": "https://github.com/dsherret/sys_traits/blob/709e02e198721f81b485c078ccdf1835fa3e6a40/Cargo.toml"
+      "source": "https://github.com/dsherret/sys_traits/blob/0b168a2935d4c398d38ea5d25af8f793858299b5/Cargo.toml"
     }
   ],
   "selectors@0.38.0": [

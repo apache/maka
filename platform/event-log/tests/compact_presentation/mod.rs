@@ -103,10 +103,12 @@ async fn compact_attempts_preserve_visible_history_read_markers_and_rebuild() {
         )
         .await;
         let source = log
-            .prepare_context_compaction(
+            .capture_compaction_context(
                 "session",
                 Some(&compact.invocation_id),
                 &CheckpointMode::Standalone,
+                100_000,
+                64 * 1024 * 1024,
             )
             .await
             .unwrap();

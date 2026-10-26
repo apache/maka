@@ -10,7 +10,10 @@ use crate::{
 };
 
 // TODO: integrate this somehow, somewhere, depending on later usage.
-#[expect(dead_code, reason = "to be used for when we handle checkouts/resets better")]
+#[expect(
+    dead_code,
+    reason = "to be used for when we handle checkouts/resets better"
+)]
 mod sparse;
 
 /// General information and entries
@@ -143,7 +146,7 @@ impl State {
     /// It's required perform any case-insensitive lookup.
     /// TODO: needs multi-threaded insertion, raw-table to have multiple locks depending on bucket.
     pub fn prepare_icase_backing(&self) -> AccelerateLookup<'_> {
-        let _span = gix_features::trace::detail!("prepare_icase_backing", entries = self.entries.len());
+        let _span = gix_trace::detail!("prepare_icase_backing", entries = self.entries.len());
         let mut out = AccelerateLookup::with_capacity(self.entries.len());
         for entry in &self.entries {
             let entry_path = entry.path(self);
@@ -188,7 +191,7 @@ impl State {
                 }
             }
         }
-        gix_features::trace::debug!(directories = out.icase_dirs.len(), "stored directories");
+        gix_trace::debug!(directories = out.icase_dirs.len(), "stored directories");
         out
     }
 
@@ -365,7 +368,12 @@ impl State {
         let idx = if stage_at_index == 0 || stage_at_index == 2 {
             idx
         } else {
-            self.entry_index_by_idx_and_stage(path, idx, Stage::Ours as StageRaw, stage_at_index.cmp(&2))?
+            self.entry_index_by_idx_and_stage(
+                path,
+                idx,
+                Stage::Ours as StageRaw,
+                stage_at_index.cmp(&2),
+            )?
         };
         Some(&self.entries[idx])
     }
@@ -384,7 +392,8 @@ impl State {
     ///
     /// If `prefix` is empty, all entries are returned.
     pub fn prefixed_entries(&self, prefix: &BStr) -> Option<&[Entry]> {
-        self.prefixed_entries_range(prefix).map(|range| &self.entries[range])
+        self.prefixed_entries_range(prefix)
+            .map(|range| &self.entries[range])
     }
 
     /// Return the range of entries which all share the same `prefix`, or `None` if there isn't a single such entry.
@@ -402,8 +411,9 @@ impl State {
                 .get(..prefix_len)
                 .map_or_else(|| e.path(self) <= &prefix[..e.path.len()], |p| p < prefix)
         });
-        let mut high =
-            low + self.entries[low..].partition_point(|e| e.path(self).get(..prefix_len).is_some_and(|p| p <= prefix));
+        let mut high = low
+            + self.entries[low..]
+                .partition_point(|e| e.path(self).get(..prefix_len).is_some_and(|p| p <= prefix));
 
         let low_entry = &self.entries.get(low)?;
         if low_entry.stage_raw() != 0 {
@@ -411,12 +421,12 @@ impl State {
                 .walk_entry_stages(low_entry.path(self), low, Ordering::Less)
                 .unwrap_or(low);
         }
-        if let Some(high_entry) = self.entries.get(high) {
-            if high_entry.stage_raw() != 0 {
-                high = self
-                    .walk_entry_stages(high_entry.path(self), high, Ordering::Less)
-                    .unwrap_or(high);
-            }
+        if let Some(high_entry) = self.entries.get(high)
+            && high_entry.stage_raw() != 0
+        {
+            high = self
+                .walk_entry_stages(high_entry.path(self), high, Ordering::Less)
+                .unwrap_or(high);
         }
         (low != high).then_some(low..high)
     }
@@ -455,8 +465,11 @@ impl State {
             .ok()?;
 
         let (start, end) = (
-            self.walk_entry_stages(path, idx, Ordering::Less).unwrap_or(idx),
-            self.walk_entry_stages(path, idx, Ordering::Greater).unwrap_or(idx) + 1,
+            self.walk_entry_stages(path, idx, Ordering::Less)
+                .unwrap_or(idx),
+            self.walk_entry_stages(path, idx, Ordering::Greater)
+                .unwrap_or(idx)
+                + 1,
         );
         Some(start..end)
     }
@@ -467,7 +480,9 @@ impl AccelerateLookup<'_> {
         let ratio_of_entries_to_dirs_in_webkit = 20; // 400k entries and 20k dirs
         Self {
             icase_entries: hashbrown::HashTable::with_capacity(cap),
-            icase_dirs: hashbrown::HashTable::with_capacity(cap / ratio_of_entries_to_dirs_in_webkit),
+            icase_dirs: hashbrown::HashTable::with_capacity(
+                cap / ratio_of_entries_to_dirs_in_webkit,
+            ),
         }
     }
     fn icase_hash(data: &BStr) -> u64 {
@@ -533,7 +548,11 @@ impl State {
     /// but returns the mutable entry instead of the index.
     ///
     /// The `path` must use the repository-relative, slash-separated [`State`] path format.
-    pub fn entry_mut_by_path_and_stage(&mut self, path: &BStr, stage: entry::Stage) -> Option<&mut Entry> {
+    pub fn entry_mut_by_path_and_stage(
+        &mut self,
+        path: &BStr,
+        stage: entry::Stage,
+    ) -> Option<&mut Entry> {
         self.entry_index_by_path_and_stage(path, stage)
             .map(|idx| &mut self.entries[idx])
     }
@@ -602,7 +621,10 @@ impl State {
     ///
     /// To implement this operation typically, one would rather add [entry::Flags::REMOVE] to each entry to remove
     /// them when [writing the index](Self::write_to()).
-    pub fn remove_entries(&mut self, mut should_remove: impl FnMut(usize, &BStr, &mut Entry) -> bool) {
+    pub fn remove_entries(
+        &mut self,
+        mut should_remove: impl FnMut(usize, &BStr, &mut Entry) -> bool,
+    ) {
         let mut index = 0;
         let paths = &self.path_backing;
         self.entries.retain_mut(|e| {
@@ -681,7 +703,8 @@ mod tests {
         let file = PathBuf::from("tests")
             .join("fixtures")
             .join(Path::new("loose_index").join("conflicting-file.git-index"));
-        let file = crate::File::at(file, gix_hash::Kind::Sha1, false, Default::default()).expect("valid file");
+        let file = crate::File::at(file, gix_hash::Kind::Sha1, false, Default::default())
+            .expect("valid file");
         assert_eq!(
             file.entries().len(),
             3,

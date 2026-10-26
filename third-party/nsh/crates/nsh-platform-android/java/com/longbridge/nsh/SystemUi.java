@@ -142,6 +142,23 @@ final class SystemUi {
         Toast.makeText(context, text, longer ? Toast.LENGTH_LONG : Toast.LENGTH_SHORT).show();
     }
 
+    /**
+     * {@code openUrl}: opens {@code url} with the app Android resolves for it ({@code Intent.ACTION_VIEW}), from the
+     * view's activity (a new task from any other context). Whether an app took it: false when none handles the scheme.
+     */
+    static boolean openUrl(Context context, String url) {
+        android.content.Intent intent = new android.content.Intent(
+                android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url));
+        Activity activity = activity(context);
+        if (activity == null) intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
+        try {
+            (activity != null ? activity : context).startActivity(intent);
+            return true;
+        } catch (android.content.ActivityNotFoundException | SecurityException e) {
+            return false;
+        }
+    }
+
     /** {@code Clipboard.writeText}: a plain text clip. */
     static void setClipboard(Context context, String text) {
         android.content.ClipboardManager clipboard =

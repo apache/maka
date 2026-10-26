@@ -117,11 +117,16 @@ and take their look from the app.
 | `<KeyboardAvoidingView>` | `nsh_base::keyboard_avoiding_view()` | Keeps its content above the software keyboard | [KeyboardAvoidingView](./keyboard-avoiding-view.md) |
 | `AlertDialog` | `nsh_base::alert_dialog()` | The system's alert and action sheet | [AlertDialog](./alert-dialog.md) |
 | `<TextView>` | `nsh_base::text_view()` | Shows a Markdown or HTML document with texts and views | [TextView](./text-view.md) |
+| `<Editor>` | `nsh_base::editor()` | A code editor with highlighting, several carets, folding and search | [Editor](./editor.md) |
+| `<DiffView>` | `nsh_base::diff_view()` | The changes between two texts or of a patch, split or unified | [DiffView](./diff-view.md) |
+| `<Table>` and its parts | `nsh_base::table()`, `table_row()`, ... | A table of the app's own rows and cells, with a table's roles | [Table](./table.md) |
+| `<DataTable>` | `nsh_base::data_table()` | A table of rows and columns of any number, selectable, sortable, with resizable and movable columns | [DataTable](./data-table.md) |
 | `<SelectionArea>` | `nsh_base::selection_area()` | Makes the texts inside it select together | [SelectionArea](./selection-area.md) |
 | `<Popover>` | `nsh_base::popover()` | Content anchored to a trigger, on top of everything | [Popover](./popover.md) |
 | `<Menu>`, `<ContextMenu>`, `<MenuItem>`, `<MenuSeparator>`, `<Submenu>` | `nsh_base::menu()`, ... | Menus: popups with cascading submenus on desktops, sheets on phones | [Menu](./menu.md) |
 | `<Tooltip>` | `nsh_base::tooltip()` | A hint next to its trigger, on hover or a held finger | [Tooltip](./tooltip.md) |
 | `<Sheet>` | `nsh_base::sheet()` | A panel at an edge of the screen over a backdrop | [Sheet](./sheet.md) |
+| `<Toast>`, `<ToastStack>` | `nsh_base::toast()`, `toast_stack()` | A toast's semantic root; toasts laid out as layers from an edge | [Toast](./toast.md) |
 | `<ResizablePanelGroup>`, `<ResizablePanel>` | `nsh_base::h_resizable()`, `resizable_panel()` | Panels side by side or stacked, with handles that resize them | [Resizable](./resizable.md) |
 | `<DockArea>` | `nsh_base::dock_area()` | A workspace of splits, tab groups and edge docks the user arranges | [Dock](./dock.md) |
 
@@ -205,7 +210,7 @@ desktop browsers, with an iPad's pointer or a Mac's mouse on iOS, and with a mou
 | Prop | Rust | Type | Description |
 |---|---|---|---|
 | `onHoverIn` | `.on_hover_in(..)` | `() => void` | The mouse came over the view or a view inside it. |
-| `onHoverMove` | `.on_hover_move(..)` | `(e: HoverEvent) => void` | The mouse moved over the view (or a view inside it) with no button down. |
+| `onHoverMove` | `.on_hover_move(..)` | `(e: HoverEvent) => void` | The mouse moved over the view (or a view inside it) with no button down, or a modifier key was pressed or released while it rests there. |
 | `onHoverOut` | `.on_hover_out(..)` | `() => void` | The mouse left the view and the views inside it, or the window. |
 
 Like CSS `:hover`, a view counts as hovered while the mouse is over it or over anything inside it, so the views around
@@ -314,6 +319,8 @@ focusing it, so focus styles show for keyboard focus only.
 | Prop | Rust | Type | Default | Description |
 |---|---|---|---|---|
 | `focusable` | `.focusable(..)` | `boolean` | `true` | Whether a view that takes presses is a stop of Tab; `false` leaves it to the pointer (a backdrop that closes a popover, rows the arrow keys move between). |
+| `onFocus` | `.on_focus(..)` | `() => void` | | Tab (or `focus()`) gave the view the keyboard focus. |
+| `onBlur` | `.on_blur(..)` | `() => void` | | The keyboard focus left the view. |
 
 ```rust tabs
 view()

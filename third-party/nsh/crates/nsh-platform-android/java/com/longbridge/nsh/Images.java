@@ -85,6 +85,23 @@ final class Images {
     /** Set by the mounter; until then in-memory images fail. */
     volatile Inline inline = uri -> null;
 
+    /** The running app's disk cache of downloaded images ({@link Native#imageCacheLookup}). */
+    interface DiskCache {
+        /** Fresh bytes ({@code byte[]}), a stale copy's conditional headers ({@code String[]}), or null. */
+        Object lookup(String url);
+
+        /** Ends a download (status 0: failed); the cached bytes to show, or null. */
+        byte[] complete(String url, int status, String[] headers, byte[] body);
+    }
+
+    /** Set by the mounter; until then nothing is kept on disk. */
+    volatile DiskCache disk = null;
+
+    /** The response headers the disk cache reads (lower case). */
+    private static final String[] CACHE_HEADERS = {
+        "cache-control", "expires", "date", "age", "etag", "last-modified", "vary", "pragma"
+    };
+
     private static final int MAX_REDIRECTS = 20;
 
     private static final ExecutorService POOL = Executors.newFixedThreadPool(4, r -> {
@@ -394,6 +411,12 @@ final class Images {
             return bytes;
         }
         if (uri.startsWith("http://") || uri.startsWith("https://")) {
+            // Through the disk cache: a fresh copy is all it takes, a stale
+            // one is revalidated (its conditions sent).
+            DiskCache disk = this.disk;
+            Object cached = disk != null ? disk.lookup(uri) : null;
+            if (cached instanceof byte[]) return (byte[]) cached;
+            String[] conditions = cached instanceof String[] ? (String[]) cached : null;
             HttpURLConnection c = null;
             String url = uri;
             try {
@@ -404,7 +427,18 @@ final class Images {
                     c.setInstanceFollowRedirects(false);
                     c.setConnectTimeout(30_000);
                     c.setReadTimeout(60_000);
-                    int code = c.getResponseCode();
+                    if (conditions != null) {
+                        for (int i = 0; i + 1 < conditions.length; i += 2) c.setRequestProperty(conditions[i], conditions[i + 1]);
+                    }
+                    int code;
+                    try {
+                        code = c.getResponseCode();
+                    } catch (java.io.IOException e) {
+                        // Offline: a stale copy may serve.
+                        byte[] stale = disk != null ? disk.complete(uri, 0, null, null) : null;
+                        if (stale != null) return stale;
+                        throw e;
+                    }
                     if (code != 301 && code != 302 && code != 303 && code != 307 && code != 308) break;
                     String location = c.getHeaderField("Location");
                     c.disconnect();
@@ -414,7 +448,11 @@ final class Images {
                     url = next;
                 }
                 int status = c.getResponseCode();
-                if (status >= 400) throw new java.io.IOException("HTTP " + status);
+                if (status == 304 || status >= 400) {
+                    byte[] served = disk != null ? disk.complete(uri, status, cacheHeaders(c), null) : null;
+                    if (served != null) return served;
+                    throw new java.io.IOException("HTTP " + status);
+                }
                 long total = Math.max(0, c.getContentLengthLong());
                 InputStream in = c.getInputStream();
                 java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream(total > 0 ? (int) Math.min(total, 1 << 26) : 1 << 16);
@@ -429,7 +467,9 @@ final class Images {
                         main.post(() -> progress(download, loaded, total));
                     }
                 }
-                return out.toByteArray();
+                byte[] bytes = out.toByteArray();
+                if (disk != null) disk.complete(uri, status, cacheHeaders(c), bytes);
+                return bytes;
             } finally {
                 if (c != null) c.disconnect();
             }
@@ -438,6 +478,23 @@ final class Images {
         try (InputStream in = new FileInputStream(path)) {
             return Net.readAll(in);
         }
+    }
+
+    /** The headers of {@code c}'s response the disk cache reads, as names and values. */
+    private static String[] cacheHeaders(HttpURLConnection c) {
+        List<String> pairs = new ArrayList<>();
+        for (java.util.Map.Entry<String, List<String>> e : c.getHeaderFields().entrySet()) {
+            if (e.getKey() == null) continue;
+            String name = e.getKey().toLowerCase(java.util.Locale.ROOT);
+            for (String wanted : CACHE_HEADERS) {
+                if (!wanted.equals(name)) continue;
+                for (String value : e.getValue()) {
+                    pairs.add(name);
+                    pairs.add(value);
+                }
+            }
+        }
+        return pairs.toArray(new String[0]);
     }
 
     private static Image decode(byte[] bytes, int maxPx, int blurPx) {

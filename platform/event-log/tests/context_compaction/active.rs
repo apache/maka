@@ -73,7 +73,7 @@ fn completion(id: &str, step: &str, text: &str) -> EventWrite {
 
 async fn checkpoint(log: &EventLog, id: &str, mode: CheckpointMode) -> EventWrite {
     let source = log
-        .prepare_context_compaction("session", Some(id), &mode)
+        .capture_compaction_context("session", Some(id), &mode, 100_000, 64 * 1024 * 1024)
         .await
         .unwrap();
     let step = format!("{id}-summary");
@@ -108,7 +108,7 @@ async fn active_anchor_is_atomic_bounded_and_survives_next_turn_and_reopen() {
     let anchor = opening("active");
     log.append(&anchor).await.unwrap();
     let source = log
-        .read_model_context("session", Some("active"))
+        .capture_model_context("session", Some("active"), 100_000, 64 * 1024 * 1024)
         .await
         .unwrap();
     log.append(&request("active", "main-step", ModelPurpose::Main, &source))
@@ -118,7 +118,7 @@ async fn active_anchor_is_atomic_bounded_and_survives_next_turn_and_reopen() {
         anchor_event_id: anchor.event().id.clone(),
     };
     assert!(
-        log.prepare_context_compaction("session", Some("active"), &mode)
+        log.capture_compaction_context("session", Some("active"), &mode, 100_000, 64 * 1024 * 1024)
             .await
             .is_err()
     );
@@ -151,7 +151,7 @@ async fn active_anchor_is_atomic_bounded_and_survives_next_turn_and_reopen() {
             .is_err()
     );
     assert!(
-        log.read_model_context("session", Some("active"))
+        log.capture_model_context("session", Some("active"), 100_000, 64 * 1024 * 1024)
             .await
             .unwrap()
             .baseline
@@ -172,18 +172,25 @@ async fn active_anchor_is_atomic_bounded_and_survives_next_turn_and_reopen() {
         "a new candidate cannot reuse a predecessor superseded after its source cut"
     );
     assert!(
-        log.prepare_context_compaction("session", Some("active"), &mode)
+        log.capture_compaction_context("session", Some("active"), &mode, 100_000, 64 * 1024 * 1024)
             .await
             .is_err(),
         "a summary completion cannot renew its own compaction budget"
     );
     let source = log
-        .read_model_context("session", Some("active"))
+        .capture_model_context("session", Some("active"), 100_000, 64 * 1024 * 1024)
         .await
         .unwrap();
     assert_eq!(source.anchor.unwrap().event, *anchor.event());
     assert!(source.tail.is_empty());
-    assert!(log.unfinished_invocations(10).await.unwrap().len() == 1);
+    assert!(
+        log.unfinished_invocations(0, 10)
+            .await
+            .unwrap()
+            .invocations
+            .len()
+            == 1
+    );
     log.append(&event(
         "active",
         Fact::InvocationEnded {
@@ -192,7 +199,10 @@ async fn active_anchor_is_atomic_bounded_and_survives_next_turn_and_reopen() {
     ))
     .await
     .unwrap();
-    let closed = log.read_model_context("session", None).await.unwrap();
+    let closed = log
+        .capture_model_context("session", None, 100_000, 64 * 1024 * 1024)
+        .await
+        .unwrap();
     assert!(matches!(
         log.read_frozen_model_context(&closed.source_evidence, 100, 1)
             .await,
@@ -202,7 +212,7 @@ async fn active_anchor_is_atomic_bounded_and_survives_next_turn_and_reopen() {
     log.close().await.unwrap();
     let log = EventLog::open(&path).await.unwrap();
     let source = log
-        .read_model_context("session", Some("next"))
+        .capture_model_context("session", Some("next"), 100_000, 64 * 1024 * 1024)
         .await
         .unwrap();
     let valid_request = request("next", "next-main", ModelPurpose::Main, &source);
@@ -259,7 +269,7 @@ async fn active_cut_rejects_pending_child_and_changed_summary_repair_source() {
     let anchor = opening("active");
     log.append(&anchor).await.unwrap();
     let source = log
-        .read_model_context("session", Some("active"))
+        .capture_model_context("session", Some("active"), 100_000, 64 * 1024 * 1024)
         .await
         .unwrap();
     log.append(&request("active", "main", ModelPurpose::Main, &source))
@@ -285,7 +295,7 @@ async fn active_cut_rejects_pending_child_and_changed_summary_repair_source() {
         anchor_event_id: anchor.event().id.clone(),
     };
     assert!(
-        log.prepare_context_compaction("session", Some("active"), &mode)
+        log.capture_compaction_context("session", Some("active"), &mode, 100_000, 64 * 1024 * 1024)
             .await
             .is_err()
     );
@@ -301,7 +311,7 @@ async fn active_cut_rejects_pending_child_and_changed_summary_repair_source() {
     .await
     .unwrap();
     let source = log
-        .prepare_context_compaction("session", Some("active"), &mode)
+        .capture_compaction_context("session", Some("active"), &mode, 100_000, 64 * 1024 * 1024)
         .await
         .unwrap();
     log.append(&request(
@@ -375,13 +385,13 @@ async fn active_cut_rejects_pending_child_and_changed_summary_repair_source() {
         .is_err()
     );
     assert!(
-        log.prepare_context_compaction("session", Some("active"), &mode)
+        log.capture_compaction_context("session", Some("active"), &mode, 100_000, 64 * 1024 * 1024)
             .await
             .is_err(),
         "summary events cannot renew their own attempt budget"
     );
     let main = log
-        .read_model_context("session", Some("active"))
+        .capture_model_context("session", Some("active"), 100_000, 64 * 1024 * 1024)
         .await
         .unwrap();
     log.append(&request("active", "new-main", ModelPurpose::Main, &main))
@@ -391,13 +401,13 @@ async fn active_cut_rejects_pending_child_and_changed_summary_repair_source() {
         .await
         .unwrap();
     let next = log
-        .prepare_context_compaction("session", Some("active"), &mode)
+        .capture_compaction_context("session", Some("active"), &mode, 100_000, 64 * 1024 * 1024)
         .await
         .unwrap();
     assert!(next.source_evidence.high_water > source.source_evidence.high_water);
     // Main may finish after capture but before Summary's request is committed.
     let raced = log
-        .read_model_context("session", Some("active"))
+        .capture_model_context("session", Some("active"), 100_000, 64 * 1024 * 1024)
         .await
         .unwrap();
     log.append(&request("active", "raced-main", ModelPurpose::Main, &raced))
@@ -433,7 +443,7 @@ async fn active_cut_rejects_pending_child_and_changed_summary_repair_source() {
         "a new source must cover the Main whose progress renews it"
     );
     let after = log
-        .prepare_context_compaction("session", Some("active"), &mode)
+        .capture_compaction_context("session", Some("active"), &mode, 100_000, 64 * 1024 * 1024)
         .await
         .unwrap();
     log.append(&request(
@@ -460,7 +470,7 @@ async fn active_cut_rejects_pending_child_and_changed_summary_repair_source() {
         .await
         .unwrap();
     assert!(
-        log.prepare_context_compaction("session", Some("active"), &mode)
+        log.capture_compaction_context("session", Some("active"), &mode, 100_000, 64 * 1024 * 1024)
             .await
             .is_err()
     );

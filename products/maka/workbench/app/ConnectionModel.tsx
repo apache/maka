@@ -57,55 +57,99 @@ export function ConnectionModel(props: { settings: ModelSettingsOwner }) {
           change={(label) => owner.changeModel({ label })}
           hint={tr('Optional. Empty uses the provider’s name.')}
         />
+        <Each
+          of={
+            [
+              {
+                key: 'codeMode',
+                label: 'Code Mode',
+                hint: 'Run tool calls through Code Mode. Model default follows the built-in policy for this model.',
+              },
+              {
+                key: 'applyPatch',
+                label: 'Apply Patch',
+                hint: 'Use apply_patch for file edits. Disabled uses structured edit and write tools. Independent of Code Mode.',
+              },
+            ] as const
+          }
+          key={(tool) => tool.key}
+        >
+          {(tool) => (
+            <View style={{ gap: 8 }}>
+              <Text style={{ ...bodyTextStyle, color: C.text, fontWeight: '500' }}>
+                {tr(tool().label)}
+              </Text>
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 12 }}>
+                <Each
+                  of={
+                    [
+                      { label: 'Model default', value: null },
+                      { label: 'Enabled', value: true },
+                      { label: 'Disabled', value: false },
+                    ] as const
+                  }
+                  key={(item) => item.label}
+                >
+                  {(item) => (
+                    <Button
+                      disabled={disabled()}
+                      selected={model()[tool().key] === item().value}
+                      accessibilityLabel={tr('{tool}: {value}', {
+                        tool: tr(tool().label),
+                        value: tr(item().label),
+                      })}
+                      onPress={inputAction(owner.changeTool, {
+                        ...owner.modelAction(),
+                        tool: tool().key,
+                        enabled: item().value,
+                      })}
+                      style={{
+                        ...controlStyle,
+                        flexDirection: 'row',
+                        alignItems: 'center',
+                        gap: 8,
+                      }}
+                      hoverStyle={controlHoverStyle}
+                      focusStyle={controlFocusStyle}
+                      disabledStyle={controlDisabledStyle}
+                    >
+                      <ChoiceIndicator
+                        kind="radio"
+                        checked={model()[tool().key] === item().value}
+                        disabled={disabled()}
+                      />
+                      <Text style={{ ...captionTextStyle, color: C.text }}>{tr(item().label)}</Text>
+                    </Button>
+                  )}
+                </Each>
+              </View>
+              <Text style={{ ...captionTextStyle, color: C.muted }}>{tr(tool().hint)}</Text>
+            </View>
+          )}
+        </Each>
         <Text style={{ ...bodyTextStyle, color: C.text, fontWeight: '500' }}>
-          {tr('Code Mode')}
+          {tr('Code Mode language')}
         </Text>
         <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 12 }}>
           <Each
             of={
               [
-                { label: 'Default', value: null },
-                { label: 'Enabled', value: true },
-                { label: 'Disabled', value: false },
+                { value: 'javascript', label: 'JavaScript' },
+                { value: 'python', label: 'Python' },
               ] as const
             }
-            key={(item) => item.label}
+            key={(language) => language.label}
           >
-            {(item) => (
-              <Button
-                disabled={disabled()}
-                selected={model().codeMode === item().value}
-                onPress={inputAction(owner.changeCodeMode, {
-                  ...owner.modelAction(),
-                  enabled: item().value,
-                })}
-                style={{ ...controlStyle, flexDirection: 'row', alignItems: 'center', gap: 8 }}
-                hoverStyle={controlHoverStyle}
-                focusStyle={controlFocusStyle}
-                disabledStyle={controlDisabledStyle}
-              >
-                <ChoiceIndicator
-                  kind="radio"
-                  checked={model().codeMode === item().value}
-                  disabled={disabled()}
-                />
-                <Text style={{ ...captionTextStyle, color: C.text }}>{tr(item().label)}</Text>
-              </Button>
-            )}
-          </Each>
-        </View>
-        <Text style={{ ...bodyTextStyle, color: C.text, fontWeight: '500' }}>
-          {tr('Code Mode language')}
-        </Text>
-        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 12 }}>
-          <Each of={['javascript', 'python'] as const} key={(language) => language}>
             {(language) => (
               <Button
                 disabled={disabled()}
-                selected={(model().codeModeLanguage ?? 'javascript') === language()}
+                selected={(model().codeModeLanguage ?? 'javascript') === language().value}
+                accessibilityLabel={tr('Code Mode language: {language}', {
+                  language: language().label,
+                })}
                 onPress={inputAction(owner.changeCodeLanguage, {
                   ...owner.modelAction(),
-                  language: language(),
+                  language: language().value,
                 })}
                 style={{ ...controlStyle, flexDirection: 'row', alignItems: 'center', gap: 8 }}
                 hoverStyle={controlHoverStyle}
@@ -114,12 +158,10 @@ export function ConnectionModel(props: { settings: ModelSettingsOwner }) {
               >
                 <ChoiceIndicator
                   kind="radio"
-                  checked={(model().codeModeLanguage ?? 'javascript') === language()}
+                  checked={(model().codeModeLanguage ?? 'javascript') === language().value}
                   disabled={disabled()}
                 />
-                <Text style={{ ...captionTextStyle, color: C.text }}>
-                  {language() === 'python' ? 'Python' : 'JavaScript'}
-                </Text>
+                <Text style={{ ...captionTextStyle, color: C.text }}>{language().label}</Text>
               </Button>
             )}
           </Each>

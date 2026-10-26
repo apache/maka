@@ -37,11 +37,13 @@ Headless commands (`host`, `application serve`, `code` and `acp`) install proces
 
 Dedicated Host processes capture stderr in their Root's private control-cache file `host.stderr.log`: on-demand capture starts before spawning, while foreground serving starts after Root selection. Read it with `maka host logs --root-id ID`, or add `--follow` for live NDJSON and `--after CURSOR` to resume. Pages preserve raw bytes as Base64 and report missing capture, replacement or truncation; clearing the control cache removes these logs. This works without an installed service.
 
+Inspect a committed session log with `maka inspect --root DIRECTORY --session SESSION_ID`.
+
 ## Product updates, recovery and URL installation
 
 Composition commands read complete JSON source and remote-export files. The Plugins composition editor loads an exact source revision in UTF-8 pages of at most 64 KiB and saves the confirmed native editor snapshot against that revision. Whole documents have no separate byte ceiling; typed validation, package checks, Host permissions, revision conflicts and actual resource admission still apply. Committed revisions retain the complete source for subsequent reads and reopening the Root.
 
-Before a Host starts, it automatically updates selected bundled plugins using the same validation and recovery as `update-defaults --apply`. When opening the interface, a running product Host is checked through its management endpoint and automatically restarted for an available update only when no other session or active work remains. Busy Hosts keep serving their existing clients and startup explains that they must become idle before retrying. A startup with current packages does not create another source revision. If an update is incompatible with saved configuration, startup reports the error and leaves the source intact so it can be corrected and retried.
+Before a Host starts, it automatically updates selected bundled plugins using the same validation and recovery as `update-defaults --apply`. When opening the interface, a running product Host is checked through its management endpoint. An available code or bundled plugin update restarts a launcher-owned ephemeral Host: existing connections close, background tasks and terminals stop, and startup waits for cleanup before opening the new Host. Installed services and explicitly selected application Hosts retain their idle-only update policy. A startup with current packages does not create another source revision. If an update is incompatible with saved configuration, startup reports the error and leaves the source intact so it can be corrected and retried.
 
 To preview or explicitly apply an update while a standalone Host is stopped, use its State Root:
 

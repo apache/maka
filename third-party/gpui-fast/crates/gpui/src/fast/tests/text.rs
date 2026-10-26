@@ -542,3 +542,117 @@ fn text_laid_out_from_the_cache_paints_the_lines_of_its_box() {
         );
     }
 }
+
+const DETACHED_TEXT: &str = "laid out where no layout reaches it";
+
+/// Lays text out without making its node a child of its own, so that no
+/// layout computed this frame reaches the text's node and Taffy never
+/// measures it, then prepaints and paints the text in its own bounds all the
+/// same: text reaching prepaint unmeasured, as a gap in retention left it.
+struct Detached {
+    text: Option<crate::StyledText>,
+    layout: std::rc::Rc<std::cell::RefCell<Option<crate::TextLayout>>>,
+}
+
+impl crate::Element for Detached {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<crate::ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _: Option<&crate::GlobalElementId>,
+        _: Option<&crate::InspectorElementId>,
+        window: &mut Window,
+        cx: &mut crate::App,
+    ) -> (crate::LayoutId, ()) {
+        let mut text = crate::StyledText::new(DETACHED_TEXT);
+        *self.layout.borrow_mut() = Some(text.layout().clone());
+        crate::Element::request_layout(&mut text, None, None, window, cx);
+        self.text = Some(text);
+        let mut style = crate::Style::default();
+        style.size.width = px(120.).into();
+        style.size.height = px(40.).into();
+        (window.request_layout(style, [], cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _: Option<&crate::GlobalElementId>,
+        _: Option<&crate::InspectorElementId>,
+        bounds: crate::Bounds<crate::Pixels>,
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut crate::App,
+    ) {
+        let text = self.text.as_mut().unwrap();
+        crate::Element::prepaint(text, None, None, bounds, &mut (), window, cx);
+    }
+
+    fn paint(
+        &mut self,
+        _: Option<&crate::GlobalElementId>,
+        _: Option<&crate::InspectorElementId>,
+        bounds: crate::Bounds<crate::Pixels>,
+        _: &mut (),
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut crate::App,
+    ) {
+        let text = self.text.as_mut().unwrap();
+        crate::Element::paint(text, None, None, bounds, &mut (), &mut (), window, cx);
+    }
+}
+
+impl IntoElement for Detached {
+    type Element = Self;
+
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+struct DetachedView {
+    layout: std::rc::Rc<std::cell::RefCell<Option<crate::TextLayout>>>,
+}
+
+impl Render for DetachedView {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div().size_full().child(Detached {
+            text: None,
+            layout: self.layout.clone(),
+        })
+    }
+}
+
+/// Text that reaches prepaint unmeasured panics upstream. It is measured
+/// there instead, as plain text at the width it is prepainted at, and
+/// painted.
+#[test]
+fn text_reaching_prepaint_unmeasured_is_measured_there_and_painted() {
+    let mut cx = TestAppContext::single();
+    let layout = std::rc::Rc::default();
+    let window = cx.add_window(|_, _| DetachedView {
+        layout: std::rc::Rc::clone(&layout),
+    });
+    for _ in 0..3 {
+        window.update(&mut cx, |_, _, cx| cx.notify()).unwrap();
+        draw(&mut cx, window.into());
+
+        let layout = layout.borrow().clone().unwrap();
+        assert_eq!(layout.text(), DETACHED_TEXT);
+        assert_eq!(
+            layout.0.borrow().as_ref().unwrap().wrap_width,
+            Some(px(120.))
+        );
+        // Paint goes ahead only for text that was measured and prepainted.
+        assert_eq!(layout.bounds().size.width, px(120.));
+    }
+}

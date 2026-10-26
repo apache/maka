@@ -466,13 +466,13 @@ mod wake_language {
         }
         fn message(
             &self,
-            operation_id: String,
+            operation: SessionOperation,
         ) -> futures_util::future::BoxFuture<'_, MessageResult> {
             unreachable!("this test only submits supervisor wakes")
         }
         fn retract(
             &self,
-            operation_id: String,
+            operation: SessionOperation,
         ) -> futures_util::future::BoxFuture<'_, MessageResult> {
             unreachable!("this test only submits supervisor wakes")
         }
@@ -570,7 +570,7 @@ mod wake_language {
         }
         fn workspace_patch(
             &self,
-            operation_id: String,
+            operation: SessionOperation,
         ) -> futures_util::future::BoxFuture<'_, Result<Option<WorkspacePatch>, CommandError>>
         {
             unreachable!("this test only submits supervisor wakes")
@@ -584,7 +584,7 @@ mod wake_language {
         }
         fn event(
             &self,
-            operation_id: String,
+            operation: SessionOperation,
             event_id: String,
             through: u64,
         ) -> futures_util::future::BoxFuture<
@@ -598,7 +598,7 @@ mod wake_language {
         }
         fn events(
             &self,
-            operation_id: String,
+            operation: SessionOperation,
             after: u64,
             through: u64,
         ) -> futures_util::future::BoxFuture<'_, Result<EventPage, CommandError>> {
@@ -628,13 +628,13 @@ mod wake_language {
         }
         fn query(
             &self,
-            operation_id: String,
+            operation: SessionOperation,
         ) -> futures_util::future::BoxFuture<'_, Result<Observation, CommandError>> {
             unreachable!("this test only submits supervisor wakes")
         }
         fn cancel(
             &self,
-            operation_id: String,
+            operation: SessionOperation,
         ) -> futures_util::future::BoxFuture<'_, Result<Observation, CommandError>> {
             unreachable!("this test only submits supervisor wakes")
         }

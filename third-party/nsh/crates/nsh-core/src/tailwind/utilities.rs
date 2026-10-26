@@ -1091,6 +1091,17 @@ fn sized<T: Copy>(
     })
 }
 
+/// A `fill-*` / `stroke-*` paint: `none`, `current` (`currentColor`),
+/// `inherit` or a color.
+fn svg_paint(theme: &Theme, v: &str) -> Option<PatchValue> {
+    Some(match v {
+        "none" => PatchValue::Str("none".into()),
+        "current" => PatchValue::Str("currentColor".into()),
+        "inherit" => PatchValue::Str("inherit".into()),
+        v => color_str(color(theme, v)?),
+    })
+}
+
 fn color_str(c: Color) -> PatchValue {
     PatchValue::Str(format!("#{:08x}", c.0).into())
 }
@@ -2196,6 +2207,22 @@ static PREFIXES: &[(&str, Handler)] = &[
     ("underline-offset", |t, v, n| {
         let p = int(v).or_else(|| arbitrary_points(t, v))?;
         one(setn(K::TextUnderlineOffset, if n { -p } else { p }))
+    }),
+    // SVG paint (Tailwind's `fill-*` / `stroke-*`): what the shapes Rust
+    // components draw paint with.
+    ("fill", |t, v, _| one(set(K::Fill, svg_paint(t, v)?))),
+    ("stroke", |t, v, _| {
+        if let Some(n) = num(v) {
+            return one(setn(K::StrokeWidth, n));
+        }
+        if let Some(p) = svg_paint(t, v) {
+            return one(set(K::Stroke, p));
+        }
+        let a = arbitrary(v)?;
+        let a = arbitrary_hinted(&a, "length")
+            .or_else(|| arbitrary_hinted(&a, "number"))
+            .unwrap_or(&a);
+        one(setn(K::StrokeWidth, css::length(a).filter(|n| *n >= 0.0)?))
     }),
     ("caret", |t, v, _| {
         if let Some(a) = current(v) {

@@ -1,5 +1,6 @@
 use std::{
     cell::RefCell,
+    ops::Range,
     rc::{Rc, Weak},
     sync::Arc,
 };
@@ -159,8 +160,10 @@ impl TerminalWindow {
 }
 
 impl WindowState {
-    fn wake(&mut self) {
-        self.frame_requested = true;
+    fn wake(&mut self) -> bool {
+        // Deferred drawing keeps this demand pending. Repeated GPUI updates
+        // must not wake the owner again for the same unconsumed frame.
+        !std::mem::replace(&mut self.frame_requested, true)
     }
 
     pub(crate) fn active(&self) -> bool {
@@ -332,6 +335,79 @@ impl WindowState {
         }
     }
 
+    pub(crate) fn text_input_target(state: &Rc<RefCell<Self>>) -> Option<gpui::TextInputTarget> {
+        {
+            let state = state.borrow();
+            if state.closed || !state.active || !state.visible.is_visible() {
+                return None;
+            }
+        }
+        let mut handler = state.borrow_mut().input_handler.take()?;
+        let target = handler.text_input_target();
+        state.borrow_mut().input_handler.get_or_insert(handler);
+        target
+    }
+
+    pub(crate) fn apply_composition(
+        state: &Rc<RefCell<Self>>,
+        target: &gpui::TextInputTarget,
+        commit_prefix: &str,
+        preedit: &str,
+        selection_utf16: Option<Range<usize>>,
+        active: bool,
+    ) -> Result<bool> {
+        {
+            let state = state.borrow();
+            if state.closed || !state.active || !state.visible.is_visible() {
+                return Ok(false);
+            }
+        }
+        let Some(mut handler) = state.borrow_mut().input_handler.take() else {
+            return Ok(false);
+        };
+        let result =
+            handler.apply_composition(target, commit_prefix, preedit, selection_utf16, active);
+        state.borrow_mut().input_handler.get_or_insert(handler);
+        result
+    }
+
+    pub(crate) fn input_caret_bounds(state: &Rc<RefCell<Self>>) -> Option<Bounds<Pixels>> {
+        {
+            let state = state.borrow();
+            if state.closed || !state.active || !state.visible.is_visible() {
+                return None;
+            }
+        }
+        let mut handler = state.borrow_mut().input_handler.take()?;
+        let bounds = (|| {
+            if !handler.query_accepts_focused_text_input() {
+                return None;
+            }
+            let selection = handler.selected_text_range(false)?;
+            let caret = if selection.reversed {
+                selection.range.start
+            } else {
+                selection.range.end
+            };
+            handler.bounds_for_range(caret..caret)
+        })();
+        state.borrow_mut().input_handler.get_or_insert(handler);
+        bounds
+    }
+
+    pub(crate) fn input_candidate_bounds(state: &Rc<RefCell<Self>>) -> Option<Bounds<Pixels>> {
+        {
+            let state = state.borrow();
+            if state.closed || !state.active || !state.visible.is_visible() {
+                return None;
+            }
+        }
+        let mut handler = state.borrow_mut().input_handler.take()?;
+        let bounds = handler.ime_candidate_bounds();
+        state.borrow_mut().input_handler.get_or_insert(handler);
+        bounds
+    }
+
     pub(crate) fn request_close(state: &Rc<RefCell<Self>>) {
         if state.borrow().closed {
             return;
@@ -418,7 +494,6 @@ impl WindowState {
         };
         if let Some(mut callback) = callback {
             callback(RequestFrameOptions {
-                require_presentation: true,
                 signal_source: FrameRequestSource::LocalSchedule,
                 ..RequestFrameOptions::default()
             });
@@ -551,16 +626,20 @@ impl PlatformWindow for TerminalWindow {
         let state = Rc::downgrade(&self.0);
         Some(Rc::new(move || {
             if let Some(state) = state.upgrade() {
-                state.borrow_mut().wake();
-                let wake = state.borrow().wake.clone();
-                wake();
+                let requested = state.borrow_mut().wake();
+                if requested {
+                    let wake = state.borrow().wake.clone();
+                    wake();
+                }
             }
         }))
     }
     fn schedule_frame(&self) {
-        self.0.borrow_mut().wake();
-        let wake = self.0.borrow().wake.clone();
-        wake();
+        let requested = self.0.borrow_mut().wake();
+        if requested {
+            let wake = self.0.borrow().wake.clone();
+            wake();
+        }
     }
     fn on_request_frame(&self, callback: Box<dyn FnMut(RequestFrameOptions)>) {
         self.0.borrow_mut().callbacks.frame = Some(callback);

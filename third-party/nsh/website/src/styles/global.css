@@ -1013,6 +1013,10 @@ html[lang^="zh"] .toc__label { letter-spacing: 0.05em; }
   table:has(.status) :is(th, td) { padding-inline: 0.42rem; }
   table:has(.status) :is(th, td):nth-child(2) { background: color-mix(in srgb, var(--citrus) 8%, transparent); }
   table:has(.status) th:nth-child(2) { color: var(--foreground); }
+  /* A table of measurements (`<div class="data-table">` around it): each
+     reading on one line, the table scrolling sideways when it is wider. */
+  .data-table :is(th, td) { white-space: nowrap; }
+  .data-table td:last-child { min-width: 0; }
   /* Status dots: green available, yellow partial, red not provided. */
   .status { display: inline-block; width: 0.6rem; height: 0.6rem; border-radius: 50%; vertical-align: 0.05em; background: var(--tone); box-shadow: 0 0 0 3px color-mix(in srgb, var(--tone) 18%, transparent); }
   .status + * , td .status { margin-right: 0.15rem; }

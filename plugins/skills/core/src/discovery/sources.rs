@@ -17,70 +17,16 @@
  * under the License.
  */
 
-use super::{DiscoveryFailure, OriginStatus, QuerySnapshot, ScanError, Source};
+use super::ScanError;
 use crate::SkillDocument;
-use crate::{SkillScope, SkillSource};
-use maka_capabilities::filesystem::ReadDirectory;
-use std::collections::BTreeSet;
-use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone)]
-pub struct BundledSource {
+pub(super) struct BundledSource {
     pub id: &'static str,
-    pub content: &'static str,
     pub document: SkillDocument,
     pub content_sha256: String,
-    pub files: &'static [(&'static str, &'static [u8])],
     pub(crate) resources: crate::resources::Embedded,
 }
-#[derive(Debug)]
-pub struct SourceCatalog {
-    pub bundled: Vec<BundledSource>,
-    pub managed: QuerySnapshot,
-    pub publication: QuerySnapshot,
-}
-impl SourceCatalog {
-    pub fn installed_managed_sources(&self) -> BTreeSet<String> {
-        let mut installed = self.publication.occupied.clone();
-        for skill in &self.publication.discovery.inventory {
-            let location = &skill.location;
-            if location.id.is_empty()
-                || location
-                    .reference
-                    .chars()
-                    .any(|c| c <= '\u{1f}' || c == '\u{7f}')
-            {
-                continue;
-            }
-            if let Some(OriginStatus::Managed { source_id, .. }) = self
-                .publication
-                .origins
-                .get(&location.reference)
-                .map(|origin| &origin.status)
-            {
-                installed.insert(source_id.to_ascii_lowercase());
-            }
-        }
-        installed
-    }
-}
-#[derive(Debug, Clone, Copy)]
-pub enum SourceCatalogError {
-    Scan(ScanError),
-    Read(DiscoveryFailure),
-    InvalidBundledMetadata,
-}
-impl std::fmt::Display for SourceCatalogError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Scan(error) => error.fmt(f),
-            Self::Read(error) => write!(f, "skill source catalog is unavailable: {error:?}"),
-            Self::InvalidBundledMetadata => f.write_str("bundled skill metadata is invalid"),
-        }
-    }
-}
-impl std::error::Error for SourceCatalogError {}
-
 struct Bundled {
     id: &'static str,
     content: &'static str,
@@ -88,8 +34,8 @@ struct Bundled {
 }
 include!(concat!(env!("OUT_DIR"), "/bundled.rs"));
 
-pub(super) fn bundled() -> Result<Vec<BundledSource>, SourceCatalogError> {
-    static PREPARED: std::sync::OnceLock<Result<Vec<BundledSource>, SourceCatalogError>> =
+pub(super) fn bundled() -> Result<Vec<BundledSource>, ScanError> {
+    static PREPARED: std::sync::OnceLock<Result<Vec<BundledSource>, ScanError>> =
         std::sync::OnceLock::new();
     PREPARED
         .get_or_init(|| {
@@ -99,101 +45,16 @@ pub(super) fn bundled() -> Result<Vec<BundledSource>, SourceCatalogError> {
                     let Bundled { id, content, files } = source;
                     Ok(BundledSource {
                         id,
-                        content,
-                        document: crate::parse(content)
-                            .map_err(|_| SourceCatalogError::InvalidBundledMetadata)?,
+                        document: crate::parse(content).map_err(|_| ScanError::Unavailable)?,
                         content_sha256: maka_agent_facts::artifact::content_digest(
                             content.as_bytes(),
                         ),
-                        files,
-                        resources: crate::resources::Embedded::new(files)
-                            .map_err(SourceCatalogError::Scan)?,
+                        resources: crate::resources::Embedded::new(files)?,
                     })
                 })
-                .collect::<Result<Vec<_>, SourceCatalogError>>()
+                .collect::<Result<Vec<_>, ScanError>>()
         })
         .clone()
-}
-
-pub async fn source_catalog(
-    root: &ReadDirectory,
-    home: Option<&ReadDirectory>,
-    cancellation: &CancellationToken,
-) -> Result<SourceCatalog, SourceCatalogError> {
-    let publication = Source::at(
-        root,
-        "skills",
-        SkillScope::Workspace,
-        SkillSource::Legacy,
-        "workspace:legacy",
-    );
-    let publication = super::scan_with_origins(&[publication], cancellation)
-        .await
-        .map_err(SourceCatalogError::Scan)?;
-    if let Some(error) = publication
-        .discovery
-        .diagnostics
-        .iter()
-        .find(|d| d.path == root.location().join("skills"))
-    {
-        return Err(SourceCatalogError::Read(error.reason));
-    }
-    catalog(publication, home, cancellation).await
-}
-
-/// Governance uses the runtime's discovery precedence, reading workspace body
-/// and installation origin from the same captured directory. No baseline I/O.
-pub async fn governance_catalog(
-    cwd: &ReadDirectory,
-    root: &ReadDirectory,
-    home: Option<&ReadDirectory>,
-    cancellation: &CancellationToken,
-) -> Result<SourceCatalog, SourceCatalogError> {
-    let publication =
-        super::scan_with_origins(&Source::standard(Some(cwd), root, home), cancellation)
-            .await
-            .map_err(SourceCatalogError::Scan)?;
-    catalog(publication, home, cancellation).await
-}
-
-async fn catalog(
-    publication: QuerySnapshot,
-    home: Option<&ReadDirectory>,
-    cancellation: &CancellationToken,
-) -> Result<SourceCatalog, SourceCatalogError> {
-    let bundled = bundled()?;
-    let managed = if let Some(home) = home {
-        // The library is its own containment root; aliases may not reach other
-        // home content. SKILL.md retains the ordinary nofollow/regular-file gate.
-        let root = home.location().join(".maka/skill-sources");
-        let source = Source::at(
-            home,
-            ".maka/skill-sources",
-            SkillScope::Custom,
-            SkillSource::Custom,
-            "managed",
-        );
-        let snapshot = super::scan_with_origins(&[source], cancellation)
-            .await
-            .map_err(SourceCatalogError::Scan)?;
-        if let Some(error) = snapshot
-            .discovery
-            .diagnostics
-            .iter()
-            .find(|d| d.path == root || matches!(d.reason, DiscoveryFailure::ReadFailed))
-        {
-            return Err(SourceCatalogError::Read(error.reason));
-        }
-        snapshot
-    } else {
-        QuerySnapshot::default()
-    };
-    super::check_cancelled(cancellation).map_err(SourceCatalogError::Scan)?;
-    Ok(SourceCatalog {
-        bundled,
-        managed,
-        publication,
-    })
 }
 
 pub fn safe_source_id(id: &str) -> bool {
@@ -202,43 +63,4 @@ pub fn safe_source_id(id: &str) -> bool {
         && id
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn authoring_examples_and_each_contract_are_readable_resources() {
-        let bundled = bundled().unwrap();
-        let source = bundled
-            .iter()
-            .find(|source| source.id == "maka-plugin-authoring")
-            .unwrap();
-        let resources = crate::Resources::embedded(source.files).unwrap();
-        assert!(!resources.fingerprint().0);
-        for (path, _) in source.files {
-            resources
-                .page(
-                    "bundled:maka-plugin-authoring",
-                    &maka_agent_facts::read::ReadInput {
-                        path: (*path).into(),
-                        offset: None,
-                        limit: None,
-                    },
-                )
-                .unwrap_or_else(|error| panic!("{path}: {error}"));
-        }
-        for required in [
-            "references/source-index.md",
-            "references/sdk/contracts/agent.ts",
-            "references/sdk/contracts/deploymentManager.ts",
-            "references/source/plugins/shared/package.ts",
-            "references/source/plugins/application/gateway/package.ts",
-        ] {
-            assert!(
-                source.files.iter().any(|(path, _)| *path == required),
-                "{required}"
-            );
-        }
-    }
 }

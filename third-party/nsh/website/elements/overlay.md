@@ -90,8 +90,9 @@ full-window layer; `class="bottom-0 left-0 right-0"` is a bar along the bottom.
 
 With `anchor`, NSH places it next to the anchor:
 
-- `anchor` is a view (a `ref`) or a `Point` (`{ x, y }`) in the root view's coordinates, the `pageX` / `pageY` of a touch
-  (a menu where the pointer is).
+- `anchor` is a view (a `ref`), a `Point` (`{ x, y }`) in the root view's coordinates, the `pageX` / `pageY` of a touch
+  (a menu where the pointer is), or a `Bounds` (`{ origin, size }`) there: an input's caret (`onCaretMove`'s `pageBounds`), where suggestions
+  for what is being typed open.
 - `placement` is the side it goes on: `"top"`, `"bottom"` (the default), `"left"` or `"right"`. When it does not fit
   there and fits on the other side, it goes there; when it fits on neither, it goes on the side with more room.
 - `align` lines it up along that side: `"start"`, `"center"` (the default) or `"end"`. Above and below the anchor,
@@ -129,7 +130,7 @@ both: that is how [Sheet](./sheet.md) and the phone presentation of [Popover](./
 
 | Prop | Rust | Type | Default | Description |
 |---|---|---|---|---|
-| `anchor` | `.anchor(&element_ref)`, `.anchor_point(point)` | `YNode \| { x: number; y: number } \| null` | none | The view or the point it is placed against. Without one it is a fixed box of its root view. |
+| `anchor` | `.anchor(&element_ref)`, `.anchor_point(point)`, `.anchor_bounds(bounds)` | `YNode \| Point \| Bounds \| null` | none | The view, the point or the box it is placed against. Without one it is a fixed box of its root view. |
 | `placement` | `.placement(..)` | `"top" \| "bottom" \| "left" \| "right"` | `"bottom"` | The side of the anchor it goes on. |
 | `align` | `.align(..)` | `"start" \| "center" \| "end"` | `"center"` | How it lines up with the anchor along that side. |
 | `offset` | `.offset(px(..))` | `number` | `0` | The gap between the anchor and the overlay. |

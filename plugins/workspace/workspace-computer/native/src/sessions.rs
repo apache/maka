@@ -126,11 +126,11 @@ pub(super) fn watch(owner: &Arc<Computer>) {
             let entries = owner.sessions.entries.lock().unwrap().clone();
             for (id, entry) in entries {
                 let valid = async {
-                    let session = owner
-                        .store
-                        .get_session::<maka_agent_api::session::SessionConfiguration>(&id)
+                    let store = owner.store.session(&id).await?;
+                    let session = store
+                        .get_session::<maka_agent_api::session::StoredSessionConfiguration>(&id)
                         .await?;
-                    let retired = owner.store.session_retirement(&id).await?;
+                    let retired = store.session_retirement(&id).await?;
                     Ok::<_, maka_event_log::StoreError>(
                         session.is_some_and(|s| !s.archived) && retired.is_none(),
                     )

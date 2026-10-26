@@ -30,14 +30,6 @@ use serde::{Deserialize, Serialize};
 use std::{any::Any, sync::Arc};
 use tokio_util::sync::CancellationToken;
 
-tokio::task_local! { static CURRENT: Scope; }
-
-/// Available while polling an admitted plugin tool. Preparation and detached
-/// tasks have no implicit authority; Service/Executor contexts pass it explicitly.
-pub fn current() -> Option<Scope> {
-    CURRENT.try_with(Clone::clone).ok()
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(
     tag = "kind",
@@ -80,6 +72,7 @@ pub struct Scope {
     // The embedding owns its authorization evidence. It is neither part of the
     // public observation nor serializable into a plugin-supplied wire grant.
     evidence: Option<Arc<dyn Any + Send + Sync>>,
+    execution: Option<Arc<dyn maka_agent_facts::tools::ExecutionCustody>>,
     context: Metadata,
 }
 
@@ -100,57 +93,11 @@ impl std::ops::Deref for Scope {
 
 /// Embedding dispatch owns an issuer. A different embedding can create its own
 /// issuer but cannot mint scopes accepted by this one's resource adapters.
-pub type Evidence = Arc<dyn Any + Send + Sync>;
-
-/// Capture the embedding's authority once at call entry. Forwarded calls retain
-/// this evidence; resource adapters still recheck revocation before effects.
-pub trait Admission: Send + Sync {
-    fn authorize<'a>(
-        &'a self,
-        identity: &'a Identity,
-    ) -> futures_util::future::BoxFuture<'a, Result<Evidence, ToolError>>;
-}
-
 #[derive(Clone, Default)]
 pub struct Issuer {
     source: Arc<()>,
-    admission: Option<Arc<dyn Admission>>,
 }
 impl Issuer {
-    pub fn with_admission(admission: Arc<dyn Admission>) -> Self {
-        Self {
-            admission: Some(admission),
-            ..Self::default()
-        }
-    }
-
-    pub async fn admit(
-        &self,
-        identity: Identity,
-        cancellation: CancellationToken,
-    ) -> Result<Scope, ToolError> {
-        let evidence = match &self.admission {
-            Some(admission) => Some(tokio::select! {
-                biased;
-                _ = cancellation.cancelled() => return Err(ToolError::Failed("plugin invocation is closed".into())),
-                evidence = admission.authorize(&identity) => evidence?,
-            }),
-            None => None,
-        };
-        Scope::new(self.source.clone(), identity, evidence, cancellation)
-    }
-    pub async fn run<T>(
-        &self,
-        identity: Identity,
-        cancellation: CancellationToken,
-        operation: impl Future<Output = Result<T, ToolError>>,
-    ) -> Result<T, ToolError> {
-        let scope = self.admit(identity, cancellation).await?;
-        let _closed = scope.cancellation.clone().drop_guard();
-        let result = CURRENT.scope(scope.clone(), operation).await;
-        scope.finish().await?;
-        result
-    }
     pub fn issue(
         &self,
         identity: Identity,
@@ -174,6 +121,20 @@ impl Issuer {
             cancellation,
         )
     }
+    /// Forward an actual admitted execution token with the original issuer evidence.
+    /// The receiving Root validates this opaque token; public Identity cannot mint it.
+    pub fn issue_with_execution<T: Any + Send + Sync>(
+        &self,
+        identity: Identity,
+        evidence: T,
+        cancellation: CancellationToken,
+        execution: Arc<dyn maka_agent_facts::tools::ExecutionCustody>,
+    ) -> Result<Scope, ToolError> {
+        let mut scope = self.issue_with(identity, evidence, cancellation)?;
+        scope.execution = Some(execution);
+        Ok(scope)
+    }
+
     /// Only the issuing embedding can inspect its private evidence type.
     pub fn evidence<'a, T: Any + Send + Sync>(&self, scope: &'a Scope) -> Option<&'a T> {
         self.owns(scope).then_some(())?;
@@ -194,6 +155,7 @@ impl Scope {
         Ok(Self {
             source,
             evidence,
+            execution: None,
             context: Metadata {
                 identity,
                 cancellation: cancellation.child_token(),
@@ -202,13 +164,19 @@ impl Scope {
         })
     }
 
+    pub fn execution(&self) -> Option<&Arc<dyn maka_agent_facts::tools::ExecutionCustody>> {
+        self.execution.as_ref()
+    }
+
     pub fn child(&self) -> Result<Self, ToolError> {
-        Self::new(
+        let mut child = Self::new(
             self.source.clone(),
             self.identity.clone(),
             self.evidence.clone(),
             self.cancellation.clone(),
-        )
+        )?;
+        child.execution = self.execution.clone();
+        Ok(child)
     }
 
     pub async fn finish(&self) -> Result<(), ToolError> {
@@ -234,5 +202,53 @@ impl Owned {
 impl Drop for Owned {
     fn drop(&mut self) {
         self.0.cancellation.cancel();
+    }
+}
+
+#[cfg(test)]
+mod execution_tests {
+    use super::*;
+
+    struct Custody;
+    impl maka_agent_facts::tools::ExecutionCustody for Custody {
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+    }
+
+    #[tokio::test]
+    async fn child_keeps_actual_custody_and_identity_alone_does_not_recreate_it() {
+        let issuer = Issuer::default();
+        let identity = Identity::Agent {
+            invocation: Invocation {
+                session_id: "session".into(),
+                turn_id: "turn".into(),
+                run_id: "run".into(),
+                invocation_id: "invocation".into(),
+            },
+            operation_id: Some("operation".into()),
+        };
+        let execution: Arc<dyn maka_agent_facts::tools::ExecutionCustody> = Arc::new(Custody);
+        let original = issuer
+            .issue_with_execution(
+                identity.clone(),
+                42u64,
+                CancellationToken::new(),
+                execution.clone(),
+            )
+            .unwrap();
+        let child = original.child().unwrap();
+        assert!(Arc::ptr_eq(child.execution().unwrap(), &execution));
+        assert!(Arc::ptr_eq(
+            original.clone().execution().unwrap(),
+            &execution
+        ));
+        assert_eq!(issuer.evidence::<u64>(&child), Some(&42));
+        assert!(!Arc::ptr_eq(&original.resources, &child.resources));
+        let observation_only = issuer.issue(identity, CancellationToken::new()).unwrap();
+        assert!(observation_only.execution().is_none());
+        original.finish().await.unwrap();
+        assert!(child.cancellation.is_cancelled());
+        child.finish().await.unwrap();
     }
 }

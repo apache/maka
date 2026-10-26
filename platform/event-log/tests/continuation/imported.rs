@@ -65,7 +65,14 @@ async fn foreign_openings_and_pauses_remain_evidence_without_local_recovery_or_r
     append(&log, &local).await;
     let before = log.prefix(100, 65536).await.unwrap();
     assert_eq!(log.pending_handoffs(0).await.unwrap().len(), 1);
-    assert_eq!(log.unfinished_invocations(10).await.unwrap().len(), 2);
+    assert_eq!(
+        log.unfinished_invocations(0, 10)
+            .await
+            .unwrap()
+            .invocations
+            .len(),
+        2
+    );
     log.close().await.unwrap();
 
     // Seed the importer's durable origin boundary, not a fake terminal or a queue.
@@ -86,7 +93,7 @@ async fn foreign_openings_and_pauses_remain_evidence_without_local_recovery_or_r
     let log = EventLog::open(&path).await.unwrap();
     assert_eq!(log.prefix(100, 65536).await.unwrap().digest, before.digest);
     assert_eq!(
-        log.unfinished_invocations(10).await.unwrap(),
+        log.unfinished_invocations(0, 10).await.unwrap().invocations,
         [local.invocation.clone()]
     );
     assert!(log.pending_handoffs(0).await.unwrap().is_empty());
@@ -196,6 +203,12 @@ async fn foreign_openings_and_pauses_remain_evidence_without_local_recovery_or_r
     let after_pause = opening("after-pause", None);
     append(&log, &after_pause).await;
     close(&log, &after_pause).await;
-    assert!(log.unfinished_invocations(10).await.unwrap().is_empty());
+    assert!(
+        log.unfinished_invocations(0, 10)
+            .await
+            .unwrap()
+            .invocations
+            .is_empty()
+    );
     log.close().await.unwrap();
 }

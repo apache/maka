@@ -43,3 +43,8 @@ impl RowPosition {
         Ok(())
     }
 }
+
+/// Incremental, policy-independent model-history interpretation.
+pub mod semantic;
+
+pub mod media;

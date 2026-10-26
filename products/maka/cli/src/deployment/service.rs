@@ -29,8 +29,7 @@ enum Role {
 }
 
 mod status;
-use status::State;
-pub(super) use status::{Observation, observe};
+pub(super) use status::{Observation, State, observe};
 
 #[cfg(target_os = "linux")]
 mod linux;

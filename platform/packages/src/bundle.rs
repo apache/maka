@@ -47,10 +47,9 @@ impl Package {
         }
         let mut files = BTreeMap::new();
         for file in bundle.files {
-            super::validate_path(&file.path)?;
             let bytes = STANDARD
                 .decode(file.content)
-                .map_err(|_| Error::Invalid("invalid bundle base64".into()))?;
+                .map_err(|error| Error::Invalid(format!("invalid bundle base64: {error}")))?;
             if files.insert(file.path, bytes).is_some() {
                 return Err(Error::Invalid(
                     "bundle contains duplicate file paths".into(),

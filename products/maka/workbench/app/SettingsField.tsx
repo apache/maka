@@ -18,23 +18,64 @@
  */
 
 import { Input, Text, View } from 'nsh';
+import { windowSize } from 'nsh/device';
 import { C, compact, inputBorderRadius, inputTextStyle } from './ui';
 
-export function SettingsField(props: {
+type SettingsInputProps = {
   label: string;
   value: string;
   change(value: string): void;
-  hint?: string;
-  masked?: boolean;
-  multiline?: boolean;
   readonly?: boolean;
   disabled?: boolean;
-}) {
+  autoFocus?: boolean;
+};
+
+const inputStyle = (disabled?: boolean) => ({
+  borderWidth: 1,
+  borderColor: C.line,
+  borderRadius: inputBorderRadius,
+  backgroundColor: C.background,
+  color: disabled ? C.muted : C.text,
+  paddingHorizontal: 12,
+  paddingVertical: compact() ? 4 : 8,
+  ...inputTextStyle,
+});
+
+export function SettingsEditor(props: SettingsInputProps) {
+  return (
+    <Input
+      accessibilityLabel={props.label}
+      autoFocus={props.autoFocus}
+      value={props.value}
+      onChange={props.change}
+      multiline
+      submitBehavior="newline"
+      readonly={props.readonly || props.disabled}
+      autoCapitalize="none"
+      autoCorrect={false}
+      style={{
+        ...inputStyle(props.disabled),
+        flex: 1,
+        minHeight: inputTextStyle.lineHeight + 2 * (compact() ? 4 : 8) + 2,
+      }}
+      focusStyle={{ borderColor: C.accent }}
+    />
+  );
+}
+
+export function SettingsField(
+  props: SettingsInputProps & {
+    hint?: string;
+    masked?: boolean;
+    multiline?: boolean;
+  },
+) {
   return (
     <View style={{ gap: 8 }}>
       <Text style={{ color: C.secondary, fontSize: 13, fontWeight: '500' }}>{props.label}</Text>
       <Input
         accessibilityLabel={props.label}
+        autoFocus={props.autoFocus}
         value={props.value}
         onChange={props.change}
         masked={props.masked}
@@ -43,15 +84,10 @@ export function SettingsField(props: {
         autoCapitalize="none"
         autoCorrect={false}
         style={{
-          height: props.multiline ? (compact() ? 96 : 120) : compact() ? 32 : 40,
-          borderWidth: 1,
-          borderColor: C.line,
-          borderRadius: inputBorderRadius,
-          backgroundColor: C.background,
-          color: props.disabled ? C.muted : C.text,
-          paddingHorizontal: 12,
-          paddingVertical: compact() ? 4 : 8,
-          ...inputTextStyle,
+          ...inputStyle(props.disabled),
+          height: props.multiline ? undefined : compact() ? 32 : 40,
+          minHeight: compact() ? 32 : 40,
+          maxHeight: props.multiline ? windowSize().height / 2 : undefined,
         }}
         focusStyle={{ borderColor: C.accent }}
       />

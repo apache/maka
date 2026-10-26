@@ -19,7 +19,7 @@
 
 import { displayText, tr } from './locale';
 import { computed, inputAction, Scroll, Text, View } from 'nsh';
-import { Button } from 'nsh/base';
+import { Button, SelectionArea } from 'nsh/base';
 import type { HistoryTool } from '../../../../packages/plugin-sdk/src/index.js';
 import type { Row } from './history';
 import type { ImagePreview } from './ImageThumbnail';
@@ -168,7 +168,9 @@ function Field(props: {
         />
       }
     >
-      <ToolReader value={projection()!} source={source} userScroll={props.userScroll} />
+      <SelectionArea>
+        <ToolReader value={projection()!} source={source} userScroll={props.userScroll} />
+      </SelectionArea>
     </If>
   );
 }

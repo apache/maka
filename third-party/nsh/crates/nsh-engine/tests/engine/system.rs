@@ -63,11 +63,13 @@ mount(() => <Text>{status()}</Text>);
         ui_sets: Vec::new(),
         runtime: None,
         data_dir: Some(dir.join("data")),
+        cache: nsh_engine::CacheOptions::off(),
         storage: None,
         clock: Default::default(),
         context: Default::default(),
         pinned: Default::default(),
         clipboard: None,
+        host: Default::default(),
         picker: None,
     };
     let engine = Engine::start(config, || ApproxTextEngine, ChannelSink(tx)).unwrap();
@@ -150,11 +152,13 @@ mount(() => <Text>{status()}</Text>);"#,
         ui_sets: Vec::new(),
         runtime: None,
         data_dir: Some(root.join("data")),
+        cache: nsh_engine::CacheOptions::off(),
         storage: None,
         clock: Default::default(),
         context: Default::default(),
         pinned: Default::default(),
         clipboard: None,
+        host: Default::default(),
         picker: None,
     };
     let engine = Engine::start(config, || ApproxTextEngine, ChannelSink(tx)).unwrap();

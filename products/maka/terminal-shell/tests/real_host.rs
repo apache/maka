@@ -23,6 +23,10 @@ mod attachment_draft;
 mod attachment_intake;
 #[path = "real_host/attachments.rs"]
 mod attachments;
+#[path = "real_host/compaction.rs"]
+mod compaction;
+#[path = "real_host/composer_completion.rs"]
+mod composer_completion;
 #[path = "real_host/final_actions.rs"]
 mod final_actions;
 #[path = "real_host/interactions.rs"]
@@ -49,6 +53,8 @@ mod support;
 mod terminal_workbench;
 #[path = "real_host/tool_cards.rs"]
 mod tool_cards;
+#[path = "real_host/workspace_locations.rs"]
+mod workspace_locations;
 
 use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
@@ -243,7 +249,13 @@ async fn wait_editable_composer(view: &mut AppView) {
         }
     })
     .await
-    .expect("the original native message composer did not become editable and focused");
+    .unwrap_or_else(|_| {
+        panic!(
+            "the original native message composer did not become editable and focused:\n{}\n{:#?}",
+            view.snapshot(),
+            view.accessibility_snapshot()
+        )
+    });
 }
 
 fn selected_command<'a>(nodes: &'a [AccessibleNode], title: &str) -> Option<&'a AccessibleNode> {
@@ -265,7 +277,7 @@ async fn select_palette(view: &mut AppView, placeholder: &str, search: &str, cho
     let input_label = match placeholder {
         "Search models…" => "Search models",
         "Search workspaces…" => "Search workspace folders",
-        "Search sessions…" => "Search session titles",
+        "Search titles and messages…" => "Search conversation history",
         "Search commands…" => "Search commands",
         _ => panic!("unknown native search field {placeholder:?}"),
     };
@@ -305,7 +317,7 @@ async fn select_palette(view: &mut AppView, placeholder: &str, search: &str, cho
                 "Search models…" => first
                     .find(|node| node.label.starts_with("Use "))
                     .is_some_and(|node| node.label.starts_with(&format!("Use {choice} · "))),
-                "Search sessions…" => first
+                "Search titles and messages…" => first
                     .find(|node| node.label.starts_with("Open conversation "))
                     .is_some_and(|node| node.label == format!("Open conversation {choice}")),
                 "Search workspaces…" => first.any(|node| {
@@ -321,11 +333,39 @@ async fn select_palette(view: &mut AppView, placeholder: &str, search: &str, cho
         }
     })
     .await
-    .unwrap_or_else(|_| panic!("the native search did not select its enabled target {choice:?}"));
+    .unwrap_or_else(|_| {
+        panic!(
+            "the native search did not select its enabled target {choice:?}:\n{}\n{:#?}",
+            view.snapshot(),
+            view.accessibility_snapshot()
+        )
+    });
     view.handle_event(Event::Key(KeyEvent::new(
         KeyCode::Enter,
         KeyModifiers::NONE,
     )));
+}
+
+async fn open_session_browser(view: &mut AppView) {
+    wait_view_state(view, |view, _| {
+        view.accessibility_snapshot().iter().any(|node| {
+            node.role == nsh_core::AccessibilityRole::Button
+                && !node.state.disabled
+                && matches!(
+                    node.label.as_str(),
+                    "Expand session browser" | "Collapse session browser"
+                )
+        })
+    })
+    .await;
+    if view
+        .accessibility_snapshot()
+        .iter()
+        .any(|node| node.label == "Expand session browser")
+    {
+        support::click_button(view, "Expand session browser").await;
+    }
+    wait_enabled_node(view, "Choose workspace scope").await;
 }
 
 async fn open_workspace_picker(view: &mut AppView) {
@@ -438,6 +478,71 @@ async fn empty_settings_configure_a_real_connection_and_manual_reasoning_model_b
             "the native {label:?} draft changed"
         );
     }
+    async fn assert_document_viewport(
+        view: &mut AppView,
+        label: &str,
+        save_label: &str,
+        first_line: &str,
+    ) {
+        wait_focused_input(view, label).await;
+        let input_id = view.surface().focused().unwrap();
+        let save_id = view
+            .accessibility_snapshot()
+            .into_iter()
+            .find(|node| {
+                node.role == nsh_core::AccessibilityRole::Button && node.label == save_label
+            })
+            .unwrap()
+            .id;
+        let node = |view: &AppView, id| {
+            view.accessibility_snapshot()
+                .into_iter()
+                .find(|node| node.id == id)
+                .unwrap()
+        };
+        let input = node(view, input_id).frame;
+        let save = node(view, save_id).frame;
+        assert!(
+            input.size.height.0 > view.surface().viewport().height.0 / 2.0,
+            "the document editor must use the free settings space instead of a small fixed box: input {input:?}, save {save:?}, viewport {:?}",
+            view.surface().viewport()
+        );
+        assert!(save.origin.y.0 >= input.origin.y.0 + input.size.height.0);
+        assert!(
+            save.origin.y.0 + save.size.height.0 <= view.surface().viewport().height.0,
+            "document actions must remain visible while its text scrolls"
+        );
+        view.handle_event(Event::Key(KeyEvent::new(
+            KeyCode::Home,
+            KeyModifiers::CONTROL,
+        )));
+        commit_native_events(view).await;
+        wait_view(view, |screen| screen.contains(first_line)).await;
+        view.handle_event(Event::Mouse(MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: ((save.origin.x.0 + save.size.width.0 / 2.0) / 8.0) as u16,
+            row: ((save.origin.y.0 + save.size.height.0 / 2.0) / 16.0) as u16,
+            modifiers: KeyModifiers::NONE,
+        }));
+        commit_native_events(view).await;
+        support::tick(view);
+        assert_eq!(
+            node(view, input_id).frame,
+            input,
+            "an outer wheel moved the editor into blank space"
+        );
+        assert_eq!(
+            node(view, save_id).frame,
+            save,
+            "an outer wheel scrolled away the actions"
+        );
+        assert!(view.snapshot().contains(first_line));
+        support::scroll_text(view, first_line, MouseEventKind::ScrollDown);
+        commit_native_events(view).await;
+        wait_view(view, |screen| !screen.contains(first_line)).await;
+        assert_eq!(node(view, input_id).frame, input);
+        assert_eq!(node(view, save_id).frame, save);
+    }
     tokio::time::timeout(Duration::from_secs(90), async {
         #[cfg(unix)]
         let mut fixture = Fixture::registered_empty_settings().await;
@@ -460,25 +565,9 @@ async fn empty_settings_configure_a_real_connection_and_manual_reasoning_model_b
         wait_view(&mut view, |screen| screen.contains("Add your first connection, then fetch or add a model.")).await;
         activate(&mut view, "Add connection").await;
         wait_view(&mut view, |screen| screen.contains("Choose the API provider for this connection.") && !screen.contains("Loading settings…")).await;
-        // Provider inventory uses the production virtual List. Wheel its real
-        // painted rows until the OpenRouter provider is physically available.
-        tokio::time::timeout(Duration::from_secs(20), async {
-            loop {
-                support::tick(&mut view);
-                let screen = view.snapshot();
-                if screen.contains("OpenRouter") {
-                    break;
-                }
-                let anchor = view.accessibility_snapshot().into_iter().find_map(|node| {
-                    let label = node.label.strip_prefix("Connect ")?;
-                    screen.lines().any(|line| line.contains(label)).then(|| label.to_owned())
-                });
-                if let Some(anchor) = anchor {
-                    support::scroll_text(&mut view, &anchor, MouseEventKind::ScrollDown);
-                }
-                tokio::time::sleep(Duration::from_millis(5)).await;
-            }
-        }).await.expect("the real provider inventory did not reveal OpenRouter");
+        fill(&mut view, "Search providers", "OPENROUTER").await;
+        wait_view(&mut view, |screen| screen.contains("OpenRouter") && !screen.contains("Loading settings…")).await;
+        assert_input(&mut view, "Search providers", "OPENROUTER").await;
         support::click_button(&mut view, "Connect OpenRouter").await;
         wait_view(&mut view, |screen| screen.contains("Connection settings") && screen.contains("Connection name")).await;
         fill(&mut view, "Connection name", "UI 连接").await;
@@ -507,19 +596,34 @@ async fn empty_settings_configure_a_real_connection_and_manual_reasoning_model_b
         assert_eq!(discovered_choice["thinkingLevels"], json!(["max","high","low","off"]));
         assert_eq!(discovered_choice["defaultThinkingLevel"], "high");
         activate(&mut view, "Edit model fixture-discovered-model").await;
+        tab_to_label(&mut view, "Support effort high").await;
         wait_view(&mut view, |screen| screen.contains("Current saved reasoning efforts: max, high, low, off. Default: high.") && !screen.contains("Loading settings…")).await;
         let node = support::wait_enabled_button(&mut view, "Support effort high").await;
         assert!(node.state.selected, "provider-discovered efforts must be visible without an override");
+        for label in ["Code Mode: Model default", "Apply Patch: Model default", "Code Mode language: JavaScript"] {
+            tab_to_label(&mut view, label).await;
+            assert!(support::wait_enabled_button(&mut view, label).await.state.selected, "omitted tool overrides must retain model defaults");
+        }
         activate(&mut view, "Back from connection settings").await;
         wait_view(&mut view, |screen| screen.contains("Connection models")).await;
         activate(&mut view, "Add model manually").await;
         wait_view(&mut view, |screen| screen.contains("Model settings") && screen.contains("Model ID")).await;
         fill(&mut view, "Model ID", "manual-ui-agent").await;
         fill(&mut view, "Model display name", "Manual UI Agent").await;
+        activate(&mut view, "Code Mode: Enabled").await;
+        activate(&mut view, "Apply Patch: Disabled").await;
+        activate(&mut view, "Code Mode language: Python").await;
         activate(&mut view, "Support effort high").await;
         activate(&mut view, "Default effort high").await;
         activate(&mut view, "Save model").await;
         wait_view(&mut view, |screen| screen.contains("Connection models") && screen.contains("Model saved.") && screen.contains("Manual UI Agent")).await;
+        fill(&mut view, "Search models", "MANUAL UI").await;
+        wait_view_state(&mut view, |view, screen| screen.contains("Manual UI Agent") && !view.accessibility_snapshot().iter().any(|node| node.label == "Edit model fixture-discovered-model")).await;
+        assert_input(&mut view, "Search models", "MANUAL UI").await;
+        fill(&mut view, "Search models", "fixture-discovered-model").await;
+        wait_view_state(&mut view, |view, screen| screen.contains("fixture-discovered-model") && !view.accessibility_snapshot().iter().any(|node| node.label == "Edit model manual-ui-agent")).await;
+        fill(&mut view, "Search models", "").await;
+        wait_view(&mut view, |screen| screen.contains("Manual UI Agent") && screen.contains("fixture-discovered-model")).await;
         activate(&mut view, "Set default manual-ui-agent").await;
         wait_view(&mut view, |screen| screen.contains("Default model saved.")).await;
         let catalog = client.query("settings", "connections", json!({"kind":"start"})).await.unwrap();
@@ -530,17 +634,52 @@ async fn empty_settings_configure_a_real_connection_and_manual_reasoning_model_b
         assert_eq!(catalog["defaultTarget"], target);
         let detail = client.query("settings", "connection", json!({"connectionId":basis["connectionId"],"revision":basis["revision"],"includeEditingFacts":true})).await.unwrap();
         assert_eq!(detail["target"]["configuration"], json!({"baseUrl":fixture.base_url}));
-        assert_eq!(detail["editing"], json!({"enabledModelIds":["fixture-discovered-model","manual-ui-agent"],"modelOverrides":{"manual-ui-agent":{"displayName":"Manual UI Agent","thinkingLevels":["high"],"defaultThinkingLevel":"high"}},"requestBodyOverlay":{"provider":{"only":["openrouter","deepseek"]},"temperature":0.22}}));
+        assert_eq!(detail["editing"], json!({"enabledModelIds":["fixture-discovered-model","manual-ui-agent"],"modelOverrides":{"manual-ui-agent":{"displayName":"Manual UI Agent","codeMode":true,"codeModeLanguage":"python","applyPatch":false,"thinkingLevels":["high"],"defaultThinkingLevel":"high"}},"requestBodyOverlay":{"provider":{"only":["openrouter","deepseek"]},"temperature":0.22}}));
         let models = client.query("settings", "models", json!({"kind":"start","query":"manual-ui-agent"})).await.unwrap();
         assert_eq!(models["choices"].as_array().unwrap().len(), 1);
         assert_eq!(models["choices"][0]["thinkingLevels"], json!(["high"]));
         assert_eq!(models["choices"][0]["defaultThinkingLevel"], "high");
         assert_eq!(models["defaultModel"]["kind"], "ready");
         assert_eq!(models["defaultModel"]["choice"]["selection"]["modelId"], "manual-ui-agent");
+        // Put the searched connection beyond the public catalog's first page.
+        // Empty inventories keep these rows out of the real model/send flow.
+        let mut catalog_revision = catalog["revision"].clone();
+        for index in 0..16 {
+            let last = index == 15;
+            let mutation = client.mutation(
+                Uuid::new_v4(), "settings", "create",
+                json!({"expectedCatalogRevision":catalog_revision,"connection":{
+                    "slug":if last { "last-page-connection".to_owned() } else { format!("search-filler-{index}") },
+                    "name":if last { "Later 中文 connection".to_owned() } else { format!("Search filler {index}") },
+                    "provider":detail["target"]["provider"],"configuration":{"baseUrl":fixture.base_url},
+                    "enabled":false,"enabledModelIds":[]
+                }}), Default::default(), None, Value::Null,
+            ).await.unwrap();
+            mutation.prepare().await.unwrap();
+            let reply = mutation.confirm().await.unwrap();
+            let Receipt::Recorded { outcome: OperationOutcome::Returned { value }, .. } = reply.receipt else {
+                panic!("the real settings catalog mutation was not recorded")
+            };
+            assert_eq!(value["kind"], "committed");
+            catalog_revision = value["catalogRevision"].clone();
+        }
+        let first_page = client.query("settings", "connections", json!({"kind":"start"})).await.unwrap();
+        assert_eq!(first_page["connections"].as_array().unwrap().len(), 16);
+        assert_eq!(first_page["next"], 16);
+        assert!(!first_page["connections"].as_array().unwrap().iter().any(|row| row["slug"] == "last-page-connection"));
         activate(&mut view, "Back from connection settings").await;
         wait_view(&mut view, |screen| screen.contains("Connection settings") && screen.contains("Connection name")).await;
         activate(&mut view, "Back from connection settings").await;
         wait_view_state(&mut view, |view, screen| screen.contains("Connections & models") && screen.contains("Refresh connections") && view.accessibility_snapshot().iter().any(|node| node.role == nsh_core::AccessibilityRole::Button && node.label == "Close settings" && !node.state.disabled) && !view.accessibility_snapshot().iter().any(|node| node.role == nsh_core::AccessibilityRole::Button && node.label == "Back from connection settings")).await;
+        fill(&mut view, "Search connections", "later 中文 OPENROUTER").await;
+        wait_view_state(&mut view, |view, screen| screen.contains("Later 中文 connection") && !screen.contains("Loading settings…") && !view.accessibility_snapshot().iter().any(|node| node.label == "Edit connection UI 连接")).await;
+        assert_input(&mut view, "Search connections", "later 中文 OPENROUTER").await;
+        activate(&mut view, "Edit connection Later 中文 connection").await;
+        wait_view(&mut view, |screen| screen.contains("Connection settings") && screen.contains("Connection name")).await;
+        assert_input(&mut view, "Connection ID", "last-page-connection").await;
+        activate(&mut view, "Back from connection settings").await;
+        fill(&mut view, "Search connections", "UI-CONNECTION").await;
+        wait_view_state(&mut view, |view, screen| screen.contains("UI 连接") && !screen.contains("Loading settings…") && !view.accessibility_snapshot().iter().any(|node| node.label == "Edit connection Later 中文 connection")).await;
         activate(&mut view, "Close settings").await;
         wait_view_state(&mut view, |view, screen| screen.contains("Make something remarkable.") && !view.accessibility_snapshot().iter().any(|node| node.role == nsh_core::AccessibilityRole::Button && node.label == "Close settings")).await;
         support::click_button(&mut view, "Choose composer workspace").await;
@@ -566,6 +705,24 @@ async fn empty_settings_configure_a_real_connection_and_manual_reasoning_model_b
         let session = sessions["sessions"][0]["id"].as_str().unwrap().to_owned();
         let observed = client.query("agent", "observe", json!({"sessionId":session})).await.unwrap();
         assert_eq!(observed["session"]["backend"], json!({"kind":"model","connectionId":basis["connectionId"],"modelId":"manual-ui-agent","thinkingLevel":null}));
+        let saved_policy = client.query("settings", "resolveModel", target.clone()).await.unwrap();
+        assert_eq!(saved_policy["choice"]["tools"], json!({"codeMode":true,"codeModeLanguage":"python","applyPatch":false}));
+        activate(&mut view, "Choose model and effort").await;
+        activate(&mut view, "Edit current model settings").await;
+        wait_view(&mut view, |screen| screen.contains("Model settings") && screen.contains("Model ID") && !screen.contains("Loading settings…")).await;
+        assert_input(&mut view, "Model display name", "Manual UI Agent").await;
+        for label in ["Code Mode: Enabled", "Apply Patch: Disabled", "Code Mode language: Python"] {
+            tab_to_label(&mut view, label).await;
+            assert!(support::wait_enabled_button(&mut view, label).await.state.selected, "current model settings must show the saved tool policy");
+        }
+        activate(&mut view, "Code Mode: Disabled").await;
+        activate(&mut view, "Apply Patch: Enabled").await;
+        activate(&mut view, "Code Mode language: JavaScript").await;
+        activate(&mut view, "Close settings").await;
+        wait_view_state(&mut view, |view, _| !view.accessibility_snapshot().iter().any(|node| node.label == "Close settings")).await;
+        let cancelled_policy = client.query("settings", "resolveModel", target.clone()).await.unwrap();
+        assert_eq!(cancelled_policy["choice"]["selection"], saved_policy["choice"]["selection"], "closing settings must not commit the unsaved tool policy");
+        assert_eq!(cancelled_policy["choice"]["tools"], json!({"codeMode":true,"codeModeLanguage":"python","applyPatch":false}));
         tab_to_label(&mut view, "Message composer").await;
         editable(&mut view, "Message composer").await;
         view.handle_event(Event::Paste("Use my new connection exactly once".into()));
@@ -651,6 +808,8 @@ async fn empty_settings_configure_a_real_connection_and_manual_reasoning_model_b
         assert_eq!(initial_global["source"], "maka");
         assert_eq!(initial_global["path"], instruction_path.to_str().unwrap());
         assert_eq!(initial_global["content"], initial_instructions);
+        let original_size = (view.surface().viewport().width.0 / 8.0, view.surface().viewport().height.0 / 16.0);
+        view.resize(120, 50);
         activate(&mut view, "Edit global instructions").await;
         // The complete native text remains one label even when a long Host
         // path wraps across multiple terminal rows.
@@ -733,6 +892,12 @@ async fn empty_settings_configure_a_real_connection_and_manual_reasoning_model_b
         let final_instructions = format!("  GLOBAL_UI_INSTRUCTIONS_UNIQUE\r\n{}\n\tMixed LF line 🦀\rStandalone CR line\r\n\r\n", "\t保留完整 UTF-8 指令，遵循实际用户需求。  \r\n".repeat(40));
         fill(&mut view, "Global instructions", &final_instructions).await;
         assert_input(&mut view, "Global instructions", &final_instructions).await;
+        assert_document_viewport(&mut view, "Global instructions", "Save global instructions", "GLOBAL_UI_INSTRUCTIONS_UNIQUE").await;
+        view.resize(80, 24);
+        assert_input(&mut view, "Global instructions", &final_instructions).await;
+        view.handle_event(Event::Key(KeyEvent::new(KeyCode::Home, KeyModifiers::CONTROL)));
+        commit_native_events(&mut view).await;
+        wait_view(&mut view, |screen| screen.contains("GLOBAL_UI_INSTRUCTIONS_UNIQUE")).await;
         activate(&mut view, "Save global instructions").await;
         wait_view(&mut view, |screen| screen.contains("Global instructions saved.")).await;
         let saved_global = client.query("agent", "globalInstructions", json!({})).await.unwrap();
@@ -745,7 +910,20 @@ async fn empty_settings_configure_a_real_connection_and_manual_reasoning_model_b
         assert_eq!(client.query("settings", "assistantPreferences", json!({})).await.unwrap(), saved_preferences, "editing AGENTS.md must not mutate display name, language or the policy revision");
         // Return from the file editor before continuing the original name and
         // composer identity checks; saving may retain the fresh file editor.
+        view.resize(120, 50);
         activate(&mut view, "Back from general settings").await;
+        activate(&mut view, "Edit compaction prompt").await;
+        let compaction_draft = format!("COMPACTION_EDITOR_FIRST_LINE\n{}", "Complete unsaved compaction instructions.\n".repeat(50));
+        fill(&mut view, "Compaction prompt", &compaction_draft).await;
+        assert_document_viewport(&mut view, "Compaction prompt", "Save this preference", "COMPACTION_EDITOR_FIRST_LINE").await;
+        view.resize(80, 24);
+        assert_input(&mut view, "Compaction prompt", &compaction_draft).await;
+        view.handle_event(Event::Key(KeyEvent::new(KeyCode::Home, KeyModifiers::CONTROL)));
+        commit_native_events(&mut view).await;
+        wait_view(&mut view, |screen| screen.contains("COMPACTION_EDITOR_FIRST_LINE")).await;
+        activate(&mut view, "Cancel").await;
+        assert_eq!(client.query("settings", "assistantPreferences", json!({})).await.unwrap(), saved_preferences, "leaving the compaction editor must not save the draft");
+        view.resize(original_size.0 as u16, original_size.1 as u16);
         activate(&mut view, "Edit personalization").await;
         assert_input(&mut view, "Display name", "已保存的中文用户").await;
         support::wait_enabled_button(&mut view, "Back from general settings").await;
@@ -761,6 +939,7 @@ async fn empty_settings_configure_a_real_connection_and_manual_reasoning_model_b
         assert_eq!(request.body["reasoning_effort"], "high");
         assert_eq!(request.body["provider"], json!({"only":["openrouter","deepseek"]}));
         assert_eq!(request.body["temperature"], 0.22);
+        assert!(request.body["tools"].as_array().unwrap().iter().any(|tool| tool["function"]["name"] == "exec"), "the model's saved Code Mode policy must reach the actual provider request");
         assert!(request.body["messages"].as_array().unwrap().iter().any(|message| message["role"] == "user" && message["content"].to_string().contains("Use my new connection exactly once")));
         let system_prompt = request.body["messages"].as_array().unwrap().iter()
             .filter(|message| message["role"] == "system")
@@ -860,7 +1039,7 @@ async fn the_home_palette_creates_switches_models_and_stops_a_real_session_witho
         evidence("workbench-home", &home);
         support::evidence_cells("workbench-home", &view);
 
-        support::click_text(&mut view, "Commands");
+        support::click_button(&mut view, "Open commands").await;
         wait_view_state(&mut view, |view, screen| {
             screen.contains("Search commands…")
                 && view.accessibility_snapshot().iter().any(|node| {
@@ -871,29 +1050,76 @@ async fn the_home_palette_creates_switches_models_and_stops_a_real_session_witho
         }).await;
         support::click_button(&mut view, "Close commands").await;
         wait_view(&mut view, |screen| screen.contains("Make something remarkable.") && !screen.contains("Search commands…")).await;
-        support::click_text(&mut view, "Commands");
+        support::click_button(&mut view, "Open commands").await;
         wait_view_state(&mut view, |view, screen| screen.contains("Search commands…") && selected_command(&view.accessibility_snapshot(), "Sessions").is_some()).await;
         let nodes = view.accessibility_snapshot();
         support::click_node(&mut view, selected_command(&nodes, "Sessions").unwrap().clone());
-        wait_view(&mut view, |screen| screen.contains("Search sessions…") && screen.contains("NSH real Agent") && !screen.contains("Loading…")).await;
-        wait_focused_input(&mut view, "Search session titles").await;
-        support::click_button(&mut view, "Open conversation NSH real Agent").await;
+        select_palette(&mut view, "Search titles and messages…", "NSH real", "NSH real Agent").await;
         wait_view(&mut view, |screen| screen.contains("NSH real Agent")).await;
         wait_editable_composer(&mut view).await;
         view.handle_event(Event::Paste("Draft A stays in its own conversation".into()));
         support::wait_draft(&client, &fixture.session, "Draft A stays in its own conversation").await;
 
+        let composer = view.surface().focused().unwrap();
+        support::wait_enabled_button(&mut view, "Collapse session browser").await;
+        assert!(!view.accessibility_snapshot().iter().any(|node| node.label == "Close session browser"), "the sidebar must not expose a second toggle beside the Header control");
+        support::click_button(&mut view, "Collapse session browser").await;
+        wait_view(&mut view, |screen| screen.contains("Draft A stays in its own conversation") && !screen.contains("All workspaces")).await;
+        support::wait_enabled_button(&mut view, "Expand session browser").await;
+        wait_editable_composer(&mut view).await;
+        assert_eq!(view.surface().focused(), Some(composer));
+
+        // Recall owns its native input while the conversation retains its draft.
+        shortcut(&mut view, 'o');
+        wait_focused_input(&mut view, "Search conversation history").await;
+        let search = view.surface().focused().unwrap();
+        view.handle_event(Event::Paste("NSH real".into()));
+        wait_enabled_node(&mut view, "Open conversation NSH real Agent").await;
+        shortcut(&mut view, 'a');
+        view.handle_event(Event::Paste("HEADER_SEARCH_HAS_NO_SESSION_MATCH".into()));
+        wait_view_state(&mut view, |view, screen| screen.contains("No matching conversations or messages.") && !view.accessibility_snapshot().iter().any(|node| node.label == "Open conversation NSH real Agent")).await;
+        shortcut(&mut view, 'a');
+        view.handle_event(Event::Key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE)));
+        wait_view(&mut view, |screen| screen.contains("Type words to search conversation history.")).await;
+        assert_eq!(view.surface().focused(), Some(search));
+        assert_eq!(view.surface().input_context().unwrap().text.as_deref(), Some(""));
+        view.handle_event(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
+        wait_editable_composer(&mut view).await;
+        assert_eq!(view.surface().focused(), Some(composer));
+        assert_eq!(view.surface().input_context().unwrap().text.as_deref(), Some("Draft A stays in its own conversation"));
+        support::wait_draft(&client, &fixture.session, "Draft A stays in its own conversation").await;
+        assert_eq!(fixture.request_count.load(Ordering::SeqCst), 0);
+        open_session_browser(&mut view).await;
+        tab_to_label(&mut view, "Message composer").await;
+
+        // Both presses can be admitted by the same native frame before the
+        // settings modal reaches it. The old Header action must not dismiss
+        // or replace the newer modal when the engine processes that FIFO.
+        let settings = support::wait_enabled_button(&mut view, "Open settings").await;
+        let toggle = support::wait_enabled_button(&mut view, "Collapse session browser").await;
+        let control = view.control().unwrap();
+        for id in [settings.id, toggle.id] {
+            control.dispatch_event(id, nsh_core::EventKind::Press, nsh_core::EventPayload::None);
+        }
+        let (done, committed) = tokio::sync::oneshot::channel();
+        control.advance_clock(Duration::ZERO, move || { let _ = done.send(()); });
+        committed.await.expect("the admitted Header actions did not commit");
+        support::wait_enabled_button(&mut view, "Close settings").await;
+        support::click_button(&mut view, "Close settings").await;
+        wait_editable_composer(&mut view).await;
+        assert_eq!(view.surface().focused(), Some(composer));
+        assert_eq!(view.surface().input_context().unwrap().text.as_deref(), Some("Draft A stays in its own conversation"));
+
         // A historical Ctrl+O request must not replay when an inactive sidebar
         // remounts. The center keeps its native Input and exact saved draft.
-        let composer = view.surface().focused().unwrap();
         view.resize(80, 24);
-        let narrow = wait_view(&mut view, |screen| screen.contains("Draft A stays in its own conversation") && !screen.contains("Search sessions…")).await;
+        let narrow = wait_view(&mut view, |screen| screen.contains("Draft A stays in its own conversation") && !screen.contains("All workspaces")).await;
         assert_eq!(view.surface().focused(), Some(composer));
         assert_eq!(view.surface().input_context().unwrap().text.as_deref(), Some("Draft A stays in its own conversation"));
         evidence("workbench-narrow-preserves-editor", &narrow);
         support::evidence_cells("workbench-narrow-preserves-editor", &view);
         view.resize(120, 40);
-        let wide = wait_view(&mut view, |screen| screen.contains("Draft A stays in its own conversation") && screen.contains("Search sessions…")).await;
+        let wide = wait_view(&mut view, |screen| screen.contains("Draft A stays in its own conversation") && screen.contains("All workspaces")).await;
         assert_eq!(view.surface().focused(), Some(composer));
         assert_eq!(view.surface().input_context().unwrap().text.as_deref(), Some("Draft A stays in its own conversation"));
         evidence("workbench-wide-preserves-editor", &wide);
@@ -929,6 +1155,54 @@ async fn the_home_palette_creates_switches_models_and_stops_a_real_session_witho
             assert_eq!(resized.origin.x.0, editor.origin.x.0 + f32::from(delta) * 8.0);
             assert_eq!(resized.size.width.0, editor.size.width.0 - f32::from(delta) * 8.0);
         }
+
+        // A height-only resize ends the native gesture at its applied width.
+        // The next drag must start there, not at the pre-drag preference.
+        let nodes = view.accessibility_snapshot();
+        let divider = nodes.iter().find(|node| node.label == "Resize session browser").unwrap().frame;
+        let editor = nodes.iter().find(|node| node.id == composer).unwrap().frame;
+        let selection = view.surface().input_context().unwrap().selection;
+        let viewport = view.surface().viewport();
+        let column = (divider.origin.x.0 / 8.0).round() as u16;
+        let target = column + 3;
+        let dragged_x = divider.origin.x.0 + 24.0;
+        for (kind, column) in [
+            (MouseEventKind::Down(MouseButton::Left), column),
+            (MouseEventKind::Drag(MouseButton::Left), target),
+        ] {
+            view.handle_event(Event::Mouse(MouseEvent {kind,column,row:1,modifiers:KeyModifiers::NONE}));
+        }
+        wait_view_state(&mut view, |view, _| view.accessibility_snapshot().iter().any(|node| node.label == "Resize session browser" && node.frame.origin.x.0 == dragged_x)).await;
+        assert_eq!(view.surface().focused(), Some(composer));
+        assert_eq!(view.surface().input_context().unwrap().selection, selection);
+        view.resize((viewport.width.0 / 8.0) as u16, (viewport.height.0 / 16.0) as u16 + 1);
+        // The full-height divider proves the new native layout was applied;
+        // the empty conversation's composer is vertically centered.
+        wait_view_state(&mut view, |view, _| view.accessibility_snapshot().iter().any(|node| node.label == "Resize session browser" && node.frame.size.height.0 == divider.size.height.0 + 16.0)).await;
+        assert!(view.accessibility_snapshot().iter().any(|node| node.label == "Resize session browser" && node.frame.origin.x.0 == dragged_x));
+        view.handle_event(Event::Mouse(MouseEvent {kind:MouseEventKind::Up(MouseButton::Left),column:target,row:1,modifiers:KeyModifiers::NONE}));
+        assert_eq!(view.surface().focused(), Some(composer));
+        let context = view.surface().input_context().unwrap();
+        assert_eq!(context.text.as_deref(), Some("Draft A stays in its own conversation"));
+        assert_eq!(context.selection, selection);
+        for (kind, column) in [
+            (MouseEventKind::Down(MouseButton::Left), target),
+            (MouseEventKind::Drag(MouseButton::Left), target + 2),
+            (MouseEventKind::Up(MouseButton::Left), target + 2),
+        ] {
+            view.handle_event(Event::Mouse(MouseEvent {kind,column,row:1,modifiers:KeyModifiers::NONE}));
+        }
+        wait_view_state(&mut view, |view, _| view.accessibility_snapshot().iter().any(|node| node.label == "Resize session browser" && node.frame.origin.x.0 != dragged_x)).await;
+        let nodes = view.accessibility_snapshot();
+        let widened = nodes.iter().find(|node| node.label == "Resize session browser").unwrap().frame;
+        assert_eq!(widened.origin.x.0, dragged_x + 16.0, "the next drag must continue from the width applied before the native gesture ended");
+        let resized = nodes.iter().find(|node| node.id == composer).unwrap().frame;
+        assert_eq!(resized.origin.x.0, editor.origin.x.0 + 40.0);
+        assert_eq!(resized.size.width.0, editor.size.width.0 - 40.0);
+        assert_eq!(view.surface().focused(), Some(composer), "divider drag moved editor focus");
+        assert_eq!(view.surface().input_context().unwrap().selection, selection);
+        view.resize((viewport.width.0 / 8.0) as u16, (viewport.height.0 / 16.0) as u16);
+        wait_view_state(&mut view, |view, _| view.accessibility_snapshot().iter().any(|node| node.label == "Resize session browser" && node.frame.size.height.0 == divider.size.height.0)).await;
         support::wait_draft(&client, &fixture.session, "Draft A stays in its own conversation").await;
 
         shortcut(&mut view, 'p');
@@ -985,9 +1259,13 @@ async fn the_home_palette_creates_switches_models_and_stops_a_real_session_witho
                 tokio::time::sleep(Duration::from_millis(5)).await;
             }
         }).await.expect("the complete negative query did not settle without a visible old model choice");
-        shortcut(&mut view, 'a');
-        view.handle_event(Event::Paste(model_query));
+        for query in ["fixture-model", "no-such-model", model_query.as_str()] {
+            shortcut(&mut view, 'a');
+            view.handle_event(Event::Paste(query.into()));
+            support::tick(&mut view);
+        }
         wait_view(&mut view, |screen| screen.contains("fixture-model-alt") && screen.contains("1 model") && !screen.contains("Loading…")).await;
+        assert_eq!(view.surface().input_context().unwrap().text.as_deref(), Some(model_query.as_str()));
         view.handle_event(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
         wait_view_state(&mut view, |view, screen| screen.contains("New conversation") && screen.contains("fixture-model-alt · high") && model_menu_closed(view)).await;
         let observed = client.query("agent", "observe", json!({"sessionId":created_id})).await.unwrap();
@@ -1186,14 +1464,14 @@ async fn the_home_palette_creates_switches_models_and_stops_a_real_session_witho
         assert_eq!(fixture.request_count.load(Ordering::SeqCst), 0);
 
         shortcut(&mut view, 'o');
-        select_palette(&mut view, "Search sessions…", "NSH real", "NSH real Agent").await;
+        select_palette(&mut view, "Search titles and messages…", "NSH real", "NSH real Agent").await;
         wait_editable_composer(&mut view).await;
         let restored = wait_view(&mut view, |screen| screen.contains("NSH real Agent") && screen.contains("Draft A stays in its own conversation")).await;
         assert!(!restored.contains("Message B uses the selected model"));
         evidence("workbench-draft-after-switch", &restored);
         support::evidence_cells("workbench-draft-after-switch", &view);
         shortcut(&mut view, 'o');
-        select_palette(&mut view, "Search sessions…", "New conversation", "New conversation").await;
+        select_palette(&mut view, "Search titles and messages…", "New conversation", "New conversation").await;
         wait_view(&mut view, |screen| screen.contains("New conversation") && screen.contains("Message B uses the selected model")).await;
         wait_editable_composer(&mut view).await;
         support::wait_enabled_button(&mut view, "Send message").await;
@@ -1204,7 +1482,7 @@ async fn the_home_palette_creates_switches_models_and_stops_a_real_session_witho
         assert!(request.body["messages"].as_array().unwrap().iter().any(|message| message["role"] == "user" && message["content"].to_string().contains("Message B uses the selected model")));
         assert!(!request.body.to_string().contains("Draft A stays in its own conversation"));
         request.delta("REAL_WORKBENCH_RUN_TO_STOP").await;
-        let writing = wait_view(&mut view, |screen| screen.contains("REAL_WORKBENCH_RUN_TO_STOP") && screen.contains("Writing response")).await;
+        let writing = wait_view(&mut view, |screen| screen.contains("REAL_WORKBENCH_RUN_TO_STOP")).await;
         assert_eq!(writing.matches("REAL_WORKBENCH_RUN_TO_STOP").count(), 1);
         support::evidence_cells("workbench-streaming", &view);
         request.tool_prefix("todo_write", "{\"todos\":[").await;
@@ -1214,49 +1492,82 @@ async fn the_home_palette_creates_switches_models_and_stops_a_real_session_witho
         let observed = client.query("agent", "observe", json!({"sessionId":created_id})).await.unwrap();
         let invocation = observed["run"]["invocationId"].as_str().filter(|id| !id.is_empty()).unwrap();
 
-        // A visible browser never takes the composer's native Enter or arrow
-        // handling. Native Tab into a browser Button scopes Escape without a
-        // JS focus mirror, and Enter must still activate that exact Button.
-        shortcut(&mut view, 'o');
-        wait_view(&mut view, |screen| screen.contains("All workspaces")).await;
-        wait_focused_input(&mut view, "Search session titles").await;
-        view.handle_event(Event::Key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT)));
-        assert!(view.accessibility_snapshot().iter().any(|node| node.focused && node.label == "Choose workspace scope"));
+        // The current sidebar owns its scope chooser and Escape; resizing a
+        // focused sidebar transfers navigation without touching the live run.
+        open_session_browser(&mut view).await;
+        tab_to_label(&mut view, "Choose workspace scope").await;
         view.handle_event(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
-        wait_view(&mut view, |screen| screen.contains("Choose a workspace below")).await;
+        wait_enabled_node(&mut view, "Workspace scopes").await;
         view.handle_event(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
-        wait_view(&mut view, |screen| screen.contains("All workspaces") && !screen.contains("Choose a workspace below")).await;
-        for _ in 0..3 {
-            view.handle_event(Event::Key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT)));
-        }
-        assert!(view.accessibility_snapshot().iter().any(|node| node.focused && node.label == "Close session browser"));
-        // The resize decision uses native subtree focus, including Tabbed
-        // Buttons that never emitted an application focus callback.
+        wait_view_state(&mut view, |view, screen| screen.contains("All workspaces") && !view.accessibility_snapshot().iter().any(|node| node.label == "Workspace scopes")).await;
+        tab_to_label(&mut view, "New conversation").await;
         view.resize(80, 24);
-        let transferred = wait_view(&mut view, |screen| screen.contains("All workspaces")).await;
-        wait_focused_input(&mut view, "Search session titles").await;
-        assert!(!view.accessibility_snapshot().iter().any(|node| node.label == "Narrower session browser"));
+        let transferred = wait_view_state(&mut view, |view, screen| {
+            let nodes = view.accessibility_snapshot();
+            screen.contains("All workspaces")
+                && !nodes.iter().any(|node| node.label == "Resize session browser" || node.label == "Message composer")
+        }).await;
         evidence("workbench-focused-browser-transfers-to-dialog", &transferred);
-        support::evidence_cells("workbench-focused-browser-transfers-to-dialog", &view);
-        view.resize(120, 40);
-        wait_enabled_node(&mut view, "Narrower session browser").await;
-        wait_view(&mut view, |screen| screen.contains("All workspaces")).await;
-        wait_focused_input(&mut view, "Search session titles").await;
-        for _ in 0..3 {
-            view.handle_event(Event::Key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT)));
-        }
-        assert!(view.accessibility_snapshot().iter().any(|node| node.focused && node.label == "Close session browser"));
+        // Escape must work after the automatic transfer, before navigation can repair focus.
         view.handle_event(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
         wait_view(&mut view, |screen| !screen.contains("All workspaces") && screen.contains("Preparing tool · todo_write")).await;
+        open_session_browser(&mut view).await;
+        view.resize(120, 40);
+        tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                view.poll().unwrap();
+                support::tick(&mut view);
+                if view.surface().focused().is_some()
+                    && view.surface().input_context().is_none()
+                    && view.accessibility_snapshot().iter().any(|node| node.label == "Resize session browser")
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        }).await.unwrap_or_else(|_| panic!(
+            "wide sidebar did not automatically receive native navigation focus: focused={:?}, path={:?}\n{}\n{:#?}",
+            view.surface().focused(), view.surface().focus_path(), view.snapshot(), view.accessibility_snapshot()
+        ));
+        view.handle_event(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
+        tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                view.poll().unwrap();
+                support::tick(&mut view);
+                let screen = view.snapshot();
+                if !screen.contains("All workspaces") && screen.contains("Preparing tool · todo_write") {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        }).await.unwrap_or_else(|_| panic!(
+            "Escape after automatic wide sidebar focus did not close the browser: focused={:?}, path={:?}\n{}\n{:#?}",
+            view.surface().focused(), view.surface().focus_path(), view.snapshot(), view.accessibility_snapshot()
+        ));
 
         view.resize(80, 24);
-        shortcut(&mut view, 'o');
+        let (done, committed) = tokio::sync::oneshot::channel();
+        view.control().unwrap().advance_clock(Duration::ZERO, move || {
+            let _ = done.send(());
+        });
+        tokio::time::timeout(Duration::from_secs(20), committed).await.unwrap().unwrap();
+        wait_view_state(&mut view, |view, _| view.accessibility_snapshot().iter().any(|node| {
+            node.role == nsh_core::AccessibilityRole::Button
+                && node.label == "Expand session browser"
+                && node.frame.origin.y.0 == 0.0
+        })).await;
+        let collapsed_toggle = support::wait_enabled_button(&mut view, "Expand session browser").await.frame;
+        support::click_button(&mut view, "Expand session browser").await;
         let narrow_browser = wait_view(&mut view, |screen| screen.contains("All workspaces")).await;
-        wait_focused_input(&mut view, "Search session titles").await;
+        assert!(!view.accessibility_snapshot().iter().any(|node| node.label == "Close session browser"));
+        assert_eq!(support::wait_enabled_button(&mut view, "Collapse session browser").await.frame, collapsed_toggle);
         evidence("workbench-narrow-session-dialog", &narrow_browser);
-        support::evidence_cells("workbench-narrow-session-dialog", &view);
-        view.handle_event(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
+        support::click_button(&mut view, "Collapse session browser").await;
         wait_view(&mut view, |screen| !screen.contains("All workspaces") && screen.contains("Preparing tool · todo_write")).await;
+        shortcut(&mut view, 'o');
+        wait_focused_input(&mut view, "Search conversation history").await;
+        view.handle_event(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
+        wait_view_state(&mut view, |view, screen| screen.contains("Preparing tool · todo_write") && !view.accessibility_snapshot().iter().any(|node| node.label == "Close conversation search")).await;
         request.delta("BROWSER_ESCAPE_LEFT_THE_RUN_ALIVE").await;
         wait_view(&mut view, |screen| screen.contains("BROWSER_ESCAPE_LEFT_THE_RUN_ALIVE") && screen.contains("Preparing tool · todo_write")).await;
         let still_running = client.query("agent", "observe", json!({"sessionId":created_id})).await.unwrap();
@@ -1288,7 +1599,7 @@ async fn the_home_palette_creates_switches_models_and_stops_a_real_session_witho
         assert_eq!(client.load_draft("agent", &fixture.session, EDITOR).await.unwrap().unwrap().text, "Draft A stays in its own conversation");
 
         // The native search callback must deliver the complete original query
-        // to the Host subscription, including a distinguishing final character.
+        // to Recall, including a distinguishing final character.
         let long_query = format!("{}終", "界".repeat(257));
         let long_title = format!("LONG_QUERY_MATCH {long_query}");
         let long_created = support::mutate(&client, "create", json!({
@@ -1298,8 +1609,7 @@ async fn the_home_palette_creates_switches_models_and_stops_a_real_session_witho
         assert_eq!(long_created["kind"], "created");
         assert_eq!(long_created["session"]["title"], long_title);
         shortcut(&mut view, 'o');
-        wait_view(&mut view, |screen| screen.contains("All workspaces")).await;
-        wait_focused_input(&mut view, "Search session titles").await;
+        wait_focused_input(&mut view, "Search conversation history").await;
         shortcut(&mut view, 'a');
         view.handle_event(Event::Paste(long_query.clone()));
         support::tick(&mut view);
@@ -1311,24 +1621,15 @@ async fn the_home_palette_creates_switches_models_and_stops_a_real_session_witho
         view.handle_event(Event::Paste(missing_tail.clone()));
         support::tick(&mut view);
         assert_eq!(view.surface().input_context().unwrap().text.as_deref(), Some(missing_tail.as_str()));
-        wait_view(&mut view, |screen| screen.contains("No matching conversations.") && !screen.contains("LONG_QUERY_MATCH") && !screen.contains("Loading…")).await;
+        wait_view(&mut view, |screen| screen.contains("No matching conversations or messages.") && !screen.contains("LONG_QUERY_MATCH") && !screen.contains("Loading…")).await;
         let original_search = view.surface().focused();
-        support::click_button(&mut view, "Clear session search").await;
-        wait_focused_input(&mut view, "Search session titles").await;
-        assert_eq!(view.surface().focused(), original_search, "clearing must retain the resident search input");
-        assert_eq!(view.surface().input_context().unwrap().text.as_deref(), Some(""));
-        wait_view(&mut view, |screen| screen.contains("LONG_QUERY_MATCH") && !screen.contains("No matching conversations.") && !screen.contains("Loading…")).await;
-        assert!(view.accessibility_snapshot().iter().all(|node| node.label != "Clear session search"));
-        // Preserve the original keyboard-clear path after exercising the
-        // mouse affordance through the same real title-search subscription.
-        view.handle_event(Event::Paste(missing_tail.clone()));
-        wait_view(&mut view, |screen| screen.contains("No matching conversations.") && !screen.contains("LONG_QUERY_MATCH") && !screen.contains("Loading…")).await;
         shortcut(&mut view, 'a');
         view.handle_event(Event::Key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE)));
-        wait_view(&mut view, |screen| screen.contains("LONG_QUERY_MATCH") && !screen.contains("No matching conversations.") && !screen.contains("Loading…")).await;
-        support::click_button(&mut view, "Close session browser").await;
+        wait_view(&mut view, |screen| screen.contains("Type words to search conversation history.")).await;
+        assert_eq!(view.surface().focused(), original_search);
+        assert_eq!(view.surface().input_context().unwrap().text.as_deref(), Some(""));
+        view.handle_event(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
         wait_editable_composer(&mut view).await;
-        wait_view(&mut view, |screen| !screen.contains("No matching conversations.") && !screen.contains("All workspaces")).await;
 
         // The target belongs to the Host's second matching page. Physical
         // wheel scrolling must obtain it without a manual continuation action.
@@ -1339,37 +1640,78 @@ async fn the_home_palette_creates_switches_models_and_stops_a_real_session_witho
             })).await;
             assert_eq!(created["kind"], "created");
         }
-        let first_page = client.query("agent", "list", json!({"filter":"all","scope":{"kind":"all"},"titleQuery":"Browser page","position":{"kind":"start"}})).await.unwrap();
+        open_session_browser(&mut view).await;
+        let mut catalog_page = client.query("agent", "list", json!({"filter":"all","position":{"kind":"start"}})).await.unwrap();
+        let mut catalog_rows = catalog_page["sessions"].as_array().unwrap().clone();
+        while !catalog_page["after"].is_null() {
+            catalog_page = client.query("agent", "list", json!({"filter":"all","position":{"kind":"after","revision":catalog_page["revision"],"cursor":catalog_page["after"]}})).await.unwrap();
+            catalog_rows.extend(catalog_page["sessions"].as_array().unwrap().iter().cloned());
+        }
+        let visible_session = |view: &AppView| view.accessibility_snapshot().into_iter().find_map(|node| {
+            if node.role != nsh_core::AccessibilityRole::Button || node.state.disabled
+                || node.frame.origin.y.0 < 0.0 || node.frame.origin.y.0 >= view.surface().viewport().height.0 {
+                return None;
+            }
+            catalog_rows.iter().find(|session| node.label == format!("Open conversation {}", session["title"].as_str().unwrap()))
+                .map(|session| session["id"].as_str().unwrap().to_owned())
+        });
+        wait_view_state(&mut view, |view, _| visible_session(view).is_some()).await;
+        let watched_id = visible_session(&view).unwrap();
+        let watched = client.query("agent", "observe", json!({"sessionId":watched_id})).await.unwrap();
+        let probe_title = "Browser watch survived concurrent creates";
+        let probe = support::mutate(&client, "metadata", json!({
+            "sessionId":watched_id,"expectedRevision":watched["session"]["revision"],
+            "title":probe_title,"labels":watched["session"]["labels"]
+        })).await;
+        assert_eq!(probe["kind"], "committed");
+        assert_eq!(probe["session"]["id"], watched_id);
+        assert_eq!(probe["session"]["updatedAt"], watched["session"]["updatedAt"]);
+        support::wait_enabled_button(&mut view, &format!("Open conversation {probe_title}")).await;
+        assert!(!view.snapshot().contains("Refresh browser"));
+
+        // The live catalog preserves its reading anchor. A real filter change
+        // starts the independent pagination check at the canonical first page.
+        support::click_button(&mut view, "Show archived conversations").await;
+        wait_view_state(&mut view, |view, screen| !screen.contains("Loading…") && view.accessibility_snapshot().iter().any(|node|
+            node.role == nsh_core::AccessibilityRole::Button
+                && node.label == "Show archived conversations"
+                && node.state.selected
+        )).await;
+        support::click_button(&mut view, "Show active conversations").await;
+        let first_page = client.query("agent", "list", json!({"filter":"all","scope":{"kind":"all"},"titleQuery":"","position":{"kind":"start"}})).await.unwrap();
         assert_eq!(first_page["sessions"].as_array().unwrap().len(), 32);
-        let next_page = client.query("agent", "list", json!({"filter":"all","scope":{"kind":"all"},"titleQuery":"Browser page","position":{"kind":"after","revision":first_page["revision"],"cursor":first_page["after"]}})).await.unwrap();
+        let next_page = client.query("agent", "list", json!({"filter":"all","scope":{"kind":"all"},"titleQuery":"","position":{"kind":"after","revision":first_page["revision"],"cursor":first_page["after"]}})).await.unwrap();
         let target = &next_page["sessions"][0];
         let target_title = target["title"].as_str().unwrap();
         let target_id = target["id"].as_str().unwrap();
         assert!(!first_page["sessions"].as_array().unwrap().iter().any(|session| session["id"] == target_id));
-        shortcut(&mut view, 'o');
-        wait_focused_input(&mut view, "Search session titles").await;
-        view.handle_event(Event::Paste("Browser page".into()));
-        assert_eq!(view.surface().input_context().unwrap().text.as_deref(), Some("Browser page"));
-        // The unfiltered catalog can already contain first_title. Settle the
-        // queued change handler before accepting that row for the new query,
-        // using the same native barrier as select_palette above.
-        let (done, committed) = tokio::sync::oneshot::channel();
-        view.control().unwrap().advance_clock(Duration::ZERO, move || { let _ = done.send(()); });
-        tokio::time::timeout(Duration::from_secs(20), committed).await.expect("the browser query did not commit").expect("the browser engine stopped");
         let first_title = first_page["sessions"][0]["title"].as_str().unwrap();
-        wait_view(&mut view, |screen| screen.contains(first_title) && !screen.contains("Loading…")).await;
+        support::wait_enabled_button(&mut view, &format!("Open conversation {first_title}")).await;
+        let target_label = format!("Open conversation {target_title}");
+        let visible_button = |view: &AppView, label: &str| view.accessibility_snapshot().into_iter().find(|node|
+            node.role == nsh_core::AccessibilityRole::Button && node.label == label && !node.state.disabled
+                && node.frame.origin.y.0 >= 0.0 && node.frame.origin.y.0 < view.surface().viewport().height.0
+        );
+        let scroll_session = |view: &mut AppView, node: AccessibleNode| {
+            view.handle_event(Event::Mouse(MouseEvent {
+                kind: MouseEventKind::ScrollDown,
+                column: (node.frame.origin.x.0 / 8.0 - 0.5).ceil().max(0.0) as u16,
+                row: (node.frame.origin.y.0 / 16.0 - 0.5).ceil().max(0.0) as u16,
+                modifiers: KeyModifiers::NONE,
+            }));
+        };
         tokio::time::timeout(Duration::from_secs(20), async {
             loop {
                 support::tick(&mut view);
                 let screen = view.snapshot();
-                if screen.contains(target_title) {
+                if visible_button(&view, &target_label).is_some() {
                     break;
                 }
                 let row = first_page["sessions"].as_array().unwrap().iter()
                     .filter_map(|session| session["title"].as_str())
-                    .find(|title| screen.contains(title))
+                    .find_map(|title| visible_button(&view, &format!("Open conversation {title}")))
                     .unwrap_or_else(|| panic!("the browser must show a matching session row before its next page; app error: {:?}\n{}", view.last_error(), screen));
-                support::scroll_text(&mut view, row, MouseEventKind::ScrollDown);
+                scroll_session(&mut view, row);
                 tokio::time::sleep(Duration::from_millis(5)).await;
             }
         }).await.expect("native browser scrolling did not load the second Host page");
@@ -1378,11 +1720,10 @@ async fn the_home_palette_creates_switches_models_and_stops_a_real_session_witho
         // Read at the end before a real external metadata commit. Renaming
         // preserves this session's ID, timestamp and query membership, so a
         // catalog revision must not remove the tail or move its screen row.
-        support::scroll_text(&mut view, target_title, MouseEventKind::ScrollDown);
-        support::tick(&mut view);
-        let tail_y = view.accessibility_snapshot().into_iter()
-            .find(|node| node.label == format!("Open conversation {target_title}"))
-            .unwrap().frame.origin.y.0;
+        let target_row = support::wait_enabled_button(&mut view, &target_label).await;
+        scroll_session(&mut view, target_row);
+        wait_view_state(&mut view, |view, _| !view.surface().animating() && visible_button(view, &target_label).is_some()).await;
+        let tail_y = visible_button(&view, &target_label).unwrap().frame.origin.y.0;
         let original = client.query("agent", "observe", json!({"sessionId":target_id})).await.unwrap();
         let updated_title = format!("{target_title} v2");
         let renamed = support::mutate(&client, "metadata", json!({
@@ -1394,17 +1735,11 @@ async fn the_home_palette_creates_switches_models_and_stops_a_real_session_witho
         assert_eq!(renamed["session"]["updatedAt"], original["session"]["updatedAt"]);
         // A new title proves the new revision reached this UI. No wheel or
         // other navigation action is allowed to recover the original row.
-        wait_view(&mut view, |screen| screen.contains(&updated_title)).await;
-        let tail_after = view.accessibility_snapshot().into_iter()
-            .find(|node| node.label == format!("Open conversation {updated_title}"))
-            .unwrap().frame.origin.y.0;
+        let updated_label = format!("Open conversation {updated_title}");
+        wait_view_state(&mut view, |view, _| !view.surface().animating() && visible_button(view, &updated_label).is_some()).await;
+        let tail_after = visible_button(&view, &updated_label).unwrap().frame.origin.y.0;
         assert_eq!(tail_after, tail_y);
         support::evidence_cells("workbench-browser-revision-preserves-tail", &view);
-        let target_title = updated_title.as_str();
-        support::click_text(&mut view, &format!("Open conversation {target_title}"));
-        wait_view(&mut view, |screen| screen.lines().any(|line| line.contains("Commands") && line.contains(target_title))).await;
-        assert_eq!(view.surface().input_context().unwrap().text.as_deref(), Some(""));
-        assert_eq!(client.load_draft("agent", &fixture.session, EDITOR).await.unwrap().unwrap().text, "Draft A stays in its own conversation");
         assert_eq!(fixture.request_count.load(Ordering::SeqCst), 1);
         drop(view);
         bindings.close().await.unwrap();
@@ -1516,16 +1851,22 @@ async fn workspace_folders_page_navigate_and_reject_replaced_directory_authority
         view.handle_event(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
         wait_editable_composer(&mut view).await;
         assert_ne!(view.surface().focused(), Some(editor));
+        let new_editor = view.surface().focused().unwrap();
         assert_eq!(view.surface().input_context().unwrap().text.as_deref(), Some(""));
         view.handle_event(Event::Paste("NEW_FOLDER_DRAFT".into()));
         support::wait_draft(&client, created_id, "NEW_FOLDER_DRAFT").await;
         support::wait_draft(&client, &fixture.session, DRAFT).await;
-        // An empty selected session keeps its actual workspace chip interactive.
-        // Pointer-opened dialogs return to that opener while preserving the draft.
-        support::click_button(&mut view, "Choose composer workspace").await;
+        // Reopening the folder picker through commands preserves both drafts.
+        support::click_button(&mut view, "Open commands").await;
+        select_palette(&mut view, "Search commands…", "Choose workspace", "Choose workspace").await;
         wait_focused_input(&mut view, "Search workspace folders").await;
         view.handle_event(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
-        wait_view_state(&mut view, |view, screen| screen.contains("NEW_FOLDER_DRAFT") && view.accessibility_snapshot().iter().any(|node| node.role == nsh_core::AccessibilityRole::Button && node.label == "Choose composer workspace" && node.focused)).await;
+        wait_view_state(&mut view, |view, _| view.accessibility_snapshot().iter().any(|node| node.focused && node.label == "Open commands")).await;
+        shortcut(&mut view, 'l');
+        wait_editable_composer(&mut view).await;
+        assert_eq!(view.surface().focused(), Some(new_editor));
+        assert_eq!(view.surface().input_context().unwrap().text.as_deref(), Some("NEW_FOLDER_DRAFT"));
+        support::wait_draft(&client, &fixture.session, DRAFT).await;
         assert_eq!(fixture.request_count.load(Ordering::SeqCst), 0);
         support::evidence_cells("workspace-picker-deep-directory-and-draft-isolation", &view);
         drop(view);
@@ -1753,12 +2094,19 @@ async fn the_resident_composer_keeps_its_session_editor_and_isolates_native_undo
         )));
         support::wait_draft(&client, &created_id, "").await;
         shortcut(&mut view, 'o');
-        select_palette(&mut view, "Search sessions…", "NSH real", "NSH real Agent").await;
-        wait_view(&mut view, |screen| {
-            screen
-                .lines()
-                .any(|line| line.contains("Commands") && line.contains("NSH real Agent"))
-                && !screen.contains("Close")
+        select_palette(
+            &mut view,
+            "Search titles and messages…",
+            "NSH real",
+            "NSH real Agent",
+        )
+        .await;
+        wait_view_state(&mut view, |view, screen| {
+            screen.contains("NSH real Agent")
+                && !view
+                    .accessibility_snapshot()
+                    .iter()
+                    .any(|node| node.label == "Close conversation search")
         })
         .await;
         wait_focused_input(&mut view, "Message composer").await;
@@ -1913,71 +2261,84 @@ async fn real_agent_history_and_live_stream_render_and_the_app_sends_once() {
         let wheel_marker = format!("History {:02} paragraph 01", boundary_turn + 1);
         let boundary_tail = format!("History {boundary_turn:02} paragraph 29:");
         let gate = ReplyGate::before_history(fixture.directory.path(), fixture.address.clone(), final_cursor);
-        let cancel_client = fixture.client_at(&gate.address).await;
-        let (mut cancelled, cancel_bindings) = fixture.view(cancel_client.clone(), Some(fixture.session.clone()));
-        wait_editable_composer(&mut cancelled).await;
-        assert_eq!(cancelled.surface().input_context().unwrap().text.as_deref(), Some(HOME_DRAFT));
-        wait_view(&mut cancelled, |screen| screen.contains("History 15 paragraph")).await;
-        assert!(!cancelled.accessibility_snapshot().iter().any(|node| node.label.contains(&added_marker)));
+        let page_client = fixture.client_at(&gate.address).await;
+        let (mut paging, page_bindings) = fixture.view(page_client.clone(), Some(fixture.session.clone()));
+        wait_editable_composer(&mut paging).await;
+        assert_eq!(paging.surface().input_context().unwrap().text.as_deref(), Some(HOME_DRAFT));
+        wait_view(&mut paging, |screen| screen.contains("History 15 paragraph")).await;
+        assert!(!paging.accessibility_snapshot().iter().any(|node| node.label.contains(&added_marker)));
         gate.arm();
-        focus_history(&mut cancelled).await;
-        cancelled.handle_event(Event::Key(KeyEvent::new(KeyCode::Home, KeyModifiers::CONTROL)));
-        gate.held.notified().await;
-        // Repeating Home moves to the now-loaded prefix while joining the same
-        // held older read. A wheel then owns the viewport, even at this boundary.
-        cancelled.handle_event(Event::Key(KeyEvent::new(KeyCode::Home, KeyModifiers::CONTROL)));
-        commit_native_events(&cancelled).await;
-        let local_start = wait_view_state(&mut cancelled, |view, screen| !view.surface().animating() && screen.contains("History ")).await;
-        support::scroll_snapshot_text(&mut cancelled, &local_start, "History ", MouseEventKind::ScrollDown);
+        // Load older pages by wheel without replacing their window identity.
+        // The held before reply remains valid when the reader scrolls away.
+        {
+            let held = gate.held.notified();
+            tokio::pin!(held);
+            let loading = std::time::Instant::now();
+            loop {
+                support::tick(&mut paging);
+                tokio::select! {
+                    () = &mut held => break,
+                    () = tokio::task::yield_now() => {}
+                }
+                let screen = paging.snapshot();
+                assert!(loading.elapsed() < Duration::from_secs(20), "wheel did not reach the held older page:\n{screen}");
+                support::scroll_snapshot_text(&mut paging, &screen, "History ", MouseEventKind::ScrollUp);
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        }
+        commit_native_events(&paging).await;
+        let local_start = wait_view_state(&mut paging, |view, screen| !view.surface().animating() && screen.contains("History ")).await;
+        support::scroll_snapshot_text(&mut paging, &local_start, "History ", MouseEventKind::ScrollDown);
         let scrolling = std::time::Instant::now();
         loop {
-            support::tick(&mut cancelled);
-            let screen = cancelled.snapshot();
+            support::tick(&mut paging);
+            let screen = paging.snapshot();
             if screen.contains(&wheel_marker) { break; }
-            assert!(scrolling.elapsed() < Duration::from_secs(20), "the cancelling wheel did not reach its adjacent complete row:\n{screen}");
-            support::scroll_snapshot_text(&mut cancelled, &screen, "History ", MouseEventKind::ScrollDown);
+            assert!(scrolling.elapsed() < Duration::from_secs(20), "the reader wheel did not reach its adjacent complete row:\n{screen}");
+            support::scroll_snapshot_text(&mut paging, &screen, "History ", MouseEventKind::ScrollDown);
             tokio::task::yield_now().await;
         }
-        commit_native_events(&cancelled).await;
-        let wheel = wait_view_state(&mut cancelled, |view, screen| !view.surface().animating() && screen.contains(&wheel_marker)).await;
+        commit_native_events(&paging).await;
+        let wheel = wait_view_state(&mut paging, |view, screen| !view.surface().animating() && screen.contains(&wheel_marker)).await;
         let wheel_row = wheel.lines().position(|line| line.contains(&wheel_marker)).unwrap();
         let reading_row = wheel.lines().position(|line| line.contains(&boundary_tail)).unwrap();
-        assert!(!cancelled.accessibility_snapshot().iter().any(|node| node.label.contains(&added_marker)));
-        evidence("history-home-wheel-before-final-page", &wheel);
-        evidence("history-home-wheel-before-final-page-ax", &format!("{:#?}", cancelled.accessibility_snapshot()));
-        support::evidence_cells("history-home-wheel-before-final-page", &cancelled);
+        assert!(!paging.accessibility_snapshot().iter().any(|node| node.label.contains(&added_marker)));
+        assert!(paging.accessibility_snapshot().iter().any(|node| node.label.contains(&boundary_tail) && node.label.contains("**bold**")), "the held prefix must still leave the reading source literal");
+        evidence("history-prefix-wheel-before-final-page", &wheel);
+        evidence("history-prefix-wheel-before-final-page-ax", &format!("{:#?}", paging.accessibility_snapshot()));
+        support::evidence_cells("history-prefix-wheel-before-final-page", &paging);
         gate.release();
-        // AX includes mounted overscan. This newly prepended paragraph proves
-        // the final reply and all its promise continuations reached a real
-        // native commit; a wire write alone would not provide that barrier.
-        let retained = wait_view_state(&mut cancelled, |view, _| view.accessibility_snapshot().iter().any(|node| node.label.contains(&added_marker))).await;
-        evidence("history-home-wheel-final-page-published", &retained);
-        evidence("history-home-wheel-final-page-published-ax", &format!("{:#?}", cancelled.accessibility_snapshot()));
-        support::evidence_cells("history-home-wheel-final-page-published", &cancelled);
-        assert_eq!(retained.lines().position(|line| line.contains(&boundary_tail)), Some(reading_row), "a completed, cancelled Home moved the user's reading source:\n{retained}");
+        // The completed prefix either mounts its first paragraph or formats
+        // the visible original tail. Both prove a real native publication;
+        // virtualized paragraphs outside the reader need not be mounted.
+        let retained = wait_view_state(&mut paging, |view, _| view.accessibility_snapshot().iter().any(|node| node.label.contains(&added_marker) || (node.label.starts_with(&boundary_tail) && !node.label.contains("**bold**")))).await;
+        evidence("history-prefix-wheel-final-page-published", &retained);
+        evidence("history-prefix-wheel-final-page-published-ax", &format!("{:#?}", paging.accessibility_snapshot()));
+        support::evidence_cells("history-prefix-wheel-final-page-published", &paging);
+        assert_eq!(retained.lines().position(|line| line.contains(&boundary_tail)), Some(reading_row), "a valid older page moved the user's reading source:\n{retained}");
         // Promise delivery may already include rich layout. While still raw,
         // also retain the original downstream-row check; rich layout removes
         // the source's two trailing blank lines below the reading position.
-        if cancelled.accessibility_snapshot().iter().any(|node| node.label.contains(&boundary_tail) && node.label.contains("**bold**")) {
-            assert_eq!(retained.lines().position(|line| line.contains(&wheel_marker)), Some(wheel_row), "a completed, cancelled Home moved the user's wheel anchor:\n{retained}");
+        if paging.accessibility_snapshot().iter().any(|node| node.label.contains(&boundary_tail) && node.label.contains("**bold**")) {
+            assert_eq!(retained.lines().position(|line| line.contains(&wheel_marker)), Some(wheel_row), "a valid older page moved the user's wheel anchor:\n{retained}");
         }
-        assert!(!retained.contains("History question 00"), "the cancelled Home snapped to canonical start:\n{retained}");
-        let formatted = wait_view_state(&mut cancelled, |view, _| view.accessibility_snapshot().iter().any(|node| node.label.starts_with(&boundary_tail) && !node.label.contains("**bold**"))).await;
-        evidence("history-home-wheel-after-formatting", &formatted);
-        evidence("history-home-wheel-after-formatting-ax", &format!("{:#?}", cancelled.accessibility_snapshot()));
-        support::evidence_cells("history-home-wheel-after-formatting", &cancelled);
+        assert!(!retained.contains("History question 00"), "the older page snapped to canonical start:\n{retained}");
+        let formatted = wait_view_state(&mut paging, |view, _| view.accessibility_snapshot().iter().any(|node| node.label.starts_with(&boundary_tail) && !node.label.contains("**bold**"))).await;
+        evidence("history-prefix-wheel-after-formatting", &formatted);
+        evidence("history-prefix-wheel-after-formatting-ax", &format!("{:#?}", paging.accessibility_snapshot()));
+        support::evidence_cells("history-prefix-wheel-after-formatting", &paging);
         assert_eq!(formatted.lines().position(|line| line.contains(&boundary_tail)), Some(reading_row), "formatting the newly completed prefix moved the same original reading anchor:\n{formatted}");
-        assert!(!formatted.contains("History question 00"), "formatting restored an obsolete Home target:\n{formatted}");
-        support::wait_draft(&cancel_client, &fixture.session, HOME_DRAFT).await;
+        assert!(!formatted.contains("History question 00"), "formatting snapped to canonical start:\n{formatted}");
+        support::wait_draft(&page_client, &fixture.session, HOME_DRAFT).await;
         assert_eq!(client.query("agent", "observe", json!({"sessionId":fixture.session})).await.unwrap()["through"], observed["through"], "history navigation must not change the Host range");
-        evidence("history-home-wheel-cancels-late-reply", &retained);
-        shortcut(&mut cancelled, 'l');
-        wait_editable_composer(&mut cancelled).await;
-        cancelled.handle_event(Event::Key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL)));
-        cancelled.handle_event(Event::Key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE)));
-        support::wait_draft(&cancel_client, &fixture.session, "").await;
-        drop(cancelled);
-        cancel_bindings.close().await.unwrap();
+        evidence("history-wheel-retains-valid-prefix-reply", &retained);
+        shortcut(&mut paging, 'l');
+        wait_editable_composer(&mut paging).await;
+        paging.handle_event(Event::Key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL)));
+        paging.handle_event(Event::Key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE)));
+        support::wait_draft(&page_client, &fixture.session, "").await;
+        drop(paging);
+        page_bindings.close().await.unwrap();
         drop(gate);
 
         // A fresh tail mount retains the original wheel-across-unloaded-pages
@@ -2084,45 +2445,9 @@ async fn real_agent_history_and_live_stream_render_and_the_app_sends_once() {
         view.handle_event(Event::Key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE)));
         // Alt+Down explicitly reveals the group. Freeze its settled pose before
         // streaming; the earlier mouse-wheel assertions retain their own anchor.
-        let cadence_source_top = wait_view(&mut view, &at_source_start).await;
-        let cadence_header_row = cadence_source_top.lines().position(|line| line.contains("Analyzing the request")).expect("the navigated activity header must be visible above its source");
-        let cadence_source_row = cadence_source_top.lines().position(|line| line.contains("NATIVE_THINK_SOURCE_01")).expect("the navigated original source must be visible");
-
-        // Rapid paragraphs must update during the stream, at a bounded cadence,
-        // while the expanded source and its reader anchor stay put.
-        let cadence = std::time::Instant::now();
-        let mut titles = vec![(Duration::ZERO, support::painted_text(&view, "Analyzing the request", cadence_header_row))];
-        let mut paragraph = 0;
-        while cadence.elapsed() < Duration::from_millis(650) {
-            paragraph += 1;
-            request.thinking(&format!("\n\nTITLE_{paragraph:02} 规划 e\u{301} {}", "界e\u{301}".repeat(48))).await;
-            for _ in 0..4 {
-                view.poll().unwrap();
-                support::tick(&mut view);
-                let screen = view.snapshot();
-                assert!(at_source_start(&screen), "a title update moved the source reader:\n{screen}");
-                assert_eq!(screen.lines().position(|line| line.contains("NATIVE_THINK_SOURCE_01")), Some(cadence_source_row), "a title update moved the original source row:\n{screen}");
-                assert!(screen.lines().nth(cadence_header_row).unwrap().contains("Analyzing the request"), "the fixed activity header moved:\n{screen}");
-                let title = support::painted_text(&view, "Analyzing the request", cadence_header_row);
-                if title != titles.last().unwrap().1 {
-                    titles.push((cadence.elapsed(), title));
-                }
-                tokio::time::sleep(Duration::from_millis(5)).await;
-            }
-        }
-        assert!(titles.len() >= 3, "continuous input postponed every intermediate title: {titles:?}; paragraphs={paragraph}; elapsed={:?}", cadence.elapsed());
-        let latest = format!("TITLE_{paragraph:02} 规划 e\u{301}");
-        wait_view(&mut view, |screen| at_source_start(screen) && screen.lines().nth(cadence_header_row).is_some_and(|line| line.contains(&latest))).await;
-        let last = support::painted_text(&view, "Analyzing the request", cadence_header_row);
-        assert!(last.ends_with('…') && !last.ends_with("e…"), "the long title must ellipsize without splitting a combining grapheme: {last}");
-        if last != titles.last().unwrap().1 {
-            titles.push((cadence.elapsed(), last));
-        }
-        // An interval-wide bound avoids confusing poll scheduling with the JS
-        // presentation timestamp, while still catching a title for every delta.
-        assert!(titles.len() <= cadence.elapsed().as_millis() as usize / 150 + 2, "the header changed faster than its minimum lifetime: {titles:?}");
-        evidence("activity-title-cadence", &titles.iter().map(|(at, title)| format!("{}ms {title}", at.as_millis())).collect::<Vec<_>>().join("\n"));
-        support::evidence_cells("activity-title-unicode", &view);
+        let reader_source_top = wait_view(&mut view, &at_source_start).await;
+        let reader_header_row = reader_source_top.lines().position(|line| line.contains("Analyzing the request")).expect("the navigated activity header must be visible above its source");
+        let reader_source_row = reader_source_top.lines().position(|line| line.contains("NATIVE_THINK_SOURCE_01")).expect("the navigated original source must be visible");
 
         // The elapsed-time label keeps advancing while deltas continuously
         // refresh this same turn and the user keeps its source reader anchored.
@@ -2135,11 +2460,11 @@ async fn real_agent_history_and_live_stream_render_and_the_app_sends_once() {
         let painted_duration = |view: &AppView| {
             let metrics = view.surface().metrics();
             view.accessibility_snapshot().into_iter().find_map(|node| {
-                if (node.frame.origin.y.0 / metrics.height().0 - 0.5).ceil() != cadence_header_row as f32 {
+                if (node.frame.origin.y.0 / metrics.height().0 - 0.5).ceil() != reader_header_row as f32 {
                     return None;
                 }
                 duration_seconds(&node.label)?;
-                duration_seconds(&support::painted_text(view, &node.label, cadence_header_row))
+                duration_seconds(&support::painted_text(view, &node.label, reader_header_row))
             })
         };
         let previous_duration = painted_duration(&view)
@@ -2151,7 +2476,7 @@ async fn real_agent_history_and_live_stream_render_and_the_app_sends_once() {
                 support::tick(&mut view);
                 let screen = view.snapshot();
                 assert!(at_source_start(&screen), "continuous thinking moved the source reader:\n{screen}");
-                assert_eq!(screen.lines().position(|line| line.contains("NATIVE_THINK_SOURCE_01")), Some(cadence_source_row));
+                assert_eq!(screen.lines().position(|line| line.contains("NATIVE_THINK_SOURCE_01")), Some(reader_source_row));
                 if painted_duration(&view).is_some_and(|seconds| seconds > previous_duration) {
                     break screen;
                 }
@@ -2179,14 +2504,14 @@ async fn real_agent_history_and_live_stream_render_and_the_app_sends_once() {
         // A reply closes only this contiguous process segment. The same native
         // source reader stays at its original row while later work gets a group.
         let cut = wait_view(&mut view, |screen| at_source_start(screen) && screen.contains("1 thought")).await;
-        assert_eq!(cut.lines().position(|line| line.contains("1 thought")), Some(cadence_header_row));
-        let header_y = (cadence_header_row as f32 + 0.5) * view.surface().metrics().height().0;
+        assert_eq!(cut.lines().position(|line| line.contains("1 thought")), Some(reader_header_row));
+        let header_y = (reader_header_row as f32 + 0.5) * view.surface().metrics().height().0;
         assert!(view.accessibility_snapshot().iter().any(|node| {
             node.label == "Process group" && node.state.selected
                 && node.frame.origin.y.0 <= header_y
                 && header_y < node.frame.origin.y.0 + node.frame.size.height.0
         }), "the same thought group must stay expanded at its original header row");
-        assert_eq!(cut.lines().position(|line| line.contains("NATIVE_THINK_SOURCE_01")), Some(cadence_source_row));
+        assert_eq!(cut.lines().position(|line| line.contains("NATIVE_THINK_SOURCE_01")), Some(reader_source_row));
         evidence("intermediate-response-cuts-process-group", &cut);
         support::evidence_cells("intermediate-response-cuts-process-group", &view);
         // Leave the old source reader explicitly, then select the new segment
@@ -2246,10 +2571,10 @@ async fn real_agent_history_and_live_stream_render_and_the_app_sends_once() {
         support::evidence_cells("real-tool-and-checklist", &view);
 
         request.delta("REAL_PROVIDER_STREAM_VISIBLE").await;
-        let streaming = wait_view(&mut view, |screen| screen.contains("REAL_PROVIDER_STREAM_VISIBLE") && screen.contains("Writing response")).await;
+        let streaming = wait_view(&mut view, |screen| screen.contains("REAL_PROVIDER_STREAM_VISIBLE")).await;
         evidence("streaming", &streaming);
         request.delta(" and committed.").await;
-        let appended = wait_view(&mut view, |screen| screen.contains("REAL_PROVIDER_STREAM_VISIBLE") && screen.contains("committed.") && screen.contains("Writing response")).await;
+        let appended = wait_view(&mut view, |screen| screen.contains("REAL_PROVIDER_STREAM_VISIBLE") && screen.contains("committed.")).await;
         evidence("streaming-second-fragment", &appended);
         request.finish().await;
         fixture.idle(&client, &fixture.session).await;
@@ -2518,6 +2843,30 @@ async fn streamed_markdown_keeps_inline_styles_and_the_original_selectable_sourc
             }).unwrap_or_else(|| panic!("formatted token {token} is not visible:\n{rendered}"));
             assert!((0..token.len()).all(|index| buffer[(cells.0 + index as u16, cells.1)].modifier.contains(expected)), "terminal cells for {token} lost {expected:?}");
         }
+        let cell = |token: &str| {
+            (0..area.height).find_map(|y| {
+                (0..=area.width.saturating_sub(token.len() as u16)).find_map(|x| {
+                    let text: String = (0..token.len()).map(|index| buffer[(x + index as u16, y)].symbol()).collect();
+                    (text == token).then_some((x, y))
+                })
+            }).unwrap_or_else(|| panic!("copy target {token} is not visible:\n{rendered}"))
+        };
+        let first = cell("RICH_HEADING");
+        let last = cell("RICH_CODE");
+        view.drain_service_output().for_each(drop);
+        for (kind, (column, row)) in [
+            (MouseEventKind::Down(MouseButton::Left), (last.0 + "RICH_CODE".len() as u16, last.1)),
+            (MouseEventKind::Drag(MouseButton::Left), (first.0.saturating_sub(1), first.1)),
+            (MouseEventKind::Up(MouseButton::Left), (first.0.saturating_sub(1), first.1)),
+        ] {
+            view.handle_event(Event::Mouse(MouseEvent { kind, column, row, modifiers: KeyModifiers::NONE }));
+        }
+        shortcut(&mut view, 'c');
+        let selected = view.drain_service_output().filter_map(|effect| match effect {
+            ServiceOutput::Clipboard(text) => Some(text),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(selected, ["RICH_HEADING\nRICH_BOLD RICH_ITALIC RICH_STRIKE RICH_CODE"], "dragging across Markdown blocks must copy all visible lines with their formatting text intact; first={first:?}; last={last:?}; text frames={:?}", view.accessibility_snapshot().into_iter().filter(|node| node.label.contains("RICH_HEADING") || node.label.contains("RICH_BOLD")).map(|node| (node.id, node.frame, node.label)).collect::<Vec<_>>());
         let table = "\n\n- RICH_LIST\n\n> RICH_QUOTE\n\n| RICH_TABLE_NAME | RICH_TABLE_VALUE |\n| :--- | ---: |\n| 中文表格 | 42 |\n| 完整单元格 | 8 |";
         request.delta(table).await;
         let rendered_table = wait_view_state(&mut view, |view, screen| {
@@ -2528,8 +2877,18 @@ async fn streamed_markdown_keeps_inline_styles_and_the_original_selectable_sourc
                 && !screen.contains("| RICH_TABLE_NAME")
         }).await;
         evidence("rich-response-live-table", &rendered_table);
+        let reference = "\n\n[RICH_REFERENCE][later]";
+        request.delta(reference).await;
+        wait_view(&mut view, |screen| screen.contains("[RICH_REFERENCE][later]")).await;
+        let definition = "\n\n[later]: https://example.test/streamed-reference";
+        request.delta(definition).await;
+        wait_view_state(&mut view, |view, _| {
+            view.accessibility_snapshot().iter().any(|node| {
+                node.role == nsh_core::AccessibilityRole::Link && node.label == "RICH_REFERENCE"
+            })
+        }).await;
         let code = "\n\n```txt\nRICH_CODE_BLOCK 中文原文\n\tkeep trailing  \n\n```";
-        let suffix = format!("{table}{code}");
+        let suffix = format!("{table}{reference}{definition}{code}");
         request.delta("\n\n```txt\nRICH_CODE_BLOCK 中文原文\n").await;
         // The stream remains physically open: parsing cannot wait for final.
         // Copying the long user message can leave its reader anchored above
@@ -2627,7 +2986,28 @@ async fn streamed_markdown_keeps_inline_styles_and_the_original_selectable_sourc
         let source = format!("```txt\n{}\n# RICH_TAIL_HEADING\n**RICH_TAIL_MARK**\n```", "filler 中文😀\n".repeat(60_000));
         assert!(source.len() > 1024 * 1024);
         request.delta(&source).await;
-        let long_formatted = wait_view_state(&mut view, |view, screen| screen.contains("**RICH_TAIL_MARK**") && message_source_available(view, false) && !screen.contains("```") && !screen.contains("Formatting unavailable")).await;
+        let long_readable = |view: &AppView, screen: &str| screen.contains("**RICH_TAIL_MARK**") && message_source_available(view, false) && !screen.contains("```") && !screen.contains("Formatting unavailable");
+        // Keep the complete live prefix while moving this native reader.
+        // Latest opens a bounded history tail and would discard the code fence.
+        wait_view(&mut view, |screen| screen.contains("filler 中文😀") || screen.contains("**RICH_TAIL_MARK**")).await;
+        view.handle_event(Event::Key(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT)));
+        let (done, committed) = tokio::sync::oneshot::channel();
+        view.control().unwrap().advance_clock(Duration::ZERO, move || { let _ = done.send(()); });
+        committed.await.unwrap();
+        wait_view_state(&mut view, |view, _| view.surface().focused().is_some() && view.surface().input_context().is_none() && !view.surface().animating()).await;
+        // Parser publication and native measurement can outlive scroll
+        // animation. End must target the actual complete code extent, not the
+        // transient empty/estimated cell between those publications.
+        let code_body = source.strip_prefix("```txt\n").unwrap().strip_suffix("\n```").unwrap();
+        wait_view_state(&mut view, |view, _| view.accessibility_snapshot().iter().any(|node|
+            node.label == code_body && node.frame.size.width.0 > 0.0 && node.frame.size.height.0 > 0.0
+        )).await;
+        let (done, committed) = tokio::sync::oneshot::channel();
+        view.control().unwrap().advance_clock(Duration::ZERO, move || { let _ = done.send(()); });
+        committed.await.unwrap();
+        wait_mode_layout(&mut view).await;
+        view.handle_event(Event::Key(KeyEvent::new(KeyCode::End, KeyModifiers::CONTROL)));
+        let long_formatted = wait_view_state(&mut view, long_readable).await;
         evidence("rich-response-long-formatted", &long_formatted);
         wait_mode_layout(&mut view).await;
         support::click_button(&mut view, "Show message source").await;
@@ -2894,9 +3274,15 @@ async fn current_workspace_previews_keep_real_contents_drafts_and_session_owners
         let roots = client.query("agent", "directories", json!({"kind":"roots"})).await.unwrap();
         let other = support::mutate(&client, "create", json!({"title":"Other preview owner","labels":[],"workspace":{"kind":"directory","selection":roots["roots"][0]["selection"]}})).await;
         shortcut(&mut view, 'o');
-        select_palette(&mut view, "Search sessions…", "Other preview owner", "Other preview owner").await;
-        wait_view(&mut view, |screen| screen.contains("Other preview owner") && !screen.contains("UNSENT_PREVIEW_DRAFT")).await;
-        support::click_label(&mut view, "Browse workspace files");
+        select_palette(&mut view, "Search titles and messages…", "Other preview owner", "Other preview owner").await;
+        wait_view_state(&mut view, |view, screen| {
+            let nodes = view.accessibility_snapshot();
+            screen.contains("Other preview owner")
+                && !screen.contains("UNSENT_PREVIEW_DRAFT")
+                && !nodes.iter().any(|node| node.label == "Search conversation history")
+                && nodes.iter().any(|node| node.label == "Message composer" && node.id != composer)
+        }).await;
+        support::click_button(&mut view, "Browse workspace files").await;
         wait_view(&mut view, |screen| screen.contains("000-preview.txt") && !screen.contains("Loading files…") && !screen.contains("Updating files…")).await;
         assert!(!view.accessibility_snapshot().iter().any(|node| node.label == "Preview 000-preview.txt" || node.label == "Preview 001-scene.data"), "resource tabs moved to another session");
         assert_ne!(other["session"]["id"], fixture.session);
@@ -3051,7 +3437,6 @@ async fn immutable_tool_images_render_and_preview_without_stopping_the_running_t
         // Closing the preview preserves its opener's reading position. The
         // response is outside that reader; Ctrl+L explicitly returns to latest.
         terminal.send(b"\x0c");
-        terminal.wait_for("Writing response").await;
         terminal.wait_for("IMAGE_RUN_CONTINUES_AFTER_ESCAPE").await;
         request.finish().await;
         fixture.idle(&client, &fixture.session).await;
@@ -3144,7 +3529,7 @@ async fn production_sixel_negotiates_from_real_queries_and_resize_keeps_unicode_
         terminal.wait_for_wire(b"\x1b[c\x1b[16t", before_resize).await;
         // Keep height unchanged: Screen's local resize cannot scroll away the
         // old left sidebar. New complete output must remove this control.
-        terminal.wait_for_absent("Search sessions…").await;
+        terminal.wait_for_absent("All workspaces").await;
         let narrow = terminal.wait_for("Open image · 64 × 48").await;
         let has_image_cells = |screen: &str| {
             let lines: Vec<_> = screen.lines().collect();
@@ -3162,7 +3547,7 @@ async fn production_sixel_negotiates_from_real_queries_and_resize_keeps_unicode_
         let before_wide = terminal.wire().len();
         terminal.resize(120, 40);
         terminal.wait_for_wire(b"\x1b[?2026l", before_wide).await;
-        terminal.wait_for("Search sessions…").await;
+        terminal.wait_for("All workspaces").await;
         let wide = terminal.wait_for("Open image · 64 × 48").await;
         assert!(has_image_cells(&wide));
         assert_eq!(terminal.wire().windows(3).filter(|bytes| *bytes == b"\x1b[c").count(), 2, "resize must not issue a new query before consuming the original replies");
@@ -3483,10 +3868,9 @@ async fn production_binary_sends_renders_provider_text_and_restores_its_actual_t
         let choice = terminal.wait_for("Resume a conversation").await;
         assert!(choice.contains("Sessions") && choice.contains('×'));
         terminal.send(b"\r");
-        terminal.wait_for_absent("×").await;
-        terminal.wait_for("Search sessions…").await;
+        terminal.wait_for("Search titles and messages…").await;
         terminal.paste("NSH real");
-        terminal.wait_for_absent("Search sessions…").await;
+        terminal.wait_for_absent("Type words to search conversation history.").await;
         terminal.wait_for("NSH real").await;
         terminal.wait_for("NSH real Agent").await;
         terminal.send(b"\r");

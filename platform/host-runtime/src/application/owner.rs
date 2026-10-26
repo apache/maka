@@ -125,7 +125,7 @@ pub(super) struct Owner {
     // This lease belongs to accepted work, including sticky cleanup failures.
     persisted: Option<(
         maka_event_log::applications::SourceSnapshot,
-        Arc<maka_event_log::EventLog>,
+        Arc<maka_event_log::root_store::RootStore>,
     )>,
     loading_adoption: Option<DeploymentRef>,
     effective: Option<DeploymentRef>,
@@ -170,7 +170,7 @@ impl Owner {
         dispatch: Weak<Dispatch>,
         persisted: Option<(
             maka_event_log::applications::SourceSnapshot,
-            Arc<maka_event_log::EventLog>,
+            Arc<maka_event_log::root_store::RootStore>,
         )>,
     ) -> Self {
         Self {
@@ -461,16 +461,39 @@ impl Owner {
                     .is_ok_and(|status| status.calls == 0)
             })
         {
+            let reason = if self.starting || self.loading_adoption.is_some() {
+                "startup"
+            } else if !self.jobs.is_empty() {
+                "jobs"
+            } else if !self.failed.is_empty() || self.cleanup_error.is_some() {
+                "cleanup"
+            } else {
+                "activation"
+            };
+            tracing::debug!(target: "maka_host_runtime::application", stage = "idle_retirement", reason,
+                jobs = self.jobs.len(), failed_cleanup = self.failed.len(),
+                "Host idle retirement deferred");
             return Ok(false);
         }
         // No await: invocation admission and source adoption remain serialized
         // with this decision. Each native guard fences its independent producers.
         let mut guards = Vec::new();
-        for owned in self.owned.values() {
+        for (id, owned) in &self.owned {
             if let Some(native) = &owned.native_owner {
                 match std::panic::catch_unwind(AssertUnwindSafe(|| native.prepare_retirement())) {
                     Ok(Some(guard)) => guards.push(guard),
-                    Ok(None) => return Ok(false),
+                    Ok(None) => {
+                        let path = self
+                            .runtime
+                            .desired()
+                            .instances()
+                            .get(id)
+                            .map(|instance| instance.path.join("/"));
+                        tracing::debug!(target: "maka_host_runtime::application", stage = "idle_retirement",
+                            reason = "native", instance_path = ?path,
+                            "Host idle retirement deferred");
+                        return Ok(false);
+                    }
                     Err(_) => return Err("native idle retirement preparation panicked".into()),
                 }
             }
@@ -1409,13 +1432,14 @@ impl Owner {
                             progress,
                             scope.cancellation.clone(),
                         );
-                        let context = Context {
+                        let mut context = Context {
                             stream: stream.clone(),
                             caller: authenticated_caller,
                             scope: scope.clone(),
                             consumer: execution.provider().clone(),
                             requester: consumer.clone(),
                             operation: reference.clone(),
+                            operation_scope: None,
                             attachments: attachments.clone(),
                             imports: self.owned[execution.provider().instance()].imports.clone(),
                             dispatch: self.dispatch.clone(),
@@ -1424,10 +1448,17 @@ impl Owner {
                         self.jobs.push(Box::pin(async move {
                             let mut historical = None;
                             let mut claim = None;
+                            let mut operation_store = None;
                             let mut receipt = None;
                             let dispatched = if let Some(request) = request {
                                 let store = store.as_ref().expect("persisted mutation");
-                                match store.dispatch_prepared_operation(request).await.map_err(|error| {
+                                let dispatched = async {
+                                    let selected = store.operation(request.reference())?;
+                                    let result = selected.dispatch_prepared_operation(request).await;
+                                    operation_store = Some(selected);
+                                    result
+                                }.await;
+                                match dispatched.map_err(|error| {
                                     let original = reference.as_ref().expect("original operation reference");
                                     tracing::error!(target: "maka_host_runtime::application", stage = "operation_dispatch", cause = diagnostics::cause(&error),
                                         sql_code = diagnostics::sql_code(&error), os_code = diagnostics::os_code(&error),
@@ -1436,7 +1467,10 @@ impl Owner {
                                         "Host runtime failure");
                                     error.to_string()
                                 }) {
-                                    Ok(OperationDispatch::New(new)) => { claim = Some(new); Ok(()) },
+                                    Ok(OperationDispatch::New(new)) => {
+                                        context.operation_scope = Some(new.auxiliary_scope());
+                                        claim = Some(new); Ok(())
+                                    },
                                     Ok(OperationDispatch::Existing(observation)) => { historical = Some(Box::new(observation)); Ok(()) },
                                     Err(error) => {
                                         let error=format!("operation dispatch was not confirmed: {error}");
@@ -1469,7 +1503,7 @@ impl Owner {
                                     Ok(()) => OperationCleanup::Confirmed,
                                     Err(error) => OperationCleanup::Failed { diagnostic: diagnostic(error) },
                                 };
-                                receipt=Some(store.as_ref().expect("original operation store").finish_operation(&claim, outcome, settled_cleanup).await.map_err(|error| {
+                                receipt=Some(operation_store.as_ref().expect("original operation store").finish_operation(&claim, outcome, settled_cleanup).await.map_err(|error| {
                                     let original = claim.reference();
                                     tracing::error!(target: "maka_host_runtime::application", stage = "operation_settlement", cause = diagnostics::cause(&error),
                                         sql_code = diagnostics::sql_code(&error), os_code = diagnostics::os_code(&error),
@@ -1520,10 +1554,11 @@ impl Owner {
                             ticket.start();
                         }
                         self.jobs.push(Box::pin(async move {
-                            let result = store
-                                .operation_observation(&reference)
-                                .await
-                                .map_err(|e| e.to_string());
+                            let result = async {
+                                store.operation(&reference)?.operation_observation().await
+                            }
+                            .await
+                            .map_err(|e| e.to_string());
                             Done::Recovered {
                                 consumer,
                                 reference,

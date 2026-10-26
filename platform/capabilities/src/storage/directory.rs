@@ -142,15 +142,14 @@ mod tests {
     use maka_plugin_core::scope::Scope as NamespaceScope;
     use std::time::Duration;
 
-    async fn scope() -> crate::call::Scope {
+    fn scope() -> crate::call::Scope {
         crate::call::Issuer::default()
-            .admit(
+            .issue(
                 crate::call::Identity::Remote {
                     request_id: uuid::Uuid::new_v4(),
                 },
                 CancellationToken::new(),
             )
-            .await
             .unwrap()
     }
 
@@ -158,7 +157,7 @@ mod tests {
     async fn namespaces_survive_generations_and_lost_replies_do_not_abandon_writes() {
         let root = tempfile::tempdir().unwrap();
         let directories = Directories::open(root.path()).unwrap();
-        let first = scope().await;
+        let first = scope();
         let namespace = Namespace::new("example.notes", NamespaceScope::Profile).unwrap();
         let files = directories.bind(&namespace, first.clone()).unwrap();
         files
@@ -171,7 +170,7 @@ mod tests {
             ("example.other", NamespaceScope::Profile),
             ("example.notes", NamespaceScope::Session("one".into())),
         ] {
-            let other = scope().await;
+            let other = scope();
             let isolated_namespace = Namespace::new(package, namespace_scope).unwrap();
             let isolated = directories
                 .bind(&isolated_namespace, other.clone())
@@ -185,7 +184,7 @@ mod tests {
             );
             other.finish().await.unwrap();
         }
-        let same = scope().await;
+        let same = scope();
         let shared = directories.bind(&namespace, same.clone()).unwrap();
         assert_eq!(
             shared
@@ -254,7 +253,7 @@ mod tests {
         same.finish().await.unwrap();
 
         let reopened = Directories::open(root.path()).unwrap();
-        let next = scope().await;
+        let next = scope();
         assert_eq!(
             reopened
                 .bind(&namespace, next.clone())
@@ -281,7 +280,7 @@ mod tests {
         assert!(Directories::open(root.path()).is_err());
         std::fs::remove_file(root.path().join("plugin-data")).unwrap();
         let directories = Directories::open(root.path()).unwrap();
-        let owner = scope().await;
+        let owner = scope();
         let namespace = Namespace::new("example.notes", NamespaceScope::Profile).unwrap();
         let files = directories.bind(&namespace, owner.clone()).unwrap();
         std::os::unix::fs::symlink(

@@ -125,10 +125,7 @@ impl Resources {
             let read = reader.visit_directory(&path, Symlinks::Reject, |entry| {
                 super::discovery::check_cancelled(cancellation)
                     .map_err(|_| maka_capabilities::filesystem::ReadError::Retired)?;
-                if !entry.name.starts_with('.')
-                    && entry.name != "SKILL.md"
-                    && entry.name != "skill.lock.json"
-                {
+                if !entry.name.starts_with('.') && entry.name != "SKILL.md" {
                     entries.push(entry);
                 }
                 Ok(())

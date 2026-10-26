@@ -1,11 +1,11 @@
 //! CoreText text engine: typesets on the engine thread, draws on the main
 //! thread from finished `CTLine`s, so every text is laid out once.
 
-use std::{cell::RefCell, ffi::c_void, ptr::NonNull};
+use std::{cell::RefCell, ffi::c_void, ops::Range, ptr::NonNull};
 
 use nsh_core::{
-    AttributedText, Color, EllipsizeMode, FontFamily, Point, Points, ResolvedTextStyle, Size,
-    TextAlign, TextEngine, TextLayout,
+    Affinity, AttributedText, Bounds, Color, EllipsizeMode, FontFamily, Point, Points,
+    ResolvedTextStyle, Size, TextAlign, TextEngine, TextLayout, TextPosition,
 };
 use objc2::rc::Retained;
 use objc2_app_kit::{
@@ -22,7 +22,7 @@ use objc2_core_text::{
     CTFont, CTFontDescriptor, CTFontManagerRegisterFontsForURL, CTFontManagerScope,
     CTFontSymbolicTraits, CTFrame, CTFramesetter, CTLine, CTLineTruncationType, CTParagraphStyle,
     CTParagraphStyleSetting, CTParagraphStyleSpecifier, CTRun, CTRunDelegate,
-    CTRunDelegateCallbacks, CTTextAlignment, CTTypesetter, CTWritingDirection,
+    CTRunDelegateCallbacks, CTRunStatus, CTTextAlignment, CTTypesetter, CTWritingDirection,
     kCTFontAttributeName, kCTFontFamilyNameAttribute, kCTFontFeatureSettingsAttribute,
     kCTFontOpenTypeFeatureTag, kCTFontOpenTypeFeatureValue, kCTFontTraitsAttribute,
     kCTFontWeightTrait, kCTForegroundColorAttributeName, kCTKernAttributeName,
@@ -61,6 +61,14 @@ pub(crate) fn decoration_key() -> &'static CFString {
 fn background_key() -> &'static CFString {
     static KEY: std::sync::OnceLock<CFStringKey> = std::sync::OnceLock::new();
     &KEY.get_or_init(|| CFStringKey(CFString::from_static_str("NshBackground")))
+        .0
+}
+
+/// Attribute marking the ellipsis token of a truncated line (a `CFNumber`):
+/// its run claims the characters it cut, which are not on screen to select.
+fn ellipsis_key() -> &'static CFString {
+    static KEY: std::sync::OnceLock<CFStringKey> = std::sync::OnceLock::new();
+    &KEY.get_or_init(|| CFStringKey(CFString::from_static_str("NshEllipsis")))
         .0
 }
 
@@ -303,6 +311,11 @@ pub(crate) struct LaidLine {
     pub(crate) origin: CGPoint,
     /// Its characters in the text (before any ellipsis).
     pub(crate) range: CFRange,
+    /// How many of its last characters (UTF-16 units) are a hard line break
+    /// (`\n`, `\r\n`, ...): the caret goes before them, never after.
+    pub(crate) break_len: CFIndex,
+    /// End of the source a truncated line can display, including its suffix.
+    hit_end: CFIndex,
 }
 
 /// Finished lines, drawn by [`draw`] on the main thread.
@@ -717,6 +730,16 @@ impl Prepared {
                     false,
                 );
             }
+            // Marks the token's run (see `ellipsis_key`).
+            CFMutableAttributedString::set_attribute(
+                Some(&token_string),
+                CFRange {
+                    location: 0,
+                    length: 1,
+                },
+                Some(ellipsis_key()),
+                Some(CFNumber::new_i32(1).as_ref()),
+            );
             let token = CTLine::with_attributed_string(&token_string);
             rest.truncated_line(width, kind, Some(&token))
         }
@@ -798,6 +821,7 @@ impl TextEngine for CoreTextEngine {
             let path = CGPath::with_rect(rect, std::ptr::null());
             prepared.framesetter.frame(WHOLE, &path, None)
         };
+        let attributed: &CFAttributedString = &prepared.string;
         // SAFETY: the frame's own line array (of CTLines) and origins.
         let mut lines = unsafe {
             let array = frame.lines();
@@ -815,6 +839,8 @@ impl TextEngine for CoreTextEngine {
                         line,
                         origin: origins[i as usize],
                         range,
+                        break_len: break_len(attributed, range),
+                        hit_end: range.location + range.length,
                     }
                 })
                 .collect::<Vec<_>>()
@@ -836,6 +862,8 @@ impl TextEngine for CoreTextEngine {
                 // and overflows the end (CSS), centered or not.
                 last.origin.x = x.max(0.0);
                 last.line = truncated;
+                last.hit_end = prepared.length;
+                last.break_len = 0;
             }
         }
         let attachments = if prepared.attachments.is_empty() {
@@ -896,6 +924,24 @@ impl TextEngine for CoreTextEngine {
                 }
             })
             .collect()
+    }
+
+    fn hit_test(&self, layout: &TextLayout, point: Point<Points>) -> TextPosition {
+        layout
+            .downcast::<CoreTextLayout>()
+            .map_or_else(TextPosition::default, |l| {
+                l.hit_test(point.x.0 as CGFloat, point.y.0 as CGFloat)
+            })
+    }
+
+    fn caret_rect(&self, layout: &TextLayout, position: TextPosition) -> Option<Bounds<Points>> {
+        layout.downcast::<CoreTextLayout>()?.caret_rect(position)
+    }
+
+    fn range_rects(&self, layout: &TextLayout, range: Range<u32>, out: &mut Vec<Bounds<Points>>) {
+        if let Some(l) = layout.downcast::<CoreTextLayout>() {
+            l.range_rects(range, out);
+        }
     }
 
     fn register_font(&self, data: &[u8]) -> Result<(), String> {
@@ -1227,20 +1273,54 @@ fn draw_backgrounds(
     }
 }
 
-/// A laid out line in view coordinates (y down).
+/// A laid out line in the content box (y down, points: the box
+/// [`CoreTextLayout::lines`] are reported in).
 struct LineBox<'a> {
     line: &'a CTLine,
     /// Its characters.
     start: CFIndex,
     end: CFIndex,
+    /// `end` without a hard break's characters: the last caret position.
+    content_end: CFIndex,
     /// The x of its origin.
     x: CGFloat,
     top: CGFloat,
+    /// Below the descent (the leading excluded).
     bottom: CGFloat,
+    /// The space below `bottom` the line reports as part of its height.
+    leading: CGFloat,
     width: CGFloat,
 }
 
-impl LineBox<'_> {
+impl<'a> LineBox<'a> {
+    fn of(layout: &CoreTextLayout, l: &'a LaidLine) -> Self {
+        let (mut ascent, mut descent, mut leading) = (0.0, 0.0, 0.0);
+        // SAFETY: valid out pointers.
+        let width = unsafe {
+            l.line
+                .typographic_bounds(&mut ascent, &mut descent, &mut leading)
+        };
+        let start = l.range.location.max(0);
+        let end = l.hit_end.max(start);
+        LineBox {
+            line: &l.line,
+            start,
+            end,
+            content_end: end.saturating_sub(l.break_len).max(start),
+            x: l.origin.x,
+            // As `TextEngine::lines` places it.
+            top: layout.height - (l.origin.y + ascent),
+            bottom: layout.height - (l.origin.y - descent),
+            leading,
+            width,
+        }
+    }
+
+    /// Its height as `TextEngine::lines` reports it.
+    fn height(&self) -> CGFloat {
+        self.bottom - self.top + self.leading
+    }
+
     /// The x of the caret before character `index`.
     fn x_of(&self, index: CFIndex) -> CGFloat {
         // SAFETY: a valid line; no secondary offset wanted.
@@ -1248,6 +1328,22 @@ impl LineBox<'_> {
             + unsafe {
                 self.line
                     .offset_for_string_index(index, std::ptr::null_mut())
+            }
+    }
+
+    /// The x of the caret at `index`: where the characters before it end
+    /// (`upstream`) or the ones after it start, which differ where
+    /// bidirectional text meets.
+    fn caret_x(&self, index: CFIndex, upstream: bool) -> CGFloat {
+        let mut secondary = CGFloat::NAN;
+        // SAFETY: a valid line and out pointer.
+        let primary = unsafe { self.line.offset_for_string_index(index, &mut secondary) };
+        // CoreText may leave the secondary offset alone where there is none.
+        self.x
+            + if upstream && secondary.is_finite() {
+                secondary
+            } else {
+                primary
             }
     }
 
@@ -1271,36 +1367,233 @@ impl LineBox<'_> {
             0.0
         }
     }
+
+    /// Fills `spans` with the stretches of x the characters `a..b` cover,
+    /// left to right, adjacent ones joined: one per run (bidirectional text
+    /// splits a range), through the line's end when the range goes on past
+    /// it. The ellipsis token is never covered.
+    fn spans(&self, a: CFIndex, b: CFIndex, spans: &mut Vec<(CGFloat, CGFloat)>) {
+        spans.clear();
+        let past = b > self.end;
+        let (a, b) = (a.max(self.start), b.min(self.end));
+        let (mut text_left, mut text_right) = (CGFloat::INFINITY, CGFloat::NEG_INFINITY);
+        let (mut first_rtl, mut last_rtl) = (false, false);
+        // SAFETY: the line's own run array (of CTRuns).
+        let runs = unsafe { self.line.glyph_runs() };
+        for i in 0..runs.count() {
+            // SAFETY: an index within the array.
+            let run = unsafe { &*runs.value_at_index(i).cast::<CTRun>() };
+            // SAFETY: a valid run; an immutable key of ours.
+            let (range, status, glyphs, token) = unsafe {
+                let key: *const CFString = ellipsis_key();
+                (
+                    run.string_range(),
+                    run.status(),
+                    run.glyph_count(),
+                    run.attributes().contains_ptr_key(key.cast()),
+                )
+            };
+            if token || glyphs <= 0 {
+                continue;
+            }
+            let mut origin = CGPoint::new(0.0, 0.0);
+            // SAFETY: one position (the run has a glyph) into a one-point
+            // buffer, and the whole run's width.
+            let width = unsafe {
+                run.positions(
+                    CFRange {
+                        location: 0,
+                        length: 1,
+                    },
+                    NonNull::from(&mut origin),
+                );
+                run.typographic_bounds(
+                    WHOLE,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                )
+            };
+            let (left, right) = (self.x + origin.x, self.x + origin.x + width);
+            let rtl = status.contains(CTRunStatus::RightToLeft);
+            text_left = text_left.min(left);
+            text_right = text_right.max(right);
+            let run_end = range.location + range.length;
+            if range.location <= self.start {
+                first_rtl = rtl;
+            }
+            if run_end >= self.end {
+                last_rtl = rtl;
+            }
+            let (s, e) = (a.max(range.location), b.min(run_end));
+            if s >= e {
+                continue;
+            }
+            // A run's own edges, not the offsets of the characters beyond
+            // it, which belong to the next run.
+            let edge = |index: CFIndex| {
+                if index <= range.location {
+                    if rtl { right } else { left }
+                } else if index >= run_end {
+                    if rtl { left } else { right }
+                } else {
+                    self.x_of(index)
+                }
+            };
+            let (x1, x2) = (edge(s), edge(e));
+            spans.push((x1.min(x2), x1.max(x2)));
+        }
+        if spans.is_empty() {
+            return;
+        }
+        spans.sort_by(|p, q| p.0.total_cmp(&q.0));
+        if past {
+            // The line's end is its left side in right-to-left text.
+            if first_rtl && last_rtl {
+                if let Some(first) = spans.first_mut() {
+                    first.0 = text_left;
+                }
+            } else if let Some(last) = spans.last_mut() {
+                last.1 = last.1.max(text_right);
+            }
+        }
+        // `dedup_by` hands each span with the last one kept: touching spans
+        // join into it.
+        spans.dedup_by(|(left, right), kept| {
+            let joins = *left <= kept.1 + 0.01;
+            if joins {
+                kept.1 = kept.1.max(*right);
+            }
+            joins
+        });
+    }
 }
 
-/// The lines of `layout` in view coordinates, its box at `content`.
-fn line_boxes(
-    layout: &CoreTextLayout,
-    content: nsh_core::Bounds<nsh_core::Points>,
-) -> Vec<LineBox<'_>> {
-    let bottom = (content.origin.y.0 + content.size.height.0) as CGFloat;
-    layout
-        .lines
-        .iter()
-        .map(|l| {
-            let (mut ascent, mut descent) = (0.0, 0.0);
-            // SAFETY: valid out pointers.
-            let width = unsafe {
-                l.line
-                    .typographic_bounds(&mut ascent, &mut descent, std::ptr::null_mut())
-            };
-            let start = l.range.location.max(0);
-            LineBox {
-                line: &l.line,
-                start,
-                end: start + l.range.length.max(0),
-                x: content.origin.x.0 as CGFloat + l.origin.x,
-                top: bottom - (l.origin.y + ascent),
-                bottom: bottom - (l.origin.y - descent),
-                width,
+/// The lines of `layout` in its content box.
+fn line_boxes(layout: &CoreTextLayout) -> impl Iterator<Item = LineBox<'_>> {
+    layout.lines.iter().map(|l| LineBox::of(layout, l))
+}
+
+/// How many UTF-16 units of a hard line break (`\n`, `\r\n`, ...) end the
+/// characters `range` of `string`.
+fn break_len(string: &CFAttributedString, range: CFRange) -> CFIndex {
+    let Some(chars) = string.string() else {
+        return 0;
+    };
+    let end = range.location + range.length;
+    let len = chars.length();
+    let at = |i: CFIndex| {
+        if i < range.location.max(0) || i >= end.min(len) {
+            return None;
+        }
+        // SAFETY: an index within the string.
+        Some(unsafe { chars.character_at_index(i) })
+    };
+    let is_break = |c: u16| matches!(c, 0x0a | 0x0d | 0x85 | 0x2028 | 0x2029);
+    match at(end - 1) {
+        Some(c) if is_break(c) => {
+            if c == 0x0a && at(end - 2) == Some(0x0d) {
+                2
+            } else {
+                1
             }
-        })
-        .collect()
+        }
+        _ => 0,
+    }
+}
+
+/// A UTF-16 offset as a CoreText index.
+fn to_index(offset: u32) -> CFIndex {
+    CFIndex::try_from(offset).unwrap_or(CFIndex::MAX)
+}
+
+/// A CoreText index as a UTF-16 offset.
+fn to_offset(index: CFIndex) -> u32 {
+    u32::try_from(index.max(0)).unwrap_or(u32::MAX)
+}
+
+/// A box in the content box from CoreText numbers.
+fn content_box(x: CGFloat, y: CGFloat, width: CGFloat, height: CGFloat) -> Bounds<Points> {
+    Bounds::new(
+        Point::new(Points(x as f32), Points(y as f32)),
+        Size::new(Points(width as f32), Points(height as f32)),
+    )
+}
+
+impl CoreTextLayout {
+    /// The caret position nearest `(x, y)` (the content box, y down): on
+    /// the line at that height (the first above the text, the last below
+    /// it), at the caret edge nearest x. Past the end of a soft wrapped line
+    /// it is the line's end, upstream; a hard break is never passed.
+    pub(crate) fn hit_test(&self, x: CGFloat, y: CGFloat) -> TextPosition {
+        let mut found = None;
+        for (i, b) in line_boxes(self).enumerate() {
+            let below = y >= b.top + b.height();
+            found = Some((i, b));
+            if !below {
+                break;
+            }
+        }
+        let Some((i, line)) = found else {
+            return TextPosition::default();
+        };
+        let index = line.caret_at(x).min(line.content_end);
+        let wrapped = line.content_end == line.end
+            && self
+                .lines
+                .get(i + 1)
+                .is_some_and(|next| next.range.location == line.end);
+        let affinity = if wrapped && index == line.end && index > line.start {
+            Affinity::Upstream
+        } else {
+            Affinity::Downstream
+        };
+        TextPosition::new(to_offset(index), affinity)
+    }
+
+    /// The caret at `position` (the content box, y down): a box of no width
+    /// as high as its line; `None` without lines.
+    pub(crate) fn caret_rect(&self, position: TextPosition) -> Option<Bounds<Points>> {
+        // `TextPosition::line` picks the line from the ranges alone.
+        let ranges: Vec<nsh_core::TextLine> = self
+            .lines
+            .iter()
+            .map(|l| nsh_core::TextLine {
+                start: to_offset(l.range.location),
+                end: to_offset(l.hit_end),
+                ..Default::default()
+            })
+            .collect();
+        let line = self.lines.get(position.line(&ranges)?)?;
+        let line = LineBox::of(self, line);
+        let index = to_index(position.offset).clamp(line.start, line.content_end);
+        let upstream = position.affinity == Affinity::Upstream && index > line.start;
+        Some(content_box(
+            line.caret_x(index, upstream),
+            line.top,
+            0.0,
+            line.height(),
+        ))
+    }
+
+    /// Appends the boxes (the content box, y down) covering the characters
+    /// of `range`, line high, one per stretch of adjacent characters of
+    /// each line.
+    pub(crate) fn range_rects(&self, range: Range<u32>, out: &mut Vec<Bounds<Points>>) {
+        if range.start >= range.end {
+            return;
+        }
+        let (a, b) = (to_index(range.start), to_index(range.end));
+        let mut spans = Vec::new();
+        for line in line_boxes(self).filter(|l| l.end > a && l.start < b) {
+            line.spans(a, b, &mut spans);
+            out.extend(
+                spans
+                    .iter()
+                    .map(|&(x1, x2)| content_box(x1, line.top, x2 - x1, line.height())),
+            );
+        }
+    }
 }
 
 /// The UTF-16 offset of the character at `(x, y)` (view coordinates), with
@@ -1308,10 +1601,13 @@ fn line_boxes(
 pub(crate) fn char_at(state: &crate::view::ViewState, x: f32, y: f32) -> Option<u32> {
     let drawn = state.text.as_ref()?;
     let layout = drawn.layout.downcast::<CoreTextLayout>()?;
-    let (x, y) = (x as CGFloat, y as CGFloat);
+    let content = drawn.content;
+    let (x, y) = (
+        (x - content.origin.x.0) as CGFloat,
+        (y - content.origin.y.0) as CGFloat,
+    );
     const SLACK: CGFloat = 4.0;
-    let line = line_boxes(layout, drawn.content)
-        .into_iter()
+    let line = line_boxes(layout)
         .filter(|l| x >= l.x - SLACK && x <= l.x + l.width + SLACK && l.distance(y) <= SLACK)
         .min_by(|a, b| a.distance(y).total_cmp(&b.distance(y)))?;
     let index = line.caret_at(x);
@@ -1348,11 +1644,13 @@ pub(crate) fn caret_at(state: &crate::view::ViewState, x: f32, y: f32) -> u32 {
     let Some(layout) = drawn.layout.downcast::<CoreTextLayout>() else {
         return 0;
     };
-    let (x, y) = (x as CGFloat, y as CGFloat);
-    line_boxes(layout, drawn.content)
-        .iter()
-        .min_by(|a, b| a.distance(y).total_cmp(&b.distance(y)))
-        .map_or(0, |l| l.caret_at(x).max(0) as u32)
+    let content = drawn.content;
+    layout
+        .hit_test(
+            (x - content.origin.x.0) as CGFloat,
+            (y - content.origin.y.0) as CGFloat,
+        )
+        .offset
 }
 
 /// The rectangles (view coordinates) the characters `start..end` of the
@@ -1368,24 +1666,24 @@ pub(crate) fn range_rects(state: &crate::view::ViewState, start: u32, end: u32) 
     selection_rects(layout, drawn.content, (start, end))
 }
 
-/// The rectangles (view coordinates) the selected `range` covers, one per
-/// line.
+/// The rectangles (view coordinates) the selected `range` covers: the
+/// layout's [`CoreTextLayout::range_rects`] moved to the content box.
 fn selection_rects(
     layout: &CoreTextLayout,
     content: nsh_core::Bounds<nsh_core::Points>,
     (a, b): (u32, u32),
 ) -> Vec<CGRect> {
-    let (a, b) = (a as CFIndex, b as CFIndex);
-    line_boxes(layout, content)
-        .iter()
-        .filter(|l| l.end > a && l.start < b)
-        .map(|l| {
-            let x1 = l.x_of(a.max(l.start));
-            // Through the line's end when the range goes on past it.
-            let x2 = if b > l.end { l.x + l.width } else { l.x_of(b) };
+    let mut rects = Vec::new();
+    layout.range_rects(a..b, &mut rects);
+    rects
+        .into_iter()
+        .map(|r| {
             CGRect::new(
-                CGPoint::new(x1.min(x2), l.top),
-                CGSize::new((x2 - x1).abs(), l.bottom - l.top),
+                CGPoint::new(
+                    (content.origin.x.0 + r.origin.x.0) as CGFloat,
+                    (content.origin.y.0 + r.origin.y.0) as CGFloat,
+                ),
+                CGSize::new(r.size.width.0 as CGFloat, r.size.height.0 as CGFloat),
             )
         })
         .collect()
@@ -1972,5 +2270,80 @@ mod tests {
 
         let (baseline, top, _, _) = place(VerticalAlign::Middle);
         assert!(near(top + 15.0, baseline - x / 2.0), "{top} {baseline}");
+    }
+}
+
+#[cfg(test)]
+mod hit_regressions {
+    use super::*;
+    fn layout(text: &str, ellipsize: Option<EllipsizeMode>) -> (CoreTextEngine, TextLayout) {
+        let engine = CoreTextEngine::default();
+        let mut text_value = AttributedText::default();
+        text_value.push(
+            text,
+            ResolvedTextStyle {
+                font_size: Points(20.0),
+                ..Default::default()
+            },
+        );
+        if let Some(mode) = ellipsize {
+            text_value.max_lines = 1;
+            text_value.ellipsize = mode;
+        }
+        let prepared = engine.prepare(&text_value);
+        let size = if ellipsize.is_some() {
+            Size::new(Points(65.0), Points(40.0))
+        } else {
+            engine.measure(&prepared, None)
+        };
+        let laid = engine.layout(&prepared, size);
+        (engine, laid)
+    }
+    #[test]
+    fn bidi_ranges_follow_visual_runs() {
+        let (engine, layout) = layout("abc אבג xyz", None);
+        let mut rects = Vec::new();
+        engine.range_rects(&layout, 0..5, &mut rects);
+        assert_eq!(
+            rects.len(),
+            2,
+            "a logical range crosses two disjoint visual runs: {rects:?}"
+        );
+        assert!(rects[0].origin.x + rects[0].size.width < rects[1].origin.x);
+    }
+    #[test]
+    fn truncated_lines_keep_visible_suffix_offsets() {
+        for mode in [EllipsizeMode::Head, EllipsizeMode::Middle] {
+            let (engine, layout) = layout("abcdefghijklmnopqrstuvwxyz", Some(mode));
+            let line = &engine.lines(&layout)[0];
+            let hit = engine.hit_test(
+                &layout,
+                Point::new(
+                    line.x + line.width - Points(1.0),
+                    line.y + line.height * 0.5,
+                ),
+            );
+            assert!(hit.offset >= 24, "{mode:?}: {hit:?}");
+            let mut rects = Vec::new();
+            engine.range_rects(&layout, 25..26, &mut rects);
+            assert!(!rects.is_empty(), "{mode:?}: visible final character");
+            let caret = engine
+                .caret_rect(&layout, TextPosition::new(26, Affinity::Downstream))
+                .unwrap();
+            assert!(
+                caret.origin.x >= line.x + line.width - Points(1.0),
+                "{mode:?}: {caret:?}"
+            );
+        }
+    }
+    #[test]
+    fn head_ellipsis_does_not_highlight_omitted_characters() {
+        let (engine, layout) = layout("abcdefghijklmnopqrstuvwxyz", Some(EllipsizeMode::Head));
+        let mut rects = Vec::new();
+        engine.range_rects(&layout, 0..1, &mut rects);
+        assert!(
+            rects.is_empty(),
+            "the token has no source character: {rects:?}"
+        );
     }
 }

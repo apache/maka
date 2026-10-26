@@ -142,8 +142,9 @@ impl EventLog {
         admission: PendingMessageAdmission,
     ) -> Result<PendingMessageAdmission, StoreError> {
         self.validate_root()?;
+        let commits = self.commits.session(&admission.invocation.session_id);
         self.connection
-            .write(WriteAdmission(admission), self.commits.clone())
+            .write(WriteAdmission(admission), commits)
             .await
     }
 
@@ -231,16 +232,10 @@ pub(crate) async fn consume(
             continue;
         };
         let matches = match &event.fact {
-            Fact::MessageSteered { message, source } => {
+            Fact::MessageSteered { source, .. } => {
                 *pending.steering_target() == event.invocation
                     && pending.source.disposition == MessageDisposition::Steering
-                    && match source.as_deref() {
-                        Some(source) => source == &pending.source,
-                        None => {
-                            pending.source.submitted_intent.is_none()
-                                && pending.source.message == **message
-                        }
-                    }
+                    && **source == pending.source
             }
             Fact::InvocationOpened { .. } => {
                 crate::message_sources::roots(event).iter().any(|source| {

@@ -138,9 +138,17 @@ test('skips a small staged binary Biome cannot decode', () => {
   }
 });
 
-test('passes a language Biome parses but does not format', () => {
+test('passes a language whose formatter is explicitly disabled', () => {
   const root = fixture();
   try {
+    writeFileSync(
+      join(root, 'biome.json'),
+      JSON.stringify({
+        formatter: { enabled: true },
+        linter: { enabled: false },
+        markdown: { formatter: { enabled: false } },
+      }),
+    );
     writeFileSync(join(root, 'notes.md'), '# Notes\n\n*   loosely   formatted\n');
     execFileSync('git', ['add', 'notes.md'], { cwd: root });
 

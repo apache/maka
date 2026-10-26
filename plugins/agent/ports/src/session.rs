@@ -80,11 +80,6 @@ impl SessionBehavior {
             native_input: NativeInputPolicy::Denied,
         }
     }
-
-    pub fn with_native_input(mut self, policy: NativeInputPolicy) -> Self {
-        self.native_input = policy;
-        self
-    }
 }
 
 #[derive(Default, Serialize, Deserialize)]

@@ -97,8 +97,12 @@ suffix identity comparisons. A source can produce each requested item directly f
 |---|---|---|---|
 | `onLoadMore` | `() => void` | | Called when the end comes within `loadMoreThreshold` viewports: load more. |
 | `loadMoreThreshold` | `number` | `1` | How close to the end (in viewport lengths) `onLoadMore` fires. |
+| `onLoadMoreAtStart` | `() => void` | | Called when the start comes within `loadMoreAtStartThreshold` viewports after the user or a scroll command moved the list: load what comes before the first item. |
+| `loadMoreAtStartThreshold` | `number` | `1` | How close to the start (in viewport lengths) `onLoadMoreAtStart` fires. |
 | `refreshing` | `boolean` | | The pull-to-refresh spinner shows. |
 | `onRefresh` | `() => void` | | Enables pull to refresh; set `refreshing` while you load. |
+| `refreshIndicator` | `{ height: number }` | | The app draws its own pull-to-refresh indicator, `height` tall, in place of the spinner. |
+| `pullValue` | `AnimatedValue` | | Fed with how far the list is pulled past its top, for that indicator. |
 | `onViewableItemsChange` | `(info: { viewableItems: ViewToken<T>[]; changed: ViewToken<T>[] }) => void` | | Items that became or stopped being viewable. |
 | `viewabilityConfig` | `ViewabilityConfig` | | When an item counts as viewable. |
 

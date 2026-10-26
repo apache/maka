@@ -1,17 +1,21 @@
 //! `StaticLayout` text engine, driven through JNI on the engine thread:
 //! `TextLayouts.prepare` builds the styled text once per content,
 //! `measure` lays it out at any width, `layout` makes the final
-//! `StaticLayout` that the UI thread only draws.
+//! `StaticLayout` that the UI thread only draws. Hit testing (`hitTest`,
+//! `caretRect`, `rangeRects`) asks that `StaticLayout` too, with the code
+//! the UI thread's selection, links and test agent call directly.
 
-use std::sync::Arc;
+use std::{ops::Range, sync::Arc};
 
 use jni::{
-    objects::{GlobalRef, JObject, JValue},
+    objects::{GlobalRef, JObject, JStaticMethodID, JValue},
     signature::{Primitive, ReturnType},
     sys::jvalue,
 };
 use nsh_core::{
-    AttributedText, EllipsizeMode, Points, Size, TextAlign, TextEngine, TextLayout, geometry::px,
+    Affinity, AttributedText, Bounds, EllipsizeMode, Point, Points, Size, TextAlign, TextEngine,
+    TextLayout, TextPosition,
+    geometry::{point, px},
 };
 
 use crate::java::{java, with_env};
@@ -338,6 +342,87 @@ impl TextEngine for AndroidTextEngine {
             .collect()
     }
 
+    fn hit_test(&self, layout: &TextLayout, at: Point<Points>) -> TextPosition {
+        let Some(AndroidLayout(obj)) = layout.downcast::<AndroidLayout>() else {
+            return TextPosition::default();
+        };
+        let packed = with_env(|env| {
+            let j = java();
+            let args: [jvalue; 4] = [
+                JValue::Object(obj.as_obj()).as_jni(),
+                JValue::Float(at.x.0).as_jni(),
+                JValue::Float(at.y.0).as_jni(),
+                JValue::Float(self.density).as_jni(),
+            ];
+            // SAFETY: matches the signature checked in `java::init`.
+            unsafe {
+                env.call_static_method_unchecked(
+                    <&jni::objects::JClass<'_>>::from(j.text.as_obj()),
+                    j.text_hit_test,
+                    ReturnType::Primitive(Primitive::Long),
+                    &args,
+                )
+            }?
+            .j()
+        });
+        // The offset in the low 32 bits, bit 32 set at the end of a wrapped
+        // line (`TextLayouts.hitTest`).
+        let offset = u32::try_from(packed & 0xffff_ffff).unwrap_or_default();
+        let affinity = if (packed >> 32) & 1 != 0 {
+            Affinity::Upstream
+        } else {
+            Affinity::Downstream
+        };
+        TextPosition::new(offset, affinity)
+    }
+
+    fn caret_rect(&self, layout: &TextLayout, position: TextPosition) -> Option<Bounds<Points>> {
+        let AndroidLayout(obj) = layout.downcast::<AndroidLayout>()?;
+        let j = java();
+        let args: [jvalue; 4] = [
+            JValue::Object(obj.as_obj()).as_jni(),
+            JValue::Int(i32::try_from(position.offset).unwrap_or(i32::MAX)).as_jni(),
+            JValue::Bool((position.affinity == Affinity::Upstream).into()).as_jni(),
+            JValue::Float(self.density).as_jni(),
+        ];
+        // SAFETY: `text_caret_rect` takes these arguments (checked in
+        // `java::init`) and returns `float[]`.
+        let floats = unsafe { call_floats(j.text_caret_rect, &args) };
+        // x, y and the height of the line, in dp; nothing without lines.
+        let &[x, y, height] = floats.as_chunks::<3>().0.first()?;
+        Some(Bounds::new(
+            point(px(x), px(y)),
+            Size::new(px(0.0), px(height)),
+        ))
+    }
+
+    fn range_rects(&self, layout: &TextLayout, range: Range<u32>, out: &mut Vec<Bounds<Points>>) {
+        let Some(AndroidLayout(obj)) = layout.downcast::<AndroidLayout>() else {
+            return;
+        };
+        if range.start >= range.end {
+            return;
+        }
+        let j = java();
+        let offset = |o: u32| i32::try_from(o).unwrap_or(i32::MAX);
+        let args: [jvalue; 4] = [
+            JValue::Object(obj.as_obj()).as_jni(),
+            JValue::Int(offset(range.start)).as_jni(),
+            JValue::Int(offset(range.end)).as_jni(),
+            JValue::Float(self.density).as_jni(),
+        ];
+        // SAFETY: `text_range_rects` takes these arguments (checked in
+        // `java::init`) and returns `float[]`.
+        let floats = unsafe { call_floats(j.text_range_rects, &args) };
+        // x, y, width and height of each box, in dp.
+        for &[x, y, width, height] in floats.as_chunks::<4>().0 {
+            out.push(Bounds::new(
+                point(px(x), px(y)),
+                Size::new(px(width), px(height)),
+            ));
+        }
+    }
+
     fn register_font(&self, data: &[u8]) -> Result<(), String> {
         let face = ttf_parser::Face::parse(data, 0).map_err(|e| e.to_string())?;
         let name = |id| {
@@ -381,4 +466,33 @@ impl TextEngine for AndroidTextEngine {
             None => Ok(()),
         }
     }
+}
+
+/// Calls a `TextLayouts` method that returns `float[]` and copies the array
+/// out; empty when the call fails.
+///
+/// # Safety
+///
+/// `method` is one of the `text_*` ids of [`crate::java::Java`] that returns
+/// `float[]` and `args` are its arguments: their number and types are those
+/// of the signature checked in `java::init`.
+unsafe fn call_floats(method: JStaticMethodID, args: &[jvalue]) -> Vec<f32> {
+    with_env(|env| {
+        let j = java();
+        // SAFETY: the caller's contract.
+        let array = unsafe {
+            env.call_static_method_unchecked(
+                <&jni::objects::JClass<'_>>::from(j.text.as_obj()),
+                method,
+                ReturnType::Array,
+                args,
+            )
+        }?
+        .l()?;
+        let array = jni::objects::JFloatArray::from(array);
+        let len = usize::try_from(env.get_array_length(&array)?).unwrap_or_default();
+        let mut out = vec![0f32; len];
+        env.get_float_array_region(&array, 0, &mut out)?;
+        Ok(out)
+    })
 }

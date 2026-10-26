@@ -25,7 +25,7 @@ use maka_agent_facts::{
     tool_call::ToolOrigin,
     tools::{ToolExecutor, ToolFuture},
 };
-use maka_code_runtime::{CellLimits, CellStore};
+use maka_code_runtime::CellLimits;
 use maka_event_log::EventLog;
 use maka_tools::{
     CodeExecutor, RunTools, ToolCatalog, ToolDefinition, ToolHandler, ToolNesting,
@@ -60,12 +60,12 @@ async fn selected_python_runs_through_exec_grammar_catalog_and_durable_journal()
             handler:ToolHandler::Immediate(Arc::new(Echo)),nesting:ToolNesting::Nestable,semantics:ToolSemantics::Parallel,
         }]).unwrap();
         let executor=CodeExecutor::new(CellLimits::default()).unwrap().with_python_worker(env!("CARGO_BIN_EXE_maka-python-worker").into()).unwrap();
-        let store=CellStore::default();
+        let loaded=maka_tools::availability::LoadedTools::new(maka_session_state::Backend::temporary().unwrap().session("python-session"));
         for (step,language,source,expected) in [
             ("python",CodeLanguage::Python,"# @exec: {\"yield_time_ms\": 10000, \"max_output_tokens\": 1000}\nresult=await tools.echo_tool(n=7)\nstore('receipt',result)\ntext(result)",json!([{"kind":"text","text":"{\"n\":7}"}])),
             ("javascript",CodeLanguage::JavaScript,"text(load('receipt'));",json!([{"kind":"text","text":"{\"n\":7}"}])),
         ] {
-            let run=RunTools::new(Language::En,log.clone(),invocation.clone(),catalog.clone(),ToolMode::CodeMode,executor.clone().with_language(language),Default::default()).with_store(store.clone());
+            let run=RunTools::new(Language::En,log.clone(),invocation.clone(),catalog.clone(),ToolMode::CodeMode,executor.clone().with_language(language),loaded.clone());
             let request=run.capture(".",CancellationToken::new()).await.unwrap();
             let definitions=request.definitions();let definition=definitions.iter().find(|tool|tool.name=="exec").unwrap();
             if language==CodeLanguage::Python {

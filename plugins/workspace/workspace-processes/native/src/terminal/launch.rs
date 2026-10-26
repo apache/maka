@@ -38,7 +38,7 @@ impl Processes {
             return Err(failed("Pipe command cannot have a terminal size"));
         }
         let configuration = self
-            .terminal_session(&input.session_id, true)
+            .terminal_session(&input.session_id, true, context)
             .await?
             .configuration;
         let settings = self.settings.clone();
@@ -74,10 +74,10 @@ impl Processes {
         .await
         .map_err(failed)??;
         let current = self
-            .terminal_session(&input.session_id, true)
+            .terminal_session(&input.session_id, true, context)
             .await?
             .configuration;
-        if current.boundary_revision != configuration.boundary_revision
+        if current.permission_basis() != configuration.permission_basis()
             || current.workspace != configuration.workspace
         {
             return Err(failed(
@@ -109,7 +109,7 @@ impl Processes {
                 ShellVisibility::User
             },
             permissions: ShellPermissions {
-                boundary_revision: configuration.boundary_revision,
+                basis: configuration.permission_basis(),
                 sandbox,
             },
             cwd: configuration.workspace.path,
@@ -135,10 +135,17 @@ impl Processes {
         };
         // No await between the final canonical Session read and native acceptance.
         // After acceptance the original owner joins work even if the caller leaves.
+        let execution = context
+            .scope()
+            .identity
+            .agent()
+            .filter(|invocation| invocation.session_id == record.session_id)
+            .zip(context.scope().execution())
+            .map(|(invocation, custody)| (invocation.clone(), custody.clone()));
         let mut handle = if pty {
-            self.resources.start_pty(record, command, size)
+            self.resources.start_pty(record, command, size, execution)
         } else {
-            self.resources.start_pipes(record, command)
+            self.resources.start_pipes(record, command, execution)
         }
         .map_err(|error| match error {
             ShellError::Process(error) => error,

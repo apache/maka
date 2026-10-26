@@ -160,6 +160,11 @@ impl Gate {
         self.outer
     }
 
+    /// The view that owns this gate, even if the pointer target moved.
+    pub fn id(&self) -> NodeId {
+        self.id
+    }
+
     /// Decides on a drag by `(dx, dy)` from where the pointer went down:
     /// the gated view when its pan activates (the candidates around it are
     /// dropped), and whether the gate is still undecided.
@@ -379,6 +384,10 @@ pub struct Press<V> {
     pub long: bool,
     /// Tells the press's timers from those of earlier presses.
     pub generation: u64,
+    /// The modifier keys held when it went down, sent with its events.
+    pub modifiers: crate::keymap::Modifiers,
+    /// Consecutive clicks it is (1 for a click, 2 for a double click).
+    pub clicks: u32,
 }
 
 impl<V> Press<V> {
@@ -399,7 +408,17 @@ impl<V> Press<V> {
             pressed: false,
             long: false,
             generation,
+            modifiers: crate::keymap::Modifiers::default(),
+            clicks: 1,
         }
+    }
+
+    /// The press with the modifier keys held and the consecutive clicks
+    /// (at least 1) of the pointer that went down.
+    pub fn clicked(mut self, modifiers: crate::keymap::Modifiers, clicks: u32) -> Press<V> {
+        self.modifiers = modifiers;
+        self.clicks = clicks.max(1);
+        self
     }
 
     /// The press goes in: `onPressDown`, the first time, if it listens.

@@ -77,7 +77,11 @@ impl EventLog {
     ) -> Result<InterruptReceipt, StoreError> {
         self.validate_root()?;
         command.validate()?;
-        let (command, owner, commits) = (command.clone(), owner.cloned(), self.commits.clone());
+        let (command, owner, commits) = (
+            command.clone(),
+            owner.cloned(),
+            self.commits.session(&command.session_id),
+        );
         self.connection.run(move |connection| Box::pin(async move {
             let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
             if let Some(receipt) = read(&mut tx, &command).await? {
@@ -131,7 +135,7 @@ impl EventLog {
                 .bind(&command.host_epoch).bind(&command.session_id).bind(&command.interrupt_id)
                 .bind(&command.turn_id).bind(&command.run_id).bind(encoded).execute(&mut *tx).await?;
             tx.commit().await.map_err(StoreError::CommitUnknown)?;
-            if changed { commits.send_modify(|_| {}); }
+            if changed { commits.metadata(); }
             Ok(fence.map_or(InterruptReceipt::Conflict, InterruptReceipt::Fenced))
         })).await
     }

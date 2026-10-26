@@ -23,7 +23,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
-globset = "0.4.18"
+globset = "0.4.20"
 schemars.workspace = true
 serde.workspace = true
 thiserror.workspace = true
@@ -31,11 +31,11 @@ url = "2.5.8"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 regex-syntax = "0.8.11"
-unicode-normalization = "0.1.25"
+unicode-normalization = "0.1.26"
 
 [target.'cfg(windows)'.dependencies]
 # Keep the native ETW imports usable with both Windows linkers, as in Codex.
-tracelogging = "=1.2.3"
+tracelogging = "=1.2.4"
 flatbuffers.workspace = true
 mxc-sdk.workspace = true
 windows-sys = { version = "0.61.2", features = ["Win32_UI_WindowsAndMessaging", "Wdk_Storage_FileSystem", "Win32_System_Registry", "Win32_System_StationsAndDesktops", "Win32_Graphics_Gdi", "Win32_Globalization", "Win32_Foundation", "Win32_Security_Authorization", "Win32_Security_Cryptography", "Win32_Storage_FileSystem", "Win32_System_SystemServices", "Win32_System_Threading", "Win32_System_JobObjects", "Win32_NetworkManagement_NetManagement", "Win32_NetworkManagement_WindowsFilteringPlatform", "Win32_System_Rpc"] }

@@ -42,6 +42,7 @@ use nsh_core::{
     Command, EventKind, EventPayload, ImageData, ImageOptions, ImageSource, NodeId, PayloadValue,
     ResizeMode,
     geometry::{DevicePixels, Points, Size, size},
+    image::{CacheHeaders, DiskCache, Fetched, Lookup},
 };
 use objc2::{
     AnyThread, DefinedClass, define_class, msg_send,
@@ -53,9 +54,9 @@ use objc2_core_foundation::{
 };
 use objc2_core_graphics::CGImage;
 use objc2_foundation::{
-    NSData, NSDataReadingOptions, NSError, NSHTTPURLResponse, NSObject, NSObjectProtocol, NSString,
-    NSURL, NSURLResponse, NSURLSession, NSURLSessionDataDelegate, NSURLSessionDataTask,
-    NSURLSessionDelegate, NSURLSessionResponseDisposition, NSURLSessionTask,
+    NSData, NSDataReadingOptions, NSError, NSHTTPURLResponse, NSMutableURLRequest, NSObject,
+    NSObjectProtocol, NSString, NSURL, NSURLResponse, NSURLSession, NSURLSessionDataDelegate,
+    NSURLSessionDataTask, NSURLSessionDelegate, NSURLSessionResponseDisposition, NSURLSessionTask,
     NSURLSessionTaskDelegate,
 };
 use objc2_image_io::{
@@ -116,6 +117,22 @@ impl nsh_engine::Assets for AssetReader {
             None => Err(format!("{uri}: no asset location configured")),
         }
     }
+}
+
+/// Sets the disk cache of what `surface`'s images download (`None`:
+/// none).
+pub(crate) fn set_disk_cache(surface: &Surface, cache: Option<DiskCache>) {
+    *surface.image_cache.borrow_mut() = cache;
+}
+
+/// The disk cache a load of `uri` goes through: the surface's, for remote
+/// images (`asset:/` URIs, served by the dev server during development,
+/// change as the app does: never kept).
+fn disk_cache(surface: &Surface, uri: &str) -> Option<DiskCache> {
+    let remote = uri.starts_with("http://") || uri.starts_with("https://");
+    remote
+        .then(|| surface.image_cache.borrow().clone())
+        .flatten()
 }
 
 /// Sets where `asset:/` URIs of `surface` resolve.
@@ -446,9 +463,16 @@ fn in_background(f: impl FnOnce() + Send + 'static) {
     .exec_async(f);
 }
 
-/// Decodes `location` as `decoding` asks; `done` runs on the main thread
-/// (before this returns when the image is cached). Returns whether it ran.
-fn request(location: Location, decoding: Decoding, progress: Option<Progress>, done: Done) -> bool {
+/// Decodes `location` as `decoding` asks, a download through `cache`;
+/// `done` runs on the main thread (before this returns when the image is
+/// cached). Returns whether it ran.
+fn request(
+    location: Location,
+    cache: Option<DiskCache>,
+    decoding: Decoding,
+    progress: Option<Progress>,
+    done: Done,
+) -> bool {
     let lk = location.key();
     let key = decoding.key(&lk);
     if let Some(image) = with(|l| l.cached(&key)) {
@@ -474,14 +498,14 @@ fn request(location: Location, decoding: Decoding, progress: Option<Progress>, d
         }
     });
     if start {
-        fetch(location, Want::Decode(key));
+        fetch(location, cache, Want::Decode(key));
     }
     false
 }
 
 /// Gets the bytes of `location` for `want`: kept ones, a running read, or
-/// a new one.
-fn fetch(location: Location, want: Want) {
+/// a new one (a download through `cache` when there is one).
+fn fetch(location: Location, cache: Option<DiskCache>, want: Want) {
     let lk = location.key();
     if let Location::Memory(_, bytes) = location {
         serve(&lk, bytes, want);
@@ -511,9 +535,19 @@ fn fetch(location: Location, want: Want) {
             on_main(move || bytes_ready(&lk, result));
         }),
         Location::Memory(..) => unreachable!("served above"),
-        Location::Url(url) => match ns_url(&url) {
-            Some(ns) => download(&ns, lk),
-            None => on_main(move || bytes_ready(&lk, Err(format!("bad URL {url}")))),
+        Location::Url(url) => match cache {
+            // The disk is read off the main thread; a fresh copy is all it
+            // takes, a stale one is revalidated.
+            Some(cache) => in_background(move || {
+                let lookup = cache.lookup(&url);
+                if let Lookup::Fresh(bytes) = lookup {
+                    on_main(move || bytes_ready(&lk, Ok(bytes)));
+                    return;
+                }
+                let headers = lookup.request_headers();
+                download(&url, lk, Some(cache), &headers);
+            }),
+            None => download(&url, lk, None, &[]),
         },
     }
 }
@@ -630,6 +664,8 @@ fn progress(location: &str, loaded: u64, total: u64) {
 
 struct DownloadIvars {
     location: String,
+    /// The disk cache and URL it goes through.
+    cache: Option<(DiskCache, String)>,
     data: Mutex<DownloadState>,
 }
 
@@ -638,6 +674,7 @@ struct DownloadState {
     bytes: Vec<u8>,
     total: u64,
     status: isize,
+    headers: CacheHeaders,
     reported: Option<Instant>,
 }
 
@@ -662,10 +699,23 @@ define_class!(
         ) {
             let ivars = self.ivars();
             let state = std::mem::take(&mut *ivars.data.lock().expect("download"));
-            let result = match error {
-                Some(e) => Err(e.localizedDescription().to_string()),
-                None if state.status >= 400 => Err(format!("HTTP {}", state.status)),
-                None => Ok(ImageData::from(state.bytes)),
+            // Delegates run on the session's queue, off the main thread:
+            // the cache's file IO is done here.
+            let result = match (&ivars.cache, error) {
+                (Some((cache, url)), error) => {
+                    let response = match error {
+                        Some(e) => Err(e.localizedDescription().to_string()),
+                        None => Ok(Fetched::new(
+                            state.status as u16,
+                            state.headers,
+                            state.bytes,
+                        )),
+                    };
+                    cache.complete(url, response)
+                }
+                (None, Some(e)) => Err(e.localizedDescription().to_string()),
+                (None, None) if state.status >= 400 => Err(format!("HTTP {}", state.status)),
+                (None, None) => Ok(ImageData::from(state.bytes)),
             };
             let location = ivars.location.clone();
             let result = result.map_err(|e| format!("{location}: {e}"));
@@ -686,6 +736,9 @@ define_class!(
             state.total = response.expectedContentLength().max(0) as u64;
             if let Some(http) = response.downcast_ref::<NSHTTPURLResponse>() {
                 state.status = http.statusCode();
+                if self.ivars().cache.is_some() {
+                    state.headers = cache_headers(http);
+                }
             }
             drop(state);
             completion.call((NSURLSessionResponseDisposition::Allow,));
@@ -715,15 +768,58 @@ define_class!(
     }
 );
 
-/// Downloads `url`, reporting progress and then its bytes.
-fn download(url: &NSURL, location: String) {
+/// The caching headers of `response`.
+fn cache_headers(response: &NSHTTPURLResponse) -> CacheHeaders {
+    let (keys, values) = response.allHeaderFields().to_vecs();
+    let pairs: Vec<(String, String)> = keys
+        .iter()
+        .zip(values.iter())
+        .filter_map(|(k, v)| {
+            let k = k.downcast_ref::<NSString>()?;
+            let v = v.downcast_ref::<NSString>()?;
+            Some((k.to_string(), v.to_string()))
+        })
+        .collect();
+    CacheHeaders::from_pairs(pairs.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+}
+
+/// Downloads `url` with `headers` (a revalidation's conditions), through
+/// `cache` when there is one, reporting progress and then its bytes.
+/// Any thread.
+fn download(
+    url: &str,
+    location: String,
+    cache: Option<DiskCache>,
+    headers: &[(&'static str, String)],
+) {
+    let Some(ns) = ns_url(url) else {
+        let error = format!("bad URL {url}");
+        on_main(move || bytes_ready(&location, Err(error)));
+        return;
+    };
+    let cached = cache.is_some();
     let delegate = ImageDownload::alloc().set_ivars(DownloadIvars {
         location,
+        cache: cache.map(|cache| (cache, url.to_owned())),
         data: Mutex::new(DownloadState::default()),
     });
     // SAFETY: NSObject's designated initializer.
     let delegate: Retained<ImageDownload> = unsafe { msg_send![super(delegate), init] };
-    let task = NSURLSession::sharedSession().dataTaskWithURL(url);
+    let request = NSMutableURLRequest::requestWithURL(&ns);
+    if cached {
+        // The disk cache answers for these: the shared URL cache must not
+        // serve a copy it never saw (nor hide a revalidation's 304).
+        request.setCachePolicy(
+            objc2_foundation::NSURLRequestCachePolicy::ReloadIgnoringLocalCacheData,
+        );
+    }
+    for (name, value) in headers {
+        request.setValue_forHTTPHeaderField(
+            Some(&NSString::from_str(value)),
+            &NSString::from_str(name),
+        );
+    }
+    let task = NSURLSession::sharedSession().dataTaskWithRequest(&request);
     // The task keeps its delegate until it completes.
     task.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
     task.resume();
@@ -954,9 +1050,10 @@ pub(crate) fn load(
 ) {
     match resolve(uri, surface.asset_base.borrow().as_ref()) {
         Some(location) => {
+            let cache = disk_cache(surface, uri);
             let uri = uri.to_owned();
             let done = move |r: Result<Decoded, String>| done(r.and_then(|d| bitmap(&uri, d)));
-            request(location, Decoding::default(), None, Box::new(done));
+            request(location, cache, Decoding::default(), None, Box::new(done));
         }
         None => done(Err(format!("unsupported image source `{uri}`"))),
     }
@@ -1006,7 +1103,11 @@ pub(crate) fn command(surface: &Rc<Surface>, _id: NodeId, command: &Command) {
         );
     };
     match resolve(uri, surface.asset_base.borrow().as_ref()) {
-        Some(location) => fetch(location, Want::Info(Box::new(done))),
+        Some(location) => fetch(
+            location,
+            disk_cache(surface, uri),
+            Want::Info(Box::new(done)),
+        ),
         None => done(Err(format!("unsupported image source `{uri}`"))),
     }
 }
@@ -1208,7 +1309,13 @@ fn start(surface: &Rc<Surface>, view: &NshView) {
             }
         };
         let immediate = match locate(&source, base.as_ref()) {
-            Some(location) => request(location, decoding, progress, Box::new(done)),
+            Some(location) => request(
+                location,
+                disk_cache(surface, &source.uri),
+                decoding,
+                progress,
+                Box::new(done),
+            ),
             None => {
                 done(Err(format!("unsupported image source `{}`", source.uri)));
                 true
@@ -1235,6 +1342,7 @@ fn start(surface: &Rc<Surface>, view: &NshView) {
     };
     request(
         location,
+        disk_cache(surface, &placeholder.uri),
         plain,
         None,
         Box::new(move |result| {

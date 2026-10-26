@@ -70,6 +70,23 @@ mount(Player);
 | `controls` | `boolean` | `false` | Shows the platform's playback controls. |
 | `resizeMode` | `"cover" \| "contain" \| "stretch" \| "center"` | | How the video fits its box. |
 | `progressUpdateInterval` | `number` | `250` | Milliseconds between `onProgress` events. |
+| `audioSession` | `"default" \| "playback" \| "mixWithOthers"` | `"default"` | What the sound does to the rest of the device's audio: see [Sound and other apps](#sound-and-other-apps). |
+
+### Sound and other apps
+
+A video's sound follows the app's audio settings, which by default are the platform's for video: on iOS the device's silent mode silences it. An app that plays speech, as an audiobook or a language course does, sets `audioSession`:
+
+| `audioSession` | In silent mode | Other apps' audio while it plays |
+|---|---|---|
+| `"default"` | the app's audio settings decide | the app's audio settings decide |
+| `"playback"` | sound plays | pauses, and plays again once the video pauses, ends or goes |
+| `"mixWithOthers"` | sound plays | keeps playing |
+
+The setting takes effect while the video plays. On iOS, the first such video to play sets `AVAudioSession` to the `playback` category in the `spokenAudio` mode (mixing with other apps' audio for `"mixWithOthers"`), and once none plays the session returns to what it was and the apps it paused may play again; `"default"` leaves the session as the app, or the app embedding NSH, set it. On Android the player's sound is marked as speech, and a `"playback"` video holds audio focus while it plays: it pauses when another app takes the focus (a call, a navigation prompt) and plays on when it comes back. Changing `audioSession` on Android opens the source again. The desktops and the web play the sound as they play any video.
+
+```tsx
+<Video src="asset:/greeting.m4a" audioSession="playback" />
+```
 
 ## Events
 

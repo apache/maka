@@ -38,6 +38,7 @@ mod long_task_responsiveness;
 mod model_interruption;
 mod pruning;
 mod session_import;
+mod session_longevity;
 mod stale_pruning;
 mod startup_recovery;
 mod startup_recovery_limits;
@@ -52,4 +53,6 @@ mod support {
     pub(crate) mod image_projection;
     pub(crate) mod invocation;
     pub(crate) mod recovery;
+    pub(crate) mod recovery_session;
+    pub(crate) mod store;
 }

@@ -25,6 +25,7 @@ unreachable_pub = "deny"
 private_interfaces = "deny"
 
 [workspace.dependencies]
+unicode-bidi = "0.3.18"
 unicode-linebreak = "0.1.5"
 nsh-core = { version = "0.2.0", path = "crates/nsh-core" }
 nsh-package = { version = "0.2.0", path = "crates/nsh-package" }
@@ -50,9 +51,7 @@ crossbeam-channel = "0.5"
 ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
 ratatui-image = { version = "11.1", default-features = false, features = ["crossterm"] }
 crossterm = { version = "0.29", features = ["event-stream", "bracketed-paste"] }
-unicode-segmentation = "1.12"
 unicode-width = "0.2"
-unicode-bidi = "0.3"
 tiny-skia = "0.12"
 fontdb = { version = "0.23", default-features = false, features = ["std", "fs", "fontconfig"] }
 rustybuzz = "0.20"
@@ -80,6 +79,9 @@ quote = "1"
 syn = { version = "2", features = ["full"] }
 ed25519-dalek = { version = "2.1", default-features = false, features = ["std", "fast", "zeroize"] }
 sha2 = "0.10"
+# The image disk cache (`nsh_core::image::DiskCache`): HTTP dates and entry checksums.
+httpdate = "1"
+crc32fast = "1"
 flate2 = "1"
 # Test payloads for the zlib module, at the versions LLRT's compression uses.
 brotli = { version = "9", default-features = false, features = ["std"] }
@@ -92,6 +94,11 @@ percent-encoding = "2.3"
 url = "2.5"
 ureq = "3.1"
 regex = "1"
+# The text of `nsh-base`'s `Editor`: a rope, and its grapheme and word boundaries.
+ropey = "1.6"
+unicode-segmentation = "1.13"
+# The line and word diffs of `nsh-base`'s `DiffView` (histogram, git's indent heuristic).
+imara-diff = "0.2"
 markdown = "1.0.0"
 html5ever = "0.27"
 markup5ever_rcdom = "0.3.0"
@@ -244,6 +251,8 @@ objc2-ui-kit = { version = "0.3.2", default-features = false, features = [
   "UIAccessibilityCustomAction",
   "UIAccessibilityIdentification",
   "UIEvent",
+  "UIFocus",
+  "UIFocusSystem",
   "UIGestureRecognizerSubclass",
   "UIPinchGestureRecognizer",
   "UIRotationGestureRecognizer",
@@ -279,6 +288,8 @@ objc2-ui-kit = { version = "0.3.2", default-features = false, features = [
   "UISceneSession",
   "UIScreen",
   "UIScrollView",
+  "UITabBar",
+  "UITabBarItem",
   "UITapGestureRecognizer",
   "UITextField",
   "UITextInput",
@@ -328,6 +339,7 @@ objc2-core-graphics = { version = "0.3.2", default-features = false, features = 
   "CGEventTypes",
   "CGGradient",
   "CGImage",
+  "CGLayer",
   "CGPath",
   "CGWindowLevel",
 ] }
@@ -421,6 +433,8 @@ objc2-app-kit = { version = "0.3.2", default-features = false, features = [
   "NSText",
   "NSTextContainer",
   "NSTextField",
+  "NSActionCell",
+  "NSUserInterfaceValidation",
   "NSTextFieldCell",
   "NSTextInputClient",
   "NSTextInputContext",

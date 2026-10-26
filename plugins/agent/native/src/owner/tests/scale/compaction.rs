@@ -54,7 +54,8 @@ async fn events(
     let mut result = Vec::new();
     loop {
         let page = fixture
-            .store
+            .session(session)
+            .await
             .session_events(session, after, through, 512, usize::MAX)
             .await
             .unwrap();
@@ -204,7 +205,13 @@ async fn phase(
     previous_checkpoint: Option<&str>,
     arrivals: &mut tokio::sync::mpsc::UnboundedReceiver<Arrival>,
 ) -> (Value, Option<String>, u64) {
-    let before = *load.fixture.store.subscribe_commits().borrow();
+    let before = *load
+        .fixture
+        .session(session)
+        .await
+        .subscribe_commits()
+        .unwrap()
+        .borrow();
     let cpu = usage().0;
     let start = Instant::now();
     let started = match expected.purpose {
@@ -236,7 +243,13 @@ async fn phase(
     assert!(load.fixture.owner.workers.reopen());
     let completion_ms = start.elapsed().as_secs_f64() * 1000.0;
     let cpu_seconds = usage().0 - cpu;
-    let through = *load.fixture.store.subscribe_commits().borrow();
+    let through = *load
+        .fixture
+        .session(session)
+        .await
+        .subscribe_commits()
+        .unwrap()
+        .borrow();
     // Correctness reads below are outside the operation's measured interval.
     completed(load, session, invocation).await;
     let facts = events(load.fixture, session, before, through).await;
@@ -329,7 +342,13 @@ async fn original_history(
     cycles: usize,
     prompt_bytes: usize,
 ) -> (usize, usize) {
-    let through = *load.fixture.store.subscribe_commits().borrow();
+    let through = *load
+        .fixture
+        .session(session)
+        .await
+        .subscribe_commits()
+        .unwrap()
+        .borrow();
     let mut input = json!({"sessionId":session,"through":through,"position":{"kind":"start"}});
     // Retain only each role's current expected message, never the complete transcript.
     let mut ids: [Option<String>; 2] = [None, None];

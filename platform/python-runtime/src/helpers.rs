@@ -60,8 +60,11 @@ pub(crate) fn invoke(
             text: display(&args[0]),
         })?,
         "notify" => context.notify(display(&args[0]))?,
-        "store" => context.store(key(&args[0])?.into(), args[1].clone())?,
-        "load" => return Ok(context.load(key(&args[0])?).unwrap_or(Value::Null)),
+        "store" => {
+            let key = key(&args[0])?.to_owned();
+            context.store(key, args.remove(1))?;
+        }
+        "load" => return Ok(context.load(key(&args[0])?)?.unwrap_or(Value::Null)),
         "yield_control" => context.yield_output(),
         "exit" => {}
         "image" => {

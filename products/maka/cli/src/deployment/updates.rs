@@ -26,11 +26,18 @@ use maka_host_runtime::HostError;
 use sqlx::{Connection, SqliteConnection};
 use std::{path::Path, sync::Arc};
 
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct Pending {
+    pub deployment: Deployment,
+    pub roots: Option<Vec<maka_host_runtime::DirectoryRootSpec>>,
+}
+
 /// Pending intent never authorizes startup. The unchanged Active row does.
 pub(super) async fn read(
     directory: &Path,
     lease: Arc<FileLease>,
-) -> Result<(Deployment, Option<Deployment>), HostError> {
+) -> Result<(Deployment, Option<Pending>), HostError> {
     lease.validate()?;
     let store::Installation::Installed(active) = store::read(directory).await? else {
         return Err("Host deployment is absent or incomplete".into());
@@ -44,7 +51,7 @@ pub(super) async fn prepare(
     directory: &Path,
     lease: Arc<FileLease>,
     expected: Deployment,
-    target: Deployment,
+    target: Pending,
 ) -> Result<(), HostError> {
     validate_target(&expected, &target)?;
     let connection = store::open_update_writer(directory, lease).await?;
@@ -75,7 +82,7 @@ pub(super) async fn commit(
     lease: Arc<FileLease>,
     owner: Arc<RootOwner>,
     expected: Deployment,
-    target: Deployment,
+    target: Pending,
 ) -> Result<(), HostError> {
     validate_target(&expected, &target)?;
     if owner.root_id() != expected.root_id || owner.canonical_path() != expected.root_path {
@@ -93,7 +100,7 @@ pub(super) async fn commit(
                     return Err(conflict());
                 }
                 sqlx::query("UPDATE deployment SET configuration = ? WHERE singleton = 1")
-                    .bind(serde_json::to_string(&target)?)
+                    .bind(serde_json::to_string(&target.deployment)?)
                     .execute(&mut *transaction)
                     .await?;
                 sqlx::query("DELETE FROM deployment_update WHERE singleton = 1")
@@ -110,7 +117,8 @@ pub(super) async fn commit(
     Ok(())
 }
 
-pub(super) fn validate_target(current: &Deployment, target: &Deployment) -> Result<(), StoreError> {
+pub(super) fn validate_target(current: &Deployment, pending: &Pending) -> Result<(), StoreError> {
+    let target = &pending.deployment;
     let mut expected = target.clone();
     expected.executable = current.executable.clone();
     expected.sha256 = current.sha256.clone();
@@ -124,8 +132,9 @@ pub(super) fn validate_target(current: &Deployment, target: &Deployment) -> Resu
         || (target.sha256 == current.sha256
             && target.mode == current.mode
             && target.websocket == current.websocket
-            && target.project_directory_roots == current.project_directory_roots)
-        || serde_json::to_vec(target)?.len() > 65_536
+            && target.project_directory_roots == current.project_directory_roots
+            && pending.roots.is_none())
+        || serde_json::to_vec(pending)?.len() > 65_536
     {
         return Err(conflict());
     }
@@ -134,7 +143,7 @@ pub(super) fn validate_target(current: &Deployment, target: &Deployment) -> Resu
 
 pub(super) async fn load(
     connection: &mut SqliteConnection,
-) -> Result<(Deployment, Option<Deployment>), StoreError> {
+) -> Result<(Deployment, Option<Pending>), StoreError> {
     let (active, pending): (String, Option<String>) = sqlx::query_as(
         "SELECT CASE WHEN length(CAST(configuration AS BLOB)) <= 65536 THEN configuration END, \
          (SELECT CASE WHEN length(CAST(target AS BLOB)) <= 65536 THEN target ELSE '' END FROM deployment_update WHERE singleton = 1) \
@@ -184,12 +193,15 @@ mod tests {
             project_directory_roots: None,
             admission: super::super::Admission::Active,
         };
-        store::install(&directory, lease.clone(), owner, current.clone())
+        store::install(&directory, lease.clone(), Arc::new(owner), current.clone())
             .await
             .unwrap();
         let mut target = current.clone();
         target.config_revision += 1;
-        target.project_directory_roots = Some(Vec::new());
+        let target = Pending {
+            deployment: target,
+            roots: Some(vec![]),
+        };
         let writer = store::open_writer(&directory, lease.clone(), None)
             .await
             .unwrap();
@@ -256,8 +268,8 @@ mod tests {
         };
         assert_eq!(active, current);
         let mut other = target.clone();
-        other.sha256 = "c".repeat(64);
-        other.executable = package::path(&directory, &other.sha256);
+        other.deployment.sha256 = "c".repeat(64);
+        other.deployment.executable = package::path(&directory, &other.deployment.sha256);
         assert!(
             prepare(&directory, lease.clone(), current.clone(), other)
                 .await
@@ -321,10 +333,14 @@ mod tests {
         .unwrap();
         // Uninstall cancels pending intent atomically, but retains a tombstone.
         // Only explicit reinstallation can grant a fresh deployment identity.
-        let mut pending = target.clone();
-        pending.config_revision += 1;
-        pending.sha256 = "d".repeat(64);
-        pending.executable = package::path(&directory, &pending.sha256);
+        let target = target.deployment;
+        let mut pending = Pending {
+            deployment: target.clone(),
+            roots: None,
+        };
+        pending.deployment.config_revision += 1;
+        pending.deployment.sha256 = "d".repeat(64);
+        pending.deployment.executable = package::path(&directory, &pending.deployment.sha256);
         prepare(&directory, lease.clone(), target.clone(), pending)
             .await
             .unwrap();

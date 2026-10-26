@@ -21,13 +21,13 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
+use crate::support::store::SessionFixture;
 use maka_agent_engine::{Engine, project_model_history};
 use maka_agent_facts::event::{Fact, TerminalStatus};
 use maka_agent_facts::model::prompt::{AssistantPart, Message, ToolOutput};
 use maka_agent_facts::model::{ModelEvent, ToolInput};
 use maka_agent_facts::tool_call::ToolRejection;
 use maka_code_runtime::CellLimits;
-use maka_event_log::EventLog;
 use maka_model::ModelExecutor;
 use maka_tools::CodeExecutor;
 use maka_tools::ToolMode;
@@ -80,20 +80,19 @@ async fn malformed_arguments_are_rejected_and_corrected(mode: ToolMode) {
             requests
         });
         let directory = tempfile::tempdir().unwrap();
-        let log = Arc::new(EventLog::open(&directory.path().join("events.sqlite")).await.unwrap());
+        let log = Arc::new(SessionFixture::open(&directory.path().join("events.sqlite")).await.unwrap());
         let count = Arc::new(AtomicUsize::new(0));
         let engine = Engine::new(
-            log.clone(),
             ModelExecutor::new(Duration::from_secs(5)).unwrap(),
             CodeExecutor::new(CellLimits::default()).unwrap(),
-        );
+        ).unwrap();
         let mut input = fixture::input(&base, "arguments", Arc::new(fixture::Effect {
             log: log.clone(), count: count.clone(),
         }));
         input.configuration.tool_mode = mode;
         // Await the run before joining the server: the original adapter failure
         // must fail this assertion immediately rather than wait for another request.
-        engine.run(input, CancellationToken::new()).await
+        engine.run(log.store(), input, CancellationToken::new()).await
             .expect("malformed arguments must be a recoverable tool rejection");
         let requests = server.await.unwrap();
         assert_eq!(requests.len(), 3);
@@ -152,7 +151,7 @@ async fn malformed_arguments_are_rejected_and_corrected(mode: ToolMode) {
         engine.drain().await;
         drop(engine);
         Arc::try_unwrap(log).ok().unwrap().close().await.unwrap();
-        let reopened = EventLog::open(&directory.path().join("events.sqlite")).await.unwrap();
+        let reopened = SessionFixture::open(&directory.path().join("events.sqlite")).await.unwrap();
         let replay = reopened.prefix(100, 128 * 1024).await.unwrap();
         assert_eq!(project_model_history(&replay, "session", maka_agent_facts::language::Language::En).unwrap(), history);
         assert_eq!(replay.events.iter().filter(|stored| matches!(stored.event.fact,
@@ -174,7 +173,7 @@ fn assert_diagnostic(error: &str) {
 
 #[tokio::test]
 async fn recovered_malformed_arguments_keep_raw_diagnostics_for_every_rejection_reason() {
-    use crate::support::recovery;
+    use crate::support::recovery_session as recovery;
     use maka_agent_facts::model::{ModelFinishReason, ModelPart, ModelStep, ModelToolCall};
     use maka_agent_facts::tool_call::ToolCallIdentity;
 
@@ -187,7 +186,7 @@ async fn recovered_malformed_arguments_keep_raw_diagnostics_for_every_rejection_
     ] {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("events.sqlite");
-        let log = EventLog::open(&path).await.unwrap();
+        let log = SessionFixture::open(&path).await.unwrap();
         recovery::opening(&log).await;
         recovery::request(&log).await;
         recovery::append(
@@ -249,7 +248,7 @@ async fn recovered_malformed_arguments_keep_raw_diagnostics_for_every_rejection_
         assert!(matches!(&prefix.events[3].event.fact,
             Fact::ToolRejected { reason: persisted, .. } if persisted == &reason));
         log.close().await.unwrap();
-        let reopened = EventLog::open(&path).await.unwrap();
+        let reopened = SessionFixture::open(&path).await.unwrap();
         assert_eq!(
             project_model_history(
                 &reopened.prefix(100, 128 * 1024).await.unwrap(),
@@ -272,7 +271,7 @@ async fn accepted_malformed_arguments_survive_transport_interruption_without_ree
     tokio::time::timeout(Duration::from_secs(20), async {
         let directory = tempfile::tempdir().unwrap();
         let log = Arc::new(
-            EventLog::open(&directory.path().join("events.sqlite"))
+            SessionFixture::open(&directory.path().join("events.sqlite"))
                 .await
                 .unwrap(),
         );
@@ -375,11 +374,14 @@ async fn accepted_malformed_arguments_survive_transport_interruption_without_ree
         input.provider.kind = ProviderKind::OpenaiResponses;
         input.provider_options = json!({"openai":{"store":false}});
         let engine = Engine::new(
-            log.clone(),
             ModelExecutor::new(Duration::from_secs(10)).unwrap(),
             CodeExecutor::new(CellLimits::default()).unwrap(),
-        );
-        engine.run(input, CancellationToken::new()).await.unwrap();
+        )
+        .unwrap();
+        engine
+            .run(log.store(), input, CancellationToken::new())
+            .await
+            .unwrap();
         engine.drain().await;
         server.await.unwrap();
         assert_eq!(count.load(Ordering::SeqCst), 1);

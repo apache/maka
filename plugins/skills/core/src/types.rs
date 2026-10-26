@@ -76,7 +76,6 @@ pub enum SkillScope {
 pub enum SkillSource {
     Maka,
     Agents,
-    Legacy,
     Custom,
 }
 

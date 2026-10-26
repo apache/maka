@@ -1,3 +1,4 @@
+use gix_error::Result;
 use std::io::Write;
 
 use crate::{State, Version, entry, extension, write::util::CountBytes};
@@ -71,8 +72,8 @@ impl State {
             extensions,
             skip_hash: _,
         }: Options,
-    ) -> Result<Version, gix_hash::io::Error> {
-        let _span = gix_features::trace::detail!("gix_index::State::write()");
+    ) -> Result<Version> {
+        let _span = gix_trace::detail!("gix_index::State::write()");
         let version = self.detect_required_version();
 
         let mut write = CountBytes::new(out);
@@ -89,9 +90,13 @@ impl State {
             .try_into()
             .expect("definitely not too many entries");
 
-        let offset_to_entries = header(&mut write, version, num_entries - removed_entries)?;
-        let offset_to_extensions = entries(&mut write, self, offset_to_entries)?;
-        let (extension_toc, out) = self.write_extensions(write, offset_to_extensions, extensions)?;
+        let offset_to_entries = header(&mut write, version, num_entries - removed_entries)
+            .map_err(gix_hash::io::from_std_io)?;
+        let offset_to_extensions =
+            entries(&mut write, self, offset_to_entries).map_err(gix_hash::io::from_std_io)?;
+        let (extension_toc, out) = self
+            .write_extensions(write, offset_to_extensions, extensions)
+            .map_err(gix_hash::io::from_std_io)?;
 
         if num_entries > 0
             && extensions
@@ -99,7 +104,12 @@ impl State {
                 .is_some()
             && !extension_toc.is_empty()
         {
-            extension::end_of_index_entry::write_to(out, self.object_hash, offset_to_extensions, extension_toc)?;
+            extension::end_of_index_entry::write_to(
+                out,
+                self.object_hash,
+                offset_to_extensions,
+                extension_toc,
+            )?;
         }
 
         Ok(version)
@@ -114,16 +124,21 @@ impl State {
     where
         T: std::io::Write,
     {
-        type WriteExtFn<'a> = &'a dyn Fn(&mut dyn std::io::Write) -> Option<std::io::Result<extension::Signature>>;
+        type WriteExtFn<'a> =
+            &'a dyn Fn(&mut dyn std::io::Write) -> Option<std::io::Result<extension::Signature>>;
         let extensions: &[WriteExtFn<'_>] = &[
             &|write| {
                 extensions
                     .should_write(extension::tree::SIGNATURE)
-                    .and_then(|signature| self.tree().map(|tree| tree.write_to(write).map(|_| signature)))
+                    .and_then(|signature| {
+                        self.tree()
+                            .map(|tree| tree.write_to(write).map(|_| signature))
+                    })
             },
             &|write| {
-                self.is_sparse()
-                    .then(|| extension::sparse::write_to(write).map(|_| extension::sparse::SIGNATURE))
+                self.is_sparse().then(|| {
+                    extension::sparse::write_to(write).map(|_| extension::sparse::SIGNATURE)
+                })
             },
         ];
 
@@ -132,7 +147,8 @@ impl State {
         for write_ext in extensions {
             if let Some(signature) = write_ext(&mut write).transpose()? {
                 let offset_past_ext = write.count;
-                let ext_size = offset_past_ext - offset_to_previous_ext - (extension::MIN_SIZE as u32);
+                let ext_size =
+                    offset_past_ext - offset_to_previous_ext - (extension::MIN_SIZE as u32);
                 offset_to_previous_ext = offset_past_ext;
                 out.push((signature, ext_size));
             }
@@ -145,7 +161,11 @@ impl State {
     fn detect_required_version(&self) -> Version {
         self.entries
             .iter()
-            .find_map(|e| e.flags.contains(entry::Flags::EXTENDED).then_some(Version::V3))
+            .find_map(|e| {
+                e.flags
+                    .contains(entry::Flags::EXTENDED)
+                    .then_some(Version::V3)
+            })
             .unwrap_or(Version::V2)
     }
 }
@@ -154,7 +174,7 @@ fn header<T: std::io::Write>(
     out: &mut CountBytes<T>,
     version: Version,
     num_entries: u32,
-) -> Result<u32, std::io::Error> {
+) -> std::result::Result<u32, std::io::Error> {
     let version = match version {
         Version::V2 => 2_u32.to_be_bytes(),
         Version::V3 => 3_u32.to_be_bytes(),
@@ -168,7 +188,11 @@ fn header<T: std::io::Write>(
     Ok(out.count)
 }
 
-fn entries<T: std::io::Write>(out: &mut CountBytes<T>, state: &State, header_size: u32) -> Result<u32, std::io::Error> {
+fn entries<T: std::io::Write>(
+    out: &mut CountBytes<T>,
+    state: &State,
+    header_size: u32,
+) -> std::result::Result<u32, std::io::Error> {
     for entry in state.entries() {
         if entry.flags.contains(entry::Flags::REMOVE) {
             continue;
@@ -210,7 +234,9 @@ mod util {
             self.count = self
                 .count
                 .checked_add(u32::try_from(written).expect("we don't write 4GB buffers"))
-                .ok_or_else(|| std::io::Error::other("Cannot write indices larger than 4 gigabytes"))?;
+                .ok_or_else(|| {
+                    std::io::Error::other("Cannot write indices larger than 4 gigabytes")
+                })?;
             Ok(written)
         }
 

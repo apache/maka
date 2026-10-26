@@ -443,18 +443,24 @@ impl Selection {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::EventLog;
     use serde_json::json;
     use sqlx::Connection;
 
     #[tokio::test]
     async fn cached_selection_preserves_json_step_types_fences_and_null_rebinding() {
-        let temp = tempfile::tempdir().unwrap();
-        let log = EventLog::open(&temp.path().join("evidence.sqlite"))
-            .await
-            .unwrap();
-        log.connection.run(|db| Box::pin(async move {
-            // Deliberately seed one malformed numeric step ID in the real schema.
+        // Isolate these SQL selection/plan fixtures from admitted-fact reducers:
+        // some rows intentionally omit fields or contain a numeric step ID.
+        // Use the production ledger DDL and lookup indexes without writer triggers.
+        let mut connection = SqliteConnection::connect("sqlite::memory:").await.unwrap();
+        sqlx::raw_sql(sqlx::AssertSqlSafe(crate::schema::fixture(|kind, _| {
+            kind != "trigger"
+        })))
+        .execute(&mut connection)
+        .await
+        .unwrap();
+        let result: Result<(), StoreError> = async {
+            let db = &mut connection;
+            // Deliberately seed one malformed numeric step ID in the query schema.
             // Selection must exclude it before canonical fact decoding can occur.
             for (sequence, kind, operation, fact) in [
                 (1, "invocation_opened", None, json!({"input":{"kind":"message"}})),
@@ -512,7 +518,7 @@ mod tests {
             assert_eq!(selected(&mut tx, "invocation", Some("42"), 8, false).await?, vec![1, 2, 3, 6]);
             tx.rollback().await?;
             Ok(())
-        })).await.unwrap();
-        log.close().await.unwrap();
+        }.await;
+        result.unwrap();
     }
 }

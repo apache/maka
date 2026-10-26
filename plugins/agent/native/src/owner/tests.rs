@@ -17,6 +17,9 @@
  * under the License.
  */
 
+#[path = "tests/http.rs"]
+mod http_fixture;
+
 #[path = "tests/plan.rs"]
 mod plan_tests;
 
@@ -500,13 +503,134 @@ struct Fixture {
     namespaces: RootNamespaces,
     root: std::path::PathBuf,
     workspace: std::path::PathBuf,
-    store: Arc<EventLog>,
+    store: Arc<RootStore>,
     config: Arc<ConfigurationStore>,
     app: Application,
     issuer: Issuer,
     owner: Arc<Owner>,
 }
 impl Fixture {
+    async fn session(&self, id: &str) -> maka_event_log::root_store::SessionStore {
+        self.store
+            .session(id)
+            .await
+            .expect("fixture Session exists")
+    }
+
+    fn runtime_databases(&self) -> Vec<std::path::PathBuf> {
+        (0..8)
+            .map(|partition| {
+                self.root
+                    .join("runtime-partitions")
+                    .join(format!("{partition:02}.sqlite"))
+            })
+            .collect()
+    }
+
+    fn runtime_database_containing(&self, query: &str, id: &str) -> std::path::PathBuf {
+        let matching: Vec<_> = self
+            .runtime_databases()
+            .into_iter()
+            .filter(|path| {
+                let db = rusqlite::Connection::open_with_flags(
+                    path,
+                    rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+                )
+                .unwrap();
+                db.query_row(query, [id], |row| row.get::<_, i64>(0))
+                    .unwrap()
+                    > 0
+            })
+            .collect();
+        assert_eq!(
+            matching.len(),
+            1,
+            "fixture fact must have exactly one physical owner"
+        );
+        matching.into_iter().next().unwrap()
+    }
+
+    async fn facts_after_failed_shutdown(
+        &self,
+        session: &str,
+    ) -> Vec<maka_agent_facts::event::Fact> {
+        // Root admission is closed after uncertain physical cleanup. Inspect
+        // only the original durable evidence, without admitting another job.
+        assert!(self.store.shutdown().await.is_err());
+        let database = rusqlite::Connection::open_with_flags(
+            self.session_database(session),
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .unwrap();
+        let (count, bytes): (i64, i64) = database.query_row(
+            "SELECT COUNT(*), COALESCE(SUM(length(CAST(event_json AS BLOB))),0) FROM runtime_events WHERE event_session=?",
+            [session], |row| Ok((row.get(0)?, row.get(1)?)),
+        ).unwrap();
+        assert!(
+            count <= 256 && bytes <= 4 * 1024 * 1024,
+            "fixture evidence exceeds original prefix bounds"
+        );
+        let mut statement = database
+            .prepare(
+                "SELECT event_json FROM runtime_events WHERE event_session=? ORDER BY sequence",
+            )
+            .unwrap();
+        statement
+            .query_map([session], |row| row.get::<_, String>(0))
+            .unwrap()
+            .map(|row| {
+                serde_json::from_str::<maka_agent_facts::event::RuntimeEvent>(&row.unwrap())
+                    .unwrap()
+                    .fact
+            })
+            .collect()
+    }
+
+    fn session_database(&self, id: &str) -> std::path::PathBuf {
+        let control = rusqlite::Connection::open_with_flags(
+            self.root.join(maka_event_log::root::ROOT_DATABASE),
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .unwrap();
+        let partition: u32 = control
+            .query_row(
+                "SELECT partition FROM session_routes WHERE session_id=?",
+                [id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        self.root
+            .join("runtime-partitions")
+            .join(format!("{partition:02}.sqlite"))
+    }
+
+    async fn prefix(
+        &self,
+        id: &str,
+        max_events: usize,
+        max_bytes: usize,
+    ) -> maka_agent_facts::event::LogPrefix {
+        self.session(id)
+            .await
+            .scoped_prefix(
+                maka_agent_facts::event::LogScope::Session { id: id.to_owned() },
+                max_events,
+                max_bytes,
+            )
+            .await
+            .unwrap()
+    }
+
+    async fn through(&self, id: &str) -> u64 {
+        self.session(id)
+            .await
+            .session_projection::<Value>(id)
+            .await
+            .unwrap()
+            .unwrap()
+            .through_sequence
+    }
+
     async fn new(base: &str, model: Option<ModelExecutor>) -> Self {
         Self::with_peer(base, model, None).await
     }
@@ -556,7 +680,7 @@ impl Fixture {
             control: dir.path().join("control"),
         };
         let root_owner = Arc::new(RootOwner::create(&root, &namespaces).unwrap());
-        let store = Arc::new(EventLog::for_root(root_owner.clone()).await.unwrap());
+        let store = Arc::new(RootStore::open(root_owner.clone()).await.unwrap());
         let config = Arc::new(ConfigurationStore::for_root(root_owner).await.unwrap());
         let provider = json!({"packageId":maka_providers::api::ID,"entryId":maka_providers::api::ID,"scope":"profile","name":provider_name});
         let create = serde_json::from_value(json!({"expectedCatalogRevision":0,"connection":{"slug":"fixture","name":"Fixture","provider":provider,"configuration":{"baseUrl":base},"enabled":true,"enabledModelIds":["fixture-model"]}})).unwrap();
@@ -677,12 +801,11 @@ impl Fixture {
                         let services = context.services();
                         let mut owner = Owner::open(context, configuration, catalog).await.unwrap();
                         if let Some(model) = replacement {
-                            let store = owner.store.clone();
                             Arc::get_mut(&mut owner).unwrap().engine = Engine::new(
-                                store,
                                 model,
                                 maka_tools::CodeExecutor::new(Default::default()).unwrap(),
-                            );
+                            )
+                            .unwrap();
                         }
                         *capture.lock().unwrap() = Some((owner.clone(), services));
                         let service = Arc::new(Agent(owner));
@@ -837,6 +960,23 @@ impl Fixture {
             .result()
             .await
     }
+    async fn recall(&self, input: Value) -> Result<Value, String> {
+        let mut subscription = self
+            .app
+            .client()
+            .subscribe(
+                self.binding(2).await,
+                "recall".into(),
+                input,
+                scope(&self.issuer, true),
+                Attachments::new().into(),
+            )
+            .await?;
+        while subscription.recv().await.is_some() {}
+        let completion = subscription.completion().await;
+        completion.cleanup?;
+        completion.result
+    }
     async fn drained(&self) {
         while !self.owner.workers.is_empty() {
             tokio::task::yield_now().await;
@@ -847,44 +987,15 @@ async fn request(socket: &mut TcpStream) -> Value {
     request_with_key(socket, "private-fixture-key").await
 }
 async fn request_with_key(socket: &mut TcpStream, key: &str) -> Value {
-    let mut bytes = Vec::new();
-    let boundary = loop {
-        let mut buffer = [0; 4096];
-        let count = socket.read(&mut buffer).await.unwrap();
-        assert_ne!(
-            count,
-            0,
-            "EOF before complete HTTP headers: buffered_bytes={}",
-            bytes.len()
-        );
-        bytes.extend_from_slice(&buffer[..count]);
-        assert!(bytes.len() < 512 * 1024);
-        if let Some(at) = bytes.windows(4).position(|window| window == b"\r\n\r\n") {
-            break at + 4;
-        }
-    };
-    let headers = String::from_utf8_lossy(&bytes[..boundary]);
+    let (headers, body) = http_fixture::read_request(socket).await;
     assert!(
         headers
             .to_ascii_lowercase()
             .contains(&format!("authorization: bearer {key}"))
     );
-    let length: usize = headers
-        .lines()
-        .find_map(|line| {
-            let (name, value) = line.split_once(':')?;
-            name.eq_ignore_ascii_case("content-length")
-                .then(|| value.trim().parse().unwrap())
-        })
-        .unwrap();
-    while bytes.len() < boundary + length {
-        let mut buffer = [0; 4096];
-        let count = socket.read(&mut buffer).await.unwrap();
-        assert_ne!(count, 0);
-        bytes.extend_from_slice(&buffer[..count]);
-    }
-    serde_json::from_slice(&bytes[boundary..boundary + length]).unwrap()
+    body
 }
+
 async fn response(socket: &mut TcpStream) {
     response_with_text(socket, "Elegant response").await;
 }
@@ -1039,7 +1150,7 @@ async fn canonical_history_is_bounded_utf8_and_keeps_its_original_fence() {
         let current_landmarks = current["landmarks"].as_array().unwrap();
         assert_eq!(current_landmarks.len(), 2);
         assert_eq!(current_landmarks[0], original_landmarks[0]);
-        let raw = fixture.store.session_events(&session, 0, newer_fence.unwrap(), 512, 1024 * 1024).await.unwrap();
+        let raw = fixture.session(&session).await.session_events(&session, 0, newer_fence.unwrap(), 512, 1024 * 1024).await.unwrap();
         assert!(raw.next_after.is_none());
         let endings = raw.events.iter().filter(|stored| matches!(&stored.event.fact, maka_agent_facts::event::Fact::InvocationEnded {outcome:maka_agent_facts::event::InvocationOutcome::Completed})).collect::<Vec<_>>();
         assert_eq!(endings.len(), 2);
@@ -1055,7 +1166,7 @@ async fn canonical_history_is_bounded_utf8_and_keeps_its_original_fence() {
         let anchored = fixture.query("history", json!({"sessionId":session,"through":newer_fence.unwrap(),"position":{"kind":"row","position":current_landmarks[1]["position"],"field":"body"}})).await.unwrap();
         assert_eq!(anchored["chunks"][0]["text"], "Hello");
         assert_eq!(anchored["chunks"][0]["turnId"], current_landmarks[1]["turnId"]);
-        let future = *fixture.store.subscribe_commits().borrow() + 1;
+        let future = fixture.through(&session).await + 1;
         assert!(fixture.query("historyLandmarks", json!({"sessionId":session,"through":future})).await.is_err());
         assert!(fixture.query("historyLandmarks", json!({"sessionId":"foreign_session","through":event_fence})).await.is_err());
         assert!(fixture.query("history", json!({"sessionId":session,"position":{"kind":"after","cursor":{"position":{"sourceSequence":0,"itemIndex":0},"offset":0}}})).await.is_err());
@@ -1095,10 +1206,10 @@ async fn actual_http_runs_overlap_and_observer_loss_does_not_cancel_execution() 
         let active = fixture.query("observe", json!({"sessionId":first})).await.unwrap();
         assert_eq!(active["session"]["id"], first);
         assert_eq!(active["session"]["activity"], "working");
-        fixture.store.establish_interaction(&catalog_interaction(&first, "working-request")).await.unwrap();
+        fixture.session(&(catalog_interaction(&first, "working-request")).session_id).await.establish_interaction(&catalog_interaction(&first, "working-request")).await.unwrap();
         let waiting = fixture.query("observe", json!({"sessionId":first})).await.unwrap();
         assert_eq!(waiting["session"]["activity"], "waiting");
-        fixture.store.commit_interaction_outcome("working-request", maka_agent_facts::interaction::InteractionOutcome::Closure { reason: maka_agent_facts::interaction::ClosureReason::ProducerCancelled, committed_at: 20 }).await.unwrap();
+        fixture.session(&first).await.commit_interaction_outcome("working-request", maka_agent_facts::interaction::InteractionOutcome::Closure { reason: maka_agent_facts::interaction::ClosureReason::ProducerCancelled, committed_at: 20 }).await.unwrap();
         let resumed = fixture.query("observe", json!({"sessionId":first})).await.unwrap();
         assert_eq!(resumed["session"]["activity"], "working");
         assert_eq!(active["run"]["invocationId"], started["invocationId"]);
@@ -1118,7 +1229,7 @@ async fn actual_http_runs_overlap_and_observer_loss_does_not_cancel_execution() 
         assert_eq!(metrics["modelId"], "fixture-model");
         assert_eq!(metrics["contextTokens"], 3);
         assert_eq!(metrics["contextLastKnown"], false);
-        let (basis, _) = fixture.store.context_usage(&first).await.unwrap();
+        let (basis, _) = fixture.session(&first).await.context_usage(&first).await.unwrap();
         let maka_event_log::context::LatestMainContext::Selected(basis) = basis else { panic!("missing accepted main request") };
         let seconds = basis.finished_at.unwrap().duration_since(basis.requested_at.unwrap()).unwrap().as_secs_f64();
         assert_eq!(metrics["outputTokensPerSecond"].as_f64().unwrap(), 2.0 / seconds);
@@ -1126,12 +1237,12 @@ async fn actual_http_runs_overlap_and_observer_loss_does_not_cancel_execution() 
         assert_eq!(completed["session"]["activity"], "idle");
         assert_eq!(completed["parts"], json!([]));
         assert!(completed["through"].as_u64().unwrap() >= active["through"].as_u64().unwrap());
-        let observation = fixture.store.session_projection::<Value>(&first).await.unwrap().unwrap();
-        let events = fixture.store.session_stream_events(&first,0,observation.through_sequence,32,64*1024).await.unwrap();
+        let observation = fixture.session(&first).await.session_projection::<Value>(&first).await.unwrap().unwrap();
+        let events = fixture.session(&first).await.session_stream_events(&first,0,observation.through_sequence,32,64*1024).await.unwrap();
         assert!(events.events.iter().any(|event| matches!(&event.fact,maka_event_log::observation::StreamFact::PartDelta{text,..} if text=="Elegant response")));
-        let prefix = fixture.store.prefix(128, 1024*1024).await.unwrap();
+        let prefix = fixture.prefix(&first, 128, 1024*1024).await;
         let model_request = prefix.events.iter().find(|row| row.event.invocation.session_id == first && matches!(row.event.fact, maka_agent_facts::event::Fact::ModelRequested { .. })).unwrap();
-        let composition = fixture.store.request_composition(&first, &model_request.event.id).await.unwrap().unwrap();
+        let composition = fixture.session(&first).await.request_composition(&first, &model_request.event.id).await.unwrap().unwrap();
         let adapter = composition.sources.iter().find(|source| source.kind == SourceKind::ModelAdapter).unwrap();
         let mut expected = fixture.owner.revision.clone();
         expected.kind = SourceKind::ModelAdapter;
@@ -1268,7 +1379,7 @@ struct Fault {
     panic: bool,
     entered: Arc<Semaphore>,
     release: Arc<Semaphore>,
-    store: Arc<StdMutex<Option<Arc<EventLog>>>>,
+    database: Arc<StdMutex<Option<std::path::PathBuf>>>,
 }
 impl maka_agent_ports::model::ProviderAdapter for Fault {
     fn open(
@@ -1291,10 +1402,21 @@ impl maka_agent_ports::model::Session for Fault {
         Box::pin(async move {
             fault.entered.add_permits(1);
             fault.release.acquire().await.unwrap().forget();
-            // Real EventLog SQL owner shuts down after durable start. Later
-            // model-interruption and terminal writes must fail independently.
-            let store = fault.store.lock().unwrap().as_ref().unwrap().clone();
-            store.shutdown().await.unwrap();
+            // Fail persistence after durable start without closing Root authority
+            // while this original worker still owns physical execution custody.
+            let path = fault.database.lock().unwrap().as_ref().unwrap().clone();
+            let database = rusqlite::Connection::open(path).unwrap();
+            database.execute_batch("CREATE TRIGGER reject_worker_events BEFORE INSERT ON event_log BEGIN SELECT RAISE(ABORT, 'fixture worker SQL failure'); END;").unwrap();
+            if !fault.panic {
+                // Keep the table in main so SQLite cannot fall back to the
+                // attached control schema; fail the next queue read itself.
+                database
+                    .execute_batch(
+                        "ALTER TABLE message_admissions RENAME COLUMN record_json TO unavailable_record_json;",
+                    )
+                    .unwrap();
+            }
+            drop(database);
             assert!(!fault.panic, "controlled original model worker panic");
             Err(maka_model::ModelError::Adapter(
                 "ordinary model failure".into(),
@@ -1307,7 +1429,7 @@ fn controlled_model(panic: bool) -> (ModelExecutor, Fault) {
         panic,
         entered: Arc::new(Semaphore::new(0)),
         release: Arc::new(Semaphore::new(0)),
-        store: Arc::new(StdMutex::new(None)),
+        database: Arc::new(StdMutex::new(None)),
     };
     let binding = maka_agent_ports::model::Binding::new(
         Arc::new(fault.clone()),
@@ -1332,9 +1454,12 @@ async fn cleanup_case(panic: bool) {
     let (mut capture, _log_guard) = log_capture();
     let (model, fault) = controlled_model(panic);
     let fixture = Fixture::new("http://127.0.0.1:1/v1", Some(model)).await;
-    *fault.store.lock().unwrap() = Some(fixture.store.clone());
+
     let session = fixture.create("Physical lifetime").await;
+
+    *fault.database.lock().unwrap() = Some(fixture.session_database(&session));
     fixture.send(&session).await.unwrap();
+
     let invocation = fixture
         .owner
         .runs
@@ -1347,6 +1472,7 @@ async fn cleanup_case(panic: bool) {
         .clone();
     let activation = fixture.owner.revision.activation.clone();
     fault.entered.acquire().await.unwrap().forget();
+
     let selection = fixture.selection().await;
     let reference = if panic {
         assert_eq!(fixture.send(&session).await.unwrap()["kind"], "queued");
@@ -1367,11 +1493,12 @@ async fn cleanup_case(panic: bool) {
     } else {
         None
     };
+
     fault.release.add_permits(1);
     fixture.drained().await;
+
     if let Some(reference) = reference {
-        // The fault closed the SQL owner. Test the original admission gate
-        // directly; a new Host intent would fail before reaching that gate.
+        // Test the original admission gate after terminal persistence failed.
         assert!(
             fixture
                 .owner
@@ -1392,7 +1519,7 @@ async fn cleanup_case(panic: bool) {
                 .contains("agent_cleanup_unconfirmed")
         );
         let raw = rusqlite::Connection::open_with_flags(
-            fixture.root.join(maka_event_log::root::ROOT_DATABASE),
+            fixture.session_database(&session),
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
         )
         .unwrap();
@@ -1412,13 +1539,20 @@ async fn cleanup_case(panic: bool) {
     assert_eq!(
         fixture.owner.runs.lock().await.closing,
         !panic,
-        "completion uncertainty quarantines only the session; advancing after SQL shutdown closes the owner"
+        "completion uncertainty quarantines only the session; advancing after SQL failure closes the owner"
     );
     assert_eq!(fixture.owner.stop.is_cancelled(), !panic);
+
     let close = fixture.app.shutdown().await;
+
     assert_eq!(close.is_err(), panic);
     fixture.config.shutdown().await.unwrap();
-    fault.store.lock().unwrap().take();
+    if !panic {
+        // Confirmed physical cleanup permits Root shutdown to acknowledge all
+        // partition owners before testing that the original lock is reusable.
+        fixture.store.shutdown().await.unwrap();
+    }
+    fault.database.lock().unwrap().take();
     let Fixture {
         services,
         _dir,
@@ -1454,11 +1588,7 @@ async fn cleanup_case(panic: bool) {
             "session_quarantined",
         )
     } else {
-        (
-            "queue_advance_failed",
-            "store_connection_closed",
-            "owner_closing",
-        )
+        ("queue_advance_failed", "store_sqlx", "owner_closing")
     };
     let event = log
         .lines()
@@ -1708,7 +1838,8 @@ async fn disabled_connection() {
     assert!(error.contains("agent_execution_unavailable"));
     assert!(!error.contains("private-fixture-key") && !error.contains("private-alternative-key"));
     let observation = fixture
-        .store
+        .session(&session)
+        .await
         .session_projection::<Value>(&session)
         .await
         .unwrap()
@@ -1734,7 +1865,14 @@ async fn tool_source_uses_original_agent_grant_and_frozen_canonical_fields() {
     use maka_plugin_core::scope::Scope as StorageScope;
     let fixture = Fixture::new("http://127.0.0.1:9/v1", None).await;
     let seed = fixture.create("Tool source").await;
-    let configuration = fixture.owner.session(&seed).await.unwrap().configuration;
+    let configuration = fixture
+        .session(&seed)
+        .await
+        .get::<StoredSessionConfiguration>()
+        .await
+        .unwrap()
+        .unwrap()
+        .configuration;
     let session = format!("{}{}", fixture.owner.prefix, Uuid::new_v4().simple());
     let plugin = PluginSession {
         session_id: session.clone(),
@@ -1784,7 +1922,7 @@ async fn tool_source_uses_original_agent_grant_and_frozen_canonical_fields() {
         .await
         .unwrap();
 
-    let fence = *fixture.store.subscribe_commits().borrow();
+    let fence = fixture.through(&session).await;
     let history = loop {
         let value = fixture
             .query(
@@ -1891,7 +2029,7 @@ fn catalog_interaction(
         created_at: 10,
         outcome: None,
         request: InteractionRequest::ClientCapability {
-            base_revision: None,
+            basis: None,
             tool_use_id: "tool".into(),
             target: GrantTarget {
                 provider_id: "provider".into(),
@@ -1908,6 +2046,11 @@ fn catalog_interaction(
 }
 
 fn provide_all(registry: &mut NativeRegistry) -> Result<(), String> {
+    provide_without_workhub(registry)?;
+    crate::workhub::provide(registry, bundled_catalog())?;
+    Ok(())
+}
+fn provide_without_workhub(registry: &mut NativeRegistry) -> Result<(), String> {
     crate::provide(registry, bundled_catalog())?;
     maka_acp_native::provide(registry)?;
     maka_files_native::provide(registry)?;
@@ -1917,6 +2060,5 @@ fn provide_all(registry: &mut NativeRegistry) -> Result<(), String> {
     maka_interactions_native::forms::provide(registry)?;
     maka_web::provide(registry)?;
     maka_jev_native::provide(registry)?;
-    crate::workhub::provide(registry, bundled_catalog())?;
     Ok(())
 }

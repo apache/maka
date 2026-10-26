@@ -41,5 +41,5 @@ tempfile.workspace = true
 sqlx.workspace = true
 rusqlite.workspace = true
 uuid.workspace = true
-tracing = { version = "0.1", default-features = false, features = ["std"] }
-tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt"] }
+tracing = { version = "0.1.44", default-features = false, features = ["std"] }
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt"] }

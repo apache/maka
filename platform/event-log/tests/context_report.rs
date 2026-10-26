@@ -235,7 +235,13 @@ async fn context_report_tracks_latest_own_main_at_exact_fences_and_survives_reop
     .await
     .unwrap();
     let source = log
-        .prepare_context_compaction("source", Some("summary"), &CheckpointMode::Standalone)
+        .capture_compaction_context(
+            "source",
+            Some("summary"),
+            &CheckpointMode::Standalone,
+            100_000,
+            64 * 1024 * 1024,
+        )
         .await
         .unwrap();
     let mut summary = request("source", "summary", "summary-step", Some(measured()));

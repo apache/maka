@@ -29,15 +29,14 @@ use std::{
 };
 use tokio_util::sync::CancellationToken;
 
-async fn owner() -> maka_capabilities::call::Scope {
+fn owner() -> maka_capabilities::call::Scope {
     maka_capabilities::call::Issuer::default()
-        .admit(
+        .issue(
             maka_capabilities::call::Identity::Remote {
                 request_id: uuid::Uuid::new_v4(),
             },
             CancellationToken::new(),
         )
-        .await
         .unwrap()
 }
 async fn view(
@@ -48,6 +47,32 @@ async fn view(
         .await
         .unwrap()
         .bind_scope(owner)
+}
+
+fn sources(
+    project: Option<&maka_capabilities::filesystem::ReadDirectory>,
+    home: Option<&maka_capabilities::filesystem::ReadDirectory>,
+) -> Vec<Source> {
+    use maka_skills::LocationId::{ProjectAgents, ProjectMaka, UserAgents, UserMaka};
+    [
+        (project, ProjectMaka),
+        (project, ProjectAgents),
+        (home, UserMaka),
+        (home, UserAgents),
+    ]
+    .into_iter()
+    .filter_map(|(root, id)| {
+        let access = root?;
+        Some(Source {
+            root: access.location(),
+            access: access.clone(),
+            directory: id.directory().into(),
+            scope: id.scope(),
+            source: id.source(),
+            reference_prefix: id.reference().into(),
+        })
+    })
+    .collect()
 }
 
 fn skill(path: &Path, name: &str, requirements: &str, body: &str) -> Vec<u8> {
@@ -64,11 +89,9 @@ fn skill(path: &Path, name: &str, requirements: &str, body: &str) -> Vec<u8> {
 async fn snapshot_precedence_preferences_and_capabilities_preserve_selected_identity() {
     let temporary = tempfile::tempdir().unwrap();
     let project = temporary.path().join("project");
-    let workspace = temporary.path().join("workspace");
     let home = temporary.path().join("home");
     for (path, name) in [
         (project.join(".agents/skills/REVIEW"), "Shadow"),
-        (workspace.join("skills/review"), "Legacy"),
         (home.join(".maka/skills/duplicate"), "Primary"),
     ] {
         skill(&path, name, "", "unused");
@@ -87,7 +110,7 @@ async fn snapshot_precedence_preferences_and_capabilities_preserve_selected_iden
     );
     skill(
         &project.join(".maka/skills/network"),
-        "workspace:legacy:review",
+        "project:agents:REVIEW",
         "required-capabilities: network\r\n",
         "network",
     );
@@ -103,14 +126,13 @@ async fn snapshot_precedence_preferences_and_capabilities_preserve_selected_iden
         "required-tools: 42\r\n",
         "invalid",
     );
-    let owner = owner().await;
+    let owner = owner();
     let project_files = view(&owner, &project).await;
-    let workspace_files = view(&owner, &workspace).await;
     let home_files = view(&owner, &home).await;
-    let sources = Source::standard(Some(&project_files), &workspace_files, Some(&home_files));
+    let sources = sources(Some(&project_files), Some(&home_files));
     let snapshot = scan(&sources, &CancellationToken::new()).await.unwrap();
     assert!(snapshot.diagnostics.is_empty());
-    assert_eq!(snapshot.inventory.len(), 7);
+    assert_eq!(snapshot.inventory.len(), 6);
     assert_eq!(snapshot.rejected.len(), 1);
     let review = snapshot
         .inventory
@@ -134,7 +156,7 @@ async fn snapshot_precedence_preferences_and_capabilities_preserve_selected_iden
             .iter()
             .filter(|skill| skill.shadowed_by.as_deref() == Some("project:maka:review"))
             .count(),
-        2
+        1
     );
     fs::write(
         project.join(".maka/skills/review/SKILL.md"),
@@ -152,7 +174,7 @@ async fn snapshot_precedence_preferences_and_capabilities_preserve_selected_iden
         host: &capable,
     };
     assert_eq!(
-        capable_catalog.load("workspace:legacy:review").unwrap_err(),
+        capable_catalog.load("project:agents:REVIEW").unwrap_err(),
         SkillFailureReason::NotFound
     );
     let catalog = Catalog {
@@ -161,7 +183,7 @@ async fn snapshot_precedence_preferences_and_capabilities_preserve_selected_iden
         host: &host,
     };
     let loaded = catalog.load(" ReViEw ").unwrap();
-    let search = catalog.search(" \u{feff}rEvIeW\t", 1);
+    let search = catalog.search(" \u{feff}rEvIeW\t", Some(1));
     assert_eq!(search.query, "review");
     assert_eq!(search.matches[0].skill.reference, "project:maka:review");
     assert_eq!(search.matched_count, 2);
@@ -179,12 +201,12 @@ async fn snapshot_precedence_preferences_and_capabilities_preserve_selected_iden
     };
     assert_eq!(
         pinned_catalog
-            .search("unrelated vocabulary", 8)
+            .search("unrelated vocabulary", None)
             .matched_count,
         0,
         "pinning does not create a match"
     );
-    let listing = pinned_catalog.search("", 1);
+    let listing = pinned_catalog.search("", Some(1));
     assert_eq!(listing.matches[0].skill.reference, "project:maka:large");
     assert_eq!(listing.matched_count, pinned_catalog.available().count());
     assert!(listing.truncated);
@@ -199,7 +221,7 @@ async fn snapshot_precedence_preferences_and_capabilities_preserve_selected_iden
         preferences: &disabled,
         ..catalog
     };
-    let listing = disabled_catalog.search("", 8);
+    let listing = disabled_catalog.search("", None);
     assert_eq!(listing.matches.len(), disabled_catalog.available().count());
     assert!(
         listing
@@ -207,9 +229,8 @@ async fn snapshot_precedence_preferences_and_capabilities_preserve_selected_iden
             .iter()
             .all(|entry| entry.skill.id != "review")
     );
-    let long_query = catalog.search(&"😀".repeat(300), 8);
+    let long_query = catalog.search(&"😀".repeat(300), None);
     assert_eq!(long_query.query, "😀".repeat(300));
-    assert!(!long_query.query_truncated);
     for budget in [0, 100, 600, 18_000] {
         let prompt = catalog.prompt(budget, maka_agent_facts::language::Language::En);
         assert!(prompt.len() <= budget);
@@ -260,7 +281,6 @@ async fn snapshot_precedence_preferences_and_capabilities_preserve_selected_iden
         SkillFailureReason::InvalidName
     );
     let long = catalog.load("large").unwrap();
-    assert!(!long.truncated);
     assert_eq!(long.instructions, "😀".repeat(24_001));
     let disabled = Preferences::Available(BTreeMap::from([(
         "project:maka:review".into(),
@@ -295,173 +315,12 @@ async fn snapshot_precedence_preferences_and_capabilities_preserve_selected_iden
         catalog.load("review").unwrap_err(),
         SkillFailureReason::ResolutionFailed
     );
-    let missing_library = maka_skills::source_catalog(
-        &workspace_files,
-        Some(&home_files),
-        &CancellationToken::new(),
-    )
-    .await
-    .unwrap();
-    assert!(missing_library.managed.discovery.inventory.is_empty());
-    assert_eq!(missing_library.bundled[0].id, "maka-cua");
-    let cua = missing_library
-        .bundled
-        .iter()
-        .find(|source| source.id == "maka-cua")
-        .unwrap();
-    assert_eq!(cua.document.manifest.name, "maka-cua");
-    assert!(
-        cua.document
-            .manifest
-            .attributes
-            .required_tools
-            .contains(&"cua_repl".into())
-    );
-    assert!(cua.document.issues.is_empty());
-    let authoring = missing_library
-        .bundled
-        .iter()
-        .find(|source| source.id == "maka-plugin-authoring")
-        .unwrap();
-    assert_eq!(authoring.document.manifest.name, authoring.id);
-    assert!(authoring.document.issues.is_empty());
-    assert_eq!(
-        authoring
-            .files
-            .iter()
-            .find(|(path, _)| *path == "references/sdk/index.ts")
-            .unwrap()
-            .1,
-        include_bytes!("../../../../packages/plugin-sdk/src/index.ts")
-    );
-    assert!(
-        authoring
-            .files
-            .iter()
-            .any(|(path, _)| *path == "assets/starter/host.mjs")
-    );
-    skill(
-        &home.join(".maka/skill-sources/source"),
-        "Source",
-        "",
-        "Not installed",
-    );
-    fs::create_dir_all(workspace.join("skills/computer-use")).unwrap();
-    let library = maka_skills::source_catalog(
-        &workspace_files,
-        Some(&home_files),
-        &CancellationToken::new(),
-    )
-    .await
-    .unwrap();
-    assert_eq!(
-        library.managed.discovery.inventory[0]
-            .document
-            .manifest
-            .name,
-        "Source"
-    );
-    assert!(
-        library.publication.occupied.contains("computer-use"),
-        "empty directories are still occupied"
-    );
-    let alias = workspace.join("skills/alias");
-    let installed_body = skill(
-        &alias,
-        "Installed alias",
-        "",
-        "locally modified instructions",
-    );
-    let hash = format!("sha256:{}", "a".repeat(64));
-    let lock = serde_json::json!({
-        "schemaVersion": 1, "id": "alias", "sourceType": "managed",
-        "sourceName": "local-library", "sourceVersion": "1", "sourceId": "SOURCE",
-        "contentSha256": hash, "sourceContentSha256": hash,
-    });
-    let lock_path = alias.join("skill.lock.json");
-    let inspect = || async {
-        maka_skills::source_catalog(
-            &workspace_files,
-            Some(&home_files),
-            &CancellationToken::new(),
-        )
-        .await
-        .unwrap()
-    };
-    assert!(
-        !inspect()
-            .await
-            .installed_managed_sources()
-            .contains("source")
-    );
-    fs::write(&lock_path, serde_json::to_vec(&lock).unwrap()).unwrap();
-    let installed = inspect().await;
-    assert!(
-        installed.installed_managed_sources().contains("source"),
-        "local body changes do not erase a valid origin"
-    );
-    assert!(
-        !installed.publication.occupied.contains("source"),
-        "origin and directory occupancy are different facts"
-    );
-    let origin = &installed.publication.origins["workspace:legacy:alias"];
-    assert_eq!(
-        origin.lock_sha256,
-        Some(maka_agent_facts::artifact::content_digest(
-            &serde_json::to_vec(&lock).unwrap()
-        ))
-    );
-    assert_ne!(
-        maka_agent_facts::artifact::content_digest(&installed_body),
-        hash
-    );
-    for (field, value) in [
-        ("id", serde_json::json!("other")),
-        ("schemaVersion", serde_json::json!(2)),
-        ("sourceName", serde_json::json!("untrusted")),
-        ("sourceId", serde_json::json!("../source")),
-        (
-            "sourceContentSha256",
-            serde_json::json!(format!("sha256:{}", "b".repeat(64))),
-        ),
-    ] {
-        let mut invalid = lock.clone();
-        invalid[field] = value;
-        fs::write(&lock_path, serde_json::to_vec(&invalid).unwrap()).unwrap();
-        assert!(
-            !inspect()
-                .await
-                .installed_managed_sources()
-                .contains("source"),
-            "invalid {field} must not create an installation alias"
-        );
-    }
-    let mut invalid_utf8 = serde_json::to_vec(&lock).unwrap();
-    invalid_utf8.pop();
-    invalid_utf8.extend_from_slice(b",\"ignored\":\"\xff\"}");
-    fs::write(&lock_path, &invalid_utf8).unwrap();
-    let invalid = inspect().await;
-    assert!(!invalid.installed_managed_sources().contains("source"));
-    assert_eq!(
-        invalid.publication.origins["workspace:legacy:alias"].lock_sha256,
-        Some(maka_agent_facts::artifact::content_digest(&invalid_utf8))
-    );
-    fs::remove_file(&lock_path).unwrap();
-    directory_link(&home, &lock_path);
-    assert!(matches!(
-        inspect().await.publication.origins["workspace:legacy:alias"].status,
-        maka_skills::OriginStatus::Invalid(maka_skills::OriginFailure::UnsafePath)
-    ));
     let cancellation = CancellationToken::new();
     cancellation.cancel();
     assert_eq!(
         scan(&sources, &cancellation).await.unwrap_err(),
         ScanError::Cancelled
     );
-    assert!(matches!(
-        maka_skills::source_catalog(&workspace_files, Some(&home_files), &cancellation).await,
-        Err(maka_skills::SourceCatalogError::Scan(ScanError::Cancelled))
-    ));
 }
 
 #[tokio::test]
@@ -485,30 +344,8 @@ async fn discovery_reads_only_contained_regular_files_and_reports_source_failure
         &root.join(".maka/skills/escape"),
     );
     directory_link(&outside, &root.join(".agents"));
-    fs::create_dir_all(root.join("skills/EmptyCase")).unwrap();
-    fs::write(root.join("skills/file-only"), "not a skill directory").unwrap();
-    directory_link(
-        &root.join("skills/EmptyCase"),
-        &root.join("skills/empty-alias"),
-    );
-    let owner = owner().await;
+    let owner = owner();
     let root_files = view(&owner, &root).await;
-    let governance =
-        maka_skills::governance_catalog(&root_files, &root_files, None, &CancellationToken::new())
-            .await
-            .unwrap();
-    assert_eq!(
-        governance
-            .publication
-            .empty
-            .iter()
-            .map(|s| s.reference.as_str())
-            .collect::<Vec<_>>(),
-        ["workspace:legacy:EmptyCase"],
-        "only real directories retain exact governance identity; files and empty links only occupy names",
-    );
-    assert!(governance.publication.occupied.contains("file-only"));
-    assert!(governance.publication.occupied.contains("empty-alias"));
     fs::create_dir_all(root.join(".maka/skills/large")).unwrap();
     fs::File::create(root.join(".maka/skills/large/SKILL.md"))
         .unwrap()
@@ -531,12 +368,9 @@ async fn discovery_reads_only_contained_regular_files_and_reports_source_failure
             .unwrap();
         assert!(status.success());
     }
-    let snapshot = scan(
-        &Source::standard(Some(&root_files), &root_files, None),
-        &CancellationToken::new(),
-    )
-    .await
-    .unwrap();
+    let snapshot = scan(&sources(Some(&root_files), None), &CancellationToken::new())
+        .await
+        .unwrap();
     let ids: BTreeSet<_> = snapshot
         .inventory
         .iter()
@@ -566,17 +400,6 @@ async fn discovery_reads_only_contained_regular_files_and_reports_source_failure
             snapshot.diagnostics
         );
     }
-    directory_link(&outside, &root.join(".maka/skill-sources"));
-    assert!(
-        matches!(
-            maka_skills::source_catalog(&root_files, Some(&root_files), &CancellationToken::new())
-                .await,
-            Err(maka_skills::SourceCatalogError::Read(
-                DiscoveryFailure::BlockedPath
-            ))
-        ),
-        "an unsafe configured library must not become an empty catalog"
-    );
     #[cfg(unix)]
     for relative in [".maka/skills/linked-file", ".maka/skills/pipe"] {
         assert!(
@@ -618,8 +441,6 @@ async fn linked_resources_freeze_with_the_skill_and_preserve_paging_and_containm
     use maka_agent_facts::read::ReadInput;
     let temporary = tempfile::tempdir().unwrap();
     let project = temporary.path().join("project");
-    let published = temporary.path().join("published");
-    fs::create_dir_all(&published).unwrap();
     let directory = project.join(".maka/skills/authoring");
     skill(&directory, "Authoring", "", "Read references/guide.md");
     fs::create_dir_all(directory.join("references")).unwrap();
@@ -635,10 +456,9 @@ async fn linked_resources_freeze_with_the_skill_and_preserve_paging_and_containm
     fs::write(directory.join(".maka/private.txt"), "private").unwrap();
     #[cfg(unix)]
     std::os::unix::fs::symlink(temporary.path(), directory.join("references/escape")).unwrap();
-    let owner = owner().await;
+    let owner = owner();
     let files = view(&owner, &project).await;
-    let published_files = view(&owner, &published).await;
-    let sources = Source::standard(Some(&files), &published_files, None);
+    let sources = sources(Some(&files), None);
     let old = scan(&sources, &CancellationToken::new()).await.unwrap();
     let preferences = Preferences::Available(Default::default());
     let host = HostCapabilities::default();
@@ -758,7 +578,7 @@ async fn linked_resources_freeze_with_the_skill_and_preserve_paging_and_containm
 #[tokio::test]
 async fn discovery_accepts_many_explicit_sources() {
     let temporary = tempfile::tempdir().unwrap();
-    let owner = owner().await;
+    let owner = owner();
     let access = view(&owner, temporary.path()).await;
     let mut sources = Vec::new();
     for i in 0..40 {

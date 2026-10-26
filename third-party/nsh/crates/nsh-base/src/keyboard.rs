@@ -65,7 +65,7 @@ pub fn KeyboardAvoidingView(props: KeyboardAvoidingViewProps) -> impl IntoElemen
             animate_layout(LayoutAnimation {
                 create: None,
                 update: Some(LayoutTransition {
-                    curve: LayoutCurve::EaseInEaseOut,
+                    curve: LayoutCurve::Keyboard,
                     property: LayoutProperty::Opacity,
                     duration_ms: duration * 1000.0,
                     delay_ms: 0.0,

@@ -18,6 +18,7 @@
  */
 
 use super::*;
+use crate::support::store::SessionFixture;
 use std::time::Duration;
 
 fn catalog(reverse: bool, effects: Arc<AtomicUsize>) -> ToolCatalog {
@@ -93,8 +94,8 @@ async fn session_loading_preserves_wire_prefixes_until_committed_compaction_and_
             for success in [true, false] {
                 let directory = tempfile::tempdir().unwrap();
                 let path = directory.path().join("events.sqlite");
-                let log = Arc::new(EventLog::open(&path).await.unwrap());
-                for session in ["session","isolated"] { log.create_session(session,session,&json!({}),1).await.unwrap(); }
+                let log = Arc::new(SessionFixture::open(&path).await.unwrap());
+                log.root().create_session("isolated", "fixture-isolated", &json!({}), 1).await.unwrap();
                 let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
                 let base = format!("http://{}/v1",listener.local_addr().unwrap());
                 let server = tokio::spawn(async move {
@@ -148,8 +149,8 @@ async fn session_loading_preserves_wire_prefixes_until_committed_compaction_and_
                     fixture::respond(&mut socket,"fresh host","stop").await;
                 });
                 let effects=Arc::new(AtomicUsize::new(0));
-                let engine=fixture::engine(log.clone());
-                engine.run(input(&base,"seed",ToolMode::Direct,catalog(false,effects.clone())),CancellationToken::new()).await.unwrap();
+                let engine=fixture::engine();
+                engine.run(log.store(), input(&base,"seed",ToolMode::Direct,catalog(false,effects.clone())),CancellationToken::new()).await.unwrap();
                 // Read-only continuation previews use a detached preference snapshot.
                 use maka_agent_facts::event::EventWrite;
 use maka_agent_facts::event::InvocationOutcome;
@@ -169,17 +170,17 @@ use maka_agent_facts::event::RuntimeEvent;
                 resumed.work=RunWork::Continuation {source:boundary.clone(),tools:catalog(true,effects.clone())};
                 let mut preview=resumed.clone();
                 preview.work=RunWork::Continuation {source:boundary,tools:ToolCatalog::default().with_discovery()};
-                assert!(matches!(engine.check_continuation(&preview,&CancellationToken::new()).await,
+                assert!(matches!(engine.check_continuation(&log.store(), &preview,&CancellationToken::new()).await,
                     Err(maka_agent_engine::RunError::ReconciliationRequired(message)) if message.contains("unavailable tool")));
-                engine.run(resumed,CancellationToken::new()).await.unwrap();
-                engine.run(input(&base,"warm",mode,catalog(true,effects.clone())),CancellationToken::new()).await.unwrap();
-                engine.run(input(&base,"stable",mode,catalog(false,effects.clone())),CancellationToken::new()).await.unwrap();
+                engine.run(log.store(), resumed,CancellationToken::new()).await.unwrap();
+                engine.run(log.store(), input(&base,"warm",mode,catalog(true,effects.clone())),CancellationToken::new()).await.unwrap();
+                engine.run(log.store(), input(&base,"stable",mode,catalog(false,effects.clone())),CancellationToken::new()).await.unwrap();
 
                 let mut isolated=input(&base,"isolated",mode,catalog(true,effects.clone()));
                 isolated.invocation.session_id="isolated".into();
-                engine.run(isolated,CancellationToken::new()).await.unwrap();
-                engine.run(fixture::input(&base,"compact",true),CancellationToken::new()).await.unwrap();
-                engine.run(input(&base,"after-compact",mode,catalog(true,effects.clone())),CancellationToken::new()).await.unwrap();
+                engine.run(log.select("isolated").await.unwrap().store(), isolated,CancellationToken::new()).await.unwrap();
+                engine.run(log.store(), fixture::input(&base,"compact",true),CancellationToken::new()).await.unwrap();
+                engine.run(log.store(), input(&base,"after-compact",mode,catalog(true,effects.clone())),CancellationToken::new()).await.unwrap();
                 engine.drain().await;
                 let prefix=log.prefix(300,2*1024*1024).await.unwrap();
                 assert_eq!(prefix.events.iter().filter(|event|matches!(&event.event.fact,Fact::ToolDispatched {name,..} if name=="tool_search")).count(),1);
@@ -190,9 +191,9 @@ use maka_agent_facts::event::RuntimeEvent;
                 assert_eq!(actual,&claim.replay.digest,"warm continuation proof matches the real request");
                 drop(engine);
                 Arc::try_unwrap(log).ok().unwrap().close().await.unwrap();
-                let log=Arc::new(EventLog::open(&path).await.unwrap());
-                let reopened=fixture::engine(log);
-                reopened.run(input(&base,"restart",mode,catalog(false,effects)),CancellationToken::new()).await.unwrap();
+                let log=Arc::new(SessionFixture::open(&path).await.unwrap());
+                let reopened=fixture::engine();
+                reopened.run(log.store(), input(&base,"restart",mode,catalog(false,effects)),CancellationToken::new()).await.unwrap();
                 reopened.drain().await;
                 server.await.unwrap();
             }
@@ -210,13 +211,11 @@ async fn continuation_admission_rejects_changed_loading_before_claiming_the_sour
         for mode in [ToolMode::Direct, ToolMode::CodeMode] {
             let directory = tempfile::tempdir().unwrap();
             let log = Arc::new(
-                EventLog::open(&directory.path().join("events.sqlite"))
+                SessionFixture::open(&directory.path().join("events.sqlite"))
                     .await
                     .unwrap(),
             );
-            log.create_session("session", "session", &json!({}), 1)
-                .await
-                .unwrap();
+
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let base = format!("http://{}/v1", listener.local_addr().unwrap());
             let server = tokio::spawn(async move {
@@ -239,7 +238,7 @@ async fn continuation_admission_rejects_changed_loading_before_claiming_the_sour
                 fixture::respond(&mut socket, "continued", "stop").await;
             });
             let effects = Arc::new(AtomicUsize::new(0));
-            let engine = fixture::engine(log.clone());
+            let engine = fixture::engine();
             let mut source = input(&base, "source", mode, catalog(false, effects.clone()));
             source.configuration.workspace_identity = Some(
                 maka_agent_facts::execution::WorkspaceIdentity::from_marker_id(
@@ -283,11 +282,12 @@ async fn continuation_admission_rejects_changed_loading_before_claiming_the_sour
                 tools: catalog(false, effects.clone()),
             };
             let cold = engine
-                .prepare_continuation(resumed.clone(), &CancellationToken::new())
+                .prepare_continuation(log.store(), resumed.clone(), &CancellationToken::new())
                 .await
                 .unwrap();
             engine
                 .run(
+                    log.store(),
                     input(&base, "seed", ToolMode::Direct, catalog(false, effects)),
                     CancellationToken::new(),
                 )
@@ -307,11 +307,12 @@ async fn continuation_admission_rejects_changed_loading_before_claiming_the_sour
             );
 
             let warm = engine
-                .prepare_continuation(resumed.clone(), &CancellationToken::new())
+                .prepare_continuation(log.store(), resumed.clone(), &CancellationToken::new())
                 .await
                 .unwrap();
             engine
                 .run(
+                    log.store(),
                     fixture::input(&base, "compact", true),
                     CancellationToken::new(),
                 )
@@ -331,7 +332,7 @@ async fn continuation_admission_rejects_changed_loading_before_claiming_the_sour
             );
 
             let current = engine
-                .prepare_continuation(resumed, &CancellationToken::new())
+                .prepare_continuation(log.store(), resumed, &CancellationToken::new())
                 .await
                 .unwrap();
             engine
@@ -443,10 +444,10 @@ async fn settled_old_tool_arguments_survive_reopen_with_a_new_request_envelope()
                 handler:ToolHandler::Immediate(Arc::new(Echo(effects.clone()))),
             }]).unwrap()
         };
-        let log = Arc::new(EventLog::open(&path).await.unwrap());
-        log.create_session("session", "session", &json!({}), 1).await.unwrap();
-        let engine = fixture::engine(log.clone());
-        engine.run(input(&base, "old-contract", ToolMode::Direct, catalog(false)),
+        let log = Arc::new(SessionFixture::open(&path).await.unwrap());
+
+        let engine = fixture::engine();
+        engine.run(log.store(), input(&base, "old-contract", ToolMode::Direct, catalog(false)),
             CancellationToken::new()).await.unwrap();
         engine.drain().await;
         assert_eq!(effects.load(Ordering::SeqCst), 1);
@@ -454,9 +455,9 @@ async fn settled_old_tool_arguments_survive_reopen_with_a_new_request_envelope()
         drop(engine);
         Arc::try_unwrap(log).ok().unwrap().close().await.unwrap();
 
-        let log = Arc::new(EventLog::open(&path).await.unwrap());
-        let engine = fixture::engine(log.clone());
-        engine.run(input(&base, "new-contract", ToolMode::Direct, catalog(true)),
+        let log = Arc::new(SessionFixture::open(&path).await.unwrap());
+        let engine = fixture::engine();
+        engine.run(log.store(), input(&base, "new-contract", ToolMode::Direct, catalog(true)),
             CancellationToken::new()).await.unwrap();
         engine.drain().await;
         server.await.unwrap();

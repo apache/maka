@@ -17,6 +17,7 @@
  * under the License.
  */
 
+use crate::support::store::SessionFixture;
 use maka_agent_engine::{Engine, RunInput};
 use maka_agent_facts::artifact::Artifact;
 use maka_agent_facts::artifact::ArtifactKind;
@@ -24,16 +25,12 @@ use maka_agent_facts::artifact::ArtifactSource;
 use maka_agent_facts::artifact::content_digest;
 use maka_agent_facts::event::Invocation;
 use maka_code_runtime::CellLimits;
-use maka_event_log::EventLog;
 use maka_model::{ModelExecutor, ProviderConfig, ProviderKind};
 use maka_tools::CodeExecutor;
 use maka_tools::ToolCatalog;
 use serde_json::{Value, json};
-use std::{collections::BTreeMap, sync::Arc, time::Duration};
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::TcpStream,
-};
+use std::{collections::BTreeMap, time::Duration};
+use tokio::{io::AsyncWriteExt, net::TcpStream};
 
 use super::invocation;
 
@@ -46,12 +43,12 @@ pub fn identity(suffix: &str) -> Invocation {
     }
 }
 
-pub fn engine(log: Arc<EventLog>) -> Engine {
+pub fn engine() -> Engine {
     Engine::new(
-        log,
         ModelExecutor::new(Duration::from_secs(30)).unwrap(),
         CodeExecutor::new(CellLimits::default()).unwrap(),
     )
+    .unwrap()
 }
 
 pub fn input(base: &str, attachments: Value) -> RunInput {
@@ -93,7 +90,7 @@ pub fn attachment(id: &str) -> Value {
         "ref":{"kind":"session_file", "sessionId":"session", "relativePath":id}})
 }
 
-pub async fn artifact(log: &EventLog, id: &str, size: usize, valid: bool) {
+pub async fn artifact(log: &SessionFixture, id: &str, size: usize, valid: bool) {
     let mut bytes = vec![0; size];
     if valid {
         bytes[..8].copy_from_slice(b"\x89PNG\r\n\x1a\n");
@@ -118,29 +115,11 @@ pub async fn artifact(log: &EventLog, id: &str, size: usize, valid: bool) {
 }
 
 pub async fn request(socket: &mut TcpStream) -> Value {
-    let mut bytes = Vec::new();
-    let boundary = loop {
-        let mut chunk = [0; 8192];
-        let count = socket.read(&mut chunk).await.unwrap();
-        assert_ne!(count, 0);
-        bytes.extend_from_slice(&chunk[..count]);
-        if let Some(at) = bytes.windows(4).position(|w| w == b"\r\n\r\n") {
-            break at + 4;
-        }
-        assert!(bytes.len() < 64 * 1024);
-    };
-    let length: usize = String::from_utf8_lossy(&bytes[..boundary])
-        .lines()
-        .find_map(|line| {
-            let (name, value) = line.split_once(':')?;
-            name.eq_ignore_ascii_case("content-length")
-                .then(|| value.trim().parse().unwrap())
-        })
-        .unwrap();
-    let received = bytes.len();
-    bytes.resize(boundary + length, 0);
-    socket.read_exact(&mut bytes[received..]).await.unwrap();
-    serde_json::from_slice(&bytes[boundary..]).unwrap()
+    // Two 50 MiB images, three 4 MiB images, and a tiny overflow image
+    // are sent together. Account for base64 and allow 1 MiB of JSON metadata.
+    let fixture_media_bytes: usize = (2 * 50 + 3 * 4) * 1024 * 1024 + 9;
+    let max_body_bytes = fixture_media_bytes.div_ceil(3) * 4 + 1024 * 1024;
+    super::http::read_request_bounded(socket, max_body_bytes).await
 }
 
 pub async fn respond(socket: &mut TcpStream) {

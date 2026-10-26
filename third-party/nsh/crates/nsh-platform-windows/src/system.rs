@@ -81,10 +81,10 @@ use windows::{
             SystemInformation::OSVERSIONINFOW,
         },
         UI::{
-            Shell::SetCurrentProcessExplicitAppUserModelID,
+            Shell::{SetCurrentProcessExplicitAppUserModelID, ShellExecuteW},
             WindowsAndMessaging::{
                 GA_ROOT, GetAncestor, PostMessageW, SPI_GETCLIENTAREAANIMATION,
-                SPI_GETSCREENREADER, SYSTEM_PARAMETERS_INFO_ACTION,
+                SPI_GETSCREENREADER, SW_SHOWNORMAL, SYSTEM_PARAMETERS_INFO_ACTION,
                 SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SystemParametersInfoW, WM_CLOSE,
             },
         },
@@ -435,6 +435,25 @@ fn accent(dark: bool) -> Color {
 // ---------------------------------------------------------------------------
 // Commands
 
+/// Opens `url` with the app registered for its scheme (`ShellExecuteW`'s
+/// `open`): whether one took it. The URL passed `nsh_core::open_url`'s
+/// check, so it names no file or program to run.
+pub(crate) fn open_url(url: &str) -> bool {
+    // SAFETY: plain call with valid NUL-terminated strings.
+    let instance = unsafe {
+        ShellExecuteW(
+            None,
+            w!("open"),
+            &HSTRING::from(url),
+            PCWSTR::null(),
+            PCWSTR::null(),
+            SW_SHOWNORMAL,
+        )
+    };
+    // Above 32 is success; the rest are error codes.
+    instance.0 as isize > 32
+}
+
 /// A command not addressed to a kind of view.
 pub(crate) fn command(surface: &Rc<Surface>, _id: NodeId, command: &Command) {
     match command {
@@ -482,6 +501,17 @@ pub(crate) fn command(surface: &Rc<Surface>, _id: NodeId, command: &Command) {
             clipboard::files_answer(*id, &clipboard_files()),
         ),
         Command::PickImages { id, request } => crate::picker::pick_images(surface, *id, *request),
+        Command::OpenUrl { id, url } => {
+            let opened = open_url(url);
+            surface.event(
+                ROOT_ID,
+                EventKind::OpenUrl,
+                EventPayload::Map(vec![
+                    ("id", PayloadValue::Number(*id as f64)),
+                    ("opened", PayloadValue::Bool(opened)),
+                ]),
+            );
+        }
         Command::Back => crate::navigation::default_back(surface),
         Command::ExitApp => {
             // Closing destroys the window, whose handler stops the surface:
@@ -1997,7 +2027,7 @@ fn set_clipboard_bytes(format: u32, bytes: &[u8]) -> bool {
 }
 
 /// True when the clipboard has an image (a PNG or a bitmap).
-fn clipboard_has_image() -> bool {
+pub(crate) fn clipboard_has_image() -> bool {
     use windows::Win32::System::{DataExchange::IsClipboardFormatAvailable, Ole::CF_DIB};
     // SAFETY: plain queries.
     unsafe {
@@ -2007,7 +2037,7 @@ fn clipboard_has_image() -> bool {
 }
 
 /// The clipboard's image: its PNG, else its bitmap as a BMP file.
-fn clipboard_image() -> Option<Vec<u8>> {
+pub(crate) fn clipboard_image() -> Option<Vec<u8>> {
     use windows::Win32::System::Ole::CF_DIB;
     clipboard_bytes(png_format())
         .or_else(|| clipboard_bytes(u32::from(CF_DIB.0)).and_then(|dib| bmp_file(&dib)))
@@ -2044,7 +2074,7 @@ fn bmp_file(dib: &[u8]) -> Option<Vec<u8>> {
 
 /// The `file:` URLs of the files on the clipboard (`CF_HDROP`: files
 /// copied in Explorer).
-fn clipboard_files() -> Vec<String> {
+pub(crate) fn clipboard_files() -> Vec<String> {
     use std::{ffi::OsString, os::windows::ffi::OsStringExt, path::PathBuf};
 
     use windows::Win32::{

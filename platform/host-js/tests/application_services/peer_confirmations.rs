@@ -104,7 +104,11 @@ impl Handler for PeerEffect {
         let fail_cleanup = self.fail_cleanup.clone();
         Box::pin(async move {
             let connection = rusqlite::Connection::open_with_flags(
-                database,
+                journal_database(
+                    &database,
+                    "application_intents",
+                    context.operation().unwrap().operation,
+                ),
                 rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
             )
             .unwrap();
@@ -139,8 +143,8 @@ struct Fixture {
     host: Application,
     client: Client,
     binding: Binding,
-    host_store: Arc<EventLog>,
-    caller_store: Arc<EventLog>,
+    host_store: Arc<RootStore>,
+    caller_store: Arc<RootStore>,
     source: DeploymentRef,
     policy: Arc<PeerPolicy>,
     started: Arc<Semaphore>,
@@ -228,10 +232,7 @@ impl Fixture {
             deployment,
             registry_contract(
                 Arc::new(PeerEffect {
-                    caller_database: _caller_dir
-                        .path()
-                        .join("root")
-                        .join(maka_event_log::root::ROOT_DATABASE),
+                    caller_database: _caller_dir.path().join("root"),
                     started: started.clone(),
                     release: release.clone(),
                     calls: calls.clone(),
@@ -335,7 +336,9 @@ impl Fixture {
         assert_eq!(self.calls.load(Ordering::SeqCst), 0);
         assert!(
             self.host_store
-                .operation_observation(reference)
+                .operation(reference)
+                .unwrap()
+                .operation_observation()
                 .await
                 .unwrap()
                 .is_none()
@@ -362,8 +365,8 @@ impl Fixture {
 
 #[tokio::test]
 async fn ordinary_admission_does_not_trust_peer_confirmation() {
+    let f = setup(Fixture::new(true)).await;
     tokio::time::timeout(Duration::from_secs(20), async {
-        let f = Fixture::new(true).await;
         let (prepared, scope, weak) = f.prepare(Uuid::new_v4(), 5).await;
         let reference = prepared.reference().clone();
         let (recorded, intent) = f.record(&prepared).await;
@@ -387,8 +390,8 @@ async fn ordinary_admission_does_not_trust_peer_confirmation() {
 
 #[tokio::test]
 async fn peer_observations_cannot_substitute_caller_identity_reference_or_shape() {
+    let f = setup(Fixture::new(false)).await;
     tokio::time::timeout(Duration::from_secs(30), async {
-        let f = Fixture::new(false).await;
         for mode in [
             "caller",
             "consumer",
@@ -456,9 +459,9 @@ async fn peer_observations_cannot_substitute_caller_identity_reference_or_shape(
 
 #[tokio::test]
 async fn peer_confirmation_cannot_override_final_revocation_or_retirement() {
-    tokio::time::timeout(Duration::from_secs(30), async {
-        for mode in ["grant", "peer", "cancel", "retire"] {
-            let f = Fixture::new(false).await;
+    for mode in ["grant", "peer", "cancel", "retire"] {
+        let f = setup(Fixture::new(false)).await;
+        tokio::time::timeout(Duration::from_secs(30), async {
             let (prepared, scope, weak) = f.prepare(Uuid::new_v4(), 5).await;
             let reference = prepared.reference().clone();
             let (recorded, intent) = f.record(&prepared).await;
@@ -478,16 +481,16 @@ async fn peer_confirmation_cannot_override_final_revocation_or_retirement() {
             f.assert_no_effect(&reference).await;
             drop(recorded);
             f.close().await;
-        }
-    })
-    .await
-    .unwrap();
+        })
+        .await
+        .unwrap();
+    }
 }
 
 #[tokio::test]
 async fn confirmation_panic_preserves_an_independent_accepted_executor() {
+    let f = setup(Fixture::new(false)).await;
     tokio::time::timeout(Duration::from_secs(20), async {
-        let f = Fixture::new(false).await;
         let (original, original_scope, original_weak) = f.prepare(Uuid::new_v4(), 5).await;
         let (original_token, intent) = f.record(&original).await;
         let accepted = f.client.mutate_from_peer(original, intent).await.unwrap();
@@ -512,7 +515,9 @@ async fn confirmation_panic_preserves_an_independent_accepted_executor() {
         assert!(original_weak.upgrade().is_some());
         assert!(
             f.host_store
-                .operation_observation(&reference)
+                .operation(&reference)
+                .unwrap()
+                .operation_observation()
                 .await
                 .unwrap()
                 .is_none()
@@ -533,11 +538,12 @@ async fn confirmation_panic_preserves_an_independent_accepted_executor() {
 
 #[tokio::test]
 async fn lost_peer_observer_does_not_settle_or_release_failed_executor_resources() {
-    tokio::time::timeout(Duration::from_secs(30), async {
-        for fail in [false, true] {
-            let f = Fixture::new(false).await;
+    for fail in [false, true] {
+        let f = setup(Fixture::new(false)).await;
+        tokio::time::timeout(Duration::from_secs(30), async {
             let (prepared, scope, weak) = f.prepare(Uuid::new_v4(), 64 * 1024 * 1024).await;
             let reference = prepared.reference().clone();
+            let journal = f.host_store.operation(&reference).unwrap();
             let (token, intent) = f.record(&prepared).await;
             let accepted = f.client.mutate_from_peer(prepared, intent).await.unwrap();
             permit(&f.started).await;
@@ -564,13 +570,9 @@ async fn lost_peer_observer_does_not_settle_or_release_failed_executor_resources
                     error.contains("not active") || error.contains("retired"),
                     "failed provider retires its dependent consumer: {error}"
                 );
-                // Privileged original SQL observation is separate from guest recovery;
-                // this fixture has no independent active receipt-reader consumer.
-                f.host_store
-                    .operation_observation(&reference)
-                    .await
-                    .unwrap()
-                    .unwrap()
+                assert!(f.host_store.shutdown().await.is_err());
+                assert!(journal.operation_observation().await.is_err());
+                persisted_operation(&f._host_dir.path().join("root"), &reference)
             } else {
                 recovery.unwrap().unwrap()
             };
@@ -619,16 +621,16 @@ async fn lost_peer_observer_does_not_settle_or_release_failed_executor_resources
                 drop(token);
                 f.close().await;
             }
-        }
-    })
-    .await
-    .unwrap();
+        })
+        .await
+        .unwrap();
+    }
 }
 
 #[tokio::test]
 async fn peer_duplicate_cannot_read_historical_value_without_independent_recovery_grant() {
+    let f = setup(Fixture::with_resources(false, false)).await;
     tokio::time::timeout(Duration::from_secs(20), async {
-        let f = Fixture::with_resources(false, false).await;
         let operation = Uuid::new_v4();
         let original_scope = f.scope(operation);
         let prepared = f.client.prepare_mutation(f.binding.clone(), "echo".into(), json!("original"),

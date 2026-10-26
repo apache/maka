@@ -197,31 +197,4 @@ mod tests {
         );
         assert!(check_delivery(&json!(9_007_199_254_740_993_u64), 1024).is_err());
     }
-
-    #[test]
-    #[ignore = "manual large JSON byte counting comparison"]
-    fn json_size_profile() {
-        let value = json!(
-            (0..2000)
-                .map(|index| json!({"key": format!("component-{index}"),
-            "text": "a paragraph with **bold** and `code` 中😀", "values": [index, true, null]}))
-                .collect::<Vec<_>>()
-        );
-        let expected = serde_json::to_vec(&value).unwrap().len();
-        for direct in [false, true] {
-            let started = std::time::Instant::now();
-            for _ in 0..100 {
-                let size = if direct {
-                    value_size(std::hint::black_box(&value), usize::MAX).unwrap()
-                } else {
-                    encoded_size(std::hint::black_box(&value), usize::MAX).unwrap()
-                };
-                assert_eq!(size, expected);
-            }
-            eprintln!(
-                "direct={direct}, bytes={expected}, 100 counts={:?}",
-                started.elapsed()
-            );
-        }
-    }
 }

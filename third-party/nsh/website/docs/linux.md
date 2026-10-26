@@ -130,6 +130,10 @@ view.load(Bundle::source(code).into());
 QuickJS bytecode is trusted input, so only load it from your own app's files. A standalone window is
 `nsh_platform_linux::run_app(source, options)`, with `AppSource::Rust(root)` or `AppSource::Bundle(bundle)`.
 
+`AppOptions::cache` (or `AppView::set_cache`, for the apps loaded next) sets where the apps keep their caches, the
+[images they download](./images-and-assets.md#kept-on-disk), and how much each keeps (`CacheOptions`: the system's
+cache directory and 256 MiB of images by default).
+
 `AppView::set_locale(Some(locale))` and `AppView::set_font_scale(Some(scale))` give the app your app's language and
 text size in place of the system's (`None` follows the system's again): `locale()`, `Intl`, `fontScale()` and text
 follow at once ([Device and environment](./device-and-environment.md#in-an-embedding-app)).

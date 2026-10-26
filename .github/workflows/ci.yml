@@ -39,14 +39,16 @@ jobs:
     env:
       MBX_CACHE_EXPORT_GROUP: ci-${{ github.run_id }}-${{ github.run_attempt }}-test
       MBX_GC_AUTO: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && '0' || '1' }}
-      MBX_TARGET_VIEWS: '0'
+      MBX_TARGET_VIEWS: "0"
+      # Linked outputs already live in target; retain cache copies only for export.
+      MBX_CACHE_LINKS: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && '1' || '0' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '24'
+          node-version: "26"
           cache: npm
       # NSH headless rendering tests need Vulkan and Mesa software adapters,
       # as in third-party/nsh/.github/workflows/gpui.yml.
@@ -84,9 +86,9 @@ jobs:
           echo "$RUNNER_TEMP/mbx-bin" >> "$GITHUB_PATH"
           echo "$RUNNER_TEMP/mbx-data/mbx/bin" >> "$GITHUB_PATH"
           echo "key=mbx-${version}-${RUNNER_OS}-${RUNNER_ARCH}-$(rustc -vV | sha256sum | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
-      - uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2
+      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
         with:
-          tool: just@1.58.0,cargo-nextest@0.9.146,cargo-deny
+          tool: just@1.59.0,cargo-nextest@0.9.149,cargo-deny
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -121,7 +123,22 @@ jobs:
           rustup target add x86_64-pc-windows-msvc
           cargo check --locked --manifest-path third-party/termina/Cargo.toml --lib --target x86_64-pc-windows-msvc --target-dir "${CARGO_TARGET_DIR:-target}"
           cargo check --locked --manifest-path third-party/termina/Cargo.toml --lib --target x86_64-pc-windows-msvc --target-dir "${CARGO_TARGET_DIR:-target}" --features windows-legacy
+      - name: Report storage before checks
+        run: |
+          df -h "$GITHUB_WORKSPACE" "$RUNNER_TEMP"
+          for path in "$GITHUB_WORKSPACE/target" "$HOME/.cache/mbx" "$HOME/.cargo/registry" "$HOME/.cargo/git"; do
+            if [ -d "$path" ]; then du -sh "$path"; fi
+          done
       - run: just check
+        env:
+          NEXTEST_PROFILE: ci
+      - name: Report storage after checks
+        if: ${{ always() && steps.mbx.outcome == 'success' }}
+        run: |
+          df -h "$GITHUB_WORKSPACE" "$RUNNER_TEMP"
+          for path in "$GITHUB_WORKSPACE/target" "$HOME/.cache/mbx" "$HOME/.cargo/registry" "$HOME/.cargo/git"; do
+            if [ -d "$path" ]; then du -sh "$path"; fi
+          done
       - run: just build
       - name: Native CLI smoke
         run: |
@@ -137,3 +154,58 @@ jobs:
         with:
           path: ${{ runner.temp }}/mbx-cache
           key: ${{ steps.mbx-cache.outputs.cache-primary-key }}
+
+  # Root workspace tests compile NSH dependencies but do not select the nested
+  # workspace's own tests. Run them serially on a fresh runner when dispatched.
+  nsh-integration:
+    needs: test
+    if: ${{ always() && github.event_name == 'workflow_dispatch' && !cancelled() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      CARGO_BUILD_JOBS: "2"
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Verify source revision
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+        run: |
+          actual=$(git rev-parse HEAD)
+          echo "NSH validation source: $actual"
+          test "$actual" = "$EXPECTED_SHA"
+          echo "CARGO_TARGET_DIR=$RUNNER_TEMP/nsh-target" >> "$GITHUB_ENV"
+      - name: Update Rust
+        run: rustup update stable --no-self-update
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: nsh-cargo-${{ runner.os }}-${{ hashFiles('third-party/nsh/Cargo.lock') }}
+          restore-keys: nsh-cargo-${{ runner.os }}-
+      - name: Test NSH core, JS, headless and terminal integration
+        run: |
+          df -h "$RUNNER_TEMP"
+          df -i "$RUNNER_TEMP"
+          available=$(df -B1 --output=avail "$RUNNER_TEMP" | tail -n 1 | tr -d ' ')
+          test "$available" -ge 8589934592 || { echo "NSH tests require 8 GiB free before compilation" >&2; exit 1; }
+          cargo test --locked --manifest-path third-party/nsh/Cargo.toml \
+            -p nsh-core -p nsh-base -p nsh-engine -p nsh-js \
+            -p nsh-testing -p nsh-platform-tui --features nsh-testing/agent
+      - name: Test portable Web text layout and hit testing
+        run: |
+          available=$(df -B1 --output=avail "$RUNNER_TEMP" | tail -n 1 | tr -d ' ')
+          test "$available" -ge 4294967296 || { echo "Web text tests require 4 GiB free before compilation" >&2; exit 1; }
+          cargo test --locked --manifest-path third-party/nsh/Cargo.toml \
+            -p nsh-platform-web --no-default-features --test text
+      - name: Report NSH storage
+        if: ${{ always() }}
+        run: |
+          df -h "$RUNNER_TEMP"
+          df -i "$RUNNER_TEMP"
+          if [ -d "$CARGO_TARGET_DIR" ]; then du -sh "$CARGO_TARGET_DIR"; fi

@@ -23,7 +23,7 @@ use maka_agent_facts::capability::FormRequester;
 use maka_agent_facts::interaction::InteractionOutcome;
 use maka_agent_facts::interaction::InteractionRecord;
 use maka_agent_facts::interaction::InteractionRequest;
-use maka_event_log::EventLog;
+use maka_event_log::RootStore;
 use maka_host_runtime::application::{
     Context, Handler, NativeActivation, NativeOwner, NativeRegistry,
 };
@@ -58,7 +58,7 @@ pub fn provide(registry: &mut NativeRegistry) -> Result<(), String> {
         }),
     )
 }
-struct Forms(Arc<EventLog>);
+struct Forms(Arc<RootStore>);
 impl Handler for Forms {
     fn call(
         &self,
@@ -77,6 +77,15 @@ impl Handler for Forms {
                 .agent()
                 .ok_or("form_requires_agent")?
                 .clone();
+            let store = store
+                .session_for_execution(
+                    context
+                        .execution_custody()
+                        .ok_or("interaction_requires_execution")?
+                        .as_ref(),
+                    &invocation,
+                )
+                .map_err(|error| error.to_string())?;
             let operation_id = context
                 .scope()
                 .identity
@@ -86,6 +95,7 @@ impl Handler for Forms {
             let tool = maka_agent_facts::tools::ToolCallContext {
                 invocation: invocation.clone(),
                 operation_id: operation_id.into(),
+                execution: context.execution_custody().cloned(),
             };
             let input: Ask = serde_json::from_value(input).map_err(|_| "form_input_invalid")?;
             let request = InteractionRequest::Form {

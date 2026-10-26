@@ -19,7 +19,7 @@
 
 mod output;
 
-use crate::{Engine, RunError, RunningInvocation};
+use crate::{Engine, RunContext, RunError, RunningInvocation};
 use maka_agent_facts::event::EventWrite;
 use maka_agent_facts::event::Fact;
 use maka_agent_facts::event::InvocationInput;
@@ -31,6 +31,7 @@ use maka_agent_ports::executor::Backend;
 use maka_agent_ports::executor::Error;
 use maka_agent_ports::executor::Outcome;
 use maka_agent_ports::executor::Request;
+use maka_event_log::root_store::SessionStore;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
@@ -45,9 +46,11 @@ pub struct ExecutorInput<B> {
 impl Engine {
     pub async fn start_executor<B: Backend>(
         &self,
+        store: SessionStore,
         input: ExecutorInput<B>,
         cancellation: CancellationToken,
     ) -> Result<RunningInvocation, RunError> {
+        crate::require_session(&store, &input.request.invocation)?;
         if input.configuration.model.is_some() || input.configuration.cwd != input.request.cwd {
             return Err(RunError::InvalidInput(
                 "executor cannot carry a model binding or mismatched workspace".into(),
@@ -64,8 +67,12 @@ impl Engine {
             .validate()
             .map_err(|error| RunError::InvalidInput(error.into()))?;
         let call = admitted.execution;
-        let inner = self.0.clone();
+        let execution = store
+            .execution_scope(crate::permission_basis(&input.configuration))
+            .await?;
+        let inner = RunContext::new(self.0.clone(), execution.store(), &input.request.invocation)?;
         self.start_owned(
+            execution,
             input.request.invocation.clone(),
             Arc::default(),
             None,
@@ -101,7 +108,13 @@ impl Engine {
                     invocation.clone(),
                     cancellation.clone(),
                 ));
-                let settlement = call.execute(output.clone(), cancellation.clone()).await;
+                let settlement = call
+                    .execute(
+                        inner.log.execution_custody()?,
+                        output.clone(),
+                        cancellation.clone(),
+                    )
+                    .await;
                 if matches!(&settlement.result, Err(Error::CleanupUnconfirmed)) {
                     crate::cleanup::unconfirmed();
                 }

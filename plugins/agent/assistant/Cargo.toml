@@ -38,7 +38,7 @@ thiserror.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 uuid.workspace = true
-unicode-normalization = "0.1.25"
+unicode-normalization = "0.1.26"
 
 [dev-dependencies]
 maka-event-log.workspace = true

@@ -189,7 +189,7 @@ async fn terminal_original_receipts_scope_isolation_boundary_revoke_and_read_sto
         wait_file(&f, "once.txt", "once").await;
         files::change(&f, &session, "danger_full_access", false, true).await;
         let target = start(&f, &owner, &session).await;
-        let record = f.store.read_shell_run(&session, maka_host_runtime::shell::request::parse_ref(target["ref"].as_str().unwrap()).unwrap()).await.unwrap().unwrap();
+        let record = f.session(&session).await.read_shell_run(&session, maka_host_runtime::shell::request::parse_ref(target["ref"].as_str().unwrap()).unwrap()).await.unwrap().unwrap();
         assert!(record.source_run_id.is_none());
         assert_eq!(record.source_tool_call_id, record.source_turn_id);
         assert!(Uuid::parse_str(&record.source_turn_id).is_ok());
@@ -209,7 +209,7 @@ async fn terminal_original_receipts_scope_isolation_boundary_revoke_and_read_sto
         foreign_record.id = "other-provider-resource".into();
         foreign_record.state = maka_agent_facts::shell_run::ShellState::Starting;
         foreign_record.revision = 1;
-        f.store.create_shell_run(foreign_record).await.unwrap();
+        f.session(&(foreign_record).session_id).await.create_shell_run(foreign_record).await.unwrap();
         let listed = query(&f, "list", json!({"sessionId":session})).await;
         assert_eq!(listed["value"]["total"], 2, "{listed}");
         assert!(listed["value"]["resources"].as_array().unwrap().iter().all(|r| r["result"]["output"].is_null()));
@@ -227,7 +227,7 @@ async fn terminal_original_receipts_scope_isolation_boundary_revoke_and_read_sto
         assert_eq!(stopped["kind"],"completed","{stopped}");
         lease.completion().await.cleanup.unwrap();
         // The injected foreign durable fact is outside this provider's custody.
-        f.store.patch_shell_run(&session,"other-provider-resource",maka_agent_facts::shell_run::ShellPatch {
+        f.session(&session).await.patch_shell_run(&session,"other-provider-resource",maka_agent_facts::shell_run::ShellPatch {
             state:Some(maka_agent_facts::shell_run::ShellState::Terminal {completed_at:maka_agent_authority::now(),outcome:maka_agent_facts::shell_run::ShellOutcome::Failed {message:"fixture ended".into()},observed_at:None}),
             ..Default::default()
         }).await.unwrap();
@@ -257,9 +257,9 @@ async fn terminal_watch_uses_canonical_snapshots_and_user_base_sandbox() {
             if value["value"]["result"]["output"]["stdout"].as_str().is_some_and(|s|s.contains("ready")) { break; }
         }
         let id=maka_host_runtime::shell::request::parse_ref(target["ref"].as_str().unwrap()).unwrap();
-        let durable=f.store.read_shell_run(&session,id).await.unwrap().unwrap();
+        let durable=f.session(&session).await.read_shell_run(&session,id).await.unwrap().unwrap();
         let catalog=query(&f,"list",json!({"sessionId":session})).await;
-        let mut changes=f.store.subscribe_shell_changes();
+        let changes=f.session(&session).await.subscribe_commits().unwrap();
         std::fs::write(f.workspace.join("watch-output"),"emit").unwrap();
         loop {
             let value=watch.recv().await.unwrap();
@@ -271,9 +271,9 @@ async fn terminal_watch_uses_canonical_snapshots_and_user_base_sandbox() {
             }
         }
         assert_eq!(query(&f,"read",target.clone()).await["value"]["result"]["output"]["stdout"],"readylive-pipe");
-        assert_eq!(f.store.read_shell_run(&session,id).await.unwrap().unwrap(),durable);
+        assert_eq!(f.session(&session).await.read_shell_run(&session,id).await.unwrap().unwrap(),durable);
         assert_eq!(query(&f,"list",json!({"sessionId":session})).await,catalog);
-        assert!(matches!(changes.try_recv(),Err(tokio::sync::broadcast::error::TryRecvError::Empty)));
+        assert!(!changes.has_changed().unwrap());
         std::fs::write(f.workspace.join("watch-release"),"finish").unwrap();
         loop {
             let value=watch.recv().await.unwrap();
@@ -283,7 +283,8 @@ async fn terminal_watch_uses_canonical_snapshots_and_user_base_sandbox() {
                 break;
             }
         }
-        let final_record=f.store.read_shell_run(&session,id).await.unwrap().unwrap();
+        let final_record=f.session(&session).await.read_shell_run(&session,id).await.unwrap().unwrap();
+        assert!(changes.has_changed().unwrap(), "durable terminal outcome must notify the selected Session");
         assert!(!final_record.state.active());
         let maka_agent_facts::shell_run::ShellOutput::Pipes { stdout, .. }=&final_record.output else {panic!("pipes")};
         assert!(stdout.contains("readylive-pipedone"));
@@ -555,9 +556,9 @@ async fn terminal_live_pty_output_leaves_catalog_stable_but_resize_and_final_are
             if frame["value"]["result"]["output"]["screen"].as_str().is_some_and(|s|s.contains("K61-READY")) {break;}
         }
         let id=maka_host_runtime::shell::request::parse_ref(target["ref"].as_str().unwrap()).unwrap();
-        let durable=f.store.read_shell_run(&session,id).await.unwrap().unwrap();
+        let durable=f.session(&session).await.read_shell_run(&session,id).await.unwrap().unwrap();
         let catalog=query(&f,"list",json!({"sessionId":session})).await;
-        let mut changes=f.store.subscribe_shell_changes();
+        let changes=f.session(&session).await.subscribe_commits().unwrap();
         mutation(&f,&owner,"control",command(&controller,2,"next"),Uuid::new_v4()).await;
         wait_file(&f,"k61-live","live").await;
         loop {
@@ -571,13 +572,14 @@ async fn terminal_live_pty_output_leaves_catalog_stable_but_resize_and_final_are
         }
         let mut after=0;let mut bytes=Vec::new();
         output_through(&mut raw,&mut after,&mut bytes,b"K61-LIVE",&json!({"cols":80,"rows":24})).await;
-        assert_eq!(f.store.read_shell_run(&session,id).await.unwrap().unwrap(),durable);
+        assert_eq!(f.session(&session).await.read_shell_run(&session,id).await.unwrap().unwrap(),durable);
         assert_eq!(query(&f,"list",json!({"sessionId":session})).await,catalog);
-        assert!(matches!(changes.try_recv(),Err(tokio::sync::broadcast::error::TryRecvError::Empty)));
+        assert!(!changes.has_changed().unwrap());
         let resized=mutation(&f,&owner,"control",json!({"controller":controller,"sequence":3,"actions":[],"size":{"cols":100,"rows":30}}),Uuid::new_v4()).await;
         assert_eq!(resized["kind"],"completed","{resized}");
         assert_eq!(resized["value"]["resizeChanged"],true);
-        let sized=f.store.read_shell_run(&session,id).await.unwrap().unwrap();
+        assert!(changes.has_changed().unwrap(), "durable resize must notify the selected Session");
+        let sized=f.session(&session).await.read_shell_run(&session,id).await.unwrap().unwrap();
         assert!(sized.revision>durable.revision);
         let maka_agent_facts::shell_run::ShellOutput::Pty { screen }=&sized.output else {panic!("pty")};
         assert_eq!((screen.metadata.size.cols(),screen.metadata.size.rows()),(100,30));
@@ -585,7 +587,7 @@ async fn terminal_live_pty_output_leaves_catalog_stable_but_resize_and_final_are
         assert_ne!(query(&f,"list",json!({"sessionId":session})).await["value"]["revision"],catalog["value"]["revision"]);
         let stopped=mutation(&f,&owner,"stop",target.clone(),Uuid::new_v4()).await;
         assert_eq!(stopped["kind"],"completed","{stopped}");
-        let final_record=f.store.read_shell_run(&session,id).await.unwrap().unwrap();
+        let final_record=f.session(&session).await.read_shell_run(&session,id).await.unwrap().unwrap();
         assert!(!final_record.state.active());
         let maka_agent_facts::shell_run::ShellOutput::Pty { screen }=&final_record.output else {panic!("pty")};
         assert!(screen.text(50 * 1024).screen.contains("K61-LIVE"), "final snapshot: {screen:?}");
@@ -617,7 +619,7 @@ async fn model_read_and_health_see_live_pipe_logs_without_persisting_output() {
             if frame["value"]["result"]["output"]["stdout"].as_str().is_some_and(|s|s.contains("ready")) {break;}
         }
         let id=maka_host_runtime::shell::request::parse_ref(reference.as_str().unwrap()).unwrap();
-        let durable=f.store.read_shell_run(&session,id).await.unwrap().unwrap();
+        let durable=f.session(&session).await.read_shell_run(&session,id).await.unwrap().unwrap();
         let catalog=query(&f,"list",json!({"sessionId":session})).await;
         std::fs::write(f.workspace.join("model-output"),"emit").unwrap();
         loop {
@@ -629,7 +631,7 @@ async fn model_read_and_health_see_live_pipe_logs_without_persisting_output() {
         let health=processes::roundtrip(&model,&f,&session,"BackgroundTaskHealth",json!({"ref":reference,"include_logs":true})).await;
         assert_eq!(health["value"]["process"]["logs"]["stdout"],"readylive-model");
         assert_eq!(health["value"]["process"]["updatedAt"],durable.updated_at);
-        assert_eq!(f.store.read_shell_run(&session,id).await.unwrap().unwrap(),durable);
+        assert_eq!(f.session(&session).await.read_shell_run(&session,id).await.unwrap().unwrap(),durable);
         assert_eq!(query(&f,"list",json!({"sessionId":session})).await,catalog);
         std::fs::write(f.workspace.join("model-release"),"finish").unwrap();
         loop {
@@ -708,14 +710,14 @@ async fn terminal_styled_display_survives_retirement_cancel_and_host_reopen_beyo
         assert!(display.scrollback.iter().flatten().any(|run| run.text == "   " && run.style.background == Color::Named(4)));
         assert!(display.screen.iter().flatten().any(|run| run.text.contains("FINAL-COLOR") && run.style.foreground == Color::Named(2)));
         let id = maka_host_runtime::shell::request::parse_ref(target["ref"].as_str().unwrap()).unwrap();
-        let stored = f.store.read_shell_run(&session, id).await.unwrap().unwrap();
+        let stored = f.session(&session).await.read_shell_run(&session, id).await.unwrap().unwrap();
         let maka_agent_facts::shell_run::ShellOutput::Pty { screen } = &stored.output else { panic!() };
         assert_eq!(screen.as_ref(), &display);
         let deployment = f.app.source().unwrap().deployment;
         f.app.shutdown().await.unwrap();
         let root = f.store.owned_root().unwrap();
         f.store.shutdown().await.unwrap();
-        f.store = Arc::new(EventLog::for_root(root).await.unwrap());
+        f.store = Arc::new(RootStore::open(root).await.unwrap());
         let mut native = NativeRegistry::default();
         maka_settings_native::provide(&mut native, crate::owner::tests::bundled_catalog()).unwrap();
         provide_all(&mut native).unwrap();
@@ -724,7 +726,7 @@ async fn terminal_styled_display_survives_retirement_cancel_and_host_reopen_beyo
             Arc::new(Grant(f.issuer.clone(), Some(tooling.policy()))), Some(maka_host_js::factory(Default::default()))).await.unwrap();
         f.app.ready().await.unwrap();
         assert_eq!(read_display(&f, &owner, &target).await, display);
-        assert_eq!(f.store.read_shell_run(&session, id).await.unwrap().unwrap(), stored);
+        assert_eq!(f.session(&session).await.read_shell_run(&session, id).await.unwrap().unwrap(), stored);
         processes::close(&f).await;
     }).await.unwrap();
 }

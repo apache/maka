@@ -32,6 +32,56 @@ use maka_agent_facts::event::LogScope;
 use sqlx::{Connection, SqliteConnection};
 
 impl EventLog {
+    /// Source identity before a fresh Run, without materializing its history.
+    pub async fn source_before_run(
+        &self,
+        invocation: &Invocation,
+    ) -> Result<SourceEvidence, StoreError> {
+        self.validate_root()?;
+        for id in [
+            &invocation.session_id,
+            &invocation.turn_id,
+            &invocation.run_id,
+            &invocation.invocation_id,
+        ] {
+            crate::sessions::validate_id(id)?;
+        }
+        let invocation = invocation.clone();
+        self.connection
+            .read_interruptible(move |connection| {
+                Box::pin(async move {
+                    let mut tx = connection.begin().await?;
+                    let selected = crate::turns::run_invocation(
+                        &mut tx,
+                        &invocation.session_id,
+                        &invocation.run_id,
+                    )
+                    .await?;
+                    if selected.as_deref() != Some(&invocation.invocation_id) {
+                        return Err(invalid("base Run identity is missing or changed"));
+                    }
+                    let row:Option<(i64,String,Option<String>)>=sqlx::query_as("SELECT opening_sequence,identity_json,parent_invocation_id FROM context_source_lineages WHERE invocation_id=?")
+                        .bind(&invocation.invocation_id).fetch_optional(&mut *tx).await?;
+                    let Some((sequence,identity,parent))=row else {return Err(invalid("Session base requires an exact fresh Message opening"));};
+                    if parent.is_some() || serde_json::from_str::<Invocation>(&identity)?!=invocation {
+                        return Err(invalid("Session base requires an exact fresh Message opening"));
+                    }
+                    let high =
+                        evidence::high_water(&mut tx, &invocation.session_id, sequence)
+                            .await?;
+                    if high > 0 {
+                        safety::closed_boundary(&mut tx, &invocation.session_id, high).await?;
+                    }
+                    safety::require_safe_through(&mut tx, &invocation.session_id, None, high)
+                        .await?;
+                    let source = evidence::evidence(&mut tx, &invocation.session_id, high).await?;
+                    tx.commit().await?;
+                    Ok(source)
+                })
+            })
+            .await
+    }
+
     /// Capture the complete closed Session base before this exact fresh opening.
     /// The opening's own message belongs to its Run segment, not to this base.
     pub async fn context_before_run(

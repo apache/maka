@@ -54,6 +54,7 @@ async fn executor_invocation_transcript() {
             approval_policy: ApprovalPolicy::OnRequest,
             boundary_revision: 0,
             cwd: fixture.path().to_string_lossy().into_owned(),
+            workspace_binding: None,
             workspace_identity: None,
             model: None,
             editing_tools: None,

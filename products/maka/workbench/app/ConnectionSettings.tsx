@@ -17,9 +17,9 @@
  * under the License.
  */
 
-import { inputAction, Text, View } from 'nsh';
+import { Input, inputAction, Text, View, List } from 'nsh';
+import type { YNode } from 'nsh';
 import { Button } from 'nsh/base';
-import { List } from 'nsh/list';
 import type { ModelSettingsOwner } from './settings';
 import { ConnectionForm } from './ConnectionForm';
 import { ConnectionModel } from './ConnectionModel';
@@ -30,6 +30,8 @@ import {
   C,
   bodyTextStyle,
   captionTextStyle,
+  inputTextStyle,
+  inputBorderRadius,
   controlStyle,
   controlHoverStyle,
   controlFocusStyle,
@@ -38,11 +40,13 @@ import {
 
 export function ConnectionSettings(props: { owner: ModelSettingsOwner }) {
   const owner = props.owner;
-  const disabled = () =>
-    owner.busy() || owner.loading() || !owner.pendingKnown() || owner.pending().length > 0;
-  const models = () => owner.editor()?.baseline?.editing?.enabledModelIds ?? [];
+  const unavailable = () => owner.busy() || !owner.pendingKnown() || owner.pending().length > 0;
+  const disabled = () => unavailable() || owner.loading();
+  let connectionsList: YNode | undefined;
+  let providersList: YNode | undefined;
+  let modelsList: YNode | undefined;
   return (
-    <View style={{ flex: 1, gap: 8 }}>
+    <View style={{ flex: 1, minHeight: 0, gap: 8 }}>
       <If when={owner.confirmation()}>
         <View
           style={{
@@ -114,23 +118,46 @@ export function ConnectionSettings(props: { owner: ModelSettingsOwner }) {
               </Text>
             </Button>
           </View>
-          <If when={!owner.loading() && !owner.connections().length}>
+          <Search
+            label={tr('Search connections')}
+            placeholder={tr('Search connections…')}
+            value={owner.connectionQuery}
+            change={(text) => {
+              owner.searchConnections(text);
+              connectionsList?.scrollToIndex({ index: 0, animated: false });
+            }}
+          />
+          <If
+            when={
+              !owner.loading() && !owner.connections().length && !owner.connectionQuery().trim()
+            }
+          >
             <Text style={{ ...bodyTextStyle, color: C.muted }}>
               {tr('Add your first connection, then fetch or add a model.')}
             </Text>
           </If>
           <List
-            each={owner.connections()}
+            ref={(node) => {
+              connectionsList = node;
+            }}
+            each={owner.filteredConnections()}
             keyExtractor={(item) => item.basis.connectionId}
             estimatedItemSize={64}
             onLoadMore={() => {
               if (!owner.error()) void owner.loadConnections(true);
             }}
-            style={{ flex: 1 }}
+            empty={
+              <If when={!owner.loading() && !!owner.connectionQuery().trim()}>
+                <Text style={{ ...bodyTextStyle, color: C.muted }}>
+                  {tr('No matching connections.')}
+                </Text>
+              </If>
+            }
+            style={{ flex: 1, minHeight: 0 }}
           >
             {(item) => (
               <Button
-                disabled={disabled() || !item().editable}
+                disabled={unavailable() || !item().editable}
                 accessibilityLabel={tr('Edit connection {name}', { name: item().name })}
                 onPress={inputAction(owner.openConnection, item().basis)}
                 style={{
@@ -172,18 +199,37 @@ export function ConnectionSettings(props: { owner: ModelSettingsOwner }) {
           <Text style={{ ...bodyTextStyle, color: C.muted }}>
             {tr('Choose the API provider for this connection.')}
           </Text>
+          <Search
+            label={tr('Search providers')}
+            placeholder={tr('Search providers…')}
+            value={owner.providerQuery}
+            change={(text) => {
+              owner.searchProviders(text);
+              providersList?.scrollToIndex({ index: 0, animated: false });
+            }}
+          />
           <List
-            each={owner.providers()}
+            ref={(node) => {
+              providersList = node;
+            }}
+            each={owner.filteredProviders()}
             keyExtractor={(item) => JSON.stringify(item.identity)}
             estimatedItemSize={48}
             onLoadMore={() => {
               if (!owner.error()) void owner.loadProviders(true);
             }}
-            style={{ flex: 1 }}
+            empty={
+              <If when={!owner.loading() && !!owner.providerQuery().trim()}>
+                <Text style={{ ...bodyTextStyle, color: C.muted }}>
+                  {tr('No matching providers.')}
+                </Text>
+              </If>
+            }
+            style={{ flex: 1, minHeight: 0 }}
           >
             {(item) => (
               <Button
-                disabled={disabled()}
+                disabled={unavailable()}
                 accessibilityLabel={tr('Connect {name}', { name: item().label })}
                 onPress={inputAction(owner.chooseProvider, item().identity)}
                 style={{
@@ -229,11 +275,30 @@ export function ConnectionSettings(props: { owner: ModelSettingsOwner }) {
               {tr('Add model manually')}
             </Text>
           </Button>
+          <Search
+            label={tr('Search models')}
+            placeholder={tr('Search models…')}
+            value={owner.modelQuery}
+            change={(text) => {
+              owner.modelQuery.set(text);
+              modelsList?.scrollToIndex({ index: 0, animated: false });
+            }}
+          />
           <List
-            each={models()}
+            ref={(node) => {
+              modelsList = node;
+            }}
+            each={owner.filteredModels()}
             keyExtractor={(id) => id}
             estimatedItemSize={64}
-            style={{ flex: 1 }}
+            empty={
+              <If when={!owner.loading() && !!owner.modelQuery().trim()}>
+                <Text style={{ ...bodyTextStyle, color: C.muted }}>
+                  {tr('No matching models.')}
+                </Text>
+              </If>
+            }
+            style={{ flex: 1, minHeight: 0 }}
           >
             {(id) => {
               const name = () =>
@@ -330,5 +395,30 @@ export function ConnectionSettings(props: { owner: ModelSettingsOwner }) {
         <Text style={{ ...captionTextStyle, color: C.muted }}>{tr('Loading settings…')}</Text>
       </If>
     </View>
+  );
+}
+
+function Search(props: {
+  label: string;
+  placeholder: string;
+  value(): string;
+  change(text: string): void;
+}) {
+  return (
+    <Input
+      accessibilityLabel={props.label}
+      value={props.value()}
+      onChange={props.change}
+      placeholder={props.placeholder}
+      style={{
+        ...inputTextStyle,
+        color: C.text,
+        placeholderColor: C.muted,
+        backgroundColor: C.background,
+        height: 40,
+        paddingHorizontal: 12,
+        borderRadius: inputBorderRadius,
+      }}
+    />
   );
 }

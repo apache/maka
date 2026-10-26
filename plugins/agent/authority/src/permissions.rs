@@ -19,21 +19,37 @@
 
 //! Canonical permission decisions shared by native workspace executors.
 use crate::interaction_wait::{wait, withdraw};
-use maka_agent_api::session::SessionConfiguration;
+use maka_agent_api::session::{ResolvedConfiguration, StoredSessionConfiguration};
 use maka_agent_facts::interaction::InteractionOutcome;
 use maka_agent_facts::interaction::InteractionRecord;
 use maka_agent_facts::interaction::InteractionRequest;
 use maka_agent_facts::interaction::PermissionRequest;
 use maka_agent_facts::tools::ToolCallContext;
 use maka_agent_facts::tools::ToolError;
-use maka_event_log::{EventLog, interactions::PermissionGrant};
+use maka_event_log::{
+    SessionStore, StoreError, interactions::PermissionGrant, sessions::SessionRecord,
+};
 use maka_sandbox::grant::Decision;
 use sha2::{Digest, Sha256};
 use tokio_util::sync::CancellationToken;
 
+/// Recover the original execution handle; an invocation identity alone cannot
+/// reacquire admission or substitute for the physical worker's custody.
+pub fn execution(
+    root: &maka_event_log::RootStore,
+    invocation: &maka_agent_facts::event::Invocation,
+    custody: Option<&dyn maka_agent_facts::tools::ExecutionCustody>,
+) -> Result<maka_event_log::SessionStore, ToolError> {
+    root.session_for_execution(
+        custody.ok_or_else(|| failed("Workspace execution custody is missing"))?,
+        invocation,
+    )
+    .map_err(|error| ToolError::Persistence(error.to_string()))
+}
+
 pub async fn request(
-    store: &EventLog,
-    configuration: &SessionConfiguration,
+    store: &SessionStore,
+    configuration: &ResolvedConfiguration,
     request: PermissionRequest,
     context: &ToolCallContext,
     cancellation: &CancellationToken,
@@ -53,7 +69,7 @@ pub async fn request(
                 serde_json::to_vec(&(
                     &context.invocation,
                     &context.operation_id,
-                    configuration.boundary_revision,
+                    configuration.permission_basis(),
                     &request,
                 ))
                 .expect("tool identity")
@@ -62,7 +78,7 @@ pub async fn request(
         created_at: crate::now(),
         request: InteractionRequest::Permissions {
             tool_use_id: Some(context.tool_use_id()),
-            base_revision: configuration.boundary_revision,
+            basis: configuration.permission_basis(),
             request,
         },
         outcome: None,
@@ -75,7 +91,7 @@ pub async fn request(
         if !committed.matches {
             return Err("permission identity conflict");
         }
-        wait(store, &record.request_id, cancellation).await
+        wait(store, &record, cancellation).await
     }
     .await;
     let outcome = match observed {
@@ -102,7 +118,7 @@ pub async fn request(
         .permission_grants(
             &context.invocation,
             Some(&context.tool_use_id()),
-            configuration.boundary_revision,
+            &configuration.permission_basis(),
         )
         .await
         .map_err(|_| failed("Permission observation unavailable"))?
@@ -116,11 +132,11 @@ fn failed(message: impl Into<String>) -> ToolError {
 }
 
 pub async fn live(
-    store: &EventLog,
+    store: &SessionStore,
     invocation: &maka_agent_facts::event::Invocation,
-) -> Result<SessionConfiguration, ToolError> {
+) -> Result<ResolvedConfiguration, ToolError> {
     let projection = store
-        .session_projection::<SessionConfiguration>(&invocation.session_id)
+        .session_projection::<StoredSessionConfiguration>(&invocation.session_id)
         .await
         .map_err(|_| failed("Workspace session is unavailable"))?
         .filter(|p| {
@@ -134,5 +150,24 @@ pub async fn live(
                 })
         })
         .ok_or_else(|| failed("Workspace invocation is no longer active"))?;
-    Ok(projection.session.configuration)
+    resolve_session(projection.session)
+        .map(|session| session.configuration)
+        .map_err(|_| failed("Workspace binding is unavailable"))
+}
+
+/// Resolve only the binding snapshot read with this Session's canonical metadata.
+/// A separate binding lookup would allow a relocation to split the observation.
+pub fn resolve_session(
+    session: SessionRecord<StoredSessionConfiguration>,
+) -> Result<SessionRecord<ResolvedConfiguration>, StoreError> {
+    let binding = session.workspace_binding.as_ref().ok_or_else(|| {
+        StoreError::InvalidTransition("Session workspace binding is missing".into())
+    })?;
+    let workspace = serde_json::from_value(binding.workspace.clone())?;
+    let configuration = session
+        .configuration
+        .clone()
+        .resolve(workspace, binding.stamp())
+        .map_err(|error| StoreError::InvalidTransition(error.into()))?;
+    Ok(session.map_configuration(|_| configuration))
 }

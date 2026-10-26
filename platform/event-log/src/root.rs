@@ -420,10 +420,6 @@ fn check_layout(path: &Path) -> io::Result<()> {
     for entry in fs::read_dir(path)? {
         let entry = entry?;
         let name = entry.file_name();
-        // Tolerate an old experimental file without reading, following or deleting it.
-        if name == "model-facts.json" {
-            continue;
-        }
         let core_file = matches!(
             name.to_str(),
             Some(

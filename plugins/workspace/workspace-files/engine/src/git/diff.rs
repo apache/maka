@@ -141,7 +141,7 @@ fn object(repo: &Repository, id: gix::hash::ObjectId, mode: u32) -> io::Result<I
 }
 fn working(repo: &Repository, name: &[u8], indexed: Option<Mode>) -> io::Result<Option<Image>> {
     interrupted(&repo.cancel)?;
-    let relative = gix::path::from_bstr(name.as_bstr());
+    let relative = gix::path::from_bstr(name.as_bstr()).map_err(io::Error::other)?;
     let mut parent = repo.directory.try_clone()?;
     let components: Vec<_> = relative.components().collect();
     for part in &components[..components.len() - 1] {
@@ -165,7 +165,9 @@ fn working(repo: &Repository, name: &[u8], indexed: Option<Mode>) -> io::Result<
         Err(e) => return Err(e),
     };
     if meta.file_type().is_symlink() {
-        let bytes = gix::path::into_bstr(parent.read_link_contents(leaf)?).to_vec();
+        let bytes = gix::path::into_bstr(parent.read_link_contents(leaf)?)
+            .map_err(io::Error::other)?
+            .to_vec();
         return Ok(Some(Image {
             mode: Mode::SYMLINK.bits(),
             bytes,

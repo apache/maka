@@ -21,8 +21,8 @@
 #[allow(dead_code)]
 mod support;
 use maka_event_log::{
-    EventLog,
     root::{RootNamespaces, RootOwner},
+    root_store::RootStore,
 };
 use maka_host_runtime::application::{Application, NativeRegistry};
 use maka_plugin_core::{composition::PresentationTarget, deployment::DeploymentRef};
@@ -47,8 +47,8 @@ struct Fixture {
     namespaces: RootNamespaces,
     root: std::path::PathBuf,
     caller_root: std::path::PathBuf,
-    store: Arc<EventLog>,
-    caller: Arc<EventLog>,
+    store: Arc<RootStore>,
+    caller: Arc<RootStore>,
     source: DeploymentRef,
     app: Application,
     server: Arc<Server>,
@@ -148,9 +148,9 @@ impl Fixture {
             control: directory.path().join("control"),
         };
         let owner = Arc::new(RootOwner::create(&root, &namespaces).unwrap());
-        let store = Arc::new(EventLog::for_root(owner).await.unwrap());
+        let store = Arc::new(support::setup(RootStore::open(owner)).await.unwrap());
         let owner = Arc::new(RootOwner::create(&caller_root, &namespaces).unwrap());
-        let caller = Arc::new(EventLog::for_root(owner).await.unwrap());
+        let caller = Arc::new(support::setup(RootStore::open(owner)).await.unwrap());
         let wide_progress = gate.as_ref().is_some_and(|gate| gate.progress);
         let (mut input, mut packages, mut observations) = support::ui(PresentationTarget::Tui);
         if wide_progress {
@@ -448,7 +448,9 @@ async fn dropping_partial_commit_keeps_real_sql_token_and_cannot_append_cancel()
     f.server.close().await.unwrap();
     assert!(
         f.store
-            .operation_observation(&reference)
+            .operation(&reference)
+            .unwrap()
+            .operation_observation()
             .await
             .unwrap()
             .is_none()
@@ -748,7 +750,7 @@ async fn stop_ui(mut ui: maka_ui_runtime::Application, root: &maka_plugin_core::
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn native_adapter_runs_checked_ui_actions_actual_caller_sql_and_original_recovery() {
     use maka_host_runtime::application::{
-        host::{Client, Host},
+        host::{Client, Configuration as HostConfiguration, Host},
         transport::HostEndpoint,
     };
     let f = Fixture::new().await;
@@ -784,8 +786,11 @@ async fn native_adapter_runs_checked_ui_actions_actual_caller_sql_and_original_r
         deployment,
         NativeRegistry::default(),
         Some(maka_host_js::factory(Default::default())),
-        selections.clone(),
-        vec![],
+        HostConfiguration::PublicHost {
+            endpoints: selections.clone(),
+            native: vec![],
+            product_methods: Default::default(),
+        },
     )
     .await
     .unwrap();
@@ -953,7 +958,9 @@ async fn concurrent_native_dispatch_and_close_cancel_the_original_host_without_a
     ));
     assert!(
         f.store
-            .operation_observation(&reference)
+            .operation(&reference)
+            .unwrap()
+            .operation_observation()
             .await
             .unwrap()
             .is_some()
@@ -1886,7 +1893,9 @@ async fn revoking_issued_scope_rejects_prepared_commit_without_losing_original_c
     assert!(!call.holds_caller_intent());
     assert!(
         f.store
-            .operation_observation(&reference)
+            .operation(&reference)
+            .unwrap()
+            .operation_observation()
             .await
             .unwrap()
             .is_none()
@@ -2175,14 +2184,14 @@ async fn native_caller_uses_actual_peer_approval_and_consumer_not_claimed_json_i
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn checked_ui_mutation_progress_cancel_waits_for_original_completion_and_receipt() {
+    let release = Arc::new(tokio::sync::Semaphore::new(0));
+    let gate = Arc::new(Gate {
+        progress: true,
+        release: Some(release.clone()),
+        ..Default::default()
+    });
+    let f = support::setup(Fixture::with_gate(Some(gate.clone()))).await;
     tokio::time::timeout(std::time::Duration::from_secs(30), async {
-        let release = Arc::new(tokio::sync::Semaphore::new(0));
-        let gate = Arc::new(Gate {
-            progress: true,
-            release: Some(release.clone()),
-            ..Default::default()
-        });
-        let f = Fixture::with_gate(Some(gate.clone())).await;
         let (mut ui, connection, _, _) = native_ui(
             &f,
             Arc::new(Physical {

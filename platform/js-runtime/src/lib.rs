@@ -20,6 +20,7 @@
 mod bridge;
 mod evaluate;
 mod execution_budget;
+mod json;
 mod module;
 pub mod plugin;
 pub mod repl;
@@ -70,7 +71,11 @@ impl CodeExecutor {
                 description: String::new(),
             })
             .collect();
-        let context = CellContext::new(CellStore::default(), metadata);
+        let context = CellContext::new(
+            CellStore::temporary().map_err(|error| CellAbort::Internal(error.message))?,
+            metadata,
+        )
+        .map_err(|error| CellAbort::Internal(error.message))?;
         self.execute_with_context(source, tools, cancellation, context)
             .await
     }

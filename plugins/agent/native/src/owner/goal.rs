@@ -42,7 +42,7 @@ pub(super) struct Goals {
     awake: AtomicBool,
 }
 impl Goals {
-    pub fn new(store: Arc<EventLog>, prefix: String) -> Self {
+    pub fn new(store: Arc<RootStore>, prefix: String) -> Self {
         let storage = Arc::new(maka_host_runtime::storage::Storage::new(
             store,
             prefix,
@@ -206,17 +206,11 @@ impl Owner {
         Ok(())
     }
     async fn goal_meter(&self, session: &str) -> Result<Meter, String> {
-        let report = self
+        let model = self
             .store
-            .usage_summary(maka_event_log::usage::Query {
-                from: 0.0,
-                to: 9_007_199_254_740_991.0,
-                session_id: Some(session.into()),
-                through: None,
-            })
+            .session_usage_totals(session)
             .await
             .map_err(reason)?;
-        let model = report.summary.models;
         Ok(Meter {
             known: model.input.known.saturating_add(model.output.known),
             missing: model.input.missing.saturating_add(model.output.missing),
@@ -259,6 +253,9 @@ impl Owner {
         }
         if !self
             .store
+            .session(session)
+            .await
+            .map_err(|error| error.to_string())?
             .message_queue(session)
             .await
             .map_err(reason)?
@@ -269,6 +266,9 @@ impl Owner {
         }
         Ok(self
             .store
+            .session(session)
+            .await
+            .map_err(|error| error.to_string())?
             .latest_turn_boundary(session)
             .await
             .map_err(reason)?
@@ -429,7 +429,7 @@ impl Owner {
                     if let Err(error) = self.goal_privacy().await {
                         return self.reject_goal(operation, error).await;
                     }
-                    if self.store.latest_turn_boundary(&session).await.map_err(reason)?.is_some_and(|boundary| matches!(boundary.state,
+                    if self.store.session(&session).await.map_err(|error| error.to_string())?.latest_turn_boundary(&session).await.map_err(reason)?.is_some_and(|boundary| matches!(boundary.state,
                         maka_event_log::turns::InvocationState::Ended { outcome: maka_agent_facts::event::InvocationOutcome::HandoffPaused { .. }, .. })) {
                         return self.reject_goal(operation, "goal_resume_session_first").await;
                     }

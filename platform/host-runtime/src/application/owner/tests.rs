@@ -281,12 +281,6 @@ async fn final_admission_rejects_failed_consumer_before_terminal_notification_is
             .map_err(|e| e.error)
             .unwrap();
         let binding = owner.capture_bindings(&consumer, "echo").unwrap().remove(0);
-        let repeated = owner.capture_bindings(&consumer, "echo").unwrap().remove(0);
-        assert!(Arc::ptr_eq(&binding.1, &repeated.1));
-        assert!(Arc::ptr_eq(
-            &binding.1,
-            &owner.runtime.inspect(&binding.0).unwrap().contract,
-        ));
         domains.0.lock().unwrap()[0].send_replace(true);
         owner.vms[&vm].failed().await;
         // Deliberately leave the notification unpolled. The command must check
@@ -438,7 +432,7 @@ async fn retained_old_head_after_new_explicit_adoption_does_not_poison_readiness
         control: dir.path().join("control"),
     };
     let store = Arc::new(
-        maka_event_log::EventLog::for_root(Arc::new(
+        maka_event_log::root_store::RootStore::open(Arc::new(
             RootOwner::create(&dir.path().join("root"), &ns).unwrap(),
         ))
         .await

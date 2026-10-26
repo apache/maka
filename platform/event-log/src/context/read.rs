@@ -19,18 +19,14 @@
 
 use super::selection::Selection;
 use super::{
-    ContextBaseline, ModelContextSource, boundary, invalid, latest_main, proof, safety, validate,
+    ContextBaseline, ContextView, ModelContextSource, boundary, invalid, latest_main, proof, safety,
 };
 use crate::{EventLog, StoreError};
 use maka_agent_facts::context::CheckpointMode;
-use maka_agent_facts::event::Fact;
-use maka_agent_facts::event::RuntimeEvent;
-use maka_agent_facts::event::StoredEvent;
+use maka_agent_facts::event::{Fact, RuntimeEvent, StoredEvent};
 use sqlx::{Connection, SqliteConnection};
 
 impl EventLog {
-    /// Check an explicit user's fresh message against all prior facts. The
-    /// returned bit only marks whether a sealed unknown dispatch is present.
     pub async fn check_manual_message_history(&self, session: &str) -> Result<bool, StoreError> {
         self.validate_root()?;
         crate::sessions::validate_id(session)?;
@@ -48,62 +44,46 @@ impl EventLog {
             .await
     }
 
-    pub async fn read_model_context(
+    pub async fn read_model_view(
         &self,
         session: &str,
         current: Option<&str>,
-    ) -> Result<ModelContextSource, StoreError> {
-        self.context_source(session, current, None, false).await
+    ) -> Result<ContextView, StoreError> {
+        self.context_view(session, current, None, false).await
     }
-
-    pub async fn read_manual_message_context(
+    pub async fn read_manual_message_view(
         &self,
         session: &str,
         current: &str,
-    ) -> Result<ModelContextSource, StoreError> {
-        self.context_source(session, Some(current), None, true)
-            .await
+    ) -> Result<ContextView, StoreError> {
+        self.context_view(session, Some(current), None, true).await
     }
-
-    pub async fn prepare_context_compaction(
+    pub async fn prepare_compaction_view(
         &self,
         session: &str,
         current: Option<&str>,
         mode: &CheckpointMode,
-    ) -> Result<ModelContextSource, StoreError> {
-        self.context_source(session, current, Some(mode.clone()), false)
+    ) -> Result<ContextView, StoreError> {
+        self.context_view(session, current, Some(mode.clone()), false)
             .await
     }
-
-    async fn context_source(
+    async fn context_view(
         &self,
         session: &str,
         current: Option<&str>,
         mode: Option<CheckpointMode>,
-        manual_message: bool,
-    ) -> Result<ModelContextSource, StoreError> {
+        manual: bool,
+    ) -> Result<ContextView, StoreError> {
         self.validate_root()?;
         crate::sessions::validate_id(session)?;
         let (session, current) = (session.to_owned(), current.map(str::to_owned));
-        let cache = self.context_cache.clone();
-        let writer = self.connection.writer();
         self.connection
             .read_interruptible(move |connection| {
                 Box::pin(async move {
-                    let attempt = match cache.has_proof(&session) {
-                        Some(true) => true,
-                        Some(false) => super::cache::history_hint(connection, &session).await,
-                        None => false,
-                    };
-                    let observation = if attempt {
-                        Some(super::cache::observe(cache.clone(), &writer, session.clone()).await?)
-                    } else {
-                        None
-                    };
                     let mut tx = connection.begin().await?;
                     let opening =
                         safety::current_opening(&mut tx, &session, current.as_deref()).await?;
-                    if manual_message {
+                    let prior_unknown = if manual {
                         let Some((_, event)) = &opening else {
                             return Err(invalid("manual message has no active opening"));
                         };
@@ -119,28 +99,14 @@ impl EventLog {
                             ));
                         }
                         safety::require_manual_message_safe(&mut tx, &session, current.as_deref())
-                            .await?;
+                            .await?
                     } else {
                         safety::require_safe(&mut tx, &session, current.as_deref()).await?;
-                    }
+                        false
+                    };
                     let selection = match &opening {
                         Some((_, event)) => Selection::for_opening(&mut tx, event).await?,
                         None => Selection::session(&session),
-                    };
-                    let (origin, mut verification) = if let Some((origin, certificate)) =
-                        observation
-                    {
-                        let (confirmed, _) =
-                            super::cache::observe(cache.clone(), &writer, session.clone()).await?;
-                        let certificate = certificate.filter(|_| confirmed == origin);
-                        let verification = super::cache::Verification::new(
-                            cache.clone(),
-                            origin.clone(),
-                            certificate,
-                        );
-                        (Some(origin), verification)
-                    } else {
-                        (None, super::cache::Verification::default())
                     };
                     let high_water = if let Some(mode) = &mode {
                         if let Some((_, event)) = &opening {
@@ -169,24 +135,81 @@ impl EventLog {
                     } else {
                         selection.high_water(&mut tx, i64::MAX as u64).await?
                     };
-                    let before = i64::MAX as u64;
-                    let latest_main =
-                        latest_main::read_selected(&mut tx, &selection, high_water).await?;
-                    let source = materialize_cached(
+                    let view = selected_view(
                         &mut tx,
                         &selection,
                         high_water,
-                        before,
-                        usize::MAX,
-                        usize::MAX,
-                        (latest_main, &mut verification),
+                        i64::MAX as u64,
+                        prior_unknown,
                     )
                     .await?;
                     tx.commit().await?;
-                    if let Some(origin) = origin {
-                        super::cache::promote(cache, &writer, origin, verification.candidate())
-                            .await?;
-                    }
+                    Ok(view)
+                })
+            })
+            .await
+    }
+
+    /// Explicit bounded export of model history. Ordinary model requests use
+    /// the fixed semantic view and never enter this materialization path.
+    pub async fn capture_model_context(
+        &self,
+        session: &str,
+        current: Option<&str>,
+        max_events: usize,
+        max_bytes: usize,
+    ) -> Result<ModelContextSource, StoreError> {
+        let view = self.read_model_view(session, current).await?;
+        self.materialize_view(view, max_events, max_bytes).await
+    }
+    pub async fn capture_manual_message_context(
+        &self,
+        session: &str,
+        current: &str,
+        max_events: usize,
+        max_bytes: usize,
+    ) -> Result<ModelContextSource, StoreError> {
+        let view = self.read_manual_message_view(session, current).await?;
+        self.materialize_view(view, max_events, max_bytes).await
+    }
+    pub async fn capture_compaction_context(
+        &self,
+        session: &str,
+        current: Option<&str>,
+        mode: &CheckpointMode,
+        max_events: usize,
+        max_bytes: usize,
+    ) -> Result<ModelContextSource, StoreError> {
+        let view = self.prepare_compaction_view(session, current, mode).await?;
+        self.materialize_view(view, max_events, max_bytes).await
+    }
+    pub(super) async fn materialize_view(
+        &self,
+        view: ContextView,
+        max_events: usize,
+        max_bytes: usize,
+    ) -> Result<ModelContextSource, StoreError> {
+        self.validate_root()?;
+        self.connection
+            .read_interruptible(move |connection| {
+                Box::pin(async move {
+                    let mut tx = connection.begin().await?;
+                    let selection = Selection {
+                        scope: view.source_evidence.scope,
+                        session: Some(view.selection.session),
+                        lineage: view.selection.lineage,
+                    };
+                    let source = materialize_selected(
+                        &mut tx,
+                        &selection,
+                        view.source_evidence.high_water,
+                        view.selection.before,
+                        max_events,
+                        max_bytes,
+                        view.latest_main,
+                    )
+                    .await?;
+                    tx.commit().await?;
                     Ok(source)
                 })
             })
@@ -194,24 +217,103 @@ impl EventLog {
     }
 }
 
-/// Authenticate the selected context before sealing a handoff.
+/// Handoff admission checks current obligations and committed source identity;
+/// it does not read every old model payload to establish private-byte trust.
 pub(crate) async fn validate_handoff_context(
     connection: &mut SqliteConnection,
-    opening: &maka_agent_facts::event::RuntimeEvent,
+    opening: &RuntimeEvent,
 ) -> Result<(), StoreError> {
     let selection = Selection::for_opening(connection, opening).await?;
     let high = selection.high_water(connection, i64::MAX as u64).await?;
-    materialize_selected(
-        connection,
-        &selection,
-        high,
-        i64::MAX as u64,
-        usize::MAX,
-        usize::MAX,
-        super::LatestMainContext::TraceUnavailable,
-    )
-    .await?;
+    latest_with_evidence(connection, &selection, high).await?;
+    super::semantic::available(connection, &opening.invocation.session_id).await?;
     Ok(())
+}
+
+pub(super) async fn selected_view(
+    connection: &mut SqliteConnection,
+    selection: &Selection,
+    high_water: u64,
+    before: u64,
+    prior_unknown: bool,
+) -> Result<ContextView, StoreError> {
+    let session = selection
+        .session
+        .as_deref()
+        .ok_or_else(|| invalid("context requires a Session"))?;
+    super::semantic::available(connection, session).await?;
+    let captured: i64 = sqlx::query_scalar("SELECT COALESCE(MAX(sequence),0) FROM event_log")
+        .fetch_one(&mut *connection)
+        .await?;
+    let captured = crate::sequence_number(captured)?;
+    let before = before.min(captured.saturating_add(1));
+    let (baseline, source_evidence) =
+        latest_with_evidence(connection, selection, high_water).await?;
+    let anchor = anchor(connection, baseline.as_ref()).await?;
+    let semantic = super::semantic::SemanticSelection {
+        session: session.to_owned(),
+        lineage: selection.lineage.clone(),
+        after: baseline
+            .as_ref()
+            .map_or(0, |baseline| baseline.checkpoint.covered_through),
+        through: high_water,
+        before,
+        captured_through: captured,
+        anchor_sequence: anchor.as_ref().map(|anchor| anchor.sequence),
+        replay: None,
+        prior_unknown,
+    };
+    let has_new_history = super::semantic::meaningful_history(connection, &semantic).await?;
+    let latest_main = latest_main::read_selected(connection, selection, high_water).await?;
+    let effective_source_digest =
+        crate::archive::digest_selected(connection, selection, &source_evidence, before).await?;
+    let (unknown_tools, unknown_tool_count) = if prior_unknown {
+        unknown_tools(connection, selection).await?
+    } else {
+        (Vec::new(), 0)
+    };
+    Ok(ContextView {
+        source_evidence,
+        effective_source_digest,
+        baseline,
+        anchor,
+        latest_main,
+        selection: semantic,
+        has_new_history,
+        prior_unknown,
+        unknown_tools,
+        unknown_tool_count,
+    })
+}
+
+async fn unknown_tools(
+    connection: &mut SqliteConnection,
+    selection: &Selection,
+) -> Result<(Vec<(String, String)>, u64), StoreError> {
+    let predicate = Selection::predicate("d", "?2");
+    let from=format!("FROM context_obligations o JOIN runtime_events d ON d.sequence=o.opened_at AND d.kind='tool_dispatched'
+        WHERE o.session_id=?1 AND o.kind='tool' AND o.sealed_unknown=1 AND {predicate}");
+    let count: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!("SELECT COUNT(*) {from}")))
+        .bind(&selection.session)
+        .bind(&selection.lineage)
+        .fetch_one(&mut *connection)
+        .await?;
+    let rows=sqlx::query_as(sqlx::AssertSqlSafe(format!("SELECT json_extract(d.event_json,'$.fact.name'),o.operation_id {from} ORDER BY o.opened_at LIMIT 64")))
+        .bind(&selection.session).bind(&selection.lineage).fetch_all(connection).await?;
+    Ok((rows, crate::sequence_number(count)?))
+}
+
+async fn anchor(
+    connection: &mut SqliteConnection,
+    baseline: Option<&ContextBaseline>,
+) -> Result<Option<StoredEvent>, StoreError> {
+    if let Some(ContextBaseline { checkpoint, .. }) = baseline
+        && let CheckpointMode::MidTurn { anchor_event_id } = &checkpoint.mode
+    {
+        let (sequence, event) = proof::by_id(connection, anchor_event_id).await?;
+        return Ok(Some(StoredEvent { sequence, event }));
+    }
+    Ok(None)
 }
 
 pub(super) async fn materialize_selected(
@@ -223,42 +325,12 @@ pub(super) async fn materialize_selected(
     max_bytes: usize,
     latest_main: super::LatestMainContext,
 ) -> Result<ModelContextSource, StoreError> {
-    materialize_cached(
-        connection,
-        selection,
-        high_water,
-        before,
-        max_events,
-        max_bytes,
-        (latest_main, &mut super::cache::Verification::default()),
-    )
-    .await
-}
-
-async fn materialize_cached(
-    connection: &mut SqliteConnection,
-    selection: &Selection,
-    high_water: u64,
-    before: u64,
-    max_events: usize,
-    max_bytes: usize,
-    (latest_main, verification): (super::LatestMainContext, &mut super::cache::Verification),
-) -> Result<ModelContextSource, StoreError> {
     let (baseline, source_evidence) =
-        latest_with_evidence(connection, selection, high_water, verification).await?;
-    let anchor = if let Some(ContextBaseline { checkpoint, .. }) = &baseline {
-        if let CheckpointMode::MidTurn { anchor_event_id } = &checkpoint.mode {
-            let (sequence, event) = proof::by_id(connection, anchor_event_id).await?;
-            Some(StoredEvent { sequence, event })
-        } else {
-            None
-        }
-    } else {
-        None
-    };
+        latest_with_evidence(connection, selection, high_water).await?;
+    let anchor = anchor(connection, baseline.as_ref()).await?;
     let anchor_bytes = anchor
         .as_ref()
-        .map(|a| serde_json::to_vec(&a.event).map(|b| b.len()))
+        .map(|anchor| serde_json::to_vec(&anchor.event).map(|bytes| bytes.len()))
         .transpose()?
         .unwrap_or(0);
     let remaining_bytes = max_bytes
@@ -269,7 +341,7 @@ async fn materialize_cached(
         .ok_or(StoreError::PrefixTooLarge)?;
     let after = baseline
         .as_ref()
-        .map_or(0, |b| b.checkpoint.covered_through);
+        .map_or(0, |baseline| baseline.checkpoint.covered_through);
     let tail = super::tail::read(
         connection,
         selection,
@@ -296,73 +368,33 @@ pub(crate) async fn latest_selected(
     connection: &mut SqliteConnection,
     selection: &Selection,
     through: u64,
-    verification: &mut super::cache::Verification,
 ) -> Result<Option<ContextBaseline>, StoreError> {
-    verification.select(selection);
-    let Some(StoredEvent { sequence, event }) =
-        latest_record(connection, selection, through).await?
+    let Some(StoredEvent { event, .. }) = latest_record(connection, selection, through).await?
     else {
         return Ok(None);
     };
-    validate::chain_cached(connection, &event, sequence, true, None, verification).await?;
-    let Fact::ContextCheckpointRecorded { checkpoint } = event.fact else {
+    let Fact::ContextCheckpointRecorded { checkpoint } = &event.fact else {
         return Err(invalid("checkpoint kind mismatch"));
     };
+    // This also rejects an unsealed checkpoint observed by a later fact in the
+    // same uncommitted append batch. Committed standalone checkpoints have it.
+    if matches!(checkpoint.mode, CheckpointMode::Standalone) {
+        super::validate::require_terminal(connection, &event).await?;
+    }
     Ok(Some(ContextBaseline {
         event_id: event.id,
-        checkpoint,
+        checkpoint: checkpoint.clone(),
     }))
 }
 
-/// Validate the baseline and authenticate the current source in the same scan
-/// wherever checkpoint coverage uses the exact current selection.
 pub(super) async fn latest_with_evidence(
     connection: &mut SqliteConnection,
     selection: &Selection,
     through: u64,
-    verification: &mut super::cache::Verification,
 ) -> Result<(Option<ContextBaseline>, super::SourceEvidence), StoreError> {
-    verification.select(selection);
-    let Some(StoredEvent { sequence, event }) =
-        latest_record(connection, selection, through).await?
-    else {
-        return Ok((
-            None,
-            super::SourceEvidence {
-                scope: selection.scope.clone(),
-                high_water: through,
-                digest: verification
-                    .digests(connection, selection, &[through])
-                    .await?
-                    .pop()
-                    .expect("one requested prefix"),
-            },
-        ));
-    };
-    let digest = validate::chain_cached(
-        connection,
-        &event,
-        sequence,
-        true,
-        Some((selection, through)),
-        verification,
-    )
-    .await?
-    .expect("requested current source digest");
-    let Fact::ContextCheckpointRecorded { checkpoint } = event.fact else {
-        return Err(invalid("checkpoint kind mismatch"));
-    };
-    Ok((
-        Some(ContextBaseline {
-            event_id: event.id,
-            checkpoint,
-        }),
-        super::SourceEvidence {
-            scope: selection.scope.clone(),
-            high_water: through,
-            digest,
-        },
-    ))
+    let baseline = latest_selected(connection, selection, through).await?;
+    let evidence = super::evidence::selected(connection, selection, through).await?;
+    Ok((baseline, evidence))
 }
 
 /// Select without traversing predecessors, so chain validation stays iterative.
@@ -372,12 +404,13 @@ pub(crate) async fn latest_record(
     through: u64,
 ) -> Result<Option<StoredEvent>, StoreError> {
     let filter = Selection::predicate("c", "?3");
+    let contains = Selection::lineage_contains("c.invocation_id", "?3");
     let eligible = format!(
         "c.kind='context_checkpoint_recorded' AND c.sequence <= ?1 AND {filter}
          AND NOT EXISTS(SELECT 1 FROM runtime_events r WHERE r.invocation_id=c.invocation_id
            AND r.kind='model_requested' AND r.operation_id=json_extract(c.event_json,'$.fact.checkpoint.summary_step_id')
            AND json_extract(r.event_json,'$.fact.source_scope.kind')='lineage'
-           AND (?3 IS NULL OR c.invocation_id NOT IN (SELECT value FROM json_each(?3,'$.runs'))))"
+           AND (?3 IS NULL OR NOT {contains}))"
     );
     // Limit each indexed branch before combining: a wide UNION view would sort
     // every old body even when the newest native checkpoint is already known.

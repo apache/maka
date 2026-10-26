@@ -272,7 +272,7 @@ mod tests {
         use maka_agent_facts::terminal::TerminalSize;
 
         let size = TerminalSize::new(80, 24).unwrap();
-        let output = Output::new(size, tokio::sync::watch::channel(()).0).unwrap();
+        let output = Output::new(size).unwrap();
         let mut terminal = Terminal::new(size, output.clone());
         // Exercise the actual Host decoder/parser/replay path. These supplied
         // native-byte cuts are not a claim of OS PTY transport verification.
@@ -300,7 +300,7 @@ mod tests {
         use maka_agent_facts::terminal::TerminalSize;
 
         let size = TerminalSize::new(80, 24).unwrap();
-        let output = Output::new(size, tokio::sync::watch::channel(()).0).unwrap();
+        let output = Output::new(size).unwrap();
         let mut terminal = Terminal::new(size, output.clone());
         terminal.output(b"\x1b]0;", false).unwrap();
         let chunk = vec![b'x'; 16 * 1024];
@@ -326,7 +326,7 @@ mod tests {
         use super::{Output, PendingWrite, Terminal};
         use maka_agent_facts::terminal::TerminalSize;
         let size = TerminalSize::new(80, 24).unwrap();
-        let output = Output::new(size, tokio::sync::watch::channel(()).0).unwrap();
+        let output = Output::new(size).unwrap();
         let mut terminal = Terminal::new(size, output);
         let (reply, mut receipt) = tokio::sync::oneshot::channel();
         let input = "x".repeat(1024 * 1024 + 1);

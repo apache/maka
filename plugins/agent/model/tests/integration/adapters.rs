@@ -142,12 +142,15 @@ async fn captured_adapter_survives_executor_replacement_and_bounds_idle_work() {
     assert!(matches!(
         context
             .transport
-            .request(maka_capabilities::http::Request {
-                method: maka_capabilities::http::Method::Get,
-                url: "http://unused.example/".into(),
-                headers: vec![],
-                body: vec![],
-            })
+            .request(
+                maka_capabilities::http::Request {
+                    method: maka_capabilities::http::Method::Get,
+                    url: "http://unused.example/".into(),
+                    headers: vec![],
+                    body: Default::default(),
+                },
+                CancellationToken::new()
+            )
             .await,
         Err(Error::Cancelled)
     ));
@@ -167,4 +170,91 @@ async fn captured_adapter_survives_executor_replacement_and_bounds_idle_work() {
         .cancel_and_wait()
         .await
         .expect("actual stream cleanup");
+}
+
+#[derive(Clone, Copy)]
+struct CleanupOutcome {
+    unknown: bool,
+    wait_cancel: bool,
+}
+impl ProviderAdapter for CleanupOutcome {
+    fn open(
+        &self,
+        _: Lifetime,
+        _: CancellationToken,
+    ) -> BoxFuture<'_, Result<Arc<dyn Session>, Error>> {
+        let session = *self;
+        Box::pin(async move { Ok(Arc::new(session) as Arc<dyn Session>) })
+    }
+}
+impl Session for CleanupOutcome {
+    fn stream(&self, _: Request, context: Context) -> BoxFuture<'static, Result<(), Error>> {
+        let mode = *self;
+        Box::pin(async move {
+            context
+                .events
+                .emit(
+                    ModelEvent::ResponseMetadata {
+                        id: Some("started".into()),
+                        model: None,
+                        timestamp: None,
+                    }
+                    .into(),
+                )
+                .await?;
+            if mode.wait_cancel {
+                context.cancellation.cancelled().await;
+            }
+            Err(if mode.unknown {
+                Error::CleanupUnconfirmed
+            } else {
+                Error::Cancelled
+            })
+        })
+    }
+}
+
+#[tokio::test]
+async fn typed_cleanup_unknown_reaches_owner_for_normal_and_cancelled_completion() {
+    for wait_cancel in [false, true] {
+        for unknown in [false, true] {
+            let input = request(
+                ProviderKind::OpenaiChatCompletions,
+                "http://unused.example/v1".into(),
+            );
+            let source = binding(CancellationToken::new(), Arc::default(), "cleanup")
+                .source()
+                .clone();
+            let binding = Binding::new(
+                Arc::new(CleanupOutcome {
+                    unknown,
+                    wait_cancel,
+                }),
+                source,
+            );
+            let executor = ModelExecutor::new(Duration::from_secs(2)).unwrap();
+            let cancellation = CancellationToken::new();
+            let mut stream = executor
+                .stream_with_adapter(input, cancellation.clone(), None, binding)
+                .await
+                .unwrap();
+            assert!(matches!(
+                stream.next().await.unwrap().unwrap().event,
+                ModelEvent::ResponseMetadata { .. }
+            ));
+            if wait_cancel {
+                cancellation.cancel();
+            }
+            let error = stream.next().await.unwrap().unwrap_err();
+            if !wait_cancel {
+                assert_eq!(error.cleanup_unconfirmed(), unknown);
+            }
+            while stream.next().await.is_some() {}
+            assert_eq!(
+                stream.cancel_and_wait().await.is_err(),
+                unknown,
+                "cleanup receipt must be independent from the ordinary cancellation error"
+            );
+        }
+    }
 }

@@ -18,11 +18,11 @@
  */
 
 use crate::support::context as fixture;
+use crate::support::store::SessionFixture;
 use maka_agent_engine::RunError;
 use maka_agent_facts::context::ModelPurpose;
 use maka_agent_facts::context::ModelRequestContext;
 use maka_agent_facts::event::Fact;
-use maka_event_log::EventLog;
 use maka_model::ModelError;
 use serde_json::json;
 use std::sync::Arc;
@@ -53,7 +53,7 @@ async fn overflow_recovers_once_only_without_observed_output() {
         let recover = !observed;
         let directory = tempfile::tempdir().unwrap();
         let log = Arc::new(
-            EventLog::open(&directory.path().join("events.sqlite"))
+            SessionFixture::open(&directory.path().join("events.sqlite"))
                 .await
                 .unwrap(),
         );
@@ -88,9 +88,10 @@ async fn overflow_recovers_once_only_without_observed_output() {
                 fixture::respond(&mut next, "done", "stop").await;
             }
         });
-        let worker = fixture::engine(log.clone());
+        let worker = fixture::engine();
         worker
             .run(
+                log.store(),
                 fixture::input(&base, "old", false),
                 CancellationToken::new(),
             )
@@ -98,7 +99,9 @@ async fn overflow_recovers_once_only_without_observed_output() {
             .unwrap();
         let mut next = fixture::input(&base, "overflow", false);
         next.main_output_limit = Some(128_000);
-        let result = worker.run(next, CancellationToken::new()).await;
+        let result = worker
+            .run(log.store(), next, CancellationToken::new())
+            .await;
         if recover {
             result.unwrap();
         } else {
@@ -154,7 +157,7 @@ async fn overflow_recovers_once_only_without_observed_output() {
 async fn proactive_failure_spends_the_same_budget_as_overflow_recovery() {
     let directory = tempfile::tempdir().unwrap();
     let log = Arc::new(
-        EventLog::open(&directory.path().join("events.sqlite"))
+        SessionFixture::open(&directory.path().join("events.sqlite"))
             .await
             .unwrap(),
     );
@@ -189,7 +192,7 @@ async fn proactive_failure_spends_the_same_budget_as_overflow_recovery() {
         let mut main = main.unwrap();
         overflow(&mut main, false).await;
     });
-    let worker = fixture::engine(log.clone());
+    let worker = fixture::engine();
     let mut old = fixture::input(&base, "old", false);
     old.context = Some(ModelRequestContext {
         provider_id: "openai".into(),
@@ -197,7 +200,10 @@ async fn proactive_failure_spends_the_same_budget_as_overflow_recovery() {
         declared_window: None,
         model_context_window: None,
     });
-    worker.run(old, CancellationToken::new()).await.unwrap();
+    worker
+        .run(log.store(), old, CancellationToken::new())
+        .await
+        .unwrap();
     let mut next = fixture::input(&base, "latched", false);
     next.context = Some(ModelRequestContext {
         provider_id: "openai".into(),
@@ -206,7 +212,9 @@ async fn proactive_failure_spends_the_same_budget_as_overflow_recovery() {
         model_context_window: None,
     });
     assert!(matches!(
-        worker.run(next, CancellationToken::new()).await,
+        worker
+            .run(log.store(), next, CancellationToken::new())
+            .await,
         Err(RunError::Model(ModelError::ContextOverflow {
             observed_output: false
         }))

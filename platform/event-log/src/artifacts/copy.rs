@@ -17,6 +17,8 @@
  * under the License.
  */
 
+mod partition;
+
 use super::records::{advance, invalid, read_record, require_session};
 use crate::StoreError;
 use maka_agent_facts::artifact::ArtifactSource;

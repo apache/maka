@@ -433,7 +433,33 @@ fn cpu_time() -> Option<Duration> {
     Some(time(usage.ru_utime) + time(usage.ru_stime))
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn cpu_time() -> Option<Duration> {
+    use windows_sys::Win32::{
+        Foundation::FILETIME,
+        System::Threading::{GetCurrentProcess, GetProcessTimes},
+    };
+    let zero = FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
+    let (mut created, mut exited, mut kernel, mut user) = (zero, zero, zero, zero);
+    // SAFETY: the pseudo handle of this process and four buffers the call fills.
+    let ok = unsafe {
+        GetProcessTimes(
+            GetCurrentProcess(),
+            &mut created,
+            &mut exited,
+            &mut kernel,
+            &mut user,
+        )
+    };
+    // FILETIME counts 100 ns.
+    let ticks = |t: FILETIME| (u64::from(t.dwHighDateTime) << 32) | u64::from(t.dwLowDateTime);
+    (ok != 0).then(|| Duration::from_nanos((ticks(kernel) + ticks(user)) * 100))
+}
+
+#[cfg(not(any(unix, windows)))]
 fn cpu_time() -> Option<Duration> {
     None
 }
@@ -477,7 +503,27 @@ fn memory() -> Option<u64> {
     Some(pages * u64::try_from(page).ok()?)
 }
 
-#[cfg(not(any(target_vendor = "apple", target_os = "linux", target_os = "android")))]
+/// The working set (resident memory), as on Linux.
+#[cfg(windows)]
+fn memory() -> Option<u64> {
+    use windows_sys::Win32::System::{
+        ProcessStatus::{K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS},
+        Threading::GetCurrentProcess,
+    };
+    // SAFETY: all-integer struct, zero is a valid value.
+    let mut counters: PROCESS_MEMORY_COUNTERS = unsafe { std::mem::zeroed() };
+    counters.cb = std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32;
+    // SAFETY: the pseudo handle of this process and a buffer of the size `cb` names.
+    let ok = unsafe { K32GetProcessMemoryInfo(GetCurrentProcess(), &mut counters, counters.cb) };
+    (ok != 0).then_some(counters.WorkingSetSize as u64)
+}
+
+#[cfg(not(any(
+    target_vendor = "apple",
+    target_os = "linux",
+    target_os = "android",
+    windows
+)))]
 fn memory() -> Option<u64> {
     None
 }

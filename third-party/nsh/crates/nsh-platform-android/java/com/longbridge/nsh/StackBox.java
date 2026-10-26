@@ -65,7 +65,7 @@ final class StackBox extends FrameLayout implements Node {
         for (int s : screens) {
             if (popped.contains(s)) continue;
             View v = mounter.views.get(s);
-            if (v instanceof ScreenBox) desired.add((ScreenBox) v);
+            if (v instanceof ScreenBox && !((ScreenBox) v).parked) desired.add((ScreenBox) v);
         }
         if (desired.equals(shown)) return;
         ScreenBox oldTop = top();
@@ -94,6 +94,20 @@ final class StackBox extends FrameLayout implements Node {
             return;
         }
         animate(pushing ? oldTop : newTop, pushing ? newTop : oldTop, pushing, animation == 1, 0, leaving);
+    }
+
+    /** Retirement parks an SDK screen until its own projection returns. */
+    void park(ScreenBox screen) {
+        if (transition != null) {
+            transition.removeAllListeners();
+            transition.cancel();
+            transition = null;
+        }
+        backProgress = -1;
+        screen.parked = true;
+        shown.remove(screen);
+        removeView(screen);
+        settle(new ArrayList<>());
     }
 
     /** Only the top screen is visible; removed screens leave. */
@@ -252,6 +266,7 @@ final class StackBox extends FrameLayout implements Node {
         boolean gestureEnabled = true;
         /** `popOnBack` false: the back buttons only send `onBackPress`. */
         boolean preventBack;
+        boolean parked;
         private final BackArrow arrow;
 
         ScreenBox(Context context, Mounter mounter, int id) {
@@ -340,6 +355,7 @@ final class StackBox extends FrameLayout implements Node {
 
         private void add(Mounter m, int itemId, int gravity) {
             if (itemId < 0) return;
+            if (!m.headerMounted(itemId, id)) return;
             View item = m.views.get(itemId);
             if (item == null) return;
             if (item.getParent() instanceof ViewGroup) ((ViewGroup) item.getParent()).removeView(item);

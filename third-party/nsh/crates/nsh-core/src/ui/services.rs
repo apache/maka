@@ -181,6 +181,12 @@ pub(crate) fn host_call(
     )
 }
 
+/// Opens `url` outside the app; the answer is whether it opened.
+pub(crate) fn open_url(url: String) -> (Answer<bool>, Action) {
+    let (answer, slot) = Answer::new();
+    (answer, Action::OpenUrl(url, slot))
+}
+
 /// The size of the image at `uri`, its bytes loaded.
 pub(crate) fn image_size(uri: String) -> (Answer<Result<ImageSize, String>>, Action) {
     let (answer, slot) = Answer::new();

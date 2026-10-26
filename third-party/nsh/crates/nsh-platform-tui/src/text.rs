@@ -96,6 +96,7 @@ pub(crate) struct TerminalRun {
     pub(crate) width: u16,
     pub(crate) start: u32,
     pub(crate) end: u32,
+    pub(crate) rtl: bool,
 }
 
 /// The immutable layout carried across the engine-to-surface mount boundary.
@@ -556,6 +557,7 @@ impl TextEngine for TerminalTextEngine {
                         },
                         start: piece.start,
                         end: piece.end,
+                        rtl: levels[i].is_rtl(),
                     });
                 }
                 column = column.saturating_add(advance);
@@ -1378,6 +1380,17 @@ mod tests {
         assert!((width - before.width).abs() > px(1.0));
         let metrics = nsh_core::canvas::line_metrics(&engine, &font, "WWW");
         assert_eq!(metrics.width, width);
+        for text in [" ", "WWW ", "名字　"] {
+            let expected = fonts.measure(&font, text);
+            assert_eq!(
+                nsh_core::canvas::measure_line(&engine, &font, text),
+                expected
+            );
+            assert_eq!(
+                nsh_core::canvas::line_metrics(&engine, &font, text).width,
+                expected
+            );
+        }
         assert_eq!(
             nsh_core::canvas::line_metrics(&engine, &font, "").width,
             Points::ZERO

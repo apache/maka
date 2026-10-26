@@ -125,10 +125,29 @@ impl AppView {
             .register(name, factory);
     }
 
+    /// The channel with the apps this view runs (`nsh/host`): their
+    /// launch parameters ([`nsh_engine::HostChannel::set_params`], read when
+    /// an app starts), events to them ([`nsh_engine::HostChannel::send`])
+    /// and handlers of their calls and posts
+    /// ([`nsh_engine::HostChannel::handle`], run on the engine thread). One
+    /// channel for every app the view loads.
+    pub fn host(&self) -> nsh_engine::HostChannel {
+        self.inner.state.borrow().options.host.clone()
+    }
+
     /// The VM limits of the apps this view loads. Applies from the next
     /// [`AppView::load`].
     pub fn set_limits(&self, limits: nsh_engine::Limits) {
         self.inner.set_limits(limits);
+    }
+
+    /// Where the apps this view loads keep their caches (the images they
+    /// downloaded) and how much each keeps ([`SurfaceOptions::cache`]). A
+    /// change applies from the next [`AppView::load`].
+    pub fn set_cache(&self, cache: nsh_engine::CacheOptions) {
+        if self.inner.state.borrow().options.cache != cache {
+            self.reconfigure(|options| options.cache = cache);
+        }
     }
 
     /// The directory the storage (`nsh/storage`) of the apps this view loads

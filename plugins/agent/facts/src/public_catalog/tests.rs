@@ -164,10 +164,33 @@ fn all_content_equality_matches_value_number_categories_duplicates_and_order() {
 }
 
 #[test]
-fn numeric_parser_failure_is_not_silently_content_inequality() {
-    // The public constructor never permits this RawValue-only acceptance hole.
+fn numeric_content_equality_matches_value_overflow_policy() {
+    // Workspace feature unification can enable arbitrary_precision, accepting 1e400.
     let overflow: &RawValue = serde_json::from_str("1e400").unwrap();
     let zero: &RawValue = serde_json::from_str("0").unwrap();
-    assert!(equal(overflow, zero).is_err());
-    assert!(PublicCatalogBody::from_json("1e400".into()).is_err());
+    let expected = serde_json::from_str::<Value>(overflow.get());
+    assert_eq!(
+        equal(overflow, zero).map_err(|error| error.classify()),
+        expected
+            .as_ref()
+            .map(|value| value == &Value::from(0))
+            .map_err(|error| error.classify())
+    );
+    assert_eq!(
+        PublicCatalogBody::from_json(overflow.get().into())
+            .map(|_| ())
+            .map_err(|error| error.classify()),
+        expected.map(|_| ()).map_err(|error| error.classify())
+    );
+}
+
+#[test]
+fn scalar_parser_failure_is_not_silently_content_inequality() {
+    // RawValue accepts lone surrogates regardless of the numeric feature set.
+    let malformed: &RawValue = serde_json::from_str(r#""\ud800""#).unwrap();
+    let valid: &RawValue = serde_json::from_str(r#""valid""#).unwrap();
+    assert!(serde_json::from_str::<Value>(malformed.get()).is_err());
+    assert!(equal(malformed, valid).is_err());
+    assert!(equal(valid, malformed).is_err());
+    assert!(PublicCatalogBody::from_json(malformed.get().into()).is_err());
 }

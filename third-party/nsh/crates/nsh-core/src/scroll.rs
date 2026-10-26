@@ -49,10 +49,6 @@ const WHEEL_IDLE: f64 = 150.0;
 const INDICATOR_HOLD: f64 = 700.0;
 /// ...then fades out in this long.
 const INDICATOR_FADE: f64 = 300.0;
-/// How far past the top a release must be to trigger a refresh.
-const REFRESH_PULL: f32 = 64.0;
-/// Space kept above the content while refreshing (the spinner's).
-const REFRESH_SPACE: f32 = 56.0;
 /// Duration of animated scrolls and bounces back (ms).
 const ANIMATION: f64 = 300.0;
 /// The release speed (points per ms) a settled mouse wheel snaps with:
@@ -174,6 +170,9 @@ pub trait ScrollHost {
     /// The offset changed (`offset` is the one reported): the children
     /// move, the sticky cells pin to it, native scroll values follow.
     fn moved(&self, offset: Point<Points>);
+    /// A vertical view is pulled `distance` past its top (0 once it is
+    /// back): its native pull value follows.
+    fn pulled(&self, distance: Points);
     /// The children's placement changed (mirroring, insets).
     fn relayout(&self);
     /// The view draws again (the indicator, the spinner, the content).
@@ -182,6 +181,10 @@ pub trait ScrollHost {
     fn attached(&self) -> bool;
     /// Runs [`frame`] on every frame from now until it returns false.
     fn start_ticking(&self);
+    /// The scroll view came to rest (its drag and momentum ended, as it
+    /// sends `onScrollEnd`): the snapping animated values that follow it
+    /// settle ([`crate::animation::Animator::scroll_ended`]).
+    fn settled(&self) {}
     /// Whether the surface is dark, kept in [`Live::dark`] when the
     /// indicator shows.
     fn dark(&self) -> bool {
@@ -220,13 +223,6 @@ fn drag_position(raw: f32, min: f32, max: f32, dim: f32, bounces: bool) -> f32 {
     } else {
         raw
     }
-}
-
-/// Whether a vertical scroll view dragged to `offset` (negative: pulled
-/// past its top) refreshes when the finger lifts, if it listens to
-/// `onRefresh` and is not refreshing yet.
-pub fn refreshes(offset: Points) -> bool {
-    offset.0 <= -REFRESH_PULL
 }
 
 /// The deceleration rate: velocity kept per ms.
@@ -435,7 +431,7 @@ impl ScrollState {
     fn limits(&self, size: Size<Points>) -> (f32, f32) {
         let max = self.max_f(size);
         let min = if !self.horizontal && self.live.refreshing {
-            -REFRESH_SPACE
+            -self.behavior.refresh_inset().0
         } else {
             0.0
         };
@@ -549,27 +545,43 @@ impl ScrollState {
     }
 
     /// The refresh spinner's center in a view `width` wide and how far it
-    /// is pulled out (all of it while refreshing), when it shows; `refresh`
-    /// is whether JS listens to `onRefresh`.
+    /// is pulled out (all of it while refreshing), when it shows (not when
+    /// the app draws its own); `refresh` is whether JS listens to
+    /// `onRefresh`.
     pub fn spinner(&self, width: Points, refresh: bool) -> Option<(Point<Points>, Percentage)> {
         let y = self.y.0;
-        if self.horizontal || y >= 0.0 || !(self.live.refreshing || refresh) {
+        let b = &self.behavior;
+        if self.horizontal
+            || y >= 0.0
+            || b.refresh_indicator.is_some()
+            || !(self.live.refreshing || refresh)
+        {
             return None;
         }
         let progress = if self.live.refreshing {
             1.0
         } else {
-            (-y / REFRESH_PULL).min(1.0)
+            (-y / b.refresh_threshold().0).min(1.0)
         };
-        let cy = self.behavior.content_inset.top.0 - y - REFRESH_SPACE / 2.0;
+        let cy = b.content_inset.top.0 - y - b.refresh_inset().0 / 2.0;
         Some((point(width / 2.0, Points(cy)), Percentage(progress)))
     }
 
     /// Each sticky cell with how far it moves at the offset.
     pub fn sticky_shifts(&self) -> impl Iterator<Item = (NodeId, Point<Points>)> + '_ {
+        self.sticky_shifts_with(|_| 0.0)
+    }
+
+    /// [`ScrollState::sticky_shifts`], a cell's animated offset
+    /// (`StickyCell::offset`) valued by `value` (the animation graph's).
+    pub fn sticky_shifts_with<'a>(
+        &'a self,
+        value: impl Fn(crate::animation::NodeId) -> f32 + 'a,
+    ) -> impl Iterator<Item = (NodeId, Point<Points>)> + 'a {
         let offset = Points(self.offset() - self.lead());
         self.sticky.iter().map(move |c| {
-            let t = sticky_shift(offset, c.start, c.end);
+            let extra = c.offset.map_or(0.0, &value);
+            let t = sticky_shift(Points(offset.0 + extra), c.start, c.end);
             let zero = Points(0.0);
             (
                 c.cell,
@@ -600,6 +612,9 @@ fn enabled(host: &impl ScrollHost) -> bool {
 
 /// Sends `kind` with the offset if JS listens to it.
 fn emit(host: &impl ScrollHost, kind: EventKind) {
+    if kind == EventKind::ScrollEnd {
+        host.settled();
+    }
     if !host.listens(kind) {
         return;
     }
@@ -625,11 +640,14 @@ fn interrupt(host: &impl ScrollHost) {
 /// Moves the main axis offset to `pos` (not clamped: drags rubber band)
 /// and updates everything that follows it.
 fn moved_to(host: &impl ScrollHost, pos: f32) {
-    let offset = host.scroll_mut(|s, size| {
+    let moved = host.scroll_mut(|s, size| {
         let target = if s.horizontal { &mut s.x } else { &mut s.y };
         if target.0 == pos {
             return None;
         }
+        // How far it is pulled past its top, when that changes.
+        let pulled =
+            (!s.horizontal && (target.0 < 0.0 || pos < 0.0)).then(|| Points((-pos).max(0.0)));
         *target = Points(pos);
         if s.indicator {
             s.live.shown = host.now();
@@ -637,12 +655,15 @@ fn moved_to(host: &impl ScrollHost, pos: f32) {
             s.live.dark = host.dark();
         }
         s.live.report = true;
-        Some(s.reported(size))
+        Some((s.reported(size), pulled))
     });
-    let Some(Some(offset)) = offset else {
+    let Some(Some((offset, pulled))) = moved else {
         return;
     };
     host.moved(offset);
+    if let Some(distance) = pulled {
+        host.pulled(distance);
+    }
     if host.attached() {
         ensure_ticking(host);
     } else {
@@ -779,11 +800,18 @@ pub fn frame(host: &impl ScrollHost, now: f64) -> bool {
     busy
 }
 
+/// Ends an owner's pending input or animated command without end callbacks.
+/// Preserve the existing frame registration: the platform may still have
+/// that callback queued, and a new motion before its next frame reuses it.
+pub fn stop_motion(host: &impl ScrollHost) {
+    set_phase(host, Phase::Idle);
+    report(host);
+}
+
 /// The view left the window during its frames: it stops (a later move
 /// starts again) and reports where it is.
 pub fn detached(host: &impl ScrollHost) {
-    set_phase(host, Phase::Idle);
-    report(host);
+    stop_motion(host);
     host.scroll_mut(|s, _| s.live.ticking = false);
 }
 
@@ -905,7 +933,11 @@ fn tick(host: &impl ScrollHost, now: f64) -> bool {
             }
             busy |= alpha > 0.0;
         }
-        if !s.horizontal && s.offset() < 0.0 && s.live.refreshing {
+        if !s.horizontal
+            && s.offset() < 0.0
+            && s.live.refreshing
+            && s.behavior.refresh_indicator.is_none()
+        {
             s.live.spin = Radians(((now / 1000.0) as f32 * 2.0 * PI) % (2.0 * PI));
             redraw = true;
             busy = true;
@@ -1004,8 +1036,9 @@ pub fn scroll_by(host: &impl ScrollHost, delta: Point<Points>) {
 
 /// `ScrollBehavior`.
 pub fn behavior(host: &impl ScrollHost, behavior: &ScrollBehavior) {
-    let inset = host.scroll_mut(|s, _| {
+    let Some((inset, refresh, held)) = host.scroll_mut(|s, _| {
         let inset = s.behavior.content_inset != behavior.content_inset;
+        let refresh = s.behavior.refresh_indicator != behavior.refresh_indicator;
         s.behavior = behavior.clone();
         if !behavior.enabled
             && matches!(
@@ -1015,23 +1048,42 @@ pub fn behavior(host: &impl ScrollHost, behavior: &ScrollBehavior) {
         {
             s.live.phase = Phase::Idle;
         }
-        inset
-    });
-    if inset == Some(true) {
+        // A refresh in progress keeps the room of the indicator now showing.
+        let held = (refresh
+            && !s.horizontal
+            && s.live.refreshing
+            && s.offset() < 0.0
+            && !matches!(s.live.phase, Phase::Drag { .. }))
+        .then(|| behavior.refresh_inset().0);
+        (inset, refresh, held)
+    }) else {
+        return;
+    };
+    if inset {
         host.relayout();
         resized(host);
+    }
+    if refresh {
+        host.redraw();
+    }
+    if let Some(room) = held {
+        animate_to(host, -room, ANIMATION, false, false);
     }
 }
 
 /// `Refreshing`: shows the spinner above the content (scrolling to it
 /// when at the top) or hides it.
 pub fn refreshing(host: &impl ScrollHost, refreshing: bool) {
-    let Some(Some((pos, dragging))) = host.scroll_mut(|s, _| {
+    let Some(Some((pos, dragging, inset))) = host.scroll_mut(|s, _| {
         if s.horizontal || s.live.refreshing == refreshing {
             return None;
         }
         s.live.refreshing = refreshing;
-        Some((s.offset(), matches!(s.live.phase, Phase::Drag { .. })))
+        Some((
+            s.offset(),
+            matches!(s.live.phase, Phase::Drag { .. }),
+            s.behavior.refresh_inset().0,
+        ))
     }) else {
         return;
     };
@@ -1040,7 +1092,7 @@ pub fn refreshing(host: &impl ScrollHost, refreshing: bool) {
         return;
     }
     if refreshing && pos <= 0.5 {
-        animate_to(host, -REFRESH_SPACE, ANIMATION, false, false);
+        animate_to(host, -inset, ANIMATION, false, false);
     } else if !refreshing && pos < 0.0 {
         animate_to(host, 0.0, ANIMATION, false, false);
     }
@@ -1154,7 +1206,10 @@ pub fn drag_end(host: &impl ScrollHost, vx: f32, vy: f32) {
         } else {
             -vx
         } / 1000.0;
-        let refresh = !s.horizontal && !s.live.refreshing && listens && s.offset() <= -REFRESH_PULL;
+        let refresh = !s.horizontal
+            && !s.live.refreshing
+            && listens
+            && s.behavior.refreshes(Points(s.offset()));
         (v, refresh)
     }) else {
         return;
@@ -1542,6 +1597,9 @@ mod tests {
         fn moved(&self, offset: Point<Points>) {
             self.moved.borrow_mut().push(offset);
         }
+        fn pulled(&self, distance: Points) {
+            assert_eq!(distance, Points::ZERO);
+        }
         fn relayout(&self) {}
         fn redraw(&self) {}
         fn attached(&self) -> bool {
@@ -1733,6 +1791,32 @@ mod tests {
     }
 
     #[test]
+    fn animated_sticky_offsets_stick_further_in() {
+        let mut s = scroll_state((320.0, 2000.0), false);
+        s.y = Points(150.0);
+        s.sticky = vec![
+            crate::StickyCell {
+                cell: 1,
+                start: Points(100.0),
+                end: Points(300.0),
+                offset: None,
+            },
+            crate::StickyCell {
+                cell: 2,
+                start: Points(100.0),
+                end: Points(300.0),
+                offset: Some(7),
+            },
+        ];
+        // Below a 56 pt header: the second sticks 56 further in.
+        let shifts: Vec<_> = s
+            .sticky_shifts_with(|n| if n == 7 { 56.0 } else { 0.0 })
+            .map(|(c, p)| (c, p.y.0))
+            .collect();
+        assert_eq!(shifts, [(1, 50.0), (2, 106.0)]);
+    }
+
+    #[test]
     fn sticky_shift_clamps() {
         let p = Points;
         assert_eq!(sticky_shift(p(0.0), p(100.0), p(300.0)), p(0.0));
@@ -1845,7 +1929,9 @@ mod tests {
         assert_eq!(s.origin(), pt(0.0, 850.0));
         // Refreshing lowers the top limit.
         s.live.refreshing = true;
-        assert_eq!(s.limits(size).0, -REFRESH_SPACE);
+        assert_eq!(s.limits(size).0, -56.0);
+        s.behavior.refresh_indicator = Some(Points(80.0));
+        assert_eq!(s.limits(size).0, -80.0);
     }
 
     #[test]
@@ -2032,6 +2118,9 @@ mod tests {
             fn moved(&self, _: Point<Points>) {
                 panic!("capture loss must not move content")
             }
+            fn pulled(&self, _: Points) {
+                panic!("capture loss must not report a pull")
+            }
             fn relayout(&self) {
                 panic!("capture loss must not relayout")
             }
@@ -2080,5 +2169,84 @@ mod tests {
             assert_eq!(host.state.borrow().live.phase, phase);
             assert_eq!((host.redraws.get(), host.ticks.get()), (1, 1));
         }
+    }
+
+    #[test]
+    fn refresh_follows_its_props() {
+        let mut s = scroll_state((300.0, 1000.0), false);
+        assert!(!s.behavior.refreshes(Points(-63.0)));
+        assert!(s.behavior.refreshes(Points(-64.0)));
+        // Pulled 32 of 64: half the spokes, centered in the 56 kept.
+        s.y = Points(-32.0);
+        assert_eq!(
+            s.spinner(Points(300.0), true),
+            Some((pt(150.0, 4.0), Percentage(0.5)))
+        );
+        // The app's own indicator, 100 tall: no spinner, a pull refreshes
+        // at its height, which refreshing keeps.
+        s.behavior.refresh_indicator = Some(Points(100.0));
+        assert!(!s.behavior.refreshes(Points(-64.0)));
+        assert!(s.behavior.refreshes(Points(-100.0)));
+        assert_eq!(s.behavior.refresh_inset(), Points(100.0));
+        assert_eq!(s.spinner(Points(300.0), true), None);
+    }
+
+    /// A vertical view 500 tall the tests drive by hand: the clock stays
+    /// at 0, frames run when called.
+    struct TestHost {
+        state: std::cell::RefCell<ScrollState>,
+        redraws: std::cell::Cell<u32>,
+    }
+
+    impl ScrollHost for TestHost {
+        fn scroll<R>(&self, f: impl FnOnce(&ScrollState, Size<Points>) -> R) -> Option<R> {
+            Some(f(&self.state.borrow(), sz(300.0, 500.0)))
+        }
+        fn scroll_mut<R>(&self, f: impl FnOnce(&mut ScrollState, Size<Points>) -> R) -> Option<R> {
+            Some(f(&mut self.state.borrow_mut(), sz(300.0, 500.0)))
+        }
+        fn now(&self) -> f64 {
+            0.0
+        }
+        fn listens(&self, _: EventKind) -> bool {
+            true
+        }
+        fn event(&self, _: EventKind, _: EventPayload) {}
+        fn report(&self, _: Point<Points>, _: u32) {}
+        fn moved(&self, _: Point<Points>) {}
+        fn pulled(&self, _: Points) {}
+        fn relayout(&self) {}
+        fn redraw(&self) {
+            self.redraws.set(self.redraws.get() + 1);
+        }
+        fn attached(&self) -> bool {
+            true
+        }
+        fn start_ticking(&self) {}
+    }
+
+    #[test]
+    fn switching_indicators_while_refreshing_keeps_the_new_room() {
+        let host = TestHost {
+            state: std::cell::RefCell::new(scroll_state((300.0, 1000.0), false)),
+            redraws: std::cell::Cell::new(0),
+        };
+        let own = ScrollBehavior {
+            refresh_indicator: Some(Points(72.0)),
+            ..Default::default()
+        };
+        behavior(&host, &own);
+        refreshing(&host, true);
+        frame(&host, 1000.0);
+        assert_eq!(host.state.borrow().y, Points(-72.0));
+        // The app drops its own indicator: the spinner draws, in its room.
+        let redraws = host.redraws.get();
+        behavior(&host, &ScrollBehavior::default());
+        assert!(host.redraws.get() > redraws);
+        frame(&host, 1000.0);
+        assert_eq!(host.state.borrow().y, Points(-56.0));
+        // Unchanged props leave it where it is.
+        behavior(&host, &ScrollBehavior::default());
+        assert!(matches!(host.state.borrow().live.phase, Phase::Idle));
     }
 }

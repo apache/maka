@@ -112,9 +112,11 @@ async fn more_than_ten_thousand_actual_observations_remain_readable() {
                 sequence: completion,
             },
             false,
-            32 * 1024,
-            1,
-            64 * 1024,
+            maka_event_log::transcript::HistoryLimits {
+                max_bytes: 32 * 1024,
+                max_chunks: Some(1),
+                max_json_bytes: 64 * 1024,
+            },
         )
         .await
         .unwrap();

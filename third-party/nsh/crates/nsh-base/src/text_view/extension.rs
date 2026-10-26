@@ -103,6 +103,10 @@ pub struct MarkdownOptions {
     /// then not read.
     #[prop(default)]
     pub mdx: bool,
+    /// Keep single line breaks in paragraphs instead of flowing them as
+    /// spaces (default false). Useful for messages with intentional lines.
+    #[prop(default)]
+    pub preserve_line_breaks: bool,
     /// The text is still arriving (a reply streamed by an AI model):
     /// syntax its end leaves open (`**bold`, `` `code ``, `[link](`, a
     /// table's header alone) is shown as if it were closed, not as
@@ -120,6 +124,7 @@ impl Default for MarkdownOptions {
             frontmatter: false,
             mdx: false,
             streaming: false,
+            preserve_line_breaks: false,
         }
     }
 }
@@ -132,8 +137,9 @@ impl Default for MarkdownOptions {
 /// to [`Self::block`], inline nodes to [`Self::inline`]); the first plugin
 /// that returns `Some` wins. Give a view's plugins with
 /// [`MarkdownPlugins`] (`provide_context`): every [`super::TextView`]
-/// below it reads with them.
-pub trait MarkdownPlugin: 'static {
+/// below it reads with them. Parsing hooks run on the CPU worker and must
+/// be `Send + Sync`; `render` runs on the component's UI owner.
+pub trait MarkdownPlugin: Send + Sync + 'static {
     /// Its name (for logs).
     fn name(&self) -> &str;
 
@@ -290,7 +296,13 @@ impl Parser {
 
     /// Markdown `source` read.
     pub fn markdown(&self, source: &str) -> Document {
-        super::markdown::parse(self, source)
+        super::markdown::parse(self, source, false).document
+    }
+
+    /// Markdown with canonical UTF-8 provenance for a rendered document.
+    /// This uses the same parser and converter as `markdown`.
+    pub(super) fn markdown_projection(&self, source: &str) -> super::markdown::Projection {
+        super::markdown::parse(self, source, true)
     }
 
     /// HTML `source` read (a fragment or a whole page: its body).

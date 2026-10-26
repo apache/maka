@@ -177,6 +177,9 @@ struct ScreenNav {
     reported: Reported,
     /// The size the background was placed at.
     backdrop_size: (f32, f32),
+    /// Native projection suspended by List retirement, awaiting Insert or
+    /// source deletion; its screen configuration remains authoritative.
+    parked: bool,
 }
 
 /// One stack.
@@ -224,6 +227,8 @@ enum Motion {
     },
     Pop {
         stack: NshView,
+        /// The screen owner, including when only its snapshot remains.
+        owner: NodeId,
         leaving: Leaving,
         below: Option<NshView>,
         fade: bool,
@@ -235,6 +240,8 @@ enum Motion {
         fade: bool,
     },
     ModalOut {
+        /// Native owner, retained even when Dismiss was already reported.
+        id: NodeId,
         /// The modal to report `onDismiss` for at the end (`None`: it was
         /// reported when the user closed it).
         dismiss: Option<NodeId>,
@@ -536,12 +543,16 @@ impl ScreenNav {
             items: Vec::new(),
             reported: Reported::default(),
             backdrop_size: (-1.0, -1.0),
+            parked: false,
         }
     }
 
     /// Reports the screen's size (its stack's) and insets: the window's
     /// safe area, but the top's when its `header` covers it.
     fn report(&mut self, surface: &Surface, stack: &NshView) {
+        if self.parked {
+            return;
+        }
         let f = stack.state().frame;
         let mut insets = safe_area(surface);
         if self.config.header_view.is_some() {
@@ -735,10 +746,18 @@ impl Nav {
 
     /// Shows only the top screen of `stack`, where it belongs.
     fn settle(&mut self, surface: &Surface, stack: NodeId) {
+        let top = self.stacks.get(&stack).and_then(|stack| {
+            stack
+                .screens
+                .shown()
+                .iter()
+                .rev()
+                .copied()
+                .find(|id| self.screens.get(id).is_some_and(|screen| !screen.parked))
+        });
         let Some(st) = self.stacks.get_mut(&stack) else {
             return;
         };
-        let top = st.screens.top();
         st.top = None;
         for view in st.view.child_views() {
             if view.kind() != ViewKind::Screen {
@@ -806,7 +825,11 @@ impl Nav {
         let ids: Vec<NodeId> = children.iter().map(NshView::id).collect();
         let prev = st.screens.reconcile(&ids);
         let desired = st.screens.shown().to_vec();
-        let (old, new) = (prev.last().copied(), desired.last().copied());
+        let active = |id: &&NodeId| self.screens.get(*id).is_some_and(|screen| !screen.parked);
+        let (old, new) = (
+            prev.iter().rev().find(active).copied(),
+            desired.iter().rev().find(active).copied(),
+        );
         let frame = stack.state().frame;
         // The image the top screen showed when the app removed it.
         let image = st
@@ -877,6 +900,7 @@ impl Nav {
             };
             let motion = Motion::Pop {
                 stack,
+                owner: old,
                 leaving,
                 below: find(new),
                 fade,
@@ -922,6 +946,7 @@ impl Nav {
                 }
                 let motion = Motion::Pop {
                     stack,
+                    owner: top,
                     leaving: Leaving::View(leaving),
                     below,
                     fade,
@@ -947,7 +972,7 @@ impl Nav {
                 && st.screens.takes_back(|top| {
                     self.screens
                         .get(&top)
-                        .is_some_and(|s| s.config.prevent_back)
+                        .is_some_and(|screen| screen.config.prevent_back)
                 })
         };
         let candidates: Vec<&StackNav> = self.stacks.values().filter(|s| wants(s)).collect();
@@ -959,7 +984,13 @@ impl Nav {
         self.order
             .iter()
             .rev()
-            .find_map(|id| self.modals.get(id)?.view.as_ref())
+            .find_map(|id| {
+                self.modals
+                    .get(id)?
+                    .view
+                    .as_ref()
+                    .filter(|view| view.has_parent())
+            })
             .map_or_else(
                 || Retained::from(surface.root.ns()),
                 |v| Retained::from(v.ns()),
@@ -1021,6 +1052,7 @@ impl Nav {
                     ),
                 );
                 let motion = Motion::ModalOut {
+                    id,
                     dismiss: (!reported).then_some(id),
                     image,
                     frame,
@@ -1072,7 +1104,9 @@ impl Nav {
     /// first when it listens (it sends `Command::Back` when no listener
     /// takes it), else the innermost stack pops. Whether something took it.
     fn go_back(&mut self, surface: &Rc<Surface>) -> bool {
-        if self.order.is_empty() && surface.root.state().events.contains(EventKind::BackPress) {
+        if self.active_modal().is_none()
+            && surface.root.state().events.contains(EventKind::BackPress)
+        {
             surface.event(ROOT_ID, EventKind::BackPress, EventPayload::None);
             return true;
         }
@@ -1083,7 +1117,7 @@ impl Nav {
     /// stack inside the newest modal pops, else the modal asks to close,
     /// else the innermost stack pops. Whether something took it.
     fn default_back(&mut self, surface: &Rc<Surface>) -> bool {
-        let target = back_target(self.order.last().copied(), false, |modal| {
+        let target = back_target(self.active_modal(), false, |modal| {
             let view = modal.and_then(|id| self.modals.get(&id)?.view.clone());
             self.back_stack(view.as_ref())
         });
@@ -1100,7 +1134,9 @@ impl Nav {
     fn raise_modals(&self, surface: &Surface) {
         let mut tail: Vec<Retained<NSView>> = Vec::new();
         for m in self.order.iter().filter_map(|id| self.modals.get(id)) {
-            if let Some(view) = &m.view {
+            if let Some(view) = &m.view
+                && view.has_parent()
+            {
                 tail.push(Retained::from(view.ns()));
             }
         }
@@ -1119,6 +1155,9 @@ impl Nav {
             return;
         };
         let Some(view) = &m.view else { return };
+        if !view.has_parent() {
+            return;
+        }
         let f = surface.root.state().frame;
         let frame = rect(0.0, 0.0, f.size.width.0, f.size.height.0);
         if std::mem::replace(&mut view.state_mut().frame, frame) != frame {
@@ -1138,6 +1177,15 @@ impl Nav {
         for s in self.screens.values() {
             set_layer_color(&s.backdrop, Some(window_color(dark)));
         }
+    }
+
+    fn active_modal(&self) -> Option<NodeId> {
+        self.order.iter().rev().copied().find(|id| {
+            self.modals
+                .get(id)
+                .and_then(|modal| modal.view.as_ref())
+                .is_some_and(NshView::has_parent)
+        })
     }
 }
 
@@ -1236,7 +1284,23 @@ pub(crate) fn stack_changed(surface: &Rc<Surface>, stack: &NshView, added: Optio
         st.image = shot(surface, &top).map(|image| (top.id(), image));
     }
     if let Some(screen) = added.filter(|v| v.kind() == ViewKind::Screen) {
-        nav.screen(surface, screen);
+        let state = nav.screen(surface, screen);
+        let restoring = std::mem::take(&mut state.parked);
+        if restoring {
+            state.report(surface, stack);
+            let children: Vec<_> = stack
+                .child_views()
+                .iter()
+                .filter(|child| child.kind() == ViewKind::Screen)
+                .map(NshView::id)
+                .collect();
+            if let Some(state) = nav.stacks.get_mut(&id) {
+                state.screens.reconcile(&children);
+            }
+            nav.dirty.retain(|&stack| stack != id);
+            nav.settle(surface, id);
+            return;
+        }
         // Hidden until the batch is reconciled: a screen pushed under the
         // top one must not flash.
         hide(surface, screen);
@@ -1285,6 +1349,11 @@ pub(crate) fn present(surface: &Rc<Surface>, view: &NshView) {
     let id = view.id();
     let m = nav.modals.entry(id).or_default();
     if m.view.is_some() {
+        if !view.has_parent() {
+            view.insert_before(&surface.root, None);
+            nav.size_modal(surface, id);
+            nav.raise_modals(surface);
+        }
         return;
     }
     m.view = Some(view.clone());
@@ -1306,6 +1375,16 @@ pub(crate) fn present(surface: &Rc<Surface>, view: &NshView) {
 pub(crate) fn dismiss(surface: &Rc<Surface>, view: &NshView) {
     let mut nav = surface.nav.borrow_mut();
     let id = view.id();
+    if !view.has_parent()
+        && let Some(modal) = nav.modals.get_mut(&id)
+        && modal.view.is_some()
+    {
+        modal.view = None;
+        modal.focus_before = None;
+        modal.closed = false;
+        nav.order.retain(|&modal| modal != id);
+        return;
+    }
     match nav.modals.get_mut(&id) {
         // The user closed it already, and it was reported.
         Some(m) if m.closed => m.closed = false,
@@ -1316,6 +1395,129 @@ pub(crate) fn dismiss(surface: &Rc<Surface>, view: &NshView) {
                 view.unparent();
             }
         }
+    }
+}
+
+/// Parks only the native root supplied by Core. Navigation participation
+/// and capture end immediately, with no lifecycle event or focus return.
+pub(crate) fn park_retired_root(surface: &Rc<Surface>, view: &NshView) {
+    let id = view.id();
+    let parent = view.parent_view();
+    let mut nav = surface.nav.borrow_mut();
+    let inside = |candidate: &NshView| candidate.ns().isDescendantOf(view.ns());
+    for motion in nav.transitions.take(|motion| match motion {
+        Motion::Push {
+            stack,
+            entering,
+            below,
+            ..
+        } => inside(stack) || inside(entering) || below.as_ref().is_some_and(&inside),
+        Motion::Pop {
+            stack,
+            owner,
+            leaving,
+            below,
+            ..
+        } => {
+            *owner == id
+                || inside(stack)
+                || matches!(leaving, Leaving::View(leaving) if inside(leaving))
+                || below.as_ref().is_some_and(&inside)
+        }
+        Motion::ModalIn { view, .. } => inside(view),
+        Motion::ModalOut { id: owner, .. } => *owner == id,
+    }) {
+        let reset = |view: &NshView| {
+            set_shift(view, (0.0, 0.0));
+            set_fade(view, 1.0);
+        };
+        match motion {
+            Motion::Push {
+                entering, below, ..
+            } => {
+                reset(&entering);
+                if let Some(below) = below {
+                    reset(&below);
+                }
+            }
+            Motion::Pop {
+                stack,
+                leaving,
+                below,
+                popped,
+                ..
+            } => {
+                match leaving {
+                    Leaving::View(leaving) => reset(&leaving),
+                    Leaving::Image(image) => stack.remove_native(&image),
+                }
+                if let Some(below) = below {
+                    reset(&below);
+                }
+                if let Some(id) = popped {
+                    surface.event(id, EventKind::Dismiss, EventPayload::None);
+                }
+            }
+            Motion::ModalIn { view, .. } => reset(&view),
+            Motion::ModalOut { image, dismiss, .. } => {
+                surface.root.remove_native(&image);
+                if let Some(id) = dismiss {
+                    surface.event(id, EventKind::Dismiss, EventPayload::None);
+                }
+            }
+        }
+    }
+    nav.presenting.retain(|&modal| modal != id);
+    if let Some(screen) = nav.screens.get_mut(&id) {
+        screen.parked = true;
+    }
+    if view.kind() == ViewKind::HeaderItem
+        && let Some(screen) = parent
+            .as_ref()
+            .and_then(|parent| nav.screens.get_mut(&parent.id()))
+    {
+        screen.items.retain(|item| item != view);
+    }
+    if view.kind() == ViewKind::Screen {
+        // Keep the SDK's screen order and canonical popped membership;
+        // hidden native roots cannot receive keyboard or pointer input.
+        view.ns().setHidden(true);
+    } else if view.has_parent() {
+        view.unparent();
+    }
+    set_shift(view, (0.0, 0.0));
+    set_fade(view, 1.0);
+    if let Some(parent) = parent.filter(|parent| parent.kind() == ViewKind::Stack) {
+        if let Some(stack) = nav.stacks.get_mut(&parent.id()) {
+            if let Some((_, image)) = stack.image.take() {
+                parent.remove_native(&image);
+            }
+        }
+        nav.settle(surface, parent.id());
+    }
+}
+
+/// Parked navigation records retain their live native configuration until
+/// Insert or source Delete; deletion releases those strong native owners.
+pub(crate) fn deleted_parked_root(surface: &Surface, view: &NshView) {
+    let mut nav = surface.nav.borrow_mut();
+    if view.kind() == ViewKind::Modal
+        && !view.has_parent()
+        && nav
+            .modals
+            .get(&view.id())
+            .is_some_and(|modal| modal.view.is_some())
+    {
+        nav.modals.remove(&view.id());
+        nav.order.retain(|&id| id != view.id());
+        nav.presenting.retain(|&id| id != view.id());
+    }
+    if nav
+        .screens
+        .get(&view.id())
+        .is_some_and(|screen| screen.parked)
+    {
+        nav.screens.remove(&view.id());
     }
 }
 

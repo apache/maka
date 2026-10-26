@@ -71,18 +71,18 @@ final class TestAgent {
             if (!(v instanceof TextBox) || !v.isShown()) return null;
             TextBox text = (TextBox) v;
             android.text.Layout layout = text.layout();
-            if (layout == null || start >= end || start >= layout.getText().length()) return null;
-            int line = layout.getLineForOffset(start);
-            float x1 = layout.getPrimaryHorizontal(start);
-            // Through the line's end when the characters go on past it.
-            float x2 = end < layout.getLineEnd(line) ? layout.getPrimaryHorizontal(end) : layout.getLineRight(line);
+            if (layout == null) return null;
+            // The box of the characters on their first line: the first one (empty
+            // for an empty range, or one past the text).
+            float[] boxes = TextLayouts.rangeRects(layout, start, end, 1f);
+            if (boxes.length < 4) return null;
             int[] at = new int[2];
             v.getLocationInWindow(at);
             return new float[] {
-                at[0] + text.contentX() + Math.min(x1, x2),
-                at[1] + text.contentY() + layout.getLineTop(line),
-                Math.abs(x2 - x1),
-                layout.getLineBottom(line) - layout.getLineTop(line),
+                at[0] + text.contentX() + boxes[0],
+                at[1] + text.contentY() + boxes[1],
+                boxes[2],
+                boxes[3],
             };
         });
     }

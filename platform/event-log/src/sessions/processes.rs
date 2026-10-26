@@ -44,40 +44,38 @@ impl EventLog {
             .await
     }
 
-    /// Invocation-owned protocol admission. Configuration and live execution
-    /// are checked in the same transaction as the original Session resource row.
-    pub async fn admit_session_process_for<T>(
+    /// Invocation-owned protocol admission. Captured permission authority and live
+    /// execution are checked in the same transaction as the Session resource row.
+    pub async fn admit_session_process_for(
         &self,
         invocation: &maka_agent_facts::event::Invocation,
         id: Uuid,
-        configuration: &T,
-    ) -> Result<(), StoreError>
-    where
-        T: serde::Serialize + serde::de::DeserializeOwned + Clone + PartialEq + Send + 'static,
-    {
+        basis: &maka_agent_facts::workspace::PermissionBasis,
+    ) -> Result<(), StoreError> {
         self.validate_root()?;
         super::validate_id(&invocation.session_id)?;
         let invocation = invocation.clone();
-        let configuration = configuration.clone();
+        basis.validate().map_err(super::invalid)?;
+        let basis = *basis;
         self.connection
             .run(move |connection| {
                 Box::pin(async move {
                     let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
                     super::retain(&mut tx, &invocation.session_id).await?;
-                    let session: super::SessionRecord<T> =
-                        super::read(&mut tx, &invocation.session_id)
-                            .await?
-                            .ok_or(StoreError::SessionNotFound)?;
+                    let current = crate::workspace_bindings::permission_basis(
+                        &mut tx,
+                        &invocation.session_id,
+                    )
+                    .await?;
                     let turn = crate::turns::read(&mut tx, &invocation.session_id, None)
                         .await?
                         .ok_or_else(|| super::invalid("process invocation unavailable"))?;
-                    if session.archived
-                        || session.configuration != configuration
+                    if current != Some(basis)
                         || turn.invocation != invocation
                         || matches!(turn.state, crate::turns::InvocationState::Ended { .. })
                     {
                         return Err(super::invalid(
-                            "process invocation or configuration changed before admission",
+                            "process invocation or permissions changed before admission",
                         ));
                     }
                     sqlx::query("INSERT INTO session_processes(id,session_id) VALUES (?,?)")
@@ -94,12 +92,15 @@ impl EventLog {
     /// Call only after the owned process group/Job and native resources drained.
     pub async fn clean_session_process(&self, id: Uuid) -> Result<(), StoreError> {
         self.validate_root()?;
+        let expected_session = self.expected_session.clone();
         self.connection
             .run(move |connection| {
                 Box::pin(async move {
                     let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
-                    let changed = sqlx::query("UPDATE session_processes SET cleaned=1 WHERE id=?")
+                    let changed = sqlx::query("UPDATE session_processes SET cleaned=1 WHERE id=? AND (? IS NULL OR session_id=?)")
                         .bind(id.to_string())
+                        .bind(expected_session.as_deref())
+                        .bind(expected_session.as_deref())
                         .execute(&mut *tx)
                         .await?
                         .rows_affected();

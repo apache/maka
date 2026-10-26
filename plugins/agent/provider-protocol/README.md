@@ -29,4 +29,6 @@ The Chat Completions codec covers compatible providers. OpenAI-specific model po
 
 Behavior was verified against unchanged selected upstream tests at the revision recorded in the [source audit](../../../docs/code-origin-audit.md). Temporary upstream tests and validation bindings are kept outside the product. First-party regressions are maintained alongside each protocol implementation.
 
+The SSE decoder limits one unfinished record to 64 MiB to bound malformed or unterminated provider input, with room for atomic records larger than 32 MiB. Completed records transfer their buffers instead of retaining peak capacity. The complete response can contain any number of records.
+
 [Source](src/lib.rs) · [Cargo manifest](Cargo.toml)

@@ -235,6 +235,8 @@ pub(crate) struct Surface {
     on_hot_update_failed: RefCell<Option<Box<dyn Fn()>>>,
     /// Where `asset:/` image URIs resolve ([`crate::image::set_asset_base`]).
     pub(crate) asset_base: RefCell<Option<crate::image::AssetBase>>,
+    /// The disk cache of downloaded images ([`crate::image::set_disk_cache`]).
+    pub(crate) image_cache: RefCell<Option<nsh_core::image::DiskCache>>,
     /// The window's chrome: title bar, menus ([`crate::chrome`]).
     pub(crate) chrome: crate::chrome::Chrome,
     /// Videos, web views and registered native components.
@@ -286,6 +288,7 @@ impl Surface {
             on_error: RefCell::new(None),
             on_hot_update_failed: RefCell::new(None),
             asset_base: RefCell::new(None),
+            image_cache: RefCell::new(None),
             native: Default::default(),
             keymap: Default::default(),
             file_drop: Default::default(),
@@ -343,6 +346,8 @@ impl Surface {
         };
         match Engine::start_with(config, CoreTextEngine::default, sink, setup) {
             Ok(engine) => {
+                // The app's downloaded images go through its disk cache.
+                crate::image::set_disk_cache(self, engine.image_cache());
                 // The test moves its clock through the engine.
                 #[cfg(feature = "dev")]
                 if let Some(model) = &*self.test_model.borrow() {
@@ -386,7 +391,10 @@ impl Surface {
 
     /// Sends an event to JS.
     pub(crate) fn event(&self, id: NodeId, kind: EventKind, payload: EventPayload) {
-        self.control(|c| c.dispatch_event(id, kind, payload));
+        self.control(|c| {
+            c.set_focus_path(crate::input::focus_path(self));
+            c.dispatch_event(id, kind, payload);
+        });
     }
 
     /// Shows fatal app errors with `f` (development hosts).
@@ -539,7 +547,11 @@ impl Surface {
         });
         if let (Some(monitor), Some(start)) = (monitor, start) {
             // Core Animation's commit (drawing what changed) included.
-            monitor.record_work(start.elapsed(), applied);
+            let cost = start.elapsed();
+            monitor.record_work(cost, applied);
+            if applied {
+                crate::fps::drained(cost);
+            }
         }
         self.ensure_ticking();
     }
@@ -635,6 +647,7 @@ impl Surface {
             anim.write(&self.mounter.borrow());
             std::mem::take(&mut anim.finished)
         };
+        crate::scroll::pin_animated_sticky(self);
         if !finished.is_empty() {
             self.control(|c| c.animations_finished(finished));
         }
@@ -792,7 +805,9 @@ impl Surface {
         let start = Instant::now();
         let dirty = self.wants_frames();
         quiet(|| self.tick(now));
-        monitor.record_work(start.elapsed(), dirty);
+        let cost = start.elapsed();
+        monitor.record_work(cost, dirty);
+        crate::fps::ticked(cost);
         monitor.vsync(
             Instant::now(),
             std::time::Duration::from_secs_f64(period.max(0.0)),

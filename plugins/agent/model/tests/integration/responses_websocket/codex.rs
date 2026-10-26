@@ -50,13 +50,15 @@ fn codex_request(port: u16, token: &str) -> ModelRequest {
             .to_string()
             .contains(token)
     );
-    request.prompt.insert(
-        0,
-        maka_model::prompt::Message::System {
-            content: "Keep this system instruction.".into(),
-            provider_options: None,
-        },
-    );
+    crate::edit_prompt(&mut request.prompt, |messages| {
+        messages.insert(
+            0,
+            maka_model::prompt::Message::System {
+                content: "Keep this system instruction.".into(),
+                provider_options: None,
+            },
+        )
+    });
     // The subscription profile must enforce store:false and supply verbosity.
     request.provider_options = json!({"openai":{"store":true}});
     assert!(request.max_output_tokens.is_some());
@@ -167,10 +169,10 @@ async fn subscription_profile_survives_proxy_ws_continuation_and_http_fallback()
             assert!(matches!(&step.parts[..], [ModelPart::Text {text, ..}] if text == "OK"));
             if index == 0 {
                 let content = accepted_content(&step);
-                next.prompt.push(serde_json::from_value(json!({"role":"assistant","content":content})).unwrap());
+                crate::edit_prompt(&mut next.prompt, |messages| messages.push(serde_json::from_value(json!({"role":"assistant","content":content})).unwrap()));
                 assert!(lane.needs_confirmation());
-                assert!(lane.confirm(&next.prompt, &[], step.response_id.as_deref()));
-                next.prompt.push(serde_json::from_value(json!({"role":"user","content":[{"type":"text","text":"second"}]})).unwrap());
+                assert!(lane.confirm(&next.prompt, &[], step.response_id.as_deref()).await);
+                crate::edit_prompt(&mut next.prompt, |messages| messages.push(serde_json::from_value(json!({"role":"user","content":[{"type":"text","text":"second"}]})).unwrap()));
                 generate(&executor, &lane, next).await;
             }
             drop(lane);

@@ -37,7 +37,7 @@ unicode-width = "0.2.2"
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
-rustix = { version = "1.1.4", features = ["pty", "termios", "fs", "process", "net"] }
+rustix = { version = "1.1.5", features = ["pty", "termios", "fs", "process", "net"] }
 
 [target.'cfg(windows)'.dependencies]
 dunce = "1.0.5"

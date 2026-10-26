@@ -73,11 +73,13 @@ fn start() -> (Engine, Receiver<MountBatch>) {
         ui_sets: Vec::new(),
         runtime: None,
         data_dir: None,
+        cache: nsh_engine::CacheOptions::off(),
         storage: None,
         clock: Default::default(),
         context: Default::default(),
         pinned: Default::default(),
         clipboard: None,
+        host: Default::default(),
         picker: None,
     };
     (
@@ -233,11 +235,13 @@ fn start_app_with(app: &str, header_heights: (Points, Points)) -> (Engine, Recei
         ui_sets: vec![nsh_base::registry(), crate::test_ui::registry()],
         runtime: None,
         data_dir: None,
+        cache: nsh_engine::CacheOptions::off(),
         storage: None,
         clock: Default::default(),
         context: Default::default(),
         pinned: Default::default(),
         clipboard: None,
+        host: Default::default(),
         picker: None,
     };
     (

@@ -396,7 +396,7 @@ async fn fetch(
     let response = tokio::select! {
         biased;
         _ = cancellation.cancelled() => return Err("public catalog refresh cancelled".into()),
-        result = transport.request(http::Request { url: url.into(), method: http::Method::Get, headers, body: vec![] }) => result.map_err(|_| "public catalog HTTP request failed")?,
+        result = transport.request(http::Request { url: url.into(), method: http::Method::Get, headers, body: Default::default() }, cancellation.clone()) => result.map_err(|_| "public catalog HTTP request failed")?,
     };
     let result = async {
         let header = |name: &str| response.head.headers.iter().find_map(|(key, value)| {

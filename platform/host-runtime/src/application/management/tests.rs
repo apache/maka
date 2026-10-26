@@ -30,7 +30,7 @@ use std::{ops::Range, time::Duration};
 
 struct Fixture {
     manager: Manager,
-    store: Arc<EventLog>,
+    store: Arc<RootStore>,
     source: DeploymentRef,
     input: Input,
     _directory: tempfile::TempDir,
@@ -48,7 +48,7 @@ impl Fixture {
             )
             .unwrap(),
         );
-        let store = Arc::new(EventLog::for_root(owner).await.unwrap());
+        let store = Arc::new(RootStore::open(owner).await.unwrap());
         let input = Input {
             environment: Environment {
                 location: ExecutionLocation::Host,
@@ -201,6 +201,7 @@ fn context(attachments: Attachments) -> Context {
         consumer: activation.clone(),
         requester: activation,
         operation: None,
+        operation_scope: None,
         attachments,
         imports: Arc::new(BTreeMap::new()),
         dispatch: Weak::new(),

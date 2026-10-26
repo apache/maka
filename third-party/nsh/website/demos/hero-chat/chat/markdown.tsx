@@ -30,11 +30,12 @@ export function Markdown(props: {
         markdown={props.md}
         options={{ streaming: !!props.streaming }}
         selectable
+        contentStyle={{ rowGap: 12 }}
         codeBlockScrollbar={false}
         streamingCaret={props.caret}
         styles={{
           // A chat's scale: tighter than a document's.
-          root: { gap: 12, fontSize: 15, lineHeight: 22, color: colors.text },
+          root: { fontSize: 15, lineHeight: 22, color: colors.text },
           heading1: { fontSize: 20, lineHeight: 26 },
           heading2: { fontSize: 17, lineHeight: 22 },
           heading3: { fontSize: 15, lineHeight: 22 },

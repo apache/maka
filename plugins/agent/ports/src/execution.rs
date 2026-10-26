@@ -37,7 +37,23 @@ pub use interaction::{OfferInteraction, Prompt};
 pub use removal::{RemovalReceipt, RemoveSession, RemovedSession};
 pub use root::{CreateRoot, RootApproval, RootTemplate, Settings as RootSettings};
 
-/// Business identity belongs to the package/scope namespace, never an activation.
+/// Receipt identity within an operation kind and package/scope namespace.
+/// The target Session is explicit: the same operation ID in another Session
+/// names independent work, never a redirect to the first accepted execution.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SessionOperation {
+    pub session_id: String,
+    pub operation_id: String,
+}
+impl SessionOperation {
+    pub fn validate(&self) -> Result<(), Error> {
+        name(&self.session_id)?;
+        name(&self.operation_id)
+    }
+}
+
+/// Business identity belongs to package/scope and target Session, never an activation.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Submit {
@@ -50,6 +66,12 @@ pub struct Submit {
 }
 
 impl Submit {
+    pub fn operation(&self) -> SessionOperation {
+        SessionOperation {
+            session_id: self.session_id.clone(),
+            operation_id: self.operation_id.clone(),
+        }
+    }
     pub fn validate(&self) -> Result<(), Error> {
         name(&self.operation_id)?;
         name(&self.session_id)?;
@@ -260,6 +282,7 @@ pub struct CurrentExecution {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ReadArtifact {
+    pub session_id: String,
     pub operation_id: String,
     pub artifact_id: String,
     pub offset: u64,
@@ -267,6 +290,7 @@ pub struct ReadArtifact {
 }
 impl ReadArtifact {
     pub fn validate(&self) -> Result<(), Error> {
+        name(&self.session_id)?;
         name(&self.operation_id)?;
         name(&self.artifact_id)?;
         if self.offset >= (1 << 53) || !(1..=64 * 1024).contains(&self.limit) {
@@ -398,8 +422,14 @@ pub trait Commands: Send + Sync + std::any::Any {
         &self,
         request: Enqueue,
     ) -> futures_util::future::BoxFuture<'_, Result<MessageReceipt, CommandError>>;
-    fn message(&self, operation_id: String) -> futures_util::future::BoxFuture<'_, MessageResult>;
-    fn retract(&self, operation_id: String) -> futures_util::future::BoxFuture<'_, MessageResult>;
+    fn message(
+        &self,
+        operation: SessionOperation,
+    ) -> futures_util::future::BoxFuture<'_, MessageResult>;
+    fn retract(
+        &self,
+        operation: SessionOperation,
+    ) -> futures_util::future::BoxFuture<'_, MessageResult>;
     /// Exact retries reuse the canonical offer, including its outcome after the Run ended.
     fn offer_interaction(
         &self,
@@ -478,7 +508,7 @@ pub trait Commands: Send + Sync + std::any::Any {
     /// Export a settled child workspace once; exact retries return its immutable Artifact.
     fn workspace_patch(
         &self,
-        operation_id: String,
+        operation: SessionOperation,
     ) -> futures_util::future::BoxFuture<'_, Result<Option<WorkspacePatch>, CommandError>>;
     /// Missing artifacts and artifacts from another Turn are both absent.
     fn artifact(
@@ -487,7 +517,7 @@ pub trait Commands: Send + Sync + std::any::Any {
     ) -> futures_util::future::BoxFuture<'_, Result<Option<ArtifactChunk>, CommandError>>;
     fn event(
         &self,
-        operation_id: String,
+        operation: SessionOperation,
         event_id: String,
         through: u64,
     ) -> futures_util::future::BoxFuture<
@@ -498,7 +528,7 @@ pub trait Commands: Send + Sync + std::any::Any {
     fn changes(&self) -> Result<tokio::sync::watch::Receiver<u64>, CommandError>;
     fn events(
         &self,
-        operation_id: String,
+        operation: SessionOperation,
         after: u64,
         through: u64,
     ) -> futures_util::future::BoxFuture<'_, Result<EventPage, CommandError>>;
@@ -518,11 +548,11 @@ pub trait Commands: Send + Sync + std::any::Any {
     ) -> futures_util::future::BoxFuture<'_, Result<Receipt, CommandError>>;
     fn query(
         &self,
-        operation_id: String,
+        operation: SessionOperation,
     ) -> futures_util::future::BoxFuture<'_, Result<Observation, CommandError>>;
     fn cancel(
         &self,
-        operation_id: String,
+        operation: SessionOperation,
     ) -> futures_util::future::BoxFuture<'_, Result<Observation, CommandError>>;
 }
 

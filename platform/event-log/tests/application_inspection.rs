@@ -18,7 +18,7 @@
  */
 
 use maka_event_log::{
-    EventLog, StoreError,
+    EventLog, RootStore, StoreError,
     root::{FileLease, ROOT_DATABASE, RootNamespaces, RootOwner},
 };
 use maka_plugin_core::{composition::Input, deployment::DeploymentRef};
@@ -120,7 +120,7 @@ impl Fixture {
             control: root.join("control"),
         };
         let owner = RootOwner::create(&root, &namespaces).unwrap();
-        let writer = EventLog::for_root(Arc::new(owner)).await.unwrap();
+        let writer = RootStore::open(Arc::new(owner)).await.unwrap();
         let input: Input = serde_json::from_value(json!({
             "environment":{"location":"host"},"instances":{}
         }))

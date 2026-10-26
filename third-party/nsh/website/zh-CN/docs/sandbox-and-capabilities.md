@@ -107,7 +107,8 @@ release 构建（所有并非从开发服务器加载的代码）在加载时会
     "statusBar": true,
     "clipboard": true,
     "picker": true,
-    "host": ["getUserInfo", "bridge.*"]
+    "host": ["getUserInfo", "bridge.*"],
+    "openUrl": { "schemes": ["https", "mailto"] }
   }
 }
 ```
@@ -167,6 +168,10 @@ web view 内的顶层导航也会在加载前由平台的导航代理检查。�
 ### `picker`
 
 `"picker": true` 允许应用显示系统的照片选择器（[`nsh/picker`](../modules/nsh-picker.md)）：由用户决定哪些内容交给应用。
+
+### `openUrl`
+
+允许应用在应用之外打开 URL（[`openUrl`](../modules/nsh-device.md#openurl)，以及 `links="open"` 的 `TextView` 中的链接）：`"openUrl": true` 允许所有 scheme，`"openUrl": { "schemes": ["https", "mailto"] }` 只允许列出的 scheme。scheme 未被授予的 URL 会抛出 `TypeError`。会执行代码或访问应用自身数据的 URL（`javascript:`、`data:`、`file:` 等）无论能力如何都不会打开。
 
 ### 存储
 

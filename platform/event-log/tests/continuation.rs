@@ -56,7 +56,7 @@ mod imported;
 use fixtures::*;
 
 #[tokio::test]
-async fn canonical_claim_is_atomic_unique_and_authenticates_the_entire_lineage_after_reopen() {
+async fn canonical_claim_is_atomic_unique_and_preserves_the_entire_lineage_after_reopen() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("continuation.sqlite");
     let log = EventLog::open(&path).await.unwrap();
@@ -314,33 +314,28 @@ async fn canonical_claim_is_atomic_unique_and_authenticates_the_entire_lineage_a
         second
     );
     assert_eq!(append(&log, &first).await, sequence);
-    let committed_before_corruption = log.prefix(100, 65536).await.unwrap().high_water;
-    // Current parent still hashes identically, but an ancestor's raw bytes changed.
-    db.execute(
-        "UPDATE event_log SET event_json=event_json || ' ' WHERE event_id=?",
-        [&source.id],
-    )
-    .unwrap();
-    assert!(
-        log.append(&EventWrite::plain(opening("third", Some(third_claim.clone()))).unwrap())
-            .await
-            .is_err()
-    );
-    assert!(
+    // A previously admitted ancestry remains usable after reopen. Fresh claims
+    // above still validate their source identity and cannot reuse an owned edge.
+    let third = opening("third", Some(third_claim.clone()));
+    append(&log, &third).await;
+    assert_eq!(
         log.continuation_for_source(&third_claim.source)
             .await
             .unwrap()
-            .is_none()
+            .unwrap()
+            .event,
+        third
     );
-    assert_eq!(
-        log.prefix(100, 65536).await.unwrap().high_water,
-        committed_before_corruption
-    );
+    assert!(matches!(
+        log.message_execution("session", "origin-message").await.unwrap(),
+        maka_event_log::message_resolution::MessageExecution::Owned(owner)
+            if owner.invocation == third.invocation
+    ));
     log.close().await.unwrap();
 }
 
 #[tokio::test]
-async fn message_owner_rejects_ambiguous_private_successors_without_repair_after_reopen() {
+async fn message_owner_rejects_new_competing_claim_and_preserves_owner_after_reopen() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("ambiguous-successors.sqlite");
     let log = EventLog::open(&path).await.unwrap();
@@ -398,43 +393,18 @@ async fn message_owner_rejects_ambiguous_private_successors_without_repair_after
             if owner.invocation == successor.invocation
     ));
 
-    // Malformed private evidence, not a supported live dual admission: the
-    // distinct high-water and claim IDs preserve the schema's unique indexes.
+    // A new competing source cut is checked at admission and cannot replace the
+    // existing message owner. No out-of-band private-ledger rewrite is involved.
     let mut competing = original;
-    competing.id = "malformed-claim".into();
+    competing.id = "competing-claim".into();
     competing.source.high_water += 1;
-    let malformed = opening("malformed-successor", Some(competing));
-    let db = rusqlite::Connection::open(&path).unwrap();
-    db.execute(
-        "INSERT INTO event_log (event_id, invocation_id, kind, event_json)
-         VALUES (?1, ?2, 'invocation_opened', ?3)",
-        rusqlite::params![
-            malformed.id,
-            malformed.invocation.invocation_id,
-            serde_json::to_string(&malformed).unwrap(),
-        ],
-    )
-    .unwrap();
-    let raw = || {
-        let mut statement = db
-            .prepare("SELECT sequence, event_json FROM event_log ORDER BY sequence")
-            .unwrap();
-        statement
-            .query_map([], |row| {
-                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
-            })
-            .unwrap()
-            .collect::<Result<Vec<_>, _>>()
-            .unwrap()
-    };
-    let raw_before = raw();
+    let competing = opening("competing-successor", Some(competing));
     let canonical_before = serde_json::to_value(log.prefix(100, 65536).await.unwrap()).unwrap();
-    assert!(matches!(
-        log.message_execution("session", "origin-message").await,
-        Err(maka_event_log::StoreError::InvalidTransition(reason))
-            if reason == "Message owner has ambiguous continuations"
-    ));
-    assert_eq!(raw(), raw_before);
+    assert!(
+        log.append(&EventWrite::plain(competing).unwrap())
+            .await
+            .is_err()
+    );
     assert_eq!(
         serde_json::to_value(log.prefix(100, 65536).await.unwrap()).unwrap(),
         canonical_before
@@ -442,11 +412,10 @@ async fn message_owner_rejects_ambiguous_private_successors_without_repair_after
     log.close().await.unwrap();
     let log = EventLog::open(&path).await.unwrap();
     assert!(matches!(
-        log.message_execution("session", "origin-message").await,
-        Err(maka_event_log::StoreError::InvalidTransition(reason))
-            if reason == "Message owner has ambiguous continuations"
+        log.message_execution("session", "origin-message").await.unwrap(),
+        maka_event_log::message_resolution::MessageExecution::Owned(owner)
+            if owner.invocation == successor.invocation
     ));
-    assert_eq!(raw(), raw_before);
     assert_eq!(
         serde_json::to_value(log.prefix(100, 65536).await.unwrap()).unwrap(),
         canonical_before

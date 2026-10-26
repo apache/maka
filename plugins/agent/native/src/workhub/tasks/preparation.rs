@@ -96,9 +96,11 @@ impl Delivery {
 impl Hub {
     pub(super) async fn transfers(
         &self,
-        source: &Invocation,
+        context: &ToolCallContext,
         attachments: &[AttachmentRef],
     ) -> Result<Vec<Transfer>, String> {
+        let source = &context.invocation;
+        let store = self.agent.0.tool_store(context)?;
         let mut transfers = Vec::with_capacity(attachments.len());
         let mut seen = std::collections::BTreeSet::new();
         for attachment in attachments {
@@ -112,10 +114,7 @@ impl Hub {
             if session_id != &source.session_id || !seen.insert(relative_path) {
                 return Err("workhub_attachment_invalid".into());
             }
-            let record = self
-                .agent
-                .0
-                .store
+            let record = store
                 .get_artifact(session_id, relative_path)
                 .await
                 .map_err(|_| "workhub_attachment_unavailable")?
@@ -163,8 +162,22 @@ impl Hub {
         let source = transfer.source.clone();
         let digest = transfer.digest.clone();
         let (session, id) = (session_id.clone(), relative_path.clone());
-        let store = self.agent.0.store.clone();
         let scope = request.scope().clone();
+        let store = match (scope.identity.agent(), scope.execution()) {
+            (Some(invocation), Some(execution)) if invocation.session_id == session => self
+                .agent
+                .0
+                .store
+                .session_for_execution(execution.as_ref(), invocation)
+                .map_err(|error| error.to_string())?,
+            _ => self
+                .agent
+                .0
+                .store
+                .session(&session)
+                .await
+                .map_err(|error| error.to_string())?,
+        };
         let mut capture = request.capture_resources(BTreeMap::from([("file".into(),ResourceDescriptor {
             encoding:ResourceEncoding::Bytes,resource:maka_plugin_core::contract::binary_resource_type(),length:source.bytes,
             metadata:serde_json::json!({"name":source.name,"bytes":source.bytes,"digest":digest}),

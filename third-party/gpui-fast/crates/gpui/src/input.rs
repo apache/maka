@@ -1,6 +1,6 @@
 use crate::{
     App, Bounds, ClipboardItem, Context, Entity, InputHandler, Pixels, TextInputConfiguration,
-    UTF16Selection, Window,
+    TextInputTarget, UTF16Selection, Window,
 };
 use std::ops::Range;
 
@@ -24,6 +24,15 @@ use std::ops::Range;
 ///
 /// See [`InputHandler`] for details on how to implement each method.
 pub trait EntityInputHandler: 'static + Sized {
+    /// See [`InputHandler::text_input_target`] for details.
+    fn text_input_target(
+        &self,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<TextInputTarget> {
+        None
+    }
+
     /// See [`InputHandler::text_for_range`] for details
     fn text_for_range(
         &mut self,
@@ -167,6 +176,12 @@ impl<V: 'static> ElementInputHandler<V> {
 }
 
 impl<V: EntityInputHandler> InputHandler for ElementInputHandler<V> {
+    fn text_input_target(&mut self, window: &mut Window, cx: &mut App) -> Option<TextInputTarget> {
+        crate::fast::dependencies::query(&self.view, cx, |view, cx| {
+            view.text_input_target(window, cx)
+        })
+    }
+
     fn selected_text_range(
         &mut self,
         ignore_disabled_input: bool,

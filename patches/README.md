@@ -21,7 +21,7 @@
 
 Root installation applies these exact-version patches with `patch-package --error-on-fail`. Product bundles use the pinned dependencies.
 
-## `zod@4.6.5`
+## `zod@4.6.7`
 
 Recursive schemas can retain their last parse context and input graph, and exceptional exits can leave entries on the allocation stack. The patch keeps memoization local to a parse and restores allocation state in `finally`, preserving cycles, aliases and reentrant parsing.
 

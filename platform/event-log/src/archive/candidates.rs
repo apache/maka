@@ -20,7 +20,7 @@
 use super::{PruneCandidate, PruneCandidates, PruneCursor, target};
 use crate::{
     EventLog, StoreError,
-    context::{cache, read, safety, selection::Selection},
+    context::{read, safety, selection::Selection},
 };
 use maka_agent_facts::event::RuntimeEvent;
 use sqlx::{Connection, SqliteConnection};
@@ -41,12 +41,7 @@ impl EventLog {
         }
         let (session, current) = (session.to_owned(), current.map(str::to_owned));
         let cursor = cursor.cloned();
-        let cache = self.context_cache.clone();
-        let writer = self.connection.writer();
         self.connection.read_interruptible(move |connection| Box::pin(async move {
-            let observation = if max_candidates > 0 && cache.has_anchor(&session) {
-                Some(cache::observe(cache.clone(), &writer, session.clone()).await?)
-            } else { None };
             let mut tx = connection.begin().await?;
             if let Some(id) = &current {
                 let live: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM runtime_events o WHERE invocation_id=? AND kind='invocation_opened'
@@ -58,7 +53,7 @@ impl EventLog {
             safety::require_safe(&mut tx, &session, current.as_deref()).await?;
             let mut output = PruneCandidates { candidates: Vec::new(), next: None };
             // The admission preflight checks safety without materializing history.
-            let promotion = if max_candidates > 0 {
+            if max_candidates > 0 {
                 let selection = if let Some(id) = &current {
                     let json: String = sqlx::query_scalar("SELECT event_json FROM runtime_events WHERE invocation_id=? AND kind='invocation_opened'")
                         .bind(id).fetch_one(&mut *tx).await?;
@@ -67,30 +62,17 @@ impl EventLog {
                 } else {
                     Selection::session(&session)
                 };
-                let (origin, mut verification) = if let Some((origin, certificate)) = observation {
-                    let (confirmed, _) = cache::observe(cache.clone(), &writer, session.clone()).await?;
-                    let certificate = certificate.filter(|_| confirmed == origin);
-                    let verification = cache::Verification::new(cache.clone(), origin.clone(), certificate);
-                    (Some(origin), verification)
-                } else { (None, cache::Verification::default()) };
-                let baseline = read::latest_selected(&mut tx, &selection, i64::MAX as u64, &mut verification).await?;
+                let baseline = read::latest_selected(&mut tx, &selection, i64::MAX as u64).await?;
                 let covered = baseline.as_ref().map_or(0, |b| b.checkpoint.covered_through);
                 let through = selection.high_water(&mut tx, i64::MAX as u64).await?;
-                if baseline.is_some() {
-                    super::validate_selected(&mut tx, &selection, through, i64::MAX as u64).await?;
-                }
                 let mut cursor = cursor.unwrap_or(PruneCursor { through, after_sequence: covered });
                 if cursor.after_sequence > cursor.through || cursor.through > through {
                     return Err(StoreError::InvalidTransition("invalid prune scan fence".into()));
                 }
                 cursor.after_sequence = cursor.after_sequence.max(covered);
                 scan(&mut tx, &selection, cursor, max_candidates, max_bytes, &mut output).await?;
-                origin.map(|origin| (origin, verification.candidate()))
-            } else { None };
-            tx.commit().await?;
-            if let Some((origin, candidate)) = promotion {
-                cache::promote(cache, &writer, origin, candidate).await?;
             }
+            tx.commit().await?;
             Ok(output)
         })).await
     }

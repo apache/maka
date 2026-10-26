@@ -33,19 +33,6 @@ pub(crate) async fn validate(
     connection: &mut SqliteConnection,
     event: &RuntimeEvent,
 ) -> Result<(), StoreError> {
-    validate_cached(
-        connection,
-        event,
-        &mut crate::context::cache::Verification::default(),
-    )
-    .await
-}
-
-pub(crate) async fn validate_cached(
-    connection: &mut SqliteConnection,
-    event: &RuntimeEvent,
-    verification: &mut crate::context::cache::Verification,
-) -> Result<(), StoreError> {
     let model_failure = match &event.fact {
         Fact::ModelInterrupted { model_failure, .. }
         | Fact::InvocationEnded {
@@ -65,7 +52,7 @@ pub(crate) async fn validate_cached(
     crate::continuation::validate(connection, event).await?;
     crate::handoff::validate_history(connection, event).await?;
     crate::steering::validate_append(connection, event).await?;
-    crate::context::validate_append(connection, event, verification).await?;
+    crate::context::validate_append(connection, event).await?;
     crate::archive::validate_append(connection, event).await?;
     outcomes(connection, event).await
 }

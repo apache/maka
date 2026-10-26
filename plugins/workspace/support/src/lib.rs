@@ -132,6 +132,10 @@ fn choice(
         .map_err(|_| "agent_directory_unavailable")?;
     let (path, identity) =
         directory::capture(&selected).map_err(|_| "agent_directory_unavailable")?;
+    // Identity capture may use O_PATH; browsing also needs a readable directory.
+    let _entries = directory::open(&path, &identity)
+        .and_then(|directory| directory.entries())
+        .map_err(|_| "agent_directory_unavailable")?;
     root.directory
         .validate(&path)
         .map_err(|_| "agent_directory_unavailable")?;
@@ -155,15 +159,16 @@ fn root_page(roots: &[Root]) -> Result<DirectoryPage, String> {
         roots: roots
             .iter()
             .enumerate()
-            .map(|(index, root)| {
+            .filter_map(|(index, root)| {
                 choice(
                     root,
                     format!("root-{}", index + 1),
                     vec![],
                     root.name.clone(),
                 )
+                .ok()
             })
-            .collect::<Result<_, _>>()?,
+            .collect(),
     })
 }
 pub fn fits<T: serde::Serialize>(value: &T) -> bool {
@@ -230,19 +235,23 @@ pub async fn query_excluding(
             });
         }
         let mut children = Vec::new();
-        for name in names.iter().take(32) {
+        let mut remaining = names.iter();
+        for name in remaining.by_ref() {
             let mut segments = selection.segments.clone();
             segments.push(name.clone());
-            children.push(choice(
-                root,
-                selection.root_id.clone(),
-                segments,
-                name.clone(),
-            )?);
+            let Ok(child) = choice(root, selection.root_id.clone(), segments, name.clone()) else {
+                continue;
+            };
+            children.push(child);
+            if children.len() == 32 {
+                break;
+            }
         }
         let mut page = DirectoryPage::Children {
             directory: selected,
-            after: (names.len() > children.len())
+            after: remaining
+                .next()
+                .is_some()
                 .then(|| children.last().expect("nonempty page").name.clone()),
             children,
         };
@@ -471,4 +480,125 @@ pub async fn selection_at(
     })
     .await
     .map_err(|_| "agent_directory_unavailable".into())
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[tokio::test]
+    async fn inaccessible_children_do_not_break_paging_but_parent_failure_is_reported() {
+        let temporary = tempfile::tempdir().unwrap();
+        let published = temporary.path().join("published");
+        std::fs::create_dir(&published).unwrap();
+        for index in 0..35 {
+            std::fs::create_dir(published.join(format!("folder-{index:02}"))).unwrap();
+        }
+        let denied = published.join("folder-01");
+        let roots = open(
+            vec![DirectoryRootSpec {
+                label: "Projects".into(),
+                path: published.clone(),
+            }],
+            &temporary.path().join("managed"),
+        )
+        .unwrap();
+        let DirectoryPage::Roots { roots: entries } =
+            query(roots.clone(), Directories::Roots {}).await.unwrap()
+        else {
+            panic!("roots")
+        };
+        let selection = entries[0].selection.clone();
+        std::fs::set_permissions(&denied, std::fs::Permissions::from_mode(0o0)).unwrap();
+        assert_eq!(
+            std::fs::read_dir(&denied)
+                .expect_err("fixture child must deny directory reads")
+                .kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+        let page = query(
+            roots.clone(),
+            Directories::Children {
+                selection: selection.clone(),
+                after: None,
+            },
+        )
+        .await;
+        std::fs::set_permissions(&denied, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let DirectoryPage::Children {
+            children, after, ..
+        } = page.unwrap()
+        else {
+            panic!("children")
+        };
+        assert_eq!(children.len(), 32);
+        assert!(!children.iter().any(|child| child.name == "folder-01"));
+        assert_eq!(after.as_deref(), Some("folder-32"));
+        let DirectoryPage::Children {
+            children, after, ..
+        } = query(
+            roots.clone(),
+            Directories::Children {
+                selection: selection.clone(),
+                after,
+            },
+        )
+        .await
+        .unwrap()
+        else {
+            panic!("children")
+        };
+        assert_eq!(
+            children
+                .iter()
+                .map(|child| child.name.as_str())
+                .collect::<Vec<_>>(),
+            ["folder-33", "folder-34"]
+        );
+        assert!(after.is_none());
+        let DirectoryPage::Children { children, .. } = query(
+            roots.clone(),
+            Directories::Children {
+                selection: selection.clone(),
+                after: None,
+            },
+        )
+        .await
+        .unwrap() else {
+            panic!("children after permission restoration")
+        };
+        assert!(children.iter().any(|child| child.name == "folder-01"));
+        std::fs::set_permissions(&published, std::fs::Permissions::from_mode(0o0)).unwrap();
+        assert_eq!(
+            std::fs::read_dir(&published)
+                .expect_err("fixture parent must deny directory reads")
+                .kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+        let unavailable = query(
+            roots.clone(),
+            Directories::Children {
+                selection: selection.clone(),
+                after: None,
+            },
+        )
+        .await;
+        std::fs::set_permissions(&published, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(unavailable.err().unwrap(), "agent_directory_unavailable");
+        std::fs::rename(&published, temporary.path().join("moved")).unwrap();
+        assert_eq!(
+            query(
+                roots,
+                Directories::Children {
+                    selection,
+                    after: None
+                }
+            )
+            .await
+            .err()
+            .unwrap(),
+            "agent_directory_unavailable"
+        );
+    }
 }

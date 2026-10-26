@@ -25,6 +25,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::support::store::SessionFixture;
 use maka_agent_engine::{Engine, RunError, RunInput};
 use maka_agent_facts::event::Fact;
 use maka_agent_facts::event::Invocation;
@@ -34,7 +35,6 @@ use maka_agent_facts::event::TerminalStatus;
 use maka_agent_facts::model::ModelEvent;
 use maka_agent_facts::model::error::ModelFailureCause;
 use maka_code_runtime::CellLimits;
-use maka_event_log::EventLog;
 use maka_model::{ModelError, ModelExecutor, ProviderConfig, ProviderKind};
 use maka_tools::CodeExecutor;
 use maka_tools::ToolMode;
@@ -110,12 +110,12 @@ async fn respond(socket: &mut TcpStream, partial: bool) {
     }
 }
 
-fn engine(log: Arc<EventLog>) -> Engine {
+fn engine() -> Engine {
     Engine::new(
-        log,
         ModelExecutor::new(Duration::from_secs(20)).unwrap(),
         CodeExecutor::new(CellLimits::default()).unwrap(),
     )
+    .unwrap()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -147,8 +147,8 @@ async fn safe_retry_preserves_failed_evidence_and_cancellation_stops_backoff() {
                 (requests, listener)
             });
             let directory = tempfile::tempdir().unwrap();
-            let log = Arc::new(EventLog::open(&directory.path().join("events.sqlite")).await.unwrap());
-            let worker = engine(log.clone());
+            let log = Arc::new(SessionFixture::open(&directory.path().join("events.sqlite")).await.unwrap());
+            let worker = engine();
             let cancellation = CancellationToken::new();
             let mut commits = log.subscribe_commits();
             let stop = async {
@@ -172,7 +172,7 @@ async fn safe_retry_preserves_failed_evidence_and_cancellation_stops_backoff() {
                     cancellation.cancel();
                 }
             };
-            let (result, ()) = tokio::join!(worker.run(input(&base, "retry"), cancellation.clone()), stop);
+            let (result, ()) = tokio::join!(worker.run(log.store(), input(&base, "retry"), cancellation.clone()), stop);
             if cancel { assert!(matches!(result, Err(RunError::Cancelled))); }
             else { result.unwrap(); }
             worker.drain().await;
@@ -209,7 +209,7 @@ async fn continuation_claim_replays_only_its_lineage_and_retries_with_frozen_inp
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}/v1", listener.local_addr().unwrap());
         let directory = tempfile::tempdir().unwrap();
-        let log = Arc::new(EventLog::open(&directory.path().join("events.sqlite")).await.unwrap());
+        let log = Arc::new(SessionFixture::open(&directory.path().join("events.sqlite")).await.unwrap());
         let mut source = input(&base, "source");
         source.configuration.workspace_identity = Some(
             maka_agent_facts::execution::WorkspaceIdentity::from_marker_id("c193cd58-f929-4ba2-bfb5-6887beaf8132").unwrap());
@@ -254,11 +254,11 @@ async fn continuation_claim_replays_only_its_lineage_and_retries_with_frozen_inp
             }
             (requests, listener)
         });
-        let worker = engine(log.clone());
+        let worker = engine();
         let before = log.prefix(100, 128 * 1024).await.unwrap();
-        worker.check_continuation(&continuation("preview"), &CancellationToken::new()).await.unwrap();
+        worker.check_continuation(&log.store(), &continuation("preview"), &CancellationToken::new()).await.unwrap();
         assert_eq!(log.prefix(100, 128 * 1024).await.unwrap().digest, before.digest, "query cannot claim or mutate the source");
-        worker.run(continuation("child"), CancellationToken::new()).await.unwrap();
+        worker.run(log.store(), continuation("child"), CancellationToken::new()).await.unwrap();
         let (requests, listener) = server.await.unwrap();
         assert_eq!(requests[0], requests[1]);
         let prompt = serde_json::to_string(&requests[0]["messages"]).unwrap();
@@ -268,8 +268,8 @@ async fn continuation_claim_replays_only_its_lineage_and_retries_with_frozen_inp
         }
         let mut moved = continuation("moved");
         moved.configuration.workspace_identity = None;
-        assert!(worker.run(moved, CancellationToken::new()).await.is_err());
-        assert!(worker.run(continuation("duplicate"), CancellationToken::new()).await.is_err());
+        assert!(worker.run(log.store(), moved, CancellationToken::new()).await.is_err());
+        assert!(worker.run(log.store(), continuation("duplicate"), CancellationToken::new()).await.is_err());
         worker.drain().await;
         assert!(tokio::time::timeout(Duration::from_millis(20), listener.accept()).await.is_err());
         let facts = log.prefix(100, 128 * 1024).await.unwrap();
@@ -300,7 +300,7 @@ async fn continuation_claim_replays_only_its_lineage_and_retries_with_frozen_inp
         ] {
             log.append(&EventWrite::plain(RuntimeEvent::new(input(&base, "unknown").invocation, fact)).unwrap()).await.unwrap();
         }
-        let unsafe_preview = worker.check_continuation(&continuation("unsafe-preview"), &CancellationToken::new()).await;
+        let unsafe_preview = worker.check_continuation(&log.store(), &continuation("unsafe-preview"), &CancellationToken::new()).await;
         assert!(matches!(&unsafe_preview,
             Err(RunError::Store(maka_event_log::StoreError::HistoryUnsettled))),
             "a safe historical cut cannot hide a later unresolved Session effect: {unsafe_preview:?}");
@@ -320,15 +320,14 @@ async fn model_timeout_cause_survives_reopening_the_log() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("events.sqlite");
         {
-            let log = Arc::new(EventLog::open(&path).await.unwrap());
+            let log = Arc::new(SessionFixture::open(&path).await.unwrap());
             let engine = Engine::new(
-                log.clone(),
                 ModelExecutor::new(Duration::from_millis(250)).unwrap(),
                 CodeExecutor::new(CellLimits::default()).unwrap(),
-            );
+            ).unwrap();
             assert!(matches!(
                 engine
-                    .run(input(&base, "timeout"), CancellationToken::new())
+                    .run(log.store(), input(&base, "timeout"), CancellationToken::new())
                     .await,
                 Err(RunError::Model(ModelError::TimedOut))
             ));
@@ -336,7 +335,7 @@ async fn model_timeout_cause_survives_reopening_the_log() {
             Arc::try_unwrap(log).ok().unwrap().close().await.unwrap();
         }
         server.abort();
-        let reopened = EventLog::open(&path).await.unwrap();
+        let reopened = SessionFixture::open(&path).await.unwrap();
         let prefix = reopened.prefix(100, 128 * 1024).await.unwrap();
         assert!(matches!(
             &prefix.events.last().unwrap().event.fact,
@@ -379,56 +378,85 @@ async fn partial_text_survives_cancellation_without_becoming_replayed_model_hist
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("events.sqlite");
         {
-            let log = Arc::new(EventLog::open(&path).await.unwrap());
-            let engine = engine(log.clone());
+            let log = Arc::new(SessionFixture::open(&path).await.unwrap());
+            let engine = engine();
             let cancellation = CancellationToken::new();
             let running_engine = engine.clone();
             let running_token = cancellation.clone();
             let first = input(&base, "cancelled");
+            let running_store = log.store();
             let running = tokio::spawn(async move {
-                running_engine.run(first, running_token).await
+                running_engine
+                    .run(running_store, first, running_token)
+                    .await
             });
             let observed = loop {
                 let prefix = log.prefix(100, 128 * 1024).await.unwrap();
-                if prefix.events.iter().any(|stored| matches!(
-                    &stored.event.fact,
-                    Fact::ModelObserved { event: ModelEvent::PartDelta { text, .. }, .. }
-                        if text == "unfinished-secret-fragment"
-                )) {
+                if prefix.events.iter().any(|stored| {
+                    matches!(
+                        &stored.event.fact,
+                        Fact::ModelObserved { event: ModelEvent::PartDelta { text, .. }, .. }
+                            if text == "unfinished-secret-fragment"
+                    )
+                }) {
                     break prefix;
                 }
-                assert!(!running.is_finished(), "model ended before durable partial text");
+                assert!(
+                    !running.is_finished(),
+                    "model ended before durable partial text"
+                );
                 tokio::task::yield_now().await;
             };
             let active = observed.project_invocation("invocation-cancelled");
             assert_eq!(active.terminal, None);
             assert_eq!(active.unfinished_model_steps.len(), 1);
             cancellation.cancel();
-            assert!(matches!(running.await.unwrap(), Err(RunError::Model(ModelError::Cancelled))));
+            assert!(matches!(
+                running.await.unwrap(),
+                Err(RunError::Model(ModelError::Cancelled))
+            ));
             let settled = log.prefix(100, 128 * 1024).await.unwrap();
             let tail = &settled.events[observed.events.len()..];
-            let interrupted = tail.iter().position(|stored| matches!(
-                &stored.event.fact,
-                Fact::ModelInterrupted { step_id, status: ModelInterruption::Cancelled, .. }
-                    if step_id == &active.unfinished_model_steps[0]
-            )).unwrap();
+            let interrupted = tail
+                .iter()
+                .position(|stored| {
+                    matches!(
+                        &stored.event.fact,
+                        Fact::ModelInterrupted { step_id, status: ModelInterruption::Cancelled, .. }
+                            if step_id == &active.unfinished_model_steps[0]
+                    )
+                })
+                .unwrap();
             assert!(matches!(&tail.last().unwrap().event.fact,
                 Fact::InvocationEnded { outcome: InvocationOutcome::Cancelled { source } }
                     if source == "runtime_cancellation"));
             assert!(interrupted < tail.len() - 1);
-            assert!(!settled.events.iter().any(|stored| matches!(
-                stored.event.fact, Fact::ModelCompleted { .. }
-            )));
+            assert!(
+                !settled
+                    .events
+                    .iter()
+                    .any(|stored| matches!(stored.event.fact, Fact::ModelCompleted { .. }))
+            );
             let state = settled.project_invocation("invocation-cancelled");
             assert_eq!(state.terminal, Some(TerminalStatus::Cancelled));
             assert!(state.unfinished_model_steps.is_empty());
             release.notify_one();
-            engine.run(input(&base, "next"), CancellationToken::new()).await.unwrap();
+            engine
+                .run(log.store(), input(&base, "next"), CancellationToken::new())
+                .await
+                .unwrap();
             drop(engine);
             Arc::try_unwrap(log).ok().unwrap().close().await.unwrap();
         }
-        let log = Arc::new(EventLog::open(&path).await.unwrap());
-        engine(log.clone()).run(input(&base, "reopened"), CancellationToken::new()).await.unwrap();
+        let log = Arc::new(SessionFixture::open(&path).await.unwrap());
+        engine()
+            .run(
+                log.store(),
+                input(&base, "reopened"),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
         let prefix = log.prefix(100, 128 * 1024).await.unwrap();
         assert!(prefix.events.iter().any(|stored| matches!(
             &stored.event.fact,
@@ -444,86 +472,96 @@ async fn partial_text_survives_cancellation_without_becoming_replayed_model_hist
         for suffix in ["cancelled", "next", "reopened"] {
             let state = prefix.project_invocation(&format!("invocation-{suffix}"));
             assert!(state.unfinished_model_steps.is_empty());
-            assert_eq!(state.terminal, Some(if suffix == "cancelled" {
-                TerminalStatus::Cancelled
-            } else {
-                TerminalStatus::Completed
-            }));
+            assert_eq!(
+                state.terminal,
+                Some(if suffix == "cancelled" {
+                    TerminalStatus::Cancelled
+                } else {
+                    TerminalStatus::Completed
+                })
+            );
         }
         let requests = server.await.unwrap();
         // This test owns conversation replay; system instructions have their own contract.
         let conversation = |request: &serde_json::Value| {
-            request["messages"].as_array().unwrap().iter()
+            request["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
                 .filter(|message| message["role"] != "system")
-                .cloned().collect::<Vec<_>>()
+                .cloned()
+                .collect::<Vec<_>>()
         };
-        assert_eq!(conversation(&requests[0]), vec![json!({"role":"user","content":"question cancelled"})]);
-        // Couple the digest to the system bytes actually sent, without fixing their wording.
-        let mut expected_prompt: Vec<_> = requests[0]["messages"].as_array().unwrap().iter()
-            .filter(|message| message["role"] == "system").cloned().collect();
-        expected_prompt.push(json!({"role":"user","content":[{"type":"text","text":"question cancelled"}]}));
+        assert_eq!(
+            conversation(&requests[0]),
+            vec![json!({"role":"user","content":"question cancelled"})]
+        );
         // Rebuild each exact pre-request prefix in an independent log. Its
         // digest includes original event identities and sequence, not history.
-        let replica = EventLog::open(&directory.path().join("replica.sqlite")).await.unwrap();
+        let replica = SessionFixture::open(&directory.path().join("replica.sqlite"))
+            .await
+            .unwrap();
         for stored in &prefix.events {
-            if let Fact::ModelRequested { source_scope, source_high_water, source_digest, input_digest, .. } = &stored.event.fact {
-                let source = replica.scoped_prefix(source_scope.clone(), 100, 128 * 1024).await.unwrap();
-                assert_eq!(*source_scope, maka_agent_facts::event::LogScope::Session {
-                    id: stored.event.invocation.session_id.clone(),
-                });
+            if let Fact::ModelRequested {
+                source_scope,
+                source_high_water,
+                source_digest,
+                input_digest,
+                ..
+            } = &stored.event.fact
+            {
+                let source = replica
+                    .scoped_prefix(source_scope.clone(), 100, 128 * 1024)
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    *source_scope,
+                    maka_agent_facts::event::LogScope::Session {
+                        id: stored.event.invocation.session_id.clone(),
+                    }
+                );
                 assert_eq!(*source_high_water, source.high_water);
                 assert_eq!(*source_digest, source.digest);
                 if stored.event.invocation.invocation_id == "invocation-cancelled" {
-                    let expected = serde_json::to_vec(&json!({
-                        "projection":"maka.model-history.v1",
-                        "prompt": expected_prompt,
-                        "tools":[], "providerOptions":{}, "maxOutputTokens":requests[0]["max_tokens"]
-                    })).unwrap();
-                    assert_eq!(*input_digest, format!("sha256:{}", hex::encode(Sha256::digest(expected))));
+                    // V2 binds prepared semantic/wire roots rather than serialized messages.
+                    assert!(input_digest.starts_with("sha256:") && input_digest.len() == 71);
                 }
             }
-            assert_eq!(replica.append(&maka_agent_facts::event::EventWrite::plain(stored.event.clone()).unwrap()).await.unwrap(), stored.sequence);
+            assert_eq!(
+                replica
+                    .append(
+                        &maka_agent_facts::event::EventWrite::plain(stored.event.clone()).unwrap()
+                    )
+                    .await
+                    .unwrap(),
+                stored.sequence
+            );
         }
-        assert_eq!(conversation(&requests[1]), vec![
-            json!({"role":"user","content":"question cancelled"}),
-            json!({"role":"user","content":"question next"})
-        ]);
-        assert_eq!(conversation(&requests[2]), vec![
-            json!({"role":"user","content":"question cancelled"}),
-            json!({"role":"user","content":"question next"}),
-            json!({"role":"assistant","content":"done"}),
-            json!({"role":"user","content":"question reopened"})
-        ]);
-    }).await.expect("partial model cancellation and recovery must make bounded progress");
+        assert_eq!(
+            conversation(&requests[1]),
+            vec![
+                json!({"role":"user","content":"question cancelled"}),
+                json!({"role":"user","content":"question next"})
+            ]
+        );
+        assert_eq!(
+            conversation(&requests[2]),
+            vec![
+                json!({"role":"user","content":"question cancelled"}),
+                json!({"role":"user","content":"question next"}),
+                json!({"role":"assistant","content":"done"}),
+                json!({"role":"user","content":"question reopened"})
+            ]
+        );
+    })
+    .await
+    .expect("partial model cancellation and recovery must make bounded progress");
 }
 
 #[tokio::test]
 async fn captured_language_is_evidenced_without_becoming_a_provider_parameter() {
     use maka_agent_facts::language::Language;
-    // Independent wire-evidence types preserve canonical field order at every level.
-    #[derive(serde::Serialize)]
-    struct Text<'a> {
-        #[serde(rename = "type")]
-        kind: &'static str,
-        text: &'a str,
-    }
-    #[derive(serde::Serialize)]
-    #[serde(tag = "role", rename_all = "lowercase")]
-    enum Prompt<'a> {
-        System { content: &'a str },
-        User { content: [Text<'a>; 1] },
-    }
-    #[derive(serde::Serialize)]
-    #[serde(rename_all = "camelCase")]
-    struct Evidence<'a> {
-        projection: &'static str,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        language: Option<&'static str>,
-        prompt: [Prompt<'a>; 2],
-        tools: [(); 0],
-        provider_options: serde_json::Value,
-        max_output_tokens: u64,
-    }
+    let mut recorded_digests = std::collections::BTreeSet::new();
     for (language, tag, context_label) in [
         (Language::En, None, "Session context"),
         (Language::ZhCn, Some("zh-CN"), "会话上下文"),
@@ -531,7 +569,7 @@ async fn captured_language_is_evidenced_without_becoming_a_provider_parameter() 
     ] {
         let directory = tempfile::tempdir().unwrap();
         let log = Arc::new(
-            EventLog::open(&directory.path().join("events.sqlite"))
+            SessionFixture::open(&directory.path().join("events.sqlite"))
                 .await
                 .unwrap(),
         );
@@ -549,8 +587,11 @@ async fn captured_language_is_evidenced_without_becoming_a_provider_parameter() 
             unreachable!()
         };
         *message = "Keep 原文 /tmp/exact.rs unchanged".into();
-        let worker = engine(log.clone());
-        worker.run(run, CancellationToken::new()).await.unwrap();
+        let worker = engine();
+        worker
+            .run(log.store(), run, CancellationToken::new())
+            .await
+            .unwrap();
         worker.drain().await;
         let request = server.await.unwrap();
         assert!(request.get("language").is_none());
@@ -560,28 +601,6 @@ async fn captured_language_is_evidenced_without_becoming_a_provider_parameter() 
         assert_eq!(
             request["messages"][1],
             json!({"role":"user","content":"Keep 原文 /tmp/exact.rs unchanged"})
-        );
-        let evidence = Evidence {
-            projection: "maka.model-history.v1",
-            language: tag,
-            prompt: [
-                Prompt::System {
-                    content: system["content"].as_str().unwrap(),
-                },
-                Prompt::User {
-                    content: [Text {
-                        kind: "text",
-                        text: "Keep 原文 /tmp/exact.rs unchanged",
-                    }],
-                },
-            ],
-            tools: [],
-            provider_options: json!({}),
-            max_output_tokens: request["max_tokens"].as_u64().unwrap(),
-        };
-        let expected_digest = format!(
-            "sha256:{}",
-            hex::encode(Sha256::digest(serde_json::to_vec(&evidence).unwrap()))
         );
         let prefix = log.prefix(100, 128 * 1024).await.unwrap();
         let opening = prefix
@@ -609,7 +628,20 @@ async fn captured_language_is_evidenced_without_becoming_a_provider_parameter() 
                 _ => None,
             })
             .unwrap();
-        assert_eq!(digest, &expected_digest);
-        log.shutdown().await.unwrap();
+        assert!(digest.starts_with("sha256:") && digest.len() == 71);
+        assert!(recorded_digests.insert(digest.clone()));
+        let expected_digest = digest.clone();
+        drop(prefix);
+        drop(worker);
+        Arc::try_unwrap(log).ok().unwrap().close().await.unwrap();
+        let reopened = SessionFixture::open(&directory.path().join("events.sqlite"))
+            .await
+            .unwrap();
+        let reopened_prefix = reopened.prefix(100, 128 * 1024).await.unwrap();
+        assert!(reopened_prefix.events.iter().any(|event| matches!(
+            &event.event.fact, Fact::ModelRequested { input_digest, .. }
+                if input_digest == &expected_digest
+        )));
+        reopened.close().await.unwrap();
     }
 }

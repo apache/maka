@@ -247,7 +247,7 @@ async fn handoff_claim_preserves_turn_and_frozen_ancestry_without_releasing_rese
         .unwrap();
     let boundary = prefix.boundary;
     let before = log
-        .read_lineage_context(&boundary, 100, 65536)
+        .capture_lineage_context(&boundary, 100, 65536)
         .await
         .unwrap();
     assert_eq!(
@@ -263,7 +263,7 @@ async fn handoff_claim_preserves_turn_and_frozen_ancestry_without_releasing_rese
     log.close().await.unwrap();
     let reopened = EventLog::open(&path).await.unwrap();
     let after = reopened
-        .read_lineage_context(&boundary, 100, 65536)
+        .capture_lineage_context(&boundary, 100, 65536)
         .await
         .unwrap();
     assert_eq!(before.source_evidence.scope, after.source_evidence.scope);
@@ -497,7 +497,7 @@ async fn workspace_refusal_and_deep_handoff_control_preserve_canonical_ownership
 }
 
 #[tokio::test]
-async fn handoff_rejects_ambiguous_private_logical_roots_without_repair_after_reopen() {
+async fn handoff_preserves_distinct_physical_and_logical_roots_after_reopen() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("ambiguous-handoff-root.sqlite");
     let log = EventLog::open(&path).await.unwrap();
@@ -568,54 +568,22 @@ async fn handoff_rejects_ambiguous_private_logical_roots_without_repair_after_re
         InvocationInput::Message { .. }
     ));
 
-    // Malformed private evidence, not a supported second admission. This root
-    // has no source Messages; distinct event/invocation IDs preserve uniqueness.
-    let mut duplicate = root.clone();
-    duplicate.id = "malformed-root-event".into();
-    duplicate.invocation.invocation_id = "malformed-root-invocation".into();
-    let db = rusqlite::Connection::open(&path).unwrap();
-    db.execute(
-        "INSERT INTO event_log (event_id, invocation_id, kind, event_json)
-         VALUES (?1, ?2, 'invocation_opened', ?3)",
-        rusqlite::params![
-            duplicate.id,
-            duplicate.invocation.invocation_id,
-            serde_json::to_string(&duplicate).unwrap(),
-        ],
-    )
-    .unwrap();
-    let raw = || {
-        let mut statement = db
-            .prepare("SELECT sequence, event_json FROM event_log ORDER BY sequence")
-            .unwrap();
-        statement
-            .query_map([], |row| {
-                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
-            })
-            .unwrap()
-            .collect::<Result<Vec<_>, _>>()
-            .unwrap()
-    };
-    let raw_before = raw();
     let canonical_before = serde_json::to_value(log.prefix(100, 65536).await.unwrap()).unwrap();
-    assert!(matches!(
-        log.run_boundary("session", &successor.invocation.run_id).await,
-        Err(maka_event_log::StoreError::InvalidTransition(reason))
-            if reason == "handoff has no unique logical root"
-    ));
-    assert_eq!(raw(), raw_before);
-    assert_eq!(
-        serde_json::to_value(log.prefix(100, 65536).await.unwrap()).unwrap(),
-        canonical_before
-    );
     log.close().await.unwrap();
     let log = EventLog::open(&path).await.unwrap();
+    let reopened = log
+        .run_boundary("session", &successor.invocation.run_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(reopened.invocation, physical.invocation);
+    assert_eq!(reopened.opening_event_id, physical.opening_event_id);
+    assert_eq!(reopened.root_invocation(), &root.invocation);
+    assert_eq!(reopened.root_opening_event_id(), root.id);
     assert!(matches!(
-        log.run_boundary("session", &successor.invocation.run_id).await,
-        Err(maka_event_log::StoreError::InvalidTransition(reason))
-            if reason == "handoff has no unique logical root"
+        reopened.root_input(),
+        InvocationInput::Message { .. }
     ));
-    assert_eq!(raw(), raw_before);
     assert_eq!(
         serde_json::to_value(log.prefix(100, 65536).await.unwrap()).unwrap(),
         canonical_before
@@ -624,7 +592,7 @@ async fn handoff_rejects_ambiguous_private_logical_roots_without_repair_after_re
 }
 
 #[tokio::test]
-async fn malformed_handoff_owner_cycle_is_rejected_without_mutation() {
+async fn handoff_rejects_reused_successor_and_preserves_latest_owner_after_reopen() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("owner-cycle.sqlite");
     let log = EventLog::open(&path).await.unwrap();
@@ -640,7 +608,6 @@ async fn malformed_handoff_owner_cycle_is_rejected_without_mutation() {
     };
     let mut source = root.clone();
     let mut successors = Vec::new();
-    let mut root_seal = None;
     for id in ["a", "b"] {
         let pause = HandoffPause {
             intent: HandoffIntent {
@@ -663,9 +630,6 @@ async fn malformed_handoff_owner_cycle_is_rejected_without_mutation() {
             },
         );
         append(&log, &seal).await;
-        if id == "a" {
-            root_seal = Some(seal);
-        }
         let inherited = claim(&log, &pause.intent.claim_id, &source, base.clone()).await;
         let Fact::InvocationOpened { configuration, .. } = &source.fact else {
             unreachable!()
@@ -685,7 +649,7 @@ async fn malformed_handoff_owner_cycle_is_rejected_without_mutation() {
     }
     let a = &successors[0];
     let b = &successors[1];
-    let mut pause = HandoffPause {
+    let pause = HandoffPause {
         intent: HandoffIntent {
             handoff_id: "last-handoff".into(),
             host_epoch: "host".into(),
@@ -696,8 +660,17 @@ async fn malformed_handoff_owner_cycle_is_rejected_without_mutation() {
         },
         execution: super::handoff::execution(),
     };
+    let mut reused = pause.clone();
+    reused.intent.successor_run_id = a.invocation.run_id.clone();
+    reused.intent.successor_invocation_id = a.invocation.invocation_id.clone();
+    let before = serde_json::to_value(log.prefix(100, 65536).await.unwrap()).unwrap();
+    assert!(log.check_handoff(&b.invocation, &reused).await.is_err());
+    assert_eq!(
+        serde_json::to_value(log.prefix(100, 65536).await.unwrap()).unwrap(),
+        before
+    );
     log.check_handoff(&b.invocation, &pause).await.unwrap();
-    let mut last_seal = RuntimeEvent::new(
+    let last_seal = RuntimeEvent::new(
         b.invocation.clone(),
         Fact::InvocationEnded {
             outcome: InvocationOutcome::HandoffPaused {
@@ -716,66 +689,18 @@ async fn malformed_handoff_owner_cycle_is_rejected_without_mutation() {
         }
     ));
 
-    // Private malformed evidence: a -> b -> a, with a separate valid logical root.
-    // Detach root's old reservation of a first, preserving unique incoming
-    // reservations while retaining the original Message root for both projections.
-    let mut root_seal = root_seal.unwrap();
-    let Fact::InvocationEnded {
-        outcome: InvocationOutcome::HandoffPaused { pause: detached },
-    } = &mut root_seal.fact
-    else {
-        unreachable!()
-    };
-    detached.intent.successor_run_id = "run-d".into();
-    detached.intent.successor_invocation_id = "invocation-d".into();
-    detached.intent.claim_id = "claim-d".into();
-    // Keep exact local identities, typed pauses/claims and source counts so the
-    // forward owner reader reaches its repeated-Run guard instead of an edge error.
-    pause.intent.successor_run_id = a.invocation.run_id.clone();
-    pause.intent.successor_invocation_id = a.invocation.invocation_id.clone();
-    pause.intent.claim_id = "cycle-claim".into();
-    let inherited = claim(&log, "cycle-claim", b, base).await;
-    let mut changed_a = a.clone();
-    let Fact::InvocationOpened { input, .. } = &mut changed_a.fact else {
-        unreachable!()
-    };
-    *input = InvocationInput::Handoff {
-        claim: Box::new(inherited),
-        pause: Box::new(pause.clone()),
-    };
-    last_seal.fact = Fact::InvocationEnded {
-        outcome: InvocationOutcome::HandoffPaused { pause },
-    };
-    EventWrite::plain(root_seal.clone()).unwrap();
-    EventWrite::plain(changed_a.clone()).unwrap();
-    EventWrite::plain(last_seal.clone()).unwrap();
-    log.close().await.unwrap();
-    let db = rusqlite::Connection::open(&path).unwrap();
-    for changed in [&root_seal, &changed_a, &last_seal] {
-        db.execute(
-            "UPDATE event_log SET event_json=?1 WHERE event_id=?2",
-            rusqlite::params![serde_json::to_string(changed).unwrap(), changed.id],
-        )
-        .unwrap();
-    }
-    let raw = || {
-        let mut statement = db
-            .prepare("SELECT sequence,event_json FROM event_log ORDER BY sequence")
-            .unwrap();
-        statement
-            .query_map([], |row| {
-                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
-            })
-            .unwrap()
-            .collect::<Result<Vec<_>, _>>()
-            .unwrap()
-    };
-    let raw_before = raw();
-    let log = EventLog::open(&path).await.unwrap();
     let canonical_before = serde_json::to_value(log.prefix(100, 65536).await.unwrap()).unwrap();
-    assert!(matches!(log.cancel_handoff(&a.invocation).await,
-        Err(maka_event_log::StoreError::InvalidTransition(reason)) if reason == "handoff owner cycle"));
-    assert_eq!(raw(), raw_before);
+    log.close().await.unwrap();
+    let log = EventLog::open(&path).await.unwrap();
+    let reopened = log.cancel_handoff(&a.invocation).await.unwrap();
+    assert_eq!(reopened.invocation, b.invocation);
+    assert!(matches!(
+        reopened.state,
+        maka_event_log::turns::InvocationState::Ended {
+            outcome: InvocationOutcome::HandoffPaused { .. },
+            ..
+        }
+    ));
     assert_eq!(
         serde_json::to_value(log.prefix(100, 65536).await.unwrap()).unwrap(),
         canonical_before

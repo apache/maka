@@ -24,6 +24,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
+use crate::support::store::SessionFixture;
 use maka_agent_engine::{Engine, RunError, RunInput};
 use maka_agent_facts::event::Fact;
 use maka_agent_facts::event::Invocation;
@@ -35,7 +36,6 @@ use maka_agent_facts::tool_call::ToolRejection;
 use maka_agent_facts::tools::ToolExecutor;
 use maka_agent_facts::tools::ToolFuture;
 use maka_code_runtime::CellLimits;
-use maka_event_log::EventLog;
 use maka_model::{ModelExecutor, ProviderConfig, ProviderKind};
 use maka_tools::CodeExecutor;
 use maka_tools::{
@@ -160,18 +160,18 @@ async fn aborted_caller_cancels_worker_but_retains_admission_until_effect_is_dur
         let path = directory.path().join("events.sqlite");
         let effect = Arc::new(Effect::default());
         {
-            let log = Arc::new(EventLog::open(&path).await.unwrap());
+            let log = Arc::new(SessionFixture::open(&path).await.unwrap());
             let engine = Engine::new(
-                log.clone(),
                 ModelExecutor::new(Duration::from_secs(10)).unwrap(),
                 CodeExecutor::new(CellLimits::default()).unwrap(),
-            );
+            ).unwrap();
             let caller_token = CancellationToken::new();
             let running_engine = engine.clone();
             let running_input = input(&base, "aborted", effect.clone());
             let running_token = caller_token.clone();
+            let running_store = log.store();
             let caller =
-                tokio::spawn(async move { running_engine.run(running_input, running_token).await });
+                tokio::spawn(async move { running_engine.run(running_store, running_input, running_token).await });
             effect.entered.notified().await;
             caller.abort();
             assert!(caller.await.unwrap_err().is_cancelled());
@@ -188,7 +188,7 @@ async fn aborted_caller_cancels_worker_but_retains_admission_until_effect_is_dur
             assert_eq!(held.project_invocation("invocation-aborted").terminal, None);
             assert!(matches!(
                 engine
-                    .run(input(&base, "blocked", effect.clone()), CancellationToken::new())
+                    .run(log.store(), input(&base, "blocked", effect.clone()), CancellationToken::new())
                     .await,
                 Err(RunError::Busy)
             ));
@@ -203,7 +203,7 @@ async fn aborted_caller_cancels_worker_but_retains_admission_until_effect_is_dur
             // admission with cooperative yields until its drain has completed.
             loop {
                 match engine
-                    .run(input(&base, "next", effect.clone()), CancellationToken::new())
+                    .run(log.store(), input(&base, "next", effect.clone()), CancellationToken::new())
                     .await
                 {
                     Err(RunError::Busy) => tokio::task::yield_now().await,
@@ -277,14 +277,13 @@ async fn aborted_caller_cancels_worker_but_retains_admission_until_effect_is_dur
         }
         {
             // Reopen to verify durable, usable history without effect replay.
-            let log = Arc::new(EventLog::open(&path).await.unwrap());
+            let log = Arc::new(SessionFixture::open(&path).await.unwrap());
             let engine = Engine::new(
-                log.clone(),
                 ModelExecutor::new(Duration::from_secs(10)).unwrap(),
                 CodeExecutor::new(CellLimits::default()).unwrap(),
-            );
+            ).unwrap();
             engine
-                .run(input(&base, "reopened", effect.clone()), CancellationToken::new())
+                .run(log.store(), input(&base, "reopened", effect.clone()), CancellationToken::new())
                 .await
                 .unwrap();
         }

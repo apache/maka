@@ -60,6 +60,7 @@ impl Access {
         Ok(Self {
             owner,
             tool: ToolCallContext {
+                execution: scope.execution().cloned(),
                 invocation,
                 operation_id,
             },
@@ -71,7 +72,7 @@ impl Access {
         &self,
         call: &Scope,
         destination: &Destination,
-    ) -> Result<(maka_agent_api::session::SessionConfiguration, bool), Error> {
+    ) -> Result<(maka_agent_api::session::ResolvedConfiguration, bool), Error> {
         let _lease = self.admit(call)?;
         let available = match &self.purpose {
             Purpose::Retrieval { basis, search } => self.owner.current(basis, *search).await,
@@ -87,10 +88,17 @@ impl Access {
         if !available {
             return Err(Error::Denied);
         }
-        let configuration =
-            maka_agent_authority::permissions::live(&self.owner.log, &self.tool.invocation)
-                .await
-                .map_err(|_| Error::Denied)?;
+        let configuration = maka_agent_authority::permissions::live(
+            &maka_agent_authority::permissions::execution(
+                &self.owner.log,
+                &self.tool.invocation,
+                self.tool.execution.as_deref(),
+            )
+            .map_err(|_| Error::Denied)?,
+            &self.tool.invocation,
+        )
+        .await
+        .map_err(|_| Error::Denied)?;
         let workspace = configuration.workspace.clone();
         let ceiling = self.owner.network.clone();
         let destination_copy = destination.clone();
@@ -118,16 +126,19 @@ impl Access {
         if !allowed {
             return Err(Error::Denied);
         }
-        let grants = self
-            .owner
-            .log
-            .permission_grants(
-                &self.tool.invocation,
-                Some(&self.tool.tool_use_id()),
-                configuration.boundary_revision,
-            )
-            .await
-            .map_err(|error| Error::Failed(error.to_string()))?;
+        let grants = maka_agent_authority::permissions::execution(
+            &self.owner.log,
+            &self.tool.invocation,
+            self.tool.execution.as_deref(),
+        )
+        .map_err(|_| Error::Denied)?
+        .permission_grants(
+            &self.tool.invocation,
+            Some(&self.tool.tool_use_id()),
+            &configuration.permission_basis(),
+        )
+        .await
+        .map_err(|error| Error::Failed(error.to_string()))?;
         Ok((
             configuration,
             grants
@@ -144,8 +155,14 @@ impl Access {
         let (configuration, granted) = self.current(call, destination).await?;
         if !granted {
             let cancellation = call.cancellation.child_token();
-            let request = maka_agent_authority::permissions::request(
+            let store = maka_agent_authority::permissions::execution(
                 &self.owner.log,
+                &self.tool.invocation,
+                self.tool.execution.as_deref(),
+            )
+            .map_err(|_| Error::Denied)?;
+            let request = maka_agent_authority::permissions::request(
+                &store,
                 &configuration,
                 PermissionRequest {
                     reason: match self.purpose {
@@ -258,7 +275,14 @@ impl Authority for Access {
             {
                 *parent_operation_id = Some(owner.tool.operation_id.clone());
             }
-            let journal = ToolJournal::new(owner.owner.log.clone(), owner.tool.invocation.clone());
+            let journal = ToolJournal::new(
+                Arc::new(maka_agent_authority::permissions::execution(
+                    &owner.owner.log,
+                    &owner.tool.invocation,
+                    owner.tool.execution.as_deref(),
+                )?),
+                owner.tool.invocation.clone(),
+            );
             let effect_owner = owner.clone();
             let result = journal
                 .invoke_prepared_call(

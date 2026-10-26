@@ -2,14 +2,20 @@
 //! passes them (`Easing.quad`, `LayoutAnimation.Presets.spring`): their
 //! names, parameters and defaults in one table each, from which they are
 //! decoded, `nsh/animated` is made (`nsh-js` `animated.rs`) and
-//! `animation.gen.ts` (the declarations) is generated.
+//! `animation.gen.ts` (the declarations) is generated. Keyframes and
+//! motions (`Animated.keyframes`, `createMotion`, `motions`) are decoded
+//! here too, and their presets come from `animation::PRESETS`.
 
 use std::fmt::Write as _;
 
 use super::host::{HostCx, HostInput, HostList, HostValue, field};
 use crate::{
     LayoutAnimation, LayoutCurve, LayoutProperty, LayoutTransition,
-    animation::{Curve, EaseMode, Easing},
+    animation::{
+        Composite, Curve, EaseMode, Easing, Keyframe, KeyframeTiming, MotionChannel, MotionPreset,
+        MotionSpec, NodeId, PRESETS as MOTIONS, PlaybackDirection, StaggerFrom, StepPosition,
+        keyframes,
+    },
     ui::TsTypes,
 };
 
@@ -89,12 +95,21 @@ const NAMED: &[(&str, Easing)] = &[
     ("easeInOut", Easing::EaseInOut),
 ];
 
-/// A name, a cubic Bézier `[x1, y1, x2, y2]` or `{ curve, param, mode }`;
-/// `None` for anything else (the animation's default).
+/// A name, a cubic Bézier `[x1, y1, x2, y2]`, `{ curve, param, mode }` or
+/// `{ steps, position }`; `None` for anything else (the animation's
+/// default).
 pub fn easing<I: HostInput>(input: &I) -> Option<Easing> {
     if let Some(list) = input.as_list() {
         let p = |i| list.item(i).and_then(|v| v.as_number()).unwrap_or(0.0) as f32;
         return Some(Easing::Bezier(p(0), p(1), p(2), p(3)));
+    }
+    if let Some(steps) = input.field("steps").and_then(|n| n.as_number()) {
+        let position = input
+            .field("position")
+            .and_then(|p| p.as_string())
+            .and_then(|p| StepPosition::parse(&p))
+            .unwrap_or_default();
+        return Some(Easing::Steps(steps.clamp(1.0, 10_000.0) as u32, position));
     }
     if input.is_object() {
         let name = input.field("curve").and_then(|c| c.as_string())?;
@@ -115,6 +130,154 @@ pub fn easing<I: HostInput>(input: &I) -> Option<Easing> {
     NAMED.iter().find(|(n, _)| *n == name).map(|&(_, e)| e)
 }
 
+/// A keyframe's value: a number, or an angle (`"45deg"`, `"0.5turn"`,
+/// `"1rad"`) in degrees.
+fn keyframe_value<I: HostInput>(input: &I) -> Option<f32> {
+    match input.as_number() {
+        Some(n) => Some(n as f32).filter(|n| n.is_finite()),
+        None => crate::css::angle(&input.as_string()?),
+    }
+}
+
+/// Keyframes of one value: numbers (spread evenly) or `{ offset?, value,
+/// easing? }`.
+pub fn keyframe_list<I: HostInput>(input: &I) -> Vec<Keyframe> {
+    input
+        .items()
+        .iter()
+        .filter_map(|item| {
+            if let Some(value) = keyframe_value(item) {
+                return Some(Keyframe::new(value));
+            }
+            let mut frame = Keyframe::new(keyframe_value(&item.field("value")?)?);
+            frame.offset = item
+                .field("offset")
+                .and_then(|o| o.as_number())
+                .map(|o| o as f32);
+            frame.easing = item.field("easing").and_then(|e| easing(&e));
+            Some(frame)
+        })
+        .collect()
+}
+
+/// How keyframes play: `{ duration, delay, easing, iterations, direction
+/// }` (CSS's defaults: 300 ms, `ease`, once, `normal`).
+pub fn keyframe_timing<I: HostInput>(input: &I) -> KeyframeTiming {
+    let number = |key| {
+        input
+            .field(key)
+            .and_then(|v| v.as_number())
+            .filter(|n| n.is_finite())
+            .map(|n| n as f32)
+    };
+    let defaults = KeyframeTiming::default();
+    let iterations = match input.field("iterations") {
+        Some(v) if v.as_string().as_deref() == Some("infinite") => None,
+        Some(v) => match v.as_number() {
+            Some(n) if n.is_infinite() && n > 0.0 => None,
+            Some(n) if n.is_finite() => Some(n.max(0.0).round().min(u32::MAX as f64) as u32),
+            _ => defaults.iterations,
+        },
+        None => defaults.iterations,
+    };
+    KeyframeTiming {
+        duration_ms: number("duration").map_or(defaults.duration_ms, |d| d.max(0.0)),
+        delay_ms: number("delay").map_or(0.0, |d| d.max(0.0)),
+        easing: input
+            .field("easing")
+            .and_then(|e| easing(&e))
+            .unwrap_or(defaults.easing),
+        iterations,
+        direction: input
+            .field("direction")
+            .and_then(|d| d.as_string())
+            .and_then(|d| PlaybackDirection::parse(&d))
+            .unwrap_or_default(),
+    }
+}
+
+/// `Animated.keyframes(value, config)`'s tree on `node`: `config` is `{
+/// keyframes, duration, delay, easing, iterations, direction }`.
+pub fn keyframes_composite<I: HostInput>(input: &I, node: NodeId) -> Composite {
+    let frames = input
+        .field("keyframes")
+        .map(|k| keyframe_list(&k))
+        .unwrap_or_default();
+    keyframes(node, &frames, &keyframe_timing(input))
+}
+
+/// A motion: a preset's name, or `{ keyframes, ...timing }` where
+/// `keyframes` is an object of channels' keyframes (`{ opacity: [0, 1] }`)
+/// or a list of frames of channels (`[{ opacity: 0 }, { opacity: 1,
+/// offset: 1, easing }]`, as the Web Animations API's). Unknown channels
+/// are left out.
+pub fn motion_spec<I: HostInput>(input: &I) -> Option<MotionSpec> {
+    if let Some(name) = input.as_string() {
+        return MotionPreset::parse(&name).map(MotionPreset::spec);
+    }
+    if !input.is_object() {
+        return None;
+    }
+    let mut spec = MotionSpec::new(keyframe_timing(input));
+    let frames = input.field("keyframes")?;
+    if frames.as_list().is_some() {
+        // Frames of channels: each channel's keyframes are the frames that
+        // name it, with the frame's offset and easing.
+        let items = frames.items();
+        let count = items.len();
+        for channel in MotionChannel::ALL {
+            let mut track = Vec::new();
+            for (i, item) in items.iter().enumerate() {
+                let Some(value) = item.field(channel.name()).and_then(|v| keyframe_value(&v))
+                else {
+                    continue;
+                };
+                let offset = item
+                    .field("offset")
+                    .and_then(|o| o.as_number())
+                    .map(|o| o as f32);
+                // A frame without an offset sits where its index puts it,
+                // so channels missing from some frames stay in step.
+                let offset = offset.or_else(|| match count {
+                    1 => Some(1.0),
+                    n => Some(i as f32 / (n - 1) as f32),
+                });
+                track.push(Keyframe {
+                    offset,
+                    easing: item.field("easing").and_then(|e| easing(&e)),
+                    ..Keyframe::new(value)
+                });
+            }
+            if !track.is_empty() {
+                spec = spec.track(channel, track);
+            }
+        }
+    } else {
+        for (name, value) in frames.entries() {
+            if let Some(channel) = MotionChannel::parse(&name) {
+                let track = keyframe_list(&value);
+                if !track.is_empty() {
+                    spec = spec.track(channel, track);
+                }
+            }
+        }
+    }
+    Some(spec)
+}
+
+/// Where a staggered group counts from: `"first"`, `"last"`, `"center"` or
+/// an item's index.
+pub fn stagger_from<I: HostInput>(input: &I) -> StaggerFrom {
+    if let Some(index) = input.as_number() {
+        return StaggerFrom::Index(index.max(0.0) as usize);
+    }
+    match input.as_string().as_deref() {
+        Some("last") => StaggerFrom::Last,
+        Some("center") => StaggerFrom::Center,
+        _ => StaggerFrom::First,
+    }
+}
+
 /// Makes a layout curve (from `springDamping`).
 type MakeLayoutCurve = fn(f32) -> LayoutCurve;
 
@@ -126,6 +289,7 @@ const LAYOUT_TYPES: &[(&str, MakeLayoutCurve)] = &[
     ("linear", |_| LayoutCurve::Linear),
     ("easeIn", |_| LayoutCurve::EaseIn),
     ("easeOut", |_| LayoutCurve::EaseOut),
+    ("keyboard", |_| LayoutCurve::Keyboard),
 ];
 
 /// What appearing and disappearing views animate (`property`), by name
@@ -249,9 +413,13 @@ pub fn declarations() -> String {
          export type EasingCurveName = {};\n\n\
          /** A curve of the `Easing` module. */\n\
          export interface EasingCurve {{\n  curve: EasingCurveName;\n  param?: number;\n  mode: \"in\" | \"out\" | \"inOut\";\n}}\n\n\
+         /** CSS `steps()`: jumps between `steps` levels instead of moving. */\n\
+         export interface EasingSteps {{\n  steps: number;\n  position?: StepPosition;\n}}\n\n\
+         /** Where a `steps()` curve jumps (CSS's `<step-position>`; `\"jump-end\"` by default). */\n\
+         export type StepPosition = \"jump-start\" | \"jump-end\" | \"jump-none\" | \"jump-both\" | \"start\" | \"end\";\n\n\
          /** How a timing animation (or an interpolation segment) progresses: a name, a cubic\n \
-         * Bézier `[x1, y1, x2, y2]` or a curve from `Easing`. */\n\
-         export type Easing = {} | [number, number, number, number] | EasingCurve;\n",
+         * Bézier `[x1, y1, x2, y2]`, a curve from `Easing` or `Easing.steps(…)`. */\n\
+         export type Easing = {} | [number, number, number, number] | EasingCurve | EasingSteps;\n",
         names(&mut CURVES.iter().map(|c| c.name)),
         names(&mut NAMED.iter().map(|(n, _)| *n)),
     );
@@ -282,6 +450,7 @@ pub fn declarations() -> String {
             .map(|(name, _)| format!("  {name}: {layout};\n"))
             .collect::<String>()
     );
+    out.push_str(&motion_declarations());
     // `LayoutAnimation.Types` / `Properties`: each name as itself.
     let object = |iface: &str, doc: &str, names: &mut dyn Iterator<Item = &str>| {
         let fields: String = names.map(|n| format!("  readonly {n}: {n:?};\n")).collect();
@@ -300,11 +469,108 @@ pub fn declarations() -> String {
     out
 }
 
+/// The declarations of channels, keyframes and the presets' names.
+fn motion_declarations() -> String {
+    let mut out = String::new();
+    let channels = MotionChannel::ALL
+        .iter()
+        .map(|c| format!("{:?}", c.name()))
+        .collect::<Vec<_>>()
+        .join(" | ");
+    let _ = write!(
+        out,
+        "\n/** What a motion moves: the opacity and the parts of the transform (translations in points,\n \
+         * rotations in degrees), applied translations first, then rotations, then scales. */\n\
+         export type MotionChannel = {channels};\n"
+    );
+    out.push_str("\n/** The ready-made motions:\n");
+    for preset in MOTIONS {
+        let _ = writeln!(
+            out,
+            " * - `{}` ({}):{}",
+            preset.name,
+            preset.kind.name(),
+            preset.doc
+        );
+    }
+    out.push_str(" */\nexport type MotionName =\n");
+    for preset in MOTIONS {
+        let _ = writeln!(out, "  | {:?}", preset.name);
+    }
+    out.push_str("  ;\n");
+    out
+}
+
+/// A preset as JS data (as `motions.<name>`): `{ kind, keyframes: {
+/// channel: [{ offset, value }] }, duration, easing, iterations, direction
+/// }`, which `motion_spec` reads back.
+fn motion_json(preset: &crate::animation::PresetDef) -> crate::JsonValue {
+    use serde_json::{Map, Value, json};
+    let spec = preset.spec();
+    let mut keyframes = Map::new();
+    for (channel, frames) in &spec.tracks {
+        keyframes.insert(
+            channel.name().into(),
+            Value::Array(
+                frames
+                    .iter()
+                    .map(|f| json!({ "offset": f.offset, "value": f.value }))
+                    .collect(),
+            ),
+        );
+    }
+    let t = spec.timing;
+    json!({
+        "kind": preset.kind.name(),
+        "keyframes": keyframes,
+        "duration": t.duration_ms,
+        "easing": easing_json(t.easing),
+        "iterations": match t.iterations {
+            Some(n) => json!(n),
+            None => json!("infinite"),
+        },
+        "direction": t.direction.name(),
+    })
+}
+
+/// An easing as JS passes it (what `easing` decodes).
+fn easing_json(e: Easing) -> crate::JsonValue {
+    use serde_json::json;
+    match e {
+        Easing::Linear => json!("linear"),
+        Easing::EaseIn => json!("easeIn"),
+        Easing::EaseOut => json!("easeOut"),
+        Easing::EaseInOut => json!("easeInOut"),
+        Easing::Bezier(a, b, c, d) => json!([a, b, c, d]),
+        Easing::Curve(curve, mode) => {
+            let (name, param) = match curve {
+                Curve::Quad => ("quad", None),
+                Curve::Cubic => ("cubic", None),
+                Curve::Poly(n) => ("poly", Some(n)),
+                Curve::Sin => ("sin", None),
+                Curve::Circle => ("circle", None),
+                Curve::Exp => ("exp", None),
+                Curve::Elastic(b) => ("elastic", Some(b)),
+                Curve::Back(s) => ("back", Some(s)),
+                Curve::Bounce => ("bounce", None),
+            };
+            let mode = match mode {
+                EaseMode::In => "in",
+                EaseMode::Out => "out",
+                EaseMode::InOut => "inOut",
+            };
+            json!({ "curve": name, "param": param, "mode": mode })
+        }
+        Easing::Steps(steps, position) => json!({ "steps": steps, "position": position.name() }),
+    }
+}
+
 /// The easing and layout animation tables as data for `nsh/animated`
 /// (`nsh-js` `animated.rs`): `curves` (`[name, parameter,
 /// default]`, the parameter `null` for curves without one), `presets`
 /// (name -> config, as `LayoutAnimation.Presets`), `types` and
-/// `properties` (the names of `LayoutAnimation.Types` / `Properties`).
+/// `properties` (the names of `LayoutAnimation.Types` / `Properties`),
+/// `motions` (name -> motion, as `motions`).
 pub fn tables() -> crate::JsonValue {
     use serde_json::{Map, Value, json};
     let transition = |t: &LayoutTransition| {
@@ -314,6 +580,7 @@ pub fn tables() -> crate::JsonValue {
             LayoutCurve::EaseOut => ("easeOut", None),
             LayoutCurve::EaseInEaseOut => ("easeInEaseOut", None),
             LayoutCurve::Spring { damping } => ("spring", Some(damping)),
+            LayoutCurve::Keyboard => ("keyboard", None),
         };
         let property = match t.property {
             LayoutProperty::Opacity => "opacity",
@@ -361,5 +628,9 @@ pub fn tables() -> crate::JsonValue {
         "presets": presets,
         "types": LAYOUT_TYPES.iter().map(|t| t.0).collect::<Vec<_>>(),
         "properties": LAYOUT_PROPERTIES.iter().filter(|p| p.2).map(|p| p.0).collect::<Vec<_>>(),
+        "motions": MOTIONS
+            .iter()
+            .map(|p| (p.name.to_string(), motion_json(p)))
+            .collect::<Map<String, Value>>(),
     })
 }

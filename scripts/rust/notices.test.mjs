@@ -46,7 +46,7 @@ test('release notices reject changed dependency inputs and edited texts', async 
       'scripts/rust/notices-sources.json',
       'products/maka/cli/Cargo.toml',
       'products/maka/desktop-shell/Cargo.toml',
-      'patches/zod+4.6.5.patch',
+      'patches/zod+4.6.7.patch',
       'products/maka/bundle/scripts/build.mjs',
       'plugins/settings/settings/package.ts',
       'packages/plugin-sdk/src/contracts.ts',

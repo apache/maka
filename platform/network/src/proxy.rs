@@ -289,10 +289,10 @@ impl State {
             .body(body)
             .send()
             .await;
-        let Ok(response) = response else {
+        let Ok(mut response) = response else {
             return status(StatusCode::BAD_GATEWAY, "upstream request failed");
         };
-        let mut headers = response.headers().clone();
+        let mut headers = std::mem::take(response.headers_mut());
         strip_hop_headers(&mut headers);
         let code = response.status();
         let body = StreamBody::new(

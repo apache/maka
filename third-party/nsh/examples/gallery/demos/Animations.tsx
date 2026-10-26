@@ -1,6 +1,19 @@
 import { type Bounds, Canvas, type CanvasRenderingContext2D, cleanup, Scroll, signal, Text, View } from "nsh";
-import { Animated, type CompositeAnimation, createAnimatedValue, Easing, LayoutAnimation, type LayoutAnimationConfig, type AnimatedNode } from "nsh/animated";
-import { Tab, Tabs } from "nsh/base";
+import {
+  Animated,
+  type AnimatedNode,
+  type CompositeAnimation,
+  createAnimatedValue,
+  createMotion,
+  Easing,
+  LayoutAnimation,
+  type LayoutAnimationConfig,
+  type MotionName,
+  type MotionPreset,
+  type MotionSpec,
+  motions,
+} from "nsh/animated";
+import { Button as BaseButton, Tab, Tabs } from "nsh/base";
 import { Icon } from "../icons";
 import { alpha, Badge, Button, Caption, Card, colors, DemoPage, finish, isDark, Legend, mono, type Palette, radius, Segmented, tabPress, tints } from "../ui";
 
@@ -119,6 +132,427 @@ function Hero() {
         <Api label="Orbits, one turn in 3.2 s" api="Animated.loop" />
         <Api label="Rings, 0.8 s apart" api="Animated.stagger" />
         <Api label="Core, in and out" api="Animated.sequence" />
+      </View>
+    </Card>
+  );
+}
+
+// --- Motion presets ---------------------------------------------------------
+
+type MotionKind = MotionPreset["kind"];
+
+const kinds: { value: MotionKind; label: string }[] = [
+  { value: "enter", label: "Enter" },
+  { value: "exit", label: "Exit" },
+  { value: "attention", label: "Attention" },
+  { value: "loop", label: "Loop" },
+];
+
+/** Every preset, in the order `motions` lists them. */
+const presetNames = Object.keys(motions) as MotionName[];
+
+/** Resolves after `ms`. */
+const pause = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+/** One preset on a little card of its own: a tap plays it. Exits come back
+ * after a moment; loops play until tapped again. */
+function PresetTile(props: { name: MotionName; tone: string; onPlay: (status: string) => void }) {
+  const m = createMotion();
+  const kind = motions[props.name].kind;
+  const looping = signal(false);
+  // The latest tap: an exit comes back only if no tap came after it.
+  let turn = 0;
+  cleanup(() => m.stop());
+  const press = async () => {
+    const mine = ++turn;
+    if (kind === "loop") {
+      looping.set(!looping());
+      props.onPlay(looping() ? props.name : "stopped");
+      if (looping()) m.play(props.name);
+      else m.reset();
+      return;
+    }
+    props.onPlay(props.name);
+    const finished = await m.play(props.name);
+    if (kind !== "exit" || !finished) return;
+    await pause(450);
+    if (mine !== turn) return;
+    m.reset();
+    m.play("fadeIn", { duration: 220 });
+  };
+  return (
+    <BaseButton
+      onPress={press}
+      accessibilityLabel={props.name}
+      style={{ flexBasis: "30%", flexGrow: 1, borderRadius: 14 }}
+      activeStyle={{ transform: [{ scale: 0.97 }] }}
+    >
+      <View
+        style={{
+          height: 92,
+          borderRadius: 14,
+          borderCurve: "continuous",
+          alignItems: "center",
+          justifyContent: "center",
+          gap: 12,
+          backgroundColor: colors.raised,
+          ...finish.raised,
+          borderWidth: 1,
+          borderColor: looping() ? props.tone : colors.border,
+        }}
+      >
+        <View
+          style={{
+            width: 32,
+            height: 32,
+            borderRadius: 9,
+            borderCurve: "continuous",
+            alignItems: "center",
+            justifyContent: "center",
+            backgroundColor: props.tone,
+            ...finish.knob,
+            opacity: m.opacity,
+            transform: [{ perspective: 300 }, ...m.transform],
+          }}
+        >
+          <View style={{ width: 10, height: 10, borderRadius: 5, backgroundColor: onTone(), opacity: 0.85 }} />
+        </View>
+        <Text numberOfLines={1} style={{ fontSize: 12, fontFamily: mono, color: looping() ? colors.text : colors.muted }}>
+          {props.name}
+        </Text>
+      </View>
+    </BaseButton>
+  );
+}
+
+/** The ready-made motions by what they are for, each a tap away. */
+function MotionPresets() {
+  const kind = signal<MotionKind>("attention");
+  const status = signal("tap a tile");
+  const names = () => presetNames.filter((n) => motions[n].kind === kind());
+  return (
+    <Card icon="spark" title="Motion presets" subtitle={`${presetNames.length} ready-made motions, played natively`} right={<Badge label={status()} tone="accent" />}>
+      <Scroll horizontal scrollbar={false}>
+        <Tabs style={{ flexDirection: "row", gap: 8 }}>
+          <Each of={kinds}>
+            {(k) => (
+              <Chip
+                label={k().label}
+                active={kind() === k().value}
+                onPress={() => {
+                  kind.set(k().value);
+                  status.set("tap a tile");
+                }}
+              />
+            )}
+          </Each>
+        </Tabs>
+      </Scroll>
+      <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+        <Each of={names()}>{(name, i) => <PresetTile name={name()} tone={tones()[i() % tones().length]} onPlay={(s) => status.set(s)} />}</Each>
+      </View>
+      <View style={{ gap: 8 }}>
+        <Api label="Channels for a view" api="createMotion()" />
+        <Api label="A preset by name" api='motion.play("shake")' />
+      </View>
+    </Card>
+  );
+}
+
+// --- Staggered entrance -----------------------------------------------------
+
+const BARS = [0.5, 0.78, 0.42, 1, 0.62, 0.88, 0.55];
+type StaggerOrigin = "first" | "center" | "last";
+
+/** How many steps item `i` of `count` waits, counted from `from` (as
+ * `Animated.stagger` counts them: the middle pair of an even count together). */
+const staggerSteps = (i: number, count: number, from: StaggerOrigin) =>
+  from === "first" ? i : from === "last" ? count - 1 - i : Math.floor(Math.abs(i - (count - 1) / 2));
+
+/** A bar and its cap, entering `delay` ms in. */
+function StaggerBar(props: { height: number; tone: string; delay: number }) {
+  const bar = createMotion({ enter: "fadeInUp", delay: props.delay, duration: 520 });
+  const cap = createMotion({ enter: "popIn", delay: props.delay + 220 });
+  cleanup(() => {
+    bar.stop();
+    cap.stop();
+  });
+  return (
+    <View style={{ flex: 1, height: "100%", justifyContent: "flex-end", alignItems: "center", gap: 6 }}>
+      <View style={{ width: 10, height: 10, borderRadius: 5, backgroundColor: props.tone, ...cap.style }} />
+      <View
+        style={{
+          alignSelf: "stretch",
+          height: `${props.height * 78}%`,
+          borderRadius: 10,
+          borderCurve: "continuous",
+          backgroundImage: `linear-gradient(180deg, ${props.tone} 0%, ${alpha(props.tone, 0.35)} 100%)`,
+          ...bar.style,
+        }}
+      />
+    </View>
+  );
+}
+
+/** Items entering one after another, from either end or the middle: a
+ * motion per item, each with its own delay. */
+function StaggeredEntrance() {
+  const from = signal<StaggerOrigin>("center");
+  const wave = signal(0);
+  // A new wave makes new items: each enters with a motion of its own.
+  const items = () => BARS.map((height, i) => ({ key: `${wave()}-${i}`, height, i }));
+  const replay = (origin: StaggerOrigin) => {
+    from.set(origin);
+    wave.set(wave() + 1);
+  };
+  return (
+    <Card icon="lists" title="Staggered entrance" subtitle="createMotion({ enter, delay }) per item" right={<Badge label="70 ms apart" />}>
+      <View style={{ height: 140, flexDirection: "row", alignItems: "flex-end", gap: 8 }}>
+        <Each of={items()} key={(it) => it.key}>
+          {(it) => <StaggerBar height={it().height} tone={tones()[it().i % tones().length]} delay={staggerSteps(it().i, BARS.length, from()) * 70} />}
+        </Each>
+      </View>
+      <Tabs style={{ flexDirection: "row", gap: 8 }}>
+        <Chip label="From first" active={from() === "first"} onPress={() => replay("first")} />
+        <Chip label="Center" active={from() === "center"} onPress={() => replay("center")} />
+        <Chip label="Last" active={from() === "last"} onPress={() => replay("last")} />
+      </Tabs>
+      <Button label="Replay" variant="secondary" icon="play" onPress={() => replay(from())} />
+    </Card>
+  );
+}
+
+// --- Keyframes ----------------------------------------------------------------
+
+const MOON = 52;
+const PHASES = 8;
+
+/** Where the shadow of phase `k` sits: it slides off to the right as the
+ * moon waxes, then comes back from the left as it wanes. */
+const shadowAt = (k: number) => (k <= PHASES / 2 ? (k / (PHASES / 2)) * MOON : -((PHASES - k) / (PHASES / 2)) * MOON);
+
+/** Sprites and ticks with `steps()`, and a like made of chained motions. */
+function Keyframes() {
+  const sprite = createAnimatedValue(0);
+  const tick = createAnimatedValue(0);
+  const loops = Animated.parallel([
+    Animated.keyframes(sprite, { keyframes: [0, -MOON * PHASES], duration: 1600, easing: Easing.steps(PHASES), iterations: "infinite" }),
+    Animated.keyframes(tick, { keyframes: [0, 360], duration: 12000, easing: Easing.steps(12), iterations: "infinite" }),
+  ]);
+  loops.start();
+
+  const heart = createMotion();
+  const bubble = createMotion();
+  bubble.opacity.set(0);
+  const liked = signal(false);
+  const count = signal(41);
+  const like = async () => {
+    const on = !liked();
+    liked.set(on);
+    count.set(count() + (on ? 1 : -1));
+    if (!on) {
+      heart.play("headShake");
+      return;
+    }
+    bubble.play({
+      keyframes: [
+        { opacity: 0, translateY: 0, scale: 0.6 },
+        { opacity: 1, translateY: -18, scale: 1, offset: 0.3, easing: Easing.out(Easing.back()) },
+        { opacity: 0, translateY: -46, scale: 1 },
+      ],
+      duration: 900,
+      easing: Easing.out(Easing.quad),
+    });
+    if (await heart.play("popIn", { duration: 360 })) heart.play("heartbeat");
+  };
+
+  const charge = createAnimatedValue(0);
+  const [width, measure] = useWidth();
+  const charging = () => {
+    charge.set(0);
+    charge.keyframes([0, 1], { duration: 1500, easing: Easing.steps(5) });
+  };
+  cleanup(() => {
+    loops.stop();
+    heart.stop();
+    bubble.stop();
+    charge.stop();
+  });
+
+  return (
+    <Card icon="animation" title="Keyframes" subtitle="Steps, frames as the Web Animations API writes them, chained motions">
+      <View style={{ flexDirection: "row", alignItems: "flex-start", justifyContent: "space-around" }}>
+        <View style={{ alignItems: "center", gap: 8 }}>
+          <View style={{ width: MOON, height: MOON, borderRadius: MOON / 2, overflow: "hidden", backgroundColor: colors.raised }}>
+            <View style={{ flexDirection: "row", width: MOON * PHASES, transform: [{ translateX: sprite }] }}>
+              <Each of={Array.from({ length: PHASES }, (_, k) => k)}>
+                {(k) => (
+                  <View style={{ width: MOON, height: MOON, borderRadius: MOON / 2, overflow: "hidden", backgroundColor: colors.warn }}>
+                    <View
+                      style={{
+                        position: "absolute",
+                        left: shadowAt(k()),
+                        top: 0,
+                        width: MOON,
+                        height: MOON,
+                        borderRadius: MOON / 2,
+                        backgroundColor: colors.raised,
+                      }}
+                    />
+                  </View>
+                )}
+              </Each>
+            </View>
+          </View>
+          <Text style={{ fontSize: 11, fontFamily: mono, color: colors.faint }}>steps(8)</Text>
+        </View>
+        <View style={{ alignItems: "center", gap: 8 }}>
+          <View style={{ width: MOON, height: MOON, borderRadius: MOON / 2, borderWidth: 1.5, borderColor: colors.border, backgroundColor: colors.raised }}>
+            <Each of={Array.from({ length: 12 }, (_, k) => k)}>
+              {(k) => (
+                <View
+                  pointerEvents="none"
+                  style={{ position: "absolute", left: MOON / 2 - 2.25, top: 2, width: 1.5, height: MOON - 7, transform: [{ rotate: `${k() * 30}deg` }] }}
+                >
+                  <View style={{ height: k() % 3 === 0 ? 6 : 3, backgroundColor: colors.faint }} />
+                </View>
+              )}
+            </Each>
+            <View
+              pointerEvents="none"
+              style={{ position: "absolute", left: MOON / 2 - 2.75, top: 7, width: 2.5, height: MOON - 17, transform: [{ rotate: tick }] }}
+            >
+              <View style={{ height: (MOON - 17) / 2, borderRadius: 1.25, backgroundColor: colors.accent }} />
+            </View>
+          </View>
+          <Text style={{ fontSize: 11, fontFamily: mono, color: colors.faint }}>steps(12)</Text>
+        </View>
+        <View style={{ alignItems: "center", gap: 8 }}>
+          <BaseButton onPress={like} accessibilityLabel={liked() ? "Unlike" : "Like"} style={{ borderRadius: MOON / 2 }}>
+            <View
+              style={{
+                width: MOON,
+                height: MOON,
+                borderRadius: MOON / 2,
+                alignItems: "center",
+                justifyContent: "center",
+                backgroundColor: liked() ? tints.warn : colors.raised,
+                borderWidth: 1,
+                borderColor: liked() ? colors.warn : colors.border,
+              }}
+            >
+              <View style={heart.style}>
+                <Icon name="star" size={24} tint={liked() ? colors.warn : colors.muted} />
+              </View>
+            </View>
+          </BaseButton>
+          <View pointerEvents="none" style={{ position: "absolute", top: -4, right: -10, ...bubble.style }}>
+            <Text style={{ fontSize: 13, fontWeight: "700", color: colors.warn }}>+1</Text>
+          </View>
+          <Text style={{ fontSize: 11, fontFamily: mono, color: colors.faint, fontVariant: ["tabular-nums"] }}>{count()} likes</Text>
+        </View>
+      </View>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
+        <View onLayout={measure} style={{ flex: 1, height: 22, borderRadius: 7, overflow: "hidden", backgroundColor: colors.background, ...finish.track }}>
+          <View
+            style={{
+              position: "absolute",
+              left: 0,
+              top: 0,
+              bottom: 0,
+              width: width(),
+              backgroundImage: `linear-gradient(90deg, ${colors.up} 0%, ${colors.accent} 100%)`,
+              transform: [{ translateX: charge.mul(width()).add(-width()) }],
+            }}
+          />
+          <View pointerEvents="none" style={{ position: "absolute", left: 0, right: 0, top: 0, bottom: 0, flexDirection: "row" }}>
+            <Each of={[0, 1, 2, 3, 4]}>{(k) => <View style={{ flex: 1, borderLeftWidth: k() === 0 ? 0 : 2, borderColor: colors.surface }} />}</Each>
+          </View>
+        </View>
+        <Button label="Charge" size="small" variant="secondary" onPress={charging} />
+      </View>
+      <View style={{ gap: 8 }}>
+        <Api label="A sprite sheet, frame by frame" api="Easing.steps(8)" />
+        <Api label="+1: three frames, one with its easing" api="play({ keyframes: [...] })" />
+        <Api label="Like: pop in, then a heartbeat" api="await play(); play()" />
+        <Api label="Charge in five jumps" api="value.keyframes([0, 1])" />
+      </View>
+    </Card>
+  );
+}
+
+// --- Aurora -------------------------------------------------------------------
+
+/** The blobs: where each rests, its colors in each appearance and the path it
+ * drifts along, there and back. */
+const blobs: { left: `${number}%`; top: number; size: number; light: string; dark: string; duration: number; keyframes: MotionSpec["keyframes"] }[] = [
+  { left: "-18%", top: -70, size: 250, light: "#ff5fa2", dark: "#d946ef", duration: 7000, keyframes: { translateX: [0, 90], translateY: [0, 50], scale: [1, 1.3] } },
+  { left: "48%", top: -60, size: 230, light: "#38d9ff", dark: "#0ea5e9", duration: 9000, keyframes: { translateX: [0, -80], translateY: [0, 70], scale: [1.1, 0.85] } },
+  { left: "8%", top: 90, size: 270, light: "#ffc93c", dark: "#6366f1", duration: 8000, keyframes: { translateX: [0, 70], translateY: [0, -60], scale: [0.9, 1.2] } },
+  { left: "58%", top: 110, size: 210, light: "#7cf29a", dark: "#14b8a6", duration: 6000, keyframes: { translateX: [0, -60], translateY: [0, -40], rotate: [0, 40], scale: [1, 1.25] } },
+];
+
+/** A getgradients-style background: blurred radial gradients, each drifting
+ * on a looping motion of its own, clipped in a card. */
+function Aurora() {
+  const drifts = blobs.map((b) => {
+    const m = createMotion();
+    m.play({ keyframes: b.keyframes, duration: b.duration, easing: Easing.inOut(Easing.sin), iterations: "infinite", direction: "alternate" });
+    return m;
+  });
+  cleanup(() => drifts.forEach((m) => m.stop()));
+  const ink = () => (isDark() ? "#ffffff" : "#1b1035");
+  return (
+    <Card icon="styles" title="Aurora" subtitle="Blurred gradients on looping motions" flush>
+      <View
+        style={{
+          height: 260,
+          borderRadius: radius.inset,
+          borderCurve: "continuous",
+          overflow: "hidden",
+          backgroundColor: isDark() ? "#0a0716" : "#fff8f3",
+        }}
+      >
+        <Each of={blobs}>
+          {(b, i) => {
+            const color = () => (isDark() ? b().dark : b().light);
+            return (
+              <View
+                pointerEvents="none"
+                style={{
+                  position: "absolute",
+                  left: b().left,
+                  top: b().top,
+                  width: b().size,
+                  height: b().size,
+                  borderRadius: b().size / 2,
+                  backgroundImage: `radial-gradient(circle, ${color()}e6 0%, ${color()}80 40%, ${color()}00 70%)`,
+                  filter: "blur(28px)",
+                  mixBlendMode: isDark() ? "screen" : "multiply",
+                  transform: drifts[i()].transform,
+                }}
+              />
+            );
+          }}
+        </Each>
+        <View style={{ position: "absolute", left: 0, right: 0, top: 0, bottom: 0, padding: 20, justifyContent: "flex-end", gap: 6 }}>
+          <View
+            style={{
+              alignSelf: "flex-start",
+              paddingHorizontal: 10,
+              height: 24,
+              borderRadius: 12,
+              justifyContent: "center",
+              backgroundColor: alpha("#ffffff", isDark() ? 0.12 : 0.55),
+              borderWidth: 1,
+              borderColor: alpha(ink(), 0.12),
+            }}
+          >
+            <Text style={{ fontSize: 11, fontFamily: mono, color: ink() }}>4 × createMotion</Text>
+          </View>
+          <Text style={{ fontSize: 34, fontWeight: "700", letterSpacing: -0.8, color: ink() }}>Aurora</Text>
+          <Text style={{ fontSize: 14, color: alpha(ink(), 0.7) }}>Each light drifts on its own loop, there and back</Text>
+        </View>
       </View>
     </Card>
   );
@@ -827,5 +1261,5 @@ function Layout() {
 }
 
 export function Animations() {
-  return <DemoPage cards={[Hero, EasingPlot, EasingRace, Composition, Springs, Interpolations, HidingHeader, Layout]} />;
+  return <DemoPage cards={[Hero, MotionPresets, StaggeredEntrance, Keyframes, Aurora, EasingPlot, EasingRace, Composition, Springs, Interpolations, HidingHeader, Layout]} />;
 }

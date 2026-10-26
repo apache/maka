@@ -84,6 +84,7 @@ What exists today:
 | `.auto_fill(..)` | `ios={{ textContentType }}` | `Input` | iOS's names for autofill types (Rust's `AutoFill` covers both platforms). |
 | `.supported_orientations(..)` | `ios={{ supportedOrientations }}` | `Dialog` | The orientations it allows. |
 | `.back_forward_gestures(..)` | `ios={{ allowsBackForwardNavigationGestures }}` | `WebView` | Swipe back and forward in the page history. |
+| `.header_right_system_item(..)` | `ios={{ headerRightSystemItem }}` | `NavPage` | UIKit's own bar button at the end of the header, pressing `headerRight`. |
 | `.back_forward_gestures(..)` | `desktop={{ allowsBackForwardNavigationGestures }}` | `WebView` | macOS: two-finger trackpad swipes go back and forward in the page history; Windows: touchscreen swipes; Linux: touchpad swipes. |
 | `.window_drag(..)` | `desktop={{ windowDrag }}` | every element | Pressing it drags the window, as the system's title bar would (see [nsh/desktop](../modules/nsh-desktop.md#a-title-bar-of-your-own)). |
 

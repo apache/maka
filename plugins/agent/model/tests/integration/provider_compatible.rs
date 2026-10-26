@@ -44,7 +44,7 @@ fn request(base_url: &str) -> ModelRequest {
             network: Default::default(),
             body_overlay: None,
         },
-        prompt: vec![maka_model::prompt::Message::user("hello")],
+        prompt: vec![maka_model::prompt::Message::user("hello")].into(),
         tools: vec![],
         provider_options: json!({}),
         max_output_tokens: Some(32),
@@ -318,7 +318,8 @@ async fn captured_language_reaches_native_notifications_without_becoming_provide
             input.prompt = vec![Message::notification(
                 "call-原文",
                 "worker result: Keep 原文",
-            )];
+            )]
+            .into();
             let mut stream = executor
                 .stream(input, CancellationToken::new())
                 .await

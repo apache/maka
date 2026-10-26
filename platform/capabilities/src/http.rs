@@ -20,8 +20,11 @@
 //! Host-authorized HTTP. Redirect and retry policy belongs to the plugin;
 //! proxy configuration, bounded I/O and resource settlement belong to Host.
 
+pub mod upload;
+
 use crate::call::Scope;
-use futures_util::future::BoxFuture;
+pub use bytes::Bytes;
+use futures_util::{Stream, StreamExt, future::BoxFuture, stream::BoxStream};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -37,15 +40,105 @@ pub enum Method {
     Options,
 }
 
+/// A single-use, pull-driven upload. Retrying opens a fresh source; the transport
+/// never buffers a complete body to make it replayable. Dropping the stream must
+/// release its resources, so producers must not detach work from this owner.
+pub struct RequestBody {
+    stream: BoxStream<'static, Result<Bytes, Error>>,
+    length: Option<u64>,
+    replay: Option<ReplaySource>,
+}
+/// Reopens the same immutable source without retaining an encoded body buffer.
+#[derive(Clone)]
+pub struct ReplaySource(Arc<dyn Fn() -> RequestBody + Send + Sync>);
+impl ReplaySource {
+    pub fn open(&self) -> RequestBody {
+        let mut body = (self.0)();
+        body.replay = Some(self.clone());
+        body
+    }
+}
+impl RequestBody {
+    pub fn replayable(factory: impl Fn() -> RequestBody + Send + Sync + 'static) -> Self {
+        ReplaySource(Arc::new(factory)).open()
+    }
+    pub fn replay_source(&self) -> Option<ReplaySource> {
+        self.replay.clone()
+    }
+    pub fn replay(&self) -> Option<Self> {
+        self.replay.as_ref().map(ReplaySource::open)
+    }
+
+    pub fn stream(stream: impl Stream<Item = Result<Bytes, Error>> + Send + 'static) -> Self {
+        Self {
+            stream: stream.boxed(),
+            length: None,
+            replay: None,
+        }
+    }
+    /// Declare an exact length without reading the source. The caller guarantees
+    /// this length (including an empty source for zero). The transport rejects
+    /// observed short or oversized streams without buffering the body.
+    pub fn with_length(
+        stream: impl Stream<Item = Result<Bytes, Error>> + Send + 'static,
+        length: u64,
+    ) -> Self {
+        Self {
+            stream: stream.boxed(),
+            length: Some(length),
+            replay: None,
+        }
+    }
+    pub fn length(&self) -> Option<u64> {
+        self.length
+    }
+    pub fn into_stream(self) -> BoxStream<'static, Result<Bytes, Error>> {
+        self.stream
+    }
+}
+impl Default for RequestBody {
+    fn default() -> Self {
+        Self::replayable(|| Self::with_length(futures_util::stream::empty(), 0))
+    }
+}
+impl From<Vec<u8>> for RequestBody {
+    fn from(bytes: Vec<u8>) -> Self {
+        let bytes = Bytes::from(bytes);
+        let length = bytes.len() as u64;
+        Self::replayable(move || {
+            let bytes = bytes.clone();
+            Self::with_length(futures_util::stream::once(async move { Ok(bytes) }), length)
+        })
+    }
+}
+
+pub struct Request {
+    pub url: String,
+    pub method: Method,
+    pub headers: Vec<(String, String)>,
+    pub body: RequestBody,
+}
+
+/// Explicit buffered external DTO boundary, separate from native uploads.
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct Request {
+pub struct BufferedRequest {
     pub url: String,
     pub method: Method,
     #[serde(default)]
     pub headers: Vec<(String, String)>,
     #[serde(default)]
     pub body: Vec<u8>,
+}
+impl From<BufferedRequest> for Request {
+    fn from(input: BufferedRequest) -> Self {
+        Self {
+            url: input.url,
+            method: input.method,
+            headers: input.headers,
+            body: input.body.into(),
+        }
+    }
 }
 
 #[derive(Serialize)]

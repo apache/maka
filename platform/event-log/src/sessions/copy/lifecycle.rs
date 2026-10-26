@@ -65,6 +65,7 @@ impl EventLog {
         self.validate_root()?;
         sessions::validate_id(session)?;
         let session = session.to_owned();
+        let prepared = self.prepared.clone();
         self.connection
             .run(move |connection| {
                 Box::pin(async move {
@@ -79,6 +80,8 @@ impl EventLog {
                     }
                     // The ledger keeps both identity and allocated family index. Only
                     // destination-owned resources and disposable projections are removed.
+                    crate::context::prepared::gc::retire_owner(&mut tx, &session).await?;
+                    crate::context::semantic::gc::retire_owner(&mut tx, &session).await?;
                     for statement in [
                         "DELETE FROM session_history_artifacts WHERE session_id=?",
                         "DELETE FROM session_history_members WHERE session_id=?",
@@ -110,6 +113,7 @@ impl EventLog {
                     .await?;
                     sessions::advance_catalog(&mut tx).await?;
                     tx.commit().await.map_err(StoreError::CommitUnknown)?;
+                    prepared.wake();
                     Ok(AbandonRevision::Abandoned)
                 })
             })

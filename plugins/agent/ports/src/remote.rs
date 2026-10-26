@@ -134,14 +134,6 @@ pub enum Access {
     /// The Host must additionally authorize caller-supplied filesystem paths.
     HostPaths,
 }
-pub fn validate_payload(value: &Value) -> Result<(), Error> {
-    let bytes = serde_json::to_vec(value).map_err(|error| Error::Invalid(error.to_string()))?;
-    if bytes.len() > 64 * 1024 {
-        return Err(Error::Invalid("remote payload exceeds 64 KiB".into()));
-    }
-    Ok(())
-}
-
 /// User-requested canonical mutations; no Agent or ambient execution authority.
 /// Embeddings without this capability reject writes by default.
 pub trait Controls: Send + Sync {

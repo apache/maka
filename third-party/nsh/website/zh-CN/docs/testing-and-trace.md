@@ -77,6 +77,11 @@ cargo test adds_a_todo        # 名称包含 "adds_a_todo" 的测试
 （[用 Rust 开发](./rust.md#测试)）。`examples/gallery-rs` 就这样测试它的 Rust 根组件，每个演示一个模块；`examples/rust-exports`
 从 Rust 测试它的 TSX 入口。
 
+`nsh test` 也会运行这些测试：传入带有 Rust crate 的应用（`nsh.json` `"rust"`）的目录时，它会在测试文件之前为其中每个 crate
+运行 `cargo test`，并把 Rust 测试与 TypeScript 测试一起显示和计数（`✓ src/lib.rs › tests::adds`），计入汇总和 `--junit`
+报告。所以无论是 Rust 应用、带 crate 的 TSX 应用还是 TSX 应用，`nsh test` 都是同一个命令；`nsh check` 同样会先对 crate 运行
+`cargo check --all-targets`，再对 TypeScript 做类型检查。
+
 ## 用 nsh test 编写测试
 
 测试文件是放在代码旁边的 `*.test.tsx` 或 `*.test.ts` 文件，它导入 `nsh/test`，就像上面的 `App.test.tsx`：
@@ -157,6 +162,39 @@ describe("the cart", () => {
 | `reducedMotion` | `false` | 用户要求减少动态效果（`reduceMotion()`）。 |
 | `platform` | `"ios"` | headless 时应用运行所在的平台：`"ios"`、`"android"`，或桌面平台 `"macos"`、`"windows"`、`"linux"`，以及桌面形态的 `"web"`（`platform.os`、`ios={{…}}` / `android={{…}}` / `desktop={{…}}` 属性、键盘快捷键）。在真实平台上就是该平台。 |
 | `clock` | 系统时钟 | 手动时钟，它的时间只随测试推进：`{}`，或者用 `{ time }` 从某个 `Date`（或自 Unix 纪元起的毫秒数）开始。见[控制时间](#控制时间)。 |
+| `host` | 无 | 由测试扮演的宿主应用：`{ params, handlers }`。见[扮演宿主应用](#扮演宿主应用)。 |
+
+### 扮演宿主应用
+
+嵌入在原生应用中的应用通过 [`nsh/host`](../modules/nsh-host.md) 与宿主应用通信。在测试里由测试扮演宿主应用：`host.params` 是应用启动时读取的启动参数，`host.handlers` 按名称回答应用的 `host.call`、接收它的 `host.post`。处理函数可以是一个值，用它回答每次调用；也可以是一个函数，接收调用的数据并返回回答（或回答的 promise）。函数抛出的错误会让调用失败，与宿主应用出错时一样。`handlers` 没有列出的名称的调用会失败，与不处理任何调用的宿主应用一样。
+
+```tsx
+const app = await open("./App.tsx", {
+  host: {
+    params: { conversation: "c-42" },
+    handlers: {
+      "user.profile": async ({ id }) => ({ id, name: "Ada" }),
+      "feature.flags": { search: true },
+      analytics: null,
+    },
+  },
+});
+await app.press("Profile");
+expect(app.host.calls()).toEqual([{ name: "user.profile", data: { id: 7 } }]);
+expect(app.host.posts()).toEqual([{ name: "analytics", data: { screen: "profile" } }]);
+// 应用的 `host.on("conversation.open", …)` 会收到它。
+await app.host.send("conversation.open", { id: "c-43" });
+expect(app.shows("Conversation c-43")).toBe(true);
+```
+
+`app.host.send(name, data)` 发送一个事件，然后等待应用空闲。`app.host.calls()` 和 `app.host.posts()` 按顺序列出处理函数收到的调用和投递：`name` 和 `data`。
+
+应用打开的 URL（[`openUrl`](../modules/nsh-device.md#openurl)，以及 `links="open"` 的 `TextView` 中的链接）会被记录下来，并以“已打开”回报给应用，本机上不会真正打开任何东西。`app.openedUrls()` 列出它们：
+
+```tsx
+await app.press("Contact us");
+expect(app.openedUrls()).toEqual(["mailto:help@example.com"]);
+```
 
 ### 模拟网络
 
@@ -285,7 +323,7 @@ expect(app.texts()).toContain("Saved at 09:00:10");
 
 | 步骤 | 说明 |
 |---|---|
-| `await app.press(selector)` | 按下该视图，或者它外层最近的可按压视图（文字外面的按钮）：依次触发 `onPressDown`、`onPressUp`、`onPress`，期间手指按下再抬起，外层监听触摸的视图都能收到（例如 Overlay 的 `onPressOutside`）。文本中的片段按在它的文字上（`await app.press("Privacy policy")`），headless 以及 iOS、Android 和桌面平台都支持。视图被禁用时 reject。 |
+| `await app.press(selector)` | 按下该视图，或者它外层最近的可按压视图（文字外面的按钮）：依次触发 `onPressDown`、`onPressUp`、`onPress`，期间手指按下再抬起，外层监听触摸的视图都能收到（例如 Overlay 的 `onPressOutside`）。文本中的片段按在它的文字上（`await app.press("Privacy policy")`），headless 以及 iOS、Android 和桌面平台都支持。500 ms 内再次按下同一视图算作第二次点击（`clicks: 2`，即双击），与各平台的计数方式一致。视图被禁用时 reject。 |
 | `await app.longPress(selector)` | 按住它（或它外层最近的可按压或监听触摸的视图），持续它的 `delayLongPress`（500 ms）：依次触发 `onPressDown`、`onLongPress`、`onPressUp`，之后不再触发 `onPress`。触摸处理函数能收到这根手指（`ContextMenu`、`Tooltip` 会打开）。 |
 | `await app.clear(selector)` | 清空输入框，相当于全选后删除。 |
 | `await app.type(selector, text)` | 在输入框（或该视图内的第一个输入框；`text:` 也匹配输入框的内容或占位文字）已有内容的末尾逐键输入：输入框先获得焦点，然后每个字符触发一次 `onKeyPress` 和一次 `onChange`，不超过 `maxLength`。单行输入框中的 `\n` 相当于回车键。 |
@@ -293,10 +331,11 @@ expect(app.texts()).toContain("Saved at 09:00:10");
 | `await app.scroll(selector, distance)` | 沿滚动视图或列表（该视图、它外层的滚动视图，或它内部的第一个）的方向拖动 `distance` 点，每帧 10 点，不超出内容范围，前提是用户可以滚动它（`scrollable`）。负数表示往回滚。 |
 | `await app.hover(selector)` | 把鼠标移到视图中央：鼠标离开的视图收到 `onHoverOut`，移入的视图收到 `onHoverIn` 并应用 `hover:` 样式，监听的视图收到带位置的 `onHoverMove`。用于桌面和任意宽度的 web，包括手机形态的浏览器（headless 时使用桌面或 `"web"` `platform`）；iOS 和 Android 手机没有鼠标，在那里会 reject。 |
 | `await app.rightClick(selector)` | 在视图中央按下鼠标右键：该视图或其外层最近的监听视图收到 `onContextMenu`。用于桌面和 web（headless 时使用桌面 `platform`）；手机没有鼠标，在那里会 reject。 |
+| `await app.paste(selector, { text?, files?, uris? })` | 像剪贴板上有这些内容时用户粘贴一样粘贴到输入框：输入框获得焦点并收到 `onPaste`（`files` 是文件路径，其字节以 `File` 交给它，`uris` 是 `file:` URL），然后按 `pasteBehavior` 插入文本。支持 headless、macOS 和 iOS；本机剪贴板保持不变。 |
 | `app.menu()` | 应用显示的上下文菜单（`Menu.popup`）中的操作：`label`（子菜单中的项写在子菜单名之后，如 `"Share > Mail"`）、`disabled`，可勾选项还有 `checked`；没有打开的菜单时为 `null`。 |
 | `await app.chooseMenuItem(label)` | 选择已打开上下文菜单中的操作，如同点击它：应用收到 `onMenu`（其 `onSelect` 运行），然后菜单关闭。该项被禁用或不存在时 reject。 |
 | `await app.closeMenu()` | 关闭已打开的上下文菜单，不选择任何项，如同按下 Escape。 |
-| `await app.keyboard.press(keys)` | 按下一个带修饰键的按键，写法同 `nsh/keymap`（`"mod+k"`、`"shift+/"`、`"escape"`；`mod` 是平台的命令键），如同硬件键盘，在所有平台上都可用（手机和平板也可以接硬件键盘）：由应用的对应快捷键接收（`keymap.bind`、`onKeyCommand`），否则由获得焦点的输入框接收字符、Backspace 或回车，否则 Escape 执行返回。 |
+| `await app.keyboard.press(keys)` | 按下一个带修饰键的按键，写法同 `nsh/keymap`（`"mod+k"`、`"shift+/"`、`"escape"`；`mod` 是平台的命令键），如同硬件键盘，在所有平台上都可用（手机和平板也可以接硬件键盘）：由应用的对应快捷键接收（`keymap.bind`、`onKeyCommand`），否则在 macOS 和 Web 上由 Tab 和 Shift+Tab 在输入框和可按压的视图之间移动键盘焦点（`onFocus`、`onBlur`、`focus:` 样式），Return 或空格按下焦点所在的视图，否则由获得焦点的输入框接收字符、Backspace 或回车，否则 Escape 执行返回。 |
 | `await app.drag(selector, { x, y })` | 手指落在视图中央，停留 100 ms，再移动 `x`、`y` 点（每帧 10 点）后抬起，由平台的输入系统处理：pan 跟随手指（`pan={{ x, y }}`、`onPanStart`，以及带松手速度的 `onPanEnd`），监听触摸的视图会收到触摸事件（`onTouchStart`、`PanResponder`），滚动视图随手指滚动，拉过顶部足够远时触发刷新（`onRefresh`），手指移开后其下的按压会被取消。在桌面和 web 上由鼠标完成。 |
 | `await app.wait(ms)` | 让应用运行 `ms` 毫秒：定时器、动画、请求。在手动时钟上，把时钟推进 `ms`（`app.clock.runFor`）。 |
 | `await app.waitFor(selector, options?)` | 有视图匹配时 resolve；传 `{ state: "gone" }` 时，等到没有视图匹配才 resolve；`timeout` 毫秒（5000）后 reject。 |
@@ -306,6 +345,7 @@ expect(app.texts()).toContain("Saved at 09:00:10");
 | `app.enabled(selector)` | 视图是否接受输入：它本身和外层视图都没有被禁用，输入框还要求不是 `readonly`。 |
 | `app.texts()` | 当前屏幕上的文字，按顺序排列。 |
 | `app.value(selector)` | 输入框的内容，没有匹配时为 `null`。 |
+| `app.spanStyle(selector)` | 在无界面测试中，返回匹配到的第一个字符的解析样式：`color`、可选的 `backgroundColor`、`fontSize`、`fontWeight`、`italic`、`underline` 和 `lineThrough`。颜色为 `#rrggbbaa`，字号单位为 pt。 |
 | `app.storage()` | 应用存储当前保存的内容。 |
 | `await app.back()` | 像用户那样返回（导航栏的返回按钮、下滑关闭弹出页）：最新的模态窗口里（没有模态窗口时就在整个屏幕上）最内层的导航栈弹出栈顶页面（`onDismiss`），栈顶页面设置了 `preventBack` 时改为询问它（`onBackRequest`）；没有可返回的栈时，最新的模态窗口请求关闭（`onRequestClose`）。没有可返回的内容时 reject。 |
 | `app.onDialog(handler)` | 回答应用之后弹出的对话框（`Alert.alert`、操作表）：`handler` 接收对话框（`title`、`message`、`buttons`、`cancelable`、`sheet`），返回要按的按钮文字，返回 `null` 则不按按钮直接关闭。 |
@@ -314,6 +354,9 @@ expect(app.texts()).toContain("Saved at 09:00:10");
 | `app.picks()` | 应用发起过的选取，按顺序排列。 |
 | `app.clipboard()` | 剪贴板当前的文字，没有时为 `null`。 |
 | `app.requests()` | 应用发出的请求，按顺序排列：`method`、`url`、`headers`、`body`。 |
+| `await app.host.send(name, data?)` | 以宿主应用的身份向应用发送事件（`host.on`），然后等待它空闲。见[扮演宿主应用](#扮演宿主应用)。 |
+| `app.host.calls()`、`app.host.posts()` | `open` 的 `host.handlers` 收到的应用调用和投递，按顺序排列：`name`、`data`。 |
+| `app.openedUrls()` | 应用打开的 URL（`openUrl`），按顺序排列：只记录，不打开。 |
 | `await app.setViewport(width, height)` | 改变视口大小，就像旋转设备或调整窗口大小那样（`windowSize()`）。 |
 | `await app.setColorScheme(scheme)` | 像用户那样把系统外观切换为 `"light"` 或 `"dark"`。 |
 | `await app.screenshot(path?)` | 应用窗口的 PNG 截图（`Uint8Array`）；给出 `path` 时同时保存到本机的这个路径（相对当前目录）。只有真实平台会绘制应用：见[在真实平台上运行](#在真实平台上运行)。 |
@@ -322,6 +365,10 @@ expect(app.texts()).toContain("Saved at 09:00:10");
 代码运行时，这一步带来的变化已经在屏幕上；之后才出现的内容（响应、定时器）用 `waitFor` 等待。选择器没有匹配到任何视图
 （错误信息会列出屏幕上的文字）、应用在此期间抛出了异常，或者应用请求了只有真实平台才能回答的内容时，步骤会 reject，
 测试随之失败。
+
+`app.spanStyle("id:guide")` 读取嵌套的 `<Text testID="guide">`；`text:word` 读取匹配文字的第一个字符。
+用 `id:note >> text:word` 限定范围，用 `>> nth=0` 选择重复匹配中的一个。
+没有匹配、匹配不唯一或 span 为空时会报错。更新 span 的 `testID` 会复用文本排版，保持 `onTextLayout` 的回调次数。
 
 ### 无界面运行替平台做了什么
 
@@ -334,6 +381,7 @@ expect(app.texts()).toContain("Saved at 09:00:10");
 - **剪贴板保存文字**：应用复制的内容，粘贴时可以读回来（用 `clipboard` 设定初始内容）。
 - **页面的宿主应答 `nsh/host`**：应用的 `nsh.json` 在 `web.host` 中指定了宿主时（[页面的宿主](#页面的宿主)）。
 - **应用在它的能力下运行**：`nsh.json` 的 `capabilities` 与设备上一样生效，没有声明的都会被拒绝。
+- **URL 只被记录**：应用打开的 URL 以“已打开”回报，`app.openedUrls()` 列出它们。
 - **选取会被回答**：用测试给的文件（`onPick`），否则视为取消，`Picker.pickImages` resolve 为 `[]`。
 - **模态窗口立即出现**：弹出时就会触发 `onShow`。
 - **图片不会加载**：不会有 `onLoad` 或 `onError`，`Image.getSize` 和 `Image.prefetch` 会 reject。
@@ -407,7 +455,8 @@ nsh test tests/form.test.tsx --target macos   # 只运行一个文件
 时一样交给测试：由 `network` 路由应答，没有路由匹配的请求会失败，`"live"` 则放行到 host 的真实网络；`app.requests()` 列出全部请求。
 `storage` 在应用启动时就已写入应用存储，`app.storage()` 从应用中读取。`locale`、`reducedMotion` 和 `safeArea` 不随平台上报的值变化；
 应用的剪贴板调用由测试自己的剪贴板应答（`clipboard` 是它的初始文本，`app.clipboard()` 读取它），机器的剪贴板保持不变；文本输入框自身的复制和
-粘贴使用系统剪贴板。带有自己 Rust crate 的应用运行在 NSH 为该平台用这些 crate 构建的开发 host 中；
+粘贴使用系统剪贴板。`host.params` 会传给应用，`app.host.send` 发送事件，应用打开的 URL 被记录下来供 `app.openedUrls()` 读取，而不会真正打开。
+`host.handlers` 只在 headless 运行：开发 host 不回答任何调用，在那里 `open` 会拒绝 handlers。带有自己 Rust crate 的应用运行在 NSH 为该平台用这些 crate 构建的开发 host 中；
 Rust 应用的 host 运行它的 root，所以 `open(".")` 在那里启动它，和 headless 时一样。
 
 在 web 上，应用运行在 headless 的 Chrome、Edge 或 Chromium 打开的开发 host 页面里：使用本机安装的浏览器，或

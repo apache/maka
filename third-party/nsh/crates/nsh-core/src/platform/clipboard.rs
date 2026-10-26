@@ -5,6 +5,10 @@
 //! the `data:` and `file:` URIs they carry, so every backend writes them
 //! the same way.
 
+mod path_list;
+
+pub use path_list::files_from_text;
+
 use crate::{EventPayload, PayloadValue};
 
 /// The largest image a clipboard read gives, in encoded bytes (48 MiB).
@@ -148,7 +152,13 @@ pub fn decode_data_uri(uri: &str) -> Option<(&str, Vec<u8>)> {
 /// `\\server\share\a` is `file://server/share/a`), its bytes outside the
 /// unreserved ones and `/` percent-encoded as UTF-8.
 pub fn file_url(path: &str) -> String {
-    let path = path.replace('\\', "/");
+    let windows = path.starts_with("\\\\")
+        || path.as_bytes().get(1) == Some(&b':') && path.as_bytes()[0].is_ascii_alphabetic();
+    let path = if windows {
+        path.replace('\\', "/")
+    } else {
+        path.to_owned()
+    };
     let (host, path) = match path.strip_prefix("//") {
         Some(unc) => unc.split_once('/').unwrap_or((unc, "")),
         None => ("", path.as_str()),
@@ -275,6 +285,7 @@ mod tests {
     #[test]
     fn file_urls_escape_paths() {
         assert_eq!(file_url("/tmp/a b#1.png"), "file:///tmp/a%20b%231.png");
+        assert_eq!(file_url(r"/tmp/a\b.png"), "file:///tmp/a%5Cb.png");
         assert_eq!(file_url("/tmp/中/"), "file:///tmp/%E4%B8%AD/");
         assert_eq!(file_url(r"C:\Users\a b.txt"), "file:///C:/Users/a%20b.txt");
         assert_eq!(

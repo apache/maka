@@ -36,9 +36,7 @@ use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
 use crate::availability::{Availability, LoadedTools, SEARCH};
-use crate::{
-    PreparedEffect, ToolCallContext, ToolCatalog, ToolDefinition, ToolMode, ToolSemantics, cell,
-};
+use crate::{PreparedEffect, ToolCatalog, ToolDefinition, ToolMode, ToolSemantics, cell};
 
 /// Run-scoped authority. Cell capacity is shared across runs, not recreated here.
 pub struct RunTools {
@@ -67,6 +65,7 @@ impl RunTools {
         cells: CodeExecutor,
         loaded: LoadedTools,
     ) -> Self {
+        let code = cell::Cells::new(maka_code_runtime::CellStore::new(loaded.session().clone()));
         Self {
             language,
             model: None,
@@ -74,13 +73,8 @@ impl RunTools {
             availability: Availability::new(catalog, loaded),
             mode,
             cells,
-            code: cell::Cells::default(),
+            code,
         }
-    }
-
-    pub fn with_store(mut self, store: maka_code_runtime::CellStore) -> Self {
-        self.code = cell::Cells::new(store);
-        self
     }
 
     pub async fn shutdown(&self) -> Result<(), ToolError> {
@@ -108,7 +102,7 @@ impl RunTools {
         self.model = Some(model);
     }
 
-    pub fn checkpoint(&self) -> maka_agent_facts::handoff::HandoffTools {
+    pub fn checkpoint(&self) -> Result<maka_agent_facts::handoff::HandoffTools, ToolError> {
         self.availability.checkpoint()
     }
 
@@ -131,20 +125,32 @@ impl RunTools {
             .capture(
                 self.model.clone(),
                 self.journal.invocation().clone(),
+                self.journal.execution_custody(),
                 cwd.into(),
                 cancellation,
             )
             .await?;
-        Ok(self.request(current))
+        self.request(current)
     }
 
-    /// Replay seals settled history and registered capabilities, not live state.
-    /// Each model step captures live bindings after invocation admission.
-    pub fn replay_definitions(&self) -> Vec<ToolDefinition> {
-        self.request(self.availability.clone()).definitions()
+    fn request(&self, current: Availability) -> Result<RequestTools<'_>, ToolError> {
+        let active = current.checkpoint()?.loaded;
+        Ok(self.request_selected(current, &active))
     }
 
-    fn request(&self, current: Availability) -> RequestTools<'_> {
+    pub fn replay_selected(
+        &self,
+        active: &std::collections::BTreeSet<String>,
+    ) -> Vec<ToolDefinition> {
+        self.request_selected(self.availability.clone(), active)
+            .definitions()
+    }
+
+    fn request_selected(
+        &self,
+        current: Availability,
+        active: &std::collections::BTreeSet<String>,
+    ) -> RequestTools<'_> {
         let digest = current.digest();
         let direct = if self.mode == ToolMode::CodeMode {
             current.direct_only()
@@ -156,7 +162,7 @@ impl RunTools {
         } else {
             current
         };
-        let described = availability.snapshot();
+        let described = availability.select(active);
         RequestTools {
             finished: Arc::new(AtomicBool::new(false)),
             digest,
@@ -216,7 +222,6 @@ impl<'a> RequestTools<'a> {
 
     pub fn into_step(self, step_id: &str) -> StepTools<'a> {
         StepTools {
-            finished: self.finished.clone(),
             request: self,
             step_id: step_id.to_owned(),
             admission: Admission::Fresh,
@@ -227,7 +232,6 @@ impl<'a> RequestTools<'a> {
 /// Call-order admission is separate from execution scheduling. Serial execution
 /// alone does not make exclusive-step siblings legal.
 pub struct StepTools<'a> {
-    finished: Arc<AtomicBool>,
     request: RequestTools<'a>,
     step_id: String,
     admission: Admission,
@@ -256,7 +260,7 @@ impl Admission {
 
 impl<'a> StepTools<'a> {
     pub fn finished(&self) -> bool {
-        self.finished.load(Ordering::Acquire)
+        self.request.finished()
     }
 
     pub async fn invoke(
@@ -277,7 +281,7 @@ impl<'a> StepTools<'a> {
         let run = request.run;
         let operation_id = format!("{}:{}", self.step_id, call.id);
         let identity = ToolCallIdentity::provider(self.step_id.clone(), call.id.clone());
-        let finished = self.finished.clone();
+        let finished = request.finished.clone();
         let catalog = if run.mode == ToolMode::CodeMode {
             &request.direct
         } else {
@@ -353,10 +357,7 @@ impl<'a> StepTools<'a> {
                         .prepare(
                             call.name.clone(),
                             input.clone(),
-                            ToolCallContext {
-                                invocation: run.journal.invocation().clone(),
-                                operation_id: operation_id.clone(),
-                            },
+                            run.journal.context(operation_id.clone()),
                             cancellation.clone(),
                         )
                         .await

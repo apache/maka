@@ -54,10 +54,19 @@ async fn create_replay_conflict_reopen_and_anchored_catalog_pages() {
         log.create_session("a", "other", &json!({}), 20).await,
         Err(StoreError::SessionConflict)
     ));
+    let binding = log
+        .attach_workspace("chosen", &json!({"path":"/chosen"}))
+        .await
+        .unwrap();
     for id in ["b", "c"] {
-        log.create_session(id, id, &json!({"workspace":{"hostCwd":"/chosen"}}), 10)
-            .await
-            .unwrap();
+        log.create_session(
+            id,
+            id,
+            &json!({"workspace":binding,"boundary_revision":0}),
+            10,
+        )
+        .await
+        .unwrap();
     }
     let scoped = log
         .scoped_sessions::<Value>(
@@ -201,11 +210,24 @@ async fn owned_catalog_filters_before_paging_and_binds_literal_query_and_scope_t
         WorkspaceIdentity::from_marker_id("44444444-4444-4444-8444-444444444444").unwrap();
     let query = "Keep 会话%_'";
     let title = "Keep 会话%_' 标题";
-    let configuration = |project, identity: &WorkspaceIdentity, title, path| {
-        json!({"title":title,"workspace":{
-            "projectId":project,"identity":identity,"path":path,"hostCwd":"/shared"
-        }})
-    };
+    async fn configuration(
+        log: &EventLog,
+        project: uuid::Uuid,
+        identity: &WorkspaceIdentity,
+        title: &str,
+        path: &str,
+    ) -> Value {
+        let binding = log
+            .attach_workspace(
+                "catalog",
+                &json!({
+                    "projectId":project,"identity":identity,"path":path
+                }),
+            )
+            .await
+            .unwrap();
+        json!({"title":title,"workspace":binding,"boundary_revision":0})
+    }
     // These earlier IDs would displace real matches if filtering happened
     // after LIMIT. Equal paths do not establish intrinsic workspace membership.
     for (id, project, workspace, title) in [
@@ -233,7 +255,7 @@ async fn owned_catalog_filters_before_paging_and_binds_literal_query_and_scope_t
         log.create_session(
             id,
             id,
-            &configuration(project, workspace, title, "/shared"),
+            &configuration(&log, project, workspace, title, "/shared").await,
             1,
         )
         .await
@@ -242,9 +264,14 @@ async fn owned_catalog_filters_before_paging_and_binds_literal_query_and_scope_t
     for index in 0..35 {
         let id = format!("owned_match_{index:02}");
         let path = if index == 0 { "/relocated" } else { "/shared" };
-        log.create_session(&id, &id, &configuration(project, &identity, title, path), 1)
-            .await
-            .unwrap();
+        log.create_session(
+            &id,
+            &id,
+            &configuration(&log, project, &identity, title, path).await,
+            1,
+        )
+        .await
+        .unwrap();
     }
     for id in [
         "owned_match_00",
@@ -663,7 +690,7 @@ async fn availability_tracks_visibility_without_admitting_work_or_decoding_metad
     let faults = rusqlite::Connection::open(&path).unwrap();
     faults
         .execute(
-            "UPDATE session_control SET configuration='invalid json' WHERE id='visible'",
+            "UPDATE session_control SET configuration='{\"workspace\":false}' WHERE id='visible'",
             [],
         )
         .unwrap();
@@ -716,7 +743,7 @@ async fn availability_rejects_a_root_that_lost_its_authority() {
     };
     let root = directory.path().join("root");
     let owner = std::sync::Arc::new(RootOwner::create(&root, &namespaces).unwrap());
-    let log = EventLog::for_root(owner).await.unwrap();
+    let log = maka_event_log::RootStore::open(owner).await.unwrap();
     log.create_session("visible", "create", &json!({}), 1)
         .await
         .unwrap();

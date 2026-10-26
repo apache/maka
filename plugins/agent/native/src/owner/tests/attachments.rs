@@ -60,7 +60,8 @@ async fn admitted_large_text_attachment_reads_exact_ranges_and_canonical_continu
     .unwrap();
     let id = uploaded["attachment"]["id"].as_str().unwrap();
     let before = f
-        .store
+        .session(&session)
+        .await
         .get_artifact(&session, id)
         .await
         .unwrap()
@@ -68,7 +69,8 @@ async fn admitted_large_text_attachment_reads_exact_ranges_and_canonical_continu
         .unwrap();
     let window = 50 * 1024 * 1024;
     let original = f
-        .store
+        .session(&session)
+        .await
         .read_artifact_chunk(&session, id, 0, window)
         .await
         .unwrap()
@@ -121,14 +123,16 @@ async fn admitted_large_text_attachment_reads_exact_ranges_and_canonical_continu
         Some(files::finish(&listener, &f).await)
     };
     let after = f
-        .store
+        .session(&session)
+        .await
         .get_artifact(&session, id)
         .await
         .unwrap()
         .record
         .unwrap();
     let retained = f
-        .store
+        .session(&session)
+        .await
         .read_artifact_chunk(&session, id, 0, window)
         .await
         .unwrap()
@@ -309,8 +313,8 @@ async fn large_selected_upload_keeps_complete_bytes_and_session_authority() {
             BTreeMap::from([("file".into(), snapshot as Arc<dyn maka_capabilities::call::ReadResource>)]),
         ).await?;
         let id = uploaded["attachment"]["id"].as_str().ok_or("upload did not return an attachment")?;
-        let record = f.store.get_artifact(&session, id).await.map_err(|error| error.to_string())?.record.ok_or("upload did not retain its artifact")?;
-        let tail = f.store.read_artifact_chunk(&session, id, 50 * 1024 * 1024, 64).await.map_err(|error| error.to_string())?.ok_or("upload lost final bytes")?;
+        let record = f.session(&session).await.get_artifact(&session, id).await.map_err(|error| error.to_string())?.record.ok_or("upload did not retain its artifact")?;
+        let tail = f.session(&session).await.read_artifact_chunk(&session, id, 50 * 1024 * 1024, 64).await.map_err(|error| error.to_string())?.ok_or("upload lost final bytes")?;
         Ok::<_, String>((uploaded, record, tail))
     }.await;
     f.drained().await;
@@ -343,7 +347,7 @@ async fn attachment_upload_send_queue_and_resource_read_keep_session_and_receipt
         assert_eq!(attachment["mimeType"], "text/markdown");
         assert_eq!(attachment["name"], "notes.md");
         let id = attachment["id"].as_str().unwrap();
-        let record = f.store.get_artifact(&session, id).await.unwrap().record.unwrap();
+        let record = f.session(&session).await.get_artifact(&session, id).await.unwrap().record.unwrap();
         assert_eq!(record.summary.as_deref(), Some(content_digest(text.as_bytes()).as_str()));
         assert!(upload(&f, &session, "notes.md", text.as_bytes(), operation).await.is_err(), "a recapture is not the original resource-bearing operation");
         let reference = f.store.application_intents(f.app.source().unwrap().deployment, super::id(2), 0, 16).await.unwrap().into_iter()
@@ -351,8 +355,8 @@ async fn attachment_upload_send_queue_and_resource_read_keep_session_and_receipt
         let client = f.app.client();
         let recovered = client.recover(client.activation(&super::id(2)).unwrap(), reference, scope(&f.issuer, true)).await.unwrap().unwrap();
         assert_eq!(recovered.outcome, OperationOutcome::Returned { value: uploaded.clone() });
-        assert_eq!(f.store.list_artifacts(&session, 0, 10).await.unwrap().records.len(), 1);
-        assert_eq!(f.store.get_artifact(&session, id).await.unwrap().record.unwrap(), record);
+        assert_eq!(f.session(&session).await.list_artifacts(&session, 0, 10).await.unwrap().records.len(), 1);
+        assert_eq!(f.session(&session).await.get_artifact(&session, id).await.unwrap().record.unwrap(), record);
         f.store.create_session("foreign_session", "foreign", &json!({"foreign":true}), 1).await.unwrap();
         assert!(upload(&f, "foreign_session", "notes.md", text.as_bytes(), Uuid::new_v4()).await.is_err());
         for (target, ids) in [(&other, vec![id]), (&session, vec![id, id]), (&session, vec!["missing"])] {
@@ -373,11 +377,11 @@ async fn attachment_upload_send_queue_and_resource_read_keep_session_and_receipt
         assert!(user["attachments"][0].get("ref").is_none(), "history descriptors confer no storage access");
         let queued = send("queued text").await.unwrap();
         assert_eq!(queued["kind"], "queued");
-        let queue = f.store.message_queue(&session).await.unwrap();
+        let queue = f.session(&session).await.message_queue(&session).await.unwrap();
         let refs = queue.entries[0].source.unprepared_content.attachments.clone();
         let changed = f.mutation(2, "editQueue", json!({"sessionId":session,"expectedRevision":queue.revision,"edit":{"kind":"update","messageId":queued["messageId"],"message":""}}), Uuid::new_v4()).await.unwrap();
         assert_eq!(changed["kind"], "committed");
-        let queue = f.store.message_queue(&session).await.unwrap();
+        let queue = f.session(&session).await.message_queue(&session).await.unwrap();
         assert_eq!(queue.entries[0].source.unprepared_content.attachments, refs);
         assert_eq!(queue.entries[0].source.message.content.attachments, refs);
         assert_eq!(queue.entries[0].source.unprepared_content.text, "");
@@ -408,7 +412,7 @@ async fn attachment_upload_send_queue_and_resource_read_keep_session_and_receipt
         assert!(continued["value"]["offset"].as_u64().unwrap() > 0);
         response(&mut socket).await;
         f.drained().await;
-        assert_eq!(f.store.read_artifact_chunk(&session, id, 0, 50 * 1024).await.unwrap().unwrap().bytes, text.as_bytes());
+        assert_eq!(f.session(&session).await.read_artifact_chunk(&session, id, 0, 50 * 1024).await.unwrap().unwrap().bytes, text.as_bytes());
         f.send(&other).await.unwrap();
         let (mut socket, _) = listener.accept().await.unwrap();
         request(&mut socket).await;
@@ -420,7 +424,7 @@ async fn attachment_upload_send_queue_and_resource_read_keep_session_and_receipt
         assert!(!tool["content"].as_str().unwrap().contains("uploaded text"));
         response(&mut socket).await;
         f.drained().await;
-        f.store.set_session_archived::<SessionConfiguration>(&session, true, now()).await.unwrap();
+        f.store.set_session_archived::<StoredSessionConfiguration>(&session, true, now()).await.unwrap();
         assert_eq!(upload(&f, &session, "notes.md", text.as_bytes(), Uuid::new_v4()).await.unwrap(), json!({"kind":"rejected","reason":"archived"}));
         f.app.shutdown().await.unwrap();
         f.config.shutdown().await.unwrap();
@@ -447,7 +451,7 @@ async fn attachment_payload_validation_and_image_read_use_actual_bytes() {
                 BTreeMap::from([("file".into(), snapshot.clone() as Arc<dyn maka_capabilities::call::ReadResource>)])).await.unwrap();
             assert_eq!(result, json!({"kind":"rejected","reason":"invalid_file"}));
         }
-        assert!(f.store.list_artifacts(&session, 0, 10).await.unwrap().records.is_empty());
+        assert!(f.session(&session).await.list_artifacts(&session, 0, 10).await.unwrap().records.is_empty());
         let uploaded = upload(&f, &session, "misleading.txt", &bytes, Uuid::new_v4()).await.unwrap();
         let attachment = &uploaded["attachment"];
         assert_eq!(attachment["mimeType"], "image/gif", "signature takes precedence over the filename");
@@ -536,7 +540,7 @@ async fn cancelled_attachment_upload_retains_resource_custody_until_worker_finis
         drop(release);
         assert!(mutation.completion().await.cleanup.is_ok());
         resources.finish().await.unwrap();
-        assert!(f.store.list_artifacts(&session, 0, 10).await.unwrap().records.is_empty());
+        assert!(f.session(&session).await.list_artifacts(&session, 0, 10).await.unwrap().records.is_empty());
         assert_eq!(upload(&f, &session, "after.txt", b"after", Uuid::new_v4()).await.unwrap()["kind"], "uploaded");
         f.app.shutdown().await.unwrap();
         f.config.shutdown().await.unwrap();

@@ -243,7 +243,7 @@ fn client_origin(hwnd: HWND) -> (f64, f64) {
 fn hit(view: &NshView, m: &Mat4, x: f32, y: f32) -> Option<NshView> {
     let (w, h, clips) = {
         let s = view.try_state()?;
-        if s.concealed || s.props.accessibility.hidden {
+        if s.concealed || s.style.hidden || s.props.accessibility.hidden {
             return None;
         }
         (s.frame.size.width.0, s.frame.size.height.0, s.clips())

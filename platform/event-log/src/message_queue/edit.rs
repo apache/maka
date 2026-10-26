@@ -21,7 +21,7 @@ use super::{MessageQueue, QueueChange, QueueEdit, invalid};
 use crate::{StoreError, message_admissions::PendingMessageAdmission};
 use maka_agent_facts::message::MessageDisposition as Disposition;
 use sqlx::SqliteConnection;
-use std::collections::HashSet;
+use std::collections::HashMap;
 
 pub(crate) struct Applied {
     pub result: QueueChange,
@@ -34,20 +34,19 @@ pub(crate) async fn apply(
     mut queue: MessageQueue,
     edit: QueueEdit,
 ) -> Result<Applied, StoreError> {
-    let original = queue.entries.clone();
     let mut retracted = Vec::new();
     let mut cancellation = None;
-    match edit {
+    let changed = match edit {
         QueueEdit::RetractAll { cancellation_id } => {
             crate::sessions::validate_id(&cancellation_id)?;
             cancellation = Some(cancellation_id);
-            queue.entries.retain(|entry| {
-                if entry.source.disposition == Disposition::TurnStarted {
-                    return true;
-                }
-                retracted.push(entry.clone());
-                false
-            });
+            retracted = queue
+                .entries
+                .extract_if(.., |entry| {
+                    entry.source.disposition != Disposition::TurnStarted
+                })
+                .collect();
+            !retracted.is_empty()
         }
         QueueEdit::Retract {
             message_id,
@@ -57,6 +56,7 @@ pub(crate) async fn apply(
             let index = queued(&queue, &message_id)?;
             cancellation = Some(cancellation_id);
             retracted.push(queue.entries.remove(index));
+            true
         }
         QueueEdit::Promote {
             message_id,
@@ -89,6 +89,7 @@ pub(crate) async fn apply(
                 .rposition(|e| e.source.disposition == Disposition::Steering)
                 .map_or(0, |index| index + 1);
             queue.entries.insert(after, entry);
+            true
         }
         QueueEdit::Update {
             message_id,
@@ -98,17 +99,18 @@ pub(crate) async fn apply(
         } => {
             let index = queued(&queue, &message_id)?;
             let entry = &mut queue.entries[index];
+            let changed = entry.source.message.content != *content
+                || entry.source.unprepared_content != *unprepared_content
+                || entry.required_tools != required_tools;
             entry.source.message.content = *content;
             entry.source.unprepared_content = *unprepared_content;
             // Edits change delivery, not the original submission identity used
             // to prove admission after an Epoch change.
             entry.required_tools = required_tools;
             entry.source.validate().map_err(invalid)?;
+            changed
         }
         QueueEdit::Reorder { message_ids } => {
-            if message_ids.iter().collect::<HashSet<_>>().len() != message_ids.len() {
-                return Err(invalid("invalid message reorder identities"));
-            }
             let lane = message_ids
                 .first()
                 .and_then(|id| {
@@ -130,25 +132,32 @@ pub(crate) async fn apply(
             if indexes.len() != message_ids.len() {
                 return Err(invalid("message queue changed before reorder"));
             }
-            let reordered: Result<Vec<_>, _> = message_ids
+            let mut positions: HashMap<_, _> = indexes
                 .iter()
-                .map(|id| {
-                    queue
-                        .entries
-                        .iter()
-                        .find(|e| {
-                            e.source.disposition == lane && &e.source.message.message_id == id
-                        })
-                        .cloned()
-                        .ok_or_else(|| invalid("message queue changed before reorder"))
+                .map(|&index| {
+                    (
+                        queue.entries[index].source.message.message_id.clone(),
+                        index,
+                    )
                 })
                 .collect();
-            for (index, entry) in indexes.into_iter().zip(reordered?) {
-                queue.entries[index] = entry;
+            let mut changed = false;
+            for (target, id) in indexes.into_iter().zip(message_ids) {
+                let source = positions
+                    .remove(&id)
+                    .ok_or_else(|| invalid("message queue changed before reorder"))?;
+                if source != target {
+                    queue.entries.swap(source, target);
+                    positions.insert(
+                        queue.entries[source].source.message.message_id.clone(),
+                        source,
+                    );
+                    changed = true;
+                }
             }
+            changed
         }
-    }
-    let changed = queue.entries != original;
+    };
     if changed {
         for entry in &retracted {
             sqlx::query("INSERT INTO message_cancellations(session_id, message_id, cancellation_id) VALUES (?, ?, ?)")

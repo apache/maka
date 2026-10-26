@@ -53,6 +53,7 @@ async fn opening(log: &EventLog, session: &str, id: &str) -> Invocation {
                 approval_policy: ApprovalPolicy::OnRequest,
                 boundary_revision: 0,
                 cwd: "/tmp".into(),
+                workspace_binding: None,
                 workspace_identity: None,
                 model: Some(ModelBinding {
                     connection_id: "connection".into(),

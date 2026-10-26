@@ -81,7 +81,7 @@ pub(super) async fn read(directory: &Path) -> Result<Installation, HostError> {
 pub(super) async fn install(
     directory: &Path,
     lease: Arc<FileLease>,
-    owner: RootOwner,
+    owner: Arc<RootOwner>,
     deployment: Deployment,
 ) -> Result<Deployment, HostError> {
     let connection = open_writer(directory, lease, None).await?;

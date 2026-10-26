@@ -103,7 +103,7 @@ pub enum InteractionRequest {
     Permissions {
         #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<String>")]
         tool_use_id: Option<String>,
-        base_revision: u64,
+        basis: crate::workspace::PermissionBasis,
         request: PermissionRequest,
     },
     Question {
@@ -120,9 +120,9 @@ pub enum InteractionRequest {
         tool_use_id: String,
         target: GrantTarget,
         /// Agent-owned approvals expire with this original permission boundary.
-        /// Older capability records without a boundary remain readable.
+        /// Unbound capabilities are explicit; Agent-owned capabilities capture a full binding stamp.
         #[serde(skip_serializing_if = "Option::is_none")]
-        base_revision: Option<u64>,
+        basis: Option<crate::workspace::PermissionBasis>,
     },
 }
 
@@ -273,7 +273,7 @@ pub struct SessionGrant {
     pub target: GrantTarget,
     pub granted_at: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub base_revision: Option<u64>,
+    pub basis: Option<crate::workspace::PermissionBasis>,
 }
 
 /// The Host supplies the real operation description; it is display information,

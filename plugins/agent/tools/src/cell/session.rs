@@ -42,10 +42,9 @@ use tokio_util::{sync::CancellationToken, task::TaskTracker};
 const MAX_CELLS: usize = 4;
 const MAX_OUTPUT_BYTES: usize = 128 * 1024;
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub(crate) struct Cells(Arc<State>);
 
-#[derive(Default)]
 struct State {
     cells: Mutex<BTreeMap<String, Arc<Cell>>>,
     execution: Arc<tokio::sync::RwLock<()>>,
@@ -87,7 +86,14 @@ impl Cells {
     pub fn new(store: CellStore) -> Self {
         Self(Arc::new(State {
             store,
-            ..State::default()
+            cells: Mutex::default(),
+            execution: Arc::default(),
+            cancellation: CancellationToken::new(),
+            tasks: TaskTracker::new(),
+            fatal: Mutex::default(),
+            notification_gate: NotificationGate::default(),
+            notification_high_water: tokio::sync::Mutex::new(0),
+            notification_changed: tokio::sync::Notify::new(),
         }))
     }
 
@@ -173,11 +179,14 @@ impl Cells {
                 ),
             })
             .collect();
-        let context = CellContext::with_notification_gate(
-            self.0.store.clone(),
-            metadata,
-            self.0.notification_gate.clone(),
-        );
+        let store = self.0.store.clone();
+        let gate = self.0.notification_gate.clone();
+        let context = tokio::task::spawn_blocking(move || {
+            CellContext::with_notification_gate(store, metadata, gate)
+        })
+        .await
+        .map_err(|error| ToolError::Persistence(error.to_string()))?
+        .map_err(|error| ToolError::Persistence(error.message))?;
         let (done, completion) = watch::channel(None);
         let token = cancellation.child_token();
         let cell = Arc::new(Cell {
@@ -278,12 +287,18 @@ impl Cells {
                     "code cell worker panicked".into(),
                 ))
             });
-            let result = result.and_then(|result| {
-                context
-                    .commit()
-                    .map_err(|error| ToolError::Failed(error.message))?;
-                Ok(result)
-            });
+            let result = match result {
+                Ok(result) => {
+                    // The worker owns this blocking publication through physical
+                    // settlement, even if its caller stops awaiting the result.
+                    match tokio::task::spawn_blocking(move || context.commit()).await {
+                        Ok(Ok(())) => Ok(result),
+                        Ok(Err(error)) => Err(ToolError::Persistence(error.message)),
+                        Err(error) => Err(ToolError::Persistence(error.to_string())),
+                    }
+                }
+                Err(error) => Err(error),
+            };
             if let Err(error @ (ToolError::Persistence(_) | ToolError::CleanupUnconfirmed(_))) =
                 &result
             {

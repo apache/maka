@@ -202,7 +202,6 @@ export const workspaceMessages = {
   'Loading image…': msg_imageLoading,
   'Loading session…': ['Loading session…', '正在加载会话…', '正在載入對話…'],
   Locations: ['Locations', '位置', '位置'],
-  'Narrower session browser': ['Narrower session browser', '缩窄会话浏览器', '縮窄對話瀏覽器'],
   'Navigating…': ['Navigating…', '正在跳转…', '正在跳轉…'],
   'New conversation in {name}': [
     'New conversation in {name}',
@@ -223,11 +222,6 @@ export const workspaceMessages = {
     '沒有符合的對話。',
   ],
   'No matching folders.': ['No matching folders.', '没有匹配的文件夹。', '沒有符合的資料夾。'],
-  'No workspace locations are published by this Host.': [
-    'No workspace locations are published by this Host.',
-    '此主机没有发布任何工作区位置。',
-    '此主機未發佈任何工作區位置。',
-  ],
   'Not a Git workspace.': [
     'Not a Git workspace.',
     '此工作区不是 Git 工作区。',
@@ -492,7 +486,6 @@ export const workspaceMessages = {
     '已複製可見終端內容。',
   ],
   'Waiting for you': msg_goalStatus_waiting,
-  'Wider session browser': ['Wider session browser', '加宽会话浏览器', '加寬對話瀏覽器'],
   'WorkHub manages this conversation. Its history cannot be forked here.': [
     'WorkHub manages this conversation. Its history cannot be forked here.',
     '此对话由 WorkHub 管理，无法在此处分叉其历史。',
@@ -540,5 +533,63 @@ export const workspaceMessages = {
     'This file is not a supported image.',
     '此文件不是支持的图片。',
     '此檔案不是支援的圖片。',
+  ],
+  'Manage workspace locations': ['Manage workspace locations', '管理工作区位置', '管理工作區位置'],
+  'Manage locations': ['Manage locations', '管理位置', '管理位置'],
+  'Add absolute folder paths on this Host. Removing a location does not delete its files.': [
+    'Add absolute folder paths on this Host. Removing a location does not delete its files.',
+    '添加此主机上的文件夹绝对路径。移除位置不会删除文件。',
+    '新增此主機上的資料夾絕對路徑。移除位置不會刪除檔案。',
+  ],
+  'Loading locations…': ['Loading locations…', '正在加载位置…', '正在載入位置…'],
+  'Published workspace locations': [
+    'Published workspace locations',
+    '已发布的工作区位置',
+    '已發佈的工作區位置',
+  ],
+  'Remove location {name}': ['Remove location {name}', '移除位置 {name}', '移除位置 {name}'],
+  'Workspace location name': ['Workspace location name', '工作区位置名称', '工作區位置名稱'],
+  'Location name': ['Location name', '位置名称', '位置名稱'],
+  'Workspace location path': ['Workspace location path', '工作区位置路径', '工作區位置路徑'],
+  'Absolute folder path on this Host': [
+    'Absolute folder path on this Host',
+    '此主机上的文件夹绝对路径',
+    '此主機上的資料夾絕對路徑',
+  ],
+  'Add workspace location': ['Add workspace location', '添加工作区位置', '新增工作區位置'],
+  'Add location': ['Add location', '添加位置', '新增位置'],
+  'Save workspace locations': ['Save workspace locations', '保存工作区位置', '儲存工作區位置'],
+  'Save locations': ['Save locations', '保存位置', '儲存位置'],
+  Reload: ['Reload', '重新加载', '重新載入'],
+  'Discard unsent action': ['Discard unsent action', '放弃未发送的操作', '捨棄未傳送的操作'],
+  'This Host does not manage workspace locations.': [
+    'This Host does not manage workspace locations.',
+    '此主机不支持管理工作区位置。',
+    '此主機不支援管理工作區位置。',
+  ],
+  'Workspace locations changed elsewhere. Reload before saving again.': [
+    'Workspace locations changed elsewhere. Reload before saving again.',
+    '工作区位置已在其他地方修改。请重新加载后再保存。',
+    '工作區位置已在其他地方修改。請重新載入後再儲存。',
+  ],
+  'The Host rejected these workspace locations.': [
+    'The Host rejected these workspace locations.',
+    '主机拒绝了这些工作区位置。',
+    '主機拒絕了這些工作區位置。',
+  ],
+  'This folder is unavailable or cannot be opened. Choose another location or retry.': [
+    'This folder is unavailable or cannot be opened. Choose another location or retry.',
+    '此文件夹不可用或无法打开。请选择其他位置或重试。',
+    '此資料夾無法使用或開啟。請選擇其他位置或重試。',
+  ],
+  'No workspace locations are available.': [
+    'No workspace locations are available.',
+    '没有可用的工作区位置。',
+    '沒有可用的工作區位置。',
+  ],
+  'Locations saved. Waiting for the Host to apply them…': [
+    'Locations saved. Waiting for the Host to apply them…',
+    '位置已保存，正在等待主机应用更改…',
+    '位置已儲存，正在等待主機套用變更…',
   ],
 } as const satisfies Catalog;

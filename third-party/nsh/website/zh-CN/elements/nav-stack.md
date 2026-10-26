@@ -268,6 +268,10 @@ fn profile(edit: impl Fn() + 'static) -> Screen {
 
 页面的内容从标题栏下方开始：在 iOS 和 Android 上位于不透明的系统标题栏之下，在桌面平台和 Web 上位于 `header` 之下。使用 `headerTransparent`、`headerLargeTitle` 或 `headerVisible={false}` 时，在 iOS 和 Android 上内容从页面顶部开始；用 [SafeAreaView](./safe-area-view.md) 或 `safeAreaInsets()` 让它避开标题栏和状态栏。
 
+在 iOS 上，设置 `headerVisible={false}` 的页面在 `popOnSwipe` 和 `popOnBack` 为 true 时仍支持侧滑返回。
+允许的交互式返回手势在转场开始时结束当前输入，键盘在拖动过程中收起。取消转场时，若其他控件没有取得焦点，
+会恢复原输入框的焦点。
+
 ```rust tabs
 nav_page()
     .title("Large title")

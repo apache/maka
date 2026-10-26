@@ -35,6 +35,28 @@ pub struct FileListRead {
     pub after: Option<FileCursor>,
 }
 
+/// Workspace-relative file suggestions from this Session's admitted directory.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentFileCandidatesRead")]
+pub struct FileCandidatesRead {
+    pub session_id: String,
+    /// Omission or null selects the workspace root.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub directory: Option<WorkspacePath>,
+    /// Empty or whitespace browses the selected directory's direct files and directories.
+    /// Otherwise, searches file paths within that directory's descendants.
+    pub query: String,
+}
+
+/// An emitted batch of path observations; null final completion ends the subscription.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentFileCandidates")]
+pub struct FileCandidates {
+    pub entries: Vec<FileEntry>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentFileWatch")]

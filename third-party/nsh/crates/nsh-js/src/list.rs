@@ -39,7 +39,10 @@ const FORWARDED: &[&str] = &[
     "scrollbar",
     "refreshing",
     "onRefresh",
+    "pullValue",
+    "refreshIndicator",
     "onLoadMore",
+    "onLoadMoreAtStart",
     "onScrollEnd",
     "scrollValue",
     "keyboardDismissMode",
@@ -82,6 +85,7 @@ const OWN: &[&str] = &[
     "keyExtractor",
     "estimatedItemSize",
     "loadMoreThreshold",
+    "loadMoreAtStartThreshold",
     "initialScrollIndex",
     "onViewableItemsChange",
     "header",
@@ -573,6 +577,7 @@ unsafe extern "C" fn forward_run(
         let names = FORWARDED.iter().map(|&n| (n, n)).chain([
             ("estimatedItemSize", "estimatedItemSize"),
             ("loadMoreThreshold", "loadMoreThreshold"),
+            ("loadMoreAtStartThreshold", "loadMoreAtStartThreshold"),
         ]);
         let mut at = 0;
         for (wire, key) in names {
@@ -623,13 +628,16 @@ fn forward(
         if qjs::JS_IsUndefined(value) || qjs::JS_IsNull(value) {
             value = match wire {
                 "estimatedItemSize" => qjs::JS_NewFloat64(50.0),
-                "loadMoreThreshold" => qjs::JS_NewFloat64(1.0),
+                "loadMoreThreshold" | "loadMoreAtStartThreshold" => qjs::JS_NewFloat64(1.0),
                 _ => value,
             };
         }
         let old = qjs::JS_GetPropertyUint32(cx, prev, at);
-        let first =
-            qjs::JS_IsUndefined(old) && !matches!(wire, "estimatedItemSize" | "loadMoreThreshold");
+        let first = qjs::JS_IsUndefined(old)
+            && !matches!(
+                wire,
+                "estimatedItemSize" | "loadMoreThreshold" | "loadMoreAtStartThreshold"
+            );
         let result = if qjs::JS_IsStrictEqual(cx, old, value) || first && qjs::JS_IsUndefined(value)
         {
             Ok(())
@@ -1362,6 +1370,12 @@ export interface ListProps<T> extends Omit<ViewProps, "children">, ScrollingHost
   testID?: string;
   /** How close to the end (in viewports) `onLoadMore` fires; default 1. */
   loadMoreThreshold?: number;
+  /** The start came within `loadMoreAtStartThreshold` viewports, after the
+   * user or a scroll command moved the list: load what comes before the
+   * first item (a chat's newer messages). Once per approach. */
+  onLoadMoreAtStart?: () => void;
+  /** How close to the start (in viewports) `onLoadMoreAtStart` fires; default 1. */
+  loadMoreAtStartThreshold?: number;
   ref?: YNode | ((node: YNode) => void);
   /** Renders one row. Called once per recycled cell; `item` and `index`
    * change when the cell is reused for another item. */

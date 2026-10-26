@@ -22,13 +22,15 @@
 mod support;
 use futures_util::{SinkExt, StreamExt};
 use maka_event_log::{
-    EventLog,
     root::{RootNamespaces, RootOwner},
+    root_store::RootStore,
 };
 use maka_host_runtime::{
     application::{
         NativeRegistry,
-        host::{Client, Host, Pairing, websocket::WebSocketListener},
+        host::{
+            Client, Configuration as HostConfiguration, Host, Pairing, websocket::WebSocketListener,
+        },
         transport::{Grant, HostEndpoint, wire},
     },
     ipc::LocalListener,
@@ -166,12 +168,12 @@ async fn remote_pairing_binds_client_source_and_session_and_revokes_original_cha
         maka_event_log::root::private_directory(directory.path()).unwrap();
         let namespaces = RootNamespaces { ownership: directory.path().join("owners"), control: directory.path().join("control") };
         let root = directory.path().join("root");
-        let store = Arc::new(EventLog::for_root(Arc::new(RootOwner::create(&root, &namespaces).unwrap())).await.unwrap());
+        let store = Arc::new(support::setup(RootStore::open(Arc::new(RootOwner::create(&root, &namespaces).unwrap()))).await.unwrap());
         let deployment = Uuid::new_v4();
         let (input, packages) = support::host();
         store.commit_application(deployment, 0, input, vec![], packages).await.unwrap();
         let selections = BTreeMap::from([("business".into(), HostEndpoint { consumer: support::identity(13), import: "business".into(), grant: Grant { methods: ["read".into(), "write".into()].into(), recovery: false } })]);
-        let host = Host::open(store.clone(), deployment, NativeRegistry::default(), Some(maka_host_js::factory(Default::default())), selections.clone(), vec![]).await.unwrap();
+        let host = Host::open(store.clone(), deployment, NativeRegistry::default(), Some(maka_host_js::factory(Default::default())), HostConfiguration::PublicHost { endpoints: selections.clone(), native: vec![], product_methods: Default::default() }).await.unwrap();
         #[cfg(unix)]
         let local = directory.path().join("host.sock");
         #[cfg(windows)]
@@ -230,10 +232,10 @@ async fn remote_pairing_binds_client_source_and_session_and_revokes_original_cha
         serving.await.unwrap().unwrap();
         drop((host, store));
         // A changed published grant set never silently reinterprets an old credential.
-        let store = Arc::new(EventLog::for_root(Arc::new(RootOwner::open(&root, &namespaces).unwrap())).await.unwrap());
+        let store = Arc::new(support::setup(RootStore::open(Arc::new(RootOwner::open(&root, &namespaces).unwrap()))).await.unwrap());
         let mut selections = selections;
         selections.get_mut("business").unwrap().grant.methods.remove("write");
-        let host = Host::open(store.clone(), deployment, NativeRegistry::default(), Some(maka_host_js::factory(Default::default())), selections, vec![]).await.unwrap();
+        let host = Host::open(store.clone(), deployment, NativeRegistry::default(), Some(maka_host_js::factory(Default::default())), HostConfiguration::PublicHost { endpoints: selections, native: vec![], product_methods: Default::default() }).await.unwrap();
         let listener = LocalListener::bind(&local).unwrap();
         let websocket = WebSocketListener::bind("127.0.0.1:0".parse().unwrap(), vec![]).await.unwrap();
         let address = format!("ws://{}/runtime-host", websocket.local_addr().unwrap());
@@ -285,7 +287,7 @@ async fn remote_pairing_preserves_large_original_query_and_cleanup() {
         maka_event_log::root::private_directory(directory.path()).unwrap();
         let namespaces=RootNamespaces { ownership:directory.path().join("owners"),control:directory.path().join("control") };
         let root=directory.path().join("root");
-        let store=Arc::new(EventLog::for_root(Arc::new(RootOwner::create(&root,&namespaces).unwrap())).await.unwrap());
+        let store=Arc::new(support::setup(RootStore::open(Arc::new(RootOwner::create(&root,&namespaces).unwrap()))).await.unwrap());
         let deployment=Uuid::new_v4();
         let (input,packages)=support::native_host("remote.echo");
         let provider=Arc::new(RemoteEcho::default());
@@ -296,9 +298,9 @@ async fn remote_pairing_preserves_large_original_query_and_cleanup() {
             } })
         } })).unwrap();
         store.commit_application(deployment,0,input,vec![],packages).await.unwrap();
-        let host=Host::open(store.clone(),deployment,native,Some(maka_host_js::factory(Default::default())),BTreeMap::from([
+        let host=Host::open(store.clone(),deployment,native,Some(maka_host_js::factory(Default::default())),HostConfiguration::PublicHost { endpoints: BTreeMap::from([
             ("business".into(),HostEndpoint { consumer:support::identity(13),import:"business".into(),grant:Grant { methods:["read".into()].into(),recovery:false } }),
-        ]),vec![]).await.unwrap();
+        ]), native: vec![], product_methods: Default::default() }).await.unwrap();
         #[cfg(unix)] let local=directory.path().join("large.sock");
         #[cfg(windows)] let local=std::path::PathBuf::from(format!(r"\\.\pipe\maka-large-remote-{}",Uuid::new_v4()));
         let listener=LocalListener::bind(&local).unwrap();

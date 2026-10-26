@@ -11,6 +11,12 @@ impl Mode {
         *self == Self::DIR | Self::SYMLINK
     }
 
+    /// Return whether this entry is a directory for ignore and sparse-pattern matching.
+    /// Sparse directories and gitlinks are directories regardless of whether they exist on disk.
+    pub fn is_dir_for_pattern_matching(&self) -> bool {
+        self.is_sparse() || self.is_submodule()
+    }
+
     /// Convert this instance to a tree's entry mode, or return `None` if for some
     /// and unexpected reason the bitflags don't resemble any known entry-mode.
     pub fn to_tree_entry_mode(&self) -> Option<gix_object::tree::EntryMode> {
@@ -58,8 +64,7 @@ impl Mode {
     }
 
     /// Like [`change_to_match_fs`](Self::change_to_match_fs) but accepts pre-extracted
-    /// file-type and permission bits, for callers that already have them (e.g. cached
-    /// metadata from a batched directory enumeration).
+    /// file-type and permission bits, for callers that already have them.
     ///
     /// Note that some parameters are mutually exclusive, but inconsistency won't be a problem
     /// if the source of the data is consistent.
@@ -89,7 +94,9 @@ impl Mode {
             Mode::SYMLINK if !has_symlinks && !is_file => (),
             Mode::COMMIT | Mode::DIR if !is_dir => (),
             Mode::FILE if executable_bit && is_executable => return Some(Change::ExecutableBit),
-            Mode::FILE_EXECUTABLE if executable_bit && !is_executable => return Some(Change::ExecutableBit),
+            Mode::FILE_EXECUTABLE if executable_bit && !is_executable => {
+                return Some(Change::ExecutableBit);
+            }
             _ => return None,
         }
         let new_mode = if is_dir {

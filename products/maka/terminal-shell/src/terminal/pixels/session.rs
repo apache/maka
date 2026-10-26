@@ -97,6 +97,12 @@ fn run(
         }
         state.trace.is_some()
     };
+    let control = super::super::UiScaleControl(presentation.clone());
+    config.context = config
+        .context
+        .with(maka_workbench::UiScale(Box::new(move |scale| {
+            control.preview(scale)
+        })));
     if ready.send(Ok(())).is_err() {
         return Ok(());
     }
@@ -255,6 +261,7 @@ fn run(
     }
     let background = application.update(|cx| cx.background_executor().clone());
     let mut mapping = Mapping::default();
+    let mut text_input = super::text_input::Owner::new();
     let mut inputs_before_draw = 0;
     let result = (|| {
         while !presentation.stop.load(Ordering::Acquire) {
@@ -366,6 +373,7 @@ fn run(
                 }
             });
             let mut worked = platform.pump_with_draw(false);
+            text_input.sync(&platform, presentation)?;
             if let Some(sample) = &mut input_pump {
                 sample.end = Instant::now();
             }
@@ -412,6 +420,7 @@ fn run(
                 });
             }
             if let Some(input) = input {
+                super::super::interrupt::terminal_activity(&presentation.host, &input.event);
                 let dispatch_start = input.queued_at.map(|_| Instant::now());
                 let measurement =
                     if let (Some(queued), Some(start)) = (input.queued_at, dispatch_start) {
@@ -447,13 +456,26 @@ fn run(
                     }
                     Event::FocusOut => {
                         cancel = true;
+                        text_input.blur(&platform, presentation)?;
                         platform
                             .set_active(false)
                             .map_err(|error| error.to_string())?;
                         "focus_out"
                     }
+                    Event::Osc(termina::escape::osc::Osc::NshTextInput(packet)) => {
+                        text_input.handle(packet, &platform, presentation)?;
+                        "composition"
+                    }
                     Event::Paste(text) => {
-                        platform.paste(text).map_err(|error| error.to_string())?;
+                        application.update(|cx| {
+                            if let Some(window) = window.borrow().as_ref() {
+                                let _ = window.update(cx, |view, window, cx| {
+                                    view.paste(nsh_core::PasteEvent::new(text));
+                                    window.refresh();
+                                    cx.notify();
+                                });
+                            }
+                        });
                         "paste_dispatched"
                     }
                     event => {
@@ -485,6 +507,7 @@ fn run(
                         }
                     }
                 };
+                text_input.sync(&platform, presentation)?;
                 if cancel {
                     application.update(|cx| {
                         if let Some(window) = window.borrow().as_ref() {
@@ -513,6 +536,21 @@ fn run(
                 started.set(allow_draw.then(Instant::now));
             }
             worked |= platform.pump_with_draw(allow_draw);
+            text_input.sync(&platform, presentation)?;
+            let caret = platform.input_caret_bounds();
+            let candidate = platform.input_candidate_bounds();
+            {
+                let mut state = presentation.state.lock().unwrap();
+                let inbox = state.pixels.as_mut().unwrap();
+                if geometry.get() == inbox.geometry && inbox.resize.is_none() {
+                    let cursor =
+                        super::cursor::Cursor::from_native(caret, candidate, inbox.capabilities);
+                    if inbox.cursor != cursor {
+                        inbox.cursor = cursor;
+                        presentation.wake_driver();
+                    }
+                }
+            }
             presentation
                 .state
                 .lock()
@@ -574,6 +612,8 @@ fn run(
             let _ = window.update(cx, |view, _, _| view.stop());
         }
     });
+    let cancelled = text_input.blur(&platform, presentation);
+    let result = result.and(cancelled);
     drop(application);
     platform.shutdown();
     result

@@ -90,6 +90,17 @@ impl ScrollHost for Host<'_> {
         }
     }
 
+    fn pulled(&self, distance: Points) {
+        let pulled = self
+            .surface
+            .anim
+            .borrow_mut()
+            .pulled(self.view.id(), distance);
+        if pulled && self.surface.mounter.try_borrow().is_ok() {
+            self.surface.write_animations();
+        }
+    }
+
     fn relayout(&self) {
         self.view.moved();
     }
@@ -113,6 +124,13 @@ impl ScrollHost for Host<'_> {
             }
             shared::frame(&host, now * 1000.0)
         });
+    }
+
+    fn settled(&self) {
+        let id = self.view.id();
+        if self.surface.anim.borrow_mut().scroll_ended(id) {
+            self.surface.ensure_ticking();
+        }
     }
 }
 
@@ -161,7 +179,11 @@ fn pin_sticky(surface: &Surface, view: &NshView) {
     if s.sticky.is_empty() {
         return;
     }
-    for (cell, shift) in s.sticky_shifts() {
+    // An animated offset is the graph's (pinned again with its frames,
+    // `pin_animated_sticky`, when it is being written).
+    let anim = surface.anim.try_borrow().ok();
+    let value = |n| anim.as_ref().map_or(0.0, |a| a.value(n));
+    for (cell, shift) in s.sticky_shifts_with(value) {
         let shift = (shift.x.0, shift.y.0);
         with_cell(surface, view, cell, |cell| {
             let mut cs = cell.state_mut();
@@ -171,6 +193,22 @@ fn pin_sticky(surface: &Surface, view: &NshView) {
                 cell.moved();
             }
         });
+    }
+}
+
+/// Pins again the sticky cells of the scroll views whose cells stick an
+/// animated value further in, after the graph's values were written.
+pub(crate) fn pin_animated_sticky(surface: &Surface) {
+    let views: Vec<u32> = surface.anim.borrow().sticky_views().to_vec();
+    for id in views {
+        let view = surface
+            .mounter
+            .try_borrow()
+            .ok()
+            .and_then(|m| m.views.get(id));
+        if let Some(view) = view {
+            pin_sticky(surface, &view);
+        }
     }
 }
 
@@ -273,7 +311,32 @@ pub(crate) fn refreshing(surface: &Rc<Surface>, view: &NshView, refreshing: bool
 
 /// `scrollTo` and `scrollToEnd`.
 pub(crate) fn command(surface: &Rc<Surface>, view: &NshView, command: &Command) {
+    let diagnostic = log::log_enabled!(target: "nsh::scroll", log::Level::Debug)
+        && matches!(
+            command,
+            Command::ScrollTo { .. } | Command::ScrollToEnd { .. }
+        );
+    if diagnostic {
+        let state = view.state();
+        if let Some(scroll) = &state.scroll {
+            match command {
+                Command::ScrollTo { x, y, animated } => {
+                    log::debug!(target: "nsh::scroll", "native_scroll_to surface={} node={} old_x={} old_y={} target_x={} target_y={} viewport_w={} viewport_h={} content_w={} content_h={} animated={animated}", surface.key(), state.id, scroll.x.0, scroll.y.0, x.0, y.0, state.frame.size.width.0, state.frame.size.height.0, scroll.content.width.0, scroll.content.height.0);
+                }
+                Command::ScrollToEnd { animated } => {
+                    log::debug!(target: "nsh::scroll", "native_scroll_to_end surface={} node={} old_x={} old_y={} viewport_w={} viewport_h={} content_w={} content_h={} animated={animated}", surface.key(), state.id, scroll.x.0, scroll.y.0, state.frame.size.width.0, state.frame.size.height.0, scroll.content.width.0, scroll.content.height.0);
+                }
+                _ => {}
+            }
+        }
+    }
     shared::command(&Host::new(surface, view), command);
+    if diagnostic {
+        let state = view.state();
+        if let Some(scroll) = &state.scroll {
+            log::debug!(target: "nsh::scroll", "native_scroll_applied surface={} node={} x={} y={} applied={}", surface.key(), state.id, scroll.x.0, scroll.y.0, scroll.applied);
+        }
+    }
 }
 
 // Input.
@@ -352,6 +415,19 @@ pub(crate) fn thumb_end(surface: &Rc<Surface>, view: &NshView) {
 /// A physical capture was lost: stop its native phase without end callbacks.
 pub(crate) fn cancel_pointer(surface: &Rc<Surface>, view: &NshView) {
     shared::cancel_pointer(&Host::new(surface, view));
+}
+
+/// Ends the removed owner's scroll work before its native ancestry changes.
+/// A retained view may be inserted again before the next frame; that does
+/// not resume an old wheel settle, glide or animated command.
+pub(crate) fn retire_motion(surface: &Rc<Surface>, root: &NshView) {
+    let mut pending = vec![root.clone()];
+    while let Some(view) = pending.pop() {
+        pending.extend(view.child_views());
+        if view.kind() == ViewKind::Scroll {
+            shared::stop_motion(&Host::new(surface, &view));
+        }
+    }
 }
 
 /// Draws a scroll view's indicator, over its content (inside its clip),
@@ -672,6 +748,77 @@ mod tests {
             s.horizontal = horizontal;
         }
         view
+    }
+
+    #[test]
+    fn source_removal_stops_owned_scroll_motion_but_insert_only_moves_continue() {
+        use nsh_core::{MountItem, ROOT_ID};
+
+        for removed in [false, true] {
+            let surface = Surface::new(nsh_engine::Environment::default());
+            surface.root.state_mut().frame = crate::geom::rect(0.0, 0.0, 300.0, 400.0);
+            for (id, kind, parent) in [(2, ViewKind::View, ROOT_ID), (4, ViewKind::Scroll, 2)] {
+                for item in [
+                    MountItem::Create { id, kind },
+                    MountItem::Frame {
+                        id,
+                        frame: crate::geom::rect(0.0, 0.0, 300.0, 400.0),
+                    },
+                    MountItem::Insert {
+                        parent,
+                        child: id,
+                        before: None,
+                    },
+                ] {
+                    surface.mounter.borrow_mut().apply(&surface, &item);
+                }
+            }
+            let scroll = surface.view(4).unwrap();
+            scroll.state_mut().scroll.as_mut().unwrap().content =
+                nsh_core::geometry::size(Points(300.0), Points(2000.0));
+            shared::command(
+                &Host::new(&surface, &scroll),
+                &Command::ScrollTo {
+                    x: Points(0.0),
+                    y: Points(200.0),
+                    animated: true,
+                },
+            );
+            if removed {
+                surface
+                    .mounter
+                    .borrow_mut()
+                    .apply(&surface, &MountItem::Remove { id: 2 });
+            }
+            surface.mounter.borrow_mut().apply(
+                &surface,
+                &MountItem::Insert {
+                    parent: ROOT_ID,
+                    child: 2,
+                    before: None,
+                },
+            );
+            assert!(scroll.attached());
+            let now = surface.clock() * 1000.0;
+            shared::frame(&Host::new(&surface, &scroll), now + 1000.0);
+            assert_eq!(
+                scroll.state().scroll.as_ref().unwrap().y,
+                Points(if removed { 0.0 } else { 200.0 })
+            );
+
+            // Termination affects the old task, not future input on a
+            // retained native view.
+            shared::command(
+                &Host::new(&surface, &scroll),
+                &Command::ScrollTo {
+                    x: Points(0.0),
+                    y: Points(300.0),
+                    animated: true,
+                },
+            );
+            shared::frame(&Host::new(&surface, &scroll), now + 2000.0);
+            assert_eq!(scroll.state().scroll.as_ref().unwrap().y, Points(300.0));
+        }
     }
 
     #[test]

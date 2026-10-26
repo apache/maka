@@ -43,7 +43,7 @@ pub(super) struct Plans {
     awake: AtomicBool,
 }
 impl Plans {
-    pub fn new(store: Arc<EventLog>, prefix: String) -> Self {
+    pub fn new(store: Arc<RootStore>, prefix: String) -> Self {
         Self {
             storage: Arc::new(maka_host_runtime::storage::Storage::new(
                 store,
@@ -333,7 +333,7 @@ impl Owner {
                     behavior: EXECUTION.to_owned().try_into().expect("Plan behavior") }
             },
             PlanAction::Resume { execution_id, approval } => {
-                if self.store.latest_turn_boundary(&input.session_id).await.map_err(reason)?.is_some_and(|boundary|
+                if self.store.session(&input.session_id).await.map_err(|error| error.to_string())?.latest_turn_boundary(&input.session_id).await.map_err(reason)?.is_some_and(|boundary|
                     matches!(boundary.state, maka_event_log::turns::InvocationState::Ended { outcome: maka_agent_facts::event::InvocationOutcome::HandoffPaused { .. }, .. })) {
                     return Err("plan_resume_session_first".into());
                 }

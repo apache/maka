@@ -101,7 +101,7 @@ async fn large_child_value_is_consumable_and_complete_cell_emission_remains_dura
             catalog.clone(),
             ToolMode::CodeMode,
             cells.clone(),
-            Default::default(),
+            maka_tools::availability::LoadedTools::temporary().unwrap(),
         );
         let result = run
             .capture(".", tokio_util::sync::CancellationToken::new())

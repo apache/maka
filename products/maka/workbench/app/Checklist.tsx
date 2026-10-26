@@ -19,9 +19,8 @@
 
 import { createText, UiError, errorText } from './text';
 import { tr } from './locale';
-import { batch, cleanup, inputAction, signal, Text, View } from 'nsh';
+import { batch, cleanup, inputAction, signal, Text, View, List } from 'nsh';
 import { Button } from 'nsh/base';
-import { List } from 'nsh/list';
 import { windowSize } from 'nsh/device';
 import { host } from './host';
 import type { Subscription } from './history';

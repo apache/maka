@@ -6,6 +6,18 @@ pub mod clipboard;
 
 use crate::geometry::{Edges, Points, Size};
 
+/// The native component of `nsh/mobile`'s `TabBar`, which the iOS and
+/// Android backends register themselves (`TabBarComponent.java`'s `NAME` keeps
+/// the same name).
+pub const TAB_BAR_COMPONENT: &str = "nsh/tab-bar";
+
+/// Whether native component `name` is NSH's own: names under `nsh/` are, and
+/// an embedding app's registration of one is refused, so it can never
+/// replace what NSH's exports render.
+pub fn is_reserved_component(name: &str) -> bool {
+    name.starts_with("nsh/")
+}
+
 /// The system appearance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ColorScheme {
@@ -177,6 +189,9 @@ pub struct Environment {
     /// The backend supplies native keyboard-focus paths and matches scoped
     /// key bindings against them. This is a host capability, not a JS signal.
     pub native_focus_scopes: bool,
+    /// The backend matches fallback key bindings after native input handling.
+    /// This is a host capability, not a JS signal.
+    pub fallback_key_bindings: bool,
     /// The OS version: major and minor (iOS, desktops), Android's API level
     /// and 0.
     pub os_version: (u16, u16),
@@ -233,6 +248,7 @@ impl Default for Environment {
             os: Os::default(),
             renderer: Renderer::Native,
             native_focus_scopes: false,
+            fallback_key_bindings: false,
             os_version: (0, 0),
             idiom: Idiom::Phone,
             apple_keyboard: false,

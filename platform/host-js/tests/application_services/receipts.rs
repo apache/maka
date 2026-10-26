@@ -100,7 +100,7 @@ fn reader_source(configuration: Value) -> (Input, Vec<Package>) {
     )
 }
 async fn reader_application(
-    store: Arc<EventLog>,
+    store: Arc<RootStore>,
     deployment: Uuid,
     issuer: &Issuer,
     recovery: Arc<AtomicBool>,
@@ -179,8 +179,9 @@ async fn script_read(client: &Client, reference: &RecoveryRef, issuer: &Issuer) 
 #[tokio::test]
 async fn composed_receipt_reader_reopens_original_root_without_old_provider_and_never_uses_another_root()
  {
+    let (dir, namespaces, store) = store().await;
+    let (_other_dir, _other_ns, other) = self::store().await;
     tokio::time::timeout(Duration::from_secs(20), async {
-        let (dir, namespaces, store) = store().await;
         let issuer = Issuer::default();
         let recovery = Arc::new(AtomicBool::new(false));
         let calls = Arc::new(AtomicUsize::new(0));
@@ -228,7 +229,7 @@ async fn composed_receipt_reader_reopens_original_root_without_old_provider_and_
         drop(client);
         close(store).await;
         let reopened = Arc::new(
-            EventLog::for_root(Arc::new(
+            RootStore::open(Arc::new(
                 RootOwner::open(&dir.path().join("root"), &namespaces).unwrap(),
             ))
             .await
@@ -285,7 +286,6 @@ async fn composed_receipt_reader_reopens_original_root_without_old_provider_and_
                 .is_err()
         );
         recovery.store(true, Ordering::SeqCst);
-        let (_other_dir, _other_ns, other) = self::store().await;
         other
             .commit_application(deployment, 0, input, vec![], packages)
             .await
@@ -329,8 +329,8 @@ async fn composed_receipt_reader_reopens_original_root_without_old_provider_and_
 
 #[tokio::test]
 async fn composed_portable_receipts_preserve_exact_journal_values_and_original_reference() {
+    let (_dir, _ns, store) = store().await;
     tokio::time::timeout(Duration::from_secs(20), async {
-        let (_dir, _ns, store) = store().await;
         let issuer = Issuer::default();
         let recovery = Arc::new(AtomicBool::new(true));
         let calls = Arc::new(AtomicUsize::new(0));
@@ -469,8 +469,8 @@ async fn composed_portable_receipts_preserve_exact_journal_values_and_original_r
 
 #[tokio::test]
 async fn builtin_receipt_reader_requires_persisted_composition_and_rejects_root_configuration() {
+    let (_dir, _ns, store) = store().await;
     tokio::time::timeout(Duration::from_secs(20), async {
-        let (_dir, _ns, store) = store().await;
         let issuer = Issuer::default();
         let (input, packages) = reader_source(json!({}));
         assert!(

@@ -19,6 +19,8 @@
 
 //! Append-only requests/outcomes and atomically derived Session grants.
 pub(crate) mod lifecycle;
+#[cfg(test)]
+mod pending_tests;
 pub(crate) mod permissions;
 mod records;
 pub use permissions::PermissionGrant;
@@ -74,14 +76,20 @@ impl EventLog {
         if request.outcome.is_some() {
             return Err(invalid("request establishment cannot include an outcome"));
         }
+        self.check_bound_session(&request.session_id)?;
+        let expected_session = self.expected_session.clone();
         let encoded = records::encode(request)?;
         let request = request.clone();
-        let commits = self.commits.clone();
+        let commits = self.commits.session(&request.session_id);
         self.connection
             .run(move |connection| {
                 Box::pin(async move {
                     let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
                     if let Some(mut record) = read(&mut tx, &request.request_id).await? {
+                        Self::require_session_scope(
+                            expected_session.as_deref(),
+                            &record.session_id,
+                        )?;
                         let outcome = record.outcome.take();
                         let matches = record == request;
                         record.outcome = outcome;
@@ -109,7 +117,7 @@ impl EventLog {
                         .await?;
                     crate::sessions::advance_revision(&mut tx, &request.session_id).await?;
                     tx.commit().await.map_err(StoreError::CommitUnknown)?;
-                    commits.send_modify(|_| {});
+                    commits.metadata();
                     Ok(InteractionCommit {
                         matches: true,
                         record: request,
@@ -129,8 +137,9 @@ impl EventLog {
         self.validate_root()?;
         entity_id(request_id).map_err(invalid)?;
         outcome.validate().map_err(invalid)?;
+        let expected_session = self.expected_session.clone();
         let request_id = request_id.to_owned();
-        let commits = self.commits.clone();
+        let commits = self.commits.notice();
         self.connection
             .run(move |connection| {
                 Box::pin(async move {
@@ -138,6 +147,7 @@ impl EventLog {
                     let mut record = read(&mut tx, &request_id)
                         .await?
                         .ok_or_else(|| invalid("interaction request not found"))?;
+                    Self::require_session_scope(expected_session.as_deref(), &record.session_id)?;
                     outcome
                         .validate_for_request(&record.request)
                         .map_err(invalid)?;
@@ -167,7 +177,7 @@ impl EventLog {
                         committed_at,
                     } = &outcome
                     {
-                        let InteractionRequest::ClientCapability { target, base_revision, .. } = &record.request
+                        let InteractionRequest::ClientCapability { target, basis, .. } = &record.request
                         else {
                             return Err(invalid("grant outcome requires capability request"));
                         };
@@ -175,23 +185,24 @@ impl EventLog {
                             session_id: record.session_id.clone(),
                             target: target.clone(),
                             granted_at: *committed_at,
-                            base_revision: *base_revision,
+                            basis: *basis,
                         };
                         sqlx::query(
                             "INSERT INTO client_capability_session_grants VALUES (?, ?)
                              ON CONFLICT(authority_key) DO UPDATE SET record_json=excluded.record_json
-                             WHERE json_extract(excluded.record_json,'$.baseRevision') >
-                               COALESCE(json_extract(client_capability_session_grants.record_json,'$.baseRevision'),-1)",
+                             WHERE json_type(excluded.record_json,'$.basis')='object'
+",
                         )
                         .bind(records::authority_key(&grant.session_id, &grant.target)?)
                         .bind(records::encode(&grant)?)
                         .execute(&mut *tx)
                         .await?;
                     }
+                    let commits = commits.for_session(&record.session_id);
                     record.outcome = Some(outcome);
                     crate::sessions::advance_revision(&mut tx, &record.session_id).await?;
                     tx.commit().await.map_err(StoreError::CommitUnknown)?;
-                    commits.send_modify(|_| {});
+                    commits.metadata();
                     Ok(InteractionCommit {
                         matches: true,
                         record,
@@ -207,9 +218,23 @@ impl EventLog {
     ) -> Result<Option<InteractionRecord>, StoreError> {
         self.validate_root()?;
         entity_id(request_id).map_err(invalid)?;
+        let expected_session = self.expected_session.clone();
         let request_id = request_id.to_owned();
         self.connection
-            .run(move |connection| Box::pin(async move { read(connection, &request_id).await }))
+            .run(move |connection| {
+                Box::pin(async move {
+                    let record =
+                        records::read_scoped(connection, &request_id, expected_session.as_deref())
+                            .await?;
+                    if let Some(record) = &record {
+                        Self::require_session_scope(
+                            expected_session.as_deref(),
+                            &record.session_id,
+                        )?;
+                    }
+                    Ok(record)
+                })
+            })
             .await
     }
 
@@ -274,28 +299,26 @@ pub(crate) async fn capability_grant(
     if records::authority_key(&grant.session_id, &grant.target)? != key {
         return Err(invalid("stored Session grant authority changed"));
     }
-    if let Some(revision) = grant.base_revision
-        && permissions::boundary_revision(connection, session).await? != Some(revision)
+    if let Some(basis) = grant.basis
+        && crate::workspace_bindings::permission_basis(connection, session).await? != Some(basis)
     {
         return Ok(None);
     }
     Ok(Some(grant))
 }
 
+const PENDING_INTERACTIONS: &str = "SELECT request_id FROM interaction_pending
+    WHERE session_id = ? ORDER BY created_at, request_id";
+
 /// Read inside the caller's observation transaction for a coherent projection.
 pub(crate) async fn pending(
     connection: &mut sqlx::SqliteConnection,
     session_id: &str,
 ) -> Result<Vec<InteractionRecord>, StoreError> {
-    let ids: Vec<String> = sqlx::query_scalar(
-        "SELECT request_id FROM interaction_requests AS request WHERE session_id = ?
-         AND NOT EXISTS (SELECT 1 FROM interaction_outcomes AS outcome
-                         WHERE outcome.request_id = request.request_id)
-         ORDER BY created_at, request_id",
-    )
-    .bind(session_id)
-    .fetch_all(&mut *connection)
-    .await?;
+    let ids: Vec<String> = sqlx::query_scalar(PENDING_INTERACTIONS)
+        .bind(session_id)
+        .fetch_all(&mut *connection)
+        .await?;
     let mut records = Vec::with_capacity(ids.len());
     for id in ids {
         records.push(

@@ -254,6 +254,98 @@ pub unsafe extern "C" fn nsh_app_set_storage_directory(
     status(dir.map(|dir| app.view.set_storage_directory(dir)))
 }
 
+/// [`NshCacheOptions::location`]: the system's cache directory (`nsh` in
+/// the app's Caches).
+pub const NSH_CACHE_LOCATION_SYSTEM: u32 = 0;
+/// [`NshCacheOptions::location`]: [`NshCacheOptions::directory`].
+pub const NSH_CACHE_LOCATION_DIRECTORY: u32 = 1;
+/// [`NshCacheOptions::location`]: nothing on disk.
+pub const NSH_CACHE_LOCATION_OFF: u32 = 2;
+/// A cache's policy ([`NshCacheOptions::images`]): its default size.
+pub const NSH_CACHE_POLICY_DEFAULT: u32 = 0;
+/// A cache's policy: at most its `_max_mb` megabytes.
+pub const NSH_CACHE_POLICY_MAX_SIZE: u32 = 1;
+/// A cache's policy: not kept on disk.
+pub const NSH_CACHE_POLICY_OFF: u32 = 2;
+
+/// Where the apps an `NshApp` loads keep their caches and how much each
+/// keeps (`nsh.h`'s `NshCacheOptions`). `size` is the struct's size as the
+/// caller knows it: fields past it read as zero (their defaults), so the
+/// struct can grow.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct NshCacheOptions {
+    /// `sizeof(NshCacheOptions)`.
+    pub size: u32,
+    /// `NSH_CACHE_LOCATION_*`.
+    pub location: u32,
+    /// The directory, for `NSH_CACHE_LOCATION_DIRECTORY`: NUL-terminated
+    /// UTF-8.
+    pub directory: *const c_char,
+    /// `NSH_CACHE_POLICY_*` of the images the apps download.
+    pub images: u32,
+    /// Megabytes (MiB) of images kept, for `NSH_CACHE_POLICY_MAX_SIZE`.
+    pub images_max_mb: u32,
+}
+
+/// Where the apps `app` loads keep their caches and how much each keeps.
+/// Applies from the next load. Returns why `options` are invalid (nothing
+/// changes), or `NULL`.
+///
+/// # Safety
+///
+/// `app` must come from [`nsh_app_create`]; `options` must point to at
+/// least `options->size` readable bytes (and at least its `size` field),
+/// its `directory` `NULL` or a NUL-terminated string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nsh_app_set_cache(
+    app: *mut NshApp,
+    options: *const NshCacheOptions,
+) -> *mut c_char {
+    use nsh_engine::{ByteSize, CacheLocation, CacheOptions, CachePolicy};
+    // SAFETY: guaranteed by the caller.
+    let app = unsafe { &*app };
+    if options.is_null() {
+        return status(Err("no cache options".to_owned()));
+    }
+    // Read what the caller's struct has; the rest stays zero (defaults).
+    // SAFETY: `options` points to at least its `size` field.
+    let given = unsafe { (*options).size } as usize;
+    let mut read = std::mem::MaybeUninit::<NshCacheOptions>::zeroed();
+    let len = given.min(std::mem::size_of::<NshCacheOptions>());
+    // SAFETY: the caller's struct has `len` readable bytes; `read` is as
+    // large; all-zero bytes are a valid `NshCacheOptions`.
+    let options = unsafe {
+        std::ptr::copy_nonoverlapping(options as *const u8, read.as_mut_ptr() as *mut u8, len);
+        read.assume_init()
+    };
+    let location = match options.location {
+        NSH_CACHE_LOCATION_SYSTEM => Ok(CacheLocation::System),
+        NSH_CACHE_LOCATION_DIRECTORY if options.directory.is_null() => {
+            Err("NSH_CACHE_LOCATION_DIRECTORY without a directory".to_owned())
+        }
+        // SAFETY: guaranteed by the caller.
+        NSH_CACHE_LOCATION_DIRECTORY => unsafe { utf8(options.directory, "the cache directory") }
+            .map(|dir| CacheLocation::Dir(PathBuf::from(dir))),
+        NSH_CACHE_LOCATION_OFF => Ok(CacheLocation::Off),
+        other => Err(format!("unknown cache location {other}")),
+    };
+    let images = match options.images {
+        NSH_CACHE_POLICY_DEFAULT => Ok(CachePolicy::Default),
+        NSH_CACHE_POLICY_MAX_SIZE => Ok(CachePolicy::MaxSize(ByteSize::mib(u64::from(
+            options.images_max_mb,
+        )))),
+        NSH_CACHE_POLICY_OFF => Ok(CachePolicy::Off),
+        other => Err(format!("unknown cache policy {other}")),
+    };
+    status(location.and_then(|location| {
+        images.map(|images| {
+            app.view
+                .set_cache(CacheOptions::at(location).with_images(images))
+        })
+    }))
+}
+
 /// The embedding app's locale, which stands in for the user's: a BCP 47
 /// tag or a platform identifier (`zh-Hans-CN`, `en_US`); `NULL` follows the
 /// system's again. Applies at once and to every app loaded later. Returns
@@ -845,5 +937,293 @@ pub unsafe extern "C" fn nsh_component_context_free(context: *mut NshComponentCo
     if !context.is_null() {
         // SAFETY: guaranteed by the caller.
         drop(unsafe { Box::from_raw(context) });
+    }
+}
+
+/// JSON text from C (`NULL`: `null`), or why it is not JSON.
+///
+/// # Safety
+///
+/// `json` must be `NULL` or a NUL-terminated string.
+unsafe fn json_arg(json: *const c_char, what: &str) -> Result<nsh_core::JsonValue, String> {
+    if json.is_null() {
+        return Ok(nsh_core::JsonValue::Null);
+    }
+    // SAFETY: guaranteed by the caller.
+    let text = unsafe { utf8(json, what) }?;
+    serde_json::from_str(text).map_err(|err| format!("{what} is not JSON: {err}"))
+}
+
+/// The launch parameters of the apps `app` loads from now on (`host.params`
+/// in the app, read when it starts): a JSON object, or `NULL` for none.
+/// Returns why `json` is not a JSON object (nothing changes), or `NULL`.
+///
+/// # Safety
+///
+/// `app` must come from [`nsh_app_create`]; `json` must be `NULL` or a
+/// NUL-terminated string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nsh_app_set_host_params(
+    app: *mut NshApp,
+    json: *const c_char,
+) -> *mut c_char {
+    // SAFETY: guaranteed by the caller.
+    let (app, params) = unsafe { (&*app, json_arg(json, "the parameters")) };
+    status(
+        params
+            .and_then(|params| match params {
+                nsh_core::JsonValue::Null => Ok(serde_json::Map::new()),
+                nsh_core::JsonValue::Object(params) => Ok(params),
+                _ => Err("the parameters are a JSON object".to_owned()),
+            })
+            .map(|params| app.view.host().set_params(params)),
+    )
+}
+
+/// Sends event `name` with `json` data (`NULL`: `null`) to the running app
+/// (`host.on(name, ...)`); kept until it listens to `name`, or for the next
+/// app while none runs. Returns why it cannot (an invalid name or data), or
+/// `NULL`.
+///
+/// # Safety
+///
+/// `app` must come from [`nsh_app_create`]; `name` must be a NUL-terminated
+/// string, `json` `NULL` or one.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nsh_app_send_host_event(
+    app: *mut NshApp,
+    name: *const c_char,
+    json: *const c_char,
+) -> *mut c_char {
+    // SAFETY: guaranteed by the caller.
+    let (app, name, data) = unsafe {
+        (
+            &*app,
+            utf8(name, "the event name"),
+            json_arg(json, "the event data"),
+        )
+    };
+    status(name.and_then(|name| app.view.host().send(name, data?)))
+}
+
+/// A call of the app (`host.call`) its handler answers (opaque to C): once,
+/// from any thread, with [`nsh_host_call_resolve`] or
+/// [`nsh_host_call_reject`], which free it; [`nsh_host_call_free`] fails it
+/// unanswered.
+pub struct NshHostCall(nsh_engine::HostCall);
+
+/// The C function a host handler calls.
+type HostHandlerFn =
+    unsafe extern "C" fn(context: *mut c_void, json: *const c_char, call: *mut NshHostCall);
+
+/// A host handler's C callback and its context; `release` runs when it is
+/// dropped (replaced, removed, or the app destroyed).
+struct CHostHandler {
+    handler: HostHandlerFn,
+    context: *mut c_void,
+    release: Option<unsafe extern "C" fn(context: *mut c_void)>,
+}
+
+// SAFETY: `handler` runs on the main thread only (the engine thread's
+// handler hops there) and `release` may run on any thread, as
+// `nsh_app_set_host_handler`'s contract says.
+unsafe impl Send for CHostHandler {}
+// SAFETY: as above; nothing is mutated through a shared reference.
+unsafe impl Sync for CHostHandler {}
+
+impl Drop for CHostHandler {
+    fn drop(&mut self) {
+        if let Some(release) = self.release {
+            // SAFETY: the contract of `nsh_app_set_host_handler`.
+            unsafe { release(self.context) };
+        }
+    }
+}
+
+/// Handles the app's calls (`host.call(name, data)`) and posts
+/// (`host.post(name, data)`) of `name`, replacing the handler it had;
+/// `handler` `NULL` removes it (the app's calls of `name` then fail at
+/// once). `handler` runs on the main thread with the JSON data and, for a
+/// call, the call to answer ([`nsh_host_call_resolve`]; `NULL` for a post).
+/// `release` (optional) is called with `context`, on any thread, when the
+/// handler is replaced or removed or the app destroyed.
+///
+/// # Safety
+///
+/// `app` must come from [`nsh_app_create`]; `name` must be a NUL-terminated
+/// string; `handler` must be safe to call with `context` on the main thread,
+/// and `release` on any thread, until `release` is called (or, without
+/// `release`, until `app` is destroyed).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nsh_app_set_host_handler(
+    app: *mut NshApp,
+    name: *const c_char,
+    handler: Option<HostHandlerFn>,
+    context: *mut c_void,
+    release: Option<unsafe extern "C" fn(context: *mut c_void)>,
+) {
+    // SAFETY: guaranteed by the caller.
+    let (app, name) = unsafe { (&*app, utf8(name, "the handler name")) };
+    let release_now = || {
+        if let Some(release) = release {
+            // SAFETY: guaranteed by the caller.
+            unsafe { release(context) };
+        }
+    };
+    let Ok(name) = name else {
+        log::error!("a host handler's name is not UTF-8");
+        return release_now();
+    };
+    let channel = app.view.host();
+    let Some(handler) = handler else {
+        channel.remove_handler(name);
+        return release_now();
+    };
+    let callback = std::sync::Arc::new(CHostHandler {
+        handler,
+        context,
+        release,
+    });
+    channel.handle(name, move |mut call| {
+        // On the engine thread: the C handler runs on the main thread.
+        let callback = callback.clone();
+        let json = CString::new(call.take_data().to_string()).unwrap_or_default();
+        let call = (!call.is_post()).then(|| NshHostCall(call));
+        dispatch2::DispatchQueue::main().exec_async(move || {
+            let call = call.map_or(std::ptr::null_mut(), |call| Box::into_raw(Box::new(call)));
+            // SAFETY: the contract of `nsh_app_set_host_handler`; the call
+            // is the handler's to answer or free.
+            unsafe { (callback.handler)(callback.context, json.as_ptr(), call) };
+        });
+    });
+}
+
+/// Answers `call` with `json` (`NULL`: `null`): the app's promise resolves
+/// with it (data that is not JSON rejects it). Frees `call`. Any thread.
+///
+/// # Safety
+///
+/// `call` must come from a host handler and not be used afterwards; `json`
+/// must be `NULL` or a NUL-terminated string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nsh_host_call_resolve(call: *mut NshHostCall, json: *const c_char) {
+    if call.is_null() {
+        return;
+    }
+    // SAFETY: guaranteed by the caller.
+    let (call, value) = unsafe { (Box::from_raw(call), json_arg(json, "the answer")) };
+    call.0.reply(value);
+}
+
+/// Fails `call` with `message`: the app's promise rejects with an `Error` of
+/// it. Frees `call`. Any thread.
+///
+/// # Safety
+///
+/// `call` must come from a host handler and not be used afterwards;
+/// `message` must be a NUL-terminated string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nsh_host_call_reject(call: *mut NshHostCall, message: *const c_char) {
+    if call.is_null() {
+        return;
+    }
+    // SAFETY: guaranteed by the caller.
+    let call = unsafe { Box::from_raw(call) };
+    let message = if message.is_null() {
+        String::new()
+    } else {
+        // SAFETY: guaranteed by the caller.
+        unsafe { CStr::from_ptr(message) }
+            .to_string_lossy()
+            .into_owned()
+    };
+    call.0.reject(message);
+}
+
+/// The C function a URL handler calls: true when the embedding app took
+/// the URL.
+type UrlHandlerFn = unsafe extern "C" fn(context: *mut c_void, url: *const c_char) -> bool;
+
+/// A URL handler's C callback and its context; `release` runs when it is
+/// dropped (replaced, removed, or the app destroyed).
+struct CUrlHandler {
+    handler: UrlHandlerFn,
+    context: *mut c_void,
+    release: Option<unsafe extern "C" fn(context: *mut c_void)>,
+}
+
+// SAFETY: `handler` runs on the main thread only (the engine thread's
+// handler hops there) and `release` may run on any thread, as
+// `nsh_app_set_open_url_handler`'s contract says.
+unsafe impl Send for CUrlHandler {}
+// SAFETY: as above; nothing is mutated through a shared reference.
+unsafe impl Sync for CUrlHandler {}
+
+impl Drop for CUrlHandler {
+    fn drop(&mut self) {
+        if let Some(release) = self.release {
+            // SAFETY: the contract of `nsh_app_set_open_url_handler`.
+            unsafe { release(self.context) };
+        }
+    }
+}
+
+/// Takes the URLs the app opens (`openUrl` of `nsh/device`) before the
+/// system does, replacing the handler it had; `handler` `NULL` removes it.
+/// `handler` runs on the main thread with the URL (checked and granted)
+/// and returns true when the embedding app took it (its router opened it),
+/// false for the system to open it. `release` (optional) is called with
+/// `context`, on any thread, when the handler is replaced or removed or the
+/// app destroyed.
+///
+/// # Safety
+///
+/// `app` must come from [`nsh_app_create`]; `handler` must be safe to call
+/// with `context` on the main thread, and `release` on any thread, until
+/// `release` is called (or, without `release`, until `app` is destroyed).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nsh_app_set_open_url_handler(
+    app: *mut NshApp,
+    handler: Option<UrlHandlerFn>,
+    context: *mut c_void,
+    release: Option<unsafe extern "C" fn(context: *mut c_void)>,
+) {
+    // SAFETY: guaranteed by the caller.
+    let channel = unsafe { &*app }.view.host();
+    let Some(handler) = handler else {
+        channel.remove_open_url_handler();
+        if let Some(release) = release {
+            // SAFETY: guaranteed by the caller.
+            unsafe { release(context) };
+        }
+        return;
+    };
+    let callback = std::sync::Arc::new(CUrlHandler {
+        handler,
+        context,
+        release,
+    });
+    channel.handle_open_url(move |request| {
+        // On the engine thread: the C handler runs on the main thread.
+        let callback = callback.clone();
+        dispatch2::DispatchQueue::main().exec_async(move || {
+            let url = CString::new(request.url()).unwrap_or_default();
+            // SAFETY: the contract of `nsh_app_set_open_url_handler`.
+            let handled = unsafe { (callback.handler)(callback.context, url.as_ptr()) };
+            request.answer(handled);
+        });
+    });
+}
+
+/// Frees `call` unanswered: the app's promise rejects. Any thread.
+///
+/// # Safety
+///
+/// `call` must be `NULL` or come from a host handler, not used afterwards.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nsh_host_call_free(call: *mut NshHostCall) {
+    if !call.is_null() {
+        // SAFETY: guaranteed by the caller.
+        drop(unsafe { Box::from_raw(call) });
     }
 }

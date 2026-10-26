@@ -200,7 +200,7 @@ impl EventLog {
         let encoded_recovery = serde_json::to_string(&recovery)?;
         let domain = self.application_domain()?;
         let owner = self.root_owner.as_ref().expect("owned caller Root").clone();
-        let commits = self.commits.clone();
+        let commits = self.commits.notice();
         self.connection
             .write(
                 WriteIntent {
@@ -333,6 +333,7 @@ impl crate::writeback::Statement for WriteIntent {
                 // The first source and original reference survive later caller updates.
                 old
             } else {
+                super::operations::require_source(connection, &caller).await?;
                 let result = sqlx::query("INSERT INTO application_intents (deployment,consumer,operation,source_revision,reference_json,recovery_json) VALUES (?,?,?,?,?,?)")
                     .bind(caller.deployment.to_string()).bind(serde_json::to_string(&consumer)?).bind(reference.operation.to_string()).bind(caller.revision as i64).bind(encoded).bind(encoded_recovery).execute(&mut *connection).await?;
                 CallerIntent {

@@ -18,7 +18,7 @@
  */
 
 use super::*;
-use maka_event_log::usage::{AuxiliarySource, Origin, Outcome, Query};
+use maka_event_log::usage::{AuxiliarySource, Origin, Outcome};
 
 async fn fixture(base: &str) -> Fixture {
     Fixture::configured(base, None, None, None, |settings| {
@@ -59,19 +59,28 @@ async fn pair(listener: &TcpListener) -> ((Value, TcpStream), (Value, TcpStream)
 }
 async fn attempts(f: &Fixture, session: &str) -> Vec<maka_agent_facts::accounting::ModelAttempt> {
     f.store
-        .model_attempts(
-            Query {
+        .usage_activity(
+            maka_event_log::root_store::UsageQuery {
                 from: 0.0,
                 to: 253402300799999.0,
                 session_id: Some(session.into()),
                 through: None,
             },
-            0,
-            100,
+            maka_agent_facts::accounting::Selection {
+                kind: Some(maka_agent_facts::accounting::ActivityKind::Model),
+                ..Default::default()
+            },
+            None,
         )
         .await
         .unwrap()
         .attempts
+        .into_iter()
+        .map(|activity| match activity {
+            maka_agent_facts::accounting::Activity::Model(attempt) => attempt,
+            _ => panic!("model activity selection returned tool"),
+        })
+        .collect()
 }
 
 #[tokio::test]
@@ -102,7 +111,7 @@ async fn kimi_automatic_title_uses_low_without_defaulting_main_thinking() {
     })
     .await;
     let session = automatic(&f).await;
-    let mut commits = f.store.subscribe_commits();
+    let mut commits = f.session(&session).await.subscribe_commits().unwrap();
     let sent = f.send(&session).await.unwrap();
     let mut main_request = None;
     let mut title_request = None;
@@ -150,9 +159,7 @@ async fn kimi_automatic_title_uses_low_without_defaulting_main_thinking() {
         )
         .await
         .unwrap();
-    let boundary = f
-        .store
-        .invocation_boundary(&session, sent["invocationId"].as_str().unwrap())
+    let boundary = f.session(&session).await.invocation_boundary(&session, sent["invocationId"].as_str().unwrap())
         .await
         .unwrap()
         .unwrap()
@@ -220,12 +227,13 @@ async fn verify_title_metadata_conflict(manual_rename: bool) {
         let before = f.owner.session(&session).await.unwrap();
         let observed_revision = before.revision;
         let mut expected = before.configuration;
-        let mut commits = f.store.subscribe_commits();
+        let mut commits = f.session(&session).await.subscribe_commits().unwrap();
         response(&mut main).await;
         let completed = loop {
             commits.borrow_and_update();
             let boundary = f
-                .store
+                .session(&session)
+                .await
                 .invocation_boundary(&session, sent["invocationId"].as_str().unwrap())
                 .await
                 .unwrap()
@@ -243,11 +251,12 @@ async fn verify_title_metadata_conflict(manual_rename: bool) {
         if manual_rename {
             // An external metadata writer can commit while this Owner holds its gate.
             let changed = f
-                .store
+                .session(&session)
+                .await
                 .update_session_metadata(
                     &session,
                     completed_revision,
-                    |configuration: &mut SessionConfiguration| {
+                    |configuration: &mut StoredSessionConfiguration| {
                         configuration.title_is_manual = true;
                         configuration.labels = vec!["Preserved label".into()];
                         Ok(())
@@ -316,7 +325,7 @@ async fn title_first_message_is_bounded_accounted_and_not_reissued_after_retry_o
         response(&mut main_socket).await;
         // An auxiliary title is owned by the Host, so main-turn completion does not cancel it.
         loop {
-            let boundary = f.store.invocation_boundary(&session, sent["invocationId"].as_str().unwrap()).await.unwrap().unwrap().0;
+            let boundary = f.session(&session).await.invocation_boundary(&session, sent["invocationId"].as_str().unwrap()).await.unwrap().unwrap().0;
             if matches!(boundary.state, maka_event_log::turns::InvocationState::Ended { .. }) { break; }
             tokio::task::yield_now().await;
         }
@@ -348,7 +357,7 @@ async fn title_first_message_is_bounded_accounted_and_not_reissued_after_retry_o
         let current = attempts(&f, &session).await;
         assert_eq!(current.len(), 3);
         assert_eq!(current.iter().filter(|attempt| matches!(attempt.origin, Origin::Auxiliary { .. })).count(), 1);
-        assert_eq!(f.store.get_session::<SessionConfiguration>(&session).await.unwrap().unwrap().configuration.title, "café 任务😀");
+        assert_eq!(f.session(&session).await.get_session::<StoredSessionConfiguration>(&session).await.unwrap().unwrap().configuration.title, "café 任务😀");
         f.config.shutdown().await.unwrap();
     }).await.unwrap();
 }
@@ -364,24 +373,36 @@ async fn title_manual_rename_even_to_placeholder_and_archive_win_in_flight() {
             let ((_, mut main), (_, mut title)) = pair(&listener).await;
             response(&mut main).await;
             loop {
-                let boundary = f.store.invocation_boundary(&session, sent["invocationId"].as_str().unwrap()).await.unwrap().unwrap().0;
+                let boundary = f.session(&session).await.invocation_boundary(&session, sent["invocationId"].as_str().unwrap()).await.unwrap().unwrap().0;
                 if matches!(boundary.state, maka_event_log::turns::InvocationState::Ended { .. }) { break; }
                 tokio::task::yield_now().await;
             }
             if archive {
-                f.store.set_session_archived::<SessionConfiguration>(&session, true, now()).await.unwrap();
+                let revision = f.owner.session(&session).await.unwrap().revision;
+                let result = f.mutation(2, "changeSession", json!({"sessionId":session,"expectedRevision":revision,"action":"archive"}), Uuid::new_v4()).await.unwrap();
+                assert_eq!(result["kind"], "changed", "{result}");
             } else {
                 let revision = f.owner.session(&session).await.unwrap().revision;
                 let result = f.mutation(2, "metadata", json!({"sessionId":session,"expectedRevision":revision,"title":"Untitled","labels":[]}), Uuid::new_v4()).await.unwrap();
                 assert_eq!(result["kind"], "committed", "{result}");
             }
-            response_with_text(&mut title, "Must not replace the user's title").await;
+            if archive {
+                let mut byte = [0];
+                assert_eq!(title.read(&mut byte).await.unwrap(), 0, "archive must await original title socket cleanup");
+            } else {
+                response_with_text(&mut title, "Must not replace the user's title").await;
+            }
             f.drained().await;
             let record = f.owner.session(&session).await.unwrap();
             assert_eq!(record.configuration.title, "Untitled");
             assert_eq!(record.archived, archive);
             assert_eq!(record.configuration.title_is_manual, !archive);
-            assert_eq!(attempts(&f, &session).await.len(), 2);
+            let original_attempts = attempts(&f, &session).await;
+            assert_eq!(original_attempts.len(), 2);
+            if archive {
+                let title_attempt = original_attempts.iter().find(|attempt| matches!(attempt.origin, Origin::Auxiliary { .. })).unwrap();
+                assert_eq!(title_attempt.outcome, Outcome::Aborted);
+            }
         }
         f.app.shutdown().await.unwrap();
         f.config.shutdown().await.unwrap();
@@ -394,7 +415,14 @@ async fn title_skips_manual_and_managed_sessions_before_model_dispatch() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let f = fixture(&format!("http://{}/v1", listener.local_addr().unwrap())).await;
         let manual = f.create("My chosen title").await;
-        let mut configuration = f.owner.session(&manual).await.unwrap().configuration;
+        let mut configuration = f
+            .session(&manual)
+            .await
+            .get_session::<StoredSessionConfiguration>(&manual)
+            .await
+            .unwrap()
+            .unwrap()
+            .configuration;
         configuration.title_is_manual = false;
         let managed = format!("{}{}", f.owner.prefix, Uuid::new_v4().simple());
         f.store
@@ -507,8 +535,9 @@ async fn title_host_shutdown_awaits_socket_cleanup_and_restart_does_not_replay()
             1
         );
         assert_eq!(
-            f.store
-                .get_session::<SessionConfiguration>(&session)
+            f.session(&session)
+                .await
+                .get_session::<StoredSessionConfiguration>(&session)
                 .await
                 .unwrap()
                 .unwrap()
@@ -534,11 +563,11 @@ async fn title_settlement_fault_fences_owner_and_preserves_original_usage_for_re
         let session = automatic(&f).await;
         let sent = f.send(&session).await.unwrap();
         let ((_, mut main), (_, mut title)) = pair(&listener).await;
-        let raw = rusqlite::Connection::open(f.root.join(maka_event_log::root::ROOT_DATABASE)).unwrap();
+        let raw = rusqlite::Connection::open(f.session_database(&session)).unwrap();
         raw.execute_batch(&format!("CREATE TRIGGER hold_title_settlement BEFORE INSERT ON event_log WHEN NEW.kind='auxiliary_model_settled' BEGIN SELECT RAISE(ABORT, '{SQL_SECRET}'); END;")).unwrap();
         response(&mut main).await;
         let completed = loop {
-            let boundary = f.store.invocation_boundary(&session, sent["invocationId"].as_str().unwrap()).await.unwrap().unwrap().0;
+            let boundary = f.session(&session).await.invocation_boundary(&session, sent["invocationId"].as_str().unwrap()).await.unwrap().unwrap().0;
             if matches!(boundary.state, maka_event_log::turns::InvocationState::Ended { .. }) { break boundary; }
             tokio::task::yield_now().await;
         };
@@ -619,7 +648,7 @@ async fn verify_visible_title_failure(case: VisibleTitleFailure) {
         let ((_,mut main),(_,mut title)) = pair(&listener).await;
         response(&mut main).await;
         let completed = loop {
-            let boundary = f.store.invocation_boundary(&session,sent["invocationId"].as_str().unwrap()).await.unwrap().unwrap().0;
+            let boundary = f.session(&session).await.invocation_boundary(&session,sent["invocationId"].as_str().unwrap()).await.unwrap().unwrap().0;
             if matches!(boundary.state,maka_event_log::turns::InvocationState::Ended {..}) {break boundary;}
             tokio::task::yield_now().await;
         };
@@ -733,7 +762,7 @@ async fn title_preparation_failure_is_public_without_a_physical_title_attempt() 
         let accepted=f.owner.runs.lock().await.controls.get(&session).unwrap().basis.model.clone().unwrap();
         response(&mut socket).await;
         f.drained().await;
-        let opening=f.store.invocation_boundary(&session,sent["invocationId"].as_str().unwrap()).await.unwrap().unwrap().0;
+        let opening=f.session(&session).await.invocation_boundary(&session,sent["invocationId"].as_str().unwrap()).await.unwrap().unwrap().0;
         selection::edit(&f,|changes| changes.enabled=Some(false)).await;
         f.owner.generate_title(opening.invocation.clone(),accepted).await.unwrap();
         let diagnostics=f.query("diagnostics",json!({"sessionId":session,"position":{"kind":"latest"}})).await;
@@ -785,9 +814,9 @@ async fn independently_admitted_title_uses_current_language_after_english_main_c
         let (mut main_socket, _) = listener.accept().await.unwrap();
         let main_request = request(&mut main_socket).await;
         let accepted = f.owner.runs.lock().await.controls.get(&session).unwrap().basis.model.clone().unwrap();
-        let opening = f.store.invocation_boundary(&session, sent["invocationId"].as_str().unwrap())
+        let opening = f.session(&session).await.invocation_boundary(&session, sent["invocationId"].as_str().unwrap())
             .await.unwrap().unwrap().0;
-        let configuration = f.store.invocation_configuration(&opening.invocation).await.unwrap().unwrap();
+        let configuration = f.session(&(opening.invocation).session_id).await.invocation_configuration(&opening.invocation).await.unwrap().unwrap();
         let chinese = prompt_language::select_language(&f, "zh-CN").await;
         let (generated, title_request) = tokio::join!(
             f.owner.generate_title(opening.invocation, accepted),
@@ -803,7 +832,7 @@ async fn independently_admitted_title_uses_current_language_after_english_main_c
         let title = f.owner.session(&session).await.unwrap().configuration.title;
         let physical_attempts = attempts(&f, &session).await;
         let raw = rusqlite::Connection::open_with_flags(
-            f.root.join(maka_event_log::root::ROOT_DATABASE),
+            f.session_database(&session),
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
         ).unwrap();
         let recorded_language: String = raw.query_row(

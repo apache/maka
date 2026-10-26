@@ -56,11 +56,13 @@ fn start() -> (Engine, Receiver<MountBatch>) {
         ui_sets: Vec::new(),
         runtime: None,
         data_dir: None,
+        cache: nsh_engine::CacheOptions::off(),
         storage: None,
         clock: Default::default(),
         context: Default::default(),
         pinned: Default::default(),
         clipboard: None,
+        host: Default::default(),
         picker: None,
     };
     (
@@ -82,6 +84,11 @@ fn shown(rx: &Receiver<MountBatch>, wait: Duration, until: &str) -> Option<(Stri
                 MountItem::Insert {
                     parent: nsh_core::ROOT_ID,
                     child,
+                    ..
+                }
+                | MountItem::ProjectRoot {
+                    parent: nsh_core::ROOT_ID,
+                    id: child,
                     ..
                 } => host = Some(*child),
                 _ => {}
@@ -128,11 +135,13 @@ fn a_rust_app_starts_in_its_appearance() {
         ui_sets: Vec::new(),
         runtime: None,
         data_dir: None,
+        cache: nsh_engine::CacheOptions::off(),
         storage: None,
         clock: Default::default(),
         context: Default::default(),
         pinned: Default::default(),
         clipboard: None,
+        host: Default::default(),
         picker: None,
     };
     let _engine = Engine::start(config, || ApproxTextEngine, ChannelSink(tx)).unwrap();
@@ -183,11 +192,13 @@ fn rust_components_navigate_with_native_stacks() {
         ui_sets: Vec::new(),
         runtime: None,
         data_dir: None,
+        cache: nsh_engine::CacheOptions::off(),
         storage: None,
         clock: Default::default(),
         context: Default::default(),
         pinned: Default::default(),
         clipboard: None,
+        host: Default::default(),
         picker: None,
     };
     let engine = Engine::start(config, || ApproxTextEngine, ChannelSink(tx)).unwrap();
@@ -272,11 +283,13 @@ fn rust_components_pass_content_to_rust_components() {
         ui_sets: Vec::new(),
         runtime: None,
         data_dir: None,
+        cache: nsh_engine::CacheOptions::off(),
         storage: None,
         clock: Default::default(),
         context: Default::default(),
         pinned: Default::default(),
         clipboard: None,
+        host: Default::default(),
         picker: None,
     };
     let engine = Engine::start(config, || ApproxTextEngine, ChannelSink(tx)).unwrap();
@@ -299,7 +312,10 @@ fn rust_components_pass_content_to_rust_components() {
         .items
         .iter()
         .filter_map(|i| match i {
-            MountItem::Insert { parent, child, .. } => Some((*child, *parent)),
+            MountItem::Insert { parent, child, .. }
+            | MountItem::ProjectRoot {
+                parent, id: child, ..
+            } => Some((*child, *parent)),
             _ => None,
         })
         .collect();
@@ -371,11 +387,13 @@ fn rust_components_take_the_back_button() {
         ui_sets: Vec::new(),
         runtime: None,
         data_dir: None,
+        cache: nsh_engine::CacheOptions::off(),
         storage: None,
         clock: Default::default(),
         context: Default::default(),
         pinned: Default::default(),
         clipboard: None,
+        host: Default::default(),
         picker: None,
     };
     let engine = Engine::start(config, || ApproxTextEngine, ChannelSink(tx)).unwrap();
@@ -523,11 +541,13 @@ fn rust_components_hear_layouts_and_scrolls() {
         ui_sets: Vec::new(),
         runtime: None,
         data_dir: None,
+        cache: nsh_engine::CacheOptions::off(),
         storage: None,
         clock: Default::default(),
         context: Default::default(),
         pinned: Default::default(),
         clipboard: None,
+        host: Default::default(),
         picker: None,
     };
     let engine = Engine::start(config, || ApproxTextEngine, ChannelSink(tx)).unwrap();
@@ -598,11 +618,13 @@ fn nested_components_in_list_rows_reach_the_list_owner() {
         ui_sets: Vec::new(),
         runtime: None,
         data_dir: None,
+        cache: nsh_engine::CacheOptions::off(),
         storage: None,
         clock: Default::default(),
         context: Default::default(),
         pinned: Default::default(),
         clipboard: None,
+        host: Default::default(),
         picker: None,
     };
     let engine = Engine::start(config, || ApproxTextEngine, ChannelSink(tx)).unwrap();
@@ -612,7 +634,10 @@ fn nested_components_in_list_rows_reach_the_list_owner() {
     while let Ok(batch) = rx.recv_deadline(deadline) {
         for item in &batch.items {
             match item {
-                MountItem::Insert { parent, child, .. } => {
+                MountItem::Insert { parent, child, .. }
+                | MountItem::ProjectRoot {
+                    parent, id: child, ..
+                } => {
                     parents.insert(*child, *parent);
                 }
                 MountItem::Text { id, text, .. } => texts.push((*id, text.text.clone())),
@@ -660,11 +685,13 @@ fn content_a_component_does_not_place_is_not_shown() {
         ui_sets: Vec::new(),
         runtime: None,
         data_dir: None,
+        cache: nsh_engine::CacheOptions::off(),
         storage: None,
         clock: Default::default(),
         context: Default::default(),
         pinned: Default::default(),
         clipboard: None,
+        host: Default::default(),
         picker: None,
     };
     let engine = Engine::start(config, || ApproxTextEngine, ChannelSink(tx)).unwrap();
@@ -675,7 +702,10 @@ fn content_a_component_does_not_place_is_not_shown() {
         while let Ok(batch) = rx.recv_deadline(deadline) {
             for item in &batch.items {
                 match item {
-                    MountItem::Insert { parent, child, .. } => {
+                    MountItem::Insert { parent, child, .. }
+                    | MountItem::ProjectRoot {
+                        parent, id: child, ..
+                    } => {
                         parents.insert(*child, *parent);
                     }
                     MountItem::Remove { id } | MountItem::Delete { id } => {

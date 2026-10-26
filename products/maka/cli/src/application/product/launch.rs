@@ -21,8 +21,8 @@
 use crate::application::HostError;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use maka_event_log::{
-    EventLog,
     applications::{LoadedDeployment, PreparedApplication},
+    root_store::RootStore,
 };
 use maka_packages::Package;
 use maka_plugin_core::{
@@ -35,7 +35,7 @@ use uuid::Uuid;
 // Test Roots are fresh. Keep the initial owner through SQL startup: dropping and
 // reacquiring it can race a parallel child's inherited OFD lease before exec.
 #[cfg(test)]
-pub(super) async fn create(root: std::path::PathBuf) -> Result<EventLog, HostError> {
+pub(super) async fn create(root: std::path::PathBuf) -> Result<RootStore, HostError> {
     use maka_event_log::root::{RootNamespaces, RootOwner};
     let owner = tokio::task::spawn_blocking(move || {
         RootOwner::create(&root, &RootNamespaces::for_current_account()?)
@@ -62,7 +62,7 @@ pub(super) fn decode_packages(
         .collect()
 }
 pub(super) async fn ensure(
-    store: &EventLog,
+    store: &RootStore,
     deployment: Uuid,
     input: &Input,
     observations: &[RemoteObservation],
@@ -78,7 +78,7 @@ pub(super) async fn ensure(
 }
 
 pub(super) async fn ensure_prepared(
-    store: &EventLog,
+    store: &RootStore,
     deployment: Uuid,
     prepared: PreparedApplication,
 ) -> Result<LoadedDeployment, HostError> {
@@ -129,7 +129,7 @@ pub(super) async fn ensure_prepared(
 }
 
 pub(super) async fn ensure_replacement(
-    store: &EventLog,
+    store: &RootStore,
     deployment: Uuid,
     expected: u64,
     input: &Input,

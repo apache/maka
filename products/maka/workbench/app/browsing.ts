@@ -41,7 +41,6 @@ export type BrowserWorkspace = AgentWorkspaceSelection;
 export type Browsing = {
   scope(): BrowserScope;
   filter(): AgentSessionFilter;
-  titleQuery(): string;
   sessions(): BrowserSession[];
   projects(): BrowserProject[];
   loading(): boolean;
@@ -49,7 +48,6 @@ export type Browsing = {
   projectError(): string;
   setScope(scope: BrowserScope): void;
   setFilter(filter: AgentSessionFilter): void;
-  setTitleQuery(text: string): void;
   loadMore(): Promise<void>;
   refresh(): Promise<void>;
 };
@@ -64,7 +62,6 @@ type Subscription = {
 type CatalogRead = {
   scope: BrowserScope;
   filter: AgentSessionFilter;
-  titleQuery: string;
   stream: Subscription | null;
   // Local read intent: the last published row and one requested next page.
   extent: string | null;
@@ -81,7 +78,6 @@ const uniqueSessions = (items: BrowserSession[]) => [
 export function createBrowsing(): Browsing {
   const scope = signal<BrowserScope>({ kind: 'all' });
   const filter = signal<AgentSessionFilter>('all');
-  const titleQuery = signal('');
   const sessions = signal<BrowserSession[]>([]);
   const projects = signal<BrowserProject[]>([]);
   const loading = signal(true);
@@ -97,7 +93,6 @@ export function createBrowsing(): Browsing {
     host.query('agent', 'list', {
       filter: read.filter,
       scope: read.scope,
-      titleQuery: read.titleQuery,
       position,
     });
   const sameRevision = (next: SessionPage, revision: string) => {
@@ -139,7 +134,6 @@ export function createBrowsing(): Browsing {
     const read: CatalogRead = {
       scope: scope(),
       filter: filter(),
-      titleQuery: titleQuery(),
       stream: null,
       extent,
       extend,
@@ -157,7 +151,6 @@ export function createBrowsing(): Browsing {
       const opened: Subscription = await host.subscribe('agent', 'catalog', {
         filter: read.filter,
         scope: read.scope,
-        titleQuery: read.titleQuery,
         position: { kind: 'start' },
       });
       if (!owns(read)) {
@@ -334,18 +327,10 @@ export function createBrowsing(): Browsing {
       void restart(true);
     });
   };
-  const setTitleQuery = (text: string) => {
-    if (!alive || text === titleQuery()) return;
-    batch(() => {
-      titleQuery.set(text);
-      void restart(true);
-    });
-  };
   void refresh();
   return {
     scope,
     filter,
-    titleQuery,
     sessions,
     projects,
     loading,
@@ -353,7 +338,6 @@ export function createBrowsing(): Browsing {
     projectError,
     setScope,
     setFilter,
-    setTitleQuery,
     loadMore,
     refresh,
   };

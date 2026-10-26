@@ -187,10 +187,12 @@ async fn imports_original_codex_history_requires_preview_and_keeps_receipt_acros
     );
     assert!(
         fixture
-            .store
-            .unfinished_invocations(16)
+            .session(session_id)
+            .await
+            .unfinished_invocations(0, 16)
             .await
             .unwrap()
+            .invocations
             .is_empty()
     );
     assert!(
@@ -223,7 +225,7 @@ async fn imports_original_codex_history_requires_preview_and_keeps_receipt_acros
         .find(|entry| entry.reference.operation == operation)
         .unwrap()
         .reference;
-    let fence = *fixture.store.subscribe_commits().borrow();
+    let fence = fixture.through(session_id).await;
     let roots = fixture.owner.settings.workspace_roots.clone();
     let policy = Arc::new(Grant(fixture.issuer.clone(), None));
     workspaces::publish_with_policy(&mut fixture, roots, policy).await;
@@ -246,7 +248,7 @@ async fn imports_original_codex_history_requires_preview_and_keeps_receipt_acros
             value: imported.clone()
         }
     );
-    assert_eq!(*fixture.store.subscribe_commits().borrow(), fence);
+    assert_eq!(fixture.through(session_id).await, fence);
     let copies = fixture
         .query("imports", json!({"kind":"copies","after":null}))
         .await
@@ -322,7 +324,8 @@ async fn imports_claude_and_live_opencode_snapshot_share_original_conversion_wit
     let copied=fixture.mutation(2,"import",json!({"kind":"copy","selection":review["preview"]["selection"],"directory":roots["roots"][0]["selection"],"title":"From OpenCode"}),Uuid::new_v4()).await.unwrap();
     assert_eq!(copied["kind"], "imported", "{copied}");
     let history = fixture
-        .store
+        .session(copied["session"]["id"].as_str().unwrap())
+        .await
         .scoped_prefix(
             maka_agent_facts::event::LogScope::Session {
                 id: copied["session"]["id"].as_str().unwrap().into(),
@@ -346,10 +349,12 @@ async fn imports_claude_and_live_opencode_snapshot_share_original_conversion_wit
 
     assert!(
         fixture
-            .store
-            .unfinished_invocations(16)
+            .session(copied["session"]["id"].as_str().unwrap())
+            .await
+            .unfinished_invocations(0, 16)
             .await
             .unwrap()
+            .invocations
             .is_empty()
     );
     assert_eq!(

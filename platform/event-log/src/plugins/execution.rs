@@ -36,13 +36,32 @@ impl EventLog {
     /// Observe pending admission and canonical delivery in one read transaction.
     pub async fn plugin_execution_progress(
         &self,
-        receipt: Receipt,
-    ) -> Result<Observation, StoreError> {
+        namespace: &Namespace,
+        operation: &maka_agent_ports::execution::SessionOperation,
+    ) -> Result<Option<Observation>, StoreError> {
         self.validate_root()?;
+        operation
+            .validate()
+            .map_err(|error| invalid(&error.to_string()))?;
+        crate::sessions::validate_id(&operation.session_id)?;
+        let operation = operation.clone();
+        let package = namespace.package().to_owned();
+        let scope = String::from(namespace.scope().clone());
         self.connection
             .run(move |connection| {
                 Box::pin(async move {
                     let mut tx = connection.begin().await?;
+                    let Some(receipt) = read(
+                        &mut tx,
+                        &package,
+                        &scope,
+                        &operation.session_id,
+                        &operation.operation_id,
+                    )
+                    .await?
+                    else {
+                        return Ok(None);
+                    };
                     let invocation = &receipt.invocation;
                     let boundary = crate::turns::read(
                         &mut tx,
@@ -114,13 +133,13 @@ impl EventLog {
                     };
                     let through_sequence = crate::observation::high_water(&mut tx).await?;
                     tx.commit().await?;
-                    Ok(Observation {
+                    Ok(Some(Observation {
                         receipt,
                         progress,
                         through_sequence,
                         terminal_event_id,
                         attention_id,
-                    })
+                    }))
                 })
             })
             .await
@@ -170,13 +189,13 @@ impl EventLog {
         }
         let package = namespace.package().to_owned();
         let scope = String::from(namespace.scope().clone());
-        let commits = self.commits.clone();
+        let commits = self.commits.session(&request.session_id);
         self.connection
             .run(move |connection| {
                 Box::pin(async move {
                     let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
                     if let Some(receipt) =
-                        read(&mut tx, &package, &scope, &request.operation_id).await?
+                        read(&mut tx, &package, &scope, &request.session_id, &request.operation_id).await?
                     {
                         if receipt.content_digest != digest
                             || receipt.invocation.session_id != request.session_id
@@ -196,15 +215,16 @@ impl EventLog {
                     {
                         return Err(StoreError::EventConflict);
                     }
-                    sqlx::query("INSERT INTO plugin_execution_receipts VALUES (?, ?, ?, ?)")
+                    sqlx::query("INSERT INTO plugin_execution_receipts (package_id, scope_id, target_session_id, operation_id, receipt_json) VALUES (?, ?, ?, ?, ?)")
                         .bind(&package)
                         .bind(&scope)
+                        .bind(&request.session_id)
                         .bind(&request.operation_id)
                         .bind(serde_json::to_string(&receipt)?)
                         .execute(&mut *tx)
                         .await?;
                     tx.commit().await.map_err(StoreError::CommitUnknown)?;
-                    commits.send_modify(|_| {});
+                    commits.metadata();
                     Ok(receipt)
                 })
             })
@@ -214,21 +234,28 @@ impl EventLog {
     pub async fn plugin_execution_receipt(
         &self,
         namespace: &Namespace,
-        operation_id: &str,
+        operation: &maka_agent_ports::execution::SessionOperation,
     ) -> Result<Option<Receipt>, StoreError> {
         self.validate_root()?;
-        if operation_id.is_empty()
-            || operation_id.len() > 256
-            || operation_id.chars().any(char::is_control)
-        {
-            return Err(invalid("invalid plugin operation identity"));
-        }
+        operation
+            .validate()
+            .map_err(|error| invalid(&error.to_string()))?;
+        crate::sessions::validate_id(&operation.session_id)?;
         let package = namespace.package().to_owned();
         let scope = String::from(namespace.scope().clone());
-        let operation = operation_id.to_owned();
+        let operation = operation.clone();
         self.connection
             .run(move |connection| {
-                Box::pin(async move { read(connection, &package, &scope, &operation).await })
+                Box::pin(async move {
+                    read(
+                        connection,
+                        &package,
+                        &scope,
+                        &operation.session_id,
+                        &operation.operation_id,
+                    )
+                    .await
+                })
             })
             .await
     }
@@ -238,14 +265,16 @@ async fn read(
     connection: &mut SqliteConnection,
     package: &str,
     scope: &str,
+    session: &str,
     operation: &str,
 ) -> Result<Option<Receipt>, StoreError> {
     let row: Option<Option<String>> = sqlx::query_scalar(
         "SELECT CASE WHEN length(CAST(receipt_json AS BLOB)) <= 4096 THEN receipt_json END
-         FROM plugin_execution_receipts WHERE package_id = ? AND scope_id = ? AND operation_id = ?",
+         FROM plugin_execution_receipts WHERE package_id = ? AND scope_id = ? AND target_session_id = ? AND operation_id = ?",
     )
     .bind(package)
     .bind(scope)
+    .bind(session)
     .bind(operation)
     .fetch_optional(connection)
     .await?;
@@ -260,7 +289,9 @@ async fn read(
         ] {
             crate::sessions::validate_id(id)?;
         }
-        if !maka_agent_facts::archive::valid_projection_digest(&receipt.content_digest) {
+        if receipt.invocation.session_id != session
+            || !maka_agent_facts::archive::valid_projection_digest(&receipt.content_digest)
+        {
             return Err(invalid("invalid plugin execution receipt"));
         }
         Ok(receipt)

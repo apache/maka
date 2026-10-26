@@ -1,4 +1,4 @@
-import { Canvas, type CanvasRenderingContext2D, type GestureResponderEvent, Path2D, signal, Text, View } from "nsh";
+import { Canvas, type CanvasRenderingContext2D, cleanup, type GestureResponderEvent, Path2D, signal, Text, View } from "nsh";
 import { Animated, createAnimatedValue, Easing, type AnimatedValue } from "nsh/animated";
 import logo from "../logo@2x.png";
 import { alpha, Button, Caption, Card, colors, DemoPage, Figure, finish, hint, isDark, Legend, type Palette, Segmented, Stat } from "../ui";
@@ -388,7 +388,9 @@ const levels = () => [colors.raised, accentA(0.22), accentA(0.45), accentA(0.7),
 
 function DotMatrix() {
   const pulse = createAnimatedValue(0);
-  Animated.loop(Animated.timing(pulse, { toValue: 1, duration: 1400, easing: Easing.out(Easing.quad) })).start();
+  const loop = Animated.loop(Animated.timing(pulse, { toValue: 1, duration: 1400, easing: Easing.out(Easing.quad) }));
+  loop.start();
+  cleanup(() => loop.stop());
   return (
     <Card icon="bell" title="Beacon uptime" subtitle="Dot matrix, one column a day">
       <Figure value="99.94" unit="%" note="3 incidents" tone="danger" />
@@ -528,7 +530,9 @@ function Dumbbell() {
 
 function Clock() {
   const seconds = createAnimatedValue(0);
-  Animated.loop(Animated.timing(seconds, { toValue: 60, duration: 60_000, easing: Easing.linear })).start();
+  const loop = Animated.loop(Animated.timing(seconds, { toValue: 60, duration: 60_000, easing: Easing.linear }));
+  loop.start();
+  cleanup(() => loop.stop());
   return (
     <Card icon="search" title="Transforms" subtitle="translate · rotate · save / restore">
       <View style={{ flexDirection: "row", alignItems: "center", gap: 16 }}>

@@ -43,8 +43,30 @@ impl Transport for Script {
     fn identity(&self) -> u64 {
         1
     }
-    fn request(&self, request: http::Request) -> BoxFuture<'_, Result<http::Response, Error>> {
+    fn request(
+        &self,
+        request: http::Request,
+        _cancellation: tokio_util::sync::CancellationToken,
+    ) -> BoxFuture<'_, Result<http::Response, Error>> {
         Box::pin(async move {
+            let mut upload = request.body.into_stream();
+            let mut body = Vec::new();
+            while let Some(chunk) = futures_util::StreamExt::next(&mut upload).await {
+                body.extend_from_slice(&chunk.unwrap());
+            }
+            if request.url.ends_with("/usercode") {
+                assert_eq!(
+                    serde_json::from_slice::<Value>(&body).unwrap(),
+                    json!({"client_id":"app_EMoamEEZ73f0CkXaXp7hrann"})
+                );
+            } else if request.url.ends_with("/deviceauth/token") {
+                assert_eq!(
+                    serde_json::from_slice::<Value>(&body).unwrap(),
+                    json!({"device_auth_id":"private-device-id", "user_code":"ABCD-EFGH"})
+                );
+            } else if request.url.contains("/models?client_version=") {
+                assert!(body.is_empty());
+            }
             self.requests.lock().unwrap().push(request.url.clone());
             if self.fail {
                 return Err(Error::Adapter("private transport diagnostic".into()));

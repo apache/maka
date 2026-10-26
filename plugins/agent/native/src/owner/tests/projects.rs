@@ -104,6 +104,30 @@ async fn projects_register_create_rename_archive_restore_and_relocate_original_s
     .await;
     assert_eq!(restored["project"]["archived"], false);
     let before = fixture.owner.session(session).await.unwrap();
+    let stored_before = fixture
+        .session(session)
+        .await
+        .get_session::<Value>(session)
+        .await
+        .unwrap()
+        .unwrap()
+        .configuration;
+    let sibling = fixture
+        .mutation(
+            2,
+            "create",
+            json!({
+                "title": "Shared selection", "labels": [],
+                "workspace": {"kind": "session", "sessionId": session}
+            }),
+            Uuid::new_v4(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        sibling["session"]["binding"]["id"],
+        created["session"]["binding"]["id"]
+    );
     fixture
         .store
         .create_session(
@@ -127,13 +151,46 @@ async fn projects_register_create_rename_archive_restore_and_relocate_original_s
         before.configuration.boundary_revision + 1
     );
     assert_eq!(after.updated_at, before.updated_at);
+    assert_eq!(after.revision, before.revision + 1);
+    assert_eq!(
+        after.configuration.binding.id,
+        before.configuration.binding.id
+    );
+    assert_eq!(
+        after.configuration.binding.permission_epoch,
+        before.configuration.binding.permission_epoch + 1
+    );
+    assert_eq!(
+        fixture
+            .session(session)
+            .await
+            .get_session::<Value>(session)
+            .await
+            .unwrap()
+            .unwrap()
+            .configuration,
+        stored_before,
+        "relocation changes the shared binding without rewriting Session metadata"
+    );
+    let sibling_id = sibling["session"]["id"].as_str().unwrap();
+    assert_eq!(
+        fixture
+            .owner
+            .session(sibling_id)
+            .await
+            .unwrap()
+            .configuration
+            .workspace,
+        after.configuration.workspace
+    );
     assert_eq!(
         after.configuration.permissions,
         before.configuration.permissions
     );
     assert_eq!(
         fixture
-            .store
+            .session("foreign")
+            .await
             .get_session::<Value>("foreign")
             .await
             .unwrap()
@@ -271,13 +328,15 @@ async fn projects_relocation_rejects_running_and_queued_work_then_merges_without
         assert_eq!(fixture.send(&source_session).await.unwrap()["kind"], "queued");
         assert_eq!(change(&fixture, relocation.clone()).await["kind"], "busy");
         assert_eq!(fixture.owner.session(&source_session).await.unwrap().configuration.workspace, original.configuration.workspace);
-        assert_eq!(fixture.store.pending_messages(&source_session).await.unwrap().len(), 1);
+        assert_eq!(fixture.session(&source_session).await.pending_messages(&source_session).await.unwrap().len(), 1);
         response(&mut socket).await;
         let (mut next, _) = listener.accept().await.unwrap();
         request(&mut next).await;
         assert_eq!(change(&fixture, relocation.clone()).await["kind"], "busy");
         response(&mut next).await;
         fixture.drained().await;
+        let source_stored = fixture.session(&source_session).await.get_session::<Value>(&source_session).await.unwrap().unwrap().configuration;
+        let target_stored = fixture.session(target_id).await.get_session::<Value>(target_id).await.unwrap().unwrap().configuration;
         let merged = change(&fixture, relocation).await;
         assert_eq!(merged["kind"], "committed");
         assert_eq!(projects(&fixture).await["projects"].as_array().unwrap().len(), 1);
@@ -290,6 +349,12 @@ async fn projects_relocation_rejects_running_and_queued_work_then_merges_without
         assert_eq!(retained.configuration.workspace.identity, target_original.configuration.workspace.identity);
         assert_eq!(retained.configuration.boundary_revision, target_original.configuration.boundary_revision);
         assert_eq!(retained.updated_at, target_original.updated_at);
+        assert_eq!(retained.configuration.binding, target_original.configuration.binding);
+        assert_eq!(retained.revision, target_original.revision + 1);
+        assert_ne!(moved.configuration.permission_basis(), original.configuration.permission_basis());
+        assert_eq!(retained.configuration.permission_basis(), target_original.configuration.permission_basis());
+        assert_eq!(fixture.session(&source_session).await.get_session::<Value>(&source_session).await.unwrap().unwrap().configuration, source_stored);
+        assert_eq!(fixture.session(target_id).await.get_session::<Value>(target_id).await.unwrap().unwrap().configuration, target_stored);
         fixture.app.shutdown().await.unwrap();
         fixture.config.shutdown().await.unwrap();
     }).await.unwrap();

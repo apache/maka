@@ -22,7 +22,7 @@ use maka_agent_facts::configuration::{
     ModelCapabilities, ModelInfo, ModelModalities, ModelModality,
 };
 use maka_agent_facts::execution::ThinkingLevel::{High, Low, Max, Off};
-use serde_json::json;
+use serde_json::{Value, json};
 
 fn from_values(
     models: Option<&serde_json::Value>,
@@ -34,39 +34,6 @@ fn from_values(
     let models = models.map(body);
     let router = router.map(body);
     Snapshot::from_sources(models.as_ref(), router.as_ref())
-}
-
-#[test]
-fn newly_published_openrouter_model_is_available_without_a_bundled_entry() {
-    let bundled = Snapshot::bundled().unwrap();
-    let id = "deepseek/deepseek-v4.1-flash-1017";
-    assert_eq!(bundled.get("openrouter", id), None);
-    // Public /api/v1/models row retained in the source audit; unrelated pricing
-    // and presentation fields are deliberately absent from this metadata input.
-    let router = json!({"data":[{
-        "id":"deepseek/deepseek-v4.1-flash-1017",
-        "name":"DeepSeek: DeepSeek V4.1 Flash 1017","context_length":1048576,
-        "architecture":{"input_modalities":["text","image"],"output_modalities":["text"]},
-        "top_provider":{"context_length":1048576,"max_completion_tokens":393216},
-        "supported_parameters":["tools","structured_outputs","reasoning","reasoning_effort"],
-        "reasoning":{"mandatory":false,"default_enabled":true,
-            "supported_efforts":["max","high","low","none"],"default_effort":"high"},
-        "knowledge_cutoff":null
-    }]});
-    let snapshot = from_values(None, Some(&router)).unwrap();
-    let model = snapshot.resolve("openrouter", ModelInfo::new(id));
-    assert_eq!(
-        model.display_name.as_deref(),
-        Some("DeepSeek: DeepSeek V4.1 Flash 1017")
-    );
-    assert_eq!(model.context_window, Some(1048576));
-    assert_eq!(model.max_output_tokens, Some(393216));
-    assert_eq!(model.knowledge_cutoff, None);
-    assert_eq!(model.thinking_levels, Some(vec![Max, High, Low, Off]));
-    assert_eq!(model.default_thinking_level, Some(High));
-    assert_eq!(model.capabilities.unwrap().vision, Some(true));
-    assert_eq!(model.capabilities.unwrap().function_calling, Some(true));
-    assert_eq!(model.structured_output, Some(true));
 }
 
 #[test]
@@ -514,9 +481,30 @@ fn raw_sources_resolve_decoded_duplicates_before_schema_validation() {
     assert!(Snapshot::from_sources(Some(&bad_model), None).is_err());
     // Hidden JSON-invalid metadata cannot cross the validated input boundary.
     for input in [
-        r#"{"x":1e400,"x":{}}"#,
+        r#"{"x":1e,"x":{}}"#,
         r#"{"data":[],"unknown":"\ud800","unknown":null}"#,
     ] {
         assert!(PublicCatalogBody::from_json(input.into()).is_err());
+    }
+}
+
+#[test]
+fn raw_source_numeric_overflow_follows_value_acceptance_before_schema_validation() {
+    use maka_agent_facts::public_catalog::PublicCatalogBody;
+    let input =
+        r#"{"x":1e400,"x":{"id":"x","models":{"m":{"id":"m","name":"Final","unknown":1e400}}}}"#;
+    let expected = serde_json::from_str::<Value>(input);
+    let body = PublicCatalogBody::from_json(input.into());
+    assert_eq!(body.is_ok(), expected.is_ok());
+    if let Ok(body) = body {
+        assert_eq!(body.as_raw().get(), input);
+        let actual = Snapshot::from_sources(Some(&body), None).unwrap();
+        let expected = from_values(Some(&expected.unwrap()), None).unwrap();
+        assert_eq!(actual.models, expected.models);
+        assert_eq!(actual.descriptions, expected.descriptions);
+        assert_eq!(
+            actual.get("x", "m").unwrap().display_name.as_deref(),
+            Some("Final")
+        );
     }
 }

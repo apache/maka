@@ -30,7 +30,7 @@ use serde_json::json;
 #[tokio::test]
 async fn binary_runs_journaled_file_tools_and_reconstructs_the_invocation_after_exit() {
     let directory = tempfile::tempdir().unwrap();
-    let log_path = directory.path().join("events.sqlite");
+    let log_path = directory.path().join("root");
     let file_path = directory.path().canonicalize().unwrap().join("output.txt");
     let source = format!(
         "text('writing'); await tools.Write({}); return await tools.Read({});",
@@ -39,7 +39,7 @@ async fn binary_runs_journaled_file_tools_and_reconstructs_the_invocation_after_
     );
     let mut child = Command::new(env!("CARGO_BIN_EXE_maka"))
         .current_dir(directory.path())
-        .args(["code", "--log"])
+        .args(["code", "--root"])
         .arg(&log_path)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -69,8 +69,27 @@ async fn binary_runs_journaled_file_tools_and_reconstructs_the_invocation_after_
         std::fs::read_to_string(file_path).unwrap(),
         "hello from Rust"
     );
-    let log = EventLog::open(&log_path).await.unwrap();
-    let prefix = log.prefix(10, 16_384).await.unwrap();
+    let root = maka_event_log::root_store::RootStore::open(std::sync::Arc::new(
+        maka_event_log::root::RootOwner::open(
+            &log_path,
+            &maka_event_log::root::RootNamespaces::for_current_account().unwrap(),
+        )
+        .unwrap(),
+    ))
+    .await
+    .unwrap();
+    let session_id = response["invocation"]["session_id"].as_str().unwrap();
+    let log = root.session(session_id).await.unwrap();
+    let prefix = log
+        .scoped_prefix(
+            maka_agent_facts::event::LogScope::Session {
+                id: session_id.into(),
+            },
+            10,
+            16_384,
+        )
+        .await
+        .unwrap();
     assert_eq!(
         prefix
             .events
@@ -111,11 +130,13 @@ async fn binary_runs_journaled_file_tools_and_reconstructs_the_invocation_after_
         maka_agent_facts::execution::ApprovalPolicy::OnRequest
     );
     assert_eq!(configuration.tool_mode, ToolMode::CodeMode);
+    assert!(configuration.workspace_binding.is_some());
     assert!(configuration.model.is_none());
-    log.close().await.unwrap();
+    root.close().await.unwrap();
     let inspect = Command::new(env!("CARGO_BIN_EXE_maka"))
-        .args(["inspect", "--log"])
+        .args(["inspect", "--root"])
         .arg(&log_path)
+        .args(["--session", session_id])
         .output()
         .unwrap();
     assert!(inspect.status.success());
@@ -151,8 +172,8 @@ fn code_presets_protect_metadata_and_only_explicit_bypass_disables_both_protecti
     ] {
         let mut child = Command::new(env!("CARGO_BIN_EXE_maka"))
             .current_dir(directory.path())
-            .args(["code", "--log"])
-            .arg(directory.path().join(format!("events-{index}.sqlite")))
+            .args(["code", "--root"])
+            .arg(directory.path().join(format!("root-{index}")))
             .args(flags)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

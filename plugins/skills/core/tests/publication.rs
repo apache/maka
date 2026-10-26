@@ -30,7 +30,7 @@ fn tree(body: &str) -> Tree {
     let mut tree = Tree::empty();
     for (path, bytes) in [
         ("SKILL.md", body.as_bytes()),
-        ("skill.lock.json", b"lock" as &[u8]),
+        ("notes.txt", b"notes" as &[u8]),
         (".maka/baseline/SKILL.md", body.as_bytes()),
         ("scripts/check", b"keep this resource"),
     ] {
@@ -65,7 +65,7 @@ async fn publication_replaces_complete_directories_preserves_resources_and_rejec
         binding: content_digest(b"original view"),
     };
     let destination = Destination::Skill {
-        reference: "workspace:legacy:review".into(),
+        reference: "installed:review".into(),
     };
     publisher
         .publish_operation(
@@ -204,7 +204,7 @@ fn manifest(body: &str) -> Value {
         ".maka":{"kind":"directory"}, ".maka/baseline":{"kind":"directory"},
         "SKILL.md":{"kind":"file","hash":content_digest(body.as_bytes()),"mode":384},
         ".maka/baseline/SKILL.md":{"kind":"file","hash":content_digest(body.as_bytes()),"mode":384},
-        "skill.lock.json":{"kind":"file","hash":content_digest(b"lock"),"mode":384},
+        "notes.txt":{"kind":"file","hash":content_digest(b"notes"),"mode":384},
         "scripts":{"kind":"directory"},
         "scripts/check":{"kind":"file","hash":content_digest(b"keep this resource"),"mode":384}
     })
@@ -212,7 +212,7 @@ fn manifest(body: &str) -> Value {
 fn write_tree(path: &Path, body: &str) {
     let files = BTreeMap::from([
         ("SKILL.md", body.as_bytes()),
-        ("skill.lock.json", b"lock".as_slice()),
+        ("notes.txt", b"notes".as_slice()),
         (".maka/baseline/SKILL.md", body.as_bytes()),
         ("scripts/check", b"keep this resource".as_slice()),
     ]);
@@ -251,7 +251,7 @@ async fn recovery_finishes_each_publication_cut_and_preserves_edits_after_commit
             binding: content_digest(b"reviewed view"),
         };
         let destination = Destination::Skill {
-            reference: "workspace:legacy:review".into(),
+            reference: "installed:review".into(),
         };
         assert!(publisher.reserve(&operation).await.unwrap().is_none());
         let intent = serde_json::to_vec(&json!({

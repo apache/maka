@@ -158,6 +158,30 @@ pub trait Scrollable: Element {
         self
     }
 
+    /// Follows how far it is pulled past its top with an animated value (0
+    /// at rest, growing with the pull; the room kept above the content
+    /// while it refreshes): an app's own pull-to-refresh indicator, with no
+    /// engine work per frame (TS: `pullValue`).
+    fn pull_value(mut self, value: &AnimatedValue) -> Self {
+        if let Some(node) = value.node().live() {
+            host::set(self.node(), Prop::PullValue(Some(node.id())));
+            self.node().attrs.bound.push(node);
+        }
+        self
+    }
+
+    /// The app draws its own pull-to-refresh indicator, `height` points
+    /// tall (from [`Self::pull_value`]): the platform's spinner is hidden, a
+    /// pull refreshes once it reaches `height`, and refreshing keeps `height`
+    /// above the content (`None`: the platform's spinner; TS:
+    /// `refreshIndicator`).
+    fn refresh_indicator(mut self, height: impl IntoReactive<Option<Points>>) -> Self {
+        host::bind_prop(self.node(), height, |height: Option<Points>| {
+            Prop::Scroll(ScrollProp::RefreshIndicator(height))
+        });
+        self
+    }
+
     /// Pulled down to refresh (enables pull to refresh).
     fn on_refresh<M>(self, listener: impl IntoListener<(), M>) -> Self {
         self.listen_scroll(EventKind::Refresh, listener.into_listener(), events::unit)

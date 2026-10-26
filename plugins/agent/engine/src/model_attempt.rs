@@ -19,18 +19,18 @@
 
 use maka_agent_facts::language::Language;
 
+use crate::prepared_prompt::PreparedPrompt;
 use crate::{
-    Inner, RunContext, RunError, RunInput, history,
+    RunContext, RunError, RunInput, RunSettings, history,
     runner::{append, digest},
 };
 use maka_agent_facts::context::ModelPurpose;
 use maka_agent_facts::event::Fact;
 use maka_agent_facts::event::ModelInterruption;
 use maka_agent_facts::model::ModelStep;
-use maka_event_log::context::ModelContextSource;
+use maka_event_log::context::ContextView;
 use maka_model::prompt::Message;
 use maka_model::{ModelError, ModelEvent, ModelRequest, StepBuilder, ToolDefinition};
-use std::collections::HashSet;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
@@ -66,33 +66,34 @@ impl From<(String, ModelStep)> for Outcome {
 
 #[allow(clippy::too_many_arguments)] // Keep the admitted history policy explicit at each model request.
 pub(super) async fn prompt<W>(
-    inner: &Inner,
+    inner: &RunContext,
     input: &RunInput<W>,
-    source: &ModelContextSource,
+    source: &ContextView,
     cancellation: &CancellationToken,
     continuation_base: Option<u64>,
     current: &str,
     prior_unknown: bool,
-) -> Result<Vec<Message>, RunError> {
+) -> Result<PreparedPrompt, RunError> {
     let route = route_identity(input)?;
-    let replay = continuation_base.map(|base| history::Replay {
-        base,
-        current,
-        route: &route,
-        model: &input.provider.model,
-    });
-    let mut prompt = history::materialize_replay(
+    let mut selection = source.selection.clone();
+    selection.replay =
+        continuation_base.map(|base| maka_event_log::context::semantic::SemanticReplay {
+            base,
+            current: current.to_owned(),
+            route,
+            model: input.provider.model.clone(),
+        });
+    selection.prior_unknown = prior_unknown;
+    let body = history::prepare_view(
         &inner.log,
-        &source.tail,
-        source.anchor.as_ref(),
-        &input.invocation.session_id,
-        input.supports_vision,
-        cancellation,
-        replay,
-        prior_unknown,
+        selection,
         input.configuration.language,
+        input.supports_vision,
+        &input.provider.kind,
+        cancellation,
     )
     .await?;
+    let mut prompt = PreparedPrompt::from_history(body);
     if let Some(baseline) = &source.baseline {
         let label = match input.configuration.language {
             Language::En => {
@@ -106,7 +107,7 @@ pub(super) async fn prompt<W>(
             }
         };
         let text = format!("{label}\n{}", baseline.checkpoint.summary.text);
-        prompt.insert(0, Message::user(text));
+        prompt.prepend(Message::user(text));
     }
     let system_text = crate::request_composition::render_system(
         input
@@ -116,65 +117,15 @@ pub(super) async fn prompt<W>(
             .map(|system| system.text.as_str()),
         &crate::request_composition::session_context(input),
     );
-    if let Some(system_text) = system_text {
-        prompt.insert(
-            0,
-            Message::System {
-                content: system_text,
-                provider_options: None,
-            },
-        );
-    }
+    prompt.set_system(system_text.map(|content| Message::System {
+        content,
+        provider_options: None,
+    }));
     Ok(prompt)
 }
 
-pub(super) fn prior_unknown_notice(source: &ModelContextSource, language: Language) -> String {
-    let events =
-        source
-            .anchor
-            .iter()
-            .map(|event| &event.event)
-            .chain(source.tail.iter().filter_map(|event| match event {
-                maka_event_log::context::ContextEvent::Canonical(event) => Some(&event.event),
-                maka_event_log::context::ContextEvent::Archived(_)
-                | maka_event_log::context::ContextEvent::ModelItems(_) => None,
-            }));
-    let events: Vec<_> = events.collect();
-    let sealed: HashSet<_> = events
-        .iter()
-        .filter_map(|event| match &event.fact {
-            Fact::InvocationEnded {
-                outcome: maka_agent_facts::event::InvocationOutcome::Failed { class, .. },
-            } if class == "outcome_unknown" => Some(event.invocation.invocation_id.as_str()),
-            _ => None,
-        })
-        .collect();
-    let settled: HashSet<_> = events
-        .iter()
-        .filter_map(|event| match &event.fact {
-            Fact::ToolSettled { operation_id, .. } => Some((
-                event.invocation.invocation_id.as_str(),
-                operation_id.as_str(),
-            )),
-            _ => None,
-        })
-        .collect();
-    let unknown: Vec<_> = events
-        .iter()
-        .filter_map(|event| match &event.fact {
-            Fact::ToolDispatched {
-                operation_id, name, ..
-            } if sealed.contains(event.invocation.invocation_id.as_str())
-                && !settled.contains(&(
-                    event.invocation.invocation_id.as_str(),
-                    operation_id.as_str(),
-                )) =>
-            {
-                Some((name.as_str(), operation_id.as_str()))
-            }
-            _ => None,
-        })
-        .collect();
+pub(super) fn prior_unknown_notice(source: &ContextView, language: Language) -> String {
+    let unknown = &source.unknown_tools;
     if unknown.is_empty() {
         return String::new();
     }
@@ -196,8 +147,8 @@ pub(super) fn prior_unknown_notice(source: &ModelContextSource, language: Langua
             Language::ZhTw => format!("\n- {name}（操作 {operation}）"),
         });
     }
-    if unknown.len() > 64 {
-        let remaining = unknown.len() - 64;
+    if source.unknown_tool_count > 64 {
+        let remaining = source.unknown_tool_count - 64;
         notice.push_str(&match language {
             Language::En => format!("\n- and {remaining} more unknown operations"),
             Language::ZhCn => format!("\n- 另有 {remaining} 个结果未知的操作"),
@@ -213,8 +164,8 @@ pub(super) struct RequestSource {
     pub checkpoint: Option<String>,
 }
 
-impl From<&ModelContextSource> for RequestSource {
-    fn from(source: &ModelContextSource) -> Self {
+impl From<&ContextView> for RequestSource {
+    fn from(source: &ContextView) -> Self {
         Self {
             evidence: source.source_evidence.clone(),
             effective_digest: source.effective_source_digest.clone(),
@@ -227,11 +178,11 @@ impl From<&ModelContextSource> for RequestSource {
 }
 
 pub(super) async fn read_source(
-    inner: &Inner,
-    input: &RunContext,
+    inner: &RunContext,
+    input: &RunSettings,
     prior_unknown: bool,
     cancellation: &CancellationToken,
-) -> Result<ModelContextSource, RunError> {
+) -> Result<ContextView, RunError> {
     // Only abandon the read reply. Its snapshot remains owned by the log's
     // independent reader until completion; no append or external effect is raced.
     tokio::select! {
@@ -239,12 +190,12 @@ pub(super) async fn read_source(
         _ = cancellation.cancelled() => Err(RunError::Cancelled),
         source = async {
             if prior_unknown {
-                inner.log.read_manual_message_context(
+                inner.log.read_manual_message_view(
                     &input.invocation.session_id,
                     &input.invocation.invocation_id,
                 ).await
             } else {
-                inner.log.read_model_context(
+                inner.log.read_model_view(
                     &input.invocation.session_id,
                     Some(&input.invocation.invocation_id),
                 ).await
@@ -254,11 +205,10 @@ pub(super) async fn read_source(
 }
 
 pub(super) async fn execute_main(
-    inner: &Arc<Inner>,
-    input: &RunContext,
-    context: ModelContextSource,
-    prompt: Vec<Message>,
-    definitions: Vec<ToolDefinition>,
+    inner: &Arc<RunContext>,
+    input: &RunSettings,
+    context: ContextView,
+    prompt: PreparedPrompt,
     main: Main<'_>,
     cancellation: &CancellationToken,
 ) -> (u64, Result<Outcome, RunError>) {
@@ -287,7 +237,10 @@ pub(super) async fn execute_main(
                     .as_ref()
                     .expect("unprogressed attempt retains its prompt")
                     .clone(),
-                definitions.clone(),
+                // Re-project this step's captured catalog only for the attempt.
+                // Keeping an owned schema vector here would retain a redundant
+                // copy for the entire response, including stalled streams.
+                tools.definitions(),
                 Attempt::Main(Main {
                     lane: lane.clone(),
                     continuation_base,
@@ -369,15 +322,15 @@ pub(super) async fn execute_main(
 
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn execute_once(
-    inner: &Arc<Inner>,
-    input: &RunContext,
+    inner: &Arc<RunContext>,
+    input: &RunSettings,
     source: &RequestSource,
-    prompt: Vec<Message>,
+    mut prompt: PreparedPrompt,
     definitions: Vec<ToolDefinition>,
     attempt: Attempt<'_>,
     cancellation: &CancellationToken,
     progressed: &mut bool,
-    retry: &mut Option<Vec<Message>>,
+    retry: &mut Option<PreparedPrompt>,
 ) -> Result<(String, ModelStep), RunError> {
     let (purpose, lane, surface, tools) = match attempt {
         Attempt::Main(Main {
@@ -391,6 +344,15 @@ pub(super) async fn execute_once(
     if cancellation.is_cancelled() {
         return Err(RunError::Cancelled);
     }
+    prompt
+        .compile_wire(
+            input.configuration.language,
+            &input.provider,
+            &input.provider_options,
+            &definitions,
+            cancellation,
+        )
+        .await?;
     let prepared = prepare_request(
         input,
         prompt,
@@ -422,7 +384,7 @@ pub(super) async fn execute_once(
     );
     let mut write =
         maka_agent_facts::event::EventWrite::plain(event)?.with_composition(composition)?;
-    if let Some(pricing) = &inner.pricing {
+    if let Some(pricing) = &inner.shared.pricing {
         write = write.with_quote(
             pricing
                 .quote(&input.provider_id, &input.provider.model)
@@ -433,6 +395,7 @@ pub(super) async fn execute_once(
     inner.log.clone().commit(write).await?;
     let result: Result<_, RunError> = async {
         let stream = inner
+            .shared
             .model
             .stream_with_adapter(prepared.request, cancellation.clone(), lane, binding)
             .await?;
@@ -499,24 +462,30 @@ pub(super) fn route_identity<W>(input: &RunInput<W>) -> Result<String, RunError>
 
 pub(super) fn prepare_request<W>(
     input: &RunInput<W>,
-    prompt: Vec<Message>,
+    prompt: PreparedPrompt,
     definitions: Vec<ToolDefinition>,
     max_output_tokens: Option<u64>,
     purpose: ModelPurpose,
 ) -> Result<PreparedRequest, RunError> {
-    let prompt = if input.supports_vision
-        && matches!(
-            &input.provider.kind,
-            maka_model::ProviderKind::OpenaiChatCompletions
-                | maka_model::ProviderKind::OpenaiCompatible { .. }
-        ) {
-        history::project_chat(prompt, input.configuration.language)
-    } else {
-        prompt
+    let prompt = prompt.model();
+    let format = match input.provider.kind {
+        maka_model::ProviderKind::OpenaiChatCompletions
+        | maka_model::ProviderKind::OpenaiCompatible { .. } => {
+            maka_model::prompt::WireFormat::ChatCompletions
+        }
+        maka_model::ProviderKind::OpenaiResponses | maka_model::ProviderKind::OpenResponses(_) => {
+            maka_model::prompt::WireFormat::Responses
+        }
+        maka_model::ProviderKind::Anthropic => maka_model::prompt::WireFormat::Anthropic,
     };
-    let prompt = history::project_compatible(prompt, &input.provider.kind);
-    let prompt = maka_model::reasoning::project(prompt, &input.provider.kind);
-    let context_breakdown = crate::context_input::breakdown(&prompt, &definitions);
+    let wire = prompt
+        .wire(format)
+        .ok_or_else(|| RunError::Internal("request evidence requires prepared wire".into()))?;
+    let mut context_breakdown = prompt.breakdown().clone();
+    context_breakdown.accumulate(&maka_agent_facts::context::measure::breakdown(
+        &[],
+        &definitions,
+    ));
     context_breakdown
         .validate()
         .map_err(|error| RunError::Internal(error.into()))?;
@@ -532,16 +501,23 @@ pub(super) fn prepare_request<W>(
         projection: &'static str,
         #[serde(skip_serializing_if = "Language::is_english")]
         language: Language,
-        prompt: &'a [Message],
+        prompt_root: &'a str,
+        wire_codec: &'a str,
+        wire_root: &'a str,
+        route_identity: &'a str,
         tools: &'a [ToolDefinition],
         provider_options: &'a serde_json::Value,
         #[serde(skip_serializing_if = "Option::is_none")]
         max_output_tokens: Option<u64>,
     }
+    let route_identity = route_identity(input)?;
     let input_digest = digest(&Evidence {
         projection: "maka.model-history.v1",
         language: input.configuration.language,
-        prompt: &prompt,
+        prompt_root: prompt.identity(),
+        wire_codec: &wire.codec,
+        wire_root: &wire.identity,
+        route_identity: &route_identity,
         tools: &definitions,
         provider_options: &input.provider_options,
         max_output_tokens,
@@ -557,21 +533,21 @@ pub(super) fn prepare_request<W>(
             max_output_tokens,
         },
         input_digest,
-        route_identity: route_identity(input)?,
+        route_identity,
     })
 }
 
 #[allow(clippy::too_many_arguments)]
 async fn receive(
-    inner: &Arc<Inner>,
-    input: &RunContext,
+    inner: &Arc<RunContext>,
+    input: &RunSettings,
     step_id: &str,
     purpose: ModelPurpose,
     mut stream: maka_model::ModelStream,
     mut tools: Option<maka_tools::StepTools<'_>>,
     progressed: &mut bool,
     cancellation: &CancellationToken,
-    retry: &mut Option<Vec<Message>>,
+    retry: &mut Option<PreparedPrompt>,
 ) -> Result<ModelStep, RunError> {
     use futures_util::{FutureExt, StreamExt, stream::FuturesUnordered};
     use maka_agent_facts::tools::ToolError;
@@ -627,7 +603,8 @@ async fn receive(
         builder.finish().map_err(Into::into)
     }.await;
     let stream_cleanup = stream.cancel_and_wait().await;
-    if matches!(result, Err(ref error) if !matches!(error, RunError::Model(_))) {
+    if matches!(result, Err(ref error) if !matches!(error, RunError::Model(_)) || error.is_cleanup_unconfirmed())
+    {
         tool_cancellation.cancel();
     }
     let mut cleanup = Ok(());
@@ -739,8 +716,8 @@ fn tool_result(
 
 #[allow(clippy::too_many_arguments)]
 async fn finish(
-    inner: &Arc<Inner>,
-    input: &RunContext,
+    inner: &Arc<RunContext>,
+    input: &RunSettings,
     step_id: String,
     purpose: ModelPurpose,
     result: Result<ModelStep, RunError>,
@@ -751,6 +728,9 @@ async fn finish(
         Ok(output) => output,
         Err(RunError::Model(error)) => {
             let status = match error {
+                maka_model::ModelError::CleanupUnconfirmed => {
+                    return Err(crate::cleanup::unconfirmed());
+                }
                 maka_model::ModelError::Cancelled => ModelInterruption::Cancelled,
                 maka_model::ModelError::TimedOut => ModelInterruption::TimedOut,
                 maka_model::ModelError::Adapter(_) | maka_model::ModelError::Http { .. } => {
@@ -838,6 +818,17 @@ mod tests {
     use maka_agent_facts::model::{ModelFinishReason, ModelPart, ModelStep, TextKind};
     use maka_model::{ModelError, ModelEvent, StepBuilder};
     use serde_json::{Value, json};
+
+    #[test]
+    fn tool_state_persistence_failure_stops_the_model_loop() {
+        use maka_agent_facts::tools::ToolError;
+        assert!(matches!(
+            super::tool_result(Err(ToolError::Persistence(
+                "discovery state commit failed after T2".into()
+            ))),
+            Err(crate::RunError::Tool(ToolError::Persistence(_)))
+        ));
+    }
 
     fn started(id: &str) -> ModelEvent {
         ModelEvent::PartStarted {

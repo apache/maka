@@ -9,7 +9,10 @@
 
 use std::{
     collections::{HashMap, HashSet},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicU32, Ordering},
+    },
 };
 
 use nsh_core::{
@@ -22,6 +25,28 @@ use crate::selector::{Matcher, Selector, TextMatch};
 
 /// The surface's root view: every app view hangs below it.
 const ROOT: NodeId = 1;
+
+/// The UTF-16 offset of byte `at` of `text`.
+fn utf16_at(text: &str, at: usize) -> u32 {
+    text[..at].encode_utf16().count() as u32
+}
+
+/// Where `want` reads in `text`, as the UTF-16 offset of each match.
+fn char_starts(text: &str, want: &TextMatch) -> Vec<u32> {
+    let ranges: Vec<usize> = match want {
+        TextMatch::Exact(want) if want.is_empty() => Vec::new(),
+        TextMatch::Exact(want) => text
+            .match_indices(want.as_str())
+            .map(|(at, _)| at)
+            .collect(),
+        TextMatch::Regex(re) => re
+            .find_iter(text)
+            .filter(|m| !m.is_empty())
+            .map(|m| m.start())
+            .collect(),
+    };
+    ranges.into_iter().map(|at| utf16_at(text, at)).collect()
+}
 
 /// The ids the model gives a canvas's nodes ([`nsh_core::canvas::CanvasNode`]),
 /// counting down from the top of the id space, where the core and JS
@@ -76,6 +101,62 @@ pub(crate) enum Back {
     Nothing,
 }
 
+#[derive(Debug)]
+pub(crate) enum InputResult {
+    CancelTouch(u32),
+    SetStates(NodeId, u8),
+    RetireListCell {
+        id: NodeId,
+        request: u64,
+        /// A focused descendant refused retirement; its path precedes the reply.
+        focus_path: Option<Vec<NodeId>>,
+    },
+}
+
+/// One actual finger, shared with the driver while its gesture is running.
+/// Removing its owners ends this contact even if their ids mount again.
+#[derive(Debug)]
+pub(crate) struct Contact {
+    pub(crate) id: u32,
+    pub(crate) target: NodeId,
+    owners: Vec<NodeId>,
+    active: AtomicBool,
+    reporting: AtomicBool,
+    native: AtomicU32,
+}
+
+/// The window's native modal presentation slots, including parked ones.
+#[derive(Debug)]
+struct Presentation {
+    id: NodeId,
+    live: bool,
+}
+
+impl Contact {
+    pub(crate) fn active(&self) -> bool {
+        self.active.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn reporting(&self) -> bool {
+        self.reporting.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn stop_reporting(&self) {
+        self.reporting.store(false, Ordering::Relaxed);
+    }
+
+    pub(crate) fn capture_native(&self, owner: NodeId) {
+        self.native.store(owner, Ordering::Relaxed);
+    }
+
+    pub(crate) fn native_owner(&self) -> Option<NodeId> {
+        match self.native.load(Ordering::Relaxed) {
+            0 => None,
+            owner => Some(owner),
+        }
+    }
+}
+
 /// The native views as the mount items built them: their tree, what they
 /// show (text, test id, accessibility label), the events they report,
 /// inputs' text, scroll views' offsets, the screens and modals a back
@@ -89,6 +170,13 @@ pub struct Screen {
     commands: Vec<(NodeId, Command)>,
     /// The input that has the focus.
     focused: Option<NodeId>,
+    /// Actual fingers down, until they lift or the native tree revokes them.
+    contacts: Vec<Arc<Contact>>,
+    /// Native input results retain their order within each consumed batch.
+    input_results: Vec<InputResult>,
+    /// The view that takes presses Tab gave the keyboard focus to (macOS,
+    /// the web).
+    key_focus: Option<NodeId>,
     /// Scroll views a command moved, whose offset the engine is told
     /// ([`Screen::take_scrolled`]), as a platform reports it.
     scrolled: Vec<NodeId>,
@@ -96,8 +184,10 @@ pub struct Screen {
     popped: HashSet<NodeId>,
     /// Modals a back closed natively, until the app removes them.
     closed: HashSet<NodeId>,
-    /// Modals presented since the last call (`onShow`).
-    presented: Vec<NodeId>,
+    /// Canonical native modal order: projection restores the existing slot.
+    presented: Vec<Presentation>,
+    /// New presentations waiting for `onShow`; this is only an event queue.
+    shows: Vec<NodeId>,
     /// The dialogs shown, in order, and how many were answered.
     dialogs: Vec<Dialog>,
     answered: usize,
@@ -112,6 +202,10 @@ pub struct Screen {
     /// answered.
     picks: Vec<(u32, nsh_core::picker::PickRequest)>,
     picks_answered: usize,
+    /// The URLs the app had the system open (`openUrl`), in order.
+    opened_urls: Vec<String>,
+    /// The `openUrl` requests to answer.
+    url_opens: Vec<u32>,
     /// What the app asked that only a real platform answers, since the
     /// last call.
     unsupported: Vec<&'static str>,
@@ -159,6 +253,8 @@ struct View {
     role: AccessibilityRole,
     /// It takes no presses (`disabled`, its accessibility state).
     disabled: bool,
+    /// `focusable`: `Some(false)` keeps a pressable out of Tab's stops.
+    focusable: Option<bool>,
     /// It is selected (`selected`, its accessibility state; a canvas node's
     /// `selected`).
     selected: bool,
@@ -186,6 +282,9 @@ struct View {
     span: Option<Span>,
     /// The spans of a text view's text that take presses.
     spans: Vec<NodeId>,
+    /// The text a text view shows, styles included, so a step can read a
+    /// span's style.
+    attributed: Option<Arc<nsh_core::AttributedText>>,
     /// Which touches it and its subtree receive (`pointerEvents`).
     pointer_events: PointerEvents,
     /// A node of a canvas's drawing, not a view of its own.
@@ -252,6 +351,9 @@ pub(crate) struct Input {
     /// The edits reported so far ([`nsh_core::EventPayload::Text`]).
     pub(crate) count: u32,
     pub(crate) config: Box<InputConfig>,
+    /// Where its text goes in the view (inside padding and border); the
+    /// whole view until the core says.
+    pub(crate) content: Option<Bounds<Points>>,
 }
 
 /// Where a scroll view is, as its platform view keeps it.
@@ -266,6 +368,8 @@ pub(crate) struct Scroll {
     content: Option<Size<Points>>,
     /// The user cannot scroll it (`scrollable={false}`).
     pub(crate) locked: bool,
+    /// How it scrolls (where a pull refreshes).
+    pub(crate) behavior: nsh_core::ScrollBehavior,
 }
 
 impl Screen {
@@ -273,6 +377,26 @@ impl Screen {
     pub fn apply(&mut self, batch: &MountBatch) {
         for item in &batch.items {
             self.apply_item(item);
+        }
+    }
+
+    /// A real host owns retirement decisions; only the core's confirmation
+    /// updates this mirror after the native reply reaches the core.
+    #[cfg(feature = "agent")]
+    pub(crate) fn observe(&mut self, batch: &MountBatch) {
+        for item in &batch.items {
+            match item {
+                MountItem::RetireListCell { .. } => {}
+                MountItem::ListCellRetired { roots } => {
+                    for root in roots {
+                        self.park_presentations(*root);
+                        self.detach(*root);
+                        self.popped.remove(root);
+                        self.closed.remove(root);
+                    }
+                }
+                _ => self.apply_item(item),
+            }
         }
     }
 
@@ -291,24 +415,83 @@ impl Screen {
                 parent,
                 child,
                 before,
+            } => self.insert(*parent, *child, *before),
+            MountItem::ProjectRoot {
+                parent,
+                id,
+                following,
             } => {
-                self.detach(*child);
-                let siblings = self.children.entry(*parent).or_default();
-                let at = before
-                    .and_then(|b| siblings.iter().position(|s| *s == b))
-                    .unwrap_or(siblings.len());
-                siblings.insert(at, *child);
-                self.nodes.entry(*child).or_default().parent = Some(*parent);
-                if self.kind(*child) == Some(ViewKind::Modal) {
-                    self.presented.push(*child);
-                }
+                // Logical siblings do not describe the window's modal stack.
+                let before = if self.kind(*id) == Some(ViewKind::Modal) {
+                    None
+                } else {
+                    // These roots have platform-owned presentation slots,
+                    // rather than their parent's ordinary content host.
+                    let slot = |node| {
+                        self.kind(node).filter(|kind| {
+                            matches!(
+                                kind,
+                                ViewKind::Modal
+                                    | ViewKind::Screen
+                                    | ViewKind::HeaderItem
+                                    | ViewKind::InputAccessory
+                            )
+                        })
+                    };
+                    let host = slot(*id);
+                    following.iter().copied().find(|next| {
+                        next != id
+                            && slot(*next) == host
+                            && self
+                                .nodes
+                                .get(next)
+                                .is_some_and(|view| view.parent == Some(*parent))
+                            && self
+                                .children
+                                .get(parent)
+                                .is_some_and(|siblings| siblings.contains(next))
+                    })
+                };
+                self.insert(*parent, *id, before);
             }
+            MountItem::RetireListCell { id, request, roots } => {
+                let actual = self.focus_path();
+                let focus_path = roots
+                    .iter()
+                    .any(|root| actual.contains(root))
+                    .then_some(actual);
+                if focus_path.is_none() {
+                    for root in roots {
+                        self.revoke_contacts(*root);
+                        self.revoke_hovered(*root);
+                        self.park_presentations(*root);
+                        self.detach(*root);
+                        self.popped.remove(root);
+                        self.closed.remove(root);
+                    }
+                }
+                self.input_results.push(InputResult::RetireListCell {
+                    id: *id,
+                    request: *request,
+                    focus_path,
+                });
+            }
+            // The real host already detached these roots before replying.
+            MountItem::ListCellRetired { .. } => {}
             MountItem::Remove { id } => {
+                self.revoke_contacts(*id);
+                self.revoke_hovered(*id);
+                self.revoke_focus(*id);
+                self.remove_presentations(*id);
                 self.detach(*id);
                 self.popped.remove(id);
                 self.closed.remove(id);
             }
             MountItem::Delete { id } => {
+                self.revoke_contacts(*id);
+                self.revoke_hovered(*id);
+                self.revoke_focus(*id);
+                self.remove_presentations(*id);
                 self.drop_spans(*id);
                 self.canvas(*id, &[]);
                 self.detach(*id);
@@ -316,9 +499,6 @@ impl Screen {
                 self.children.remove(id);
                 self.popped.remove(id);
                 self.closed.remove(id);
-                if self.focused == Some(*id) {
-                    self.focused = None;
-                }
             }
             MountItem::ScreenConfig { id, config } => {
                 self.nodes.entry(*id).or_default().prevent_back = config.prevent_back;
@@ -335,6 +515,7 @@ impl Screen {
             MountItem::ScrollBehavior { id, behavior } => {
                 if let Some(scroll) = self.scroll_mut(*id) {
                     scroll.locked = !behavior.enabled;
+                    scroll.behavior = (**behavior).clone();
                 }
             }
             MountItem::Events { id, events } => self.nodes.entry(*id).or_default().events = *events,
@@ -344,6 +525,7 @@ impl Screen {
                 view.label = props.accessibility.label.clone();
                 view.role = props.accessibility.role;
                 view.disabled = props.accessibility.state.disabled;
+                view.focusable = props.focusable;
                 view.selected = props.accessibility.state.selected;
                 view.long_press_delay = props.long_press_delay;
                 view.selection_area = props.selection_area;
@@ -362,12 +544,21 @@ impl Screen {
                 self.nodes.entry(*id).or_default().label = label.clone();
             }
             MountItem::Text { id, text, .. } => {
-                self.nodes.entry(*id).or_default().text = Some(text.text.clone());
+                {
+                    let view = self.nodes.entry(*id).or_default();
+                    view.text = Some(text.text.clone());
+                    view.attributed = Some(Arc::clone(text));
+                }
                 self.set_spans(*id, text);
             }
             MountItem::Input { id, config } => {
                 if let Some(input) = self.input_mut(*id) {
                     input.config = config.clone();
+                }
+            }
+            MountItem::InputContent { id, content } => {
+                if let Some(input) = self.input_mut(*id) {
+                    input.content = Some(*content);
                 }
             }
             MountItem::InputValue { id, text, count } => {
@@ -467,6 +658,11 @@ impl Screen {
             // failed load (a `TextView` asks for its images' sizes).
             Command::ImageInfo { id, .. } => self.image_infos.push(*id),
             Command::PickImages { id, request } => self.picks.push((*id, *request)),
+            // Recorded, never opened: a test's machine opens nothing.
+            Command::OpenUrl { id, url } => {
+                self.opened_urls.push(url.clone());
+                self.url_opens.push(*id);
+            }
             Command::Back => self.back_asked = true,
             Command::Desktop(desktop) => {
                 if let nsh_core::desktop::DesktopCommand::PopupMenu { items, .. } = &**desktop {
@@ -478,8 +674,11 @@ impl Screen {
                 self.js_grants.push(*block);
             }
             Command::ClearJsResponder => self.js_block = false,
-            Command::Focus if self.input(id).is_some() => self.focused = Some(id),
-            Command::Blur if id == ROOT || self.focused == Some(id) => self.focused = None,
+            Command::Focus if self.input(id).is_some() => self.set_focused(Some(id)),
+            Command::Blur if id == ROOT || self.focused == Some(id) => {
+                self.set_focused(None);
+                self.set_key_focus(None);
+            }
             Command::ScrollTo { x, y, .. } => {
                 let end = self.scroll_end(id);
                 if let Some(scroll) = self.scroll_mut(id) {
@@ -512,6 +711,26 @@ impl Screen {
     /// `text`: each a view in the model, inside the text view (or the span
     /// around it), as a platform finds the one under a finger.
     fn set_spans(&mut self, id: NodeId, text: &nsh_core::AttributedText) {
+        let retired = self
+            .nodes
+            .get(&id)
+            .map(|view| {
+                view.spans
+                    .iter()
+                    .copied()
+                    .filter(|old| {
+                        !text
+                            .links
+                            .iter()
+                            .any(|next| next.node == *old && next.is_enabled())
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        for old in retired {
+            self.revoke_contacts(old);
+            self.revoke_hovered(old);
+        }
         self.drop_spans(id);
         let mut links = text.links.clone();
         // Outer spans first, so each finds the one around it made.
@@ -571,12 +790,217 @@ impl Screen {
         Some((span.view, span.start, span.end))
     }
 
+    /// The style of the span `selector` names, from its first character,
+    /// inherited from the spans around it. `id:<testID>` names a nested
+    /// text's span. `text:<text>` names where the text reads it. The parts
+    /// before the last name the views to look in. An error when none or
+    /// several match, when the matched span is empty, or when the last part
+    /// is not a span name.
+    pub fn span_style(&self, selector: &str) -> Result<nsh_core::ResolvedTextStyle, String> {
+        let selector = Selector::parse(selector)?;
+        let scope = selector.scope().map(|s| self.resolve(&s));
+        let last = selector.parts.last().expect("a selector has a part");
+        let mut hits = Vec::new();
+        for id in self.by_layer() {
+            if scope
+                .as_ref()
+                .is_some_and(|scope| !scope.iter().any(|s| *s == id || self.is_inside(id, *s)))
+            {
+                continue;
+            }
+            let Some(text) = self.nodes.get(&id).and_then(|v| v.attributed.as_ref()) else {
+                continue;
+            };
+            let ranges = match &last.matcher {
+                Matcher::TestId(want) => text
+                    .test_ids
+                    .iter()
+                    .filter(|t| &*t.test_id == want)
+                    .map(|t| (t.start < t.end).then_some(t.start))
+                    .collect(),
+                Matcher::Text(want) => char_starts(&text.text, want)
+                    .into_iter()
+                    .map(Some)
+                    .collect(),
+                Matcher::Any(want) => {
+                    let ids: Vec<Option<u32>> = text
+                        .test_ids
+                        .iter()
+                        .filter(|t| &*t.test_id == want)
+                        .map(|t| (t.start < t.end).then_some(t.start))
+                        .collect();
+                    if ids.is_empty() {
+                        char_starts(&text.text, &TextMatch::Exact(want.trim().to_owned()))
+                            .into_iter()
+                            .map(Some)
+                            .collect()
+                    } else {
+                        ids
+                    }
+                }
+                Matcher::Label(_) | Matcher::Role { .. } | Matcher::View(_) => {
+                    return Err(format!(
+                        "`{selector}`: a span is named by `id:<testID>` or `text:<text>`"
+                    ));
+                }
+            };
+            hits.extend(ranges.into_iter().map(|start| (id, start)));
+        }
+        if let Some(n) = last.nth {
+            hits = hits.get(n).copied().into_iter().collect();
+        }
+        let (id, start) = match hits.as_slice() {
+            [(id, Some(start))] => (*id, *start),
+            [(_, None)] => return Err(format!("span `{selector}` has no characters")),
+            [] => return Err(format!("no span matches `{selector}`")),
+            many => {
+                return Err(format!(
+                    "`{selector}` matches {} spans; add `nth=<n>` or name the text views to look in",
+                    many.len()
+                ));
+            }
+        };
+        self.nodes
+            .get(&id)
+            .and_then(|v| v.attributed.as_ref())
+            .and_then(|text| text.span_at(start))
+            .map(|span| span.style)
+            .ok_or_else(|| format!("no span matches `{selector}`"))
+    }
+
     fn detach(&mut self, id: NodeId) {
         if let Some(parent) = self.nodes.get_mut(&id).and_then(|v| v.parent.take())
             && let Some(siblings) = self.children.get_mut(&parent)
         {
             siblings.retain(|s| *s != id);
         }
+    }
+
+    fn insert(&mut self, parent: NodeId, child: NodeId, before: Option<NodeId>) {
+        self.detach(child);
+        let siblings = self.children.entry(parent).or_default();
+        let at = before
+            .and_then(|before| siblings.iter().position(|sibling| *sibling == before))
+            .unwrap_or(siblings.len());
+        siblings.insert(at, child);
+        self.nodes.entry(child).or_default().parent = Some(parent);
+        if self.kind(child) == Some(ViewKind::Modal) {
+            if let Some(presentation) = self.presented.iter_mut().find(|entry| entry.id == child) {
+                presentation.live = true;
+            } else {
+                self.presented.push(Presentation {
+                    id: child,
+                    live: true,
+                });
+                self.shows.push(child);
+            }
+        }
+    }
+
+    fn park_presentations(&mut self, root: NodeId) {
+        for at in 0..self.presented.len() {
+            let id = self.presented[at].id;
+            if id == root || self.is_inside(id, root) {
+                self.presented[at].live = false;
+                self.shows.retain(|shown| *shown != id);
+            }
+        }
+    }
+
+    fn remove_presentations(&mut self, root: NodeId) {
+        let presentations = std::mem::take(&mut self.presented);
+        for presentation in presentations {
+            if presentation.id == root || self.is_inside(presentation.id, root) {
+                self.shows.retain(|shown| *shown != presentation.id);
+            } else {
+                self.presented.push(presentation);
+            }
+        }
+    }
+
+    fn top_modal(&self, attached: &[NodeId]) -> Option<NodeId> {
+        self.presented
+            .iter()
+            .rev()
+            .find(|entry| entry.live && attached.contains(&entry.id))
+            .map(|entry| entry.id)
+    }
+
+    fn revoke_focus(&mut self, id: NodeId) {
+        if self
+            .key_focus
+            .is_some_and(|focus| focus == id || self.is_inside(focus, id))
+        {
+            self.key_focus = None;
+        }
+        if self
+            .focused
+            .is_some_and(|focus| focus == id || self.is_inside(focus, id))
+        {
+            self.focused = None;
+        }
+    }
+
+    /// Revoke before changing ancestry: a later Insert cannot revive a finger.
+    fn revoke_contacts(&mut self, root: NodeId) {
+        let contains = |id| id == root || self.is_inside(id, root);
+        let mut cancelled = Vec::new();
+        for contact in &self.contacts {
+            if contact.owners.iter().copied().any(contains) {
+                contact.active.store(false, Ordering::Relaxed);
+                if contact.reporting.swap(false, Ordering::Relaxed) {
+                    cancelled.push(InputResult::CancelTouch(contact.id));
+                }
+            }
+            if contact.native_owner().is_some_and(contains) {
+                contact.native.store(0, Ordering::Relaxed);
+            }
+        }
+        self.input_results.extend(cancelled);
+    }
+
+    /// Forget the actual hovered owners before their ids can be reused.
+    fn revoke_hovered(&mut self, root: NodeId) {
+        let hovered = std::mem::take(&mut self.hovered);
+        for owner in hovered {
+            if owner == root || self.is_inside(owner, root) {
+                if let Some(states) =
+                    self.set_state(owner, nsh_core::tailwind::state::HOVERED, false)
+                {
+                    self.input_results
+                        .push(InputResult::SetStates(owner, states));
+                }
+            } else {
+                self.hovered.push(owner);
+            }
+        }
+    }
+
+    pub(crate) fn begin_contact(
+        &mut self,
+        id: u32,
+        target: NodeId,
+        mut owners: Vec<NodeId>,
+        reporting: bool,
+    ) -> Arc<Contact> {
+        owners.push(target);
+        let contact = Arc::new(Contact {
+            id,
+            target,
+            owners,
+            active: AtomicBool::new(true),
+            reporting: AtomicBool::new(reporting),
+            native: AtomicU32::new(0),
+        });
+        self.contacts.push(contact.clone());
+        contact
+    }
+
+    pub(crate) fn end_contact(&mut self, contact: &Arc<Contact>) {
+        self.contacts.retain(|other| !Arc::ptr_eq(other, contact));
+        contact.active.store(false, Ordering::Relaxed);
+        contact.stop_reporting();
+        contact.native.store(0, Ordering::Relaxed);
     }
 
     /// The views on screen, in tree order: below the root, of a stack
@@ -730,11 +1154,7 @@ impl Screen {
     /// without one, the newest modal asks to close.
     pub(crate) fn back_target(&self) -> Back {
         let attached = self.attached();
-        let modal = attached
-            .iter()
-            .rev()
-            .copied()
-            .find(|id| self.kind(*id) == Some(ViewKind::Modal));
+        let modal = self.top_modal(&attached);
         let can_go_back = |stack: NodeId| {
             let screens = self.screens(stack);
             screens.len() >= 2
@@ -785,7 +1205,7 @@ impl Screen {
 
     /// The modals presented since the last call.
     pub(crate) fn take_presented(&mut self) -> Vec<NodeId> {
-        std::mem::take(&mut self.presented)
+        std::mem::take(&mut self.shows)
     }
 
     /// Whether the app asked for a back since the last call.
@@ -844,6 +1264,18 @@ impl Screen {
         std::mem::take(&mut self.image_infos)
     }
 
+    /// The URLs the app had the system open (`openUrl`, a `TextView`'s
+    /// links), in order: what reached the platform, past the URL check,
+    /// the `openUrl` capability and the embedding app's URL handler.
+    pub fn opened_urls(&self) -> &[String] {
+        &self.opened_urls
+    }
+
+    /// The `openUrl` requests to answer since the last call.
+    pub(crate) fn take_url_opens(&mut self) -> Vec<u32> {
+        std::mem::take(&mut self.url_opens)
+    }
+
     pub(crate) fn take_unsupported(&mut self) -> Vec<&'static str> {
         std::mem::take(&mut self.unsupported)
     }
@@ -852,19 +1284,34 @@ impl Screen {
     /// topmost modal's first (the last presented), then the rest.
     fn by_layer(&self) -> Vec<NodeId> {
         let attached = self.shown();
-        let modals: Vec<NodeId> = attached
-            .iter()
-            .copied()
-            .filter(|id| self.kind(*id) == Some(ViewKind::Modal))
-            .collect();
-        let Some(top) = modals.last() else {
+        let Some(top) = self.top_modal(&attached) else {
             return attached;
         };
         let (mut first, rest): (Vec<NodeId>, Vec<NodeId>) = attached
             .into_iter()
-            .partition(|id| *id == *top || self.is_inside(*id, *top));
+            .partition(|id| *id == top || self.is_inside(*id, top));
         first.extend(rest);
         first
+    }
+
+    /// The view `selector` matches inside `target` (a text in the button
+    /// a press goes to); `None` when the match is `target` itself.
+    pub(crate) fn match_inside(&self, selector: &Selector, target: NodeId) -> Option<NodeId> {
+        self.resolve(selector)
+            .into_iter()
+            .find(|id| self.is_inside(*id, target))
+    }
+
+    /// Where in `target` a press of what `selector` names lands: the
+    /// center of the view it matches inside `target`, as a finger taps the
+    /// text it reads. `None` when the match is `target` itself.
+    pub(crate) fn press_point(&self, selector: &Selector, target: NodeId) -> Option<Point<Points>> {
+        let inner = self.bounds_in_root(self.match_inside(selector, target)?)?;
+        let outer = self.bounds_in_root(target)?;
+        Some(nsh_core::geometry::point(
+            inner.origin.x - outer.origin.x + inner.size.width / 2.0,
+            inner.origin.y - outer.origin.y + inner.size.height / 2.0,
+        ))
     }
 
     fn is_inside(&self, mut id: NodeId, ancestor: NodeId) -> bool {
@@ -1408,7 +1855,6 @@ impl Screen {
 
     /// View `id`'s interaction states with `bit` set (or cleared), when it
     /// tracks it and they change.
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn set_state(&mut self, id: NodeId, bit: u8, on: bool) -> Option<u8> {
         let view = self.nodes.get_mut(&id)?;
         let next = nsh_core::input::next_states(view.tracked, view.states, bit, on)?;
@@ -1460,13 +1906,65 @@ impl Screen {
 
     /// Whether view `id` reports `event`.
     pub(crate) fn hears(&self, id: NodeId, event: EventKind) -> bool {
-        self.nodes
-            .get(&id)
-            .is_some_and(|v| v.events.contains(event))
+        self.is_attached(id)
+            && self
+                .nodes
+                .get(&id)
+                .is_some_and(|view| view.events.contains(event))
+    }
+
+    pub(crate) fn is_attached(&self, id: NodeId) -> bool {
+        id == ROOT || self.is_inside(id, ROOT)
+    }
+
+    pub(crate) fn take_input_results(&mut self) -> Vec<InputResult> {
+        std::mem::take(&mut self.input_results)
     }
 
     pub(crate) fn input(&self, id: NodeId) -> Option<&Input> {
         self.nodes.get(&id)?.input.as_ref()
+    }
+
+    /// Input `id`'s caret at the end of its text, in the view, as
+    /// [`nsh_core::ApproxTextEngine`] lays the text out: characters `0.55 ×`
+    /// the font size wide, lines `1.2 ×` it tall, wrapped at the content
+    /// box's width when multiline; a single line is centered in the box and
+    /// keeps the caret inside it.
+    pub(crate) fn input_caret(&self, id: NodeId) -> Option<Bounds<Points>> {
+        let view = self.nodes.get(&id)?;
+        let input = view.input.as_ref()?;
+        let content = input
+            .content
+            .unwrap_or_else(|| Bounds::new(Point::default(), view.frame.size));
+        let font = input.config.style.font_size.0;
+        let (advance, line) = (font * 0.55, font * 1.2);
+        let (column, row) = if input.config.multiline {
+            let per_line = ((content.size.width.0 / advance).floor() as usize).max(1);
+            let mut row = 0;
+            let mut column = 0;
+            for (i, part) in input.text.split('\n').enumerate() {
+                let chars = part.chars().count();
+                if i > 0 {
+                    row += 1;
+                }
+                row += chars / per_line;
+                column = chars % per_line;
+            }
+            (column, row)
+        } else {
+            (input.text.chars().count(), 0)
+        };
+        let mut x = content.origin.x.0 + column as f32 * advance;
+        let y = if input.config.multiline {
+            content.origin.y.0 + row as f32 * line
+        } else {
+            x = x.min(content.origin.x.0 + (content.size.width.0 - 1.0).max(0.0));
+            content.origin.y.0 + (content.size.height.0 - line) / 2.0
+        };
+        Some(Bounds::new(
+            nsh_core::geometry::point(Points(x), Points(y)),
+            nsh_core::geometry::size(Points(1.0), Points(line)),
+        ))
     }
 
     pub(crate) fn input_mut(&mut self, id: NodeId) -> Option<&mut Input> {
@@ -1478,8 +1976,53 @@ impl Screen {
         self.focused
     }
 
+    pub(crate) fn focus_path(&self) -> Vec<NodeId> {
+        let Some(mut id) = self.focused.or_else(|| self.key_focus()) else {
+            return Vec::new();
+        };
+        let mut path = vec![id];
+        while let Some(parent) = self.nodes.get(&id).and_then(|view| view.parent) {
+            path.push(parent);
+            id = parent;
+        }
+        path
+    }
+
     pub(crate) fn set_focused(&mut self, id: Option<NodeId>) {
+        if id.is_some() {
+            self.key_focus = None;
+        }
         self.focused = id;
+    }
+
+    /// The pressable with the keyboard focus, while it is mounted.
+    pub(crate) fn key_focus(&self) -> Option<NodeId> {
+        self.key_focus.filter(|&id| self.is_attached(id))
+    }
+
+    pub(crate) fn set_key_focus(&mut self, id: Option<NodeId>) {
+        self.key_focus = id;
+    }
+
+    /// Tab's stops, in tree order, as macOS and the web have them: the
+    /// inputs that edit and the views that take presses, shown, enabled
+    /// and not `focusable={false}`.
+    pub(crate) fn tab_stops(&self) -> Vec<NodeId> {
+        self.shown()
+            .into_iter()
+            .filter(|&id| {
+                let Some(v) = self.nodes.get(&id) else {
+                    return false;
+                };
+                if let Some(input) = &v.input {
+                    return input.config.editable && !self.disabled_from(id, None);
+                }
+                v.span.is_none()
+                    && v.events.contains(EventKind::Press)
+                    && v.focusable != Some(false)
+                    && !self.disabled_from(id, None)
+            })
+            .collect()
     }
 
     pub(crate) fn scroll(&self, id: NodeId) -> Option<&Scroll> {
@@ -1518,6 +2061,70 @@ impl Screen {
 mod tests {
     use super::*;
 
+    #[test]
+    fn detached_pressable_focus_does_not_revive_after_reinsertion_or_id_reuse() {
+        for delete in [false, true] {
+            let mut screen = Screen::default();
+            screen.apply(&batch(vec![
+                create(2, ViewKind::View),
+                create(4, ViewKind::View),
+                create(6, ViewKind::View),
+                project(ROOT, 2, &[]),
+                insert(2, 4),
+                project(ROOT, 6, &[]),
+            ]));
+            screen
+                .nodes
+                .get_mut(&4)
+                .unwrap()
+                .events
+                .set(EventKind::Press, true);
+            screen.set_key_focus(Some(4));
+            screen.apply(&batch(vec![MountItem::Remove { id: 6 }]));
+            assert_eq!(screen.key_focus(), Some(4), "unrelated removal keeps focus");
+            if delete {
+                screen.apply(&batch(vec![MountItem::Delete { id: 4 }]));
+                screen.apply(&batch(vec![create(4, ViewKind::View), insert(2, 4)]));
+                screen
+                    .nodes
+                    .get_mut(&4)
+                    .unwrap()
+                    .events
+                    .set(EventKind::Press, true);
+            } else {
+                screen.apply(&batch(vec![MountItem::Remove { id: 2 }]));
+                assert_eq!(screen.key_focus(), None);
+                screen.apply(&batch(vec![project(ROOT, 2, &[])]));
+            }
+            assert!(screen.hears(4, EventKind::Press));
+            assert_eq!(
+                screen.key_focus(),
+                None,
+                "attachment cannot restore keyboard focus"
+            );
+        }
+    }
+
+    #[test]
+    fn native_retirement_keeps_a_cell_with_pressable_keyboard_focus() {
+        let mut screen = Screen::default();
+        screen.apply(&batch(vec![
+            create(2, ViewKind::View),
+            create(4, ViewKind::View),
+            project(ROOT, 2, &[]),
+            insert(2, 4),
+        ]));
+        screen.set_key_focus(Some(4));
+        screen.apply(&batch(vec![MountItem::RetireListCell {
+            id: 2,
+            request: 1,
+            roots: vec![2],
+        }]));
+        assert!(screen.is_attached(4));
+        assert!(matches!(screen.take_input_results().as_slice(),
+            [InputResult::RetireListCell { focus_path: Some(path), .. }] if path == &[4, 2, ROOT]));
+    }
+
     /// A canvas over a pressable pad, both inside a plain container.
     fn canvas_screen() -> Screen {
         let mut screen = Screen::default();
@@ -1528,7 +2135,7 @@ mod tests {
             frame(2, 0.0, 0.0, 200.0, 40.0),
             frame(4, 0.0, 0.0, 200.0, 40.0),
             frame(6, 0.0, 0.0, 200.0, 40.0),
-            insert(1, 2),
+            project(1, 2, &[]),
             insert(2, 6),
             insert(2, 4),
         ]));
@@ -1609,6 +2216,14 @@ mod tests {
         }
     }
 
+    fn project(parent: NodeId, id: NodeId, following: &[NodeId]) -> MountItem {
+        MountItem::ProjectRoot {
+            parent,
+            id,
+            following: following.to_vec(),
+        }
+    }
+
     fn frame(id: NodeId, x: f32, y: f32, width: f32, height: f32) -> MountItem {
         MountItem::Frame {
             id,
@@ -1641,6 +2256,42 @@ mod tests {
     }
 
     #[test]
+    fn an_input_caret_follows_its_text_as_the_approximate_engine_lays_it_out() {
+        let mut screen = Screen::default();
+        let mut config = nsh_core::InputConfig::default();
+        config.style.font_size = Points(10.0);
+        config.multiline = true;
+        screen.apply(&batch(vec![
+            create(2, ViewKind::Input),
+            frame(2, 0.0, 0.0, 60.0, 100.0),
+            MountItem::Input {
+                id: 2,
+                config: Box::new(config),
+            },
+            MountItem::InputContent {
+                id: 2,
+                content: Bounds::new(
+                    Point::new(Points(4.0), Points(6.0)),
+                    Size::new(Points(55.0), Points(88.0)),
+                ),
+            },
+            insert(1, 2),
+        ]));
+        let caret = |screen: &Screen| {
+            let b = screen.input_caret(2).unwrap();
+            (b.origin.x.0, b.origin.y.0, b.size.height.0)
+        };
+        assert_eq!(caret(&screen), (4.0, 6.0, 12.0));
+        // Ten characters fit a line of 55 points (5.5 each): the twelfth is
+        // the second of the next line.
+        screen.input_mut(2).unwrap().text = "abcdefghijkl".into();
+        assert_eq!(caret(&screen), (4.0 + 2.0 * 5.5, 18.0, 12.0));
+        // A line break starts a line.
+        screen.input_mut(2).unwrap().text = "ab\nc".into();
+        assert_eq!(caret(&screen), (4.0 + 5.5, 18.0, 12.0));
+    }
+
+    #[test]
     fn only_the_top_screen_of_a_stack_and_the_top_modal_first_are_seen() {
         let mut screen = Screen::default();
         screen.apply(&batch(vec![
@@ -1657,16 +2308,30 @@ mod tests {
             frame(6, 0.0, 0.0, 100.0, 20.0),
             frame(10, 0.0, 0.0, 100.0, 20.0),
             frame(14, 0.0, 0.0, 100.0, 20.0),
-            insert(1, 2),
-            insert(2, 4),
+            project(1, 2, &[]),
+            project(2, 4, &[]),
             insert(4, 6),
-            insert(2, 8),
+            project(2, 8, &[]),
             insert(8, 10),
         ]));
         assert_eq!(screen.texts(), ["Details"]);
         screen.apply(&batch(vec![
+            create(16, ViewKind::Screen), // An independent root still parked.
+            create(18, ViewKind::Screen),
+            create(20, ViewKind::Stack),
+            project(1, 20, &[]),
+            project(20, 18, &[]), // An existing root in another native host.
+            project(2, 4, &[16, 18, 8]),
+        ]));
+        // A missing or foreign first candidate must not append Home on top.
+        assert_eq!(screen.texts(), ["Details"]);
+        screen.apply(&batch(vec![project(2, 8, &[16, 18, 4])]));
+        assert_eq!(screen.texts(), ["Home"]);
+        screen.apply(&batch(vec![project(2, 4, &[16, 18, 8])]));
+        assert_eq!(screen.texts(), ["Details"]);
+        screen.apply(&batch(vec![
             text(10, "Close"),
-            insert(1, 12),
+            project(1, 12, &[]),
             insert(12, 14),
         ]));
         assert_eq!(screen.texts(), ["Close", "Close"]);
@@ -1677,6 +2342,150 @@ mod tests {
         );
         screen.apply(&batch(vec![MountItem::Remove { id: 8 }]));
         assert_eq!(screen.texts(), ["Home", "Close"]);
+    }
+
+    #[test]
+    fn projected_cells_use_the_first_live_sibling_after_native_retirement() {
+        let mut screen = Screen::default();
+        screen.apply(&batch(vec![
+            create(2, ViewKind::View),
+            frame(2, 0.0, 0.0, 400.0, 400.0),
+            project(ROOT, 2, &[]),
+            create(18, ViewKind::View),
+            frame(18, 0.0, 0.0, 400.0, 400.0),
+            project(ROOT, 18, &[]),
+            create(20, ViewKind::View),
+            project(18, 20, &[]),
+            create(22, ViewKind::View), // A root not currently in a native host.
+        ]));
+        for (id, label) in [(4, "A"), (8, "B"), (12, "C")] {
+            screen.apply(&batch(vec![
+                create(id, ViewKind::View),
+                create(id + 2, ViewKind::Text),
+                text(id + 2, label),
+                frame(id, 0.0, 0.0, 100.0, 40.0),
+                frame(id + 2, 0.0, 0.0, 100.0, 20.0),
+                project(2, id, &[]),
+                insert(id, id + 2),
+            ]));
+        }
+        screen.apply(&batch(vec![
+            create(24, ViewKind::Modal),
+            project(2, 24, &[]), // Same logical parent, a different native host.
+            create(16, ViewKind::Input),
+            insert(8, 16),
+            MountItem::Command {
+                id: 16,
+                command: Command::Focus,
+            },
+            MountItem::RetireListCell {
+                id: 8,
+                request: 1,
+                roots: vec![8],
+            },
+            project(2, 4, &[22, 20, 24, 8, 12]),
+        ]));
+        assert_eq!(screen.texts(), ["A", "B", "C"]);
+        assert!(matches!(screen.take_input_results().as_slice(),
+            [InputResult::RetireListCell { id: 8, request: 1, focus_path: Some(path) }]
+                if path.first() == Some(&16)));
+
+        screen.apply(&batch(vec![
+            MountItem::Command {
+                id: ROOT,
+                command: Command::Blur,
+            },
+            MountItem::RetireListCell {
+                id: 8,
+                request: 2,
+                roots: vec![8],
+            },
+            project(2, 4, &[22, 20, 24, 8, 12]),
+        ]));
+        assert_eq!(screen.texts(), ["A", "C"]);
+        assert!(matches!(
+            screen.take_input_results().as_slice(),
+            [InputResult::RetireListCell {
+                id: 8,
+                request: 2,
+                focus_path: None
+            }]
+        ));
+        screen.apply(&batch(vec![project(2, 8, &[12])]));
+        assert_eq!(screen.texts(), ["A", "B", "C"]);
+    }
+
+    #[test]
+    fn parked_modals_keep_their_window_slot_across_projection_parents() {
+        let mut screen = Screen::default();
+        screen.apply(&batch(vec![
+            create(2, ViewKind::View),
+            create(18, ViewKind::View),
+            project(ROOT, 2, &[]),
+            project(ROOT, 18, &[]),
+            create(4, ViewKind::Modal),
+            create(6, ViewKind::Text),
+            text(6, "Choose"),
+            frame(6, 0.0, 0.0, 100.0, 20.0),
+            project(2, 4, &[]),
+            insert(4, 6),
+            create(8, ViewKind::Modal),
+            create(10, ViewKind::Text),
+            text(10, "Choose"),
+            frame(10, 0.0, 0.0, 100.0, 20.0),
+            project(18, 8, &[]),
+            insert(8, 10),
+            create(12, ViewKind::Input),
+            insert(8, 12),
+        ]));
+        let choose = Selector::parse("text:Choose").unwrap();
+        assert_eq!(screen.resolve(&choose), [10, 6]);
+        assert_eq!(screen.take_presented(), [4, 8]);
+        screen.apply(&batch(vec![
+            MountItem::Command {
+                id: 12,
+                command: Command::Focus,
+            },
+            MountItem::RetireListCell {
+                id: 8,
+                request: 1,
+                roots: vec![8],
+            },
+            project(18, 4, &[]),
+        ]));
+        assert!(matches!(
+            screen.take_input_results().as_slice(),
+            [InputResult::RetireListCell {
+                id: 8,
+                request: 1,
+                focus_path: Some(_)
+            }]
+        ));
+        assert_eq!(screen.resolve(&choose), [10, 6]);
+        assert!(screen.take_presented().is_empty());
+
+        screen.apply(&batch(vec![
+            MountItem::Command {
+                id: ROOT,
+                command: Command::Blur,
+            },
+            MountItem::RetireListCell {
+                id: 4,
+                request: 2,
+                roots: vec![4],
+            },
+        ]));
+        assert_eq!(screen.resolve(&choose), [10]);
+        screen.apply(&batch(vec![project(2, 4, &[])]));
+        assert_eq!(screen.resolve(&choose), [10, 6]);
+        assert!(screen.take_presented().is_empty());
+
+        screen.apply(&batch(vec![
+            MountItem::Remove { id: 4 },
+            project(2, 4, &[]),
+        ]));
+        assert_eq!(screen.resolve(&choose), [6, 10]);
+        assert_eq!(screen.take_presented(), [4]);
     }
 
     #[test]
@@ -1707,7 +2516,7 @@ mod tests {
             frame(12, 0.0, 0.0, 100.0, 20.0),
             frame(14, 0.0, 200.0, 400.0, 100.0),
             frame(16, 0.0, 1000.0, 100.0, 20.0),
-            insert(1, 2),
+            project(1, 2, &[]),
             insert(2, 4),
             insert(2, 6),
             insert(2, 8),
@@ -1772,7 +2581,7 @@ mod tests {
             create(4, ViewKind::Text),
             frame(2, 0.0, 0.0, 400.0, 800.0),
             frame(4, 0.0, 0.0, 300.0, 40.0),
-            insert(1, 2),
+            project(1, 2, &[]),
             insert(2, 4),
             // "Terms 🙂" (the emoji is two UTF-16 units), and "Privacy".
             linked(vec![link(13, 21, 100), link(26, 33, 102)]),

@@ -714,7 +714,7 @@ pub struct DataSource {
     pub deployment: uuid::Uuid,
     pub namespace: maka_plugin_core::composition::InstanceId,
 }
-#[derive(Serialize, JsonSchema, Deserialize)]
+#[derive(Clone, Serialize, JsonSchema, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentSession")]
 pub struct Session {
@@ -729,6 +729,7 @@ pub struct Session {
     pub data_source: Box<DataSource>,
     pub permissions: WorkspacePermissions,
     pub boundary_revision: u64,
+    pub binding: maka_agent_facts::workspace::BindingStamp,
     pub id: String,
     pub title: String,
     pub labels: Vec<String>,
@@ -737,9 +738,12 @@ pub struct Session {
     pub updated_at: u64,
     pub archived: bool,
     pub has_unread: bool,
+    /// Exact durable visible tail accepted by markRead; independent of preview clocks.
+    #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<String>")]
+    pub tail_message_id: Option<String>,
     pub activity: SessionActivity,
 }
-#[derive(Serialize, JsonSchema, Deserialize)]
+#[derive(Clone, Serialize, JsonSchema, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[schemars(rename = "AgentSessionActivity")]
 pub enum SessionActivity {
@@ -1528,6 +1532,10 @@ pub fn contract() -> Contract {
                     method::<SkillCandidatesRead, SkillCandidates>(MethodMode::Query),
                 ),
                 (
+                    "fileCandidates".into(),
+                    method::<FileCandidatesRead, Option<FileCandidates>>(MethodMode::Subscription),
+                ),
+                (
                     "tools".into(),
                     Method {
                         progress: None,
@@ -1615,7 +1623,7 @@ pub fn contract() -> Contract {
                 ),
                 (
                     "recall".into(),
-                    method::<RecallQuery, RecallPage>(MethodMode::Query),
+                    method::<RecallQuery, RecallPage>(MethodMode::Subscription),
                 ),
                 (
                     "imports".into(),

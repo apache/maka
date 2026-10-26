@@ -17,6 +17,7 @@
  * under the License.
  */
 
+use crate::support::store::SessionFixture;
 use crate::support::{
     agent_loop::{Effect, input, respond},
     http::read_request,
@@ -30,7 +31,6 @@ use maka_agent_facts::event::RuntimeEvent;
 use maka_agent_facts::event::TerminalStatus;
 use maka_agent_facts::handoff::HandoffIntent;
 use maka_code_runtime::CellLimits;
-use maka_event_log::EventLog;
 use maka_model::ModelExecutor;
 use maka_tools::CodeExecutor;
 use std::{
@@ -84,9 +84,9 @@ async fn handoff_waits_for_settlement_rollback_keeps_run_and_seal_survives_reope
             respond(&mut socket, false).await;
             requests
         });
-        let log = Arc::new(EventLog::open(&path).await.unwrap());
-        let engine = Engine::new(log.clone(), ModelExecutor::new(Duration::from_secs(5)).unwrap(),
-            CodeExecutor::new(CellLimits::default()).unwrap());
+        let log = Arc::new(SessionFixture::open(&path).await.unwrap());
+        let engine = Engine::new(ModelExecutor::new(Duration::from_secs(5)).unwrap(),
+            CodeExecutor::new(CellLimits::default()).unwrap()).unwrap();
         let count = Arc::new(AtomicUsize::new(0));
         let effect = Arc::new(Effect { log: log.clone(), count: count.clone() });
         let mut run = input(&base, "first", effect);
@@ -121,7 +121,7 @@ async fn handoff_waits_for_settlement_rollback_keeps_run_and_seal_survives_reope
                 source: prefix.boundary,tools, };
         }
         let configuration = run.configuration.clone();
-        let running = engine.start(run, CancellationToken::new()).await.unwrap();
+        let running = engine.start(log.store(), run, CancellationToken::new()).await.unwrap();
         first.await.unwrap();
         let gate = running.handoff().unwrap().clone();
         let reservation = gate.reserve(intent("cancelled")).unwrap();
@@ -156,21 +156,21 @@ async fn handoff_waits_for_settlement_rollback_keeps_run_and_seal_survives_reope
         assert!(matches!(&before.events.last().unwrap().event.fact,
             Fact::InvocationEnded { outcome: InvocationOutcome::HandoffPaused { pause } } if pause == &expected));
         let effect = Arc::new(Effect { log: log.clone(), count: count.clone() });
-        assert!(engine.start(input(&base, "unrelated", effect), CancellationToken::new()).await.is_err(),
+        assert!(engine.start(log.store(), input(&base, "unrelated", effect), CancellationToken::new()).await.is_err(),
             "physical sealing does not release the logical Turn to a different admission");
         assert_eq!(log.prefix(100, 128 * 1024).await.unwrap().digest, before.digest);
         log.shutdown().await.unwrap();
         drop(engine);
         drop(log);
-        let reopened = Arc::new(EventLog::open(&path).await.unwrap());
-        assert_eq!(maka_event_log::recovery::recover_invocations(&reopened).await.unwrap(), 0);
+        let reopened = Arc::new(SessionFixture::open(&path).await.unwrap());
+        assert_eq!(reopened.root().recover_invocations().await.unwrap(), 0);
         let after = reopened.prefix(100, 128 * 1024).await.unwrap();
         assert_eq!(before.digest, after.digest);
         assert_eq!(after.project_invocation("invocation-first").terminal, Some(TerminalStatus::Paused));
         let prefix = reopened.run_source("session", "run-first", None).await.unwrap().unwrap();
         let source = prefix.boundary;
-        let resumed_engine = Engine::new(reopened.clone(), ModelExecutor::new(Duration::from_secs(5)).unwrap(),
-            CodeExecutor::new(CellLimits::default()).unwrap());
+        let resumed_engine = Engine::new(ModelExecutor::new(Duration::from_secs(5)).unwrap(),
+            CodeExecutor::new(CellLimits::default()).unwrap()).unwrap();
         let successor = || {
             let effect = Arc::new(Effect { log: reopened.clone(), count: count.clone() });
             let mut run = input(&base, "successor", effect);
@@ -195,10 +195,10 @@ async fn handoff_waits_for_settlement_rollback_keeps_run_and_seal_survives_reope
                     *tools = Default::default();
                 },
             }
-            assert!(resumed_engine.start(changed, CancellationToken::new()).await.is_err());
+            assert!(resumed_engine.start(reopened.store(), changed, CancellationToken::new()).await.is_err());
             assert_eq!(reopened.prefix(100, 128 * 1024).await.unwrap().digest, after.digest);
         }
-        resumed_engine.run(successor(), CancellationToken::new()).await.unwrap();
+        resumed_engine.run(reopened.store(), successor(), CancellationToken::new()).await.unwrap();
         resumed_engine.drain().await;
         let requests = server.await.unwrap();
         assert_eq!(requests.len(), 3);

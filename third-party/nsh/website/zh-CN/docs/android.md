@@ -7,8 +7,8 @@ group: platforms
 
 # Android
 
-NSH 应用在 Android 上用普通的 Android 视图和 `StaticLayout` 文本运行，要求 Android 9（API 28）及以上，支持 `arm64-v8a`
-和 `x86_64`。用 Rust 和 TSX 编写的完整应用，运行和打包方式与其他平台相同；现有应用也可以在 `NshView` 中嵌入模块，加载它下载的签名包，并按自己设定的限制和能力运行它们。在
+NSH 应用在 Android 上用普通的 Android 视图和 `StaticLayout` 文本运行，要求 Android 9（API 28）及以上，支持 `arm64-v8a`、
+`armeabi-v7a` 和 `x86_64`。用 Rust 和 TSX 编写的完整应用，运行和打包方式与其他平台相同；现有应用也可以在 `NshView` 中嵌入模块，加载它下载的签名包，并按自己设定的限制和能力运行它们。在
 Android 上，`os()` 是 `Os::Android`（TSX 中 `platform.os` 是 `"android"`），TSX 的 `android={{…}}` 属性生效。
 
 ## 环境要求
@@ -41,6 +41,8 @@ Rust 应用的 APK 带有它自己的 `libnsh.so`，用你的 crate 构建，其
 
 APK 用 SDK 的 build tools 构建，不需要 Gradle；除非传入发布用的 keystore，否则用调试密钥签名。发布签名和图标见[打包](./packaging.md#android)。
 
+NSH 以 16 KB ELF 对齐构建 `libnsh.so`，并将未压缩的原生库按 16 KB ZIP 边界打包。
+
 ## 嵌入 Android 应用
 
 现有的 Android 应用可以在自己的界面中显示 NSH 应用。运行时以 Android 库 `nsh.aar` 的形式提供：创建一个
@@ -64,7 +66,7 @@ dist/nsh/embed/android/nsh.aar       release: bundles and signed packages
 dist/nsh/embed/android/nsh-dev.aar   also connects to a `nsh dev` server
 ```
 
-AAR 包含 Java 运行时以及适用于 `arm64-v8a` 和 `x86_64` 的 `libnsh.so`（仅 64 位）。它声明了 `INTERNET`
+AAR 包含 Java 运行时以及适用于 `arm64-v8a`、`armeabi-v7a` 和 `x86_64` 的 `libnsh.so`。它声明了 `INTERNET`
 权限，要求 **API 28**（Android 9）或更高版本。
 
 把它加入应用模块，例如从 `libs` 文件夹引入：
@@ -162,10 +164,14 @@ setContentView(column);
 | `setFontScale(float scale)` | 代替系统字体大小的文字大小（1 为默认）：文字和输入框按它重新排版，`fontScale()` 读到它，立即生效，此后加载的应用也一样；长度保持原样。`0` 跟随系统。 |
 | `setThemeOverrides(String json)` | 把宿主的品牌加在应用的[主题](./tailwind.md#主题-token)之上：格式与 `nsh.json` 的 `"theme"` 相同的主题文件。其中的 token 在浅色和深色模式下都覆盖应用的同名 token，应用的其他 token 保持不变。立即生效，并作用于之后加载的应用；`null` 恢复应用自己的主题。文件无法解析时抛出 `IllegalArgumentException`。 |
 | `setStorageDirectory(File dir)` | 接下来加载的应用保存其[存储](../modules/nsh-storage.md)的目录；`null`：应用私有目录内的 `files/nsh/<app id>`，按应用自己的 id。 |
+| `setCacheOptions(NshCacheOptions options)` | 接下来加载的应用保存缓存（[下载的图片](./images-and-assets.md#磁盘缓存)）的位置和每种缓存的大小。用 `NshCacheOptions.builder()` 构建：`location(File)`、`systemLocation()`（默认：缓存目录中的 `nsh`，每个应用在 `<app id>`）或 `noDiskCache()`；`imagesMaxMegabytes(int)`（默认 256）或 `imagesOff()`。 |
 | `loadAssetBundle(String dir)` | 运行 APK assets 中的 `dir/bundle.nshc`；应用资源取自 `dir/assets/`。无法读取时返回 `false`（也会报告给错误监听器）。 |
 | `loadBundleFile(File file)` | 运行一个 `bundle.js` 文件；资源取自同目录下的 `assets/`。拒绝 `.nshc` 文件。 |
 | `runPackage(NshPackage pkg)` | 运行一个已验证的签名包，替换正在运行的应用。一个包只能运行一次。 |
 | `registerComponent(String name, NshComponent.Factory factory)` | 注册一个[原生组件](./native-components.md)。 |
+| `setParams(Object params)` | 之后加载的应用的启动参数（`Map` 或 `JSONObject`）：应用在启动时以 `host.params` 读取（[`nsh/host`](../modules/nsh-host.md)）。不是 JSON 对象时返回 `false`。 |
+| `send(String name, Object data)` | 向应用发送一个事件（`host.on(name, …)`）；应用开始监听前会一直保留，没有应用运行时留给下一个应用。可在任意线程调用；`destroy()` 后返回 `false`。 |
+| `handle(String name, HostHandler handler)` | 在 UI 线程处理应用对 `name` 的调用（`host.call`）和投递（`host.post`）；传 `null` 移除处理函数。处理函数通过它的 `NshHostReply` 在任意线程回答一次。 |
 | `connectDevServer(String url)` | 开发用：从 `nsh dev` 服务器加载，每次修改后重新加载。使用 release 版 AAR 时返回 `false`。 |
 | `handleBack()` | 让应用处理返回键（关闭对话框、弹出页面、执行 `BackHandler` 监听器）；返回它是否处理了。 |
 | `destroy()` | 停止应用，并对它的每个原生组件调用 `destroy()`。此后该视图不能再使用。 |
@@ -174,7 +180,7 @@ setContentView(column);
 > 编译字节码（`.nshc`）只能从 APK 自身的 assets 或签名包中加载。存储上的文件可能被替换，而 QuickJS 不校验字节码，所以
 > `loadBundleFile` 只接受 JS 源码。应用下载的代码应以[签名包](./signed-packages.md)的形式提供。
 
-`setLimits`、`setGrantedCapabilities` 和 `setStorageDirectory` 从下一次加载开始生效：请在 `loadAssetBundle` 等方法之前调用。
+`setLimits`、`setGrantedCapabilities`、`setStorageDirectory` 和 `setCacheOptions` 从下一次加载开始生效：请在 `loadAssetBundle` 等方法之前调用。
 
 每个应用无需任何设置就按自己的 id 保存存储：签名包使用其发布密钥证书担保的 id，bundle 使用其 `nsh.json` 中的 `id`（`nsh package` 写入 APK assets 的 `nsh/app.json`）。如果宿主想把应用的数据放到自己选择的位置，调用 `setStorageDirectory`：
 
@@ -183,6 +189,43 @@ nsh.setStorageDirectory(new File(getFilesDir(), "nsh/com.example.orders"));
 nsh.loadAssetBundle("orders");
 ```
 
+## 与应用通信
+
+视图与它运行的应用通过一条专属通道通信（[`nsh/host`](../modules/nsh-host.md)）：应用在启动时读取的启动参数、宿主应用发来的事件，以及应用发出的调用和投递，数据都是 JSON（在这一侧是 map、list、字符串、数字和布尔值）。应用里不需要任何视图，也不需要原生组件。
+
+```java
+// 加载之前：应用首先打开的内容（TSX 中的 `host.params`）。
+nsh.setParams(Map.of("conversation", intent.getStringExtra("conversation")));
+nsh.loadAssetBundle("nsh");
+
+// 应用的 `await host.call("user.profile", { id })`，在 UI 线程处理。
+nsh.handle("user.profile", (data, reply) -> {
+    Object id = ((Map<?, ?>) data).get("id");
+    api.profile(id, profile -> reply.resolve(Map.of("id", id, "name", profile.name)),
+            error -> reply.reject(error.getMessage()));
+});
+
+// 应用的 `host.post("analytics", …)`：没有回答。
+nsh.handle("analytics", (data, reply) -> analytics.log(data));
+
+// 之后：应用通过 `host.on("conversation.open", …)` 收到它。
+nsh.send("conversation.open", Map.of("id", tappedConversation));
+```
+
+Kotlin 写法：
+
+```kotlin
+nsh.handle("user.profile") { data, reply ->
+    val id = (data as Map<*, *>)["id"]
+    lifecycleScope.launch {
+        runCatching { api.profile(id) }
+            .onSuccess { reply.resolve(mapOf("id" to id, "name" to it.name)) }
+            .onFailure { reply.reject(it.message ?: "failed") }
+    }
+}
+```
+
+处理函数在 UI 线程运行；调用在应用中等待回答，不会阻塞任何一方。始终没有给出的 reply 在被回收时让调用失败，没有处理函数的名称的调用会立即失败。应用尚未监听的名称的事件会保留到它开始监听，没有应用运行时（`loadAssetBundle` 之前、重新加载期间）发送的事件交给下一个应用。
 ## 主题覆盖
 
 嵌入在多个品牌宿主应用中的同一个应用会采用各个宿主的品牌：宿主给出其品牌要改的 token，格式与 `nsh.json` 的 `"theme"` 相同的主题文件（shadcn/ui 的 `cssVars`，值按 CSS 的写法）。它们覆盖应用的同名 token，应用的其他 token 保持不变。在 `dark` 下给出 token 的深色模式值（只在 `light` 或 `theme` 下设置的 token 在两种模式下都是这个颜色）：
@@ -196,6 +239,22 @@ nsh.loadAssetBundle("orders");
 ```
 
 在加载之前或之后调用都可以：`bg-primary`、`rounded-(--radius)` 等类名立即更新样式，之后加载的每个应用在第一帧就带有这些覆盖。`setThemeOverrides(null)` 恢复应用自己的主题。
+
+## 应用打开的链接
+
+应用打开的 URL（[`openUrl`](../modules/nsh-device.md#openurl)，以及 `links="open"` 的 `TextView` 中的链接）先交给视图的 `OpenUrlHandler`，在 UI 线程调用：宿主应用自己处理了这个 URL（例如交给自己的路由）时返回 `true`，返回 `false` 则由系统用 `ACTION_VIEW` Intent 打开。没有设置处理函数时，所有 URL 都由系统打开。到达这里的 URL 都已通过应用的 `openUrl` 能力检查。
+
+```java
+nsh.setOpenUrlHandler(url -> {
+    Uri uri = Uri.parse(url);
+    // 宿主应用自己的链接在宿主应用里打开。
+    if ("lb".equals(uri.getScheme()) || "longbridge.com".equals(uri.getHost())) {
+        router.open(uri);
+        return true;
+    }
+    return false;
+});
+```
 
 ## 限制
 

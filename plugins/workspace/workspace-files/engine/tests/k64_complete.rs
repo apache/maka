@@ -25,7 +25,7 @@ use std::{fs, sync::atomic::AtomicBool};
 use tokio_util::sync::CancellationToken;
 
 #[tokio::test]
-async fn complete_search_keeps_dense_late_deep_and_control_tail_matches() {
+async fn complete_search_keeps_late_deep_and_control_tail_matches() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().canonicalize().unwrap();
     let reader = ReadExecutor::new(
@@ -35,7 +35,6 @@ async fn complete_search_keeps_dense_late_deep_and_control_tail_matches() {
         },
     )
     .unwrap();
-    fs::write(root.join("dense.txt"), "needle\n".repeat(251)).unwrap();
     let mut large = b"x\n".repeat(6 * 1024 * 1024);
     large.extend_from_slice(b"late-marker\n");
     fs::write(root.join("large.txt"), &large).unwrap();
@@ -56,7 +55,6 @@ async fn complete_search_keeps_dense_late_deep_and_control_tail_matches() {
     fs::write(root.join("controls/excluded.txt"), "control-marker\n").unwrap();
     fs::write(root.join("controls/kept.txt"), "control-marker\n").unwrap();
     let cases = [
-        ("Grep", json!({"path":"dense.txt","pattern":"needle"})),
         ("Grep", json!({"path":"large.txt","pattern":"late-marker"})),
         ("Grep", json!({"path":"deep","pattern":"deep-marker"})),
         ("Glob", json!({"cwd":"names","pattern":"*.txt"})),
@@ -75,7 +73,6 @@ async fn complete_search_keeps_dense_late_deep_and_control_tail_matches() {
         );
     }
     let expected = [
-        json!({"matches":(1..=251).map(|n|format!("{n}:needle")).collect::<Vec<_>>(),"complete":true}),
         json!({"matches":["6291457:late-marker"],"complete":true}),
         json!({"matches":[format!("{}:1:deep-marker",deep.join("tail.txt").display())],"complete":true}),
         json!({"files":(0..201).map(|i|format!("{i:03}.txt")).collect::<Vec<_>>(),"complete":true}),

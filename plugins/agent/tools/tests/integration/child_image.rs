@@ -148,7 +148,7 @@ async fn nested_image_is_committed_before_js_and_explicit_output_projects_it() {
         catalog,
         ToolMode::CodeMode,
         CodeExecutor::new(CellLimits::default()).unwrap(),
-        Default::default(),
+        maka_tools::availability::LoadedTools::temporary().unwrap(),
     );
     let result = run
         .capture(".", tokio_util::sync::CancellationToken::new())

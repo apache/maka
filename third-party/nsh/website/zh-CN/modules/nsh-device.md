@@ -1,6 +1,6 @@
 ---
 title: nsh/device
-description: 窗口尺寸、配色方案、字体缩放、区域设置、平台信息、像素密度和布局方向。
+description: 窗口尺寸、配色方案、字体缩放、区域设置、平台信息、像素密度、布局方向，以及在应用之外打开 URL。
 order: 6
 ---
 
@@ -16,7 +16,7 @@ use nsh_core::{
 ```
 
 ```tsx tabs
-import { colorScheme, fontScale, locale, pixelRatio, platform, setColorScheme, windowSize } from "nsh/device";
+import { colorScheme, fontScale, locale, openUrl, pixelRatio, platform, setColorScheme, windowSize } from "nsh/device";
 ```
 
 教程见[设备与环境](../docs/device-and-environment.md)。
@@ -177,6 +177,44 @@ let hairline = move || px(1.0 / pixel_ratio());
 ```tsx tabs
 const hairline = () => 1 / pixelRatio();
 ```
+
+## openUrl
+
+```ts
+function openUrl(url: string): Promise<boolean>;
+```
+
+在应用之外打开 `url`：网页在浏览器中打开，`mailto:` 链接在邮件应用中打开，`tel:` 链接在电话应用中打开，其他应用注册的 scheme（`maps:`、宿主应用自己的 `lb://` 链接）交给对应的应用。结果表示是否有应用打开了它：没有应用处理该 scheme 时为 `false`。Rust：`nsh_core::ui::prelude` 的 `open_url(url)`，返回可在任务中等待（或直接丢弃）的回答。
+
+```rust tabs
+button()
+    .child(text("联系我们"))
+    .on_press(|| {
+        spawn(async {
+            if !open_url("mailto:help@example.com").await {
+                log::warn!("no mail app");
+            }
+        });
+    })
+```
+
+```tsx tabs
+<Button
+  onPress={async () => {
+    if (!(await openUrl("mailto:help@example.com"))) {
+      console.warn("no mail app");
+    }
+  }}
+>
+  <Text>联系我们</Text>
+</Button>
+```
+
+- URL 必须是绝对地址（带 scheme）。会执行代码或访问应用自身数据的 URL，即 `javascript:`、`data:`、`blob:`、`file:`、`about:` 和 `asset:`，以及相对地址，会抛出 `TypeError`。
+- 声明了能力的应用需要 `openUrl`：`"openUrl": true` 允许所有 scheme，`"openUrl": { "schemes": ["https", "mailto"] }` 只允许列出的 scheme；其他 URL 抛出 `TypeError`（见[沙箱与能力](../docs/sandbox-and-capabilities.md)）。
+- 嵌入它的应用先看到这个 URL，可以改由自己的路由处理（Swift `NshAppView.onOpenURL`、Java `NshView.setOpenUrlHandler`、Rust `AppView::host().handle_open_url`；见 [iOS](../docs/ios.md#应用打开的链接) 和 [Android](../docs/android.md#应用打开的链接)），此时结果为 `true`。
+- 各平台用自己的方式打开：iOS 用 `UIApplication.open`（嵌入时是宿主应用的 application），Android 用 `ACTION_VIEW` Intent，macOS 用 `NSWorkspace`，Windows 用 `ShellExecuteW`，Linux 用 `GtkUriLauncher`，GPUI 用它的 `open_url`，Web 在新标签页中打开。`nsh test` 记录这些 URL，而不真正打开。
+- [`TextView`](../elements/text-view.md) 设置 `links="open"` 后，以同样的方式打开其中的链接。
 
 ## 布局方向
 

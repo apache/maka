@@ -43,32 +43,7 @@ struct Captured {
 }
 
 pub(super) async fn read_wire(socket: &mut TcpStream) -> Value {
-    let mut bytes = Vec::new();
-    let boundary = loop {
-        let mut chunk = [0; 4096];
-        let count = socket.read(&mut chunk).await.unwrap();
-        assert_ne!(count, 0);
-        bytes.extend_from_slice(&chunk[..count]);
-        if let Some(at) = bytes.windows(4).position(|window| window == b"\r\n\r\n") {
-            break at + 4;
-        }
-        assert!(bytes.len() < 1024 * 1024);
-    };
-    let length: usize = String::from_utf8_lossy(&bytes[..boundary])
-        .lines()
-        .find_map(|line| {
-            let (name, value) = line.split_once(':')?;
-            name.eq_ignore_ascii_case("content-length")
-                .then(|| value.trim().parse().unwrap())
-        })
-        .unwrap();
-    while bytes.len() < boundary + length {
-        let mut chunk = [0; 4096];
-        let count = socket.read(&mut chunk).await.unwrap();
-        assert_ne!(count, 0);
-        bytes.extend_from_slice(&chunk[..count]);
-    }
-    serde_json::from_slice(&bytes[boundary..boundary + length]).unwrap()
+    http_fixture::read_request(socket).await.1
 }
 
 async fn send_body(socket: &mut TcpStream, status: &str, content_type: &str, body: String) {
@@ -320,7 +295,8 @@ async fn coordinator_catalog_completes(wire: Wire, provider: &str) {
         let sent = fixture.send(&session).await.unwrap();
         let outcome = loop {
             let facts = fixture
-                .store
+                .session(&(session))
+                .await
                 .scoped_prefix(
                     LogScope::Session {
                         id: session.clone(),

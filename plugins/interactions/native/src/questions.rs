@@ -22,7 +22,7 @@
 use futures_util::future::BoxFuture;
 use maka_agent_facts::interaction::InteractionOutcome;
 use maka_agent_facts::interaction::InteractionRecord;
-use maka_event_log::EventLog;
+use maka_event_log::RootStore;
 use maka_host_runtime::application::{
     Context, Handler, NativeActivation, NativeOwner, NativeRegistry,
 };
@@ -59,7 +59,7 @@ pub fn provide(registry: &mut NativeRegistry) -> Result<(), String> {
         }),
     )
 }
-struct Questions(Arc<EventLog>);
+struct Questions(Arc<RootStore>);
 impl Handler for Questions {
     fn call(
         &self,
@@ -78,6 +78,15 @@ impl Handler for Questions {
                 .agent()
                 .ok_or("question_requires_agent")?
                 .clone();
+            let store = store
+                .session_for_execution(
+                    context
+                        .execution_custody()
+                        .ok_or("interaction_requires_execution")?
+                        .as_ref(),
+                    &invocation,
+                )
+                .map_err(|error| error.to_string())?;
             let operation_id = context
                 .scope()
                 .identity
@@ -87,6 +96,7 @@ impl Handler for Questions {
             let tool = maka_agent_facts::tools::ToolCallContext {
                 invocation: invocation.clone(),
                 operation_id: operation_id.into(),
+                execution: context.execution_custody().cloned(),
             };
             let request = match projection::project_question_request(
                 &tool.tool_use_id(),

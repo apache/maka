@@ -1,6 +1,6 @@
 //! The runtime's modules written in Rust: `nsh/android`'s `Toast`,
-//! `nsh/accessibility`'s commands, all of `nsh/image`, `nsh/clipboard`,
-//! `nsh/picker` and `nsh/storage`,
+//! `nsh/accessibility`'s commands, `nsh/device`'s `openUrl`, all of
+//! `nsh/image`, `nsh/clipboard`, `nsh/picker` and `nsh/storage`,
 //! `nsh/desktop`'s `Window`, the surface-independent `os` metadata,
 //! `net`'s sockets, `websocket`'s connections, `fs/promises`' files and
 //! `nsh/host`'s calls. Their JS face is made
@@ -16,6 +16,7 @@ mod accessibility;
 mod android;
 mod clipboard;
 mod desktop;
+mod device;
 mod fs;
 pub(crate) mod host;
 mod image;
@@ -44,6 +45,8 @@ pub fn registries() -> &'static [Registry] {
             .module::<android::BackHandler>();
         let mut accessibility = Registry::runtime("nsh/accessibility");
         accessibility.module::<accessibility::Accessibility>();
+        let mut device = Registry::runtime("nsh/device");
+        device.module::<device::Device>();
         let mut image = Registry::runtime("nsh/image");
         image.module::<image::Image>();
         let mut clipboard = Registry::runtime("nsh/clipboard");
@@ -54,6 +57,8 @@ pub fn registries() -> &'static [Registry] {
         storage.module::<storage::Storage>();
         let mut desktop = Registry::runtime("nsh/desktop");
         desktop.module::<desktop::Window>();
+        let mut mobile = Registry::runtime("nsh/mobile");
+        mobile.register::<crate::mobile::TabBar>();
         let mut os = Registry::runtime("os");
         os.module::<os::Os>();
         let mut process = Registry::runtime("process");
@@ -74,11 +79,13 @@ pub fn registries() -> &'static [Registry] {
         vec![
             android,
             accessibility,
+            device,
             image,
             clipboard,
             picker,
             storage,
             desktop,
+            mobile,
             os,
             net,
             process,

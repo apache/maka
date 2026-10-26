@@ -172,6 +172,30 @@ impl TouchTracker {
         self.ivars().tracked.borrow_mut().clear();
     }
 
+    /// Cancels only fingers whose original target belongs to the retiring
+    /// cell. Fingers in other rows and an ancestor's scroll keep running.
+    pub(crate) fn cancel_in(&self, cell: &UIView) {
+        let changed: Vec<_> = self
+            .ivars()
+            .tracked
+            .borrow()
+            .iter()
+            .filter(|touch| touch.view.isDescendantOfView(cell))
+            .map(|touch| touch.id)
+            .collect();
+        if changed.is_empty() {
+            return;
+        }
+        self.report(TouchPhase::Cancel, &changed);
+        self.ivars()
+            .tracked
+            .borrow_mut()
+            .retain(|touch| !changed.contains(&touch.id));
+        if self.ivars().tracked.borrow().is_empty() {
+            self.ivars().activated.set(None);
+        }
+    }
+
     fn ids_of(&self, touches: &NSSet<UITouch>) -> Vec<u32> {
         let tracked = self.ivars().tracked.borrow();
         touches

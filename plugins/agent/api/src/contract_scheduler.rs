@@ -48,6 +48,7 @@ impl maka_scheduler::task::TaskEffect for ScheduledEffect {
             Self::Session { target, .. } | Self::AgentRun { target, .. } => {
                 if target.session_id.is_empty()
                     || target.boundary_revision > maka_agent_facts::interaction::MAX_SAFE_INTEGER
+                    || target.binding.validate().is_err()
                 {
                     Err(maka_scheduler::Error::Invalid(
                         "invalid scheduled execution target".into(),
@@ -72,6 +73,7 @@ pub struct ScheduledTarget {
     pub workspace: Workspace,
     pub permissions: WorkspacePermissions,
     pub boundary_revision: u64,
+    pub binding: maka_agent_facts::workspace::BindingStamp,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

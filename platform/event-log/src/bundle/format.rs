@@ -29,10 +29,12 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 
+mod decode;
+
 pub(super) const MAGIC: &[u8] = b"MAKA-SESSION\0\x02";
 pub(super) const CHUNK: usize = 64 * 1024;
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub(super) enum Record {
     Header {

@@ -28,16 +28,15 @@ pub use access::Pairing;
 pub mod protocol;
 pub use client::{CallChannelOpener, Client, LocalCall};
 pub use discovery::Registration;
-pub use protocol::{Configuration, LifecycleMode, Status, VERSION};
+pub use protocol::{Configuration, LifecycleMode, Publication, Status, VERSION};
 
 use super::transport::{
-    Catalogue, Endpoints, HostEndpoint, NativeGrant, Peer, PeerPolicy, Peers, Server, wire,
-    with_gateway,
+    Catalogue, Endpoints, HostEndpoint, Peer, PeerPolicy, Peers, Server, wire, with_gateway,
 };
 use super::{Application, NativeRegistry, Result};
 use crate::ipc::{LocalListener, LocalStream};
 use access::{Authority, Principal};
-use maka_event_log::EventLog;
+use maka_event_log::root_store::RootStore;
 use maka_plugin_core::deployment::DeploymentRef;
 use protocol::{Connected, Opening, Request, Response, SessionControl};
 use sha2::Digest;
@@ -72,14 +71,14 @@ pub struct Host {
     root: Arc<maka_event_log::root::RootOwner>,
     options: Options,
     application: Application,
-    store: Arc<EventLog>,
+    store: Arc<RootStore>,
     access: Arc<maka_config::ConfigurationStore>,
     access_grant: Mutex<String>,
     access_gate: tokio::sync::Mutex<()>,
     epoch: Uuid,
     source: DeploymentRef,
     policy: Arc<PeerPolicy>,
-    selections: Mutex<BTreeMap<String, HostEndpoint>>,
+    configuration: Mutex<Configuration>,
     sessions: Mutex<BTreeMap<Uuid, Arc<Session>>>,
     stop: CancellationToken,
     residency: Mutex<lifecycle::Residency>,
@@ -91,7 +90,9 @@ struct Session {
     mode: SessionMode,
 }
 enum SessionMode {
-    Owned,
+    Owned {
+        selections: BTreeMap<String, HostEndpoint>,
+    },
     Peer {
         source: DeploymentRef,
         selections: BTreeMap<String, HostEndpoint>,
@@ -99,31 +100,28 @@ enum SessionMode {
 }
 impl Host {
     pub async fn open(
-        store: Arc<EventLog>,
+        store: Arc<RootStore>,
         deployment: Uuid,
         native: NativeRegistry,
         scripts: Option<Arc<dyn super::backend::Factory>>,
-        selections: BTreeMap<String, HostEndpoint>,
-        grants: Vec<NativeGrant>,
+        configuration: Configuration,
     ) -> Result<Arc<Self>> {
         Self::open_with_options(
             store,
             deployment,
             native,
             scripts,
-            selections,
-            grants,
+            configuration,
             Options::default(),
         )
         .await
     }
     pub async fn open_with_options(
-        store: Arc<EventLog>,
+        store: Arc<RootStore>,
         deployment: Uuid,
         native: NativeRegistry,
         scripts: Option<Arc<dyn super::backend::Factory>>,
-        selections: BTreeMap<String, HostEndpoint>,
-        grants: Vec<NativeGrant>,
+        configuration: Configuration,
         options: Options,
     ) -> Result<Arc<Self>> {
         let loaded = store
@@ -131,18 +129,16 @@ impl Host {
             .await
             .map_err(|error| error.to_string())?
             .ok_or("deployment not found")?;
-        Self::open_loaded_with_options(store, loaded, native, scripts, selections, grants, options)
-            .await
+        Self::open_loaded_with_options(store, loaded, native, scripts, configuration, options).await
     }
 
     /// Open a checked committed source without rereading its immutable packages.
     pub async fn open_loaded_with_options(
-        store: Arc<EventLog>,
+        store: Arc<RootStore>,
         loaded: maka_event_log::applications::LoadedDeployment,
         native: NativeRegistry,
         scripts: Option<Arc<dyn super::backend::Factory>>,
-        selections: BTreeMap<String, HostEndpoint>,
-        grants: Vec<NativeGrant>,
+        configuration: Configuration,
         options: Options,
     ) -> Result<Arc<Self>> {
         if options.handshake_timeout.is_zero()
@@ -153,8 +149,14 @@ impl Host {
         {
             return Err("invalid Host options".into());
         }
+        configuration.validate()?;
+        let Configuration::PublicHost {
+            endpoints,
+            native: grants,
+            ..
+        } = &configuration;
         let root = store.owned_root().map_err(|error| error.to_string())?;
-        let policy = Arc::new(PeerPolicy::with_native_grants(grants)?);
+        let policy = Arc::new(PeerPolicy::with_native_grants(grants.clone())?);
         let application = Application::start_loaded(
             store.clone(),
             loaded,
@@ -163,7 +165,7 @@ impl Host {
             policy.clone(),
             scripts,
         )?;
-        if let Err(error) = Endpoints::start(&application.client(), &selections).await {
+        if let Err(error) = Endpoints::start(&application.client(), endpoints).await {
             application.shutdown().await?;
             return Err(error);
         }
@@ -177,14 +179,8 @@ impl Host {
         let access_grant = format!(
             "application.owner:{}",
             hex::encode(sha2::Sha256::digest(
-                serde_json::to_vec(&(
-                    application.source(),
-                    Configuration::PublicHost {
-                        endpoints: selections.clone(),
-                        native: policy.native_grants(),
-                    }
-                ))
-                .map_err(|error| error.to_string())?
+                serde_json::to_vec(&(application.source(), &configuration))
+                    .map_err(|error| error.to_string())?
             ))
         );
         Ok(Arc::new(Self {
@@ -198,12 +194,30 @@ impl Host {
             access_gate: tokio::sync::Mutex::new(()),
             policy,
             epoch: Uuid::new_v4(),
-            selections: Mutex::new(selections),
+            configuration: Mutex::new(configuration),
             sessions: Mutex::default(),
             stop: CancellationToken::new(),
             residency: Mutex::new(lifecycle::Residency::default()),
         }))
     }
+
+    async fn publication(&self) -> Result<Publication> {
+        let _gate = self.access_gate.lock().await;
+        if self.stop.is_cancelled() {
+            return Err("Host is closing".into());
+        }
+        let source = self
+            .store
+            .application_head(self.source.deployment)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or("Host deployment source missing")?;
+        Ok(Publication {
+            source,
+            configuration: self.configuration.lock().unwrap().clone(),
+        })
+    }
+
     /// This configuration step is durable independently of source replacement.
     /// The launcher's original pending operation coordinates their retries.
     async fn configure(
@@ -221,15 +235,33 @@ impl Host {
         if self.stop.is_cancelled() {
             return Err("Host is closing".into());
         }
-        let current = Configuration::PublicHost {
-            endpoints: self.selections.lock().unwrap().clone(),
-            native: self.policy.native_grants(),
-        };
+        let Configuration::PublicHost { endpoints, .. } = &configuration;
+        let resolved = Endpoints::capture(&self.application.client(), endpoints).await?;
+        configuration.validate_product_methods(&previous, &Catalogue::captured(&resolved))?;
+        let current = self.configuration.lock().unwrap().clone();
         let current = serde_json::to_value(current).map_err(|error| error.to_string())?;
         let previous = serde_json::to_value(previous).map_err(|error| error.to_string())?;
         let desired = serde_json::to_value(&configuration).map_err(|error| error.to_string())?;
         if current != previous && current != desired {
             return Err("Host configuration conflicts with current authority".into());
+        }
+        let record = self
+            .store
+            .application_launch()
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or("public Host selection missing")?;
+        if record.deployment != self.source.deployment {
+            return Err("Host configuration selects another deployment".into());
+        }
+        // Optional domain fields may be omitted or explicitly empty. Compare
+        // their typed meaning, but keep the exact stored JSON as the CAS witness.
+        let persisted: Configuration = serde_json::from_value(record.configuration.clone())
+            .map_err(|error| error.to_string())?;
+        persisted.validate()?;
+        let persisted = serde_json::to_value(persisted).map_err(|error| error.to_string())?;
+        if persisted != previous && persisted != desired {
+            return Err("Host configuration conflicts with persisted authority".into());
         }
         let access_grant = format!(
             "application.owner:{}",
@@ -240,7 +272,7 @@ impl Host {
         );
         if !self
             .store
-            .compare_and_set_application_launch_configuration(source, previous, desired)
+            .compare_and_set_application_launch_configuration(source, record.configuration, desired)
             .await
             .map_err(|error| error.to_string())?
         {
@@ -248,9 +280,9 @@ impl Host {
         }
         // No await between durable confirmation and publication of live authority.
         // Existing sessions retain their captured bindings and accepted jobs.
-        let Configuration::PublicHost { endpoints, native } = configuration;
-        *self.selections.lock().unwrap() = endpoints;
-        self.policy.replace_native_grants(native);
+        let Configuration::PublicHost { native, .. } = &configuration;
+        self.policy.replace_native_grants(native.clone());
+        *self.configuration.lock().unwrap() = configuration;
         *self.access_grant.lock().unwrap() = access_grant;
         Ok(())
     }
@@ -406,6 +438,14 @@ impl Host {
                 drop(gate);
                 wire::write(&mut output, &Response::Status(self.status())).await
             }
+            Request::Publication => {
+                authority.local()?;
+                wire::write(
+                    &mut output,
+                    &Response::Publication(self.publication().await),
+                )
+                .await
+            }
             Request::Configure {
                 source,
                 previous,
@@ -480,9 +520,15 @@ impl Host {
                     .await?;
                 let (mode, peer, endpoints, selections) = match request {
                     Request::Connect => {
-                        let selections = self.selections.lock().unwrap().clone();
+                        let selections = {
+                            let configuration = self.configuration.lock().unwrap();
+                            let Configuration::PublicHost { endpoints, .. } = &*configuration;
+                            endpoints.clone()
+                        };
                         (
-                            SessionMode::Owned,
+                            SessionMode::Owned {
+                                selections: selections.clone(),
+                            },
                             Peer::new(
                                 self.source.clone(),
                                 selections
@@ -566,77 +612,98 @@ impl Host {
                         if matches!(command, SessionControl::Close) {
                             break Ok(());
                         }
-                        let SessionMode::Peer {
-                            source: origin,
-                            selections,
-                        } = &session.mode
-                        else {
-                            return Err("Host-owned session cannot approve peer sources".into());
-                        };
-                        let response = match command {
-                            SessionControl::Epochs => Response::Epochs(
-                                Endpoints::capture(&self.application.client(), selections)
-                                    .await
-                                    .map(|endpoints| endpoints.epochs()),
-                            ),
-                            SessionControl::Capture => {
-                                captured = None;
-                                let result =
+                        let response = if matches!(command, SessionControl::Refresh) {
+                            let result = async {
+                                let SessionMode::Owned { selections } = &session.mode else {
+                                    return Err("Peer sessions require captured approval".into());
+                                };
+                                let endpoints =
+                                    Endpoints::start(&self.application.client(), selections)
+                                        .await?;
+                                let catalogue = Catalogue::captured(&endpoints);
+                                wire::encode_bounded(
+                                    &Response::Refreshed(Ok(catalogue.clone())),
+                                    usize::MAX,
+                                )?;
+                                session.transport.replace_endpoints(endpoints)?;
+                                Ok(catalogue)
+                            }
+                            .await;
+                            Response::Refreshed(result)
+                        } else {
+                            let SessionMode::Peer {
+                                source: origin,
+                                selections,
+                            } = &session.mode
+                            else {
+                                return Err("Host-owned session cannot approve peer sources".into());
+                            };
+                            match command {
+                                SessionControl::Epochs => Response::Epochs(
                                     Endpoints::capture(&self.application.client(), selections)
                                         .await
-                                        .map(|endpoints| {
-                                            let catalogue = Catalogue::captured(&endpoints);
-                                            captured = Some(endpoints);
-                                            catalogue
-                                        });
-                                let response = Response::Captured(result);
-                                if let Err(error) = wire::encode_bounded(&response, usize::MAX) {
+                                        .map(|endpoints| endpoints.epochs()),
+                                ),
+                                SessionControl::Capture => {
                                     captured = None;
-                                    Response::Captured(Err(format!(
-                                        "cannot encode Host captured catalogue: {error}"
-                                    )))
-                                } else {
-                                    response
-                                }
-                            }
-                            SessionControl::Approve {
-                                source,
-                                consumers,
-                                retain,
-                                captured: expected,
-                            } => {
-                                let result = (|| {
-                                    source.validate()?;
-                                    if source.state_domain != origin.state_domain
-                                        || source.deployment != origin.deployment
+                                    let result =
+                                        Endpoints::capture(&self.application.client(), selections)
+                                            .await
+                                            .map(|endpoints| {
+                                                let catalogue = Catalogue::captured(&endpoints);
+                                                captured = Some(endpoints);
+                                                catalogue
+                                            });
+                                    let response = Response::Captured(result);
+                                    if let Err(error) = wire::encode_bounded(&response, usize::MAX)
                                     {
-                                        return Err("foreign approval deployment".into());
-                                    }
-                                    let approved = if consumers.is_empty() {
-                                        None
+                                        captured = None;
+                                        Response::Captured(Err(format!(
+                                            "cannot encode Host captured catalogue: {error}"
+                                        )))
                                     } else {
-                                        Some(Peer::new(source.clone(), consumers)?)
-                                    };
-                                    if approved.is_none() != expected.is_none() {
-                                        return Err(
-                                            "approval requires its captured endpoints".into()
-                                        );
+                                        response
                                     }
-                                    session.peer.check_update(approved.clone(), &retain)?;
-                                    if let Some(expected) = expected {
-                                        let endpoints = captured
-                                            .take()
-                                            .ok_or("Host endpoints were not captured")?;
-                                        if Catalogue::captured(&endpoints) != expected {
-                                            return Err("Host captured endpoints differ".into());
+                                }
+                                SessionControl::Approve {
+                                    source,
+                                    consumers,
+                                    retain,
+                                    captured: expected,
+                                } => {
+                                    let result = (|| {
+                                        source.validate()?;
+                                        if source.state_domain != origin.state_domain
+                                            || source.deployment != origin.deployment
+                                        {
+                                            return Err("foreign approval deployment".into());
                                         }
-                                        session.transport.replace_endpoints(endpoints)?;
-                                    }
-                                    session.peer.update(approved, &retain)
-                                })();
-                                Response::Approved { source, result }
+                                        let approved = if consumers.is_empty() {
+                                            None
+                                        } else {
+                                            Some(Peer::new(source.clone(), consumers)?)
+                                        };
+                                        if approved.is_none() != expected.is_none() {
+                                            return Err(
+                                                "approval requires its captured endpoints".into()
+                                            );
+                                        }
+                                        session.peer.check_update(approved.clone(), &retain)?;
+                                        if let Some(expected) = expected {
+                                            let endpoints = captured
+                                                .take()
+                                                .ok_or("Host endpoints were not captured")?;
+                                            if Catalogue::captured(&endpoints) != expected {
+                                                return Err("Host captured endpoints differ".into());
+                                            }
+                                            session.transport.replace_endpoints(endpoints)?;
+                                        }
+                                        session.peer.update(approved, &retain)
+                                    })();
+                                    Response::Approved { source, result }
+                                }
+                                SessionControl::Close | SessionControl::Refresh => unreachable!(),
                             }
-                            SessionControl::Close => unreachable!(),
                         };
                         tokio::select! {
                             biased;
@@ -683,7 +750,7 @@ impl Host {
                 wire::write(&mut output, &Response::Accepted).await?;
                 // Carry buffered bytes into the existing bounded transport.
                 match &session.mode {
-                    SessionMode::Owned => {
+                    SessionMode::Owned { .. } => {
                         session
                             .transport
                             .serve_owned(input.inner, output, session.peer.clone())?
@@ -703,7 +770,11 @@ impl Host {
         if selections.is_empty() {
             return Err("invalid peer endpoint selections".into());
         }
-        let published = self.selections.lock().unwrap();
+        let configuration = self.configuration.lock().unwrap();
+        let Configuration::PublicHost {
+            endpoints: published,
+            ..
+        } = &*configuration;
         for (name, selection) in selections {
             selection.validate()?;
             let published = published

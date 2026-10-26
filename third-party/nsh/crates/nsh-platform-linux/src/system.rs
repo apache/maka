@@ -502,6 +502,7 @@ pub(crate) fn command(surface: &Rc<Surface>, _id: NodeId, command: &Command) {
         }
         Command::ReadClipboardFiles { id } => read_clipboard_files(surface, *id),
         Command::PickImages { id, request } => pick_images(surface, *id, *request),
+        Command::OpenUrl { id, url } => open_url(surface, *id, url),
         Command::Back => crate::navigation::default_back(surface),
         Command::ExitApp => {
             // Closing destroys the window, whose handler stops the surface:
@@ -1043,6 +1044,30 @@ fn show_toast(surface: &Rc<Surface>, text: &str, long: bool) {
 
 /// `Clipboard.readText` / `hasText`: answers read `id` with whether the
 /// clipboard holds text and, unless `has_only`, the text.
+/// Opens `url` with the app the desktop has for its scheme
+/// (`GtkUriLauncher`: the desktop portal in a sandbox, `GAppInfo`
+/// otherwise), parented to the surface's window, and reports whether it
+/// did ([`EventKind::OpenUrl`]).
+fn open_url(surface: &Rc<Surface>, id: u32, url: &str) {
+    let window = surface.root.root().and_downcast::<gtk::Window>();
+    let surface = Rc::downgrade(surface);
+    gtk::UriLauncher::new(url).launch(window.as_ref(), gio::Cancellable::NONE, move |result| {
+        if let Err(err) = &result {
+            log::debug!("linux: opening a URL failed: {err}");
+        }
+        if let Some(surface) = surface.upgrade() {
+            surface.event(
+                ROOT_ID,
+                EventKind::OpenUrl,
+                EventPayload::Map(vec![
+                    ("id", PayloadValue::Number(id as f64)),
+                    ("opened", PayloadValue::Bool(result.is_ok())),
+                ]),
+            );
+        }
+    });
+}
+
 fn read_clipboard(surface: &Rc<Surface>, id: u32, has_only: bool) {
     let answer = move |surface: &Surface, has: bool, text: Option<String>| {
         let mut fields = vec![
@@ -1128,6 +1153,47 @@ fn read_clipboard_image(surface: &Rc<Surface>, id: u32, has_only: bool) {
         if let Some(surface) = surface.upgrade() {
             answer(&surface, clipboard::image_answer(id, true, image));
         }
+    });
+}
+
+/// What `board` holds, read as the user pastes into an input (`onPaste`):
+/// its text, its image (as PNG) and its local files' `file:` URIs. GTK
+/// reads a clipboard asynchronously: `done` gets it once read.
+pub(crate) fn read_pasted(
+    board: gdk::Clipboard,
+    done: impl FnOnce(nsh_core::PasteEvent) + 'static,
+) {
+    let types = board.formats().union_deserialize_types();
+    let (has_image, has_files) = (
+        types.contains_type(gdk::Texture::static_type()),
+        types.contains_type(gdk::FileList::static_type()),
+    );
+    glib::spawn_future_local(async move {
+        let text = board.read_text_future().await.ok().flatten();
+        let mut paste = nsh_core::PasteEvent::new(text.map(|t| t.to_string()).unwrap_or_default());
+        if has_files
+            && let Ok(value) = board
+                .read_value_future(gdk::FileList::static_type(), glib::Priority::DEFAULT)
+                .await
+            && let Ok(list) = value.get::<gdk::FileList>()
+        {
+            paste.uris = list
+                .files()
+                .into_iter()
+                .filter(|file| file.path().is_some_and(|path| path.is_absolute()))
+                .map(|file| file.uri().to_string())
+                .collect();
+        }
+        // A file list's icon is no image of the user's.
+        if has_image
+            && paste.uris.is_empty()
+            && let Ok(Some(texture)) = board.read_texture_future().await
+        {
+            paste.files.push(nsh_core::PastedFile::image(
+                texture.save_to_png_bytes().to_vec(),
+            ));
+        }
+        done(paste);
     });
 }
 

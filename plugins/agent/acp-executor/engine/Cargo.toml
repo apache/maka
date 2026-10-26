@@ -28,7 +28,7 @@ maka-agent-facts.workspace = true
 maka-agent-ports.workspace = true
 maka-capabilities.workspace = true
 agent-client-protocol.workspace = true
-base64 = "0.22.1"
+base64 = "0.23.1"
 cap-std.workspace = true
 cap-fs-ext.workspace = true
 futures-util.workspace = true
@@ -41,7 +41,7 @@ tokio.workspace = true
 tokio-util.workspace = true
 uuid.workspace = true
 url = "2.5.8"
-zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+zip = { version = "9.1.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [dev-dependencies]
 tempfile.workspace = true

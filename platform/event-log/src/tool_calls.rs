@@ -141,21 +141,41 @@ pub(crate) async fn validate(
                 | ToolOrigin::HostSdk { .. }
                 | ToolOrigin::Standalone => None,
             };
-            let duplicate: bool = sqlx::query_scalar(
-                "SELECT EXISTS(SELECT 1 FROM runtime_events
-                 WHERE kind IN ('tool_dispatched', 'tool_rejected')
-                 AND (operation_id = ?1 OR (invocation_id = ?2
-                     AND json_extract(event_json, '$.fact.call.tool_call_id') = ?3
-                     AND (?4 IS NULL
-                         OR json_extract(event_json, '$.fact.call.origin.kind') IS NOT 'provider'
-                         OR json_extract(event_json, '$.fact.call.origin.step_id') IS ?4))))",
-            )
-            .bind(operation_id)
-            .bind(invocation)
-            .bind(&call.tool_call_id)
-            .bind(provider_step)
-            .fetch_one(&mut *tx)
-            .await?;
+            let duplicate: bool = if let Some(step) = provider_step {
+                sqlx::query_scalar(
+                    "SELECT EXISTS(SELECT 1 FROM runtime_events
+                       WHERE operation_id=?1 AND kind IN ('tool_dispatched','tool_rejected'))
+                     OR EXISTS(SELECT 1 FROM runtime_events WHERE invocation_id=?2
+                       AND kind IN ('tool_dispatched','tool_rejected')
+                       AND json_extract(event_json,'$.fact.call.tool_call_id')=?3
+                       AND CASE WHEN json_extract(event_json,'$.fact.call.origin.kind')='provider'
+                         THEN json_extract(event_json,'$.fact.call.origin.step_id') END IS NULL)
+                     OR EXISTS(SELECT 1 FROM runtime_events WHERE invocation_id=?2
+                       AND kind IN ('tool_dispatched','tool_rejected')
+                       AND json_extract(event_json,'$.fact.call.tool_call_id')=?3
+                       AND CASE WHEN json_extract(event_json,'$.fact.call.origin.kind')='provider'
+                         THEN json_extract(event_json,'$.fact.call.origin.step_id') END=?4)",
+                )
+                .bind(operation_id)
+                .bind(invocation)
+                .bind(&call.tool_call_id)
+                .bind(step)
+                .fetch_one(&mut *tx)
+                .await?
+            } else {
+                sqlx::query_scalar(
+                    "SELECT EXISTS(SELECT 1 FROM runtime_events
+                       WHERE operation_id=?1 AND kind IN ('tool_dispatched','tool_rejected'))
+                     OR EXISTS(SELECT 1 FROM runtime_events WHERE invocation_id=?2
+                       AND kind IN ('tool_dispatched','tool_rejected')
+                       AND json_extract(event_json,'$.fact.call.tool_call_id')=?3)",
+                )
+                .bind(operation_id)
+                .bind(invocation)
+                .bind(&call.tool_call_id)
+                .fetch_one(&mut *tx)
+                .await?
+            };
             if duplicate {
                 return Err(invalid(
                     "tool operation or call identity already dispatched or rejected",
@@ -266,13 +286,11 @@ pub(crate) async fn validate(
         }
         Fact::ToolSettled { operation_id, .. } => {
             let pending: bool = sqlx::query_scalar(
-                "SELECT EXISTS(SELECT 1 FROM runtime_events AS child
-                 WHERE child.invocation_id = ? AND child.kind = 'tool_dispatched'
+                "SELECT EXISTS(SELECT 1 FROM context_obligations live
+                 CROSS JOIN runtime_events child ON child.sequence=live.opened_at
+                 WHERE live.invocation_id = ? AND live.kind='tool'
                  AND json_extract(child.event_json, '$.fact.call.origin.kind') IN ('code_mode', 'host_sdk')
-                 AND json_extract(child.event_json, '$.fact.call.origin.parent_operation_id') = ?
-                 AND NOT EXISTS(SELECT 1 FROM runtime_events AS settled
-                     WHERE settled.invocation_id = child.invocation_id
-                     AND settled.operation_id = child.operation_id AND settled.kind = 'tool_settled'))",
+                 AND json_extract(child.event_json, '$.fact.call.origin.parent_operation_id') = ?)",
             ).bind(invocation).bind(operation_id).fetch_one(&mut *tx).await?;
             if pending {
                 return Err(invalid("parent tool cannot settle before its children"));

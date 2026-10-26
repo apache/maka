@@ -344,8 +344,7 @@ export function toolResult(kind: ToolFamily, input: unknown): ToolProjection | n
       typeof value.url !== 'string' ||
       !(value.title === null || typeof value.title === 'string') ||
       !['markdown', 'text'].includes(String(value.format)) ||
-      typeof value.content !== 'string' ||
-      typeof value.truncated !== 'boolean'
+      typeof value.content !== 'string'
     )
       return null;
     return {
@@ -356,15 +355,6 @@ export function toolResult(kind: ToolFamily, input: unknown): ToolProjection | n
           text: value.url,
         },
         { label: tr('Recorded page content'), text: value.content },
-        ...(value.truncated
-          ? [
-              {
-                label: tr('Web notice'),
-                text: tr('The extracted page content is truncated.'),
-                tone: 'warning' as const,
-              },
-            ]
-          : []),
       ],
     };
   }
@@ -383,13 +373,12 @@ export function toolResult(kind: ToolFamily, input: unknown): ToolProjection | n
         !row ||
         typeof row.title !== 'string' ||
         typeof row.url !== 'string' ||
-        typeof row.snippet !== 'string' ||
-        typeof row.truncated !== 'boolean'
+        typeof row.snippet !== 'string'
       )
         return null;
       sections.push({
         label: row.title || tr('Web result'),
-        text: `${row.url}\n${row.snippet}${row.truncated ? `\n${tr('[Snippet truncated by the Host]')}` : ''}`,
+        text: `${row.url}\n${row.snippet}`,
       });
     }
     if (!sections.length) sections.push({ label: tr('Web results'), text: tr('No results.') });

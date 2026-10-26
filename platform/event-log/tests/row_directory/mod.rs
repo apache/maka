@@ -72,9 +72,11 @@ async fn complete_import_is_immediately_readable_and_exact_retry_keeps_original_
             Position::Tail,
             false,
             HistoryView::Text,
-            8192,
-            Some(8),
-            65536,
+            maka_event_log::transcript::HistoryLimits {
+                max_bytes: 8192,
+                max_chunks: Some(8),
+                max_json_bytes: 65536,
+            },
         )
         .await
         .unwrap();
@@ -99,9 +101,11 @@ async fn complete_import_is_immediately_readable_and_exact_retry_keeps_original_
             Position::Tail,
             false,
             HistoryView::Text,
-            8192,
-            Some(8),
-            65536,
+            maka_event_log::transcript::HistoryLimits {
+                max_bytes: 8192,
+                max_chunks: Some(8),
+                max_json_bytes: 65536,
+            },
         )
         .await
         .unwrap();

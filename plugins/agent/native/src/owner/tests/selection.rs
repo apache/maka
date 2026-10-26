@@ -654,8 +654,8 @@ async fn queued_model_route_change_settles_original_message_without_retargeting(
         edit(&fixture, |changes| changes.configuration = Some(json!({"baseUrl":"http://127.0.0.1:1/v1"}))).await;
         response(&mut socket).await;
         fixture.drained().await;
-        assert!(fixture.store.pending_messages(&session).await.unwrap().is_empty());
-        let facts = fixture.store.scoped_prefix(maka_agent_facts::event::LogScope::Session { id: session.clone() }, 256, 1024 * 1024).await.unwrap();
+        assert!(fixture.session(&session).await.pending_messages(&session).await.unwrap().is_empty());
+        let facts = fixture.session(&(session)).await.scoped_prefix(maka_agent_facts::event::LogScope::Session { id: session.clone() }, 256, 1024 * 1024).await.unwrap();
         assert!(facts.events.iter().any(|event| matches!(&event.event.fact, maka_agent_facts::event::Fact::InvocationEnded { outcome: maka_agent_facts::event::InvocationOutcome::Failed { class, .. } } if class == "message_preparation_failed")));
         assert_eq!(facts.events.iter().filter(|event| matches!(event.event.fact, maka_agent_facts::event::Fact::InvocationOpened { .. })).count(), 2);
         let diagnostics=fixture.query("diagnostics",json!({"sessionId":session,"position":{"kind":"latest"}})).await;
@@ -748,7 +748,7 @@ async fn thinking_choices_reach_requests_and_queued_policy_cannot_steer_another_
             assert_eq!(result["kind"], "queued");
         }
         assert!(fixture.mutation(2, "send", json!({"sessionId":session,"message":"unsupported","model":selection,"thinkingLevel":"ultra"}), Uuid::new_v4()).await.is_err());
-        let pending = fixture.store.pending_messages(&session).await.unwrap();
+        let pending = fixture.session(&session).await.pending_messages(&session).await.unwrap();
         assert_eq!(pending.len(), 2);
         for (entry, level) in pending.iter().zip([Off, Low]) {
             let basis: MessageBasis = serde_json::from_value(entry.execution.basis.clone()).unwrap();
@@ -764,7 +764,7 @@ async fn thinking_choices_reach_requests_and_queued_policy_cannot_steer_another_
             response(&mut socket).await;
         }
         fixture.drained().await;
-        assert!(fixture.store.pending_messages(&session).await.unwrap().is_empty());
+        assert!(fixture.session(&session).await.pending_messages(&session).await.unwrap().is_empty());
         fixture.app.shutdown().await.unwrap();
         fixture.config.shutdown().await.unwrap();
     }).await.unwrap();
@@ -838,9 +838,7 @@ async fn unsupported_thinking_logs_original_provider_cause_without_admitting_exe
             )
             .await;
         fixture.drained().await;
-        let facts = fixture
-            .store
-            .scoped_prefix(
+        let facts = fixture.session(&(session)).await.scoped_prefix(
                 maka_agent_facts::event::LogScope::Session {
                     id: session.clone(),
                 },

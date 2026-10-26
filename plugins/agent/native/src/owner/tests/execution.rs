@@ -118,12 +118,10 @@ async fn computer_resume_replays_original_input_without_duplicate_effects(stop: 
             json!({"code":"globalThis.resumeCounter = 40; nodeRepl.write(globalThis.resumeCounter);"}),
         )
         .await;
-        let mut commits = fixture.store.subscribe_commits();
+        let mut commits = fixture.session(&session).await.subscribe_commits().unwrap();
         let approval = loop {
             commits.borrow_and_update();
-            if let Some(record) = fixture
-                .store
-                .pending_interactions(&session)
+            if let Some(record) = fixture.session(&session).await.pending_interactions(&session)
                 .await
                 .unwrap()
                 .into_iter()
@@ -154,7 +152,7 @@ async fn computer_resume_replays_original_input_without_duplicate_effects(stop: 
         fixture.drained().await;
         let source = fixture.query("execution", json!({"sessionId":session,"invocationId":sent["invocationId"]})).await.unwrap()["execution"].clone();
         assert_eq!(source["state"], if stop { "cancelled" } else { "failed" }, "{source}");
-        let failed_invocation=fixture.store.invocation_boundary(&session,sent["invocationId"].as_str().unwrap()).await.unwrap().unwrap().0.invocation;
+        let failed_invocation=fixture.session(&session).await.invocation_boundary(&session,sent["invocationId"].as_str().unwrap()).await.unwrap().unwrap().0.invocation;
         let diagnostics=fixture.query("diagnostics",json!({"sessionId":session,"position":{"kind":"latest"}})).await;
 
         // A later message must not replace the selected source's original input.
@@ -199,7 +197,7 @@ async fn computer_resume_replays_original_input_without_duplicate_effects(stop: 
         assert_computer_output(&fixture, &session, "41").await;
         response(&mut socket).await;
         fixture.drained().await;
-        assert!(fixture.store.pending_interactions(&session).await.unwrap().is_empty());
+        assert!(fixture.session(&session).await.pending_interactions(&session).await.unwrap().is_empty());
         fixture.app.shutdown().await.unwrap();
         fixture.config.shutdown().await.unwrap();
         if !stop {
@@ -243,7 +241,7 @@ async fn exact_receipt_resumes_original_input_and_deduplicates_after_prerequisit
         let fixture = Fixture::new(&format!("http://{}/v1", listener.local_addr().unwrap()), None).await;
         let session = fixture.create("Resume original").await;
         let source = cancelled(&fixture, &listener, &session).await;
-        let boundary = fixture.store.invocation_boundary(&session,source["invocationId"].as_str().unwrap()).await.unwrap().unwrap().0;
+        let boundary = fixture.session(&session).await.invocation_boundary(&session,source["invocationId"].as_str().unwrap()).await.unwrap().unwrap().0;
         let maka_agent_facts::input::InvocationInput::Message {source_messages,..} = boundary.root_input() else {panic!("original message")};
         let message = source_messages[0].message.message_id.clone();
 
@@ -281,7 +279,7 @@ async fn exact_receipt_resumes_original_input_and_deduplicates_after_prerequisit
         assert!(matches!(fixture.config.remove_connection(RemoveCatalogConnectionInput {
             expected: ConnectionVersionBasis { connection_id: selected.connection_id, revision: selected.revision },
         }).await.unwrap(), CatalogMutationResult::Committed { .. }));
-        fixture.store.set_session_archived::<SessionConfiguration>(&session, true, now()).await.unwrap();
+        fixture.store.set_session_archived::<StoredSessionConfiguration>(&session, true, now()).await.unwrap();
         std::fs::rename(&fixture.workspace, fixture.workspace.with_extension("removed")).unwrap();
         let accepted = fixture.owner.resume(serde_json::from_value(input).unwrap(), &reference).await.unwrap();
         let accepted = serde_json::to_value(accepted).unwrap();
@@ -541,7 +539,8 @@ async fn resume_refuses_unsettled_effect_outside_its_selected_lineage() {
             },
         ] {
             fixture
-                .store
+                .session(&session)
+                .await
                 .append(&EventWrite::plain(RuntimeEvent::new(invocation.clone(), fact)).unwrap())
                 .await
                 .unwrap();
@@ -622,7 +621,8 @@ async fn resume_uses_live_workspace_permissions_instead_of_original_grants() {
         assert!(!fixture.workspace.join("blocked.txt").exists());
         assert!(
             fixture
-                .store
+                .session(&session)
+                .await
                 .pending_interactions(&session)
                 .await
                 .unwrap()

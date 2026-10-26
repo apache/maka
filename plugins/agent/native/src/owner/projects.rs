@@ -475,35 +475,15 @@ impl Owner {
                 };
                 selected.project_id = Some(project.id);
                 self.store
-                    .relink_project_if::<SessionConfiguration, _>(
+                    .relink_project_if(
                         ProjectRelinkGuard {
                             source: current,
                             destination: other,
-                            session_prefix: self.prefix.clone(),
+                            owner_scope: self.prefix.clone(),
                         },
                         registration,
                         now(),
-                        move |session, context| {
-                            let Some(id) = session.workspace.project_id.map(|id| id.to_string())
-                            else {
-                                return Ok(());
-                            };
-                            if context.previous_ids.contains(&id) {
-                                session.workspace = selected.clone();
-                                session.boundary_revision = session
-                                    .boundary_revision
-                                    .checked_add(1)
-                                    .filter(|revision| *revision <= 9_007_199_254_740_991)
-                                    .ok_or_else(|| {
-                                        StoreError::InvalidTransition(
-                                            "project permission boundary exhausted".into(),
-                                        )
-                                    })?;
-                            } else if context.absorbed_ids.contains(&id) {
-                                session.workspace.project_id = selected.project_id;
-                            }
-                            Ok(())
-                        },
+                        serde_json::to_value(selected).map_err(|_| "agent_project_invalid")?,
                     )
                     .await
                     .map(|result| result.project)

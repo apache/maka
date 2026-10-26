@@ -64,7 +64,7 @@ enum Task {
         /// Include development support (dev server, error overlay).
         #[arg(long)]
         dev: bool,
-        /// ABIs to build (default: arm64-v8a and x86_64).
+        /// ABIs to build (default: arm64-v8a, armeabi-v7a and x86_64).
         #[arg(long)]
         abi: Vec<String>,
     },

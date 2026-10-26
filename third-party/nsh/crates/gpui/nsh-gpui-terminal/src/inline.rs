@@ -130,6 +130,11 @@ impl InlineFrame {
     pub fn bytes(&self) -> &[u8] {
         &self.bytes
     }
+
+    /// Transfers the complete inline image transaction to its writer.
+    pub fn into_bytes(self) -> Vec<u8> {
+        self.bytes
+    }
 }
 
 /// Clears only the complete alternate viewport already owned by the embedder.
@@ -167,8 +172,8 @@ mod tests {
         for protocol in [InlineProtocol::Sixel, InlineProtocol::Iterm2] {
             let encoded = InlineFrame::encode(&source, protocol, 1, 1, false, false).unwrap();
             assert_eq!(encoded.token(), source.token());
-            let payload = encoded
-                .bytes()
+            let bytes = encoded.into_bytes();
+            let payload = bytes
                 .strip_prefix(b"\x1b[H\x1b[2J")
                 .unwrap()
                 .strip_suffix(b"\x1b[H")

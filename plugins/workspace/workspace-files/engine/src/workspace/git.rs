@@ -86,65 +86,30 @@ pub(super) fn exclude_marker(
         .open(&entry)
     {
         Ok(repository) => repository.to_thread_local(),
-        Err(gix::open::Error::NotARepository { source, .. }) => {
-            use gix::discover::is_git::Error;
-            // gix's exists/is_dir layout checks hide some IO failures. Probe only
-            // their reported sentinel, without reconstructing repository validity.
-            match &source {
-                Error::MissingHead => {
-                    let metadata = entry.metadata()?;
-                    let git = if metadata.is_file() {
-                        gix::discover::path::from_gitdir_file(&entry).map_err(io::Error::other)?
-                    } else {
-                        entry.clone()
-                    };
-                    probe_missing(&git.join("HEAD"))?;
-                }
-                Error::MissingObjectsDirectory { missing } => {
-                    // Pinned gix's directory-form linked-admin check discards
-                    // commondir read errors before falling back to local objects.
-                    // Preserve that IO without parsing a second Git layout.
-                    if entry.metadata()?.is_dir() {
-                        match std::fs::File::open(entry.join("commondir")) {
-                            Ok(mut file) => {
-                                if file.metadata()?.is_file() {
-                                    let mut buffer = [0; 8192];
-                                    while file.read(&mut buffer)? != 0 {}
-                                }
-                            }
-                            Err(error)
-                                if matches!(
-                                    error.kind(),
-                                    io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
-                                ) => {}
-                            Err(error) => return Err(error),
-                        }
-                    }
-                    probe_missing(missing)?;
-                }
-                Error::MissingRefsDirectory { missing } => probe_missing(missing)?,
-                _ => {}
-            }
-            if let Some(error) = exposed_io(&source)
-                && !matches!(
-                    error.kind(),
+        Err(error) => {
+            if let Some(source) = error.downcast_any_ref::<io::Error>() {
+                if matches!(
+                    source.kind(),
                     io::ErrorKind::NotFound
                         | io::ErrorKind::NotADirectory
                         | io::ErrorKind::InvalidData
-                )
-            {
-                return Err(error);
+                ) {
+                    return Ok(());
+                }
+                return Err(match source.raw_os_error() {
+                    Some(code) => io::Error::from_raw_os_error(code),
+                    None => io::Error::new(source.kind(), source.to_string()),
+                });
             }
-            return Ok(());
-        }
-        Err(gix::open::Error::Config(error)) => {
-            if let Some(error) = exposed_io(&error) {
-                return Err(error);
+            match error.dominant_class() {
+                Some(
+                    gix::error::Class::NotFound
+                    | gix::error::Class::Corruption
+                    | gix::error::Class::Validation,
+                ) => return Ok(()),
+                _ => return Err(io::Error::other(error)),
             }
-            return Ok(());
         }
-        Err(gix::open::Error::Io(error)) => return Err(error),
-        Err(error) => return Err(io::Error::other(error)),
     };
     let git = dunce::canonicalize(repository.git_dir())?;
     let common = dunce::canonicalize(repository.common_dir())?;
@@ -197,33 +162,6 @@ pub(super) fn exclude_marker(
     }
     validate_anchor(&common, &directory)?;
     validate_anchor(&info_path, &info)
-}
-
-fn probe_missing(path: &Path) -> io::Result<()> {
-    match path.metadata() {
-        Ok(_) => Ok(()),
-        Err(error)
-            if matches!(
-                error.kind(),
-                io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
-            ) =>
-        {
-            Ok(())
-        }
-        Err(error) => Err(error),
-    }
-}
-
-fn exposed_io(mut error: &(dyn std::error::Error + 'static)) -> Option<io::Error> {
-    loop {
-        if let Some(error) = error.downcast_ref::<io::Error>() {
-            return Some(match error.raw_os_error() {
-                Some(code) => io::Error::from_raw_os_error(code),
-                None => io::Error::new(error.kind(), error.to_string()),
-            });
-        }
-        error = error.source()?;
-    }
 }
 
 fn validate_anchor(path: &Path, directory: &Dir) -> io::Result<()> {

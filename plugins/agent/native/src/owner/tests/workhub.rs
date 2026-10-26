@@ -31,7 +31,7 @@ pub(super) async fn activate_workers(
     workers: bool,
     granted: bool,
 ) {
-    activate_worker_mode(fixture, install, workers, granted, WorkerBehavior::Returned).await
+    activate_worker_mode(fixture, install, workers, granted, WorkerBehavior::Returned).await;
 }
 async fn activate_worker_mode(
     fixture: &mut Fixture,
@@ -39,7 +39,7 @@ async fn activate_worker_mode(
     workers: bool,
     granted: bool,
     behavior: WorkerBehavior,
-) {
+) -> Arc<Owner> {
     let external = matches!(behavior, WorkerBehavior::External);
     let denied_query = match &behavior {
         WorkerBehavior::DeniedQuery(method) => Some(*method),
@@ -296,7 +296,17 @@ async fn activate_worker_mode(
             .unwrap();
     }
     let mut native = NativeRegistry::default();
-    crate::owner::tests::provide_all(&mut native).unwrap();
+    crate::owner::tests::provide_without_workhub(&mut native).unwrap();
+    let captured = Arc::new(std::sync::Mutex::new(None));
+    let capture = captured.clone();
+    crate::workhub::provide_captured(
+        &mut native,
+        bundled_catalog(),
+        Arc::new(move |owner| {
+            *capture.lock().unwrap() = Some(owner);
+        }),
+    )
+    .unwrap();
     if !matches!(
         behavior,
         WorkerBehavior::Returned | WorkerBehavior::DeniedQuery(_) | WorkerBehavior::External
@@ -397,6 +407,11 @@ async fn activate_worker_mode(
     .await
     .unwrap();
     fixture.app.ready().await.unwrap();
+    captured
+        .lock()
+        .unwrap()
+        .take()
+        .expect("actual coordinator Owner")
 }
 async fn binding(fixture: &Fixture) -> Binding {
     let client = fixture.app.client();
@@ -626,14 +641,16 @@ async fn workhub_uses_original_agent_engine_and_freezes_coordinator_prompt() {
             tokio::task::yield_now().await;
         }
         let boundary = fixture
-            .store
+            .session(session)
+            .await
             .invocation_boundary(session, sent["invocationId"].as_str().unwrap())
             .await
             .unwrap()
             .unwrap()
             .0;
         let config = fixture
-            .store
+            .session(&(boundary.invocation).session_id)
+            .await
             .invocation_configuration(&boundary.invocation)
             .await
             .unwrap()
@@ -677,7 +694,7 @@ async fn workhub_queued_message_keeps_original_behavior_across_activation() {
         request(&mut socket).await;
         let queued = fixture.mutation(2, "send", json!({"sessionId":session,"message":"Follow up after shutdown","model":fixture.selection().await}), Uuid::new_v4()).await.unwrap();
         assert_eq!(queued["kind"], "queued");
-        let queue = fixture.store.message_queue(&session).await.unwrap();
+        let queue = fixture.session(&session).await.message_queue(&session).await.unwrap();
         let original = queue.entries.iter().find(|entry| entry.source.message.message_id == queued["messageId"]).unwrap().execution.basis["behavior"].clone();
         assert!(original["text"].as_str().unwrap().contains("WorkHub coordinator"));
         activate(&mut fixture, false).await;
@@ -689,14 +706,14 @@ async fn workhub_queued_message_keeps_original_behavior_across_activation() {
         let invocation = loop {
             let observed = fixture.query("observe", json!({"sessionId":session})).await.unwrap();
             if observed["run"].is_null() {
-                let boundary = fixture.store.observe_session::<SessionConfiguration>(&session).await.unwrap().unwrap().root_turn.unwrap();
+                let boundary = fixture.session(&session).await.observe_session::<StoredSessionConfiguration>(&session).await.unwrap().unwrap().root_turn.unwrap();
                 if boundary.invocation.invocation_id != sent["invocationId"] {
                     break boundary.invocation;
                 }
             }
             tokio::task::yield_now().await;
         };
-        let config = fixture.store.invocation_configuration(&invocation).await.unwrap().unwrap();
+        let config = fixture.session(&(invocation).session_id).await.invocation_configuration(&invocation).await.unwrap().unwrap();
         assert_eq!(serde_json::to_value(config.system_prompt.unwrap()).unwrap(), original);
         fixture.app.shutdown().await.unwrap();
         fixture.config.shutdown().await.unwrap();
@@ -913,7 +930,7 @@ async fn workhub_real_model_routes_original_input_and_recovers_child_receipt_wit
         let records = fixture.store.plugin_data_scan(&namespace, maka_capabilities::storage::Scan {prefix:String::new(),after:None}).await.unwrap();
         let replayed = records.entries.into_iter().find(|entry| entry.key.ends_with(&format!("tasks/{task_id}"))).unwrap();
         let maka_capabilities::storage::Data::Present(replayed) = replayed.record.data else {panic!("task data");};
-        let canonical = fixture.store.scoped_prefix(maka_agent_facts::event::LogScope::Session {id:coordinator.clone()},256,4*1024*1024).await.unwrap();
+        let canonical = fixture.session(&(coordinator)).await.scoped_prefix(maka_agent_facts::event::LogScope::Session {id:coordinator.clone()},256,4*1024*1024).await.unwrap();
         let sources: Vec<_> = canonical.events.iter().filter_map(|row| match &row.event.fact {
             Fact::InvocationOpened {input:maka_agent_facts::input::InvocationInput::Message {source_messages,..},..} => Some(source_messages.as_slice()),
             _ => None,
@@ -1168,7 +1185,7 @@ async fn workhub_unknown_worker_admission_keeps_original_receipt_across_source_u
         assert!(input["messages"].to_string().contains("uncertain"));response(&mut socket).await;
         idle(&fixture,EXPORT,&coordinator).await;
         assert_eq!(query_import(&fixture,hub::EXPORT,"task",json!({"taskId":task_id})).await,original);
-        let receipt=fixture.store.operation_observation(&reference).await.unwrap().unwrap();
+        let receipt=fixture.store.operation(&reference).unwrap().operation_observation().await.unwrap().unwrap();
         assert!(matches!(receipt.outcome,OperationOutcome::Unknown {..}));
         assert_eq!(fixture.store.application_intents(fixture.app.source().unwrap().deployment,id(1),0,128).await.unwrap().len(),1);
         assert!(tokio::time::timeout(Duration::from_millis(30),listener.accept()).await.is_err());
@@ -1183,7 +1200,7 @@ async fn workhub_cancelled_worker_queries_and_mutations_reach_cleanup_budget() {
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let mut fixture = Fixture::new(&format!("http://{}/v1",listener.local_addr().unwrap()),None).await;
             let blocked = Arc::new(Blocked { method, entered: tokio::sync::Semaphore::new(0), cancelled: tokio::sync::Semaphore::new(0), release: tokio::sync::Semaphore::new(0) });
-            activate_worker_mode(&mut fixture,true,true,true,WorkerBehavior::Blocked(blocked.clone())).await;
+            let coordinator_owner = activate_worker_mode(&mut fixture,true,true,true,WorkerBehavior::Blocked(blocked.clone())).await;
             let worker = worker_session(&fixture).await;
             let ready = resolve(&fixture,selection(&fixture).await,Uuid::new_v4()).await;
             let coordinator = ready["session"]["id"].as_str().unwrap().to_owned();
@@ -1197,10 +1214,13 @@ async fn workhub_cancelled_worker_queries_and_mutations_reach_cleanup_budget() {
             fixture.mutation(2,"stop",json!({"sessionId":coordinator,"invocationId":sent["invocationId"]}),Uuid::new_v4()).await.unwrap();
             blocked.cancelled.acquire().await.unwrap().forget();
             // Physical callback stays owned beyond the original five-second budget.
-            tokio::time::timeout(Duration::from_secs(8),idle(&fixture,EXPORT,&coordinator)).await.unwrap();
+            tokio::time::timeout(Duration::from_secs(8), async {
+                while !coordinator_owner.workers.is_empty() { tokio::task::yield_now().await; }
+            }).await.unwrap();
+            assert!(coordinator_owner.runs.lock().await.quarantined.contains(&coordinator));
             assert!(fixture.app.client().snapshot().instances.iter().any(|instance| instance.activation.instance() == &id(21) && instance.calls > 0));
-            let facts = fixture.store.scoped_prefix(maka_agent_facts::event::LogScope::Session { id: coordinator.clone() },256,4*1024*1024).await.unwrap();
-            assert!(!facts.events.iter().any(|event| matches!(event.event.fact,Fact::ToolSettled { .. })));
+            let facts = fixture.facts_after_failed_shutdown(&coordinator).await;
+            assert!(!facts.iter().any(|fact| matches!(fact,Fact::ToolSettled { .. })));
             blocked.release.add_permits(1);
             assert!(fixture.app.shutdown().await.is_err());
             assert!(!fixture.app.client().snapshot().closed);
@@ -1229,7 +1249,7 @@ async fn workhub_queued_input_cannot_adopt_reactivated_worker_bindings() {
             tokio::task::yield_now().await;
         };
         assert_eq!(resolved["execution"]["state"],"failed");
-        let facts=fixture.store.scoped_prefix(maka_agent_facts::event::LogScope::Session {id:session},256,4*1024*1024).await.unwrap();
+        let facts=fixture.session(&(session)).await.scoped_prefix(maka_agent_facts::event::LogScope::Session {id:session},256,4*1024*1024).await.unwrap();
         assert!(facts.events.iter().any(|event| matches!(&event.event.fact,Fact::InvocationEnded {outcome:maka_agent_facts::event::InvocationOutcome::Failed {message:Some(message),..}} if message == "agent_tools_changed")));
         assert!(tokio::time::timeout(Duration::from_millis(30),listener.accept()).await.is_err());
         fixture.app.shutdown().await.unwrap();fixture.config.shutdown().await.unwrap();
@@ -1603,17 +1623,17 @@ async fn workhub_creates_selected_worker_and_transfers_original_attachment_bytes
         assert_eq!(query_import(&fixture,hub::EXPORT,"tasks",json!({})).await["entries"][0]["title"],"New assigned worker");
         let worker=task["status"]["sessionId"].as_str().unwrap();
         idle(&fixture,EXPORT,&coordinator).await;idle(&fixture,"worker",worker).await;
-        let artifacts=fixture.store.list_artifacts(worker,0,10).await.unwrap();assert_eq!(artifacts.records.len(),9);
+        let artifacts=fixture.session(worker).await.list_artifacts(worker,0,10).await.unwrap();assert_eq!(artifacts.records.len(),9);
         for ((name,bytes),source) in files.iter().zip(&sources) {
             let copied=artifacts.records.iter().find(|record|record.name==*name).unwrap();
             assert_ne!(&copied.id,source);
             assert_eq!(copied.session_id,worker);
             assert_eq!(copied.size_bytes,bytes.len() as u64);
             assert_eq!(copied.summary.as_deref(),Some(maka_agent_facts::artifact::content_digest(bytes).as_str()));
-            assert!(fixture.store.read_artifact_chunk(worker,&copied.id,0,bytes.len()).await.unwrap().unwrap().bytes==*bytes,"original transfer bytes differ: {name}");
+            assert!(fixture.session(worker).await.read_artifact_chunk(worker,&copied.id,0,bytes.len()).await.unwrap().unwrap().bytes==*bytes,"original transfer bytes differ: {name}");
         }
-        let through=*fixture.store.subscribe_commits().borrow();
-        let events=fixture.store.session_events(worker,0,through,512,usize::MAX).await.unwrap();
+        let through=fixture.through(worker).await;
+        let events=fixture.session(worker).await.session_events(worker,0,through,512,usize::MAX).await.unwrap();
         let received=events.events.iter().find_map(|stored|match &stored.event.fact {
             Fact::InvocationOpened {input:maka_agent_facts::event::InvocationInput::Message {content,..},..}=>content.attachments.as_ref(),
             _=>None,
@@ -1631,7 +1651,7 @@ async fn workhub_creates_selected_worker_and_transfers_original_attachment_bytes
         assert_eq!(query_import(&fixture,"worker","list",json!({"filter":"all","position":{"kind":"start"}})).await["sessions"].as_array().unwrap().len(),1);
         let replay=control_turn(&fixture,&listener,&coordinator,json!({"operation":"advance","taskId":task["taskId"]})).await;
         assert_eq!(replay["status"]["invocationId"],task["status"]["invocationId"]);
-        assert_eq!(fixture.store.list_artifacts(worker,0,10).await.unwrap().records.len(),9);
+        assert_eq!(fixture.session(worker).await.list_artifacts(worker,0,10).await.unwrap().records.len(),9);
         while let Ok(accepted)=tokio::time::timeout(Duration::from_millis(30),listener.accept()).await {
             let (mut socket,_)=accepted.unwrap();let input=request(&mut socket).await;
             assert!(is_coordinator(&input)&&is_worker_notice(&input),"advance redispatched work instead of receiving the original completion notice: {input}");
@@ -1670,16 +1690,16 @@ async fn workhub_unknown_preparation_never_recreates_or_reuploads_on_advance() {
             let sessions=sessions["sessions"].as_array().unwrap();assert_eq!(sessions.len(),1);
             let worker=sessions[0]["id"].as_str().unwrap().to_owned();
             let count=usize::from(method=="uploadAttachment");
-            assert_eq!(fixture.store.list_artifacts(&worker,0,10).await.unwrap().records.len(),count);
+            assert_eq!(fixture.session(&worker).await.list_artifacts(&worker,0,10).await.unwrap().records.len(),count);
             let records=fixture.store.application_intents(fixture.app.source().unwrap().deployment,id(1),0,128).await.unwrap();
             assert_eq!(records.len(),count+1);assert_eq!(records.last().unwrap().reference.method,method);
             let reference=records.last().unwrap().reference.clone();
             activate_workers(&mut fixture,true,true,true).await;
             assert_eq!(query_import(&fixture,hub::EXPORT,"task",json!({"taskId":original["taskId"]})).await,original);
             assert_eq!(control_turn(&fixture,&listener,&coordinator,json!({"operation":"advance","taskId":original["taskId"]})).await,original);
-            assert_eq!(fixture.store.list_artifacts(&worker,0,10).await.unwrap().records.len(),count);
+            assert_eq!(fixture.session(&worker).await.list_artifacts(&worker,0,10).await.unwrap().records.len(),count);
             assert_eq!(fixture.store.application_intents(fixture.app.source().unwrap().deployment,id(1),0,128).await.unwrap().len(),count+1);
-            assert!(matches!(fixture.store.operation_observation(&reference).await.unwrap().unwrap().outcome,OperationOutcome::Unknown {..}));
+            assert!(matches!(fixture.store.operation(&reference).unwrap().operation_observation().await.unwrap().unwrap().outcome,OperationOutcome::Unknown {..}));
             assert!(tokio::time::timeout(Duration::from_millis(30),listener.accept()).await.is_err());
             fixture.app.shutdown().await.unwrap();fixture.config.shutdown().await.unwrap();
         }).await.unwrap();
@@ -1727,8 +1747,8 @@ async fn workhub_unrecorded_upload_requires_original_capture_after_sql_recovery(
         let ready=resolve(&fixture,selection(&fixture).await,Uuid::new_v4()).await;
         let coordinator=ready["session"]["id"].as_str().unwrap().to_owned();
         let uploaded=attachments::upload(&fixture,&coordinator,"original.txt",b"original bytes",Uuid::new_v4()).await.unwrap();
-        let raw=rusqlite::Connection::open(fixture.root.join(maka_event_log::root::ROOT_DATABASE)).unwrap();
-        raw.execute_batch("CREATE TRIGGER hold_upload BEFORE INSERT ON application_operations WHEN json_extract(NEW.request_json,'$.method')='uploadAttachment' BEGIN SELECT RAISE(ABORT, 'fixture reservation unavailable'); END;").unwrap();
+        let databases: Vec<_> = fixture.runtime_databases().into_iter().map(|path| rusqlite::Connection::open(path).unwrap()).collect();
+        for raw in &databases { raw.execute_batch("CREATE TRIGGER hold_upload BEFORE INSERT ON application_operations WHEN json_extract(NEW.request_json,'$.method')='uploadAttachment' BEGIN SELECT RAISE(ABORT, 'fixture reservation unavailable'); END;").unwrap(); }
         fixture.mutation(2,"send",json!({"sessionId":coordinator,"message":"Use my file","attachments":[uploaded["attachment"]["id"]],"model":fixture.selection().await}),Uuid::new_v4()).await.unwrap();
         let (mut socket,_)=listener.accept().await.unwrap();request(&mut socket).await;
         task_response(&mut socket,json!({"operation":"route","worker":"worker","target":{"kind":"existing","sessionId":worker},"note":"Transfer original bytes","model":fixture.selection().await})).await;
@@ -1737,11 +1757,11 @@ async fn workhub_unrecorded_upload_requires_original_capture_after_sql_recovery(
         let original=query_import(&fixture,hub::EXPORT,"task",json!({"taskId":task})).await;
         assert_eq!(original["status"]["state"]["kind"],"original_capture_required");
         let intents=fixture.store.application_intents(fixture.app.source().unwrap().deployment,id(1),0,128).await.unwrap();assert_eq!(intents.len(),1);
-        let reference=intents[0].reference.clone();assert_eq!(reference.method,"uploadAttachment");assert!(fixture.store.operation_observation(&reference).await.unwrap().is_none());
-        raw.execute_batch("DROP TRIGGER hold_upload;").unwrap();drop(raw);
+        let reference=intents[0].reference.clone();assert_eq!(reference.method,"uploadAttachment");assert!(fixture.store.operation(&reference).unwrap().operation_observation().await.unwrap().is_none());
+        for raw in &databases { raw.execute_batch("DROP TRIGGER hold_upload;").unwrap(); } drop(databases);
         assert_eq!(control_turn(&fixture,&listener,&coordinator,json!({"operation":"advance","taskId":task})).await,original);
-        assert!(fixture.store.operation_observation(&reference).await.unwrap().is_none());
-        assert!(fixture.store.list_artifacts(&worker,0,10).await.unwrap().records.is_empty());
+        assert!(fixture.store.operation(&reference).unwrap().operation_observation().await.unwrap().is_none());
+        assert!(fixture.session(&worker).await.list_artifacts(&worker,0,10).await.unwrap().records.is_empty());
         assert_eq!(fixture.store.application_intents(fixture.app.source().unwrap().deployment,id(1),0,128).await.unwrap().len(),1);
         assert!(tokio::time::timeout(Duration::from_millis(30),listener.accept()).await.is_err());
         fixture.app.shutdown().await.unwrap();fixture.config.shutdown().await.unwrap();
@@ -1870,7 +1890,7 @@ async fn workhub_presets_freeze_selected_worker_tools_and_recover_after_restart(
         let persisted_presets=query_import(&fixture,hub::EXPORT,"presets",json!({})).await;
         let intents=fixture.store.application_intents(fixture.app.source().unwrap().deployment,id(1),0,128).await.unwrap();
         fixture.app.shutdown().await.unwrap();fixture.config.shutdown().await.unwrap();
-        let prefix=fixture.store.scoped_prefix(maka_agent_facts::event::LogScope::Session {id:worker.to_owned()},256,4*1024*1024).await.unwrap();
+        let prefix=fixture.session(worker).await.scoped_prefix(maka_agent_facts::event::LogScope::Session {id:worker.to_owned()},256,4*1024*1024).await.unwrap();
         let original_invocation=task["status"]["invocationId"].as_str().unwrap();
         let mut lifecycle=[0usize;4];
         let mut requested_step=None;

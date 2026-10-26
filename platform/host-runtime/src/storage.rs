@@ -31,14 +31,18 @@ use tokio_util::sync::CancellationToken;
 
 #[derive(Clone)]
 pub struct Storage {
-    log: Arc<maka_event_log::EventLog>,
+    log: Arc<maka_event_log::root_store::RootStore>,
     prefix: String,
     namespace: Namespace,
     drain: CancellationToken,
     resources: Arc<Resources>,
 }
 impl Storage {
-    pub fn new(log: Arc<maka_event_log::EventLog>, prefix: String, namespace: Namespace) -> Self {
+    pub fn new(
+        log: Arc<maka_event_log::root_store::RootStore>,
+        prefix: String,
+        namespace: Namespace,
+    ) -> Self {
         Self {
             log,
             prefix,

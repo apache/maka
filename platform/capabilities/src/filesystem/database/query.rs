@@ -50,7 +50,7 @@ pub fn read(
 }
 
 fn read_connection(
-    connection: Connection,
+    mut connection: Connection,
     queries: Vec<Query>,
     cancelled: &CancellationToken,
     stopping: &CancellationToken,
@@ -177,11 +177,7 @@ fn collect(
         if !statement.readonly() {
             return Err(Error::Invalid("statement is not a read-only query".into()));
         }
-        let columns: Vec<String> = statement
-            .column_names()
-            .iter()
-            .map(|column| (*column).into())
-            .collect();
+        let columns: Vec<String> = statement.column_names().map(String::from).collect();
         let parameters = query.parameters.iter().map(Parameter).collect::<Vec<_>>();
         let mut rows = statement
             .query(rusqlite::params_from_iter(parameters.iter()))

@@ -23,10 +23,9 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 use maka_agent_facts::attachment::AttachmentRef;
 use maka_agent_facts::attachment::StorageRef;
 use maka_agent_facts::attachment::sniff_binary_mime;
-use maka_agent_facts::event::StoredEvent;
 use maka_agent_facts::tool_output::AudioOutput;
 use maka_agent_facts::tool_output::ImageOutput;
-use maka_event_log::EventLog;
+use maka_event_log::root_store::SessionStore;
 use maka_model::prompt::{ContentPart, FileData, Message, ToolOutput};
 use tokio_util::sync::CancellationToken;
 
@@ -61,38 +60,30 @@ pub(super) enum Target<'a> {
 
 enum ImageRead {
     Bytes(Vec<u8>),
-    Unavailable(&'static str),
+    Unavailable(String),
 }
 
-#[allow(clippy::too_many_arguments)] // Model projection needs both the replay cut and admission policy.
-pub(crate) async fn materialize_replay(
-    log: &EventLog,
-    events: &[maka_event_log::context::ContextEvent],
-    anchor: Option<&StoredEvent>,
+/// Resolve the structural media references belonging to one semantic page.
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn materialize_targets<'a>(
+    log: &SessionStore,
     session: &str,
-    vision: bool,
+    mut messages: Vec<Message>,
+    targets: impl IntoIterator<Item = Target<'a>>,
+    resources: &super::resources::Resources<'_>,
     cancellation: &CancellationToken,
-    replay: Option<super::Replay<'_>>,
-    prior_unknown: bool,
     language: Language,
-) -> Result<Vec<Message>, RunError> {
-    let mut targets = Vec::new();
-    let selected = anchor
-        .into_iter()
-        .map(super::EventRef::Canonical)
-        .chain(events.iter().map(super::EventRef::from));
-    let resources =
-        super::resources::Resources::load(log, session, selected.clone(), cancellation).await?;
-    let mut messages = super::build(
-        selected,
-        &resources,
-        &mut targets,
-        vision,
-        replay,
-        prior_unknown,
-        language,
-    )?;
-    for target in targets {
+    snapshot: Option<&[maka_agent_facts::history::media::MediaBinding]>,
+) -> Result<
+    (
+        Vec<Message>,
+        Vec<maka_agent_facts::history::media::MediaBinding>,
+    ),
+    RunError,
+> {
+    use maka_agent_facts::history::media::MediaBinding;
+    let mut bindings = Vec::new();
+    for (index, target) in targets.into_iter().enumerate() {
         if cancellation.is_cancelled() {
             return Err(RunError::Cancelled);
         }
@@ -102,10 +93,41 @@ pub(crate) async fn materialize_replay(
             Target::Tool { image, .. } => (&image.reference, &image.mime_type),
         };
         let audio = matches!(target, Target::Audio { .. });
-        let read = match resources.resolve(reference) {
-            Some(reference) => read(log, session, reference, audio).await?,
-            None => ImageRead::Unavailable("session_mismatch"),
+        let (read, binding) = if let Some(snapshot) = snapshot {
+            let binding = snapshot.get(index).ok_or_else(|| {
+                RunError::ReconciliationRequired("prepared media snapshot is incomplete".into())
+            })?;
+            let read = match binding {
+                MediaBinding::Available { reference } => {
+                    match read(log, session, reference, audio).await? {
+                        value @ ImageRead::Bytes(_) => value,
+                        ImageRead::Unavailable(_) => {
+                            return Err(RunError::ReconciliationRequired(
+                                "captured immutable media is unavailable".into(),
+                            ));
+                        }
+                    }
+                }
+                MediaBinding::Unavailable { reason } => ImageRead::Unavailable(reason.clone()),
+            };
+            (read, binding.clone())
+        } else {
+            let resolved = resources.resolve(reference);
+            let read = match resolved {
+                Some(reference) => read(log, session, reference, audio).await?,
+                None => ImageRead::Unavailable("session_mismatch".into()),
+            };
+            let binding = match &read {
+                ImageRead::Bytes(_) => MediaBinding::Available {
+                    reference: resolved.expect("available media has a reference").clone(),
+                },
+                ImageRead::Unavailable(reason) => MediaBinding::Unavailable {
+                    reason: reason.clone(),
+                },
+            };
+            (read, binding)
         };
+        bindings.push(binding);
         if cancellation.is_cancelled() {
             return Err(RunError::Cancelled);
         }
@@ -175,11 +197,16 @@ pub(crate) async fn materialize_replay(
     if cancellation.is_cancelled() {
         return Err(RunError::Cancelled);
     }
-    Ok(messages)
+    if snapshot.is_some_and(|snapshot| snapshot.len() != bindings.len()) {
+        return Err(RunError::ReconciliationRequired(
+            "prepared media snapshot has a different target set".into(),
+        ));
+    }
+    Ok((messages, bindings))
 }
 
 async fn read(
-    log: &EventLog,
+    log: &SessionStore,
     session: &str,
     reference: &StorageRef,
     audio: bool,
@@ -189,13 +216,13 @@ async fn read(
         relative_path,
     } = reference
     else {
-        return Ok(ImageRead::Unavailable("unsupported_ref_kind"));
+        return Ok(ImageRead::Unavailable("unsupported_ref_kind".into()));
     };
     if session_id != session {
-        return Ok(ImageRead::Unavailable("session_mismatch"));
+        return Ok(ImageRead::Unavailable("session_mismatch".into()));
     }
     if maka_agent_facts::interaction::entity_id(relative_path).is_err() {
-        return Ok(ImageRead::Unavailable("not_found"));
+        return Ok(ImageRead::Unavailable("not_found".into()));
     }
     let Some(bytes) = log
         .with_artifact(
@@ -210,10 +237,128 @@ async fn read(
         .await?
         .transpose()?
     else {
-        return Ok(ImageRead::Unavailable("not_found"));
+        return Ok(ImageRead::Unavailable("not_found".into()));
     };
     if !audio && sniff_binary_mime(&bytes).is_none() {
-        return Ok(ImageRead::Unavailable("unsupported_mime"));
+        return Ok(ImageRead::Unavailable("unsupported_mime".into()));
     }
     Ok(ImageRead::Bytes(bytes))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use maka_agent_facts::{
+        artifact::{Artifact, ArtifactKind, ArtifactSource},
+        attachment::AttachmentKind,
+    };
+
+    #[tokio::test]
+    async fn captured_unavailable_media_never_turns_into_a_new_retry_payload() {
+        let (_directory, root) = crate::test_support::root().await;
+        let log = crate::test_support::session(&root, "session").await;
+        let bytes = b"\x89PNG\r\n\x1a\n";
+        let image = AttachmentRef {
+            kind: AttachmentKind::Image,
+            name: "image.png".into(),
+            mime_type: "image/png".into(),
+            bytes: bytes.len() as u64,
+            storage_ref: StorageRef::SessionFile {
+                session_id: "session".into(),
+                relative_path: "image".into(),
+            },
+        };
+        let resources = super::super::resources::Resources::native("session");
+        let cancellation = CancellationToken::new();
+        let (missing, manifest) = materialize_targets(
+            &log,
+            "session",
+            vec![Message::user("question")],
+            vec![Target::User {
+                message: 0,
+                image: &image,
+            }],
+            &resources,
+            &cancellation,
+            Language::En,
+            None,
+        )
+        .await
+        .unwrap();
+        log.commit_artifact(
+            Artifact {
+                id: "image".into(),
+                session_id: "session".into(),
+                turn_id: "turn".into(),
+                created_at: 1,
+                name: "image.png".into(),
+                kind: ArtifactKind::Image,
+                size_bytes: bytes.len() as u64,
+                mime_type: Some("image/png".into()),
+                source: ArtifactSource::UserUpload,
+                summary: Some(maka_agent_facts::artifact::content_digest(bytes)),
+            },
+            bytes.to_vec(),
+        )
+        .await
+        .unwrap();
+        let (retry, _) = materialize_targets(
+            &log,
+            "session",
+            vec![Message::user("question")],
+            vec![Target::User {
+                message: 0,
+                image: &image,
+            }],
+            &resources,
+            &cancellation,
+            Language::En,
+            Some(&manifest),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            retry, missing,
+            "a later artifact cannot mutate captured absence"
+        );
+        let (fresh, available) = materialize_targets(
+            &log,
+            "session",
+            vec![Message::user("question")],
+            vec![Target::User {
+                message: 0,
+                image: &image,
+            }],
+            &resources,
+            &cancellation,
+            Language::En,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_ne!(
+            fresh, missing,
+            "a new request may capture newly available media"
+        );
+        log.delete_user_artifact("session", "image").await.unwrap();
+        assert!(
+            materialize_targets(
+                &log,
+                "session",
+                vec![Message::user("question")],
+                vec![Target::User {
+                    message: 0,
+                    image: &image
+                }],
+                &resources,
+                &cancellation,
+                Language::En,
+                Some(&available)
+            )
+            .await
+            .is_err(),
+            "losing a captured resource fails instead of changing model input"
+        );
+        root.close().await.unwrap();
+    }
 }

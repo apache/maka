@@ -18,7 +18,6 @@
  */
 
 use clap::{Args, Parser, Subcommand};
-use maka_event_log::EventLog;
 use maka_host_runtime::HostError;
 use std::{net::SocketAddr, path::PathBuf};
 
@@ -133,8 +132,10 @@ pub(super) struct Root {
 
 #[derive(Args)]
 struct Log {
-    #[arg(long, value_name = "FILE")]
-    log: PathBuf,
+    #[arg(long, value_name = "DIRECTORY")]
+    root: PathBuf,
+    #[arg(long)]
+    session: String,
 }
 
 impl Cli {
@@ -264,10 +265,21 @@ impl Cli {
             Command::Code(args) => code::run(args).await,
             Command::Acp(args) => crate::acp::run(args).await,
             Command::Inspect(args) => {
-                let log = EventLog::open(&args.log).await?;
-                let prefix = log.prefix(10_000, 8 * 1024 * 1024).await?;
+                let store = crate::application::open_store(args.root).await?;
+                let session = store.session(&args.session).await?;
+                let prefix = session
+                    .scoped_prefix(
+                        maka_agent_facts::event::LogScope::Session {
+                            id: session.id().into(),
+                        },
+                        10_000,
+                        8 * 1024 * 1024,
+                    )
+                    .await;
+                let closed = store.shutdown().await;
+                let prefix = prefix?;
+                closed?;
                 println!("{}", serde_json::to_string(&prefix)?);
-                log.shutdown().await?;
                 Ok(())
             }
         };
@@ -297,7 +309,7 @@ mod tests {
                 "--endpoints",
                 "/tmp/endpoints",
             ],
-            vec!["maka", "code", "--log", "/tmp/logging.sqlite"],
+            vec!["maka", "code", "--root", "/tmp/code-root"],
             vec!["maka", "acp"],
         ] {
             assert!(

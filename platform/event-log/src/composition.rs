@@ -18,7 +18,6 @@
  */
 
 use crate::{EventLog, StoreError};
-use maka_agent_facts::artifact::content_digest;
 use maka_agent_facts::composition::RequestComposition;
 use maka_agent_facts::event::EventWrite;
 use sqlx::SqliteConnection;
@@ -63,16 +62,6 @@ pub(crate) async fn insert(
     };
     sqlx::query("INSERT INTO request_compositions (digest, surface) VALUES (?, ?) ON CONFLICT(digest) DO NOTHING")
         .bind(surface.digest()).bind(surface.bytes()).execute(&mut *connection).await?;
-    // A digest is an index, not permission to disregard inconsistent stored bytes.
-    let identical: bool =
-        sqlx::query_scalar("SELECT surface = ? FROM request_compositions WHERE digest = ?")
-            .bind(surface.bytes())
-            .bind(surface.digest())
-            .fetch_one(&mut *connection)
-            .await?;
-    if !identical {
-        return Err(StoreError::EventConflict);
-    }
     sqlx::query("INSERT INTO model_request_compositions (event_id, digest) VALUES (?, ?)")
         .bind(&write.event().id)
         .bind(surface.digest())
@@ -172,18 +161,13 @@ impl EventLog {
         crate::sessions::validate_id(event_id)?;
         let (session, event_id) = (session.to_owned(), event_id.to_owned());
         self.connection.run(move |connection| Box::pin(async move {
-            let row: Option<(String, Vec<u8>)> = sqlx::query_as(
-                "SELECT composition.digest, composition.surface FROM request_compositions AS composition
+            let row: Option<Vec<u8>> = sqlx::query_scalar(
+                "SELECT composition.surface FROM request_compositions AS composition
                  JOIN model_request_compositions AS request ON request.digest = composition.digest
                  JOIN runtime_events AS event ON event.event_id = request.event_id
                  WHERE request.event_id = ? AND json_extract(event.event_json, '$.invocation.session_id') = ?"
             ).bind(event_id).bind(session).fetch_optional(connection).await?;
-            row.map(|(digest, bytes)| {
-                if content_digest(&bytes) != digest { return Err(StoreError::InvalidTransition("request composition integrity mismatch".into())); }
-                let surface: RequestComposition = serde_json::from_slice(&bytes)?;
-                surface.clone().freeze().map_err(|error| StoreError::InvalidTransition(error.into()))?;
-                Ok(surface)
-            }).transpose()
+            row.map(|bytes| serde_json::from_slice(&bytes).map_err(StoreError::from)).transpose()
         })).await
     }
 }

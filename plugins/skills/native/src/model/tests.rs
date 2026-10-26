@@ -478,8 +478,6 @@ async fn instruction_pages_preserve_the_complete_body_and_original_receipt() {
     schema("load", &result);
     assert!(maka_workspace_support::fits(&result));
     assert_eq!(result["kind"], "loaded");
-    assert_eq!(result["truncated"], false);
-    assert_eq!(result["receipt"]["truncated"], false);
     assert!(!result["instructions"].as_str().unwrap().is_empty());
     let mut current = result.clone();
     let mut complete = String::new();
@@ -680,10 +678,15 @@ async fn preparation_language_preserves_opaque_skills_metadata_and_protocol_iden
     let user_text = "Keep MyExactUserText 中文 / 繁體";
     let mut original_receipts = None;
     let mut revision = None;
-    for (language, safety_word, discovery_word) in [
-        ("en", "permission", "Available local skills"),
-        ("zh-CN", "权限", "可用的本地技能"),
-        ("zh-TW", "權限", "可用的本機技能"),
+    for (language, safety_word, discovery_word, no_task) in [
+        (
+            "en",
+            "permission",
+            "Available local skills",
+            "no additional task text",
+        ),
+        ("zh-CN", "权限", "可用的本地技能", "未提供额外的任务文本"),
+        ("zh-TW", "權限", "可用的本機技能", "未提供額外的任務文字"),
     ] {
         let result = library
             .model(
@@ -703,6 +706,22 @@ async fn preparation_language_preserves_opaque_skills_metadata_and_protocol_iden
             .unwrap();
         schema("prepare", &result);
         assert_eq!(result["kind"], "ready");
+        for message in ["/skill:review", "ordinary"] {
+            let prepared = library.model(
+                "prepare",
+                json!({"tools":["OriginalLoadTool","OriginalSearchTool"],"input":{"language":language,"message":message,"loadTool":"OriginalLoadTool","searchTool":"OriginalSearchTool"}}),
+                &call,
+            ).await.unwrap();
+            assert_eq!(prepared["kind"], "ready");
+            if message == "/skill:review" {
+                let text = prepared["text"].as_str().unwrap();
+                assert!(text.contains(no_task));
+                assert!(text.contains(body));
+            } else {
+                assert_eq!(prepared["text"], Value::Null);
+                assert_eq!(prepared["record"]["invocation"]["loaded"], json!([]));
+            }
+        }
         let text = result["text"].as_str().unwrap();
         assert!(text.contains(safety_word));
         assert!(text.contains(body));

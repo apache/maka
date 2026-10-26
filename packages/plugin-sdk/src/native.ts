@@ -382,8 +382,26 @@ export const nativeImplementations = /* @__PURE__ */ ((): {
       $schema: 'https://json-schema.org/draft/2020-12/schema';
       title: 'Configuration';
       type: 'object';
-      properties: { locale: { type: 'string'; default: '' } };
+      properties: {
+        locale: { type: 'string'; default: '' };
+        workspaceLocations: {
+          anyOf: [{ $ref: '#/$defs/Configuration' }, { type: 'null' }];
+          default: null;
+        };
+      };
       additionalProperties: false;
+      $defs: {
+        Configuration: {
+          type: 'object';
+          properties: {
+            agent: { type: 'string' };
+            skills: { type: ['string', 'null'] };
+            processes: { type: ['string', 'null'] };
+          };
+          additionalProperties: false;
+          required: ['agent'];
+        };
+      };
     };
     exports: { Settings: typeof contracts.settings };
   };
@@ -393,8 +411,26 @@ export const nativeImplementations = /* @__PURE__ */ ((): {
       $schema: 'https://json-schema.org/draft/2020-12/schema';
       title: 'Configuration';
       type: 'object';
-      properties: { locale: { type: 'string'; default: '' } };
+      properties: {
+        locale: { type: 'string'; default: '' };
+        workspaceLocations: {
+          anyOf: [{ $ref: '#/$defs/Configuration' }, { type: 'null' }];
+          default: null;
+        };
+      };
       additionalProperties: false;
+      $defs: {
+        Configuration: {
+          type: 'object';
+          properties: {
+            agent: { type: 'string' };
+            skills: { type: ['string', 'null'] };
+            processes: { type: ['string', 'null'] };
+          };
+          additionalProperties: false;
+          required: ['agent'];
+        };
+      };
     };
     exports: { Authentication: typeof contracts.settingsAuthentication };
   };
@@ -409,8 +445,26 @@ export const nativeImplementations = /* @__PURE__ */ ((): {
       $schema: 'https://json-schema.org/draft/2020-12/schema';
       title: 'Configuration';
       type: 'object';
-      properties: { locale: { type: 'string'; default: '' } };
+      properties: {
+        locale: { type: 'string'; default: '' };
+        workspaceLocations: {
+          anyOf: [{ $ref: '#/$defs/Configuration' }, { type: 'null' }];
+          default: null;
+        };
+      };
       additionalProperties: false;
+      $defs: {
+        Configuration: {
+          type: 'object';
+          properties: {
+            agent: { type: 'string' };
+            skills: { type: ['string', 'null'] };
+            processes: { type: ['string', 'null'] };
+          };
+          additionalProperties: false;
+          required: ['agent'];
+        };
+      };
     };
     exports: { Setup: typeof contracts.settingsSetup };
   };
@@ -774,8 +828,26 @@ export const nativeImplementations = /* @__PURE__ */ ((): {
       $schema: 'https://json-schema.org/draft/2020-12/schema',
       title: 'Configuration',
       type: 'object',
-      properties: { locale: { type: 'string', default: '' } },
+      properties: {
+        locale: { type: 'string', default: '' },
+        workspaceLocations: {
+          anyOf: [{ $ref: '#/$defs/Configuration' }, { type: 'null' }],
+          default: null,
+        },
+      },
       additionalProperties: false,
+      $defs: {
+        Configuration: {
+          type: 'object',
+          properties: {
+            agent: { type: 'string' },
+            skills: { type: ['string', 'null'] },
+            processes: { type: ['string', 'null'] },
+          },
+          additionalProperties: false,
+          required: ['agent'],
+        },
+      },
     },
     exports: { Settings: contracts.settings },
   },
@@ -785,8 +857,26 @@ export const nativeImplementations = /* @__PURE__ */ ((): {
       $schema: 'https://json-schema.org/draft/2020-12/schema',
       title: 'Configuration',
       type: 'object',
-      properties: { locale: { type: 'string', default: '' } },
+      properties: {
+        locale: { type: 'string', default: '' },
+        workspaceLocations: {
+          anyOf: [{ $ref: '#/$defs/Configuration' }, { type: 'null' }],
+          default: null,
+        },
+      },
       additionalProperties: false,
+      $defs: {
+        Configuration: {
+          type: 'object',
+          properties: {
+            agent: { type: 'string' },
+            skills: { type: ['string', 'null'] },
+            processes: { type: ['string', 'null'] },
+          },
+          additionalProperties: false,
+          required: ['agent'],
+        },
+      },
     },
     exports: { Authentication: contracts.settingsAuthentication },
   },
@@ -801,8 +891,26 @@ export const nativeImplementations = /* @__PURE__ */ ((): {
       $schema: 'https://json-schema.org/draft/2020-12/schema',
       title: 'Configuration',
       type: 'object',
-      properties: { locale: { type: 'string', default: '' } },
+      properties: {
+        locale: { type: 'string', default: '' },
+        workspaceLocations: {
+          anyOf: [{ $ref: '#/$defs/Configuration' }, { type: 'null' }],
+          default: null,
+        },
+      },
       additionalProperties: false,
+      $defs: {
+        Configuration: {
+          type: 'object',
+          properties: {
+            agent: { type: 'string' },
+            skills: { type: ['string', 'null'] },
+            processes: { type: ['string', 'null'] },
+          },
+          additionalProperties: false,
+          required: ['agent'],
+        },
+      },
     },
     exports: { Setup: contracts.settingsSetup },
   },

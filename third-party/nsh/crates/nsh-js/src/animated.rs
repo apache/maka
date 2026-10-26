@@ -1,7 +1,9 @@
 //! `nsh/animated`: animated values and the animation graph (`AnimatedNode`,
-//! `AnimatedValue`, `Animated`'s drivers and composites), `Easing` and
-//! `LayoutAnimation`. Everything runs on the UI thread, JS only describes
-//! it.
+//! `AnimatedValue`, `Animated`'s drivers and composites, keyframes),
+//! motions (`createMotion`, `motions`), `Easing` and `LayoutAnimation`.
+//! Everything runs on the UI thread, JS only describes it: keyframes and
+//! motions are composites whose trees the core makes from their configs
+//! (`nsh_core::animation::motion`).
 //!
 //! Operations are encoded as a few values (`ANIMATION_*`) and decoded into
 //! `AnimationOp`s (`protocol::decode_animation_op`). Nodes and composites are
@@ -15,7 +17,10 @@ use std::{
     ptr,
 };
 
-use nsh_core::{animation::AnimationOp, js::protocol::*};
+use nsh_core::{
+    animation::{AnimationOp, MotionChannel},
+    js::protocol::*,
+};
 use rquickjs::{Ctx, Value, qjs};
 use rustc_hash::FxHashMap;
 
@@ -266,6 +271,7 @@ fn classes(cx: *mut JsContext) -> Classes {
                 (c"timing", value_timing, 2),
                 (c"spring", value_spring, 2),
                 (c"decay", value_decay, 1),
+                (c"keyframes", value_keyframes, 2),
             ],
         );
         let composite_proto = qjs::JS_NewObject(cx);
@@ -462,12 +468,17 @@ fn derived_hash(op: &AnimationOp) -> u64 {
             }
         }
         AnimationOp::CreateDiffClamp {
-            input, min, max, ..
+            input,
+            min,
+            max,
+            snap,
+            ..
         } => {
             kind = 1;
             ids[0] = *input;
             f(*min);
             f(*max);
+            snap.hash(&mut h);
         }
         AnimationOp::CreateMath { a, b, .. } => {
             kind = 2;
@@ -542,6 +553,9 @@ unsafe extern "C" fn node_diff_clamp(
         int(input),
         dup(cx, arg(argc, argv, 0)),
         dup(cx, arg(argc, argv, 1)),
+        // `{ snap }`: settles at the nearer bound when its scroll view
+        // rests (undefined without options).
+        get(cx, arg(argc, argv, 2), c"snap"),
     ];
     derived(cx, vec![dup(cx, this)], ANIMATION_DIFF_CLAMP, args)
 }
@@ -1256,7 +1270,8 @@ unsafe extern "C" fn animated_delay(
     composite(cx, spec, Vec::new())
 }
 
-/// `stagger(ms, list)`: the animations starting `ms` apart.
+/// `stagger(ms, list, { from })`: the animations starting `ms` apart,
+/// counted from the first (by default), the last, the center or an index.
 unsafe extern "C" fn animated_stagger(
     cx: *mut JsContext,
     _this: JsValue,
@@ -1267,13 +1282,16 @@ unsafe extern "C" fn animated_stagger(
     // SAFETY: a conversion, reads of a live array; values are freed.
     unsafe { qjs::JS_ToFloat64(cx, &mut ms, arg(argc, argv, 0)) };
     let list = arg(argc, argv, 1);
+    let from = stagger_from(cx, arg(argc, argv, 2));
     let mut len: i64 = 0;
     let mut staged = Vec::new();
     unsafe {
         if qjs::JS_IsArray(list) && qjs::JS_GetLength(cx, list, &mut len) == 0 {
-            for i in 0..len.max(0) {
-                let a = qjs::JS_GetPropertyInt64(cx, list, i);
-                let mut delay_args = [qjs::JS_NewFloat64(ms * i as f64)];
+            let count = len.max(0) as usize;
+            for i in 0..count {
+                let a = qjs::JS_GetPropertyInt64(cx, list, i as i64);
+                let steps = nsh_core::animation::stagger_delay(i, count, from) as f64;
+                let mut delay_args = [qjs::JS_NewFloat64(ms * steps)];
                 let delay = animated_delay(cx, UNDEFINED, 1, delay_args.as_mut_ptr());
                 let mut pair = [delay, a];
                 let seq_list = qjs::JS_NewArrayFrom(cx, 2, pair.as_mut_ptr());
@@ -1286,6 +1304,347 @@ unsafe extern "C" fn animated_stagger(
     let r = group(cx, "parallel", all, vec![(c"stopTogether", qjs::JS_TRUE)]);
     free(cx, all);
     r
+}
+
+/// `{ from }` of a stagger: `"first"`, `"last"`, `"center"` or an index.
+fn stagger_from(cx: *mut JsContext, config: JsValue) -> nsh_core::animation::StaggerFrom {
+    use nsh_core::animation::StaggerFrom;
+    let from = get(cx, config, c"from");
+    let mut index = 0f64;
+    // SAFETY: checks and a conversion of a live value.
+    let r = unsafe {
+        if qjs::JS_IsNumber(from) && qjs::JS_ToFloat64(cx, &mut index, from) == 0 {
+            StaggerFrom::Index(index.max(0.0) as usize)
+        } else {
+            match dom::string_arg(cx, from).as_deref() {
+                Some("last") => StaggerFrom::Last,
+                Some("center") => StaggerFrom::Center,
+                _ => StaggerFrom::First,
+            }
+        }
+    };
+    free(cx, from);
+    r
+}
+
+// --- Keyframes and motions ---------------------------------------------------------
+
+/// A keyframes composite on value `value`: `config` is `{ keyframes,
+/// duration, delay, easing, iterations, direction }` (copied).
+fn keyframes(cx: *mut JsContext, value: JsValue, config: JsValue) -> JsValue {
+    let Some(node) = node_id(cx, value) else {
+        // SAFETY: throws on a live context.
+        return unsafe { qjs::JS_ThrowTypeError(cx, c"not an animated value".as_ptr()) };
+    };
+    let spec = driver_config(cx, "keyframes", None, config);
+    // SAFETY: the spec takes the field.
+    unsafe { qjs::JS_SetPropertyStr(cx, spec, c"node".as_ptr(), int(node)) };
+    composite(cx, spec, vec![dup(cx, value)])
+}
+
+/// `Animated.keyframes(value, config)`.
+unsafe extern "C" fn animated_keyframes(
+    cx: *mut JsContext,
+    _this: JsValue,
+    argc: c_int,
+    argv: *mut JsValue,
+) -> JsValue {
+    keyframes(cx, arg(argc, argv, 0), arg(argc, argv, 1))
+}
+
+/// Starts composite `c` (taken): a promise of whether it finished.
+fn start_composite(cx: *mut JsContext, c: JsValue) -> JsValue {
+    // SAFETY: a check of a live value, then its method.
+    if unsafe { qjs::JS_IsException(c) } {
+        return c;
+    }
+    let p = unsafe { composite_start(cx, c, 0, ptr::null_mut()) };
+    free(cx, c);
+    p
+}
+
+/// `value.keyframes(keyframes, options)`: plays them on the value; a
+/// promise of whether they finished.
+unsafe extern "C" fn value_keyframes(
+    cx: *mut JsContext,
+    this: JsValue,
+    argc: c_int,
+    argv: *mut JsValue,
+) -> JsValue {
+    let config = driver_config(cx, "keyframes", None, arg(argc, argv, 1));
+    // SAFETY: the config takes the field.
+    unsafe {
+        qjs::JS_SetPropertyStr(
+            cx,
+            config,
+            c"keyframes".as_ptr(),
+            dup(cx, arg(argc, argv, 0)),
+        );
+    }
+    let c = keyframes(cx, this, config);
+    free(cx, config);
+    start_composite(cx, c)
+}
+
+/// Whether field `key` of `obj` is truthy.
+fn flag(cx: *mut JsContext, obj: JsValue, key: &CStr) -> bool {
+    let v = get(cx, obj, key);
+    // SAFETY: a conversion of an owned value, freed.
+    let on = unsafe { qjs::JS_ToBool(cx, v) } == 1;
+    free(cx, v);
+    on
+}
+
+/// Motion `motion` (a name or a spec) with `options` (its timing, ...)
+/// over it, owned: a preset named with options is the preset's data
+/// (`motions`) with them.
+fn motion_with(cx: *mut JsContext, motion: JsValue, options: JsValue) -> JsValue {
+    // SAFETY: checks of live values; new values owned.
+    unsafe {
+        if !qjs::JS_IsObject(options) {
+            return dup(cx, motion);
+        }
+        let name = qjs::JS_IsString(motion)
+            .then(|| dom::string_arg(cx, motion))
+            .flatten();
+        let base = match name {
+            Some(name) => {
+                let motions = table(cx, "motions");
+                let name = CString::new(name).unwrap_or_default();
+                let preset = qjs::JS_GetPropertyStr(cx, motions, name.as_ptr());
+                free(cx, motions);
+                if qjs::JS_IsUndefined(preset) {
+                    return dup(cx, motion);
+                }
+                preset
+            }
+            None => dup(cx, motion),
+        };
+        let mut args = [base, options];
+        let merged = dom::merge_values(cx, &mut args);
+        free(cx, base);
+        merged
+    }
+}
+
+/// A composite of `motion` (with `options`) on the channels of motion
+/// object `object`, not started.
+fn motion_composite(
+    cx: *mut JsContext,
+    object: JsValue,
+    motion: JsValue,
+    options: JsValue,
+) -> JsValue {
+    let mut ids = Vec::with_capacity(MotionChannel::ALL.len());
+    let mut values = Vec::with_capacity(MotionChannel::ALL.len());
+    for channel in MotionChannel::ALL {
+        let name = CString::new(channel.name()).unwrap_or_default();
+        let v = get(cx, object, &name);
+        ids.push(node_id(cx, v).unwrap_or(0) as f32);
+        values.push(v);
+    }
+    // Less motion, asked for by the user: it lands where it ends.
+    let reduced = crate::env::current(cx).reduce_motion
+        && !flag(cx, options, c"ignoreReduceMotion")
+        && !flag(cx, motion, c"ignoreReduceMotion");
+    let spec = object_spec(cx, motion, options, &ids, reduced);
+    composite(cx, spec, values)
+}
+
+/// Plays `motion` (with `options`) on the channels of motion object
+/// `object`: a promise of whether it finished.
+fn play(cx: *mut JsContext, object: JsValue, motion: JsValue, options: JsValue) -> JsValue {
+    start_composite(cx, motion_composite(cx, object, motion, options))
+}
+
+/// The composite spec of a motion's `play`.
+fn object_spec(
+    cx: *mut JsContext,
+    motion: JsValue,
+    options: JsValue,
+    ids: &[f32],
+    reduced: bool,
+) -> JsValue {
+    object(
+        cx,
+        vec![
+            (c"type", string(cx, "motion")),
+            (c"nodes", number_array(cx, ids)),
+            (c"motion", motion_with(cx, motion, options)),
+            (
+                c"reduced",
+                if reduced { qjs::JS_TRUE } else { qjs::JS_FALSE },
+            ),
+        ],
+    )
+}
+
+/// A motion object's method: `magic` 0 `play`, 1 `stop`, 2 `reset`, 3
+/// `animation`; its data is the object.
+unsafe extern "C" fn motion_method(
+    cx: *mut JsContext,
+    _this: JsValue,
+    argc: c_int,
+    argv: *mut JsValue,
+    magic: c_int,
+    data: *mut JsValue,
+) -> JsValue {
+    // SAFETY: one data value: the motion object.
+    let object = unsafe { *data };
+    match magic {
+        0 => return play(cx, object, arg(argc, argv, 0), arg(argc, argv, 1)),
+        3 => return motion_composite(cx, object, arg(argc, argv, 0), arg(argc, argv, 1)),
+        _ => {}
+    }
+    for channel in MotionChannel::ALL {
+        let name = CString::new(channel.name()).unwrap_or_default();
+        let v = get(cx, object, &name);
+        let id = node_id(cx, v);
+        free(cx, v);
+        let Some(id) = id else { continue };
+        let mut op = vec![int(ANIMATION_STOP), int(id)];
+        if magic == 2 {
+            op = vec![int(ANIMATION_SET), int(id), int(channel.identity())];
+        }
+        if let Err(e) = send(cx, op) {
+            return e;
+        }
+    }
+    UNDEFINED
+}
+
+/// A motion's transform steps (owned) over its channels' `values`: the
+/// translations and rotations, then the scales with `scale` folded into
+/// `scaleX` and `scaleY` (multiplied natively), so a motion takes 7 of a
+/// view's 8 transform steps and leaves one for the app (a `perspective`).
+fn motion_transform(cx: *mut JsContext, values: &[JsValue]) -> Vec<JsValue> {
+    use MotionChannel::*;
+    let at = |c: MotionChannel| values[c.index()];
+    let mut steps = Vec::with_capacity(7);
+    for channel in [TranslateX, TranslateY, Rotate, RotateX, RotateY] {
+        let name = CString::new(channel.name()).unwrap_or_default();
+        steps.push(object(cx, vec![(name.as_c_str(), dup(cx, at(channel)))]));
+    }
+    steps.push(object(
+        cx,
+        vec![(c"scaleX", math(cx, "mul", at(Scale), at(ScaleX)))],
+    ));
+    steps.push(object(
+        cx,
+        vec![(c"scaleY", math(cx, "mul", at(Scale), at(ScaleY)))],
+    ));
+    steps
+}
+
+/// `createMotion(options)`: an animated value per channel at rest (or at
+/// `options.initial`, or where `options.enter` starts), their style
+/// bindings, and `play` / `stop` / `reset` / `animation`; `enter` plays at
+/// once, with the options as its timing.
+unsafe extern "C" fn create_motion(
+    cx: *mut JsContext,
+    _this: JsValue,
+    argc: c_int,
+    argv: *mut JsValue,
+) -> JsValue {
+    let options = arg(argc, argv, 0);
+    let enter = get(cx, options, c"enter");
+    let has_enter = !unsafe { qjs::JS_IsUndefined(enter) };
+    let mut initial = [None; 9];
+    let given = get(cx, options, c"initial");
+    for channel in MotionChannel::ALL {
+        let name = CString::new(channel.name()).unwrap_or_default();
+        let v = get(cx, given, &name);
+        let mut x = 0f64;
+        // SAFETY: a check and a conversion of an owned value, freed.
+        if unsafe { qjs::JS_IsNumber(v) && qjs::JS_ToFloat64(cx, &mut x, v) == 0 } {
+            initial[channel.index()] = Some(x as f32);
+        }
+        free(cx, v);
+    }
+    free(cx, given);
+    let starts = if has_enter {
+        // SAFETY: a context reference for the decoder, which takes a dup.
+        let js_cx = unsafe { Ctx::from_raw(ptr::NonNull::new_unchecked(cx)) };
+        let value = unsafe { Value::from_raw(js_cx, dup(cx, enter)) };
+        crate::protocol::motion_start(value)
+    } else {
+        [None; 9]
+    };
+    // SAFETY: new objects taking the values set on them.
+    unsafe {
+        let m = qjs::JS_NewObject(cx);
+        // The channels' values (owned), by `MotionChannel::ALL`.
+        let mut values = Vec::with_capacity(MotionChannel::ALL.len());
+        for channel in MotionChannel::ALL {
+            let start = starts[channel.index()]
+                .or(initial[channel.index()])
+                .unwrap_or(channel.identity());
+            let v = match new_value(cx, start as f64) {
+                Ok(v) => v,
+                Err(e) => {
+                    free(cx, m);
+                    for v in values {
+                        free(cx, v);
+                    }
+                    free(cx, enter);
+                    return e;
+                }
+            };
+            let name = CString::new(channel.name()).unwrap_or_default();
+            qjs::JS_SetPropertyStr(cx, m, name.as_ptr(), dup(cx, v));
+            values.push(v);
+        }
+        let opacity = dup(cx, values[MotionChannel::Opacity.index()]);
+        let transform = motion_transform(cx, &values);
+        for v in values {
+            free(cx, v);
+        }
+        let list = |items: &[JsValue]| {
+            let mut items: Vec<JsValue> = items.iter().map(|&t| dup(cx, t)).collect();
+            qjs::JS_NewArrayFrom(cx, items.len() as c_int, items.as_mut_ptr())
+        };
+        let style = object(
+            cx,
+            vec![(c"opacity", opacity), (c"transform", list(&transform))],
+        );
+        qjs::JS_SetPropertyStr(cx, m, c"transform".as_ptr(), list(&transform));
+        qjs::JS_SetPropertyStr(cx, m, c"style".as_ptr(), style);
+        for t in transform {
+            free(cx, t);
+        }
+        for (name, magic, length) in [
+            (c"play", 0, 2),
+            (c"stop", 1, 0),
+            (c"reset", 2, 0),
+            (c"animation", 3, 2),
+        ] {
+            let mut data = [m];
+            let f = qjs::JS_NewCFunctionData(
+                cx,
+                Some(motion_method),
+                length,
+                magic,
+                1,
+                data.as_mut_ptr(),
+            );
+            qjs::JS_SetPropertyStr(cx, m, name.as_ptr(), f);
+        }
+        if has_enter {
+            let p = play(cx, m, enter, options);
+            free(cx, enter);
+            if qjs::JS_IsException(p) {
+                free(cx, m);
+                return p;
+            }
+            free(cx, p);
+        }
+        m
+    }
+}
+
+/// `motions`: the presets as data.
+fn motions(cx: *mut JsContext) -> JsValue {
+    table(cx, "motions")
 }
 
 /// `loop(animation, { iterations, resetBeforeIteration })`.
@@ -1378,9 +1737,10 @@ fn animated(cx: *mut JsContext) -> JsValue {
             (c"decay", animated_decay, 2),
             (c"sequence", animated_sequence, 1),
             (c"parallel", animated_parallel, 2),
-            (c"stagger", animated_stagger, 2),
+            (c"stagger", animated_stagger, 3),
             (c"delay", animated_delay, 1),
             (c"loop", animated_loop, 2),
+            (c"keyframes", animated_keyframes, 2),
             (c"add", animated_add, 2),
             (c"subtract", animated_subtract, 2),
             (c"multiply", animated_multiply, 2),
@@ -1499,6 +1859,22 @@ unsafe extern "C" fn easing_mode(
     }
 }
 
+/// `Easing.steps(count, position)`: CSS `steps()`.
+unsafe extern "C" fn easing_steps(
+    cx: *mut JsContext,
+    _this: JsValue,
+    argc: c_int,
+    argv: *mut JsValue,
+) -> JsValue {
+    let position = arg(argc, argv, 1);
+    let mut fields = vec![(c"steps", dup(cx, arg(argc, argv, 0)))];
+    // SAFETY: a check of a live value.
+    if !unsafe { qjs::JS_IsUndefined(position) } {
+        fields.push((c"position", dup(cx, position)));
+    }
+    object(cx, fields)
+}
+
 unsafe extern "C" fn easing_bezier(
     cx: *mut JsContext,
     _this: JsValue,
@@ -1550,6 +1926,12 @@ fn easing(cx: *mut JsContext) -> JsValue {
             o,
             c"bezier".as_ptr(),
             reactive::new_function(cx, c"bezier", easing_bezier, 4),
+        );
+        qjs::JS_SetPropertyStr(
+            cx,
+            o,
+            c"steps".as_ptr(),
+            reactive::new_function(cx, c"steps", easing_steps, 2),
         );
         qjs::JS_SetPropertyStr(
             cx,
@@ -1733,8 +2115,12 @@ pub(crate) const EXPORTS: &[Item] = &[
     easing?: Easing;
   }): AnimatedNode;
   /** Follows this node's changes, kept within `min..max` (a header that
-   * hides while content scrolls up and comes back as it scrolls down). */
-  diffClamp(min: number, max: number): AnimatedNode;
+   * hides while content scrolls up and comes back as it scrolls down).
+   * `snap`: when the scroll view it follows comes to rest between the
+   * bounds, it settles at the nearer one in 200 ms, easing out (a floating
+   * bar shows or hides fully); at `max` only once this node reached
+   * `max`, so a page scrolled less than the bar's height shows all of it. */
+  diffClamp(min: number, max: number, options?: { snap?: boolean }): AnimatedNode;
   add(b: AnimatedNode | number): AnimatedNode;
   sub(b: AnimatedNode | number): AnimatedNode;
   mul(b: AnimatedNode | number): AnimatedNode;
@@ -1778,6 +2164,10 @@ pub(crate) const EXPORTS: &[Item] = &[
    * `clamp` it stops at a bound, or bounces back keeping `bounce` (0..1) of
    * its speed. */
   decay(options?: DecayConfig): Promise<boolean>;
+  /** Plays `keyframes` (numbers spread evenly, or `{ offset, value, easing }`)
+   * as CSS keyframes play: each segment with its easing (CSS `ease` by
+   * default), `iterations` times in `direction`. Resolves with `finished`. */
+  keyframes(keyframes: KeyframeValue[], options?: KeyframeTiming): Promise<boolean>;
 }"#,
         ),
     ),
@@ -1787,6 +2177,22 @@ pub(crate) const EXPORTS: &[Item] = &[
         Ts::function(
             "Creates an animated value. Bind it (or nodes derived from it) to style\nproperties (`opacity`, `transform`, `backgroundColor`, `borderColor`, a\ntext's `color`, `shadowColor` / `shadowOpacity` / `shadowRadius`), to a\nscroll position (`scrollValue`) or to drags (`pan`).",
             &["(value?: number): AnimatedValue"],
+        ),
+    ),
+    (
+        "createMotion",
+        Export::Function(create_motion, 1),
+        Ts::function(
+            "Creates a motion: an animated value for each channel (`opacity`, `translateX`,\n`translateY`, `rotate`, `rotateX`, `rotateY`, `scale`, `scaleX`, `scaleY`) at rest, bound\nwith `style={motion.style}` (or `opacity` and `transform` spread into a style), and\n`play(motion, options)` to run a preset (`\"shake\"`, `\"fadeInUp\"`, ...) or keyframes of\nyour own on them, natively. `enter` starts the values where that motion starts and\nplays it at once (the options also take its timing: `delay`, `duration`, ...). When the\nuser asks for less motion, motions land where they end without moving, unless\n`ignoreReduceMotion` is set.",
+            &["(options?: MotionOptions): Motion"],
+        ),
+    ),
+    (
+        "motions",
+        Export::Value(motions),
+        Ts::value(
+            "The ready-made motions as data (`motion.play(\"shake\")` plays `motions.shake`):\nentrances, exits, attention seekers and loops. Spread one to change it:\n`motion.play({ ...motions.fadeInUp, duration: 600 })`.",
+            "Readonly<Record<MotionName, MotionPreset>>",
         ),
     ),
     (
@@ -1846,6 +2252,8 @@ export interface EasingModule extends EasingCurves {
   linear: Easing;
   ease: Easing;
   bezier(x1: number, y1: number, x2: number, y2: number): Easing;
+  /** CSS `steps(count, position)`: jumps between `count` levels. */
+  steps(count: number, position?: StepPosition): EasingSteps;
   in(e: Easing): Easing;
   out(e: Easing): Easing;
   inOut(e: Easing): Easing;
@@ -1853,6 +2261,120 @@ export interface EasingModule extends EasingCurves {
    * included), computed by the native implementation the animations run:
    * to draw it. */
   sample(easing: Easing, count: number): number[];
+}
+
+/** A keyframe of one value: where it is at `offset` (0..1 of an iteration;
+ * missing offsets spread evenly, as in the Web Animations API) and the easing
+ * of the segment that starts there. Values are numbers, or angles
+ * (`"45deg"`, `"0.5turn"`) in degrees. */
+export interface Keyframe {
+  offset?: number;
+  value: number | string;
+  easing?: Easing;
+}
+
+/** A keyframe, or only its value (spread evenly with the others). */
+export type KeyframeValue = number | string | Keyframe;
+
+/** Which way iterations of keyframes play (CSS `animation-direction`). */
+export type PlaybackDirection = "normal" | "reverse" | "alternate" | "alternate-reverse";
+
+/** How keyframes play, as CSS animations do. */
+export interface KeyframeTiming {
+  /** One iteration, in milliseconds (300). */
+  duration?: number;
+  /** Before the first iteration, in milliseconds. */
+  delay?: number;
+  /** The curve of each segment without one of its own (CSS `ease`). */
+  easing?: Easing;
+  /** How many iterations (1), or `"infinite"`. */
+  iterations?: number | "infinite";
+  /** Which way they play (`"normal"`). */
+  direction?: PlaybackDirection;
+}
+
+/** `Animated.keyframes`' config. */
+export interface KeyframesConfig extends KeyframeTiming {
+  keyframes: KeyframeValue[];
+}
+
+/** One frame of several channels, as the Web Animations API writes them:
+ * `{ opacity: 0, translateY: 24 }`, with its `offset` and `easing`. */
+export type MotionFrame = { [C in MotionChannel]?: number | string } & { offset?: number; easing?: Easing };
+
+/** A motion of your own: each channel's keyframes (`{ opacity: [0, 1],
+ * translateY: [24, 0] }`) or a list of frames (`[{ opacity: 0 }, { opacity: 1
+ * }]`), with how they play. */
+export interface MotionSpec extends KeyframeTiming {
+  keyframes: { [C in MotionChannel]?: KeyframeValue[] } | MotionFrame[];
+  /** Plays even when the user asks for less motion. */
+  ignoreReduceMotion?: boolean;
+}
+
+/** A ready-made motion (`motions.<name>`). */
+export interface MotionPreset extends MotionSpec {
+  /** What it is for: it brings a view in, takes it out, draws the eye or
+   * repeats. */
+  kind: "enter" | "exit" | "attention" | "loop";
+}
+
+/** Options of `play`: the motion's timing changed, and more. */
+export interface MotionPlayOptions extends KeyframeTiming {
+  /** Plays even when the user asks for less motion. */
+  ignoreReduceMotion?: boolean;
+}
+
+/** `createMotion`'s options: where channels start, a motion to enter with,
+ * and its timing. */
+export interface MotionOptions extends MotionPlayOptions {
+  /** Where channels start (the others at rest): `{ opacity: 0 }`. */
+  initial?: { [C in MotionChannel]?: number };
+  /** Starts where this motion starts and plays it at once. */
+  enter?: MotionName | MotionSpec;
+}
+
+/** A motion's transform: its channels in the order they apply, `scale`
+ * folded into `scaleX` and `scaleY` (7 steps; a view takes 8, so one is left
+ * for yours, such as a `perspective` before them for 3D flips). */
+export type MotionTransform = [
+  { translateX: AnimatedValue },
+  { translateY: AnimatedValue },
+  { rotate: AnimatedValue },
+  { rotateX: AnimatedValue },
+  { rotateY: AnimatedValue },
+  { scaleX: AnimatedNode },
+  { scaleY: AnimatedNode },
+];
+
+/** Animated values for a view's opacity and transform, and motions to play
+ * on them (`createMotion`). */
+export interface Motion {
+  readonly opacity: AnimatedValue;
+  readonly translateX: AnimatedValue;
+  readonly translateY: AnimatedValue;
+  /** Degrees. */
+  readonly rotate: AnimatedValue;
+  readonly rotateX: AnimatedValue;
+  readonly rotateY: AnimatedValue;
+  readonly scale: AnimatedValue;
+  readonly scaleX: AnimatedValue;
+  readonly scaleY: AnimatedValue;
+  /** `{ opacity, transform }`: bind it with `style={motion.style}`, or
+   * spread it into a style. */
+  readonly style: { opacity: AnimatedValue; transform: MotionTransform };
+  /** The transform alone, to spread into one with steps of your own. */
+  readonly transform: MotionTransform;
+  /** Plays a preset or a motion of your own; a new one interrupts the one
+   * playing. Resolves with whether it finished. */
+  play(motion: MotionName | MotionSpec, options?: MotionPlayOptions): Promise<boolean>;
+  /** The same motion as an animation to compose, not started:
+   * `Animated.stagger(60, cards.map((m) => m.animation("fadeInUp")), { from:
+   * "center" })`. */
+  animation(motion: MotionName | MotionSpec, options?: MotionPlayOptions): CompositeAnimation;
+  /** Stops it where it is. */
+  stop(): void;
+  /** Stops it and puts every channel back at rest. */
+  reset(): void;
 }
 
 /** An animation built with `Animated`: runs natively, steps and all. */
@@ -1873,15 +2395,19 @@ export interface AnimatedModule {
   decay(value: AnimatedValue, config?: DecayConfig): CompositeAnimation;
   sequence(list: CompositeAnimation[]): CompositeAnimation;
   parallel(list: CompositeAnimation[], config?: { stopTogether?: boolean }): CompositeAnimation;
-  stagger(ms: number, list: CompositeAnimation[]): CompositeAnimation;
+  /** The animations all at once, each starting `ms` after the one before,
+   * counted from the first, the last, the center item or an index. */
+  stagger(ms: number, list: CompositeAnimation[], config?: { from?: "first" | "last" | "center" | number }): CompositeAnimation;
   delay(ms: number): CompositeAnimation;
   loop(animation: CompositeAnimation, config?: { iterations?: number; resetBeforeIteration?: boolean }): CompositeAnimation;
+  /** `value` through keyframes, as CSS keyframes play (see `KeyframeTiming`). */
+  keyframes(value: AnimatedValue, config: KeyframesConfig): CompositeAnimation;
   add(a: AnimatedNode, b: AnimatedNode | number): AnimatedNode;
   subtract(a: AnimatedNode, b: AnimatedNode | number): AnimatedNode;
   multiply(a: AnimatedNode, b: AnimatedNode | number): AnimatedNode;
   divide(a: AnimatedNode, b: AnimatedNode | number): AnimatedNode;
   modulo(a: AnimatedNode, b: AnimatedNode | number): AnimatedNode;
-  diffClamp(a: AnimatedNode, min: number, max: number): AnimatedNode;
+  diffClamp(a: AnimatedNode, min: number, max: number, options?: { snap?: boolean }): AnimatedNode;
   /** The values a spring moves through from `from` (0), one per frame at
    * `fps` (60) until it rests: the exact curve the native driver runs. */
   sampleSpring(config: SpringConfig & { from?: number }, fps?: number): number[];
@@ -2139,6 +2665,39 @@ mod tests {
     }
 
     #[test]
+    fn a_diff_clamp_asks_to_snap() {
+        use nsh_core::animation::AnimationOp as A;
+        let host = Host::new().unwrap();
+        host.eval_source(
+            r#"
+            import { Animated, AnimatedValue } from "nsh/animated";
+            import { text } from "nsh:rt";
+            const scroll = new AnimatedValue(0);
+            const plain = scroll.diffClamp(0, 56);
+            const snapping = scroll.diffClamp(0, 56, { snap: true });
+            globalThis.report = () =>
+                text([
+                    plain === snapping,
+                    Animated.diffClamp(scroll, 0, 56, { snap: true }) === snapping,
+                    scroll.diffClamp(0, 56, { snap: false }) === plain,
+                ].join(","));
+            globalThis.keep = [scroll, plain, snapping];
+            "#,
+        )
+        .unwrap();
+        let snaps: Vec<bool> = animation_ops(&host)
+            .into_iter()
+            .filter_map(|o| match o {
+                A::CreateDiffClamp { snap, .. } => Some(snap),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(snaps, [false, true]);
+        // Equal ones share a node; a snapping one is not a plain one.
+        assert_eq!(report(&host).as_deref(), Some("false,true,true"));
+    }
+
+    #[test]
     fn curves_are_sampled_natively() {
         let host = Host::new().unwrap();
         host.eval_source(
@@ -2162,5 +2721,105 @@ mod tests {
         .unwrap();
         animation_ops(&host);
         assert_eq!(report(&host).as_deref(), Some("0 0.25 1,0,1,false,100,0"));
+    }
+
+    #[test]
+    fn keyframes_and_motions_become_native_trees() {
+        use nsh_core::animation::{AnimationOp as A, Composite, Driver};
+        let host = Host::new().unwrap();
+        host.eval_source(
+            r#"
+            import { Animated, AnimatedValue, Easing, createMotion, motions } from "nsh/animated";
+            import { text } from "nsh:rt";
+            const v = new AnimatedValue(0);
+            v.keyframes([0, { value: 10, offset: 0.25, easing: Easing.steps(2) }, 0], { duration: 400 });
+            const m = createMotion({ enter: "fadeInUp", delay: 100 });
+            m.play({ keyframes: [{ rotate: "0deg" }, { rotate: "0.5turn" }], iterations: "infinite" });
+            const staggered = Animated.stagger(10, [0, 1, 2].map(() => Animated.timing(v, { toValue: 1 })), { from: "center" });
+            globalThis.report = () =>
+                text([
+                    Easing.sample(Easing.steps(2), 3).join(" "),
+                    motions.shake.kind,
+                    motions.fadeInUp.keyframes.translateY[0].value,
+                    m.style.transform.length,
+                    m.style.opacity === m.opacity,
+                    typeof m.play,
+                ].join(","));
+            globalThis.keep = [v, m, staggered];
+            "#,
+        )
+        .unwrap();
+        let ops = animation_ops(&host);
+        let composites: Vec<&Composite> = ops
+            .iter()
+            .filter_map(|o| match o {
+                A::StartComposite { spec, .. } => Some(spec),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(composites.len(), 3, "{ops:?}");
+        // The keyframes: a jump to 0, 0 -> 10 over 100 ms, then back in
+        // steps (a keyframe's easing shapes the segment starting there).
+        let Composite::Sequence(steps) = composites[0] else {
+            panic!("{:?}", composites[0])
+        };
+        assert!(matches!(
+            steps[1],
+            Composite::Run {
+                driver: Driver::Timing {
+                    to: 10.0,
+                    duration_ms: 100.0,
+                    ..
+                },
+                ..
+            }
+        ));
+        assert!(matches!(
+            steps[2],
+            Composite::Run {
+                driver: Driver::Timing {
+                    to: 0.0,
+                    duration_ms: 300.0,
+                    easing: nsh_core::animation::Easing::Steps(2, _),
+                    ..
+                },
+                ..
+            }
+        ));
+        // The motion's values start where `fadeInUp` starts.
+        let created: Vec<f32> = ops
+            .iter()
+            .filter_map(|o| match o {
+                A::CreateValue { value, .. } => Some(*value),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(created, [0.0, 0.0, 0.0, 24.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0]);
+        // Its enter: two tracks holding their first keyframe through the
+        // delay; the play: one endless track in degrees.
+        let Composite::Parallel { children, .. } = composites[1] else {
+            panic!("{:?}", composites[1])
+        };
+        assert_eq!(children.len(), 2);
+        assert!(matches!(&children[0], Composite::Sequence(s) if s[1] == Composite::Delay(100.0)));
+        let Composite::Parallel { children, .. } = composites[2] else {
+            panic!("{:?}", composites[2])
+        };
+        let Composite::Loop {
+            child,
+            iterations: None,
+            ..
+        } = &children[0]
+        else {
+            panic!("{children:?}")
+        };
+        assert!(matches!(
+            &**child,
+            Composite::Sequence(s) if matches!(s[1], Composite::Run { driver: Driver::Timing { to: 180.0, .. }, .. })
+        ));
+        assert_eq!(
+            report(&host).as_deref(),
+            Some("0 0.5 1,attention,24,7,true,function")
+        );
     }
 }

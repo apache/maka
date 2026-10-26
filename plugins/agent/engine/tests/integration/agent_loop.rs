@@ -21,11 +21,11 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
+use crate::support::store::SessionFixture;
 use maka_agent_engine::{Engine, RunError};
 use maka_agent_facts::event::Fact;
 use maka_agent_facts::event::TerminalStatus;
 use maka_code_runtime::CellLimits;
-use maka_event_log::EventLog;
 use maka_model::ModelExecutor;
 use maka_tools::CodeExecutor;
 use serde_json::{Value, json};
@@ -66,12 +66,12 @@ async fn loop_commits_before_effects_replays_history_after_reopen_and_rejects_du
         let path = directory.path().join("events.sqlite");
         let count = Arc::new(AtomicUsize::new(0));
         {
-            let log = Arc::new(EventLog::open(&path).await.unwrap());
+            let log = Arc::new(SessionFixture::open(&path).await.unwrap());
             let engine = Engine::new(
-                log.clone(),
                 ModelExecutor::new(Duration::from_secs(10)).unwrap(),
                 CodeExecutor::new(CellLimits::default()).unwrap(),
-            );
+            )
+            .unwrap();
             let effect = Arc::new(Effect {
                 log: log.clone(),
                 count: count.clone(),
@@ -85,7 +85,9 @@ async fn loop_commits_before_effects_replays_history_after_reopen_and_rejects_du
                 let mut invalid = input(&base, "invalid", effect.clone());
                 invalid.configuration.cwd = invalid_cwd.into();
                 assert!(matches!(
-                    engine.start(invalid, CancellationToken::new()).await,
+                    engine
+                        .start(log.store(), invalid, CancellationToken::new())
+                        .await,
                     Err(RunError::InvalidInput(_))
                 ));
             }
@@ -96,7 +98,9 @@ async fn loop_commits_before_effects_replays_history_after_reopen_and_rejects_du
                 model: "not-the-dispatched-model".into(),
             });
             assert!(matches!(
-                engine.start(invalid, CancellationToken::new()).await,
+                engine
+                    .start(log.store(), invalid, CancellationToken::new())
+                    .await,
                 Err(RunError::InvalidInput(_))
             ));
             assert!(
@@ -105,7 +109,10 @@ async fn loop_commits_before_effects_replays_history_after_reopen_and_rejects_du
             );
             assert_eq!(count.load(Ordering::SeqCst), 0);
             fixture::admit_root(&log, &mut first).await;
-            let admitted = engine.start(first, CancellationToken::new()).await.unwrap();
+            let admitted = engine
+                .start(log.store(), first, CancellationToken::new())
+                .await
+                .unwrap();
             let steering_invocation = admitted.invocation().clone();
             assert_eq!(admitted.invocation().invocation_id, "invocation-first");
             assert!(
@@ -127,6 +134,7 @@ async fn loop_commits_before_effects_replays_history_after_reopen_and_rejects_du
             assert!(matches!(
                 engine
                     .run(
+                        log.store(),
                         input(&base, "duplicate", effect.clone()),
                         CancellationToken::new()
                     )
@@ -173,18 +181,22 @@ async fn loop_commits_before_effects_replays_history_after_reopen_and_rejects_du
             Arc::try_unwrap(log).ok().unwrap().close().await.unwrap();
         }
         {
-            let log = Arc::new(EventLog::open(&path).await.unwrap());
+            let log = Arc::new(SessionFixture::open(&path).await.unwrap());
             let engine = Engine::new(
-                log.clone(),
                 ModelExecutor::new(Duration::from_secs(10)).unwrap(),
                 CodeExecutor::new(CellLimits::default()).unwrap(),
-            );
+            )
+            .unwrap();
             let effect = Arc::new(Effect {
                 log: log.clone(),
                 count: count.clone(),
             });
             engine
-                .run(input(&base, "next", effect), CancellationToken::new())
+                .run(
+                    log.store(),
+                    input(&base, "next", effect),
+                    CancellationToken::new(),
+                )
                 .await
                 .unwrap();
             assert_eq!(

@@ -16,9 +16,10 @@
 # under the License.
 
 [workspace]
-exclude = ["third-party/nsh", "third-party/gpui-fast", "third-party/async-io", "third-party/gix-index", "third-party/sqlx-sqlite", "third-party/image-webp", "third-party/termina"]
+exclude = ["third-party/nsh", "third-party/gpui-fast", "third-party/async-io", "third-party/gix-index", "third-party/gix-discover", "third-party/sqlx-sqlite", "third-party/image-webp", "third-party/termina"]
 default-members = ["products/maka/cli", "platform/python-runtime"]
 members = [
+    "platform/session-state",
     "plugins/agent/facts",
     "platform/packages",
     "plugins/agent/ports",
@@ -90,8 +91,8 @@ license = "Apache-2.0"
 publish = false
 
 [workspace.dependencies]
-mxc-sdk = { git = "https://github.com/microsoft/mxc", rev = "b21120168d70befe12356411423266bfef168446" }
-flatbuffers = "25"
+mxc-sdk = { git = "https://github.com/microsoft/mxc", rev = "05a430bc17a3e1b3fa2131524fc52e4319e07298" }
+flatbuffers = "25.12.19"
 maka-python-runtime = { path = "platform/python-runtime" }
 maka-mcp = { path = "plugins/agent/mcp" }
 hex = "0.4.3"
@@ -125,23 +126,24 @@ maka-agent-authority = { path = "plugins/agent/authority" }
 maka-web-api = { path = "plugins/workspace/workspace-web/api" }
 maka-agent-api = { path = "plugins/agent/api" }
 maka-transport = { path = "platform/transport" }
-cua-driver-sdk = { git = "https://github.com/maka-agent/cua", rev = "79c9b58a1b61f66ae966635c464e54cb2c8151d6" }
-cua-driver-contract = { git = "https://github.com/maka-agent/cua", rev = "79c9b58a1b61f66ae966635c464e54cb2c8151d6" }
-agent-client-protocol = { version = "2.2.0", default-features = false, features = ["unstable_protocol_v2"] }
+cua-driver-sdk = { git = "https://github.com/maka-agent/cua", rev = "afcdf58a76cb9998f4e2fed8c0124d81ac4f1fcf" }
+cua-driver-contract = { git = "https://github.com/maka-agent/cua", rev = "afcdf58a76cb9998f4e2fed8c0124d81ac4f1fcf" }
+agent-client-protocol = { version = "3.5.0", default-features = false, features = ["unstable_protocol_v2"] }
 apply-patch = { path = "plugins/workspace/workspace-files/patch" }
 cap-fs-ext = "4.0.3"
 cap-std = "4.0.3"
-jiff = "0.2.37"
-clap = { version = "4.6.6", default-features = false, features = ["derive", "std", "help", "usage", "error-context"] }
+jiff = "0.2.38"
+clap = { version = "4.6.7", default-features = false, features = ["derive", "std", "help", "usage", "error-context"] }
 crossterm = { version = "0.29.0", features = ["event-stream"] }
-deno_core = "=0.411.0"
-deno_error = "0.7"
-fastrand = "2"
-futures-util = { version = "0.3", features = ["sink"] }
-gix = { version = "=0.87.1", default-features = false, features = ["sha1", "sha256"] }
+deno_core = "=0.413.0"
+# Deno Core fixes the shared error ABI to this exact release.
+deno_error = "=0.7.1"
+fastrand = "2.5.0"
+futures-util = { version = "0.3.34", features = ["sink"] }
+gix = { version = "=0.90.0", default-features = false, features = ["sha1", "sha256"] }
 imagesize = { version = "=0.15.0", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
-jsonschema = { version = "0.56.0", default-features = false }
-libc = "0.2"
+jsonschema = { version = "0.60.1", default-features = false }
+libc = "0.2.191"
 maka-acp = { path = "products/maka/acp" }
 maka-agent-engine = { path = "plugins/agent/engine" }
 maka-agent-native = { path = "plugins/agent/native" }
@@ -157,6 +159,7 @@ maka-graph = { path = "plugins/agent/graph" }
 maka-insights = { path = "plugins/agent/insights" }
 maka-jev = { path = "plugins/workspace/workspace-jev/engine" }
 maka-js-runtime = { path = "platform/js-runtime" }
+maka-session-state = { path = "platform/session-state" }
 maka-code-runtime = { path = "platform/code-runtime" }
 maka-model = { path = "plugins/agent/model" }
 maka-provider-protocol = { path = "plugins/agent/provider-protocol" }
@@ -183,34 +186,74 @@ maka-ui-js = { path = "platform/ui-js" }
 maka-web = { path = "plugins/workspace/workspace-web/native" }
 maka-workbench = { path = "products/maka/workbench" }
 maka-workhub = { path = "plugins/workhub/core" }
-pulldown-cmark = { version = "0.13.4", default-features = false }
+pulldown-cmark = { version = "0.13.5", default-features = false }
 ratatui = { version = "0.30.2", default-features = false, features = ["crossterm"] }
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "gzip", "brotli", "deflate", "socks"] }
-rusqlite = { version = "0.39", features = ["bundled"] }
-schemars = "1.2.2"
-serde = { version = "1", features = ["derive", "rc"] }
-serde_json = { version = "1", features = ["raw_value"] }
+rusqlite = { version = "0.41.0", features = ["bundled"] }
+schemars = "1.2.3"
+serde = { version = "1.0.229", features = ["derive", "rc"] }
+serde_json = { version = "1.0.154", features = ["raw_value"] }
 sha2 = "0.11.1"
-sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "sqlite", "migrate", "macros"] }
-tempfile = "3"
-thiserror = "2"
-tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros", "signal", "io-util"] }
-tokio-tungstenite = "0.29"
-tokio-util = { version = "0.7", features = ["rt"] }
+sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "sqlite", "migrate", "macros"] }
+tempfile = "3.27.0"
+thiserror = "2.0.21"
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "sync", "time", "macros", "signal", "io-util"] }
+tokio-tungstenite = "0.30.0"
+tokio-util = { version = "0.7.20", features = ["rt"] }
 unicode-segmentation = "1.13.3"
 unicode-width = "0.2.2"
 sys-locale = "0.3.2"
 termina = { path = "third-party/termina" }
-uuid = { version = "1", features = ["v4", "serde"] }
+uuid = { version = "1.29.0", features = ["v4", "v7", "serde"] }
 
 [profile.dev]
 # Keep useful backtraces without embedding hundreds of MiB of dependency types.
 debug = "line-tables-only"
-# Favor fast development builds; reserve optimization for release builds.
+# Keep application code quick to rebuild and straightforward to debug.
 opt-level = 0
 
+# Dependency workspaces' profiles are ignored here. Keep the VM and layout
+# engines optimized, as NSH does in its own development builds.
+[profile.dev.package.quickjs-jit-sys]
+opt-level = 3
+
+[profile.dev.package.taffy]
+opt-level = 3
+
+# Include the concrete UI callers that instantiate generic engine/layout code.
+# Level 1 keeps development builds lighter and allows shared monomorphizations.
+[profile.dev.package.nsh-core]
+opt-level = 1
+
+[profile.dev.package.nsh-js]
+opt-level = 1
+
+[profile.dev.package.nsh-platform-tui]
+opt-level = 1
+
+[profile.dev.package.nsh-platform-gpui]
+opt-level = 1
+
+[profile.dev.package.gpui-fast]
+opt-level = 1
+
+[profile.dev.package.gpui-fast-wgpu]
+opt-level = 1
+
+# Keep Sixel colour quantization and its concrete generic writer optimized.
+[profile.dev.package.quantette]
+opt-level = 3
+
+[profile.dev.package.icy_sixel]
+opt-level = 3
+
+[profile.dev.package.nsh-gpui-terminal]
+opt-level = 3
+
 [patch.crates-io]
+reqwest = { path = "third-party/reqwest" }
 gix-index = { path = "third-party/gix-index" }
+gix-discover = { path = "third-party/gix-discover" }
 image-webp = { path = "third-party/image-webp" }
 sqlx-sqlite = { path = "third-party/sqlx-sqlite" }
 async-io = { path = "third-party/async-io" }

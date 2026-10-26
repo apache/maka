@@ -158,7 +158,8 @@ pub(in crate::owner::tests) async fn artifact(f: &Fixture, session: &str, pictur
     let path = f._dir.path().join(&picture.name);
     let picture = picture.clone();
     let session_owned = session.to_owned();
-    f.store
+    f.session(session)
+        .await
         .with_artifact(
             maka_event_log::artifacts::ArtifactReadScope::Session(session),
             id,
@@ -203,12 +204,13 @@ async fn canonical(
     f: &Fixture,
     session: &str,
 ) -> Result<Vec<maka_agent_facts::event::StoredEvent>, maka_event_log::StoreError> {
-    let through = *f.store.subscribe_commits().borrow();
+    let through = f.through(session).await;
     let mut after = 0;
     let mut events = Vec::new();
     loop {
         let page = f
-            .store
+            .session(session)
+            .await
             .session_events(session, after, through, 512, usize::MAX)
             .await?;
         events.extend(page.events);
@@ -281,7 +283,7 @@ async fn verify(f: &Fixture, session: &str, invocation: &str, pictures: &[Pictur
         }
     }
     assert_eq!((opened, requests, completed, terminal), (1, 1, 1, 1));
-    let through = *f.store.subscribe_commits().borrow();
+    let through = f.through(session).await;
     let mut input = json!({"sessionId":session,"through":through,"position":{"kind":"start"}});
     let mut user = String::new();
     let mut answer = String::new();
@@ -401,7 +403,7 @@ async fn run_protocol(count: usize, side: u32, options: Options) {
         let expected = pictures.clone();
         let directory = f._dir.path().to_owned();
         let server_progress = progress.clone();
-        let store = f.store.clone();
+        let store = f.session(session).await;
         let server_session = session.to_owned();
         let (send, receive) = tokio::sync::oneshot::channel();
         let turn = Instant::now();
@@ -418,7 +420,7 @@ async fn run_protocol(count: usize, side: u32, options: Options) {
                     let mut report = json!({"http_requests":attempt+1,"arrival_ms":turn.elapsed().as_secs_f64()*1000.0,
                         "normalized_request_json_bytes":normalized_bytes,"actual_images":0,
                         "exact_images":false,"substitution_text":[]});
-                    let through = *store.subscribe_commits().borrow();
+                    let through = *store.subscribe_commits().unwrap().borrow();
                     let mut after = 0;
                     let mut purpose = None;
                     loop {
@@ -478,7 +480,7 @@ async fn run_protocol(count: usize, side: u32, options: Options) {
         invocation = Some(sent["invocationId"].as_str().unwrap().to_owned());
         metrics["admission_ms"] = json!(turn.elapsed().as_secs_f64()*1000.0);
         stage.set("model_http");
-        let mut commits = f.store.subscribe_commits();
+        let mut commits = f.session(session).await.subscribe_commits().unwrap();
         let terminal_failure = async {
             loop {
                 commits.borrow_and_update();

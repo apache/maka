@@ -95,7 +95,7 @@ async fn isolated_native_files_and_immutable_patch_survive_successor_and_restart
         std::fs::remove_file(f.workspace.join("unsaved.txt")).unwrap();
         let payload = "完整原文\n".repeat(2600);
         files::call(&listener, &f, &session, json!({"path":"tracked.txt","content":payload})).await;
-        let boundary = f.store.latest_turn_boundary(&session).await.unwrap().unwrap().invocation;
+        let boundary = f.session(&session).await.latest_turn_boundary(&session).await.unwrap().unwrap().invocation;
         let execution = json!({"sessionId":session,"invocationId":boundary.invocation_id});
         assert_eq!(f.mutation(2,"snapshotPatch",execution.clone(),Uuid::new_v4()).await.unwrap()["kind"],"busy");
         assert_eq!(files::finish(&listener,&f).await["kind"], "completed");
@@ -121,7 +121,7 @@ async fn isolated_native_files_and_immutable_patch_survive_successor_and_restart
         assert_eq!(archived["toolName"], "WorkspaceFile");
         assert!(archived["page"]["next"].is_object());
         let archive_address = maka_agent_facts::archive::ToolResultAddress::parse(archived["resourceRef"].as_str().unwrap()).unwrap();
-        let successor_receipt = f.store.resolve_tool_result(&session, archive_address.event_id()).await.unwrap();
+        let successor_receipt = f.session(&session).await.resolve_tool_result(&session, archive_address.event_id()).await.unwrap();
         let maka_agent_facts::tool_output::ToolOutput::Operation(reply) = &successor_receipt else { panic!("successor must retain the original service receipt") };
         assert_eq!(reply.reference.method, "write");
         assert_eq!(reply.receipt, Receipt::Recorded {
@@ -130,7 +130,7 @@ async fn isolated_native_files_and_immutable_patch_survive_successor_and_restart
             }}) },
             cleanup: maka_plugin_core::operation::OperationCleanup::Confirmed,
         });
-        assert!(f.store.resolve_tool_result(borrowed["session"]["id"].as_str().unwrap(), archive_address.event_id()).await.is_err());
+        assert!(f.session(borrowed["session"]["id"].as_str().unwrap()).await.resolve_tool_result(borrowed["session"]["id"].as_str().unwrap(), archive_address.event_id()).await.is_err());
         assert_eq!(std::fs::read_to_string(path.join("tracked.txt")).unwrap(), "successor\n");
         assert_eq!(f.mutation(2,"snapshotPatch",execution.clone(),Uuid::new_v4()).await.unwrap(),original);
         assert_eq!(read_patch(&f,&execution).await,patch);
@@ -145,8 +145,8 @@ async fn isolated_native_files_and_immutable_patch_survive_successor_and_restart
         crate::owner::tests::provide_all(&mut native).unwrap();
         f.app=Application::start_from_store(f.store.clone(),deployment,native,f.issuer.clone(),Arc::new(Grant(f.issuer.clone(),None)),Some(maka_host_js::factory(Default::default()))).await.unwrap();
         f.app.ready().await.unwrap();
-        assert_eq!(f.store.resolve_tool_result(&session, archive_address.event_id()).await.unwrap(), successor_receipt);
-        assert!(f.store.resolve_tool_result(borrowed["session"]["id"].as_str().unwrap(), archive_address.event_id()).await.is_err());
+        assert_eq!(f.session(&session).await.resolve_tool_result(&session, archive_address.event_id()).await.unwrap(), successor_receipt);
+        assert!(f.session(borrowed["session"]["id"].as_str().unwrap()).await.resolve_tool_result(borrowed["session"]["id"].as_str().unwrap(), archive_address.event_id()).await.is_err());
         assert_eq!(read_patch(&f,&execution).await,patch);
         assert_eq!(f.query("observe",json!({"sessionId":session})).await.unwrap()["session"]["workspace"]["path"],path.to_str().unwrap());
         f.app.shutdown().await.unwrap();
@@ -179,7 +179,8 @@ async fn large_completed_isolated_patch_is_complete_and_immutable_after_successo
     )
     .await;
     let boundary = f
-        .store
+        .session(&session)
+        .await
         .latest_turn_boundary(&session)
         .await
         .unwrap()

@@ -23,6 +23,7 @@ mod dom;
 mod env;
 mod error;
 mod host;
+mod host_channel;
 mod hot;
 mod input_action;
 mod keymap;

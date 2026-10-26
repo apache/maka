@@ -27,7 +27,7 @@
 
 ## 开发
 
-安装 Rust stable、Node.js 24 LTS、npm 11.19.0、just、cargo-nextest 和 Python 3。许可证检查还需 cargo-deny。Windows 需要将 Git for Windows 的 `sh` 加入 `PATH`。
+安装 Rust stable、Node.js 26、npm 12.2.1、just、cargo-nextest 和 Python 3。许可证检查还需 cargo-deny。Windows 需要将 Git for Windows 的 `sh` 加入 `PATH`。
 
 ```sh
 just setup

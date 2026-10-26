@@ -39,6 +39,12 @@ pub struct Enqueue {
     pub placement: Placement,
 }
 impl Enqueue {
+    pub fn operation(&self) -> super::SessionOperation {
+        super::SessionOperation {
+            session_id: self.invocation.session_id.clone(),
+            operation_id: self.operation_id.clone(),
+        }
+    }
     pub fn validate(&self) -> Result<(), Error> {
         name(&self.operation_id)?;
         maka_agent_facts::interaction::entity_id(&self.message_id)

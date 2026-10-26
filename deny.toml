@@ -71,42 +71,6 @@ exceptions = [
   { crate = "uniffi_pipeline@0.31.0", allow = ["MPL-2.0"] },
 ]
 
-# These Cua crates omit license metadata; the pinned repository LICENSE.md covers them.
-[[licenses.clarify]]
-crate = "cua-driver-contract@0.29.1"
-expression = "MIT"
-license-files = [{ path = "../../../../../LICENSE.md", hash = 0xd83541a2 }]
-
-[[licenses.clarify]]
-crate = "cua-driver-core@0.29.1"
-expression = "MIT"
-license-files = [{ path = "../../../../../LICENSE.md", hash = 0xd83541a2 }]
-
-[[licenses.clarify]]
-crate = "cursor-overlay@0.29.1"
-expression = "MIT"
-license-files = [{ path = "../../../../../LICENSE.md", hash = 0xd83541a2 }]
-
-[[licenses.clarify]]
-crate = "pip-preview@0.29.1"
-expression = "MIT"
-license-files = [{ path = "../../../../../LICENSE.md", hash = 0xd83541a2 }]
-
-[[licenses.clarify]]
-crate = "platform-linux@0.29.1"
-expression = "MIT"
-license-files = [{ path = "../../../../../LICENSE.md", hash = 0xd83541a2 }]
-
-[[licenses.clarify]]
-crate = "platform-macos@0.29.1"
-expression = "MIT"
-license-files = [{ path = "../../../../../LICENSE.md", hash = 0xd83541a2 }]
-
-[[licenses.clarify]]
-crate = "platform-windows@0.29.1"
-expression = "MIT"
-license-files = [{ path = "../../../../../LICENSE.md", hash = 0xd83541a2 }]
-
 [sources]
 allow-git = [
   "https://github.com/microsoft/mxc",

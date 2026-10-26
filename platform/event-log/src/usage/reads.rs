@@ -139,3 +139,66 @@ pub(super) async fn page<T: Serialize + Send + 'static>(
         })
         .await
 }
+
+/// Each partition's contribution to the Root's bounded keyset merge. The first
+/// query captures its own settlement fence in the same read transaction.
+pub(crate) async fn activity_after(
+    log: &EventLog,
+    query: Query,
+    selection: Selection,
+    partition: usize,
+    after: Option<crate::root_store::UsageActivityCursor>,
+) -> Result<Page<super::Activity>, StoreError> {
+    log.validate_root()?;
+    query.validate()?;
+    selection.validate().map_err(invalid)?;
+    log.connection
+        .read(move |connection| {
+            Box::pin(async move {
+                let mut tx = connection.begin().await?;
+                let through = query.fence(&mut tx).await?;
+                let view = View::Activity(selection);
+                let mut count = QueryBuilder::new("SELECT COUNT(*) FROM usage_activity");
+                view.restrict(&mut count, &query, through);
+                let total: i64 = count.build_query_scalar().fetch_one(&mut *tx).await?;
+                let mut select = QueryBuilder::new("SELECT ");
+                select.push(view.columns()).push(" FROM usage_activity");
+                view.restrict(&mut select, &query, through);
+                if let Some(after) = after {
+                    select
+                        .push(" AND (completed_at < ")
+                        .push_bind(after.completed_at);
+                    if partition >= after.partition {
+                        select
+                            .push(" OR (completed_at = ")
+                            .push_bind(after.completed_at);
+                        if partition == after.partition {
+                            select.push(" AND event_id > ").push_bind(after.request_id);
+                        }
+                        select.push(")");
+                    }
+                    select.push(")");
+                }
+                select.push(" ORDER BY completed_at DESC, event_id LIMIT 33");
+                let rows = select.build().fetch_all(&mut *tx).await?;
+                let attempts = rows
+                    .iter()
+                    .map(super::read_activity)
+                    .collect::<Result<Vec<_>, _>>()?;
+                // Fixed 33 records per partition; one oversized fact is never truncated.
+                for attempt in &attempts {
+                    if serde_json::to_vec(attempt)?.len() > 32 * 1024 {
+                        return Err(invalid("one Usage record exceeds page capacity"));
+                    }
+                }
+                tx.commit().await?;
+                Ok(Page {
+                    through,
+                    attempts,
+                    total: crate::sequence_number(total)?,
+                    next_offset: None,
+                })
+            })
+        })
+        .await
+}

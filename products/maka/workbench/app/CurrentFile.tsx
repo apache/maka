@@ -19,11 +19,9 @@
 
 import { createText, errorText, renderText, UiError, type UiText } from './text';
 import { tr } from './locale';
-import { cleanup, computed, inputAction, Scroll, signal, Text, View } from 'nsh';
-import { Button } from 'nsh/base';
+import { cleanup, computed, inputAction, Scroll, signal, Text, View, Image, List } from 'nsh';
+import { Button, SelectionArea } from 'nsh/base';
 import { Clipboard } from 'nsh/clipboard';
-import { Image } from 'nsh/image';
-import { List } from 'nsh/list';
 import { host, type FileView } from './host';
 import type { AgentFileChange } from '../../../../packages/plugin-sdk/src/index.js';
 import type { WorkspaceFileTarget } from './workspaceFileState';
@@ -512,21 +510,26 @@ function RetryCurrentFile(props: { model: CurrentFileModel }) {
   );
 }
 
-function CapturedFileStatus(props: { model: CurrentFileModel }) {
+function CapturedFileStatus(props: { model: CurrentFileModel; selectable?: boolean }) {
   const model = props.model;
   return (
     <If when={model.stale() || model.state().kind === 'loading' || model.state().kind === 'error'}>
       <View style={{ padding: 8, gap: 8, alignItems: 'flex-start' }}>
         <If when={model.stale()}>
-          <Text style={{ ...bodyTextStyle, color: C.warning }}>
+          <Text selectable={false} style={{ ...bodyTextStyle, color: C.warning }}>
             {tr('The workspace may have changed. Refresh for current contents.')}
           </Text>
         </If>
         <If when={model.state().kind === 'loading'}>
-          <Text style={{ ...bodyTextStyle, color: C.muted }}>{tr('Reading current file…')}</Text>
+          <Text selectable={false} style={{ ...bodyTextStyle, color: C.muted }}>
+            {tr('Reading current file…')}
+          </Text>
         </If>
         <If when={model.state().kind === 'error'}>
-          <Text selectable style={{ ...bodyTextStyle, color: C.danger }}>
+          <Text
+            selectable={props.selectable !== false}
+            style={{ ...bodyTextStyle, color: C.danger }}
+          >
             {renderText((model.state() as Extract<FileState, { kind: 'error' }>).message)}
           </Text>
           <RetryCurrentFile model={model} />
@@ -543,51 +546,54 @@ function FileRows(props: { model: CurrentFileModel; view: Extract<FileView, { ki
     mounted = false;
   });
   return (
-    <List
-      each={props.view.rows}
-      keyExtractor={(row) => String(row.offset)}
-      estimatedItemSize={codeTextStyle.lineHeight}
-      contentOffset={initialOffset}
-      onScroll={(event) => {
-        if (mounted) props.model.position = { x: event.offset.x, y: event.offset.y };
-      }}
-      accessibilityLabel={tr('Captured file text')}
-      style={{ flex: 1, minHeight: 0, backgroundColor: C.surface }}
-      header={<CapturedFileStatus model={props.model} />}
-    >
-      {(row) => (
-        <View
-          style={{
-            flexDirection: 'row',
-            alignItems: 'flex-start',
-            minHeight: codeTextStyle.lineHeight,
-            gap: 8,
-          }}
-        >
-          <Text
+    <SelectionArea style={{ flex: 1, minHeight: 0 }}>
+      <List
+        each={props.view.rows}
+        keyExtractor={(row) => String(row.offset)}
+        estimatedItemSize={codeTextStyle.lineHeight}
+        contentOffset={initialOffset}
+        onScroll={(event) => {
+          if (mounted) props.model.position = { x: event.offset.x, y: event.offset.y };
+        }}
+        accessibilityLabel={tr('Captured file text')}
+        style={{ flex: 1, minHeight: 0, backgroundColor: C.surface }}
+        header={<CapturedFileStatus model={props.model} selectable={false} />}
+      >
+        {(row) => (
+          <View
             style={{
-              ...codeTextStyle,
-              width: Math.max(24, String(props.view.rows.length).length * 8),
-              color: C.muted,
+              flexDirection: 'row',
+              alignItems: 'flex-start',
+              minHeight: codeTextStyle.lineHeight,
+              gap: 8,
             }}
           >
-            {row().line}
-          </Text>
-          <Text
-            selectable
-            style={{
-              ...codeTextStyle,
-              flex: 1,
-              minWidth: 0,
-              color: C.text,
-            }}
-          >
-            {/* Soft-wrapped visual lines retain their original source line number. */}
-            {row().text.replace(/\r?\n$/, '')}
-          </Text>
-        </View>
-      )}
-    </List>
+            <Text
+              selectable={false}
+              style={{
+                ...codeTextStyle,
+                width: Math.max(24, String(props.view.rows.length).length * 8),
+                color: C.muted,
+              }}
+            >
+              {row().line}
+            </Text>
+            <Text
+              selectable
+              style={{
+                ...codeTextStyle,
+                flex: 1,
+                minWidth: 0,
+                color: C.text,
+              }}
+            >
+              {/* Soft-wrapped visual lines retain their original source line number. */}
+              {row().text.replace(/\r?\n$/, '')}
+            </Text>
+          </View>
+        )}
+      </List>
+    </SelectionArea>
   );
 }
 

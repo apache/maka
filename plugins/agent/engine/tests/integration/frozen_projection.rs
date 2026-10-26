@@ -19,6 +19,7 @@
 
 use crate::support::image_projection as support;
 
+use crate::support::store::SessionFixture;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use maka_agent_engine::project_model_history;
 use maka_agent_facts::capability::CallResult;
@@ -30,14 +31,13 @@ use maka_agent_facts::event::RuntimeEvent;
 use maka_agent_facts::input::InvocationInput;
 use maka_agent_facts::tool_call::ToolCallIdentity;
 use maka_agent_facts::tool_output::ToolOutput;
-use maka_event_log::EventLog;
 use serde_json::json;
 use std::{sync::Arc, time::SystemTime};
 use support::*;
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 
-async fn settled(log: &EventLog, output: &ToolOutput) {
+async fn settled(log: &SessionFixture, output: &ToolOutput) {
     let prior = identity("prior");
     for fact in [
         Fact::InvocationOpened {
@@ -97,7 +97,7 @@ async fn frozen_string_and_attachment_text_keep_distinct_sdk_shapes() {
         ),
     ] {
         let directory = tempfile::tempdir().unwrap();
-        let log = EventLog::open(&directory.path().join("events.sqlite"))
+        let log = SessionFixture::open(&directory.path().join("events.sqlite"))
             .await
             .unwrap();
         settled(&log, &raw).await;
@@ -117,7 +117,7 @@ async fn frozen_string_and_attachment_text_keep_distinct_sdk_shapes() {
 async fn reopened_history_uses_frozen_projection_without_raw_store_access() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("events.sqlite");
-    let log = EventLog::open(&path).await.unwrap();
+    let log = SessionFixture::open(&path).await.unwrap();
     let raw = ToolOutput::Text("raw-only-marker".repeat(800_000));
     settled(&log, &raw).await;
     let original = log.prefix(100, 16 * 1024 * 1024).await.unwrap();
@@ -132,7 +132,7 @@ async fn reopened_history_uses_frozen_projection_without_raw_store_access() {
         json!({"type":"json","value":{"kind":"text","text":"raw-only-marker".repeat(800_000)}})
     );
     log.close().await.unwrap();
-    let log = EventLog::open(&path).await.unwrap();
+    let log = SessionFixture::open(&path).await.unwrap();
     let reopened = log.prefix(100, 16 * 1024 * 1024).await.unwrap();
     assert_eq!(
         serde_json::to_value(&reopened).unwrap(),
@@ -160,10 +160,8 @@ async fn reopened_history_uses_frozen_projection_without_raw_store_access() {
 async fn reopened_mcp_images_materialize_multiple_ordered_parts_from_protected_artifacts() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("events.sqlite");
-    let log = EventLog::open(&path).await.unwrap();
-    log.create_session("session", "create", &json!({}), 1)
-        .await
-        .unwrap();
+    let log = SessionFixture::open(&path).await.unwrap();
+
     artifact(&log, "user", 8, true).await;
     let bytes = [
         b"\x89PNG\r\n\x1a\nfirst".to_vec(),
@@ -194,7 +192,7 @@ async fn reopened_mcp_images_materialize_multiple_ordered_parts_from_protected_a
     )
     .await;
     log.close().await.unwrap();
-    let log = Arc::new(EventLog::open(&path).await.unwrap());
+    let log = Arc::new(SessionFixture::open(&path).await.unwrap());
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}/v1", listener.local_addr().unwrap());
     let server = tokio::spawn(async move {
@@ -203,9 +201,10 @@ async fn reopened_mcp_images_materialize_multiple_ordered_parts_from_protected_a
         respond(&mut socket).await;
         body
     });
-    let engine = engine(log.clone());
+    let engine = engine();
     engine
         .run(
+            log.store(),
             input(&base, json!([attachment("user")])),
             CancellationToken::new(),
         )

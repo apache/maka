@@ -23,13 +23,14 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+maka-session-state.workspace = true
 maka-code-runtime.workspace = true
 hex.workspace = true
 maka-plugin-core.workspace = true
 maka-agent-facts.workspace = true
 maka-agent-ports.workspace = true
 maka-capabilities.workspace = true
-base64 = "0.22.1"
+base64 = "0.23.1"
 maka-event-log.workspace = true
 maka-model.workspace = true
 maka-tools.workspace = true
@@ -44,6 +45,7 @@ futures-util.workspace = true
 fastrand.workspace = true
 
 [dev-dependencies]
+rusqlite.workspace = true
 tokio-tungstenite.workspace = true
 maka-presentation.workspace = true
 tempfile.workspace = true

@@ -94,8 +94,11 @@ async fn frozen_base_preserves_original_checkpoint_tail_and_diagnostics_across_l
     assert!(empty.tail.is_empty());
     let checkpoint = prepared(&log, "baseline").await;
     log.append_batch(&checkpoint).await.unwrap();
-    let hidden_evidence = closed(&log, "prior", 32, 1).await;
-    let expected = log.read_model_context("session", None).await.unwrap();
+    let _hidden_evidence = closed(&log, "prior", 32, 1).await;
+    let expected = log
+        .capture_model_context("session", None, 100_000, 64 * 1024 * 1024)
+        .await
+        .unwrap();
     closed(&log, "source", 64, 1).await;
     let actual = log
         .context_before_run(&invocation("source"), 100, 32768)
@@ -140,7 +143,11 @@ async fn frozen_base_preserves_original_checkpoint_tail_and_diagnostics_across_l
     ))
     .await
     .unwrap();
-    assert!(log.read_model_context("session", None).await.is_err());
+    assert!(
+        log.capture_model_context("session", None, 100_000, 64 * 1024 * 1024)
+            .await
+            .is_err()
+    );
     assert_same_base(
         &log.read_frozen_model_context(&expected.source_evidence, 100, 32768)
             .await
@@ -195,20 +202,6 @@ async fn frozen_base_preserves_original_checkpoint_tail_and_diagnostics_across_l
             .tail
             .is_empty()
     );
-    // Same decoded observation, different raw source bytes; this row is not in the rendered tail.
-    let inspect = rusqlite::Connection::open(&path).unwrap();
-    inspect
-        .execute(
-            "UPDATE event_log SET event_json=' ' || event_json WHERE event_id=?",
-            [&hidden_evidence],
-        )
-        .unwrap();
-    assert!(
-        log.read_frozen_model_context(&expected.source_evidence, 100, 32768)
-            .await
-            .is_err()
-    );
-    drop(inspect);
     log.close().await.unwrap();
 }
 

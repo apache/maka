@@ -17,7 +17,7 @@
  * under the License.
  */
 
-use super::{Owner, SessionConfiguration, now};
+use super::{Owner, StoredSessionConfiguration, now};
 use crate::contract::*;
 use maka_agent_facts::interaction::InteractionAnswer;
 use maka_agent_facts::interaction::InteractionRecord;
@@ -31,7 +31,10 @@ impl Owner {
         self.session(session_id).await?;
         let observed = self
             .store
-            .session_projection::<SessionConfiguration>(session_id)
+            .session(session_id)
+            .await
+            .map_err(|error| error.to_string())?
+            .session_projection::<StoredSessionConfiguration>(session_id)
             .await
             .map_err(|_| "agent_interactions_unavailable")?
             .ok_or("agent_session_unavailable")?;
@@ -73,6 +76,9 @@ impl Owner {
     ) -> Result<InteractionRecord, String> {
         self.session(session_id).await?;
         self.store
+            .session(session_id)
+            .await
+            .map_err(|error| error.to_string())?
             .interaction(request_id)
             .await
             .map_err(|_| "agent_interactions_unavailable")?
@@ -94,6 +100,9 @@ impl Owner {
         }
         let Some(record) = self
             .store
+            .session(&input.session_id)
+            .await
+            .map_err(|error| error.to_string())?
             .interaction(&input.request_id)
             .await
             .map_err(|_| "agent_interactions_unavailable")?
@@ -103,7 +112,7 @@ impl Owner {
         };
         // Each supported producer owns its policy; the store commits only the
         // original bounded answer and current permission boundary.
-        let computer = matches!(&record.request, InteractionRequest::ClientCapability { target, base_revision: Some(_), .. }
+        let computer = matches!(&record.request, InteractionRequest::ClientCapability { target, basis: Some(_), .. }
             if target == &maka_workspace_api::computer::target());
         if !computer
             && !matches!(
@@ -134,6 +143,9 @@ impl Owner {
         }
         let committed = self
             .store
+            .session(&record.session_id)
+            .await
+            .map_err(|error| error.to_string())?
             .commit_interaction_outcome(&record.request_id, input.answer.into_outcome(now()))
             .await
             .map_err(|_| "agent_interaction_commit_unavailable")?;

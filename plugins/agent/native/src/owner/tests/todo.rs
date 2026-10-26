@@ -214,7 +214,7 @@ async fn todo_archived_result_next_is_readable_by_the_selected_native_read_tool(
         }
         f.app.shutdown().await.unwrap();
 
-        let original = f.store.scoped_prefix(
+        let original = f.session(&(session)).await.scoped_prefix(
             maka_agent_facts::event::LogScope::Session { id: session.clone() },
             256,
             4 * 1024 * 1024,
@@ -226,7 +226,7 @@ async fn todo_archived_result_next_is_readable_by_the_selected_native_read_tool(
         let source = original.events.iter().find(|event| matches!(&event.event.fact,
             Fact::ToolSettled { operation_id, outcome: ToolOutcome::Succeeded { .. } }
             if operation_id == source_operation)).unwrap();
-        let source_output = f.store.resolve_tool_result(&session, &source.event.id).await.unwrap();
+        let source_output = f.session(&session).await.resolve_tool_result(&session, &source.event.id).await.unwrap();
         f.config.shutdown().await.unwrap();
 
         // All behavior assertions follow actual cleanup, including expected
@@ -354,10 +354,10 @@ async fn todo_real_model_direct_and_code_mode_keep_full_list_isolation_and_resta
             let facts = service_tools::facts(&f,&session).await;
             let dispatched: Vec<_> = facts.iter().filter_map(|fact| match fact { Fact::ToolDispatched { name, operation_id, .. } if name == "todo_write" || name == "todo_read" => Some(operation_id), _ => None }).collect();
             assert_eq!(dispatched.len(),2);
-            let original = f.store.scoped_prefix(maka_agent_facts::event::LogScope::Session { id: session.clone() }, 256, 4 * 1024 * 1024).await.unwrap();
+            let original = f.session(&(session)).await.scoped_prefix(maka_agent_facts::event::LogScope::Session { id: session.clone() }, 256, 4 * 1024 * 1024).await.unwrap();
             for id in dispatched {
                 let event = original.events.iter().find(|event| matches!(&event.event.fact, Fact::ToolSettled { operation_id, .. } if operation_id == id)).unwrap();
-                let output = f.store.resolve_tool_result(&session, &event.event.id).await.unwrap();
+                let output = f.session(&session).await.resolve_tool_result(&session, &event.event.id).await.unwrap();
                 let maka_agent_facts::tool_output::ToolOutput::Json(document) = output else { panic!("original checklist JSON is retained") };
                 assert_eq!(document["items"],json!(items), "every item survives in each original write/read receipt");
                 assert_eq!(facts.iter().filter(|fact| matches!(fact, Fact::ToolSettled { operation_id, outcome: ToolOutcome::Succeeded { .. } } if operation_id == id)).count(),1);
@@ -399,10 +399,25 @@ async fn todo_prepared_replacements_conflict_and_cancelled_or_closed_invocations
             .unwrap()
             .invocation
             .clone();
-        let journal = ToolJournal::new(f.store.clone(), invocation.clone());
+        let execution_scope = f
+            .session(&session)
+            .await
+            .execution_scope(Some(
+                f.owner
+                    .session(&session)
+                    .await
+                    .unwrap()
+                    .configuration
+                    .permission_basis(),
+            ))
+            .await
+            .unwrap();
+        let execution_store = Arc::new(execution_scope.store());
+        let journal = ToolJournal::new(execution_store.clone(), invocation.clone());
         let context = |id: &str| ToolCallContext {
             invocation: invocation.clone(),
             operation_id: id.into(),
+            execution: Some(execution_store.execution_custody().unwrap()),
         };
         let input = |text: &str| json!({"todos":[{"content":text,"status":"in_progress"}]});
         let first = f
@@ -498,6 +513,7 @@ async fn todo_prepared_replacements_conflict_and_cancelled_or_closed_invocations
                 .is_err()
         );
         assert_eq!(page(&f, &session, 0).await, before);
+        drop(execution_scope);
         f.app.shutdown().await.unwrap();
     })
     .await

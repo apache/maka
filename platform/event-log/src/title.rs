@@ -47,7 +47,7 @@ impl EventLog {
         cause
             .validate()
             .map_err(|error| invalid(&error.to_string()))?;
-        let commits = self.commits.clone();
+        let commits = self.commits.session(&invocation.session_id);
         self.connection.run(move |connection| Box::pin(async move {
             let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
             original_title_binding(&mut tx, &invocation).await?;
@@ -57,7 +57,7 @@ impl EventLog {
                 .execute(&mut *tx).await?;
             let sequence = crate::sequence_number(result.last_insert_rowid())?;
             tx.commit().await.map_err(StoreError::CommitUnknown)?;
-            commits.send_replace(sequence);
+            commits.publish(sequence);
             Ok(sequence)
         })).await
     }

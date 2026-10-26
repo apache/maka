@@ -1,6 +1,6 @@
 ---
 title: Animation
-description: Style transitions and keyframe animations, animated values with timing, spring and decay, interpolation, composite animations, easing, layout animations, and what runs on the UI thread, in Rust and TSX.
+description: Motions (ready-made entrances, exits, attention seekers and loops, or your own keyframes), style transitions and keyframe animations, animated values with timing, spring, decay and keyframes, interpolation, composite animations, easing, layout animations, and what runs on the UI thread, in Rust and TSX.
 order: 43
 group: ui
 demo: guide-animation
@@ -10,14 +10,248 @@ demo: guide-animation
 
 Every animation in NSH runs on the UI thread. You describe it once, from Rust or TSX, and the platform plays it frame by frame (Core Animation and a display link on iOS, the UI-thread animator on Android) without calling back into your code. A busy engine thread cannot make an animation stutter, and an animation costs none of your code while it runs.
 
-There are four tools, from the simplest to the most flexible:
+There are six tools, from the readiest to the most flexible:
 
 | Tool | Use it for |
 |---|---|
+| [Motion](#motion) | A view that enters, leaves, draws the eye or loops: ready-made motions (`fadeInUp`, `shake`, `pulse`, ...) or keyframes of your own, on its opacity and transform. |
 | [Transitions](#transitions) | A style change that should animate instead of jump: a color, an opacity, a transform. |
 | [Keyframe animations](#keyframe-animations) | A spinner, a pulsing placeholder, a bouncing hint. |
+| [Keyframes](#keyframes) | Any animated value through keyframes, as CSS plays them: offsets, an easing per segment, iterations and a direction. |
 | [Animated values](#animated-values) | Anything driven by a value over time: springs, gestures, scroll position, sequences. |
 | [Layout animations](#layoutanimation) | Size and position changes after an update: items inserted, removed, reordered, a panel expanding. |
+
+## Motion
+
+A motion moves a view's opacity and transform through keyframes, natively. Create one in the component that owns the view (`motion()` in Rust, `createMotion()` from `nsh/animated` in TSX), bind it to the view, and play a ready-made motion or one of your own on it. `enter` starts the view where a motion begins and plays it at once, so the view comes in from its first frame.
+
+```rust tabs
+#[component]
+pub fn App() -> impl IntoElement {
+    let card = motion().entering(MotionPreset::FadeInUp);
+    view().flex_1().items_center().justify_center().child(
+        view()
+            .size(px(120.0))
+            .rounded(px(16.0))
+            .bg(rgb(0x0969da))
+            .bind_motion(&card)
+            .on_press(move || {
+                card.play(MotionPreset::Shake);
+            }),
+    )
+}
+```
+
+```tsx tabs
+import { mount, View } from "nsh";
+import { createMotion } from "nsh/animated";
+
+function App() {
+  const card = createMotion({ enter: "fadeInUp" });
+  return (
+    <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
+      <View
+        onPress={() => card.play("shake")}
+        style={{ width: 120, height: 120, borderRadius: 16, backgroundColor: "#0969da", ...card.style }}
+      />
+    </View>
+  );
+}
+
+mount(App);
+```
+
+A motion has an animated value per channel: `opacity` (0..1), `translateX` and `translateY` (points), `rotate`, `rotateX` and `rotateY` (degrees), `scale`, `scaleX` and `scaleY`. They start at rest (opacity and scales 1, the rest 0) and apply in that order: translations, then rotations, then scales, about the view's transform origin. A motion has no look of its own: it moves what you styled.
+
+A motion moves opacity and transform only. Spreading `m.style` sets the view's `opacity`; to keep an opacity of your own, bind only the transform (`transform: m.transform`). Colors move with an animated value and [`interpolate`](#interpolation).
+
+| TSX | Rust | Description |
+|---|---|---|
+| `createMotion(options?)` | `motion()` | A motion with every channel at rest. |
+| `createMotion({ initial: { opacity: 0 } })` | `m.value(MotionChannel::Opacity).set(0.0)` | Where channels start; the others start at rest. |
+| `createMotion({ enter, delay, duration, ... })` | `motion().entering(spec)` | Starts where `enter` starts and plays it at once; the other options change its timing. `enter` sets the channels it moves, over `initial`. |
+| `style={m.style}`, `m.transform` | `.bind_motion(&m)` | Binds the channels: `m.style` is `{ opacity, transform }`; spread `m.transform` into a transform with a step of your own. A motion takes 7 of a view's 8 transform steps (`scale` is folded into `scaleX` and `scaleY`), which leaves one for yours, such as `[{ perspective: 600 }, ...m.transform]` for 3D flips. In Rust the motion's transform applies after the view's own. |
+| `m.opacity`, `m.translateX`, ... | `m.value(MotionChannel::Opacity)`, ... | One channel's animated value, to interpolate or drive by hand. |
+| `m.play(motion, options?)` | `m.play(spec)` | Plays a preset or a motion of your own; a new one interrupts the one playing. Resolves with `true` when it finished (`AnimationEnd` in Rust). |
+| `m.animation(motion, options?)` | `m.animation(spec)` | The same motion as a [composite animation](#composite-animations), not started, to sequence, stagger or loop with others. |
+| `play(motion, { ignoreReduceMotion: true })` | `m.play_ignoring_reduce_motion(spec)` | Plays it even when the user asks for less motion. |
+| `m.stop()` | `m.stop()` | Stops it where it is. |
+| `m.reset()` | `m.reset()` | Stops it and puts every channel back at rest. |
+
+### Presets
+
+The ready-made motions are data: `motions` from `nsh/animated` (`motions.fadeInUp` is what `play("fadeInUp")` plays) and `MotionPreset` in Rust (`MotionPreset::FadeInUp.spec()`). Distances are in points, sized for controls and cards; for larger views, scale a motion's values or write your own keyframes. `swing` and the other rotations turn about the view's transform origin: give a swinging sign `transformOrigin: "top"` (`.origin_top()`).
+
+**Enter**: they start hidden or away and end at rest.
+
+| TSX | Rust | Duration | Description |
+|---|---|---|---|
+| `fadeIn` | `MotionPreset::FadeIn` | 300 ms | Fades in. |
+| `fadeInUp` | `MotionPreset::FadeInUp` | 450 ms | Fades in, rising into place. |
+| `fadeInDown` | `MotionPreset::FadeInDown` | 450 ms | Fades in, dropping into place. |
+| `fadeInLeft` | `MotionPreset::FadeInLeft` | 450 ms | Fades in, coming from the left. |
+| `fadeInRight` | `MotionPreset::FadeInRight` | 450 ms | Fades in, coming from the right. |
+| `zoomIn` | `MotionPreset::ZoomIn` | 350 ms | Fades in, growing from 90 %. |
+| `popIn` | `MotionPreset::PopIn` | 450 ms | Pops in: grows from half its size past its own and settles. |
+| `bounceIn` | `MotionPreset::BounceIn` | 650 ms | Bounces in, overshooting twice. |
+| `slideInUp` | `MotionPreset::SlideInUp` | 400 ms | Slides up from below, unfaded (sheets, toasts). |
+| `slideInDown` | `MotionPreset::SlideInDown` | 400 ms | Slides down from above, unfaded. |
+| `flipInX` | `MotionPreset::FlipInX` | 600 ms | Flips in about its horizontal axis. |
+| `flipInY` | `MotionPreset::FlipInY` | 600 ms | Flips in about its vertical axis. |
+
+**Exit**: they start at rest and end hidden or away.
+
+| TSX | Rust | Duration | Description |
+|---|---|---|---|
+| `fadeOut` | `MotionPreset::FadeOut` | 250 ms | Fades out. |
+| `fadeOutUp` | `MotionPreset::FadeOutUp` | 300 ms | Fades out, rising away. |
+| `fadeOutDown` | `MotionPreset::FadeOutDown` | 300 ms | Fades out, dropping away. |
+| `fadeOutLeft` | `MotionPreset::FadeOutLeft` | 300 ms | Fades out to the left. |
+| `fadeOutRight` | `MotionPreset::FadeOutRight` | 300 ms | Fades out to the right. |
+| `zoomOut` | `MotionPreset::ZoomOut` | 250 ms | Fades out, shrinking to 90 %. |
+| `popOut` | `MotionPreset::PopOut` | 300 ms | Pops out: swells a little, then shrinks away. |
+| `slideOutDown` | `MotionPreset::SlideOutDown` | 300 ms | Slides down out of view, unfaded. |
+| `slideOutUp` | `MotionPreset::SlideOutUp` | 300 ms | Slides up out of view, unfaded. |
+
+**Attention**: they start and end at rest.
+
+| TSX | Rust | Duration | Description |
+|---|---|---|---|
+| `shake` | `MotionPreset::Shake` | 500 ms | Shakes sideways: a wrong password, an invalid field. |
+| `headShake` | `MotionPreset::HeadShake` | 800 ms | Shakes its head: a gentler no. |
+| `wiggle` | `MotionPreset::Wiggle` | 600 ms | Wiggles about its center: something to notice. |
+| `swing` | `MotionPreset::Swing` | 900 ms | Swings from its top edge, like a sign. |
+| `pulse` | `MotionPreset::Pulse` | 500 ms | Grows a little and back: a soft emphasis. |
+| `heartbeat` | `MotionPreset::Heartbeat` | 900 ms | Beats twice, like a heart: a like, a favorite. |
+| `rubberBand` | `MotionPreset::RubberBand` | 800 ms | Squashes and stretches like rubber. |
+| `jello` | `MotionPreset::Jello` | 800 ms | Wobbles like jelly. |
+| `tada` | `MotionPreset::Tada` | 900 ms | Shrinks, then grows with a wiggle: a reward. |
+| `jump` | `MotionPreset::Jump` | 700 ms | Jumps and lands with a squash. |
+| `flash` | `MotionPreset::Flash` | 800 ms | Blinks out and in twice. |
+
+**Loop**: they repeat until stopped.
+
+| TSX | Rust | Duration | Description |
+|---|---|---|---|
+| `spin` | `MotionPreset::Spin` | 1000 ms | Turns once, forever. |
+| `float` | `MotionPreset::Float` | 1500 ms | Floats up and down, forever. |
+| `breathe` | `MotionPreset::Breathe` | 1800 ms | Breathes: grows and fades a little, forever. |
+| `sway` | `MotionPreset::Sway` | 1600 ms | Sways about its center, forever. |
+| `bob` | `MotionPreset::Bob` | 1000 ms | Bobs like a bouncing ball, forever. |
+| `glow` | `MotionPreset::Glow` | 2000 ms | Glows in and out, forever. |
+
+`play` takes a preset's timing options over it (`m.play("shake", { duration: 300 })`), and a preset spreads into a motion of your own (`m.play({ ...motions.fadeInUp, duration: 600 })`). In Rust, change a preset's spec: `MotionPreset::FadeInUp.spec().timing(|t| t.delay(100.0))`.
+
+### Motions of your own
+
+A motion of your own is keyframes per channel and one timing (the options of [keyframes](#keyframes)). In TSX, write each channel's keyframes (`{ opacity: [0, 1] }`), or a list of frames as the Web Animations API writes them (`[{ opacity: 0, translateY: 24 }, { opacity: 1, translateY: 0 }]`), each frame with its `offset` and `easing`. In a list of frames, a frame without an offset sits where its position in the list puts it, and a channel follows the frames that name it. Angles can be strings (`"45deg"`, `"0.5turn"`). In Rust, build a `MotionSpec`.
+
+```rust tabs
+let rise = MotionSpec::new(KeyframeTiming::new(400.0))
+    .values(MotionChannel::Opacity, [0.0, 1.0])
+    .track(
+        MotionChannel::TranslateY,
+        [Keyframe::at(0.0, 24.0).ease(Easing::EaseOut), Keyframe::at(1.0, 0.0)],
+    );
+card.play(rise);
+
+let flip = MotionSpec::new(KeyframeTiming::new(600.0).infinite())
+    .values(MotionChannel::RotateY, [0.0, 180.0, 360.0]);
+card.play(flip);
+```
+
+```tsx tabs
+// Channels' keyframes.
+card.play({
+  duration: 400,
+  keyframes: { opacity: [0, 1], translateY: [{ value: 24, easing: "easeOut" }, 0] },
+});
+
+// A list of frames.
+card.play({
+  duration: 400,
+  keyframes: [
+    { opacity: 0, translateY: 24, easing: "easeOut" },
+    { opacity: 1, translateY: 0 },
+  ],
+});
+
+card.play({ duration: 600, iterations: "infinite", keyframes: { rotateY: ["0deg", "180deg", "360deg"] } });
+```
+
+### Entrances and staggered lists
+
+Give each row a motion that enters, with a delay that grows with its index: rows that appear together come in one after another. Cap the delay so that a row added far down the list does not wait.
+
+```rust tabs
+each(items, |item: &Item| item.id, |item, index| {
+    let delay = index.get_untracked().min(10) as f32 * 60.0;
+    let row = motion().entering(MotionPreset::FadeInUp.spec().timing(|t| t.delay(delay)));
+    view()
+        .rounded_xl()
+        .bg(ZINC.shade(100))
+        .p_4()
+        .bind_motion(&row)
+        .child(text(move || item.get().title))
+})
+```
+
+```tsx tabs
+function Row(props: { title: string; index: number }) {
+  const row = createMotion({ enter: "fadeInUp", delay: Math.min(props.index, 10) * 60 });
+  return (
+    <View class="rounded-xl bg-zinc-100 p-4" style={row.style}>
+      <Text>{props.title}</Text>
+    </View>
+  );
+}
+
+<Each of={items()} key={(item) => item.id}>
+  {(item, index) => <Row title={item().title} index={index()} />}
+</Each>
+```
+
+Motions also compose: `m.animation(..)` is a motion as a [composite animation](#composite-animations), not started, so `Animated.stagger` runs a group of them natively, counted from the first item, the last, the center or any index. Give them a hidden `initial` (or start them where the motion starts) so nothing shows before its turn.
+
+```rust tabs
+let cards: Vec<Motion> = (0..5)
+    .map(|_| {
+        let m = motion();
+        m.value(MotionChannel::Opacity).set(0.0);
+        m
+    })
+    .collect();
+Animation::stagger_from(60.0, StaggerFrom::Center, cards.iter().map(|m| m.animation(MotionPreset::FadeInUp))).start();
+```
+
+```tsx tabs
+const cards = [0, 1, 2, 3, 4].map(() => createMotion({ initial: { opacity: 0 } }));
+Animated.stagger(60, cards.map((m) => m.animation("fadeInUp")), { from: "center" }).start();
+```
+
+### Exits
+
+Play the exit, wait for it, then remove the view. A [layout animation](#layoutanimation) lets the views around it close the gap.
+
+```rust tabs
+let remove = move || {
+    spawn(async move {
+        row.play(MotionPreset::FadeOutLeft).await;
+        animate_layout(LayoutAnimation::EASE_IN_EASE_OUT);
+        items.update(|items| items.retain(|i| i.id != id));
+    });
+};
+```
+
+```tsx tabs
+const remove = async () => {
+  await row.play("fadeOutLeft");
+  LayoutAnimation.easeInEaseOut();
+  items.set(items().filter((i) => i.id !== id));
+};
+```
+
+Motions follow the user's [reduced motion](#reduced-motion) setting on their own: when the user asks for less motion, a motion lands where it ends at once, without moving.
 
 ## Transitions
 
@@ -262,6 +496,51 @@ x.decay({ velocity: e.velocityX, clamp: [0, 300], bounce: 0.3 });
 const where = await x.getValue();
 ```
 
+### Keyframes
+
+`keyframes` plays a value through keyframes as CSS keyframes play: `value.keyframes(frames, options)` in TSX, `value.keyframes(frames, KeyframeTiming)` in Rust (`Animated.keyframes(value, { keyframes, ... })` and `Animation::keyframes(..)` as a step of a [composite](#composite-animations)). A keyframe is a number (or an angle string such as `"90deg"`), spread evenly with the others, or `{ offset, value, easing }` (`Keyframe::new(value)`, `Keyframe::at(offset, value)`, `.ease(easing)` in Rust).
+
+```rust tabs
+let y = animated_value(0.0);
+y.keyframes(
+    [Keyframe::new(0.0), Keyframe::at(0.3, -20.0).ease(Easing::EaseIn), Keyframe::new(0.0)],
+    KeyframeTiming::new(600.0).easing(Easing::EaseOut).iterations(Some(3)),
+);
+
+// A clock hand that ticks once a second.
+let hand = animated_value(0.0);
+hand.keyframes(
+    [Keyframe::new(0.0), Keyframe::new(360.0)],
+    KeyframeTiming::new(60_000.0).easing(Easing::Steps(60, StepPosition::JumpEnd)).infinite(),
+);
+```
+
+```tsx tabs
+const y = createAnimatedValue(0);
+y.keyframes([0, { offset: 0.3, value: -20, easing: "easeIn" }, 0], { duration: 600, easing: "easeOut", iterations: 3 });
+
+// A clock hand that ticks once a second.
+const hand = createAnimatedValue(0);
+hand.keyframes([0, 360], { duration: 60_000, easing: Easing.steps(60), iterations: "infinite" });
+```
+
+| Option | Rust (`KeyframeTiming`) | Default | Description |
+|---|---|---|---|
+| `duration` | `KeyframeTiming::new(ms)` | 300 | One iteration, in milliseconds. |
+| `delay` | `.delay(ms)` | 0 | Before the first iteration. |
+| `easing` | `.easing(easing)` | CSS `ease` | The curve of each segment without an easing of its own. |
+| `iterations` | `.iterations(Some(n))`, `.infinite()` | 1 | How many iterations, or `"infinite"`. |
+| `direction` | `.direction(PlaybackDirection::Alternate)` | `"normal"` | `"normal"`, `"reverse"`, `"alternate"` or `"alternate-reverse"`. |
+
+They play as in CSS and the Web Animations API:
+
+- An easing shapes each segment, not the whole: a keyframe's `easing` shapes the segment that starts at it, and the timing's `easing` every other segment.
+- Keyframes without an offset spread evenly between their neighbors; the first defaults to 0 and the last to 1.
+- Each iteration starts with a jump to its first keyframe. Without a keyframe at offset 0, the value goes from where it is.
+- During a `delay`, the value already holds the first keyframe (CSS `animation-fill-mode: backwards`), so a delayed entrance shows its first frame rather than the view at rest. This holds for motions too.
+- `reverse` and the backward iterations of `alternate` run the segments backwards, each with its curve reversed.
+- The value stays where the last iteration leaves it. The answer is `true` when they finished, `false` when something stopped them.
+
 ### Interpolation
 
 `interpolate` maps a value through piecewise linear segments to numbers, colors or angles, and returns a new node you can bind. One value can drive many properties. In Rust, `interpolate(&input, &output)` maps to numbers, `interpolate_colors(&input, &colors)` to colors, and `interpolate_with(&input, output, Interpolation { .. })` takes the extrapolation and easing; in TSX, `value.interpolate({ inputRange, outputRange })` takes them all.
@@ -331,6 +610,16 @@ const header = scroll.diffClamp(0, 56);
 <View style={{ position: "absolute", top: 0, left: 0, right: 0, height: 56, transform: [{ translateY: header.mul(-1) }] }}>…</View>
 ```
 
+With `{ snap: true }` (`diff_clamp_with(min, max, DiffClamp::snapping())`), a header left partly shown when the scrolling stops finishes the move: it settles fully shown or fully hidden, whichever is nearer, in 200 ms on the UI thread. It hides only once the page has scrolled at least its height, so a page scrolled less than that shows the whole header. Scrolling again during the move takes over from where the header is.
+
+```rust tabs
+let header = offset.diff_clamp_with(0.0, 56.0, DiffClamp::snapping());
+```
+
+```tsx tabs
+const header = scroll.diffClamp(0, 56, { snap: true });
+```
+
 ## Composite animations
 
 Animations are built out of steps (`Animation` in Rust, `Animated` from `nsh/animated` in TSX) and the whole tree runs natively: each step starts on the UI thread the moment the previous one ends, with no gap and none of your code in between.
@@ -394,7 +683,8 @@ hop.start(({ finished }) => console.log(finished ? "landed" : "stopped"));
 | `Animated.decay(value, { velocity?, deceleration?, clamp?, bounce? })` | `Animation::decay(&value, velocity, deceleration)`, `Animation::decay_within(..)` | A decay step. |
 | `Animated.sequence(list)` | `Animation::sequence(list)` | One after another. |
 | `Animated.parallel(list, { stopTogether? })` | `Animation::parallel(list)`, `.stop_together(..)` | All at once. |
-| `Animated.stagger(ms, list)` | `Animation::stagger(ms, list)` | All at once, each starting `ms` after the previous one. |
+| `Animated.stagger(ms, list, { from? })` | `Animation::stagger(ms, list)`, `Animation::stagger_from(ms, StaggerFrom::Center, list)` | All at once, each starting `ms` after the previous one, counted from `from`: `"first"` (the default), `"last"`, `"center"` (a ripple out from the middle) or an index (`StaggerFrom::First`, `Last`, `Center`, `Index(i)`). |
+| `Animated.keyframes(value, { keyframes, ...timing })` | `Animation::keyframes(&value, frames, KeyframeTiming)` | A step of [keyframes](#keyframes). |
 | `Animated.delay(ms)` | `Animation::delay(ms)` | Waits. |
 | `Animated.loop(animation, { iterations?, resetBeforeIteration? })` | `.looped(iterations)`, `.reset_before_iteration(..)` | Repeats (forever by default; `None` in Rust). |
 
@@ -415,6 +705,7 @@ Easing curves are data, evaluated natively: `Easing` from `nsh/animated` in TSX,
 | `Easing.elastic(bounciness?)` | `Curve::Elastic(bounciness)` | Springy overshoot. |
 | `Easing.bounce` | `Curve::Bounce` | Bounces at the end. |
 | `Easing.bezier(x1, y1, x2, y2)` | `Easing::Bezier(x1, y1, x2, y2)` | A cubic Bézier, as in CSS. |
+| `Easing.steps(count, position?)` | `Easing::Steps(count, StepPosition::JumpEnd)` | Jumps between `count` levels instead of moving, as CSS `steps()`: a frame-by-frame sprite, a ticking hand. `position` is `"jump-end"` (the default, also `"end"`), `"jump-start"` (`"start"`), `"jump-none"` or `"jump-both"`. |
 | `Easing.in(e)`, `Easing.out(e)`, `Easing.inOut(e)` | `Easing::Curve(curve, EaseMode::In)`, `EaseMode::Out`, `EaseMode::InOut` | The curves are "in" curves; `out` and `inOut` turn them around. |
 
 In TSX, anywhere an easing is accepted you can also pass a name (`"linear"`, `"ease"`, `"easeIn"`, `"easeOut"`, `"easeInOut"`) or a Bézier array `[x1, y1, x2, y2]`; in Rust, `Easing::EaseIn`, `Easing::EaseOut` and `Easing::EaseInOut` are the CSS curves.
@@ -496,7 +787,7 @@ const remove = () => {
 | `easeInEaseOut(onEnd?)`, `linear(onEnd?)`, `spring(onEnd?)` | `animate_layout` with a preset | `configureNext` with a preset. |
 | `Types`, `Properties` | `LayoutCurve`, `LayoutProperty` | The names, for building configs. |
 
-A config is `{ duration, create?, update?, delete? }` (`LayoutAnimation { create, update, delete }` in Rust): `create` for inserted views, `update` for moved or resized ones, `delete` for removed ones. Each phase is `{ type?, property?, duration?, delay?, springDamping? }` (`LayoutTransition { curve, property, duration_ms, delay_ms }`), where `type` is `"easeInEaseOut"`, `"spring"`, `"linear"`, `"easeIn"` or `"easeOut"`, `property` is what appearing and disappearing views animate (`"opacity"`, `"scaleXY"`, `"scale"`), and `springDamping` (0..1, 0.7 by default; `LayoutCurve::Spring { damping }`) sets the spring's overshoot.
+A config is `{ duration, create?, update?, delete? }` (`LayoutAnimation { create, update, delete }` in Rust): `create` for inserted views, `update` for moved or resized ones, `delete` for removed ones. Each phase is `{ type?, property?, duration?, delay?, springDamping? }` (`LayoutTransition { curve, property, duration_ms, delay_ms }`), where `type` is `"easeInEaseOut"`, `"spring"`, `"linear"`, `"easeIn"`, `"easeOut"` or `"keyboard"` (the software keyboard's own curve, timed from when the keyboard started to move, so that what makes room for it moves with it; `LayoutCurve::Keyboard`), `property` is what appearing and disappearing views animate (`"opacity"`, `"scaleXY"`, `"scale"`), and `springDamping` (0..1, 0.7 by default; `LayoutCurve::Spring { damping }`) sets the spring's overshoot.
 
 ```rust tabs
 use nsh_core::ui::{LayoutAnimation, LayoutCurve, LayoutProperty, LayoutTransition};
@@ -525,7 +816,7 @@ LayoutAnimation.configureNext({
 | | Runs on | Your code per frame |
 |---|---|---|
 | Transitions, keyframe animations | UI thread | none |
-| `timing` / `spring` / `decay`, composites | UI thread | none; your code hears when they end |
+| Motions, keyframes, `timing` / `spring` / `decay`, composites | UI thread | none; your code hears when they end |
 | `interpolate`, arithmetic, `diffClamp` | UI thread | none |
 | `scrollValue`, `pan` / `pinch` / `rotation` | UI thread | none; your code hears start and end |
 | Layout animations | UI thread | none |
@@ -535,7 +826,11 @@ Reach for `requestAnimationFrame` (a global in TSX, following the display) only 
 
 ## Reduced motion
 
-When the user asks for less motion (iOS "Reduce Motion", Android "Remove animations"), `reduce_motion()` in Rust and `reduceMotion()` from `nsh/accessibility` in TSX are `true`, and the `motion-reduce:` / `motion-safe:` Tailwind variants apply. Your animations play as written; use these to choose a calmer alternative:
+When the user asks for less motion (iOS "Reduce Motion", Android "Remove animations"), `reduce_motion()` in Rust and `reduceMotion()` from `nsh/accessibility` in TSX are `true`, and the `motion-reduce:` / `motion-safe:` Tailwind variants apply.
+
+[Motions](#motion) follow the setting on their own: `play` and `enter` land where the motion ends at once, without moving, and the answer is `true` as for a motion that played. An exit still ends hidden, an entrance still ends at rest. Pass `ignoreReduceMotion: true` (`play_ignoring_reduce_motion` in Rust) for a motion that carries meaning the user needs, such as a progress spinner.
+
+Transitions, keyframe animations, animated values, keyframes and composites play as written; use these to choose a calmer alternative:
 
 ```rust tabs
 let open = move || {

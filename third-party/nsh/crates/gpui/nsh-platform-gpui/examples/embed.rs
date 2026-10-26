@@ -19,7 +19,9 @@
 //! `ComponentContext::set_size`), takes its own clicks (GPUI's), emits
 //! `tap` with the count and flashes on JS's `pulse` command. It takes the
 //! keyboard: Tab reaches it among the app's text fields, Space or Enter
-//! taps it.
+//! taps it. The view's channel (`AppView::host`, `nsh/host` in the app)
+//! gives the app its launch parameters and a message, answers its "time"
+//! call and hears its "tapped" posts.
 
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 fn main() {
@@ -177,6 +179,24 @@ fn main() {
                         })
                     }),
                 );
+                // The channel with the app (`nsh/host`): what it reads at
+                // start, the call it makes, the posts it sends and an event.
+                let host = view.host();
+                let mut params = serde_json::Map::new();
+                params.insert("user".into(), json!("Ada"));
+                host.set_params(params);
+                host.handle("time", |call| {
+                    let secs = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_or(0, |d| d.as_secs());
+                    let (h, m, s) = (secs / 3600 % 24, secs / 60 % 60, secs % 60);
+                    call.resolve(json!({ "time": format!("{h:02}:{m:02}:{s:02} UTC") }));
+                });
+                host.handle("tapped", |call| {
+                    eprintln!("the app posted tapped: {}", call.data())
+                });
+                // Kept until the app listens.
+                let _ = host.send("message", json!({ "text": "Hello from GPUI" }));
                 // Also while a dev server shows them over the app.
                 view.on_error(|message| eprintln!("embedded app: {message}"));
                 match source {

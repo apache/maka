@@ -239,15 +239,18 @@ impl Provider for Codex {
             }
             let response = context
                 .transport
-                .request(http::Request {
-                    url: format!(
-                        "{}/models?client_version=1.0.0",
-                        base_url.trim_end_matches('/')
-                    ),
-                    method: http::Method::Get,
-                    headers: headers.into_iter().collect(),
-                    body: vec![],
-                })
+                .request(
+                    http::Request {
+                        url: format!(
+                            "{}/models?client_version=1.0.0",
+                            base_url.trim_end_matches('/')
+                        ),
+                        method: http::Method::Get,
+                        headers: headers.into_iter().collect(),
+                        body: Default::default(),
+                    },
+                    context.cancellation.clone(),
+                )
                 .await
                 .map_err(|_| Error::Transport("model discovery failed".into()))?;
             let result = async {

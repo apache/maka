@@ -140,6 +140,8 @@ pub enum ModelError {
     Http { status: u16 },
     #[error("model request cancelled")]
     Cancelled,
+    #[error("model transport physical cleanup is unconfirmed")]
+    CleanupUnconfirmed,
     #[error("model stream idle timeout exceeded")]
     TimedOut,
     #[error("model input exceeds provider capacity (observed output: {observed_output})")]
@@ -151,6 +153,9 @@ pub enum ModelError {
 }
 
 impl ModelError {
+    pub fn cleanup_unconfirmed(&self) -> bool {
+        matches!(self, Self::CleanupUnconfirmed)
+    }
     pub fn failure_cause(&self) -> Option<ModelFailureCause> {
         Some(match self {
             Self::Cancelled => return None,
@@ -160,7 +165,7 @@ impl ModelError {
             Self::Provider(failure) => ModelFailureCause::Provider {
                 reason: failure.reason(),
             },
-            Self::Adapter(_) => ModelFailureCause::Adapter,
+            Self::Adapter(_) | Self::CleanupUnconfirmed => ModelFailureCause::Adapter,
         })
     }
 }

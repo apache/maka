@@ -42,7 +42,7 @@ impl EventLog {
             crate::sessions::validate_id(id)?;
         }
         let source = source.clone();
-        let commits = self.commits.clone();
+        let commits = self.commits.session(&source.session_id);
         self.connection
             .run(move |connection| {
                 Box::pin(async move {
@@ -50,7 +50,7 @@ impl EventLog {
                     let (boundary, sequence) = apply(&mut tx, &source).await?;
                     tx.commit().await.map_err(StoreError::CommitUnknown)?;
                     if let Some(sequence) = sequence {
-                        commits.send_replace(sequence);
+                        commits.publish(sequence);
                     }
                     Ok(boundary)
                 })

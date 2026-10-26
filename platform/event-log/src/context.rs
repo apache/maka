@@ -18,7 +18,6 @@
  */
 
 mod boundary;
-pub(crate) mod cache;
 pub(crate) mod evidence;
 pub(crate) mod frozen;
 pub(crate) mod history;
@@ -30,8 +29,10 @@ pub(crate) mod read;
 mod report;
 mod request;
 pub use report::{ContextReport, ContextRequest, ContextRequestState};
+pub mod prepared;
 pub(crate) mod safety;
 pub(crate) mod selection;
+pub mod semantic;
 mod tail;
 mod usage;
 pub use usage::ContextUsage;
@@ -57,6 +58,22 @@ pub struct SourceEvidence {
 pub struct ContextBaseline {
     pub event_id: String,
     pub checkpoint: ContextCheckpoint,
+}
+
+/// Immutable selection metadata for paged model-history rendering. The view
+/// carries no complete canonical tail or rendered prompt.
+#[derive(Debug)]
+pub struct ContextView {
+    pub source_evidence: SourceEvidence,
+    pub baseline: Option<ContextBaseline>,
+    pub anchor: Option<StoredEvent>,
+    pub effective_source_digest: String,
+    pub latest_main: LatestMainContext,
+    pub selection: semantic::SemanticSelection,
+    pub has_new_history: bool,
+    pub prior_unknown: bool,
+    pub unknown_tools: Vec<(String, String)>,
+    pub unknown_tool_count: u64,
 }
 
 /// Complete source evidence and its distinct, bounded model rendering input.
@@ -131,3 +148,6 @@ pub struct ArchivedToolResult {
 fn invalid(reason: &str) -> StoreError {
     StoreError::InvalidTransition(format!("invalid context checkpoint: {reason}"))
 }
+
+#[cfg(test)]
+mod admission_tests;

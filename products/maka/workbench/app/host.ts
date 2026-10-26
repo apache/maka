@@ -184,6 +184,7 @@ export const host = {
         };
   },
   query,
+  refresh: () => nativeHost.refresh(),
   subscribe,
   get initialSession() {
     return nativeHost.initialSession;

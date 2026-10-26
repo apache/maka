@@ -80,7 +80,7 @@ async fn continuation_requests_and_checkpoints_prove_selected_source_across_repa
         let child = continuation::opening("child", Some(claim.clone()));
         let opened = continuation::append(&log, &child).await;
         let main_source = log
-            .read_model_context("session", Some("child"))
+            .capture_model_context("session", Some("child"), 100_000, 64 * 1024 * 1024)
             .await
             .unwrap();
         let request = lineage_request("main", ModelPurpose::Main, &main_source);
@@ -131,7 +131,7 @@ async fn continuation_requests_and_checkpoints_prove_selected_source_across_repa
             CheckpointMode::PreTurn
         };
         let source = log
-            .prepare_context_compaction("session", Some("child"), &mode)
+            .capture_compaction_context("session", Some("child"), &mode, 100_000, 64 * 1024 * 1024)
             .await
             .unwrap();
         assert_eq!(
@@ -199,7 +199,7 @@ async fn continuation_requests_and_checkpoints_prove_selected_source_across_repa
         assert!(log.append(&checkpoint).await.is_err());
         assert!(!commits.has_changed().unwrap());
         assert_eq!(
-            log.read_model_context("session", Some("child"))
+            log.capture_model_context("session", Some("child"), 100_000, 64 * 1024 * 1024)
                 .await
                 .unwrap()
                 .baseline
@@ -212,7 +212,7 @@ async fn continuation_requests_and_checkpoints_prove_selected_source_across_repa
             .unwrap();
         log.append(&checkpoint).await.unwrap();
         let after = log
-            .read_model_context("session", Some("child"))
+            .capture_model_context("session", Some("child"), 100_000, 64 * 1024 * 1024)
             .await
             .unwrap();
         assert_eq!(
@@ -236,7 +236,7 @@ async fn continuation_requests_and_checkpoints_prove_selected_source_across_repa
         continuation::close(&log, &child).await;
         let descendant = continuation::claim(&log, "descendant", &child, claim.base).await;
         let selected = log
-            .read_lineage_context(&descendant.source, 100, 65536)
+            .capture_lineage_context(&descendant.source, 100, 65536)
             .await
             .unwrap();
         assert_eq!(
@@ -244,7 +244,7 @@ async fn continuation_requests_and_checkpoints_prove_selected_source_across_repa
             checkpoint.event().id
         );
         assert_eq!(
-            log.read_model_context("session", None)
+            log.capture_model_context("session", None, 100_000, 64 * 1024 * 1024)
                 .await
                 .unwrap()
                 .baseline

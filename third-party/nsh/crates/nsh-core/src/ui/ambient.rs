@@ -333,6 +333,14 @@ pub fn global<G: Default + 'static>() -> Signal<G> {
     signal
 }
 
+/// [`global`] where a reactive runtime is entered (the engine's thread,
+/// while it runs Rust code), else `None`: for code that also runs outside
+/// an engine (a unit test of a component's model).
+pub fn try_global<G: Default + 'static>() -> Option<Signal<G>> {
+    super::reactive::try_with_data(|_| ())?;
+    Some(global::<G>())
+}
+
 /// The insets of the screen or modal the component on `host` is on, below
 /// its header, else the safe area (TS: `safeAreaInsets()`).
 pub(crate) fn insets_of(host: NodeId) -> EdgeInsets {
@@ -387,6 +395,20 @@ pub(crate) fn with_storage<R>(f: impl FnOnce(&crate::storage::Store) -> R) -> R 
             .clone()
     });
     f(&storage)
+}
+
+/// Opens `url` outside the app (TS: `openUrl` of `nsh/device`): a web page
+/// in the browser, a `mailto:` or `tel:` link in its app, any scheme
+/// another app registered. The embedding app may take it first (its host
+/// channel's URL handler, which routes it through the host's router).
+/// Resolves to whether it opened: `false` for a URL
+/// [`crate::open_url::check_url`] refuses, when the app's `openUrl`
+/// capability is not granted, or when no app handles it. Await it in a
+/// task, or drop it when the answer does not matter.
+pub fn open_url(url: impl Into<String>) -> Answer<bool> {
+    let (answer, action) = super::services::open_url(url.into());
+    act(action);
+    answer
 }
 
 /// Puts `text` on the system clipboard (TS: `Clipboard.writeText`).
@@ -702,6 +724,13 @@ where
 /// no owner, it lives as long as the surface).
 pub fn animated_value(value: f32) -> super::AnimatedValue {
     super::AnimatedValue::new(&executor(), value)
+}
+
+/// Animated values for a view's opacity and transform, and motions to
+/// play on them (TS: `createMotion`): bind it with
+/// [`super::Styled::bind_motion`]. A `Copy` handle the current owner keeps.
+pub fn motion() -> super::Motion {
+    super::Motion::new(&executor())
 }
 
 /// A handle for an element (TS: `ref`): put it on the element with

@@ -17,6 +17,7 @@
  * under the License.
  */
 //! A public Host opens the same persisted product source across process restarts.
+mod publication;
 pub(super) mod update;
 use super::{HostError, Input, author, installation, launch, packages};
 use base64::{Engine, engine::general_purpose::STANDARD};
@@ -24,22 +25,28 @@ use maka_event_log::{
     EventLog,
     applications::{LoadedDeployment, PreparedApplication, launch::Launch},
     root::RootOwner,
+    root_store::RootStore,
 };
 use maka_host_runtime::{
     DirectoryRootSpec,
     application::host::{Host, Options},
 };
+pub(crate) use publication::{LivePublication, prepare_live_publication};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, sync::Arc};
 use uuid::Uuid;
 
-/// Managed deployment directories are authoritative; standalone reopen preserves source edits.
+const PROCESS_INSTANCES: [&str; 2] = ["workspace-processes", "coordinator-workspace-processes"];
+
+/// Configured directories seed a new Host; saved application sources own later edits.
 pub(crate) enum Roots {
     Saved,
     Configured(Option<Vec<DirectoryRootSpec>>),
 }
-fn directories(roots: Option<Vec<DirectoryRootSpec>>) -> Result<Vec<DirectoryRootSpec>, HostError> {
+pub(crate) fn directories(
+    roots: Option<Vec<DirectoryRootSpec>>,
+) -> Result<Vec<DirectoryRootSpec>, HostError> {
     DirectoryRootSpec::normalize(match roots {
         Some(roots) => roots,
         None => vec![DirectoryRootSpec {
@@ -61,7 +68,7 @@ struct Preparation {
 
 /// Bind an explicitly committed generic Host without reauthoring its source.
 pub(crate) async fn select_committed_host(
-    store: &EventLog,
+    store: &RootStore,
     request: &maka_host_runtime::application::host::startup::Request,
 ) -> Result<(), HostError> {
     if let Some(record) = store.application_launch().await? {
@@ -89,6 +96,7 @@ pub(crate) async fn select_committed_host(
             serde_json::to_value(Selection::PublicHost {
                 endpoints: request.endpoints.clone(),
                 native: request.native.clone(),
+                product_methods: Default::default(),
             })?,
         )
         .await?;
@@ -146,14 +154,13 @@ pub(crate) async fn open_host(
         }
     };
     let result = async {
-        let (loaded, Selection::PublicHost { endpoints, native }) = prepare(&store, roots).await?;
+        let (loaded, selection) = prepare(&store, roots).await?;
         Ok(Host::open_loaded_with_options(
             store.clone(),
             loaded,
             crate::application::serve::native(catalog.catalog())?,
             Some(maka_host_js::factory(Default::default())),
-            endpoints,
-            native,
+            selection,
             options,
         )
         .await?)
@@ -170,7 +177,7 @@ pub(crate) async fn open_host(
     }
 }
 async fn prepare(
-    store: &EventLog,
+    store: &RootStore,
     roots: Roots,
 ) -> Result<(LoadedDeployment, Selection), HostError> {
     // A fresh Host is already authored from the current bundle.
@@ -179,7 +186,7 @@ async fn prepare(
     }
     // Recover a frozen operation before considering the executing bundle. The
     // updater uses prepare_saved too, so applying a replacement cannot recurse.
-    let (loaded, selection) = prepare_saved(store, Roots::Saved).await?;
+    let (loaded, _) = prepare_saved(store, Roots::Saved).await?;
     let root = store.owned_root()?.canonical_path().to_owned();
     let outcome = update::synchronize(store, true).await.map_err(|error| {
         HostError::from(format!(
@@ -187,29 +194,24 @@ async fn prepare(
             root.display()
         ))
     })?;
-    let configured = matches!(roots, Roots::Configured(_));
-    if let Roots::Configured(roots) = roots {
-        apply_directories(
-            store,
-            loaded.source().reference.deployment,
-            directories(roots)?,
-        )
-        .await?;
-    }
-    if outcome.applied || configured {
-        let loaded = store
+    let configured =
+        apply_launch_configuration(store, loaded.source().reference.deployment, None).await?;
+    let loaded = if outcome.applied || configured {
+        store
             .load_application(loaded.source().reference.deployment)
             .await?
-            .ok_or("public Host source missing")?;
-        return Ok((loaded, selection));
-    }
+            .ok_or("public Host source missing")?
+    } else {
+        loaded
+    };
+    let selection = publication::synchronize(store, &loaded).await?;
     Ok((loaded, selection))
 }
 
 // Explicit update recovery must finish only its frozen target, without starting
 // another update from a potentially newer bundle.
 async fn prepare_saved(
-    store: &EventLog,
+    store: &RootStore,
     roots: Roots,
 ) -> Result<(LoadedDeployment, Selection), HostError> {
     if store.application_launch().await?.is_none() {
@@ -229,11 +231,36 @@ async fn prepare_saved(
         .await?
         .ok_or("public Host selection missing")?;
     // A terminal launcher cannot accidentally reinterpret this Root as its Host.
-    let selection: Selection = serde_json::from_value(record.configuration)?;
+    let selection: Selection = serde_json::from_value(record.configuration.clone())?;
     if let Some(pending) = record.pending {
         let preparation: Preparation = serde_json::from_slice(&pending)?;
         let packages = launch::decode_packages(preparation.packages)?;
-        update::validate_target(&preparation.input, &packages)?;
+        if preparation.input.environment.location
+            != maka_plugin_core::composition::ExecutionLocation::Host
+        {
+            return Err("public Host update requires a local Host source".into());
+        }
+        let frozen = PreparedApplication::new(preparation.input.clone(), vec![], packages.clone())?;
+        let current = if preparation.expected_revision == 0 {
+            store.load_application(record.deployment).await?
+        } else {
+            None
+        };
+        if let Some(current) = &current {
+            launch_changes(
+                &current.source().input,
+                current.packages(),
+                current.plan(),
+                &record.configuration,
+            )?;
+        } else {
+            launch_changes(
+                frozen.input(),
+                frozen.packages(),
+                frozen.plan(),
+                &record.configuration,
+            )?;
+        }
         if preparation.expected_revision == 0 {
             launch::ensure(store, record.deployment, &preparation.input, &[], &packages).await?;
         } else {
@@ -256,7 +283,7 @@ async fn prepare_saved(
     Ok((loaded, selection))
 }
 async fn begin(
-    store: &EventLog,
+    store: &RootStore,
     roots: Option<Vec<DirectoryRootSpec>>,
 ) -> Result<(Uuid, Selection, PreparedApplication), HostError> {
     let home = crate::serve::home_directory()?;
@@ -279,9 +306,26 @@ async fn begin(
     let packages = tokio::task::spawn_blocking(packages).await??;
     let (sources, _, prepared) = author(configuration, &packages).await?;
     let deployment = sources.deployment;
+    // These product endpoints publish every method of their selected service.
+    // Explicit generic Host selections leave this ownership set empty.
+    let product_methods = [
+        "agent",
+        "coordinator",
+        "settings",
+        "authentication",
+        "setup",
+        "terminal",
+        "coordinatorTerminal",
+        "workhub",
+    ]
+    .into_iter()
+    .filter(|name| sources.endpoints.contains_key(*name))
+    .map(str::to_owned)
+    .collect();
     let selection = Selection::PublicHost {
         endpoints: sources.endpoints,
         native: sources.native,
+        product_methods,
     };
     let preparation = Preparation {
         expected_revision: 0,
@@ -298,6 +342,12 @@ async fn begin(
             })
             .collect(),
     };
+    launch_changes(
+        prepared.input(),
+        prepared.packages(),
+        prepared.plan(),
+        &serde_json::to_value(&selection)?,
+    )?;
     store
         .begin_application_launch(Launch {
             deployment,
@@ -308,67 +358,70 @@ async fn begin(
     Ok((deployment, selection, prepared))
 }
 
-async fn apply_directories(
-    store: &EventLog,
+async fn apply_launch_configuration(
+    store: &RootStore,
     deployment: Uuid,
-    roots: Vec<DirectoryRootSpec>,
-) -> Result<(), HostError> {
+    roots: Option<Vec<DirectoryRootSpec>>,
+) -> Result<bool, HostError> {
     let metadata = store
         .read_application_metadata(deployment)
         .await?
         .ok_or("public Host source missing")?;
-    let roots = serde_json::to_value(roots)?;
+    // The bootstrap helper implements this executable's internal protocol. Its
+    // installation path is launcher-owned, even when the bundle is unchanged.
+    let helper = serde_json::to_value(std::env::current_exe()?)?;
+    let processes: Vec<_> = PROCESS_INSTANCES
+        .into_iter()
+        .filter(|name| {
+            metadata
+                .source
+                .input
+                .instances
+                .get(*name)
+                .is_some_and(|node| node.configuration.values.get("helper") != Some(&helper))
+        })
+        .collect();
     let current = metadata
         .source
         .input
         .instances
         .get("agent")
         .and_then(|node| node.configuration.values.get("workspaceRoots"));
-    if current == Some(&roots) {
-        return Ok(());
+    let roots = roots
+        .map(serde_json::to_value)
+        .transpose()?
+        .filter(|roots| current != Some(roots));
+    let locations = serde_json::to_value(workspace_location_targets(&metadata.source.input))?;
+    let locations_changed = metadata
+        .source
+        .input
+        .instances
+        .get("settings")
+        .is_some_and(|node| {
+            node.configuration.values.get("workspaceLocations") != Some(&locations)
+        });
+    if roots.is_none() && processes.is_empty() && !locations_changed {
+        return Ok(false);
     }
-    // Read payloads only for an actual configuration change, never on ordinary reopen.
+    // Read payloads only when a launcher-owned value might change.
     let loaded = store
         .load_application_at(&metadata.source.reference)
         .await?
         .ok_or("public Host source missing")?;
     let (mut source, packages, _, _) = loaded.into_parts();
     let input = &mut source.input;
-    configuration_values(input, &packages, "agent", maka_agent_api::IMPLEMENTATION)?
-        .insert("workspaceRoots".into(), roots.clone());
-    if input.instances.contains_key("skills") {
-        configuration_values(input, &packages, "skills", maka_skills_api::IMPLEMENTATION)?
-            .insert("projectRoots".into(), roots.clone());
+    let helper_changes = refresh_product_configuration(input, &packages, &helper);
+    if roots.is_none() && helper_changes.is_empty() {
+        return Ok(false);
     }
-    if input.instances.contains_key("workspace-processes") {
-        let filesystem = configuration_values(
+    if let Some(roots) = roots {
+        let targets = workspace_location_targets(input);
+        maka_settings_native::workspace_locations::replace(
             input,
             &packages,
-            "workspace-processes",
-            maka_workspace_api::processes::IMPLEMENTATION,
-        )?
-        .get_mut("filesystem")
-        .and_then(Value::as_object_mut)
-        .ok_or("public Host filesystem ceiling missing")?;
-        let previous = current
-            .and_then(Value::as_array)
-            .ok_or("saved published directories missing")?;
-        let rules = filesystem
-            .get_mut("rules")
-            .and_then(Value::as_array_mut)
-            .ok_or("saved filesystem rules missing")?;
-        // Replace the published roots' write ceiling, preserving narrower
-        // user-authored read/deny rules and unrelated filesystem restrictions.
-        rules.retain(|rule| {
-            !(rule["scope"] == "subtree"
-                && rule["access"] == "write"
-                && previous.iter().any(|root| root["path"] == rule["path"]))
-        });
-        for root in roots.as_array().expect("directory list") {
-            if !rules.iter().any(|rule| rule["path"] == root["path"]) {
-                rules.push(json!({"path": root["path"], "scope": "subtree", "access": "write"}));
-            }
-        }
+            &targets,
+            &serde_json::from_value::<Vec<DirectoryRootSpec>>(roots)?,
+        )?;
     }
     store
         .commit_application(
@@ -379,42 +432,358 @@ async fn apply_directories(
             packages,
         )
         .await?;
-    Ok(())
+    Ok(true)
 }
-fn configuration_values<'a>(
-    input: &'a mut Input,
-    packages: &[super::Package],
-    name: &str,
-    expected: &str,
-) -> Result<&'a mut BTreeMap<String, Value>, HostError> {
-    use maka_plugin_core::{
-        composition::PackageUse,
-        package::{EntryTarget, Implementation, PackageSelection},
-    };
-    let node = input
-        .instances
-        .get_mut(name)
-        .ok_or("managed public Host component was removed")?;
-    let PackageSelection::Pinned { package } = &node.package else {
-        return Err("managed public Host component must be pinned".into());
-    };
-    let native = packages
-        .iter()
-        .find(|bytes| bytes.application_ref() == *package)
-        .and_then(|bytes| bytes.manifest().application.as_ref())
-        .and_then(|declaration| declaration.entries.get(&EntryTarget::Host));
-    if node.use_package != PackageUse::Entry
-        || !node.configuration.parameters.is_empty()
-        || !matches!(native, Some(entry) if matches!(&entry.implementation, Implementation::Native { implementation } if implementation == expected))
-    {
-        return Err("managed directories no longer target the saved native Host components".into());
+
+fn workspace_location_targets(
+    input: &Input,
+) -> maka_settings_native::workspace_locations::Configuration {
+    maka_settings_native::workspace_locations::Configuration {
+        agent: "agent".into(),
+        skills: input
+            .instances
+            .contains_key("skills")
+            .then(|| "skills".into()),
+        processes: input
+            .instances
+            .contains_key("workspace-processes")
+            .then(|| "workspace-processes".into()),
     }
-    Ok(&mut node.configuration.values)
+}
+
+fn refresh_product_configuration(
+    input: &mut Input,
+    packages: &[super::Package],
+    helper: &Value,
+) -> Vec<String> {
+    let mut changes = Vec::new();
+    for name in PROCESS_INSTANCES {
+        // Custom components and composition wrappers own their configuration.
+        if let Some(values) = configuration_values(
+            input,
+            packages,
+            name,
+            maka_workspace_api::processes::IMPLEMENTATION,
+        ) && values.get("helper") != Some(helper)
+        {
+            values.insert("helper".into(), helper.clone());
+            changes.push(format!(
+                "/instances/{name}/configuration/values/helper: use launcher executable"
+            ));
+        }
+    }
+    let locations = serde_json::to_value(workspace_location_targets(input))
+        .expect("workspace location targets serialize");
+    if configuration_values(input, packages, "agent", maka_agent_api::IMPLEMENTATION).is_some()
+        && let Some(values) = configuration_values(
+            input,
+            packages,
+            "settings",
+            maka_settings_native::IMPLEMENTATION,
+        )
+        && values.get("workspaceLocations") != Some(&locations)
+    {
+        values.insert("workspaceLocations".into(), locations);
+        changes.push(
+            "/instances/settings/configuration/values/workspaceLocations: follow product services"
+                .into(),
+        );
+    }
+    changes
+}
+
+pub(super) fn launch_changes(
+    input: &Input,
+    packages: &[super::Package],
+    plan: &maka_plugin_core::plan::Plan,
+    configuration: &Value,
+) -> Result<Vec<String>, HostError> {
+    let helper = serde_json::to_value(std::env::current_exe()?)?;
+    let mut changes = refresh_product_configuration(&mut input.clone(), packages, &helper);
+    let mut selection = serde_json::from_value(configuration.clone())?;
+    changes.extend(publication::refresh_from_plan(&mut selection, plan)?);
+    Ok(changes)
+}
+
+pub(super) async fn preview_update(store: &EventLog) -> Result<super::update::Outcome, HostError> {
+    let (mut outcome, target) = update::preview(store).await?;
+    let record = store
+        .application_launch()
+        .await?
+        .ok_or("public Host selection missing")?;
+    let changes = launch_changes(
+        target.input(),
+        target.packages(),
+        target.plan(),
+        &record.configuration,
+    )?;
+    outcome.changed |= !changes.is_empty();
+    outcome.changes.extend(changes);
+    Ok(outcome)
+}
+
+pub(super) async fn apply_update(store: &RootStore) -> Result<super::update::Outcome, HostError> {
+    // Recover exactly one frozen package target before reconciling launcher
+    // values. Calling prepare here would select the executing bundle again.
+    let mut outcome = update::synchronize(store, true).await?;
+    let record = store
+        .application_launch()
+        .await?
+        .ok_or("public Host selection missing")?;
+    let loaded = store
+        .load_application(record.deployment)
+        .await?
+        .ok_or("public Host source missing")?;
+    let changes = launch_changes(
+        &loaded.source().input,
+        loaded.packages(),
+        loaded.plan(),
+        &record.configuration,
+    )?;
+    if changes.is_empty() {
+        return Ok(outcome);
+    }
+    let configured = apply_launch_configuration(store, record.deployment, None).await?;
+    let loaded = if configured {
+        store
+            .load_application(record.deployment)
+            .await?
+            .ok_or("public Host source missing")?
+    } else {
+        loaded
+    };
+    publication::synchronize(store, &loaded).await?;
+    outcome.changed = true;
+    outcome.applied = true;
+    outcome.changes.extend(changes);
+    Ok(outcome)
+}
+
+use maka_settings_native::workspace_locations::configuration_values;
+
+pub(crate) async fn configure_workspace_locations(
+    owner: Arc<RootOwner>,
+    roots: Vec<DirectoryRootSpec>,
+) -> Result<(), HostError> {
+    let store = maka_transport::open_store(owner).await?;
+    let result = replace_workspace_locations(&store, roots).await;
+    store.drain().await;
+    result
+}
+
+async fn replace_workspace_locations(
+    store: &RootStore,
+    roots: Vec<DirectoryRootSpec>,
+) -> Result<(), HostError> {
+    let (loaded, _) = prepare_saved(store, Roots::Configured(Some(roots.clone()))).await?;
+    apply_launch_configuration(store, loaded.source().reference.deployment, Some(roots)).await?;
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn explicit_update_previews_and_applies_launch_drift_with_current_packages() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = launch::create(directory.path().join("host")).await.unwrap();
+        let (initial, mut selection) = prepare(&store, Roots::Configured(Some(vec![])))
+            .await
+            .unwrap();
+        let original = store.application_launch().await.unwrap().unwrap();
+        let mut input = initial.source().input.clone();
+        let missing = directory.path().join("removed-cli");
+        for name in PROCESS_INSTANCES {
+            input
+                .instances
+                .get_mut(name)
+                .unwrap()
+                .configuration
+                .values
+                .insert("helper".into(), json!(missing));
+        }
+        let stale_source = store
+            .commit_application(
+                original.deployment,
+                initial.source().reference.revision,
+                input.clone(),
+                vec![],
+                initial.packages().to_vec(),
+            )
+            .await
+            .unwrap();
+        let Selection::PublicHost { endpoints, .. } = &mut selection;
+        for name in ["agent", "coordinator"] {
+            assert!(
+                endpoints
+                    .get_mut(name)
+                    .unwrap()
+                    .grant
+                    .methods
+                    .remove("projectMcp")
+            );
+        }
+        let stale_selection = serde_json::to_value(selection).unwrap();
+        assert!(
+            store
+                .compare_and_set_application_launch_configuration(
+                    stale_source.clone(),
+                    original.configuration.clone(),
+                    stale_selection.clone(),
+                )
+                .await
+                .unwrap()
+        );
+
+        let owner = store.owned_root().unwrap();
+        store.drain().await;
+        drop(store);
+        let inspection = maka_transport::open_application_inspection(owner.clone())
+            .await
+            .unwrap();
+        let preview = preview_update(&inspection).await.unwrap();
+        assert!(preview.changed);
+        assert!(!preview.applied);
+        assert_eq!(
+            preview.changes,
+            [
+                "/instances/workspace-processes/configuration/values/helper: use launcher executable",
+                "/instances/coordinator-workspace-processes/configuration/values/helper: use launcher executable",
+                "/publication/endpoints/agent/grant/methods: follow current service contract",
+                "/publication/endpoints/coordinator/grant/methods: follow current service contract",
+            ]
+        );
+        let unchanged = inspection
+            .load_application(original.deployment)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(unchanged.source().reference, stale_source);
+        assert_eq!(unchanged.source().input, input);
+        assert_eq!(
+            inspection
+                .application_launch()
+                .await
+                .unwrap()
+                .unwrap()
+                .configuration,
+            stale_selection
+        );
+        inspection.drain().await;
+        drop(inspection);
+
+        let store = maka_transport::open_store(owner.clone()).await.unwrap();
+        let applied = apply_update(&store).await.unwrap();
+        assert!(applied.changed && applied.applied);
+        assert_eq!(applied.changes, preview.changes);
+        let updated = store
+            .load_application(original.deployment)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            updated.source().reference.revision,
+            stale_source.revision + 1
+        );
+        assert_eq!(updated.source().input, initial.source().input);
+        assert_eq!(
+            store
+                .application_launch()
+                .await
+                .unwrap()
+                .unwrap()
+                .configuration,
+            original.configuration
+        );
+        store.drain().await;
+        drop(store);
+        let inspection = maka_transport::open_application_inspection(owner)
+            .await
+            .unwrap();
+        let again = preview_update(&inspection).await.unwrap();
+        assert!(!again.changed && !again.applied);
+        assert!(again.changes.is_empty());
+        inspection.drain().await;
+    }
+
+    #[tokio::test]
+    async fn startup_refreshes_product_methods_without_expanding_explicit_publications() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = launch::create(directory.path().join("host")).await.unwrap();
+        let (initial, original) = prepare(&store, Roots::Configured(Some(vec![])))
+            .await
+            .unwrap();
+        let original = serde_json::to_value(original).unwrap();
+        for product_owned in [true, false] {
+            let mut narrowed: Selection = serde_json::from_value(original.clone()).unwrap();
+            let Selection::PublicHost {
+                endpoints,
+                product_methods,
+                ..
+            } = &mut narrowed;
+            for name in ["agent", "coordinator"] {
+                for method in ["projectMcp", "trustProjectMcp", "fileCandidates"] {
+                    assert!(
+                        endpoints
+                            .get_mut(name)
+                            .unwrap()
+                            .grant
+                            .methods
+                            .remove(method)
+                    );
+                }
+            }
+            if !product_owned {
+                product_methods.clear();
+            }
+            let narrowed = serde_json::to_value(narrowed).unwrap();
+            let previous = store.application_launch().await.unwrap().unwrap();
+            assert!(
+                store
+                    .compare_and_set_application_launch_configuration(
+                        initial.source().reference.clone(),
+                        previous.configuration,
+                        narrowed.clone(),
+                    )
+                    .await
+                    .unwrap()
+            );
+
+            let (reopened, selection) = prepare(&store, Roots::Saved).await.unwrap();
+            assert_eq!(reopened.source().reference, initial.source().reference);
+            assert_eq!(reopened.source().input, initial.source().input);
+            let Selection::PublicHost { endpoints, .. } = &selection;
+            for name in ["agent", "coordinator"] {
+                for method in ["projectMcp", "trustProjectMcp", "fileCandidates"] {
+                    assert_eq!(
+                        endpoints[name].grant.methods.contains(method),
+                        product_owned
+                    );
+                }
+            }
+            let expected = if product_owned { &original } else { &narrowed };
+            assert_eq!(serde_json::to_value(selection).unwrap(), *expected);
+            let record = store.application_launch().await.unwrap().unwrap();
+            assert_eq!(record.configuration, *expected);
+            assert!(record.pending.is_none());
+
+            let (again, selection) = prepare(&store, Roots::Saved).await.unwrap();
+            assert_eq!(again.source().reference, initial.source().reference);
+            assert_eq!(serde_json::to_value(selection).unwrap(), *expected);
+            assert_eq!(
+                store
+                    .application_launch()
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .configuration,
+                *expected
+            );
+        }
+        store.drain().await;
+    }
+
     #[tokio::test]
     async fn startup_updates_old_selected_packages_and_retries_after_incompatible_configuration() {
         let directory = tempfile::tempdir().unwrap();
@@ -531,7 +900,7 @@ mod tests {
         let root = directory.path().join("root");
         let workspace = directory.path().join("workspace");
         std::fs::create_dir(&workspace).unwrap();
-        let store = EventLog::for_root(Arc::new(RootOwner::create(&root, &namespaces).unwrap()))
+        let store = RootStore::open(Arc::new(RootOwner::create(&root, &namespaces).unwrap()))
             .await
             .unwrap();
         let roots = vec![DirectoryRootSpec {
@@ -623,9 +992,7 @@ mod tests {
             )
             .await
             .unwrap();
-        prepare(&store, Roots::Configured(Some(vec![])))
-            .await
-            .unwrap();
+        replace_workspace_locations(&store, vec![]).await.unwrap();
         let changed = store.load_application(deployment).await.unwrap().unwrap();
         assert_eq!(changed.source().reference.revision, revision + 2);
         assert_eq!(
@@ -652,9 +1019,15 @@ mod tests {
                 .values["permissions"]["access"],
             "read_only"
         );
-        prepare(&store, Roots::Configured(Some(vec![])))
-            .await
-            .unwrap();
+        prepare(
+            &store,
+            Roots::Configured(Some(vec![DirectoryRootSpec {
+                label: "Workspace".into(),
+                path: workspace.clone(),
+            }])),
+        )
+        .await
+        .unwrap();
         prepare(&store, Roots::Saved).await.unwrap();
         assert_eq!(
             store
@@ -666,6 +1039,51 @@ mod tests {
                 .reference,
             changed.source().reference
         );
+        // A moved/rebuilt CLI must replace even an existing older helper, with
+        // no package update and without changing the user's source or permissions.
+        let old_helper = directory.path().join("old-maka");
+        std::fs::write(&old_helper, b"old executable").unwrap();
+        let expected = changed.source().input.clone();
+        let mut revision = changed.source().reference.revision;
+        for exists in [true, false] {
+            if !exists {
+                std::fs::remove_file(&old_helper).unwrap();
+            }
+            let mut stale = expected.clone();
+            stale
+                .instances
+                .get_mut("settings")
+                .unwrap()
+                .configuration
+                .values
+                .remove("workspaceLocations");
+            for name in ["workspace-processes", "coordinator-workspace-processes"] {
+                stale
+                    .instances
+                    .get_mut(name)
+                    .unwrap()
+                    .configuration
+                    .values
+                    .insert("helper".into(), json!(old_helper));
+            }
+            let stale = store
+                .commit_application(
+                    deployment,
+                    revision,
+                    stale,
+                    changed.source().remote_exports.clone(),
+                    changed.packages().to_vec(),
+                )
+                .await
+                .unwrap();
+            let (repaired, _) = prepare(&store, Roots::Saved).await.unwrap();
+            assert_eq!(repaired.source().input, expected);
+            assert_eq!(repaired.source().reference.deployment, deployment);
+            assert_eq!(repaired.source().reference.revision, stale.revision + 1);
+            let (again, _) = prepare(&store, Roots::Saved).await.unwrap();
+            assert_eq!(again.source().reference, repaired.source().reference);
+            revision = repaired.source().reference.revision;
+        }
         store.drain().await;
     }
 }

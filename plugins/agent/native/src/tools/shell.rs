@@ -103,12 +103,5 @@ mod tests {
         assert!(
             title(&serde_json::json!({"command":"\u{0000}\u{202e}", "title":" \n "})).is_none()
         );
-        let original = serde_json::json!({"properties":{}});
-        assert!(
-            schema(original.clone(), true)["properties"]["title"]
-                .get("maxLength")
-                .is_none()
-        );
-        assert!(schema(original, false)["properties"].get("title").is_none());
     }
 }

@@ -18,11 +18,10 @@
  */
 
 import { tr } from './locale';
-import { cleanup, effect, inputAction, Scroll, signal, Text, View } from 'nsh';
+import { cleanup, effect, inputAction, Scroll, signal, Text, View, Image } from 'nsh';
 import type { YNode } from 'nsh';
 import { Button } from 'nsh/base';
 import { keymap } from 'nsh/keymap';
-import { Image } from 'nsh/image';
 import { Terminal } from './Terminal';
 import { Terminals } from './Terminals';
 import { WorkspaceFiles } from './WorkspaceFiles';

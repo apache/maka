@@ -24,6 +24,7 @@ publish.workspace = true
 
 [dependencies]
 maka-agent-facts.workspace = true
+maka-provider-protocol.workspace = true
 maka-agent-ports.workspace = true
 maka-capabilities.workspace = true
 sha2.workspace = true

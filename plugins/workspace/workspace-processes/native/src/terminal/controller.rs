@@ -75,8 +75,11 @@ impl Processes {
         &self,
         target: &Target,
         handle: &ShellHandle,
+        context: &Context,
     ) -> Result<Arc<ShellObservation>, ToolError> {
-        let current = self.terminal_session(&target.session_id, true).await?;
+        let current = self
+            .terminal_session(&target.session_id, true, context)
+            .await?;
         let record = handle
             .latest()
             .ok_or_else(|| failed("Terminal is not ready"))?
@@ -84,7 +87,7 @@ impl Processes {
         if !record.state.active() || !record.output.is_pty() {
             return Err(failed("Only an active PTY can be controlled"));
         }
-        if current.configuration.boundary_revision != record.permissions.boundary_revision {
+        if current.configuration.permission_basis() != record.permissions.basis {
             return Err(failed(
                 "PTY launch permissions no longer match this Session; start a new terminal",
             ));
@@ -107,7 +110,7 @@ impl Processes {
             _ = context.scope().cancellation.cancelled() => return Err(failed("Terminal acquire cancelled")),
             guard = gate.lock() => guard,
         };
-        let record = self.terminal_authorize(&target, &handle).await?;
+        let record = self.terminal_authorize(&target, &handle, context).await?;
         cancelled(&context.scope().cancellation)?;
         if self.drain.is_cancelled() {
             return Err(failed("Process owner is draining"));
@@ -220,7 +223,7 @@ impl Processes {
             _ = context.scope().cancellation.cancelled() => return Err(failed("Terminal input cancelled before admission")),
             guard = gate.lock() => guard,
         };
-        self.terminal_authorize(&input.controller.target, &handle)
+        self.terminal_authorize(&input.controller.target, &handle, context)
             .await?;
         cancelled(&context.scope().cancellation)?;
         if self.drain.is_cancelled() {
@@ -313,7 +316,7 @@ impl Processes {
         context: &Context,
     ) -> Result<Released, ToolError> {
         let caller = caller(context)?;
-        self.terminal_session(&controller.target.session_id, false)
+        self.terminal_session(&controller.target.session_id, false, context)
             .await?;
         self.terminal_id(&controller.target)?;
         if controller.controller_id.is_nil() {

@@ -700,7 +700,7 @@ impl Application {
     /// Loads the original source and exact bytes in one storage snapshot.
     /// The execution owner retains the storage lease through actual cleanup.
     pub async fn start_from_store(
-        store: Arc<maka_event_log::EventLog>,
+        store: Arc<maka_event_log::root_store::RootStore>,
         deployment: Uuid,
         native: NativeRegistry,
         issuer: Issuer,
@@ -717,15 +717,15 @@ impl Application {
 
     /// Start a committed snapshot belonging to the same live original Root.
     pub fn start_loaded(
-        store: Arc<maka_event_log::EventLog>,
+        store: Arc<maka_event_log::root_store::RootStore>,
         loaded: maka_event_log::applications::LoadedDeployment,
         mut native: NativeRegistry,
         issuer: Issuer,
         policy: Arc<dyn Policy>,
         scripts: Option<Arc<dyn backend::Factory>>,
     ) -> Result<Self> {
-        loaded
-            .check_store(&store)
+        store
+            .check_application(&loaded)
             .map_err(|error| error.to_string())?;
         // Persisted remote declarations are compatibility observations. This
         // executor has no trusted remote transport and cannot turn them into grants.
@@ -775,7 +775,7 @@ impl Application {
         scripts: Option<Arc<dyn backend::Factory>>,
         persisted: Option<(
             maka_event_log::applications::SourceSnapshot,
-            Arc<maka_event_log::EventLog>,
+            Arc<maka_event_log::root_store::RootStore>,
         )>,
         plan: Option<Plan>,
     ) -> Result<Self> {

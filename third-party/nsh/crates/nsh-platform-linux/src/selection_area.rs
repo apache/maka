@@ -11,7 +11,7 @@
 //!   active). Frames are the texts' content boxes in the area's
 //!   coordinates, through GTK's allocation transforms (frames, scroll
 //!   offsets, shifts); hit-testing is the main thread's layout of each
-//!   text ([`LinuxLayout::caret_at`]).
+//!   text ([`LinuxLayout::hit_test`]).
 //! - Gestures come from `input.rs`, whose pointer handlers serve real and
 //!   simulated (`nsh test --target linux`) input alike: a mouse press in an area presses
 //!   the model (the click count as GTK counts double clicks; Shift+click
@@ -142,10 +142,11 @@ impl SelectionTexts for Texts {
     fn offset_at(&self, i: usize, point: Point<Points>) -> u32 {
         let item = &self.items[i];
         item.layout.downcast::<LinuxLayout>().map_or(0, |l| {
-            l.caret_at(
+            l.hit_test(
                 (point.x - item.frame.origin.x).0,
                 (point.y - item.frame.origin.y).0,
             )
+            .offset
         })
     }
 }

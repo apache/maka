@@ -30,6 +30,7 @@ mod history;
 mod interactions;
 mod model_attempt;
 mod model_source;
+mod prepared_prompt;
 pub use model_source::{ModelSource, PreparedModel};
 pub mod pricing;
 mod request_composition;
@@ -52,7 +53,8 @@ use maka_agent_facts::event::Invocation;
 use maka_agent_facts::execution::InvocationConfiguration;
 use maka_agent_facts::input::MessageInput;
 use maka_agent_facts::tools::ToolError;
-use maka_event_log::{EventLog, StoreError};
+use maka_event_log::StoreError;
+use maka_event_log::root_store::{SessionExecutionScope, SessionStore};
 use maka_model::{ModelError, ModelExecutor, ProviderConfig};
 use maka_tools::CodeExecutor;
 use maka_tools::ToolCatalog;
@@ -64,6 +66,8 @@ use tokio_util::task::TaskTracker;
 pub enum RunError {
     #[error("session already has an active invocation")]
     Busy,
+    #[error(transparent)]
+    SessionState(#[from] maka_session_state::Error),
     /// Preflight became stale; no invocation was opened or source claimed.
     #[error("Session tool loading changed during continuation preparation; prepare again")]
     ContinuationChanged,
@@ -80,7 +84,7 @@ pub enum RunError {
     #[error(transparent)]
     Store(#[from] StoreError),
     #[error(transparent)]
-    Model(#[from] ModelError),
+    Model(ModelError),
     #[error(transparent)]
     Tool(ToolError),
     /// Physical ownership is uncertain; an enclosing native owner must retain
@@ -98,11 +102,21 @@ impl RunError {
         matches!(
             self,
             Self::CleanupUnconfirmed
+                | Self::Model(ModelError::CleanupUnconfirmed)
                 | Self::Tool(
                     ToolError::CleanupUnconfirmed(_)
                         | ToolError::OperationCleanupUnconfirmed { .. }
                 )
         )
+    }
+}
+
+impl From<ModelError> for RunError {
+    fn from(error: ModelError) -> Self {
+        if error.cleanup_unconfirmed() {
+            cleanup::unconfirmed();
+        }
+        Self::Model(error)
     }
 }
 
@@ -141,10 +155,10 @@ pub struct RunInput<W = RunWork> {
 
 // Admission owns the submitted body. Running execution owns only settings and
 // identity; canonical opening facts supply the body to bounded history reads.
-type RunContext = RunInput<()>;
+type RunSettings = RunInput<()>;
 
 impl RunInput {
-    fn into_context(self) -> (RunContext, RunWork) {
+    fn into_context(self) -> (RunSettings, RunWork) {
         let Self {
             work,
             model_source,
@@ -202,43 +216,48 @@ pub enum RunWork {
 
 struct Inner {
     pricing: Option<Arc<dyn pricing::Pricing>>,
-    log: Arc<EventLog>,
     model: ModelExecutor,
     cells: CodeExecutor,
-    sessions: Mutex<std::collections::HashMap<String, SessionState>>,
+    session_backend: maka_session_state::Backend,
     active: Mutex<HashSet<String>>,
     workers: TaskTracker,
 }
 
-#[derive(Clone, Default)]
-struct SessionState {
-    code_store: maka_code_runtime::CellStore,
-    loaded: maka_tools::availability::LoadedTools,
+/// One selected journal for this run; scheduling and scratch state remain global.
+struct RunContext {
+    shared: Arc<Inner>,
+    log: Arc<SessionStore>,
+}
+
+impl RunContext {
+    fn new(
+        shared: Arc<Inner>,
+        store: SessionStore,
+        invocation: &Invocation,
+    ) -> Result<Arc<Self>, RunError> {
+        require_session(&store, invocation)?;
+        Ok(Arc::new(Self {
+            shared,
+            log: Arc::new(store),
+        }))
+    }
 }
 
 impl Inner {
-    fn session_state(&self, session: &str) -> SessionState {
-        self.sessions
-            .lock()
-            .unwrap()
-            .entry(session.into())
-            .or_default()
-            .clone()
+    fn loaded(&self, session: &str) -> maka_tools::availability::LoadedTools {
+        maka_tools::availability::LoadedTools::new(self.session_backend.session(session))
     }
-
-    fn loaded_snapshot(&self, session: &str) -> std::collections::BTreeSet<String> {
-        self.sessions
-            .lock()
-            .unwrap()
-            .get(session)
-            .map(|state| state.loaded.snapshot())
-            .unwrap_or_default()
+    fn loaded_snapshot(
+        &self,
+        session: &str,
+    ) -> Result<std::collections::BTreeSet<String>, RunError> {
+        Ok(self.session_backend.session(session).loaded()?)
     }
-
-    fn clear_loaded(&self, session: &str) {
-        if let Some(state) = self.sessions.lock().unwrap().get(session) {
-            state.loaded.clear();
-        }
+    fn clear_loaded(&self, session: &str) -> Result<(), RunError> {
+        Ok(self
+            .session_backend
+            .session(session)
+            .update_loaded(std::collections::BTreeSet::clear)?)
     }
 }
 
@@ -252,6 +271,7 @@ pub struct Engine(Arc<Inner>);
 /// the discovery basis. A changed basis requires fresh preparation.
 pub struct PreparedContinuation {
     engine: std::sync::Weak<Inner>,
+    store: SessionStore,
     input: RunInput,
     claim: continuation::PreparedClaim,
 }
@@ -262,53 +282,52 @@ impl PreparedContinuation {
 }
 
 impl Engine {
-    pub fn new(log: Arc<EventLog>, model: ModelExecutor, cells: CodeExecutor) -> Self {
-        Self::create(log, model, cells, None)
+    pub fn new(model: ModelExecutor, cells: CodeExecutor) -> Result<Self, RunError> {
+        Self::create(model, cells, None)
     }
 
     pub fn with_pricing(
-        log: Arc<EventLog>,
         model: ModelExecutor,
         cells: CodeExecutor,
         pricing: Arc<dyn pricing::Pricing>,
-    ) -> Self {
-        Self::create(log, model, cells, Some(pricing))
+    ) -> Result<Self, RunError> {
+        Self::create(model, cells, Some(pricing))
     }
 
     fn create(
-        log: Arc<EventLog>,
         model: ModelExecutor,
         cells: CodeExecutor,
         pricing: Option<Arc<dyn pricing::Pricing>>,
-    ) -> Self {
-        Self(Arc::new(Inner {
+    ) -> Result<Self, RunError> {
+        Ok(Self(Arc::new(Inner {
             pricing,
-            log,
             model,
             cells,
-            sessions: Mutex::default(),
+            session_backend: maka_session_state::Backend::temporary()?,
             active: Mutex::new(HashSet::new()),
             workers: TaskTracker::new(),
-        }))
+        })))
     }
 
     pub async fn run(
         &self,
+        store: SessionStore,
         input: RunInput,
         cancellation: CancellationToken,
     ) -> Result<Invocation, RunError> {
-        self.start(input, cancellation).await?.wait().await
+        self.start(store, input, cancellation).await?.wait().await
     }
 
     /// Host calls after session retirement has fenced and drained its runs.
-    pub fn release_session_state(&self, session: &str) {
-        self.0.sessions.lock().unwrap().remove(session);
+    pub fn release_session_state(&self, session: &str) -> Result<(), RunError> {
+        Ok(self.0.session_backend.session(session).retire()?)
     }
 
     /// Observe replay safety without reserving a source or creating a claim.
     /// Admission validates the claim against current canonical facts.
     pub async fn check_continuation(
         &self,
+        store: &SessionStore,
         input: &RunInput,
         cancellation: &CancellationToken,
     ) -> Result<(), RunError> {
@@ -317,17 +336,18 @@ impl Engine {
         else {
             return Err(RunError::InvalidInput("not a continuation request".into()));
         };
-        self.0
+        let context = RunContext::new(self.0.clone(), store.clone(), &input.invocation)?;
+        context
             .log
             .prepare_prune_candidates(&input.invocation.session_id, None, 0, 0, None)
             .await?;
         continuation::inspect(
-            &self.0,
+            &context,
             input,
             source,
             tools,
             cancellation,
-            &self.0.loaded_snapshot(&input.invocation.session_id),
+            &self.0.loaded_snapshot(&input.invocation.session_id)?,
         )
         .await
         .map(|_| ())
@@ -335,6 +355,7 @@ impl Engine {
 
     pub async fn prepare_continuation(
         &self,
+        store: SessionStore,
         input: RunInput,
         cancellation: &CancellationToken,
     ) -> Result<PreparedContinuation, RunError> {
@@ -343,13 +364,15 @@ impl Engine {
         else {
             return Err(RunError::InvalidInput("not a continuation request".into()));
         };
-        self.0
+        let context = RunContext::new(self.0.clone(), store.clone(), &input.invocation)?;
+        context
             .log
             .prepare_prune_candidates(&input.invocation.session_id, None, 0, 0, None)
             .await?;
-        let claim = continuation::prepare(&self.0, &input, source, tools, cancellation).await?;
+        let claim = continuation::prepare(&context, &input, source, tools, cancellation).await?;
         Ok(PreparedContinuation {
             engine: Arc::downgrade(&self.0),
+            store,
             input,
             claim,
         })
@@ -365,8 +388,13 @@ impl Engine {
                 "continuation belongs to another Engine".into(),
             ));
         }
-        self.start_model(prepared.input, Some(prepared.claim), cancellation)
-            .await
+        self.start_model(
+            prepared.store,
+            prepared.input,
+            Some(prepared.claim),
+            cancellation,
+        )
+        .await
     }
 
     /// The owner first stops admissions and requests cancellation. This barrier
@@ -384,14 +412,16 @@ impl Engine {
     /// and draining; dropping it requests cancellation without abandoning effects.
     pub async fn start(
         &self,
+        store: SessionStore,
         input: RunInput,
         cancellation: CancellationToken,
     ) -> Result<RunningInvocation, RunError> {
-        self.start_model(input, None, cancellation).await
+        self.start_model(store, input, None, cancellation).await
     }
 
     async fn start_model(
         &self,
+        store: SessionStore,
         input: RunInput,
         claim: Option<continuation::PreparedClaim>,
         cancellation: CancellationToken,
@@ -474,7 +504,11 @@ impl Engine {
             };
             HandoffGate::new(input.invocation.clone(), root.clone())
         });
-        let inner = self.0.clone();
+        require_session(&store, &input.invocation)?;
+        let execution = store
+            .execution_scope(permission_basis(&input.configuration))
+            .await?;
+        let inner = RunContext::new(self.0.clone(), execution.store(), &input.invocation)?;
         let invocation = input.invocation.clone();
         let tool_names = Arc::new(match &input.work {
             RunWork::Message { tools, .. }
@@ -484,6 +518,7 @@ impl Engine {
         });
         let worker_handoff = handoff.clone();
         self.start_owned(
+            execution,
             invocation,
             tool_names,
             handoff,
@@ -497,6 +532,7 @@ impl Engine {
 
     async fn start_owned<F, Fut>(
         &self,
+        execution: SessionExecutionScope,
         invocation: Invocation,
         tool_names: Arc<HashSet<String>>,
         handoff: Option<HandoffGate>,
@@ -528,6 +564,9 @@ impl Engine {
         let (admitted, ready) = tokio::sync::oneshot::channel();
         let cleanup = cleanup::Evidence::default();
         let worker = self.0.workers.spawn(async move {
+            // Only the original worker accepts physical custody. Its lease Drop
+            // fences uncertain cleanup, including panic and runtime teardown.
+            let execution = execution.accept();
             let _admission = admission;
             let result = cleanup.scope(run(worker_cancellation, admitted)).await;
             let physical = if cleanup.confirmed()
@@ -537,6 +576,11 @@ impl Engine {
             } else {
                 Err(CleanupUnconfirmed)
             };
+            if physical.is_ok() {
+                execution.finish();
+            } else {
+                execution.retain_unconfirmed();
+            }
             RunningCompletion {
                 result,
                 cleanup: physical,
@@ -565,6 +609,26 @@ impl Engine {
     }
 }
 
+fn require_session(store: &SessionStore, invocation: &Invocation) -> Result<(), RunError> {
+    if store.id() != invocation.session_id {
+        return Err(RunError::InvalidInput(
+            "Session store does not match invocation".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn permission_basis(
+    configuration: &InvocationConfiguration,
+) -> Option<maka_agent_facts::workspace::PermissionBasis> {
+    configuration
+        .workspace_binding
+        .map(|binding| maka_agent_facts::workspace::PermissionBasis {
+            boundary_revision: configuration.boundary_revision,
+            binding,
+        })
+}
+
 struct Admission {
     inner: Arc<Inner>,
     session_id: String,
@@ -579,3 +643,9 @@ impl Drop for Admission {
         self.inner.active.lock().unwrap().remove(&self.session_id);
     }
 }
+
+#[cfg(test)]
+mod session_state_tests;
+
+#[cfg(test)]
+mod test_support;

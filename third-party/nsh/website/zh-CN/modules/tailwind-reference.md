@@ -415,6 +415,14 @@ view()
 | `cursor-<name>`、`cursor-[<name>]` | `cursor`：`cursor-pointer`、`cursor-grab`、`cursor-not-allowed` 等（所有 CSS 光标关键字） |
 | `select-none`、`select-text`、`select-auto` | 文字选择（见排版） |
 
+## SVG
+
+| 类名 | 设置 |
+|---|---|
+| `fill-<color>`、`fill-none`、`fill-current`、`fill-inherit` | `fill`（`fill-current` 即 `currentColor`） |
+| `stroke-<color>`、`stroke-none`、`stroke-current`、`stroke-inherit` | `stroke` |
+| `stroke-<number>`、`stroke-[<length>]` | `strokeWidth` |
+
 ## 图片
 
 | Class | 设置 |

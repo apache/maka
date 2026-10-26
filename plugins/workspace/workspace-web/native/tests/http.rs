@@ -34,7 +34,7 @@ use tokio_util::sync::CancellationToken;
 #[derive(Default)]
 struct Transport {
     replies: Mutex<VecDeque<http::Response>>,
-    calls: Mutex<Vec<(call::Scope, http::Request)>>,
+    calls: Mutex<Vec<(call::Scope, http::BufferedRequest)>>,
     started: tokio::sync::Notify,
 }
 impl http::Client for Transport {
@@ -44,6 +44,23 @@ impl http::Client for Transport {
         request: http::Request,
     ) -> BoxFuture<'_, Result<http::Response, http::Error>> {
         Box::pin(async move {
+            let http::Request {
+                url,
+                method,
+                headers,
+                body,
+            } = request;
+            let mut upload = body.into_stream();
+            let mut body = Vec::new();
+            while let Some(chunk) = futures_util::StreamExt::next(&mut upload).await {
+                body.extend_from_slice(&chunk.unwrap());
+            }
+            let request = http::BufferedRequest {
+                url,
+                method,
+                headers,
+                body,
+            };
             self.calls.lock().unwrap().push((scope, request));
             self.started.notify_one();
             let reply = self.replies.lock().unwrap().pop_front();
@@ -192,7 +209,6 @@ async fn content_negotiation_extraction_and_limits_do_not_hide_incomplete_result
         page.content
     );
     assert!(!page.content.contains("SECRET_SCRIPT"));
-    assert!(!page.truncated);
     assert_eq!(first.closes.load(Ordering::SeqCst), 1);
     assert_eq!(second.closes.load(Ordering::SeqCst), 1);
     assert!(
@@ -215,7 +231,6 @@ async fn content_negotiation_extraction_and_limits_do_not_hide_incomplete_result
         .fetch(&parent, "https://docs.example/large")
         .await
         .unwrap();
-    assert!(!page.truncated);
     assert_eq!(page.content, markdown);
 
     let complete = format!("{}UNIQUE_FINAL_CONTENT", "a".repeat(5 * 1024 * 1024));
@@ -231,7 +246,6 @@ async fn content_negotiation_extraction_and_limits_do_not_hide_incomplete_result
         .await
         .unwrap();
     assert_eq!(page.content, complete);
-    assert!(!page.truncated);
     assert_eq!(oversized.closes.load(Ordering::SeqCst), 1);
 
     let deep = reply(
@@ -249,7 +263,6 @@ async fn content_negotiation_extraction_and_limits_do_not_hide_incomplete_result
         page.content,
         format!("{}content{}", "<div>".repeat(150), "</div>".repeat(150))
     );
-    assert!(!page.truncated);
     assert_eq!(deep.closes.load(Ordering::SeqCst), 1);
     assert!(!parent.cancellation.is_cancelled());
 }

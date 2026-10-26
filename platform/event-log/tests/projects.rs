@@ -19,9 +19,9 @@
 
 use maka_event_log::{
     EventLog, StoreError,
-    projects::{ProjectError, ProjectMutation, ProjectRegistration, ProjectRelinkContext},
+    projects::{ProjectError, ProjectMutation, ProjectRegistration, ProjectRelinkGuard},
 };
-use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 use sqlx::Connection;
 
 fn registration(identity: &str, path: &str, worktree: bool) -> ProjectRegistration {
@@ -32,35 +32,28 @@ fn registration(identity: &str, path: &str, worktree: bool) -> ProjectRegistrati
         is_worktree: worktree,
     }
 }
-
 #[path = "projects/registration.rs"]
 mod registration;
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-struct Membership {
-    project: Option<String>,
-    cwd: String,
-}
-
-fn reassign(member: &mut Membership, context: &ProjectRelinkContext) -> Result<(), StoreError> {
-    if let Some(id) = &member.project {
-        if context.previous_ids.contains(id) {
-            member.project = Some(context.project_id.clone());
-            member.cwd.clone_from(&context.destination_path);
-        } else if context.absorbed_ids.contains(id) {
-            member.project = Some(context.project_id.clone());
-        }
-    }
-    Ok(())
+async fn member(log: &EventLog, owner: &str, id: &str, project: Option<&str>, path: &str) {
+    let workspace = json!({"projectId":project,"path":path,"worktree":{"original":path}});
+    let reference = log.attach_workspace(owner, &workspace).await.unwrap();
+    log.create_session(
+        id,
+        &format!("original-{id}"),
+        &json!({"workspace":reference,"boundary_revision":4,"title":id}),
+        10,
+    )
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
-async fn relink_merges_aliases_and_sessions_in_one_transaction_without_rewriting_runtime_facts() {
-    use maka_agent_facts::event::EventWrite;
-    use maka_agent_facts::event::Fact;
-    use maka_agent_facts::event::Invocation;
-    use maka_agent_facts::event::RuntimeEvent;
-    use maka_agent_facts::input::InvocationInput;
+async fn relink_merges_aliases_and_bindings_atomically_without_rewriting_sessions_or_facts() {
+    use maka_agent_facts::{
+        event::{EventWrite, Fact, Invocation, RuntimeEvent},
+        input::InvocationInput,
+    };
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("events.sqlite");
     let log = EventLog::open(&path).await.unwrap();
@@ -79,36 +72,21 @@ async fn relink_merges_aliases_and_sessions_in_one_transaction_without_rewriting
         .register_project(registration("folder:/third", "/third", false), true, 4)
         .await
         .unwrap();
-    for (id, project, cwd) in [
-        ("a", Some(first.id.clone()), "/old"),
-        ("b", Some(second.id.clone()), "/linked"),
-        ("c", Some(third.id.clone()), "/third"),
-        ("unrelated", None, "/old"),
-    ] {
-        log.create_session(
-            id,
-            &format!("original-{id}"),
-            &Membership {
-                project,
-                cwd: cwd.into(),
-            },
-            10,
-        )
-        .await
-        .unwrap();
-    }
-    let invocation = Invocation {
-        session_id: "a".into(),
-        turn_id: "turn".into(),
-        run_id: "run".into(),
-        invocation_id: "invocation".into(),
-    };
+    member(&log, "owner_", "a", Some(&first.id), "/old").await;
+    member(&log, "owner_", "b", Some(&second.id), "/linked").await;
+    member(&log, "owner_", "c", Some(&third.id), "/third").await;
+    member(&log, "owner_", "unrelated", None, "/old").await;
     let opening = RuntimeEvent::new(
-        invocation,
+        Invocation {
+            session_id: "a".into(),
+            turn_id: "turn".into(),
+            run_id: "run".into(),
+            invocation_id: "invocation".into(),
+        },
         Fact::InvocationOpened {
             configuration: None,
             input: InvocationInput::Message {
-                source_messages: Vec::new(),
+                source_messages: vec![],
                 content: "immutable opening".into(),
                 request_fingerprint: None,
             },
@@ -119,61 +97,45 @@ async fn relink_merges_aliases_and_sessions_in_one_transaction_without_rewriting
         .unwrap();
     let facts = serde_json::to_value(log.prefix(32, 65536).await.unwrap()).unwrap();
     let projects_before = log.list_projects().await.unwrap();
-    let sessions_before = log
-        .list_sessions::<Membership>(None, None, 32)
-        .await
-        .unwrap();
-
-    // A real SQLite failure after Session updates must roll back all participants.
+    let before = log.list_sessions::<Value>(None, None, 32).await.unwrap();
+    let selected = json!({"path":"/new","projectId":first.id,"worktree":{"replacement":"new"}});
     let mut fault = sqlx::SqliteConnection::connect_with(
         &sqlx::sqlite::SqliteConnectOptions::new().filename(&path),
     )
     .await
     .unwrap();
-    sqlx::query(
-        "CREATE TRIGGER fail_project_relink BEFORE UPDATE OF identity ON projects
-        BEGIN SELECT RAISE(ABORT, 'project-relink-fault'); END",
-    )
-    .execute(&mut fault)
-    .await
-    .unwrap();
+    sqlx::query("CREATE TRIGGER fail_project_relink BEFORE UPDATE OF identity ON projects BEGIN SELECT RAISE(ABORT,'project-relink-fault'); END").execute(&mut fault).await.unwrap();
     let failure = log
         .relink_project(
             &first.id,
+            "owner_",
             registration("git:/new/.git", "/new", false),
             30,
-            reassign,
+            selected.clone(),
         )
         .await
         .unwrap_err();
     assert!(failure.to_string().contains("project-relink-fault"));
     assert_eq!(log.list_projects().await.unwrap(), projects_before);
-    let unchanged = log
-        .list_sessions::<Membership>(None, None, 32)
-        .await
-        .unwrap();
-    assert_eq!(unchanged.revision, sessions_before.revision);
-    assert_eq!(unchanged.sessions, sessions_before.sessions);
-    assert_eq!(
-        serde_json::to_value(log.prefix(32, 65536).await.unwrap()).unwrap(),
-        facts
-    );
+    let rollback = log.list_sessions::<Value>(None, None, 32).await.unwrap();
+    assert_eq!(rollback.revision, before.revision);
+    assert_eq!(rollback.sessions, before.sessions);
     sqlx::query("DROP TRIGGER fail_project_relink")
         .execute(&mut fault)
         .await
         .unwrap();
-    fault.close().await.unwrap();
-
+    sqlx::query("CREATE TRIGGER forbid_session_rewrite BEFORE UPDATE ON session_control BEGIN SELECT RAISE(ABORT,'Session rows must not change'); END").execute(&mut fault).await.unwrap();
     let merged = log
         .relink_project(
             &first.id,
+            "owner_",
             registration("git:/new/.git", "/new", false),
             31,
-            reassign,
+            selected.clone(),
         )
         .await
         .unwrap();
-    assert_eq!(merged.updated_session_ids, ["a", "b"]);
+    assert_eq!(merged.updated_bindings, 2);
     assert_eq!(merged.project.id, first.id);
     assert_eq!(merged.project.aliases, vec![second.id.clone()]);
     assert_eq!(
@@ -181,94 +143,73 @@ async fn relink_merges_aliases_and_sessions_in_one_transaction_without_rewriting
             .project
             .locations
             .iter()
-            .map(|l| l.path.as_str())
+            .map(|location| location.path.as_str())
             .collect::<Vec<_>>(),
-        ["/linked", "/new"]
+        vec!["/linked", "/new"]
     );
-    let after = log
-        .list_sessions::<Membership>(None, None, 32)
-        .await
-        .unwrap();
-    assert_ne!(after.revision, sessions_before.revision);
-    for record in &after.sessions {
-        let old = sessions_before
-            .sessions
-            .iter()
-            .find(|old| old.id == record.id)
-            .unwrap();
-        assert_eq!(record.updated_at, old.updated_at);
-        if matches!(record.id.as_str(), "a" | "b") {
-            assert_eq!(record.revision, old.revision + 1);
-            assert_eq!(
-                record.configuration.project.as_deref(),
-                Some(first.id.as_str())
-            );
-            assert_eq!(
-                record.configuration.cwd,
-                if record.id == "a" { "/new" } else { "/linked" }
-            );
-        } else {
-            assert_eq!(record, old);
+    let after = log.list_sessions::<Value>(None, None, 32).await.unwrap();
+    for (before, after) in before.sessions.iter().zip(&after.sessions) {
+        assert_eq!(after.configuration, before.configuration);
+        assert_eq!(after.configuration_digest, before.configuration_digest);
+        match after.id.as_str() {
+            "a" => {
+                assert_eq!(after.revision, before.revision + 1);
+                let binding = after.workspace_binding.as_ref().unwrap();
+                assert_eq!(binding.workspace, selected);
+                assert_eq!((binding.permission_epoch, binding.metadata_epoch), (1, 1));
+            }
+            "b" => {
+                assert_eq!(after.revision, before.revision + 1);
+                let binding = after.workspace_binding.as_ref().unwrap();
+                assert_eq!(binding.workspace["projectId"], first.id);
+                assert_eq!(binding.workspace["path"], "/linked");
+                assert_eq!(binding.workspace["worktree"], json!({"original":"/linked"}));
+                assert_eq!((binding.permission_epoch, binding.metadata_epoch), (0, 1));
+            }
+            _ => assert_eq!(after, before),
         }
-        assert_eq!(
-            log.probe_session_create::<Membership>(&record.id, &format!("original-{}", record.id))
-                .await
-                .unwrap()
-                .unwrap(),
-            *record
-        );
     }
-
-    // An absorbed alias can address the survivor during a later merge. All old
-    // identities continue to resolve; aliases never become independent owners.
+    assert_eq!(
+        serde_json::to_value(log.prefix(32, 65536).await.unwrap()).unwrap(),
+        facts
+    );
     let again = log
         .relink_project(
             &second.id,
+            "owner_",
             registration("folder:/third", "/third", false),
             32,
-            reassign,
+            json!({"path":"/third","projectId":first.id,"worktree":{"replacement":"third"}}),
         )
         .await
         .unwrap();
-    assert_eq!(again.updated_session_ids, ["a", "b", "c"]);
-    assert_eq!(again.project.id, first.id);
-    assert_eq!(again.project.aliases.len(), 2);
+    assert_eq!(again.updated_bindings, 3);
+    assert!(again.project.aliases.contains(&second.id));
+    assert!(again.project.aliases.contains(&third.id));
+    let expected = log.list_sessions::<Value>(None, None, 32).await.unwrap();
+    sqlx::query("DROP TRIGGER forbid_session_rewrite")
+        .execute(&mut fault)
+        .await
+        .unwrap();
+    fault.close().await.unwrap();
+    log.close().await.unwrap();
+    let log = EventLog::open(&path).await.unwrap();
+    assert_eq!(
+        log.list_sessions::<Value>(None, None, 32)
+            .await
+            .unwrap()
+            .sessions,
+        expected.sessions
+    );
     assert_eq!(
         serde_json::to_value(log.prefix(32, 65536).await.unwrap()).unwrap(),
         facts
     );
     log.close().await.unwrap();
-    let reopened = EventLog::open(&path).await.unwrap();
-    for id in [&first.id, &second.id, &third.id] {
-        assert_eq!(
-            reopened.get_project(id).await.unwrap().unwrap(),
-            again.project
-        );
-    }
-    assert_eq!(reopened.list_projects().await.unwrap().len(), 1);
-    assert_eq!(
-        serde_json::to_value(reopened.prefix(32, 65536).await.unwrap()).unwrap(),
-        facts
-    );
-    assert_eq!(
-        reopened
-            .get_session::<Membership>("unrelated")
-            .await
-            .unwrap()
-            .unwrap()
-            .configuration,
-        Membership {
-            project: None,
-            cwd: "/old".into()
-        }
-    );
-    reopened.close().await.unwrap();
 }
 
 #[tokio::test]
-async fn conditional_project_writes_reject_stale_rows_and_relink_only_the_owned_session_namespace()
-{
-    use maka_event_log::projects::ProjectRelinkGuard;
+async fn guarded_project_changes_compare_exact_observations_and_only_relink_owned_bindings() {
     let temp = tempfile::tempdir().unwrap();
     let log = EventLog::open(&temp.path().join("projects.sqlite"))
         .await
@@ -333,21 +274,38 @@ async fn conditional_project_writes_reject_stale_rows_and_relink_only_the_owned_
         log.projects_with_identity_prefix("foreign:").await.unwrap(),
         vec![other]
     );
-    let member = Membership {
-        project: Some(renamed.id.clone()),
-        cwd: "/first".into(),
-    };
-    log.create_session("own_session", "original", &member, 1)
+    member(&log, "own_", "own_session", Some(&renamed.id), "/first").await;
+    member(&log, "own_", "own_shared", Some(&renamed.id), "/first").await;
+    member(
+        &log,
+        "foreign_",
+        "foreign_session",
+        Some(&renamed.id),
+        "/first",
+    )
+    .await;
+    let before = log
+        .get_session::<Value>("own_session")
         .await
+        .unwrap()
         .unwrap();
-    let foreign = serde_json::json!({"unrelated":"a different service configuration"});
-    log.create_session("foreign_session", "foreign", &foreign, 1)
+    let foreign = log
+        .get_session::<Value>("foreign_session")
         .await
+        .unwrap()
         .unwrap();
+    assert_eq!(
+        before.configuration["workspace"],
+        log.get_session::<Value>("own_shared")
+            .await
+            .unwrap()
+            .unwrap()
+            .configuration["workspace"]
+    );
     let stale = ProjectRelinkGuard {
         source: renamed.clone(),
         destination: Some(target.clone()),
-        session_prefix: "own_".into(),
+        owner_scope: "own_".into(),
     };
     let target = log
         .mutate_project_if(
@@ -357,58 +315,63 @@ async fn conditional_project_writes_reject_stale_rows_and_relink_only_the_owned_
         )
         .await
         .unwrap();
+    let selected = json!({"path":"/target","projectId":renamed.id});
     assert!(matches!(
         log.relink_project_if(
             stale,
             registration("owner:folder:/target", "/target", false),
             5,
-            reassign
+            selected.clone()
         )
         .await,
         Err(StoreError::Project(ProjectError::Changed))
     ));
     assert_eq!(
-        log.get_session::<Membership>("own_session")
+        log.get_session::<Value>("own_session")
             .await
             .unwrap()
-            .unwrap()
-            .configuration,
-        member
+            .unwrap(),
+        before
     );
-    assert_eq!(
-        log.get_project(&renamed.id).await.unwrap().unwrap(),
-        renamed
-    );
+    let mut own_notice = log.subscribe_session_commits("own_session");
+    let foreign_notice = log.subscribe_session_commits("foreign_session");
     let merged = log
         .relink_project_if(
             ProjectRelinkGuard {
                 source: renamed,
                 destination: Some(target),
-                session_prefix: "own_".into(),
+                owner_scope: "own_".into(),
             },
             registration("owner:folder:/target", "/target", false),
             6,
-            reassign,
+            selected.clone(),
         )
         .await
         .unwrap();
-    assert_eq!(merged.updated_session_ids, ["own_session"]);
     assert_eq!(
-        log.get_session::<Membership>("own_session")
-            .await
-            .unwrap()
-            .unwrap()
-            .configuration
-            .cwd,
-        "/target"
+        merged.updated_bindings, 1,
+        "shared selection must not be allocated per Session"
     );
+    let after = log
+        .get_session::<Value>("own_session")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(after.configuration, before.configuration);
+    assert_eq!(after.workspace_binding.unwrap().workspace, selected);
     assert_eq!(
-        log.get_session::<serde_json::Value>("foreign_session")
+        log.get_session::<Value>("foreign_session")
             .await
             .unwrap()
-            .unwrap()
-            .configuration,
+            .unwrap(),
         foreign
     );
+    tokio::time::timeout(std::time::Duration::from_secs(1), own_notice.changed())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!foreign_notice.has_changed().unwrap());
+    drop(own_notice);
+    drop(foreign_notice);
     log.close().await.unwrap();
 }

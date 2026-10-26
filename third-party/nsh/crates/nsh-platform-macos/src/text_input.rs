@@ -9,7 +9,9 @@
 //! are borderless, without a background or focus ring, with the config's
 //! font, colors and alignment. A single-line field shows its own
 //! placeholder (an attributed one); a text view has none, so a label under
-//! it shows the placeholder while the text is empty.
+//! it shows the placeholder while the text is empty. Single-line text
+//! and placeholders share the field editor's natural font metrics;
+//! multiline paragraphs use the configured line height.
 //!
 //! The fields are subclasses ([`define_field!`]) only to hear what AppKit
 //! tells a field's delegate's delegate: AppKit edits a field with the
@@ -62,9 +64,9 @@ use objc2_app_kit::{
     NSApplication, NSBorderType, NSColor, NSControl, NSControlTextEditingDelegate, NSEvent,
     NSEventModifierFlags, NSEventType, NSFocusRingType, NSFontAttributeName,
     NSForegroundColorAttributeName, NSLineBreakMode, NSMutableParagraphStyle,
-    NSParagraphStyleAttributeName, NSResponder, NSScrollView, NSSecureTextField, NSText,
-    NSTextAlignment, NSTextDelegate, NSTextField, NSTextFieldDelegate, NSTextInputClient,
-    NSTextView, NSTextViewDelegate, NSView, NSWritingDirection,
+    NSParagraphStyleAttributeName, NSPasteboard, NSResponder, NSScrollView, NSSecureTextField,
+    NSText, NSTextAlignment, NSTextDelegate, NSTextField, NSTextFieldDelegate, NSTextInputClient,
+    NSTextView, NSTextViewDelegate, NSValidatedUserInterfaceItem, NSView, NSWritingDirection,
 };
 use objc2_core_foundation::{CGFloat, CGSize};
 use objc2_foundation::{
@@ -167,6 +169,29 @@ impl Editor {
         Some((r.location as u32, (r.location + r.length) as u32))
     }
 
+    /// The caret at the selection's end in `target`'s coordinates, while
+    /// the editor edits: where the text system draws its insertion point.
+    fn caret(&self, target: &NSView) -> Option<Bounds<Points>> {
+        let editing = self.editing()?;
+        let text_view = editing.downcast_ref::<NSTextView>()?;
+        let window = text_view.window()?;
+        let range = text_view.selectedRange();
+        let at = NSRange::new(range.location + range.length, 0);
+        // SAFETY: no actual range is asked for (null).
+        let screen =
+            unsafe { text_view.firstRectForCharacterRange_actualRange(at, std::ptr::null_mut()) };
+        let rect = target.convertRect_fromView(window.convertRectFromScreen(screen), None);
+        Some(Bounds {
+            origin: Point::new(px(rect.origin.x as f32), px(rect.origin.y as f32)),
+            // An empty range's rect has no width; the insertion point is
+            // one point wide.
+            size: Size::new(
+                px((rect.size.width as f32).max(1.0)),
+                px(rect.size.height as f32),
+            ),
+        })
+    }
+
     /// Selects `start..end` (UTF-16, clamped to the text).
     fn select(&self, start: u32, end: u32) -> bool {
         let Some(editor) = self.editing() else {
@@ -238,6 +263,8 @@ pub(crate) struct InputState {
     config: RefCell<InputConfig>,
     /// A configuration was applied (auto focus happens on the first).
     configured: Cell<bool>,
+    /// The first configuration's native autofocus callback is still live.
+    focus_pending: Cell<bool>,
     /// Content box; the whole view until the core sends one.
     content: Cell<Option<Bounds<Points>>>,
     /// User edits reported to the engine.
@@ -250,6 +277,8 @@ pub(crate) struct InputState {
     focused: Cell<bool>,
     /// Selection as last reported (UTF-16).
     selection: Cell<(u32, u32)>,
+    /// The caret as last reported, in the input view.
+    caret: Cell<Bounds<Points>>,
     /// A selection set while the field was not edited, applied when it is.
     pending_selection: Cell<Option<(u32, u32)>>,
     /// The text the engine knows the input has: the last one reported
@@ -400,10 +429,7 @@ impl Ctx {
             return;
         };
         // A programmatic change is reported once, where it ends.
-        if input.applying.get()
-            || input.focusing.get()
-            || !view.state().events.contains(EventKind::SelectionChange)
-        {
+        if input.applying.get() || input.focusing.get() {
             return;
         }
         let editor = input.editor.borrow().clone();
@@ -418,18 +444,65 @@ impl Ctx {
         {
             return;
         }
-        let Some(range) = editor.selection() else {
+        if view.state().events.contains(EventKind::SelectionChange)
+            && let Some(range) = editor.selection()
+            && input.selection.replace(range) != range
+        {
+            self.send(EventKind::SelectionChange, || {
+                EventPayload::Map(vec![
+                    ("start", PayloadValue::Number(range.0 as f64)),
+                    ("end", PayloadValue::Number(range.1 as f64)),
+                ])
+            });
+        }
+        self.caret_moved();
+    }
+
+    /// `onCaretMove` if the caret moved: with the selection, or as the text
+    /// view scrolled or the input was laid out again. Only an editor that
+    /// edits has a caret.
+    fn caret_moved(&self) {
+        let Some((_, view, input)) = self.get() else {
             return;
         };
-        if input.selection.replace(range) == range {
+        if !view.state().events.contains(EventKind::CaretMove) {
             return;
         }
-        self.send(EventKind::SelectionChange, || {
-            EventPayload::Map(vec![
-                ("start", PayloadValue::Number(range.0 as f64)),
-                ("end", PayloadValue::Number(range.1 as f64)),
-            ])
-        });
+        let editor = input.editor.borrow().clone();
+        let Some(caret) = editor.caret(view.ns()) else {
+            return;
+        };
+        if input.caret.replace(caret) != caret {
+            self.send(EventKind::CaretMove, || EventPayload::caret(caret));
+        }
+    }
+
+    /// A paste into the editor: reports what `pasteboard` holds
+    /// (`onPaste`) if the app listens; whether the editor then pastes its
+    /// text itself (`pasteBehavior`). The pasteboard is read only here, on
+    /// the user's paste.
+    fn pasting(&self, pasteboard: &NSPasteboard) -> bool {
+        let Some((surface, view, input)) = self.get() else {
+            return true;
+        };
+        let (id, listens) = {
+            let s = view.state();
+            (s.id, s.events.contains(EventKind::Paste))
+        };
+        if listens {
+            let paste = crate::system::pasted(pasteboard);
+            surface.event(id, EventKind::Paste, EventPayload::Paste(Box::new(paste)));
+        }
+        input.config.borrow().paste_behavior == nsh_core::PasteBehavior::Insert
+    }
+
+    /// Whether the editor offers Paste for what a text view's own paste
+    /// leaves out (images, files), while the app listens to pastes.
+    fn pastes_more(&self) -> bool {
+        self.get().is_some_and(|(_, view, _)| {
+            view.state().events.contains(EventKind::Paste)
+                && crate::system::has_pasted_files(&NSPasteboard::generalPasteboard())
+        })
     }
 
     /// Focus entered or left the editor.
@@ -712,6 +785,18 @@ pub(crate) fn tab(surface: &Surface, from: &NSView, backward: bool) -> bool {
 /// [`Ctx`] what its field editor does.
 macro_rules! define_field {
     ($name:ident, $objc:literal, $($super:ident),+) => {
+        define_field!(@ $name, $objc, {}, $($super),+);
+    };
+    ($name:ident, $objc:literal, cell = $cell:ident, $($super:ident),+) => {
+        define_field!(@ $name, $objc, {
+            /// Its cells' field editor reports pastes.
+            #[unsafe(method(cellClass))]
+            fn cell_class() -> &'static objc2::runtime::AnyClass {
+                $cell::class()
+            }
+        }, $($super),+);
+    };
+    (@ $name:ident, $objc:literal, { $($extra:tt)* }, $($super:ident),+) => {
         define_class!(
             /// A field of an input (see the module docs).
             #[unsafe(super($($super),+))]
@@ -723,6 +808,8 @@ macro_rules! define_field {
             unsafe impl NSObjectProtocol for $name {}
 
             impl $name {
+                $($extra)*
+
                 #[unsafe(method(becomeFirstResponder))]
                 fn become_first_responder(&self) -> bool {
                     // AppKit selects the whole text as the field takes the
@@ -813,6 +900,7 @@ macro_rules! define_field {
 define_field!(
     TextField,
     "NshTextField",
+    cell = FieldCell,
     NSTextField,
     NSControl,
     NSView,
@@ -892,8 +980,215 @@ define_class!(
                 cx.composition_changed();
             }
         }
+
+        /// A paste (Edit > Paste, Command+V, the context menu): reported,
+        /// and its text pasted as `pasteBehavior` says.
+        #[unsafe(method(paste:))]
+        fn paste(&self, sender: Option<&AnyObject>) {
+            if text_area_pasting(self, &NSPasteboard::generalPasteboard()) {
+                // SAFETY: NSTextView's own method.
+                let _: () = unsafe { msg_send![super(self), paste: sender] };
+            }
+        }
+
+        #[unsafe(method(pasteAsPlainText:))]
+        fn paste_as_plain_text(&self, sender: Option<&AnyObject>) {
+            if text_area_pasting(self, &NSPasteboard::generalPasteboard()) {
+                // SAFETY: NSTextView's own method.
+                let _: () = unsafe { msg_send![super(self), pasteAsPlainText: sender] };
+            }
+        }
+
+        /// Paste is offered for images and files too while the app
+        /// listens.
+        #[unsafe(method(validateUserInterfaceItem:))]
+        fn validate(&self, item: &ProtocolObject<dyn NSValidatedUserInterfaceItem>,
+        ) -> objc2::runtime::Bool {
+            if item.action() == Some(sel!(paste:)) && self.ivars().get().is_some_and(Ctx::pastes_more) {
+                return objc2::runtime::Bool::YES;
+            }
+            // SAFETY: NSTextView's own method.
+            unsafe { msg_send![super(self), validateUserInterfaceItem: item] }
+        }
     }
 );
+
+/// A test's paste (`nsh test --target macos`): `content` on a pasteboard of
+/// its own (the machine's clipboard stays as it was), pasted into the
+/// focused input as the user's paste is: reported, then its text read
+/// from that pasteboard as `pasteBehavior` says.
+#[cfg(feature = "dev")]
+pub(crate) fn test_paste(
+    window: &objc2_app_kit::NSWindow,
+    content: &nsh_core::PasteEvent,
+) -> Result<(), String> {
+    use objc2_app_kit::{NSPasteboardItem, NSPasteboardTypeString, NSPasteboardWriting};
+    let responder = window.firstResponder().ok_or("no input has the focus")?;
+    let object: &AnyObject = &responder;
+    let (text_view, cx): (&NSTextView, Option<Ctx>) =
+        if let Some(area) = object.downcast_ref::<TextArea>() {
+            (area, area.ivars().get().cloned())
+        } else if let Some(editor) = object.downcast_ref::<FieldEditor>() {
+            (editor, field_ctx(editor))
+        } else {
+            return Err("no input of the app has the focus".into());
+        };
+    let cx = cx.ok_or("the focused input is gone")?;
+    let board = NSPasteboard::pasteboardWithUniqueName();
+    board.clearContents();
+    let mut items: Vec<Retained<ProtocolObject<dyn NSPasteboardWriting>>> = Vec::new();
+    let item = || NSPasteboardItem::new();
+    if !content.text.is_empty() {
+        let text = item();
+        // SAFETY: an immutable AppKit constant.
+        text.setString_forType(&NSString::from_str(&content.text), unsafe {
+            NSPasteboardTypeString
+        });
+        items.push(ProtocolObject::from_retained(text));
+    }
+    for file in &content.files {
+        let kind = match file.mime.as_str() {
+            "image/png" => "public.png",
+            "image/jpeg" => "public.jpeg",
+            "image/gif" => "com.compuserve.gif",
+            "image/webp" => "org.webmproject.webp",
+            "image/tiff" => "public.tiff",
+            _ => "public.data",
+        };
+        let data = item();
+        data.setData_forType(
+            &objc2_foundation::NSData::with_bytes(&file.data),
+            &NSString::from_str(kind),
+        );
+        items.push(ProtocolObject::from_retained(data));
+    }
+    for uri in &content.uris {
+        let url = item();
+        url.setString_forType(
+            &NSString::from_str(uri),
+            &NSString::from_str("public.file-url"),
+        );
+        items.push(ProtocolObject::from_retained(url));
+    }
+    board.writeObjects(&objc2_foundation::NSArray::from_retained_slice(&items));
+    if cx.pasting(&board) {
+        text_view.readSelectionFromPasteboard(&board);
+    }
+    // SAFETY: NSPasteboard's method; the test's pasteboard is not used again.
+    let _: () = unsafe { msg_send![&board, releaseGlobally] };
+    Ok(())
+}
+
+/// A paste into text area `area`: [`Ctx::pasting`].
+fn text_area_pasting(area: &TextArea, pasteboard: &NSPasteboard) -> bool {
+    area.ivars().get().is_none_or(|cx| cx.pasting(pasteboard))
+}
+
+define_class!(
+    /// The field editor of a single-line input ([`FieldCell`]): AppKit's
+    /// shared one, but for pastes, which an input reports (`onPaste`).
+    #[unsafe(super(NSTextView, NSText, NSView, NSResponder, NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "NshFieldEditor"]
+    struct FieldEditor;
+
+    unsafe impl NSObjectProtocol for FieldEditor {}
+
+    impl FieldEditor {
+        /// A paste (Edit > Paste, Command+V, the context menu): reported,
+        /// and its text pasted as `pasteBehavior` says.
+        #[unsafe(method(paste:))]
+        fn paste(&self, sender: Option<&AnyObject>) {
+            if field_editor_pasting(self, &NSPasteboard::generalPasteboard()) {
+                // SAFETY: NSTextView's own method.
+                let _: () = unsafe { msg_send![super(self), paste: sender] };
+            }
+        }
+
+        #[unsafe(method(pasteAsPlainText:))]
+        fn paste_as_plain_text(&self, sender: Option<&AnyObject>) {
+            if field_editor_pasting(self, &NSPasteboard::generalPasteboard()) {
+                // SAFETY: NSTextView's own method.
+                let _: () = unsafe { msg_send![super(self), pasteAsPlainText: sender] };
+            }
+        }
+
+        /// Paste is offered for images and files too while the app
+        /// listens.
+        #[unsafe(method(validateUserInterfaceItem:))]
+        fn validate(&self, item: &ProtocolObject<dyn NSValidatedUserInterfaceItem>,
+        ) -> objc2::runtime::Bool {
+            if item.action() == Some(sel!(paste:)) && field_ctx(self).is_some_and(|cx| cx.pastes_more()) {
+                return objc2::runtime::Bool::YES;
+            }
+            // SAFETY: NSTextView's own method.
+            unsafe { msg_send![super(self), validateUserInterfaceItem: item] }
+        }
+    }
+);
+
+/// The input of the field `editor` edits (its delegate, while it edits).
+fn field_ctx(editor: &FieldEditor) -> Option<Ctx> {
+    let delegate = editor.delegate()?;
+    let object: &AnyObject = ProtocolObject::as_ref(&*delegate);
+    object
+        .downcast_ref::<TextField>()
+        .and_then(|field| field.ivars().get().cloned())
+}
+
+/// A paste into the field `editor` edits: [`Ctx::pasting`].
+fn field_editor_pasting(editor: &FieldEditor, pasteboard: &NSPasteboard) -> bool {
+    field_ctx(editor).is_none_or(|cx| cx.pasting(pasteboard))
+}
+
+define_class!(
+    /// The cell of a single-line input's field: its field editor is NSH's
+    /// ([`FieldEditor`]), one per window as AppKit's own, which reports
+    /// pastes. AppKit makes the cells (`cellClass`): no ivars.
+    #[unsafe(super(objc2_app_kit::NSTextFieldCell, objc2_app_kit::NSActionCell, objc2_app_kit::NSCell, NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "NshFieldCell"]
+    struct FieldCell;
+
+    unsafe impl NSObjectProtocol for FieldCell {}
+
+    impl FieldCell {
+        #[unsafe(method_id(fieldEditorForView:))]
+        fn field_editor_for_view(&self, view: &NSView) -> Option<Retained<NSTextView>> {
+            let mtm = MainThreadMarker::from(self);
+            view.window().map(|window| field_editor(mtm, &window))
+        }
+    }
+);
+
+thread_local! {
+    /// The field editors of the windows, by window.
+    static FIELD_EDITORS: RefCell<Vec<(objc2::rc::Weak<objc2_app_kit::NSWindow>, Retained<NSTextView>)>> =
+        const { RefCell::new(Vec::new()) };
+}
+
+/// `window`'s field editor for inputs (made the first time).
+fn field_editor(mtm: MainThreadMarker, window: &objc2_app_kit::NSWindow) -> Retained<NSTextView> {
+    FIELD_EDITORS.with_borrow_mut(|editors| {
+        // The editors of closed windows go.
+        editors.retain(|(w, _)| w.load().is_some());
+        if let Some((_, editor)) = editors
+            .iter()
+            .find(|(w, _)| w.load().is_some_and(|w| std::ptr::eq(&*w, window)))
+        {
+            return editor.clone();
+        }
+        let this = FieldEditor::alloc(mtm).set_ivars(());
+        // SAFETY: NSTextView's initializer (it makes its own text system).
+        let editor: Retained<FieldEditor> =
+            unsafe { msg_send![super(this), initWithFrame: ns_rect(0.0, 0.0, 0.0, 0.0)] };
+        // SAFETY: the class is a subclass of NSTextView.
+        let editor: Retained<NSTextView> = unsafe { Retained::cast_unchecked(editor) };
+        editor.setFieldEditor(true);
+        editors.push((objc2::rc::Weak::from(window), editor.clone()));
+        editor
+    })
+}
 
 define_class!(
     /// Fills an input's view and holds its editor (and placeholder), so a
@@ -1020,6 +1315,14 @@ define_class!(
     struct InputDelegate;
 
     unsafe impl NSObjectProtocol for InputDelegate {}
+
+    impl InputDelegate {
+        /// A text view's clip view scrolled.
+        #[unsafe(method(clipBoundsChanged:))]
+        fn clip_bounds_changed(&self, _notification: &NSNotification) {
+            self.ivars().caret_moved();
+        }
+    }
 
     unsafe impl NSControlTextEditingDelegate for InputDelegate {
         #[unsafe(method(controlTextDidChange:))]
@@ -1179,12 +1482,14 @@ pub(crate) fn create(surface: &Rc<Surface>, view: &NshView) {
             placeholder,
             config: RefCell::new(InputConfig::default()),
             configured: Cell::new(false),
+            focus_pending: Cell::new(false),
             content: Cell::new(None),
             count: Cell::new(0),
             applying: Cell::new(false),
             clipping: Cell::new(false),
             focused: Cell::new(false),
             selection: Cell::new((0, 0)),
+            caret: Cell::new(Bounds::default()),
             pending_selection: Cell::new(None),
             known: RefCell::new(String::new()),
             composition: RefCell::new(None),
@@ -1243,6 +1548,21 @@ fn new_editor(
         }
         view.setDelegate(Some(ProtocolObject::from_ref(delegate)));
         scroller.setDocumentView(Some(&view));
+        // Scrolling the text moves the caret (`onSelectionChange`).
+        // SAFETY: a scroll view's clip view (an `NSView`), always present.
+        let clip: Retained<NSView> = unsafe { msg_send![&scroller, contentView] };
+        clip.setPostsBoundsChangedNotifications(true);
+        // SAFETY: the delegate answers the selector (`clipBoundsChanged:`);
+        // a selector-based observer goes away with it.
+        unsafe {
+            objc2_foundation::NSNotificationCenter::defaultCenter()
+                .addObserver_selector_name_object(
+                    delegate,
+                    sel!(clipBoundsChanged:),
+                    Some(objc2_app_kit::NSViewBoundsDidChangeNotification),
+                    Some(&clip),
+                );
+        }
         Editor::Area { scroller, view }
     } else {
         let field = if secure {
@@ -1396,7 +1716,11 @@ fn placeholder(
     align: NSTextAlignment,
 ) -> Retained<NSAttributedString> {
     let color = placeholder_color(config);
-    let paragraph = paragraph(config, align);
+    // AppKit's single-line field editor uses the font's natural line
+    // height. A fixed paragraph height here would move only the
+    // placeholder's baseline, away from the text and caret.
+    let paragraph = NSMutableParagraphStyle::new();
+    paragraph.setAlignment(align);
     // SAFETY: immutable AppKit attribute keys with values of their
     // documented types (NSFont, NSColor, NSParagraphStyle).
     let keys = unsafe {
@@ -1421,6 +1745,7 @@ fn placeholder(
 /// Focuses the input once it is in a window (`autoFocus`): the view is
 /// configured before it is inserted.
 fn auto_focus(surface: &Rc<Surface>, input: &Rc<InputState>) {
+    input.focus_pending.set(true);
     let weak = Rc::downgrade(input);
     let mut frames = 0;
     surface.add_frame_callback(move |_, _| {
@@ -1428,14 +1753,33 @@ fn auto_focus(surface: &Rc<Surface>, input: &Rc<InputState>) {
         let Some(input) = weak.upgrade() else {
             return false;
         };
+        if !input.focus_pending.get() {
+            return false;
+        }
         let editor = input.editor.borrow().clone();
         if editor.responder().window().is_none() {
             // Not on screen yet; an input never shown stops trying.
-            return frames < 120;
+            if frames >= 120 {
+                input.focus_pending.set(false);
+                return false;
+            }
+            return true;
         }
+        input.focus_pending.set(false);
         editor.focus();
         false
     });
+}
+
+/// A pending autofocus must not steal focus after a virtual row's native
+/// subtree has detached but its input owner has not been deleted yet.
+pub(crate) fn cancel_auto_focus(view: &NshView) {
+    if let Some(input) = view.state().input.as_ref() {
+        input.focus_pending.set(false);
+    }
+    for child in view.child_views() {
+        cancel_auto_focus(&child);
+    }
 }
 
 /// Places the pad over the whole view and the editor (and a text view's
@@ -1570,6 +1914,7 @@ pub(crate) fn content(view: &NshView, content: Bounds<Points>) {
     };
     input.content.set(Some(content));
     place(view, &input);
+    input.cx.caret_moved();
 }
 
 /// An input accessory inserted into `parent`. There is no software
@@ -1693,6 +2038,42 @@ fn clip_utf16(s: &str, max: usize) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn single_line_placeholder_matches_native_editor_metrics() {
+        let font = objc2_app_kit::NSFont::systemFontOfSize(16.0);
+        for line_height in [0.0, 16.0, 24.0, 32.0] {
+            let mut config = InputConfig::default();
+            config.placeholder.push_str("Placeholder");
+            config.style.line_height = px(line_height);
+            for align in [
+                NSTextAlignment::Left,
+                NSTextAlignment::Center,
+                NSTextAlignment::Right,
+            ] {
+                let text = placeholder(&config, &font, align);
+                // SAFETY: index zero is in the nonempty attributed string;
+                // no effective range is requested.
+                let style = unsafe {
+                    text.attribute_atIndex_effectiveRange(
+                        NSParagraphStyleAttributeName,
+                        0,
+                        std::ptr::null_mut(),
+                    )
+                }
+                .unwrap()
+                .downcast::<objc2_app_kit::NSParagraphStyle>()
+                .unwrap();
+                assert_eq!(style.alignment(), align);
+                assert_eq!(style.minimumLineHeight(), 0.0);
+                assert_eq!(style.maximumLineHeight(), 0.0);
+            }
+            // Multiline editors keep the requested paragraph line height.
+            let style = paragraph(&config, NSTextAlignment::Left);
+            assert_eq!(style.minimumLineHeight(), line_height as CGFloat);
+            assert_eq!(style.maximumLineHeight(), line_height as CGFloat);
+        }
+    }
 
     #[test]
     fn max_length_clipping() {

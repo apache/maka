@@ -28,6 +28,10 @@ use std::{
 };
 
 mod authority;
+pub(crate) mod control;
+pub(crate) mod custody;
+use control::ReadOnlyControl;
+use custody::{Custody, Retained};
 #[cfg(test)]
 mod cancellation;
 #[cfg(test)]
@@ -39,6 +43,7 @@ use sqlx::{Connection, SqliteConnection, sqlite::SqliteConnectOptions};
 use tokio::sync::{Semaphore, mpsc, oneshot, watch};
 
 use crate::StoreError;
+use crate::context::prepared::lifetime::PreparedCache;
 use tokio_util::sync::CancellationToken;
 
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -72,10 +77,42 @@ type Job = Box<
 type ReadJob = Box<
     dyn for<'c> FnOnce(Result<&'c mut SqliteConnection, StoreError>) -> BoxFuture<'c, bool> + Send,
 >;
+struct ReadEnvelope {
+    job: ReadJob,
+    custody: Option<Custody>,
+}
+
 enum Command {
+    Pinned(Box<Command>, Custody),
     Run(Job),
     Write(crate::writeback::Request),
+    CollectPrepared,
     Shutdown,
+}
+
+impl Command {
+    fn pinned(self, custody: &Option<Custody>) -> Self {
+        match custody {
+            Some(custody) => Self::Pinned(Box::new(self), custody.clone()),
+            None => self,
+        }
+    }
+    fn is_write(&self) -> bool {
+        match self {
+            Self::Pinned(command, _) => command.is_write(),
+            Self::Write(_) => true,
+            _ => false,
+        }
+    }
+    fn retain(self, retained: &Retained) -> Self {
+        match self {
+            Self::Pinned(command, custody) => {
+                retained.hold(0, custody);
+                command.retain(retained)
+            }
+            command => command,
+        }
+    }
 }
 
 /// Ingress is bounded; accepted work and the database lease belong to a dedicated
@@ -83,11 +120,13 @@ enum Command {
 pub struct OwnedConnection {
     failures: Arc<AtomicU64>,
     jobs: mpsc::Sender<Command>,
-    read_jobs: mpsc::Sender<ReadJob>,
+    read_jobs: mpsc::Sender<ReadEnvelope>,
     read_stop: CancellationToken,
+    writer_stop: CancellationToken,
     closed: Shared<BoxFuture<'static, Result<(), String>>>,
     readers: Arc<Semaphore>,
     changes: watch::Receiver<()>,
+    custody: Option<Custody>,
 }
 
 /// Short writer observations can be sent from a reader without retaining a
@@ -96,28 +135,38 @@ pub struct OwnedConnection {
 pub(crate) struct WriterIngress {
     jobs: mpsc::Sender<Command>,
     failures: Arc<AtomicU64>,
+    custody: Option<Custody>,
 }
 
 impl WriterIngress {
     pub(crate) async fn write<S: crate::writeback::Statement>(
         &self,
         statement: S,
-        commits: watch::Sender<u64>,
+        commits: crate::commits::CommitNotice,
     ) -> Result<S::Output, StoreError>
     where
         crate::writeback::Request: From<crate::writeback::Pending<S>>,
     {
         let (reply, result) = oneshot::channel();
         self.jobs
-            .send(Command::Write(
-                crate::writeback::Pending::new(statement, commits, reply, self.failures.clone())
+            .send(
+                Command::Write(
+                    crate::writeback::Pending::new(
+                        statement,
+                        commits,
+                        reply,
+                        self.failures.clone(),
+                    )
                     .into(),
-            ))
+                )
+                .pinned(&self.custody),
+            )
             .await
             .map_err(|_| StoreError::ConnectionClosed)?;
         result.await.map_err(|_| StoreError::OperationUnknown)?
     }
 
+    #[cfg(test)]
     pub(crate) fn failures(&self) -> u64 {
         self.failures.load(Ordering::Acquire)
     }
@@ -131,18 +180,21 @@ impl WriterIngress {
         let (reply, result) = oneshot::channel();
         let failures = self.failures.clone();
         self.jobs
-            .send(Command::Run(Box::new(move |connection, valid| {
-                Box::pin(async move {
-                    let result = match valid {
-                        Ok(()) => operation(connection).await,
-                        Err(error) => Err(error),
-                    };
-                    if result.is_err() {
-                        failures.fetch_add(1, Ordering::AcqRel);
-                    }
-                    let _ = reply.send(result);
-                })
-            })))
+            .send(
+                Command::Run(Box::new(move |connection, valid| {
+                    Box::pin(async move {
+                        let result = match valid {
+                            Ok(()) => operation(connection).await,
+                            Err(error) => Err(error),
+                        };
+                        if result.is_err() {
+                            failures.fetch_add(1, Ordering::AcqRel);
+                        }
+                        let _ = reply.send(result);
+                    })
+                }))
+                .pinned(&self.custody),
+            )
             .await
             .map_err(|_| StoreError::ConnectionClosed)?;
         result.await.map_err(|_| StoreError::OperationUnknown)?
@@ -150,17 +202,38 @@ impl WriterIngress {
 }
 
 impl OwnedConnection {
+    /// Weak identity never keeps an idle physical owner or its Root lease alive.
+    pub(crate) fn owner_identity(&self) -> std::sync::Weak<AtomicU64> {
+        Arc::downgrade(&self.failures)
+    }
+
+    /// Internal scoped ingress to the same physical owner, never a new owner.
+    pub(crate) fn scoped(&self, custody: Custody) -> Self {
+        Self {
+            failures: self.failures.clone(),
+            jobs: self.jobs.clone(),
+            read_jobs: self.read_jobs.clone(),
+            read_stop: self.read_stop.clone(),
+            writer_stop: self.writer_stop.clone(),
+            closed: self.closed.clone(),
+            readers: self.readers.clone(),
+            changes: self.changes.clone(),
+            custody: Some(custody::combine(&self.custody, custody)),
+        }
+    }
+
     pub(crate) fn writer(&self) -> WriterIngress {
         WriterIngress {
             jobs: self.jobs.clone(),
             failures: self.failures.clone(),
+            custody: self.custody.clone(),
         }
     }
 
     pub(crate) async fn write<S: crate::writeback::Statement>(
         &self,
         statement: S,
-        commits: watch::Sender<u64>,
+        commits: crate::commits::CommitNotice,
     ) -> Result<S::Output, StoreError>
     where
         crate::writeback::Request: From<crate::writeback::Pending<S>>,
@@ -184,10 +257,62 @@ impl OwnedConnection {
         authority: ConnectionAuthority,
         initialize: for<'c> fn(&'c mut SqliteConnection) -> BoxFuture<'c, Result<(), StoreError>>,
     ) -> Result<Self, StoreError> {
+        Self::open_with_cache(options, authority, initialize, None, None).await
+    }
+
+    pub(crate) async fn open_with_cache(
+        options: SqliteConnectOptions,
+        authority: ConnectionAuthority,
+        initialize: impl for<'c> FnOnce(
+            &'c mut SqliteConnection,
+        ) -> BoxFuture<'c, Result<(), StoreError>>
+        + Send
+        + 'static,
+        prepared: Option<PreparedCache>,
+        control: Option<ReadOnlyControl>,
+    ) -> Result<Self, StoreError> {
+        Self::open_registered(options, authority, initialize, prepared, control, None).await
+    }
+
+    pub(crate) async fn open_tracked(
+        options: SqliteConnectOptions,
+        authority: ConnectionAuthority,
+        initialize: impl for<'c> FnOnce(
+            &'c mut SqliteConnection,
+        ) -> BoxFuture<'c, Result<(), StoreError>>
+        + Send
+        + 'static,
+        registration: crate::root_store::StageRegistration,
+    ) -> Result<Self, StoreError> {
+        Self::open_registered(
+            options,
+            authority,
+            initialize,
+            None,
+            None,
+            Some(registration),
+        )
+        .await
+    }
+
+    async fn open_registered(
+        options: SqliteConnectOptions,
+        authority: ConnectionAuthority,
+        initialize: impl for<'c> FnOnce(
+            &'c mut SqliteConnection,
+        ) -> BoxFuture<'c, Result<(), StoreError>>
+        + Send
+        + 'static,
+        prepared: Option<PreparedCache>,
+        control: Option<ReadOnlyControl>,
+        mut registration: Option<crate::root_store::StageRegistration>,
+    ) -> Result<Self, StoreError> {
         let (jobs, mut receiver) = mpsc::channel::<Command>(32);
-        let (read_jobs, read_receiver) = mpsc::channel::<ReadJob>(2);
+        let (read_jobs, read_receiver) = mpsc::channel::<ReadEnvelope>(2);
         let read_stop = CancellationToken::new();
         let reader_stop = read_stop.clone();
+        let writer_stop = CancellationToken::new();
+        let owner_stop = writer_stop.clone();
         let authority = Arc::new(authority);
         let (ready, startup) = oneshot::channel();
         let (completion, closed) = oneshot::channel();
@@ -195,6 +320,8 @@ impl OwnedConnection {
         std::thread::Builder::new()
             .name("runtime-store-owner".into())
             .spawn(move || {
+                if let Some(registration) = &mut registration { registration.started(); }
+                let retained = Arc::new(Retained::default());
                 let mut queued_drop_panicked = false;
                 let mut result = std::panic::catch_unwind(AssertUnwindSafe(|| {
                     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -207,13 +334,27 @@ impl OwnedConnection {
                     let reader_owner = runtime.spawn(run_readers(
                         read_receiver,
                         reader_stop.clone(),
-                        read_options,
+                        ReaderOptions {
+                            connection: read_options,
+                            prepared: prepared.clone(),
+                            control: control.clone(),
+                        },
                         authority.clone(),
+                        retained.clone(),
+                        owner_stop.clone(),
                     ));
                     let mut last_changes = 0_i64;
                     let initialized = std::panic::catch_unwind(AssertUnwindSafe(|| {
                         runtime.block_on(async {
                             initialize(&mut connection).await?;
+                            if let Some(cache) = &prepared {
+                                cache.attach(&mut connection, true).await?;
+                            }
+                            // Later initialization must not discard the TEMP view and
+                            // silently expose the standalone main bindings table.
+                            if let Some(control) = &control {
+                                control.validate(&mut connection).await?;
+                            }
                             last_changes = sqlx::query_scalar("SELECT total_changes()")
                                 .fetch_one(&mut connection)
                                 .await?;
@@ -224,12 +365,37 @@ impl OwnedConnection {
                     let success = initialized.is_ok();
                     // If open's waiter disappeared, close without accepting work.
                     let mut pending = None;
+                    let mut closing = false;
                     if ready.send(initialized).is_ok() && success {
                         while let Some(command) =
-                            pending.take().or_else(|| runtime.block_on(receiver.recv()))
+                            pending.take().or_else(|| {
+                                runtime.block_on(async {
+                                    if closing {
+                                        return receiver.recv().await;
+                                    }
+                                    // Stop admission without needing queue capacity or the
+                                    // caller's runtime. Accepted work still drains below.
+                                    tokio::select! {
+                                        biased;
+                                        () = owner_stop.cancelled() => Some(Command::Shutdown),
+                                        command = async {
+                                            if let Some(cache) = &prepared {
+                                                let registry = cache.registry();
+                                                tokio::select! {
+                                                    command = receiver.recv() => command,
+                                                    () = registry.notified() => Some(Command::CollectPrepared),
+                                                }
+                                            } else { receiver.recv().await }
+                                        } => command,
+                                    }
+                            })
+                            })
                         {
+                            let command = command.retain(&retained);
+                            let maintenance = matches!(command, Command::CollectPrepared);
                             let executed =
                                 std::panic::catch_unwind(AssertUnwindSafe(|| match command {
+                                    Command::Pinned(..) => unreachable!("custody moved into actor slot"),
                                     Command::Run(job) => {
                                         runtime.block_on(job(&mut connection, validate()));
                                         true
@@ -240,7 +406,10 @@ impl OwnedConnection {
                                         let mut group = vec![first];
                                         while group.len() < 32 {
                                             match receiver.try_recv() {
-                                                Ok(Command::Write(request)) => group.push(request),
+                                                Ok(command) if command.is_write() => {
+                                                    let Command::Write(request) = command.retain(&retained) else { unreachable!() };
+                                                    group.push(request);
+                                                },
                                                 Ok(boundary) => {
                                                     pending = Some(boundary);
                                                     break;
@@ -254,7 +423,28 @@ impl OwnedConnection {
                                             &validate,
                                         ))
                                     }
+                                    Command::CollectPrepared => {
+                                        if let Some(cache) = &prepared {
+                                            match runtime.block_on(
+                                                crate::context::prepared::gc::maintain(
+                                                    &mut connection,
+                                                    &cache.registry(),
+                                                ),
+                                            ) {
+                                                Ok(_) => true,
+                                                Err(error) => {
+                                                    eprintln!(
+                                                        "prepared cache maintenance failed: {error}"
+                                                    );
+                                                    false
+                                                }
+                                            }
+                                        } else {
+                                            true
+                                        }
+                                    }
                                     Command::Shutdown => {
+                                        closing = true;
                                         // Reject new sends, then drain every accepted job.
                                         receiver.close();
                                         true
@@ -271,7 +461,9 @@ impl OwnedConnection {
                                 Ok(total) if total == last_changes => {}
                                 Ok(total) => {
                                     last_changes = total;
-                                    changed.send_replace(());
+                                    if !maintenance {
+                                        changed.send_replace(());
+                                    }
                                 }
                                 // Preserve the job's result and real close path. A
                                 // subscriber's canonical read will report any failure.
@@ -279,7 +471,16 @@ impl OwnedConnection {
                                     changed.send_replace(());
                                 }
                             }
+                            // Waiting for the handle also flushes queued Transaction::drop
+                            // rollbacks. A successful query alone is not proof of cleanup.
+                            if !runtime.block_on(is_autocommit(&mut connection)) {
+                                break;
+                            }
+                            retained.clear(0);
                         }
+                    }
+                    if let Some(cache) = &prepared {
+                        cache.registry().close();
                     }
                     // Readers can await writer replies. Close admission, then reject
                     // queued work, including sends holding an earlier capacity permit,
@@ -303,6 +504,7 @@ impl OwnedConnection {
                     runtime
                         .block_on(connection.close())
                         .map_err(|error| StoreError::CloseFailed(error.to_string()))?;
+                    retained.clear(0);
                     match reader_failure {
                         Some(error) => Err(StoreError::CloseFailed(error)),
                         None => Ok(()),
@@ -327,8 +529,13 @@ impl OwnedConnection {
                     result,
                     Err(StoreError::CloseFailed(_) | StoreError::StartupCleanupFailed { .. })
                 );
+                if let Some(registration) = &mut registration {
+                    registration.complete(result.is_ok());
+                }
                 if !cleanup_failed {
+                    drop(prepared);
                     drop(authority);
+                    drop(retained);
                 }
                 let _ = completion.send(result);
                 // A failed real close is not permission to release the original
@@ -346,6 +553,7 @@ impl OwnedConnection {
                 jobs,
                 read_jobs,
                 read_stop,
+                writer_stop,
                 closed: async move {
                     closed
                         .await
@@ -358,6 +566,7 @@ impl OwnedConnection {
                 .shared(),
                 readers: Arc::new(Semaphore::new(2)),
                 changes,
+                custody: None,
             }),
             Ok(Err(error)) => {
                 drop(jobs);
@@ -405,11 +614,16 @@ impl OwnedConnection {
         self.writer().run(operation).await
     }
 
-    pub async fn shutdown(&self) -> Result<(), StoreError> {
+    /// Signal every owner before awaiting any close receipt. This is safe from
+    /// Drop and does not require capacity in a stalled writer's ingress queue.
+    pub(crate) fn request_shutdown(&self) {
         self.readers.close();
         self.read_stop.cancel();
-        // Closed ingress is also normal for repeated or concurrent shutdown.
-        let _ = self.jobs.send(Command::Shutdown).await;
+        self.writer_stop.cancel();
+    }
+
+    pub async fn shutdown(&self) -> Result<(), StoreError> {
+        self.request_shutdown();
         self.closed.clone().await.map_err(StoreError::CloseFailed)
     }
 
@@ -450,72 +664,76 @@ impl OwnedConnection {
             .map_err(|_| StoreError::ConnectionClosed)?;
         let (mut reply, result) = oneshot::channel();
         self.read_jobs
-            .send(Box::new(move |connection| {
-                Box::pin(async move {
-                    let _permit = permit;
-                    let mut clean = true;
-                    let executed = match connection {
-                        Ok(connection) => {
-                            let cancel = Arc::new(AtomicBool::new(false));
-                            if interruptible {
-                                match connection.lock_handle().await {
-                                    Ok(mut locked) => {
-                                        let cancel = cancel.clone();
-                                        // Remember cancellation between statements, then consume
-                                        // it once so transaction rollback can run normally.
-                                        locked.set_progress_handler(1000, move || {
-                                            !cancel.swap(false, Ordering::Relaxed)
-                                        });
-                                    }
-                                    Err(error) => {
-                                        let _ = reply.send(Err(error.into()));
-                                        return false;
-                                    }
-                                }
-                            }
-                            let executed = {
-                                let operation =
-                                    AssertUnwindSafe(async { operation(&mut *connection).await })
-                                        .catch_unwind();
-                                tokio::pin!(operation);
-                                tokio::select! {
-                                    result = &mut operation => result,
-                                    () = reply.closed(), if interruptible => {
-                                        cancel.store(true, Ordering::Relaxed);
-                                        operation.await
-                                    }
-                                }
-                            };
-                            if interruptible {
-                                // The handle lock follows queued Transaction::drop rollbacks.
-                                clean = match connection.lock_handle().await {
-                                    Ok(mut locked) => {
-                                        locked.remove_progress_handler();
-                                        // SAFETY: the SQLx guard excludes worker FFI calls;
-                                        // this only reads the live handle's transaction state.
-                                        unsafe {
-                                            rusqlite::ffi::sqlite3_get_autocommit(
-                                                locked.as_raw_handle().as_ptr(),
-                                            ) != 0
+            .send(ReadEnvelope {
+                custody: self.custody.clone(),
+                job: Box::new(move |connection| {
+                    Box::pin(async move {
+                        let _permit = permit;
+                        let mut clean = true;
+                        let executed = match connection {
+                            Ok(connection) => {
+                                let cancel = Arc::new(AtomicBool::new(false));
+                                if interruptible {
+                                    match connection.lock_handle().await {
+                                        Ok(mut locked) => {
+                                            let cancel = cancel.clone();
+                                            // Remember cancellation between statements, then consume
+                                            // it once so transaction rollback can run normally.
+                                            locked.set_progress_handler(1000, move || {
+                                                !cancel.swap(false, Ordering::Relaxed)
+                                            });
+                                        }
+                                        Err(error) => {
+                                            let _ = reply.send(Err(error.into()));
+                                            return false;
                                         }
                                     }
-                                    Err(_) => false,
+                                }
+                                let executed = {
+                                    let operation = AssertUnwindSafe(async {
+                                        operation(&mut *connection).await
+                                    })
+                                    .catch_unwind();
+                                    tokio::pin!(operation);
+                                    tokio::select! {
+                                        result = &mut operation => result,
+                                        () = reply.closed(), if interruptible => {
+                                            cancel.store(true, Ordering::Relaxed);
+                                            operation.await
+                                        }
+                                    }
                                 };
+                                if interruptible {
+                                    // The handle lock follows queued Transaction::drop rollbacks.
+                                    clean = match connection.lock_handle().await {
+                                        Ok(mut locked) => {
+                                            locked.remove_progress_handler();
+                                            // SAFETY: the SQLx guard excludes worker FFI calls;
+                                            // this only reads the live handle's transaction state.
+                                            unsafe {
+                                                rusqlite::ffi::sqlite3_get_autocommit(
+                                                    locked.as_raw_handle().as_ptr(),
+                                                ) != 0
+                                            }
+                                        }
+                                        Err(_) => false,
+                                    };
+                                }
+                                executed
                             }
-                            executed
-                        }
-                        Err(error) => Ok(Err(error)),
-                    };
-                    let reusable = clean
-                        && !matches!(
-                            &executed,
-                            Err(_) | Ok(Err(StoreError::Sqlx(sqlx::Error::WorkerCrashed)))
-                        );
-                    let result = executed.unwrap_or(Err(StoreError::OperationUnknown));
-                    let _ = reply.send(result);
-                    reusable
-                })
-            }))
+                            Err(error) => Ok(Err(error)),
+                        };
+                        let reusable = clean
+                            && !matches!(
+                                &executed,
+                                Err(_) | Ok(Err(StoreError::Sqlx(sqlx::Error::WorkerCrashed)))
+                            );
+                        let result = executed.unwrap_or(Err(StoreError::OperationUnknown));
+                        let _ = reply.send(result);
+                        reusable
+                    })
+                }),
+            })
             .await
             .map_err(|_| StoreError::ConnectionClosed)?;
         result.await.map_err(|_| StoreError::OperationUnknown)?
@@ -526,27 +744,44 @@ impl OwnedConnection {
     }
 }
 
+#[derive(Clone)]
+struct ReaderOptions {
+    connection: SqliteConnectOptions,
+    prepared: Option<PreparedCache>,
+    control: Option<ReadOnlyControl>,
+}
+
 // Both persistent readers remain on the original owner's runtime. The mutex
 // protects only ingress removal; SQL and accepted jobs run independently.
 async fn run_readers(
-    receiver: mpsc::Receiver<ReadJob>,
+    receiver: mpsc::Receiver<ReadEnvelope>,
     stop: CancellationToken,
-    options: SqliteConnectOptions,
+    options: ReaderOptions,
     authority: Arc<ConnectionAuthority>,
+    retained: Arc<Retained>,
+    writer_stop: CancellationToken,
 ) -> Result<(), StoreError> {
     let receiver = Arc::new(tokio::sync::Mutex::new(receiver));
     let mut readers = tokio::task::JoinSet::new();
-    for _ in 0..2 {
+    for slot in 1..=2 {
         readers.spawn(reader_worker(
             receiver.clone(),
             stop.clone(),
             options.clone(),
             authority.clone(),
+            retained.clone(),
+            slot,
         ));
     }
     let mut failure = None;
     while let Some(result) = readers.join_next().await {
         retain_reader_failure(result, &mut failure);
+        if failure.is_some() {
+            // A failed physical reader must not leave the writer accepting new
+            // work indefinitely; its retained slot survives with that owner.
+            stop.cancel();
+            writer_stop.cancel();
+        }
     }
     match failure {
         Some(error) => Err(StoreError::CloseFailed(error)),
@@ -555,10 +790,12 @@ async fn run_readers(
 }
 
 async fn reader_worker(
-    receiver: Arc<tokio::sync::Mutex<mpsc::Receiver<ReadJob>>>,
+    receiver: Arc<tokio::sync::Mutex<mpsc::Receiver<ReadEnvelope>>>,
     stop: CancellationToken,
-    options: SqliteConnectOptions,
+    options: ReaderOptions,
     authority: Arc<ConnectionAuthority>,
+    retained: Arc<Retained>,
+    slot: usize,
 ) -> Result<(), StoreError> {
     let mut connection = None;
     let mut failure = None;
@@ -574,10 +811,21 @@ async fn reader_worker(
                 job = receiver.recv() => job,
             }
         };
-        let Some(job) = job else { break };
+        let Some(ReadEnvelope { job, custody }) = job else {
+            break;
+        };
+        if let Some(custody) = custody {
+            retained.hold(slot, custody);
+        }
         let mut valid = authority.validate();
         if valid.is_ok() && connection.is_none() {
-            match connect_reader(&options).await {
+            match connect_reader(
+                &options.connection,
+                options.prepared.as_ref(),
+                options.control.as_ref(),
+            )
+            .await
+            {
                 Ok(opened) => connection = Some(opened),
                 Err(error) => {
                     if matches!(error, StoreError::StartupCleanupFailed { .. }) {
@@ -593,12 +841,22 @@ async fn reader_worker(
             .and_then(|()| authority.validate())
             .map(|()| connection.as_mut().expect("validated reader connection"));
         let reusable = job(ready).await;
-        if !reusable
+        // Noninterruptible reads must prove cleanup too. A forgotten transaction
+        // or a failed startup close retires this physical reader before reuse.
+        let clean = match connection.as_mut() {
+            Some(connection) => is_autocommit(connection).await,
+            None => failure.is_none(),
+        };
+        if (!reusable || !clean)
             && let Some(connection) = connection.take()
             && let Err(error) = close_reader(connection).await
         {
             failure.get_or_insert(error.to_string());
         }
+        if failure.is_some() {
+            break;
+        }
+        retained.clear(slot);
     }
     if let Some(connection) = connection
         && let Err(error) = close_reader(connection).await
@@ -611,6 +869,17 @@ async fn reader_worker(
     }
 }
 
+async fn is_autocommit(connection: &mut SqliteConnection) -> bool {
+    match connection.lock_handle().await {
+        Ok(mut locked) => {
+            // SAFETY: the SQLx guard excludes worker FFI calls and follows all
+            // queued rollback work. Only the current transaction state is read.
+            unsafe { rusqlite::ffi::sqlite3_get_autocommit(locked.as_raw_handle().as_ptr()) != 0 }
+        }
+        Err(_) => false,
+    }
+}
+
 async fn close_reader(connection: SqliteConnection) -> Result<(), StoreError> {
     AssertUnwindSafe(connection.close())
         .catch_unwind()
@@ -619,9 +888,23 @@ async fn close_reader(connection: SqliteConnection) -> Result<(), StoreError> {
         .map_err(|error| StoreError::CloseFailed(error.to_string()))
 }
 
-async fn connect_reader(options: &SqliteConnectOptions) -> Result<SqliteConnection, StoreError> {
+async fn connect_reader(
+    options: &SqliteConnectOptions,
+    prepared: Option<&PreparedCache>,
+    control: Option<&ReadOnlyControl>,
+) -> Result<SqliteConnection, StoreError> {
     let mut connection = connect_owned(options).await?;
     if let Err(error) = crate::sqlite_functions::register(&mut connection).await {
+        return Err(close_startup(connection, error).await);
+    }
+    if let Some(cache) = prepared
+        && let Err(error) = cache.attach(&mut connection, false).await
+    {
+        return Err(close_startup(connection, error).await);
+    }
+    if let Some(control) = control
+        && let Err(error) = control.attach(&mut connection).await
+    {
         return Err(close_startup(connection, error).await);
     }
     Ok(connection)

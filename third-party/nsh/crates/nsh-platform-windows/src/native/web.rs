@@ -198,6 +198,10 @@ pub(crate) struct WebItem {
 }
 
 impl WebItem {
+    pub(super) fn focused(&self) -> bool {
+        self.focused.get()
+    }
+
     pub(crate) fn new(surface: &Rc<Surface>, view: &NshView) -> Rc<Self> {
         let portal = surface
             .compose()
@@ -491,6 +495,7 @@ impl WebItem {
                 // responder.
                 if let Some(surface) = item.surface.upgrade() {
                     crate::text_input::blur_all(&surface);
+                    surface.sync_focus();
                 }
             }
             Ok(())
@@ -499,6 +504,9 @@ impl WebItem {
         let lost = FocusChangedEventHandler::create(Box::new(move |_, _| {
             if let Some(item) = weak.upgrade() {
                 item.focused.set(false);
+                if let Some(surface) = item.surface.upgrade() {
+                    surface.sync_focus();
+                }
             }
             Ok(())
         }));
@@ -535,6 +543,7 @@ impl WebItem {
             }
         }
         self.focused.set(false);
+        surface.sync_focus();
     }
 
     /// True when the app may show `url` at the top level.

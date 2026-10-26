@@ -18,7 +18,7 @@
  */
 
 import { errorText, renderText, UiError } from './text';
-import { cleanup, effect, signal, untracked } from 'nsh';
+import { cleanup, effect, signal, untracked, type Signal } from 'nsh';
 import { TerminalGrid } from 'maka/host';
 import { host, terminalMutation, pendingTerminals, recoverTerminal, abandonTerminal } from './host';
 import type { ScopedHost } from './host';
@@ -33,6 +33,8 @@ import type {
 
 type Stream<T> = { next(): Promise<T | null>; close(): Promise<void> };
 type Watch<T> = { closed: boolean; stream: Stream<T> | null };
+type TerminalRow = { value: Signal<ResourceUpdate> };
+type TerminalTarget = { sessionId: string; ref: string };
 export function terminalStatus(status: ResourceUpdate['result']['status']): string {
   switch (status) {
     case 'starting':
@@ -72,7 +74,7 @@ export function createTerminals(options: {
   active(): boolean;
   open(entry: ResourceUpdate, model: TerminalModel): void;
 }) {
-  const entries = signal<ResourceUpdate[]>([]);
+  const entries = signal<TerminalRow[]>([]);
   const error = signal<unknown>('');
   const loading = signal(false);
   const starting = signal(false);
@@ -122,15 +124,24 @@ export function createTerminals(options: {
     }
   };
   const accept = (resources: ResourceUpdate[]) => {
+    // A fresh Host snapshot updates an existing terminal; it does not replace
+    // the List's row owner while its original native control is being used.
+    const previous = new Map(entries().map((row) => [row.value().result.ref, row]));
     entries.set(
       resources
         .filter((entry) => entry.sessionId === sessionId && entry.result.kind === 'shell_run')
         .sort(
           (a, b) =>
             a.result.startedAt - b.result.startedAt || a.result.ref.localeCompare(b.result.ref),
-        ),
+        )
+        .map((entry) => {
+          let row = previous.get(entry.result.ref);
+          if (row) row.value.set(entry);
+          else row = { value: signal(entry) };
+          models.get(entry.result.ref)?.update(entry);
+          return row;
+        }),
     );
-    for (const entry of entries()) models.get(entry.result.ref)?.update(entry);
   };
   const follow = (session: string) => {
     stop(watch);
@@ -184,8 +195,12 @@ export function createTerminals(options: {
       }
     })();
   };
-  const open = (entry: ResourceUpdate) => {
-    if (!sessionId || !scope || !owns(entry.sessionId)) return;
+  const open = (target: TerminalTarget) => {
+    if (!sessionId || !scope || !owns(target.sessionId)) return;
+    const entry = entries()
+      .find((row) => row.value().result.ref === target.ref)
+      ?.value();
+    if (!entry) return;
     let model = models.get(entry.result.ref);
     if (!model) {
       model = createTerminal(entry, scope, {
@@ -253,8 +268,13 @@ export function createTerminals(options: {
         await mutate(owner, 'start', { sessionId: selected, size: DEFAULT_SIZE }),
       );
       if (!owns(selected) || scope !== owner) return;
-      accept([...entries().filter((item) => item.result.ref !== entry.result.ref), entry]);
-      open(entry);
+      accept([
+        ...entries()
+          .map((row) => row.value())
+          .filter((item) => item.result.ref !== entry.result.ref),
+        entry,
+      ]);
+      open({ sessionId: entry.sessionId, ref: entry.result.ref });
     } catch (reason) {
       if (owns(selected) && scope === owner) error.set(reason);
     } finally {

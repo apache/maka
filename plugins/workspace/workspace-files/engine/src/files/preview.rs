@@ -75,7 +75,7 @@ impl Directory {
         interrupted(cancel)?;
         self.validate_inner()?;
         let relative =
-            gix::path::try_from_bstring(path.bytes().map_err(|_| error("files_invalid_path"))?)
+            gix::path::from_bstring(path.bytes().map_err(|_| error("files_invalid_path"))?)
                 .map_err(|_| error("files_invalid_path"))?;
         let parent = relative
             .parent()

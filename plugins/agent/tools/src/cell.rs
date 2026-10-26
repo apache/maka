@@ -40,7 +40,7 @@ use serde_json::Value;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
-use crate::{ToolCallContext, ToolCatalog, ToolDefinition};
+use crate::{ToolCatalog, ToolDefinition};
 use uuid::Uuid;
 
 const EXEC_GRAMMAR: &str = r#"start: pragma_source | plain_source
@@ -125,7 +125,6 @@ pub(super) struct WaitInput {
     /// Approximate text-output budget (64..32768 tokens).
     #[serde(default = "default_tokens")]
     #[schemars(range(min = 64, max = 32768))]
-    #[serde(alias = "max_output_tokens")]
     max_tokens: usize,
     /// Request cancellation. Running means accepted effects are still being settled.
     #[serde(default)]
@@ -259,10 +258,7 @@ impl ToolExecutor for NestedTools {
             } else {
                 futures_util::future::Either::Right(execution.write_owned().await)
             };
-            let context = ToolCallContext {
-                invocation: journal.invocation().clone(),
-                operation_id: operation_id.clone(),
-            };
+            let context = journal.context(operation_id.clone());
             let prepared = catalog
                 .prepare(name.clone(), input.clone(), context, cancellation.clone())
                 .await;

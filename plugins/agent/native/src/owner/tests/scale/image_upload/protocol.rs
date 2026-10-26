@@ -178,18 +178,7 @@ impl Options {
     // Local reader adds protocol-specific auth and explicit custom-header proof;
     // no request body is logged, and body bytes are parsed directly as JSON.
     pub async fn request(self, socket: &mut TcpStream) -> Value {
-        let mut bytes = Vec::new();
-        let boundary = loop {
-            let mut buffer = [0; 4096];
-            let n = socket.read(&mut buffer).await.unwrap();
-            assert_ne!(n, 0, "EOF before provider request headers");
-            bytes.extend_from_slice(&buffer[..n]);
-            assert!(bytes.len() < 512 * 1024);
-            if let Some(at) = bytes.windows(4).position(|value| value == b"\r\n\r\n") {
-                break at + 4;
-            }
-        };
-        let headers = String::from_utf8_lossy(&bytes[..boundary]);
+        let (headers, sent) = crate::owner::tests::http_fixture::read_request(socket).await;
         let header = |name: &str| {
             headers
                 .lines()
@@ -219,14 +208,6 @@ impl Options {
         if self.customized() {
             assert_eq!(header("x-maka-image-fixture"), Some("original-images"));
         }
-        let length: usize = header("content-length").unwrap().parse().unwrap();
-        while bytes.len() < boundary + length {
-            let mut buffer = [0; 4096];
-            let n = socket.read(&mut buffer).await.unwrap();
-            assert_ne!(n, 0, "EOF in provider JSON body");
-            bytes.extend_from_slice(&buffer[..n]);
-        }
-        let sent: Value = serde_json::from_slice(&bytes[boundary..boundary + length]).unwrap();
         if self.customized() {
             assert_eq!(sent["temperature"], 0.25);
             assert_eq!(sent["k49_fixture"], json!({"marker":"original images 中"}));

@@ -132,6 +132,18 @@ pub(crate) struct Modifiers {
     pub(crate) meta: bool,
 }
 
+impl Modifiers {
+    /// As the core's modifiers (`meta` is its `cmd`).
+    fn core(self) -> nsh_core::keymap::Modifiers {
+        nsh_core::keymap::Modifiers {
+            ctrl: self.ctrl,
+            alt: self.alt,
+            shift: self.shift,
+            cmd: self.meta,
+        }
+    }
+}
+
 /// A mouse, touch or pen event.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct PointerEvent {
@@ -198,7 +210,7 @@ pub(crate) enum Cursor {
     /// The arrow.
     #[default]
     Arrow,
-    /// A hand (links, pressables with `cursor: pointer`).
+    /// A hand (`cursor: pointer`: links).
     Hand,
     /// The I-beam (text).
     Text,
@@ -658,10 +670,9 @@ pub(crate) fn command(surface: &Rc<Surface>, _id: NodeId, command: &Command) {
 // --- Cursors ------------------------------------------------------------------------
 
 /// The cursor of a CSS `cursor` value, `None` to inherit the parent's.
-fn css_cursor(cursor: nsh_core::Cursor, pressable: bool) -> Option<Cursor> {
+fn css_cursor(cursor: nsh_core::Cursor) -> Option<Cursor> {
     use nsh_core::Cursor as C;
     Some(match cursor {
-        C::Auto if pressable => Cursor::Hand,
         C::Auto => return None,
         C::Default => Cursor::Arrow,
         C::Pointer => Cursor::Hand,
@@ -687,7 +698,7 @@ fn css_cursor(cursor: nsh_core::Cursor, pressable: bool) -> Option<Cursor> {
 /// A view's own cursor: its style's, the I-beam over text fields and
 /// selectable text (a press target keeps the hand), or `None`.
 fn view_cursor(s: &ViewState) -> Option<Cursor> {
-    css_cursor(s.style.cursor, has_press(s.events)).or_else(|| {
+    css_cursor(s.style.cursor).or_else(|| {
         (s.kind == ViewKind::Input || crate::text::selectable(s)).then_some(Cursor::Text)
     })
 }
@@ -858,12 +869,7 @@ fn context_menu(surface: &Rc<Surface>, x: f32, y: f32, modifiers: Modifiers) {
             let event = nsh_core::ContextMenuEvent {
                 position: nsh_core::geometry::point(Points(location_x), Points(location_y)),
                 page_position: nsh_core::geometry::point(Points(x), Points(y)),
-                modifiers: nsh_core::keymap::Modifiers {
-                    ctrl: modifiers.ctrl,
-                    alt: modifiers.alt,
-                    shift: modifiers.shift,
-                    cmd: modifiers.meta,
-                },
+                modifiers: modifiers.core(),
             };
             surface.event(id, EventKind::ContextMenu, EventPayload::ContextMenu(event));
             return;
@@ -995,6 +1001,7 @@ pub(crate) fn key(surface: &Rc<Surface>, event: KeyEvent) -> bool {
         // it saw no other key: swallow the release once Alt + key was ours.
         return event.vk == VK_MENU && input.alt_combo.replace(false);
     }
+    let repeat = crate::keymap::pressed(surface, &event);
     // The window's shortcuts (full screen, the dev host's reload) work
     // wherever the focus is.
     let shortcut = crate::chrome::window_key(surface, &event)
@@ -1002,7 +1009,7 @@ pub(crate) fn key(surface: &Rc<Surface>, event: KeyEvent) -> bool {
     let editing = crate::text_input::focused(surface).is_some();
     let handled = shortcut
         || crate::system::key(surface, &event)
-        || crate::keymap::key(surface, &event, editing)
+        || crate::keymap::key(surface, &event, editing, repeat, false)
         || crate::chrome::shortcut(surface, &event)
         || crate::text_input::key(surface, &event)
         || crate::text::key(surface, &event)
@@ -1013,7 +1020,8 @@ pub(crate) fn key(surface: &Rc<Surface>, event: KeyEvent) -> bool {
             let (x, y) = input.last.get().unwrap_or((-1.0, -1.0));
             crate::scroll::key(surface, &event, x, y)
         }
-        || tab(surface, &event);
+        || tab(surface, &event)
+        || crate::keymap::key(surface, &event, editing, repeat, true);
     if handled && event.modifiers.alt {
         input.alt_combo.set(true);
     }
@@ -1032,10 +1040,12 @@ pub(crate) fn component_key(surface: &Rc<Surface>, event: KeyEvent) -> bool {
         crate::keymap::released(surface, &event);
         return event.vk == VK_MENU && surface.input.alt_combo.replace(false);
     }
+    let repeat = crate::keymap::pressed(surface, &event);
     let handled = crate::chrome::window_key(surface, &event)
         || surface.shortcuts.borrow().iter().any(|f| f(&event))
-        || crate::keymap::key(surface, &event, true)
-        || crate::chrome::shortcut(surface, &event);
+        || crate::keymap::key(surface, &event, true, repeat, false)
+        || crate::chrome::shortcut(surface, &event)
+        || crate::keymap::key(surface, &event, true, repeat, true);
     if handled && event.modifiers.alt {
         surface.input.alt_combo.set(true);
     }
@@ -1172,7 +1182,23 @@ fn cancel_contact(surface: &Rc<Surface>, mut pointer: Pointer) {
 /// Insert-only moves preserve the current contact and editor caret.
 pub(crate) fn retire_focus_within(surface: &Rc<Surface>, root: &NshView) {
     let contains = |view: &NshView| chain(view).contains(root);
+    if surface
+        .pending_auto_focus
+        .borrow()
+        .as_ref()
+        .is_some_and(contains)
+    {
+        surface.pending_auto_focus.borrow_mut().take();
+    }
     let input = &surface.input;
+    let mut owned = FxHashSet::default();
+    if !input.pointers.borrow().is_empty() {
+        let mut pending = vec![root.clone()];
+        while let Some(view) = pending.pop() {
+            owned.insert(view.id());
+            pending.extend(view.child_views());
+        }
+    }
     let keys = input
         .pointers
         .borrow()
@@ -1196,14 +1222,71 @@ pub(crate) fn retire_focus_within(surface: &Rc<Surface>, root: &NshView) {
                 || pointer.candidates.iter().any(|(view, _)| contains(view))
                 || pointer.pressed.iter().any(contains)
                 || pointer.pinch.as_ref().is_some_and(contains)
+                || pointer.path.iter().any(|id| owned.contains(id))
+                || pointer.gate.is_some_and(|gate| owned.contains(&gate.id()))
         })
         .map(|pointer| pointer.key)
         .collect::<Vec<_>>();
     for key in keys {
-        let Some(pointer) = take(surface, key) else {
+        let Some(mut pointer) = take(surface, key) else {
             continue;
         };
-        cancel_contact(surface, pointer);
+        let owner = match &pointer.mode {
+            Mode::Pan(view) | Mode::Scroll(view, _) | Mode::Thumb(view, _) => Some(view.clone()),
+            Mode::TwoFinger => input
+                .two
+                .borrow()
+                .as_ref()
+                .map(|two| two.transform.view.clone()),
+            Mode::Idle | Mode::Free => None,
+        }
+        .filter(|view| !contains(view));
+        if let Some(owner) = owner {
+            // The surviving ancestor already owns this drag. Retire the
+            // old row's touch/press participants, not that native gesture.
+            if pointer.reporting {
+                surface.control(|control| control.cancel_touch(pointer.id));
+                pointer.reporting = false;
+            }
+            pointer.path.clear();
+            if pointer
+                .press
+                .as_ref()
+                .is_some_and(|press| contains(&press.view))
+            {
+                cancel_press(surface, &mut pointer);
+            }
+            if pointer
+                .item
+                .as_ref()
+                .is_some_and(|item| contains(item.view()))
+            {
+                let item = pointer.item.take().unwrap();
+                item.send(
+                    surface,
+                    PointerKind::Cancel,
+                    (pointer.x, pointer.y),
+                    1,
+                    pointer.modifiers,
+                );
+            }
+            for view in std::mem::take(&mut pointer.pressed) {
+                if contains(&view) {
+                    set_state(surface, &view, PRESSED, false);
+                } else {
+                    pointer.pressed.push(view);
+                }
+            }
+            pointer.candidates.retain(|(view, _)| !contains(view));
+            pointer.gate = None;
+            if pointer.pinch.as_ref().is_some_and(contains) {
+                pointer.pinch = None;
+            }
+            pointer.target = owner;
+            put(surface, pointer);
+        } else {
+            cancel_contact(surface, pointer);
+        }
     }
     if input
         .zoom
@@ -1270,6 +1353,7 @@ pub(crate) fn retire_focus_within(surface: &Rc<Surface>, root: &NshView) {
             item.send(surface, PointerKind::Leave, at, 0, Modifiers::default());
         }
     }
+    crate::scroll::retire_motion(surface, root);
     let native = crate::native::requested_focus(surface)
         .or_else(|| crate::native::focused_component(surface))
         .and_then(|id| surface.view(id))
@@ -1636,6 +1720,7 @@ fn down(
         finish(surface, stale, true);
     }
     let Some(mut hit) = pick(&surface.root, x, y, true) else {
+        log::debug!(target: "nsh::interaction", "down surface={} x={x} y={y} hit=none", surface.key());
         return;
     };
     let touch = key != Key::Mouse;
@@ -1663,6 +1748,7 @@ fn down(
         })
         .flatten();
     if let Some(view) = thumb {
+        log::debug!(target: "nsh::interaction", "down surface={} x={x} y={y} hit={} press=none scrollbar={}", surface.key(), hit.view.id(), view.id());
         let input = &surface.input;
         if input.pointers.borrow().is_empty() {
             input.js_block.set(false);
@@ -1772,8 +1858,9 @@ fn down(
     let press = if native {
         None
     } else {
-        find_press(surface, &hit.view, &views, x, y)
+        find_press(surface, &hit.view, &views, x, y, modifiers, clicks)
     };
+    log::debug!(target: "nsh::interaction", "down surface={} x={x} y={y} hit={} press={:?} native={native} selection={selects}", surface.key(), hit.view.id(), press.as_ref().map(|press| press.node));
     let id = input.next_id.get();
     input.next_id.set(id.wrapping_add(1));
     let mut p = Pointer {
@@ -1968,6 +2055,7 @@ fn up(surface: &Rc<Surface>, key: Key, at: Option<(f32, f32)>, time: f64, cancel
 
 /// The pointer lifted (or was cancelled): ends what it did.
 fn finish(surface: &Rc<Surface>, mut p: Pointer, cancelled: bool) {
+    log::debug!(target: "nsh::interaction", "up surface={} pointer={} x={} y={} target={} press={:?} cancelled={cancelled} moved={} inside={:?}", surface.key(), p.id, p.x, p.y, p.target.id(), p.press.as_ref().map(|press| press.node), p.moved, p.press.as_ref().map(|press| released_inside(&press.view, p.x, p.y)));
     if let Some(item) = p.item.take() {
         let kind = if cancelled {
             PointerKind::Cancel
@@ -2122,6 +2210,8 @@ fn find_press(
     views: &[NshView],
     x: f32,
     y: f32,
+    modifiers: Modifiers,
+    clicks: u32,
 ) -> Option<Press> {
     let generation = surface.input.next_gen.get();
     surface.input.next_gen.set(generation + 1);
@@ -2139,13 +2229,16 @@ fn find_press(
                 && has_press(link.events)
                 && link.is_enabled()
             {
-                return Some(Press::new(
-                    target.clone(),
-                    link.node,
-                    link.events,
-                    link.props.long_press_delay,
-                    generation,
-                ));
+                return Some(
+                    Press::new(
+                        target.clone(),
+                        link.node,
+                        link.events,
+                        link.props.long_press_delay,
+                        generation,
+                    )
+                    .clicked(modifiers.core(), clicks),
+                );
             }
         }
     }
@@ -2159,6 +2252,7 @@ fn find_press(
                 s.props.long_press_delay,
                 generation,
             )
+            .clicked(modifiers.core(), clicks)
         })
     })
 }
@@ -2180,10 +2274,13 @@ fn press_out(surface: &Rc<Surface>, press: &mut Press, fire: bool, at: (f32, f32
 /// Sends `kind` of `press` with the pointer at `(x, y)` (root coordinates).
 fn press_event(surface: &Surface, press: &Press, kind: EventKind, (x, y): (f32, f32)) {
     log::debug!(target: "nsh::input", "{} on {}", kind.prop_name(), press.node);
+    log::debug!(target: "nsh::interaction", "press surface={} kind={} node={} x={x} y={y}", surface.key(), kind.prop_name(), press.node);
     let (location_x, location_y) = local(&press.view, x, y);
     let event = nsh_core::PressEvent {
         position: nsh_core::geometry::point(Points(location_x), Points(location_y)),
         page_position: nsh_core::geometry::point(Points(x), Points(y)),
+        modifiers: press.modifiers,
+        clicks: press.clicks,
     };
     surface.event(press.node, kind, EventPayload::Press(event));
 }
@@ -2545,12 +2642,7 @@ fn hover_moved(surface: &Surface, x: f32, y: f32, modifiers: Modifiers) {
         let event = nsh_core::HoverEvent {
             position: nsh_core::geometry::point(Points(location_x), Points(location_y)),
             page_position: nsh_core::geometry::point(Points(x), Points(y)),
-            modifiers: nsh_core::keymap::Modifiers {
-                ctrl: modifiers.ctrl,
-                alt: modifiers.alt,
-                shift: modifiers.shift,
-                cmd: modifiers.meta,
-            },
+            modifiers: modifiers.core(),
         };
         surface.event(id, EventKind::HoverMove, EventPayload::Hover(event));
     }
@@ -2580,6 +2672,21 @@ fn hover_event(surface: &Surface, view: &NshView, kind: EventKind) {
     };
     if listens {
         surface.event(id, kind, EventPayload::None);
+    }
+}
+
+/// The keyboard's modifiers changed (`modifiers` held now): while the
+/// mouse rests over the surface with no button down, the hovered views
+/// that listen hear `onHoverMove` again where it is, with the new
+/// modifiers (an editor underlines a definition while Mod is held), as
+/// they would on the next move.
+pub(crate) fn modifiers_changed(surface: &Surface, modifiers: Modifiers) {
+    let input = &surface.input;
+    if input.pointers.borrow().iter().any(|p| p.key == Key::Mouse) {
+        return;
+    }
+    if let Some((x, y)) = input.last.get() {
+        hover_moved(surface, x, y, modifiers);
     }
 }
 
@@ -3159,6 +3266,197 @@ mod tests {
     }
 
     #[test]
+    fn retiring_a_historical_touch_or_gate_owner_cancels_its_moved_target() {
+        use nsh_core::MountItem;
+
+        for capture in ["touch", "gate"] {
+            let surface = Surface::new(nsh_engine::Environment::default());
+            surface.root.state_mut().frame = rect(0.0, 0.0, 400.0, 400.0);
+            for (id, parent, frame) in [
+                (2, ROOT_ID, rect(0.0, 0.0, 100.0, 100.0)),
+                (6, ROOT_ID, rect(200.0, 0.0, 100.0, 100.0)),
+                (4, 2, rect(0.0, 0.0, 50.0, 50.0)),
+            ] {
+                for item in [
+                    MountItem::Create {
+                        id,
+                        kind: ViewKind::View,
+                    },
+                    MountItem::Frame { id, frame },
+                    MountItem::Insert {
+                        parent,
+                        child: id,
+                        before: None,
+                    },
+                ] {
+                    surface.mounter.borrow_mut().apply(&surface, &item);
+                }
+            }
+            let owner = surface.view(2).unwrap();
+            if capture == "touch" {
+                owner.state_mut().events.set(EventKind::Touch, true);
+            } else {
+                owner.state_mut().props.pan_activation = Some(nsh_core::PanActivation::horizontal(
+                    Points(6.0),
+                    Points(8.0),
+                ));
+            }
+            let mouse = |kind| {
+                pointer(
+                    &surface,
+                    PointerEvent {
+                        kind,
+                        x: 20.0,
+                        y: 20.0,
+                        button: 0,
+                        pointer: 1,
+                        touch: false,
+                        pen: false,
+                        time: surface.clock(),
+                        modifiers: Modifiers::default(),
+                        clicks: 1,
+                    },
+                )
+            };
+            mouse(PointerKind::Down);
+            surface.mounter.borrow_mut().apply(
+                &surface,
+                &MountItem::Insert {
+                    parent: 6,
+                    child: 4,
+                    before: None,
+                },
+            );
+            assert_eq!(surface.view(4).unwrap().parent_view().unwrap().id(), 6);
+            surface.mounter.borrow_mut().apply(
+                &surface,
+                &MountItem::RetireListCell {
+                    id: 2,
+                    request: 1,
+                    roots: vec![2],
+                },
+            );
+            assert!(!owner.attached());
+            assert!(
+                surface.input.pointers.borrow().is_empty(),
+                "{capture} capture survived retirement"
+            );
+            mouse(PointerKind::Move);
+            mouse(PointerKind::Up);
+            assert!(surface.input.pointers.borrow().is_empty());
+        }
+    }
+
+    #[cfg(feature = "js")]
+    #[gpui::test]
+    fn retiring_a_historical_touch_owner_releases_the_real_js_scroll_block(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use std::time::{Duration, Instant};
+
+        use nsh_core::MountItem;
+
+        const APP: &str = r#"
+            import { View, mount } from 'nsh';
+            mount(() => View({style: {width: 300, height: 400}, children: [
+                View({accessibilityLabel: 'Touch owner', style: {height: 100},
+                    onStartShouldSetResponder: () => true,
+                    onResponderGrant: () => true,
+                    children: View({accessibilityLabel: 'Touch target', style: {width: 100, height: 50}})}),
+                View({accessibilityLabel: 'Outside owner', style: {height: 100}})
+            ]}));
+        "#;
+        fn find(view: &NshView, label: &str) -> Option<NshView> {
+            if view.state().props.accessibility.label.as_deref() == Some(label) {
+                return Some(view.clone());
+            }
+            view.with_children(|children| children.iter().find_map(|view| find(view, label)))
+        }
+        fn flush(surface: &Rc<Surface>) {
+            let (tx, rx) = crossbeam_channel::bounded(1);
+            surface.control(|control| {
+                control.advance_clock(Duration::ZERO, move || tx.send(()).unwrap())
+            });
+            rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            surface.drain();
+        }
+        fn wait(surface: &Rc<Surface>, ready: impl Fn() -> bool) {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !ready() {
+                flush(surface);
+                assert!(
+                    Instant::now() < deadline,
+                    "native touch state did not settle"
+                );
+            }
+        }
+        cx.executor().allow_parking();
+        let (surface, _app) = cx.update(|cx| {
+            let app = crate::rt::init_test_app(cx);
+            let surface = Surface::new(nsh_engine::Environment::default());
+            surface.set_error_handler(Box::new(|error| panic!("{error:?}")));
+            surface.resized(300.0, 400.0, 1.0);
+            *surface.text_system.borrow_mut() = Some(cx.text_system().clone());
+            surface.start(
+                nsh_engine::EngineConfig::new(nsh_engine::App::Js(nsh_engine::Bundle::source(
+                    APP.into(),
+                ))),
+                false,
+            );
+            (surface, app)
+        });
+        wait(&surface, || {
+            find(&surface.root, "Touch target")
+                .is_some_and(|view| view.state().frame.size.width.0 > 0.0)
+        });
+        let owner = find(&surface.root, "Touch owner").unwrap();
+        let target = find(&surface.root, "Touch target").unwrap();
+        let outside = find(&surface.root, "Outside owner").unwrap();
+        let mouse = |kind| {
+            pointer(
+                &surface,
+                PointerEvent {
+                    kind,
+                    x: 20.0,
+                    y: 20.0,
+                    button: 0,
+                    pointer: 1,
+                    touch: false,
+                    pen: false,
+                    time: surface.clock(),
+                    modifiers: Modifiers::default(),
+                    clicks: 1,
+                },
+            )
+        };
+        mouse(PointerKind::Down);
+        wait(&surface, || surface.input.js_block.get());
+        surface.mounter.borrow_mut().apply(
+            &surface,
+            &MountItem::Insert {
+                parent: outside.id(),
+                child: target.id(),
+                before: None,
+            },
+        );
+        surface.mounter.borrow_mut().apply(
+            &surface,
+            &MountItem::RetireListCell {
+                id: owner.id(),
+                request: 1,
+                roots: vec![owner.id()],
+            },
+        );
+        wait(&surface, || !surface.input.js_block.get());
+        assert!(!owner.attached());
+        mouse(PointerKind::Move);
+        mouse(PointerKind::Up);
+        flush(&surface);
+        assert!(!surface.input.js_block.get());
+        surface.stop();
+    }
+
+    #[test]
     fn pointer_events() {
         let root = root();
         let a = view(&root, 2, ViewKind::View, rect(0.0, 0.0, 100.0, 100.0));
@@ -3278,11 +3576,11 @@ mod tests {
     #[test]
     fn cursors() {
         use nsh_core::Cursor as C;
-        assert_eq!(css_cursor(C::Auto, false), None);
-        assert_eq!(css_cursor(C::Auto, true), Some(Cursor::Hand));
-        assert_eq!(css_cursor(C::Default, true), Some(Cursor::Arrow));
-        assert_eq!(css_cursor(C::NotAllowed, false), Some(Cursor::NotAllowed));
-        assert_eq!(css_cursor(C::None, false), Some(Cursor::Hidden));
+        assert_eq!(css_cursor(C::Auto), None);
+        assert_eq!(css_cursor(C::Default), Some(Cursor::Arrow));
+        assert_eq!(css_cursor(C::Pointer), Some(Cursor::Hand));
+        assert_eq!(css_cursor(C::NotAllowed), Some(Cursor::NotAllowed));
+        assert_eq!(css_cursor(C::None), Some(Cursor::Hidden));
     }
 
     #[test]
@@ -3393,6 +3691,89 @@ mod tests {
             s.behavior.enabled = true;
         }
         (surface, scroll)
+    }
+
+    #[test]
+    fn retiring_a_dragged_row_keeps_its_surviving_ancestor_scroll() {
+        use nsh_core::{MountBatch, MountItem};
+
+        let surface = Surface::new(nsh_engine::Environment::default());
+        let apply = |batch: MountBatch| {
+            let mut mounter = surface.mounter.borrow_mut();
+            for item in &batch.items {
+                mounter.apply(&surface, item);
+            }
+            mounter.end_batch(&surface);
+        };
+        surface.root.state_mut().frame = rect(0.0, 0.0, 300.0, 400.0);
+        apply(MountBatch {
+            items: vec![
+                MountItem::Create {
+                    id: 2,
+                    kind: ViewKind::Scroll,
+                },
+                MountItem::Frame {
+                    id: 2,
+                    frame: rect(0.0, 0.0, 300.0, 400.0),
+                },
+                MountItem::Insert {
+                    parent: ROOT_ID,
+                    child: 2,
+                    before: None,
+                },
+                MountItem::ScrollContent {
+                    id: 2,
+                    size: nsh_core::geometry::size(Points(300.0), Points(2000.0)),
+                },
+                MountItem::Create {
+                    id: 4,
+                    kind: ViewKind::View,
+                },
+                MountItem::Frame {
+                    id: 4,
+                    frame: rect(0.0, 0.0, 300.0, 400.0),
+                },
+                MountItem::ProjectRoot {
+                    parent: 2,
+                    id: 4,
+                    following: vec![],
+                },
+            ],
+        });
+        let scroll = surface.view(2).unwrap();
+        let touch = |kind, y, time| {
+            pointer(
+                &surface,
+                PointerEvent {
+                    kind,
+                    x: 100.0,
+                    y,
+                    button: 0,
+                    pointer: 7,
+                    touch: true,
+                    pen: false,
+                    time,
+                    modifiers: Modifiers::default(),
+                    clicks: 1,
+                },
+            )
+        };
+        touch(PointerKind::Down, 100.0, 1.0);
+        touch(PointerKind::Move, 60.0, 1.1);
+        let before = offset(&scroll);
+        assert!(before > 0.0);
+        apply(MountBatch {
+            items: vec![MountItem::RetireListCell {
+                id: 4,
+                request: 1,
+                roots: vec![4],
+            }],
+        });
+        assert!(!surface.view(4).unwrap().attached());
+        touch(PointerKind::Move, 20.0, 1.2);
+        assert!(offset(&scroll) > before);
+        touch(PointerKind::Up, 20.0, 1.3);
+        assert!(surface.input.pointers.borrow().is_empty());
     }
 
     fn pad(surface: &Rc<Surface>, dy: f32, time: f64, phase: GesturePhase) {

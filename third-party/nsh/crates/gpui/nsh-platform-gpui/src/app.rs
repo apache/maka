@@ -149,6 +149,10 @@ pub struct AppOptions {
     /// system's data directory ([`nsh_engine::data_dir`]); an app that
     /// embeds nsh gives its own (its data directory + `/nsh`, say).
     pub data_dir: Option<PathBuf>,
+    /// Where the apps it runs keep their caches (the images they
+    /// downloaded) and how much each keeps: by default the system's cache
+    /// directory, each app's in `<dir>/<app id>`. See [`AppView::set_cache`].
+    pub cache: nsh_engine::CacheOptions,
     /// The apps' storage (`nsh/storage`), overriding the `storage.json` in
     /// their directory of [`data_dir`](Self::data_dir).
     pub storage: Option<Arc<dyn nsh_engine::StorageBackend>>,
@@ -157,6 +161,11 @@ pub struct AppOptions {
     /// functions read it with `nsh_core::ui::engine_context`, so each view
     /// reaches its own part of the embedding app.
     pub context: nsh_engine::EngineContext,
+    /// The embedding app's channel with the apps the view runs
+    /// (`nsh/host`): their launch parameters, events to them and handlers of
+    /// their calls and posts ([`AppView::host`]). One for every app the view
+    /// loads; a new one by default.
+    pub host: nsh_engine::HostChannel,
 }
 
 impl Default for AppOptions {
@@ -173,8 +182,10 @@ impl Default for AppOptions {
             fps: false,
             limits: Limits::default(),
             data_dir: None,
+            cache: Default::default(),
             storage: None,
             context: Default::default(),
+            host: nsh_engine::HostChannel::default(),
         }
     }
 }
@@ -266,13 +277,29 @@ impl AppView {
         crate::input::cancel_pointer(&self.surface);
     }
 
+    /// Delivers a user paste to the current editable input, reporting its
+    /// content before inserting text according to the input's paste policy.
+    /// Returns whether the focused input accepted the paste.
+    pub fn paste(&self, paste: nsh_core::PasteEvent) -> bool {
+        let Some(view) = crate::text_input::focused(&self.surface) else {
+            return false;
+        };
+        crate::text_input::paste_content(&self.surface, &view, paste)
+    }
+
     /// A view with no app yet (in `cx.new(|cx| AppView::new(...))`).
     pub fn new(options: AppOptions, window: &mut Window, cx: &mut Context<Self>) -> AppView {
         crate::rt::init(cx);
-        // The focused field's caret follows the window's activation
-        // (`text_input::window_focus`, checked as the view is drawn).
-        cx.observe_window_activation(window, |_, _, cx| cx.notify())
-            .detach();
+        // Revoke the native field's admission on activation changes even
+        // while terminal pixel output defers the next paint.
+        cx.observe_window_activation(window, |view: &mut AppView, window, cx| {
+            crate::text_input::window_focus(
+                &view.surface,
+                window.is_window_active() && view.focus.is_focused(window),
+            );
+            cx.notify();
+        })
+        .detach();
         bind_keys(cx);
         let surface = Surface::new(Environment {
             terminal_keyboard: options.terminal_keyboard,
@@ -326,11 +353,13 @@ impl AppView {
             ui_sets: ui_sets(),
             runtime: None,
             data_dir: options.data_dir.clone().or_else(nsh_engine::data_dir),
+            cache: options.cache.clone(),
             storage: options.storage.clone(),
             clock: Default::default(),
             context: options.context.clone(),
             pinned: Default::default(),
             clipboard: None,
+            host: options.host.clone(),
             picker: self.picker.borrow().clone(),
         };
         drop(options);
@@ -386,12 +415,29 @@ impl AppView {
         self.options.borrow_mut().asset_base = base;
     }
 
+    /// The channel with the apps this view runs (`nsh/host`;
+    /// [`AppOptions::host`]): set their launch parameters
+    /// ([`nsh_engine::HostChannel::set_params`], read when an app starts),
+    /// send them events ([`nsh_engine::HostChannel::send`]) and handle their
+    /// calls and posts ([`nsh_engine::HostChannel::handle`]; handlers run on
+    /// the engine thread). Any thread may use it.
+    pub fn host(&self) -> nsh_engine::HostChannel {
+        self.options.borrow().host.clone()
+    }
+
     /// The VM limits ([`AppOptions::limits`]) of the apps loaded from now
     /// on: the JS heap, the stack, the time budgets of loading and of every
     /// other call into JS, and the quotas (nodes, ops). The running app
     /// keeps the limits it was loaded with.
     pub fn set_limits(&self, limits: Limits) {
         self.options.borrow_mut().limits = limits;
+    }
+
+    /// Where the apps loaded from now on keep their caches (the images they
+    /// downloaded) and how much each keeps. The running app keeps the
+    /// caches it was loaded with.
+    pub fn set_cache(&self, cache: nsh_engine::CacheOptions) {
+        self.options.borrow_mut().cache = cache;
     }
 
     /// Answers the picks of the apps loaded from now on
@@ -662,6 +708,14 @@ impl Focusable for AppView {
 /// The surface's window input handler resolves the current native field for
 /// every text operation, including focus changes between paints.
 impl gpui::EntityInputHandler for AppView {
+    fn text_input_target(
+        &self,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<gpui::TextInputTarget> {
+        crate::text_input::ime::target(&self.surface)
+    }
+
     fn accepts_text_input(&self, window: &mut Window, _cx: &mut Context<Self>) -> bool {
         window.is_window_active()
             && self.focus.is_focused(window)

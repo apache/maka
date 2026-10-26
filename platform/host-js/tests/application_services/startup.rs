@@ -21,8 +21,8 @@ use super::*;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn failed_initial_start_keeps_independent_initializers_and_original_cleanup_custody() {
+    let (directory, namespaces, store) = store().await;
     tokio::time::timeout(Duration::from_secs(20), async {
-        let (directory, namespaces, store) = store().await;
         let provider = native_package();
         let consumer = consumer();
         let mut desired = input(&provider, &consumer);

@@ -177,14 +177,25 @@ async fn giant_bodies_and_metadata_do_not_block_stream_delivery() {
         },
     })
     .await;
-    let steered = append(Fact::MessageSteered {
-        source: None,
-        message: Box::new(maka_agent_facts::input::DeliveredMessage {
+    let steered = append({
+        let message = maka_agent_facts::input::DeliveredMessage {
             origin: None,
             message_id: "steering".into(),
             content: "s".repeat(64 * 1024).into(),
             submitted_content_digest: format!("sha256:{}", "b".repeat(64)),
-        }),
+        };
+        let mut unprepared_content = message.content.clone();
+        unprepared_content.preparation.clear();
+        Fact::MessageSteered {
+            source: Box::new(maka_agent_facts::message::RootSourceMessage {
+                message: message.clone(),
+                unprepared_content,
+                submitted_placement: maka_agent_facts::message::Placement::CurrentTurn,
+                disposition: maka_agent_facts::message::MessageDisposition::Steering,
+                submitted_intent: None,
+            }),
+            message: Box::new(message),
+        }
     })
     .await;
     append(request("second")).await;

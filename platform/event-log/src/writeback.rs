@@ -26,7 +26,7 @@ use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
 };
-use tokio::sync::{oneshot, watch};
+use tokio::sync::oneshot;
 
 pub(crate) trait Statement: Send + Sized + 'static {
     type Value: Send + 'static;
@@ -66,14 +66,14 @@ enum State<S: Statement> {
 pub(crate) struct Pending<S: Statement> {
     reusable_after_rollback: bool,
     state: State<S>,
-    commits: watch::Sender<u64>,
+    commits: crate::commits::CommitNotice,
     reply: oneshot::Sender<Result<S::Output, StoreError>>,
     failures: Arc<AtomicU64>,
 }
 impl<S: Statement> Pending<S> {
     pub(crate) fn new(
         statement: S,
-        commits: watch::Sender<u64>,
+        commits: crate::commits::CommitNotice,
         reply: oneshot::Sender<Result<S::Output, StoreError>>,
         failures: Arc<AtomicU64>,
     ) -> Self {
@@ -119,9 +119,9 @@ impl<S: Statement> Pending<S> {
             State::Prepared(prepared) if transaction.is_ok() => {
                 match prepared.notification {
                     Notification::None => {}
-                    Notification::Metadata => self.commits.send_modify(|_| {}),
+                    Notification::Metadata => self.commits.metadata(),
                     Notification::Sequence(sequence) => {
-                        self.commits.send_replace(sequence);
+                        self.commits.publish(sequence);
                     }
                 }
                 Ok(S::committed(prepared.value))

@@ -23,8 +23,9 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+bytes = "1.12.1"
 hex.workspace = true
-base64 = "0.22"
+base64 = "0.23.1"
 cap-fs-ext.workspace = true
 cap-std.workspace = true
 dunce = "1.0.5"
@@ -48,7 +49,7 @@ rusqlite = { workspace = true, features = ["functions"] }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
-rustix = { version = "1.1.4", features = ["fs"] }
+rustix = { version = "1.1.5", features = ["fs"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_Storage_FileSystem"] }

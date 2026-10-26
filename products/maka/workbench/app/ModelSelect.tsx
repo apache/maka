@@ -28,12 +28,15 @@ import {
   signal,
   Text,
   View,
+  List,
 } from 'nsh';
 import type { YNode } from 'nsh';
-import type { ThinkingLevel } from '../../../../packages/plugin-sdk/src/generated/runtime';
+import type {
+  ModelSelection,
+  ThinkingLevel,
+} from '../../../../packages/plugin-sdk/src/generated/runtime';
 import { Button, Popover } from 'nsh/base';
 import { keymap } from 'nsh/keymap';
-import { List } from 'nsh/list';
 import { platform, windowSize } from 'nsh/device';
 import { host } from './host';
 import { tr } from './locale';
@@ -80,7 +83,7 @@ export function ModelSelect(props: {
   toggle(target: ModelTarget): void;
   close(instance: number): boolean;
   select(instance: number, backend: ModelBackend): Promise<void>;
-  manage(target: { sessionId: string; instance: number }): void;
+  manage(target: { sessionId: string; instance: number; model?: ModelSelection }): void;
 }) {
   const owner = props.owner;
   let menu: ModelMenuHandle | null = null;
@@ -182,9 +185,13 @@ export function ModelSelect(props: {
               current={() => props.current() && props.instance() === instance}
               close={props.close}
               select={(backend) => props.select(instance, backend)}
-              manage={() => {
-                if (props.current() && props.instance() === instance)
-                  props.manage({ sessionId: owner.sessionId, instance });
+              manage={(model) => {
+                if (
+                  props.current() &&
+                  props.instance() === instance &&
+                  (!model || sameRoute(owner.backend(), model))
+                )
+                  props.manage({ sessionId: owner.sessionId, instance, model: model ?? undefined });
               }}
               attach={(handle) => {
                 menu = handle;
@@ -206,7 +213,7 @@ function ModelMenu(props: {
   current(): boolean;
   close(instance: number): boolean;
   select(backend: ModelBackend): Promise<void>;
-  manage(): void;
+  manage(model: ModelSelection | null): void;
   attach(handle: ModelMenuHandle): void;
   detach(handle: ModelMenuHandle): void;
 }) {
@@ -221,6 +228,7 @@ function ModelMenu(props: {
   const error = createText();
   let alive = true;
   let generation = 0;
+  let modelsQueued = false;
   let removeSearchKeys = () => {};
   let list: YNode | undefined;
   let focusIntent: 'model' | 'effort' | null = null;
@@ -319,48 +327,65 @@ function ModelMenu(props: {
     if (to === 'models') void loadModels(true);
   };
   const loadModels = async (restart = false) => {
-    if (!active() || (!restart && (loading() || !page()?.next))) return;
-    const reading = ++generation;
-    const search = query();
-    let changed = false;
+    if (!active() || pane() !== 'models' || (!restart && !page()?.next)) return;
     if (restart) {
-      page.set(null);
-      selected.set(0);
+      generation += 1;
+      batch(() => {
+        page.set(null);
+        selected.set(0);
+        error.set('');
+      });
     }
+    modelsQueued = true;
+    // Discarding a Promise cannot cancel admitted Host work. Keep one query
+    // in flight, then read the latest search or the next published page.
+    if (loading()) return;
     loading.set(true);
     error.set('');
     try {
       do {
-        const previousPage = page();
-        const result = await host.query(
-          'settings',
-          'models',
-          previousPage?.next
-            ? { kind: 'continue', revision: previousPage.revision, cursor: previousPage.next }
-            : { kind: 'start', query: search },
-        );
-        if (!active() || reading !== generation) return;
-        if (result.kind === 'changed') {
-          if (changed)
-            throw new UiError(
-              'The model catalog keeps changing. Retry to read the current choices.',
+        modelsQueued = false;
+        const reading = generation;
+        const search = query();
+        let changed = false;
+        try {
+          do {
+            const previousPage = page();
+            if (previousPage && !previousPage.next) break;
+            const result = await host.query(
+              'settings',
+              'models',
+              previousPage?.next
+                ? { kind: 'continue', revision: previousPage.revision, cursor: previousPage.next }
+                : { kind: 'start', query: search },
             );
-          changed = true;
-          page.set(null);
-          selected.set(0);
-          continue;
+            if (!active() || pane() !== 'models' || reading !== generation) break;
+            if (result.kind === 'changed') {
+              if (changed)
+                throw new UiError(
+                  'The model catalog keeps changing. Retry to read the current choices.',
+                );
+              changed = true;
+              page.set(null);
+              selected.set(0);
+              continue;
+            }
+            page.set({
+              revision: result.revision,
+              next: result.next,
+              choices: [...(previousPage?.choices ?? []), ...result.choices],
+            });
+            break;
+          } while (active() && pane() === 'models' && reading === generation);
+        } catch (reason) {
+          if (active() && pane() === 'models' && reading === generation) {
+            modelsQueued = false;
+            error.set(errorText(reason));
+          }
         }
-        page.set({
-          revision: result.revision,
-          next: result.next,
-          choices: [...(previousPage?.choices ?? []), ...result.choices],
-        });
-        break;
-      } while (active() && reading === generation);
-    } catch (reason) {
-      if (active() && reading === generation) error.set(errorText(reason));
+      } while (active() && pane() === 'models' && modelsQueued);
     } finally {
-      if (alive && reading === generation) loading.set(false);
+      if (alive) loading.set(false);
     }
   };
   const retry = ({ instance, from }: { instance: number; from: Pane }) => {
@@ -520,6 +545,22 @@ function ModelMenu(props: {
               }}
             >
               {effortCaption(owner.backend(), owner.modelDetails())}
+            </Text>
+            <Icon name="right" color={C.muted} />
+          </Button>
+        </If>
+        <If when={readyChoice()}>
+          <Button
+            disabled={pending()}
+            accessibilityLabel={tr('Edit current model settings')}
+            onPress={inputAction(props.manage, readyChoice()!.selection)}
+            style={{ ...controlStyle, flexDirection: 'row', alignItems: 'center', gap: 8 }}
+            hoverStyle={{ backgroundColor: C.raised }}
+            focusStyle={{ backgroundColor: C.raised }}
+            disabledStyle={controlDisabledStyle}
+          >
+            <Text style={{ ...captionTextStyle, color: C.secondary, flex: 1 }}>
+              {`${tr('Code Mode')} · ${tr('Apply Patch')}`}
             </Text>
             <Icon name="right" color={C.muted} />
           </Button>

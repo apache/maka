@@ -24,6 +24,9 @@ markdown.workspace = true
 html5ever.workspace = true
 markup5ever_rcdom.workspace = true
 regex.workspace = true
+ropey.workspace = true
+unicode-segmentation.workspace = true
+imara-diff.workspace = true
 log.workspace = true
 syntect = { workspace = true, optional = true }
 two-face = { workspace = true, optional = true }

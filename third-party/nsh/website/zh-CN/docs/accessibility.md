@@ -61,7 +61,7 @@ view()
 
 ### 角色
 
-角色（`.role(AccessibilityRole::Header)`、`role="header"`）告诉用户这是哪一类元素、如何操作。在 Rust 中它是 `AccessibilityRole` 的一个变体（`Button`、`Header`、`Switch` 等）；TSX 的取值有 `"none"`、`"button"`、`"link"`、`"search"`、`"image"`、`"imagebutton"`、`"keyboardkey"`、`"text"`、`"adjustable"`、`"header"`、`"summary"`、`"alert"`、`"checkbox"`、`"combobox"`、`"menu"`、`"menubar"`、`"menuitem"`、`"progressbar"`、`"radio"`、`"radiogroup"`、`"scrollbar"`、`"spinbutton"`、`"switch"`、`"tab"`、`"tablist"`、`"timer"`、`"toolbar"`、`"list"` 和 `"grid"`。
+角色（`.role(AccessibilityRole::Header)`、`role="header"`）告诉用户这是哪一类元素、如何操作。在 Rust 中它是 `AccessibilityRole` 的一个变体（`Button`、`Header`、`Switch` 等）；TSX 的取值有 `"none"`、`"button"`、`"link"`、`"search"`、`"image"`、`"imagebutton"`、`"keyboardkey"`、`"text"`、`"adjustable"`、`"header"`、`"summary"`、`"alert"`、`"checkbox"`、`"combobox"`、`"menu"`、`"menubar"`、`"menuitem"`、`"progressbar"`、`"radio"`、`"radiogroup"`、`"scrollbar"`、`"spinbutton"`、`"switch"`、`"tab"`、`"tablist"`、`"timer"`、`"toolbar"`、`"list"`、`"grid"`、`"table"`、`"rowgroup"`、`"row"`、`"columnheader"` 和 `"cell"`（[`Table`](../elements/table.md) 各部件的角色）。
 
 最常用的几个：
 

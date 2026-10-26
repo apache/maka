@@ -24,11 +24,12 @@ use maka_agent_facts::{
 };
 
 async fn events_since(fixture: &Fixture, session: &str, mut after: u64) -> Vec<StoredEvent> {
-    let through = *fixture.store.subscribe_commits().borrow();
+    let through = fixture.through(session).await;
     let mut events = Vec::new();
     while after < through {
         let page = fixture
-            .store
+            .session(session)
+            .await
             .session_events(session, after, through, 512, 1024 * 1024)
             .await
             .unwrap();
@@ -58,7 +59,8 @@ fn settled_result(prompt: &Value) -> Value {
 async fn unchanged_sources(fixture: &Fixture, session: &str, sources: &[RunBoundary]) {
     for source in sources {
         let unchanged = fixture
-            .store
+            .session(session)
+            .await
             .run_source(session, &source.invocation.run_id, None)
             .await
             .unwrap()
@@ -108,8 +110,8 @@ async fn resume_repeated_cancellations_preserves_settled_effects() {
             Fact::ToolDispatched { .. })).count(), 1);
         assert_eq!(initial.iter().filter(|stored| matches!(stored.event.fact,
             Fact::ToolSettled { outcome: ToolOutcome::Succeeded { .. }, .. })).count(), 1);
-        let (root, _) = fixture.store.invocation_boundary(&session, &source_id).await.unwrap().unwrap();
-        let frozen_configuration = fixture.store.invocation_configuration(&root.invocation)
+        let (root, _) = fixture.session(&session).await.invocation_boundary(&session, &source_id).await.unwrap().unwrap();
+        let frozen_configuration = fixture.session(&(root.invocation).session_id).await.invocation_configuration(&root.invocation)
             .await.unwrap().unwrap();
         let mut sources = Vec::new();
         for ordinal in 1..=66 {
@@ -117,9 +119,9 @@ async fn resume_repeated_cancellations_preserves_settled_effects() {
                 "sessionId":session,"invocationId":source_id
             })).await.unwrap();
             assert_eq!(execution["execution"]["state"], "cancelled");
-            let (physical, high_water) = fixture.store.invocation_boundary(&session, &source_id)
+            let (physical, high_water) = fixture.session(&session).await.invocation_boundary(&session, &source_id)
                 .await.unwrap().unwrap();
-            let source = fixture.store.run_source(&session, &physical.invocation.run_id, None)
+            let source = fixture.session(&session).await.run_source(&session, &physical.invocation.run_id, None)
                 .await.unwrap().unwrap();
             assert_eq!(source.boundary.invocation, physical.invocation);
             assert_eq!(source.boundary.invocation.invocation_id, source_id);
@@ -127,12 +129,12 @@ async fn resume_repeated_cancellations_preserves_settled_effects() {
             assert_eq!(execution["execution"]["highWater"], high_water);
             assert!(matches!(source.last.event.fact,
                 Fact::InvocationEnded { outcome: InvocationOutcome::Cancelled { .. } }));
-            assert_eq!(fixture.store.invocation_configuration(&source.boundary.invocation)
+            assert_eq!(fixture.session(&(source.boundary.invocation).session_id).await.invocation_configuration(&source.boundary.invocation)
                 .await.unwrap().unwrap(), frozen_configuration);
             sources.push(source.boundary.clone());
             // A stricter public read proves replay fits well below production's
             // allowance, without reproducing private byte-accounting logic.
-            let context = fixture.store.read_lineage_context(&source.boundary, 1_000, 1024 * 1024)
+            let context = fixture.session(&(source.boundary).invocation.session_id).await.capture_lineage_context(&source.boundary, 1_000, 1024 * 1024)
                 .await.unwrap();
             assert!(context.baseline.is_none());
             let context_events = context.tail.len() + usize::from(context.anchor.is_some());
@@ -150,7 +152,7 @@ async fn resume_repeated_cancellations_preserves_settled_effects() {
                 "effects":counter.effects.load(Ordering::SeqCst)});
             if !started {
                 unchanged_sources(&fixture, &session, &sources).await;
-                assert!(fixture.store.continuation_for_source(&source.boundary).await.unwrap().is_none());
+                assert!(fixture.session(&(source.boundary).invocation.session_id).await.continuation_for_source(&source.boundary).await.unwrap().is_none());
                 let after = events_since(&fixture, &session, source.last.sequence).await;
                 assert!(!after.iter().any(|stored| matches!(stored.event.fact,
                     Fact::InvocationOpened { .. } | Fact::ModelRequested { .. } | Fact::ToolDispatched { .. }
@@ -190,15 +192,15 @@ async fn resume_repeated_cancellations_preserves_settled_effects() {
             })).await.unwrap();
             assert_eq!(execution["execution"]["state"],
                 if ordinal == 66 { "completed" } else { "cancelled" });
-            let next = fixture.store.run_source(&session, next_run, None).await.unwrap().unwrap();
+            let next = fixture.session(&session).await.run_source(&session, next_run, None).await.unwrap().unwrap();
             assert_eq!(next.boundary.invocation.invocation_id, next_id);
             assert_eq!(execution["execution"]["highWater"], next.boundary.high_water);
-            assert_eq!(fixture.store.invocation_configuration(&next.boundary.invocation)
+            assert_eq!(fixture.session(&(next.boundary.invocation).session_id).await.invocation_configuration(&next.boundary.invocation)
                 .await.unwrap().unwrap(), frozen_configuration);
             let Fact::InvocationOpened { input: InvocationInput::Continuation { claim, .. }, .. }
                 = &next.opening.event.fact else { panic!("resume did not acquire a Continuation"); };
             assert_eq!(claim.source, source.boundary);
-            let claimed = fixture.store.continuation_for_source(&source.boundary).await.unwrap().unwrap();
+            let claimed = fixture.session(&(source.boundary).invocation.session_id).await.continuation_for_source(&source.boundary).await.unwrap().unwrap();
             assert_eq!(claimed.event, next.opening.event);
             let after = events_since(&fixture, &session, source.last.sequence).await;
             assert!(after.iter().all(|stored| stored.event.invocation == next.boundary.invocation));
@@ -216,7 +218,7 @@ async fn resume_repeated_cancellations_preserves_settled_effects() {
                 assert!(matches!(next.last.event.fact,
                     Fact::InvocationEnded { outcome: InvocationOutcome::Completed }));
             }
-            let unchanged = fixture.store.run_source(&session, &source.boundary.invocation.run_id, None)
+            let unchanged = fixture.session(&session).await.run_source(&session, &source.boundary.invocation.run_id, None)
                 .await.unwrap().unwrap();
             assert_eq!(unchanged.boundary, source.boundary);
             assert_eq!(counter.effects.load(Ordering::SeqCst), 1);

@@ -22,11 +22,10 @@ use super::{SourceEvidence, invalid};
 use crate::{StoreError, sequence_number};
 use sqlx::SqliteConnection;
 
-mod scan;
-pub(crate) use scan::register;
+mod roots;
+pub(crate) use roots::register;
 
-/// The same scoped digest as complete prefix(), without retaining source rows.
-/// Even a single old giant observation is hashed in bounded SQL BLOB slices.
+/// The same scoped identity as complete prefix(), using committed source progress.
 pub(super) async fn evidence(
     connection: &mut SqliteConnection,
     session: &str,
@@ -51,42 +50,30 @@ pub(crate) async fn selected(
     })
 }
 
-/// Hash one exact selection once for strictly increasing source boundaries.
+/// Resolve exact selected source boundaries from indexed durable prefixes.
 /// Each boundary must select a complete row (or the empty prefix at zero).
-/// Only hash states and digest strings are retained, never the source payloads.
 pub(super) async fn digests(
     connection: &mut SqliteConnection,
     selection: &Selection,
     throughs: &[u64],
 ) -> Result<Vec<String>, StoreError> {
-    Ok(scan(connection, selection, throughs, None).await?.0)
-}
-
-pub(super) async fn scan(
-    connection: &mut SqliteConnection,
-    selection: &Selection,
-    throughs: &[u64],
-    raw: Option<&super::cache::Raw>,
-) -> Result<(Vec<String>, Option<super::cache::Raw>), StoreError> {
-    if throughs.is_empty() {
-        return Ok((Vec::new(), None));
+    let mut result = Vec::with_capacity(throughs.len());
+    let scope = serde_json::to_vec(&selection.scope)?;
+    for through in throughs {
+        let cut = i64::try_from(*through).map_err(|_| invalid("source cut overflow"))?;
+        let digest: String = sqlx::query_scalar("SELECT context_source_identity(?,?,?,?)")
+            .bind(&selection.session)
+            .bind(&selection.lineage)
+            .bind(&scope)
+            .bind(cut)
+            .fetch_one(&mut *connection)
+            .await?;
+        result.push(
+            serde_json::from_str::<Result<String, String>>(&digest)?
+                .map_err(StoreError::InvalidTransition)?,
+        );
     }
-    let session = selection
-        .session
-        .as_deref()
-        .ok_or_else(|| invalid("context requires a Session"))?;
-    let result: String = sqlx::query_scalar("SELECT context_source_digests(?, ?, ?, ?, ?)")
-        .bind(session)
-        .bind(&selection.lineage)
-        .bind(serde_json::to_vec(&selection.scope)?)
-        .bind(serde_json::to_string(throughs)?)
-        .bind(raw.map(serde_json::to_string).transpose()?)
-        .fetch_one(connection)
-        .await?;
-    let (digests, raw) =
-        serde_json::from_str::<Result<(Vec<String>, super::cache::Raw), String>>(&result)?
-            .map_err(StoreError::InvalidTransition)?;
-    Ok((digests, Some(raw)))
+    Ok(result)
 }
 
 pub(super) async fn high_water(

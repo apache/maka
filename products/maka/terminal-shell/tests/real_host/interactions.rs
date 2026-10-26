@@ -19,7 +19,7 @@
 
 use super::{shortcut, support, tab_to_label, wait_enabled_node, wait_focused_input};
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
-use maka_agent_api::session::SessionConfiguration;
+use maka_agent_api::session::StoredSessionConfiguration;
 use maka_agent_facts::interaction::{Decision, InteractionOutcome, InteractionRecord};
 use maka_app_client::{Client, Operation};
 use maka_plugin_core::operation::{OperationOutcome, Receipt};
@@ -33,12 +33,28 @@ const PRIVATE_NOTE: &str = "PRIVATE_FORM_VALUE_门口";
 async fn publish(fixture: &Fixture, id: &str, mut request: Value) -> InteractionRecord {
     let projection = fixture
         .store
-        .session_projection::<SessionConfiguration>(&fixture.session)
+        .session(&fixture.session)
+        .await
+        .unwrap()
+        .session_projection::<StoredSessionConfiguration>(&fixture.session)
         .await
         .unwrap()
         .unwrap();
     if request["kind"] == "client_capability" {
-        request["baseRevision"] = json!(projection.session.configuration.boundary_revision);
+        let configuration = &projection.session.configuration;
+        let binding = projection
+            .session
+            .workspace_binding
+            .as_ref()
+            .unwrap()
+            .stamp();
+        request["basis"] = json!(maka_agent_facts::workspace::PermissionBasis {
+            boundary_revision: configuration
+                .workspace
+                .boundary_revision(configuration.boundary_revision, binding)
+                .unwrap(),
+            binding,
+        });
     }
     // Use the live physical Run, including its invocation identity, rather than
     // the stable logical Turn identity used to present continuations.
@@ -55,6 +71,9 @@ async fn publish(fixture: &Fixture, id: &str, mut request: Value) -> Interaction
     .unwrap();
     let established = fixture
         .store
+        .session(&fixture.session)
+        .await
+        .unwrap()
         .establish_run_interaction(&invocation, &record)
         .await
         .unwrap();
@@ -222,15 +241,15 @@ async fn computer_consent_keeps_the_original_target_boundary_and_single_click_re
                 && screen.contains("Permission boundary: 0")
         }).await;
         assert!(view.accessibility_snapshot().iter().any(|node| node.label == format!("Session: {}", fixture.session)));
-        assert!(fixture.store.interaction(&denied.request_id).await.unwrap().unwrap().outcome.is_none());
+        assert!(fixture.store.session(&fixture.session).await.unwrap().interaction(&denied.request_id).await.unwrap().unwrap().outcome.is_none());
         assert!(client.pending_controls().await.unwrap().is_empty());
 
         wait_enabled_node(&mut view, "Deny").await;
         support::click_button(&mut view, "Deny").await;
         wait_view(&mut view, |screen| screen.contains("Capability denied")).await;
-        assert!(matches!(fixture.store.interaction(&denied.request_id).await.unwrap().unwrap().outcome, Some(InteractionOutcome::ClientCapabilityDecision { decision: Decision::Deny, .. })));
+        assert!(matches!(fixture.store.session(&fixture.session).await.unwrap().interaction(&denied.request_id).await.unwrap().unwrap().outcome, Some(InteractionOutcome::ClientCapabilityDecision { decision: Decision::Deny, .. })));
         let target = maka_workspace_api::computer::target();
-        assert!(fixture.store.client_capability_grant(&fixture.session, &target).await.unwrap().is_none());
+        assert!(fixture.store.session(&fixture.session).await.unwrap().client_capability_grant(&fixture.session, &target).await.unwrap().is_none());
         wait_view(&mut view, |screen| !screen.contains("Capability request")).await;
 
         let allowed = publish(&fixture, "native_computer_allow", computer_request()).await;
@@ -244,31 +263,32 @@ async fn computer_consent_keeps_the_original_target_boundary_and_single_click_re
             screen.contains("Confirming action")
                 && !view.accessibility_snapshot().iter().any(|node| node.label == "Pending request")
         }).await;
-        let canonical = fixture.store.interaction(&allowed.request_id).await.unwrap().unwrap();
+        let canonical = fixture.store.session(&fixture.session).await.unwrap().interaction(&allowed.request_id).await.unwrap().unwrap();
         assert!(matches!(canonical.outcome, Some(InteractionOutcome::ClientCapabilityDecision { decision: Decision::Allow, .. })));
-        let grant = fixture.store.client_capability_grant(&fixture.session, &target).await.unwrap().unwrap();
+        let grant = fixture.store.session(&fixture.session).await.unwrap().client_capability_grant(&fixture.session, &target).await.unwrap().unwrap();
         assert_eq!(grant.session_id, fixture.session);
         assert_eq!(grant.target, target);
-        assert_eq!(grant.base_revision, Some(0));
+        assert_eq!(grant.basis.unwrap().boundary_revision, 0);
+        assert_eq!(serde_json::to_value(grant.basis).unwrap(), serde_json::to_value(&allowed.request).unwrap()["basis"]);
         gate.release();
         wait_view(&mut view, |screen| screen.contains("Capability allowed")).await;
         assert_response_receipt(&client, &original, &canonical).await;
 
         let roots = client.query("agent", "directories", json!({"kind":"roots"})).await.unwrap();
         let other = support::mutate(&client, "create", json!({"title":"Other consent owner","labels":[],"workspace":{"kind":"directory","selection":roots["roots"][0]["selection"]}})).await;
-        assert!(fixture.store.client_capability_grant(other["session"]["id"].as_str().unwrap(), &target).await.unwrap().is_none());
+        assert!(fixture.store.session(other["session"]["id"].as_str().unwrap()).await.unwrap().client_capability_grant(other["session"]["id"].as_str().unwrap(), &target).await.unwrap().is_none());
         let mut other_provider = target.clone();
         other_provider.provider_id = "other_computer_provider".into();
-        assert!(fixture.store.client_capability_grant(&fixture.session, &other_provider).await.unwrap().is_none());
-        let before = fixture.store.get_session::<SessionConfiguration>(&fixture.session).await.unwrap().unwrap();
+        assert!(fixture.store.session(&fixture.session).await.unwrap().client_capability_grant(&fixture.session, &other_provider).await.unwrap().is_none());
+        let before = fixture.store.get_session::<StoredSessionConfiguration>(&fixture.session).await.unwrap().unwrap();
         let changed = support::mutate(&client, "metadata", json!({
             "sessionId":fixture.session,"expectedRevision":before.revision,
             "title":before.configuration.title,"labels":before.configuration.labels,
             "permissions":{"settings":before.configuration.permissions,"revokeGrants":true}
         })).await;
         assert_eq!(changed["kind"], "committed");
-        assert!(fixture.store.client_capability_grant(&fixture.session, &target).await.unwrap().is_none());
-        assert_eq!(fixture.store.interaction(&allowed.request_id).await.unwrap().unwrap(), canonical);
+        assert!(fixture.store.session(&fixture.session).await.unwrap().client_capability_grant(&fixture.session, &target).await.unwrap().is_none());
+        assert_eq!(fixture.store.session(&fixture.session).await.unwrap().interaction(&allowed.request_id).await.unwrap().unwrap(), canonical);
         assert_eq!(fixture.request_count.load(Ordering::SeqCst), 1, "consent must not send another model request");
         request.finish().await;
         fixture.idle(&client, &fixture.session).await;
@@ -327,7 +347,7 @@ async fn inline_questions_keep_their_draft_and_submit_only_from_the_request_seat
         assert_eq!(view.surface().input_context().unwrap().text.as_deref(), Some("The message draft remains separate"));
         view.handle_event(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL)));
         commit_input(&mut view).await;
-        assert!(fixture.store.interaction(&question.request_id).await.unwrap().unwrap().outcome.is_none());
+        assert!(fixture.store.session(&fixture.session).await.unwrap().interaction(&question.request_id).await.unwrap().unwrap().outcome.is_none());
         assert!(client.pending_controls().await.unwrap().is_empty());
         assert_eq!(fixture.request_count.load(Ordering::SeqCst), 1);
 
@@ -335,7 +355,7 @@ async fn inline_questions_keep_their_draft_and_submit_only_from_the_request_seat
         support::click_button(&mut view, "Submit answers").await;
         await_response_gate(&mut view, &gate).await;
         let original = original_response(&client, &question.request_id).await;
-        let canonical = fixture.store.interaction(&question.request_id).await.unwrap().unwrap();
+        let canonical = fixture.store.session(&fixture.session).await.unwrap().interaction(&question.request_id).await.unwrap().unwrap();
         assert_eq!(serde_json::to_value(&canonical).unwrap()["outcome"]["answers"], json!([original_answer, null]));
         wait_request(&mut view, "Capability request", "Computer access for this session").await;
         assert!(view.accessibility_snapshot().iter().any(|node| node.role == nsh_core::AccessibilityRole::Button && node.label == "Allow" && node.state.disabled));
@@ -350,7 +370,7 @@ async fn inline_questions_keep_their_draft_and_submit_only_from_the_request_seat
         wait_enabled_node(&mut view, "Deny").await;
         support::click_button(&mut view, "Deny").await;
         wait_view(&mut view, |screen| screen.contains("Capability denied")).await;
-        assert!(matches!(fixture.store.interaction(&next.request_id).await.unwrap().unwrap().outcome, Some(InteractionOutcome::ClientCapabilityDecision { decision: Decision::Deny, .. })));
+        assert!(matches!(fixture.store.session(&fixture.session).await.unwrap().interaction(&next.request_id).await.unwrap().unwrap().outcome, Some(InteractionOutcome::ClientCapabilityDecision { decision: Decision::Deny, .. })));
         assert_eq!(fixture.request_count.load(Ordering::SeqCst), 1);
         request.finish().await;
         fixture.idle(&client, &fixture.session).await;
@@ -383,7 +403,7 @@ async fn structured_form_defaults_omission_validation_masking_and_receipt_are_re
         assert!(view.accessibility_snapshot().iter().any(|node| node.role == nsh_core::AccessibilityRole::Button && node.label == "Submit form" && node.state.disabled));
         view.handle_event(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL)));
         commit_input(&mut view).await;
-        assert!(fixture.store.interaction(&record.request_id).await.unwrap().unwrap().outcome.is_none());
+        assert!(fixture.store.session(&fixture.session).await.unwrap().interaction(&record.request_id).await.unwrap().unwrap().outcome.is_none());
         assert!(client.pending_controls().await.unwrap().is_empty());
         shortcut(&mut view, 'a');
         view.handle_event(Event::Paste("1.25".into()));
@@ -433,7 +453,7 @@ async fn structured_form_defaults_omission_validation_masking_and_receipt_are_re
         support::click_button(&mut view, "Submit form").await;
         await_response_gate(&mut view, &gate).await;
         let original = original_response(&client, &record.request_id).await;
-        let canonical = fixture.store.interaction(&record.request_id).await.unwrap().unwrap();
+        let canonical = fixture.store.session(&fixture.session).await.unwrap().interaction(&record.request_id).await.unwrap().unwrap();
         let encoded = serde_json::to_value(&canonical).unwrap();
         assert_eq!(encoded["outcome"]["action"], "accept");
         assert_eq!(encoded["outcome"]["values"], json!({
@@ -471,12 +491,12 @@ async fn the_production_pty_leaves_requests_unanswered_then_records_cancel_and_d
         terminal.click_text("Physical form decision");
         terminal.send(b"\x1b");
         terminal.wait_for("Physical form decision").await;
-        assert!(fixture.store.interaction(&cancelled.request_id).await.unwrap().unwrap().outcome.is_none());
+        assert!(fixture.store.session(&fixture.session).await.unwrap().interaction(&cancelled.request_id).await.unwrap().unwrap().outcome.is_none());
         assert!(client.pending_controls().await.unwrap().is_empty());
         terminal.wait_for("Cancel request").await;
         terminal.click_text("Cancel request");
         terminal.wait_for("Form cancelled").await;
-        assert_eq!(serde_json::to_value(fixture.store.interaction(&cancelled.request_id).await.unwrap().unwrap()).unwrap()["outcome"]["action"], "cancel");
+        assert_eq!(serde_json::to_value(fixture.store.session(&fixture.session).await.unwrap().interaction(&cancelled.request_id).await.unwrap().unwrap()).unwrap()["outcome"]["action"], "cancel");
         terminal.wait_for_absent("Form request").await;
 
         let declined = publish(&fixture, "physical_form_decline", prompt).await;
@@ -484,7 +504,7 @@ async fn the_production_pty_leaves_requests_unanswered_then_records_cancel_and_d
         terminal.wait_for("Decline").await;
         terminal.click_text("Decline");
         let screen = terminal.wait_for("Form declined").await;
-        assert_eq!(serde_json::to_value(fixture.store.interaction(&declined.request_id).await.unwrap().unwrap()).unwrap()["outcome"]["action"], "decline");
+        assert_eq!(serde_json::to_value(fixture.store.session(&fixture.session).await.unwrap().interaction(&declined.request_id).await.unwrap().unwrap()).unwrap()["outcome"]["action"], "decline");
         support::evidence("production-pty-form-declined", &screen);
         terminal.wait_for_absent("Form request").await;
         assert_eq!(fixture.request_count.load(Ordering::SeqCst), 1);

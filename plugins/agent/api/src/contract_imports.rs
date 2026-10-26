@@ -201,7 +201,6 @@ pub enum ImportsPage {
     Changed,
     Unavailable,
     Invalid,
-    Limit,
 }
 #[derive(Deserialize, JsonSchema)]
 #[serde(
@@ -247,5 +246,4 @@ pub enum ImportResult {
     Changed,
     Unavailable,
     Invalid,
-    Limit,
 }

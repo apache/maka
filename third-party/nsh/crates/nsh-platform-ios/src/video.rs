@@ -6,7 +6,9 @@
 use std::{cell::Cell, ffi::CStr, ptr::NonNull, rc::Rc, sync::OnceLock};
 
 use block2::RcBlock;
-use nsh_core::{EventKind, EventPayload, NodeId, PayloadValue, ResizeMode, VideoProps};
+use nsh_core::{
+    AudioSession, EventKind, EventPayload, NodeId, PayloadValue, ResizeMode, VideoProps,
+};
 use nsh_engine::EngineControl;
 use objc2::{
     Encode, Encoding, MainThreadMarker, msg_send,
@@ -78,6 +80,137 @@ fn class(name: &CStr) -> Option<&'static AnyClass> {
     AnyClass::get(name)
 }
 
+/// The audio session's category, mode and options (`AVAudioSession`).
+type Category = (Retained<NSString>, Retained<NSString>, usize);
+
+/// What `session` sets: Apple's `playback` category in the `spokenAudio`
+/// mode, mixing with other apps' audio for `MixWithOthers`. `Default`
+/// sets nothing: the app's (or the embedding app's) session stays.
+fn audio_category(session: AudioSession) -> Option<Category> {
+    // AVAudioSessionCategoryOptionMixWithOthers is 1.
+    let options = match session {
+        AudioSession::Default => return None,
+        AudioSession::Playback => 0,
+        AudioSession::MixWithOthers => 1,
+    };
+    Some((
+        NSString::from_str("AVAudioSessionCategoryPlayback"),
+        NSString::from_str("AVAudioSessionModeSpokenAudio"),
+        options,
+    ))
+}
+
+/// The videos of this (main) thread that play with an audio session of
+/// their own, and what the session was before the first of them.
+#[derive(Default)]
+struct AudioSessions {
+    /// Playing videos (their [`VideoHost::audio_key`]) and their sessions.
+    playing: Vec<(u64, AudioSession)>,
+    /// What the session is set to for them, and what it was before.
+    applied: Option<(AudioSession, Category)>,
+}
+
+thread_local! {
+    static AUDIO: std::cell::RefCell<AudioSessions> = std::cell::RefCell::default();
+}
+
+/// Video `key` plays with `session` (`Some`), or plays no more: the shared
+/// audio session follows the playing videos. While one that does not mix
+/// plays, it is `Playback`, else `MixWithOthers`; once none plays, the
+/// session is set back to what it was and deactivated, telling the apps it
+/// interrupted that they may play again.
+fn audio_playing(key: u64, session: Option<AudioSession>) {
+    AUDIO.with(|audio| {
+        let mut audio = audio.borrow_mut();
+        audio.playing.retain(|&(k, _)| k != key);
+        if let Some(session) = session.filter(|s| *s != AudioSession::Default) {
+            audio.playing.push((key, session));
+        }
+        let wanted = if audio.playing.is_empty() {
+            None
+        } else if audio.playing.iter().any(|&(_, s)| s == AudioSession::Playback) {
+            Some(AudioSession::Playback)
+        } else {
+            Some(AudioSession::MixWithOthers)
+        };
+        if wanted == audio.applied.as_ref().map(|(s, _)| *s) {
+            return;
+        }
+        let Some(shared) = shared_audio_session() else {
+            return;
+        };
+        match wanted {
+            Some(session) => {
+                let before = match audio.applied.take() {
+                    Some((_, before)) => before,
+                    None => current_category(&shared),
+                };
+                let set = audio_category(session).is_some_and(|c| set_category(&shared, &c));
+                // SAFETY: AVAudioSession's documented API.
+                let active = set && unsafe {
+                    let mut error: *mut AnyObject = std::ptr::null_mut();
+                    let ok: Bool = msg_send![&shared, setActive: Bool::YES, error: &mut error];
+                    ok.as_bool()
+                };
+                if !active {
+                    log::error!("cannot set and activate the audio session for a video");
+                }
+                audio.applied = Some((session, before));
+            }
+            None => {
+                let Some((_, before)) = audio.applied.take() else {
+                    return;
+                };
+                // SAFETY: AVAudioSession's documented API;
+                // AVAudioSessionSetActiveOptionNotifyOthersOnDeactivation is 1.
+                unsafe {
+                    let mut error: *mut AnyObject = std::ptr::null_mut();
+                    let _: Bool = msg_send![&shared, setActive: Bool::NO, withOptions: 1usize, error: &mut error];
+                }
+                if !set_category(&shared, &before) {
+                    log::error!("cannot restore the audio session after a video");
+                }
+            }
+        }
+    });
+}
+
+fn shared_audio_session() -> Option<Retained<AnyObject>> {
+    let cls = class(c"AVAudioSession")?;
+    // SAFETY: AVAudioSession's documented API.
+    Some(unsafe { msg_send![cls, sharedInstance] })
+}
+
+/// The session's category, mode and options now.
+fn current_category(shared: &AnyObject) -> Category {
+    // SAFETY: AVAudioSession's documented getters.
+    unsafe {
+        (
+            msg_send![shared, category],
+            msg_send![shared, mode],
+            msg_send![shared, categoryOptions],
+        )
+    }
+}
+
+fn set_category(shared: &AnyObject, (category, mode, options): &Category) -> bool {
+    let mut error: *mut AnyObject = std::ptr::null_mut();
+    // SAFETY: AVAudioSession's documented API.
+    let ok: Bool = unsafe {
+        msg_send![
+            shared,
+            setCategory: &**category,
+            mode: &**mode,
+            options: *options,
+            error: &mut error,
+        ]
+    };
+    ok.as_bool()
+}
+
+/// The keys of [`audio_playing`], one per video host.
+static NEXT_AUDIO_KEY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
 /// What the player has reported so far.
 #[derive(Default)]
 struct Status {
@@ -100,6 +233,8 @@ pub(crate) struct VideoHost {
     status: Rc<Status>,
     props: VideoProps,
     repeat: Rc<Cell<bool>>,
+    /// Its key in [`audio_playing`].
+    audio_key: u64,
 }
 
 impl VideoHost {
@@ -124,6 +259,7 @@ impl VideoHost {
             status: Rc::default(),
             props: VideoProps::default(),
             repeat: Rc::default(),
+            audio_key: NEXT_AUDIO_KEY.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         }
     }
 
@@ -182,6 +318,9 @@ impl VideoHost {
                 let _: () = msg_send![controller, setVideoGravity: &*gravity];
             }
         }
+        // The audio session follows what plays, not what is mounted.
+        let playing = self.player.is_some() && !p.paused;
+        audio_playing(self.audio_key, playing.then_some(p.audio_session));
         self.props = p;
     }
 
@@ -202,9 +341,14 @@ impl VideoHost {
         // SAFETY: AVPlayer's documented API.
         let item: Option<Retained<AnyObject>> = unsafe { msg_send![&player, currentItem] };
         let (control, id, repeat) = (self.control.clone(), self.id, self.repeat.clone());
+        let audio_key = self.audio_key;
         let weak_player = objc2::rc::Weak::from_retained(&player);
         let block = RcBlock::new(move |_: NonNull<NSNotification>| {
             control.dispatch_event(id, EventKind::End, EventPayload::None);
+            if !repeat.get() {
+                // It stopped: the other apps' audio may play again.
+                audio_playing(audio_key, None);
+            }
             if repeat.get()
                 && let Some(player) = weak_player.load()
             {
@@ -237,6 +381,7 @@ impl VideoHost {
     }
 
     fn close(&mut self) {
+        audio_playing(self.audio_key, None);
         if let (Some(player), Some(token)) = (&self.player, self.time_observer.take()) {
             // SAFETY: removes the observer this host added.
             let _: () = unsafe { msg_send![player, removeTimeObserver: &*token] };

@@ -46,7 +46,7 @@ fn progress_entry(provider: bool, implementation: Implementation) -> EntryDeclar
     result
 }
 async fn launch_progress(
-    store: Arc<EventLog>,
+    store: Arc<RootStore>,
     issuer: &Issuer,
     handler: Option<Arc<dyn Handler>>,
     realm: Realm,
@@ -178,7 +178,9 @@ async fn javascript_mutations_stream_before_receipt_and_replay_only_original_out
             let reference = mutation.reference.clone();
             assert_eq!(mutation.recv().await, Some(json!(0)));
             let original = store
-                .operation_observation(&reference)
+                .operation(&reference)
+                .unwrap()
+                .operation_observation()
                 .await
                 .unwrap()
                 .unwrap();
@@ -233,8 +235,8 @@ async fn javascript_mutations_stream_before_receipt_and_replay_only_original_out
 
 #[tokio::test]
 async fn mutation_progress_validates_separately_and_retained_emit_cannot_outlive_callback() {
+    let (_dir, _ns, store) = store().await;
     tokio::time::timeout(Duration::from_secs(20), async {
-        let (_dir, _ns, store) = store().await;
         let issuer = Issuer::default();
         let retained = Arc::new(Mutex::new(None));
         let captured = retained.clone();
@@ -287,8 +289,8 @@ async fn mutation_progress_validates_separately_and_retained_emit_cannot_outlive
 
 #[tokio::test]
 async fn dropping_mutation_progress_closes_demand_without_cancelling_or_settling_effect() {
+    let (_dir, _ns, store) = store().await;
     tokio::time::timeout(Duration::from_secs(20), async {
-        let (_dir, _ns, store) = store().await;
         let issuer = Issuer::default();
         let release = Arc::new(Semaphore::new(0));
         let finished = Arc::new(Semaphore::new(0));
@@ -324,7 +326,9 @@ async fn dropping_mutation_progress_closes_demand_without_cancelling_or_settling
         assert_eq!(mutation.recv().await, Some(json!(1)));
         drop(mutation);
         let pending = store
-            .operation_observation(&reference)
+            .operation(&reference)
+            .unwrap()
+            .operation_observation()
             .await
             .unwrap()
             .unwrap();
@@ -334,7 +338,9 @@ async fn dropping_mutation_progress_closes_demand_without_cancelling_or_settling
         permit(&finished).await;
         app.shutdown().await.unwrap();
         let actual = store
-            .operation_observation(&reference)
+            .operation(&reference)
+            .unwrap()
+            .operation_observation()
             .await
             .unwrap()
             .unwrap();
@@ -355,8 +361,8 @@ async fn dropping_mutation_progress_closes_demand_without_cancelling_or_settling
 
 #[tokio::test]
 async fn unread_mutation_progress_does_not_limit_other_effects() {
+    let (_dir, _ns, store) = store().await;
     tokio::time::timeout(Duration::from_secs(30), async {
-        let (_dir, _ns, store) = store().await;
         let issuer = Issuer::default();
         let entered = Arc::new(Semaphore::new(0));
         let counter = Arc::new(AtomicUsize::new(0));

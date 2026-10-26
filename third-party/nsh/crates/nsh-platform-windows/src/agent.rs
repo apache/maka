@@ -23,10 +23,22 @@ use crate::{
 const MAIN: Duration = Duration::from_secs(10);
 /// A press's hold, as a quick click's.
 const CLICK: Duration = Duration::from_millis(60);
-/// A precision touchpad's events, a display frame apart.
+/// A display frame, when the compositor cannot say when the next one is.
 const FRAME: Duration = Duration::from_millis(16);
 /// How far one wheel event moves at most, in points.
 const SCROLL_STEP: f32 = 20.0;
+/// Waits for the compositor's next frame, as input devices report once
+/// per refresh: a fixed sleep (Win32 timers tick every ~15.6 ms) sent
+/// fewer events than the display shows frames, so scrolled pages drew at
+/// a fraction of its rate.
+fn next_frame() {
+    // SAFETY: a plain call; it fails while composition is off (a locked or
+    // remote session).
+    if unsafe { windows::Win32::Graphics::Dwm::DwmFlush() }.is_err() {
+        std::thread::sleep(FRAME);
+    }
+}
+
 /// The virtual keys the agent presses.
 const VK_BACK: u16 = 0x08;
 const VK_RETURN: u16 = 0x0D;
@@ -108,7 +120,8 @@ impl Native for WindowsNative {
     fn scroll(&self, at: Point<Points>, delta: Point<Points>) {
         let (x, y) = (at.x.0, at.y.0);
         let (dx, dy) = (delta.x.0, delta.y.0);
-        // A precision touchpad's events, a frame apart, adding up to it.
+        // A precision touchpad's events, one per display refresh, adding up
+        // to it.
         let n = (dx.abs().max(dy.abs()) / SCROLL_STEP).ceil().max(1.0) as u32;
         for _ in 0..n {
             self.on_main(move |s| {
@@ -125,7 +138,7 @@ impl Native for WindowsNative {
                     },
                 );
             });
-            std::thread::sleep(FRAME);
+            next_frame();
         }
     }
 
@@ -138,7 +151,7 @@ impl Native for WindowsNative {
         std::thread::sleep(nsh_testing::agent::LANDING);
         let mut last = from;
         for at in nsh_testing::agent::drag_path(from, to) {
-            std::thread::sleep(FRAME);
+            next_frame();
             let (x, y) = (at.x.0, at.y.0);
             self.on_main(move |s| synth::pointer(s, PointerKind::Move, x, y, 0));
             last = at;

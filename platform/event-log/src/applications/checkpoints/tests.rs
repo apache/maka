@@ -532,3 +532,77 @@ async fn admission_and_payload_share_original_snapshot_during_a_real_concurrent_
     assert!(empty.0.content.is_empty());
     assert_eq!(empty.1, 10);
 }
+
+async fn root_source(store: &crate::RootStore, deployment: Uuid, expected: u64) -> DeploymentRef {
+    let package = Package::new(BTreeMap::from([(MANIFEST_FILE.into(),serde_json::to_vec(&json!({"schemaVersion":1,"id":"ui.checkpoint","application":Declaration {entries:BTreeMap::from([(EntryTarget::Tui,EntryDeclaration {scene:None,implementation:Implementation::Native {implementation:"test.checkpoint".into()},configuration:json!({"type":"object"}).into(),imports:BTreeMap::new(),exports:BTreeMap::new()})]),composition:None}})).unwrap())])).unwrap();
+    store
+        .commit_application(
+            deployment,
+            expected,
+            Input {
+                environment: Environment {
+                    location: ExecutionLocation::Ui,
+                    presentation: Some(PresentationTarget::Tui),
+                },
+                instances: BTreeMap::from([(
+                    "editor".into(),
+                    Node {
+                        key: Uuid::from_u128(42),
+                        package: package.application_ref().into(),
+                        use_package: PackageUse::Entry,
+                        configuration: Configuration::default(),
+                        parameters: Configuration::default(),
+                        bindings: BTreeMap::new(),
+                        disabled: false,
+                        overrides: vec![],
+                    },
+                )]),
+                recovery: None,
+                launch: None,
+            },
+            vec![],
+            vec![package],
+        )
+        .await
+        .unwrap()
+}
+#[tokio::test]
+async fn idle_root_checkpoint_and_deployment_watch_release_original_authority() {
+    let dir = tempfile::tempdir().unwrap();
+    let namespaces = RootNamespaces {
+        ownership: dir.path().join("ownership"),
+        control: dir.path().join("control"),
+    };
+    let path = dir.path().join("root");
+    let owner = Arc::new(RootOwner::create(&path, &namespaces).unwrap());
+    let root = Arc::new(crate::RootStore::open(owner).await.unwrap());
+    let reference = root_source(&root, Uuid::new_v4(), 0).await;
+    let checkpoints = root.ui_checkpoints(&reference, &instance()).await.unwrap();
+    let mut changes = root.subscribe_application(reference).unwrap();
+    checkpoints
+        .write("open", None, "v1", &json!({}), &json!({}), vec![1, 2, 3])
+        .await
+        .unwrap();
+    assert_eq!(
+        checkpoints
+            .read("open", |_| Ok(()))
+            .await
+            .unwrap()
+            .unwrap()
+            .0
+            .content,
+        vec![1, 2, 3]
+    );
+    root.shutdown().await.unwrap();
+    assert!(matches!(
+        checkpoints.read("open", |_| Ok(())).await,
+        Err(StoreError::ConnectionClosed)
+    ));
+    assert!(matches!(
+        changes.next().await,
+        Err(StoreError::ConnectionClosed)
+    ));
+    drop(root);
+    let reopened = RootOwner::open(&path, &namespaces).unwrap();
+    drop((reopened, checkpoints, changes));
+}

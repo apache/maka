@@ -31,12 +31,8 @@ pub(crate) async fn validate_append(
     let Fact::MessageSteered { message, source } = &event.fact else {
         return Ok(());
     };
-    maka_agent_facts::event::validate_steered_source(
-        message,
-        source.as_deref(),
-        &event.invocation.session_id,
-    )
-    .map_err(|error| StoreError::InvalidTransition(error.into()))?;
+    maka_agent_facts::event::validate_steered_source(message, source, &event.invocation.session_id)
+        .map_err(|error| StoreError::InvalidTransition(error.into()))?;
     let eligible: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM runtime_events WHERE invocation_id = ?
          AND kind = 'invocation_opened' AND json_extract(event_json, '$.fact.input.kind') IN ('message', 'continuation', 'handoff'))"
@@ -47,13 +43,12 @@ pub(crate) async fn validate_append(
         ));
     }
     let pending: bool = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
-        "{}, {} SELECT EXISTS(SELECT 1 FROM unresolved WHERE kind != 0
-          OR id NOT IN (SELECT operation_id FROM private_summaries))",
+        "{} SELECT EXISTS(SELECT 1 FROM unresolved u WHERE kind != 0
+          OR NOT EXISTS(SELECT 1 FROM context_execution_steps s WHERE s.invocation_id=?1
+            AND s.operation_id=u.id AND s.purpose='summary' AND s.tool_observed_at IS NULL))",
         crate::recovery::unresolved!(""),
-        crate::context::safety::PRIVATE_SUMMARIES,
     )))
     .bind(&event.invocation.invocation_id)
-    .bind(i64::MAX)
     .fetch_one(&mut *tx)
     .await?;
     if pending {
@@ -97,7 +92,7 @@ impl EventLog {
                             ));
                         };
                         maka_agent_facts::event::validate_steered_source(
-                            message, source.as_deref(), &event.invocation.session_id,
+                            message, source, &event.invocation.session_id,
                         )
                             .map_err(|error| StoreError::InvalidTransition(error.into()))?;
                         if event.invocation.session_id != session_id

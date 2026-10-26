@@ -233,7 +233,13 @@ mod tests {
     fn permission(tool: Option<&str>) -> InteractionRecord {
         snapshot(InteractionRequest::Permissions {
             tool_use_id: tool.map(str::to_owned),
-            base_revision: 0,
+            basis: maka_agent_facts::workspace::PermissionBasis {
+                boundary_revision: 0,
+                binding: maka_agent_facts::workspace::BindingStamp {
+                    id: "00000000-0000-4000-8000-000000000001".parse().unwrap(),
+                    permission_epoch: 0,
+                },
+            },
             request: PermissionRequest {
                 reason: "Access network".into(),
                 command: None,
@@ -319,7 +325,9 @@ mod tests {
     #[test]
     fn command_permission_uses_v2_command_subject() {
         use maka_agent_facts::interaction::PermissionCommand;
-        let InteractionRequest::Permissions { mut request, .. } = permission(None).request.clone()
+        let InteractionRequest::Permissions {
+            basis, mut request, ..
+        } = permission(None).request.clone()
         else {
             panic!()
         };
@@ -329,7 +337,7 @@ mod tests {
         });
         let snapshot = snapshot(InteractionRequest::Permissions {
             tool_use_id: Some("tool".into()),
-            base_revision: 0,
+            basis,
             request,
         });
         let callback =

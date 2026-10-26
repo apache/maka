@@ -57,7 +57,6 @@ pub struct Operation {
     #[serde(default)]
     pub upload: Option<UploadReference>,
     /// Durable fence proving that this attempt did not dispatch.
-    #[serde(default)]
     pub abandoned: bool,
     /// Present only after original preparation has been durably recorded.
     pub reference: Option<RecoveryRef>,
@@ -120,7 +119,6 @@ impl DraftKey {
 pub struct Draft {
     pub revision: u64,
     pub text: String,
-    #[serde(default)]
     pub attachments: Vec<DraftAttachment>,
 }
 
@@ -235,42 +233,16 @@ impl Journal {
                     }
                 }
             }
-            // Serialize schema inspection and ALTER across independent client scopes.
+            // Serialize schema creation across independent client scopes.
             let mut transaction = sqlx::Connection::begin_with(&mut *connection, "BEGIN IMMEDIATE")
                 .await
                 .map_err(|error| format!("client journal beginning schema transaction: {error}"))?;
-            sqlx::query("CREATE TABLE IF NOT EXISTS operations (id TEXT PRIMARY KEY, domain TEXT NOT NULL, deployment TEXT NOT NULL, context TEXT NOT NULL, draft_owner TEXT, reference TEXT, receipt TEXT, abandoned INTEGER NOT NULL DEFAULT 0)")
+            sqlx::query("CREATE TABLE IF NOT EXISTS operations (id TEXT PRIMARY KEY, domain TEXT NOT NULL, deployment TEXT NOT NULL, context TEXT NOT NULL, draft_owner TEXT, reference TEXT, receipt TEXT, abandoned INTEGER NOT NULL DEFAULT 0, upload_adopted INTEGER NOT NULL DEFAULT 0)")
                 .execute(&mut *transaction).await.map_err(|error| format!("client journal creating operations table: {error}"))?;
             sqlx::query("CREATE INDEX IF NOT EXISTS operations_pending ON operations(domain,deployment,draft_owner) WHERE receipt IS NULL AND abandoned=0")
                 .execute(&mut *transaction).await.map_err(|error| format!("client journal creating pending operations index: {error}"))?;
-            sqlx::query("CREATE TABLE IF NOT EXISTS drafts (owner TEXT PRIMARY KEY, revision INTEGER NOT NULL, text TEXT NOT NULL, consumed INTEGER NOT NULL DEFAULT 0)")
+            sqlx::query("CREATE TABLE IF NOT EXISTS drafts (owner TEXT PRIMARY KEY, revision INTEGER NOT NULL, text TEXT NOT NULL, consumed INTEGER NOT NULL DEFAULT 0, attachments TEXT NOT NULL DEFAULT '[]')")
                 .execute(&mut *transaction).await.map_err(|error| format!("client journal creating drafts table: {error}"))?;
-            for (inspect, column, alter) in [
-                (
-                    "PRAGMA table_info(drafts)",
-                    "attachments",
-                    "ALTER TABLE drafts ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]'",
-                ),
-                (
-                    "PRAGMA table_info(operations)",
-                    "upload_adopted",
-                    "ALTER TABLE operations ADD COLUMN upload_adopted INTEGER NOT NULL DEFAULT 0",
-                ),
-            ] {
-                let columns = sqlx::query(inspect)
-                    .fetch_all(&mut *transaction)
-                    .await
-                    .map_err(|error| format!("client journal inspecting {column} column: {error}"))?;
-                if !columns
-                    .iter()
-                    .any(|row| row.get::<&str, _>("name") == column)
-                {
-                    sqlx::query(alter)
-                        .execute(&mut *transaction)
-                        .await
-                        .map_err(|error| format!("client journal adding {column} column: {error}"))?;
-                }
-            }
             transaction
                 .commit()
                 .await
@@ -533,7 +505,7 @@ impl Journal {
         host: &DeploymentRef,
         session: &str,
     ) -> Result<Vec<Operation>> {
-        let rows = sqlx::query("SELECT context,reference,receipt,abandoned FROM operations WHERE domain=? AND deployment=? AND draft_owner IS NULL AND json_extract(context,'$.endpoint')='terminal' AND json_extract(context,'$.sessionId')=? AND json_extract(context,'$.correlation')=? AND json_extract(context,'$.method') IN ('start','stop','control','release') AND (receipt IS NULL OR json_extract(receipt,'$.cleanup.kind')!='confirmed') AND abandoned=0 ORDER BY rowid DESC LIMIT 128")
+        let rows = sqlx::query("SELECT context,reference,receipt,abandoned FROM operations WHERE domain=? AND deployment=? AND draft_owner IS NULL AND json_extract(context,'$.endpoint')='terminal' AND json_extract(context,'$.sessionId')=? AND json_extract(context,'$.correlation')=? AND json_extract(context,'$.method') IN ('start','stop','control','release') AND (receipt IS NULL OR json_extract(receipt,'$.cleanup.kind')!='confirmed') AND abandoned=0 ORDER BY rowid DESC")
             .bind(&host.state_domain).bind(host.deployment.to_string())
             .bind(session).bind(serde_json::json!({"kind":"terminal"}).to_string())
             .fetch_all(&self.0).await.map_err(error)?;
@@ -729,9 +701,71 @@ mod tests {
     use super::*;
     use sqlx::{Connection, SqliteConnection};
 
-    async fn original_journal() -> (tempfile::TempDir, std::path::PathBuf, DraftKey) {
+    #[tokio::test]
+    async fn reopened_terminal_recovery_lists_every_unsettled_original_for_its_session() {
         let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("old-client.db");
+        let path = directory.path().join("client.db");
+        let journal = Journal::open(&path).await.unwrap();
+        let host = DeploymentRef {
+            state_domain: "a".repeat(64),
+            deployment: Uuid::from_u128(1),
+            revision: 1,
+        };
+        let mut expected = Vec::new();
+        for id in 1..=132 {
+            let operation = Operation {
+                id: Uuid::from_u128(id),
+                host: host.clone(),
+                endpoint: "terminal".into(),
+                method: "start".into(),
+                session_id: Some(if id == 130 { "other" } else { "session" }.into()),
+                correlation: serde_json::json!({"kind":"terminal"}),
+                draft: None,
+                upload: None,
+                abandoned: false,
+                reference: None,
+                receipt: None,
+            };
+            journal.reserve(&operation).await.unwrap();
+            match id {
+                130 => {}
+                131 => {
+                    journal.abandon(&host, operation.id).await.unwrap();
+                }
+                132 => {
+                    journal
+                        .observe(
+                            &operation,
+                            &Receipt::Recorded {
+                                outcome: OperationOutcome::Returned {
+                                    value: serde_json::json!({"kind":"started"}),
+                                },
+                                cleanup: OperationCleanup::Confirmed,
+                            },
+                        )
+                        .await
+                        .unwrap();
+                }
+                _ => expected.push(operation.id),
+            }
+        }
+        journal.0.close().await;
+        let journal = Journal::open(&path).await.unwrap();
+        let pending = journal.pending_terminals(&host, "session").await.unwrap();
+        expected.reverse();
+        assert_eq!(
+            pending
+                .iter()
+                .map(|operation| operation.id)
+                .collect::<Vec<_>>(),
+            expected
+        );
+        journal.0.close().await;
+    }
+
+    async fn seeded_journal() -> (tempfile::TempDir, std::path::PathBuf, DraftKey) {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("client.db");
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect_with(
@@ -741,7 +775,7 @@ mod tests {
             )
             .await
             .unwrap();
-        sqlx::query("CREATE TABLE drafts (owner TEXT PRIMARY KEY, revision INTEGER NOT NULL, text TEXT NOT NULL, consumed INTEGER NOT NULL DEFAULT 0)").execute(&pool).await.unwrap();
+        sqlx::query("CREATE TABLE drafts (owner TEXT PRIMARY KEY, revision INTEGER NOT NULL, text TEXT NOT NULL, consumed INTEGER NOT NULL DEFAULT 0, attachments TEXT NOT NULL DEFAULT '[]')").execute(&pool).await.unwrap();
         let key = DraftKey {
             state_domain: "original-host".into(),
             deployment: Uuid::from_u128(1),
@@ -760,8 +794,8 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn concurrent_open_migrates_the_original_text_row_without_losing_its_revision() {
-        let (_directory, path, key) = original_journal().await;
+    async fn concurrent_open_preserves_the_existing_draft_and_revision() {
+        let (_directory, path, key) = seeded_journal().await;
         let (first, second) = tokio::join!(Journal::open(&path), Journal::open(&path));
         let (first, second) = (first.unwrap(), second.unwrap());
         let loaded = first.load_draft(&key).await.unwrap().unwrap();
@@ -774,28 +808,28 @@ mod tests {
             (7, "original unsent text", 0)
         );
         first
-            .save_draft(&key, Some(7), "edited after migration".to_owned().into())
+            .save_draft(&key, Some(7), "edited after reopening".to_owned().into())
             .await
             .unwrap();
         assert_eq!(
             second.load_draft(&key).await.unwrap().unwrap().text,
-            "edited after migration"
+            "edited after reopening"
         );
         assert!(
             second
-                .save_draft(&key, Some(7), "stale old scope".to_owned().into())
+                .save_draft(&key, Some(7), "stale scope".to_owned().into())
                 .await
                 .is_err()
         );
     }
 
-    async fn original_journal_with_reader() -> (
+    async fn seeded_journal_with_reader() -> (
         tempfile::TempDir,
         std::path::PathBuf,
         DraftKey,
         SqliteConnection,
     ) {
-        let (directory, path, key) = original_journal().await;
+        let (directory, path, key) = seeded_journal().await;
         let mut reader =
             SqliteConnection::connect_with(&SqliteConnectOptions::new().filename(&path))
                 .await
@@ -816,8 +850,8 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn open_waits_for_a_real_reader_before_migrating_the_original_draft() {
-        let (_directory, path, key, mut reader) = original_journal_with_reader().await;
+    async fn open_waits_for_a_real_reader_before_loading_the_existing_draft() {
+        let (_directory, path, key, mut reader) = seeded_journal_with_reader().await;
         let contention = tokio::sync::Notify::new();
         let opening = Journal::open_inner(&path, Some(&contention));
         tokio::pin!(opening);
@@ -850,13 +884,11 @@ mod tests {
             (7, "original unsent text", 0)
         );
         let edited = first
-            .save_draft(&key, Some(7), "edited after migration".into())
+            .save_draft(&key, Some(7), "edited after reopening".into())
             .await
             .unwrap();
         assert_eq!(edited.revision, 8);
-        let stale = second
-            .save_draft(&key, Some(7), "stale old scope".into())
-            .await;
+        let stale = second.save_draft(&key, Some(7), "stale scope".into()).await;
         let loaded = second.load_draft(&key).await.unwrap().unwrap();
         for journal in [&first, &second] {
             let mode: String = sqlx::query_scalar("PRAGMA journal_mode")
@@ -878,13 +910,13 @@ mod tests {
                 loaded.text.as_str(),
                 loaded.attachments.len()
             ),
-            (8, "edited after migration", 0)
+            (8, "edited after reopening", 0)
         );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cancelling_contended_open_leaves_the_original_draft_reopenable() {
-        let (_directory, path, key, mut reader) = original_journal_with_reader().await;
+        let (_directory, path, key, mut reader) = seeded_journal_with_reader().await;
         let contention = tokio::sync::Notify::new();
         let mut opening = Box::pin(Journal::open_inner(&path, Some(&contention)));
         let observed = tokio::time::timeout(std::time::Duration::from_secs(20), async {
@@ -914,7 +946,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn contended_open_exhausts_its_budget_without_losing_the_original_draft() {
-        let (_directory, path, key, mut reader) = original_journal_with_reader().await;
+        let (_directory, path, key, mut reader) = seeded_journal_with_reader().await;
         let started = tokio::time::Instant::now();
         let result = Journal::open(&path).await;
         let elapsed = started.elapsed();
@@ -941,7 +973,7 @@ mod tests {
 
     #[tokio::test]
     async fn schema_failure_keeps_its_stage_and_releases_the_startup_transaction() {
-        let (_directory, path, _key) = original_journal().await;
+        let (_directory, path, _key) = seeded_journal().await;
         let mut connection =
             SqliteConnection::connect_with(&SqliteConnectOptions::new().filename(&path))
                 .await

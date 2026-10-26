@@ -17,7 +17,7 @@
  * under the License.
  */
 
-use futures_util::future::BoxFuture;
+use futures_util::{StreamExt, future::BoxFuture};
 use maka_agent_ports::model::Connect;
 use maka_agent_ports::model::Credentials;
 use maka_agent_ports::model::Error as ModelError;
@@ -39,10 +39,27 @@ use tokio_util::sync::CancellationToken;
 #[path = "codex/inventory.rs"]
 mod inventory;
 
+struct CapturedRequest {
+    url: String,
+    body: Vec<u8>,
+}
+impl CapturedRequest {
+    async fn read(request: http::Request) -> Self {
+        let mut chunks = request.body.into_stream();
+        let mut body = Vec::new();
+        while let Some(chunk) = chunks.next().await {
+            body.extend_from_slice(&chunk.unwrap());
+        }
+        Self {
+            url: request.url,
+            body,
+        }
+    }
+}
 struct Exchange {
     started: Notify,
     release: Notify,
-    requests: Mutex<Vec<http::Request>>,
+    requests: Mutex<Vec<CapturedRequest>>,
     fail: bool,
     response: serde_json::Value,
     status: u16,
@@ -51,11 +68,20 @@ impl Transport for Exchange {
     fn identity(&self) -> u64 {
         1
     }
-    fn request(&self, request: http::Request) -> BoxFuture<'_, Result<http::Response, ModelError>> {
+    fn request(
+        &self,
+        request: http::Request,
+        cancellation: tokio_util::sync::CancellationToken,
+    ) -> BoxFuture<'_, Result<http::Response, ModelError>> {
         Box::pin(async move {
+            let request = CapturedRequest::read(request).await;
             self.requests.lock().unwrap().push(request);
             self.started.notify_one();
-            self.release.notified().await;
+            tokio::select! {
+                biased;
+                _ = cancellation.cancelled() => return Err(ModelError::Cancelled),
+                _ = self.release.notified() => {}
+            }
             if self.fail {
                 return Err(ModelError::Adapter("reply lost".into()));
             }

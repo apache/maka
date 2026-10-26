@@ -53,8 +53,8 @@ macro_rules! parts {
 }
 
 parts! {
-    /// The text view itself (a column of its blocks): text styles here
-    /// pass to every part.
+    /// The native document viewport: outer geometry and text styles.
+    /// Text styles pass to every part; `contentStyle` lays out its rows.
     root => Root,
     /// Every paragraph.
     paragraph => Paragraph,

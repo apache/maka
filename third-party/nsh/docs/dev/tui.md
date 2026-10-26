@@ -23,6 +23,9 @@ guide is [Terminal](../../website/docs/tui.md), with a matching
   screen/modal state, animation bindings and decoded image references.
   It applies batches in order. Native state decisions happen before JS
   receives events, as on the other platforms.
+  Inline-link locators index the resident Text snapshots directly; text
+  replacement and physical node removal maintain the index, while parked
+  list cells retain their text and locators together.
 - `text.rs`: engine-thread text layout records terminal graphemes and
   positions in the type-erased `TextLayout`; the renderer uses those runs
   directly. Terminal widths come from `unicode-width`, graphemes from
@@ -211,9 +214,17 @@ zoomable Scroll on its pointer path takes the input. Each delivery pairs
 Hover entry and exit are reported, but continuous `onHoverMove` and
 `onMouseMove` callbacks are not emitted by this backend. The scripted
 `hover` step moves the pointer; it does not add those callbacks.
-Selection remains local to one selectable text node: `SelectionArea`
-does not yet enable cross-node selection or copying in the terminal,
-including across `TextView` blocks.
+`SelectionArea` shares one `nsh_core::selection::SelectionModel` across
+its text nodes, including multiline text and `TextView` blocks. It uses
+the shaped text's UTF-16 hit positions and text values, rather than copying
+terminal cells; `selectable={false}` labels and control captions stay out. Mouse
+dragging and Shift+click extend the selection, and dragging beyond a Scroll
+edge scrolls while the pointer is held. Ctrl+A selects the area, Ctrl+C or
+Ctrl+Insert copies, and Escape clears a nonempty selection. App keymaps
+retain their priority. A retained background selection receives these keys
+only in the active input scope: a modal or focused popup suspends its
+keyboard ownership until that scope closes. Selection copies use the same
+host clipboard services and complete OSC 52 output as other clipboard writes.
 
 The native animation graph and `motion.rs` presentation tracks run on
 terminal ticks. Layout animations interpolate frames and retain exiting
@@ -480,6 +491,10 @@ a host component receives at most one detent before the host dispatches
 its callbacks and delivers more input. Raw `Surface` hosts opt into service
 requests explicitly with `set_host_services_enabled`; clipboard reads and
 pastes are completed through the checked methods above.
+Native text pastes report `onPaste` before `onChangeText`. `pasteBehavior="report"`
+reports the text without changing the selection or edit count; the default
+`"insert"` retains literal terminal text, including line endings. Clipboard
+completions still require the original focus, selection, edit count and grant.
 
 `TextEngine::measure_canvas(&self, &CanvasFont, &str) -> Option<Points>`
 returns an optional Canvas line advance. Its default is `None`, which uses

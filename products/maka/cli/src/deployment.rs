@@ -99,18 +99,11 @@ pub(super) struct Install {
     directories: configuration::Directories,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum Admission {
-    #[default]
     Active,
     Revoked,
-}
-
-impl Admission {
-    fn is_active(&self) -> bool {
-        *self == Self::Active
-    }
 }
 
 /// Deployment admission authorizes startup; it does not assert process health.
@@ -127,15 +120,12 @@ pub(super) struct Deployment {
     pub websocket: SocketAddr,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project_directory_roots: Option<Vec<DirectoryRootSpec>>,
-    // Active remains readable by previously installed executables. Older readers
-    // reject the explicit tombstone through deny_unknown_fields.
-    #[serde(default, skip_serializing_if = "Admission::is_active")]
     admission: Admission,
 }
 
 impl Deployment {
     fn require_active(&self) -> Result<(), HostError> {
-        if !self.admission.is_active() {
+        if self.admission != Admission::Active {
             return Err("deployment has been uninstalled".into());
         }
         Ok(())
@@ -228,7 +218,7 @@ impl Install {
         .await??;
         let existing = store::read(&directory).await?;
         if let store::Installation::Installed(existing) = &existing
-            && existing.admission.is_active()
+            && existing.admission == Admission::Active
         {
             existing.validate(&root, &directory)?;
             if matches!(existing_policy, ExistingDeployment::Reuse) {
@@ -289,6 +279,13 @@ impl Install {
                 // Remove the old projection before granting a new installation:
                 // an old login trigger must not resurrect it across the cut.
                 service::remove(existing.clone(), lease.clone(), owner.clone()).await?;
+                if directories_specified {
+                    crate::application::configure_workspace_locations(
+                        owner.clone(),
+                        crate::application::directories(requested.project_directory_roots.clone())?,
+                    )
+                    .await?;
+                }
                 store::change(
                     &directory,
                     lease.clone(),
@@ -317,6 +314,14 @@ impl Install {
             )?;
             if owner.root_id() != root.root_id() {
                 return Err("State Root changed during installation".into());
+            }
+            let owner = Arc::new(owner);
+            if directories_specified {
+                crate::application::configure_workspace_locations(
+                    owner.clone(),
+                    crate::application::directories(requested.project_directory_roots.clone())?,
+                )
+                .await?;
             }
             store::install(&directory, lease.clone(), owner, requested).await?
         };

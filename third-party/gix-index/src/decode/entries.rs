@@ -1,8 +1,10 @@
 use std::ops::Range;
 
+use gix_error::{OptionExt, Result};
+
 use crate::{
     Entry, Version,
-    decode::{self, header},
+    decode::header,
     entry,
     util::{read_u32, split_at_byte_exclusive, var_int},
 };
@@ -71,12 +73,14 @@ pub fn estimate_path_storage_requirements_in_bytes(
     object_hash: gix_hash::Kind,
     version: Version,
 ) -> usize {
-    let size_of_entries_block = entries_block_size_in_bytes(on_disk_size, offset_to_extensions, object_hash);
+    let size_of_entries_block =
+        entries_block_size_in_bytes(on_disk_size, offset_to_extensions, object_hash);
     match version {
         Version::V3 | Version::V2 => {
             // V2/V3 store full paths in the entries block, so whatever remains after subtracting the fixed
             // entry header portion is an upper bound for path bytes we may copy into memory.
-            size_of_entries_block.saturating_sub(num_entries as usize * on_disk_entry_sans_path(object_hash))
+            size_of_entries_block
+                .saturating_sub(num_entries as usize * on_disk_entry_sans_path(object_hash))
         }
         Version::V4 => size_of_entries_block
             // V4 stores delta-compressed paths on disk. Subtract the minimum per-entry non-path payload to
@@ -97,7 +101,7 @@ pub fn chunk<'a>(
     num_entries: u32,
     object_hash: gix_hash::Kind,
     version: Version,
-) -> Result<(Outcome, &'a [u8]), decode::Error> {
+) -> Result<(Outcome, &'a [u8])> {
     let mut is_sparse = false;
     let has_delta_paths = version == Version::V4;
     let mut prev_path = None;
@@ -111,7 +115,7 @@ pub fn chunk<'a>(
             has_delta_paths,
             prev_path,
         )
-        .ok_or(decode::Error::Entry { index: idx })?;
+        .ok_or_raise(|| gix_error::message!("Could not parse entry at index {idx}").corrupted())?;
 
         data = remaining;
         is_sparse |= entry.mode.is_sparse();

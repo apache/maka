@@ -401,6 +401,22 @@ pub fn contract() -> Contract {
                     method::<crate::network::Read, crate::network::Snapshot>(MethodMode::Query),
                 ),
                 (
+                    "workspaceLocations".into(),
+                    method::<
+                        super::workspace_locations::Read,
+                        Option<super::workspace_locations::Snapshot>,
+                    >(MethodMode::Query),
+                ),
+                (
+                    "updateWorkspaceLocations".into(),
+                    method::<
+                        super::workspace_locations::Update,
+                        maka_plugin_core::deployment::management::ManagementResult<
+                            super::workspace_locations::Snapshot,
+                        >,
+                    >(MethodMode::Mutation),
+                ),
+                (
                     "updateNetwork".into(),
                     Method {
                         resources: BTreeMap::from([(

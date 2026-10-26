@@ -398,9 +398,12 @@ async fn original_uppercase_marker_and_two_workspaces_reach_exact_execution_conf
         assert_eq!(std::fs::read(&marker).unwrap(), bytes);
         let listed = fixture.query("list", json!({"filter":"all","position":{"kind":"start"}})).await.unwrap();
         assert_eq!(listed["sessions"].as_array().unwrap().len(), 2);
-        let events = fixture.store.prefix(128, 512 * 1024).await.unwrap();
+        let mut events = Vec::new();
+        for id in [&first, &second] {
+            events.extend(fixture.prefix(id, 128, 512 * 1024).await.events);
+        }
         let mut configurations = BTreeMap::new();
-        for stored in events.events {
+        for stored in events {
             if let maka_agent_facts::event::Fact::InvocationOpened { configuration: Some(configuration), .. } = stored.event.fact {
                 configurations.insert(stored.event.invocation.session_id, configuration);
             }
@@ -412,6 +415,7 @@ async fn original_uppercase_marker_and_two_workspaces_reach_exact_execution_conf
             assert_eq!(configuration.cwd, session.configuration.workspace.path);
             assert_eq!(configuration.workspace_identity, Some(session.configuration.workspace.identity));
             assert_eq!(configuration.workspace_origin, WorkspaceOrigin::Selected);
+            assert_eq!(configuration.workspace_binding, Some(session.configuration.binding));
             assert_ne!(std::path::Path::new(&configuration.cwd), fixture.root.canonicalize().unwrap());
         }
         assert_ne!(configurations[&first].cwd, configurations[&second].cwd);
@@ -487,7 +491,7 @@ async fn full_session_projection_budget_preserves_forward_and_reverse_catalog_bo
     }
     let expected = fixture
         .store
-        .scoped_sessions::<SessionConfiguration>(
+        .scoped_sessions::<StoredSessionConfiguration>(
             maka_event_log::sessions::CatalogScope::IdPrefix(fixture.owner.prefix.clone()),
             None,
             maka_event_log::sessions::SessionPosition::Start,
@@ -607,8 +611,9 @@ async fn original_directory_moved_into_managed_worktrees_cannot_be_reborrowed_by
     );
     assert!(
         fixture
-            .store
-            .session_projection::<SessionConfiguration>(id)
+            .session(id)
+            .await
+            .session_projection::<StoredSessionConfiguration>(id)
             .await
             .unwrap()
             .unwrap()
@@ -661,8 +666,9 @@ async fn replaced_directory_marker_and_removed_publication_refuse_before_message
     );
     assert!(
         fixture
-            .store
-            .session_projection::<SessionConfiguration>(&id)
+            .session(&id)
+            .await
+            .session_projection::<StoredSessionConfiguration>(&id)
             .await
             .unwrap()
             .unwrap()
@@ -681,8 +687,9 @@ async fn replaced_directory_marker_and_removed_publication_refuse_before_message
     );
     assert!(
         fixture
-            .store
-            .session_projection::<SessionConfiguration>(&id)
+            .session(&id)
+            .await
+            .session_projection::<StoredSessionConfiguration>(&id)
             .await
             .unwrap()
             .unwrap()

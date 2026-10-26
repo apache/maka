@@ -20,7 +20,6 @@
 use maka_agent_ports::model::Binding;
 use maka_agent_ports::model::Error;
 use maka_agent_ports::model::Lifetime;
-use maka_agent_ports::model::Message;
 use maka_agent_ports::model::Session;
 use std::sync::{Arc, Mutex};
 use tokio::sync::Mutex as AsyncMutex;
@@ -70,9 +69,9 @@ impl Conversation {
             .as_ref()
             .is_some_and(|bound| bound.session.needs_confirmation())
     }
-    pub fn confirm(
+    pub async fn confirm(
         &self,
-        prompt: &[Message],
+        prompt: &maka_agent_facts::model::prompt_source::Prompt,
         settled_tool_call_ids: &[&str],
         response_id: Option<&str>,
     ) -> bool {
@@ -82,6 +81,13 @@ impl Conversation {
             .unwrap()
             .as_ref()
             .map(|bound| bound.session.clone());
-        session.is_some_and(|session| session.confirm(prompt, settled_tool_call_ids, response_id))
+        match session {
+            Some(session) => {
+                session
+                    .confirm(prompt, settled_tool_call_ids, response_id)
+                    .await
+            }
+            None => false,
+        }
     }
 }

@@ -50,6 +50,12 @@ pub struct AppOptions {
     /// `None` uses the app's own data directory
     /// ([`SurfaceOptions::data_dir`]'s default).
     pub data_dir: Option<std::path::PathBuf>,
+    /// Where the apps keep their caches (the images they downloaded) and
+    /// how much each keeps ([`SurfaceOptions::cache`]).
+    pub cache: nsh_engine::CacheOptions,
+    /// Logs the performance monitor's readings once a second
+    /// ([`SurfaceOptions::fps`]).
+    pub fps: bool,
 }
 
 /// Whether `path` is inside the app's own bundle (which the system verifies
@@ -188,10 +194,12 @@ fn connect(mtm: MainThreadMarker, scene: &UIWindowScene) {
         root.bounds(),
         SurfaceOptions {
             trace: options.trace,
+            fps: options.fps,
             asset_base: options.asset_base,
             data_dir: options
                 .data_dir
                 .or_else(|| SurfaceOptions::default().data_dir),
+            cache: options.cache,
             // An app on its own (the development host, the release runner),
             // not a module embedded in another app.
             limits: nsh_engine::Limits::standalone(),

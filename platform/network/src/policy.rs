@@ -165,6 +165,17 @@ impl Policy {
         })))))
     }
 
+    /// The same redirect authority used by the reqwest policy. Streaming
+    /// transports reopen a source themselves only after this check and drain.
+    pub fn follow_redirect(
+        &self,
+        original: &Url,
+        next: &Url,
+        previous_count: usize,
+    ) -> Result<bool, Error> {
+        redirect_allowed(original, next, previous_count)
+    }
+
     /// Captured routing, independent of subsequent environment changes. Redirects
     /// retain authority only within the same origin and therefore the same route.
     pub fn client_builder(&self) -> ClientBuilder {
@@ -172,19 +183,17 @@ impl Policy {
             .no_proxy()
             .retry(reqwest::retry::never())
             .connect_timeout(Duration::from_secs(15))
-            .redirect(reqwest::redirect::Policy::custom(|attempt| {
-                if attempt.previous().len() >= 20 {
-                    attempt.error("outbound redirect limit")
-                } else if attempt
-                    .previous()
-                    .first()
-                    .is_some_and(|first| first.origin() != attempt.url().origin())
-                {
-                    attempt.stop()
-                } else {
-                    attempt.follow()
-                }
-            }));
+            .redirect(reqwest::redirect::Policy::custom(
+                |attempt| match redirect_allowed(
+                    attempt.previous().first().unwrap_or(attempt.url()),
+                    attempt.url(),
+                    attempt.previous().len(),
+                ) {
+                    Ok(true) => attempt.follow(),
+                    Ok(false) => attempt.stop(),
+                    Err(error) => attempt.error(error),
+                },
+            ));
         if self.0.is_some() {
             let policy = self.clone();
             builder = builder.proxy(Proxy::custom(move |url| {
@@ -194,6 +203,14 @@ impl Policy {
             }));
         }
         builder
+    }
+}
+
+fn redirect_allowed(original: &Url, next: &Url, previous_count: usize) -> Result<bool, Error> {
+    if previous_count >= 20 {
+        Err(Error::RedirectLimit)
+    } else {
+        Ok(original.origin() == next.origin())
     }
 }
 

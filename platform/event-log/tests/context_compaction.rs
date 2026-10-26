@@ -38,8 +38,6 @@ use serde_json::json;
 
 #[path = "context_compaction/active.rs"]
 mod active;
-#[path = "context_compaction/chain.rs"]
-mod chain;
 #[path = "context_compaction/fixtures.rs"]
 mod fixtures;
 #[path = "context_compaction/frozen.rs"]
@@ -58,7 +56,10 @@ async fn repeated_checkpoints_cross_old_history_limits_with_bounded_tail_and_exa
     for round in 0..3 {
         closed(&log, &format!("main-{round}"), 3 * 1024 * 1024, 3400).await;
         if round == 0 {
-            let source = log.read_model_context("session", None).await.unwrap();
+            let source = log
+                .capture_model_context("session", None, 100_000, 64 * 1024 * 1024)
+                .await
+                .unwrap();
             let prefix = log
                 .scoped_prefix(
                     LogScope::Session {
@@ -98,7 +99,10 @@ async fn repeated_checkpoints_cross_old_history_limits_with_bounded_tail_and_exa
         .await,
         Err(StoreError::PrefixTooLarge)
     ));
-    let source = log.read_model_context("session", None).await.unwrap();
+    let source = log
+        .capture_model_context("session", None, 100_000, 64 * 1024 * 1024)
+        .await
+        .unwrap();
     assert_eq!(source.baseline.unwrap().event_id, last[0].event().id);
     assert!(source.tail.len() < 10);
     let revision = log
@@ -141,7 +145,7 @@ async fn repeated_checkpoints_cross_old_history_limits_with_bounded_tail_and_exa
         maka_event_log::sessions::SessionCopyResult::Committed(_)
     ));
     let inherited = log
-        .read_model_context("copied-session", None)
+        .capture_model_context("copied-session", None, 100_000, 64 * 1024 * 1024)
         .await
         .unwrap();
     assert_eq!(inherited.baseline.unwrap().event_id, last[0].event().id);
@@ -166,7 +170,7 @@ async fn repeated_checkpoints_cross_old_history_limits_with_bounded_tail_and_exa
     log.append_batch(&last).await.unwrap();
     assert!(!commits.has_changed().unwrap());
     assert_eq!(
-        log.read_model_context("session", None)
+        log.capture_model_context("session", None, 100_000, 64 * 1024 * 1024)
             .await
             .unwrap()
             .source_evidence
@@ -174,7 +178,7 @@ async fn repeated_checkpoints_cross_old_history_limits_with_bounded_tail_and_exa
         source.source_evidence.digest
     );
     assert!(
-        log.read_model_context("other", None)
+        log.capture_model_context("other", None, 100_000, 64 * 1024 * 1024)
             .await
             .unwrap()
             .baseline
@@ -205,7 +209,13 @@ async fn repeated_checkpoints_cross_old_history_limits_with_bounded_tail_and_exa
     ))
     .await
     .unwrap();
-    assert!(log.unfinished_invocations(10).await.unwrap().is_empty());
+    assert!(
+        log.unfinished_invocations(0, 10)
+            .await
+            .unwrap()
+            .invocations
+            .is_empty()
+    );
     log.close().await.unwrap();
 }
 
@@ -214,7 +224,7 @@ async fn forged_summary_source_and_hidden_old_unknowns_never_become_a_baseline()
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("events.sqlite");
     let log = EventLog::open(&path).await.unwrap();
-    let observed = closed(&log, "main", 32, 1).await;
+    closed(&log, "main", 32, 1).await;
     let pair = prepared(&log, "compact").await;
     for mutation in [0, 1, 2] {
         let mut forged = pair[0].event().clone();
@@ -233,34 +243,53 @@ async fn forged_summary_source_and_hidden_old_unknowns_never_become_a_baseline()
         );
     }
     log.append_batch(&pair).await.unwrap();
-    let inspect = rusqlite::Connection::open(&path).unwrap();
-    let original: String = inspect
-        .query_row(
-            "SELECT event_json FROM runtime_events WHERE event_id = ?",
-            [&observed],
-            |row| row.get(0),
-        )
-        .unwrap();
-    inspect.execute("UPDATE event_log SET event_json = replace(event_json, 'part', 'changed') WHERE event_id = ?", [&observed]).unwrap();
-    assert!(log.read_model_context("session", None).await.is_err());
-    let mut unknown: RuntimeEvent = serde_json::from_str(&original).unwrap();
-    unknown.fact = Fact::ToolDispatched {
-        presentation: None,
-        title: None,
-        operation_id: "hidden".into(),
-        call: ToolCallIdentity::standalone("hidden-call".into()),
-        name: "write".into(),
-        input: json!({}),
+    let invocation = Invocation {
+        session_id: "session".into(),
+        turn_id: "unknown".into(),
+        run_id: "unknown".into(),
+        invocation_id: "unknown".into(),
     };
-    inspect.execute("UPDATE event_log SET kind = 'tool_dispatched', operation_id = 'hidden', event_json = ? WHERE event_id = ?",
-        rusqlite::params![serde_json::to_string(&unknown).unwrap(), observed]).unwrap();
-    let error = log.read_model_context("session", None).await.unwrap_err();
+    for fact in [
+        Fact::InvocationOpened {
+            configuration: None,
+            input: InvocationInput::Message {
+                content: "new work".into(),
+                source_messages: Vec::new(),
+                request_fingerprint: None,
+            },
+        },
+        Fact::ToolDispatched {
+            presentation: None,
+            title: None,
+            operation_id: "hidden".into(),
+            call: ToolCallIdentity::standalone("hidden-call".into()),
+            name: "write".into(),
+            input: json!({}),
+        },
+        Fact::InvocationEnded {
+            outcome: InvocationOutcome::Failed {
+                class: "outcome_unknown".into(),
+                message: None,
+                model_failure: None,
+            },
+        },
+    ] {
+        log.append(&EventWrite::plain(RuntimeEvent::new(invocation.clone(), fact)).unwrap())
+            .await
+            .unwrap();
+    }
+    let error = log
+        .capture_model_context("session", None, 100_000, 64 * 1024 * 1024)
+        .await
+        .unwrap_err();
     assert!(error.to_string().contains("unresolved prior execution"));
     assert!(
-        log.prepare_context_compaction(
+        log.capture_compaction_context(
             "session",
             None,
-            &maka_agent_facts::context::CheckpointMode::Standalone
+            &maka_agent_facts::context::CheckpointMode::Standalone,
+            100_000,
+            64 * 1024 * 1024
         )
         .await
         .is_err()

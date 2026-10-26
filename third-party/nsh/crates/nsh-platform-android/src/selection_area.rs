@@ -7,8 +7,11 @@
 //! holds one [`Area`] (a `long` handle in Java, from `nativeCreate` to
 //! `nativeDestroy`). Java hands over the texts' content when they change
 //! (`nativeSetTexts`) and their frames with every call (they move with
-//! scrolling); hit-testing calls back into Java (`SelectionArea.offsetAt`,
-//! the text's `Layout`), all on the UI thread within the native call.
+//! scrolling); hit-testing calls back into Java (`SelectionArea.offsetAt`
+//! turns the point into the text's content box and asks
+//! `TextLayouts.hitTest`, which the engine thread's
+//! `TextEngine::hit_test` runs too), all on the UI thread within the native
+//! call.
 //! Coordinates are the area's, in points (dp), origin at its top left.
 
 use std::cell::RefCell;

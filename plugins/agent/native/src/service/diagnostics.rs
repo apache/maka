@@ -26,13 +26,16 @@ pub(super) async fn query(
     input: Diagnostics,
     context: &Context,
 ) -> Result<Value, String> {
-    owner.session(&input.session_id).await?;
+    owner
+        .scoped_session(context.scope(), &input.session_id)
+        .await?;
     let (through, before) = match input.position {
         DiagnosticPosition::Latest => (None, None),
         DiagnosticPosition::Before { through, sequence } => (Some(through), Some(sequence)),
     };
     let page = owner
-        .store
+        .scoped_store(context.scope(), &input.session_id)
+        .await?
         .diagnostics_page(&input.session_id, through, before, 32, PAGE_BYTES)
         .await
         .map_err(|_| "agent_diagnostics_unavailable")?;
@@ -66,7 +69,9 @@ pub(super) async fn query(
         page.entries.pop();
         page.next_before = page.entries.last().map(|entry| entry.sequence);
     };
-    owner.session(&input.session_id).await?;
+    owner
+        .scoped_session(context.scope(), &input.session_id)
+        .await?;
     if context.scope().cancellation.is_cancelled() {
         return Err("agent_observation_cancelled".into());
     }
@@ -78,22 +83,33 @@ pub(super) async fn watch(
     input: SessionRead,
     context: &Context,
 ) -> Result<Value, String> {
-    owner.session(&input.session_id).await?;
-    let mut commits = owner.store.subscribe_commits();
+    owner
+        .scoped_session(context.scope(), &input.session_id)
+        .await?;
+    let mut commits = owner
+        .scoped_store(context.scope(), &input.session_id)
+        .await?
+        .subscribe_commits()
+        .map_err(|error| error.to_string())?;
     let mut previous = None;
     loop {
         if context.scope().cancellation.is_cancelled() {
             return Err("agent_observation_cancelled".into());
         }
-        owner.session(&input.session_id).await?;
+        owner
+            .scoped_session(context.scope(), &input.session_id)
+            .await?;
         let through = *commits.borrow_and_update();
         let revision = owner
-            .store
+            .scoped_store(context.scope(), &input.session_id)
+            .await?
             .latest_diagnostic_sequence(&input.session_id, through)
             .await
             .map_err(|_| "agent_diagnostics_unavailable")?
             .unwrap_or(0);
-        owner.session(&input.session_id).await?;
+        owner
+            .scoped_session(context.scope(), &input.session_id)
+            .await?;
         if context.scope().cancellation.is_cancelled() {
             return Err("agent_observation_cancelled".into());
         }

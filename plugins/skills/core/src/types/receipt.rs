@@ -34,7 +34,6 @@ pub struct SkillLoadedReceipt {
     pub name: String,
     pub scope: SkillScope,
     pub source: SkillSource,
-    pub truncated: bool,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SkillFailedReceipt {
@@ -46,7 +45,7 @@ pub struct SkillFailedReceipt {
 impl Serialize for SkillInvocationReceipt {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let mut map = serializer.serialize_map(Some(match self {
-            Self::Loaded(_) => 9,
+            Self::Loaded(_) => 8,
             Self::Failed(_) => 4,
         }))?;
         match self {
@@ -59,7 +58,6 @@ impl Serialize for SkillInvocationReceipt {
                 map.serialize_entry("name", &r.name)?;
                 map.serialize_entry("scope", &r.scope)?;
                 map.serialize_entry("source", &r.source)?;
-                map.serialize_entry("truncated", &r.truncated)?;
             }
             Self::Failed(r) => {
                 map.serialize_entry("invocation", &r.invocation)?;
@@ -87,7 +85,6 @@ enum WireReceipt {
         name: String,
         scope: SkillScope,
         source: SkillSource,
-        truncated: bool,
     },
     Failed {
         invocation: SkillInvocationMode,
@@ -126,7 +123,6 @@ impl<'de> Deserialize<'de> for SkillInvocationReceipt {
                 name,
                 scope,
                 source,
-                truncated,
             } => Ok(Self::Loaded(SkillLoadedReceipt {
                 invocation,
                 request,
@@ -135,7 +131,6 @@ impl<'de> Deserialize<'de> for SkillInvocationReceipt {
                 name,
                 scope,
                 source,
-                truncated,
             })),
             WireReceipt::Failed {
                 invocation,

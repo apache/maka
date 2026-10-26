@@ -377,9 +377,19 @@ fn cstr(key: &str) -> CString {
 
 /// `obj[key]`.
 pub(crate) fn get(cx: Ctx, obj: Raw, key: &str) -> R<V> {
-    let k = cstr(key);
-    // SAFETY: a live object (getters may run JS).
-    V::checked(cx, unsafe { qjs::JS_GetPropertyStr(cx, obj, k.as_ptr()) })
+    // The atom from the key's bytes, not a C string: decoding a long list
+    // of objects reads their fields this way, an allocation each.
+    // SAFETY: QuickJS copies the bytes.
+    let atom = unsafe { qjs::JS_NewAtomLen(cx, key.as_ptr().cast(), key.len() as _) };
+    if atom == qjs::JS_ATOM_NULL {
+        return Err(Throw);
+    }
+    // SAFETY: a live object (getters may run JS); the atom is ours to free.
+    unsafe {
+        let value = qjs::JS_GetProperty(cx, obj, atom);
+        qjs::JS_FreeAtom(cx, atom);
+        V::checked(cx, value)
+    }
 }
 
 /// `obj[atom]`.

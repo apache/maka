@@ -14,7 +14,8 @@ nsh <COMMAND>
 
   init         Create an app in Rust or TSX
   build        Build an app: describe a Rust app's crates, or bundle a TSX app and compile it to QuickJS bytecode
-  test         Run an app's tests headless
+  test         Run an app's tests headless, and its Rust crates' with cargo test
+  check        Type check an app with TypeScript's native compiler, and its Rust crates with cargo check
   dev          Serve an app to dev hosts (simulators, devices) and push rebuilds
   run          Like dev, and also run the app in a development host
   package      Package an installable app from the prebuilt runtime
@@ -97,7 +98,7 @@ Rust 应用（`nsh.json` 中有 `"root"`，见[用 Rust 开发](./rust.md)）运
 | `--release` | | 压缩代码并去掉调试信息。release 包没有热模块替换：每次保存都会重新加载应用。 |
 | `--limits [<LIMITS>]` | | 按嵌入在其他应用中的方式运行应用，使用宿主应用设置的限制：`memory` 和 `stack`（单位为 `KB`、`MB` 或 `GB`）、`load` 和 `call`（单位为 `ms` 或 `s`）以及 `nodes`，例如 `--limits memory=128MB,call=500ms`。没写的项保持嵌入时的默认值，只写 `--limits` 就全部使用默认值（[沙箱与能力](./sandbox-and-capabilities.md#限制)）。不带它时，应用像打包后的应用一样独立运行。仅 TSX 入口。 |
 | `--trace` | | 宿主把每次 commit 的耗时（JS、布局、挂载项）记录到终端。 |
-| `--fps` | | 在应用上方显示性能监视器：帧率、每帧和每次 commit 的开销、CPU、GPU 和内存（[macOS](./macos.md#性能监视器)；目前仅限 `--target macos`）。 |
+| `--fps` | | 性能监视器：帧率、每帧和每次 commit 的开销、CPU、GPU 和内存；macOS 上显示在应用上方（[macOS](./macos.md#性能监视器)）；macOS、Linux、Windows 和 iOS 上每秒输出一行日志。 |
 | `--name <NAME>` | `nsh.json` 的 name | 菜单栏中的应用显示名称及初始窗口标题（`--target macos`，TSX 入口）。 |
 | `--window-size <WIDTHxHEIGHT>` | 宿主默认值 | 初始窗口尺寸，单位为点，例如 `800x600`（`--target macos`、`linux`、`windows` 和 `gpui`，TSX 入口）。 |
 
@@ -124,10 +125,10 @@ nsh dev [ENTRY] [--target catalyst|ios|android|macos|linux|windows|gpui|web] [--
 ## nsh test
 
 ```sh
-nsh test [PATH] [--filter <NAME>] [--trace] [--junit <FILE>] [--target <TARGET>] [--browser <PATH>] [--web-host <JS>]
+nsh test [PATH] [--filter <NAME>] [--trace] [--fps] [--junit <FILE>] [--target <TARGET>] [--browser <PATH>] [--web-host <JS>]
 ```
 
-以无界面方式运行应用的测试（[测试](./testing-and-trace.md)）：运行目录 `PATH`（默认为当前目录；跳过隐藏目录、`node_modules` 和 `target`）中的测试文件（`*.test.tsx`、`*.test.ts`，导入 `nsh/test`），或者测试文件 `PATH` 本身。每个测试文件在各自的引擎上运行，测试打开的每个应用又在另一个全新的引擎上运行。它为每个测试打印一行；失败时还会打印抛出的内容、它在测试文件中的位置和屏幕上的文字。只要有失败，就以非零退出码结束。如果传入的是应用入口（`nsh test App.tsx`；Rust 应用为 `nsh test nsh.json`），它会在真实网络下打开应用，让它运行 1.2 s，然后执行标准输入给出的步骤（`await app.press("Add")`，其中 `app` 就是这个应用）。TSX 应用在 CLI 自己的进程里运行；带有自己 Rust crate 的应用在用这些 crate 构建的无界面运行器中运行，由 CLI 为它构建入口。除非测试以 Android 打开应用（`open` 的 `platform`），无界面运行按 iOS 处理：`platform.os` 为 `"ios"`，`ios:` 类和 `ios={{…}}` 属性都会生效。
+以无界面方式运行应用的测试（[测试](./testing-and-trace.md)）：运行目录 `PATH`（默认为当前目录；跳过隐藏目录、`node_modules` 和 `target`）中的测试文件（`*.test.tsx`、`*.test.ts`，导入 `nsh/test`），或者测试文件 `PATH` 本身。如果传入的是带有自己 Rust crate 的应用（`nsh.json` `"rust"`：Rust 应用，或带 crate 的 TSX 应用）的目录，它会先在目录中每个 crate 自己的目录下运行 `cargo test`，并把每个 Rust 测试与 TypeScript 测试一起显示和计数，归在其测试目标的文件下（`src/lib.rs › tests::adds`）；只有 Rust 测试的 Rust 应用也这样测试。每个测试文件在各自的引擎上运行，测试打开的每个应用又在另一个全新的引擎上运行。它为每个测试打印一行；失败时还会打印抛出的内容、它在测试文件中的位置和屏幕上的文字。只要有失败，就以非零退出码结束。如果传入的是应用入口（`nsh test App.tsx`；Rust 应用为 `nsh test nsh.json`），它会在真实网络下打开应用，让它运行 1.2 s，然后执行标准输入给出的步骤（`await app.press("Add")`，其中 `app` 就是这个应用）。TSX 应用在 CLI 自己的进程里运行；带有自己 Rust crate 的应用在用这些 crate 构建的无界面运行器中运行，由 CLI 为它构建入口。除非测试以 Android 打开应用（`open` 的 `platform`），无界面运行按 iOS 处理：`platform.os` 为 `"ios"`，`ios:` 类和 `ios={{…}}` 属性都会生效。
 
 ```text
 ✓ App.test.tsx › counts taps (321ms)
@@ -136,14 +137,28 @@ nsh test [PATH] [--filter <NAME>] [--trace] [--junit <FILE>] [--target <TARGET>]
 
 | 参数 | 说明 |
 |---|---|
-| `--filter <NAME>` | 只运行名称（前面带上所在 `describe` 块的名称）包含 `NAME` 的测试。 |
+| `--filter <NAME>` | 只运行名称（前面带上所在 `describe` 块的名称）包含 `NAME` 的测试；对 crate 则是 `cargo test <NAME>`。 |
 | `--trace` | 打印测试所打开应用的每个挂载批次，标注它所属的步骤（`── press(Add): 7 items`），以及每次 commit 的耗时：首帧、一个步骤或一帧滚动的开销。加上 `--target` 时，是 host 的批次和耗时。 |
+| `--fps` | 配合 `--target linux`、`macos`、`windows` 或 `ios`：host 每秒输出一行性能监视器读数（帧率、帧各阶段、commit、CPU、内存），用 `-v` 显示。 |
 | `--junit <FILE>` | 同时把结果以 JUnit XML 报告写入 `FILE`，CI 服务按这种格式展示测试结果：每个测试文件一个 `testsuite`，每个测试一个 `testcase`。 |
-| `--target <TARGET>` | 在该平台的开发 host 上运行测试打开的应用，而不是 headless（`macos`、`linux`、`windows`、`gpui`、`web`、`ios` 和 `android`；`web` 在 headless 的 Chrome、Edge 或 Chromium 里运行）：步骤用平台自己的输入执行（[测试](./testing-and-trace.md#在真实平台上运行)）。 |
+| `--target <TARGET>` | 在该平台的开发 host 上运行测试打开的应用，而不是 headless（`macos`、`linux`、`windows`、`gpui`、`web`、`ios` 和 `android`；`web` 在 headless 的 Chrome、Edge 或 Chromium 里运行）：步骤用平台自己的输入执行（[测试](./testing-and-trace.md#在真实平台上运行)）。crate 的 Rust 测试在本机运行，属于不带 `--target` 的运行。 |
 | `--browser <PATH>` | `--target web` 运行应用所用的 Chrome、Edge 或 Chromium 可执行文件（默认：本机安装的那个）。 |
 | `--web-host <JS>` | headless 运行时测试打开的应用所用的 Web 页面宿主模块（默认：`nsh.json` 的 `web.host`；它导出 `createHost(player)`）：它应答应用的 [`nsh/host`](../modules/nsh-host.md) 调用，它的 `player.hostEvent` 会送到 `host.on`（[测试](./testing-and-trace.md#页面的宿主)）。只用于 headless 运行；`--target web` 运行 `nsh.json` 的 `web.host`。 |
 
 NSH 生成的文件都放在 `.nsh/` 下：类型声明、runner 源码，以及默认的构建和打包输出 `.nsh/out/`。Cargo 保留它通常的 `target/` 缓存和已有的 `CARGO_TARGET_DIR` 行为；NSH 不会添加 Cargo 配置来移动它。`--out` 仍可指定输出位置。
+
+## nsh check
+
+```sh
+nsh check [ENTRY] [--tsc <TSC>] [-- <TSC ARGS>...]
+```
+
+对应用做类型检查。带有自己 Rust crate 的应用（`nsh.json` `"rust"`）会先在每个 crate 自己的目录下用 `cargo check --all-targets` 检查它（包括它的测试）；Cargo 报错时以非零退出码结束。Rust 应用（`"root"`）随后只检查它所拥有的 TypeScript：有 `tsconfig.json`（`nsh init --template rust` 为 `App.test.tsx` 写入的那个）时，它的测试文件也会做类型检查。TypeScript 检查会刷新 `.nsh/types` 和 `.nsh/tsconfig.json`，然后以应用的 `tsconfig.json` 运行 `tsc -p <应用目录> --noEmit`。它使用原生编译器 TypeScript 7，不需要 Node：第一次运行时从 npm registry 下载（约 9 MB），按 NSH 记录的校验和校验，并保存在 NSH 的缓存里（macOS 上为 `~/Library/Caches/nsh`，Linux 上为 `~/.cache/nsh`，Windows 上为 `%LOCALAPPDATA%\nsh`，或 `NSH_CACHE`）。有类型错误时以非零退出码结束。`tsconfig.json` 没有继承 `./.nsh/tsconfig.json`（NSH 在那里维护它的 TypeScript 设置）时会给出警告（[项目结构](./project-structure.md)）。
+
+| 参数 | 说明 |
+|---|---|
+| `--tsc <TSC>` | 改为运行这个 `tsc`（也可用 `NSH_TSC`），例如 `node_modules` 里的，或者给没有网络的机器准备的副本。 |
+| `-- <TSC ARGS>` | 原样传给 `tsc`，例如 `nsh check -- --pretty false`。 |
 
 ## nsh build
 

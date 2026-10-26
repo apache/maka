@@ -5,8 +5,7 @@ original `EngineConfig`. It renders the same scene with the production WGPU
 offscreen API. It supplies neither a second application runtime nor terminal IO.
 The transport uses the official GPUI Fast 0.1.10 core. Only the WGPU renderer
 is received under `third-party/gpui-wgpu`, where its own `offscreen` feature
-exposes production pixel readback. It requires no core patch or application
-repository, and `test-support` is not a production dependency.
+exposes production pixel readback. `test-support` is not a production dependency.
 
 The host constructs `gpui_wgpu::WgpuHeadlessRenderer` and creates `TerminalPlatform`, uses `Application::with_platform` and
 `run_embedded`, and pumps foreground work when woken or a timer is due. One
@@ -28,6 +27,22 @@ mouse reports. Coordinates supplied to this platform are physical pixels at
 scale 1; it does not guess cell dimensions or synthesize pixel precision from
 cell reports. Keyboard callbacks run before the current native text handler
 commits a propagated printable character. A bracketed paste is one text commit.
+
+A host with a negotiated composition producer keeps `text_input_target()` on
+the native owner thread and applies each complete update with
+`apply_composition(target, commit_prefix, preedit, selection_utf16, active)`.
+The selection is relative to the preedit, in UTF-16 code units. An inactive
+update cancels its temporary mark. The committed prefix is applied first; if
+that edit changes the focused field, the remaining preedit is discarded.
+The target identifies a native focus admission, so leaving and returning to
+the same field also invalidates it. The host binds each source composition
+lifetime to one such target and negotiates application admission separately;
+field changes do not require a transport round trip.
+
+`input_candidate_bounds()` returns the native IME anchor on the current visual
+line, with its full height, in logical window pixels. Convert all four edges
+to terminal units and retain any zero-width rectangle. `input_caret_bounds()`
+continues to report the actual caret independently.
 
 Each successful GPU submission produces a `SubmittedFrame` containing an
 issuer-bound `FrameToken`, viewport generation and its owned readback ticket.

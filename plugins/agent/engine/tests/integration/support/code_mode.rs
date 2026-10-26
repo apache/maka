@@ -19,12 +19,12 @@
 
 use super::invocation;
 
+use crate::support::store::SessionFixture;
 use maka_agent_engine::RunInput;
 use maka_agent_facts::event::Fact;
 use maka_agent_facts::event::Invocation;
 use maka_agent_facts::tools::ToolExecutor;
 use maka_agent_facts::tools::ToolFuture;
-use maka_event_log::EventLog;
 use maka_model::{ProviderConfig, ProviderKind};
 use maka_tools::{
     ToolCatalog, ToolDefinition, ToolHandler, ToolMode, ToolNesting, ToolRegistration,
@@ -34,7 +34,7 @@ use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 use tokio::sync::Barrier;
 use tokio_util::sync::CancellationToken;
@@ -43,7 +43,7 @@ pub const CODE: &str =
     "text(await Promise.all([tools.left({value:21}), tools.right({value:42})]));";
 
 pub struct Effects {
-    pub log: Arc<EventLog>,
+    pub log: Arc<SessionFixture>,
     pub count: Arc<AtomicUsize>,
     pub together: Arc<Barrier>,
 }
@@ -142,32 +142,7 @@ pub fn input(base: &str, suffix: &str, effects: Arc<Effects>) -> RunInput {
 }
 
 pub async fn read_request(socket: &mut TcpStream) -> Value {
-    let mut bytes = Vec::new();
-    let boundary = loop {
-        let mut chunk = [0; 4096];
-        let count = socket.read(&mut chunk).await.unwrap();
-        assert_ne!(count, 0);
-        bytes.extend_from_slice(&chunk[..count]);
-        assert!(bytes.len() < 128 * 1024);
-        if let Some(at) = bytes.windows(4).position(|w| w == b"\r\n\r\n") {
-            break at + 4;
-        }
-    };
-    let length: usize = String::from_utf8_lossy(&bytes[..boundary])
-        .lines()
-        .find_map(|line| {
-            let (name, value) = line.split_once(':')?;
-            name.eq_ignore_ascii_case("content-length")
-                .then(|| value.trim().parse().unwrap())
-        })
-        .unwrap();
-    while bytes.len() < boundary + length {
-        let mut chunk = [0; 4096];
-        let count = socket.read(&mut chunk).await.unwrap();
-        assert_ne!(count, 0);
-        bytes.extend_from_slice(&chunk[..count]);
-    }
-    serde_json::from_slice(&bytes[boundary..boundary + length]).unwrap()
+    super::http::read_request(socket).await
 }
 
 pub async fn respond(socket: &mut TcpStream, first: bool) {

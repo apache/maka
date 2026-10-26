@@ -16,7 +16,7 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-//! Product authoring loads checked packages from development output or release assets.
+//! Product authoring loads checked packages embedded in this executable.
 use super::{HostError, Input, Package, RemoteObservation, read_json};
 use clap::Args;
 use maka_event_log::applications::PreparedApplication;
@@ -29,7 +29,10 @@ mod headless;
 mod launch;
 mod update;
 pub(crate) use headless::update::live_update_available;
-pub(crate) use headless::{ProductHost, Roots, open_host, select_committed_host};
+pub(crate) use headless::{
+    LivePublication, ProductHost, Roots, configure_workspace_locations, directories, open_host,
+    prepare_live_publication, select_committed_host,
+};
 pub(super) use update::Update;
 
 pub(super) fn root_path(root: Option<PathBuf>) -> Result<PathBuf, HostError> {
@@ -41,15 +44,11 @@ pub(super) fn root_path(root: Option<PathBuf>) -> Result<PathBuf, HostError> {
     }
 }
 
-#[cfg(maka_embedded_product)]
 struct Bundled {
     name: &'static str,
     files: &'static [(&'static str, &'static [u8])],
 }
-#[cfg(maka_embedded_product)]
 include!(concat!(env!("OUT_DIR"), "/product-assets.rs"));
-#[cfg(not(maka_embedded_product))]
-const DEVELOPMENT_BUNDLE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../bundle/dist");
 
 #[derive(Args)]
 pub(crate) struct Compose {
@@ -86,7 +85,6 @@ impl Compose {
     }
 }
 
-#[cfg(maka_embedded_product)]
 fn packages() -> Result<BTreeMap<String, Package>, HostError> {
     BUNDLED
         .iter()
@@ -98,36 +96,6 @@ fn packages() -> Result<BTreeMap<String, Package>, HostError> {
                 .collect();
             Ok((bundled.name.into(), Package::new(files)?))
         })
-        .collect()
-}
-
-#[cfg(not(maka_embedded_product))]
-fn development_bundle() -> PathBuf {
-    std::env::var_os("MAKA_PRODUCT_BUNDLE")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| DEVELOPMENT_BUNDLE.into())
-}
-#[cfg(not(maka_embedded_product))]
-fn package_paths() -> Result<BTreeMap<String, PathBuf>, HostError> {
-    let directory = std::path::absolute(development_bundle())?;
-    let names: Vec<String> = serde_json::from_value(read_json(&directory.join("packages.json"))?)?;
-    let mut paths = BTreeMap::new();
-    for name in names {
-        if name.is_empty() || !name.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-') {
-            return Err("invalid development package name".into());
-        }
-        let path = directory.join("packages").join(&name);
-        if paths.insert(name, path).is_some() {
-            return Err("duplicate development package name".into());
-        }
-    }
-    Ok(paths)
-}
-#[cfg(not(maka_embedded_product))]
-fn packages() -> Result<BTreeMap<String, Package>, HostError> {
-    package_paths()?
-        .into_iter()
-        .map(|(name, path)| Ok((name, Package::read_from(&path)?)))
         .collect()
 }
 
@@ -149,37 +117,7 @@ fn fingerprint(source: &str, packages: impl IntoIterator<Item = (String, String)
 // This generated identifier is a no-op hint, never package execution admission.
 // Actual installation/update candidates must pass verified_fingerprint below.
 fn bundle_fingerprint() -> Result<String, HostError> {
-    #[cfg(maka_embedded_product)]
-    {
-        parse_bundle_fingerprint(PRODUCT_VERSION)
-    }
-    #[cfg(not(maka_embedded_product))]
-    {
-        read_bundle_fingerprint(&development_bundle())
-    }
-}
-#[cfg(any(test, not(maka_embedded_product)))]
-fn read_bundle_fingerprint(directory: &std::path::Path) -> Result<String, HostError> {
-    use std::io::Read;
-    let mut version = String::new();
-    std::fs::File::open(directory.join("product-version.txt"))
-        .and_then(|file| file.take(73).read_to_string(&mut version))
-        .map_err(|error| {
-            format!("product version unavailable; rebuild the product bundle: {error}")
-        })?;
-    parse_bundle_fingerprint(&version)
-}
-fn parse_bundle_fingerprint(version: &str) -> Result<String, HostError> {
-    let version = version.strip_suffix('\n').unwrap_or(version);
-    if version.len() != 71
-        || !version.starts_with("sha256-")
-        || !version.as_bytes()[7..]
-            .iter()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(byte))
-    {
-        return Err("invalid product version; rebuild the product bundle".into());
-    }
-    Ok(version.to_owned())
+    Ok(PRODUCT_VERSION.trim_end().into())
 }
 fn verified_fingerprint(
     source: &str,
@@ -201,16 +139,7 @@ fn verified_fingerprint(
     Ok(actual)
 }
 fn authoring() -> Result<String, HostError> {
-    #[cfg(maka_embedded_product)]
-    {
-        Ok(AUTHORING.into())
-    }
-    #[cfg(not(maka_embedded_product))]
-    {
-        Ok(std::fs::read_to_string(
-            development_bundle().join("authoring/composition.mjs"),
-        )?)
-    }
+    Ok(AUTHORING.into())
 }
 
 async fn author(
@@ -289,6 +218,7 @@ async fn author_with_source(
     maka_host_runtime::application::host::Configuration::PublicHost {
         endpoints: sources.endpoints.clone(),
         native: sources.native.clone(),
+        product_methods: Default::default(),
     }
     .validate()?;
     values.remove("packages");

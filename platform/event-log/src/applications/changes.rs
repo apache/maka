@@ -21,12 +21,13 @@
 use super::{EventLog, StoreError, invalid};
 use maka_plugin_core::deployment::DeploymentRef;
 use sqlx::Row;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 /// A coalescing cursor, not composition authority. The committed SQL head is
 /// re-read after every wake, including the first pull and a concurrent commit.
 pub struct DeploymentChanges {
-    store: Arc<EventLog>,
+    store: Weak<EventLog>,
+    stop: Option<tokio_util::sync::CancellationToken>,
     observed: DeploymentRef,
     wakes: tokio::sync::watch::Receiver<u64>,
 }
@@ -40,7 +41,8 @@ impl EventLog {
             return Err(invalid("foreign application state domain"));
         }
         Ok(DeploymentChanges {
-            store: self.clone(),
+            store: Arc::downgrade(self),
+            stop: None,
             observed,
             wakes: self.subscribe_commits(),
         })
@@ -81,13 +83,22 @@ impl EventLog {
     }
 }
 impl DeploymentChanges {
+    pub(crate) fn with_shutdown(mut self, stop: tokio_util::sync::CancellationToken) -> Self {
+        self.stop = Some(stop);
+        self
+    }
+
     pub async fn next(&mut self) -> Result<DeploymentRef, StoreError> {
         loop {
             // Consume the wake before the SQL read: a commit during the read
             // remains observable if that read did not already include it.
             self.wakes.borrow_and_update();
-            let source = self
-                .store
+            if self.stop.as_ref().is_some_and(|stop| stop.is_cancelled()) {
+                return Err(StoreError::ConnectionClosed);
+            }
+            let store = self.store.upgrade().ok_or(StoreError::ConnectionClosed)?;
+            let closed = store.connection.close_receipt();
+            let source = store
                 .application_head(self.observed.deployment)
                 .await?
                 .ok_or_else(|| invalid("watched deployment not found"))?;
@@ -98,9 +109,17 @@ impl DeploymentChanges {
                 self.observed = source.clone();
                 return Ok(source);
             }
+            drop(store);
+            let stopping = async {
+                match &self.stop {
+                    Some(stop) => stop.cancelled().await,
+                    None => std::future::pending::<()>().await,
+                }
+            };
             tokio::select! {
                 biased;
-                result = self.store.connection.close_receipt() => {
+                () = stopping => return Err(StoreError::ConnectionClosed),
+                result = closed => {
                     return Err(match result {
                         Ok(()) => StoreError::ConnectionClosed,
                         Err(error) => StoreError::CloseFailed(error),

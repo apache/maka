@@ -1,17 +1,27 @@
 //! The `TextView` component: a [`Document`] shown with the primitives.
 
-use std::rc::Rc;
+use std::{
+    cell::RefCell,
+    collections::HashMap,
+    rc::{Rc, Weak},
+    sync::Arc,
+};
 
 use nsh_core::{
-    ResizeMode,
+    ListContentStyle, ListSourceRows, ListViewport, ResizeMode,
     color::Hsla,
     geometry::{DefiniteLength, Length},
-    ui::{Renderer, Style, StyleRefinement, prelude::*},
+    ui::{
+        Arg, CallCx, Instance, JsHost, JsIn, JsOwned, JsValue, Owner, PropError, Renderer, Ret,
+        Style, StyleRefinement, TsTypes, prelude::*,
+    },
 };
 
 use super::{
     Alert, Block, CodeBlock, ColumnAlign, CustomNode, Document, Image, ImageLength, Inline,
     ListItem, MarkdownExtension, MarkdownOptions, MarkdownPlugins, Parser, Table,
+    markdown::{Projection, ProjectionKind},
+    parse::{DocumentState, SourceOrigin},
     parts::{TextViewClasses, TextViewPart as Part, TextViewParts, TextViewStyles},
 };
 use crate::theme::theme;
@@ -24,6 +34,11 @@ pub struct TextViewProps {
     /// by an AI model can be passed as it grows (with `options={{
     /// streaming: true }}`): only the blocks that changed are shown again.
     pub markdown: Prop<Option<SharedString>>,
+    /// Stable identity of the original UTF-8 source for reading anchors.
+    pub source_id: Prop<Option<SharedString>>,
+    /// Accessible labels and feedback supplied by the app.
+    #[prop(default)]
+    pub labels: Prop<TextViewLabels>,
     /// The document as HTML (simple markup as a reader shows it: no CSS or
     /// scripts), when `markdown` is not given.
     pub html: Prop<Option<SharedString>>,
@@ -44,10 +59,21 @@ pub struct TextViewProps {
     /// Inline styles by part, over their classes.
     #[prop(default)]
     pub styles: Prop<TextViewStyles>,
-    /// Its texts can be selected and copied (a long press, or a drag with
-    /// a pointer), each block on its own.
+    /// Padding and spacing of the native document rows, in points.
+    /// Supplying a value replaces the complete content layout.
+    #[prop(default = default_content_style())]
+    pub content_style: Prop<ListContentStyle>,
+    /// Its mounted texts share one selection for copying (a long press,
+    /// or a drag with a pointer), joined by a surrounding SelectionArea.
     #[prop(default)]
     pub selectable: Prop<bool>,
+    /// What a press on a link does: `"report"` (the default) reports it
+    /// (`onLinkPress`) and opens nothing; `"open"` also opens a link to
+    /// another app or site outside the app (`openUrl` of `nsh/device`,
+    /// under the app's `openUrl` capability; the embedding app may route
+    /// it), while anchors in the document (`#…`) are only reported.
+    #[prop(default)]
+    pub links: Prop<TextViewLinks>,
     /// Whether code blocks show the scroll indicator of their horizontal
     /// scroll view (default true).
     #[prop(default = true)]
@@ -90,9 +116,89 @@ pub struct TextViewProps {
     /// asks for, else three quarters of a line tall. A press on an image in
     /// a link reports the link (`onLinkPress`), on another the image
     /// (`onImagePress`).
-    pub render_image: Prop<Option<Renderer<Image>>>,
+    pub render_image: Prop<Option<Renderer<TextViewImageContext>>>,
 }
 
+/// Localized labels for native document controls.
+#[derive(Debug, Clone, Default, PartialEq, JsObject)]
+pub struct TextViewLabels {
+    /// The table's accessible name.
+    pub table: Option<SharedString>,
+    /// Feedback after copying a code block.
+    pub copied: Option<SharedString>,
+}
+
+/// Layout and activation context for an app's image renderer. The app owns
+/// standalone image activation; linked images activate their enclosing link.
+#[derive(Debug, Clone, PartialEq, JsObject)]
+pub struct TextViewImageContext {
+    /// The immutable parsed image.
+    pub image: Image,
+    /// The image belongs to a link (do not add a competing press target).
+    pub linked: bool,
+    /// Whether the image stands alone or is an attachment in text.
+    pub flow: TextViewImageFlow,
+    /// Height of its surrounding text line, in points.
+    pub line_height: f32,
+}
+
+/// How an image participates in the document's text flow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PropEnum)]
+pub enum TextViewImageFlow {
+    /// An image on its own line.
+    Block,
+    /// An attachment inside a text line.
+    Inline,
+}
+
+/// A focus capability bound to the exact originating Link's lifetime.
+#[class(interface)]
+#[derive(Debug, Clone)]
+pub struct TextViewLinkTarget {
+    element: ElementRef,
+    owner: Owner,
+    origin: SourceOrigin,
+    lifetime: Weak<()>,
+}
+
+impl PartialEq for TextViewLinkTarget {
+    fn eq(&self, other: &Self) -> bool {
+        self.element == other.element && Weak::ptr_eq(&self.lifetime, &other.lifetime)
+    }
+}
+#[class]
+impl TextViewLinkTarget {
+    /// Whether the exact original Link still owns this capability.
+    pub fn is_live(&self) -> bool {
+        self.lifetime.strong_count() != 0
+    }
+
+    /// Accept a focus restoration request while the original Link still
+    /// lives. It runs natively in order with the caller's earlier UI changes.
+    pub fn focus(&self, cx: CallCx<'_>) -> bool {
+        if !self.is_live() {
+            return false;
+        }
+        let target = self.clone();
+        cx.start(async move {
+            target.focus_native();
+        });
+        true
+    }
+}
+impl TextViewLinkTarget {
+    fn focus_native(&self) -> bool {
+        if self.lifetime.strong_count() == 0
+            || !self.owner.is_live()
+            || !self.origin.is_current()
+            || self.element.node().is_none()
+        {
+            return false;
+        }
+        self.element.focus();
+        true
+    }
+}
 /// A formula of a [`TextView`]'s document, for its `renderMath`.
 #[derive(Debug, Clone, Default, PartialEq, JsObject)]
 pub struct TextViewMath {
@@ -102,12 +208,25 @@ pub struct TextViewMath {
     pub display: bool,
 }
 
+/// What a press on a link of a [`TextView`] does (`links`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PropEnum)]
+pub enum TextViewLinks {
+    /// It is reported (`onLinkPress`); the app decides what opens.
+    #[default]
+    Report,
+    /// It is reported, then a URL of another app or site (with a scheme:
+    /// `https:`, `mailto:`, ...) opens outside the app
+    /// ([`nsh_core::ui::open_url`]); an anchor in the document (`#…`) is
+    /// only reported.
+    Open,
+}
+
 /// The events of a [`TextView`].
 #[derive(Debug, Clone, PartialEq, Event)]
 pub enum TextViewEvent {
     /// A link was pressed: its URL (`#anchor` for a heading of the
-    /// document, `#footnote-<label>` for a footnote). Nothing opens it:
-    /// the app decides.
+    /// document, `#footnote-<label>` for a footnote). Nothing opens it
+    /// unless `links` is `"open"`: the app decides.
     #[args(event)]
     LinkPress(TextViewLinkPressEvent),
     /// An image that is not in a link was pressed: the image (its `src`,
@@ -119,6 +238,11 @@ pub enum TextViewEvent {
     /// copied): its id and the code block.
     #[args(event)]
     CodeBlockAction(TextViewCodeActionEvent),
+    /// User scrolling in a code block or table.
+    ScrollIntent,
+    /// Native formatting failed; the complete original text remains visible.
+    #[args(reason)]
+    ParseError(Option<SharedString>),
 }
 
 /// An action of the code blocks of a [`TextView`] (`codeBlockActions`).
@@ -148,12 +272,50 @@ impl TextViewCodeAction {
 }
 
 /// A press on a link of a [`TextView`] (`onLinkPress`).
-#[derive(Debug, Clone, Default, PartialEq, JsObject)]
+#[derive(Debug, Clone, Default, PartialEq)]
 #[non_exhaustive]
 pub struct TextViewLinkPressEvent {
     /// The link's URL (`#anchor` for a heading of the document,
     /// `#footnote-<label>` for a footnote).
     pub url: SharedString,
+    /// Exact original native Link; its capability expires with that Link.
+    pub target: Option<TextViewLinkTarget>,
+}
+
+// Classes cross through Arg/Ret, rather than JsValue's blanket Ret. Keep
+// this event's conversion at that boundary and derive its target declaration
+// from the actual class spec registered by nsh/base.
+impl JsValue for TextViewLinkPressEvent {
+    fn ts_type(types: &mut TsTypes) -> String {
+        types.declare("TextViewLinkPressEvent", |types| {
+            let url = <SharedString as JsValue>::ts_type(types);
+            let target = <Option<Instance<TextViewLinkTarget>> as Arg>::ts_type(types);
+            format!("/** A native document link press and its original focus capability. */\nexport interface TextViewLinkPressEvent {{\n  url: {url};\n  target: {target};\n}}")
+        })
+    }
+
+    fn from_js(value: JsIn<'_>) -> Result<Self, PropError> {
+        let url = <SharedString as JsValue>::from_js(value.field("url")?.get())?;
+        let target =
+            <Option<Instance<TextViewLinkTarget>> as Arg>::from_js(value.field("target")?.get())?
+                .map(|target| target.with(Clone::clone));
+        Ok(Self { url, target })
+    }
+
+    fn to_js<'a>(&self, host: &'a dyn JsHost) -> Result<JsOwned<'a>, PropError> {
+        let object = JsOwned::new(host, host.new_object()?);
+        host.set_field(
+            object.get().raw(),
+            "url",
+            <SharedString as JsValue>::to_js(&self.url, host)?.into_raw(),
+        )?;
+        let target = match &self.target {
+            Some(target) => target.clone().into_js(host)?,
+            None => JsOwned::new(host, host.null()),
+        };
+        host.set_field(object.get().raw(), "target", target.into_raw())?;
+        Ok(object)
+    }
 }
 
 /// A press on a code block's action (`onCodeBlockAction`).
@@ -186,98 +348,260 @@ pub struct TextViewCodeActionEvent {
 #[component]
 pub fn TextView(props: TextViewProps, cx: Scope<TextViewEvent>) -> impl IntoElement {
     let plugins = use_context::<MarkdownPlugins>().unwrap_or_default();
-    let parser_plugins = plugins.clone();
-    let document = computed(move || {
-        let parser = || {
-            Parser::new()
-                .options(props.options.get())
-                .extensions(props.extensions.get())
-                .plugins(&parser_plugins)
-        };
-        if let Some(markdown) = props.markdown.get() {
-            parser().markdown(&markdown)
-        } else if let Some(html) = props.html.get() {
-            parser().html(&html)
-        } else {
-            props.document.get().unwrap_or_default()
-        }
-    });
-    let blocks = computed(move || {
-        document.with(|d| d.blocks.iter().cloned().enumerate().collect::<Vec<_>>())
-    });
-    let count = computed(move || blocks.with(Vec::len));
-    let footnotes = computed(move || document.with(|d| d.footnotes.clone()));
+    let parsed = super::parse::document(props, plugins.clone(), cx);
+    let document = parsed.document;
+    let count =
+        computed(move || document.with(|d| d.blocks.len() + usize::from(!d.footnotes.is_empty())));
     let plugins = Rc::new(plugins);
-    let row_plugins = plugins.clone();
-    view()
+    dynamic(move || {
+        parsed.track_source();
+        // User choices belong to the source, not to a recycled list cell.
+        // Signals and event owners are still made under each logical row.
+        let choices = BlockChoices::new(document);
+        let prune = choices.clone();
+        effect(move || document.with(|document| prune.retain(document)));
+        let row_plugins = plugins.clone();
+        virtual_list(count, move |at| {
+            let rows = computed(move || {
+                let index = at.index();
+                document.with(|d| {
+                    d.blocks
+                        .get(index)
+                        .cloned()
+                        .map(|block| DocumentRow::Block(d.kind, index, block))
+                        .or_else(|| {
+                            (index == d.blocks.len() && !d.footnotes.is_empty())
+                                .then_some(DocumentRow::Footnotes)
+                        })
+                        .into_iter()
+                        .collect::<Vec<_>>()
+                })
+            });
+            let plugins = row_plugins.clone();
+            let choices = choices.clone();
+            each(rows, DocumentRow::key, move |item, _| {
+                let cx = Cx::read(&props, cx, plugins.clone(), parsed, choices.clone());
+                // A cell follows Position. This owner instead follows the
+                // logical block, so its old callbacks cannot address a row
+                // that the cell starts showing later.
+                let content = match item.get_untracked() {
+                    DocumentRow::Block(_, index, _) => {
+                        let last = computed(move || document.with(|d| index + 1 == d.blocks.len()));
+                        let before = computed(move || {
+                            document.with(|d| {
+                                Before::of(index.checked_sub(1).and_then(|i| d.blocks.get(i)))
+                            })
+                        });
+                        let block = computed(move || match item.get() {
+                            DocumentRow::Block(_, _, block) => block,
+                            DocumentRow::Footnotes => unreachable!(),
+                        });
+                        cx.block(block, index.to_string(), last, before)
+                    }
+                    DocumentRow::Footnotes => {
+                        cx.footnotes(computed(move || document.with(|d| d.footnotes.clone())))
+                    }
+                };
+                view().child(content)
+            })
+        })
+        .viewport(ListViewport::Parent)
+        .source_rows(move || {
+            // The live domain may be longer than this worker publication.
+            // Neither the repaired parser input nor an admitted old prefix
+            // may claim the current source's complete byte coverage.
+            let source = props.markdown.get()?;
+            let id = props.source_id.get()?;
+            document.with(|projection| {
+                let mut rows = ListSourceRows::default();
+                rows.id = Arc::from(id.as_str());
+                rows.source_len = source.len() as u64;
+                rows.projection_len = projection.raw_len;
+                rows.rows = projection.rows.clone();
+                Some(Arc::new(rows))
+            })
+        })
+        .content_style(props.content_style)
         .flex_col()
-        .gap(px(BLOCK_GAP))
+        .keys(move || {
+            document.with(|d| {
+                d.blocks
+                    .iter()
+                    .enumerate()
+                    .map(|(index, block)| DocumentRowKey::block(d.kind, index, block))
+                    .chain((!d.footnotes.is_empty()).then_some(DocumentRowKey::Footnotes))
+                    .collect::<Vec<_>>()
+            })
+        })
         .text_size(px(BODY_SIZE))
         .line_height(px(BODY_SIZE * BODY_LINE))
         .text_color(move || theme().foreground)
-        // Selectable: its texts share one selection, block to block (inside
-        // a `SelectionArea`, the outer area's).
+        // Parent mode contributes these mounted texts to the surrounding
+        // reader and selection area; it owns no independent scroll offset.
         .selection_area(props.selectable)
+        .map(|mut el| {
+            if let Some(parts) = use_context::<TextViewParts>() {
+                let style = std::mem::take(el.style());
+                *el.style() = parts.refine(Part::Root, style);
+            }
+            el
+        })
         .app_class(move || props.classes.with(|c| c.root.clone()))
         .inline_style(move || {
             props
                 .styles
                 .with(|s| s.root.as_ref().map(|s| s.0.clone()).unwrap_or_default())
         })
-        .child(each(
-            blocks,
-            // By position and kind: the block a stream is writing keeps its
-            // row, and its row alone is made again.
-            |(index, block): &(usize, Block)| (*index, block.kind().to_owned()),
-            move |item, index| {
-                let plugins = row_plugins.clone();
-                // A memo: a block added after this one runs it again only
-                // when this one stops being the last.
-                let last = computed(move || index.get() + 1 == count.get());
-                // A memo as well: what comes before decides a heading's
-                // room above it.
-                let before = computed(move || match index.get() {
-                    0 => Before::Nothing,
-                    i => blocks.with(|b| Before::of(b.get(i - 1).map(|(_, b)| b))),
-                });
-                // A node as the row's root: an `Each` keeps rows by their
-                // root's key, which a region has none of.
-                view().child(dynamic(move || {
-                    let cx = Cx::read(&props, cx, plugins.clone());
-                    let (i, block) = item.get();
-                    cx.block(&block, &i.to_string(), last.get(), before.get())
-                }))
-            },
-        ))
-        .child(dynamic(move || {
-            let notes = footnotes.get();
-            if notes.is_empty() {
-                return None;
+    })
+}
+
+fn default_content_style() -> ListContentStyle {
+    ListContentStyle {
+        row_gap: px(BLOCK_GAP),
+        ..ListContentStyle::default()
+    }
+}
+
+#[derive(Clone, PartialEq)]
+enum DocumentRow {
+    Block(ProjectionKind, usize, Block),
+    Footnotes,
+}
+#[derive(Clone, PartialEq, Eq, Hash)]
+enum DocumentRowKey {
+    LiteralWholeDocument,
+    Block(usize, String),
+    Footnotes,
+}
+impl DocumentRowKey {
+    fn block(projection: ProjectionKind, index: usize, block: &Block) -> Self {
+        match projection {
+            ProjectionKind::LiteralWholeDocument => Self::LiteralWholeDocument,
+            ProjectionKind::Parsed => Self::Block(index, row_kind(block)),
+        }
+    }
+}
+impl DocumentRow {
+    fn key(&self) -> DocumentRowKey {
+        match self {
+            Self::Block(projection, index, block) => {
+                DocumentRowKey::block(*projection, *index, block)
             }
-            let cx = Cx::read(&props, cx, plugins.clone());
-            let footnotes = view()
-                .flex_col()
-                .gap(px(4.0))
-                .text_size(px(SMALL_SIZE))
-                .line_height(px(SMALL_SIZE * 1.6))
-                .text_color(move || theme().muted_foreground);
-            Some(
-                cx.part(footnotes, Part::Footnotes)
-                    .children(notes.iter().map(|note| {
-                        let key = format!("f{}", note.index);
-                        cx.part(view().flex_row().gap(px(6.0)), Part::Footnote)
-                            .child(cx.part(text(format!("{}.", note.index)), Part::FootnoteLabel))
-                            .child(cx.with_line(SMALL_SIZE * 1.6, || {
-                                cx.blocks(
-                                    view().flex_col().flex_1().gap(px(4.0)),
-                                    &note.children,
-                                    &key,
-                                    false,
-                                )
-                            }))
-                    })),
-            )
-        }))
+            Self::Footnotes => DocumentRowKey::Footnotes,
+        }
+    }
+}
+
+/// Only user decisions outlive cells. Each mounted logical row creates its
+/// own signal; the source keeps values, never handles owned by retired cells.
+#[derive(Clone)]
+struct BlockChoices {
+    document: Signal<Projection>,
+    values: Rc<RefCell<HashMap<ChoiceAddress, SavedChoice>>>,
+    footnote: Option<String>,
+}
+
+struct SavedChoice {
+    owners: Vec<String>,
+    value: bool,
+}
+impl BlockChoices {
+    fn new(document: Signal<Projection>) -> Self {
+        Self {
+            document,
+            values: Rc::default(),
+            footnote: None,
+        }
+    }
+
+    fn for_footnote(&self, label: String) -> Self {
+        Self {
+            footnote: Some(label),
+            ..self.clone()
+        }
+    }
+
+    fn address(&self, path: &str) -> ChoiceAddress {
+        ChoiceAddress {
+            footnote: self.footnote.clone(),
+            // The renderer's footnote key contains a display number; its
+            // logical owner, and hence its choices, belong to the label.
+            path: if self.footnote.is_some() {
+                path.split_once('.').map_or("", |(_, path)| path).to_owned()
+            } else {
+                path.to_owned()
+            },
+        }
+    }
+
+    fn signal(&self, path: &str, initial: bool) -> Signal<bool> {
+        let address = self.address(path);
+        let owners = self.document.with_untracked(|d| choice_owners(d, &address));
+        let initial = self
+            .values
+            .borrow()
+            .get(&address)
+            .filter(|choice| Some(&choice.owners) == owners.as_ref())
+            .map_or(initial, |choice| choice.value);
+        signal(initial)
+    }
+
+    fn set(&self, path: &str, value: bool) {
+        let address = self.address(path);
+        if let Some(owners) = self.document.with_untracked(|d| choice_owners(d, &address)) {
+            self.values
+                .borrow_mut()
+                .insert(address, SavedChoice { owners, value });
+        }
+    }
+
+    fn retain(&self, document: &Document) {
+        self.values
+            .borrow_mut()
+            .retain(|path, choice| choice_owners(document, path).as_ref() == Some(&choice.owners));
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct ChoiceAddress {
+    footnote: Option<String>,
+    path: String,
+}
+
+/// Kind changes at any ancestor replace its logical owner and choices.
+/// Footnotes are addressed by label, independently of their display number.
+fn choice_owners(document: &Document, address: &ChoiceAddress) -> Option<Vec<String>> {
+    let mut indices = address.path.split('.');
+    let root = indices.next()?.parse::<usize>().ok()?;
+    let mut owners = Vec::new();
+    let mut block = if let Some(label) = &address.footnote {
+        let note = document
+            .footnotes
+            .iter()
+            .find(|note| &note.label == label)?;
+        owners.push(format!("footnote:{}", note.label));
+        note.children.get(root)?
+    } else {
+        document.blocks.get(root)?
+    };
+    owners.push(row_kind(block));
+    while let Some(index) = indices.next() {
+        let index = index.parse::<usize>().ok()?;
+        block = match block {
+            Block::Blockquote { children, .. } | Block::Details { children, .. } => {
+                children.get(index)?
+            }
+            Block::Custom(node) => node.children.get(index)?,
+            Block::List { items, .. } => {
+                let item = items.get(index)?;
+                owners.push(format!("item:{}", item.checked.is_some()));
+                item.children.get(indices.next()?.parse::<usize>().ok()?)?
+            }
+            _ => return None,
+        };
+        owners.push(row_kind(block));
+    }
+    Some(owners)
 }
 
 /// Syntax highlighting of code blocks, for Rust views: given to the text
@@ -343,19 +667,18 @@ impl std::fmt::Debug for CodeHighlighter {
 /// What the blocks of one run are made with: the props read.
 #[derive(Clone)]
 struct Cx {
-    classes: TextViewClasses,
-    styles: TextViewStyles,
     selectable: bool,
+    props: TextViewProps,
+    source: DocumentState,
+    choices: BlockChoices,
     code_scroll_indicator: bool,
     table_scrollbar: bool,
     caret: Option<Slot>,
     render_custom: Option<Renderer<CustomNode>>,
-    render_code_block: Option<Renderer<CodeBlock>>,
-    render_code_block_action: Option<Renderer<TextViewCodeAction>>,
     code_block_actions: Vec<TextViewCodeAction>,
     render_table_actions: Option<Renderer<Table>>,
     render_math: Option<Renderer<TextViewMath>>,
-    render_image: Option<Renderer<Image>>,
+    render_image: Option<Renderer<TextViewImageContext>>,
     plugins: Rc<MarkdownPlugins>,
     typed: TextViewParts,
     /// Whether the caret is placed in this run.
@@ -370,6 +693,7 @@ struct Cx {
     /// image there is the link's.
     link: std::cell::RefCell<Option<SharedString>>,
     highlighter: Option<CodeHighlighter>,
+    links: TextViewLinks,
     scope: Scope<TextViewEvent>,
 }
 
@@ -378,17 +702,18 @@ impl Cx {
         props: &TextViewProps,
         scope: Scope<TextViewEvent>,
         plugins: Rc<MarkdownPlugins>,
+        source: DocumentState,
+        choices: BlockChoices,
     ) -> Self {
         Self {
-            classes: props.classes.get(),
-            styles: props.styles.get(),
             selectable: props.selectable.get(),
+            props: *props,
+            source,
+            choices,
             code_scroll_indicator: props.code_block_scrollbar.get(),
             table_scrollbar: props.table_scrollbar.get(),
             caret: props.streaming_caret.get(),
             render_custom: props.render_custom.get(),
-            render_code_block: props.render_code_block.get(),
-            render_code_block_action: props.render_code_block_action.get(),
             code_block_actions: props.code_block_actions.get(),
             render_table_actions: props.render_table_actions.get(),
             render_math: props.render_math.get(),
@@ -400,7 +725,522 @@ impl Cx {
             list_depth: std::cell::Cell::new(0),
             line: std::cell::Cell::new(BODY_SIZE * BODY_LINE),
             link: std::cell::RefCell::new(None),
+            links: props.links.get(),
             scope,
+        }
+    }
+
+    /// What a press on a link to `url` does: reported, and opened outside
+    /// the app when `links` says so.
+    fn link_press(&self, url: SharedString, element: ElementRef) -> impl Fn() + Clone + 'static {
+        let (scope, links) = (self.scope, self.links);
+        let owner = Owner::current();
+        let origin = self.source.origin();
+        // The owner already owns disposal. JS only retains a weak capability;
+        // a synchronous class method must never enter the reactive graph.
+        let lifetime = Rc::new(());
+        let weak = Rc::downgrade(&lifetime);
+        cleanup(move || drop(lifetime));
+        move || {
+            if !origin.is_current() || !owner.is_live() || element.node().is_none() {
+                return;
+            }
+            scope.emit(TextViewEvent::LinkPress(TextViewLinkPressEvent {
+                url: url.clone(),
+                target: Some(TextViewLinkTarget {
+                    element,
+                    owner,
+                    origin: origin.clone(),
+                    lifetime: weak.clone(),
+                }),
+            }));
+            if links == TextViewLinks::Open && !url.starts_with('#') {
+                drop(open_url(url.to_string()));
+            }
+        }
+    }
+
+    fn source(&self, el: Text, segments: Vec<nsh_core::TextSourceSegment>) -> Text {
+        let source_id = self.props.source_id;
+        el.text_source(move || {
+            source_id.get().map(|id| {
+                std::sync::Arc::new(nsh_core::TextSource::Mapped {
+                    id: id.to_string().into(),
+                    segments: segments.clone(),
+                })
+            })
+        })
+    }
+
+    fn block(
+        &self,
+        block: Memo<Block>,
+        key: String,
+        tail: Memo<bool>,
+        before: Memo<Before>,
+    ) -> AnyElement {
+        if matches!(block.get_untracked(), Block::CodeBlock(_)) {
+            let code = computed(move || match block.get() {
+                Block::CodeBlock(code) => code,
+                _ => unreachable!(),
+            });
+            let render = self.props.render_code_block;
+            let cx = self.clone();
+            return dynamic(move || match render.get() {
+                Some(render) => {
+                    let key = format!("code:{key}");
+                    let cx = cx.clone();
+                    dynamic(move || {
+                        let code = code.get();
+                        cx.attachment(
+                            render.render(key.clone(), code.clone()).into_element(),
+                            &code.source,
+                        )
+                    })
+                    .into_element()
+                }
+                None => untracked(|| cx.code_block(code, &key, tail)),
+            })
+            .into_element();
+        }
+        match block.get_untracked() {
+            Block::Blockquote { alert, .. } => {
+                let children = computed(move || match block.get() {
+                    Block::Blockquote { children, .. } => children,
+                    _ => unreachable!(),
+                });
+                let column = self.blocks(
+                    view().flex_col().flex_1().gap(px(BLOCK_GAP)),
+                    children,
+                    key,
+                    tail,
+                );
+                return if let Some(alert) = alert {
+                    self.alert_frame(alert).child(column).into_element()
+                } else {
+                    self.part(
+                        view()
+                            .flex_col()
+                            .border_l(px(2.0))
+                            .border_color(strong_border)
+                            .ps(px(BODY_SIZE * 0.9))
+                            .text_color(move || theme().foreground.opacity(0.8)),
+                        Part::Blockquote,
+                    )
+                    .child(column)
+                    .into_element()
+                };
+            }
+            Block::List { .. } => return self.list(block, key, tail),
+            Block::Details { open, .. } => {
+                let shown = self.choices.signal(&key, open);
+                let choices = self.choices.clone();
+                let choice_key = key.clone();
+                let children = computed(move || match block.get() {
+                    Block::Details { children, .. } => children,
+                    _ => unreachable!(),
+                });
+                let cx = self.clone();
+                let summary_cx = self.clone();
+                let summary_key = key.clone();
+                return self
+                    .part(view().flex_col().gap(px(ITEM_GAP * 2.0)), Part::Details)
+                    .child(
+                        self.part(
+                            view()
+                                .flex_row()
+                                .role(AccessibilityRole::Button)
+                                .focusable(true)
+                                .accessibility_state(move || AccessibilityState {
+                                    expanded: Some(shown.get()),
+                                    ..AccessibilityState::default()
+                                })
+                                .on_press(move || {
+                                    let value = !shown.get_untracked();
+                                    shown.set(value);
+                                    choices.set(&choice_key, value);
+                                }),
+                            Part::Summary,
+                        )
+                        .child(
+                            self.part(
+                                text(move || if shown.get() { "▾ " } else { "▸ " })
+                                    .selectable(false)
+                                    .text_color(move || theme().muted_foreground),
+                                Part::SummaryMarker,
+                            ),
+                        )
+                        .child(dynamic(move || match block.get() {
+                            Block::Details { summary, .. } => summary_cx
+                                .paragraph(&summary, &summary_key, false)
+                                .into_element(),
+                            _ => unreachable!(),
+                        })),
+                    )
+                    .child(dynamic(move || {
+                        shown.get().then(|| {
+                            cx.blocks(
+                                view().flex_col().gap(px(BLOCK_GAP)),
+                                children,
+                                key.clone(),
+                                tail,
+                            )
+                        })
+                    }))
+                    .into_element();
+            }
+            Block::Custom(_) => {
+                let node = computed(move || match block.get() {
+                    Block::Custom(node) => node,
+                    _ => unreachable!(),
+                });
+                return self.custom(node, key, tail);
+            }
+            _ => {}
+        }
+        let cx = self.clone();
+        dynamic(move || {
+            let mut current = Cx::read(
+                &cx.props,
+                cx.scope,
+                cx.plugins.clone(),
+                cx.source,
+                cx.choices.clone(),
+            );
+            current.list_depth = std::cell::Cell::new(cx.list_depth.get());
+            current.line = std::cell::Cell::new(cx.line.get());
+            let el = current.leaf(&block.get(), &key, tail.get(), before.get());
+            if tail.get() && current.caret.is_some() && !current.caret_placed.get() {
+                view()
+                    .flex_col()
+                    .child(el)
+                    .child(current.caret_after(text(""), true))
+                    .into_element()
+            } else {
+                el
+            }
+        })
+        .into_element()
+    }
+
+    fn custom(&self, node: Memo<CustomNode>, key: String, tail: Memo<bool>) -> AnyElement {
+        let fallback = signal(true);
+        let plugins = self.plugins.clone();
+        let render = self.props.render_custom;
+        let hook_cx = self.clone();
+        let hook_key = key.clone();
+        let hook = dynamic(move || {
+            let render = render.get();
+            let el = if plugins.is_empty() && render.is_none() {
+                None
+            } else {
+                let node = node.get();
+                plugins
+                    .render(&node)
+                    .or_else(|| {
+                        render.map(|render| {
+                            render
+                                .render(format!("custom:{hook_key}"), node.clone())
+                                .into_element()
+                        })
+                    })
+                    .map(|el| hook_cx.attachment(el, &node.source))
+            };
+            fallback.set(el.is_none());
+            el
+        });
+        let children = computed(move || node.with(|node| node.children.clone()));
+        let has_children = computed(move || children.with(|children| !children.is_empty()));
+        let native_cx = self.clone();
+        let native = when(
+            move || fallback.get(),
+            move || {
+                let cx = native_cx.clone();
+                let key = key.clone();
+                dynamic(move || {
+                    if has_children.get() {
+                        untracked(|| {
+                            cx.blocks(
+                                view().flex_col().gap(px(BLOCK_GAP)),
+                                children,
+                                key.clone(),
+                                tail,
+                            )
+                        })
+                        .into_element()
+                    } else {
+                        let cx = cx.clone();
+                        let key = key.clone();
+                        dynamic(move || {
+                            let node = node.get();
+                            if !node.content.is_empty() {
+                                cx.paragraph(&node.content, &key, tail.get()).into_element()
+                            } else {
+                                cx.caret_after(
+                                    cx.source(
+                                        text(node.text.clone())
+                                            .when(cx.selectable, |t| t.selectable(true)),
+                                        node.source.clone(),
+                                    ),
+                                    tail.get(),
+                                )
+                                .into_element()
+                            }
+                        })
+                        .into_element()
+                    }
+                })
+            },
+        );
+        self.part(view().flex_col().child(hook).child(native), Part::Custom)
+            .into_element()
+    }
+
+    /// A custom render's single actual Text attachment has one canonical atom.
+    fn attachment(&self, el: AnyElement, segments: &[nsh_core::TextSourceSegment]) -> AnyElement {
+        let Some(start) = segments.iter().map(|s| s.source_start).min() else {
+            return el;
+        };
+        let end = segments.iter().map(|s| s.source_end).max().unwrap_or(start);
+        self.source(
+            text("")
+                .when(self.selectable, |t| t.selectable(true))
+                .child(el),
+            vec![nsh_core::TextSourceSegment {
+                start: 0,
+                end: 1,
+                source_start: start,
+                source_end: end,
+                kind: nsh_core::TextSourceKind::Replacement,
+            }],
+        )
+        .into_element()
+    }
+
+    fn footnotes(&self, footnotes: Memo<Vec<super::Footnote>>) -> AnyElement {
+        let cx = self.clone();
+        self.part(
+            view()
+                .flex_col()
+                .gap(px(4.0))
+                .text_size(px(SMALL_SIZE))
+                .line_height(px(SMALL_SIZE * 1.6))
+                .text_color(move || theme().muted_foreground),
+            Part::Footnotes,
+        )
+        .child(each(
+            footnotes,
+            |note: &super::Footnote| note.label.clone(),
+            move |note, _| {
+                let children = computed(move || note.get().children);
+                let key = format!("f{}", note.get_untracked().index);
+                let mut cx = cx.clone();
+                cx.choices = cx.choices.for_footnote(note.get_untracked().label);
+                cx.part(view().flex_row().gap(px(6.0)), Part::Footnote)
+                    .child(cx.part(
+                        text(move || format!("{}.", note.get().index)).selectable(false),
+                        Part::FootnoteLabel,
+                    ))
+                    .child(cx.with_line(SMALL_SIZE * 1.6, || {
+                        cx.blocks(
+                            view().flex_col().flex_1().gap(px(4.0)),
+                            children,
+                            key,
+                            computed(|| false),
+                        )
+                    }))
+            },
+        ))
+        .into_element()
+    }
+
+    fn blocks<E: ParentElement + Styled>(
+        &self,
+        column: E,
+        blocks: Memo<Vec<Block>>,
+        key: String,
+        tail: Memo<bool>,
+    ) -> E {
+        let rows = computed(move || blocks.get().into_iter().enumerate().collect::<Vec<_>>());
+        let cx = self.clone();
+        column.child(each(
+            rows,
+            |(i, block): &(usize, Block)| (*i, row_kind(block)),
+            move |item, index| {
+                let block = computed(move || item.get().1);
+                let before = computed(move || match index.get() {
+                    0 => Before::Nothing,
+                    i => blocks.with(|b| Before::of(b.get(i - 1))),
+                });
+                let last = computed(move || tail.get() && index.get() + 1 == blocks.with(Vec::len));
+                view().child(cx.block(
+                    block,
+                    format!("{key}.{}", item.get_untracked().0),
+                    last,
+                    before,
+                ))
+            },
+        ))
+    }
+
+    fn list(&self, block: Memo<Block>, key: String, tail: Memo<bool>) -> AnyElement {
+        let items = computed(move || match block.get() {
+            Block::List { items, .. } => items.into_iter().enumerate().collect::<Vec<_>>(),
+            _ => unreachable!(),
+        });
+        let ordered = matches!(block.get_untracked(), Block::List { ordered: true, .. });
+        let kind = if ordered {
+            Part::OrderedList
+        } else {
+            Part::UnorderedList
+        };
+        let depth = self.list_depth.get();
+        let cx = self.clone();
+        self.parts(view().flex_col().gap(px(ITEM_GAP)), &[Part::List, kind])
+            .child(each(
+                items,
+                |(i, item): &(usize, ListItem)| (*i, item.checked.is_some()),
+                move |item, index| {
+                    let key = format!("{key}.{}", item.get_untracked().0);
+                    let checked = item.get_untracked().1.checked;
+                    let task = checked.is_some();
+                    let done = checked == Some(true);
+                    let children = computed(move || item.get().1.children);
+                    let last =
+                        computed(move || tail.get() && index.get() + 1 == items.with(Vec::len));
+                    let mut child_cx = cx.clone();
+                    child_cx.list_depth = std::cell::Cell::new(depth.saturating_add(1));
+                    let content = child_cx.blocks(
+                        view()
+                            .flex_col()
+                            .flex_1()
+                            .gap(move || {
+                                px(match block.get() {
+                                    Block::List { loose: true, .. } => BLOCK_GAP,
+                                    _ => ITEM_GAP,
+                                })
+                            })
+                            .when(done, |v| {
+                                v.text_color(move || theme().muted_foreground)
+                                    .line_through()
+                                    .text_decoration_color(move || {
+                                        theme().muted_foreground.opacity(0.6)
+                                    })
+                            }),
+                        children,
+                        key,
+                        last,
+                    );
+                    let marker_cx = cx.clone();
+                    let marker = dynamic(move || {
+                        let (ordered, start) = match block.get() {
+                            Block::List { ordered, start, .. } => (ordered, start),
+                            _ => unreachable!(),
+                        };
+                        marker_cx.list_marker(
+                            ordered,
+                            start,
+                            index.get(),
+                            item.get().1.checked,
+                            depth,
+                        )
+                    })
+                    .into_element();
+                    let (before, inside) = if task {
+                        (Some(marker), None)
+                    } else {
+                        (None, Some(marker))
+                    };
+                    let row = view().flex_row().map(|v| {
+                        if task {
+                            v.gap(px(8.0)).ps(px(1.5))
+                        } else {
+                            v.ps(px(LIST_INDENT))
+                        }
+                    });
+                    cx.part(row, Part::ListItem)
+                        .child(before)
+                        .child(cx.part(content.child(inside), Part::ListItemContent))
+                },
+            ))
+            .into_element()
+    }
+
+    fn list_marker(
+        &self,
+        ordered: bool,
+        start: u32,
+        index: usize,
+        checked: Option<bool>,
+        depth: u8,
+    ) -> AnyElement {
+        match checked {
+            Some(checked) => {
+                let mut parts = vec![Part::ListMarker, Part::TaskMarker];
+                if checked {
+                    parts.push(Part::TaskMarkerChecked);
+                }
+                // A box centered on the first line.
+                let marker = view()
+                    .flex_none()
+                    .size(px(TASK_BOX))
+                    .mt(px((BODY_SIZE * BODY_LINE - TASK_BOX) / 2.0))
+                    .rounded(px(4.0))
+                    .border(px(1.5))
+                    .items_center()
+                    .justify_center()
+                    .role(AccessibilityRole::Checkbox)
+                    .accessibility_state(AccessibilityState {
+                        checked: Some(if checked {
+                            nsh_core::Checked::True
+                        } else {
+                            nsh_core::Checked::False
+                        }),
+                        ..AccessibilityState::default()
+                    });
+                let marker = if checked {
+                    marker
+                        .bg(move || theme().primary)
+                        .border_color(move || theme().primary)
+                        .child(
+                            text("✓")
+                                .selectable(false)
+                                .text_size(px(11.0))
+                                .line_height(px(13.0))
+                                .font_weight(FontWeight::BOLD)
+                                .text_color(move || theme().primary_foreground),
+                        )
+                } else {
+                    marker.border_color(move || theme().muted_foreground)
+                };
+                self.parts(marker, &parts).into_element()
+            }
+            None => {
+                let marker = if ordered {
+                    format!("{}.", start as usize + index)
+                } else {
+                    // A browser's markers by depth: disc, circle, square.
+                    match depth {
+                        0 => "•",
+                        1 => "◦",
+                        _ => "▪",
+                    }
+                    .to_owned()
+                };
+                // In the indent before the content, its end against
+                // it, as a browser places it: wider numbers reach
+                // further left and the content stays in line.
+                let marker = text(marker)
+                    .selectable(false)
+                    .absolute()
+                    .top(px(0.0))
+                    .right(relative(1.0))
+                    .w(px(MARKER_BOX))
+                    .pe(px(6.0))
+                    .text_right()
+                    .text_color(move || theme().muted_foreground);
+                self.part(marker, Part::ListMarker).into_element()
+            }
         }
     }
 
@@ -417,29 +1257,31 @@ impl Cx {
                 *el.style() = self.typed.refine(*part, style);
             }
         }
-        let mut classes = String::new();
-        for part in parts {
-            if let Some(c) = self.classes.get(*part) {
-                if !classes.is_empty() {
-                    classes.push(' ');
-                }
-                classes.push_str(c);
-            }
-        }
-        let el = if classes.is_empty() {
-            el
-        } else {
-            el.app_class(Some(SharedString::from(classes)))
-        };
-        let styles: Vec<&Style> = parts.iter().filter_map(|p| self.styles.get(*p)).collect();
-        match styles.as_slice() {
-            [] => el,
-            [style] => el.inline_style((*style).clone()),
-            // Later parts' declarations win, as later classes do.
-            _ => el.inline_style(Style::from_decls(
-                styles.iter().flat_map(|s| s.decls().iter().cloned()),
-            )),
-        }
+        let class_prop = self.props.classes;
+        let style_prop = self.props.styles;
+        let class_parts = parts.to_vec();
+        let style_parts = parts.to_vec();
+        el.app_class(move || {
+            class_prop.with(|classes| {
+                let classes = class_parts
+                    .iter()
+                    .filter_map(|p| classes.get(*p))
+                    .map(|s| s.as_ref())
+                    .collect::<Vec<&str>>()
+                    .join(" ");
+                (!classes.is_empty()).then(|| SharedString::from(classes))
+            })
+        })
+        .inline_style(move || {
+            style_prop.with(|styles| {
+                Style::from_decls(
+                    style_parts
+                        .iter()
+                        .filter_map(|p| styles.get(*p))
+                        .flat_map(|s| s.decls().iter().cloned()),
+                )
+            })
+        })
     }
 
     /// A text of the block's inline content, selectable when asked.
@@ -459,41 +1301,7 @@ impl Cx {
         }
     }
 
-    /// `blocks` in `column`, each keyed under `key`; the last one is
-    /// `tail`'s.
-    fn blocks<E: ParentElement + Styled>(
-        &self,
-        column: E,
-        blocks: &[Block],
-        key: &str,
-        tail: bool,
-    ) -> E {
-        let n = blocks.len();
-        column.children(blocks.iter().enumerate().map(|(i, b)| {
-            let before = match i {
-                0 => Before::Nothing,
-                i => Before::of(blocks.get(i - 1)),
-            };
-            self.block(b, &format!("{key}.{i}"), tail && i + 1 == n, before)
-        }))
-    }
-
-    fn block(&self, block: &Block, key: &str, tail: bool, before: Before) -> AnyElement {
-        let el = self.block_content(block, key, tail, before);
-        // A block with no text of its own at its end (a rule, the app's
-        // content): the caret goes on a line after it.
-        if tail && self.caret.is_some() && !self.caret_placed.get() {
-            view()
-                .flex_col()
-                .child(el)
-                .child(self.caret_after(text(""), true))
-                .into_element()
-        } else {
-            el
-        }
-    }
-
-    fn block_content(&self, block: &Block, key: &str, tail: bool, before: Before) -> AnyElement {
+    fn leaf(&self, block: &Block, key: &str, tail: bool, before: Before) -> AnyElement {
         match block {
             Block::Paragraph { content } => match only_images(content) {
                 // Images with no text around them are blocks: as wide as
@@ -525,41 +1333,19 @@ impl Cx {
                     .role(AccessibilityRole::Header);
                 self.parts(el, &[Part::Heading, part]).into_element()
             }
-            Block::Blockquote {
-                children,
-                alert: None,
-            } => {
-                let column = view()
-                    .flex_col()
-                    .gap(px(BLOCK_GAP))
-                    .border_l(px(2.0))
-                    .border_color(strong_border)
-                    .ps(px(BODY_SIZE * 0.9))
-                    .text_color(move || theme().foreground.opacity(0.8));
-                self.part(self.blocks(column, children, key, tail), Part::Blockquote)
-                    .into_element()
-            }
-            Block::Blockquote {
-                children,
-                alert: Some(alert),
-            } => self.alert(*alert, children, key, tail),
-            Block::List {
-                ordered,
-                start,
-                loose,
-                items,
-            } => self.list(*ordered, *start, *loose, items, key, tail),
-            Block::CodeBlock(code) => self.code_block(code, key, tail),
-            Block::Math { tex } => match &self.render_math {
-                Some(render) => render
-                    .render(
-                        format!("math:{key}"),
-                        TextViewMath {
-                            tex: tex.clone().into(),
-                            display: true,
-                        },
-                    )
-                    .into_element(),
+            Block::Math { tex, source } => match &self.render_math {
+                Some(render) => self.attachment(
+                    render
+                        .render(
+                            format!("math:{key}"),
+                            TextViewMath {
+                                tex: tex.clone().into(),
+                                display: true,
+                            },
+                        )
+                        .into_element(),
+                    source,
+                ),
                 // Its TeX in a box as a code block's, as gpui-kit shows a
                 // formula it has no renderer for.
                 None => self
@@ -572,7 +1358,7 @@ impl Cx {
                             .border_color(move || theme().border)
                             .bg(move || theme().muted)
                             .child(
-                                text(tex.clone())
+                                self.source(text(tex.clone()), source.clone())
                                     .font_family(mono_font)
                                     .text_size(px(CODE_SIZE))
                                     .line_height(px(CODE_SIZE * CODE_LINE))
@@ -593,142 +1379,15 @@ impl Cx {
                     Part::Rule,
                 )
                 .into_element(),
-            Block::Details {
-                open,
-                summary,
-                children,
-            } => self.details(*open, summary, children, key, tail),
-            Block::Custom(node) => self.custom_block(node, key, tail),
+            Block::Blockquote { .. }
+            | Block::List { .. }
+            | Block::CodeBlock(_)
+            | Block::Details { .. }
+            | Block::Custom(_) => unreachable!("containers use the Memo renderer"),
         }
     }
 
-    fn list(
-        &self,
-        ordered: bool,
-        start: u32,
-        loose: bool,
-        items: &[ListItem],
-        key: &str,
-        tail: bool,
-    ) -> AnyElement {
-        let n = items.len();
-        let kind = if ordered {
-            Part::OrderedList
-        } else {
-            Part::UnorderedList
-        };
-        let depth = self.list_depth.get();
-        let rows = items.iter().enumerate().map(|(i, item)| {
-            let key = format!("{key}.{i}");
-            let marker = match item.checked {
-                Some(checked) => {
-                    let mut parts = vec![Part::ListMarker, Part::TaskMarker];
-                    if checked {
-                        parts.push(Part::TaskMarkerChecked);
-                    }
-                    // A box centered on the first line.
-                    let marker = view()
-                        .flex_none()
-                        .size(px(TASK_BOX))
-                        .mt(px((BODY_SIZE * BODY_LINE - TASK_BOX) / 2.0))
-                        .rounded(px(4.0))
-                        .border(px(1.5))
-                        .items_center()
-                        .justify_center()
-                        .role(AccessibilityRole::Checkbox)
-                        .accessibility_state(AccessibilityState {
-                            checked: Some(if checked {
-                                nsh_core::Checked::True
-                            } else {
-                                nsh_core::Checked::False
-                            }),
-                            ..AccessibilityState::default()
-                        });
-                    let marker = if checked {
-                        marker
-                            .bg(move || theme().primary)
-                            .border_color(move || theme().primary)
-                            .child(
-                                text("✓")
-                                    .text_size(px(11.0))
-                                    .line_height(px(13.0))
-                                    .font_weight(FontWeight::BOLD)
-                                    .text_color(move || theme().primary_foreground),
-                            )
-                    } else {
-                        marker.border_color(move || theme().muted_foreground)
-                    };
-                    self.parts(marker, &parts).into_element()
-                }
-                None => {
-                    let marker = if ordered {
-                        format!("{}.", start as usize + i)
-                    } else {
-                        // A browser's markers by depth: disc, circle, square.
-                        match depth {
-                            0 => "•",
-                            1 => "◦",
-                            _ => "▪",
-                        }
-                        .to_owned()
-                    };
-                    // In the indent before the content, its end against
-                    // it, as a browser places it: wider numbers reach
-                    // further left and the content stays in line.
-                    let marker = text(marker)
-                        .absolute()
-                        .top(px(0.0))
-                        .right(relative(1.0))
-                        .w(px(MARKER_BOX))
-                        .pe(px(6.0))
-                        .text_right()
-                        .text_color(move || theme().muted_foreground);
-                    self.part(marker, Part::ListMarker).into_element()
-                }
-            };
-            let task = item.checked.is_some();
-            let done = item.checked == Some(true);
-            let content = view()
-                .flex_col()
-                .flex_1()
-                .gap(px(if loose { BLOCK_GAP } else { ITEM_GAP }))
-                .when(done, |v| {
-                    v.text_color(move || theme().muted_foreground)
-                        .line_through()
-                        .text_decoration_color(move || theme().muted_foreground.opacity(0.6))
-                });
-            let row = view().flex_row().map(|v| {
-                if task {
-                    v.gap(px(8.0)).ps(px(1.5))
-                } else {
-                    v.ps(px(LIST_INDENT))
-                }
-            });
-            let content = self.blocks(content, &item.children, &key, tail && i + 1 == n);
-            // Before the content when a box, inside it (placed over the
-            // indent) when a bullet or a number.
-            let (before, inside) = if task {
-                (Some(marker), None)
-            } else {
-                (None, Some(marker))
-            };
-            self.part(row, Part::ListItem)
-                .child(before)
-                .child(self.part(content.child(inside), Part::ListItemContent))
-        });
-        self.list_depth.set(depth.saturating_add(1));
-        let rows: Vec<_> = rows.collect();
-        self.list_depth.set(depth);
-        // Loose or not, items are as close (Allsum's paragraphs in items
-        // have no margins); a loose item's own blocks are a gap apart.
-        self.parts(view().flex_col().gap(px(ITEM_GAP)), &[Part::List, kind])
-            .children(rows)
-            .into_element()
-    }
-
-    /// A GitHub alert: a box tinted with its kind's color, its icon before
-    /// its blocks.
-    fn alert(&self, alert: Alert, children: &[Block], key: &str, tail: bool) -> AnyElement {
+    fn alert_frame(&self, alert: Alert) -> View {
         let (part, glyph) = match alert {
             Alert::Note => (Part::AlertNote, "i"),
             Alert::Tip => (Part::AlertTip, "✓"),
@@ -748,12 +1407,12 @@ impl Cx {
             .justify_center()
             .child(
                 text(glyph)
+                    .selectable(false)
                     .text_size(px(10.0))
                     .line_height(px(12.0))
                     .font_weight(FontWeight::BOLD)
                     .text_color(tint),
             );
-        let column = view().flex_col().flex_1().gap(px(BLOCK_GAP));
         let row = view()
             .flex_row()
             .gap(px(10.0))
@@ -765,81 +1424,87 @@ impl Cx {
             .bg(move || tint().opacity(0.08));
         self.parts(row, &[Part::Blockquote, Part::Alert, part])
             .child(self.part(icon, Part::AlertIcon))
-            .child(self.blocks(column, children, key, tail))
-            .into_element()
     }
 
-    fn code_block(&self, code: &CodeBlock, key: &str, tail: bool) -> AnyElement {
-        if let Some(render) = &self.render_code_block {
-            return render
-                .render(format!("code:{key}"), code.clone())
-                .into_element();
-        }
-        // The app's actions float over the top right corner, so the code
-        // keeps its first line (no row is kept for them). Where a pointer
-        // hovers (desktops, desktop browsers) they show while it is over the
-        // block; touch screens have no hover, so there they always show.
-        let hover = is_desktop();
-        let header = (!self.code_block_actions.is_empty()).then(|| {
-            let header = view()
-                .absolute()
-                .top(px(6.0))
-                .right(px(6.0))
-                .flex_row()
-                .items_center()
-                .gap(px(2.0))
-                .when(hover, |h| {
-                    h.opacity(0.0)
-                        .group_hover(|s| s.opacity(1.0))
-                        .transition_opacity()
-                        .duration(150.0)
-                });
-            self.part(header, Part::CodeBlockHeader).children(
-                self.code_block_actions
-                    .iter()
-                    .enumerate()
-                    .map(|(i, action)| self.code_action(action, code, &format!("{key}.{i}"))),
+    /// The row owns controls and Wrap state. Only the code body changes as
+    /// the source grows, so keyboard focus and the user's wrap choice survive.
+    fn code_block(&self, code: Memo<CodeBlock>, key: &str, tail: Memo<bool>) -> AnyElement {
+        let wrapped = self.choices.signal(
+            key,
+            self.code_block_actions
+                .iter()
+                .any(|a| a.id.as_ref() == "wrap"),
+        );
+        let props = self.props;
+        let actions = computed(move || props.code_block_actions.get());
+        let action_cx = self.clone();
+        let action_key = key.to_owned();
+        let header = self
+            .part(
+                view().flex_row().items_center().gap(px(4.0)),
+                Part::CodeBlockHeader,
             )
-        });
-        // The app's highlighter, else the built-in one (which may color the
-        // code a moment after it shows), else plain.
-        let body = match &self.highlighter {
-            Some(h) => text("").children(h.spans(code)),
-            None => match super::highlight::built_in(code) {
-                Some(spans) => text("").children(spans),
-                None => text(code.code.clone()),
-            },
-        };
-        // The padding is the code's, inside the scroll view: the code
-        // scrolls to the edges, and the scroll bar sits in the bottom
-        // padding rather than over the last line.
-        let body = self.caret_after(
-            body.font_family(mono_font)
+            .child(each(
+                actions,
+                |action: &TextViewCodeAction| action.id.clone(),
+                move |action, _| {
+                    let action = computed(move || action.get());
+                    let key = format!("{action_key}.{}", action.get_untracked().id);
+                    action_cx.code_action_live(action, code, wrapped, &key, &action_key)
+                },
+            ));
+        let cx = self.clone();
+        self.part(
+            view()
+                .flex_col()
+                .rounded(px(8.0))
+                .border_1()
+                .border_color(move || theme().border)
+                .bg(move || theme().muted)
+                .text_size(px(CODE_SIZE))
+                .line_height(px(CODE_SIZE * CODE_LINE)),
+            Part::CodeBlock,
+        )
+        .child(header)
+        .child(dynamic(move || {
+            let cx = Cx::read(
+                &cx.props,
+                cx.scope,
+                cx.plugins.clone(),
+                cx.source,
+                cx.choices.clone(),
+            );
+            let code = code.get();
+            let body = match &cx.highlighter {
+                Some(h) => text("").children(h.spans(&code)),
+                None => match super::highlight::built_in(&code) {
+                    Some(spans) => text("").children(spans),
+                    None => text(code.code.clone()),
+                },
+            };
+            let body = cx
+                .source(body, code.source.clone())
+                .font_family(mono_font)
                 .px(px(16.0))
                 .py(px(14.0))
-                .when(self.selectable, |t| t.selectable(true)),
-            tail,
-        );
-        let block = view()
-            .flex_col()
-            .when(hover, |b| b.group())
-            .rounded(px(8.0))
-            .border_1()
-            .border_color(move || theme().border)
-            .bg(move || theme().muted)
-            .text_size(px(CODE_SIZE))
-            .line_height(px(CODE_SIZE * CODE_LINE));
-        // The actions last, so they are drawn over the code.
-        self.part(block, Part::CodeBlock)
-            .child(
-                self.part(
-                    scroll().horizontal().scrollbar(self.code_scroll_indicator),
-                    Part::CodeBlockScroll,
-                )
-                .child(self.part(body, Part::CodeBlockCode)),
+                .min_w(px(0.0))
+                .when(wrapped.get(), |t| t.w_full())
+                .when(cx.selectable, |t| t.selectable(true));
+            let body = cx.caret_after(body, tail.get());
+            let scope = cx.scope;
+            cx.part(
+                scroll()
+                    .when(!wrapped.get(), |s| s.horizontal())
+                    .scrollable(!wrapped.get())
+                    .scrollbar(cx.code_scroll_indicator)
+                    .on_scroll_intent(move |_: &ScrollIntent| {
+                        scope.emit(TextViewEvent::ScrollIntent)
+                    }),
+                Part::CodeBlockScroll,
             )
-            .child(header)
-            .into_element()
+            .child(cx.part(body, Part::CodeBlockCode))
+        }))
+        .into_element()
     }
 
     /// A table as one grid, so its columns line up across rows: each column
@@ -859,31 +1524,45 @@ impl Cx {
 
     /// A code block's action: a ghost button (its background shows while
     /// hovered or pressed) around the action's icon.
-    fn code_action(&self, action: &TextViewCodeAction, code: &CodeBlock, key: &str) -> AnyElement {
+    fn code_action_live(
+        &self,
+        action: Memo<TextViewCodeAction>,
+        code: Memo<CodeBlock>,
+        wrapped: Signal<bool>,
+        key: &str,
+        choice_key: &str,
+    ) -> AnyElement {
         let scope = self.scope;
-        let copy = action.id.as_ref() == "copy";
-        let label = action.label.clone().unwrap_or_else(|| action.id.clone());
-        // 0: the action's icon, 1: the check a copy shows for a moment.
+        let owner = Owner::current();
+        let choices = self.choices.clone();
+        let choice_key = choice_key.to_owned();
+        let id = action.get_untracked().id;
+        let copy = id.as_ref() == "copy";
+        let wrap = id.as_ref() == "wrap";
+        let label = computed(move || {
+            let action = action.get();
+            action.label.unwrap_or(action.id)
+        });
+        let labels = self.props.labels;
         let done = animated_value(0.0);
+        let copied = signal(false);
         let icon = if copy {
             copy_icon(&done)
-        } else if let Some(render) = &self.render_code_block_action {
-            render
-                .render(format!("action:{key}"), action.clone())
-                .into_element()
         } else {
-            text(label.clone())
-                .text_size(px(11.0))
-                .text_color(move || theme().muted_foreground)
-                .into_element()
+            let render = self.props.render_code_block_action;
+            let key = format!("action:{key}");
+            dynamic(move || match render.get() {
+                Some(render) => render.render(key.clone(), action.get()).into_element(),
+                None => text(move || label.get())
+                    .selectable(false)
+                    .text_size(px(11.0))
+                    .into_element(),
+            })
+            .into_element()
         };
-        let event = TextViewCodeActionEvent {
-            id: action.id.clone(),
-            code: code.clone(),
-        };
-        let hovered = theme().foreground.opacity(0.08);
-        let pressed = theme().foreground.opacity(0.14);
         view()
+            .flex_row()
+            .gap(px(4.0))
             .min_w(px(24.0))
             .h(px(24.0))
             .px(px(5.0))
@@ -891,13 +1570,28 @@ impl Cx {
             .items_center()
             .justify_center()
             .cursor_pointer()
-            .hover(|s| s.bg(hovered))
-            .active(|s| s.bg(pressed))
+            .hover(|s| s.bg(theme().foreground.opacity(0.08)))
+            .active(|s| s.bg(theme().foreground.opacity(0.14)))
             .role(AccessibilityRole::Button)
-            .label(label)
+            .focusable(true)
+            .label(move || label.get())
+            .accessibility_state(move || AccessibilityState {
+                selected: wrap && wrapped.get(),
+                ..AccessibilityState::default()
+            })
             .on_press(move || {
+                if !owner.is_live() {
+                    return;
+                }
+                let code = code.get_untracked();
+                if wrap {
+                    let value = !wrapped.get_untracked();
+                    wrapped.set(value);
+                    choices.set(&choice_key, value);
+                }
                 if copy {
-                    set_clipboard(event.code.code.clone());
+                    set_clipboard(code.code.clone());
+                    copied.set(true);
                     let _ = done.spring(
                         1.0,
                         Spring {
@@ -907,12 +1601,26 @@ impl Cx {
                         },
                     );
                     set_timeout(std::time::Duration::from_millis(1600), move || {
+                        copied.set(false);
                         let _ = done.timing(0.0, 180.0, Easing::EaseOut);
                     });
                 }
-                scope.emit(TextViewEvent::CodeBlockAction(event.clone()));
+                scope.emit(TextViewEvent::CodeBlockAction(TextViewCodeActionEvent {
+                    id: id.clone(),
+                    code,
+                }));
             })
             .child(icon)
+            .child(
+                text(move || {
+                    if copied.get() {
+                        labels.with(|labels| labels.copied.clone().unwrap_or_default())
+                    } else {
+                        "".into()
+                    }
+                })
+                .selectable(false),
+            )
             .into_element()
     }
 
@@ -1047,76 +1755,21 @@ impl Cx {
             .child(actions)
             .child(
                 self.part(
-                    scroll().horizontal().scrollbar(self.table_scrollbar),
+                    scroll()
+                        .horizontal()
+                        .scrollbar(self.table_scrollbar)
+                        .optional_label({
+                            let labels = self.props.labels;
+                            move || labels.with(|labels| labels.table.clone())
+                        })
+                        .on_scroll_intent({
+                            let scope = self.scope;
+                            move |_: &ScrollIntent| scope.emit(TextViewEvent::ScrollIntent)
+                        }),
                     Part::TableScroll,
                 )
                 .child(grid),
             )
-            .into_element()
-    }
-
-    fn details(
-        &self,
-        open: bool,
-        summary: &[Inline],
-        children: &[Block],
-        key: &str,
-        tail: bool,
-    ) -> AnyElement {
-        let shown = signal(open);
-        let marker = text(move || SharedString::from(if shown.get() { "▾ " } else { "▸ " }))
-            .text_color(move || theme().muted_foreground);
-        let summary = self.part(
-            view()
-                .flex_row()
-                .role(AccessibilityRole::Button)
-                .accessibility_state(move || AccessibilityState {
-                    expanded: Some(shown.get()),
-                    ..AccessibilityState::default()
-                })
-                .on_press(move || shown.set(!shown.get()))
-                .child(self.part(marker, Part::SummaryMarker))
-                .child(self.paragraph(summary, &format!("{key}.s"), false).flex_1()),
-            Part::Summary,
-        );
-        // The content is made each time it opens.
-        let cx = self.clone();
-        let children = children.to_vec();
-        let key = key.to_owned();
-        let body = move || cx.blocks(view().flex_col().gap(px(BLOCK_GAP)), &children, &key, tail);
-        self.part(view().flex_col().gap(px(ITEM_GAP * 2.0)), Part::Details)
-            .child(summary)
-            .child(when(move || shown.get(), body))
-            .into_element()
-    }
-
-    fn custom_block(&self, node: &CustomNode, key: &str, tail: bool) -> AnyElement {
-        if let Some(el) = self.plugins.render(node) {
-            return el;
-        }
-        if let Some(render) = &self.render_custom {
-            return render
-                .render(format!("custom:{key}"), node.clone())
-                .into_element();
-        }
-        let el = if !node.children.is_empty() {
-            self.blocks(
-                view().flex_col().gap(px(BLOCK_GAP)),
-                &node.children,
-                key,
-                tail,
-            )
-            .into_element()
-        } else if !node.content.is_empty() {
-            self.paragraph(&node.content, key, tail).into_element()
-        } else {
-            self.caret_after(
-                text(node.text.clone()).when(self.selectable, |t| t.selectable(true)),
-                tail,
-            )
-            .into_element()
-        };
-        self.part(view().flex_col().child(el), Part::Custom)
             .into_element()
     }
 
@@ -1135,6 +1788,15 @@ impl Cx {
 
     fn inline(&self, inline: &Inline, key: &str) -> AnyElement {
         match inline {
+            Inline::Source { content, segments } => {
+                if matches!(content.as_slice(), [Inline::Math { .. }]) && self.render_math.is_some()
+                {
+                    self.attachment(self.inline(&content[0], key), segments)
+                } else {
+                    self.source(self.span(content, key), segments.clone())
+                        .into_element()
+                }
+            }
             Inline::Text { text: t } => text(t.clone()).into_element(),
             Inline::Strong { content } => self
                 .part(
@@ -1194,24 +1856,25 @@ impl Cx {
                 title,
                 content,
             } => {
-                let scope = self.scope;
                 let url = SharedString::from(url.clone());
                 let outer = self.link.replace(Some(url.clone()));
                 let span = self.span(content, key);
+                let mut label = String::new();
+                super::document::inline_text(content, &mut label);
                 self.link.replace(outer);
+                let target = element_ref();
                 let el = span
+                    .element_ref(&target)
+                    .focusable(true)
                     .text_color(move || theme().primary)
                     .underline()
                     .text_decoration_color(move || theme().primary.opacity(0.4))
                     .text_decoration_thickness(px(1.0))
                     .underline_offset(px(3.0))
                     .role(AccessibilityRole::Link)
+                    .label(SharedString::from(label))
                     .when_some(title.clone(), |t, title| t.hint(title))
-                    .on_press(move || {
-                        scope.emit(TextViewEvent::LinkPress(TextViewLinkPressEvent {
-                            url: url.clone(),
-                        }))
-                    });
+                    .on_press(self.link_press(url, target));
                 self.part(el, Part::Link).into_element()
             }
             Inline::Image(image) => {
@@ -1234,33 +1897,34 @@ impl Cx {
             },
             Inline::Break => text("\n").into_element(),
             Inline::FootnoteReference { label, index } => {
-                let scope = self.scope;
                 let url = SharedString::from(format!("#footnote-{label}"));
+                let target = element_ref();
                 self.part(
                     text(index.to_string())
                         .text_size(rems(0.75))
                         .text_color(move || theme().primary)
                         .role(AccessibilityRole::Link)
-                        .on_press(move || {
-                            scope.emit(TextViewEvent::LinkPress(TextViewLinkPressEvent {
-                                url: url.clone(),
-                            }))
-                        }),
+                        .focusable(true)
+                        .element_ref(&target)
+                        .on_press(self.link_press(url, target)),
                     Part::FootnoteReference,
                 )
                 .into_element()
             }
             Inline::Custom(node) => {
                 if let Some(el) = self.plugins.render(node) {
-                    return el;
+                    return self.attachment(el, &node.source);
                 }
                 if let Some(render) = &self.render_custom {
-                    return render
-                        .render(format!("custom:{key}"), node.clone())
-                        .into_element();
+                    return self.attachment(
+                        render
+                            .render(format!("custom:{key}"), node.clone())
+                            .into_element(),
+                        &node.source,
+                    );
                 }
                 let el = if node.content.is_empty() {
-                    text(node.text.clone())
+                    self.source(text(node.text.clone()), node.source.clone())
                 } else {
                     self.span(&node.content, key)
                 };
@@ -1280,13 +1944,21 @@ impl Cx {
 
     /// Images that stand alone (a paragraph or a cell with no text), one
     /// under another.
-    fn image_column(&self, images: &[(&Image, Option<&str>)], key: &str) -> View {
+    fn image_column(&self, images: &[ImageOnly<'_>], key: &str) -> View {
         view()
             .flex_col()
+            .w_full()
             .items_start()
-            .children(images.iter().enumerate().map(|(i, (image, link))| {
+            .children(images.iter().enumerate().map(|(i, (image, link, source))| {
                 let link = link.map(|l| SharedString::from(l.to_owned()));
-                self.image(image, link, ImageFlow::Block, &format!("{key}.{i}"))
+                let image = self.image(image, link, ImageFlow::Block, &format!("{key}.{i}"));
+                self.source(
+                    text("")
+                        .w_full()
+                        .when(self.selectable, |t| t.selectable(true))
+                        .child(image),
+                    source.unwrap_or_default().to_vec(),
+                )
             }))
     }
 
@@ -1300,31 +1972,46 @@ impl Cx {
         key: &str,
     ) -> AnyElement {
         let scope = self.scope;
+        let target = element_ref();
         let pressed = image.clone();
         let is_link = link.is_some();
-        // In a link it is the link's; else a press reports the image.
-        let press = Some(move || match &link {
-            Some(url) => scope.emit(TextViewEvent::LinkPress(TextViewLinkPressEvent {
-                url: url.clone(),
-            })),
+        let press_link = link.clone().map(|url| self.link_press(url, target));
+        let press = move || match &press_link {
+            Some(press) => press(),
             None => scope.emit(TextViewEvent::ImagePress(pressed.clone())),
-        });
+        };
         let role = if is_link {
             AccessibilityRole::Link
         } else {
             AccessibilityRole::ImageButton
         };
         if let Some(render) = &self.render_image {
-            let el = render.render(format!("image:{key}"), image.clone());
-            return match press {
-                Some(press) => view()
+            let el = render.render(
+                format!("image:{key}"),
+                TextViewImageContext {
+                    image: image.clone(),
+                    linked: is_link,
+                    flow: match flow {
+                        ImageFlow::Block => TextViewImageFlow::Block,
+                        ImageFlow::Inline(_) => TextViewImageFlow::Inline,
+                    },
+                    line_height: match flow {
+                        ImageFlow::Inline(line) => line,
+                        ImageFlow::Block => self.line.get(),
+                    },
+                },
+            );
+            if is_link && matches!(flow, ImageFlow::Block) {
+                return view()
                     .role(role)
+                    .focusable(true)
+                    .element_ref(&target)
                     .label(SharedString::from(image.alt.clone()))
                     .on_press(press)
                     .child(el)
-                    .into_element(),
-                None => el.into_element(),
-            };
+                    .into_element();
+            }
+            return el.into_element();
         }
         let (width, height) = (image.width, image.height);
         // Its natural size (a pixel a point, as a browser takes it), once
@@ -1381,10 +2068,11 @@ impl Cx {
                     .rounded(px(8.0))
                     .w_full()
                     .aspect_ratio(move || ratio.or_else(aspect).unwrap_or(1.0));
-                let el = match press {
-                    Some(press) => el.role(role).on_press(press),
-                    None => el.role(AccessibilityRole::Image),
-                };
+                let el = el
+                    .role(role)
+                    .focusable(true)
+                    .element_ref(&target)
+                    .on_press(press);
                 return view()
                     .w(box_width)
                     .max_w(relative(1.0))
@@ -1405,11 +2093,23 @@ impl Cx {
                     .translate_y(move || size().height / 2.0 - px(0.35 * em))
             }
         };
-        let el = match press {
-            Some(press) => el.role(role).on_press(press),
-            None => el.role(AccessibilityRole::Image),
-        };
+        let el = el
+            .role(role)
+            .focusable(true)
+            .element_ref(&target)
+            .on_press(press);
         self.part(el, Part::Image).into_element()
+    }
+}
+
+/// A container changes presentation kind as its opening syntax completes.
+/// Ordinary value updates (including a growing code body) retain the row.
+fn row_kind(block: &Block) -> String {
+    match block {
+        Block::Blockquote {
+            alert: Some(alert), ..
+        } => format!("alert:{alert:?}"),
+        _ => block.kind().to_owned(),
     }
 }
 
@@ -1425,23 +2125,30 @@ enum ImageFlow {
 /// The images of content that is only images (each in a link or not), with
 /// their links: shown as blocks, as gpui-kit shows a paragraph of images
 /// with no text.
-fn only_images(content: &[Inline]) -> Option<Vec<(&Image, Option<&str>)>> {
+type ImageOnly<'a> = (
+    &'a Image,
+    Option<&'a str>,
+    Option<&'a [nsh_core::TextSourceSegment]>,
+);
+fn only_images(content: &[Inline]) -> Option<Vec<ImageOnly<'_>>> {
     fn walk<'a>(
         content: &'a [Inline],
         link: Option<&'a str>,
-        out: &mut Vec<(&'a Image, Option<&'a str>)>,
+        source: Option<&'a [nsh_core::TextSourceSegment]>,
+        out: &mut Vec<ImageOnly<'a>>,
     ) -> bool {
         content.iter().all(|inline| match inline {
             Inline::Image(image) => {
-                out.push((image, link));
+                out.push((image, link, source));
                 true
             }
-            Inline::Link { url, content, .. } => walk(content, Some(url), out),
+            Inline::Source { content, segments } => walk(content, link, Some(segments), out),
+            Inline::Link { url, content, .. } => walk(content, Some(url), source, out),
             _ => false,
         })
     }
     let mut out = Vec::new();
-    (walk(content, None, &mut out) && !out.is_empty()).then_some(out)
+    (walk(content, None, None, &mut out) && !out.is_empty()).then_some(out)
 }
 
 /// The size of an image in text with lines `line` tall, as gpui-kit's text
@@ -1788,7 +2495,10 @@ mod tests {
         };
         let content = [image("a.png"), link(vec![image("b.png")])];
         let images = only_images(&content).unwrap();
-        let found: Vec<_> = images.iter().map(|(i, l)| (i.src.as_str(), *l)).collect();
+        let found: Vec<_> = images
+            .iter()
+            .map(|(i, l, _)| (i.src.as_str(), *l))
+            .collect();
         assert_eq!(found, [("a.png", None), ("b.png", Some("https://x.y"))]);
         // Text, even a space, puts the images in its lines, as gpui-kit's
         // text flow does.
@@ -1850,10 +2560,208 @@ mod tests {
             text_view()
                 .markdown("# Title")
                 .selectable(true)
-                .render_image(|image: &Image| text(image.alt.clone()))
+                .render_image(|context: &TextViewImageContext| text(context.image.alt.clone()))
                 .render_code_block(|code: &CodeBlock| text(code.code.clone()))
                 .on_link_press(|_event: &TextViewLinkPressEvent| {})
                 .into_element()
         };
+    }
+    #[component]
+    fn LinksAcrossReplacement() -> impl IntoElement {
+        let source = signal(SharedString::from("[same](file.txt)"));
+        let first = signal(None::<TextViewLinkTarget>);
+        let presses = signal(0);
+        let status = signal(String::from("ready"));
+        view()
+            .flex_col()
+            .child(
+                view()
+                    .test_id("replace")
+                    .h(px(30.0))
+                    .on_press(move || source.set("[same][ref]\n\n[ref]: file.txt".into())),
+            )
+            .child(view().test_id("kind").h(px(30.0)).on_press(move || {
+                source.set(format!("{}\n---", source.get_untracked()).into());
+            }))
+            .child(view().test_id("old").h(px(30.0)).on_press(move || {
+                status.set(format!(
+                    "old {}",
+                    first
+                        .get_untracked()
+                        .is_some_and(|target| target.focus_native())
+                ))
+            }))
+            .child(text(move || status.get()))
+            .child(
+                text_view()
+                    .source_id("message")
+                    .markdown(move || Some(source.get()))
+                    .on_link_press(move |event: &TextViewLinkPressEvent| {
+                        let target = event.target.clone().expect("original Link capability");
+                        first.set(Some(target.clone()));
+                        presses.update(|n| *n += 1);
+                        status.set(format!(
+                            "press {} focus {}",
+                            presses.get_untracked(),
+                            target.focus_native()
+                        ));
+                    }),
+            )
+    }
+
+    #[test]
+    fn a_same_value_link_after_source_replacement_has_a_new_live_focus_capability() {
+        use nsh_core::{Size, ui::Root};
+        use nsh_testing::Headless;
+        let mut app = Headless::start(nsh_engine::EngineConfig {
+            viewport: Size::new(px(500.0), px(400.0)),
+            ..nsh_engine::EngineConfig::new(Root::of::<LinksAcrossReplacement>())
+        })
+        .unwrap();
+        app.wait_for("text:same").unwrap();
+        app.press("text:same").unwrap();
+        app.wait_for("press 1 focus true").unwrap();
+        // Prefix append keeps the source but changes this row's kind.
+        app.press("id:kind").unwrap();
+        app.wait_for("role:header").unwrap();
+        app.press("id:old").unwrap();
+        app.wait_for("old false").unwrap();
+        app.press("text:same").unwrap();
+        app.wait_for("press 2 focus true").unwrap();
+        app.press("id:replace").unwrap();
+        app.wait_for("text:same").unwrap();
+        app.press("id:old").unwrap();
+        app.wait_for("old false").unwrap();
+        app.press("text:same").unwrap();
+        app.wait_for("press 3 focus true").unwrap();
+        let node = app.screen().press_target("text:same").unwrap().unwrap();
+        assert!(
+            app.screen()
+                .commands()
+                .iter()
+                .any(|(id, command)| *id == node && matches!(command, nsh_core::Command::Focus))
+        );
+    }
+
+    #[component]
+    fn DocumentViewportChoices() -> impl IntoElement {
+        let page = element_ref();
+        let source_id = signal(SharedString::from("first"));
+        let target = signal(None::<TextViewLinkTarget>);
+        let status = signal(String::from("ready"));
+        let presses = signal(0);
+        let source = format!(
+            "```text\ncode kept across recycling\n```\n\n<details><summary>Disclosure</summary>\n\ndisclosed child\n\n</details>\n\n[saved link](file.txt)\n\n{}\n\nviewport tail",
+            (0..80)
+                .map(|i| format!("filler {i}\n\n"))
+                .collect::<String>(),
+        );
+        view()
+            .flex_col()
+            .flex_1()
+            .child(
+                view()
+                    .test_id("bottom")
+                    .h(px(25.0))
+                    .on_press(move || page.scroll_to_end(false)),
+            )
+            .child(view().test_id("top").h(px(25.0)).on_press(move || {
+                page.scroll_to(point(px(0.0), px(0.0)), false);
+            }))
+            .child(view().test_id("old-link").h(px(25.0)).on_press(move || {
+                status.set(format!(
+                    "link live {}",
+                    target
+                        .get_untracked()
+                        .is_some_and(|target| target.is_live())
+                ));
+            }))
+            .child(
+                view()
+                    .test_id("reset")
+                    .h(px(25.0))
+                    .on_press(move || source_id.set("second".into())),
+            )
+            .child(text(move || status.get()))
+            .child(
+                scroll().flex_1().element_ref(&page).child(
+                    text_view()
+                        .markdown(source)
+                        .source_id(move || Some(source_id.get()))
+                        .code_block_actions(vec![TextViewCodeAction {
+                            id: "wrap".into(),
+                            label: Some("Wrap code".into()),
+                        }])
+                        .on_link_press(move |event: &TextViewLinkPressEvent| {
+                            target.set(event.target.clone());
+                            presses.update(|value| *value += 1);
+                            status.set(format!("link pressed {}", presses.get_untracked()));
+                        }),
+                ),
+            )
+    }
+
+    #[test]
+    fn document_viewport_recycles_link_owners_and_retains_source_choices() {
+        use nsh_core::{Size, ui::Root};
+        use nsh_testing::Headless;
+        let mut app = Headless::start(nsh_engine::EngineConfig {
+            viewport: Size::new(px(500.0), px(500.0)),
+            ..nsh_engine::EngineConfig::new(Root::of::<DocumentViewportChoices>())
+        })
+        .unwrap();
+        app.wait_for("label:Wrap code").unwrap();
+        let first_wrap = app
+            .screen()
+            .press_target("label:Wrap code")
+            .unwrap()
+            .unwrap();
+        let first_details = app
+            .screen()
+            .press_target("text:Disclosure")
+            .unwrap()
+            .unwrap();
+        assert!(app.screen().selected("label:Wrap code").unwrap());
+        app.press("label:Wrap code").unwrap();
+        assert!(!app.screen().selected("label:Wrap code").unwrap());
+        app.press("text:Disclosure").unwrap();
+        app.wait_for("disclosed child").unwrap();
+        app.press("text:saved link").unwrap();
+        app.wait_for("link pressed 1").unwrap();
+        app.press("id:bottom").unwrap();
+        app.wait_for("viewport tail").unwrap();
+        // Detached cells keep their last logical content until reused. A
+        // larger viewport binds the middle rows as well, reusing those cells.
+        app.set_viewport(Size::new(px(500.0), px(1800.0))).unwrap();
+        app.wait_for("filler 30").unwrap();
+        app.press("id:old-link").unwrap();
+        app.wait_for("link live false").unwrap();
+        app.set_viewport(Size::new(px(500.0), px(500.0))).unwrap();
+        app.press("id:top").unwrap();
+        app.wait_for("label:Wrap code").unwrap();
+        assert!(!app.screen().selected("label:Wrap code").unwrap());
+        assert_ne!(
+            app.screen()
+                .press_target("label:Wrap code")
+                .unwrap()
+                .unwrap(),
+            first_wrap
+        );
+        assert_ne!(
+            app.screen()
+                .press_target("text:Disclosure")
+                .unwrap()
+                .unwrap(),
+            first_details
+        );
+        app.wait_for("disclosed child").unwrap();
+        app.press("text:saved link").unwrap();
+        app.wait_for("link pressed 2").unwrap();
+        app.press("id:old-link").unwrap();
+        app.wait_for("link live true").unwrap();
+        app.press("id:reset").unwrap();
+        app.wait_for("label:Wrap code").unwrap();
+        assert!(app.screen().selected("label:Wrap code").unwrap());
+        assert!(!app.screen().shows("disclosed child"));
     }
 }

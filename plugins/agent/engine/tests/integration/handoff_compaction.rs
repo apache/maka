@@ -17,6 +17,7 @@
  * under the License.
  */
 
+use crate::support::store::SessionFixture;
 use crate::support::{
     agent_loop::{Effect, input, respond},
     context as fixture,
@@ -29,7 +30,7 @@ use maka_agent_facts::event::Fact;
 use maka_agent_facts::execution::ModelBinding;
 use maka_agent_facts::execution::WorkspaceIdentity;
 use maka_agent_facts::handoff::HandoffIntent;
-use maka_event_log::{EventLog, context::LatestMainContext};
+use maka_event_log::context::LatestMainContext;
 use std::{
     sync::{
         Arc,
@@ -44,7 +45,7 @@ use tokio_util::sync::CancellationToken;
 async fn handoff_preserves_conversation_replay_and_compacts_before_its_physical_anchor() {
     tokio::time::timeout(Duration::from_secs(20), async {
         let directory = tempfile::tempdir().unwrap();
-        let log = Arc::new(EventLog::open(&directory.path().join("events.sqlite")).await.unwrap());
+        let log = Arc::new(SessionFixture::open(&directory.path().join("events.sqlite")).await.unwrap());
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}/v1", listener.local_addr().unwrap());
         let (seen, ready) = oneshot::channel();
@@ -89,12 +90,12 @@ async fn handoff_preserves_conversation_replay_and_compacts_before_its_physical_
             respond(&mut socket, false).await;
             (summary, main)
         });
-        let engine = fixture::engine(log.clone());
+        let engine = fixture::engine();
         let mut prior = fixture::input(&base, "prior", false);
         prior.provider.kind = maka_model::ProviderKind::OpenaiCompatible { name: "fixture".into() };
         prior.provider.model = "old".into();
         prior.configuration.model.as_mut().unwrap().model = "old".into();
-        engine.run(prior, CancellationToken::new()).await.unwrap();
+        engine.run(log.store(), prior, CancellationToken::new()).await.unwrap();
         let count = Arc::new(AtomicUsize::new(0));
         let effect = Arc::new(Effect { log: log.clone(), count: count.clone() });
         let mut first = input(&base, "first", effect.clone());
@@ -110,7 +111,7 @@ async fn handoff_preserves_conversation_replay_and_compacts_before_its_physical_
         let configuration = first.configuration.clone();
         let context = first.context.clone();
         let source_invocation = first.invocation.clone();
-        let running = engine.start(first, CancellationToken::new()).await.unwrap();
+        let running = engine.start(log.store(), first, CancellationToken::new()).await.unwrap();
         ready.await.unwrap();
         let reservation = running.handoff().unwrap().reserve(HandoffIntent {
             handoff_id: "compact".into(), host_epoch: "host".into(), root_run_id: "run-first".into(),
@@ -133,8 +134,8 @@ async fn handoff_preserves_conversation_replay_and_compacts_before_its_physical_
             source: prefix.boundary,
             pause: Box::new(pause), tools,
         };
-        let resumed = fixture::engine(log.clone());
-        resumed.run(successor, CancellationToken::new()).await.unwrap();
+        let resumed = fixture::engine();
+        resumed.run(log.store(), successor, CancellationToken::new()).await.unwrap();
         resumed.drain().await;
         let (summary, main) = server.await.unwrap();
         assert!(summary["messages"].to_string().contains("question first"));
@@ -150,7 +151,7 @@ async fn handoff_preserves_conversation_replay_and_compacts_before_its_physical_
         let latest_sequence = prefix.events.iter().rev().find(|e|
             e.event.invocation.invocation_id == "successor-invocation"
             && matches!(e.event.fact, Fact::ModelCompleted { .. })).unwrap().sequence;
-        let source = log.read_model_context("session", None).await.unwrap();
+        let source = log.read_model_view("session", None).await.unwrap();
         assert!(matches!(source.latest_main, LatestMainContext::Selected(latest)
             if latest.sequence == latest_sequence));
         log.shutdown().await.unwrap();

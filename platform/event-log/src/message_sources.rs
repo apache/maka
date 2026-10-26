@@ -34,10 +34,7 @@ pub(crate) fn roots(event: &RuntimeEvent) -> &[RootSourceMessage] {
             },
             ..
         } => source_messages,
-        Fact::MessageSteered {
-            source: Some(source),
-            ..
-        } => std::slice::from_ref(source.as_ref()),
+        Fact::MessageSteered { source, .. } => std::slice::from_ref(source.as_ref()),
         _ => &[],
     }
 }
@@ -45,13 +42,6 @@ pub(crate) fn identities(event: &RuntimeEvent) -> impl Iterator<Item = &str> {
     roots(event)
         .iter()
         .map(|source| source.message.message_id.as_str())
-        .chain(match &event.fact {
-            Fact::MessageSteered {
-                message,
-                source: None,
-            } => Some(message.message_id.as_str()),
-            _ => None,
-        })
 }
 pub(crate) async fn initialize(connection: &mut SqliteConnection) -> Result<(), StoreError> {
     let populated: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM message_sources)")
@@ -174,24 +164,36 @@ impl EventLog {
             turn_id.to_owned(),
             message_id.to_owned(),
         );
-        self.connection.run(move |connection| Box::pin(async move {
-            let mut tx = connection.begin().await?;
-            let row: Option<(i64, String)> = sqlx::query_as(
-                "SELECT e.sequence, e.event_json
+        self.connection
+            .run(move |connection| {
+                Box::pin(async move {
+                    let mut tx = connection.begin().await?;
+                    let row: Option<(i64, String)> = sqlx::query_as(
+                        "SELECT e.sequence, e.event_json
                  FROM session_message_sources s JOIN runtime_events e ON e.event_id=s.event_id
                  WHERE s.owner_session_id=?1 AND s.message_id=?2
-                   AND (e.kind='invocation_opened' OR (e.kind='message_steered' AND json_type(e.event_json,'$.fact.source')='object'))
-                   AND json_extract(e.event_json,'$.invocation.turn_id')=?3"
-            ).bind(&session).bind(&message).bind(&turn).fetch_optional(&mut *tx).await?;
-            let Some((sequence, json)) = row else { return Ok(None); };
-            let proof = decode_root(sequence, json, &message)?;
-            if proof.opening.event.invocation.turn_id != turn {
-                return Err(invalid("source proof Turn changed"));
-            }
-            let result = editable(&mut tx, &session, &proof.opening, proof.source()).await?;
-            tx.commit().await?;
-            Ok(Some(result))
-        })).await
+                   AND (e.kind='invocation_opened' OR e.kind='message_steered')
+                   AND json_extract(e.event_json,'$.invocation.turn_id')=?3",
+                    )
+                    .bind(&session)
+                    .bind(&message)
+                    .bind(&turn)
+                    .fetch_optional(&mut *tx)
+                    .await?;
+                    let Some((sequence, json)) = row else {
+                        return Ok(None);
+                    };
+                    let proof = decode_root(sequence, json, &message)?;
+                    if proof.opening.event.invocation.turn_id != turn {
+                        return Err(invalid("source proof Turn changed"));
+                    }
+                    let result =
+                        editable(&mut tx, &session, &proof.opening, proof.source()).await?;
+                    tx.commit().await?;
+                    Ok(Some(result))
+                })
+            })
+            .await
     }
 
     /// Resolve an original source identity without inferring ownership from UI rows.
@@ -205,18 +207,30 @@ impl EventLog {
         crate::sessions::validate_id(message_id)?;
         let session = session_id.to_owned();
         let message = message_id.to_owned();
-        self.connection.run(move |connection| Box::pin(async move {
-            let row: Option<(i64, String)> = sqlx::query_as(
-                "SELECT e.sequence, e.event_json
+        self.connection
+            .run(move |connection| {
+                Box::pin(async move {
+                    let row: Option<(i64, String)> = sqlx::query_as(
+                        "SELECT e.sequence, e.event_json
                  FROM message_sources s JOIN runtime_events e ON e.event_id = s.event_id
                  WHERE s.session_id = ? AND s.message_id = ?
-                   AND (e.kind='invocation_opened' OR (e.kind='message_steered' AND json_type(e.event_json,'$.fact.source')='object'))"
-            ).bind(&session).bind(&message).fetch_optional(connection).await?;
-            let Some((sequence, json)) = row else { return Ok(None); };
-            let proof = decode_root(sequence, json, &message)?;
-            if proof.opening.event.invocation.session_id != session { return Err(invalid("source proof Session changed")); }
-            Ok(Some(proof))
-        })).await
+                   AND (e.kind='invocation_opened' OR e.kind='message_steered')",
+                    )
+                    .bind(&session)
+                    .bind(&message)
+                    .fetch_optional(connection)
+                    .await?;
+                    let Some((sequence, json)) = row else {
+                        return Ok(None);
+                    };
+                    let proof = decode_root(sequence, json, &message)?;
+                    if proof.opening.event.invocation.session_id != session {
+                        return Err(invalid("source proof Session changed"));
+                    }
+                    Ok(Some(proof))
+                })
+            })
+            .await
     }
 }
 
@@ -242,13 +256,10 @@ fn decode_delivery(sequence: i64, json: String) -> Result<StoredEvent, StoreErro
             ..
         } => maka_agent_facts::message::validate_sources(content, source_messages)
             .map_err(invalid)?,
-        Fact::MessageSteered {
-            message,
-            source: Some(source),
-        } => {
+        Fact::MessageSteered { message, source } => {
             maka_agent_facts::event::validate_steered_source(
                 message,
-                Some(source),
+                source,
                 &event.invocation.session_id,
             )
             .map_err(invalid)?;

@@ -11,7 +11,7 @@ mod hit;
 use std::sync::Arc;
 
 pub use self::{
-    damage::{Damage, DamageScan},
+    damage::{Damage, DamageScan, first_animated, prefix_path_needed},
     hit::{point_in_path, point_in_stroke},
 };
 use crate::{
@@ -464,17 +464,48 @@ pub fn measure_line(
     if let Some(width) = engine.measure_canvas(font, text) {
         return width;
     }
-    let mut attributed = crate::text::AttributedText {
-        no_wrap: true,
-        max_lines: 1,
-        ..Default::default()
-    };
-    attributed.push(text, font.text_style());
-    if attributed.text.is_empty() {
+    if text.is_empty() {
         return Points::ZERO;
     }
-    let prepared = engine.prepare(&attributed);
-    engine.measure(&prepared, None).width
+    advance(engine, font, text)
+}
+
+/// What closes a text ending in white space while it is measured.
+const MARK: &str = "x";
+
+/// How far `text` advances on one line in `font`, its trailing white space
+/// included, as canvas `measureText` counts it. Text engines lay a line
+/// out without the white space at its end (it hangs past the line, as in
+/// CSS), so a run of spaces measures 0 and `"a "` as `"a"`: such a text is
+/// measured with a mark after it, less the mark.
+fn advance(engine: &impl crate::text::TextEngine, font: &CanvasFont, text: &str) -> Points {
+    let width = |text: &str| {
+        let mut attributed = crate::text::AttributedText {
+            no_wrap: true,
+            max_lines: 1,
+            ..Default::default()
+        };
+        attributed.push(text, font.text_style());
+        let prepared = engine.prepare(&attributed);
+        engine.measure(&prepared, None).width
+    };
+    // A line break ends the line: what follows it is not on it.
+    let hangs = text.ends_with(|c: char| c.is_whitespace() && !is_line_break(c));
+    if !hangs {
+        return width(text);
+    }
+    let mut marked = String::with_capacity(text.len() + MARK.len());
+    marked.push_str(text);
+    marked.push_str(MARK);
+    (width(&marked) - width(MARK)).max(Points::ZERO)
+}
+
+/// Whether `c` breaks a line (Unicode's mandatory breaks).
+fn is_line_break(c: char) -> bool {
+    matches!(
+        c,
+        '\n' | '\r' | '\u{b}' | '\u{c}' | '\u{85}' | '\u{2028}' | '\u{2029}'
+    )
 }
 
 /// How `text` sits on one line in a canvas font ([`line_metrics`]): its
@@ -513,9 +544,10 @@ pub fn line_metrics(
     let width = if text.is_empty() {
         Points::ZERO
     } else {
-        // Canvas glyph advances can differ from a platform's normal text
-        // layout, such as the terminal's fixed-width cells.
-        engine.measure_canvas(font, text).unwrap_or(size.width)
+        // Preserve canvas-specific advances, distinct from terminal cell layout.
+        engine
+            .measure_canvas(font, text)
+            .unwrap_or_else(|| advance(engine, font, text))
     };
     let layout = engine.layout(&prepared, size);
     match engine.lines(&layout).first() {
@@ -732,6 +764,24 @@ pub enum CanvasOp {
     },
 }
 
+impl CanvasOp {
+    /// Whether it paints (rather than setting the state: transforms,
+    /// styles, paths, clips).
+    pub fn paints(&self) -> bool {
+        matches!(
+            self,
+            CanvasOp::Fill(..)
+                | CanvasOp::Stroke(_)
+                | CanvasOp::FillRect(_)
+                | CanvasOp::StrokeRect(_)
+                | CanvasOp::ClearRect(_)
+                | CanvasOp::FillText { .. }
+                | CanvasOp::StrokeText { .. }
+                | CanvasOp::DrawImage { .. }
+        )
+    }
+}
+
 /// One `draw` of a canvas.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Drawing {
@@ -743,6 +793,30 @@ pub struct Drawing {
     /// assistive technologies and UI tests ([`CanvasNode`]), in reading
     /// order.
     pub nodes: Vec<CanvasNode>,
+    /// The operations whose value is the canvas view's style rather than
+    /// one of their own, by index in `ops`: the core gives them the
+    /// view's paint properties ([`crate::style::PaintStyle`], inherited
+    /// from the views around it) before a platform gets the drawing
+    /// ([`Drawing::painted`]), so what a Rust component draws follows the
+    /// app's `fill-*` / `stroke-*` classes and the appearance without
+    /// being recorded again.
+    pub view_paints: Vec<(u32, ViewPaint)>,
+}
+
+/// An operation of a [`Drawing`] that takes its value from the canvas
+/// view's paint properties ([`Drawing::view_paints`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ViewPaint {
+    /// `fillStyle` is the view's `fill`; where nothing sets one, this.
+    Fill(crate::style::SvgPaint),
+    /// `strokeStyle` is the view's `stroke`; where nothing sets one, this.
+    Stroke(crate::style::SvgPaint),
+    /// `lineWidth` is the view's `strokeWidth` (1 where nothing sets one,
+    /// CSS's initial value).
+    StrokeWidth,
+    /// The line dash is the view's `strokeDasharray` (solid where nothing
+    /// sets one).
+    StrokeDasharray,
 }
 
 /// A part of a canvas's drawing that assistive technologies and UI tests
@@ -796,6 +870,45 @@ impl CanvasNode {
 }
 
 impl Drawing {
+    /// The drawing as a platform replays it: its [`Drawing::view_paints`]
+    /// given the paint properties `paint` of its view, whose text color is
+    /// `current` (`currentColor`). `none` paints nothing (a transparent
+    /// paint).
+    pub fn painted(&self, paint: &crate::style::PaintStyle, current: Color) -> Drawing {
+        use crate::style::SvgPaint;
+        let color = |p: SvgPaint| {
+            Paint::Color(match p {
+                SvgPaint::None => Color::TRANSPARENT,
+                SvgPaint::CurrentColor => current,
+                SvgPaint::Color(c) => c,
+            })
+        };
+        let mut out = self.clone();
+        for &(at, view) in &self.view_paints {
+            let Some(op) = out.ops.get_mut(at as usize) else {
+                continue;
+            };
+            *op = match view {
+                ViewPaint::Fill(initial) => {
+                    CanvasOp::FillStyle(color(paint.fill.unwrap_or(initial)))
+                }
+                ViewPaint::Stroke(initial) => {
+                    CanvasOp::StrokeStyle(color(paint.stroke.unwrap_or(initial)))
+                }
+                ViewPaint::StrokeWidth => {
+                    CanvasOp::LineWidth(Num::Const(paint.stroke_width.map_or(1.0, |w| w.0)))
+                }
+                ViewPaint::StrokeDasharray => CanvasOp::LineDash(
+                    paint
+                        .stroke_dasharray
+                        .clone()
+                        .unwrap_or_else(|| Arc::from([])),
+                ),
+            };
+        }
+        out
+    }
+
     /// The slot of animated value `node`, adding it if new.
     pub fn slot(&mut self, node: crate::animation::NodeId) -> u16 {
         match self.slots.iter().position(|&n| n == node) {
@@ -1216,6 +1329,65 @@ fn arc_to_cubics(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::text::{AttributedText, TextEngine, TextLayout};
+
+    /// Lays a line out as text engines do: 10 points a character, without
+    /// the white space at its end.
+    struct Hanging;
+
+    impl TextEngine for Hanging {
+        type Prepared = String;
+
+        fn prepare(&self, text: &AttributedText) -> String {
+            text.text.to_string()
+        }
+
+        fn prepare_aligned(
+            &self,
+            text: &AttributedText,
+            _: &crate::text::AttachmentAlignments,
+        ) -> String {
+            self.prepare(text)
+        }
+
+        fn measure(&self, text: &String, _: Option<Points>) -> Size<Points> {
+            let shown = text.trim_end_matches(|c: char| c.is_whitespace());
+            Size::new(Points(10.0 * shown.chars().count() as f32), Points(12.0))
+        }
+
+        fn layout(&self, _: &String, _: Size<Points>) -> TextLayout {
+            TextLayout(std::sync::Arc::new(()))
+        }
+    }
+
+    #[test]
+    fn trailing_white_space_advances_as_canvas_measures_it() {
+        let font = CanvasFont::default();
+        for (text, width) in [
+            ("", 0.0),
+            ("ab", 20.0),
+            (" ", 10.0),
+            ("   ", 30.0),
+            ("  items: ", 90.0),
+            ("a\t", 20.0),
+            // Chinese and its ideographic space, a character each.
+            ("名字\u{3000}", 30.0),
+            ("你好 ", 30.0),
+            // A line break ends the line.
+            ("ab\n", 20.0),
+        ] {
+            assert_eq!(
+                measure_line(&Hanging, &font, text),
+                Points(width),
+                "{text:?}"
+            );
+            assert_eq!(
+                line_metrics(&Hanging, &font, text).width,
+                Points(width),
+                "{text:?}"
+            );
+        }
+    }
 
     #[test]
     fn canvas_measurement_override_is_forwarded_by_shared_engines() {
@@ -1239,6 +1411,10 @@ mod tests {
         assert_eq!(
             measure_line(&std::rc::Rc::new(CanvasOnly), &font, "abc"),
             Points(60.0)
+        );
+        assert_eq!(
+            measure_line(&std::rc::Rc::new(CanvasOnly), &font, "  "),
+            Points(40.0)
         );
         // Engines using the default hook retain their existing prepare/measure path.
         assert!(

@@ -504,9 +504,20 @@ fn annotated_openings_preserve_source_identity_and_unannotated_batches_stay_aggr
             let mut steered = opening;
             steered.sequence += 1;
             steered.event.id = "steering".into();
-            steered.event.fact = Fact::MessageSteered {
-                message: Box::new(delivered),
-                source: None,
+            steered.event.fact = {
+                let message = delivered;
+                let mut unprepared_content = message.content.clone();
+                unprepared_content.preparation.clear();
+                Fact::MessageSteered {
+                    source: Box::new(maka_agent_facts::message::RootSourceMessage {
+                        message: message.clone(),
+                        unprepared_content,
+                        submitted_placement: maka_agent_facts::message::Placement::CurrentTurn,
+                        disposition: maka_agent_facts::message::MessageDisposition::Steering,
+                        submitted_intent: None,
+                    }),
+                    message: Box::new(message),
+                }
             };
             let rows = view.push(&steered).unwrap();
             assert_eq!(rows.len(), 1);

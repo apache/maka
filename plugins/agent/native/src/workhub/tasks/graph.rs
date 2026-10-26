@@ -449,7 +449,7 @@ impl Hub {
             .map_err(error),
             "watchGraph" => {
                 let input: api::Read = serde_json::from_value(input).map_err(error)?;
-                let mut commits = self.agent.0.store.subscribe_commits();
+                let mut commits = self.agent.0.store.subscribe_changes();
                 let mut previous = None;
                 loop {
                     if stop.is_cancelled() {
@@ -719,6 +719,7 @@ impl Hub {
     pub(super) async fn graph_input(
         &self,
         assignment: &Assignment,
+        execution: Option<&dyn maka_agent_facts::tools::ExecutionCustody>,
         stop: CancellationToken,
     ) -> Result<Result<String, TaskStatus>, String> {
         let source = assignment.graph.as_ref().ok_or("graph_task_missing")?;
@@ -760,7 +761,7 @@ impl Hub {
             }
             references.push((input.source_graph_id, input.result_id));
         }
-        let language = self.source_language(&assignment.source).await?;
+        let language = self.source_language(&assignment.source, execution).await?;
         let mut message = assignment.input["message"]
             .as_str()
             .ok_or("graph_input_invalid")?

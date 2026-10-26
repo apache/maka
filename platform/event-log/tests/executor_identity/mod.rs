@@ -69,6 +69,7 @@ fn opening(cwd: &std::path::Path, external: bool) -> Fact {
                 approval_policy: maka_agent_facts::execution::ApprovalPolicy::OnRequest,
                 boundary_revision: 0,
                 cwd: cwd.to_string_lossy().into_owned(),
+                workspace_binding: None,
                 workspace_identity: None,
                 model: None,
                 editing_tools: None,
@@ -86,18 +87,26 @@ fn opening(cwd: &std::path::Path, external: bool) -> Fact {
     }
 }
 fn claim(invocation: &Invocation, message_id: &str) -> EventWrite {
-    write(
-        invocation,
+    write(invocation, {
+        let message = DeliveredMessage {
+            message_id: message_id.into(),
+            content: "legal client claim".into(),
+            submitted_content_digest: format!("sha256:{}", "a".repeat(64)),
+            origin: None,
+        };
+        let mut unprepared_content = message.content.clone();
+        unprepared_content.preparation.clear();
         Fact::MessageSteered {
-            source: None,
-            message: Box::new(DeliveredMessage {
-                message_id: message_id.into(),
-                content: "legal client claim".into(),
-                submitted_content_digest: format!("sha256:{}", "a".repeat(64)),
-                origin: None,
+            source: Box::new(maka_agent_facts::message::RootSourceMessage {
+                message: message.clone(),
+                unprepared_content,
+                submitted_placement: maka_agent_facts::message::Placement::CurrentTurn,
+                disposition: maka_agent_facts::message::MessageDisposition::Steering,
+                submitted_intent: None,
             }),
-        },
-    )
+            message: Box::new(message),
+        }
+    })
 }
 fn events(db: &Connection) -> Vec<(i64, Vec<u8>)> {
     db.prepare("SELECT sequence,CAST(event_json AS BLOB) FROM event_log ORDER BY sequence")
@@ -248,7 +257,7 @@ async fn queued(
             owner,
             Fact::MessageSteered {
                 message: Box::new(source.message.clone()),
-                source: Some(Box::new(source)),
+                source: Box::new(source),
             },
         ),
         receipt,

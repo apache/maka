@@ -19,7 +19,7 @@
 
 //! Caller-owned original references exposed through an ordinary local service.
 use crate::{NativeCapability, NativeExport, NativeRegistry, actions::*};
-use maka_event_log::{EventLog, applications::intents::CallerIntent};
+use maka_event_log::{RootStore, applications::intents::CallerIntent};
 use maka_plugin_core::{
     contract::{Contract, Interface, Method, MethodMode, Transport},
     deployment::DeploymentRef,
@@ -73,7 +73,7 @@ pub fn caller_history_contract() -> Contract {
 
 struct History {
     source: DeploymentRef,
-    store: Arc<EventLog>,
+    store: Arc<RootStore>,
     scope: Scope,
 }
 impl NativeService for History {
@@ -137,7 +137,7 @@ impl NativeService for History {
 pub(crate) fn provide<V: ?Sized + 'static>(
     native: &mut NativeRegistry<V>,
     source: DeploymentRef,
-    store: Arc<EventLog>,
+    store: Arc<RootStore>,
 ) -> crate::Result<()> {
     #[derive(Deserialize)]
     #[serde(deny_unknown_fields)]

@@ -17,8 +17,10 @@
  * under the License.
  */
 
+use crate::json::Json;
 use crate::{CellContext, CellDiagnostic, CellDiagnosticKind, CellOutput};
 use deno_core::{OpState, op2};
+use deno_error::JsErrorBox;
 use maka_code_runtime::ToolScope;
 use std::{cell::RefCell, future::Future, rc::Rc, sync::Arc};
 use tokio_util::sync::CancellationToken;
@@ -26,12 +28,11 @@ use tokio_util::sync::CancellationToken;
 // Synchronous admission before returning the future is intentional: even an
 // unawaited JS call immediately becomes tracked host work.
 #[op2]
-#[serde]
 fn op_maka_tool(
     state: Rc<RefCell<OpState>>,
     #[string] name: String,
     #[serde] input: serde_json::Value,
-) -> impl Future<Output = serde_json::Value> {
+) -> impl Future<Output = Result<Json, JsErrorBox>> {
     let scope = state.borrow().borrow::<Arc<ToolScope>>().clone();
     let receiver = scope.start(name, input);
     async move {
@@ -44,10 +45,11 @@ fn op_maka_tool(
             }),
             Err(error) => Err(error),
         };
-        match result {
+        let outcome = match result {
             Ok(value) => serde_json::json!({"ok": true, "value": value}),
             Err(error) => serde_json::json!({"ok": false, "error": error}),
-        }
+        };
+        Json::encode(&outcome)
     }
 }
 
@@ -79,12 +81,13 @@ fn op_maka_store(
 }
 
 #[op2]
-#[serde]
-fn op_maka_load(state: &mut OpState, #[string] key: String) -> serde_json::Value {
-    match state.borrow::<CellContext>().load(&key) {
-        Some(value) => serde_json::json!({"found":true,"value":value}),
-        None => serde_json::json!({"found":false}),
-    }
+fn op_maka_load(state: &mut OpState, #[string] key: String) -> Result<Json, JsErrorBox> {
+    let outcome = match state.borrow::<CellContext>().load(&key) {
+        Ok(Some(value)) => serde_json::json!({"found":true,"value":value}),
+        Ok(None) => serde_json::json!({"found":false}),
+        Err(error) => serde_json::json!({"error":error}),
+    };
+    Json::encode(&outcome)
 }
 
 #[op2]

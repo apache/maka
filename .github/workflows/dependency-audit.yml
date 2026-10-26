@@ -20,7 +20,7 @@ name: Dependency audit
 on:
   schedule:
     # Offset from the hour to reduce peak-time scheduling delays.
-    - cron: '17 3 * * *'
+    - cron: "17 3 * * *"
   workflow_dispatch:
   pull_request:
     paths:
@@ -29,14 +29,14 @@ on:
       - deny.toml
       - Cargo.toml
       - Cargo.lock
-      - 'platform/**/Cargo.toml'
-      - 'plugins/**/Cargo.toml'
-      - 'products/**/Cargo.toml'
-      - 'tools/**/Cargo.toml'
+      - "platform/**/Cargo.toml"
+      - "plugins/**/Cargo.toml"
+      - "products/**/Cargo.toml"
+      - "tools/**/Cargo.toml"
       - products/maka/cli/DEPENDENCIES.rust.tsv
       - package.json
       - package-lock.json
-      - 'packages/*/package.json'
+      - "packages/*/package.json"
   push:
     branches: [main]
     paths:
@@ -45,14 +45,14 @@ on:
       - deny.toml
       - Cargo.toml
       - Cargo.lock
-      - 'platform/**/Cargo.toml'
-      - 'plugins/**/Cargo.toml'
-      - 'products/**/Cargo.toml'
-      - 'tools/**/Cargo.toml'
+      - "platform/**/Cargo.toml"
+      - "plugins/**/Cargo.toml"
+      - "products/**/Cargo.toml"
+      - "tools/**/Cargo.toml"
       - products/maka/cli/DEPENDENCIES.rust.tsv
       - package.json
       - package-lock.json
-      - 'packages/*/package.json'
+      - "packages/*/package.json"
 
 permissions:
   contents: read
@@ -69,12 +69,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '24'
+          node-version: "26"
       - name: Update stable Rust for dependency resolution
         run: rustup update stable --no-self-update
-      - uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2
+      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
         with:
           tool: cargo-deny@0.20.2
       - name: Check Rust licenses and dependency inventory
@@ -90,9 +90,9 @@ jobs:
           persist-credentials: false
 
       - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '24'
+          node-version: "26"
           cache: npm
 
       - name: Install build dependencies

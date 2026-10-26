@@ -39,6 +39,10 @@ tokio = { workspace = true, features = ["rt-multi-thread"] }
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
 
+# Process CPU and memory (`perf`).
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_ProcessStatus", "Win32_System_Threading"] }
+
 [dev-dependencies]
 # The typed API check reads the crate's public API.
 syn = { workspace = true, features = ["visit"] }

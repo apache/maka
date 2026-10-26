@@ -28,13 +28,13 @@ use maka_agent_facts::executor::Output;
 use maka_agent_ports::executor::Error;
 use maka_agent_ports::executor::Outcome;
 use maka_agent_ports::executor::OutputSink;
-use maka_event_log::EventLog;
+use maka_event_log::root_store::SessionStore;
 use std::{collections::HashSet, sync::Arc};
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 pub(super) struct Recorder {
-    log: Arc<EventLog>,
+    log: Arc<SessionStore>,
     invocation: Invocation,
     cancellation: CancellationToken,
     state: Mutex<State>,
@@ -48,7 +48,7 @@ struct State {
 }
 impl Recorder {
     pub fn new(
-        log: Arc<EventLog>,
+        log: Arc<SessionStore>,
         invocation: Invocation,
         cancellation: CancellationToken,
     ) -> Self {

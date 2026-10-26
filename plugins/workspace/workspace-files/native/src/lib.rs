@@ -21,11 +21,11 @@
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use futures_util::future::BoxFuture;
 use maka_agent_api::contract::{Workspace, WorkspaceAccess};
-use maka_agent_api::session::SessionConfiguration;
+use maka_agent_api::session::ResolvedConfiguration;
 use maka_agent_facts::tools::ToolCallContext;
 use maka_agent_facts::tools::ToolError;
 use maka_agent_facts::tools::ToolExecutor;
-use maka_event_log::EventLog;
+use maka_event_log::RootStore;
 use maka_fs_tools::{
     MutationExecutor, ReadExecutor, ReadOutput, ReadScope, WriteCoordinator, WriteScope,
 };
@@ -97,7 +97,7 @@ pub fn provide(registry: &mut NativeRegistry) -> Result<(), String> {
     )
 }
 struct Files {
-    store: Arc<EventLog>,
+    store: Arc<RootStore>,
     writes: Arc<WriteCoordinator>,
     state_root: PathBuf,
 }
@@ -131,6 +131,7 @@ impl Handler for Files {
             let tool_context = ToolCallContext {
                 invocation,
                 operation_id,
+                execution: context.scope().execution().cloned(),
             };
             let mut ticket = context
                 .scope()
@@ -251,7 +252,7 @@ pub enum Output {
     Image { bytes: Vec<u8>, mime_type: String },
 }
 async fn execute(
-    store: &EventLog,
+    root: &RootStore,
     writes: Arc<WriteCoordinator>,
     state_root: PathBuf,
     name: &str,
@@ -259,12 +260,17 @@ async fn execute(
     tool_context: ToolCallContext,
     context: &Context,
 ) -> Result<Output, ToolError> {
+    let store = maka_agent_authority::permissions::execution(
+        root,
+        &tool_context.invocation,
+        tool_context.execution.as_deref(),
+    )?;
     let (tool, _) = method(name).ok_or_else(|| failed("Workspace file method unavailable"))?;
     let image = name == "readImage";
     let cancellation = &context.scope().cancellation;
     cancelled(cancellation)?;
     let configuration =
-        maka_agent_authority::permissions::live(store, &tool_context.invocation).await?;
+        maka_agent_authority::permissions::live(&store, &tool_context.invocation).await?;
     if tool == maka_fs_tools::READ_NAME {
         let read: maka_agent_facts::read::ReadInput =
             serde_json::from_value(input.clone()).map_err(failed)?;
@@ -299,7 +305,7 @@ async fn execute(
             match address {
                 ResourceAddress::Attachment(id) => {
                     return attachments::read(
-                        store,
+                        &store,
                         &tool_context.invocation.session_id,
                         &id,
                         &request,
@@ -345,7 +351,7 @@ async fn execute(
         maka_fs_tools::WRITE_NAME | maka_fs_tools::EDIT_NAME | maka_fs_tools::PATCH_NAME
     ) {
         captured = permissions::authorize(
-            store,
+            &store,
             captured,
             &configuration,
             tool,
@@ -364,8 +370,8 @@ async fn execute(
     };
     // This original SQL snapshot is the filesystem admission point, ordered
     // against permission CAS and invocation closure in the same Root worker.
-    let current = maka_agent_authority::permissions::live(store, &tool_context.invocation).await?;
-    if current.boundary_revision != configuration.boundary_revision
+    let current = maka_agent_authority::permissions::live(&store, &tool_context.invocation).await?;
+    if current.permission_basis() != configuration.permission_basis()
         || current.workspace != configuration.workspace
     {
         return Err(failed(

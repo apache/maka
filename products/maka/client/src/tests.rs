@@ -20,13 +20,13 @@
 use super::*;
 use futures_util::future::BoxFuture;
 use maka_event_log::{
-    EventLog,
     root::{RootNamespaces, RootOwner, private_directory},
+    root_store::RootStore,
 };
 use maka_host_runtime::{
     application::{
         Context, Handler, NativeActivation, NativeRegistry,
-        host::Host,
+        host::{Configuration, Host},
         transport::{Grant, HostEndpoint},
     },
     ipc::LocalListener,
@@ -49,6 +49,7 @@ use tokio::sync::Notify;
 
 mod drafts;
 mod progress;
+mod request_custody;
 mod settings;
 
 #[derive(Default)]
@@ -142,11 +143,18 @@ impl Handler for CounterHandler {
                     }
                 }
                 "watch" => {
+                    if input["once"] == true {
+                        return Ok(json!({"sent":owner.effects.load(Ordering::SeqCst)}));
+                    }
                     context
                         .emit(json!({"sent":owner.effects.load(Ordering::SeqCst)}))
                         .await?;
                     context.scope().cancellation.cancelled().await;
                     owner.watches_closed.fetch_add(1, Ordering::SeqCst);
+                    if input["holdCleanup"] == true {
+                        owner.started.notify_one();
+                        owner.release.notified().await;
+                    }
                     Ok(json!({"closed":true}))
                 }
                 _ => Err("unknown counter method".into()),
@@ -175,7 +183,7 @@ impl Fixture {
             )
             .unwrap(),
         );
-        let store = Arc::new(EventLog::for_root(root).await.unwrap());
+        let store = Arc::new(RootStore::open(root).await.unwrap());
         let mut contract: Contract = serde_json::from_value(json!({
             "name":"test.Counter","version":1,"transport":"remote","interface":{"kind":"service","methods":{
                 "read":{"mode":"query","input":{},"output":{},"resources":{}},
@@ -310,92 +318,95 @@ impl Fixture {
             deployment,
             native,
             None,
-            BTreeMap::from([
-                (
-                    "agent".into(),
-                    HostEndpoint {
-                        consumer: InstanceId(vec![Uuid::from_u128(3)]),
-                        import: "agent".into(),
-                        grant: Grant {
-                            methods: [
-                                "read".into(),
-                                "send".into(),
-                                "uploadAttachment".into(),
-                                "selectBackend".into(),
-                                "updateGlobalInstructions".into(),
-                                "stop".into(),
-                                "respond".into(),
-                                "editQueue".into(),
-                                "watch".into(),
-                            ]
-                            .into(),
-                            recovery: false,
+            Configuration::PublicHost {
+                endpoints: BTreeMap::from([
+                    (
+                        "agent".into(),
+                        HostEndpoint {
+                            consumer: InstanceId(vec![Uuid::from_u128(3)]),
+                            import: "agent".into(),
+                            grant: Grant {
+                                methods: [
+                                    "read".into(),
+                                    "send".into(),
+                                    "uploadAttachment".into(),
+                                    "selectBackend".into(),
+                                    "updateGlobalInstructions".into(),
+                                    "stop".into(),
+                                    "respond".into(),
+                                    "editQueue".into(),
+                                    "watch".into(),
+                                ]
+                                .into(),
+                                recovery: false,
+                            },
                         },
-                    },
-                ),
-                (
-                    "settings".into(),
-                    HostEndpoint {
-                        consumer: InstanceId(vec![Uuid::from_u128(3)]),
-                        import: "settings".into(),
-                        grant: Grant {
-                            methods: [
-                                "create".into(),
-                                "saveCredential".into(),
-                                "updateAssistantPreferences".into(),
-                                "updateNetwork".into(),
-                            ]
-                            .into(),
-                            recovery: false,
+                    ),
+                    (
+                        "settings".into(),
+                        HostEndpoint {
+                            consumer: InstanceId(vec![Uuid::from_u128(3)]),
+                            import: "settings".into(),
+                            grant: Grant {
+                                methods: [
+                                    "create".into(),
+                                    "saveCredential".into(),
+                                    "updateAssistantPreferences".into(),
+                                    "updateNetwork".into(),
+                                ]
+                                .into(),
+                                recovery: false,
+                            },
                         },
-                    },
-                ),
-                (
-                    "setup".into(),
-                    HostEndpoint {
-                        consumer: InstanceId(vec![Uuid::from_u128(3)]),
-                        import: "setup".into(),
-                        grant: Grant {
-                            methods: ["discoverModels".into()].into(),
-                            recovery: false,
+                    ),
+                    (
+                        "setup".into(),
+                        HostEndpoint {
+                            consumer: InstanceId(vec![Uuid::from_u128(3)]),
+                            import: "setup".into(),
+                            grant: Grant {
+                                methods: ["discoverModels".into()].into(),
+                                recovery: false,
+                            },
                         },
-                    },
-                ),
-                (
-                    "management".into(),
-                    HostEndpoint {
-                        consumer: InstanceId(vec![Uuid::from_u128(3)]),
-                        import: "management".into(),
-                        grant: Grant {
-                            methods: ["setEnabled".into(), "configure".into()].into(),
-                            recovery: false,
+                    ),
+                    (
+                        "management".into(),
+                        HostEndpoint {
+                            consumer: InstanceId(vec![Uuid::from_u128(3)]),
+                            import: "management".into(),
+                            grant: Grant {
+                                methods: ["setEnabled".into(), "configure".into()].into(),
+                                recovery: false,
+                            },
                         },
-                    },
-                ),
-                (
-                    "authentication".into(),
-                    HostEndpoint {
-                        consumer: InstanceId(vec![Uuid::from_u128(3)]),
-                        import: "authentication".into(),
-                        grant: Grant {
-                            methods: ["loginCredential".into()].into(),
-                            recovery: false,
+                    ),
+                    (
+                        "authentication".into(),
+                        HostEndpoint {
+                            consumer: InstanceId(vec![Uuid::from_u128(3)]),
+                            import: "authentication".into(),
+                            grant: Grant {
+                                methods: ["loginCredential".into()].into(),
+                                recovery: false,
+                            },
                         },
-                    },
-                ),
-                (
-                    "receipts".into(),
-                    HostEndpoint {
-                        consumer: InstanceId(vec![Uuid::from_u128(3)]),
-                        import: "receipts".into(),
-                        grant: Grant {
-                            methods: ["read".into()].into(),
-                            recovery: true,
+                    ),
+                    (
+                        "receipts".into(),
+                        HostEndpoint {
+                            consumer: InstanceId(vec![Uuid::from_u128(3)]),
+                            import: "receipts".into(),
+                            grant: Grant {
+                                methods: ["read".into()].into(),
+                                recovery: true,
+                            },
                         },
-                    },
-                ),
-            ]),
-            vec![],
+                    ),
+                ]),
+                native: vec![],
+                product_methods: Default::default(),
+            },
         )
         .await
         .unwrap();

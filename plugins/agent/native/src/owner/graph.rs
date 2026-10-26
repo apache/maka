@@ -91,6 +91,9 @@ impl Owner {
     ) -> Result<Value, String> {
         let configuration = self
             .store
+            .session(&invocation.session_id)
+            .await
+            .map_err(|error| error.to_string())?
             .invocation_configuration(invocation)
             .await
             .map_err(|_| "graph_source_unavailable")?
@@ -123,12 +126,16 @@ impl Owner {
         let session = self.session(&invocation.session_id).await?;
         let configuration = self
             .store
+            .session(&invocation.session_id)
+            .await
+            .map_err(|error| error.to_string())?
             .invocation_configuration(invocation)
             .await
             .map_err(|_| "graph_source_unavailable")?
             .ok_or("graph_source_unavailable")?;
         if session.archived
             || session.configuration.boundary_revision != configuration.boundary_revision
+            || Some(session.configuration.binding) != configuration.workspace_binding
             || session.configuration.workspace.identity
                 != configuration
                     .workspace_identity
@@ -141,6 +148,7 @@ impl Owner {
             workspace: session.configuration.workspace,
             permissions: session.configuration.permissions,
             boundary_revision: session.configuration.boundary_revision,
+            binding: session.configuration.binding,
         })
     }
     pub(crate) async fn graph_target_valid(
@@ -154,7 +162,8 @@ impl Owner {
         Ok(!session.archived
             && session.configuration.workspace == target.workspace
             && session.configuration.permissions == target.permissions
-            && session.configuration.boundary_revision == target.boundary_revision)
+            && session.configuration.boundary_revision == target.boundary_revision
+            && session.configuration.binding == target.binding)
     }
     pub(super) async fn prepare_graph_behavior(
         &self,
@@ -188,6 +197,9 @@ impl Owner {
             }
             if !self
                 .store
+                .session(session)
+                .await
+                .map_err(|error| error.to_string())?
                 .message_queue(session)
                 .await
                 .map_err(|_| "agent_queue_unavailable")?
@@ -410,7 +422,7 @@ impl Owner {
     async fn graph_start_allowed(
         &self,
         graphs: &Graphs,
-        session: &SessionRecord<SessionConfiguration>,
+        session: &SessionRecord<ResolvedConfiguration>,
         runs: &Runs,
         current: Option<&maka_graph::control::Control>,
     ) -> Result<(), String> {
@@ -425,6 +437,9 @@ impl Owner {
         if runs.controls.contains_key(&session.id)
             || !self
                 .store
+                .session(&session.id)
+                .await
+                .map_err(|error| error.to_string())?
                 .message_queue(&session.id)
                 .await
                 .map_err(|_| "agent_queue_unavailable")?

@@ -24,6 +24,8 @@ final class Pressable {
     private long nodeEvents;
     private boolean span;
     private float downX, downY;
+    /** The touch, for the press events' payload. */
+    private final Mounter.PressAt at = new Mounter.PressAt();
     private boolean tracking, pressedIn, longPressed;
     private final Runnable pressIn = this::pressIn;
     private final Runnable longPress = this::longPress;
@@ -51,7 +53,7 @@ final class Pressable {
     }
 
     private void event(int kind) {
-        if (wants(kind)) mounter.event(node, kind);
+        if (wants(kind)) mounter.press(node, kind, view, at);
     }
 
     boolean onTouchEvent(MotionEvent e) {
@@ -66,6 +68,7 @@ final class Pressable {
                 node = id;
             }
         }
+        if (!feedbackOnly) at.track(e);
         switch (e.getActionMasked()) {
             case MotionEvent.ACTION_DOWN:
                 downX = e.getX();

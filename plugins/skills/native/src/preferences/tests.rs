@@ -20,6 +20,21 @@
 use super::*;
 use crate::tests::scope;
 
+async fn root_store(path: &std::path::Path) -> Arc<RootStore> {
+    use maka_event_log::root::{RootNamespaces, RootOwner};
+    let namespaces = RootNamespaces {
+        ownership: path.join("owners"),
+        control: path.join("control"),
+    };
+    let root_path = path.join("root");
+    let owner = if root_path.exists() {
+        RootOwner::open(&root_path, &namespaces).unwrap()
+    } else {
+        RootOwner::create(&root_path, &namespaces).unwrap()
+    };
+    Arc::new(RootStore::open(Arc::new(owner)).await.unwrap())
+}
+
 fn change(revision: u64, enabled: bool, pinned: bool) -> SetPreference {
     SetPreference {
         reference: "source:local:review".into(),
@@ -30,8 +45,7 @@ fn change(revision: u64, enabled: bool, pinned: bool) -> SetPreference {
 #[tokio::test]
 async fn concurrent_cas_persists_the_winner_and_separates_owners() {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("store.sqlite");
-    let log = Arc::new(EventLog::open(&path).await.unwrap());
+    let log = root_store(dir.path()).await;
     let store = Store::new(log.clone(), "one_".into());
     let other = Store::new(log.clone(), "two_".into());
     let call = scope();
@@ -56,7 +70,7 @@ async fn concurrent_cas_persists_the_winner_and_separates_owners() {
     call.finish().await.unwrap();
     log.shutdown().await.unwrap();
     drop((store, other, log));
-    let log = Arc::new(EventLog::open(&path).await.unwrap());
+    let log = root_store(dir.path()).await;
     let store = Store::new(log.clone(), "one_".into());
     let call = scope();
     assert_eq!(store.read(&call).await.unwrap().entries, expected);
@@ -77,11 +91,7 @@ async fn concurrent_cas_persists_the_winner_and_separates_owners() {
 #[tokio::test]
 async fn deleted_revision_is_preserved_and_invalid_or_cancelled_reads_never_enable_skills() {
     let dir = tempfile::tempdir().unwrap();
-    let log = Arc::new(
-        EventLog::open(&dir.path().join("store.sqlite"))
-            .await
-            .unwrap(),
-    );
+    let log = root_store(dir.path()).await;
     let store = Store::new(log.clone(), "one_".into());
     log.plugin_data_batch(
         &namespace(),
@@ -124,11 +134,7 @@ async fn deleted_revision_is_preserved_and_invalid_or_cancelled_reads_never_enab
 #[tokio::test]
 async fn dropping_observer_cannot_finish_the_original_call_before_its_store_work() {
     let dir = tempfile::tempdir().unwrap();
-    let log = Arc::new(
-        EventLog::open(&dir.path().join("store.sqlite"))
-            .await
-            .unwrap(),
-    );
+    let log = root_store(dir.path()).await;
     let store = Store::new(log.clone(), "one_".into());
     let call = scope();
     let (started, running) = tokio::sync::oneshot::channel();
@@ -163,11 +169,7 @@ async fn dropping_observer_cannot_finish_the_original_call_before_its_store_work
 #[tokio::test]
 async fn a_returned_business_error_does_not_invent_a_cleanup_failure() {
     let dir = tempfile::tempdir().unwrap();
-    let log = Arc::new(
-        EventLog::open(&dir.path().join("store.sqlite"))
-            .await
-            .unwrap(),
-    );
+    let log = root_store(dir.path()).await;
     let store = Store::new(log.clone(), "one_".into());
     let call = scope();
     let result = store

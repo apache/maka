@@ -18,12 +18,13 @@
  */
 
 import { tr } from './locale';
-import { cleanup, computed, Input, inputAction, signal, Text, View } from 'nsh';
+import { cleanup, computed, Input, inputAction, signal, Text, View, List } from 'nsh';
 import type { YNode } from 'nsh';
-import { List } from 'nsh/list';
 import { keymap } from 'nsh/keymap';
 import { Button, Dialog } from 'nsh/base';
+import { windowSize } from 'nsh/device';
 import { Icon } from './Icon';
+import type { CommandEntry } from './composerCommands';
 import {
   C,
   captionTextStyle,
@@ -37,17 +38,9 @@ import {
 } from './ui';
 import { dialogTop } from './chrome';
 
-export type PaletteEntry = {
-  id: string;
-  title: string;
-  detail?: string;
-  hint?: string;
-  run(): void;
-};
-
 export function Palette(props: {
   instance: number;
-  commands: PaletteEntry[];
+  commands: CommandEntry[];
   close(instance: number): boolean;
 }) {
   const query = signal('');
@@ -82,11 +75,12 @@ export function Palette(props: {
       }}
       style={{
         flex: 1,
-        justifyContent: 'center',
+        justifyContent: 'flex-start',
         alignItems: 'center',
         backgroundColor: '#00000099',
-        padding: 16,
-        paddingTop: dialogTop(16),
+        paddingHorizontal: 16,
+        paddingTop: compact() ? dialogTop(16) : windowSize().height / 8,
+        paddingBottom: 16,
       }}
     >
       <View
@@ -94,6 +88,8 @@ export function Palette(props: {
           width: '100%',
           maxWidth: 640,
           maxHeight: '100%',
+          minHeight: 0,
+          flexShrink: 1,
           backgroundColor: C.surface,
           padding: 16,
           gap: 16,

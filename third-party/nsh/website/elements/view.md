@@ -154,13 +154,13 @@ view()
 | `onLongPress` | `.on_long_press` | none | The finger stayed down for `delayLongPress` (500 ms). |
 | `onPressDown` / `onPressUp` | `.on_press_down` / `.on_press_up` | none | A finger went down / lifted or left. |
 | `onHoverIn` / `onHoverOut` | `.on_hover_in` / `.on_hover_out` | none | The mouse came over the view (or a view inside it) / left it or the window ([hover](./index.md#hover)). |
-| `onHoverMove` | `.on_hover_move` | `HoverEvent` | The mouse moved over the view with no button down: `position`, `pagePosition` (`Point`s) and `modifiers`; at most once a frame. |
+| `onHoverMove` | `.on_hover_move` | `HoverEvent` | The mouse moved over the view with no button down, or a modifier key was pressed or released while it rests there: `position`, `pagePosition` (`Point`s) and `modifiers`; at most once a frame. |
 | `onMouseMove` | `.on_mouse_move` | TSX `Point`; Rust `Point<Points>` | Mouse movement, including with a button down, on macOS, Linux, Windows, GPUI and web. Local coordinates in points; nested listeners hear it inside out, at most once a frame. |
 | `onContextMenu` | `.on_context_menu` | `ContextMenuEvent` | The secondary button was pressed over the view ([context menus](./index.md#context-menus)). |
 | `onFileDragEnter` / `onFileDragLeave` | `.on_file_drag_enter` / `.on_file_drag_leave` | none | A local-file drag entered / left the active desktop destination. |
 | `onFileDrop` | `.on_file_drop` | `{ uris: string[] }` (`FileDropEvent`) | Local files or directories were dropped on the desktop destination. |
 | `onLayout` | `.on_layout` | `Bounds` (`Bounds<Points>`) | The frame relative to the parent changed. |
-| `onPanStart` / `onPanEnd` | `.on_pan_start` / `.on_pan_end` | `PanEvent` | A drag bound with `pan` started / ended. |
+| `onPanStart` / `onPanEnd` | `.on_pan_start` / `.on_pan_end` | `PanEvent` | A drag bound with `pan` started / ended; `cancelled` is true when the system cancels it. |
 | `onPinchStart` / `onPinchEnd` | `.on_pinch_start` / `.on_pinch_end` | `{ scale, velocity }` | A pinch bound with `pinch` started / ended. |
 | `onRotationStart` / `onRotationEnd` | `.on_rotation_start` / `.on_rotation_end` | `{ rotation, velocity }` | A rotation bound with `rotation` started / ended. |
 | `onAccessibilityAction` | `.on_accessibility_action` | `{ actionName }` | A custom accessibility action ran. |

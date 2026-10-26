@@ -810,7 +810,14 @@ fn render_component(
                 }
                 c
             }
-            None => reader,
+            // A memo of the getter: it runs again only when what the
+            // children's expression itself reads changes, not each time
+            // what they show does, so the regions it makes (an `<Each>`'s
+            // rows) are made once and kept, as a host element's are.
+            None => {
+                let memo = reactive::memo(cx, reader.take(), false);
+                Owned(cx, reactive::finish_value(cx, memo))
+            }
         };
         dom::insert_value_at(cx, node, children.1, anchor.as_ref().map(|a| a.1))?;
     }

@@ -222,7 +222,7 @@ async fn native_process_foreground_enforces_workspace_and_protected_boundaries()
         assert_eq!(result["value"]["output"]["stdout"], "native");
         let facts = service_tools::facts(&f, &session).await;
         assert!(facts.iter().any(|fact| matches!(fact, maka_agent_facts::event::Fact::ToolDispatched {presentation:Some(key), ..} if key == "maka.workspace.Processes@1/execute")));
-        let through = *f.store.subscribe_commits().borrow();
+        let through = f.through(&session).await;
 
         let mut position = json!({"kind":"start"});
         let mut result_row = None;
@@ -257,7 +257,7 @@ async fn native_process_foreground_enforces_workspace_and_protected_boundaries()
         forbidden["justification"] = json!("Read private state.");
         let result = roundtrip(&listener,&f,&session,"Execute",forbidden).await;
         assert_eq!(result["kind"], "failed", "{result}");
-        assert!(f.store.pending_interactions(&session).await.unwrap().is_empty());
+        assert!(f.session(&session).await.pending_interactions(&session).await.unwrap().is_empty());
         files::change(&f, &session, "read_only", false, false).await;
         let result = roundtrip(
             &listener,
@@ -418,7 +418,8 @@ async fn native_process_revocation_or_stop_withdraws_permission_without_launch()
                 assert_eq!(result["kind"], "failed", "{result}");
             }
             assert!(
-                f.store
+                f.session(&request.session_id)
+                    .await
                     .interaction(&request.request_id)
                     .await
                     .unwrap()
@@ -427,7 +428,8 @@ async fn native_process_revocation_or_stop_withdraws_permission_without_launch()
                     .is_some()
             );
             assert!(
-                f.store
+                f.session(&session)
+                    .await
                     .pending_interactions(&session)
                     .await
                     .unwrap()

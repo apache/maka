@@ -63,6 +63,30 @@ pub struct ContextCounts {
 }
 
 impl PreparedContextBreakdown {
+    /// Combine already-rounded fragments without rounding their byte totals again.
+    pub fn accumulate(&mut self, other: &Self) {
+        fn add(left: &mut ContextBucket, right: &ContextBucket) {
+            left.content_bytes = left.content_bytes.saturating_add(right.content_bytes);
+            left.estimated_tokens = left.estimated_tokens.saturating_add(right.estimated_tokens);
+        }
+        add(&mut self.system, &other.system);
+        add(&mut self.user, &other.user);
+        add(&mut self.assistant, &other.assistant);
+        add(&mut self.tool, &other.tool);
+        add(&mut self.tool_schemas, &other.tool_schemas);
+        self.counts.messages = self.counts.messages.saturating_add(other.counts.messages);
+        self.counts.media = self.counts.media.saturating_add(other.counts.media);
+        self.counts.tool_calls = self
+            .counts
+            .tool_calls
+            .saturating_add(other.counts.tool_calls);
+        self.counts.tool_results = self
+            .counts
+            .tool_results
+            .saturating_add(other.counts.tool_results);
+        self.counts.tools = self.counts.tools.saturating_add(other.counts.tools);
+    }
+
     fn buckets(&self) -> [&ContextBucket; 5] {
         [
             &self.system,

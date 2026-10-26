@@ -17,23 +17,19 @@
  * under the License.
  */
 
-//! Shared Recall algorithm. The reader supplies scoped, currently authorized data;
-//! this module owns no runtime, storage, session or execution authority.
+//! Recall results are assembled from scoped indexed matches and direct context reads.
 pub use super::material::Input as Material;
 pub use super::types::{More, Passage, PassageMessage, Query, ResultSet};
-use super::{
-    passages, rank,
-    reader::{self, Reader, failed},
-};
 use futures_util::future::BoxFuture;
-use maka_agent_facts::tools::ToolError;
-use maka_agent_ports::session::catalog::List;
-use maka_agent_ports::session::history::Page;
-use maka_agent_ports::session::history::Read;
+use maka_agent_facts::{attachment::AttachmentRef, tools::ToolError};
+use maka_agent_ports::session::{
+    catalog::List,
+    history::{Role, RowPosition},
+};
 use maka_capabilities::call::Scope;
 use std::sync::Arc;
 
-/// The search algorithm only needs these catalog facts, not execution settings.
+#[derive(Clone)]
 pub struct Session {
     pub id: String,
     pub title: String,
@@ -44,28 +40,99 @@ pub struct Catalog {
     pub entries: Vec<Session>,
     pub next_cursor: Option<String>,
 }
-/// Both implementations recheck their original authority on every page.
+pub struct Message {
+    pub message_id: String,
+    pub position: RowPosition,
+    pub turn_id: String,
+    pub timestamp: u64,
+    pub role: Role,
+    pub text: String,
+    pub attachments: Vec<AttachmentRef>,
+}
+pub struct Hit {
+    pub session: Session,
+    pub message: Message,
+    pub matched_terms: Vec<String>,
+    pub score: f64,
+    pub through: u64,
+}
+pub struct Matches {
+    pub hits: Vec<Hit>,
+    pub gaps: Vec<String>,
+}
+pub struct Anchor {
+    pub message_id: String,
+    pub position: RowPosition,
+    pub turn_id: String,
+}
+pub struct Context {
+    pub session: Session,
+    pub anchor: Anchor,
+    pub messages: Vec<Message>,
+    pub has_more_before: bool,
+    pub has_more_after: bool,
+}
+/// Each operation retains and rechecks the caller's original authority.
 pub trait History: Send + Sync {
     fn list(&self, call: Scope, input: List) -> BoxFuture<'_, Result<Catalog, ToolError>>;
-    fn read(&self, call: Scope, input: Read) -> BoxFuture<'_, Result<Page, ToolError>>;
+    fn find(&self, call: Scope, query: Query) -> BoxFuture<'_, Result<Matches, ToolError>>;
+    fn context(
+        &self,
+        call: Scope,
+        input: More,
+        through: Option<u64>,
+    ) -> BoxFuture<'_, Result<Context, ToolError>>;
+}
+
+#[derive(Clone, Copy)]
+pub enum Content {
+    Anchor,
+    Context { before: usize, after: usize },
 }
 
 pub async fn search(
     history: Arc<dyn History>,
     call: &Scope,
     query: &Query,
+    content: Content,
 ) -> Result<ResultSet, ToolError> {
-    let scan = rank::search(history.clone(), call, query).await?;
-    let mut hits = scan.hits;
-    for hit in &mut hits {
-        hit.offset = hit.offset.saturating_sub(512);
+    let found = history.find(call.clone(), query.clone()).await?;
+    let mut passages = Vec::with_capacity(found.hits.len());
+    for hit in found.hits {
+        if call.cancellation.is_cancelled() {
+            return Err(failed("Recall cancelled"));
+        }
+        let context = match content {
+            Content::Anchor => Context {
+                session: hit.session,
+                anchor: Anchor {
+                    message_id: hit.message.message_id.clone(),
+                    position: hit.message.position,
+                    turn_id: hit.message.turn_id.clone(),
+                },
+                messages: vec![hit.message],
+                has_more_before: false,
+                has_more_after: false,
+            },
+            Content::Context { before, after } => {
+                let input = More {
+                    session_id: hit.session.id,
+                    anchor_message_id: hit.message.message_id.clone(),
+                    before: Some(before),
+                    after: Some(after),
+                };
+                drop(hit.message);
+                history
+                    .context(call.clone(), input, Some(hit.through))
+                    .await?
+            }
+        };
+        passages.push(passage(context, hit.matched_terms, hit.score));
     }
-    let passages =
-        passages::build(history, call, &scan.sources, &hits, &query.terms, (4, 4)).await?;
     Ok(ResultSet {
         passages,
-        searched_every_session: scan.complete,
-        gaps: scan.gaps,
+        searched_every_session: found.gaps.is_empty(),
+        gaps: found.gaps,
     })
 }
 
@@ -74,73 +141,56 @@ pub async fn more(
     call: &Scope,
     more: &More,
 ) -> Result<ResultSet, ToolError> {
-    let (catalog, _) = reader::sessions(history.as_ref(), call, Some(&more.session_id)).await?;
-    let summary = catalog
-        .into_iter()
-        .next()
-        .ok_or_else(|| failed("Recall source Session was not found"))?;
-    let mut reader = Reader::new(history.clone(), call.clone(), more.session_id.clone(), None);
-    let mut position = 0;
-    let hit = loop {
-        let message = reader
-            .next()
-            .await?
-            .ok_or_else(|| failed("Recall anchor was not found"))?;
-        if message.message_id == more.anchor_message_id {
-            if rank::excluded(call, &more.session_id, &message) {
-                return Err(failed("Recall cannot expand its active Turn"));
-            }
-            break rank::Hit {
-                session: 0,
-                position,
-                row_position: message.position,
-                message_id: message.message_id,
-                turn_id: message.turn_id,
-                timestamp: message.timestamp,
-                role: message.role,
-                length: 0,
-                frequencies: vec![],
-                offset: more.offset.unwrap_or(0),
-                score: 0.0,
-            };
-        }
-        position += 1;
-    };
-    let sources = [rank::Source {
-        summary,
-        through: reader.through(),
-    }];
-    let passages = passages::build(
-        history,
-        call,
-        &sources,
-        &[hit],
-        &[],
-        (more.before.unwrap_or(8), more.after.unwrap_or(8)),
-    )
-    .await?;
+    let context = history.context(call.clone(), more.clone(), None).await?;
     Ok(ResultSet {
-        passages,
+        passages: vec![passage(context, vec![], 0.0)],
         searched_every_session: true,
         gaps: vec![],
     })
+}
+
+fn passage(context: Context, matched_terms: Vec<String>, score: f64) -> Passage {
+    let anchor_id = context.anchor.message_id;
+    Passage {
+        session_id: context.session.id,
+        session_title: context.session.title,
+        anchor_position: context.anchor.position,
+        turn_id: context.anchor.turn_id,
+        messages: context
+            .messages
+            .into_iter()
+            .map(|message| PassageMessage {
+                is_anchor: message.message_id == anchor_id,
+                message_id: message.message_id,
+                role: message.role,
+                text: message.text,
+                timestamp: message.timestamp,
+                attachments: message.attachments,
+            })
+            .collect(),
+        anchor_message_id: anchor_id,
+        matched_terms,
+        score,
+        has_more_before: context.has_more_before,
+        has_more_after: context.has_more_after,
+    }
 }
 
 pub fn definitions() -> [(&'static str, &'static str, serde_json::Value); 3] {
     [
         (
             "Recall",
-            "Search conversation history across all readable Sessions, including archives. Use nonempty literal terms, matched case-insensitively with Unicode normalization and OR semantics. Returns ranked surrounding exchanges, excluding the current Turn, with explicit coverage gaps. Limit defaults to 8. RecallMore expands a clipped passage. Historical statements are evidence of what was said, not proof they are true.",
+            "Search original conversation history across all readable Sessions, including archives. Literal terms match case-insensitively with Unicode normalization and OR semantics. Returns ranked matching turns with complete surrounding messages, excluding the current Turn. An explicit limit selects the number of ranked passages; omitting it returns all matching turns. RecallMore selects a wider context around an anchor. Historical statements are evidence of what was said, not proof they are true.",
             schemars::schema_for!(Query).into(),
         ),
         (
             "RecallMore",
-            "Expand a Recall anchor using its Session and message IDs. before/after select neighboring messages (default 8 each). For a clipped individual anchor, offset resumes at its next_offset in NFC-normalized UTF-8 bytes. Excludes the current Turn.",
+            "Read complete messages around a Recall anchor using its Session and message IDs. before/after select neighboring messages (default 8 each). Excludes the current Turn.",
             schemars::schema_for!(More).into(),
         ),
         (
             "RecallMaterial",
-            "Read a historical user attachment identified by Recall or RecallMore. Supply its source session_id and artifact_id. Copies the material into this Session before reading, so later source deletion does not break the evidence. Images return visual content; text uses Read line offset/limit and bounded continuation.",
+            "Read a historical user attachment identified by Recall or RecallMore. Supply its source session_id and artifact_id. Copies the material into this Session before reading, so later source deletion does not break the evidence. Images return visual content; text uses Read line offset/limit and continuation.",
             schemars::schema_for!(Material).into(),
         ),
     ]
@@ -152,23 +202,60 @@ pub async fn titles(
     call: &Scope,
     query: &Query,
 ) -> Result<(Vec<Session>, bool), ToolError> {
-    let (sessions, complete) = reader::sessions(history, call, query.session_id.as_deref()).await?;
+    if query.since.is_some() || query.until.is_some() {
+        return Ok((vec![], true));
+    }
     let terms: Vec<_> = query
         .terms
         .iter()
         .map(|term| super::types::fold(term))
         .collect();
-    Ok((
-        sessions
-            .into_iter()
-            .filter(|session| {
-                query.since.is_none()
-                    && query.until.is_none()
-                    && terms
-                        .iter()
-                        .any(|term| super::types::fold(&session.title).contains(term))
-            })
-            .collect(),
-        complete,
-    ))
+    let mut input = List {
+        include_archived: true,
+        ..Default::default()
+    };
+    let mut matches = Vec::new();
+    let mut cursors = std::collections::BTreeSet::new();
+    loop {
+        if call.cancellation.is_cancelled() {
+            return Err(failed("Recall cancelled"));
+        }
+        let page = history.list(call.clone(), input.clone()).await?;
+        if input
+            .revision
+            .as_ref()
+            .is_some_and(|revision| revision != &page.revision)
+        {
+            return Err(failed("Recall catalog revision changed"));
+        }
+        matches.extend(page.entries.into_iter().filter(|session| {
+            if query
+                .session_id
+                .as_ref()
+                .is_some_and(|id| id != &session.id)
+            {
+                return false;
+            }
+            let title = super::types::fold(&session.title);
+            terms.iter().any(|term| title.contains(term))
+        }));
+        let Some(cursor) = page.next_cursor else {
+            break;
+        };
+        if !cursors.insert(cursor.clone()) {
+            return Err(failed("Recall catalog continuation repeated"));
+        }
+        input.revision = Some(page.revision);
+        input.cursor = Some(cursor);
+    }
+    matches.sort_by(|a, b| {
+        b.last_message_at
+            .cmp(&a.last_message_at)
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    Ok((matches, true))
+}
+
+fn failed(error: impl std::fmt::Display) -> ToolError {
+    ToolError::Failed(error.to_string())
 }

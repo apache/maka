@@ -18,7 +18,7 @@
  */
 
 import { createInterface } from 'node:readline';
-import { appendFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, renameSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 const [mode, record] = process.argv.slice(2);
 const log = (event) => appendFileSync(record, JSON.stringify(event) + '\n');
@@ -143,9 +143,10 @@ if (mode.startsWith('http')) {
         response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(result));
     });
   });
-  server.listen(0, '127.0.0.1', () =>
-    writeFileSync(record + '.url', `http://127.0.0.1:${server.address().port}/mcp`),
-  );
+  server.listen(0, '127.0.0.1', () => {
+    writeFileSync(record + '.url.tmp', `http://127.0.0.1:${server.address().port}/mcp`);
+    renameSync(record + '.url.tmp', record + '.url');
+  });
 } else {
   const input = createInterface({ input: process.stdin });
   input.on('line', (line) =>

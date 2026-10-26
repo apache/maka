@@ -86,7 +86,7 @@ impl Repository {
             let path = path.strip_suffix(b"\n").unwrap_or(path);
             let path = path.strip_suffix(b"\r").unwrap_or(path);
             root.join(
-                gix::path::try_from_bstr(path.as_bstr())
+                gix::path::from_bstr(path.as_bstr())
                     .map_err(|_| failure("git_unsupported"))?
                     .as_ref(),
             )
@@ -105,7 +105,7 @@ impl Repository {
                 let path = path.strip_suffix(b"\r").unwrap_or(path);
                 dunce::canonicalize(
                     git_dir.join(
-                        gix::path::try_from_bstr(path.as_bstr())
+                        gix::path::from_bstr(path.as_bstr())
                             .map_err(|_| failure("git_unsupported"))?
                             .as_ref(),
                     ),

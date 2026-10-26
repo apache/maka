@@ -17,6 +17,7 @@ event id:drag onPanStart translationX=2 translationY=-3 velocityX=10 velocityY=0
 expect Pan: start 2,-3 v 10,0
 event id:drag onPanEnd translationX=40 translationY=5 velocityX=250.5 velocityY=-12
 expect Pan: start 2,-3 v 10,0; end 40,5 v 250.5,-12
+expect Cancelled: false
 event id:pinch onPinchStart scale=1.1 velocity=0.5
 expect Pinch: start 1.1 v 0.5
 event id:pinch onPinchEnd scale=2 velocity=-0.25
@@ -48,6 +49,11 @@ key id:field Backspace
 expect Keys: H i ! Backspace
 event id:field onSelectionChange start=0 end=2
 expect Selection: 0-2
+# The caret moved: in the input and in the root view, where the input is
+# at 0,64.
+expect Caret: none
+event id:field onCaretMove
+expect Caret: bounds,pageBounds bounds page 0,64 0x0
 # Return submits what was typed.
 expect Submitted: nothing
 event id:field onSubmit text=Hi!
@@ -87,6 +93,15 @@ covers [events] onKeyPress
 covers [events] onChange
 covers [events] onSubmit
 covers [events] onSelectionChange
+covers [events] onCaretMove
+# What the user pasted, reported; the input inserts nothing itself.
+prop id:paste pasteBehavior report
+expect Pasted: none
+event id:paste onPaste text=hello
+expect Pasted: hello files 0 uris 0
+covers [events] onPaste
+prop id:paste pasteBehavior report
+covers [props] pasteBehavior
 covers [events] onContentSizeChange
 covers [props] selectedRange
 # events-layout
@@ -175,6 +190,13 @@ event id:action onAccessibilityAction actionName=increment
 expect Action: increment
 event id:action onAccessibilityAction actionName=activate
 expect Action: activate
+# Tab reaches a view that takes presses, then moves on.
+listens id:key-focus onFocus
+listens id:key-focus onBlur
+event id:key-focus onFocus
+expect Key focus: focused
+event id:key-focus onBlur
+expect Key focus: focused blurred
 covers [events] onPressDown
 covers [events] onPressUp
 covers [events] onHoverIn

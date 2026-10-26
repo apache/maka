@@ -41,9 +41,9 @@ server client, log forwarding, the error overlay: `dev.rs`). The host turns on `
 
 - **One retained view per node, one window per surface.** Each node is an `NshView` (`view.rs`): an `Rc` node with
   its `ViewState` (frame, style, animated values, content), its children in drawing order and a weak parent. A
-  surface's window draws its whole tree with Direct2D into a flip-model swap chain (`render.rs`); NSH content needs
-  no child windows. Changing a view (`changed` / `moved`) invalidates the window; `WM_PAINT` draws the tree once,
-  however many views changed. Only native components that bring a window of their own are child `HWND`s, and they
+  surface's window draws its tree with Direct2D into a flip-model swap chain (`render.rs`); NSH content needs
+  no child windows. Changing a view (`changed` / `moved`) queues it on its surface and invalidates the window;
+  `WM_PAINT` draws once, however many views changed, only where they changed ("Partial frames", below). Only native components that bring a window of their own are child `HWND`s, and they
   sit above everything NSH draws (the "airspace" limit, below).
 - **Window composition for web views** (`compose.rs`). A window without web views has no composition: one swap
   chain, drawn and presented as above. The first web view makes a DirectComposition target on the window (above
@@ -65,7 +65,12 @@ server client, log forwarding, the error overlay: `dev.rs`). The host turns on `
 - **Drawing a view** (`render::draw_view`): shadows and background (`decor.rs`), the content clipped to the bounds
   (text, image, canvas), the children (clipped to the rounded bounds when the view clips), the items the view hosts
   (`ViewState::natives`: text editors, alerts, overlays, videos — the `Hosted` trait), the scroll
-  indicator, then the border, all inside an opacity layer when translucent. Transforms are CSS-like 4x4 matrices
+  indicator, then the border, all inside an opacity layer when translucent (bounded by the area the subtree draws in:
+  an unbounded layer is a surface as large as the clip around it, often the window; a view that paints only its
+  background color fades the color instead, with no layer). A view's content clip is pushed only when it has content
+  (text, an image, a canvas). The children of a clipping view (a scroll view's content) whose drawn area
+  (`drawn_area`: bounds, shadows, outlines, transformed children) lies outside what the window and the clips leave
+  visible are not drawn (`hidden_by_clips`, in the window's pass only). Transforms are CSS-like 4x4 matrices
   (`geom.rs`); affine ones are Direct2D's 3x2 world transform, projective ones (perspective) draw the subtree into an
   offscreen bitmap mapped with `DrawBitmap`'s perspective transform. Units are points: the device context's DPI is
   the window's (the process is per-monitor DPI aware, v2).
@@ -102,7 +107,7 @@ server client, log forwarding, the error overlay: `dev.rs`). The host turns on `
 | Text | `text.rs` | DirectWrite on the engine thread: one `IDWriteTextLayout` per prepared text, re-broken at each width asked for; the final layout's glyph runs are recorded through a custom `IDWriteTextRenderer` and drawn on the main thread with `DrawGlyphRun`, so what was measured is what is drawn. Line heights follow Pango's model (each span as tall as its own font; DirectWrite only breaks lines). Color emoji are the COLR layers of `TranslateColorGlyphRun`. Colors and decorations are read per cluster from the drawn text's spans (a layout is reused for texts that only differ in them). Custom fonts load into an in-memory font collection (`IDWriteInMemoryFontFileLoader`). `fontVariant` is OpenType features. `selectable` text has a desktop-style range selection (mouse drags, Ctrl+A, Ctrl+C) |
 | Decoration | `decor.rs` | Direct2D geometries: shadows (React Native's take the box's shape with a fill, the content's without, as iOS), blurred once into bitmaps cached by what they look like (`decor/cache.rs`); colors; linear and radial gradients as gradient brushes, conic ones drawn into cached bitmaps (`decor/gradient.rs`); inset shadows; borders per side (over the children, as UIKit); outlines; `filter`s as Direct2D effects on the subtree recorded offscreen (`decor/layer.rs`); `mixBlendMode` and `backdropFilter` read the backdrop out of the pass's target |
 | Images | `image.rs` | Loaded and decoded on worker threads: WIC (PNG, JPEG, BMP, TIFF, ICO, HEIF / WebP with their codecs), the `image` crate for GIF and WebP (every frame of animations); pixels in an LRU cache per resolved location, Direct2D bitmaps made when first drawn and made again after a device loss; animated GIF / WebP on thread timers at their frame delays (paused while not drawn); blur and tint as effects at draw time |
-| Canvas | `canvas.rs` | The recorded drawing replayed into an `ID2D1CommandList` when it changes (vector: sharp at any scale), played back with the view's transform; the current path kept in canvas' model; shadows through the shadow effect; composite operations through the Composite / Blend effects; conic gradients as thin wedges masked by the shape; text in DirectWrite, the fonts `measureText` uses |
+| Canvas | `canvas.rs` | The recorded drawing replayed into an `ID2D1CommandList` when it changes (vector: sharp at any scale), played back with the view's transform; a drawing whose animated values are read late is two lists, the operations before the first that reads one (`nsh_core::canvas::first_animated`) recorded once and the rest again when a value changes (the tail replays the head's state without painting it; recorded whole when the tail would combine with the head's pixels: a composite operation in effect or set in it, a `clearRect`); the current path kept in canvas' model; shadows through the shadow effect; composite operations through the Composite / Blend effects; conic gradients as thin wedges masked by the shape; text in DirectWrite, the fonts `measureText` uses |
 | Scroll views | `scroll.rs`, `nsh_core::scroll` | Offsets of their own (`ScrollState`, with the physics and gestures in `nsh_core::scroll`, shared with GPUI and Linux; `scroll.rs` draws the indicator and spinner and walks the view tree), reported as UIKit's `contentOffset`; wheel / touchpad / touch and pen scrolling with UIKit-like deceleration, snapping, paging, sticky cells, rubber banding for touch drags (wheels stop at the edges; mouse drags never scroll: they are the app's, for pans, responders and text selection; pull to refresh needs a touchscreen); the keyboard (arrows by 40 pt, Page Up / Page Down and Space / Shift+Space by 87.5% of a page, Home / End and Ctrl+Home / Ctrl+End, animated); mirrored horizontal lists for right to left; an indicator that fades and that the mouse drags as a scroll bar, shown and kept as on Linux |
 | Input | `input.rs`, `window.rs`, `nsh_core::input` | Its own hit testing over the views (frames, scroll offsets, 3D transforms inverted, `pointerEvents`, `hitSlop`, `overflow: hidden`, `Overflow` areas); mouse from the `WM_*BUTTON*` messages, touch and pen from `WM_POINTER*`; touches for the responder system with `panActivation` gates; presses, long presses, hover and pressed states, `onHoverIn` / `onHoverOut` / `onHoverMove` (picked at each mouse move), `onContextMenu` (the right button; a field or selectable text nearer opens its edit menu), cursors; pan / pinch / rotate animated values (Ctrl + wheel, and precision touchpads' pinch, which Windows sends as Ctrl + wheel, pinch the view under the pointer); wheel and precision touchpad scrolling routed to scroll views, staying on the view it began in; keys go to the window's shortcuts, the system (dialogs), the focused field, selectable text, navigation, scroll views, then Tab between text fields (see "Keyboard"); the decisions over plain data (what a pointer may start, a press's events, hover changes, hit areas, pinches, wheel latching) are `nsh_core::input`'s, shared with the GPUI, Linux and macOS backends |
 | Text inputs | `text_input.rs` | An editor of NSH's own (`nsh_core::text_edit`: text, selection, words, undo; the GPUI backend's too), drawn with DirectWrite and Direct2D as a hosted item at the content box; the view draws the decoration; IME composition through IMM32 (`ImmGetCompositionStringW`, the candidate window placed at the caret), enabled only while a field that is neither `readonly` nor `masked` has the focus; the composition is drawn at the caret and kept out of the text, which changes (`onChangeText`) only when it is committed, and `onCompositionChange` reports it as it starts, changes and ends (after the committed text's `onChangeText`; a commit and the next composition in one `WM_IME_COMPOSITION` are an end and a new start); a `value` JS sets while the IME composes is held and applied when the composition ends, unless the user's commit made it stale; caret blinking on a thread timer; edit counts drop stale JS values; offsets converted between UTF-16 and UTF-8; return does what `submitBehavior` says (see "Keyboard"); a right click opens the edit menu (Undo, Cut, Copy, Paste, Delete, Select All: a context menu of the platform's own, `chrome::popup_actions`, whose items send the field its keys), as on selectable text (Copy, Select All) |
@@ -112,7 +117,7 @@ server client, log forwarding, the error overlay: `dev.rs`). The host turns on `
 | Video | `native/video.rs` | Media Foundation's media engine in frame-server mode on the thread's Direct3D 11 device (a DXGI device manager); each frame is copied into a texture Direct2D draws, so a video clips, transforms and is covered like any view; `controls` draws NSH's own control bar (play / pause, scrubber, time) |
 | Web views | `native/web.rs`, `compose.rs` | WebView2 composition controllers (`webview2-com`, the loader linked statically: apps ship no `WebView2Loader.dll`) drawing into a visual of the window's composition, between the layers of what NSH draws before and after them, so NSH content covers them; the visual is transformed like the view (affine), clipped to its clipping ancestors (axis-aligned bounds) and its own rounded corners, faded with its and its ancestors' opacity, and out of the tree while the view is not drawn (hidden, concealed screens); a deleted view's page stays while a removal animation keeps the view on screen. Input is NSH's: hit testing gives a point over the page to it only when no NSH content covers it there (`Hosted::raw`), and mouse buttons, moves and wheels go through `SendMouseInput`, touch and pen contacts through `SendPointerInput` (synthesized ones as the mouse); the page's cursor comes from `CursorChanged`; a click gives the page the keyboard focus (`MoveFocus`, WebView2 then takes keys and the IME itself, NSH's fields blur), a click on NSH content or Tab out of the page (`MoveFocusRequested`) gives it back. Rasterized at the window's scale (`RasterizationScale`, monitor changes not followed by WebView2 itself); bounds are the view's window pixels (pop-ups and IME candidates are placed from them). `baseUrl` navigates to the base URL and answers that document's request with the HTML (`WebResourceRequested`); `scrollable={false}` gives the wheel to the scroll views around and keeps the page's viewport from scrolling (`overflow: hidden` on its root, scripts still scroll); `desktop={{ allowsBackForwardNavigationGestures }}` is `IsSwipeNavigationEnabled` (touchscreen swipes). One environment per thread and profile folder (`%LOCALAPPDATA%\<app id>\WebView2`); a placeholder without the WebView2 Runtime |
 | Native components | `native.rs` | `AppView::register_component(name, factory)`; a `NativeComponent` draws with Direct2D in the view (`draw`) or brings a child window (`window`) that follows its view after every frame, clipped with a window region, above everything NSH draws; `ComponentContext::emit` / `set_size` / `redraw` from any thread |
-| Accessibility | `access.rs`, `access/uia.rs` | UI Automation: a server-side provider tree answered on `WM_GETOBJECT`, one provider per exposed view (holding only the surface key and node id); control types from `role` / text / press handlers / labelled images; `testID` as the automation id; Invoke, Toggle, ExpandCollapse, SelectionItem, RangeValue, Value and Scroll patterns; `accessible={true}` groups its content as on iOS and Android; property, structure and live-region notification events only while a client listens |
+| Accessibility | `access.rs`, `access/uia.rs` | UI Automation: a server-side provider tree answered on `WM_GETOBJECT`, one provider per exposed view (holding only the surface key and node id); control types from `role` / text / press handlers / labelled images; `testID` as the automation id; Invoke, Toggle, ExpandCollapse, SelectionItem, RangeValue, Value and Scroll patterns; `accessible={true}` groups its content as on iOS and Android; `accessibilityElementsHidden`, `visibility: hidden` (as in a browser) and screens below the top of a stack hide a subtree; property, structure and live-region notification events only while a client listens |
 | Environment | `system.rs` | Re-read on `WM_SETTINGCHANGE` (and theme / DWM color changes). Color scheme: the app's appearance (`nsh.json` `"appearance"`, `setColorScheme`) when it forces one, else `AppsUseLightTheme`, live; the title bar (DWM's immersive dark mode) and the root's background follow it. The locale (`Intl`) from `GetUserDefaultLocaleName` (not `LANG` / `LC_*`); font scale from `TextScaleFactor` (Settings > Accessibility > Text size); reduce motion from `SPI_GETCLIENTAREAANIMATION`; right to left from the UI language's reading direction; the screen reader from `SPI_GETSCREENREADER`; the pixel ratio the window's DPI over 96; `platform.os` `"windows"`, idiom `desktop`, OS version `RtlGetVersion`'s major.minor (10.0 on Windows 11 too); the accent palette for dialogs; safe area and keyboard height 0 |
 | Window chrome (`nsh/desktop`) | `chrome.rs` | The title (`SetWindowTextW`); the hidden title bar: `WM_NCCALCSIZE` gives the client area the window's whole height (the side and bottom resize borders stay non-client; a maximized window's top is moved in by the frame it hangs off the monitor by, another one's by Windows 11's visible top border, which would cover the app's top row), `WM_NCHITTEST` answers the top resize border, the caption buttons (`HTMINBUTTON` / `HTMAXBUTTON` / `HTCLOSE`, so Windows 11 shows snap layouts) and `windowDrag` views (`HTCAPTION`, with the system title bar too: the system moves, maximizes and opens the window menu); the caption buttons drawn over the app after the tree (46 points wide, as tall as the app's bar: `Window.setTitleBar`'s `height`, 32 by default; Windows 11's glyphs and hover colors, dimmed while inactive), their non-client clicks handled here, never by `DefWindowProc` (which would draw Windows 95's); `WM_NCACTIVATE` with `lparam` -1 so the old caption is not painted over the app; full screen is `window::toggle_full_screen` (F11's), which tells the chrome to hide the menu bar and zero the title bar's area. Menus are Win32 menus: the menu bar (`SetMenu`, removed while the title bar is hidden or in full screen; `&` escaped, the shortcut after a tab), context menus with `TrackPopupMenuEx` (posted as `WM_NSH_MENU`: its modal loop must not run while a batch is applied); dark with the app through uxtheme's `SetPreferredAppMode` / `FlushMenuThemes` (ordinals 135 / 136) and, for the bar, `WM_UAHDRAWMENU` / `WM_UAHDRAWMENUITEM` plus the line under it after `WM_NCPAINT`; shortcuts matched on key downs before the app's key handling (`input::key`) but after `nsh/keymap`'s bindings, the editing roles excepted (they send the field its own Ctrl+key) |
 | Clipboard | `system.rs` | The Win32 clipboard (`CF_UNICODETEXT`); reads are synchronous, so `Clipboard.readText` is answered at once |
@@ -172,7 +177,8 @@ through NSH's hit testing to web views, as real input does):
 - typing goes into the focused field key by key (`text_input::char_input`), or into the page of a focused web view
   (posted to its window as `WM_CHAR`s); Return, Backspace and select all (Ctrl+A) go through `input::key`, and keys
   without modifiers to a focused page;
-- a scroll is precision touchpad events of at most 20 points, a frame apart;
+- a scroll is precision touchpad events of at most 20 points, one per display refresh (`DwmFlush`: a 16 ms sleep,
+  rounded up by Win32's ~15.6 ms timers, sent fewer events than the display shows frames);
 - a dialog's button is pressed at its laid-out middle (`system::dialog_point`), or outside the card to close it;
 - a screenshot is what the window shows, web views and their layers included, at the window's scale: `PrintWindow`
   with `PW_RENDERFULLCONTENT`, which composes the window's swap chain and DirectComposition content as DWM does,
@@ -188,8 +194,55 @@ echo 'await app.screenshot("a.png"); await app.press("label:Navigation"); await 
 ```
 
 The host takes `--bundle <path>` to run a build (`nsh build`) without a dev server; without it it connects to the dev
-server on this machine (`--dev-server ws://…/ws` names another); `--trace` logs per-commit timings; `--data-dir <dir>`
+server on this machine (`--dev-server ws://…/ws` names another); `--trace` logs per-commit timings; `--fps` the
+performance monitor's readings once a second ("Performance"); `--data-dir <dir>`
 keeps the apps' data there (`nsh test` gives each app a fresh one). Timers are Win32's (~15.6 ms granularity).
+
+## Performance: `--fps`
+
+`nsh-windows-host --fps` (`nsh run --target windows --fps`, `nsh test --target windows --fps`; `AppOptions::fps`)
+logs one `nsh::perf` line a second (`fps.rs`, on `nsh_engine::perf::PerfMonitor`), in the Linux and macOS
+backends' shape: frames shown over the compositor's rate (`DwmGetCompositionTimingInfo`), the main thread's time per
+shown frame and its phases (`tick`: the ticker's animations and frame callbacks; `drain`: batches applied as they
+arrived; `paint`: Direct2D drawing the tree, of which `canvas` is the canvases' recording and replay; `present`:
+`Present`, which waits for the vertical blank and is not counted as work), the engine's commits, its busy share, and
+the process' CPU (`GetProcessTimes`) and working set. While it measures, the ticker runs on every refresh: its ticks
+close the frames. `examples/gallery/tools/perf.py` runs the gallery under it (`--target windows` is the default on
+Windows).
+
+### Partial frames
+
+A frame draws only what changed since the back buffer was last drawn, and presents only what changed since the last
+frame:
+
+- **What changed** (`Surface::take_damage`): `NshView::changed` (and `moved`, which every frame, style, content,
+  animation, transition and scroll change goes through) puts the view on its surface's list. A view records where the
+  window's frame painted it (`set_painted`: its bounds out by shadows and outline, with the items it hosts, clipped
+  to what was visible; in a pass drawn offscreen for a filter or a 3D transform, that view's area). The damage of a
+  changed view is where it and its subtree were painted (`painted_subtree`) and where its subtree draws now
+  (`to_root` and `drawn_area`). A view taken out of its parent queues itself before it leaves; one inserted queues
+  itself after. The mounter queues the view of every applied item that may change what is drawn (`mount.rs`
+  `redrawn`), whatever applied it, and an item for the whole window (`Appearance`, `LayoutDirection`)
+  invalidates all of it. `Surface::invalidate` (theme, size, scale, chrome, device loss, composition) draws the
+  whole window; so do a change below a projective transform or in a subtree whose area is not known (a hosted item:
+  text editors, alerts), and the system's own `WM_PAINT` with nothing queued.
+- **What is drawn** (`render::frame`): the swap chain is `FLIP_SEQUENTIAL` with two buffers, so the back buffer
+  holds the frame of two presents ago and a frame draws its own damage and the last frame's (`SwapChain::to_draw`;
+  a new or resized chain, a window with web views and the frame after a whole one draw everything). The rectangles,
+  in pixels, are merged where they touch or their union costs nothing, then the cheapest pairs until at most 24 are
+  left (`merged`). The tree is drawn once into them: an axis-aligned clip for one, a layer masked by a geometry
+  group of rectangles for several (pushed on the context's stack, so `flatten` keeps it; `DrawCx::clip_skip` keeps
+  it out of what views record as visible), cleared to the window's background first. A view whose own area meets
+  none of the rectangles is left out with its subtree when it clips its children or has none.
+- **What is presented**: `Present1` with the frame's own changed rectangles, so DWM composes only those.
+
+`render.rs`'s `a_partial_frame_draws_what_a_whole_one_does` draws a tree whole, changes it (a move, a color, a
+removal) and checks that drawing the damage over the old pixels gives the bytes a whole frame gives.
+
+What a frame costs then follows what changed: the gallery's Stocks page (~690 views, 1200 × 800 points on a 150%
+display) changes ~34 views a frame (pulsing sparklines, prices, the chart's live point), drawn in ~1.4 ms of
+`paint`. Canvases record their animated tail only (see the table above), views without content of their
+own push no clip, and the children of a clipping view out of sight are not drawn.
 
 ## Not implemented, or different
 

@@ -101,7 +101,7 @@ fn delivery(invocation: &Invocation, source: RootSourceMessage) -> RuntimeEvent 
         invocation.clone(),
         Fact::MessageSteered {
             message: Box::new(source.message.clone()),
-            source: Some(Box::new(source)),
+            source: Box::new(source),
         },
     )
 }
@@ -127,12 +127,7 @@ async fn steering_source_validates_identity_provenance_and_preserves_large_recei
 
     let mut wire = serde_json::to_value(delivery(&owner, pending.source.clone())).unwrap();
     wire["fact"].as_object_mut().unwrap().remove("source");
-    let without_source: RuntimeEvent = serde_json::from_value(wire).unwrap();
-    assert!(matches!(
-        without_source.fact,
-        Fact::MessageSteered { source: None, .. }
-    ));
-    EventWrite::plain(without_source).unwrap();
+    assert!(serde_json::from_value::<RuntimeEvent>(wire).is_err());
 
     let mut large = pending.source.clone();
     large.message.content.preparation[0].receipt = json!("x".repeat(540_000));
@@ -165,11 +160,7 @@ async fn steering_source_validates_identity_provenance_and_preserves_large_recei
         .unwrap();
     assert_eq!(proof.sequence, sequence);
     assert_eq!(proof.event, event);
-    let Fact::MessageSteered {
-        message,
-        source: Some(source),
-    } = &proof.event.fact
-    else {
+    let Fact::MessageSteered { message, source } = &proof.event.fact else {
         unreachable!()
     };
     assert_eq!(source.as_ref(), &large);
@@ -286,19 +277,6 @@ async fn edited_and_promoted_resource_sources_are_atomic_and_survive_restart_and
             .await
             .is_err(),
         "old unprepared input cannot replace the accepted edit"
-    );
-    let omitted = RuntimeEvent::new(
-        owner.clone(),
-        Fact::MessageSteered {
-            message: Box::new(expected.message.clone()),
-            source: None,
-        },
-    );
-    assert!(
-        log.append(&EventWrite::plain(omitted).unwrap())
-            .await
-            .is_err(),
-        "resource intent cannot be consumed without its canonical source"
     );
     assert_eq!(log.message_queue("session").await.unwrap(), pending);
 

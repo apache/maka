@@ -11,7 +11,7 @@
 //! at the start of a commit, so a view starts with all the props set in
 //! the JS turn before.
 
-use std::{any::Any, cell::RefCell, rc::Rc, sync::Arc};
+use std::{any::Any, cell::RefCell, collections::VecDeque, rc::Rc, sync::Arc};
 
 use rustc_hash::FxHashMap;
 
@@ -486,6 +486,11 @@ pub(super) struct Components {
     /// their answers.
     host_calls: FxHashMap<u64, AnswerSlot<Result<crate::JsonValue, String>>>,
     next_host_call: u64,
+    /// URLs being opened (`openUrl`), by request id: their answers.
+    url_opens: FxHashMap<u32, AnswerSlot<bool>>,
+    /// Those not handed to the engine yet ([`Core::take_url_opens`]).
+    url_requests: Vec<(u32, String)>,
+    next_url_open: u32,
     /// HTTP requests of tasks (`ui::fetch`), by request id: what arrived
     /// so far and the answer.
     fetches: FxHashMap<u32, PendingFetch>,
@@ -568,6 +573,9 @@ impl Default for Components {
             image_infos: FxHashMap::default(),
             next_image_info: 1,
             clipboard_reads: FxHashMap::default(),
+            url_opens: FxHashMap::default(),
+            url_requests: Vec::new(),
+            next_url_open: 0,
             next_clipboard_read: 1,
             picks: FxHashMap::default(),
             next_pick: 1,
@@ -686,10 +694,15 @@ fn same(a: &Option<Arc<ClassList>>, b: &Option<Arc<ClassList>>) -> bool {
 impl<M: TextEngine> Core<M> {
     /// The components this core can render (from `nsh-base` and the
     /// like), and the design tokens their sets bring
-    /// ([`Registry::tokens_from`]); set before the first op.
+    /// ([`Registry::tokens_from`]); set before the first op. Runs the
+    /// sets' setup functions ([`Registry::setup`]).
     pub fn set_components(&mut self, registry: Registry) {
         if let Some(Ok(tokens)) = registry.tokens(None) {
             self.set_tokens(tokens);
+        }
+        {
+            let _entered = self.components.runtime.enter();
+            registry.run_setups();
         }
         self.components.registry = registry;
     }
@@ -1053,6 +1066,7 @@ impl<M: TextEngine> Core<M> {
                 self.key(child)?;
                 let inst = self.components.instances.get_mut(&parent).expect("host");
                 let was_empty = inst.js_children.is_empty();
+                let moved = inst.js_children.contains(&child);
                 inst.js_children.retain(|&c| c != child);
                 let at = before.and_then(|b| inst.js_children.iter().position(|&c| c == b));
                 inst.js_children
@@ -1079,7 +1093,10 @@ impl<M: TextEngine> Core<M> {
                         let anchor = self.anchor_node(anchor);
                         self.join_nested_at(nested, child, at.and(before).or(anchor));
                     }
-                    // Its wrapper is the view's (a region of them).
+                    // Its wrapper is the view's (a region of them, keyed
+                    // by the child): a child moved among the others keeps
+                    // its wrapper, which the region moves.
+                    Placement::Each if moved => {}
                     Placement::Each => self.detach_id(child),
                     Placement::None => self.detach_id(child),
                 }
@@ -2549,18 +2566,7 @@ impl<M: TextEngine> Core<M> {
             // out of the window for a moment, which ends its touches and
             // its focus (Android: an input that gains a sibling would lose
             // the keyboard on each keystroke).
-            let ids: Vec<NodeId> = wanted().copied().collect();
-            let mut before = None;
-            for &child in ids.iter().rev() {
-                if !self.precedes(parent, child, before) {
-                    let _ = self.apply_op(Op::Insert {
-                        parent,
-                        child,
-                        before,
-                    });
-                }
-                before = Some(child);
-            }
+            self.place_before(parent, &wanted_ids, None);
         }
         out
     }
@@ -2621,6 +2627,15 @@ impl<M: TextEngine> Core<M> {
             new
         };
         let mut old: Vec<Option<Expanded>> = old.into_iter().map(Some).collect();
+        // Old positions stay authoritative: other branches can consume a
+        // candidate too. Duplicate keys retain their original FIFO order.
+        let mut keyed: FxHashMap<SharedString, VecDeque<usize>> = FxHashMap::default();
+        for (index, entry) in old.iter().enumerate() {
+            if let Some(key) = entry.as_ref().and_then(|entry| entry.key.as_ref()) {
+                keyed.entry(key.clone()).or_default().push_back(index);
+            }
+        }
+
         let mut out = Vec::with_capacity(new.len());
         let mut placeholder = None;
         // Unkeyed elements take the next unused old element of their kind,
@@ -2635,6 +2650,7 @@ impl<M: TextEngine> Core<M> {
                     host,
                     inst,
                     &mut old,
+                    &mut keyed,
                     &mut out,
                     &mut placeholder,
                     &mut cursor,
@@ -2678,6 +2694,7 @@ impl<M: TextEngine> Core<M> {
         host: NodeId,
         inst: &mut Instance,
         old: &mut [Option<Expanded>],
+        keyed: &mut FxHashMap<SharedString, VecDeque<usize>>,
         out: &mut Vec<Expanded>,
         placeholder: &mut Option<usize>,
         cursor: &mut usize,
@@ -2770,13 +2787,22 @@ impl<M: TextEngine> Core<M> {
             // A view's region: bound, its nodes come with its patches.
             ElKind::Region(region) => {
                 let id = self.bind_region(host, parent, region);
-                out.push(super::views::region_placeholder(id));
+                let mut e = super::views::region_placeholder(id);
+                // An `Each` row's region keeps its row's key: a run that
+                // keeps the row finds it by that key (`ElKind::Keep`).
+                e.key = el.key;
+                out.push(e);
             }
             // An `Each` row that stays: as it was.
             ElKind::Keep => {
-                let kept = old.iter().position(|o| {
-                    o.as_ref()
-                        .is_some_and(|o| o.key.is_some() && o.key == el.key)
+                let kept = el.key.as_ref().and_then(|key| {
+                    let candidates = keyed.get_mut(key)?;
+                    while let Some(index) = candidates.pop_front() {
+                        if old[index].is_some() {
+                            return Some(index);
+                        }
+                    }
+                    None
                 });
                 match kept.and_then(|at| old[at].take()) {
                     Some(e) => out.push(e),
@@ -2844,9 +2870,11 @@ impl<M: TextEngine> Core<M> {
                 let component = matches!(part, Part::Component(_));
                 let matches = |o: &Expanded| !component && o.tag == el.tag && o.part == part;
                 let at = match &el.key {
-                    Some(k) => old.iter().position(|o| {
-                        o.as_ref()
-                            .is_some_and(|o| o.key.as_ref() == Some(k) && matches(o))
+                    Some(key) => keyed.get(key).and_then(|candidates| {
+                        candidates
+                            .iter()
+                            .copied()
+                            .find(|&index| old[index].as_ref().is_some_and(matches))
                     }),
                     None => {
                         let at = old[(*cursor).min(old.len())..]
@@ -3303,20 +3331,11 @@ impl<M: TextEngine> Core<M> {
             Placement::At(parent, anchor) => {
                 let parent_key = self.key(parent).ok();
                 // An anchor that left the parent: at the end.
-                let mut before = self.anchor_node(anchor).filter(|&a| {
+                let before = self.anchor_node(anchor).filter(|&a| {
                     self.key(a)
                         .is_ok_and(|k| Some(self.nodes[k as usize].parent) == parent_key)
                 });
-                for &child in nodes.iter().rev() {
-                    if !self.precedes(parent, child, before) {
-                        let _ = self.apply_op(Op::Insert {
-                            parent,
-                            child,
-                            before,
-                        });
-                    }
-                    before = Some(child);
-                }
+                self.place_before(parent, &nodes, before);
             }
             Placement::Nested(other, anchor) => {
                 let mut before = self.anchor_node(anchor);
@@ -3331,20 +3350,52 @@ impl<M: TextEngine> Core<M> {
         }
     }
 
-    /// Whether `child` is a child of `parent` right before `next` (the last
-    /// one when `next` is `None`).
-    pub(super) fn precedes(&self, parent: NodeId, child: NodeId, next: Option<NodeId>) -> bool {
-        let Ok(k) = self.key(parent) else {
-            return false;
+    /// Place this batch before an anchor using the current physical sibling
+    /// order. The temporary lookup is refreshed only after a real insertion;
+    /// Insert remains the authority for moves, aliases and invalid operations.
+    pub(super) fn place_before(
+        &mut self,
+        parent: NodeId,
+        nodes: &[NodeId],
+        mut before: Option<NodeId>,
+    ) {
+        if nodes.is_empty() {
+            return;
+        }
+        let order = |core: &Self, next: &mut FxHashMap<NodeId, Option<NodeId>>| {
+            next.clear();
+            if let Ok(parent) = core.key(parent) {
+                let children = &core.nodes[parent as usize].children;
+                next.reserve(children.len());
+                for (index, &child) in children.iter().enumerate() {
+                    next.insert(
+                        core.nodes[child as usize].id,
+                        children
+                            .get(index + 1)
+                            .map(|&next| core.nodes[next as usize].id),
+                    );
+                }
+            }
         };
-        let children = &self.nodes[k as usize].children;
-        let Some(at) = children
-            .iter()
-            .position(|&c| self.nodes[c as usize].id == child)
-        else {
-            return false;
-        };
-        children.get(at + 1).map(|&c| self.nodes[c as usize].id) == next
+        let mut next = FxHashMap::default();
+        order(self, &mut next);
+        for &child in nodes.iter().rev() {
+            // An absent child is not the last child, even with no anchor.
+            if next.get(&child) != Some(&before)
+                && self
+                    .apply_op(Op::Insert {
+                        parent,
+                        child,
+                        before,
+                    })
+                    .is_ok()
+            {
+                order(self, &mut next);
+            }
+            // A rejected Insert still resolves the next child's anchor in
+            // the same way as the original reverse-placement sequence.
+            before = Some(child);
+        }
     }
 
     /// Slot node `node` as element `el`: its styles, props and handlers
@@ -3870,7 +3921,9 @@ impl<M: TextEngine> Core<M> {
                 return true;
             }
             for &(slot, index) in &bind.binds {
-                self.bind_virtual_cell(bind.list, slot as usize, index as usize);
+                if self.current_list_bind(bind.list, slot, index) {
+                    self.bind_virtual_cell(bind.list, slot as usize, index as usize);
+                }
             }
             bound = true;
             false
@@ -4483,6 +4536,22 @@ impl<M: TextEngine> Core<M> {
                     .host_calls
                     .retain(|_, slot| std::rc::Rc::strong_count(slot) > 1);
             }
+            Action::OpenUrl(url, answer) => {
+                if let Err(refused) = crate::open_url::check_url(&url) {
+                    log::warn!(target: "js", "{refused}");
+                    answer.borrow_mut().deliver(false);
+                    return;
+                }
+                if !self.access.allows_open_url(&url) {
+                    answer.borrow_mut().deliver(false);
+                    self.deny(crate::open_url::not_granted(&url));
+                    return;
+                }
+                let id = self.components.next_url_open;
+                self.components.next_url_open = id.wrapping_add(1);
+                self.components.url_opens.insert(id, answer);
+                self.components.url_requests.push((id, url));
+            }
         }
     }
 
@@ -4508,6 +4577,34 @@ impl<M: TextEngine> Core<M> {
         if let Some(answer) = self.components.image_infos.remove(&id) {
             answer.borrow_mut().deliver(size);
         }
+    }
+
+    /// Moves the URLs the app asked to open (`openUrl`, [`crate::ui::open_url`])
+    /// since the last call to `out`, by request id, checked and granted
+    /// ([`crate::open_url`]). The engine asks the embedding app first, then
+    /// answers each with [`Core::answer_open_url`] (the embedding app took
+    /// it) or [`Core::open_url_on_platform`].
+    pub fn take_url_opens(&mut self, out: &mut Vec<(u32, String)>) {
+        out.append(&mut self.components.url_requests);
+    }
+
+    /// Answers URL request `id`: whether the URL opened.
+    pub fn answer_open_url(&mut self, id: u32, opened: bool) {
+        if let Some(answer) = self.components.url_opens.remove(&id) {
+            answer.borrow_mut().deliver(opened);
+        }
+    }
+
+    /// Hands URL request `id` to the platform, which opens `url` and
+    /// reports whether it did ([`crate::EventKind::OpenUrl`] on the root).
+    pub fn open_url_on_platform(&mut self, id: u32, url: String) {
+        if !self.components.url_opens.contains_key(&id) {
+            return;
+        }
+        let _ = self.apply_op(Op::Command {
+            id: crate::ROOT_ID,
+            command: Command::OpenUrl { id, url },
+        });
     }
 
     /// Moves the HTTP requests tasks made (`ui::fetch`) since the last call
@@ -4703,6 +4800,19 @@ impl<M: TextEngine> Core<M> {
                     let files = crate::picker::finish(&asked, files.clone());
                     answer.borrow_mut().deliver(files);
                 }
+                true
+            }
+            EventKind::OpenUrl if id == crate::ROOT_ID => {
+                let Some(request) = number("id") else {
+                    return false;
+                };
+                let opened = match payload {
+                    EventPayload::Map(entries) => entries
+                        .iter()
+                        .any(|(k, v)| *k == "opened" && *v == crate::PayloadValue::Bool(true)),
+                    _ => false,
+                };
+                self.answer_open_url(request as u32, opened);
                 true
             }
             EventKind::Clipboard if id == crate::ROOT_ID => {

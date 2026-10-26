@@ -105,7 +105,7 @@ async fn reopened_pending_main_and_summary_are_failed_without_replaying_admissio
                 )
                 .await;
                 let source = log
-                    .prepare_context_compaction(
+                    .prepare_compaction_view(
                         "session",
                         Some("invocation"),
                         &maka_agent_facts::context::CheckpointMode::MidTurn {
@@ -214,7 +214,7 @@ async fn reopened_committed_call_without_dispatch_is_durably_known_not_executed(
             request_id: "approval".into(),
             created_at: 1,
             request: InteractionRequest::ClientCapability {
-                base_revision: None,
+                basis: None,
                 tool_use_id: "step:call".into(),
                 target: target.clone(),
             },
@@ -302,10 +302,13 @@ async fn reopened_committed_call_without_dispatch_is_durably_known_not_executed(
 
 #[tokio::test]
 async fn unknown_dispatch_stays_unknown_and_blocks_next_admission_after_reopen() {
+    use crate::support::recovery_session::{append, opening, tool_call};
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("events.sqlite");
     {
-        let log = EventLog::open(&path).await.unwrap();
+        let log = crate::support::store::SessionFixture::open(&path)
+            .await
+            .unwrap();
         opening(&log).await;
         tool_call(&log).await;
         append(
@@ -325,8 +328,12 @@ async fn unknown_dispatch_stays_unknown_and_blocks_next_admission_after_reopen()
         .await;
         log.close().await.unwrap();
     }
-    let log = Arc::new(EventLog::open(&path).await.unwrap());
-    assert_eq!(recover(&log).await.unwrap(), 1);
+    let log = Arc::new(
+        crate::support::store::SessionFixture::open(&path)
+            .await
+            .unwrap(),
+    );
+    assert_eq!(log.root().recover_invocations().await.unwrap(), 1);
     let prefix = log.prefix(100, 128 * 1024).await.unwrap();
     assert_eq!(prefix.events.len(), 5);
     assert!(
@@ -344,12 +351,13 @@ async fn unknown_dispatch_stays_unknown_and_blocks_next_admission_after_reopen()
     assert_eq!(state.terminal, Some(TerminalStatus::Failed));
     assert_eq!(state.uncertain_operations, vec!["step:call"]);
     let engine = Engine::new(
-        log.clone(),
         ModelExecutor::new(Duration::from_secs(1)).unwrap(),
         CodeExecutor::new(CellLimits::default()).unwrap(),
-    );
+    )
+    .unwrap();
     let result = engine
         .run(
+            log.store(),
             RunInput {
                 model_source: None,
                 model_revision: None,
@@ -396,11 +404,12 @@ async fn unknown_dispatch_stays_unknown_and_blocks_next_admission_after_reopen()
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn explicit_new_message_after_unknown_dispatch_informs_model_without_replaying_tool() {
+    use crate::support::recovery_session::{append, opening, request};
     tokio::time::timeout(Duration::from_secs(15), async {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("events.sqlite");
         {
-            let log = EventLog::open(&path).await.unwrap();
+            let log = crate::support::store::SessionFixture::open(&path).await.unwrap();
             opening(&log).await;
             request(&log).await;
             append(&log, Fact::ModelCompleted {
@@ -433,10 +442,10 @@ async fn explicit_new_message_after_unknown_dispatch_informs_model_without_repla
             assert!(log.check_manual_message_history("session").await.is_err());
             log.close().await.unwrap();
         }
-        let log = Arc::new(EventLog::open(&path).await.unwrap());
-        assert_eq!(recover(&log).await.unwrap(), 1);
+        let log = Arc::new(crate::support::store::SessionFixture::open(&path).await.unwrap());
+        assert_eq!(log.root().recover_invocations().await.unwrap(), 1);
         assert!(log.check_manual_message_history("session").await.unwrap());
-        assert!(log.read_model_context("session", None).await.is_err());
+        assert!(log.read_model_view("session", None).await.is_err());
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base_url = format!("http://{}/v1", listener.local_addr().unwrap());
         let server = tokio::spawn(async move {
@@ -446,7 +455,7 @@ async fn explicit_new_message_after_unknown_dispatch_informs_model_without_repla
             socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\ndata: {chunk}\n\ndata: [DONE]\n\n").as_bytes()).await.unwrap();
             request
         });
-        let engine = Engine::new(log.clone(), ModelExecutor::new(Duration::from_secs(5)).unwrap(), CodeExecutor::new(CellLimits::default()).unwrap());
+        let engine = Engine::new(ModelExecutor::new(Duration::from_secs(5)).unwrap(), CodeExecutor::new(CellLimits::default()).unwrap()).unwrap();
         let run = RunInput {
             model_source: None,
             model_revision: None,
@@ -464,7 +473,7 @@ async fn explicit_new_message_after_unknown_dispatch_informs_model_without_repla
             work: maka_agent_engine::RunWork::Message { allow_prior_unknown: true, source_messages: Vec::new(),
                 message: "What happened to effect.txt?".into(), tools: Default::default() },
         };
-        engine.run(run, CancellationToken::new()).await.unwrap();
+        engine.run(log.store(), run, CancellationToken::new()).await.unwrap();
         let request = server.await.unwrap();
         let messages = request["messages"].as_array().unwrap();
         assert!(messages.iter().any(|message| message["role"] == "system" && message["content"].as_str().is_some_and(|text| text.contains("write_file") && text.contains("may or may not have happened"))), "{messages:?}");
@@ -565,14 +574,17 @@ async fn item_acceptance_survives_crashes_before_dispatch_before_settlement_and_
         );
 
         if cut != 1 {
-            let source = log.read_model_context("session", None).await.unwrap();
+            let source = log
+                .capture_model_context("session", None, 10_000, 16 * 1024 * 1024)
+                .await
+                .unwrap();
             assert!(source.tail.iter().any(
                 |event| matches!(event,maka_event_log::context::ContextEvent::ModelItems(items)
                 if items.items.iter().any(|item| matches!(item.part,ModelPart::ToolCall {..})))
             ));
         } else {
             assert!(
-                log.read_model_context("session", None).await.is_err(),
+                log.read_model_view("session", None).await.is_err(),
                 "unsettled effects cannot silently resume"
             );
         }
@@ -657,7 +669,10 @@ async fn accepted_history_budget_counts_complete_items_not_token_envelopes() {
             },
         )
         .await;
-        let source = log.read_model_context("session", None).await.unwrap();
+        let source = log
+            .capture_model_context("session", None, 10_000, 16 * 1024 * 1024)
+            .await
+            .unwrap();
         let items = source
             .tail
             .iter()

@@ -233,9 +233,138 @@ impl OperationRequest<RecoveryContract> {
 /// from a receipt, copied, or used against another Root owner's connection.
 pub struct DispatchClaim {
     reference: RecoveryRef,
-    owner: Arc<RootOwner>,
+    owner: std::sync::Weak<RootOwner>,
+    dispatch: Arc<DispatchState>,
+}
+pub(crate) trait DispatchLifetime: Send + Sync {
+    fn finish(&self);
+    fn abandon(self: Arc<Self>);
+}
+struct DispatchState {
+    identity: std::sync::Weak<std::sync::atomic::AtomicU64>,
+    status: std::sync::Mutex<DispatchStatus>,
+}
+struct DispatchRetention {
+    _owner: Arc<RootOwner>,
+    lifetime: Option<Arc<dyn DispatchLifetime>>,
+}
+// Physical cleanup knowledge is independent of receipt durability. Once a
+// trusted caller supplies validated cleanup, cancellation/SQL failure cannot
+// turn it into unknown provider custody. Accepted SQL keeps its own owner pin.
+struct SettlementCustody {
+    retained: Option<DispatchRetention>,
+    confirmed: bool,
+}
+impl Drop for SettlementCustody {
+    fn drop(&mut self) {
+        if let Some(DispatchRetention {
+            lifetime: Some(lifetime),
+            ..
+        }) = self.retained.take()
+        {
+            if self.confirmed {
+                lifetime.finish();
+            } else {
+                lifetime.abandon();
+            }
+        }
+    }
+}
+struct DispatchStatus {
+    closed: bool,
+    active: usize,
+    unconfirmed: bool,
+    retained: Option<DispatchRetention>,
+}
+
+/// Private first-commit evidence. A receipt cannot construct this scope.
+#[derive(Clone)]
+pub struct OperationDispatchScope {
+    reference: RecoveryRef,
+    dispatch: Arc<DispatchState>,
+}
+pub(crate) struct DispatchWork {
+    dispatch: Arc<DispatchState>,
+    released: std::sync::atomic::AtomicBool,
+}
+impl DispatchWork {
+    pub(crate) fn quarantine(&self) {
+        if !self
+            .released
+            .swap(true, std::sync::atomic::Ordering::AcqRel)
+        {
+            let mut status = self.dispatch.status.lock().unwrap();
+            status.active -= 1;
+            status.unconfirmed = true;
+            status.closed = true;
+        }
+    }
+    pub(crate) fn finish(&self) {
+        if !self
+            .released
+            .swap(true, std::sync::atomic::Ordering::AcqRel)
+        {
+            self.dispatch.status.lock().unwrap().active -= 1;
+        }
+    }
+}
+impl Drop for DispatchWork {
+    fn drop(&mut self) {
+        self.finish();
+    }
+}
+impl OperationDispatchScope {
+    pub fn reference(&self) -> &RecoveryRef {
+        &self.reference
+    }
+    pub(crate) fn acquire(
+        &self,
+        log: &EventLog,
+        reference: &RecoveryRef,
+    ) -> Result<Arc<DispatchWork>, StoreError> {
+        if reference != &self.reference
+            || !std::sync::Weak::ptr_eq(&log.connection.owner_identity(), &self.dispatch.identity)
+        {
+            return Err(invalid("foreign original operation custody"));
+        }
+        let mut status = self.dispatch.status.lock().unwrap();
+        if status.closed {
+            return Err(invalid("original operation dispatch is closed"));
+        }
+        status.active = status
+            .active
+            .checked_add(1)
+            .ok_or_else(|| invalid("operation work count exhausted"))?;
+        Ok(Arc::new(DispatchWork {
+            dispatch: self.dispatch.clone(),
+            released: std::sync::atomic::AtomicBool::new(false),
+        }))
+    }
+}
+impl Drop for DispatchClaim {
+    fn drop(&mut self) {
+        // Lost original execution custody never admits a new auxiliary worker.
+        let retained = {
+            let mut status = self.dispatch.status.lock().unwrap();
+            status.closed = true;
+            status.retained.take()
+        };
+        if let Some(DispatchRetention {
+            lifetime: Some(lifetime),
+            ..
+        }) = retained
+        {
+            lifetime.abandon();
+        }
+    }
 }
 impl DispatchClaim {
+    pub fn auxiliary_scope(&self) -> OperationDispatchScope {
+        OperationDispatchScope {
+            reference: self.reference.clone(),
+            dispatch: self.dispatch.clone(),
+        }
+    }
     pub fn reference(&self) -> &RecoveryRef {
         &self.reference
     }
@@ -320,20 +449,37 @@ impl EventLog {
         &self,
         request: OperationRequest,
     ) -> Result<Dispatch, StoreError> {
+        self.dispatch_operation_with_lifetime(request, None).await
+    }
+    pub(crate) async fn dispatch_operation_with_lifetime(
+        &self,
+        request: OperationRequest,
+        lifetime: Option<Arc<dyn DispatchLifetime>>,
+    ) -> Result<Dispatch, StoreError> {
         let contract_json = serde_json::to_string(&request.contract)?;
         let request = request.journal()?;
         let reference = request.stored_reference()?;
-        self.dispatch_prepared_operation(PreparedOperation {
-            journal: request,
-            reference,
-            contract_json: contract_json.into(),
-        })
+        self.dispatch_prepared_with_lifetime(
+            PreparedOperation {
+                journal: request,
+                reference,
+                contract_json: contract_json.into(),
+            },
+            lifetime,
+        )
         .await
     }
 
     pub async fn dispatch_prepared_operation(
         &self,
         prepared: PreparedOperation,
+    ) -> Result<Dispatch, StoreError> {
+        self.dispatch_prepared_with_lifetime(prepared, None).await
+    }
+    pub(crate) async fn dispatch_prepared_with_lifetime(
+        &self,
+        prepared: PreparedOperation,
+        lifetime: Option<Arc<dyn DispatchLifetime>>,
     ) -> Result<Dispatch, StoreError> {
         let PreparedOperation {
             journal: request,
@@ -343,6 +489,18 @@ impl EventLog {
         self.operation_domain(&reference)?;
         let owner = self.root_owner.as_ref().expect("owned Root").clone();
         let request_json = serde_json::to_string(&request)?;
+        let dispatch = Arc::new(DispatchState {
+            identity: self.connection.owner_identity(),
+            status: std::sync::Mutex::new(DispatchStatus {
+                closed: false,
+                active: 0,
+                unconfirmed: false,
+                retained: Some(DispatchRetention {
+                    _owner: owner.clone(),
+                    lifetime,
+                }),
+            }),
+        });
         self.connection
             .write(
                 WriteDispatch {
@@ -351,8 +509,9 @@ impl EventLog {
                     contract_json,
                     request_json,
                     owner,
+                    dispatch,
                 },
-                self.commits.clone(),
+                self.commits.notice(),
             )
             .await
     }
@@ -366,21 +525,42 @@ impl EventLog {
         cleanup: OperationCleanup,
     ) -> Result<OperationObservation, StoreError> {
         self.operation_domain(&claim.reference)?;
-        if !Arc::ptr_eq(self.root_owner.as_ref().expect("owned Root"), &claim.owner) {
+        if !std::sync::Weak::ptr_eq(
+            &Arc::downgrade(self.root_owner.as_ref().expect("owned Root")),
+            &claim.owner,
+        ) {
             return Err(invalid("foreign operation dispatch claim"));
         }
+        if !std::sync::Weak::ptr_eq(&self.connection.owner_identity(), &claim.dispatch.identity) {
+            return Err(invalid("foreign operation partition claim"));
+        }
         validate_settlement(&outcome, &cleanup)?;
+        let cleanup_confirmed = matches!(cleanup, OperationCleanup::Confirmed);
+        let custody = {
+            let mut status = claim.dispatch.status.lock().unwrap();
+            if status.active != 0 || (status.unconfirmed && cleanup_confirmed) {
+                return Err(invalid("original operation work has not drained"));
+            }
+            status.closed = true;
+            SettlementCustody {
+                retained: status.retained.take(),
+                confirmed: cleanup_confirmed,
+            }
+        };
         let reference = claim.reference.clone();
-        self.connection
+        let result = self
+            .connection
             .write(
                 WriteSettlement {
                     reference,
                     outcome,
                     cleanup,
                 },
-                self.commits.clone(),
+                self.commits.notice(),
             )
-            .await
+            .await;
+        drop(custody);
+        result
     }
 
     /// Reads one fixed original namespace. This lookup performs no effect and
@@ -425,12 +605,14 @@ pub(crate) struct WriteDispatch {
     contract_json: Arc<str>,
     request_json: String,
     owner: Arc<RootOwner>,
+    dispatch: Arc<DispatchState>,
 }
 pub(crate) struct DispatchValue(PreparedDispatch);
 enum PreparedDispatch {
     New {
         reference: RecoveryRef,
         owner: Arc<RootOwner>,
+        dispatch: Arc<DispatchState>,
     },
     Existing(OperationObservation),
 }
@@ -449,6 +631,7 @@ impl crate::writeback::Statement for WriteDispatch {
                 contract_json,
                 request_json,
                 owner,
+                dispatch,
             } = self;
             if let Some(record) = read(connection, &reference).await? {
                 // The original origin remains historical observation. New request
@@ -464,6 +647,7 @@ impl crate::writeback::Statement for WriteDispatch {
                     notification: crate::writeback::Notification::None,
                 });
             }
+            require_source(connection, &reference.source).await?;
             sqlx::query("INSERT INTO application_operation_contracts (digest, contract_json) VALUES (?, ?) ON CONFLICT(digest) DO NOTHING")
                         .bind(&reference.contract.digest)
                         .bind(contract_json.as_ref())
@@ -482,7 +666,11 @@ impl crate::writeback::Statement for WriteDispatch {
                         .await?;
 
             Ok(crate::writeback::Prepared {
-                value: DispatchValue(PreparedDispatch::New { reference, owner }),
+                value: DispatchValue(PreparedDispatch::New {
+                    reference,
+                    owner,
+                    dispatch,
+                }),
                 changed: true,
                 notification: crate::writeback::Notification::Metadata,
             })
@@ -490,9 +678,15 @@ impl crate::writeback::Statement for WriteDispatch {
     }
     fn committed(value: Self::Value) -> Self::Output {
         match value.0 {
-            PreparedDispatch::New { reference, owner } => {
-                Dispatch::New(DispatchClaim { reference, owner })
-            }
+            PreparedDispatch::New {
+                reference,
+                owner,
+                dispatch,
+            } => Dispatch::New(DispatchClaim {
+                reference,
+                owner: Arc::downgrade(&owner),
+                dispatch,
+            }),
             PreparedDispatch::Existing(observation) => Dispatch::Existing(observation),
         }
     }
@@ -559,5 +753,25 @@ impl crate::writeback::Statement for WriteSettlement {
             error,
             StoreError::EventConflict | StoreError::InvalidTransition(_)
         )
+    }
+}
+
+/// Partitions resolve this name through the immutable Root control source view;
+/// standalone stores use the same local source table. Keep this in the write tx.
+pub(crate) async fn require_source(
+    connection: &mut SqliteConnection,
+    source: &DeploymentRef,
+) -> Result<(), StoreError> {
+    let exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM application_sources WHERE deployment=? AND revision=?)",
+    )
+    .bind(source.deployment.to_string())
+    .bind(source.revision as i64)
+    .fetch_one(connection)
+    .await?;
+    if exists {
+        Ok(())
+    } else {
+        Err(invalid("original application source missing"))
     }
 }

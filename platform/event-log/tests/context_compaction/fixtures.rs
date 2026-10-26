@@ -159,10 +159,12 @@ pub(super) async fn prepare_trace(
     .await
     .unwrap();
     let source = log
-        .prepare_context_compaction(
+        .capture_compaction_context(
             "session",
             Some(id),
             &maka_agent_facts::context::CheckpointMode::Standalone,
+            100_000,
+            64 * 1024 * 1024,
         )
         .await
         .unwrap();
@@ -307,7 +309,7 @@ async fn adoption_markers_are_durable_timed_and_hidden_from_recall() {
                 CheckpointMode::PreTurn
             };
             let source = log
-                .prepare_context_compaction("session", Some(id), &mode)
+                .capture_compaction_context("session", Some(id), &mode, 100_000, 64 * 1024 * 1024)
                 .await
                 .unwrap();
             let timed = |write: EventWrite, at| {
@@ -339,7 +341,10 @@ async fn adoption_markers_are_durable_timed_and_hidden_from_recall() {
                 .await
                 .unwrap();
             if !standalone {
-                let main_source = log.read_model_context("session", Some(id)).await.unwrap();
+                let main_source = log
+                    .capture_model_context("session", Some(id), 100_000, 64 * 1024 * 1024)
+                    .await
+                    .unwrap();
                 let mut main = request(id, &main_source).event().clone();
                 if let Fact::ModelRequested {
                     step_id,
@@ -446,9 +451,11 @@ async fn adoption_markers_are_durable_timed_and_hidden_from_recall() {
                         Position::Start,
                         false,
                         view,
-                        128 * 1024,
-                        None,
-                        1024 * 1024,
+                        maka_event_log::transcript::HistoryLimits {
+                            max_bytes: 128 * 1024,
+                            max_chunks: None,
+                            max_json_bytes: 1024 * 1024,
+                        },
                     )
                     .await
                     .unwrap();
@@ -476,9 +483,11 @@ async fn adoption_markers_are_durable_timed_and_hidden_from_recall() {
                     Position::Start,
                     false,
                     HistoryView::Conversation,
-                    128 * 1024,
-                    None,
-                    1024 * 1024,
+                    maka_event_log::transcript::HistoryLimits {
+                        max_bytes: 128 * 1024,
+                        max_chunks: None,
+                        max_json_bytes: 1024 * 1024,
+                    },
                 )
                 .await
                 .unwrap();

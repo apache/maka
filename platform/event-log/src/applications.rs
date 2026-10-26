@@ -70,6 +70,9 @@ impl PreparedApplication {
     pub fn packages(&self) -> &[Package] {
         &self.packages
     }
+    pub fn plan(&self) -> &Plan {
+        &self.plan
+    }
 }
 
 /// Exact committed source and immutable bytes, checked together with its plan.
@@ -237,7 +240,7 @@ impl EventLog {
         let encoded = serde_json::to_string(&input)?;
         let remote = serde_json::to_string(&observations)?;
         let owner = std::sync::Arc::downgrade(self.root_owner.as_ref().expect("owned source Root"));
-        let commits = self.commits.clone();
+        let commits = self.commits.notice();
         self.connection.run(move |connection| Box::pin(async move {
             let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
             let id = deployment.to_string();
@@ -272,7 +275,7 @@ impl EventLog {
                     .bind(&id).bind(revision as i64).bind(&reference.id).bind(&reference.revision).execute(&mut *tx).await?;
             }
             tx.commit().await.map_err(StoreError::CommitUnknown)?;
-            commits.send_modify(|_| {});
+            commits.metadata();
             let reference = DeploymentRef { state_domain: domain, deployment, revision };
             let snapshot = SourceSnapshot::new(owner, reference.clone(), input.environment.location, &plan);
             Ok(LoadedDeployment {

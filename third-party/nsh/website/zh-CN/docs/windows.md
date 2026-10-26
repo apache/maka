@@ -49,6 +49,14 @@ dist\nsh\runtime\windows\nsh-windows-host --bundle build\bundle.nshc --window-si
 
 `--window-size` 是窗口的尺寸，单位为点（`<宽>x<高>`；TSX 应用）。
 
+### 性能监视器
+
+`--fps`（`nsh run App.tsx --target windows --fps`、`nsh test --target windows --fps`、宿主的 `--fps`，或 Rust 应用在
+`run_app` 中用 `AppOptions { fps: true, .. }`）每秒输出一行性能监视器读数（target `nsh::perf`）：显示的帧数与显示器刷新率、
+主线程每帧的耗时及其各阶段（`tick`、`drain`、`paint`、`present`、`canvas`）、引擎的 commit、CPU 和内存，格式与其他桌面平台一致
+（毫秒，依次为 mean/p50/p95/max）。`nsh test --fps -v` 会显示这些读数，`examples/gallery/tools/perf.py` 会读取它们
+（[性能报告](./performance-report.md#windowswin32direct2d)）。请测量 release 构建；监视器关闭时没有任何开销。
+
 ## 打包
 
 ```sh
@@ -117,6 +125,8 @@ view.load(Bundle::source(code).into());
 字节码 bundle（`bundle.nshc`）用 `unsafe { Bundle::bytecode(bytes) }`（或同样是 unsafe 的 `Bundle::read_trusted(path)`）加载：
 QuickJS 字节码是受信任的输入，只能从你自己应用的文件中加载。独立窗口用 `nsh_platform_windows::run_app(source, options)`，传入 `AppSource::Rust(root)` 或
 `AppSource::Bundle(bundle)`。`Root::tokens` 为根组件设置[主题](./rust.md#主题)，`Root::app_id` 设置保存其数据所用的 id。
+
+`AppOptions::cache`（或 `AppView::set_cache`，作用于之后加载的应用）设置应用保存缓存（[下载的图片](./images-and-assets.md#磁盘缓存)）的位置和每种缓存的大小（`CacheOptions`：默认为系统的缓存目录和 256 MiB 图片）。
 
 `AppView::set_locale(Some(locale))` 和 `AppView::set_font_scale(Some(scale))` 用你的应用的语言和文字大小代替系统的设置（`None` 恢复跟随系统）：`locale()`、`Intl`、`fontScale()` 和文字立即跟随（[设备与环境](./device-and-environment.md#在嵌入它的应用中)）。
 

@@ -180,6 +180,12 @@ impl Native for IosNative {
         self.finger(last.0, last.1, Phase::Up);
     }
 
+    fn paste(&self, content: &nsh_core::PasteEvent) -> Result<(), String> {
+        let content = content.clone();
+        self.on_main(move |_, window| crate::input::test_paste(window, &content))
+            .unwrap_or_else(|| Err("the window is gone".into()))
+    }
+
     fn type_text(&self, text: &str) {
         // As the software keyboard types, a character at a time, at a
         // quick typist's pace: a controlled input's value comes back from

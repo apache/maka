@@ -52,22 +52,17 @@ async fn phase(f: &Fixture, session: &str, expected: &str) -> Value {
 }
 async fn mode(f: &Fixture, session: &str, mode: &str) -> Value {
     let record = f
-        .store
-        .get_session::<SessionConfiguration>(session)
+        .session(session)
+        .await
+        .get_session::<StoredSessionConfiguration>(session)
         .await
         .unwrap()
         .unwrap();
     f.mutation(2,"metadata",json!({"sessionId":session,"expectedRevision":record.revision,"title":record.configuration.title,"labels":record.configuration.labels,"collaborationMode":mode}),Uuid::new_v4()).await.unwrap()
 }
 async fn approval(f: &Fixture, session: &str) -> Value {
-    let config = f
-        .store
-        .get_session::<SessionConfiguration>(session)
-        .await
-        .unwrap()
-        .unwrap()
-        .configuration;
-    json!({"target":{"sessionId":session,"workspace":config.workspace,"permissions":config.permissions,"boundaryRevision":config.boundary_revision},"model":f.selection().await,"thinkingLevel":null})
+    let config = f.owner.session(session).await.unwrap().configuration;
+    json!({"target":{"sessionId":session,"workspace":config.workspace,"permissions":config.permissions,"boundaryRevision":config.boundary_revision,"binding":config.binding},"model":f.selection().await,"thinkingLevel":null})
 }
 async fn approve(f: &Fixture, session: &str) -> (Value, Value, Uuid) {
     let snapshot = current(f, session).await;
@@ -118,7 +113,7 @@ async fn plan_real_direct_and_code_mode_require_review_then_native_effect_and_ca
             let session = f.mutation(2,"create",create,Uuid::new_v4()).await.unwrap()["session"]["id"].as_str().unwrap().to_owned();
             let sibling = f.create("Independent session").await;
             assert_eq!(mode(&f,&session,"plan").await["kind"],"committed");
-            assert!(!f.store.get_session::<SessionConfiguration>(&session).await.unwrap().unwrap().configuration.title_is_manual, "mode selection must preserve automatic title eligibility");
+            assert!(!f.session(&session).await.get_session::<StoredSessionConfiguration>(&session).await.unwrap().unwrap().configuration.title_is_manual, "mode selection must preserve automatic title eligibility");
             f.send(&session).await.unwrap();
             let (mut first,_) = listener.accept().await.unwrap();
             let sent = request(&mut first).await;
@@ -131,7 +126,7 @@ async fn plan_real_direct_and_code_mode_require_review_then_native_effect_and_ca
             let (mut after_denial,_) = listener.accept().await.unwrap();
             request(&mut after_denial).await;
             assert!(!f.workspace.join("should-not-exist").exists());
-            assert!(f.store.pending_interactions(&session).await.unwrap().is_empty());
+            assert!(f.session(&session).await.pending_interactions(&session).await.unwrap().is_empty());
             service_tools::named_tool_response(&mut after_denial,"SubmitPlan",artifact()).await;
             f.drained().await;
             let proposed = current(&f,&session).await;
@@ -281,7 +276,7 @@ async fn plan_cancel_after_approval_rejects_original_input_before_any_model_requ
         assert_eq!(f.mutation(2,"changePlan",json!({"sessionId":session,"revision":pending["revision"],"action":{"kind":"cancel","executionId":pending["execution"]["id"],"reason":"Cancel queued original"}}),Uuid::new_v4()).await.unwrap()["kind"],"committed");
         drop(producer);
         phase(&f,&session,"cancelled").await;
-        assert!(f.store.message_queue(&session).await.unwrap().entries.is_empty());
+        assert!(f.session(&session).await.message_queue(&session).await.unwrap().entries.is_empty());
         assert!(tokio::time::timeout(Duration::from_millis(100),listener.accept()).await.is_err());
         let facts = service_tools::facts(&f,&session).await;
         assert_eq!(facts.iter().filter(|fact|matches!(fact,Fact::InvocationOpened{..})).count(),1, "only the planning Turn was admitted");
@@ -321,7 +316,7 @@ async fn plan_unknown_original_approval_and_accepted_outbox_recover_after_restar
         phase(&f,&session,"completed").await;
         todo_tests::reopen(&mut f).await;
         assert_eq!(f.query("planReceipt",json!({"reference":reference})).await.unwrap(),committed);
-        assert!(f.store.message_queue(&session).await.unwrap().entries.is_empty());
+        assert!(f.session(&session).await.message_queue(&session).await.unwrap().entries.is_empty());
         assert_eq!(service_tools::facts(&f,&session).await.iter().filter(|fact|matches!(fact,Fact::InvocationOpened{..})).count(),2);
         assert!(tokio::time::timeout(Duration::from_millis(100),listener.accept()).await.is_err());
         f.app.shutdown().await.unwrap();
@@ -355,7 +350,7 @@ async fn planning_filters_actual_service_methods_before_discovery_and_code_mode_
             let (mut socket,_) = listener.accept().await.unwrap();
             request(&mut socket).await;
             assert!(!f.workspace.join("unapproved.txt").exists());
-            assert!(f.store.pending_interactions(&session).await.unwrap().is_empty());
+            assert!(f.session(&session).await.pending_interactions(&session).await.unwrap().is_empty());
             service_tools::named_tool_response(&mut socket,"SubmitPlan",artifact()).await;
             f.drained().await;
             assert_eq!(current(&f,&session).await["proposal"]["status"],"pending_approval");

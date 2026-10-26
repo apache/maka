@@ -24,9 +24,11 @@ use maka_host_runtime::application::{Context, Handler, NativeOwner};
 use serde_json::Value;
 use std::sync::Arc;
 pub(crate) struct Settings {
+    pub source: maka_plugin_core::deployment::DeploymentRef,
+    pub workspace_locations: Option<super::workspace_locations::Configuration>,
     pub catalog: Arc<maka_providers::catalog::Catalog>,
     pub configuration: Arc<maka_config::ConfigurationStore>,
-    pub log: Arc<maka_event_log::EventLog>,
+    pub log: Arc<maka_event_log::root_store::RootStore>,
     pub configured_locale: maka_agent_facts::language::LanguagePreference,
     pub native_language: maka_agent_facts::language::Language,
 }
@@ -192,8 +194,29 @@ impl Handler for Settings {
         let log = self.log.clone();
         let configured_locale = self.configured_locale;
         let native_language = self.native_language;
+        let source = self.source.clone();
+        let workspace_locations = self.workspace_locations.clone();
         Box::pin(async move {
             match method.as_str() {
+                "workspaceLocations" => {
+                    super::workspace_locations::read(
+                        &log,
+                        &source,
+                        workspace_locations.as_ref(),
+                        input,
+                    )
+                    .await
+                }
+                "updateWorkspaceLocations" => {
+                    context.operation().ok_or("settings_mutation_required")?;
+                    super::workspace_locations::update(
+                        &log,
+                        &source,
+                        workspace_locations.as_ref(),
+                        input,
+                    )
+                    .await
+                }
                 "network" => super::network::read(&store, &log, input).await,
                 "updateNetwork" => super::network::update(&store, input, context).await,
                 "usage" => super::usage::page(&log, input).await,

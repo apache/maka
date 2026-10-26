@@ -52,14 +52,14 @@ maka-agent-facts.workspace = true
 maka-capabilities.workspace = true
 cua-driver-contract = { workspace = true, optional = true }
 cua-driver-sdk = { workspace = true, optional = true }
-cua-driver-core = { git = "https://github.com/maka-agent/cua", rev = "79c9b58a1b61f66ae966635c464e54cb2c8151d6", optional = true }
+cua-driver-core = { git = "https://github.com/maka-agent/cua", rev = "afcdf58a76cb9998f4e2fed8c0124d81ac4f1fcf", optional = true }
 serde.workspace = true
 schemars.workspace = true
 uuid = { workspace = true, optional = true }
 libc = { workspace = true, optional = true }
 reqwest.workspace = true
-base64 = { version = "0.22.1", optional = true }
-cursor-overlay = { git = "https://github.com/maka-agent/cua", rev = "79c9b58a1b61f66ae966635c464e54cb2c8151d6", features = ["theme-authoring"], optional = true }
+base64 = { version = "0.23.1", optional = true }
+cursor-overlay = { git = "https://github.com/maka-agent/cua", rev = "afcdf58a76cb9998f4e2fed8c0124d81ac4f1fcf", features = ["theme-authoring"], optional = true }
 sha2 = { workspace = true, optional = true }
 tempfile = { workspace = true, optional = true }
 serde_json.workspace = true
@@ -68,19 +68,21 @@ tokio-util.workspace = true
 
 [dev-dependencies]
 maka-js-runtime.workspace = true
-tiny-skia = { version = "0.11", features = ["png-format"] }
+tiny-skia = { version = "0.12.0", features = ["png-format"] }
+# Cua's native theme renderer accepts its own tiny-skia 0.11 Pixmap.
+cua-skia = { package = "tiny-skia", version = "0.11.4", features = ["png-format"] }
 
 [target.'cfg(windows)'.dependencies]
-platform-windows = { git = "https://github.com/maka-agent/cua", rev = "79c9b58a1b61f66ae966635c464e54cb2c8151d6", optional = true }
+platform-windows = { git = "https://github.com/maka-agent/cua", rev = "afcdf58a76cb9998f4e2fed8c0124d81ac4f1fcf", optional = true }
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_Threading"], optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-platform-linux = { git = "https://github.com/maka-agent/cua", rev = "79c9b58a1b61f66ae966635c464e54cb2c8151d6", optional = true }
+platform-linux = { git = "https://github.com/maka-agent/cua", rev = "afcdf58a76cb9998f4e2fed8c0124d81ac4f1fcf", optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-platform-macos = { git = "https://github.com/maka-agent/cua", rev = "79c9b58a1b61f66ae966635c464e54cb2c8151d6", optional = true }
+platform-macos = { git = "https://github.com/maka-agent/cua", rev = "afcdf58a76cb9998f4e2fed8c0124d81ac4f1fcf", optional = true }
 core-foundation = { version = "0.10.1", optional = true }
-objc2 = { version = "0.6.4", optional = true }
+objc2 = { version = "0.6.5", optional = true }
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSData", "NSString"], optional = true }
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSPasteboard", "NSPasteboardItem"], optional = true }
 

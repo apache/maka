@@ -102,11 +102,16 @@ TSX 从 `nsh/base` 导入，Rust 从 `nsh_base` crate 导入。它们负责行�
 | `<KeyboardAvoidingView>` | `nsh_base::keyboard_avoiding_view()` | 让内容保持在软键盘之上 | [KeyboardAvoidingView](./keyboard-avoiding-view.md) |
 | `AlertDialog` | `nsh_base::alert_dialog()` | 系统的提示框和操作表 | [AlertDialog](./alert-dialog.md) |
 | `<TextView>` | `nsh_base::text_view()` | 用文本和视图显示 Markdown 或 HTML 文档 | [TextView](./text-view.md) |
+| `<Editor>` | `nsh_base::editor()` | 带高亮、多光标、折叠和搜索的代码编辑器 | [Editor](./editor.md) |
+| `<DiffView>` | `nsh_base::diff_view()` | 两段文本之间或补丁中的改动，并排或合并显示 | [DiffView](./diff-view.md) |
+| `<Table>` 及其部件 | `nsh_base::table()`、`table_row()` 等 | 由应用写出行和单元格的表格，带有表格的角色 | [Table](./table.md) |
+| `<DataTable>` | `nsh_base::data_table()` | 行列数量不限的表格，可选择、排序，列可调整宽度和移动 | [DataTable](./data-table.md) |
 | `<SelectionArea>` | `nsh_base::selection_area()` | 让其中的文字一起选择 | [SelectionArea](./selection-area.md) |
 | `<Popover>` | `nsh_base::popover()` | 锚定在触发元素上、显示在一切之上的内容 | [Popover](./popover.md) |
 | `<Menu>`、`<ContextMenu>`、`<MenuItem>`、`<MenuSeparator>`、`<Submenu>` | `nsh_base::menu()`、... | 菜单：桌面上是带级联子菜单的弹出层，手机上是 sheet | [Menu](./menu.md) |
 | `<Tooltip>` | `nsh_base::tooltip()` | 悬停或手指按住时显示在触发元素旁的提示 | [Tooltip](./tooltip.md) |
 | `<Sheet>` | `nsh_base::sheet()` | 位于屏幕一侧边缘、覆盖在背景层之上的面板 | [Sheet](./sheet.md) |
+| `<Toast>`、`<ToastStack>` | `nsh_base::toast()`、`toast_stack()` | toast 的语义根；从一侧边缘排成层叠的 toast | [Toast](./toast.md) |
 | `<ResizablePanelGroup>`、`<ResizablePanel>` | `nsh_base::h_resizable()`、`resizable_panel()` | 并排或上下排列的面板，以及调整它们大小的手柄 | [Resizable](./resizable.md) |
 | `<DockArea>` | `nsh_base::dock_area()` | 由分栏、标签组和边缘停靠区组成、用户自行安排的工作区 | [Dock](./dock.md) |
 
@@ -183,7 +188,7 @@ view()
 | 属性 | Rust | 类型 | 说明 |
 |---|---|---|---|
 | `onHoverIn` | `.on_hover_in(..)` | `() => void` | 鼠标移到视图或其内部的视图上。 |
-| `onHoverMove` | `.on_hover_move(..)` | `(e: HoverEvent) => void` | 没有按下按键时，鼠标在视图（或其内部的视图）上移动。 |
+| `onHoverMove` | `.on_hover_move(..)` | `(e: HoverEvent) => void` | 没有按下按键时，鼠标在视图（或其内部的视图）上移动，或鼠标停在那里时按下或松开了修饰键。 |
 | `onHoverOut` | `.on_hover_out(..)` | `() => void` | 鼠标离开视图及其内部的视图，或离开窗口。 |
 
 与 CSS 的 `:hover` 一样，鼠标在视图上或在其内部任何内容上时，视图都算作被悬停，因此鼠标下方视图外层的视图也会收到 `onHoverIn`（由外向内；`onHoverOut` 由内向外）。事件在发生之后才通知应用，触摸从不触发；按着按键移动属于触摸（`onTouchMove`、响应者系统）。从鼠标下方移除的视图会收到 `onHoverOut`，在 Linux 和 Windows 上要等到鼠标下一次移动。
@@ -274,6 +279,8 @@ import { Menu } from "nsh/desktop";
 | 属性 | Rust | 类型 | 默认值 | 说明 |
 |---|---|---|---|---|
 | `focusable` | `.focusable(..)` | `boolean` | `true` | 可按压的视图是否是 Tab 的停靠点；`false` 把它留给指针（关闭浮层的背景层、用方向键切换的列表行）。 |
+| `onFocus` | `.on_focus(..)` | `() => void` | | Tab（或 `focus()`）让视图获得了键盘焦点。 |
+| `onBlur` | `.on_blur(..)` | `() => void` | | 键盘焦点离开了视图。 |
 
 ```rust tabs
 view()

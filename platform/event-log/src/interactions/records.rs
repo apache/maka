@@ -91,12 +91,23 @@ pub(super) async fn read(
     connection: &mut sqlx::SqliteConnection,
     request_id: &str,
 ) -> Result<Option<InteractionRecord>, StoreError> {
+    read_scoped(connection, request_id, None).await
+}
+
+pub(super) async fn read_scoped(
+    connection: &mut sqlx::SqliteConnection,
+    request_id: &str,
+    expected_session: Option<&str>,
+) -> Result<Option<InteractionRecord>, StoreError> {
     let row = sqlx::query(
         "SELECT request.session_id, request.created_at, request.record_json, outcome.outcome_json
          FROM interaction_requests AS request LEFT JOIN interaction_outcomes AS outcome
-         ON outcome.request_id = request.request_id WHERE request.request_id = ?",
+         ON outcome.request_id = request.request_id WHERE request.request_id = ?
+         AND (? IS NULL OR request.session_id = ?)",
     )
     .bind(request_id)
+    .bind(expected_session)
+    .bind(expected_session)
     .fetch_optional(connection)
     .await?;
     let Some(row) = row else { return Ok(None) };

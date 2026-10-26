@@ -132,11 +132,13 @@ fn fetch_round_trips_through_the_platform_network() {
         ui_sets: Vec::new(),
         runtime: None,
         data_dir: None,
+        cache: nsh_engine::CacheOptions::off(),
         storage: None,
         clock: Default::default(),
         context: Default::default(),
         pinned: Default::default(),
         clipboard: None,
+        host: Default::default(),
         picker: None,
     };
     let _engine = Engine::start(config, || ApproxTextEngine, Sink(tx)).unwrap();
@@ -242,11 +244,13 @@ fn fetch_stays_within_the_capabilities() {
         ui_sets: Vec::new(),
         runtime: None,
         data_dir: None,
+        cache: nsh_engine::CacheOptions::off(),
         storage: None,
         clock: Default::default(),
         context: Default::default(),
         pinned: Default::default(),
         clipboard: None,
+        host: Default::default(),
         picker: None,
     };
     let _engine = Engine::start(config, || ApproxTextEngine, Sink(tx)).unwrap();
@@ -311,11 +315,13 @@ fn rust_components_fetch_through_the_platform_network() {
         ui_sets: Vec::new(),
         runtime: None,
         data_dir: None,
+        cache: nsh_engine::CacheOptions::off(),
         storage: None,
         clock: Default::default(),
         context: Default::default(),
         pinned: Default::default(),
         clipboard: None,
+        host: Default::default(),
         picker: None,
     };
     let _engine = Engine::start(config, || ApproxTextEngine, Sink(tx)).unwrap();
