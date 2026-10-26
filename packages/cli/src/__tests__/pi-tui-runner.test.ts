@@ -1042,6 +1042,82 @@ describe('Maka Pi TUI runner', () => {
     }
   });
 
+  test('a new OAuth account pre-selects discovered models in discovery order', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new SlashCommandDriver();
+    const saveCalls: OnboardingSaveInput[] = [];
+    const models = [
+      { id: 'gpt-6.1-sol' },
+      { id: 'gpt-6-astra' },
+      { id: 'gpt-5.6-sol' },
+      { id: 'gpt-5.6-terra' },
+    ];
+    // Seeded like the old static fallback: discovery, not the seed, decides the selection.
+    const provider = oauthCreateProvider([
+      'gpt-6-astra',
+      'gpt-5.6-sol',
+      'gpt-5.6-terra',
+      'gpt-5.6-luna',
+    ]);
+    const onboarding = fakeOnboardingSurface({
+      providers: [provider],
+      loginOAuth: async () => ({
+        kind: 'authenticated' as const,
+        connection: {
+          connectionId: 'codex-id',
+          slug: 'codex-subscription',
+          providerType: 'openai-codex' as const,
+        },
+      }),
+      verify: async () => ({ kind: 'ok' as const, models }),
+      save: async (input) => {
+        saveCalls.push(input);
+        return {
+          kind: 'ok' as const,
+          connection: {
+            connectionId: 'codex-id',
+            revision: 1,
+            slug: 'codex-subscription',
+            providerType: 'openai-codex' as const,
+          },
+          refresh: { kind: 'ok' as const, modelChoices: [], connectionIdentities: [] },
+        };
+      },
+    });
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'bypass',
+      terminal,
+      onboarding,
+    });
+
+    try {
+      await waitForTuiPaint(terminal);
+      terminal.input('/setup');
+      terminal.input('\r');
+      await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('Set Up Provider'));
+      terminal.input('\r');
+      await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('2/4'));
+      terminal.input('\r');
+      terminal.input('\r');
+      await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('4/4'));
+      terminal.input('\r');
+      await waitFor(() => saveCalls.length === 1);
+
+      assert.deepEqual(
+        saveCalls[0]?.enabledModelIds,
+        models.map(({ id }) => id),
+      );
+    } finally {
+      process.emit('SIGTERM');
+      await run;
+    }
+  });
+
   for (const [locale, cancellingText, unconfirmedText] of [
     ['en', 'Cancelling sign-in', 'Sign-in result is not confirmed'],
     ['zh-CN', '正在取消登录', '登录结果尚未确认'],
