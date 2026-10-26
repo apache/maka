@@ -172,9 +172,12 @@ engine, JS, headless (with `agent`), terminal, bundler and development-tooling
 (client/server) tests, followed by Web's portable `text` integration test.
 This separate runner starts after Maka's test job, even if that job fails;
 root workspace tests alone do not select these suites. A final, capacity-guarded
-step selects the three animated-prop queue tests in the owning GPUI workspace,
-verifies their discovery and runs them without opening a native window. That
-workspace uses its own lock and patches, not Maka's complete root dependency
+step selects the three animated-prop queue tests and the explicit-focus ownership
+test in the owning GPUI workspace, verifies the three queue names and the exact
+focus-test name, and runs them serially without opening a native window. The
+focus test uses the production mounter, stop collection and activation helpers;
+it does not validate OS-window focus dispatch. That workspace uses its own lock
+and patches, not Maka's complete root dependency
 graph; sharing a target directory does not imply equivalent cached artifacts.
 Both vendored GPUI owning workspaces (`crates/gpui` and `examples/embed-gpui`)
 explicitly reuse Maka's existing GPUI core, native platform, scheduler and

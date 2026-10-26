@@ -1013,7 +1013,7 @@
     "third-party/nsh/Cargo.toml": "33badd278cac3e9415b8aa067a26470a0e6a6ed4bcabe6096c42e8f3c778e474",
     "third-party/nsh/LICENSE-APACHE": "ec75427ad955e3c740f22e7dc3f6db6fc5b2cc1d9135c2af91cece8dd47a2d38",
     "third-party/nsh/README.md": "7e96dcaff053bd42b852ac90e14c2d2deed5e607630f5697284106de14c386d1",
-    "third-party/nsh/SOURCE.md": "61dfe8271ed9f44b65cfc8c375638858637731fde28b546f1c75fda516026333",
+    "third-party/nsh/SOURCE.md": "72022f1eb00ebf8a490a9e23abe94de0eb63e1c2f0efe014e75b4beb78947918",
     "third-party/nsh/crates/gpui/Cargo.lock": "cc49da9ee7785f247f5860161047662235d3c73f60c94a9e5db9740a49bc0733",
     "third-party/nsh/crates/gpui/Cargo.toml": "072da8564cadcca827751e1c8f72bfd776ff5b36eb761e593f86bcaa24a98a85",
     "third-party/nsh/crates/gpui/nsh-gpui-host/Cargo.toml": "f36b982a17b38bd1d91760a2d8d9db06b42db949c227878cef294a5ff2100844",
