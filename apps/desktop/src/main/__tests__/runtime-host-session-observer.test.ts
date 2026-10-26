@@ -3357,7 +3357,6 @@ test("publishes Host sidecar and graph invalidations without inventing Session s
         lastReason: null,
         achievedAt: null,
         pausedAt: null,
-        eventWait: null,
       },
     }),
   });
@@ -3854,7 +3853,6 @@ function activeGoal() {
     lastReason: null,
     achievedAt: null,
     pausedAt: null,
-    eventWait: null,
   };
 }
 
@@ -4295,24 +4293,73 @@ test('a latched replica reseeds through recovery for the next reader', async () 
 });
 
 
-test('wait-only projection changes invalidate the Goal without a Goal revision change', async () => {
+test('Session wait changes invalidate the projection without changing Goal revision', async () => {
   const events = new AsyncFrameQueue();
   const changes: string[] = [];
-  const wait = { waitId: 'wait', controlGeneration: 1, waitRevision: 1,
+  const wait: import('@maka/runtime-host/protocol').SessionEventWaitProjection = {
+    sessionId: 'session-1', waitId: 'wait', sourceTurnId: 'turn-1',
+    consumer: { kind: 'tool_invocation', runId: 'run-1', invocationId: 'invocation-1', operationId: 'operation-1' },
     resource: { providerId: 'shell_run', resourceType: 'background_task', resourceId: 'maka://runtime/background-tasks/task' },
-    reason: 'Inspect tests', deadlineAt: 100, phase: 'observing' as const,
-    observation: { state: 'pending' as const, lastObservedAt: 10, reasonCode: null }, outcome: null };
-  const goal = { ...activeGoal(), eventWait: wait };
+    deadlineAt: 100, phase: 'observing', observation: 'pending', reasonCode: null,
+  };
+  const goal = activeGoal();
   const observer = new RuntimeHostSessionObserver({ client: { openSession: async () => runtimeHostSessionFixture({
-    snapshot: continuitySnapshot({ goal }), events, async close() { events.end(); },
+    snapshot: continuitySnapshot({ goal, eventWaits: { items: [wait], nextCursor: null } }), events, async close() { events.end(); },
   }) }, emitSessionsChanged: (reason) => changes.push(reason) });
   try {
     await observer.observe('session-1', 'observer-1', eventTarget(11));
     changes.length = 0;
-    const ready = { ...goal, eventWait: { ...wait, waitRevision: 2, phase: 'awaiting_admission' as const, observation: null, outcome: 'satisfied' as const } };
+    const ready = { ...wait, phase: 'result_ready' as const, observation: null };
     events.push({ kind: 'subscription.session_projection', hostEpoch: 'host-1', subscriptionId: 'subscription-1', sequence: 1,
-      snapshot: continuitySnapshot({ goal: ready, projectionRevision: 2 }) });
+      snapshot: continuitySnapshot({ goal, eventWaits: { items: [ready], nextCursor: null }, projectionRevision: 2 }) });
     await waitFor(() => changes.includes('goal-change'));
     assert.equal(changes.filter((r) => r === 'goal-change').length, 1);
+  } finally { await observer.close(); }
+});
+
+
+test('later-page wait invalidations refresh Goal services without a new continuity page', async () => {
+  const events = new AsyncFrameQueue();
+  const changes: string[] = [];
+  const observer = new RuntimeHostSessionObserver({
+    client: { openSession: async () => runtimeHostSessionFixture({
+      snapshot: continuitySnapshot(), events, async close() { events.end(); },
+    }) },
+    emitSessionsChanged: (reason) => changes.push(reason),
+  });
+  try {
+    await observer.observe('session-1', 'observer-1', eventTarget(11));
+    changes.length = 0;
+    events.push({ kind: 'subscription.session_domain_changed', hostEpoch: 'host-1',
+      subscriptionId: 'subscription-1', sequence: 1, sessionId: 'session-1', domain: 'event_wait' });
+    await waitFor(() => changes.includes('goal-change'));
+    assert.deepEqual(changes, ['goal-change']);
+  } finally { await observer.close(); }
+});
+
+test('subscription recovery refreshes paginated waits even when the first page is unchanged', async () => {
+  const firstEvents = new AsyncFrameQueue();
+  const secondEvents = new AsyncFrameQueue();
+  const changes: string[] = [];
+  let opens = 0;
+  let recovered = false;
+  const observer = new RuntimeHostSessionObserver({
+    client: { openSession: async () => {
+      const events = ++opens === 1 ? firstEvents : secondEvents;
+      return runtimeHostSessionFixture({ snapshot: continuitySnapshot(), events,
+        async close() { events.end(); } });
+    } },
+    emitSessionsChanged: (reason) => changes.push(reason),
+    emitSubscriptionRecovered: () => { recovered = true; },
+  });
+  try {
+    await observer.observe('session-1', 'observer-1', eventTarget(11));
+    changes.length = 0;
+    // The missed domain invalidation is not replayed by subscription.open.
+    firstEvents.push({ kind: 'subscription.closed', hostEpoch: 'host-1',
+      subscriptionId: 'subscription-1', sequence: 1, reason: 'slow_consumer' });
+    await waitFor(() => recovered);
+    assert.equal(opens, 2);
+    assert.ok(changes.includes('goal-change'));
   } finally { await observer.close(); }
 });

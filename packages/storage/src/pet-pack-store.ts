@@ -45,6 +45,7 @@ export const PET_PACK_MANIFEST_MAX_BYTES = 64 * 1024;
 export const PET_PACK_SPRITE_SHEET_MAX_BYTES = 4 * 1024 * 1024;
 
 export type PetPackStoreErrorCode =
+  | 'invalid_manifest'
   | 'invalid_id'
   | 'invalid_asset'
   | 'already_installed'
@@ -142,6 +143,12 @@ class FilePetPackStore implements PetPackStore {
 
   async install(input: InstallPetPackInput): Promise<PetPackManifestV1> {
     const manifest = snapshotManifest(decodePetPackManifest(input.manifest));
+    const manifestJson = `${JSON.stringify(manifest, null, 2)}\n`;
+    if (Buffer.byteLength(manifestJson, 'utf8') > PET_PACK_MANIFEST_MAX_BYTES) {
+      throw new PetPackStoreError('invalid_manifest', 'Installed manifest exceeds the size limit', {
+        petId: manifest.id,
+      });
+    }
     const spriteSheet = Buffer.from(input.spriteSheet);
     return await this.serial(async () => {
       assertSpriteSheet(manifest, spriteSheet, 'invalid_asset');
@@ -160,7 +167,7 @@ class FilePetPackStore implements PetPackStore {
       try {
         if (process.platform !== 'win32') await chmod(staging, 0o700);
         const manifestPath = join(staging, PET_PACK_MANIFEST_FILE);
-        await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, {
+        await writeFile(manifestPath, manifestJson, {
           encoding: 'utf8',
           mode: 0o600,
           flag: 'wx',
@@ -364,6 +371,9 @@ function snapshotManifest(manifest: PetPackManifestV1): PetPackManifestV1 {
     ...(manifest.description === undefined ? {} : { description: manifest.description }),
     spriteSheet: { ...manifest.spriteSheet },
     animations,
+    ...(manifest.idleVariants === undefined
+      ? {}
+      : { idleVariants: manifest.idleVariants.map(snapshotAnimation) }),
   };
 }
 

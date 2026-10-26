@@ -106,7 +106,7 @@ test('UTF-8 BOM settings are read without resetting or rewriting the file', asyn
   await writeFile(path, bytes);
   assert.equal((await store.get()).appearance.theme, 'dark');
   assert.deepEqual(await readFile(path), bytes);
-  assert.deepEqual(await readdir(root), ['settings.json']);
+  assert.deepEqual(await settingsEntries(root), ['settings.json']);
   assert.deepEqual(events, []);
 });
 
@@ -118,7 +118,7 @@ for (const bigEndian of [false, true]) {
     await writeFile(path, bytes);
     await assert.rejects(store.get(), /Save the file as UTF-8/);
     assert.deepEqual(await readFile(path), bytes);
-    assert.deepEqual(await readdir(root), ['settings.json']);
+    assert.deepEqual(await settingsEntries(root), ['settings.json']);
     assert.deepEqual(events, []);
   });
 }
@@ -133,7 +133,7 @@ test('corrupt settings behind a symlink are not reset and the link survives', {
   await assert.rejects(store.get(), /symbolic-link target manually/);
   assert.equal((await lstat(path)).isSymbolicLink(), true);
   assert.deepEqual(await readFile(target), corrupt);
-  assert.equal((await readdir(root)).length, 2);
+  assert.equal((await settingsEntries(root)).length, 2);
   assert.deepEqual(events, []);
 });
 
@@ -173,7 +173,7 @@ test('a symlink installed during temp preparation is not replaced or followed fo
   assert.equal((await lstat(path)).isSymbolicLink(), true);
   assert.equal(await readFile(target, 'utf8'), text);
   assert.equal(
-    (await readdir(root)).some((name) => name.endsWith('.tmp')),
+    (await settingsEntries(root)).some((name) => name.endsWith('.tmp')),
     false,
   );
   assert.deepEqual(events, []);
@@ -224,7 +224,7 @@ for (const stage of ['initial read', 'backup write', 'temp write'] as const) {
     assert.equal((await store.get()).appearance.theme, 'dark');
     assert.equal(await readFile(path, 'utf8'), repaired);
     assert.deepEqual(events, []);
-    const files = await readdir(root);
+    const files = await settingsEntries(root);
     assert.equal(
       files.some((name) => name.endsWith('.tmp')),
       false,
@@ -252,7 +252,7 @@ for (const change of ['remove', 'another corrupt value', 'same bytes in a new in
         await readFile(path),
         change === 'another corrupt value' ? Buffer.from('{') : corrupt,
       );
-    const files = await readdir(root);
+    const files = await settingsEntries(root);
     assert.equal(files.filter((name) => name.startsWith('settings.json.corrupt-')).length, 1);
     assert.equal(
       files.some((name) => name.endsWith('.tmp')),
@@ -298,7 +298,7 @@ test('recovery survives successive process exits during backup writes', async (t
     assert.equal(child.error, undefined);
     assert.equal(child.status, 73, child.stderr);
     assert.deepEqual(await readFile(path), corrupt);
-    const backup = (await readdir(root)).find(
+    const backup = (await settingsEntries(root)).find(
       (name) => name.startsWith('settings.json.corrupt-') && !interruptedBackups.includes(name),
     );
     assert.ok(backup);
@@ -312,7 +312,7 @@ test('recovery survives successive process exits during backup writes', async (t
   assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), createDefaultSettings());
   assert.deepEqual(await readFile(join(root, interruptedBackups[0])), Buffer.alloc(0));
   assert.deepEqual(await readFile(join(root, interruptedBackups[1])), corrupt.subarray(0, 3));
-  assert.equal((await readdir(root)).length, 4);
+  assert.equal((await settingsEntries(root)).length, 4);
 });
 
 test('failed resets reuse one complete backup across calls and recreated store instances', async (t) => {
@@ -335,7 +335,7 @@ test('failed resets reuse one complete backup across calls and recreated store i
     });
   }
   assert.equal(backups.size, 1);
-  assert.equal((await readdir(root)).length, 2);
+  assert.equal((await settingsEntries(root)).length, 2);
   assert.deepEqual(await readFile([...backups][0]), corrupt);
   assert.deepEqual(events, []);
 });
@@ -367,7 +367,7 @@ test('failed resets reuse an alternative backup without replacing an interrupted
   assert.deepEqual(await readFile([...backups][0]), corrupt);
   assert.deepEqual(await readFile(incomplete), corrupt.subarray(0, 3));
   assert.deepEqual(await readFile(path), corrupt);
-  assert.equal((await readdir(root)).length, 3);
+  assert.equal((await settingsEntries(root)).length, 3);
   assert.deepEqual(events, []);
 });
 
@@ -398,7 +398,7 @@ for (const phase of ['open', 'readFile', 'sync'] as const) {
     });
     assert.deepEqual(await readFile(path), corrupt);
     assert.deepEqual(await readFile(backup), corrupt);
-    assert.equal((await readdir(root)).length, 2);
+    assert.equal((await settingsEntries(root)).length, 2);
     assert.deepEqual(events, []);
   });
 }
@@ -435,7 +435,11 @@ test('a different corruption after a failed reset gets its own backup and preser
   assert.equal(backups[1], backups[2], 'a new store reuses the second complete backup');
   assert.deepEqual(await readFile(backups[0]), first);
   assert.deepEqual(await readFile(backups[1]), second);
-  assert.equal((await readdir(root)).length, 3, 'only the source and its two byte versions remain');
+  assert.equal(
+    (await settingsEntries(root)).length,
+    3,
+    'only the source and its two byte versions remain',
+  );
   assert.deepEqual(events, []);
 });
 
@@ -471,7 +475,7 @@ test('a completed backup survives directory sync failure and is fenced again bef
   assert.deepEqual(await createSettingsStore(root).get(), createDefaultSettings());
   assert.equal(backupCreates, 1);
   assert.equal(directorySyncs, 3);
-  assert.equal((await readdir(root)).length, 2);
+  assert.equal((await settingsEntries(root)).length, 2);
 });
 
 for (const unsafe of ['tampered', 'partial', 'public mode', 'hard link'] as const) {
@@ -494,7 +498,7 @@ for (const unsafe of ['tampered', 'partial', 'public mode', 'hard link'] as cons
       assert.deepEqual(await current.get(), createDefaultSettings());
     }
     assert.deepEqual(await readFile(backup), bytes);
-    const backups = (await readdir(root)).filter((name) =>
+    const backups = (await settingsEntries(root)).filter((name) =>
       name.startsWith('settings.json.corrupt-'),
     );
     assert.equal(backups.length, 2);
@@ -526,7 +530,7 @@ for (const [name, bytes] of [
     assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), createDefaultSettings());
     await store.get();
     assert.equal(events.length, 1);
-    assert.equal((await readdir(root)).length, 2);
+    assert.equal((await settingsEntries(root)).length, 2);
   });
 }
 
@@ -553,7 +557,7 @@ test('missing and valid JSON keep their normal behavior without a recovery repor
     assert.equal(await readFile(path, 'utf8'), text);
   }
   assert.deepEqual(events, []);
-  assert.deepEqual(await readdir(root), ['settings.json']);
+  assert.deepEqual(await settingsEntries(root), ['settings.json']);
 });
 
 for (const callback of [
@@ -643,7 +647,7 @@ for (const code of ['EACCES', 'EIO']) {
     syncBuiltinESMExports();
     await assert.rejects(store.get(), (error) => error === failure);
     assert.deepEqual(await read(path), corrupt);
-    assert.deepEqual(await readdir(root), ['settings.json']);
+    assert.deepEqual(await settingsEntries(root), ['settings.json']);
     assert.deepEqual(events, []);
   });
 }
@@ -690,13 +694,13 @@ for (const phase of ['open', 'writeFile', 'chmod', 'sync', 'close', 'directory']
     });
     assert.deepEqual(await readFile(path), corrupt);
     if (phase === 'directory') {
-      const backups = (await readdir(root)).filter((name) =>
+      const backups = (await settingsEntries(root)).filter((name) =>
         name.startsWith('settings.json.corrupt-'),
       );
       assert.equal(backups.length, 1);
       assert.deepEqual(await readFile(join(root, backups[0])), corrupt);
     } else {
-      assert.deepEqual(await readdir(root), ['settings.json']);
+      assert.deepEqual(await settingsEntries(root), ['settings.json']);
     }
     assert.deepEqual(events, []);
   });
@@ -799,7 +803,7 @@ test('reset publication failure retains the complete backup and never reports su
   });
   assert.deepEqual(await readFile(backupPath), corrupt);
   assert.deepEqual(await readFile(path), corrupt);
-  assert.equal((await readdir(root)).length, 2);
+  assert.equal((await settingsEntries(root)).length, 2);
   assert.deepEqual(events, []);
 });
 
@@ -818,7 +822,7 @@ for (const code of ['ENOENT', 'syntax']) {
     syncBuiltinESMExports();
     await assert.rejects(store.get(), (error) => error === failure);
     assert.equal(await readFile(path, 'utf8'), text);
-    assert.deepEqual(await readdir(root), ['settings.json']);
+    assert.deepEqual(await settingsEntries(root), ['settings.json']);
     assert.deepEqual(events, []);
   });
 }
@@ -895,4 +899,10 @@ for (const mutation of ['get', 'update', 'updateIf', 'milestone'] as const) {
     assert.deepEqual(JSON.parse(JSON.stringify(await store.get())), createDefaultSettings());
     assert.equal(events.length, 1);
   });
+}
+
+// The permanent native lock is coordination state, not a recovery backup or
+// an abandoned atomic-write temporary. Keep every other entry in these checks.
+async function settingsEntries(root: string): Promise<string[]> {
+  return (await readdir(root)).filter((name) => name !== 'settings.json.lock');
 }

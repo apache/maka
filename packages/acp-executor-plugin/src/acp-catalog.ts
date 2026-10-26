@@ -56,6 +56,12 @@ export class AcpCatalog {
     private readonly store?: AcpCatalogStore,
   ) {}
 
+  /** Presentation-only lookup: never probes, launches an Agent, or supplies Session capabilities. */
+  async readCached(): Promise<ExecutorCatalogEntry | undefined> {
+    await this.#hydrate();
+    return this.#disposed ? undefined : this.#cached;
+  }
+
   async get(signal: AbortSignal, refresh = false): Promise<ExecutorCatalogEntry> {
     signal.throwIfAborted();
     if (this.#disposed) return this.unavailable();

@@ -18,7 +18,7 @@
  */
 
 import { useState } from 'react';
-import { parseAttachmentResourceRef } from '@maka/core/attachments';
+import { isStickerArtifactId, parseAttachmentResourceRef } from '@maka/core/attachments';
 import { isRemoteImageSource, type ImageDeliveryFailure } from '@maka/core/image-delivery';
 import { useAttachmentImage } from './attachment-image.js';
 import { useImageDelivery } from './image-delivery.js';
@@ -64,7 +64,7 @@ export function useChatImageResource(input: { source: string; redacted: boolean;
   const openSource = remote && !hiddenRemote && (presentation.kind === 'failed' ||
     presentation.kind === 'unavailable' && presentation.reason === 'remote') ? input.source : undefined;
   return {
-    presentation, attempt, retry, openSource,
+    presentation, attempt, retry, openSource, sticker: !!explicit && isStickerArtifactId(explicit.artifactId),
     onDecodeError: () => { if (source) setFailedSource(source); },
   };
 }

@@ -92,6 +92,7 @@ export function installDom() {
     cancelAnimationFrame: () => {},
     document,
     getComputedStyle: () => ({
+      getPropertyValue: () => '',
       paddingBottom: '0',
       paddingLeft: '0',
       paddingRight: '0',

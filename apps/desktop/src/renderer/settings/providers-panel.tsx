@@ -358,7 +358,9 @@ function ProvidersPanelContent({ bridge, apiKeyOnboardingBridge, initialPage = '
         // swaps", and it draws no ring.
         (<VStack gap={5} tabIndex={-1} role="region" aria-labelledby={detailTitleId} className="settingsRouteLevel" data-maka-contract="connection-detail">
           <ConnectionDefaultAction
-            key={selected.connectionId}
+            /* Both children of this level remount per connection; the prefix
+               keeps this key apart from its ConnectionDetail sibling's. */
+            key={`default-action:${selected.connectionId}`}
             connection={selected}
             bridge={bridge}
             onChanged={async () => { await reload(); }}

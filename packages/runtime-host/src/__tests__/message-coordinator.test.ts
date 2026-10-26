@@ -4006,3 +4006,44 @@ test('a lone folded steering entry leaves the queue projection decodable', async
     runId: 'run-2',
   });
 });
+
+test('steering notification ignores followups and leaves consumption to the provider boundary', async () => {
+  const f = createFixture();
+  f.coordinator.reserveRootTurn(ROOT);
+  const owner = f.coordinator.bindRun(ROOT);
+  assert.ok(owner.waitForSteering);
+  const abort = new AbortController();
+  let woke = false;
+  const waiting = owner.waitForSteering(abort.signal).then(() => {
+    woke = true;
+  });
+  await submit(f, 'later', 'followup', 'next_turn');
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(woke, false);
+  await submit(f, 'now', 'steering', 'current_turn');
+  await waiting;
+  assert.equal(f.coordinator.projection(ROOT.sessionId).steering.length, 1);
+  const [lease] = await owner.pull();
+  assert.equal(lease?.messageId, 'now');
+  owner.ack([lease!.id]);
+  owner.release();
+});
+
+test('steering notification checks already committed input and aborts without consuming it', async () => {
+  const f = createFixture();
+  f.coordinator.reserveRootTurn(ROOT);
+  const owner = f.coordinator.bindRun(ROOT);
+  assert.ok(owner.waitForSteering);
+  const abort = new AbortController();
+  const waiting = owner.waitForSteering(abort.signal);
+  abort.abort(new Error('stop waiting'));
+  await assert.rejects(waiting, /stop waiting/);
+  await submit(f, 'already', 'input', 'current_turn');
+  await owner.waitForSteering(new AbortController().signal);
+  const [lease] = await owner.pull();
+  assert.equal(lease?.messageId, 'already');
+  owner.ack([lease!.id]);
+  const released = owner.waitForSteering(new AbortController().signal);
+  owner.release();
+  await assert.rejects(released, { name: 'AbortError' });
+});

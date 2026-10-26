@@ -104,13 +104,10 @@ export function goalStatusLineText(
   goal: Pick<
     GoalProjection,
     'status' | 'iterations' | 'maxIterations' | 'setAt' | 'pausedAt' | 'achievedAt'
-  > &
-    Partial<Pick<GoalProjection, 'eventWait'>>,
+  >,
   now: number,
 ): string {
   const counter = `${goal.iterations}/${goal.maxIterations}`;
-  if (goal.eventWait)
-    return `goal ${goal.eventWait.phase === 'observing' ? 'waiting for task' : 'awaiting continuation'} ${counter}`;
   if (goal.status === 'active') {
     return `goal ${counter} ${formatGoalElapsed(goalElapsedMs(goal, now))}`;
   }
@@ -170,24 +167,6 @@ export function goalSummaryLines(goal: GoalProjection, now: number): string[] {
     );
   } else if (goal.tokensSpent > 0) {
     lines.push(`Tokens: ${formatTokenCount(goal.tokensSpent)}`);
-  }
-  if (goal.eventWait) {
-    const wait = goal.eventWait;
-    lines.push(
-      wait.phase === 'awaiting_admission'
-        ? 'Result available; waiting to continue.'
-        : wait.observation?.state === 'unknown'
-          ? 'Background task state temporarily unverifiable.'
-          : 'Waiting for background task.',
-    );
-    if (wait.observation?.state === 'unknown' && wait.observation.reasonCode)
-      lines.push(`Observation: ${inlineGoalText(wait.observation.reasonCode)}`);
-    lines.push(
-      `Task: ${inlineGoalText(wait.resource.resourceId)}`,
-      `Reason: ${inlineGoalText(wait.reason)}`,
-      `Deadline: ${new Date(wait.deadlineAt).toISOString()}`,
-      '/goal cancel-wait pauses the Goal; the background task keeps running.',
-    );
   }
   if (goal.lastReason) lines.push(`Last evaluator note: ${inlineGoalText(goal.lastReason)}`);
   return lines;

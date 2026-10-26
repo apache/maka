@@ -70,7 +70,7 @@ function waiting(
     schemaVersion: 1,
     waitId,
     sessionId,
-    goalControlLease: { goalId: 'goal-1', generation: 0 },
+
     sourceTurnId: 'turn-1',
     sourceToolCallId: 'call-1',
     resource: {
@@ -416,7 +416,7 @@ for (const backend of ['Local', 'Memory'] as const) {
       }
     });
   });
-  test(`${backend}: CAS, active slots and immutable terminal results (not external-truth or Goal authorization checks)`, async () => {
+  test(`${backend}: neutral observations coexist within a Session while preserving CAS and immutable terminal results`, async () => {
     await withProvider(make(), async (s, root) => {
       const session = await s.sessionStore.create(input(root));
       const r = waiting(session.id),
@@ -429,10 +429,13 @@ for (const backend of ['Local', 'Memory'] as const) {
         kind: 'revision_conflict',
         actualAuthorityRevision: 0,
       });
-      assert.deepEqual(await store.commit(commit(waiting(session.id, 'wait-2'))), {
-        kind: 'active_wait_conflict',
-        waitId: r.waitId,
-      });
+      assert.equal((await store.commit(commit(waiting(session.id, 'wait-2')))).kind, 'committed');
+      assert.deepEqual(
+        (await store.listSession({ sessionId: session.id, limit: 200 })).items.map(
+          (snapshot) => snapshot.record.waitId,
+        ),
+        ['wait-1', 'wait-2'],
+      );
       const results = await Promise.all([
         store.commit(commit(resolve(r), 0)),
         store.commit(commit(cancel(r), 0)),
@@ -448,10 +451,6 @@ for (const backend of ['Local', 'Memory'] as const) {
       assert.equal((await store.commit(commit(current.record, 0))).kind, 'revision_conflict');
       await assert.rejects(store.commit(commit(r, 1)), /transition|time regression/);
       if (current.record.status === 'resolved') {
-        assert.equal(
-          (await store.commit(commit(waiting(session.id, 'wait-2')))).kind,
-          'active_wait_conflict',
-        );
         await assert.rejects(
           store.commit(
             commit(
@@ -463,7 +462,7 @@ for (const backend of ['Local', 'Memory'] as const) {
         );
         await store.commit(commit(cancel(current.record), 1));
       }
-      assert.equal((await store.commit(commit(waiting(session.id, 'wait-2')))).kind, 'committed');
+      assert.equal((await store.commit(commit(waiting(session.id, 'wait-3')))).kind, 'committed');
       assert.equal(await store.read({ sessionId: 'other-session', waitId: r.waitId }), null);
       const other = await s.sessionStore.create(input(root));
       await assert.rejects(store.commit(commit(waiting(other.id, r.waitId))), /ownership/);
@@ -473,8 +472,11 @@ for (const backend of ['Local', 'Memory'] as const) {
       const creations = await Promise.all(
         ['race-a', 'race-b'].map((waitId) => store.commit(commit(waiting(racing.id, waitId)))),
       );
-      assert.deepEqual(creations.map((v) => v.kind).sort(), ['active_wait_conflict', 'committed']);
-      assert.equal((await store.listSession({ sessionId: racing.id, limit: 200 })).items.length, 1);
+      assert.deepEqual(
+        creations.map((v) => v.kind),
+        ['committed', 'committed'],
+      );
+      assert.equal((await store.listSession({ sessionId: racing.id, limit: 200 })).items.length, 2);
       // These dormant records do not create Goal authority or any successor.
       assert.equal(await s.goalStore.read(session.id), null);
     });
@@ -506,24 +508,35 @@ for (const backend of ['Local', 'Memory'] as const) {
       const seen: string[] = [];
       let cursor: string | undefined;
       do {
-        const page = await store.listPending({
+        const page = await store.listByStatus({
+          status: 'waiting',
           limit: 2,
           ...(cursor ? { afterWaitId: cursor } : {}),
         });
         seen.push(...page.items.map((v) => v.record.waitId));
         cursor = page.nextCursor ?? undefined;
       } while (cursor);
-      assert.deepEqual(seen, ids.filter((v) => v !== 'z').sort());
+      assert.deepEqual(seen, ids.filter((v) => v !== 'z' && v !== 'Z').sort());
+      assert.deepEqual(
+        (await store.listByStatus({ status: 'resolved', limit: 2 })).items.map(
+          (snapshot) => snapshot.record.waitId,
+        ),
+        ['Z'],
+      );
       for (const limit of [0, -1, 201, Infinity, 1.5])
-        await assert.rejects(store.listPending({ limit }));
-      await assert.rejects(store.listPending({ limit: 1, afterWaitId: '../unsafe' }));
+        await assert.rejects(store.listByStatus({ status: 'waiting', limit }));
+      await assert.rejects(
+        store.listByStatus({ status: 'waiting', limit: 1, afterWaitId: '../unsafe' }),
+      );
       for (const suffix of ['\n', '\r', '\u2028', '\u2029']) {
-        await assert.rejects(store.listPending({ limit: 1, afterWaitId: `wait${suffix}` }));
+        await assert.rejects(
+          store.listByStatus({ status: 'waiting', limit: 1, afterWaitId: `wait${suffix}` }),
+        );
         await assert.rejects(store.read({ sessionId: `session${suffix}`, waitId: 'wait' }));
         await assert.rejects(store.read({ sessionId: 'session', waitId: `wait${suffix}` }));
         await assert.rejects(store.listSession({ sessionId: `session${suffix}`, limit: 1 }));
       }
-      const first = (await store.listPending({ limit: 1 })).items[0]!;
+      const first = (await store.listByStatus({ status: 'waiting', limit: 1 })).items[0]!;
       const list = await store.listSession({ sessionId: first.record.sessionId, limit: 200 });
       assert.equal(list.items.length, 1);
       (list.items[0]!.record.condition.parameters.flags as boolean[])[0] = false;
@@ -532,12 +545,15 @@ for (const backend of ['Local', 'Memory'] as const) {
         [true],
       );
       await s.sessionStore.close?.();
-      await assert.rejects(store.listPending({ limit: 1 }), /closed|invalid|Expected/);
+      await assert.rejects(
+        store.listByStatus({ status: 'waiting', limit: 1 }),
+        /closed|invalid|Expected/,
+      );
       const reopened = await openInteractiveExecutionStoresForWrite(owner.lease, provider);
       try {
         assert.deepEqual(await reopened.eventWaitStore.read(identity(first.record)), first);
         assert.deepEqual(
-          (await reopened.eventWaitStore.listPending({ limit: 200 })).items.map(
+          (await reopened.eventWaitStore.listByStatus({ status: 'waiting', limit: 200 })).items.map(
             (v) => v.record.waitId,
           ),
           seen,
@@ -624,7 +640,7 @@ for (const backend of ['Local', 'Memory'] as const) {
         for (const operation of [
           () => other.eventWaitStore.read(identity(r)),
           () => other.eventWaitStore.listSession({ sessionId: r.sessionId, limit: 1 }),
-          () => other.eventWaitStore.listPending({ limit: 1 }),
+          () => other.eventWaitStore.listByStatus({ status: 'waiting', limit: 1 }),
           () => other.eventWaitStore.listForObservation({ limit: 1, now: 10 }),
           () => other.eventWaitStore.commit(commit(resolve(r), 0)),
         ]) {
@@ -765,7 +781,7 @@ test('facade authentication, explicit provider port, lease revocation and backen
     await s.eventWaitStore.close();
     assert.equal(backendCloses, 0);
     assert.throws(() => authenticateInteractiveEventWaitAuthorityWriter(s.eventWaitStore));
-    await assert.rejects(s.eventWaitStore.listPending({ limit: 1 }));
+    await assert.rejects(s.eventWaitStore.listByStatus({ status: 'waiting', limit: 1 }));
     await s.sessionStore.close?.();
     assert.equal(backendCloses, 1);
     await owner.close();
@@ -777,7 +793,6 @@ test('group close waits for pending event-wait reads, lists and writes', async (
   for (const method of [
     'read',
     'listSession',
-    'listPending',
     'listByStatus',
     'listForObservation',
     'readSourceCooldown',
@@ -829,33 +844,31 @@ test('group close waits for pending event-wait reads, lists and writes', async (
           ? s.eventWaitStore.read(identity(r))
           : method === 'listSession'
             ? s.eventWaitStore.listSession({ sessionId: session.id, limit: 1 })
-            : method === 'listPending'
-              ? s.eventWaitStore.listPending({ limit: 1 })
-              : method === 'listByStatus'
-                ? s.eventWaitStore.listByStatus({ status: 'waiting', limit: 1 })
-                : method === 'listForObservation'
-                  ? s.eventWaitStore.listForObservation({ limit: 1, now: 10 })
-                  : method === 'readSourceCooldown'
-                    ? s.eventWaitStore.readSourceCooldown({
+            : method === 'listByStatus'
+              ? s.eventWaitStore.listByStatus({ status: 'waiting', limit: 1 })
+              : method === 'listForObservation'
+                ? s.eventWaitStore.listForObservation({ limit: 1, now: 10 })
+                : method === 'readSourceCooldown'
+                  ? s.eventWaitStore.readSourceCooldown({
+                      providerId: 'fake',
+                      connectionId: null,
+                    })
+                  : method === 'extendSourceCooldown'
+                    ? s.eventWaitStore.extendSourceCooldown({
                         providerId: 'fake',
                         connectionId: null,
+                        observedAt: 10,
+                        until: 20,
                       })
-                    : method === 'extendSourceCooldown'
-                      ? s.eventWaitStore.extendSourceCooldown({
+                    : method === 'reserveSourceDispatch' || method === 'completeSourceDispatch'
+                      ? s.eventWaitStore[method]({
                           providerId: 'fake',
                           connectionId: null,
+                          token: 'dispatch-1',
                           observedAt: 10,
                           until: 20,
                         })
-                      : method === 'reserveSourceDispatch' || method === 'completeSourceDispatch'
-                        ? s.eventWaitStore[method]({
-                            providerId: 'fake',
-                            connectionId: null,
-                            token: 'dispatch-1',
-                            observedAt: 10,
-                            until: 20,
-                          })
-                        : s.eventWaitStore.commit(commit(r));
+                      : s.eventWaitStore.commit(commit(r));
       await started;
       const closing = s.sessionStore.close?.();
       assert.equal(closed, false);
@@ -893,10 +906,13 @@ test('workflow-12 migration adds only dormant schema, retains Session/Goal data,
     const reopened = await openInteractiveExecutionStoresForWrite(owner.lease);
     try {
       assert.equal((await reopened.sessionStore.readHeader(session.id)).id, session.id);
-      assert.deepEqual(await reopened.eventWaitStore.listPending({ limit: 1 }), {
-        items: [],
-        nextCursor: null,
-      });
+      assert.deepEqual(
+        await reopened.eventWaitStore.listByStatus({ status: 'waiting', limit: 1 }),
+        {
+          items: [],
+          nextCursor: null,
+        },
+      );
       await reopened.eventWaitStore.commit(commit(r));
       await reopened.eventWaitStore.commit(commit(resolve(r), 0));
       const db = acquireOperationalStateDatabase(root);
@@ -1068,7 +1084,10 @@ for (const backend of ['Local', 'Memory'] as const) {
           });
           assert.equal(await s.eventWaitStore.read({ sessionId, waitId: r.waitId }), null);
         }
-        assert.equal((await s.eventWaitStore.listPending({ limit: 200 })).items.length, 1);
+        assert.equal(
+          (await s.eventWaitStore.listByStatus({ status: 'waiting', limit: 200 })).items.length,
+          1,
+        );
       },
     );
   });
@@ -1121,7 +1140,7 @@ test('revoked root lease rejects every event-wait operation before a still-live 
     for (const operation of [
       () => s.eventWaitStore.read(identity(r)),
       () => s.eventWaitStore.listSession({ sessionId: r.sessionId, limit: 1 }),
-      () => s.eventWaitStore.listPending({ limit: 1 }),
+      () => s.eventWaitStore.listByStatus({ status: 'waiting', limit: 1 }),
       () => s.eventWaitStore.listForObservation({ limit: 1, now: 10 }),
       () => s.eventWaitStore.commit(commit(r)),
     ])
@@ -1177,13 +1196,16 @@ for (const backend of ['Local', 'Memory'] as const) {
       assert.equal(second.items[0].record.waitId, 'observe-2');
       assert.equal(second.nextCursor, null);
       assert.deepEqual(
-        (await s.eventWaitStore.listPending({ limit: 10 })).items.map((v) => v.record.waitId),
+        (await s.eventWaitStore.listByStatus({ status: 'waiting', limit: 10 })).items.map(
+          (v) => v.record.waitId,
+        ),
         ['observe-3'],
       );
       for (const bad of [
         { status: 'delivered', limit: 1 },
         { status: 'waiting', limit: 201 },
         { status: 'waiting', limit: 1, extra: true },
+        { status: 'waiting', limit: 1, deliveryOutstanding: true },
         { status: 'waiting', limit: 1, afterWaitId: undefined },
       ])
         await assert.rejects(
@@ -1391,7 +1413,7 @@ for (const [backend, make] of [
   });
 }
 
-test('workflow-13 upgrade indexes observation order without rewriting legacy wait records', async () => {
+test('workflow-13 upgrade indexes observation order without rewriting v1 observation records', async () => {
   await withProvider(localExecutionPersistenceProvider, async (s, root, owner) => {
     const session = await s.sessionStore.create(input(root));
     const record = waiting(session.id);
@@ -1512,7 +1534,7 @@ test('workflow-14 reopen retains source cooldown facts and dispatch reservations
   });
 });
 
-test('workflow-13 upgrade to 15 retains wait bytes and adds status access and source limits', async () => {
+test('workflow-13 upgrade to current retains wait bytes and adds status access and source limits', async () => {
   await withProvider(localExecutionPersistenceProvider, async (s, root, owner) => {
     const session = await s.sessionStore.create(input(root));
     const record = waiting(session.id);
@@ -1580,11 +1602,73 @@ test('workflow-13 upgrade to 15 retains wait bytes and adds status access and so
           db
             .prepare("SELECT version FROM operational_schema_migrations WHERE scope = 'workflow'")
             .get()?.version,
-          15,
+          SQLITE_WORKFLOW_SCHEMA_VERSION,
         );
       } finally {
         db.close();
       }
+    } finally {
+      await reopened.sessionStore.close?.();
+    }
+  });
+});
+
+test('workflow-15 migration preserves v1 observation bytes while making deadlines nullable and separating consumer indexes', async () => {
+  await withProvider(localExecutionPersistenceProvider, async (s, root, owner) => {
+    const session = await s.sessionStore.create(input(root));
+    const record = waiting(session.id);
+    await s.eventWaitStore.commit(commit(record));
+    await s.sessionStore.close?.();
+    const old = new DatabaseSync(join(root, 'runtime.sqlite'));
+    const before = old.prepare('SELECT record_json FROM workflow_event_waits').get();
+    try {
+      old.exec(`CREATE TABLE legacy_event_waits (
+        wait_id TEXT PRIMARY KEY, session_id TEXT NOT NULL,
+        authority_revision INTEGER NOT NULL CHECK (authority_revision >= 0),
+        status TEXT NOT NULL CHECK (status IN ('waiting', 'resolved', 'cancelled', 'expired')),
+        delivery_key TEXT NOT NULL UNIQUE, deadline_at INTEGER NOT NULL CHECK (deadline_at >= 0),
+        record_json TEXT NOT NULL,
+        FOREIGN KEY (session_id) REFERENCES session_metadata(session_id) ON DELETE CASCADE
+      );
+      INSERT INTO legacy_event_waits SELECT * FROM workflow_event_waits;
+      DROP TABLE workflow_event_waits;
+      ALTER TABLE legacy_event_waits RENAME TO workflow_event_waits;
+      CREATE UNIQUE INDEX workflow_event_waits_one_active_session ON workflow_event_waits(session_id)
+        WHERE status IN ('waiting', 'resolved') AND json_extract(record_json, '$.delivery') IS NULL;
+      UPDATE operational_schema_migrations SET version = 15 WHERE scope = 'workflow';`);
+    } finally {
+      old.close();
+    }
+    const reopened = await openInteractiveExecutionStoresForWrite(owner.lease);
+    try {
+      assert.equal(
+        (await reopened.eventWaitStore.read(identity(record)))?.record.waitId,
+        record.waitId,
+      );
+      const db = new DatabaseSync(join(root, 'runtime.sqlite'), { readOnly: true });
+      try {
+        assert.deepEqual(db.prepare('SELECT record_json FROM workflow_event_waits').get(), before);
+        const columns = db.prepare('PRAGMA table_info(workflow_event_waits)').all();
+        assert.equal(columns.find((c) => c.name === 'deadline_at')?.notnull, 0);
+        const indexes = db
+          .prepare(
+            "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='workflow_event_waits'",
+          )
+          .all()
+          .map((r) => r.name);
+        assert.ok(indexes.includes('workflow_event_waits_by_operation'));
+        assert.ok(indexes.includes('workflow_event_waits_by_goal_checkpoint'));
+        assert.ok(!indexes.includes('workflow_event_waits_one_active_session'));
+        assert.ok(!indexes.includes('workflow_event_waits_pending'));
+        assert.ok(!indexes.includes('workflow_event_waits_delivery'));
+      } finally {
+        db.close();
+      }
+      assert.equal(
+        (await reopened.eventWaitStore.commit(commit(waiting(session.id, 'second-observation'))))
+          .kind,
+        'committed',
+      );
     } finally {
       await reopened.sessionStore.close?.();
     }

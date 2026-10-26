@@ -139,6 +139,236 @@ test('durably acknowledged ACP Session resumes the same external ID without repl
   }
 });
 
+test('reopened Sessions retain presentation without starting a process or inheriting live capabilities', async () => {
+  const fixture = await executableFixture();
+  const protocol = fakeProtocol();
+  protocol.hasMode = true;
+  protocol.supportsRestore = true;
+  const state = durableState();
+  const values = new Map<string, unknown>();
+  const storage: AcpCatalogPersistence['storage'] = {
+    async get<T>(key: string) {
+      return { revision: 1, value: structuredClone(values.get(key)) as T | undefined };
+    },
+    async set<T>(key: string, value: T) {
+      values.set(key, structuredClone(value));
+      return { revision: 1, value };
+    },
+    async delete(key: string) {
+      values.delete(key);
+      return { revision: 2, value: undefined };
+    },
+  };
+  const grouped: typeof adapter = {
+    ...adapter,
+    describeModels: (models) => ({
+      models,
+      modelGroups:
+        models.length === 2
+          ? [
+              {
+                id: 'family',
+                name: 'Model family',
+                variants: [
+                  { modelId: 'default', level: 'low' },
+                  { modelId: 'fast', level: 'high' },
+                ],
+              },
+            ]
+          : [],
+    }),
+  };
+  let onConnection: (() => void) | undefined;
+  const make = (cached = true) =>
+    new AcpExecutor(
+      grouped,
+      { executable: fixture.executable },
+      {
+        state: state.state,
+        createConnection: (input) => {
+          const owner = protocol.factory(input);
+          onConnection?.();
+          return owner;
+        },
+        ...(cached ? { catalogPersistence: { storage, key: 'catalog' } } : {}),
+      },
+    );
+  const first = make();
+  let reopened: AcpExecutor | undefined;
+  let uncached: AcpExecutor | undefined;
+  const input = {
+    conversationKey: 'session-a',
+    cwd: process.cwd(),
+    configuration: { model: 'fast', mode: 'auto' },
+  };
+  try {
+    await first.discover({ cwd: fixture.root, signal: new AbortController().signal });
+    assert.equal(
+      (
+        await first.execute(
+          { ...request('first'), configuration: input.configuration },
+          executorContext([]),
+        )
+      ).status,
+      'completed',
+    );
+    await first.acknowledgeExecution('session-a', 'turn-first');
+    const live = await first.inspectConversation(input);
+    const recorded = structuredClone(state.record());
+    await first.dispose();
+    const connections = protocol.connections;
+    reopened = make();
+    const assertPresentation = async (executor: AcpExecutor) => {
+      const saved = await executor.inspectConversation(input);
+      assert.equal(saved.readiness, 'restorable');
+      assert.deepEqual(saved.models, live.models);
+      assert.deepEqual(saved.modelGroups, live.modelGroups);
+      assert.deepEqual(saved.modes, live.modes);
+      assert.equal(saved.currentModel, 'fast');
+      assert.equal(saved.currentMode, 'auto', 'cached default must not replace the saved mode');
+      assert.equal(saved.supportsModelChange, false);
+      assert.equal(saved.supportsModeChange, false);
+      assert.equal(
+        protocol.connections,
+        connections,
+        'inspection never discovers or restores an Agent',
+      );
+    };
+    // The Session snapshot is sufficient even without the public discovery cache.
+    uncached = make(false);
+    await assertPresentation(uncached);
+    await assertPresentation(reopened);
+    // Existing records from before presentation persistence can use already cached labels.
+    const legacy = { ...recorded } as Record<string, unknown>;
+    delete legacy.presentation;
+    state.values.set('session-a', legacy);
+    await assertPresentation(reopened);
+    const missing = await uncached.inspectConversation(input);
+    assert.equal(missing.readiness, 'restorable');
+    assert.deepEqual(missing.models, [{ id: 'fast', name: 'fast' }]);
+    assert.deepEqual(missing.modes, [{ id: 'auto', name: 'auto' }]);
+    assert.equal(protocol.connections, connections, 'missing labels never trigger a probe');
+    state.values.set('session-a', { ...recorded, presentation: { version: 1, models: 'invalid' } });
+    await assertPresentation(reopened);
+    const unknown = await reopened.inspectConversation({
+      ...input,
+      configuration: { model: 'unknown', mode: 'custom' },
+    });
+    assert.deepEqual(unknown.models, [{ id: 'unknown', name: 'unknown' }]);
+    assert.equal(unknown.currentMode, 'custom');
+    assert.deepEqual(unknown.modes, [{ id: 'custom', name: 'custom' }]);
+    for (const model of [undefined, 'removed-model']) {
+      state.values.set('session-a', {
+        ...recorded,
+        confirmedModel: model,
+        presentation: { version: 1, models: [], modes: live.modes },
+      });
+      const independent: typeof live = await uncached.inspectConversation({
+        ...input,
+        configuration: undefined,
+      });
+      assert.deepEqual(
+        independent.modes,
+        live.modes,
+        'mode labels do not depend on a matching model',
+      );
+      assert.deepEqual(independent.models, model ? [{ id: model, name: model }] : []);
+      assert.equal(independent.currentMode, 'auto');
+      assert.equal(independent.currentModel, model);
+      assert.equal(independent.supportsModeChange, false);
+      assert.equal(independent.supportsModelChange, false);
+    }
+    assert.equal(protocol.connections, connections);
+    state.values.set('session-a', recorded);
+    const abort = new AbortController();
+    const started = new Promise<void>((resolve) => {
+      onConnection = resolve;
+    });
+    protocol.holdInitialize = true;
+    const restoring = reopened.configureConversation(input, abort.signal);
+    const cancelled = assert.rejects(restoring, /Presentation test cancelled/);
+    try {
+      await started;
+      const pending = await reopened.inspectConversation({ ...input, configuration: undefined });
+      assert.equal(pending.readiness, 'restoring');
+      assert.deepEqual(pending.models, live.models);
+      assert.deepEqual(pending.modelGroups, live.modelGroups);
+      assert.deepEqual(pending.modes, live.modes);
+      assert.equal(pending.currentModel, 'fast');
+      assert.equal(pending.currentMode, 'auto');
+    } finally {
+      abort.abort(new Error('Presentation test cancelled'));
+      await cancelled;
+      protocol.holdInitialize = false;
+      onConnection = undefined;
+    }
+    const failed = await reopened.inspectConversation({ ...input, configuration: undefined });
+    assert.equal(failed.readiness, 'restore_failed');
+    assert.deepEqual(failed.models, live.models);
+    assert.deepEqual(failed.modelGroups, live.modelGroups);
+    assert.deepEqual(failed.modes, live.modes);
+    protocol.modelValues = ['fast'];
+    await reopened.configureConversation(input, new AbortController().signal);
+    const restored = await reopened.inspectConversation(input);
+    assert.deepEqual(
+      restored.models.map((model) => model.id),
+      ['fast'],
+      'live removals replace cached presentation',
+    );
+    assert.deepEqual(restored.modelGroups, []);
+    assert.equal(restored.readiness, 'ready');
+  } finally {
+    await first.dispose();
+    await reopened?.dispose();
+    await uncached?.dispose();
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test('execution restores the saved external conversation and retries a failed restore without duplicating prompts', async () => {
+  const fixture = await executableFixture();
+  const protocol = fakeProtocol();
+  protocol.supportsRestore = true;
+  const storage = durableState();
+  const make = () =>
+    new AcpExecutor(
+      adapter,
+      { executable: fixture.executable },
+      {
+        state: storage.state,
+        createConnection: protocol.factory,
+      },
+    );
+  const first = make();
+  let reopened: AcpExecutor | undefined;
+  try {
+    assert.equal((await first.execute(request('first'), executorContext([]))).status, 'completed');
+    await first.acknowledgeExecution('session-a', 'turn-first');
+    await first.dispose();
+    reopened = make();
+    const conversation = { conversationKey: 'session-a', cwd: process.cwd() };
+    assert.equal((await reopened.inspectConversation(conversation)).readiness, 'restorable');
+    protocol.restoreFailure = true;
+    assert.equal((await reopened.execute(request('second'), executorContext([]))).status, 'failed');
+    assert.equal(protocol.prompts, 1, 'a failed restore never sends the new prompt');
+    assert.equal((await reopened.inspectConversation(conversation)).readiness, 'restore_failed');
+    protocol.restoreFailure = false;
+    assert.equal(
+      (await reopened.execute(request('second'), executorContext([]))).status,
+      'completed',
+    );
+    await reopened.acknowledgeExecution('session-a', 'turn-second');
+    assert.equal(protocol.prompts, 2);
+    assert.equal(protocol.sessions, 1, 'execution retains the original external conversation');
+    assert.equal(protocol.resumes, 1);
+    assert.equal(storage.record().committedPrompts, 2);
+  } finally {
+    await reopened?.dispose();
+    await first.dispose();
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
 test('unacknowledged prompt loads replay as restoration and exposes history gap without a second prompt', async () => {
   const fixture = await executableFixture();
   const protocol = fakeProtocol();
@@ -1780,13 +2010,15 @@ test('ACP modes remain distinct from models across discovery, prompt, idle chang
         configuration: { model: 'fast', mode: 'ask' },
       });
       assert.equal(saved.readiness, 'restorable');
+      assert.equal(saved.supportsModelChange, false);
+      assert.equal(saved.supportsModeChange, false);
       assert.deepEqual(
         saved.models.map((model) => model.id),
-        ['fast'],
+        ['default', 'fast'],
       );
       assert.deepEqual(
         saved.modes?.map((mode) => mode.id),
-        ['ask'],
+        ['ask', 'auto'],
       );
       await restored.configureConversation(
         {

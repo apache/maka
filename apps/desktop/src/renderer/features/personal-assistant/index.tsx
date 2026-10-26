@@ -118,7 +118,7 @@ export function PersonalAssistantEntry({
   return (
     <SideNavItem
       label="个人助手"
-      icon={<PersonalAssistantAvatar avatar={avatar} />}
+      icon={<PersonalAssistantAvatar avatar={avatar} variant="navigation" />}
       size="md"
       isSelected={!!bound && bound === activeSessionId}
       aria-label={error ? '个人助手：' + error : '个人助手'}
@@ -464,3 +464,5 @@ export { createInternalUriDispatcher } from './internal-uri.js';
 
 export { PersonalAssistantChatPresentation, PersonalAssistantComposer } from './chat-presentation.js';
 export { PersonalAssistantTaskLayout } from './task-layout.js';
+
+export { PetDesktopBridge } from './pet-bridge.js';

@@ -18,6 +18,7 @@
  */
 
 import type { MakaBridge } from '../../../preload/bridge-contract.js';
+import type { ExecutorCatalogEntry } from '@maka/core/executor-catalog';
 import type { ConversationCheckinPort, ConversationServices } from '../../features/conversation/index.js';
 import { sessionSnapshotToQuote } from '@maka/core/session-reference';
 
@@ -34,6 +35,10 @@ export function createDesktopConversationServices(
     'shellRuns' | 'transcripts' | 'sessionLocal' | 'sessions' | 'runtimeHostProfiles' | 'skills' | 'workspace' | 'newTasks' | 'mcp'
   > = window.maka,
 ): ConversationServices {
+  // Like the native connection snapshots, serve the last read while revalidating.
+  // ACP catalogs are Session-specific, so never share them by Agent or model ID.
+  const executorSnapshots = new Map<string, readonly ExecutorCatalogEntry[]>();
+  const executorReads = new Map<string, Promise<readonly ExecutorCatalogEntry[]>>();
   return {
     ...bridge.sessionLocal,
     observation: createDesktopConversationObservationServices(bridge),
@@ -63,6 +68,20 @@ export function createDesktopConversationServices(
     checkin: createDesktopCheckinPort(bridge),
     sessions: {
       ...bridge.sessions,
+      readCachedExecutorState: sessionId => executorSnapshots.get(sessionId),
+      getExecutorState: sessionId => {
+        const pending = executorReads.get(sessionId);
+        if (pending) return pending;
+        const read = bridge.sessions.getExecutorState(sessionId).then(catalog => {
+          executorSnapshots.delete(sessionId);
+          executorSnapshots.set(sessionId, catalog);
+          // Bound memory across long navigation histories; evicted Sessions read again before display.
+          if (executorSnapshots.size > 64) executorSnapshots.delete(executorSnapshots.keys().next().value!);
+          return catalog;
+        }).finally(() => { executorReads.delete(sessionId); });
+        executorReads.set(sessionId, read);
+        return read;
+      },
       updateQueueEntry: (sessionId: string, entryId: string, expectedQueueRevision: number, text: string) =>
         bridge.sessions.updateQueueEntry(sessionId, entryId, expectedQueueRevision, text),
       reorderQueueEntries: (sessionId: string, entryIds: readonly string[], expectedQueueRevision: number) =>

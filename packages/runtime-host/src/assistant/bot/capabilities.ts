@@ -23,7 +23,10 @@ export const BOT_TOOLS = new Set([
   'InboxCheck',
   'SendUser',
   'DiscoveryFeedback',
-  'AssistantSetAvatar',
+  'AssistantCharacterPack',
+  'AssistantPetPack',
+  'AssistantSetup',
+  'AssistantStickerSearch',
   'Sleep',
   'AssistantConversation',
   'MatterDelegate',
@@ -37,6 +40,8 @@ export const BOT_TOOLS = new Set([
   'InitiativeConfigure',
   'InitiativeControl',
   'InitiativeStatus',
+  'QuickDiscoveryControl',
+  'QuickDiscoveryStatus',
   'MemoryIndexCreate',
   'MemoryIndexCreateGroup',
   'MemoryIndexMaintain',
@@ -54,6 +59,9 @@ export const BOT_TOOLS = new Set([
 export const BOT_DELEGATION_TOOLS = new Set(
   [...BOT_TOOLS].filter(
     (name) =>
-      name.startsWith('Matter') || name.startsWith('Initiative') || name.startsWith('Memory'),
+      name.startsWith('QuickDiscovery') ||
+      name.startsWith('Matter') ||
+      name.startsWith('Initiative') ||
+      name.startsWith('Memory'),
   ),
 );

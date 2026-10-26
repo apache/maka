@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import { canExecuteExistingConversation } from '@maka/core/executor-catalog';
+import { createAssistantPetPacks } from './assistant-pet-packs.js';
 import { readMatterRuntimeEvents } from '../assistant/proactive-matters/settlement-context.js';
 import { markAssistantBackgroundSessions } from '../assistant/background-sessions.js';
 import { PersonalAssistantService, ASSISTANT_LEGACY_PACKAGES } from '../assistant/service.js';
@@ -24,6 +26,7 @@ import { assistantInputTurnId, legacyAssistantInputTurnId } from '../assistant/b
 import { createAssistantMessageReader } from './session-transcript-reader.js';
 import { createImageFileReader } from '@maka/runtime/image-file-reader';
 import { ChatImageDeliveryService } from './chat-image-delivery.js';
+import { readyChatImageArtifact } from './chat-image-artifact.js';
 import { downloadChatImage, ImageSourceError } from './chat-image-source.js';
 import { readAvatarImageSource } from './avatar-image-source.js';
 import { createWorkHubResultRuntime } from './workhub-result-runtime.js';
@@ -31,7 +34,12 @@ import { createWorkHubInspectionTool } from './workhub-inspection-tool.js';
 import { copyWorkHubAttachmentsToTarget } from './workhub-message-attachments.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
-import { attachmentKindFromMimeType, MAX_READ_IMAGE_BYTES } from '@maka/core/attachments';
+import {
+  attachmentKindFromMimeType,
+  formatAttachmentResourceRef,
+  STICKER_ARTIFACT_PREFIX,
+  MAX_READ_IMAGE_BYTES,
+} from '@maka/core/attachments';
 import type { ContextOffloadLimits } from '@maka/core/context-offload';
 import { messageContentDigest, normalizeMessageContent } from '@maka/core/events';
 import type { AttachmentRef } from '@maka/core/events';
@@ -102,6 +110,9 @@ import { ShellRunProcessManager } from '@maka/runtime/shell-run-manager';
 import { ShellRunEventWaitAccess } from './shell-run-event-wait-access.js';
 import { ShellRunEventWaitAdapter } from './shell-run-event-wait-adapter.js';
 import { EventWaitAdapterRegistry } from './event-wait-adapter.js';
+import { HostEventWaitObserver } from './event-wait-manager.js';
+import { interactiveEventWaitObservationStore } from './event-wait-observation-store.js';
+import { HostInvocationEventWaitCoordinator } from './invocation-event-waits.js';
 import {
   resolveShellPlan,
   resolveTurnShellPlan,
@@ -148,7 +159,7 @@ import { createReadImageSnapshotStore } from '@maka/storage/read-image-snapshot-
 import { isSessionNotFoundError } from '@maka/storage/execution-stores';
 import { createExternalSessionAdapterRegistry } from '@maka/storage/external-sessions';
 import { createGitWorktreeChildExecutor } from '@maka/storage/git-worktree-child-executor';
-import { runWithStorageRootLease } from '@maka/storage/root-authority';
+import { runWithStorageRootLease, StorageRootAuthorityError } from '@maka/storage/root-authority';
 import { createInteractiveContextOffloadReader } from '@maka/storage/context-offload-store';
 import { observeInteractivePlanStoreWriter } from '@maka/storage/plan-authority';
 import { openStorageWriterComposition } from '@maka/storage/storage-writer-composition';
@@ -201,7 +212,8 @@ import { HostExecutionInspectCoordinator } from './execution-inspect-coordinator
 import { HostExternalSessionCoordinator } from './external-session-coordinator.js';
 import { boundedFailureDiagnostic } from './failure-diagnostic.js';
 import { HostSessionBundleCoordinator } from './session-bundle-coordinator.js';
-import type { HostGoalEventWaitSources } from './goal-event-waits.js';
+import type { HostEventWaitSources } from './event-wait-sources.js';
+import { decodeAnyEventWaitRecord } from '@maka/core/event-wait';
 import { HostGoalCoordinator } from './goal-coordinator.js';
 import { readGoalFormEvidence, unreadGoalFormToolResponses } from './goal-form-evidence.js';
 import { recentGoalToolReferences } from './goal-evaluation-context.js';
@@ -354,7 +366,7 @@ export interface ExecutionRuntimeHostCompositionDependencies {
   readonly checkpointPublication?: HostCheckpointPublicationOptions;
   readonly executionPersistenceProvider?: ExecutionPersistenceProvider;
   readonly primaryBackendFactory?: BackendFactory;
-  readonly eventWaitSources?: HostGoalEventWaitSources;
+  readonly eventWaitSources?: HostEventWaitSources;
   readonly generateSessionTitle?: HostSessionEffectModel['generateTitle'];
   readonly oauthAuthorization?: Pick<
     HostOAuthCoordinatorInput,
@@ -504,11 +516,43 @@ export async function createExecutionRuntimeHostComposition(
           if (failures.length)
             throw new AggregateError(failures, 'Failed to stop assistant sessions');
         },
+        petPacks: createAssistantPetPacks(
+          context.owner.capability.canonicalPath,
+          (sessionId, path, signal) => readLocalImage(sessionId, path, signal, 'pet'),
+        ),
         readAvatarImage: (sessionId, source, signal) =>
           readAvatarImageSource(source, signal, {
             workspace: async () => (await stores.sessionStore.readHeaderSnapshot(sessionId)).cwd,
             readLocal: (path, boundedSignal) => readLocalImage(sessionId, path, boundedSignal),
             download: downloadImage,
+          }),
+        publishCharacterImage: (sessionId, assetId, image, kind): Promise<string> =>
+          sessionAdmission.run(sessionId, async () => {
+            if (!personalAssistant.enabled || !personalAssistant.isConversation(sessionId))
+              throw Error('Assistant conversation is unavailable');
+            const id =
+              // Use the artifact-style prefix: a dash followed by a long hash
+              // can be mistaken for a credential by chat text redaction.
+              (kind === 'sticker' ? STICKER_ARTIFACT_PREFIX : 'assistant_character_') +
+              createHash('sha256')
+                .update(JSON.stringify([sessionId, assetId]))
+                .digest('hex');
+            const record = await openedArtifactStore.create(
+              readyChatImageArtifact({
+                id,
+                sessionId,
+                turnId: id,
+                name: 'character-image',
+                messageId: id,
+                source: `character-pack:${assetId}`,
+                image,
+              }),
+            );
+            return formatAttachmentResourceRef({
+              kind: 'session_file',
+              sessionId,
+              relativePath: record.id,
+            })!;
           }),
         appendConversation: async (sessionId, message) => {
           await sessionAdmission.run(sessionId, async (lease) => {
@@ -542,6 +586,13 @@ export async function createExecutionRuntimeHostComposition(
           });
         },
         markBackgroundSessions: (ids) => markAssistantBackgroundSessions(stores.sessionStore, ids),
+        readCompactionRevision: async (sessionId) =>
+          (
+            await stores.agentRunStore.readEventProjection?.(
+              sessionId,
+              'history_compact_checkpoint_recorded',
+            )
+          )?.id,
         readRuntimeEvents: async (sessionId, runId) =>
           runId
             ? readMatterRuntimeEvents(stores.runtimeEventStore, sessionId, runId)
@@ -723,13 +774,19 @@ export async function createExecutionRuntimeHostComposition(
         await transport.close();
       }
     };
-    const readLocalImage = async (sessionId: string, path: string, abortSignal: AbortSignal) => {
+    const readLocalImage = async (
+      sessionId: string,
+      path: string,
+      abortSignal: AbortSignal,
+      imagePurpose: 'chat' | 'pet' = 'chat',
+    ) => {
       const [header, boundary] = await Promise.all([
         stores.sessionStore.readHeaderSnapshot(sessionId),
         stores.sessionStore.readExecutionBoundary(sessionId),
       ]);
       const result = await localImageReader({
         path,
+        imagePurpose,
         cwd: header.cwd,
         permissionMode: header.permissionMode,
         executionBoundary: boundary,
@@ -1114,6 +1171,7 @@ export async function createExecutionRuntimeHostComposition(
     let scheduledTasks: HostScheduledTaskCoordinator | undefined;
     let scheduledTaskTool: MakaTool | undefined;
     let goal: HostGoalCoordinator | undefined;
+    let invocationWaits: HostInvocationEventWaitCoordinator | undefined;
     let dailyReview: HostDailyReviewCoordinator | undefined;
     const rootPort: HostMessageRootPort = {
       readLatestRootTurnLineage: (identity) =>
@@ -1139,7 +1197,7 @@ export async function createExecutionRuntimeHostComposition(
           ...projected,
           idleOnly: true,
           supportsAttachments: entry?.supportsAttachments ?? false,
-          ...(entry?.readiness === 'ready'
+          ...(canExecuteExistingConversation(entry?.readiness)
             ? {}
             : {
                 unavailableReason:
@@ -1187,6 +1245,10 @@ export async function createExecutionRuntimeHostComposition(
       rootAdmissions: rootAdmissionOwner,
       messages,
       readGoal: (sessionId) => requireGoal(goal).readProjection(sessionId),
+      readEventWaits: async (sessionId) => {
+        const { items, nextCursor } = await requireGoal(goal).readEventWaits(sessionId);
+        return { items, nextCursor };
+      },
     });
     canonicalProjection = canonicalProjectionReader;
     const canonicalPermissionOutcomes = new HostCanonicalPermissionOutcomeReader({
@@ -1361,100 +1423,106 @@ export async function createExecutionRuntimeHostComposition(
       lane: memoryExtractionLane,
       acquireResidency: () => context.acquireResidency('memory-extraction'),
     });
-    const hostAiSdkBackendInput = <T extends BackendPreparationContext>(backendContext: T) => ({
-      context: backendContext,
-      beforeTurnFinish: async (turn: Parameters<typeof pluginTurnFinish.evaluate>[0]) => {
-        const decision = await personalAssistant.beforeFinish(turn);
-        return decision.allow ? pluginTurnFinish.evaluate(turn) : decision;
-      },
-      runtimePolicy: runtimePolicyStores,
-      oauthCredentials,
-      createRunComposer: createInteractiveRunComposerFactory({
-        skills,
-        pluginSkills,
-        memory: requireMemory(memory),
-        sessionTodo,
-        clientCapabilities: requireClientCapabilities(clientCapabilities),
-        resolveTavilyWebSearchReadiness: () =>
-          resolveHostTavilyWebSearchReadiness(runtimePolicyStores.operations),
-        ...(scheduledTaskTool ? { scheduledTaskTool } : {}),
-        planStore,
-        goalTools: requireGoal(goal).tools,
-        eventWaitAvailable: () =>
-          backendContext.header.toolMode !== 'code_mode' &&
-          ['active', 'waiting'].includes(
-            requireGoal(goal).manager.get(backendContext.sessionId)?.status ?? '',
-          ),
-        builtinTools,
-        hostTools,
-        resolveToolCeiling: (sessionId) => personalAssistant.toolCeiling(sessionId),
-        resolveRootTools: async (sessionId) => {
-          await assertAssistantSessionEnabled(sessionId);
-          return [
-            ...personalAssistant.filterTools(sessionId, personalAssistant.tools),
-            ...(sessionId === WORKHUB_COORDINATION_SESSION_ID && workHubResults && workHubInspection
-              ? [workHubResults.tool, workHubInspection]
-              : await requireGraphCoordinator(graphCoordinator).toolsForSession(sessionId)),
-          ];
+    const hostAiSdkBackendInput = <T extends BackendPreparationContext>(backendContext: T) => {
+      if (!invocationWaits) throw new Error('Event wait service is not initialized');
+      const eventWait = invocationWaits.createTool(backendContext.sessionId, () =>
+        ['active', 'waiting'].includes(
+          requireGoal(goal).manager.get(backendContext.sessionId)?.status ?? '',
+        ),
+      );
+      return {
+        context: backendContext,
+        beforeTurnFinish: async (turn: Parameters<typeof pluginTurnFinish.evaluate>[0]) => {
+          const decision = await personalAssistant.beforeFinish(turn);
+          return decision.allow ? pluginTurnFinish.evaluate(turn) : decision;
         },
-        resolvePluginTools: (sessionId, coreTools) => {
-          const resolved = pluginTools.resolveContributions(sessionId, coreTools);
-          return { ...resolved, tools: personalAssistant.filterTools(sessionId, resolved.tools) };
-        },
-        resolvePluginSystemPrompt: async (sessionId, promptContext, baseText) => {
-          const assembly = await pluginSystemPrompt.assemble(
-            {
-              sessionId,
-              turnId: promptContext.turnId,
-              cwd: promptContext.cwd,
-            },
-            baseText,
-          );
-          const native = await personalAssistant.prompt(
-            { sessionId, turnId: promptContext.turnId, cwd: promptContext.cwd },
-            assembly.text,
-          );
-          return {
-            text: native.text,
-            contexts: [...assembly.contexts, ...native.contexts],
-            sourceRevisions: [
-              ...(assembly.sourceRevision ? [assembly.sourceRevision] : []),
-              ...(native.sourceRevision ? [native.sourceRevision] : []),
-            ],
-          };
-        },
-        parentAgentTools: childAgentTools.parentTools,
-        childTools: childAgentTools.childTools,
-        worktreePatchWriteBackAvailable: true,
-        resolveProfileSystemPrompt: async (promptContext, basePrompt) => {
-          if (promptContext.sessionId !== WORKHUB_COORDINATION_SESSION_ID) return basePrompt;
-          const admission = await stores.agentRunStore.readRootTurnAdmission(
-            promptContext.sessionId,
-            promptContext.turnId,
-          );
-          return bindWorkHubRoutingDecisionPrompt(
-            basePrompt,
-            admission?.execution.kind === 'workhub_coordination'
-              ? admission.execution.routingDecision
-              : undefined,
-          );
-        },
-      }),
-      ...(hostedExecutionRunProfile(backendContext.header.toolProfile)?.memoryExtraction === false
-        ? {}
-        : { memoryExtraction }),
-      artifacts: openedArtifactStore,
-      ...(openedContextOffloadReader ? { contextOffload: openedContextOffloadReader } : {}),
-      ...(storage.contextOffloadUnavailable ? { contextOffloadUnavailable: true } : {}),
-      executionArtifacts,
-      usage: openedUsageStores,
-      childAgents: bindHostChildAgentBackend(
-        requireSessionManager(manager),
-        backendContext.sessionId,
-      ),
-      runtimeCommitSink: stores.runtimeEventStore,
-      requestDrain: context.requestDrain,
-    });
+        runtimePolicy: runtimePolicyStores,
+        oauthCredentials,
+        createRunComposer: createInteractiveRunComposerFactory({
+          skills,
+          pluginSkills,
+          memory: requireMemory(memory),
+          sessionTodo,
+          clientCapabilities: requireClientCapabilities(clientCapabilities),
+          resolveTavilyWebSearchReadiness: () =>
+            resolveHostTavilyWebSearchReadiness(runtimePolicyStores.operations),
+          ...(scheduledTaskTool ? { scheduledTaskTool } : {}),
+          planStore,
+          goalTools: [...requireGoal(goal).tools, eventWait.tool],
+          eventWaitAvailable: eventWait.available,
+          builtinTools,
+          hostTools,
+          resolveToolCeiling: (sessionId) => personalAssistant.toolCeiling(sessionId),
+          resolveRootTools: async (sessionId) => {
+            await assertAssistantSessionEnabled(sessionId);
+            return [
+              ...personalAssistant.filterTools(sessionId, personalAssistant.tools),
+              ...(sessionId === WORKHUB_COORDINATION_SESSION_ID &&
+              workHubResults &&
+              workHubInspection
+                ? [workHubResults.tool, workHubInspection]
+                : await requireGraphCoordinator(graphCoordinator).toolsForSession(sessionId)),
+            ];
+          },
+          resolvePluginTools: (sessionId, coreTools) => {
+            const resolved = pluginTools.resolveContributions(sessionId, coreTools);
+            return { ...resolved, tools: personalAssistant.filterTools(sessionId, resolved.tools) };
+          },
+          resolvePluginSystemPrompt: async (sessionId, promptContext, baseText) => {
+            const assembly = await pluginSystemPrompt.assemble(
+              {
+                sessionId,
+                turnId: promptContext.turnId,
+                cwd: promptContext.cwd,
+              },
+              baseText,
+            );
+            const native = await personalAssistant.prompt(
+              { sessionId, turnId: promptContext.turnId, cwd: promptContext.cwd },
+              assembly.text,
+            );
+            return {
+              text: native.text,
+              contexts: [...assembly.contexts, ...native.contexts],
+              sourceRevisions: [
+                ...(assembly.sourceRevision ? [assembly.sourceRevision] : []),
+                ...(native.sourceRevision ? [native.sourceRevision] : []),
+              ],
+            };
+          },
+          parentAgentTools: childAgentTools.parentTools,
+          childTools: childAgentTools.childTools,
+          worktreePatchWriteBackAvailable: true,
+          resolveProfileSystemPrompt: async (promptContext, basePrompt) => {
+            if (promptContext.sessionId !== WORKHUB_COORDINATION_SESSION_ID) return basePrompt;
+            const admission = await stores.agentRunStore.readRootTurnAdmission(
+              promptContext.sessionId,
+              promptContext.turnId,
+            );
+            return bindWorkHubRoutingDecisionPrompt(
+              basePrompt,
+              admission?.execution.kind === 'workhub_coordination'
+                ? admission.execution.routingDecision
+                : undefined,
+            );
+          },
+        }),
+        ...(hostedExecutionRunProfile(backendContext.header.toolProfile)?.memoryExtraction === false
+          ? {}
+          : { memoryExtraction }),
+        artifacts: openedArtifactStore,
+        ...(openedContextOffloadReader ? { contextOffload: openedContextOffloadReader } : {}),
+        ...(storage.contextOffloadUnavailable ? { contextOffloadUnavailable: true } : {}),
+        executionArtifacts,
+        usage: openedUsageStores,
+        childAgents: bindHostChildAgentBackend(
+          requireSessionManager(manager),
+          backendContext.sessionId,
+        ),
+        runtimeCommitSink: stores.runtimeEventStore,
+        requestDrain: context.requestDrain,
+      };
+    };
     backends.register('ai-sdk', {
       prepare: async (backendContext) => {
         await assertAssistantSessionEnabled(backendContext.sessionId);
@@ -1498,7 +1566,22 @@ export async function createExecutionRuntimeHostComposition(
       },
     });
     const runtimeAuthority: RuntimeHostedRootAuthority = {
-      bindRun: (identity) => messages.bindRun(identity),
+      bindRun: (identity) => {
+        const owner = messages.bindRun(identity);
+        invocationWaits?.admitRun(
+          identity,
+          ['active', 'waiting'].includes(
+            requireGoal(goal).manager.get(identity.sessionId)?.status ?? '',
+          ),
+        );
+        return {
+          ...owner,
+          release: () => {
+            owner.release();
+            invocationWaits?.releaseRun(identity);
+          },
+        };
+      },
       executeRoot: (input) =>
         executeHostedExecutionToSettlement(requireRootCoordinator(rootCoordinator), input),
       stopRoot: (identity, input) =>
@@ -2520,9 +2603,12 @@ export async function createExecutionRuntimeHostComposition(
       onError: () => context.requestDrain(),
     });
     const goalExecutionCoordinator = new HostGoalExecutionCoordinator({
-      authorizeEventWait: async (sessionId, pending) =>
-        (await requireGoal(goal).eventWaitBridge?.authorizeAdmission(sessionId, pending)) ?? false,
-
+      preflightGoalWaiting: async (sessionId, pending) =>
+        (await requireGoal(goal).goalWaitingBridge?.preflightAdmission(sessionId, pending)) ??
+        false,
+      authorizeGoalWaiting: async (sessionId, pending) =>
+        (await requireGoal(goal).goalWaitingBridge?.authorizeAdmission(sessionId, pending)) ??
+        false,
       executions: coordinator,
       runtime: manager,
       matchesActive: (sessionId, checkpoint, controlLease) =>
@@ -2533,13 +2619,56 @@ export async function createExecutionRuntimeHostComposition(
       openedShellRunStore,
       stores.runtimeEventStore,
     );
-    goal = new HostGoalCoordinator({
-      eventWaitSources: dependencies.eventWaitSources ?? {
-        adapters: new EventWaitAdapterRegistry([
-          new ShellRunEventWaitAdapter(shellRunWaitAccess, shellRuns),
-        ]),
-        authorize: (wait, signal) => shellRunWaitAccess.authorize(wait, signal),
+    const eventWaitSources: HostEventWaitSources = dependencies.eventWaitSources ?? {
+      adapters: new EventWaitAdapterRegistry([
+        new ShellRunEventWaitAdapter(shellRunWaitAccess, shellRuns),
+      ]),
+      authorize: (wait, signal) => shellRunWaitAccess.authorize(wait, signal),
+    };
+    const reportEventWaitError = (error: unknown) => {
+      if (error instanceof StorageRootAuthorityError) context.requestDrain();
+      console.warn('[runtime-host] Event wait reconciliation failed', error);
+    };
+    const eventWaitsChanged = (sessionId: string) => {
+      continuityCoordinator.enqueueCanonicalRefresh(sessionId);
+      continuityCoordinator.enqueueSessionDomainChanged(sessionId, 'event_wait');
+    };
+    const eventWaitObserver = new HostEventWaitObserver({
+      store: interactiveEventWaitObservationStore(stores.eventWaitStore),
+      decodeRecord: decodeAnyEventWaitRecord,
+      adapters: eventWaitSources.adapters,
+      authorize: async (wait, signal) => {
+        if (wait.schemaVersion !== 2) return { kind: 'revoked', reason: 'unsupported_consumer' };
+        if (wait.consumer.kind === 'tool_invocation')
+          return invocationWaits!.authorizeObservation(wait, signal);
+        return (
+          (await requireGoal(goal).goalWaitingBridge?.authorizeObservation(wait, signal)) ?? {
+            kind: 'unknown',
+            reason: 'goal_not_ready',
+          }
+        );
       },
+      onChanged: (wait) => {
+        invocationWaits?.changed(wait);
+        if (wait.schemaVersion === 2 && wait.consumer.kind === 'goal_waiting')
+          void goal?.goalWaitingBridge?.reconcile().catch(reportEventWaitError);
+        eventWaitsChanged(wait.sessionId);
+      },
+      onError: reportEventWaitError,
+      ...(eventWaitSources.clock ? { clock: eventWaitSources.clock } : {}),
+      ...(eventWaitSources.policy ? { policy: eventWaitSources.policy } : {}),
+    });
+    invocationWaits = new HostInvocationEventWaitCoordinator({
+      stores,
+      observer: eventWaitObserver,
+      sources: eventWaitSources,
+      onChanged: eventWaitsChanged,
+      onError: reportEventWaitError,
+      ...(eventWaitSources.clock ? { clock: eventWaitSources.clock } : {}),
+    });
+    goal = new HostGoalCoordinator({
+      eventWaitSources,
+      eventWaitObserver,
       store: openedGoalStore,
       stores,
       readSessionContext: async (sessionId) => {
@@ -2568,10 +2697,16 @@ export async function createExecutionRuntimeHostComposition(
         requestDrain: context.requestDrain,
         readSessionHeader: (sessionId) => stores.sessionStore.readHeaderSnapshot(sessionId),
       }),
-      admitTurn: (sessionId, text, checkpoint, controlLease, eventWait) =>
-        goalExecutionCoordinator.admitTurn(sessionId, text, checkpoint, controlLease, eventWait),
+      admitTurn: (...args) => goalExecutionCoordinator.admitTurn(...args),
+      cancelInvocationWait: (target) => invocationWaits!.cancel(target),
       acquireResidency: (kind) => context.acquireResidency('goal', kind),
-      onProjectionChanged: (sessionId) => continuityCoordinator.enqueueCanonicalRefresh(sessionId),
+      onProjectionChanged: (sessionId) => {
+        invocationWaits?.refreshCapabilities(
+          sessionId,
+          ['active', 'waiting'].includes(goal?.manager.get(sessionId)?.status ?? ''),
+        );
+        eventWaitsChanged(sessionId);
+      },
       requestDrain: context.requestDrain,
     });
     pluginGoals.bindRuntime({
@@ -3761,10 +3896,25 @@ export async function createExecutionRuntimeHostComposition(
         handlers: [requireGoal(goal).handlers],
         recovery: {
           state: () => requireGoal(goal).prepareRecovery(),
-          domains: () => requireGoal(goal).recover(),
+          domains: async () => {
+            await invocationWaits!.start();
+            await requireGoal(goal).recover();
+            // close() may finish recovery after drain has already stopped observation.
+            if (!draining) await eventWaitObserver.start();
+          },
         },
-        drain: [() => goalExecutions?.beginDrain(), () => goal?.beginDrain()],
-        close: [() => requireGoal(goal).close()],
+        drain: [
+          // Stop source work before closing its Goal authorization authority.
+          // Invocation ACK/retire cleanup remains alive until final close.
+          () => eventWaitObserver.beginDrain(),
+          () => goalExecutions?.beginDrain(),
+          () => goal?.beginDrain(),
+        ],
+        close: [
+          () => requireGoal(goal).close(),
+          () => invocationWaits!.close(),
+          () => eventWaitObserver.close(),
+        ],
       }),
       createRuntimeHostDomainModule({
         id: 'session-retirement',

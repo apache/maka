@@ -174,25 +174,25 @@ test('fixed external sessions show only their executor and failed writes retain 
   } finally { await dom.cleanup(); }
 });
 
-test('unavailable agents cannot commit and use the existing sign-in or restore actions', async () => {
+test('existing Sessions keep authentication and history recovery actions in the Composer', async () => {
   const dom = installTranscriptDom();
   const setup: string[] = [];
-  let restored = 0;
+  let newTasks = 0;
   try {
-    for (const readiness of ['authentication_required', 'restorable', 'restoring'] as const) {
-      await dom.render(<LocaleProvider locale="en"><ComposerModelPicker label="Native" choices={choices}
-        executor={{ catalog: [{ ...catalog[0]!, readiness }], selection: { executorId: 'agent', configuration: { model: 'opaque-high' } }, fixed: true,
+    for (const readiness of ['authentication_required', 'history_only', 'history_gap'] as const) {
+      await dom.render(<LocaleProvider locale="en"><Composer activeSession={session('external')}
+        executorPicker={{ catalog: [{ ...catalog[0]!, readiness }], fixed: true,
+          selection: { executorId: 'agent', configuration: { model: 'opaque-high' } },
           onSelect() { assert.fail('unavailable model must never commit'); },
-          onSetup: id => { setup.push(id!); }, onRetry() {}, onNewTask() {}, onRestore: () => { restored++; } }}
+          onSetup: id => { setup.push(id!); }, onRetry() {}, onNewTask() { newTasks++; } }}
+        onSend={() => undefined} onStop={() => undefined}
       /></LocaleProvider>);
-      const { click } = actions(dom);
-      const buttons = [...dom.document.querySelectorAll('button')];
-      if (readiness === 'authentication_required') await click(buttons.find(el => el.textContent === 'Go to sign in'));
-      if (readiness === 'restorable') await click(buttons.find(el => el.textContent === 'Restore Session'));
-      if (readiness === 'restoring') assert.equal(buttons.some(el => el.textContent === 'Restore Session'), false);
+      const recovery = dom.document.querySelector('.maka-executor-recovery');
+      assert.ok(recovery);
+      await actions(dom).click(recovery.querySelector('button'));
     }
     assert.deepEqual(setup, ['agent']);
-    assert.equal(restored, 1);
+    assert.equal(newTasks, 2);
   } finally { await dom.cleanup(); }
 });
 
@@ -227,6 +227,79 @@ test('model switching availability retains its priority and opaque family levels
   assert.deepEqual(deriveComposerModelSwitchAvailability({ sessionStatus: 'waiting_for_user' }), { available: false, pending: false, reason: 'permission' });
   assert.equal(deriveComposerModelSwitchAvailability({}).available, true);
   assert.equal(highestExecutorModelVariant(catalog[0]!.modelGroups![0]!), 'opaque-high');
+});
+
+test('external session recovery preserves the draft and releases pending state after failure', async () => {
+  const dom = installTranscriptDom();
+  dom.window.getSelection = () => null;
+  dom.document.getSelection = () => null;
+  const ref = createRef<ComposerHandle>();
+  let rejectRestore!: (error: Error) => void;
+  let restores = 0;
+  try {
+    await dom.render(<LocaleProvider locale="en"><Composer ref={ref}
+      activeSession={session('external')} sendBlocked
+      executorPicker={{ catalog: [{ ...catalog[0]!, readiness: 'restore_failed' }], fixed: true,
+        selection: { executorId: 'agent', configuration: { model: 'opaque-high' } },
+        onRestore: () => { restores++; return new Promise<void>((_resolve, reject) => { rejectRestore = reject; }); },
+        onSelect() {}, onSetup() {}, onRetry() {}, onNewTask() {} }}
+      onSend={() => undefined} onStop={() => undefined}
+    /></LocaleProvider>);
+    await act(async () => { ref.current?.setText('Keep this draft'); });
+    const { click } = actions(dom);
+    const restoreButton = () => [...dom.document.querySelectorAll('button')].find(el => el.textContent === 'Restore Session')!;
+    await click(restoreButton());
+    assert.equal(restoreButton().disabled, true);
+    await click(restoreButton());
+    assert.equal(restores, 1);
+    assert.match(dom.document.querySelector('.maka-executor-recovery')!.textContent!, /Restoring/);
+    await act(async () => { rejectRestore(new Error('Agent offline')); });
+    assert.match(dom.document.querySelector('.maka-executor-recovery')!.textContent!, /Restoration failed/);
+    assert.equal(restoreButton().disabled, false);
+    assert.equal(ref.current?.getText(), 'Keep this draft');
+    assert.equal(dom.document.querySelector('button[aria-label="Send"]')!.getAttribute('aria-disabled'), 'true');
+  } finally { await dom.cleanup(); }
+});
+
+test('typing never restores; automatic recovery submits once and preserves a refused draft', async () => {
+  const dom = installTranscriptDom();
+  dom.window.getSelection = () => null;
+  dom.document.getSelection = () => null;
+  const setAttribute = dom.window.Element.prototype.setAttribute;
+  dom.window.Element.prototype.setAttribute = function normalized(name: string, value: string) {
+    return setAttribute.call(this, name === 'contentEditable' ? 'contenteditable' : name, value);
+  };
+  const ref = createRef<ComposerHandle>();
+  let restores = 0;
+  const sent: string[] = [];
+  let finish!: (sent: boolean) => void;
+  try {
+    await dom.render(<LocaleProvider locale="en"><Composer ref={ref}
+      activeSession={session('external')}
+      executorPicker={{ catalog: [{ ...catalog[0]!, readiness: 'restorable' }], fixed: true,
+        selection: { executorId: 'agent', configuration: { model: 'opaque-high' } },
+        onRestore() { restores++; }, onSelect() { assert.fail('typing must not configure the Agent'); }, onSetup() {}, onRetry() {}, onNewTask() {} }}
+      onSend={text => { sent.push(text); return new Promise<boolean>(resolve => { finish = resolve; }); }} onStop={() => undefined}
+    /></LocaleProvider>);
+    const editor = dom.document.querySelector<HTMLElement>('[contenteditable="true"]')!;
+    await act(async () => { editor.focus(); });
+    assert.equal(restores, 0);
+    await act(async () => { editor.textContent = ' '; editor.dispatchEvent(new dom.window.Event('input', { bubbles: true })); });
+    assert.equal(restores, 0);
+    await act(async () => { editor.textContent = 'Continue this task'; editor.dispatchEvent(new dom.window.Event('input', { bubbles: true })); });
+    assert.equal(restores, 0);
+    assert.equal(ref.current?.getText(), 'Continue this task');
+    assert.equal(dom.document.querySelector('.maka-executor-recovery'), null);
+    const submit = () => dom.document.querySelector('form')!.dispatchEvent(new dom.window.Event('submit', { bubbles: true, cancelable: true }));
+    await act(async () => { submit(); submit(); });
+    assert.deepEqual(sent, ['Continue this task']);
+    assert.equal(restores, 0, 'sending delegates recovery to the Host');
+    await act(async () => { finish(false); });
+    assert.equal(ref.current?.getText(), 'Continue this task');
+    await act(async () => { submit(); });
+    await act(async () => { finish(true); });
+    assert.equal(ref.current?.getText(), '');
+  } finally { await dom.cleanup(); dom.window.Element.prototype.setAttribute = setAttribute; }
 });
 
 test('agent loading stays in its section and failed refresh keeps the selected agent refresh button', async () => {
@@ -294,16 +367,97 @@ test('draft refresh appears only for the selected external agent and preserves i
   } finally { await dom.cleanup(); }
 });
 
-test('inventory errors retry the roster even with a valid external selection', async () => {
+for (const readiness of ['restore_failed', 'authentication_required', 'history_only', 'history_gap'] as const)
+test(`${readiness} keeps inspection failures actionable alongside the cached recovery action`, async () => {
   const dom = installTranscriptDom();
   const retried: Array<string | undefined> = [];
+  const recovered: string[] = [];
+  const render = (error?: string) => dom.render(<LocaleProvider locale="en"><Composer
+    activeSession={session('external')}
+    executorPicker={{ catalog: [{ ...catalog[0]!, readiness, supportsModelChange: false, supportsModeChange: false }],
+      fixed: true,
+      selection: { executorId: 'agent', configuration: { model: 'opaque-high', mode: 'plan' } }, error,
+      onSelect() { assert.fail('inspection retry must not configure the Agent'); },
+      onRestore() { recovered.push('restore'); }, onSetup() { recovered.push('setup'); },
+      onRetry: id => { retried.push(id); }, onNewTask() { recovered.push('new'); } }}
+    onSend={() => { assert.fail('inspection retry must not send a message'); }} onStop={() => undefined}
+  /></LocaleProvider>);
+  const recovery = () => dom.document.querySelector('.maka-executor-recovery');
   try {
-    await dom.render(<LocaleProvider locale="en"><ComposerModelPicker label="Native" choices={choices}
-      executor={{ catalog, selection: { executorId: 'agent', configuration: { model: 'opaque-high' } },
-        error: 'Inventory unavailable',
-        onSelect() {}, onSetup() {}, onRetry: id => { retried.push(id); }, onNewTask() {} }}
-    /></LocaleProvider>);
+    await render();
+    assert.equal(recovery()?.getAttribute('data-state'), readiness);
+    const recoveryText = recovery()?.textContent;
+    assert.equal(dom.document.querySelector('.maka-executor-notice'), null);
+    await render('Host inspection disconnected');
+    const notice = dom.document.querySelector('.maka-executor-notice');
+    assert.ok(notice, 'a failed inspection must not be hidden by the cached readiness');
+    assert.match(notice.textContent ?? '', /failed/);
+    await actions(dom).click(notice.querySelector('button'));
+    assert.deepEqual(retried, [undefined], 'retry only re-inspects the Session');
+    assert.deepEqual(recovered, [], 'inspection retry must not invoke the cached recovery action');
+    assert.equal(actions(dom).trigger()?.textContent, 'Family');
+    assert.equal(recovery()?.textContent, recoveryText);
+    await actions(dom).click(recovery()?.querySelector('button'));
+    assert.deepEqual(recovered, [readiness === 'restore_failed' ? 'restore' : readiness === 'authentication_required' ? 'setup' : 'new']);
+    await render();
+    assert.equal(dom.document.querySelector('.maka-executor-notice'), null, 'successful inspection clears only the read error');
+    assert.equal(recovery()?.textContent, recoveryText, 'the independent recovery action stays available');
+  } finally { await dom.cleanup(); }
+});
+
+for (const readiness of ['ready', 'restorable', 'restoring'] as const)
+test(`${readiness} inspections keep errors actionable without exposing automatic recovery`, async () => {
+  const dom = installTranscriptDom();
+  const retried: Array<string | undefined> = [];
+  const render = (error?: string) => dom.render(<LocaleProvider locale="en"><Composer
+    activeSession={readiness === 'ready' ? undefined : session('external')}
+    executorPicker={{ catalog: [{ ...catalog[0]!, readiness, supportsModelChange: false, supportsModeChange: false }],
+      fixed: readiness !== 'ready',
+      selection: { executorId: 'agent', configuration: { model: 'opaque-high', mode: 'plan' } }, error,
+      onSelect() { assert.fail('inspection retry must not configure the Agent'); },
+      onRestore() { assert.fail('inspection retry must not restore the Agent'); },
+      onSetup() {}, onRetry: id => { retried.push(id); }, onNewTask() {} }}
+    onSend={() => undefined} onStop={() => undefined}
+  /></LocaleProvider>);
+  try {
+    await render();
+    assert.equal(dom.document.querySelector('.maka-executor-recovery'), null);
+    assert.equal(dom.document.querySelector('.maka-executor-notice'), null);
+    await render('Host inspection disconnected');
+    assert.equal(dom.document.querySelector('.maka-executor-recovery'), null);
+    assert.match(dom.document.querySelector('.maka-executor-notice')?.textContent ?? '', /failed/);
     await actions(dom).click([...dom.document.querySelectorAll('button')].find(el => el.textContent === 'Retry'));
-    assert.deepEqual(retried, [undefined], 'a successful single-agent read cannot repair the inventory');
+    assert.deepEqual(retried, [undefined]);
+    assert.equal(actions(dom).trigger()?.textContent, 'Family', 'a failed read preserves the cached model label');
+    await render();
+    assert.equal(dom.document.querySelector('.maka-executor-notice'), null, 'successful inspection clears the error');
+    assert.equal(dom.document.querySelector('.maka-executor-recovery'), null);
+  } finally { await dom.cleanup(); }
+});
+
+test('saved model, effort and mode controls retain their labels through restoration without permitting edits', async () => {
+  const dom = installTranscriptDom();
+  try {
+    let labels: string[] | undefined;
+    for (const readiness of ['restorable', 'restoring', 'restore_failed', 'ready'] as const) {
+      await dom.render(<LocaleProvider locale="en"><ComposerModelPicker label="Native" choices={choices}
+        executor={{ catalog: [{ ...catalog[0]!, readiness,
+          supportsModelChange: readiness === 'ready', supportsModeChange: readiness === 'ready' }],
+          fixed: true,
+          selection: { executorId: 'agent', configuration: { model: 'opaque-high', mode: 'plan' } },
+          onSelect() { assert.fail('restoration must not change saved configuration'); },
+          onSetup() {}, onRetry() {}, onNewTask() {}, onRestore() {} }}
+      /></LocaleProvider>);
+      const selectors = ['.maka-model-switcher-trigger', '.maka-thinking-level-selector', '.maka-executor-mode-selector'];
+      const buttons = selectors.map(selector => dom.document.querySelector<HTMLButtonElement>(selector + ' button'));
+      assert.ok(buttons.every(Boolean), `all three controls exist in ${readiness}`);
+      const current = buttons.map(button => button!.textContent!);
+      labels ??= current;
+      assert.deepEqual(current, labels);
+      for (const button of buttons) {
+        assert.equal(button!.getAttribute('aria-disabled') === 'true' || button!.disabled,
+          readiness !== 'ready', `only live capabilities allow changes in ${readiness}`);
+      }
+    }
   } finally { await dom.cleanup(); }
 });

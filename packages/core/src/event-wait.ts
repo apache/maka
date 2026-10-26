@@ -67,21 +67,10 @@ export type EventWaitJsonValue =
   | readonly EventWaitJsonValue[]
   | { readonly [key: string]: EventWaitJsonValue };
 
-export type EventWaitDelivery =
-  | {
-      readonly kind: 'admitted';
-      readonly turnId: string;
-      readonly runId: string;
-      readonly userMessageId: string;
-      readonly at: number;
-    }
-  | { readonly kind: 'suppressed'; readonly at: number; readonly reason: string };
-
 export interface EventWaitBase {
   readonly schemaVersion: 1;
   readonly waitId: string;
   readonly sessionId: string;
-  readonly goalControlLease: GoalControlLease;
   readonly sourceTurnId: string;
   readonly sourceToolCallId: string;
   readonly resource: {
@@ -100,7 +89,7 @@ export interface EventWaitBase {
   readonly updatedAt: number;
   readonly deadlineAt: number;
   readonly observation?: EventWaitObservation;
-  readonly delivery?: EventWaitDelivery;
+  readonly delivery?: never;
 }
 
 export interface EventWaitResolution {
@@ -129,9 +118,130 @@ export type EventWaitLifecycle =
   | { readonly status: 'expired'; readonly expiredAt: number };
 
 export type EventWaitRecord = EventWaitBase & EventWaitLifecycle;
-/** Source observation has no dependency on the task owner's lifecycle. */
-export type ObservedEventWaitRecord = Omit<EventWaitBase, 'goalControlLease'> & EventWaitLifecycle;
 export type EventWaitStatus = EventWaitRecord['status'];
+
+/** Version two separates observation from the consumer's execution authority. */
+export type EventWaitConsumer =
+  | {
+      readonly kind: 'tool_invocation';
+      readonly runId: string;
+      readonly invocationId: string;
+      readonly operationId: string;
+      readonly toolCallId: string;
+    }
+  | {
+      readonly kind: 'goal_waiting';
+      readonly sourceRunId: string;
+      readonly completionEventId: string;
+      readonly goalControlLease: GoalControlLease;
+      readonly goalRevision: number;
+    };
+export interface ConsumerEventWaitObservation extends Omit<EventWaitObservation, 'schemaVersion'> {
+  readonly schemaVersion: 2;
+  /** Monotonic reservation window; rolling it never changes the semantic deadline. */
+  readonly window: number;
+}
+export type ConsumerEventWaitDelivery =
+  | {
+      readonly kind: 'consumed';
+      readonly operationId: string;
+      readonly resultEventId: string;
+      readonly resultDigest: string;
+      readonly at: number;
+    }
+  | { readonly kind: 'retired'; readonly reason: string; readonly at: number }
+  | {
+      readonly kind: 'admitted';
+      readonly turnId: string;
+      readonly runId: string;
+      readonly userMessageId: string;
+      readonly at: number;
+    };
+export type ConsumerEventWaitRecord = Omit<
+  EventWaitBase,
+  'schemaVersion' | 'sourceToolCallId' | 'deadlineAt' | 'observation' | 'delivery'
+> & {
+  readonly schemaVersion: 2;
+  readonly consumer: EventWaitConsumer;
+  readonly deadlineAt: number | null;
+  readonly observation?: ConsumerEventWaitObservation;
+  readonly delivery?: ConsumerEventWaitDelivery;
+} & EventWaitLifecycle;
+export type AnyEventWaitRecord = EventWaitRecord | ConsumerEventWaitRecord;
+export type EventWaitConsumerKind = 'observation' | EventWaitConsumer['kind'];
+export function eventWaitConsumerKind(record: AnyEventWaitRecord): EventWaitConsumerKind {
+  return record.schemaVersion === 1 ? 'observation' : record.consumer.kind;
+}
+export function decodeConsumerEventWaitRecord(value: unknown): ConsumerEventWaitRecord {
+  return decodeWaitRecord(value, true) as ConsumerEventWaitRecord;
+}
+export function decodeAnyEventWaitRecord(value: unknown): AnyEventWaitRecord {
+  return Object.getOwnPropertyDescriptor(object(value, 'record'), 'schemaVersion')?.value === 2
+    ? decodeConsumerEventWaitRecord(value)
+    : decodeEventWaitRecord(value);
+}
+export interface EventWaitConditionSpec {
+  readonly resource: EventWaitBase['resource'];
+  readonly condition: EventWaitBase['condition'];
+  readonly deadlineAt: number | null;
+}
+export function decodeEventWaitConditionSpec(value: unknown): EventWaitConditionSpec {
+  const v = shape(value, ['resource', 'condition', 'deadlineAt']);
+  const resource = shape(v.resource, ['providerId', 'connectionId', 'resourceType', 'resourceId']);
+  const condition = shape(v.condition, ['typeId', 'version', 'parameters']);
+  const parameters = object(
+    json(
+      condition.parameters,
+      EVENT_WAIT_LIMITS.parameterBytes,
+      EVENT_WAIT_LIMITS.parameterDepth,
+      EVENT_WAIT_LIMITS.parameterNodes,
+    ),
+    'parameters',
+  ) as Record<string, EventWaitJsonValue>;
+  return {
+    resource: {
+      providerId: typeId(resource.providerId),
+      connectionId:
+        resource.connectionId === null ? null : id(resource.connectionId, 'connectionId'),
+      resourceType: typeId(resource.resourceType),
+      resourceId: text(resource.resourceId, 'resourceId', EVENT_WAIT_LIMITS.resourceIdBytes),
+    },
+    condition: {
+      typeId: typeId(condition.typeId),
+      version: integer(condition.version, 'condition version', 1),
+      parameters,
+    },
+    deadlineAt: v.deadlineAt === null ? null : integer(v.deadlineAt, 'deadlineAt'),
+  };
+}
+function decodeConsumer(value: unknown): EventWaitConsumer {
+  const c = object(value, 'consumer');
+  const lease = (v: unknown): GoalControlLease => {
+    const l = shape(v, ['goalId', 'generation']);
+    return { goalId: id(l.goalId, 'goalId'), generation: integer(l.generation, 'generation') };
+  };
+  if (c.kind === 'tool_invocation') {
+    shape(c, ['kind', 'runId', 'invocationId', 'operationId', 'toolCallId']);
+    return {
+      kind: c.kind,
+      runId: id(c.runId, 'consumer run'),
+      invocationId: id(c.invocationId, 'consumer invocation'),
+      operationId: id(c.operationId, 'consumer operation'),
+      toolCallId: text(c.toolCallId, 'consumer tool call', EVENT_WAIT_LIMITS.toolCallIdBytes),
+    };
+  }
+  if (c.kind === 'goal_waiting') {
+    shape(c, ['kind', 'sourceRunId', 'completionEventId', 'goalControlLease', 'goalRevision']);
+    return {
+      kind: c.kind,
+      sourceRunId: id(c.sourceRunId, 'consumer source run'),
+      completionEventId: id(c.completionEventId, 'consumer completion'),
+      goalControlLease: lease(c.goalControlLease),
+      goalRevision: integer(c.goalRevision, 'consumer Goal revision'),
+    };
+  }
+  return invalid('consumer kind');
+}
 
 const encoder = new TextEncoder();
 const invalidIdCharacterPattern = /[^A-Za-z0-9_-]/u;
@@ -285,17 +395,12 @@ export function eventWaitDeliveryKey(waitId: string): string {
   return `event-wait/${id(waitId, 'waitId')}`;
 }
 
-/** Correlation only: decoding does not authenticate Goal ownership or external truth. */
+/** Ownership is checked by the supplied store and authorizer. */
 export function decodeEventWaitRecord(value: unknown): EventWaitRecord {
-  return decodeWaitRecord(value, true) as EventWaitRecord;
+  return decodeWaitRecord(value) as EventWaitRecord;
 }
 
-/** Owner-free observation record. Ownership is checked by the supplied store and authorizer. */
-export function decodeObservedEventWaitRecord(value: unknown): ObservedEventWaitRecord {
-  return decodeWaitRecord(value, false);
-}
-
-function decodeWaitRecord(value: unknown, goal: boolean): ObservedEventWaitRecord {
+function decodeWaitRecord(value: unknown, consumer = false): AnyEventWaitRecord {
   const root = object(json(value, EVENT_WAIT_LIMITS.recordBytes, 16, 2048), 'record');
   const lifecycleKeys =
     root.status === 'waiting'
@@ -313,9 +418,8 @@ function decodeWaitRecord(value: unknown, goal: boolean): ObservedEventWaitRecor
       'schemaVersion',
       'waitId',
       'sessionId',
-      ...(goal ? ['goalControlLease'] : []),
       'sourceTurnId',
-      'sourceToolCallId',
+      ...(consumer ? ['consumer'] : ['sourceToolCallId']),
       'resource',
       'condition',
       'deliveryKey',
@@ -326,61 +430,40 @@ function decodeWaitRecord(value: unknown, goal: boolean): ObservedEventWaitRecor
       ...lifecycleKeys,
     ],
     root.status === 'cancelled'
-      ? ['priorResolution', 'observation', 'delivery']
-      : ['observation', 'delivery'],
+      ? ['priorResolution', 'observation', ...(consumer ? ['delivery'] : [])]
+      : ['observation', ...(consumer ? ['delivery'] : [])],
   );
-  if (r.schemaVersion !== EVENT_WAIT_SCHEMA_VERSION) invalid('schemaVersion');
-  const lease = goal ? shape(r.goalControlLease, ['goalId', 'generation']) : undefined;
-  const resource = shape(r.resource, ['providerId', 'connectionId', 'resourceType', 'resourceId']);
-  const condition = shape(r.condition, ['typeId', 'version', 'parameters']);
-  const parameters = object(
-    json(
-      condition.parameters,
-      EVENT_WAIT_LIMITS.parameterBytes,
-      EVENT_WAIT_LIMITS.parameterDepth,
-      EVENT_WAIT_LIMITS.parameterNodes,
-    ),
-    'parameters',
-  ) as Record<string, EventWaitJsonValue>;
+  if (r.schemaVersion !== (consumer ? 2 : EVENT_WAIT_SCHEMA_VERSION)) invalid('schemaVersion');
+  const spec = decodeEventWaitConditionSpec({
+    resource: r.resource,
+    condition: r.condition,
+    deadlineAt: r.deadlineAt,
+  });
   const base = {
-    schemaVersion: EVENT_WAIT_SCHEMA_VERSION,
+    schemaVersion: consumer ? (2 as const) : EVENT_WAIT_SCHEMA_VERSION,
     waitId: id(r.waitId, 'waitId'),
     sessionId: id(r.sessionId, 'sessionId'),
-    ...(lease
-      ? {
-          goalControlLease: {
-            goalId: id(lease.goalId, 'goalId'),
-            generation: integer(lease.generation, 'generation'),
-          },
-        }
-      : {}),
     sourceTurnId: id(r.sourceTurnId, 'sourceTurnId'),
-    sourceToolCallId: text(
-      r.sourceToolCallId,
-      'sourceToolCallId',
-      EVENT_WAIT_LIMITS.toolCallIdBytes,
-    ),
-    resource: {
-      providerId: typeId(resource.providerId),
-      connectionId:
-        resource.connectionId === null ? null : id(resource.connectionId, 'connectionId'),
-      resourceType: typeId(resource.resourceType),
-      resourceId: text(resource.resourceId, 'resourceId', EVENT_WAIT_LIMITS.resourceIdBytes),
-    },
-    condition: {
-      typeId: typeId(condition.typeId),
-      version: integer(condition.version, 'condition version', 1),
-      parameters,
-    },
+    ...(consumer
+      ? { consumer: decodeConsumer(r.consumer) }
+      : {
+          sourceToolCallId: text(
+            r.sourceToolCallId,
+            'sourceToolCallId',
+            EVENT_WAIT_LIMITS.toolCallIdBytes,
+          ),
+        }),
+    resource: spec.resource,
+    condition: spec.condition,
     deliveryKey: eventWaitDeliveryKey(id(r.waitId, 'waitId')),
     createdAt: integer(r.createdAt, 'createdAt'),
     updatedAt: integer(r.updatedAt, 'updatedAt'),
-    deadlineAt: integer(r.deadlineAt, 'deadlineAt'),
-  } satisfies Omit<EventWaitBase, 'goalControlLease'> & { goalControlLease?: GoalControlLease };
+    deadlineAt: consumer && r.deadlineAt === null ? null : integer(r.deadlineAt, 'deadlineAt'),
+  };
   if (
     r.deliveryKey !== base.deliveryKey ||
     base.updatedAt < base.createdAt ||
-    base.deadlineAt <= base.createdAt
+    (!consumer && base.deadlineAt !== null && base.deadlineAt <= base.createdAt)
   )
     invalid('identity or times');
   const time = (v: unknown, upper = base.updatedAt): number => {
@@ -394,9 +477,46 @@ function decodeWaitRecord(value: unknown, goal: boolean): ObservedEventWaitRecor
     const terminalAt =
       r.status === 'resolved' ? r.resolvedAt : r.status === 'expired' ? r.expiredAt : r.cancelledAt;
     if (time(d.at) < time(terminalAt)) invalid('delivery before terminal fact');
-    if (d.kind === 'admitted') {
+    if (consumer && d.kind === 'consumed') {
+      shape(d, ['kind', 'operationId', 'resultEventId', 'resultDigest', 'at']);
+      if (
+        ('consumer' in base ? base.consumer.kind : undefined) !== 'tool_invocation' ||
+        d.operationId !==
+          ('consumer' in base && base.consumer.kind === 'tool_invocation'
+            ? base.consumer.operationId
+            : undefined) ||
+        typeof d.resultDigest !== 'string' ||
+        !/^sha256:[a-f0-9]{64}$/.test(d.resultDigest)
+      )
+        invalid('consumption');
+      Object.assign(base, {
+        delivery: {
+          kind: 'consumed',
+          operationId: id(d.operationId, 'consumed operation'),
+          resultEventId: id(d.resultEventId, 'consumed result'),
+          resultDigest: d.resultDigest,
+          at: time(d.at),
+        },
+      });
+    } else if (consumer && d.kind === 'retired') {
+      shape(d, ['kind', 'at', 'reason']);
+      Object.assign(base, {
+        delivery: {
+          kind: 'retired',
+          at: time(d.at),
+          reason: text(d.reason, 'retirement reason', EVENT_WAIT_LIMITS.reasonBytes),
+        },
+      });
+    } else if (d.kind === 'admitted') {
+      if (consumer && ('consumer' in base ? base.consumer.kind : undefined) !== 'goal_waiting')
+        invalid('consumer admission');
       shape(d, ['kind', 'turnId', 'runId', 'userMessageId', 'at']);
-      if (r.status !== 'resolved' && r.status !== 'expired') invalid('admission without result');
+      if (
+        r.status !== 'resolved' &&
+        r.status !== 'expired' &&
+        !(consumer && r.status === 'cancelled')
+      )
+        invalid('admission without result');
       Object.assign(base, {
         delivery: {
           kind: 'admitted',
@@ -406,17 +526,7 @@ function decodeWaitRecord(value: unknown, goal: boolean): ObservedEventWaitRecor
           at: time(d.at),
         },
       });
-    } else {
-      shape(d, ['kind', 'at', 'reason']);
-      if (d.kind !== 'suppressed') invalid('delivery kind');
-      Object.assign(base, {
-        delivery: {
-          kind: 'suppressed',
-          at: time(d.at),
-          reason: text(d.reason, 'delivery reason', EVENT_WAIT_LIMITS.reasonBytes),
-        },
-      });
-    }
+    } else invalid('delivery kind');
   }
   if (Object.hasOwn(r, 'observation')) {
     const x = shape(r.observation, [
@@ -431,6 +541,7 @@ function decodeWaitRecord(value: unknown, goal: boolean): ObservedEventWaitRecor
       'cursor',
       'eventKey',
       'reason',
+      ...(consumer ? ['window'] : []),
     ]);
     const attempts = integer(x.attempts, 'observation attempts', 1);
     const consecutiveErrors = integer(x.consecutiveErrors, 'consecutive errors');
@@ -439,7 +550,7 @@ function decodeWaitRecord(value: unknown, goal: boolean): ObservedEventWaitRecor
     const nextPollAt = integer(x.nextPollAt, 'next poll');
     const lastObservedAt = x.lastObservedAt === null ? null : time(x.lastObservedAt);
     if (
-      x.schemaVersion !== 1 ||
+      x.schemaVersion !== (consumer ? 2 : 1) ||
       attempts > EVENT_WAIT_LIMITS.observationAttempts ||
       consecutiveErrors > attempts ||
       nextObserveAt < lastAttemptAt ||
@@ -458,7 +569,8 @@ function decodeWaitRecord(value: unknown, goal: boolean): ObservedEventWaitRecor
       invalid('observation');
     Object.assign(base, {
       observation: {
-        schemaVersion: 1,
+        schemaVersion: consumer ? 2 : 1,
+        ...(consumer ? { window: integer(x.window, 'observation window') } : {}),
         attempts,
         lastAttemptAt,
         lastObservedAt,
@@ -499,7 +611,7 @@ function decodeWaitRecord(value: unknown, goal: boolean): ObservedEventWaitRecor
   };
   switch (r.status) {
     case 'waiting':
-      return { ...base, status: 'waiting' };
+      return { ...base, status: 'waiting' } as AnyEventWaitRecord;
     case 'resolved': {
       const resolvedAt = time(r.resolvedAt);
       return {
@@ -507,13 +619,13 @@ function decodeWaitRecord(value: unknown, goal: boolean): ObservedEventWaitRecor
         status: 'resolved',
         resolvedAt,
         resolution: resolution(r.resolution, resolvedAt),
-      };
+      } as AnyEventWaitRecord;
     }
     case 'cancelled': {
       const cancelledAt = time(r.cancelledAt);
       const reason = text(r.reason, 'reason', EVENT_WAIT_LIMITS.reasonBytes);
       if (!Object.hasOwn(r, 'priorResolution'))
-        return { ...base, status: 'cancelled', cancelledAt, reason };
+        return { ...base, status: 'cancelled', cancelledAt, reason } as AnyEventWaitRecord;
       const prior = shape(r.priorResolution, ['resolvedAt', 'resolution']);
       const resolvedAt = time(prior.resolvedAt, cancelledAt);
       return {
@@ -522,12 +634,12 @@ function decodeWaitRecord(value: unknown, goal: boolean): ObservedEventWaitRecor
         cancelledAt,
         reason,
         priorResolution: { resolvedAt, resolution: resolution(prior.resolution, resolvedAt) },
-      };
+      } as AnyEventWaitRecord;
     }
     case 'expired': {
       const expiredAt = time(r.expiredAt);
-      if (expiredAt < base.deadlineAt) invalid('premature expiry');
-      return { ...base, status: 'expired', expiredAt };
+      if (base.deadlineAt === null || expiredAt < base.deadlineAt) invalid('premature expiry');
+      return { ...base, status: 'expired', expiredAt } as AnyEventWaitRecord;
     }
     default:
       return invalid('status');
@@ -535,21 +647,14 @@ function decodeWaitRecord(value: unknown, goal: boolean): ObservedEventWaitRecor
 }
 
 export function assertEventWaitTransition(previous: EventWaitRecord, next: EventWaitRecord): void {
-  const a = decodeEventWaitRecord(previous),
-    b = decodeEventWaitRecord(next);
-  if (JSON.stringify(a.goalControlLease) !== JSON.stringify(b.goalControlLease))
-    invalid('immutable goalControlLease');
-  const { goalControlLease: _a, ...before } = a;
-  const { goalControlLease: _b, ...after } = b;
-  assertObservedEventWaitTransition(before, after);
+  assertAnyEventWaitTransition(decodeEventWaitRecord(previous), decodeEventWaitRecord(next));
 }
-
-export function assertObservedEventWaitTransition(
-  previous: ObservedEventWaitRecord,
-  next: ObservedEventWaitRecord,
+export function assertAnyEventWaitTransition(
+  previous: AnyEventWaitRecord,
+  next: AnyEventWaitRecord,
 ): void {
-  const a = decodeObservedEventWaitRecord(previous);
-  const b = decodeObservedEventWaitRecord(next);
+  const a = decodeAnyEventWaitRecord(previous);
+  const b = decodeAnyEventWaitRecord(next);
   const same = (x: unknown, y: unknown) => JSON.stringify(x) === JSON.stringify(y);
   if (same(a, b)) return;
   if (a.delivery) invalid('immutable delivery');
@@ -558,7 +663,7 @@ export function assertObservedEventWaitTransition(
     const { updatedAt: _previousTime, ...prior } = a;
     if (same(rest, prior) && b.updatedAt >= a.updatedAt) return;
     const { delivery: _acknowledgement, ...observation } = b;
-    assertObservedEventWaitTransition(a, observation);
+    assertAnyEventWaitTransition(a, observation);
     return;
   }
   for (const field of [
@@ -566,7 +671,6 @@ export function assertObservedEventWaitTransition(
     'waitId',
     'sessionId',
     'sourceTurnId',
-    'sourceToolCallId',
     'resource',
     'condition',
     'deliveryKey',
@@ -575,11 +679,32 @@ export function assertObservedEventWaitTransition(
   ] as const) {
     if (!same(a[field], b[field])) invalid(`immutable ${field}`);
   }
+  if (
+    a.schemaVersion !== b.schemaVersion ||
+    (a.schemaVersion === 2 && b.schemaVersion === 2
+      ? !same(a.consumer, b.consumer)
+      : a.schemaVersion === 1 && b.schemaVersion === 1 && a.sourceToolCallId !== b.sourceToolCallId)
+  )
+    invalid('immutable consumer');
   if (b.updatedAt < a.updatedAt) invalid('time regression');
   if (a.observation) {
+    const rolls =
+      a.schemaVersion === 2 &&
+      b.schemaVersion === 2 &&
+      a.observation.attempts === EVENT_WAIT_LIMITS.observationAttempts &&
+      b.observation?.attempts === 1 &&
+      b.observation.window === a.observation.window + 1;
+    if (
+      a.schemaVersion === 2 &&
+      b.schemaVersion === 2 &&
+      b.observation &&
+      !rolls &&
+      b.observation.window !== a.observation.window
+    )
+      invalid('observation window');
     if (
       !b.observation ||
-      b.observation.attempts < a.observation.attempts ||
+      (!rolls && b.observation.attempts < a.observation.attempts) ||
       b.observation.attempts > a.observation.attempts + 1 ||
       b.observation.lastAttemptAt < a.observation.lastAttemptAt ||
       (a.observation.lastObservedAt !== null &&
@@ -593,23 +718,33 @@ export function assertObservedEventWaitTransition(
     )
       invalid('attempt time without reservation');
     if (
-      b.observation.attempts > a.observation.attempts &&
+      (b.observation.attempts > a.observation.attempts || rolls) &&
       (b.status !== 'waiting' ||
         b.observation.outcome !== 'checking' ||
         b.observation.lastObservedAt !== a.observation.lastObservedAt ||
         b.observation.cursor !== a.observation.cursor ||
         b.observation.eventKey !== a.observation.eventKey ||
-        b.observation.consecutiveErrors !== a.observation.consecutiveErrors)
+        // Keep the last unknown visible while the first request in a new
+        // window is checking, within the new window's single-attempt bound.
+        b.observation.consecutiveErrors !==
+          (rolls ? Math.min(1, a.observation.consecutiveErrors) : a.observation.consecutiveErrors))
     )
       invalid('attempt reservation');
-  } else if (b.observation && b.observation.attempts !== 1) invalid('initial observation budget');
+  } else if (
+    b.observation &&
+    (b.observation.attempts !== 1 || (b.schemaVersion === 2 && b.observation.window !== 0))
+  )
+    invalid('initial observation budget');
+  const newReservation =
+    b.observation &&
+    (b.observation.attempts > (a.observation?.attempts ?? 0) ||
+      (a.schemaVersion === 2 &&
+        b.schemaVersion === 2 &&
+        a.observation &&
+        b.observation.window === a.observation.window + 1));
   if (a.status === 'waiting') {
     if (b.status === 'waiting' && b.observation && !same(a.observation, b.observation)) {
-      if (
-        b.observation.attempts > (a.observation?.attempts ?? 0) &&
-        b.observation.outcome === 'checking'
-      )
-        return;
+      if (newReservation && b.observation.outcome === 'checking') return;
       if (
         a.observation?.outcome === 'checking' &&
         (b.observation.outcome === 'pending' || b.observation.outcome === 'unknown')
@@ -617,7 +752,7 @@ export function assertObservedEventWaitTransition(
         return;
       invalid('observation update without reservation');
     }
-    if (b.status === 'resolved' && b.resolvedAt >= b.deadlineAt)
+    if (b.status === 'resolved' && b.deadlineAt !== null && b.resolvedAt >= b.deadlineAt)
       invalid('resolution after deadline');
     if (
       b.status === 'resolved' ||

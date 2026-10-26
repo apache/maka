@@ -19,7 +19,6 @@ apps/desktop/src/renderer/chat-recovery-notice.tsx
 apps/desktop/src/renderer/composer-mentions.tsx
 apps/desktop/src/renderer/composition/desktop-feature-services.tsx
 apps/desktop/src/renderer/composition/legacy-desktop-region.tsx
-apps/desktop/src/renderer/custom-pet-companion.tsx
 apps/desktop/src/renderer/error-boundary.tsx
 apps/desktop/src/renderer/features/app-update/services-context.tsx
 apps/desktop/src/renderer/features/app-update/ui/app-update-provider.tsx
@@ -75,6 +74,7 @@ apps/desktop/src/renderer/features/personal-assistant/chat-presentation.tsx
 apps/desktop/src/renderer/features/personal-assistant/original-reader.css
 apps/desktop/src/renderer/features/personal-assistant/original-reader.tsx
 apps/desktop/src/renderer/features/personal-assistant/personal-assistant.css
+apps/desktop/src/renderer/features/personal-assistant/pet-bridge.tsx
 apps/desktop/src/renderer/features/personal-assistant/task-float.css
 apps/desktop/src/renderer/features/personal-assistant/task-float.tsx
 apps/desktop/src/renderer/features/personal-assistant/task-layout.tsx

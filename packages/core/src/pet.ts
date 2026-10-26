@@ -90,6 +90,8 @@ export interface PetAnimationV1 {
   readonly fallback?: PetActivityState;
 }
 
+export type PetIdleAnimationV1 = Pick<PetAnimationV1, 'frames' | 'fps' | 'loop'>;
+
 export type PetAnimationsV1 = Readonly<Record<PetRequiredActivityState, PetAnimationV1>> &
   Readonly<Partial<Record<PetOptionalActivityState, PetAnimationV1>>>;
 
@@ -104,6 +106,8 @@ export interface PetPackManifestV1 {
   readonly description?: string;
   readonly spriteSheet: PetSpriteSheetV1;
   readonly animations: PetAnimationsV1;
+  /** Additional idle sequences, rotated with animations.idle. */
+  readonly idleVariants?: readonly PetIdleAnimationV1[];
 }
 
 export type PetManifestValidationIssueCode =
@@ -138,7 +142,7 @@ export class PetManifestValidationError extends Error {
 
 const MANIFEST_SHAPE = defineObjectShape<PetPackManifestV1>()(
   ['schema', 'id', 'displayName', 'spriteSheet', 'animations'],
-  ['description'],
+  ['description', 'idleVariants'],
 );
 const SPRITE_SHEET_SHAPE = defineObjectShape<PetSpriteSheetV1>()(
   ['path', 'format', 'frameWidth', 'frameHeight', 'columns', 'rows', 'frameCount'],
@@ -358,8 +362,8 @@ function validateAnimation(
   state: PetActivityState,
   frameCount: number | undefined,
   issues: PetManifestValidationIssue[],
+  path = `$.animations.${state}`,
 ): value is PetAnimationV1 {
-  const path = `$.animations.${state}`;
   if (!isRecord(value)) {
     addIssue(issues, 'invalid_type', path, 'must be an object');
     return false;
@@ -523,6 +527,25 @@ export function validatePetPackManifest(value: unknown): PetManifestValidationRe
     typeof frameCount === 'number' ? frameCount : undefined,
     issues,
   );
+
+  if (value.idleVariants !== undefined) {
+    if (!Array.isArray(value.idleVariants) || value.idleVariants.length === 0) {
+      addIssue(issues, 'invalid_type', '$.idleVariants', 'must be a non-empty array');
+    } else {
+      for (const [index, variant] of value.idleVariants.entries()) {
+        const path = `$.idleVariants[${index}]`;
+        validateAnimation(variant, 'idle', frameCount, issues, path);
+        if (isRecord(variant) && Object.hasOwn(variant, 'fallback')) {
+          addIssue(
+            issues,
+            'unknown_field',
+            `${path}.fallback`,
+            'idle variants rotate automatically; fallback is not supported',
+          );
+        }
+      }
+    }
+  }
 
   return issues.length === 0
     ? { ok: true, value: value as unknown as PetPackManifestV1 }

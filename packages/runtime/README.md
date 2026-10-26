@@ -56,57 +56,51 @@ not infer HTTP readiness from the process status alone.
 
 ## Explicit event waits
 
-`WaitForEvent` is available to AI SDK direct-tool Turns with an active Goal.
-The production source is a locally owned, same-Session managed background Bash
-task: `shell_run / background_task / terminal@1`, with an empty parameter object
-and its canonical `maka://runtime/background-tasks/<id>` reference. The Host verifies
-the task against its immutable invocation and tool call/dispatch/result facts;
-references, UI projections and process IDs are not access credentials. Code Mode
-may create a background task, but must return to direct mode to register a wait.
-ACP, nested Code Mode and plugin executors cannot register waits.
+`WaitForEvent` is an ordinary asynchronous tool for Goal-enabled Runs. It keeps
+its original Turn, Run, invocation and tool operation pending while the Host
+observes a supported condition. One normal tool result resumes the same model
+loop. Waiting does not settle the Goal, yield the Turn, reserve a successor,
+refund an iteration or reset an execution budget. AI SDK direct tools and nested
+Code Mode calls use the same durable tool boundary. ACP executors retain their
+existing tool surface; this change adds no Host tool bridge.
 
-The tool requires a direct, exclusive tool step; a successful Host registration produces an in-memory
-control receipt that ends the Turn with `event_wait` after persisting its result.
-Persisted JSON and ordinary tool output cannot manufacture that receipt.
+The Host latches the capability to the admitted Run. Pausing, clearing or
+replacing its Goal does not revoke an admitted ordinary tool, and another wait
+in that Run remains available. New ordinary Session Runs do not receive the
+capability. `current_turn` input interrupts the wait at the existing steering
+boundary; `next_turn` input remains queued. Code Mode drains already-dispatched
+siblings before returning to that boundary.
 
-Runtime Host's `HostGoalEventWaitBridge` binds registration to the current Goal
-control generation and Root execution. Its narrow storage operations atomically
-register the gate, settle the source once, and queue an existing Goal continuation.
-The continuation freezes execution IDs, prompt and typed result provenance. Root
-admission atomically consumes that continuation and acknowledges delivery. The
-observation outcome remains available after admission; it is not cancellation.
+The source registry supports managed same-Session background ShellRuns.
+Computer text waits retain their existing native implementation. Source notifications are hints:
+the Host rereads authority and shares concurrency, Retry-After and cooldown
+budgets. Sources without push support use bounded Host polling. A nullable
+absolute deadline and rolling observation checkpoints keep scheduler limits
+separate from business outcomes. A terminal ShellRun may have failed; inspect
+its original reference with `Read`. Observation never restarts or takes ownership
+of a source process.
 
-While the gate is outstanding, the normal Goal evaluator and waiting timer cannot
-start work. Observation uses the existing bounded Host observation service. Busy
-admission and temporarily unknown authorization retain the original continuation;
-new user work keeps its normal admission priority. Pause/cancellation invalidate
-the old generation. Portable Session copies pause linked Goals and discard the
-wait linkage; same-root backups retain it.
+The Runtime event log is the authority for tool completion. Registration proves
+the original T1 dispatch; the original T2 response proves consumption. A lost
+consumption acknowledgement is reconstructed from T2 without repeating the tool
+or blocking the model loop. The wait record is not a persisted JavaScript Promise:
+Host restart follows existing Runtime recovery and never creates a successor
+from an in-turn wait alone.
 
-Recovery distinguishes a queued continuation from an admitted successor. A queued
-result or timeout retains its frozen execution IDs and input across restart, and
-retries through the existing Root admission checks. If admission commits but its
-acknowledgement is lost before the Root owner adopts it, the Host requests drain
-and fences further admission for that Session. Restart the Host before resuming
-the Goal: recovery closes an admitted Goal Turn without a Run as `app_restarted`
-and pauses the Goal. An explicit user resume starts a fresh continuation under a
-new control generation; it does not redeliver the old wait. If a Run already
-exists, its recovery follows the normal Runtime policy. This boundary does not
-provide transparent retry or exactly-once execution of external side effects.
+A Turn that ends naturally may separately produce a structured Goal waiting
+condition. Host observation replaces that waiting timer while preserving the
+existing evaluation, settlement and single continuation admission.
 
-Terminal means completed, failed, timed out or cancelled, not necessarily successful.
-The continuation uses `Read` on the original reference to inspect output and exit
-status. Orphaned tasks produce `source_unavailable` and are never automatically
-restarted. Confirmed disappearance or revoked access closes the wait and pauses
-the Goal with a bounded diagnostic; temporary storage failures remain unknown.
+Session continuity exposes independently identified waits, including after Goal
+clear. `session.event-wait.cancel` validates the exact consumer identity. For a
+tool wait it returns cancellation to that tool without pausing the Goal or
+stopping the source. Stop still cancels the Run. A natural Goal waiting consumer
+uses its Goal generation/revision and existing Goal cancellation semantics.
+Portable Session copies omit wait authority; same-root checkpoints retain it
+without granting execution or duplicate-delivery authority.
 
-Goal projections include the current outstanding wait, its reason/deadline and
-observation or admission phase. `goal.event-wait.cancel` targets the original
-Goal, generation and wait ID plus Goal revision. It pauses the Goal and suppresses
-unadmitted delivery without stopping the background process. Repeated or stale
-requests report cancellation, admission or conflict without targeting newer work.
-ShellRun notifications only prompt authoritative rereads; observing a task does
-not take ownership of its sandbox, process lifetime or completion cleanup.
+See the [Host observation contract](../../docs/goal-event-wait-consumers.md) for
+consumer identities and lifecycle boundaries.
 
 ## Extension rules
 

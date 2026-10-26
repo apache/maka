@@ -205,3 +205,24 @@ test('worker creation failure ends only its owner batch and reports failure with
     f.db.close();
   }
 });
+
+test('pet activity reads only owner-scoped worker metadata, without scanning or computing coverage', () => {
+  const f = setup();
+  try {
+    f.store.list = () => [{ id: 'a' }, { id: 'b' }];
+    f.workers.get('b')!.ownerSessionId = 'someone-else';
+    f.workers.get('a')!.lastAttempt = 123;
+    f.controller.runs.set('a', Promise.resolve());
+    f.store.boundary = () => {
+      throw Error('must not read coverage');
+    };
+    f.store.work = () => {
+      throw Error('must not read content');
+    };
+    assert.deepEqual(f.controller.activity('owner'), [
+      { id: 'a', running: true, attempt: 123, error: null },
+    ]);
+  } finally {
+    f.db.close();
+  }
+});

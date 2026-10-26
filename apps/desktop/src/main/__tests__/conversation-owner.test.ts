@@ -25,7 +25,8 @@ import type { StoredMessage } from '@maka/core/session';
 import type { UiLocale } from '@maka/core/ui-locale';
 import type { DesktopSessionSummary } from '../../shared/desktop-session-projection.js';
 import { createSessionCatalogController, SessionCatalogContext } from '../../renderer/application/contracts/session-catalog/session-catalog-state.js';
-import { ConversationProvider, ConversationServicesProvider, ConversationLifecycle, ConversationTranscriptRegion, ConversationComposerRegion, useAppShellSessionUiState, type ConversationObservationServices, type ConversationServices } from '../../renderer/features/conversation/index.js';
+import { ConversationProvider, ConversationServicesProvider, ConversationLifecycle, ConversationTranscriptRegion, ConversationComposerRegion, useAppShellSessionUiState, useExecutorSelection, type ConversationObservationServices, type ConversationServices } from '../../renderer/features/conversation/index.js';
+import type { ExecutorCatalogEntry } from '@maka/core/executor-catalog';
 import { renderConversationMarkdown, stubComposerGateInputs, stubConversationServices, useConversationOwner } from '../../renderer/features/conversation/testing.js';
 import type { LatestRequestUsage } from '../../renderer/application/contracts/session-inspector/latest-request-usage.js';
 import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
@@ -46,6 +47,7 @@ function harness(options: {
   completeMessages?: readonly StoredMessage[];
   searchTarget?: ComponentProps<typeof ConversationLifecycle>['searchTarget'];
   listTurnLandmarks?: ConversationServices['sessions']['listTurnLandmarks'];
+  executorSessions?: Partial<ConversationServices['sessions']>;
 } = {}) {
   const { root } = installReactRenderer();
   const catalog = createSessionCatalogController();
@@ -57,7 +59,8 @@ function harness(options: {
   }> = [];
   const observations: Array<{ sessionId: string; closed: boolean; phase: Parameters<ConversationObservationServices['subscribeEvents']>[2]; fail: () => void }> = [];
   const services = stubConversationServices(
-    options.listTurnLandmarks ? { sessions: { listTurnLandmarks: options.listTurnLandmarks } } : {},
+    { sessions: { ...options.executorSessions,
+      ...(options.listTurnLandmarks ? { listTurnLandmarks: options.listTurnLandmarks } : {}) } },
   );
   services.observation.openTranscript = (sessionId, error, initialTurnId) => {
     let messages: StoredMessage[] = [];
@@ -107,6 +110,12 @@ function harness(options: {
   let lifecycleCommits = 0;
   let setVisible!: (visible: boolean) => void;
   let setCovered!: (covered: boolean) => void;
+  const executorFrames: Array<{ id?: string; picker: ReturnType<typeof useExecutorSelection> }> = [];
+  function ExecutorProbe({ session }: { session?: DesktopSessionSummary }) {
+    const picker = useExecutorSelection({ key: session?.id ?? 'draft', session });
+    executorFrames.push({ id: session?.id, picker });
+    return null;
+  }
   function Transcript(props: NonNullable<typeof transcript>) { transcript = props; transcriptRenders += 1; return null; }
   function Composer(_props: { processing: boolean; pendingMessages?: readonly TransientUserMessageProjection[]; latestRequestUsage?: LatestRequestUsage }) {
     composerRenders += 1;
@@ -122,6 +131,7 @@ function harness(options: {
     const [covered, updateCovered] = useState(false);
     setCovered = updateCovered;
     return createElement(Fragment, null,
+      options.executorSessions ? createElement(ExecutorProbe, { session: target.activeCatalogSession }) : null,
       createElement(Profiler, { id: 'conversation-lifecycle', onRender: () => { lifecycleCommits += 1; } }, createElement(ConversationLifecycle, {
         refreshSessions: async () => [], onExecutionBoundaryChanged() {},
         showModelSetupToast() {}, onTurnCompleted() {},
@@ -141,7 +151,7 @@ function harness(options: {
     }),
   })));
   return {
-    root, catalog, opened, observations,
+    root, catalog, opened, observations, executorFrames,
     get owner() { return owner; }, get target() { return target; }, get transcript() { return transcript; },
     get counts() { return { shellRenders, transcriptRenders, composerRenders, composerMounts, composerUnmounts, lifecycleCommits }; },
     showTranscript(visible: boolean) { setVisible(visible); },
@@ -151,6 +161,81 @@ function harness(options: {
 
 describe('Conversation ownership', () => {
   afterEach(cleanupFakeDom);
+  for (const readiness of ['ready', 'restorable'] as const) for (const metadataFirst of [false, true]) {
+    it(`publishes ${readiness} ACP Sessions with their model snapshot on the first frame (metadata first: ${metadataFirst})`, async () => {
+      const cached = new Map<string, readonly ExecutorCatalogEntry[]>();
+      const reads: Array<{ id: string; finish(value: readonly ExecutorCatalogEntry[]): void }> = [];
+      const catalog: ExecutorCatalogEntry[] = [{
+        id: 'agent', displayName: 'Agent', readiness, supportsAttachments: false,
+        supportsModelChange: readiness === 'ready', supportsModeChange: readiness === 'ready',
+        models: [{ id: 'high', name: 'Gemini (High)' }, { id: 'low', name: 'Gemini (Low)' }],
+        modelGroups: [{ id: 'family', name: 'Gemini', variants: [{ modelId: 'high', level: 'high' }, { modelId: 'low', level: 'low' }] }],
+        modes: [{ id: 'default', name: 'Default' }], currentModel: 'high', currentMode: 'default',
+      }];
+      const h = harness({ executorSessions: {
+        readCachedExecutorState: id => cached.get(id),
+        getExecutorState: id => new Promise(resolve => { reads.push({ id, finish(value) { cached.set(id, value); resolve(value); } }); }),
+        setExecutorModelConfiguration: async () => { assert.fail('opening must not restore or configure the Agent'); },
+      } });
+      h.catalog.commitSessions([row('A'), ...['B', 'C'].map(id => ({ ...row(id), executorId: 'agent', executorConfig: { model: 'high', mode: 'default' } }))]);
+      await act(async () => h.target.setActiveId('A'));
+      await act(async () => h.opened.at(-1)!.publish([message('a')]));
+      assert.equal(reads.length, 0, 'native Sessions do not inspect external Agents');
+      await act(async () => h.target.setActiveId('B'));
+      if (metadataFirst) {
+        await act(async () => reads[0]!.finish(catalog));
+        assert.equal(h.target.activeId, 'A', 'metadata alone cannot publish an unread transcript');
+      }
+      await act(async () => h.opened.at(-1)!.publish([message('b')]));
+      if (!metadataFirst) {
+        assert.equal(h.target.activeId, 'A', 'retain the current conversation until both next reads settle');
+        assert.equal(h.target.switchingSession, true);
+        await act(async () => reads[0]!.finish(catalog));
+      }
+      assert.equal(h.target.activeId, 'B');
+      const assertFrames = () => {
+        const frames = h.executorFrames.filter(frame => frame.id === 'B');
+        assert.ok(frames.length);
+        for (const { picker } of frames) {
+          assert.deepEqual(picker.entry, catalog[0]);
+          assert.equal(picker.loading, false, 'neither activation nor revalidation flashes loading');
+          assert.deepEqual(picker.loadingIds, []);
+        }
+      };
+      assertFrames();
+      await act(async () => h.target.setActiveId('A'));
+      await act(async () => h.opened.at(-1)!.publish([message('a-again')]));
+      await act(async () => h.target.setActiveId('B'));
+      await act(async () => h.opened.at(-1)!.publish([message('b-again')]));
+      assert.equal(h.target.activeId, 'B', 'a cached Session publishes without waiting for revalidation');
+      assertFrames();
+      await act(async () => h.target.setActiveId('C'));
+      await act(async () => h.opened.at(-1)!.publish([message('c')]));
+      assert.equal(h.target.activeId, 'B', 'another Session using the same Agent cannot borrow B metadata');
+      await act(async () => h.target.setActiveId('A'));
+      await act(async () => h.opened.at(-1)!.publish([message('a-last')]));
+      await act(async () => reads.find(read => read.id === 'C')!.finish(catalog));
+      assert.equal(h.target.activeId, 'A', 'a late preparation cannot navigate back to a superseded Session');
+      await act(async () => h.root.unmount());
+    });
+  }
+
+  it('keeps an ACP conversation readable when display metadata fails', async () => {
+    let reject!: (error: Error) => void;
+    const h = harness({ executorSessions: {
+      getExecutorState: () => new Promise((_resolve, fail) => { reject = fail; }),
+    } });
+    h.catalog.commitSessions([row('A'), { ...row('B'), executorId: 'agent' }]);
+    await act(async () => h.target.setActiveId('A'));
+    await act(async () => h.opened.at(-1)!.publish([message('a')]));
+    await act(async () => h.target.setActiveId('B'));
+    await act(async () => h.opened.at(-1)!.publish([message('b')]));
+    await act(async () => reject(new Error('Host unavailable')));
+    assert.equal(h.target.activeId, 'B');
+    assert.equal(h.transcript?.messages[0]?.id, 'b');
+    await act(async () => h.root.unmount());
+  });
+
   it('hides Branch only for the Personal Assistant and keeps Copy across Session switches', async () => {
     const h = harness();
     h.catalog.commitSessions([

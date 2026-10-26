@@ -144,7 +144,7 @@ test('backup restores every wait lifecycle, revisions and the resolved active sl
         schemaVersion: 1,
         waitId: `wait-${status}`,
         sessionId: session.id,
-        goalControlLease: { goalId: 'goal-1', generation: 3 },
+
         sourceTurnId: 'turn-1',
         sourceToolCallId: 'call-1',
         resource: {
@@ -223,12 +223,11 @@ test('backup restores every wait lifecycle, revisions and the resolved active sl
         });
         const nextWaitId = `${record.waitId}-next`;
         // Use the original waiting shape, omitting terminal fields from the
-        // restored record, when checking whether its active slot survived.
+        // restored record, when checking independent observation registration.
         const waiting = {
           schemaVersion: record.schemaVersion,
           waitId: nextWaitId,
           sessionId: record.sessionId,
-          goalControlLease: record.goalControlLease,
           sourceTurnId: record.sourceTurnId,
           sourceToolCallId: record.sourceToolCallId,
           resource: record.resource,
@@ -246,10 +245,17 @@ test('backup restores every wait lifecycle, revisions and the resolved active sl
             expectedAuthorityRevision: null,
             record: waiting,
           }),
-          record.status === 'waiting' || record.status === 'resolved'
-            ? { kind: 'active_wait_conflict', waitId: record.waitId }
-            : { kind: 'committed', snapshot: { authorityRevision: 0, record: waiting } },
+          { kind: 'committed', snapshot: { authorityRevision: 0, record: waiting } },
         );
+        assert.deepEqual(
+          await restored.read({ sessionId: record.sessionId, waitId: record.waitId }),
+          snapshot,
+          'registering another observation must preserve the restored identity and result',
+        );
+        assert.deepEqual(await restored.read({ sessionId: record.sessionId, waitId: nextWaitId }), {
+          authorityRevision: 0,
+          record: waiting,
+        });
       }
     } finally {
       await restored.close();

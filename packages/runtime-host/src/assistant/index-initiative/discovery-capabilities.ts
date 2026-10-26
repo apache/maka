@@ -65,6 +65,9 @@ export const DISCOVERY_EXCLUDED_TOOLS: ReadonlySet<string> = new Set([
   'InboxCheck',
   'InboxList',
   'InboxRead',
-  'AssistantSetAvatar',
+  'AssistantCharacterPack',
+  'AssistantPetPack',
+  'AssistantSetup',
+  'AssistantStickerSearch',
   'Sleep',
 ]);

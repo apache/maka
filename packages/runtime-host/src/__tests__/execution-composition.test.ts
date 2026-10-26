@@ -3972,6 +3972,229 @@ test('production executor admission discovers the Session provider, including pr
   });
 });
 
+test('existing external conversations admit recoverable messages while retaining readiness gates', async () => {
+  await withCompositionRoot(async ({ root, owner }) => {
+    const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+    const sessions = [];
+    for (const readiness of [
+      'ready',
+      'restorable',
+      'restore_failed',
+      'restoring',
+      'history_only',
+      'history_gap',
+      'authentication_required',
+      'unavailable',
+    ]) {
+      const session = await stores.sessionStore.create({
+        cwd: root,
+        executorId: 'external',
+        llmConnectionSlug: 'executor:external',
+        model: 'saved-model',
+        permissionMode: 'ask',
+      });
+      sessions.push({ session, readiness });
+    }
+    const { composition } = await createCapturedExecutionComposition(owner);
+    try {
+      const source = join(root, 'recoverable-executor-fixture');
+      await mkdir(source);
+      await writeFile(
+        join(source, 'maka.extension.json'),
+        JSON.stringify({
+          schemaVersion: 1,
+          id: 'recoverable-executor-fixture',
+          runtime: { entry: 'index.mjs' },
+          configuration: { properties: { readiness: { type: 'string' } }, required: ['readiness'] },
+          composition: { patch: 'maka.composition.json', structuralDependencies: [] },
+        }),
+      );
+      await writeFile(
+        join(source, 'index.mjs'),
+        `export default {
+        packageId: 'recoverable-executor-fixture', contributions: [{ id: 'executor', kind: 'executor' }],
+        host: { apply(ctx, config) { ctx.executors.register({
+          id: 'external',
+          inspectConversation: async () => ({ id: 'external', displayName: 'External',
+            readiness: config.readiness, models: [], supportsAttachments: false, supportsModelChange: false }),
+          execute: async () => ({ status: 'completed', text: 'continued' }),
+        }); } },
+      };`,
+      );
+      await writeFile(
+        join(source, 'maka.composition.json'),
+        JSON.stringify(
+          sessions.map(({ session, readiness }) => ({
+            type: 'insert',
+            rootId: `session:${session.id}`,
+            entry: {
+              id: `executor-${session.id}`,
+              packageId: 'recoverable-executor-fixture',
+              config: { readiness },
+            },
+          })),
+        ),
+      );
+      const installed = await composition.plugins.installPackage(source);
+      assert.equal(installed.convergence, 'converged', JSON.stringify(installed));
+      const context: ConnectionContext = {
+        hostEpoch: 'execution-composition-test',
+        connectionId: 'recoverable-executor-client',
+        principal: 'local_os_user',
+        acquireResidency: () => ({ release() {} }),
+      };
+      for (const { session, readiness } of sessions) {
+        const result = await composition.handlers['turn.message.submit'](
+          {
+            originHostEpoch: context.hostEpoch,
+            sessionId: session.id,
+            messageId: `message-${readiness}`,
+            content: { text: 'continue' },
+            placement: 'next_turn',
+          },
+          context,
+        );
+        if (['ready', 'restorable', 'restore_failed'].includes(readiness)) {
+          assert.equal(result.ok, true, JSON.stringify(result));
+          if (result.ok) assert.equal(result.result.disposition, 'turn_started', readiness);
+        } else {
+          assert.equal(result.ok, false, `${readiness}: ${JSON.stringify(result)}`);
+        }
+      }
+    } finally {
+      await composition.close();
+    }
+  });
+});
+
+test('another client can submit while recovery holds admission and starts the same external conversation', async () => {
+  const started = deferred<void>();
+  let release: (() => void) | undefined;
+  let restores = 0;
+  const server = createServer((_request, response) => {
+    restores++;
+    release = () => response.end('ready');
+    started.resolve();
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  assert.ok(address && typeof address !== 'string');
+  try {
+    await withCompositionRoot(async ({ root, owner }) => {
+      const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+      const session = await stores.sessionStore.create({
+        cwd: root,
+        executorId: 'external',
+        llmConnectionSlug: 'executor:external',
+        model: 'saved-model',
+        executorConfig: { model: 'saved-model' },
+        permissionMode: 'ask',
+      });
+      const { composition } = await createCapturedExecutionComposition(owner);
+      try {
+        const source = join(root, 'typing-executor-fixture');
+        await mkdir(source);
+        await writeFile(
+          join(source, 'maka.extension.json'),
+          JSON.stringify({
+            schemaVersion: 1,
+            id: 'typing-executor-fixture',
+            runtime: { entry: 'index.mjs' },
+            composition: { patch: 'maka.composition.json', structuralDependencies: [] },
+          }),
+        );
+        await writeFile(
+          join(source, 'index.mjs'),
+          `export default {
+          packageId: 'typing-executor-fixture', contributions: [{ id: 'executor', kind: 'executor' }],
+          host: { apply(ctx) {
+            let readiness = 'restorable';
+            ctx.executors.register({ id: 'external',
+              inspectConversation: async () => ({ id: 'external', displayName: 'External', readiness,
+                models: [], supportsAttachments: false, supportsModelChange: false }),
+              configureConversation: async (input, signal) => {
+                readiness = 'restoring';
+                const response = await fetch('http://127.0.0.1:${address.port}', { signal });
+                await response.text();
+                readiness = 'ready';
+                return input.configuration;
+              },
+              execute: async () => {
+                if (readiness !== 'ready') throw new Error('Execution raced restoration');
+                return { status: 'completed', text: 'continued' };
+              },
+            });
+          } },
+        };`,
+        );
+        await writeFile(
+          join(source, 'maka.composition.json'),
+          JSON.stringify([
+            {
+              type: 'insert',
+              rootId: `session:${session.id}`,
+              entry: { id: 'typing-executor', packageId: 'typing-executor-fixture', config: {} },
+            },
+          ]),
+        );
+        const installed = await composition.plugins.installPackage(source);
+        assert.equal(installed.convergence, 'converged', JSON.stringify(installed));
+        const context: ConnectionContext = {
+          hostEpoch: 'execution-composition-test',
+          connectionId: 'typing-executor-client',
+          principal: 'local_os_user',
+          acquireResidency: () => ({ release() {} }),
+        };
+        const current = await stores.sessionStore.readHeaderRecordSnapshot(session.id);
+        const preparation = composition.handlers['session.configuration.update'](
+          {
+            sessionId: session.id,
+            expectedRevision: current.revision,
+            patch: { executorConfig: { model: 'saved-model' } },
+          },
+          context,
+        );
+        await started.promise;
+        let admitted = false;
+        const sending = composition.handlers['turn.message.submit'](
+          {
+            originHostEpoch: context.hostEpoch,
+            sessionId: session.id,
+            messageId: 'typed-message',
+            content: { text: 'continue while restoration is pending' },
+            placement: 'next_turn',
+          },
+          { ...context, connectionId: 'another-client' },
+        ).then((result) => {
+          admitted = true;
+          return result;
+        });
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        assert.equal(
+          admitted,
+          false,
+          'Host admission waits for recovery regardless of which client saved the message',
+        );
+        release!();
+        const configured = await preparation;
+        assert.equal(configured.ok, true, JSON.stringify(configured));
+        const result = await sending;
+        assert.equal(result.ok, true, JSON.stringify(result));
+        if (result.ok) assert.equal(result.result.disposition, 'turn_started');
+        assert.equal(restores, 1);
+      } finally {
+        release?.();
+        await composition.close();
+      }
+    });
+  } finally {
+    release?.();
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
+  }
+});
+
 test('production composition orphans ownerless ShellRuns before serving Resource queries', async () => {
   await withCompositionRoot(async ({ root, owner }) => {
     const stores = await openInteractiveExecutionStoresForWrite(owner.lease);

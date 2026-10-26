@@ -19,8 +19,46 @@
 
 import { defineObjectShape, hasExactShape, isRecord } from './record-schema.js';
 
-/** Correlation data, never proof of permission to register or admit a Turn. */
-export interface EventWaitProvenance {
+/** A naturally completed Goal Turn has no suspended tool call. */
+export interface GoalWaitingProvenance {
+  readonly waitId: string;
+  readonly sourceTurnId: string;
+  readonly generation: number;
+  readonly resultDigest: `sha256:${string}`;
+}
+
+export function decodeGoalWaitingProvenance(value: unknown): GoalWaitingProvenance {
+  if (
+    !isRecord(value) ||
+    Object.keys(value).sort().join() !== 'generation,resultDigest,sourceTurnId,waitId' ||
+    typeof value.waitId !== 'string' ||
+    !/^[A-Za-z0-9_-]{1,128}$/.test(value.waitId) ||
+    typeof value.sourceTurnId !== 'string' ||
+    !/^[A-Za-z0-9_-]{1,128}$/.test(value.sourceTurnId) ||
+    !Number.isSafeInteger(value.generation) ||
+    (value.generation as number) < 0 ||
+    typeof value.resultDigest !== 'string' ||
+    !/^sha256:[a-f0-9]{64}$/.test(value.resultDigest)
+  )
+    throw new TypeError('Invalid Goal waiting provenance');
+  return Object.freeze({ ...value }) as unknown as GoalWaitingProvenance;
+}
+
+export function sameGoalWaitingProvenance(
+  a: GoalWaitingProvenance | undefined,
+  b: GoalWaitingProvenance | undefined,
+): boolean {
+  if (!a || !b) return a === b;
+  return (
+    a.waitId === b.waitId &&
+    a.sourceTurnId === b.sourceTurnId &&
+    a.generation === b.generation &&
+    a.resultDigest === b.resultDigest
+  );
+}
+
+/** Read compatibility for PR3/PR4 history only; never authorizes a new admission. */
+export interface LegacyEventWaitProvenance {
   readonly waitId: string;
   readonly deliveryKey: string;
   readonly sourceTurnId: string;
@@ -29,7 +67,7 @@ export interface EventWaitProvenance {
   readonly outcome: 'satisfied' | 'invalidated' | 'source_unavailable' | 'expired';
   readonly resultDigest: `sha256:${string}`;
 }
-const shape = defineObjectShape<EventWaitProvenance>()(
+const legacyShape = defineObjectShape<LegacyEventWaitProvenance>()(
   [
     'waitId',
     'deliveryKey',
@@ -41,10 +79,10 @@ const shape = defineObjectShape<EventWaitProvenance>()(
   ],
   [],
 );
-export function decodeEventWaitProvenance(value: unknown): EventWaitProvenance {
+export function decodeLegacyEventWaitProvenance(value: unknown): LegacyEventWaitProvenance {
   if (
     !isRecord(value) ||
-    !hasExactShape(value, shape) ||
+    !hasExactShape(value, legacyShape) ||
     typeof value.waitId !== 'string' ||
     !/^[A-Za-z0-9_-]{1,128}$/.test(value.waitId) ||
     value.deliveryKey !== `event-wait/${value.waitId}` ||
@@ -71,12 +109,12 @@ export function decodeEventWaitProvenance(value: unknown): EventWaitProvenance {
     generation: value.generation,
     outcome: value.outcome,
     resultDigest: value.resultDigest,
-  }) as EventWaitProvenance;
+  }) as LegacyEventWaitProvenance;
 }
 
-export function sameEventWaitProvenance(
-  a: EventWaitProvenance | undefined,
-  b: EventWaitProvenance | undefined,
+export function sameLegacyEventWaitProvenance(
+  a: LegacyEventWaitProvenance | undefined,
+  b: LegacyEventWaitProvenance | undefined,
 ): boolean {
   if (!a || !b) return a === b;
   return (
@@ -88,4 +126,21 @@ export function sameEventWaitProvenance(
     a.outcome === b.outcome &&
     a.resultDigest === b.resultDigest
   );
+}
+
+/** The two provenance formats describe different consumers and cannot coexist. */
+export function decodeGoalEventProvenance(value: { goalWaiting?: unknown; eventWait?: unknown }): {
+  goalWaiting?: GoalWaitingProvenance;
+  eventWait?: LegacyEventWaitProvenance;
+} {
+  if (value.goalWaiting !== undefined && value.eventWait !== undefined)
+    throw new TypeError('Conflicting Goal wait provenance');
+  return {
+    ...(value.goalWaiting === undefined
+      ? {}
+      : { goalWaiting: decodeGoalWaitingProvenance(value.goalWaiting) }),
+    ...(value.eventWait === undefined
+      ? {}
+      : { eventWait: decodeLegacyEventWaitProvenance(value.eventWait) }),
+  };
 }

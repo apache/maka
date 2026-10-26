@@ -34,6 +34,7 @@ export interface BotEndpoint {
   post(input: InboxInput): void;
   discoveryDeliveries?(): DiscoveryDelivery[];
   discoveryFeedback?(): DiscoveryFeedbackLink[];
+  taskCreated?(owner: string, taskKey: string, sessionId: string): void;
 }
 /** In-process routing only; durable mailbox and wake state belong to the Bot. */
 export class AssistantBotBridge {
@@ -72,6 +73,9 @@ export class AssistantBotBridge {
       deliveries: this.endpoint!.discoveryDeliveries?.() ?? [],
       feedback: this.endpoint!.discoveryFeedback?.() ?? [],
     };
+  }
+  taskCreated(owner: string, taskKey: string, sessionId: string) {
+    this.endpoint?.taskCreated?.(owner, taskKey, sessionId);
   }
   post(owner: string, input: InboxInput) {
     if (!this.isConversation(owner)) return false;
