@@ -64,6 +64,27 @@ struct Evaluation {
     reply: oneshot::Sender<Result<CellResult, CellAbort>>,
 }
 
+struct EvaluationPromise(Option<v8::Global<v8::Promise>>);
+
+extern "C" fn retain_evaluation_promise(
+    kind: v8::PromiseHookType,
+    promise: v8::Local<v8::Promise>,
+    _: v8::Local<v8::Value>,
+) {
+    if kind != v8::PromiseHookType::Init {
+        return;
+    }
+    // SAFETY: V8 invokes this hook with a live promise in the current isolate.
+    v8::callback_scope!(unsafe scope, promise);
+    if matches!(
+        scope.get_slot::<EvaluationPromise>(),
+        Some(EvaluationPromise(None))
+    ) {
+        let promise = v8::Global::new(scope, promise);
+        scope.set_slot(EvaluationPromise(Some(promise)));
+    }
+}
+
 impl Repl {
     pub fn is_closed(&self) -> bool {
         self.stopped.is_cancelled() || self.worker.is_finished()
@@ -168,6 +189,9 @@ async fn serve(
             delete globalThis[name];
         {bootstrap}
     }})()"#)).map_err(|e| CellAbort::Internal(e.to_string()))?;
+    runtime
+        .v8_isolate()
+        .set_promise_hook(retain_evaluation_promise);
 
     let isolate = runtime.v8_isolate().thread_safe_handle();
     let heap_exhausted = CancellationToken::new();
@@ -244,6 +268,10 @@ async fn serve(
         sequence += 1;
         // Local inspector transport gives real REPL lexical bindings and await;
         // there is deliberately no inspector socket or arbitrary CDP endpoint.
+        // V8 creates the REPL's async-function promise before user statements.
+        // Its inspector handler retains it weakly, so own that first promise
+        // through settlement without retaining promises created by user code.
+        runtime.v8_isolate().set_slot(EvaluationPromise(None));
         {
             let _execution = request.context.enter_execution();
             inspector.post_message(
@@ -256,6 +284,10 @@ async fn serve(
                 })),
             );
         }
+        let _evaluation_promise = runtime
+            .v8_isolate()
+            .remove_slot::<EvaluationPromise>()
+            .and_then(|promise| promise.0);
         let mut completed = false;
         let interrupted_message = if admission.is_some() {
             "REPL interrupted"
