@@ -72,7 +72,7 @@ pub(super) enum Completion {
 }
 
 /// Running readback and codec work retain their original capacity until return.
-/// Only complete Sixel snapshots can supersede another completed snapshot.
+/// Complete snapshots can supersede another completed snapshot before writing.
 struct FrameJob {
     geometry: u64,
     work: FrameWork,
@@ -101,7 +101,7 @@ pub(crate) struct Inbox {
     pub capabilities: Capabilities,
     events: VecDeque<Input>,
     tracing: bool,
-    /// Last current-viewport writer receipt; also rejects late older Sixel work.
+    /// Last current-viewport writer receipt; also rejects late older snapshots.
     pub published: Option<FrameToken>,
     frames: VecDeque<FrameJob>,
     frame_capacity: usize,
@@ -159,12 +159,22 @@ impl Inbox {
     /// Admission is checked before drawing, so the native dirty bit coalesces
     /// changes while these finite readback/codec/result slots are occupied.
     pub(super) fn can_submit(&self) -> bool {
-        let parallel = self.capabilities.protocol == Some(Protocol::Sixel);
-        let capacity = if parallel { self.frame_capacity } else { 1 };
+        let protocol = self.capabilities.protocol;
+        let capacity = match protocol {
+            Some(Protocol::Sixel) => self.frame_capacity,
+            // One codec owner and one GPU lookahead/completed-result position.
+            Some(Protocol::Kitty) => 2,
+            _ => 1,
+        };
         if self.resize.is_some()
             || self.capabilities.viewport().is_none()
             || self.frames.len() >= capacity
-            || (!parallel && self.in_flight.is_some())
+            || (protocol == Some(Protocol::Iterm2) && self.in_flight.is_some())
+            || (protocol == Some(Protocol::Kitty)
+                && self
+                    .frames
+                    .iter()
+                    .any(|job| matches!(job.work, FrameWork::Reserved | FrameWork::Submitted(_))))
         {
             return false;
         }
@@ -213,6 +223,14 @@ impl Inbox {
     }
 
     pub(super) fn take_candidate(&mut self) -> Option<Candidate> {
+        if self.capabilities.protocol == Some(Protocol::Kitty)
+            && self
+                .frames
+                .iter()
+                .any(|job| matches!(job.work, FrameWork::Encoding(_)))
+        {
+            return None;
+        }
         let job = self
             .frames
             .iter_mut()
@@ -240,7 +258,10 @@ impl Inbox {
             self.frames.remove(index);
             return Completion::Finished;
         };
-        if self.capabilities.protocol == Some(Protocol::Sixel) {
+        if matches!(
+            self.capabilities.protocol,
+            Some(Protocol::Sixel | Protocol::Kitty)
+        ) {
             let replacement = self
                 .frames
                 .iter()
@@ -286,14 +307,16 @@ impl Inbox {
         Completion::Finished
     }
 
-    /// Sixel is a complete visual snapshot: an idle writer takes the latest
-    /// ready scene without waiting for older codecs. Stateful protocols retain
-    /// their serial order and every handoff waits for the native writer receipt.
+    /// An idle writer takes the latest independent snapshot. Kitty binds image
+    /// slots only after this claim; every handoff waits for the native receipt.
     pub(super) fn take_encoded(&mut self) -> Option<Encoded> {
         if self.in_flight.is_some() {
             return None;
         }
-        let index = if self.capabilities.protocol == Some(Protocol::Sixel) {
+        let index = if matches!(
+            self.capabilities.protocol,
+            Some(Protocol::Sixel | Protocol::Kitty)
+        ) {
             self.frames
                 .iter()
                 .position(|job| matches!(job.work, FrameWork::Ready(_)))?
@@ -601,10 +624,10 @@ mod tests {
     }
 
     #[test]
-    fn serial_protocols_wait_for_the_predecessor_and_native_writer_receipt() {
-        for protocol in [Protocol::Kitty, Protocol::Iterm2] {
+    fn iterm2_waits_for_the_predecessor_and_native_writer_receipt() {
+        {
             let mut caps = capabilities();
-            caps.protocol = Some(protocol);
+            caps.protocol = Some(Protocol::Iterm2);
             let mut inbox = Inbox::new(caps, false);
             let token = FrameToken::default();
             inbox.frames.push_back(FrameJob {
@@ -645,6 +668,21 @@ mod tests {
     // Use authentic, ordered native tokens without widening FrameToken's API.
     // Only completion order is controlled below; no scheduler API is replaced.
     fn native_frames(count: usize) -> Vec<nsh_gpui_terminal::CandidateFrame> {
+        let mut completed = Vec::new();
+        native_submissions(count, |frame| {
+            let frame = frame.complete().unwrap();
+            assert_eq!(&frame.pixels()[..4], &[255, 0, 0, 255]);
+            completed.push(frame);
+        });
+        assert!(
+            completed
+                .windows(2)
+                .all(|pair| pair[0].token().sequence() < pair[1].token().sequence())
+        );
+        completed
+    }
+
+    fn native_submissions(count: usize, mut receive: impl FnMut(SubmittedFrame)) {
         use gpui::{
             AppContext, Application, Bounds, Context, IntoElement, Render, Styled, Window,
             WindowBounds, WindowOptions, div, point, px, rgb, size,
@@ -683,7 +721,6 @@ mod tests {
                 .unwrap(),
             );
         });
-        let mut completed = Vec::new();
         for _ in 0..count {
             application.update(|cx| {
                 window
@@ -694,19 +731,133 @@ mod tests {
                     .unwrap();
             });
             assert!(platform.pump());
-            let frame = frames.borrow_mut().remove(0).complete().unwrap();
-            assert_eq!(&frame.pixels()[..4], &[255, 0, 0, 255]);
+            let frame = frames.borrow_mut().remove(0);
             assert!(frames.borrow().is_empty());
-            completed.push(frame);
+            receive(frame);
         }
-        assert!(
-            completed
-                .windows(2)
-                .all(|pair| pair[0].token().sequence() < pair[1].token().sequence())
-        );
         drop(application);
         platform.shutdown();
-        completed
+    }
+
+    #[test]
+    fn kitty_overlaps_one_codec_with_draw_and_coalesces_only_unwritten_snapshots() {
+        fn finish(inbox: &mut Inbox, candidate: Candidate) -> Completion {
+            let frame = candidate.frame.complete().unwrap();
+            inbox.finished(
+                &frame.token(),
+                Some(Encoded {
+                    frame: WireFrame::Kitty(
+                        nsh_gpui_terminal::kitty::KittyFrame::encode(&frame, 4, 2).unwrap(),
+                    ),
+                    geometry: candidate.geometry,
+                }),
+            )
+        }
+
+        let mut caps = capabilities();
+        caps.protocol = Some(Protocol::Kitty);
+        let mut inbox = Inbox::new(caps, false);
+        inbox.last_fully_written_geometry = Some(1);
+        let mut active = None;
+        let mut writing = None;
+        let mut waiting = None;
+        let mut tokens = Vec::new();
+        native_submissions(4, |frame| {
+            let index = tokens.len();
+            tokens.push(frame.token());
+            assert!(
+                inbox.reserve_frame(),
+                "GPU lookahead remains available during encoding and writing"
+            );
+            assert!(inbox.submitted(Candidate {
+                frame,
+                geometry: 1,
+                pump_started: None
+            }));
+            assert!(
+                !inbox.can_submit(),
+                "only one submitted GPU lookahead can wait"
+            );
+            if index == 0 {
+                active = inbox.take_candidate();
+                assert!(active.is_some());
+                return;
+            }
+            if index == 1 {
+                assert!(inbox.take_candidate().is_none(), "the codec has one owner");
+                finish(&mut inbox, active.take().unwrap());
+                writing = inbox.take_encoded();
+                assert_eq!(writing.as_ref().unwrap().frame.token(), tokens[0]);
+                assert!(
+                    inbox.published.is_none(),
+                    "taking a snapshot is not a writer receipt"
+                );
+                active = inbox.take_candidate();
+                return;
+            }
+            if index == 2 {
+                assert!(inbox.take_candidate().is_none());
+                finish(&mut inbox, active.take().unwrap());
+                assert!(
+                    inbox.take_encoded().is_none(),
+                    "an active writer cannot be replaced"
+                );
+                let candidate = inbox.take_candidate().unwrap();
+                assert!(
+                    !inbox.can_submit(),
+                    "ready snapshot and codec own both positions"
+                );
+                match finish(&mut inbox, candidate) {
+                    Completion::Superseded { token, replacement } => {
+                        assert_eq!(token, tokens[1]);
+                        assert_eq!(replacement, tokens[2]);
+                    }
+                    Completion::Finished => {
+                        panic!("the newer complete snapshot must replace the waiting scene")
+                    }
+                }
+                waiting = Some(tokens[2].clone());
+                return;
+            }
+            active = inbox.take_candidate();
+            assert_eq!(
+                inbox.completed_frames().next().unwrap().token,
+                waiting.take().unwrap()
+            );
+            inbox.push(Event::WindowResized(caps.size)).unwrap();
+            inbox.resize.take();
+            assert!(
+                inbox.completed_frames().next().is_none(),
+                "resize discards only the unwritten complete snapshot"
+            );
+            assert_eq!(
+                inbox.frames.len(),
+                1,
+                "the old codec retains its position until completion"
+            );
+            finish(&mut inbox, active.take().unwrap());
+            assert!(inbox.frames.is_empty());
+            let writing = writing.take().unwrap();
+            inbox.written(
+                Offer {
+                    token: writing.frame.token(),
+                    geometry: 1,
+                },
+                Some(41),
+            );
+            assert!(
+                inbox.take_encoded().is_none(),
+                "the native owner must consume even a stale receipt"
+            );
+            let receipt = inbox.ready.take().unwrap();
+            assert_ne!(receipt.geometry, inbox.geometry);
+            inbox.presented(&receipt.token);
+            assert!(inbox.published.is_none());
+            assert!(inbox.can_submit());
+        });
+        assert_eq!(tokens.len(), 4);
+        assert!(inbox.frames.is_empty());
+        assert!(inbox.in_flight.is_none());
     }
 
     fn native_encoded(frame: &nsh_gpui_terminal::CandidateFrame, geometry: u64) -> Encoded {
@@ -1081,7 +1232,7 @@ mod tests {
     }
 
     #[test]
-    fn protocols_with_previous_image_state_remain_serial_after_flush() {
+    fn kitty_preparation_can_pass_a_receipt_while_iterm2_remains_serial() {
         for protocol in [Protocol::Kitty, Protocol::Iterm2] {
             let mut caps = capabilities();
             caps.protocol = Some(protocol);
@@ -1097,9 +1248,10 @@ mod tests {
                 geometry: 1,
             });
             inbox.written(Offer { token, geometry: 1 }, Some(41));
-            assert!(
-                !inbox.can_submit(),
-                "previous-image state waits for native receipt consumption"
+            assert_eq!(
+                inbox.can_submit(),
+                protocol == Protocol::Kitty,
+                "Kitty preparation does not bind previous-image state"
             );
             let receipt = inbox.ready.take().unwrap();
             inbox.presented(&receipt.token);
