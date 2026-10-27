@@ -30,6 +30,7 @@ import {
   bodyTextStyle,
   captionTextStyle,
   controlStyle,
+  fieldBoxStyle,
   controlHoverStyle,
   controlFocusStyle,
   controlDisabledStyle,
@@ -80,7 +81,13 @@ export function ConnectionForm(props: { settings: ModelSettingsOwner }) {
             ...owner.action(),
             enabled: !form().enabled,
           })}
-          style={{ ...controlStyle, flexDirection: 'row', alignItems: 'center', gap: 12 }}
+          style={{
+            ...controlStyle,
+            ...fieldBoxStyle,
+            flexDirection: 'row',
+            alignItems: 'center',
+            gap: 12,
+          }}
           hoverStyle={controlHoverStyle}
           focusStyle={controlFocusStyle}
           disabledStyle={controlDisabledStyle}
@@ -120,7 +127,7 @@ export function ConnectionForm(props: { settings: ModelSettingsOwner }) {
               kind: 'key',
               modelId: null,
             })}
-            style={controlStyle}
+            style={{ ...controlStyle, ...fieldBoxStyle, alignSelf: 'flex-start' }}
             hoverStyle={controlHoverStyle}
             focusStyle={controlFocusStyle}
             disabledStyle={controlDisabledStyle}

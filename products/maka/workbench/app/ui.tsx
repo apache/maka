@@ -78,6 +78,19 @@ export const controlStyle = {
   borderRadius: 8,
   justifyContent: 'center',
 } as const;
+/**
+ * Horizontal padding of the disclosure rows in a turn (status, process group,
+ * thinking, tool). The desktop gives them one value so their chevrons and
+ * trailing states line up; the terminal keeps its own cell layout.
+ */
+export const disclosureInset = (terminal: number) => (platform.isTerminal ? terminal : 8);
+/**
+ * A switch or action row among labelled text fields. On the desktop it gets the
+ * fields' box, so its inset text lines up with the text typed in them.
+ */
+export const fieldBoxStyle = platform.isTerminal
+  ? {}
+  : { borderWidth: 1, borderColor: C.line, backgroundColor: C.background };
 export const controlHoverStyle = { backgroundColor: C.raised };
 export const controlFocusStyle = { backgroundColor: C.raised, borderColor: C.accent };
 export const controlDisabledStyle = platform.isTerminal

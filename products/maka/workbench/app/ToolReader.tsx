@@ -19,7 +19,7 @@
 
 import { textTooltip } from './ui';
 import { tr } from './locale';
-import { cleanup, computed, inputAction, Scroll, signal, Text, View } from 'nsh';
+import { cleanup, computed, inputAction, platform, Scroll, signal, Text, View } from 'nsh';
 import { Button } from 'nsh/base';
 import { Clipboard } from 'nsh';
 import type { ToolSource } from './ToolSource';
@@ -101,7 +101,16 @@ function ToolText(props: {
           ? C.warning
           : C.text;
   return (
-    <View style={{ minWidth: 0, borderRadius: 8, backgroundColor: C.background }}>
+    <View
+      style={{
+        minWidth: 0,
+        borderRadius: 8,
+        backgroundColor: C.background,
+        // The desktop page shares this colour, so a hairline marks the block.
+        borderWidth: platform.isTerminal ? 0 : 1,
+        borderColor: C.line,
+      }}
+    >
       <View
         style={{
           flexDirection: 'row',
@@ -121,41 +130,48 @@ function ToolText(props: {
         </Text>
         <Copy label={props.copyLabel} text={() => props.text} source={props.source} />
       </View>
-      <Scroll
-        horizontal
-        onScrollIntent={props.userScroll}
-        contentStyle={{ paddingHorizontal: 12, paddingBottom: 12 }}
+      <If
+        when={props.text !== ''}
+        else={
+          <Text
+            style={[
+              { ...captionTextStyle, color: C.muted, paddingHorizontal: 12, paddingBottom: 12 },
+              { userSelect: 'none' },
+            ]}
+          >
+            {tr('Empty recorded text.')}
+          </Text>
+        }
       >
-        <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 12 }}>
-          <If when={props.gutter !== undefined}>
-            <Text
-              accessibilityElementsHidden
-              style={[
-                { ...codeTextStyle, color: C.muted, textAlign: 'right' },
-                { pointerEvents: 'none', userSelect: 'none' },
-              ]}
-            >
-              {props.gutter}
-            </Text>
-            <View
-              style={[
-                { width: 1, alignSelf: 'stretch', backgroundColor: C.line },
-                { pointerEvents: 'none' },
-              ]}
-            />
-          </If>
-          <Text style={[{ ...codeTextStyle, color }, { userSelect: 'text' }]}>{props.text}</Text>
-        </View>
-      </Scroll>
-      <If when={props.text === ''}>
-        <Text
-          style={[
-            { ...captionTextStyle, color: C.muted, paddingHorizontal: 12, paddingBottom: 12 },
-            { userSelect: 'none' },
-          ]}
+        <Scroll
+          horizontal
+          onScrollIntent={props.userScroll}
+          contentStyle={{ paddingHorizontal: 12, paddingBottom: 12 }}
         >
-          {tr('Empty recorded text.')}
-        </Text>
+          <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 12 }}>
+            <If when={props.gutter !== undefined}>
+              <Text
+                accessibilityElementsHidden
+                style={[
+                  { ...codeTextStyle, color: C.muted, textAlign: 'right' },
+                  { pointerEvents: 'none', userSelect: 'none' },
+                ]}
+              >
+                {props.gutter}
+              </Text>
+              <View
+                style={[
+                  { width: 1, alignSelf: 'stretch', backgroundColor: C.line },
+                  { pointerEvents: 'none' },
+                ]}
+              />
+            </If>
+            {/* A final newline would show as an empty last line; copying keeps it. */}
+            <Text style={[{ ...codeTextStyle, color }, { userSelect: 'text' }]}>
+              {props.text.endsWith('\n') ? props.text.slice(0, -1) : props.text}
+            </Text>
+          </View>
+        </Scroll>
       </If>
     </View>
   );

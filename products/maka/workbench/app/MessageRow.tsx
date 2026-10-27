@@ -27,7 +27,7 @@ import { platform } from 'nsh';
 import { messageKey, type Row } from './history';
 import { MarkdownBody } from './MarkdownBody';
 import { SourceText } from './SourceText';
-import { C, bodyTextStyle, secondaryTextStyle, controlStyle } from './ui';
+import { C, bodyTextStyle, secondaryTextStyle, controlStyle, disclosureInset } from './ui';
 import { Icon } from './Icon';
 import { HistoryAttachments } from './Attachments';
 import { ToolCard } from './ToolCard';
@@ -226,7 +226,7 @@ export function MessageRow({
                               ...controlStyle,
                               flex: 1,
                               minWidth: 0,
-                              paddingHorizontal: 0,
+                              paddingHorizontal: disclosureInset(0),
                               flexDirection: 'row',
                               alignItems: 'center',
                               gap: 8,
@@ -278,7 +278,7 @@ export function MessageRow({
                         <If when={expanded()}>
                           <View
                             style={{
-                              paddingLeft: platform.isTerminal ? 24 : 22,
+                              paddingLeft: platform.isTerminal ? 24 : 32,
                               paddingVertical: 4,
                             }}
                           >

@@ -27,7 +27,7 @@ import { platform, windowSize } from 'nsh';
 import type { Row } from './history';
 import { MessageRow, type MessageViewState } from './MessageRow';
 import type { ProcessGroup, TurnPresentation } from './processGroups';
-import { C, captionTextStyle, controlStyle } from './ui';
+import { C, captionTextStyle, controlStyle, disclosureInset } from './ui';
 import { Icon } from './Icon';
 import type { ImagePreview } from './ToolImage';
 import { toolActivitySummary, type ToolActivity } from './toolActivity';
@@ -40,7 +40,7 @@ const panelStyle = {
 };
 const groupHeaderStyle = {
   ...controlStyle,
-  paddingHorizontal: 0,
+  paddingHorizontal: disclosureInset(0),
   flexDirection: 'row',
   alignItems: 'center',
   gap: 8,
@@ -116,7 +116,15 @@ export function TurnSummary(props: {
         answerKey: props.turn().answerKey,
         open: !props.expanded(),
       })}
-      style={{ ...controlStyle, flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 8 }}
+      style={{
+        ...controlStyle,
+        paddingHorizontal: disclosureInset(controlStyle.paddingHorizontal),
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 8,
+        marginTop: 8,
+        marginBottom: platform.isTerminal ? 0 : 8,
+      }}
       hoverStyle={{ backgroundColor: C.surface }}
       focusStyle={{ backgroundColor: C.raised }}
       activeStyle={{ backgroundColor: C.line }}

@@ -33,7 +33,7 @@ import {
 } from 'nsh';
 import type { YNode } from 'nsh';
 import { Button } from 'nsh/base';
-import { keymap } from 'nsh';
+import { keymap, platform } from 'nsh';
 import { AnimatedValue } from 'nsh';
 import {
   host,
@@ -2173,7 +2173,7 @@ export function Conversation(props: ConversationProps) {
                 ? { autoscrollToBottomThreshold: 32 }
                 : {}
             }
-            contentStyle={{ paddingRight: 8 }}
+            contentStyle={{ paddingRight: 8, paddingBottom: platform.isTerminal ? 0 : 16 }}
             style={{ flex: 1, minHeight: 0 }}
             onScroll={(event) => {
               changedReadExposure();

@@ -75,6 +75,10 @@ export function GeneralSettings(props: { owner: GeneralSettingsOwner }) {
   );
 }
 
+// On the desktop the section text starts where the rows' text does, so the
+// language heading lines up with the switches and links below it.
+const textInset = { paddingHorizontal: platform.isTerminal ? 0 : controlStyle.paddingHorizontal };
+
 function GeneralRoot(props: { owner: GeneralSettingsOwner; request: GeneralAction }) {
   const owner = props.owner;
   const request = props.request;
@@ -97,14 +101,14 @@ function GeneralRoot(props: { owner: GeneralSettingsOwner; request: GeneralActio
       </If>
       <If when={owner.facts()}>
         <View style={{ gap: 8 }}>
-          <Text style={{ ...bodyTextStyle, color: C.text, fontWeight: '600' }}>
+          <Text style={{ ...bodyTextStyle, color: C.text, fontWeight: '600', ...textInset }}>
             {tr('Language')}
           </Text>
-          <Text style={{ ...captionTextStyle, color: C.muted }}>
+          <Text style={{ ...captionTextStyle, color: C.muted, ...textInset }}>
             {tr('Language used by the interface and assistant.')}
           </Text>
           <If when={owner.facts()?.language == null}>
-            <Text style={{ ...captionTextStyle, color: C.muted }}>
+            <Text style={{ ...captionTextStyle, color: C.muted, ...textInset }}>
               {tr('Using the default language.')}
             </Text>
           </If>

@@ -19,7 +19,7 @@
 
 import { textTooltip } from './ui';
 import { displayText, tr } from './locale';
-import { computed, inputAction, Scroll, Text, View } from 'nsh';
+import { computed, inputAction, platform, Scroll, Text, View } from 'nsh';
 import { Button } from 'nsh/base';
 import type { HistoryTool } from '../../../../packages/plugin-sdk/src/index.js';
 import type { Row } from './history';
@@ -28,7 +28,7 @@ import { ToolImage } from './ToolImage';
 import { createToolSource, OriginalToolSource, type ToolSourceRef } from './ToolSource';
 import { cardFamily, processFamily, toolArguments, toolResult } from './toolCards';
 import { ToolReader } from './ToolReader';
-import { C, captionTextStyle, controlStyle } from './ui';
+import { C, captionTextStyle, controlStyle, disclosureInset } from './ui';
 import { Icon } from './Icon';
 
 const detailsGap = 8;
@@ -268,6 +268,7 @@ export function ToolCard(props: {
           })}
           style={{
             ...controlStyle,
+            paddingHorizontal: disclosureInset(controlStyle.paddingHorizontal),
             flex: 1,
             minWidth: 0,
             flexDirection: 'row',
@@ -339,7 +340,8 @@ export function ToolCard(props: {
         </If>
       </View>
       <If when={props.expanded()}>
-        <View style={{ paddingLeft: 16 }}>
+        {/* On the desktop the details start under the title, as thinking text does. */}
+        <View style={{ paddingLeft: platform.isTerminal ? 16 : 32 }}>
           <Scroll
             accessibilityLabel={tr('Tool details')}
             onScrollIntent={props.userScroll}
@@ -349,7 +351,7 @@ export function ToolCard(props: {
               minWidth: 0,
               maxHeight: Math.max(16, props.maxHeight() - controlStyle.minHeight - detailsGap),
             }}
-            contentStyle={{ gap: 16 }}
+            contentStyle={{ gap: 16, paddingRight: platform.isTerminal ? 0 : 12 }}
           >
             <If when={tool()?.result?.image}>
               <ToolImage
