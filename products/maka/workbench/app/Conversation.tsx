@@ -482,6 +482,10 @@ export function Conversation(props: ConversationProps) {
   let editEpoch = 0;
   let pendingDraft: (AttachmentEdit & { text: string }) | null = null;
   let saveTask: Promise<void> | null = null;
+  // From Enter until the Host reserves the send, the saved draft must stay the
+  // revision being sent. Edits made meanwhile show at once and are saved after.
+  let holding = false;
+  let heldDraft: (AttachmentEdit & { text: string }) | null = null;
   const attachments = createAttachmentDraft({
     sessionId,
     client,
@@ -489,8 +493,7 @@ export function Conversation(props: ConversationProps) {
     changed() {
       if (!alive || !draftReady()) return;
       editEpoch += 1;
-      pendingDraft = { text: draft(), ...attachments.snapshot() };
-      startSave();
+      queueDraft({ text: draft(), ...attachments.snapshot() });
     },
   });
 
@@ -1333,11 +1336,32 @@ export function Conversation(props: ConversationProps) {
       await saveTask;
     }
   };
+  const queueDraft = (edit: AttachmentEdit & { text: string }) => {
+    if (holding) {
+      heldDraft = edit;
+      return;
+    }
+    pendingDraft = edit;
+    startSave();
+  };
   const changeDraft = (text: string) => {
     if (!alive || !draftReady()) return;
     editEpoch += 1;
     draft.set(text);
-    pendingDraft = { text, ...attachments.snapshot() };
+    queueDraft({ text, ...attachments.snapshot() });
+  };
+  // Saves what was edited while a send was being reserved. Once `sent` was
+  // reserved, only the text typed after it stays in the composer.
+  const releaseHeld = (sent?: string) => {
+    holding = false;
+    const edit = heldDraft;
+    heldDraft = null;
+    if (edit === null || !alive) return;
+    if (sent !== undefined && edit.text.startsWith(sent)) {
+      changeDraft(edit.text.slice(sent.length));
+      return;
+    }
+    pendingDraft = edit;
     startSave();
   };
   const acceptRecoveredDraft = (
@@ -1549,6 +1573,7 @@ export function Conversation(props: ConversationProps) {
     const files = [...attachments.files()];
     sending.set(true);
     error.set('');
+    holding = true;
     try {
       const model = await selection(expectedBackend);
       if (!alive || model === null) return;
@@ -1556,7 +1581,7 @@ export function Conversation(props: ConversationProps) {
       await flushDraft();
       if (!alive) return;
       if (savingFailed()) throw new UiError('The draft could not be saved; it has not been sent.');
-      if (editEpoch !== epoch)
+      if (editEpoch !== epoch && heldDraft === null)
         throw new UiError('The draft changed before confirmation. Send again to confirm it.');
       if (
         expectedBackend !== undefined &&
@@ -1568,10 +1593,12 @@ export function Conversation(props: ConversationProps) {
       receiptsKnown.set(false);
       const sent = await sendDraft(client, draftRevision, model);
       if (!alive) return;
+      releaseHeld(text);
       settleReply(sent.reply, text, epoch, files);
     } catch (reason) {
       report(reason);
     } finally {
+      releaseHeld();
       try {
         if (alive) {
           const operations = await pendingSends(client);
