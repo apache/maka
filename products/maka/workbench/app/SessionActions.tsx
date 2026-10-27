@@ -448,6 +448,7 @@ const menuRowStyle = () => ({
   height: compact() ? 32 : 40,
   flexDirection: 'row' as const,
   alignItems: 'center' as const,
+  justifyContent: 'flex-start' as const,
   paddingHorizontal: 8,
   paddingVertical: 6,
   gap: 8,
