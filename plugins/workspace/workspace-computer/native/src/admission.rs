@@ -185,10 +185,8 @@ impl OperationSettlement for Settlement {
         let mut slot = self.pending.lock().unwrap();
         match slot.as_mut() {
             Some(retained) => {
-                retained.push(Box::pin(async move {
-                    pending.await;
-                    Ok(())
-                }));
+                // Keep the original box in place if polling it unwinds.
+                retained.push(Box::pin(pending.map(|()| Ok(()))));
                 Ok(())
             }
             None => Err((
@@ -685,10 +683,7 @@ impl OperationSettlement for HostServiceSettlement {
         };
         HostEffects::launch(
             admitted,
-            Box::pin(async move {
-                pending.await;
-                Ok(())
-            }),
+            Box::pin(pending.map(|()| Ok(()))),
             None,
             None,
             None,
@@ -1255,6 +1250,55 @@ mod tests {
         fixture.effects.settle().await.unwrap();
         fixture.owner.resources.settle().await.unwrap();
         fixture.close(false).await;
+    }
+
+    #[tokio::test]
+    async fn panicking_host_service_settlement_retains_the_original_rpc_box() {
+        struct Panicking {
+            polled: CancellationToken,
+            _witness: DropWitness,
+        }
+        impl std::future::Future for Panicking {
+            type Output = ();
+            fn poll(
+                self: std::pin::Pin<&mut Self>,
+                _: &mut std::task::Context<'_>,
+            ) -> std::task::Poll<()> {
+                self.polled.cancel();
+                panic!("fixture Host-service RPC poll panicked");
+            }
+        }
+        let fixture = Fixture::new().await;
+        let gate = Arc::new(Gate::default());
+        let handoff = host_service_settlement(&fixture.owner, &fixture.native, gate.clone());
+        let polled = CancellationToken::new();
+        let dropped = Arc::new(AtomicBool::new(false));
+        assert!(
+            handoff
+                .retain(Box::pin(Panicking {
+                    polled: polled.clone(),
+                    _witness: DropWitness(dropped.clone()),
+                }))
+                .is_ok()
+        );
+        gate.seal().await.unwrap();
+        polled.cancelled().await;
+        assert!(fixture.owner.resources.settle().await.is_err());
+        assert!(fixture.owner.stopping.is_cancelled());
+        assert!(!dropped.load(Ordering::SeqCst));
+        fixture.effects.settle().await.unwrap();
+        assert!(
+            !fixture
+                .facts()
+                .await
+                .iter()
+                .any(|fact| matches!(fact, Fact::ToolDispatched { .. }))
+        );
+        let resources = fixture.owner.resources.clone();
+        fixture.close(true).await;
+        assert!(!dropped.load(Ordering::SeqCst));
+        drop(resources);
+        assert!(dropped.load(Ordering::SeqCst));
     }
 
     #[tokio::test]

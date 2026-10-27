@@ -1836,16 +1836,20 @@ mod tests {
     impl PreparedBrowserFixture {
         async fn open() -> Self {
             use maka_agent_api::{
-                contract::{WorkspaceAccess, WorkspacePermissions},
+                contract::{Workspace, WorkspaceAccess, WorkspacePermissions},
                 session::StoredSessionConfiguration,
             };
             use maka_agent_facts::workspace::BindingStamp;
             let directory = tempfile::tempdir().expect("private browser authority fixture");
+            let workspace_path = directory.path().join("workspace");
+            std::fs::create_dir(&workspace_path).expect("private fixture workspace");
+            let private = directory.path().join("root");
+            let control = directory.path().join("control");
             let root_owner = maka_event_log::root::RootOwner::create(
-                &directory.path().join("root"),
+                &private,
                 &maka_event_log::root::RootNamespaces {
                     ownership: directory.path().join("ownership"),
-                    control: directory.path().join("control"),
+                    control: control.clone(),
                 },
             )
             .expect("fixture Root owner");
@@ -1854,8 +1858,31 @@ mod tests {
                     .await
                     .expect("fixture Root store"),
             );
+            let (path, directory_identity) = maka_fs_tools::directory::capture(&workspace_path)
+                .expect("capture actual fixture workspace");
+            let opened = maka_fs_tools::directory::open(&path, &directory_identity)
+                .expect("open actual fixture workspace");
+            let identity = maka_fs_tools::workspace::ensure_directory_identity(
+                path.clone(),
+                opened,
+                private,
+                control,
+                None,
+            )
+            .await
+            .expect("prepare actual fixture workspace identity");
+            let workspace = Workspace {
+                worktree: None,
+                project_id: None,
+                path: path.to_string_lossy().into_owned(),
+                directory_identity,
+                identity,
+            };
             let binding = root
-                .attach_workspace("fixture", &json!({"path":directory.path()}))
+                .attach_workspace(
+                    "fixture",
+                    &serde_json::to_value(workspace).expect("serialize actual fixture workspace"),
+                )
                 .await
                 .expect("actual fixture workspace binding");
             let store = root
