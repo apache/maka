@@ -1,10 +1,9 @@
-//! The native ES modules apps import: nsh's own (`nsh`,
-//! `nsh:rt`, `nsh/device`, `nsh/accessibility`, `nsh/keymap`, ...;
-//! [`nsh_core::js::NATIVE_MODULES`])
-//! and those of registries (`Registry::specifier`): the UI sets a host
-//! serves (`nsh/base`, an app's own) and the runtime's (`nsh/android`, ...), whose
-//! components, modules and re-exports become exports (`components.rs`).
-//! A module of both kinds (`nsh/accessibility`) has the exports of both.
+//! The native ES modules apps import: nsh's own (`nsh`, `nsh:rt`,
+//! `nsh/desktop`, `nsh/mobile`; [`nsh_core::js::NATIVE_MODULES`]) and those
+//! of registries (`Registry::specifier`): the UI sets a host serves
+//! (`nsh/base`, an app's own) and runtime services, whose components,
+//! modules and re-exports become exports (`components.rs`). A module
+//! served by both kinds (`nsh`) has the exports of both.
 //!
 //! The exports are made when a bundle first imports the module. QuickJS-NG
 //! resolves imports when it compiles a module, so the bytecode compiler

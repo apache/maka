@@ -1140,8 +1140,8 @@ view().direction(LayoutDirection::Rtl).flex_row().gap_2().child(text("First")).c
 
 ### Related
 
-- Safe area insets (Rust `safe_area()`; TSX `safeArea()`, `safeAreaInsets()`) and the software keyboard (Rust `keyboard_height()`; TSX `keyboardFrame()`) are part of [`nsh/base`](./nsh-base.md#safearea-and-safeareainsets).
-- Screen reader and reduced motion settings are in [`nsh`](./nsh-accessibility.md).
+- Safe area insets (Rust `safe_area()`; TSX `safeArea()`, `safeAreaInsets()`) and the software keyboard (Rust `keyboard_height()`; TSX `keyboardFrame()`) are exported by `nsh`; see [Safe area and keyboard](#safe-area-and-keyboard).
+- Screen reader and reduced motion settings are in [`nsh`'s Accessibility API](#accessibility).
 
 ## PanResponder
 

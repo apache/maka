@@ -1121,8 +1121,8 @@ view().direction(LayoutDirection::Rtl).flex_row().gap_2().child(text("First")).c
 
 ### 相关内容
 
-- 安全区域（Rust 的 `safe_area()`；TSX 的 `safeArea()`、`safeAreaInsets()`）和软键盘（Rust 的 `keyboard_height()`；TSX 的 `keyboardFrame()`）属于 [`nsh/base`](./nsh-base.md#safearea-and-safeareainsets)。
-- 屏幕阅读器和减弱动态效果的设置在 [`nsh`](./nsh-accessibility.md) 中。
+- 安全区域（Rust 的 `safe_area()`；TSX 的 `safeArea()`、`safeAreaInsets()`）和软键盘（Rust 的 `keyboard_height()`；TSX 的 `keyboardFrame()`）由 `nsh` 导出，见[安全区域与键盘](#安全区域与键盘)。
+- 屏幕阅读器和减弱动态效果的设置在 [`nsh` 的 Accessibility API](#accessibility) 中。
 
 ## PanResponder
 
