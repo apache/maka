@@ -20,7 +20,7 @@
 import { createText, UiError, errorText, message as uiMessage } from './text';
 import { applyLanguagePreference, tr } from './locale';
 import { initializeUiScale, uiScale } from './uiScale';
-import { initializeAppearance } from './appearance';
+import { appearance, initializeAppearance } from './appearance';
 import { cleanup, effect, inputAction, mount, signal, Scroll, Text, View } from 'nsh';
 import type { YNode } from 'nsh';
 import { Button, Dialog } from 'nsh/base';
@@ -609,6 +609,9 @@ function App() {
     keymap.bind('mod+0', () => void uiScale.resetAndSave(), { when: 'always' });
     keymap.bind('mod+alt+0', () => void uiScale.resetAndSave(), { when: 'always' });
   }
+  // The View menu's Larger text is Command-=; Command-+ (with Shift) is the same request.
+  if (appearance.supported)
+    keymap.bind('mod+shift+plus', () => appearance.stepTextSize(1), { when: 'always' });
   keymap.bind('mod+p', () => open({ kind: 'commands', sessionId: selected() }), { when: 'always' });
   keymap.bind('mod+o', () => open({ kind: 'search', sessionId: selected() }), { when: 'always' });
   keymap.bind('mod+g', () => open({ kind: 'models', sessionId: selected() }), { when: 'always' });
@@ -634,6 +637,7 @@ function App() {
     models: () => open({ kind: 'models', sessionId: selected() }),
     latest: jumpLatest,
     settings: () => open({ kind: 'settings', sessionId: selected() }),
+    textSize: appearance.stepTextSize,
   });
   const recoverControls = async () => {
     if (recovering()) return;

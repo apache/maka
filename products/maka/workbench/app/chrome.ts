@@ -56,6 +56,8 @@ export interface MenuActions {
   models(): void;
   latest(): void;
   settings(): void;
+  /** One text size up (1), down (-1), or the default (0). */
+  textSize(step: number): void;
 }
 
 /** The application menu (the macOS menu bar; the shortcuts elsewhere). */
@@ -114,6 +116,18 @@ export function applicationMenu(actions: MenuActions) {
           { label: tr('Commands'), shortcut: 'mod+p', onSelect: actions.commands },
           { label: tr('Models'), shortcut: 'mod+g', onSelect: actions.models },
           { label: tr('Jump to latest'), shortcut: 'mod+l', onSelect: actions.latest },
+          { type: 'separator' },
+          { label: tr('Larger text'), shortcut: 'mod+plus', onSelect: () => actions.textSize(1) },
+          {
+            label: tr('Smaller text'),
+            shortcut: 'mod+minus',
+            onSelect: () => actions.textSize(-1),
+          },
+          {
+            label: tr('Default text size'),
+            shortcut: 'mod+0',
+            onSelect: () => actions.textSize(0),
+          },
           { type: 'separator' },
           { role: 'toggleFullScreen' },
         ],

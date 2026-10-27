@@ -49,6 +49,12 @@ export const appearance = {
     void applyTextSize(scale);
     void Storage.setItem(TEXT_SIZE, String(scale)).catch(() => undefined);
   },
+  /** The next text size up (1) or down (-1), or the default (0): the View menu's. */
+  stepTextSize(step: number) {
+    const at = textSizes.indexOf(textSize());
+    const next = step === 0 ? 1 : textSizes[at + step];
+    if (next !== undefined && next !== textSize()) appearance.chooseTextSize(next);
+  },
 };
 
 export function initializeAppearance() {

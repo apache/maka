@@ -1066,4 +1066,7 @@ export const settingsMessages = {
   Small: ['Small', '小', '小'],
   Large: ['Large', '大', '大'],
   Larger: ['Larger', '特大', '特大'],
+  'Larger text': ['Larger text', '放大文字', '放大文字'],
+  'Smaller text': ['Smaller text', '缩小文字', '縮小文字'],
+  'Default text size': ['Default text size', '默认文字大小', '預設文字大小'],
 } as const satisfies Catalog;
