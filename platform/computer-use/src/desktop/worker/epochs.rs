@@ -331,8 +331,7 @@ impl BrowserAuthorization for Authorization {
 impl EpochWorker {
     fn new(
         session: String,
-        owner: &SessionOwner,
-        driver: Arc<Mutex<Driver>>,
+        mut local: crate::session::Session,
         events: mpsc::UnboundedSender<Event>,
         disconnected: CancellationToken,
         owner_id: String,
@@ -340,8 +339,6 @@ impl EpochWorker {
         callbacks: WorkerCallbacks,
     ) -> Self {
         let (queue, mut receive) = mpsc::unbounded_channel();
-        let mut local =
-            crate::session::Session::with_owner(driver, NativeEpochId::new(), owner.clone());
         let task = tokio::spawn(async move {
             let mut pending = PendingInvocations::default();
             loop {
@@ -600,8 +597,7 @@ impl EpochWorker {
 impl Epoch {
     fn new(
         session: String,
-        owner: &SessionOwner,
-        driver: Arc<Mutex<Driver>>,
+        local: crate::session::Session,
         events: mpsc::UnboundedSender<Event>,
         disconnected: CancellationToken,
         owner_id: String,
@@ -610,8 +606,7 @@ impl Epoch {
     ) -> Self {
         Self::Open(EpochWorker::new(
             session,
-            owner,
-            driver,
+            local,
             events,
             disconnected,
             owner_id,
@@ -927,16 +922,24 @@ fn transport_cleanup(error: io::Error, cleanup: &io::Result<()>) -> io::Error {
     }
 }
 
+struct WorkerContext<'worker> {
+    driver: &'worker Arc<Mutex<Driver>>,
+    events: &'worker mpsc::UnboundedSender<Event>,
+    disconnected: &'worker CancellationToken,
+    callbacks: &'worker WorkerCallbacks,
+}
+
 fn dispatch(
     request: Request,
     id: u64,
     owners: &mut HashMap<String, Owner>,
-    driver: &Arc<Mutex<Driver>>,
-    events: &mpsc::UnboundedSender<Event>,
-    disconnected: &CancellationToken,
     cancellation: CancellationToken,
-    callbacks: &WorkerCallbacks,
+    context: &WorkerContext<'_>,
 ) -> Result<(), ToolError> {
+    let driver = context.driver;
+    let events = context.events;
+    let disconnected = context.disconnected;
+    let callbacks = context.callbacks;
     match &request {
         Request::CloseEpoch { owner, epoch } => callbacks.seal_matching(owner, Some(epoch), None),
         Request::CloseOwner { owner } => callbacks.seal_matching(owner, None, None),
@@ -979,8 +982,11 @@ fn dispatch(
             let epoch = owner.epochs.entry(epoch).or_insert_with(|| {
                 Epoch::new(
                     session.clone(),
-                    &owner.resources,
-                    driver.clone(),
+                    crate::session::Session::with_owner(
+                        driver.clone(),
+                        NativeEpochId::new(),
+                        owner.resources.clone(),
+                    ),
                     events.clone(),
                     disconnected.clone(),
                     owner_id,
@@ -1186,6 +1192,12 @@ pub(super) async fn serve(
             .send(Event::BrowserCallback { message })
             .map_err(|_| ToolError::OutcomeUnknown("desktop callback event channel closed".into()))
     }));
+    let context = WorkerContext {
+        driver: &driver,
+        events: &events,
+        disconnected: &disconnected,
+        callbacks: &callbacks,
+    };
     let mut owners = HashMap::<String, Owner>::new();
     let mut invocations = Invocations {
         pending: Default::default(),
@@ -1243,7 +1255,7 @@ pub(super) async fn serve(
             frame = receive.recv(), if receive_open && transport_error.is_none() => {
                 match frame {
                     Some(ParentFrame::BrowserCallback { message }) => {
-                        if let Err(error)=callbacks.handle(message){transport_error=Some(io::Error::other(error.to_string()));disconnected.cancel();sealing=true;callbacks.disconnect("desktop callback protocol failed");}
+                        if let Err(error)=callbacks.handle(*message){transport_error=Some(io::Error::other(error.to_string()));disconnected.cancel();sealing=true;callbacks.disconnect("desktop callback protocol failed");}
                     }
                     Some(ParentFrame::Request { id, request }) => {
                         if id <= last_request {
@@ -1269,7 +1281,7 @@ pub(super) async fn serve(
                         let result = if sealing {
                             Err(failed("Windows desktop worker is closed"))
                         } else {
-                            dispatch(*request, id, &mut owners, &driver, &events, &disconnected, cancellation,&callbacks)
+                            dispatch(*request, id, &mut owners, cancellation, &context)
                         };
                         if let Err(error) = result { respond(&events, id, Err(error)); }
                     }
@@ -1301,8 +1313,13 @@ pub(super) async fn serve(
             event = received.recv() => {
                 match event.expect("the connection retains its event sender") {
                     Event::BrowserCallback { message } => {
-                        if transport_error.is_none()&&!disconnected.is_cancelled(){
-                            if let Err(error)=write(&mut output,&WorkerFrame::BrowserCallback{message}).await {transport_error=Some(error);disconnected.cancel();sealing=true;callbacks.disconnect("desktop callback write failed");}
+                        if transport_error.is_none() && !disconnected.is_cancelled()
+                            && let Err(error) = write(&mut output, &WorkerFrame::BrowserCallback { message }).await
+                        {
+                            transport_error = Some(error);
+                            disconnected.cancel();
+                            sealing = true;
+                            callbacks.disconnect("desktop callback write failed");
                         }
                     }
                     Event::Response { id, result, audio } => {

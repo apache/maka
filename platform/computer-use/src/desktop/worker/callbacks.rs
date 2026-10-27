@@ -219,7 +219,7 @@ pub(super) enum ParentMessage {
     Prepared {
         request_id: u64,
         key: ScopeKey,
-        result: Result<ScopeGrant, Failure>,
+        result: Box<Result<ScopeGrant, Failure>>,
     },
     Checked {
         token: ScopeToken,
@@ -417,6 +417,10 @@ impl ParentCallbacks {
         }))
     }
 
+    pub fn report_protocol_fault(&self, error: ToolError) {
+        let _ = self.0.fault.send(error);
+    }
+
     /// Only this entry borrows the live original invocation. Later messages use
     /// its captured capabilities, never whichever invocation is currently active.
     pub async fn prepare(
@@ -431,7 +435,7 @@ impl ParentCallbacks {
             return (self.0.send)(ParentMessage::Prepared {
                 request_id,
                 key,
-                result: Err(failed("Browser callback invocation expired").into()),
+                result: Box::new(Err(failed("Browser callback invocation expired").into())),
             });
         }
         let cancellation = cancellation.child_token();
@@ -494,7 +498,7 @@ impl ParentCallbacks {
                 (self.0.send)(ParentMessage::Prepared {
                     request_id,
                     key,
-                    result: Ok(grant.clone()),
+                    result: Box::new(Ok(grant.clone())),
                 })?;
                 state.scopes.insert(
                     grant.token.id,
@@ -513,7 +517,7 @@ impl ParentCallbacks {
                 (self.0.send)(ParentMessage::Prepared {
                     request_id,
                     key,
-                    result: Err(error.into()),
+                    result: Box::new(Err(error.into())),
                 })?;
                 cleanup.map_or(Ok(()), Err)
             }
@@ -694,14 +698,15 @@ impl ParentCallbacks {
                 Err(failed(
                     "Browser lease-child service changed its captured source scope",
                 ))
-            } else if state.checks.contains_key(&(token.id, id)) {
-                return Err(failed("Browser lease-child callback identity mismatch"));
             } else {
+                let std::collections::hash_map::Entry::Vacant(check) =
+                    state.checks.entry((token.id, id))
+                else {
+                    return Err(failed("Browser lease-child callback identity mismatch"));
+                };
                 // This tracks the existing callback observation. The original
                 // Host service independently admits and owns its physical work.
-                state
-                    .checks
-                    .insert((token.id, id), CancellationToken::new());
+                check.insert(CancellationToken::new());
                 Ok(host.expect("validated lease-child Host capability"))
             }
         };
@@ -801,15 +806,17 @@ impl ParentCallbacks {
                     let mut state = self.0.state.lock().unwrap();
                     let scope = checked_scope(&state, &token, true)?;
                     let host = scope.capabilities.effects.clone();
-                    if state.closed.is_some() || scope.sealed || host.is_none() {
+                    if state.closed.is_some() || scope.sealed {
                         Err(failed("Browser Host effect scope is sealed or unavailable"))
-                    } else {
+                    } else if let Some(host) = host {
                         if state.effects.contains_key(&(token.id, id)) {
                             return Err(failed("Browser effect callback identity mismatch"));
                         }
                         let signal = Arc::new(Signal::default());
                         state.effects.insert((token.id, id), signal.clone());
-                        Ok((host.unwrap(), signal))
+                        Ok((host, signal))
+                    } else {
+                        Err(failed("Browser Host effect scope is sealed or unavailable"))
                     }
                 };
                 let (host, signal) = match prepared {
@@ -1353,7 +1360,7 @@ impl WorkerCallbacks {
                 .then(|| scope.clone() as Arc<dyn BrowserHostEffects>),
             settlement: grant
                 .settlement
-                .then(|| scope as Arc<dyn OperationSettlement>),
+                .then_some(scope as Arc<dyn OperationSettlement>),
         })
     }
     pub fn handle(&self, message: ParentMessage) -> Result<(), ToolError> {
@@ -1374,7 +1381,7 @@ impl WorkerCallbacks {
                 if pending.key != key {
                     return Err(failed("Browser prepared response changed access intent"));
                 }
-                let result = match result {
+                let result = match *result {
                     Ok(grant) => {
                         if grant.token.key != key || grant.token.id == 0 {
                             return Err(failed("Browser prepared token identity mismatch"));
@@ -2155,29 +2162,27 @@ impl EffectCustody {
         let result = AssertUnwindSafe(self.pending.as_mut().unwrap().as_mut())
             .catch_unwind()
             .await;
-        match result {
-            Ok(result) => {
-                self.pending.take(); // Terminal: never store this box as physical drain.
-                {
-                    let mut state = self.worker.0.state.lock().unwrap();
-                    if result.as_ref().is_err_and(outcome_unknown) {
-                        if let Some(entry) = state.effects.get_mut(&(self.token.id, self.id)) {
-                            // Keep scope quarantine; actual native Session/Driver
-                            // controllers retain physical custody independently.
-                            entry.uncertain = true;
-                        }
-                    } else {
-                        state.effects.remove(&(self.token.id, self.id));
+        // Panicked polling retains its exact box in Drop.
+        if let Ok(result) = result {
+            self.pending.take(); // Terminal: never store this box as physical drain.
+            {
+                let mut state = self.worker.0.state.lock().unwrap();
+                if result.as_ref().is_err_and(outcome_unknown) {
+                    if let Some(entry) = state.effects.get_mut(&(self.token.id, self.id)) {
+                        // Keep scope quarantine; actual native Session/Driver
+                        // controllers retain physical custody independently.
+                        entry.uncertain = true;
                     }
+                } else {
+                    state.effects.remove(&(self.token.id, self.id));
                 }
-                let _ = (self.worker.0.send)(WorkerMessage::EffectFinished {
-                    token: self.token.clone(),
-                    id: self.id,
-                    result: result.map_err(Failure::from),
-                });
-                self.worker.0.changed.notify_waiters();
             }
-            Err(_) => {} // Panicked polling retains its exact box in Drop.
+            let _ = (self.worker.0.send)(WorkerMessage::EffectFinished {
+                token: self.token.clone(),
+                id: self.id,
+                result: result.map_err(Failure::from),
+            });
+            self.worker.0.changed.notify_waiters();
         }
     }
 }

@@ -163,7 +163,7 @@ type Response = Result<Value, Failure>;
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum ParentFrame {
     BrowserCallback {
-        message: callbacks::ParentMessage,
+        message: Box<callbacks::ParentMessage>,
     },
     Request {
         id: u64,

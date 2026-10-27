@@ -494,10 +494,8 @@ async fn preparation_refuses_foreign_session_and_preserves_original_cleanup_fail
         .unwrap();
     assert!(matches!(
         fixture.parent_message().await,
-        ParentMessage::Prepared {
-            result: Err(Failure::Failed(_)),
-            ..
-        }
+        ParentMessage::Prepared { result, .. }
+            if matches!(*result, Err(Failure::Failed(_)))
     ));
     assert!(authority.reads.lock().unwrap().is_empty());
     let authority = Arc::new(Authority {
@@ -524,10 +522,8 @@ async fn preparation_refuses_foreign_session_and_preserves_original_cleanup_fail
     );
     assert!(matches!(
         fixture.parent_message().await,
-        ParentMessage::Prepared {
-            result: Err(Failure::CleanupUnconfirmed(_)),
-            ..
-        }
+        ParentMessage::Prepared { result, .. }
+            if matches!(*result, Err(Failure::CleanupUnconfirmed(_)))
     ));
 }
 
@@ -714,10 +710,8 @@ async fn cancelled_attachment_cleanup_faults_original_connection_after_receiver_
         .unwrap();
     assert!(matches!(
         fixture.parent_message().await,
-        ParentMessage::Prepared {
-            result: Err(Failure::Failed(_)),
-            ..
-        }
+        ParentMessage::Prepared { result, .. }
+            if matches!(*result, Err(Failure::Failed(_)))
     ));
     assert!(
         foreign.reads.lock().unwrap().is_empty(),

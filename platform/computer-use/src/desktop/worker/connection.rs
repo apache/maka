@@ -378,7 +378,9 @@ impl ConnectionTask {
         let callbacks = ParentCallbacks::new(
             Arc::new(move |message| {
                 callback_send
-                    .send(ParentFrame::BrowserCallback { message })
+                    .send(ParentFrame::BrowserCallback {
+                        message: Box::new(message),
+                    })
                     .map_err(|_| ToolError::OutcomeUnknown("desktop callback writer closed".into()))
             }),
             protocol_fault.clone(),
@@ -557,11 +559,10 @@ impl ConnectionTask {
                     let sent = send.send(ParentFrame::Request { id, request: Box::new(invocation.request) });
                     let task_callbacks=callbacks.clone();
                     let task_send = send.clone();
-                    let task_fault = protocol_fault.clone();
                     requests.spawn(async move {
                         let result = if sent.is_ok() {
                             let cancellation = invocation.cancellation.clone();
-                            let operation = invoke_routed(id, response, task_send.clone(), invocation.capabilities, invocation.cancellation, task_fault,task_callbacks,identity);
+                            let operation = invoke_routed(id, response, task_send.clone(), invocation.capabilities, invocation.cancellation, task_callbacks,identity);
                             tokio::pin!(operation);
                             tokio::select! {
                                 biased;
@@ -639,7 +640,6 @@ async fn invoke_routed(
     send: mpsc::UnboundedSender<ParentFrame>,
     capabilities: ParentCapabilities,
     cancellation: CancellationToken,
-    protocol_fault: mpsc::UnboundedSender<ToolError>,
     callbacks: ParentCallbacks,
     identity: Option<ScopeIdentity>,
 ) -> Result<Value, ToolError> {
@@ -750,7 +750,7 @@ async fn invoke_routed(
                         let overlap = matches!(&frame, Ok(WorkerFrame::BrowserAuthorization { .. }
                             | WorkerFrame::BrowserSessionPreparationAuthorization { .. }));
                         if overlap {
-                            let _ = protocol_fault.send(ToolError::OutcomeUnknown("desktop authorization callback overlapped its original reply".into()));
+                            callbacks.report_protocol_fault(ToolError::OutcomeUnknown("desktop authorization callback overlapped its original reply".into()));
                         }
                         callback_cancellation.cancel();
                         let cleanup = authorization_cleanup(decision.await);

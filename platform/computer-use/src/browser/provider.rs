@@ -133,9 +133,11 @@ pub(super) fn native_error(error: NativeProviderError) -> ToolError {
     }
 }
 
+type NativeProviderCell = Arc<OnceCell<Result<Arc<NativeBrowserProvider>, ToolError>>>;
+
 struct CachedNative {
     endpoint: ValidatedNativeEndpoint,
-    ready: Arc<OnceCell<Result<Arc<NativeBrowserProvider>, ToolError>>>,
+    ready: NativeProviderCell,
 }
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct CacheIdentity {
@@ -155,7 +157,7 @@ impl NativeCache {
         &mut self,
         owner: uuid::Uuid,
         endpoint: &ValidatedNativeEndpoint,
-    ) -> Result<Arc<OnceCell<Result<Arc<NativeBrowserProvider>, ToolError>>>, ToolError> {
+    ) -> Result<NativeProviderCell, ToolError> {
         let identity = endpoint.identity();
         let key = CacheIdentity {
             owner,

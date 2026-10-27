@@ -265,6 +265,10 @@ struct CallContext {
     origins: HashSet<Origin>,
     issuing: Arc<AtomicUsize>,
 }
+struct CallTarget {
+    origin: Origin,
+    tab: Option<String>,
+}
 struct CallScope {
     control: NativeBrowserProvider,
     issuing: Arc<AtomicUsize>,
@@ -402,8 +406,10 @@ impl PreparationTransport {
                     &preparation.provider,
                     agent.context.clone(),
                     preparation.epoch,
-                    origin,
-                    Some(preparation.claim.tab_id().to_string()),
+                    CallTarget {
+                        origin,
+                        tab: Some(preparation.claim.tab_id().to_string()),
+                    },
                     false,
                 )?;
                 ledger.native_preparation_current(&scope, &agent.request)?;
@@ -1098,10 +1104,13 @@ impl Host {
         provider: &Provider,
         context: NativeHostOperation,
         epoch: crate::desktop::NativeEpochId,
-        origin: Origin,
-        target: Option<String>,
+        target: CallTarget,
         activate: bool,
     ) -> Result<CallScope, ToolError> {
+        let CallTarget {
+            origin,
+            tab: target,
+        } = target;
         let native = provider
             .native()
             .ok_or_else(|| failed("native provider required"))?;
@@ -1852,14 +1861,14 @@ impl Host {
                         lease.disposition = Disposition::Closing;
                     }
                 }
-                if matches!(operation, NativeOperation::FinishTurn { .. }) {
-                    if let Some(call) = call.as_ref() {
-                        self.native
-                            .get_mut(&(owner, browser.clone()))
-                            .ok_or_else(|| unknown("native finish owner retired"))?
-                            .finish_phases
-                            .insert(call.turn.clone(), FinishPhase::Refused(message));
-                    }
+                if matches!(operation, NativeOperation::FinishTurn { .. })
+                    && let Some(call) = call.as_ref()
+                {
+                    self.native
+                        .get_mut(&(owner, browser.clone()))
+                        .ok_or_else(|| unknown("native finish owner retired"))?
+                        .finish_phases
+                        .insert(call.turn.clone(), FinishPhase::Refused(message));
                 }
             }
             NativeRecoveredOperation::Unknown {
@@ -1890,14 +1899,14 @@ impl Host {
                         .ok_or_else(|| unknown("uncertain finish owner retired"))?
                         .finish_phases
                         .insert(call.turn.clone(), FinishPhase::Acknowledged);
-                } else if matches!(operation, NativeOperation::FinishTurn { .. }) {
-                    if let Some(call) = call.as_ref() {
-                        self.native
-                            .get_mut(&(owner, browser.clone()))
-                            .ok_or_else(|| unknown("uncertain finish owner retired"))?
-                            .finish_phases
-                            .insert(call.turn.clone(), FinishPhase::Unknown(reason.clone()));
-                    }
+                } else if matches!(operation, NativeOperation::FinishTurn { .. })
+                    && let Some(call) = call.as_ref()
+                {
+                    self.native
+                        .get_mut(&(owner, browser.clone()))
+                        .ok_or_else(|| unknown("uncertain finish owner retired"))?
+                        .finish_phases
+                        .insert(call.turn.clone(), FinishPhase::Unknown(reason.clone()));
                 }
                 if matches!(
                     operation,
@@ -2167,8 +2176,10 @@ impl Host {
                 &provider,
                 context_operation(&cleanup_turn),
                 crate::desktop::NativeEpochId::new(),
-                Origin::UserClaimed,
-                None,
+                CallTarget {
+                    origin: Origin::UserClaimed,
+                    tab: None,
+                },
                 false,
             )?;
             if capabilities.header_scope == NativeHeaderPolicyScope::Session {
@@ -3034,8 +3045,10 @@ impl Browsers {
                 &provider,
                 operation(invocation)?,
                 self.epoch,
-                Origin::AgentCreated,
-                Some(request.opener_tab_id.to_string()),
+                CallTarget {
+                    origin: Origin::AgentCreated,
+                    tab: Some(request.opener_tab_id.to_string()),
+                },
                 true,
             )?;
             (scope, opener, actual.clone())
@@ -3309,8 +3322,10 @@ impl Browsers {
             &provider,
             operation(invocation)?,
             self.epoch,
-            Origin::AgentCreated,
-            None,
+            CallTarget {
+                origin: Origin::AgentCreated,
+                tab: None,
+            },
             true,
         )?;
         let preparation = scope
@@ -3515,8 +3530,10 @@ impl Tab {
             &self.provider,
             context,
             self.cursor_epoch,
-            Origin::UserClaimed,
-            Some(self.info.id.clone()),
+            CallTarget {
+                origin: Origin::UserClaimed,
+                tab: Some(self.info.id.clone()),
+            },
             false,
         )?;
         let shown = scope
@@ -3577,8 +3594,10 @@ impl Tab {
             &self.provider,
             operation(invocation)?,
             self.cursor_epoch,
-            Origin::UserClaimed,
-            Some(self.info.id.clone()),
+            CallTarget {
+                origin: Origin::UserClaimed,
+                tab: Some(self.info.id.clone()),
+            },
             true,
         )?;
         check_input(cancellation)?;
@@ -3955,8 +3974,10 @@ impl Tab {
                 &self.provider,
                 operation(invocation)?,
                 self.cursor_epoch,
-                Origin::UserClaimed,
-                Some(self.info.id.clone()),
+                CallTarget {
+                    origin: Origin::UserClaimed,
+                    tab: Some(self.info.id.clone()),
+                },
                 true,
             )?
         };
@@ -4149,8 +4170,10 @@ impl Tab {
                 &self.provider,
                 context.clone(),
                 self.cursor_epoch,
-                Origin::UserClaimed,
-                Some(self.info.id.clone()),
+                CallTarget {
+                    origin: Origin::UserClaimed,
+                    tab: Some(self.info.id.clone()),
+                },
                 true,
             )?
         };
@@ -4398,8 +4421,10 @@ impl Tab {
             &self.provider,
             operation(invocation)?,
             self.cursor_epoch,
-            Origin::UserClaimed,
-            Some(self.info.id.clone()),
+            CallTarget {
+                origin: Origin::UserClaimed,
+                tab: Some(self.info.id.clone()),
+            },
             true,
         )?;
         let claim = self
@@ -4624,8 +4649,10 @@ impl Tab {
             &self.provider,
             context,
             self.cursor_epoch,
-            Origin::UserClaimed,
-            Some(self.info.id.clone()),
+            CallTarget {
+                origin: Origin::UserClaimed,
+                tab: Some(self.info.id.clone()),
+            },
             false,
         )?;
         let request = scope
@@ -4894,8 +4921,10 @@ async fn refresh_control(
                     &overlay.provider,
                     overlay.context.clone(),
                     overlay.epoch,
-                    Origin::AgentCreated,
-                    Some(identity.target.clone()),
+                    CallTarget {
+                        origin: Origin::AgentCreated,
+                        tab: Some(identity.target.clone()),
+                    },
                     false,
                 )?;
                 scope
@@ -5012,7 +5041,7 @@ mod preparation_effect_tests {
         effects.begin(&old, true);
         effects.begin(&current, true);
         effects.fixed_cleanup(&old, true);
-        assert_eq!(effects.scopes, [current.clone()]);
+        assert_eq!(effects.scopes.as_slice(), std::slice::from_ref(&current));
         assert!(
             !effects.settled(),
             "old logical cleanup cannot clear current preparation"
