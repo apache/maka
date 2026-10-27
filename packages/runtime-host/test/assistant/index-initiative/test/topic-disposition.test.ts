@@ -183,3 +183,58 @@ test('a deferred topic can be reopened early by a material change', (t) => {
   );
   assert.equal(b.state('tea').status, 'open');
 });
+
+test('a reopening applies only to the rule it was judged against, even when a topic later gains a tag', (t) => {
+  const b = fixture(t);
+  closeTea(b);
+  // A second, newer rule closes the tag "sport". It does not match tea yet.
+  feedback(b, 'f2', '运动相关的也别发了');
+  commit(
+    b,
+    'close-sport',
+    draft({
+      feedbackDecisions: [
+        resolution('f2', [
+          {
+            quote: '运动相关的也别发了',
+            status: 'closed',
+            topicIds: [],
+            tags: ['sport'],
+            reason: '不关注运动',
+            resumeAt: null,
+          },
+        ]),
+      ],
+    }),
+  );
+  assert.equal(b.state('tea').status, 'closed');
+  // The model judges a real change against the rule that governs tea now (f).
+  commit(
+    b,
+    'reopen',
+    draft({
+      notes: [note('tea', ['tea'], '茶博会即将开幕。')],
+      reopened: [{ topicId: 'tea', reason: '茶博会即将开幕' }],
+    }),
+  );
+  assert.equal(b.state('tea').status, 'open');
+  // Tea then gains the tag "sport": the newer rule now matches it. That rule was
+  // never judged against any change, so the earlier reopening must not override it.
+  commit(
+    b,
+    'tag',
+    draft({ notes: [note('tea', ['tea', 'sport'], '茶博会设有骑行活动。')] }),
+    'exploration',
+  );
+  const s = b.state('tea');
+  assert.equal(s.status, 'closed');
+  assert.equal(s.feedbackId, 'f2');
+  assert.equal(s.reopenedByChange, undefined);
+  // It can be reopened again, but only by a judgement against the rule that governs now.
+  commit(
+    b,
+    'reopen-again',
+    draft({ reopened: [{ topicId: 'tea', reason: '骑行活动是新的具体机会' }] }),
+  );
+  assert.equal(b.state('tea').status, 'open');
+});
