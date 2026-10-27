@@ -17,7 +17,7 @@
  * under the License.
  */
 
-use super::records::{invalid, read};
+use super::records::{invalid, read_local as read};
 use crate::{EventLog, StoreError};
 use maka_agent_facts::event::Invocation;
 use maka_agent_facts::interaction::InteractionOutcome;
@@ -143,8 +143,18 @@ pub(crate) async fn close_previous_basis(
         reason: maka_agent_facts::interaction::ClosureReason::ProducerCancelled,
         committed_at: now,
     };
+    let ids: Vec<String> = sqlx::query_scalar(
+        "SELECT request_id FROM interaction_pending
+         WHERE session_id=? ORDER BY created_at,request_id",
+    )
+    .bind(session)
+    .fetch_all(&mut *connection)
+    .await?;
     let mut closed = 0;
-    for record in super::pending(connection, session).await? {
+    for id in ids {
+        let record = read(connection, &id)
+            .await?
+            .ok_or_else(|| invalid("permission request disappeared"))?;
         if matches!(record.request,
             InteractionRequest::Permissions { basis, .. }
             | InteractionRequest::ClientCapability { basis: Some(basis), .. }

@@ -62,4 +62,6 @@ nsh-core.workspace = true
 nsh-base.workspace = true
 
 [dev-dependencies]
+nsh-bundler = { workspace = true, features = ["bundle"] }
+nsh-js.workspace = true
 tempfile.workspace = true

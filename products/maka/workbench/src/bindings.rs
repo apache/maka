@@ -93,17 +93,12 @@ impl Bindings {
     /// Native objects own subscriptions; the launcher owns calls and durable recovery.
     pub fn registry(&self, initial_session: Option<String>) -> Registry {
         let owner = self.owner.clone();
-        let mut registry = Registry::ui_set("maka/host");
-        registry.register::<uploads::AttachmentPicker>();
-        registry.class::<terminal_grid::TerminalGrid>();
-        registry.class::<uploads::UploadIntake>();
-        registry.value("host", move || {
+        registry(move || {
             Instance::new(ApplicationHost {
                 owner: owner.clone(),
                 initial_session: initial_session.clone(),
             })
-        });
-        registry
+        })
     }
 
     /// Fence new native tasks, close the original Host session and finish admitted IO.
@@ -117,6 +112,22 @@ impl Bindings {
         });
         closed
     }
+}
+
+/// Describes the native Host types without connecting or creating runtime objects.
+#[must_use]
+pub fn ui_set_description() -> nsh_core::element::description::SetDescription {
+    let registry = registry(|| panic!("declaration metadata must not instantiate the native Host"));
+    (&registry).into()
+}
+
+fn registry(make_host: impl Fn() -> Instance<ApplicationHost> + Send + Sync + 'static) -> Registry {
+    let mut registry = Registry::ui_set("maka/host");
+    registry.register::<uploads::AttachmentPicker>();
+    registry.class::<terminal_grid::TerminalGrid>();
+    registry.class::<uploads::UploadIntake>();
+    registry.value("host", make_host);
+    registry
 }
 
 impl Owner {

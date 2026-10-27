@@ -104,7 +104,7 @@ impl EventLog {
         T: Serialize + DeserializeOwned + Clone + PartialEq + Send + 'static,
         F: FnOnce(&mut T) -> Result<(), StoreError> + Send + 'static,
     {
-        self.mutate_session_metadata(id, expected, false, None, update)
+        self.mutate_session_metadata(id, expected, false, None, None, update)
             .await
     }
 
@@ -122,7 +122,7 @@ impl EventLog {
         F: FnOnce(&mut T) -> Result<(), StoreError> + Send + 'static,
     {
         validate_time(now)?;
-        self.mutate_session_metadata(id, expected, false, Some(now), update)
+        self.mutate_session_metadata(id, expected, false, Some(now), None, update)
             .await
     }
 
@@ -137,7 +137,7 @@ impl EventLog {
     where
         T: Serialize + DeserializeOwned + Clone + PartialEq + Send + 'static,
     {
-        self.mutate_session_metadata(id, expected, true, None, move |current| {
+        self.mutate_session_metadata(id, expected, true, None, None, move |current| {
             *current = configuration;
             Ok(())
         })
@@ -150,6 +150,7 @@ impl EventLog {
         expected: u64,
         always_advance: bool,
         permission_time: Option<u64>,
+        root_app_control: Option<std::sync::Arc<EventLog>>,
         update: F,
     ) -> Result<SessionMutation<T>, StoreError>
     where
@@ -225,11 +226,28 @@ impl EventLog {
                         )
                         .await?;
                     }
+                    let retired_basis = if let Some(old) = boundary {
+                        (crate::workspace_bindings::permission_basis(&mut tx, &id).await?
+                            != Some(old))
+                        .then_some(old)
+                    } else {
+                        None
+                    };
                     advance_catalog(&mut tx).await?;
                     let record = read(&mut tx, &id)
                         .await?
                         .ok_or(StoreError::SessionNotFound)?;
                     tx.commit().await.map_err(StoreError::CommitUnknown)?;
+                    if let (Some(control), Some(old), Some(now)) =
+                        (root_app_control, retired_basis, permission_time)
+                    {
+                        // The accepted source actor owns this completion even
+                        // if its caller disappears. No following source grant
+                        // or CAS can pass while obsolete app prompts settle.
+                        control
+                            .close_computer_app_previous_basis(&id, old, now)
+                            .await?;
+                    }
                     commits.metadata();
                     Ok(SessionMutation::Committed(Box::new(record)))
                 })

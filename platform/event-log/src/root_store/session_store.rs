@@ -248,6 +248,12 @@ impl SessionStore {
     ) -> Result<InteractionCommit, StoreError> {
         self.check_session(&invocation.session_id)?;
         self.check_session(&request.session_id)?;
+        if matches!(
+            request.request,
+            maka_agent_facts::interaction::InteractionRequest::ComputerApp { .. }
+        ) {
+            return self.establish_computer_app(invocation, request).await;
+        }
         self.scoped()
             .await?
             .establish_run_interaction(invocation, request)
@@ -259,6 +265,14 @@ impl SessionStore {
         request_id: &str,
         outcome: InteractionOutcome,
     ) -> Result<InteractionCommit, StoreError> {
+        if let Some(record) = self.interaction(request_id).await?
+            && matches!(
+                record.request,
+                maka_agent_facts::interaction::InteractionRequest::ComputerApp { .. }
+            )
+        {
+            return self.commit_computer_app(record, outcome).await;
+        }
         self.scoped()
             .await?
             .commit_interaction_outcome(request_id, outcome)
@@ -289,6 +303,19 @@ impl SessionStore {
         self.scoped()
             .await?
             .client_capability_grant(session_id, target)
+            .await
+    }
+
+    pub async fn browser_origin_decision(
+        &self,
+        session: &str,
+        target: &GrantTarget,
+        basis: &PermissionBasis,
+    ) -> Result<Option<maka_agent_facts::interaction::Decision>, StoreError> {
+        self.check_session(session)?;
+        self.scoped()
+            .await?
+            .browser_origin_decision(session, target, basis)
             .await
     }
 
@@ -344,7 +371,7 @@ impl SessionStore {
     pub async fn append_capability_dispatch(
         &self,
         event: &EventWrite,
-        target: &maka_agent_facts::interaction::GrantTarget,
+        targets: &[maka_agent_facts::interaction::GrantTarget],
         basis: &maka_agent_facts::workspace::PermissionBasis,
     ) -> Result<u64, CommitError> {
         self.check_session(&event.event().invocation.session_id)
@@ -352,7 +379,7 @@ impl SessionStore {
         self.scoped()
             .await
             .map_err(commit_error)?
-            .append_capability_dispatch(event, target, basis)
+            .append_capability_dispatch(event, targets, basis)
             .await
     }
 
@@ -519,10 +546,7 @@ impl SessionStore {
         now: u64,
     ) -> Result<usize, StoreError> {
         self.check_session(&invocation.session_id)?;
-        self.scoped()
-            .await?
-            .close_run_interactions(invocation, reason, now)
-            .await
+        self.close_computer_app_run(invocation, reason, now).await
     }
 
     pub async fn permission_grants(
@@ -631,27 +655,23 @@ impl SessionStore {
         self.scoped().await?.finish_prepared(build).await
     }
 
-    pub async fn prepared_semantic_page(
+    pub async fn prepared_semantic_group(
         &self,
         view: &PreparedView,
         cursor: usize,
-        limit: usize,
-    ) -> Result<PreparedSemanticPage, StoreError> {
+    ) -> Result<Option<PreparedSemanticGroup>, StoreError> {
         self.scoped()
             .await?
-            .prepared_semantic_page(view, cursor, limit)
+            .prepared_semantic_group(view, cursor)
             .await
     }
 
-    pub async fn prepared_view_group_rows(
+    pub async fn prepared_view_group(
         &self,
         view: &PreparedView,
         group: &PreparedGroup,
-    ) -> Result<Vec<ResolvedRow>, StoreError> {
-        self.scoped()
-            .await?
-            .prepared_view_group_rows(view, group)
-            .await
+    ) -> Result<PreparedSemanticGroup, StoreError> {
+        self.scoped().await?.prepared_view_group(view, group).await
     }
 
     pub async fn context_report(
@@ -1000,17 +1020,6 @@ impl SessionStore {
             .await
     }
 
-    pub async fn prepared_group_snapshot(
-        &self,
-        view: &PreparedView,
-        group: &PreparedGroup,
-    ) -> Result<MediaManifest, StoreError> {
-        self.scoped()
-            .await?
-            .prepared_group_snapshot(view, group)
-            .await
-    }
-
     pub async fn prepare_wire_view(
         &self,
         view: &PreparedView,
@@ -1109,7 +1118,7 @@ impl EventSink for SessionStore {
     }
 }
 
-fn commit_error(error: StoreError) -> CommitError {
+pub(super) fn commit_error(error: StoreError) -> CommitError {
     match error {
         StoreError::CommitUnknown(error) => CommitError::OutcomeUnknown(error.to_string()),
         StoreError::OperationUnknown => CommitError::OutcomeUnknown(error.to_string()),

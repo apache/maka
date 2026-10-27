@@ -67,6 +67,376 @@ fn manifest() -> MediaManifest {
         }],
     }
 }
+
+#[tokio::test]
+async fn semantic_group_reads_rows_and_frozen_manifest_with_one_tree_seek() {
+    use maka_agent_facts::history::semantic::Payload;
+
+    fn row(source: u64, revision: u64) -> ResolvedRow {
+        let point = RowPosition {
+            source_sequence: source,
+            item_index: 0,
+        };
+        ResolvedRow {
+            row: SemanticRow {
+                id: point,
+                revision,
+                invocation: Invocation {
+                    session_id: "prepared-test".into(),
+                    turn_id: "turn".into(),
+                    run_id: "run".into(),
+                    invocation_id: "invocation".into(),
+                },
+                order: point,
+                kind: if source <= 3 {
+                    SemanticKind::Notification {
+                        call_id: format!("call-{source}"),
+                        custom: false,
+                        payload: point,
+                    }
+                } else {
+                    SemanticKind::ImportedUser { payload: point }
+                },
+            },
+            payload: Some(Payload::Text(format!("original payload {source}"))),
+        }
+    }
+    async fn store(log: &EventLog, rows: Vec<ResolvedRow>) {
+        log.connection.run(move |connection| Box::pin(async move {
+            let mut tx = connection.begin().await?;
+            crate::connection::worker_query(&mut tx, move |worker| Box::pin(async move {
+                for resolved in rows {
+                    let row = resolved.row;
+                    let source = row.id.source_sequence as i64;
+                    let kind = if matches!(&row.kind, SemanticKind::Notification { .. }) {
+                        "notification"
+                    } else {
+                        "imported_user"
+                    };
+                    sqlx::query("INSERT INTO context_semantic_rows(owner_session_id,source_sequence,source_index,revision,order_sequence,order_index,invocation_id,revision_invocation,event_id,kind,archived,inherited,visible,unknown_only,row_json) VALUES('prepared-test',?,0,?,?,0,'invocation','invocation',?,?,0,0,1,0,?)")
+                        .bind(source).bind(row.revision as i64).bind(source)
+                        .bind(format!("event-{source}")).bind(kind).bind(encoded(&row)?)
+                        .execute(&mut *worker).await?;
+                    sqlx::query("INSERT INTO context_semantic_changes(owner_session_id,revision,source_sequence,source_index,order_sequence,order_index,invocation_id,revision_invocation,archived,inherited,deleted) VALUES('prepared-test',?,?,0,?,0,'invocation','invocation',0,0,0)")
+                        .bind(row.revision as i64).bind(source).bind(source)
+                        .execute(&mut *worker).await?;
+                    sqlx::query("INSERT OR IGNORE INTO context_semantic_fragments VALUES(?,0,?,0)")
+                        .bind(source).bind(source).execute(&mut *worker).await?;
+                    sqlx::query("INSERT OR IGNORE INTO context_semantic_fragment_pieces VALUES(?,0,0,?)")
+                        .bind(source).bind(serde_json::to_vec(&resolved.payload.unwrap())?)
+                        .execute(&mut *worker).await?;
+                }
+                Ok(())
+            })).await?;
+            tx.commit().await?;
+            Ok(())
+        })).await.unwrap();
+    }
+    fn frozen_manifest(generation: &str, group: &str) -> MediaManifest {
+        MediaManifest {
+            aliases: Vec::new(),
+            media: vec![MediaBinding::Unavailable {
+                reason: format!("{generation} capture for group {group}"),
+            }],
+        }
+    }
+    async fn publish(log: &EventLog, through: u64, generation: &str) -> PreparedView {
+        let build = log
+            .prepare_model_view(selection(through), "single-semantic-read")
+            .await
+            .unwrap();
+        loop {
+            let groups = log.prepared_dirty_groups(&build, None, 64).await.unwrap();
+            if groups.is_empty() {
+                break;
+            }
+            for group in groups {
+                // Joined followers remain dirty so they can replace an old
+                // group with a zero-width tombstone. Render their actual rows.
+                let messages: Vec<_> = log
+                    .prepared_group_rows(&build, &group)
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .map(|resolved| {
+                        let Some(Payload::Text(text)) = resolved.payload else {
+                            panic!("fixture row has no text payload");
+                        };
+                        match resolved.row.kind {
+                            SemanticKind::Notification { call_id, .. } => {
+                                Message::notification(call_id, text)
+                            }
+                            SemanticKind::ImportedUser { .. } => Message::user(text),
+                            _ => panic!("fixture row has an unexpected semantic kind"),
+                        }
+                    })
+                    .collect();
+                if matches!(group.id.as_str(), "2" | "3") {
+                    assert!(
+                        messages.is_empty(),
+                        "joined follower {} must publish a zero-width tombstone",
+                        group.id
+                    );
+                }
+                let measured = measure::prompt_breakdown(&messages);
+                log.put_prepared_group(
+                    &build,
+                    &group,
+                    messages,
+                    measured,
+                    frozen_manifest(generation, &group.id),
+                )
+                .await
+                .unwrap();
+            }
+        }
+        log.finish_prepared(&build).await.unwrap()
+    }
+    fn runs(
+        stats: &crate::connection::ConnectionResourceStats,
+        sql: &str,
+    ) -> BTreeMap<(usize, usize), i32> {
+        std::iter::once(&stats.writer)
+            .chain(stats.readers.iter().flatten())
+            .flat_map(|connection| {
+                connection.statements.iter().filter_map(move |statement| {
+                    (statement.sql.as_deref() == Some(sql)).then_some((
+                        (connection.connection_id, statement.statement_id),
+                        statement.runs,
+                    ))
+                })
+            })
+            .collect()
+    }
+    fn run_delta(
+        before: &crate::connection::ConnectionResourceStats,
+        after: &crate::connection::ConnectionResourceStats,
+        sql: &str,
+    ) -> i64 {
+        let before = runs(before, sql);
+        let after = runs(after, sql);
+        assert_eq!(
+            before.keys().collect::<Vec<_>>(),
+            after.keys().collect::<Vec<_>>(),
+            "observe the same warmed original statements: {sql}"
+        );
+        after
+            .into_iter()
+            .map(|(key, value)| {
+                let delta = value.checked_sub(before[&key]).unwrap();
+                assert!(delta >= 0, "SQLite run counters must remain monotonic");
+                i64::from(delta)
+            })
+            .sum()
+    }
+
+    let directory = tempfile::tempdir().unwrap();
+    let log = EventLog::open(&directory.path().join("semantic-group.sqlite"))
+        .await
+        .unwrap();
+    // Cross the old 256-message page boundary with 257 distinct groups. The
+    // three joined notifications are real semantic rows and three messages.
+    let expected: Vec<_> = (1..=259).map(|source| row(source, source)).collect();
+    store(&log, expected.clone()).await;
+    let view = publish(&log, 259, "old").await;
+    assert_eq!(view.message_count, 259);
+    let mut cursor = 0;
+    let mut actual = Vec::new();
+    let mut groups = 0;
+    while let Some(group) = log.prepared_semantic_group(&view, cursor).await.unwrap() {
+        assert_eq!(group.skip, 0);
+        assert_eq!(
+            group.manifest,
+            frozen_manifest("old", &(cursor + 1).to_string())
+        );
+        cursor += group.rows.len();
+        actual.extend(group.rows);
+        groups += 1;
+    }
+    assert_eq!(groups, 257);
+    assert_eq!(actual, expected);
+    let middle = log
+        .prepared_semantic_group(&view, 1)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(middle.skip, 1);
+    assert_eq!(middle.rows, expected[..3]);
+    assert_eq!(middle.manifest, frozen_manifest("old", "1"));
+    assert!(
+        log.prepared_semantic_group(&view, 259)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(matches!(
+        log.prepared_semantic_group(&view, 260).await,
+        Err(StoreError::InvalidTransition(reason)) if reason == "invalid prepared semantic cursor"
+    ));
+
+    for (sequence, rows) in [
+        (1, &expected[..3]),
+        (2, &expected[..0]),
+        (3, &expected[..0]),
+        (259, &expected[258..]),
+    ] {
+        let group = PreparedGroup {
+            id: sequence.to_string(),
+        };
+        let read = log.prepared_view_group(&view, &group).await.unwrap();
+        assert_eq!(read.rows, rows, "group sequence {sequence}");
+        assert_eq!(read.manifest, frozen_manifest("old", &group.id));
+        assert_eq!(read.skip, 0);
+    }
+
+    // Compare actual SQLite statement runs with one standalone root seek on
+    // this same frozen tree; two additional searches cannot hide in a page size.
+    const NODE_SQL: &str = "SELECT node_json FROM context_prepared_nodes WHERE id=?";
+    const GROUP_SQL: &str = "SELECT group_json FROM context_prepared_groups WHERE id=?";
+    let root = view.root.clone();
+    log.connection
+        .run(move |connection| {
+            Box::pin(async move {
+                tree::seek(connection, root.as_deref(), 1).await?;
+                Ok(())
+            })
+        })
+        .await
+        .unwrap();
+    let (first, second) = tokio::join!(
+        log.prepared_semantic_group(&view, 1),
+        log.prepared_semantic_group(&view, 1),
+    );
+    first.unwrap().unwrap();
+    second.unwrap().unwrap();
+    let before = log.sqlite_resource_stats().await.unwrap();
+    let root = view.root.clone();
+    log.connection
+        .run(move |connection| {
+            Box::pin(async move {
+                tree::seek(connection, root.as_deref(), 1).await?;
+                Ok(())
+            })
+        })
+        .await
+        .unwrap();
+    let sought = log.sqlite_resource_stats().await.unwrap();
+    let node_reads = run_delta(&before, &sought, NODE_SQL);
+    assert!(node_reads > 0);
+    assert_eq!(run_delta(&before, &sought, GROUP_SQL), 1);
+    let read = log
+        .prepared_semantic_group(&view, 1)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(read.rows, middle.rows);
+    assert_eq!(read.manifest, middle.manifest);
+    let after = log.sqlite_resource_stats().await.unwrap();
+    let actual_node_reads = run_delta(&sought, &after, NODE_SQL);
+    let actual_group_reads = run_delta(&sought, &after, GROUP_SQL);
+    assert!(actual_node_reads <= node_reads);
+    assert!(actual_group_reads <= 1);
+    eprintln!(
+        "semantic group node reads={actual_node_reads}, group reads={actual_group_reads}, one-seek baseline={node_reads}"
+    );
+
+    store(&log, vec![row(1, 260), row(260, 260)]).await;
+    let next = publish(&log, 260, "new").await;
+    let changed = log
+        .prepared_semantic_group(&next, 1)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(changed.rows[0].row.revision, 260);
+    assert_eq!(changed.manifest, frozen_manifest("new", "1"));
+    let registry = log.prepared.clone();
+    log.connection
+        .run(move |connection| {
+            Box::pin(async move {
+                while gc::maintain(connection, &registry).await? {}
+                Ok(())
+            })
+        })
+        .await
+        .unwrap();
+    let original = log
+        .prepared_semantic_group(&view, 1)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(original.rows, middle.rows);
+    assert_eq!(original.manifest, middle.manifest);
+    assert_eq!(original.skip, 1);
+    let retained = log
+        .prepared_view_group(&view, &PreparedGroup { id: "1".into() })
+        .await
+        .unwrap();
+    assert_eq!(retained.rows, middle.rows);
+    assert_eq!(retained.manifest, middle.manifest);
+    assert_eq!(retained.skip, 0);
+
+    store(&log, vec![row(1000, 1000)]).await;
+    let sparse = publish(&log, 1000, "sparse").await;
+    assert!(sparse.message_count < 1000);
+    let group = PreparedGroup { id: "1000".into() };
+    let sparse_read = log.prepared_view_group(&sparse, &group).await.unwrap();
+    assert_eq!(sparse_read.rows, vec![row(1000, 1000)]);
+    assert_eq!(sparse_read.manifest, frozen_manifest("sparse", "1000"));
+    assert_eq!(sparse_read.skip, 0);
+    for (id, reason) in [
+        ("999", "prepared group is outside its root"),
+        ("not-a-sequence", "invalid prepared group"),
+    ] {
+        assert!(matches!(
+            log.prepared_view_group(&sparse, &PreparedGroup { id: id.into() }).await,
+            Err(StoreError::InvalidTransition(actual)) if actual == reason
+        ));
+    }
+
+    let root = sparse.root.clone();
+    log.connection
+        .run(move |connection| {
+            Box::pin(async move {
+                tree::find(connection, root.as_deref(), 1000).await?;
+                Ok(())
+            })
+        })
+        .await
+        .unwrap();
+    let (first, second) = tokio::join!(
+        log.prepared_view_group(&sparse, &group),
+        log.prepared_view_group(&sparse, &group),
+    );
+    first.unwrap();
+    second.unwrap();
+    let before = log.sqlite_resource_stats().await.unwrap();
+    let root = sparse.root.clone();
+    log.connection
+        .run(move |connection| {
+            Box::pin(async move {
+                tree::find(connection, root.as_deref(), 1000).await?;
+                Ok(())
+            })
+        })
+        .await
+        .unwrap();
+    let found = log.sqlite_resource_stats().await.unwrap();
+    let node_reads = run_delta(&before, &found, NODE_SQL);
+    assert!(node_reads > 0);
+    assert_eq!(run_delta(&before, &found, GROUP_SQL), 1);
+    let read = log.prepared_view_group(&sparse, &group).await.unwrap();
+    assert_eq!(read.rows, sparse_read.rows);
+    assert_eq!(read.manifest, sparse_read.manifest);
+    let after = log.sqlite_resource_stats().await.unwrap();
+    let actual_node_reads = run_delta(&found, &after, NODE_SQL);
+    let actual_group_reads = run_delta(&found, &after, GROUP_SQL);
+    assert!(actual_node_reads <= node_reads);
+    assert_eq!(actual_group_reads, 1);
+    eprintln!(
+        "sequence group node reads={actual_node_reads}, group reads={actual_group_reads}, one-find baseline={node_reads}"
+    );
+    log.close().await.unwrap();
+}
 async fn render(
     log: &EventLog,
     build: &PreparedBuild,
@@ -257,12 +627,6 @@ async fn stable_preparation_is_delta_only_and_reopen_rebuilds_private_views() {
             .unwrap()
     );
     assert_eq!(bytes(&log, &wire).await, old_bytes);
-    assert_eq!(
-        log.prepared_group_snapshot(&view, &PreparedGroup { id: "1".into() })
-            .await
-            .unwrap(),
-        manifest()
-    );
     let metadata = log
         .prepared_wire_metadata_page(&wire, PreparedWireCursor::default(), 1)
         .await
@@ -295,7 +659,12 @@ async fn stable_preparation_is_delta_only_and_reopen_rebuilds_private_views() {
         .unwrap();
     assert!(maximum <= 32 * 1024);
     log.close().await.unwrap();
+    let group = PreparedGroup { id: "1".into() };
     let reopened = EventLog::open(&path).await.unwrap();
+    assert!(matches!(
+        reopened.prepared_view_group(&view, &group).await,
+        Err(StoreError::InvalidTransition(reason)) if reason == "prepared view belongs to another database owner"
+    ));
     assert!(
         reopened
             .prepared_wire_page(&wire, PreparedWireCursor::default(), 1)

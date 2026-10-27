@@ -25,6 +25,8 @@ Provides Maka's native app and browser API through an independent JavaScript REP
 
 A Session owns its REPL variables, target bindings and observations. The Host owns permission checks and the native driver. Each operation uses current authority; keeping a JavaScript object does not keep a grant. The REPL has no ambient Node, filesystem or arbitrary network API.
 
+Native embedders pass a trusted `InvocationContext` to `Session::invoke`. HTTP(S) page reads and input require its `BrowserAuthorization`; navigation checks the destination. A raw Session without that callback refuses protected site access. The callback belongs to the Host's actual invocation and grant system, and cannot be supplied by REPL commands.
+
 For a fresh REPL, select an entrypoint and read its emitted state before acting:
 
 ```js
@@ -38,6 +40,8 @@ Subsequent calls use indices from that observation. `cua.getState()` lists avail
 The `desktop` setting defaults to `auto`: the Windows host in WSL, otherwise the local desktop. `local` selects Linux inside WSL; `windows` requires the Windows helper. Native releases prepare their matching Windows helper through the verified distribution cache. WSL interoperability and an interactive Windows desktop are required.
 
 Browser providers are explicitly configured CDP connections to existing profiles. When no provider is configured, use a native browser window. Configuration and platform-specific methods are described by the API reference; a missing provider does not trigger a browser restart or enable debugging.
+
+Computer output recording requires the explicit Host configuration `audio: true`, which defaults to false. It adds `cua.computer.start_audio_recording`, `stop_audio_recording` and `nodeRepl.emitAudio`; recordings capture output audio and never select a microphone. macOS also requires separate audio Session consent. Reset and Session cleanup discard owned recordings.
 
 ## Native and WSL development builds
 
@@ -55,6 +59,6 @@ Plain `cargo run -p maka-cli` retains the native default. To build the bridge di
 
 ## Lifetime
 
-Reset clears this Session's bindings without closing user apps or tabs. Navigation, window changes and fresh observations can invalidate previous input targets. Cancellation or timeout requires a reset; an uncertain action is never replayed automatically. Shutdown waits for accepted native work to settle.
+Sessions own their temporary tabs; turn completion closes the tabs held by that turn. Other Sessions cannot list or acquire them. Reset clears this Session's bindings and closes its temporary tabs, preserving user apps and preexisting tabs. Navigation, window changes and fresh observations can invalidate previous input targets. Cancellation or timeout requires a reset; an uncertain action is never replayed automatically. Shutdown waits for accepted native work to settle.
 
 Verify input and capture behavior on the target desktop; a REPL unit test cannot establish native focus or accessibility behavior.

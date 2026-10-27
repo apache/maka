@@ -109,9 +109,7 @@ pub(crate) async fn initialize_connection_with_control(
     crate::transcript::initialize_cache(connection).await?;
     // Migrations create the standalone main table; derived Session reads must
     // resolve the root's live bindings before rebuilding any execution state.
-    if let Some(control) = control {
-        control.attach(connection).await?;
-    }
+    crate::connection::control::initialize_views(connection, control).await?;
     crate::message_sources::initialize(connection).await?;
     crate::sessions::initialize_execution(connection).await?;
     Ok(())

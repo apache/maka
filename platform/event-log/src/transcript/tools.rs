@@ -98,11 +98,7 @@ fn ancestry(db: &RawConnection, invocation: &str, through: i64) -> Result<Ancest
         ids.insert(sequence);
         match serde_json::from_str::<ToolOrigin>(&origin)? {
             ToolOrigin::Provider { step_id } => break Some(step_id),
-            ToolOrigin::Standalone
-            | ToolOrigin::HostSdk {
-                parent_operation_id: None,
-                ..
-            } => break None,
+            ToolOrigin::Standalone | ToolOrigin::HostSdk { parent: None, .. } => break None,
             ToolOrigin::CodeMode {
                 parent_operation_id,
                 ..
@@ -110,12 +106,16 @@ fn ancestry(db: &RawConnection, invocation: &str, through: i64) -> Result<Ancest
             | ToolOrigin::CodeCell {
                 parent_operation_id,
                 ..
-            }
-            | ToolOrigin::HostSdk {
-                parent_operation_id: Some(parent_operation_id),
-                ..
             } => {
                 current = parent_operation_id;
+                before = sequence - 1;
+                rejected = false;
+            }
+            ToolOrigin::HostSdk {
+                parent: Some(parent),
+                ..
+            } => {
+                current = parent.operation_id().to_owned();
                 before = sequence - 1;
                 rejected = false;
             }
@@ -178,7 +178,7 @@ mod tests {
     use maka_agent_facts::{
         event::{Fact, Invocation, InvocationInput, LogScope, RuntimeEvent, ToolOutcome},
         model::{ModelEvent, ModelFinishReason, ModelPart, ModelStep, ModelToolCall},
-        tool_call::ToolCallIdentity,
+        tool_call::{HostSdkParent, ToolCallIdentity},
     };
     use serde_json::json;
     use sqlx::{Connection, SqliteConnection};
@@ -186,6 +186,91 @@ mod tests {
         Arc,
         atomic::{AtomicUsize, Ordering},
     };
+
+    #[test]
+    fn typed_host_sdk_ancestry_projects_beyond_the_former_depth_limit() {
+        let db = RawConnection::open_in_memory().unwrap();
+        db.execute_batch(&crate::schema::fixture(|kind, _| kind != "trigger"))
+            .unwrap();
+        let invocation = Invocation {
+            session_id: "session".into(),
+            turn_id: "turn".into(),
+            run_id: "run".into(),
+            invocation_id: "invocation".into(),
+        };
+        // Forty dispatches exceed the former 33-boundary guard. Both typed
+        // relationships must lead to the same original HostSdk root.
+        for index in 0..40 {
+            let parent = (index > 0).then(|| {
+                let operation_id = format!("host-{}", index - 1);
+                if index % 2 == 0 {
+                    HostSdkParent::NestedEffect { operation_id }
+                } else {
+                    HostSdkParent::EvaluationObserver {
+                        operation_id,
+                        epoch: format!("epoch-{index}"),
+                    }
+                }
+            });
+            let event = RuntimeEvent::new(
+                invocation.clone(),
+                Fact::ToolDispatched {
+                    operation_id: format!("host-{index}"),
+                    call: ToolCallIdentity {
+                        tool_call_id: format!("call-{index}"),
+                        origin: ToolOrigin::HostSdk {
+                            package_id: "package".into(),
+                            entry_id: "entry".into(),
+                            activation: "activation".into(),
+                            parent,
+                        },
+                    },
+                    name: "Read".into(),
+                    input: json!({}),
+                    presentation: None,
+                    title: None,
+                },
+            );
+            db.execute(
+                "INSERT INTO event_log(sequence,event_id,invocation_id,kind,operation_id,event_json) VALUES(?,?,?,?,?,?)",
+                params![index + 1, event.id, "invocation", event.fact.kind(), event.fact.operation_id(), serde_json::to_string(&event).unwrap()],
+            ).unwrap();
+        }
+        let mut event = RuntimeEvent::new(
+            invocation,
+            Fact::ToolSettled {
+                operation_id: "host-39".into(),
+                outcome: ToolOutcome::Failed {
+                    message: "original host failure".into(),
+                },
+            },
+        );
+        event.id = "settlement".into();
+        let stored = maka_agent_facts::event::StoredEvent {
+            sequence: 41,
+            event,
+        };
+        db.execute(
+            "INSERT INTO event_log(sequence,event_id,invocation_id,kind,operation_id,event_json) VALUES(?,?,?,?,?,?)",
+            params![41, stored.event.id, "invocation", stored.event.fact.kind(), stored.event.fact.operation_id(), serde_json::to_string(&stored.event).unwrap()],
+        ).unwrap();
+
+        let result = ancestry(&db, "invocation", 41).unwrap();
+        assert_eq!(result.step, None);
+        assert_eq!(result.dispatch, 40);
+        assert_eq!(result.boundaries, (1..=41).collect::<BTreeSet<_>>());
+        let rows = project(&db, &stored).unwrap();
+        assert_eq!(rows.len(), 1);
+        let message = serde_json::to_value(&rows[0].message).unwrap();
+        assert_eq!(message["id"], "settlement");
+        assert_eq!(message["origin"], "host_sdk");
+        assert_eq!(message["parentOperationId"], "host-38");
+        assert_eq!(message["isError"], true);
+        assert_eq!(
+            message["content"],
+            json!({"kind":"text","text":"original host failure"})
+        );
+    }
 
     async fn boundary_work(siblings: usize) -> usize {
         let mut connection = SqliteConnection::connect("sqlite::memory:").await.unwrap();

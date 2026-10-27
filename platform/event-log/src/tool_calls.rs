@@ -20,7 +20,7 @@
 use maka_agent_facts::event::Fact;
 use maka_agent_facts::event::RuntimeEvent;
 use maka_agent_facts::model::ModelToolCall;
-use maka_agent_facts::tool_call::ToolOrigin;
+use maka_agent_facts::tool_call::{HostSdkParent, ToolOrigin};
 use sqlx::SqliteConnection;
 
 use crate::StoreError;
@@ -187,20 +187,24 @@ pub(crate) async fn validate(
                     package_id,
                     entry_id,
                     activation,
-                    parent_operation_id,
+                    parent,
                 } => {
                     for value in [package_id, entry_id, activation] {
                         identity(value)?;
                     }
-                    if let Some(parent) = parent_operation_id {
-                        identity(parent)?;
+                    if let Some(parent) = parent {
+                        identity(parent.operation_id())?;
+                        if let HostSdkParent::EvaluationObserver { epoch, .. } = parent {
+                            identity(epoch)?;
+                        }
                     }
-                    let active: bool = if let Some(parent) = parent_operation_id {
+                    let active: bool = if let Some(parent) = parent {
                         sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM runtime_events AS parent
                             WHERE parent.invocation_id = ? AND parent.operation_id = ? AND parent.kind = 'tool_dispatched'
-                            AND NOT EXISTS(SELECT 1 FROM runtime_events AS settled WHERE settled.operation_id = parent.operation_id
+                            AND NOT EXISTS(SELECT 1 FROM runtime_events AS settled WHERE settled.invocation_id = parent.invocation_id
+                                AND settled.operation_id = parent.operation_id
                                 AND settled.kind = 'tool_settled'))")
-                            .bind(invocation).bind(parent).fetch_one(&mut *tx).await?
+                            .bind(invocation).bind(parent.operation_id()).fetch_one(&mut *tx).await?
                     } else {
                         sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM runtime_events WHERE invocation_id = ?1 AND kind = 'executor_started')
                             AND NOT EXISTS(SELECT 1 FROM runtime_events WHERE invocation_id = ?1 AND kind = 'executor_completed')")
@@ -288,9 +292,12 @@ pub(crate) async fn validate(
             let pending: bool = sqlx::query_scalar(
                 "SELECT EXISTS(SELECT 1 FROM context_obligations live
                  CROSS JOIN runtime_events child ON child.sequence=live.opened_at
-                 WHERE live.invocation_id = ? AND live.kind='tool'
-                 AND json_extract(child.event_json, '$.fact.call.origin.kind') IN ('code_mode', 'host_sdk')
-                 AND json_extract(child.event_json, '$.fact.call.origin.parent_operation_id') = ?)",
+                 WHERE live.invocation_id = ?1 AND live.kind='tool'
+                 AND ((json_extract(child.event_json, '$.fact.call.origin.kind') = 'code_mode'
+                   AND json_extract(child.event_json, '$.fact.call.origin.parent_operation_id') = ?2)
+                   OR (json_extract(child.event_json, '$.fact.call.origin.kind') = 'host_sdk'
+                     AND json_extract(child.event_json, '$.fact.call.origin.parent_relationship.kind') IS NOT 'evaluation_observer'
+                     AND json_extract(child.event_json, '$.fact.call.origin.parent_operation_id') = ?2)))",
             ).bind(invocation).bind(operation_id).fetch_one(&mut *tx).await?;
             if pending {
                 return Err(invalid("parent tool cannot settle before its children"));

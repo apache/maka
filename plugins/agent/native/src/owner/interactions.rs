@@ -50,7 +50,8 @@ impl Owner {
                         InteractionRequest::ServiceApproval { tool_use_id, .. }
                         | InteractionRequest::Question { tool_use_id, .. }
                         | InteractionRequest::Form { tool_use_id, .. }
-                        | InteractionRequest::ClientCapability { tool_use_id, .. } => {
+                        | InteractionRequest::ClientCapability { tool_use_id, .. }
+                        | InteractionRequest::ComputerApp { tool_use_id, .. } => {
                             Some(tool_use_id.clone())
                         }
                     },
@@ -64,6 +65,7 @@ impl Owner {
                         InteractionRequest::ClientCapability { .. } => {
                             InteractionKind::ClientCapability
                         }
+                        InteractionRequest::ComputerApp { .. } => InteractionKind::ComputerApp,
                     },
                 })
                 .collect(),
@@ -112,8 +114,23 @@ impl Owner {
         };
         // Each supported producer owns its policy; the store commits only the
         // original bounded answer and current permission boundary.
-        let computer = matches!(&record.request, InteractionRequest::ClientCapability { target, basis: Some(_), .. }
-            if target == &maka_workspace_api::computer::target());
+        let computer = match &record.request {
+            InteractionRequest::ClientCapability {
+                target,
+                basis: Some(_),
+                ..
+            } => {
+                target == &maka_workspace_api::computer::target()
+                    || target == &maka_workspace_api::computer::audio_target()
+                    || maka_workspace_api::computer::is_browser_target(target)
+            }
+            InteractionRequest::ComputerApp { target, .. } => {
+                let mut expected = maka_workspace_api::computer::target();
+                expected.scope = target.scope.clone();
+                target == &expected
+            }
+            _ => false,
+        };
         if !computer
             && !matches!(
                 record.request,
@@ -132,6 +149,8 @@ impl Owner {
                 | InteractionAnswer::Permissions { .. }
                 | InteractionAnswer::Form { .. }
                 | InteractionAnswer::ClientCapability { .. }
+                | InteractionAnswer::ComputerApp { .. }
+                | InteractionAnswer::ComputerAppCancel {}
         ) || input.answer.validate_for_request(&record.request).is_err()
         {
             return reject(InteractionRejection::InvalidAnswer);

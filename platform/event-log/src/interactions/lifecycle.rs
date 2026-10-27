@@ -17,7 +17,7 @@
  * under the License.
  */
 
-use super::records::{encode, invalid, read};
+use super::records::{encode, invalid, read_local, read_scoped};
 use crate::{EventLog, StoreError};
 use maka_agent_facts::event::Invocation;
 use maka_agent_facts::interaction::ClosureReason;
@@ -65,7 +65,7 @@ impl EventLog {
             .run(move |connection| {
                 Box::pin(async move {
                     let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
-                    let count = visit_pending(&mut tx, scope.as_ref(), Some(&outcome)).await?;
+                    let count = close_in_transaction(&mut tx, scope.as_ref(), &outcome).await?;
                     if count > 0 {
                         tx.commit().await.map_err(StoreError::CommitUnknown)?;
                         // Interaction facts wake observers without advancing the execution cursor.
@@ -102,10 +102,29 @@ pub(crate) async fn require_closed(
     Ok(())
 }
 
+pub(crate) async fn close_in_transaction(
+    connection: &mut SqliteConnection,
+    scope: Option<&Invocation>,
+    outcome: &InteractionOutcome,
+) -> Result<usize, StoreError> {
+    if !matches!(outcome, InteractionOutcome::Closure { .. }) {
+        return Err(invalid("interaction closure requires a closure outcome"));
+    }
+    outcome.validate().map_err(invalid)?;
+    if let Some(scope) = scope {
+        validate_scope(scope)?;
+    }
+    visit_pending(connection, scope, Some(outcome)).await
+}
+
 pub(super) const PENDING_SESSION_PAGE: &str = "SELECT request_id FROM interaction_pending
     WHERE session_id = ? AND request_id > ? ORDER BY request_id LIMIT 64";
 pub(super) const PENDING_ROOT_PAGE: &str = "SELECT request_id FROM interaction_pending
     WHERE request_id > ? ORDER BY request_id LIMIT 64";
+pub(super) const ALL_PENDING_SESSION_PAGE: &str = "SELECT request_id FROM interaction_pending
+    WHERE session_id=?1 AND request_id>?2
+    UNION ALL SELECT request_id FROM root_app_pending WHERE session_id=?1 AND request_id>?2
+    ORDER BY request_id LIMIT 64";
 
 /// Bound allocations independently of the number of requests in the root.
 /// Decode and validate source facts before deciding Run membership or closing.
@@ -120,11 +139,15 @@ async fn visit_pending(
         // Separate statements keep Session closure an indexed Session seek,
         // while startup recovery pages the global active set only.
         let ids: Vec<String> = if let Some(scope) = scope {
-            sqlx::query_scalar(PENDING_SESSION_PAGE)
-                .bind(&scope.session_id)
-                .bind(&after)
-                .fetch_all(&mut *connection)
-                .await?
+            sqlx::query_scalar(if closure.is_some() {
+                PENDING_SESSION_PAGE
+            } else {
+                ALL_PENDING_SESSION_PAGE
+            })
+            .bind(&scope.session_id)
+            .bind(&after)
+            .fetch_all(&mut *connection)
+            .await?
         } else {
             sqlx::query_scalar(PENDING_ROOT_PAGE)
                 .bind(&after)
@@ -135,9 +158,12 @@ async fn visit_pending(
             return Ok(count);
         }
         for id in &ids {
-            let record = read(connection, id)
-                .await?
-                .ok_or_else(|| invalid("stored interaction disappeared"))?;
+            let record = if closure.is_some() {
+                read_local(connection, id).await?
+            } else {
+                read_scoped(connection, id, scope.map(|scope| scope.session_id.as_str())).await?
+            }
+            .ok_or_else(|| invalid("stored interaction disappeared"))?;
             if let Some(scope) = scope
                 && (record.session_id != scope.session_id
                     || record.turn_id != scope.turn_id

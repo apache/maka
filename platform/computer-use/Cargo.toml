@@ -43,6 +43,9 @@ native-desktop = [
     "dep:objc2",
     "dep:objc2-foundation",
     "dep:objc2-app-kit",
+    "dep:unicode-segmentation",
+    "dep:image",
+    "dep:tracing",
 ]
 
 [dependencies]
@@ -50,37 +53,49 @@ maka-code-runtime.workspace = true
 hex = { workspace = true, optional = true }
 maka-agent-facts.workspace = true
 maka-capabilities.workspace = true
+futures-util.workspace = true
 cua-driver-contract = { workspace = true, optional = true }
 cua-driver-sdk = { workspace = true, optional = true }
-cua-driver-core = { git = "https://github.com/maka-agent/cua", rev = "afcdf58a76cb9998f4e2fed8c0124d81ac4f1fcf", optional = true }
+cua-driver-core = { git = "https://github.com/maka-agent/cua", rev = "e53bc79912458a038120fcf7c5b22d76d8301980", optional = true }
 serde.workspace = true
 schemars.workspace = true
 uuid = { workspace = true, optional = true }
 libc = { workspace = true, optional = true }
 reqwest.workspace = true
 base64 = { version = "0.23.1", optional = true }
-cursor-overlay = { git = "https://github.com/maka-agent/cua", rev = "afcdf58a76cb9998f4e2fed8c0124d81ac4f1fcf", features = ["theme-authoring"], optional = true }
+cursor-overlay = { git = "https://github.com/maka-agent/cua", rev = "e53bc79912458a038120fcf7c5b22d76d8301980", features = ["theme-authoring"], optional = true }
 sha2 = { workspace = true, optional = true }
 tempfile = { workspace = true, optional = true }
 serde_json.workspace = true
 tokio = { workspace = true, features = ["io-std", "process"] }
 tokio-util.workspace = true
+tracing = { workspace = true, optional = true }
 
 [dev-dependencies]
+maka-agent-authority.workspace = true
+maka-event-log.workspace = true
+tempfile.workspace = true
 maka-js-runtime.workspace = true
+tokio-tungstenite.workspace = true
+tracing-subscriber.workspace = true
 tiny-skia = { version = "0.12.0", features = ["png-format"] }
 # Cua's native theme renderer accepts its own tiny-skia 0.11 Pixmap.
 cua-skia = { package = "tiny-skia", version = "0.11.4", features = ["png-format"] }
 
 [target.'cfg(windows)'.dependencies]
-platform-windows = { git = "https://github.com/maka-agent/cua", rev = "afcdf58a76cb9998f4e2fed8c0124d81ac4f1fcf", optional = true }
+platform-windows = { git = "https://github.com/maka-agent/cua", rev = "e53bc79912458a038120fcf7c5b22d76d8301980", optional = true }
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_Threading"], optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-platform-linux = { git = "https://github.com/maka-agent/cua", rev = "afcdf58a76cb9998f4e2fed8c0124d81ac4f1fcf", optional = true }
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"], optional = true }
+platform-linux = { git = "https://github.com/maka-agent/cua", rev = "e53bc79912458a038120fcf7c5b22d76d8301980", optional = true }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+x11rb = "0.13"
 
 [target.'cfg(target_os = "macos")'.dependencies]
-platform-macos = { git = "https://github.com/maka-agent/cua", rev = "afcdf58a76cb9998f4e2fed8c0124d81ac4f1fcf", optional = true }
+unicode-segmentation = { workspace = true, optional = true }
+platform-macos = { git = "https://github.com/maka-agent/cua", rev = "e53bc79912458a038120fcf7c5b22d76d8301980", optional = true }
 core-foundation = { version = "0.10.1", optional = true }
 objc2 = { version = "0.6.5", optional = true }
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSData", "NSString"], optional = true }

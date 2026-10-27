@@ -433,7 +433,7 @@ pub(crate) async fn read<T: DeserializeOwned>(
         let last_message = execution::last_message(connection, id).await?;
         let read_state = read_state::read(connection, id).await?;
         let pending_since: Option<i64> = sqlx::query_scalar(
-            "SELECT MIN(created_at) FROM interaction_pending WHERE session_id = ?",
+            "SELECT MIN(created_at) FROM all_interaction_pending WHERE session_id = ?",
         )
         .bind(id)
         .fetch_one(&mut *connection)

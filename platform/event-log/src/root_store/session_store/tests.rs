@@ -166,6 +166,85 @@ async fn foreign_interaction_reads_are_absent_and_mutations_are_rejected() {
 }
 
 #[tokio::test]
+async fn browser_decisions_remain_inside_the_owning_session_store() {
+    use maka_agent_facts::interaction::{Decision, GrantCapability, GrantScope, GrantTarget};
+    use maka_agent_facts::workspace::{BindingStamp, PermissionBasis};
+
+    let (_directory, root, _a, foreign) = fixture().await;
+    let reference = root
+        .attach_workspace("browser", &json!({"path":"/browser-fixture"}))
+        .await
+        .unwrap();
+    let selected = root
+        .create_session(
+            "browser-session",
+            "browser-create",
+            &json!({"workspace":reference,"boundary_revision":4}),
+            1,
+        )
+        .await
+        .unwrap();
+    let basis = PermissionBasis {
+        boundary_revision: 4,
+        binding: BindingStamp {
+            id: reference.id,
+            permission_epoch: reference.permission_epoch_at_attach,
+        },
+    };
+    let target = GrantTarget {
+        provider_id: "provider".into(),
+        contract_id: "contract".into(),
+        server_id: "browser".into(),
+        tool_name: "cua_repl".into(),
+        capability: GrantCapability::Browser,
+        scope: GrantScope::BrowserOrigin {
+            origin: "https://example.com".into(),
+        },
+    };
+    let raw = selected.owner().unwrap();
+    raw.establish_interaction(&InteractionRecord {
+        session_id: selected.id().into(),
+        turn_id: "turn".into(),
+        run_id: "run".into(),
+        request_id: "browser-origin".into(),
+        created_at: 2,
+        request: maka_agent_facts::interaction::InteractionRequest::ClientCapability {
+            tool_use_id: "browser-tool".into(),
+            target: target.clone(),
+            basis: Some(basis),
+        },
+        outcome: None,
+    })
+    .await
+    .unwrap();
+    selected
+        .commit_interaction_outcome(
+            "browser-origin",
+            InteractionOutcome::ClientCapabilityDecision {
+                decision: Decision::Deny,
+                committed_at: 3,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        selected
+            .browser_origin_decision(selected.id(), &target, &basis)
+            .await
+            .unwrap(),
+        Some(Decision::Deny)
+    );
+    assert!(
+        foreign
+            .browser_origin_decision(selected.id(), &target, &basis)
+            .await
+            .is_err()
+    );
+    drop(raw);
+    root.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn foreign_process_cleanup_and_continuation_receipt_stay_private() {
     let (_dir, root, a, b) = fixture().await;
     let raw = b.owner().unwrap();
@@ -305,7 +384,11 @@ async fn prepared_handles_and_wire_views_are_session_bound() {
     assert!(a.prepared_dirty_groups(&build, None, 1).await.is_err());
     assert!(a.finish_prepared(&build).await.is_err());
     let view = b.finish_prepared(&build).await.unwrap();
-    assert!(a.prepared_semantic_page(&view, 0, 1).await.is_err());
+    assert!(a.prepared_semantic_group(&view, 0).await.is_err());
+    assert!(matches!(
+        a.prepared_view_group(&view, &PreparedGroup { id: "1".into() }).await,
+        Err(StoreError::InvalidTransition(reason)) if reason == "foreign Session resource"
+    ));
     assert!(
         a.prepare_wire_view(&view, WireFormat::Responses, "codec")
             .await

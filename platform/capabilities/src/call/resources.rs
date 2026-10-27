@@ -76,6 +76,17 @@ impl Resources {
             None => Ok(()),
         }
     }
+    /// Close admission and await every original owner, including after a sibling
+    /// has reported failure. Run sealing requires settlement, not a timed poll.
+    pub async fn settle(&self) -> Result<(), ToolError> {
+        self.state.lock().unwrap().closed = true;
+        self.tasks.close();
+        self.tasks.wait().await;
+        match &self.state.lock().unwrap().failure {
+            Some(error) => Err(ToolError::CleanupUnconfirmed(error.clone())),
+            None => Ok(()),
+        }
+    }
 }
 pub struct Ticket {
     group: Arc<Resources>,
@@ -175,5 +186,28 @@ mod tests {
         lost.start();
         drop(lost);
         assert!(group.seal().is_err());
+    }
+
+    #[tokio::test]
+    async fn run_settlement_waits_for_all_original_workers_even_after_known_failure() {
+        use std::{
+            future::Future,
+            task::{Context, Waker},
+        };
+
+        let group = Arc::new(Resources::default());
+        let mut failed = group.reserve().unwrap();
+        failed.start();
+        let mut live = group.reserve().unwrap();
+        live.start();
+        failed.complete(Err("original worker failed".into()));
+        let mut settlement = Box::pin(group.settle());
+        let mut context = Context::from_waker(Waker::noop());
+        assert!(settlement.as_mut().poll(&mut context).is_pending());
+        assert!(group.reserve().is_err());
+        live.complete(Ok(()));
+        assert!(
+            matches!(settlement.await, Err(ToolError::CleanupUnconfirmed(message)) if message == "original worker failed")
+        );
     }
 }

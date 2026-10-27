@@ -33,6 +33,8 @@ pub(super) enum Key {
     Session(String),
     Work(String),
     Binding(uuid::Uuid),
+    // A profile revoke must linearize before or after a native dispatch T1.
+    ComputerApp(String),
 }
 
 pub(super) struct Gates {

@@ -19,6 +19,12 @@
 
 //! Minimal embedding executable for the private desktop and cursor helpers.
 fn main() -> std::process::ExitCode {
+    tracing_subscriber::fmt()
+        .with_max_level(tracing_subscriber::filter::LevelFilter::DEBUG)
+        .with_ansi(false)
+        .with_writer(std::io::stderr)
+        .try_init()
+        .expect("initialize desktop host diagnostics");
     if let Some(exit) = maka_computer_use::cursor::bootstrap() {
         return exit;
     }

@@ -27,7 +27,7 @@ const PREDICATE: &str = "
     AND (?3 IS NULL OR EXISTS (SELECT 1 FROM workspace_bindings binding WHERE binding.id=json_extract(configuration,'$.workspace.id') AND json_extract(binding.workspace_json,'$.path')=?3))
     AND (?4 IS NULL OR substr(id, 1, length(?4)) = ?4)
     AND (?5 = 0 OR EXISTS (
-        SELECT 1 FROM interaction_pending pending
+        SELECT 1 FROM all_interaction_pending pending
         WHERE pending.session_id = session_control.id))
     AND (?6 IS NULL OR EXISTS (SELECT 1 FROM workspace_bindings binding WHERE binding.id=json_extract(configuration,'$.workspace.id') AND json_extract(binding.workspace_json,'$.projectId')=?6))
     AND (?7 IS NULL OR EXISTS (SELECT 1 FROM workspace_bindings binding WHERE binding.id=json_extract(configuration,'$.workspace.id') AND json_extract(binding.workspace_json,'$.identity')=?7))

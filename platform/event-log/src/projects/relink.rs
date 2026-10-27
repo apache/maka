@@ -122,6 +122,7 @@ impl EventLog {
                         conflict.as_ref(),
                         &owner_scope,
                         selected_workspace,
+                        now as u64,
                     )
                     .await?;
                     sqlx::query("DELETE FROM project_locations WHERE project_id = ?")
@@ -194,6 +195,7 @@ async fn reassign_bindings(
     absorbed: Option<&ProjectRecord>,
     owner_scope: &str,
     mut selected_workspace: Value,
+    now: u64,
 ) -> Result<usize> {
     if !selected_workspace.is_object() {
         return Err(invalid("invalid relocated workspace"));
@@ -228,14 +230,27 @@ async fn reassign_bindings(
                         workspace["projectId"] = Value::String(source.id.clone());
                         workspace
                     };
+                    let binding_id = uuid::Uuid::parse_str(&id)
+                        .map_err(|_| invalid("invalid workspace binding ID"))?;
                     crate::workspace_bindings::replace(
-                        connection,
-                        uuid::Uuid::parse_str(&id)
-                            .map_err(|_| invalid("invalid workspace binding ID"))?,
-                        workspace,
-                        relocation,
+                        connection, binding_id, workspace, relocation,
                     )
                     .await?;
+                    if relocation {
+                        let current =
+                            crate::workspace_bindings::read::<Value>(connection, binding_id)
+                                .await?
+                                .ok_or_else(|| {
+                                    invalid("relocated workspace binding disappeared")
+                                })?;
+                        EventLog::close_computer_app_binding_in_transaction(
+                            connection,
+                            binding_id,
+                            current.permission_epoch,
+                            now,
+                        )
+                        .await?;
+                    }
                     updated = updated
                         .checked_add(1)
                         .ok_or_else(|| invalid("workspace binding count exhausted"))?;

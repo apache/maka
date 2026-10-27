@@ -33,11 +33,17 @@ mod execution;
 mod family;
 mod gates;
 mod lifecycle;
-pub use execution::{SessionExecutionLease, SessionExecutionScope};
+pub use execution::{
+    InvocationEffectLease, InvocationEffects, SessionExecutionLease, SessionExecutionScope,
+};
 pub(crate) use lifecycle::{StageOwner, StageRegistration};
 mod applications;
 mod attachments;
+mod computer_apps;
 mod control;
+pub(crate) use computer_apps::activity::{
+    record_computer_app_activity, require_computer_app_running,
+};
 mod plugins;
 mod recall;
 mod recovery;

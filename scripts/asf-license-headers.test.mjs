@@ -176,6 +176,7 @@ describe('ASF header classification', () => {
       'scripts/asf-source-release.mjs',
       'locales/zh-CN.ftl',
       'products/maka/cli/src/main.rs',
+      'scripts/rust/verify-windows-dpi.ps1',
       'Dockerfile',
       'justfile',
       '.husky/pre-commit',

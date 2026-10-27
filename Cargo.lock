@@ -746,7 +746,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6bf601cccedfffec598ec2db1f9d6745885458bccc0e8916d7023f017c94b3d0"
 dependencies = [
  "atspi-common 0.14.0",
- "atspi-connection",
  "atspi-proxies 0.14.0",
  "zbus",
 ]
@@ -2421,9 +2420,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "cua-cursor-motion"
+version = "0.38.0"
+source = "git+https://github.com/maka-agent/cua?rev=e53bc79912458a038120fcf7c5b22d76d8301980#e53bc79912458a038120fcf7c5b22d76d8301980"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "cua-driver-contract"
-version = "0.32.0"
-source = "git+https://github.com/maka-agent/cua?rev=afcdf58a76cb9998f4e2fed8c0124d81ac4f1fcf#afcdf58a76cb9998f4e2fed8c0124d81ac4f1fcf"
+version = "0.38.0"
+source = "git+https://github.com/maka-agent/cua?rev=e53bc79912458a038120fcf7c5b22d76d8301980#e53bc79912458a038120fcf7c5b22d76d8301980"
 dependencies = [
  "schemars 1.2.3",
  "serde",
@@ -2433,8 +2440,8 @@ dependencies = [
 
 [[package]]
 name = "cua-driver-core"
-version = "0.32.0"
-source = "git+https://github.com/maka-agent/cua?rev=afcdf58a76cb9998f4e2fed8c0124d81ac4f1fcf#afcdf58a76cb9998f4e2fed8c0124d81ac4f1fcf"
+version = "0.38.0"
+source = "git+https://github.com/maka-agent/cua?rev=e53bc79912458a038120fcf7c5b22d76d8301980#e53bc79912458a038120fcf7c5b22d76d8301980"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2453,6 +2460,7 @@ dependencies = [
  "libc",
  "regex",
  "regorus",
+ "rquickjs",
  "serde",
  "serde_json",
  "serde_yaml_ng",
@@ -2472,11 +2480,12 @@ dependencies = [
 
 [[package]]
 name = "cua-driver-sdk"
-version = "0.32.0"
-source = "git+https://github.com/maka-agent/cua?rev=afcdf58a76cb9998f4e2fed8c0124d81ac4f1fcf#afcdf58a76cb9998f4e2fed8c0124d81ac4f1fcf"
+version = "0.38.0"
+source = "git+https://github.com/maka-agent/cua?rev=e53bc79912458a038120fcf7c5b22d76d8301980#e53bc79912458a038120fcf7c5b22d76d8301980"
 dependencies = [
  "async-trait",
  "core-foundation 0.10.1",
+ "cua-cursor-motion",
  "cua-driver-contract",
  "cua-driver-core",
  "cursor-overlay",
@@ -2500,10 +2509,11 @@ checksum = "f27ae1dd37df86211c42e150270f82743308803d90a6f6e6651cd730d5e1732f"
 
 [[package]]
 name = "cursor-overlay"
-version = "0.32.0"
-source = "git+https://github.com/maka-agent/cua?rev=afcdf58a76cb9998f4e2fed8c0124d81ac4f1fcf#afcdf58a76cb9998f4e2fed8c0124d81ac4f1fcf"
+version = "0.38.0"
+source = "git+https://github.com/maka-agent/cua?rev=e53bc79912458a038120fcf7c5b22d76d8301980#e53bc79912458a038120fcf7c5b22d76d8301980"
 dependencies = [
  "anyhow",
+ "cua-cursor-motion",
  "cua-driver-contract",
  "cua-driver-core",
  "fontdue",
@@ -3351,7 +3361,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -6053,7 +6063,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.62.2",
+ "windows-core 0.61.2",
 ]
 
 [[package]]
@@ -6466,7 +6476,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "20fd6de4ccfcc187e38bc21cfa543cb5a302cb86a8b114eb7f0bf0dc9f8ac00f"
 dependencies = [
  "io-lifetimes 3.0.1",
- "windows-sys 0.60.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -7612,14 +7622,19 @@ dependencies = [
  "maka-code-runtime",
  "maka-computer-use",
  "maka-event-log",
+ "maka-fs-tools",
  "maka-host-runtime",
  "maka-js-runtime",
  "maka-plugin-core",
+ "maka-sandbox",
  "maka-workspace-api",
  "serde_json",
  "sha2 0.11.1",
+ "tempfile",
  "tokio",
+ "tokio-tungstenite 0.30.0",
  "tokio-util",
+ "url",
  "uuid",
 ]
 
@@ -7633,11 +7648,15 @@ dependencies = [
  "cua-driver-core",
  "cua-driver-sdk",
  "cursor-overlay",
+ "futures-util",
  "hex",
+ "image",
  "libc",
+ "maka-agent-authority",
  "maka-agent-facts",
  "maka-capabilities",
  "maka-code-runtime",
+ "maka-event-log",
  "maka-js-runtime",
  "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
@@ -7654,9 +7673,14 @@ dependencies = [
  "tiny-skia 0.11.4",
  "tiny-skia 0.12.0",
  "tokio",
+ "tokio-tungstenite 0.30.0",
  "tokio-util",
+ "tracing",
+ "tracing-subscriber",
+ "unicode-segmentation",
  "uuid",
  "windows-sys 0.61.2",
+ "x11rb",
 ]
 
 [[package]]
@@ -8727,6 +8751,7 @@ dependencies = [
  "nsh-bundler",
  "nsh-core",
  "nsh-engine",
+ "nsh-js",
  "open",
  "percent-encoding",
  "serde_json",
@@ -9305,8 +9330,7 @@ checksum = "a5eb86a92577833b75522336f210c49d9ebd7dd55a44d80a92e68c668a75f27c"
 [[package]]
 name = "nom"
 version = "1.2.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a5b8c256fd9471521bcb84c3cdba98921497f1a331cbc15b8030fc63b82050ce"
+source = "git+https://github.com/maka-agent/cua?rev=e53bc79912458a038120fcf7c5b22d76d8301980#e53bc79912458a038120fcf7c5b22d76d8301980"
 
 [[package]]
 name = "nom"
@@ -9620,7 +9644,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -10290,7 +10314,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d8fae84b431384b68627d0f9b3b1245fcf9f46f6c0e3dc902e9dce64edd1967"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -11160,8 +11184,8 @@ checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 
 [[package]]
 name = "pip-preview"
-version = "0.32.0"
-source = "git+https://github.com/maka-agent/cua?rev=afcdf58a76cb9998f4e2fed8c0124d81ac4f1fcf#afcdf58a76cb9998f4e2fed8c0124d81ac4f1fcf"
+version = "0.38.0"
+source = "git+https://github.com/maka-agent/cua?rev=e53bc79912458a038120fcf7c5b22d76d8301980#e53bc79912458a038120fcf7c5b22d76d8301980"
 dependencies = [
  "serde_json",
 ]
@@ -11221,13 +11245,14 @@ checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 
 [[package]]
 name = "platform-linux"
-version = "0.32.0"
-source = "git+https://github.com/maka-agent/cua?rev=afcdf58a76cb9998f4e2fed8c0124d81ac4f1fcf#afcdf58a76cb9998f4e2fed8c0124d81ac4f1fcf"
+version = "0.38.0"
+source = "git+https://github.com/maka-agent/cua?rev=e53bc79912458a038120fcf7c5b22d76d8301980#e53bc79912458a038120fcf7c5b22d76d8301980"
 dependencies = [
  "anyhow",
  "ashpd",
  "async-trait",
  "atspi 0.30.0",
+ "atspi-connection",
  "base64 0.22.1",
  "bitflags 2.13.2",
  "clipboard-rs",
@@ -11267,8 +11292,8 @@ dependencies = [
 
 [[package]]
 name = "platform-macos"
-version = "0.32.0"
-source = "git+https://github.com/maka-agent/cua?rev=afcdf58a76cb9998f4e2fed8c0124d81ac4f1fcf#afcdf58a76cb9998f4e2fed8c0124d81ac4f1fcf"
+version = "0.38.0"
+source = "git+https://github.com/maka-agent/cua?rev=e53bc79912458a038120fcf7c5b22d76d8301980#e53bc79912458a038120fcf7c5b22d76d8301980"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -11285,6 +11310,7 @@ dependencies = [
  "getrandom 0.4.3",
  "image",
  "libc",
+ "mach2",
  "objc2 0.5.3",
  "objc2-app-kit 0.2.2",
  "objc2-foundation 0.2.2",
@@ -11306,8 +11332,8 @@ dependencies = [
 
 [[package]]
 name = "platform-windows"
-version = "0.32.0"
-source = "git+https://github.com/maka-agent/cua?rev=afcdf58a76cb9998f4e2fed8c0124d81ac4f1fcf#afcdf58a76cb9998f4e2fed8c0124d81ac4f1fcf"
+version = "0.38.0"
+source = "git+https://github.com/maka-agent/cua?rev=e53bc79912458a038120fcf7c5b22d76d8301980#e53bc79912458a038120fcf7c5b22d76d8301980"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -11886,7 +11912,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -13027,6 +13053,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "rquickjs"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a0a22bf72f515cc4189dd7c63d016f6de92a11eee98ddf7dd64794198f6eb34e"
+dependencies = [
+ "rquickjs-core",
+]
+
+[[package]]
+name = "rquickjs-core"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6657979a24d543e5fc66f32cef2f47ca82ce8eb55cec5f7d59a12b7b570bbf24"
+dependencies = [
+ "hashbrown 0.17.1",
+ "relative-path",
+ "rquickjs-sys",
+]
+
+[[package]]
+name = "rquickjs-sys"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cee271d0eeba64f0915b846cb7ae02e16faf3dfdffdca91731101d9d30fe3423"
+dependencies = [
+ "cc",
+]
+
+[[package]]
 name = "rsa"
 version = "0.10.0-rc.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -13232,7 +13287,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -13312,7 +13367,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -14847,7 +14902,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix 1.1.5",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -15293,21 +15348,6 @@ dependencies = [
 
 [[package]]
 name = "toml"
-version = "0.9.12+spec-1.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cf92845e79fc2e2def6a5d828f0801e29a2f8acc037becc5ab08595c7d5e9863"
-dependencies = [
- "indexmap 2.14.2",
- "serde_core",
- "serde_spanned 1.1.2",
- "toml_datetime 0.7.5+spec-1.1.0",
- "toml_parser",
- "toml_writer",
- "winnow 0.7.15",
-]
-
-[[package]]
-name = "toml"
 version = "1.1.8+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "20489e00e4d8741d6be680764cc12e270655e375a20d1011e844a9c3379e678d"
@@ -15328,15 +15368,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "22cddaf88f4fbc13c51aebbf5f8eceb5c7c5a9da2ac40a13519eb5b0a0e8f11c"
 dependencies = [
  "serde",
-]
-
-[[package]]
-name = "toml_datetime"
-version = "0.7.5+spec-1.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "92e1cfed4a3038bc5a127e35a2d360f145e1f4b971b551a2ba5fd7aedf7e1347"
-dependencies = [
- "serde_core",
 ]
 
 [[package]]
@@ -15837,7 +15868,7 @@ dependencies = [
  "serde",
  "tempfile",
  "textwrap",
- "toml 0.9.12+spec-1.1.0",
+ "toml 0.8.23",
  "uniffi_internal_macros",
  "uniffi_meta",
  "uniffi_pipeline",
@@ -15883,7 +15914,7 @@ dependencies = [
  "quote",
  "serde",
  "syn 2.0.119",
- "toml 0.9.12+spec-1.1.0",
+ "toml 0.8.23",
  "uniffi_meta",
 ]
 
@@ -16730,7 +16761,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -17146,15 +17177,6 @@ dependencies = [
 
 [[package]]
 name = "windows-sys"
-version = "0.60.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f2f500e4d28234f72040990ec9d39e3a6b950f9f22d3dba18416c35882612bcb"
-dependencies = [
- "windows-targets 0.53.5",
-]
-
-[[package]]
-name = "windows-sys"
 version = "0.61.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ae137229bcbd6cdf0f7b80a31df61766145077ddf49416a728b02cb3921ff3fc"
@@ -17419,7 +17441,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d6f32a0ff4a9f6f01231eb2059cc85479330739333e0e58cadf03b6af2cca10"
 dependencies = [
  "cfg-if",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

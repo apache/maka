@@ -445,6 +445,38 @@ CREATE TABLE "client_capability_session_grants" (
     record_json TEXT NOT NULL
 );
 
+-- App consent uses the existing append-only interaction facts. Only profile
+-- persistence needs mutable authority: revocation advances its revision so a
+-- delayed response cannot restore the previously revoked Always grant.
+CREATE TABLE computer_app_profile_authority (
+    target_key TEXT PRIMARY KEY NOT NULL,
+    revision INTEGER NOT NULL CHECK(revision BETWEEN 0 AND 9007199254740991),
+    source_request TEXT REFERENCES interaction_requests(request_id)
+) STRICT;
+
+-- An observed app remains selectable between completed native calls in the same
+-- logical Turn. Its first source T1 is an immutable, host-resolved selection.
+CREATE TABLE computer_app_turn_activity (
+    session_id TEXT NOT NULL,
+    turn_id TEXT NOT NULL,
+    app_key TEXT NOT NULL,
+    source_event TEXT NOT NULL REFERENCES event_log(event_id),
+    operation_id TEXT NOT NULL,
+    record_json TEXT NOT NULL,
+    PRIMARY KEY(session_id,turn_id,app_key),
+    UNIQUE(session_id,operation_id)
+) STRICT;
+
+CREATE TABLE computer_app_turn_stops (
+    session_id TEXT NOT NULL,
+    turn_id TEXT NOT NULL,
+    app_key TEXT NOT NULL,
+    stopped_at INTEGER NOT NULL CHECK(stopped_at BETWEEN 0 AND 9007199254740991),
+    PRIMARY KEY(session_id,turn_id,app_key),
+    FOREIGN KEY(session_id,turn_id,app_key)
+        REFERENCES computer_app_turn_activity(session_id,turn_id,app_key) ON DELETE CASCADE
+) STRICT;
+
 CREATE TABLE "projects" (
     id TEXT PRIMARY KEY NOT NULL,
     identity TEXT NOT NULL UNIQUE,
@@ -967,6 +999,26 @@ CREATE INDEX shell_runs_active ON shell_runs(active) WHERE active = 1;
 
 CREATE INDEX interaction_session_pending ON interaction_requests(session_id, created_at, request_id);
 
+CREATE UNIQUE INDEX computer_app_native_effect ON interaction_requests(
+    session_id,
+    json_extract(record_json, '$.request.nativeOperationId')
+) WHERE json_extract(record_json, '$.request.kind') = 'computer_app';
+
+CREATE INDEX interaction_browser_origin_decision ON interaction_requests(
+    session_id,
+    json_extract(record_json,'$.request.target.providerId'),
+    json_extract(record_json,'$.request.target.contractId'),
+    json_extract(record_json,'$.request.target.serverId'),
+    json_extract(record_json,'$.request.target.toolName'),
+    json_extract(record_json,'$.request.target.scope.origin'),
+    json_extract(record_json,'$.request.basis.boundaryRevision'),
+    json_extract(record_json,'$.request.basis.binding.id'),
+    json_extract(record_json,'$.request.basis.binding.permissionEpoch'),
+    request_id
+) WHERE json_extract(record_json,'$.request.kind')='client_capability'
+    AND json_extract(record_json,'$.request.target.capability')='browser'
+    AND json_extract(record_json,'$.request.target.scope.kind')='browser_origin';
+
 CREATE INDEX interaction_permission_basis ON interaction_requests(
     session_id, json_extract(record_json, '$.request.baseRevision'), created_at, request_id
 ) WHERE json_extract(record_json, '$.request.kind') = 'permissions';
@@ -1393,7 +1445,10 @@ BEGIN
     INSERT INTO context_independent_tools
     SELECT NEW.invocation_id,NEW.operation_id,NEW.sequence
     WHERE NEW.kind IN ('tool_dispatched','tool_rejected')
-      AND ((NEW.kind='tool_dispatched' AND json_extract(NEW.event_json,'$.fact.call.origin.kind')='code_cell')
+      AND ((NEW.kind='tool_dispatched' AND (
+          json_extract(NEW.event_json,'$.fact.call.origin.kind')='code_cell'
+          OR (json_extract(NEW.event_json,'$.fact.call.origin.kind')='host_sdk'
+            AND json_extract(NEW.event_json,'$.fact.call.origin.parent_relationship.kind')='evaluation_observer')))
         OR EXISTS(SELECT 1 FROM context_independent_tools p WHERE p.invocation_id=NEW.invocation_id
           AND p.operation_id=json_extract(NEW.event_json,'$.fact.call.origin.parent_operation_id')));
 

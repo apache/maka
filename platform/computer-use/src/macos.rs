@@ -19,7 +19,10 @@
 
 //! Retained AX elements are the identity for macOS semantic operations. Cua's
 //! bounded walker and exact-window checks supply the platform implementation.
+pub(crate) mod controller;
+pub(crate) mod page_scroll;
 pub(crate) mod pasteboard;
+pub(crate) mod permission_subject;
 use crate::protocol::*;
 use core_foundation::{
     base::{CFEqual, CFGetTypeID, CFRange, CFRelease, TCFType},
@@ -81,6 +84,8 @@ pub(crate) struct Target {
     window_id: u32,
     window: RetainedElement,
     elements: HashMap<u64, RetainedElement>,
+    // Native AX references are confined to their CFRunLoop owner thread.
+    _thread_bound: std::marker::PhantomData<std::rc::Rc<()>>,
 }
 impl Target {
     pub(crate) fn cursor_point(&self, index: u64) -> Result<[f64; 2], ToolError> {
@@ -103,7 +108,12 @@ impl Target {
             height,
         })
     }
-    pub(crate) fn paste(&self, text: &str, html: bool) -> Result<bool, ToolError> {
+    pub(crate) fn paste(
+        &self,
+        text: &str,
+        html: bool,
+        cancellation: &tokio_util::sync::CancellationToken,
+    ) -> Result<bool, ToolError> {
         self.verify()?;
         let pointer = unsafe {
             platform_macos::ax::exact_target::focused_element_in_window(self.pid, self.window_id)
@@ -121,7 +131,12 @@ impl Target {
         let selection = unsafe { read_range(pointer) }.ok_or_else(|| {
             failed("paste requires an observable selection; use typeText or browser tab input")
         })?;
+        check_cancelled(cancellation)?;
         let restore = pasteboard::replace(text, html)?;
+        if let Err(error) = check_cancelled(cancellation) {
+            restore.restore()?;
+            return Err(error);
+        }
         let posted = platform_macos::input::skylight::with_foreground_hid_activation(
             self.pid,
             self.window_id,
@@ -129,20 +144,23 @@ impl Target {
                 // Activation can reset the first responder/selection. Reapply the
                 // exact retained field and range inside the foreground interval.
                 unsafe {
+                    check_cancelled(cancellation)?;
                     if set_bool_attr_true(pointer, "AXFocused") != kAXErrorSuccess {
                         return Err(
                             std::io::Error::other("paste field could not be focused").into()
                         );
                     }
+                    check_cancelled(cancellation)?;
                     write_range(pointer, selection)
                         .map_err(|e| std::io::Error::other(e.to_string()))?;
                 }
+                check_cancelled(cancellation)?;
                 platform_macos::input::keyboard::press_key_global("v", &["cmd"])
             },
         );
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
         let mut consumed = false;
-        while std::time::Instant::now() < deadline {
+        while posted.is_ok() && std::time::Instant::now() < deadline {
             if unsafe { copy_string_attr(pointer, "AXValue") }.is_some_and(|after| after != before)
             {
                 consumed = true;
@@ -151,7 +169,11 @@ impl Target {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         let restored = restore.restore()?;
-        posted.map_err(|e| ToolError::OutcomeUnknown(e.to_string()))?;
+        posted.map_err(|error| {
+            error
+                .downcast::<ToolError>()
+                .unwrap_or_else(|error| ToolError::OutcomeUnknown(error.to_string()))
+        })?;
         if !consumed {
             return Err(ToolError::OutcomeUnknown("paste did not produce an observable change; inspect the UI before trying another action".into()));
         }
@@ -186,6 +208,7 @@ impl Target {
                 window_id,
                 window,
                 elements: HashMap::new(),
+                _thread_bound: std::marker::PhantomData,
             })
         }
     }
@@ -286,10 +309,6 @@ impl Target {
                     target: Position::Element(_),
                     ..
                 }
-                | Action::Scroll {
-                    target: Position::Element(_),
-                    ..
-                }
         )
     }
     fn element(&self, index: u64) -> Result<AXUIElementRef, ToolError> {
@@ -346,7 +365,7 @@ impl Target {
                         ));
                     }
                     let element = self.element(index)?;
-                    self.prepare_menu(element)?;
+                    self.prepare_menu(element, cancellation)?;
                     let actions = copy_action_names(element);
                     let action = match options.mouse_button.unwrap_or(MouseButton::Left) {
                         MouseButton::Left => "AXPress",
@@ -377,7 +396,7 @@ impl Target {
                 }
                 Action::Secondary { index, action } => {
                     let element = self.element(index)?;
-                    self.prepare_menu(element)?;
+                    self.prepare_menu(element, cancellation)?;
                     if !copy_action_names(element).contains(&action) {
                         return Err(failed(
                             "action_not_exposed: use an action listed in the current AX state",
@@ -402,11 +421,13 @@ impl Target {
                         if !number.is_finite() {
                             return Err(failed("value must be finite"));
                         }
+                        check_cancelled(cancellation)?;
                         check(set_number_attr(element, "AXValue", number))?;
                         if copy_number_attr(element, "AXValue") != Some(number) {
                             return Err(failed("AX value read-back did not match"));
                         }
                     } else {
+                        check_cancelled(cancellation)?;
                         check(set_string_attr(element, "AXValue", &value))?;
                         if copy_string_attr(element, "AXValue").as_deref() != Some(&value) {
                             return Err(failed("AX value read-back did not match"));
@@ -428,96 +449,10 @@ impl Target {
                         .ok_or_else(|| failed("editable text unavailable"))?;
                     let (start, length) = selection(&value, &text, &options)?;
                     let range = (start as isize, length as isize);
+                    check_cancelled(cancellation)?;
                     write_range(element, range)?;
                     if read_range(element) != Some(range) {
                         return Err(failed("AX selection read-back failed"));
-                    }
-                }
-                Action::Scroll {
-                    target: Position::Element(index),
-                    direction,
-                    distance,
-                } => {
-                    if let Some(Distance::Pixels { pixels }) = distance {
-                        if !(1..=20_000).contains(&pixels) {
-                            return Err(failed("scroll pixel distance out of range"));
-                        }
-                        let element = self.element(index)?;
-                        let facts = gather_background_facts(
-                            self.pid,
-                            self.window_id,
-                            Some(element as usize),
-                        );
-                        if let BackgroundInputDecision::Refuse(refusal) = decide_background_input(
-                            ExactWindowTarget {
-                                pid: self.pid,
-                                window_id: self.window_id,
-                            },
-                            &facts,
-                            BackgroundAction::WindowPointer,
-                        ) {
-                            return Err(failed(format!("{}: {}", refusal.code, refusal.reason)));
-                        }
-                        let (x, y) = platform_macos::ax::bindings::element_screen_center(element)
-                            .ok_or_else(|| failed("element has no live scroll point"))?;
-                        let bounds = platform_macos::windows::window_bounds_by_id(self.window_id)
-                            .ok_or_else(|| failed("bound window has no live frame"))?;
-                        let local = (x - bounds.x, y - bounds.y);
-                        if local.0 < 0.0
-                            || local.1 < 0.0
-                            || local.0 >= bounds.width
-                            || local.1 >= bounds.height
-                        {
-                            return Err(failed(
-                                "element scroll point lies outside the bound window",
-                            ));
-                        }
-                        let delta = pixels as i32;
-                        let (dy, dx) = match direction {
-                            Direction::Up => (delta, 0),
-                            Direction::Down => (-delta, 0),
-                            Direction::Left => (0, delta),
-                            Direction::Right => (0, -delta),
-                        };
-                        if cancellation.is_cancelled() {
-                            return Err(failed(
-                                "Computer Use cancelled before pixel scroll dispatch",
-                            ));
-                        }
-                        platform_macos::input::mouse::scroll_pixels_at_xy(
-                            self.pid,
-                            x,
-                            y,
-                            Some(local),
-                            Some(self.window_id),
-                            dy,
-                            dx,
-                        )
-                        .map_err(failed)?;
-                        return Ok(());
-                    }
-                    let pages = match distance {
-                        None => 1,
-                        Some(Distance::Pages(pages)) => pages,
-                        Some(Distance::Pixels { .. }) => unreachable!(),
-                    };
-                    if !(1..=50).contains(&pages) {
-                        return Err(failed("scroll page count out of range"));
-                    }
-                    let action = match direction {
-                        Direction::Up => "AXScrollUpByPage",
-                        Direction::Down => "AXScrollDownByPage",
-                        Direction::Left => "AXScrollLeftByPage",
-                        Direction::Right => "AXScrollRightByPage",
-                    };
-                    for _ in 0..pages {
-                        let element = self.element(index)?;
-                        if !copy_action_names(element).iter().any(|a| a == action) {
-                            return Err(failed(
-                                "element exposes no semantic page-scroll action; use screenshot coordinates",
-                            ));
-                        }
-                        check(perform_action(element, action))?;
                     }
                 }
                 _ => return Err(failed("unsupported AX action")),
@@ -525,7 +460,11 @@ impl Target {
         }
         Ok(())
     }
-    fn prepare_menu(&self, element: AXUIElementRef) -> Result<(), ToolError> {
+    fn prepare_menu(
+        &self,
+        element: AXUIElementRef,
+        cancellation: &tokio_util::sync::CancellationToken,
+    ) -> Result<(), ToolError> {
         if unsafe { element_window_id(element) }.is_some() {
             return Ok(());
         }
@@ -537,9 +476,11 @@ impl Target {
                     == Some(true)
         };
         if !focused() {
+            check_cancelled(cancellation)?;
             if !platform_macos::input::skylight::make_exact_window_key(self.pid, self.window_id) {
                 return Err(failed("menu context could not activate the bound window"));
             }
+            check_cancelled(cancellation)?;
             unsafe { check(perform_action(self.window.as_ptr() as _, "AXRaise"))? };
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
             while !focused() && std::time::Instant::now() < deadline {
@@ -684,6 +625,15 @@ fn check(status: i32) -> Result<(), ToolError> {
         Ok(())
     } else {
         Err(failed(format!("AX operation refused ({status})")))
+    }
+}
+fn check_cancelled(cancellation: &tokio_util::sync::CancellationToken) -> Result<(), ToolError> {
+    if cancellation.is_cancelled() {
+        Err(failed(
+            "Computer Use cancelled before accessibility input dispatch",
+        ))
+    } else {
+        Ok(())
     }
 }
 fn failed(error: impl std::fmt::Display) -> ToolError {

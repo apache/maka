@@ -81,6 +81,30 @@ fn request(v: &Value) -> Result<InteractionRequest> {
                 basis: field(v, "basis")?,
             }
         }
+        Some("computer_app") => {
+            shape(
+                v,
+                &[
+                    "kind",
+                    "toolUseId",
+                    "nativeOperationId",
+                    "target",
+                    "basis",
+                    "display",
+                    "allowAlways",
+                    "authorityRevision",
+                ],
+            )?;
+            InteractionRequest::ComputerApp {
+                tool_use_id: field(v, "toolUseId")?,
+                native_operation_id: field(v, "nativeOperationId")?,
+                target: field(v, "target")?,
+                basis: field(v, "basis")?,
+                display: field(v, "display")?,
+                allow_always: field(v, "allowAlways")?,
+                authority_revision: field(v, "authorityRevision")?,
+            }
+        }
         Some("form") => {
             shape(v, &["kind", "toolUseId", "message", "requester", "fields"])?;
             let input = crate::capability::form_decode::decode_input(&serde_json::json!({
@@ -139,6 +163,16 @@ fn answer(v: &Value) -> Result<InteractionAnswer> {
                 decision: field(v, "decision")?,
             }
         }
+        Some("computer_app") => {
+            shape(v, &["kind", "decision"])?;
+            InteractionAnswer::ComputerApp {
+                decision: field(v, "decision")?,
+            }
+        }
+        Some("computer_app_cancel") => {
+            shape(v, &["kind"])?;
+            InteractionAnswer::ComputerAppCancel {}
+        }
         Some("form") => InteractionAnswer::Form {
             result: result(v, false)?,
         },
@@ -174,6 +208,13 @@ fn outcome(v: &Value) -> Result<InteractionOutcome> {
         Some("client_capability_decision") => {
             shape(v, &["kind", "decision", "committedAt"])?;
             InteractionOutcome::ClientCapabilityDecision {
+                decision: field(v, "decision")?,
+                committed_at,
+            }
+        }
+        Some("computer_app_decision") => {
+            shape(v, &["kind", "decision", "committedAt"])?;
+            InteractionOutcome::ComputerAppDecision {
                 decision: field(v, "decision")?,
                 committed_at,
             }
