@@ -1198,10 +1198,15 @@ export async function resolveExecutionTarget(
       ? {}
       : { defaultApiProtocol: resolved.connection.defaultApiProtocol }),
     defaultModel: model,
+    // The compaction freshness gate answers for the catalog this backend
+    // resolved — not for the last time the user refreshed models. Passing the
+    // discovery timestamp through kept the gate closed for every ordinary
+    // session (no manual refresh within five minutes), so cross-model Codex
+    // checkpoint reuse could never trigger (#6402).
     ...(resolved.connection.providerType === 'openai-codex' &&
     resolved.connection.modelSource === 'fetched' &&
     resolved.connection.modelsFetchedAt !== undefined
-      ? { codexCompactionMetadataFetchedAt: resolved.connection.modelsFetchedAt }
+      ? { codexCompactionMetadataFetchedAt: Date.now() }
       : {}),
     models: discovered
       ? [...resolved.connection.models]
