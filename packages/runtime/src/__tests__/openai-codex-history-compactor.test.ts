@@ -237,6 +237,42 @@ describe('OpenAI Codex compaction output', () => {
 });
 
 describe('OpenAI Codex compaction input', () => {
+  test('rolls a compatible checkpoint forward after switching Codex models', async () => {
+    const old = assistantTextEvent('old', 'old-step', 'OLD_RAW_HISTORY');
+    const tail = assistantTextEvent('tail', 'tail-step', 'NEW_TAIL');
+    const previous = buildHistoryCompactCheckpoint({
+      sessionId: 'session-1',
+      coveredRuntimeEvents: [old],
+      providerState: {
+        kind: 'openai_codex_remote_v2',
+        connectionId: 'codex-subscription',
+        modelId: 'model-a',
+        codexCompactionHash: '3000',
+        itemId: 'cmp-old',
+        encryptedContent: 'OLD_ENCRYPTED_STATE',
+      },
+    });
+    const model = compactionModel();
+    const state = await buildOpenAiCodexHistoryCompactor({
+      resolveModel: () => model,
+      connectionId: 'codex-subscription',
+      modelId: 'model-b',
+      models: [{ id: 'model-b', codexCompactionHash: '3000' }],
+    })({
+      sessionId: 'session-1',
+      turnId: 'turn-current',
+      source: { foldedRuntimeEvents: [old, tail] },
+      previousCheckpoint: previous,
+      newlyFoldedRuntimeEvents: [tail],
+    });
+    const prompt = JSON.stringify(model.doStreamCalls[0]?.prompt);
+    assert.match(prompt, /OLD_ENCRYPTED_STATE/);
+    assert.match(prompt, /NEW_TAIL/);
+    assert.doesNotMatch(prompt, /OLD_RAW_HISTORY/);
+    assert.equal(state.modelId, 'model-b');
+    assert.equal(state.codexCompactionHash, '3000');
+  });
+
   test('preserves a historical text checkpoint head anchor after reasoning admission shifts its index (#6154)', async () => {
     const anchor = runtimeEvent({
       id: 'anchor',

@@ -134,6 +134,8 @@ export interface OpenAiCodexRemoteCompactState {
   kind: 'openai_codex_remote_v2';
   connectionId: string;
   modelId: string;
+  /** Compatibility identity captured when this checkpoint was produced. */
+  codexCompactionHash?: string;
   itemId: string;
   encryptedContent: string;
 }
@@ -413,23 +415,39 @@ export function isTextHistoryCompactCheckpoint(
 
 export function canReplayHistoryCompactCheckpointForModel(
   checkpoint: HistoryCompactCheckpoint,
-  connection: { providerType: string },
+  connection: {
+    providerType: string;
+    models?: readonly { id: string; codexCompactionHash?: string }[];
+  },
   connectionId: string | undefined,
   modelId: string,
 ): boolean {
   if (!isProviderHistoryCompactCheckpoint(checkpoint)) return true;
+  const state = checkpoint.providerState;
+  if (
+    connection.providerType !== 'openai-codex' ||
+    connectionId === undefined ||
+    state.connectionId !== connectionId
+  )
+    return false;
+  const targetHash = connection.models?.find((model) => model.id === modelId)?.codexCompactionHash;
+  // Legacy checkpoints remain usable on their original model. Never infer a
+  // legacy checkpoint's original hash from today's mutable model catalog.
+  if (state.modelId === modelId && (!state.codexCompactionHash || !targetHash)) return true;
   return (
-    connection.providerType === 'openai-codex' &&
-    connectionId !== undefined &&
-    checkpoint.providerState.connectionId === connectionId &&
-    checkpoint.providerState.modelId === modelId
+    nonEmpty(state.codexCompactionHash) &&
+    nonEmpty(targetHash) &&
+    state.codexCompactionHash === targetHash
   );
 }
 
 /** Whether this model's configured compactor can roll forward from this checkpoint value. */
 export function canContinueHistoryCompactCheckpointForModel(
   checkpoint: HistoryCompactCheckpoint,
-  connection: { providerType: string },
+  connection: {
+    providerType: string;
+    models?: readonly { id: string; codexCompactionHash?: string }[];
+  },
   connectionId: string | undefined,
   modelId: string,
 ): boolean {
@@ -910,6 +928,11 @@ function validHistoryCompactProviderState(value: unknown): value is HistoryCompa
     state.kind === 'openai_codex_remote_v2' &&
     nonEmpty(state.connectionId) &&
     nonEmpty(state.modelId) &&
+    (state.codexCompactionHash === undefined ||
+      (nonEmpty(state.codexCompactionHash) &&
+        state.codexCompactionHash.length <= 128 &&
+        state.codexCompactionHash.trim() === state.codexCompactionHash &&
+        !/[\u0000-\u001f\u007f]/.test(state.codexCompactionHash))) &&
     nonEmpty(state.itemId) &&
     nonEmpty(state.encryptedContent)
   );

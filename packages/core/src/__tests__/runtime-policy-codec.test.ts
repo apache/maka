@@ -528,12 +528,24 @@ test('relay model profiles round-trip canonical entries and drafts, strictly', (
 test('normalizes exact bounded model discovery results', () => {
   assert.deepEqual(
     normalizeConnectionModelDiscoveryResult({
-      models: [{ id: 'gpt-5', capabilities: { chat: true, parallelToolCalls: false } }],
+      models: [
+        {
+          id: 'gpt-5',
+          codexCompactionHash: '3000',
+          capabilities: { chat: true, parallelToolCalls: false },
+        },
+      ],
       source: 'fetched',
       fetchedAt: 42,
     }),
     {
-      models: [{ id: 'gpt-5', capabilities: { chat: true, parallelToolCalls: false } }],
+      models: [
+        {
+          id: 'gpt-5',
+          codexCompactionHash: '3000',
+          capabilities: { chat: true, parallelToolCalls: false },
+        },
+      ],
       source: 'fetched',
       fetchedAt: 42,
     },
@@ -541,6 +553,12 @@ test('normalizes exact bounded model discovery results', () => {
   for (const invalid of [
     { models: [{ id: 'duplicate' }, { id: 'duplicate' }], source: 'fetched', fetchedAt: 42 },
     { models: [{ id: 'invalid', contextWindow: 0 }], source: 'fetched', fetchedAt: 42 },
+    { models: [{ id: 'invalid', codexCompactionHash: '' }], source: 'fetched', fetchedAt: 42 },
+    {
+      models: [{ id: 'invalid', codexCompactionHash: 'x'.repeat(129) }],
+      source: 'fetched',
+      fetchedAt: 42,
+    },
     {
       models: Array.from({ length: 2049 }, (_, i) => ({ id: `model-${i}` })),
       source: 'fetched',

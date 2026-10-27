@@ -416,8 +416,8 @@ describe('model discovery', () => {
       respondJson(response, 200, {
         models: [
           { slug: 'hidden-model', visibility: 'hide', priority: 0 },
-          { slug: 'gpt-5.6-sol', priority: 1, context_window: 372000 },
-          { slug: 'gpt-5.5', priority: 2, context_window: 272000 },
+          { slug: 'gpt-5.6-sol', priority: 1, context_window: 372000, comp_hash: '3000' },
+          { slug: 'gpt-5.5', priority: 2, context_window: 272000, comp_hash: '' },
           { slug: 'gpt-5.4-mini', priority: 3 },
           { slug: '', priority: 4 },
         ],
@@ -442,7 +442,7 @@ describe('model discovery', () => {
       { url: '/models?client_version=1.0.0', authorization: 'Bearer codex-oauth-token' },
     ]);
     assert.deepEqual(models, [
-      { id: 'gpt-5.6-sol', contextWindow: 372000 },
+      { id: 'gpt-5.6-sol', contextWindow: 372000, codexCompactionHash: '3000' },
       { id: 'gpt-5.5', contextWindow: 272000 },
       { id: 'gpt-5.4-mini' },
     ]);

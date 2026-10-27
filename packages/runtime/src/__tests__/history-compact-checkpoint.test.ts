@@ -138,6 +138,66 @@ describe('history compact checkpoint', () => {
     );
   });
 
+  test('only replays native state across models with a captured matching hash on the same connection', () => {
+    const state = {
+      kind: 'openai_codex_remote_v2' as const,
+      connectionId: 'connection-a',
+      modelId: 'model-a',
+      codexCompactionHash: '3000',
+      itemId: 'cmp_123',
+      encryptedContent: 'encrypted-state',
+    };
+    const checkpoint = buildHistoryCompactCheckpoint({
+      sessionId: 'session-1',
+      coveredRuntimeEvents: [textEvent(0)],
+      providerState: state,
+    });
+    const connection = {
+      providerType: 'openai-codex',
+      models: [
+        { id: 'model-a', codexCompactionHash: '3000' },
+        { id: 'model-b', codexCompactionHash: '3000' },
+        { id: 'model-c', codexCompactionHash: '2911' },
+        { id: 'unknown' },
+      ],
+    };
+    for (const check of [
+      canReplayHistoryCompactCheckpointForModel,
+      canContinueHistoryCompactCheckpointForModel,
+    ]) {
+      assert.equal(check(checkpoint, connection, 'connection-a', 'model-b'), true);
+      assert.equal(check(checkpoint, connection, 'connection-a', 'model-c'), false);
+      assert.equal(check(checkpoint, connection, 'connection-a', 'unknown'), false);
+      assert.equal(check(checkpoint, connection, 'connection-b', 'model-b'), false);
+      assert.equal(
+        check(checkpoint, { ...connection, providerType: 'openai' }, 'connection-a', 'model-b'),
+        false,
+      );
+      assert.equal(
+        check(
+          checkpoint,
+          { ...connection, models: [{ id: 'model-a', codexCompactionHash: 'changed' }] },
+          'connection-a',
+          'model-a',
+        ),
+        false,
+      );
+    }
+    const legacy = buildHistoryCompactCheckpoint({
+      sessionId: 'session-1',
+      coveredRuntimeEvents: [textEvent(0)],
+      providerState: { ...state, codexCompactionHash: undefined },
+    });
+    assert.equal(
+      canReplayHistoryCompactCheckpointForModel(legacy, connection, 'connection-a', 'model-a'),
+      true,
+    );
+    assert.equal(
+      canReplayHistoryCompactCheckpointForModel(legacy, connection, 'connection-a', 'model-b'),
+      false,
+    );
+  });
+
   test('persists provider-native state as a V3 checkpoint bound to one Codex model', () => {
     const checkpoint = buildHistoryCompactCheckpoint({
       sessionId: 'session-1',

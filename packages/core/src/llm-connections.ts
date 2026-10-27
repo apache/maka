@@ -108,6 +108,8 @@ export interface ModelInfo {
   /** Account-advertised request wire when one provider exposes multiple model protocols. */
   apiProtocol?: ModelApiProtocol;
   contextWindow?: number;
+  /** Opaque compatibility identifier advertised by the Codex subscription model catalog. */
+  codexCompactionHash?: string;
   /** Maximum provider-visible input tokens, when narrower than contextWindow. */
   inputLimit?: number;
   maxOutputTokens?: number;
