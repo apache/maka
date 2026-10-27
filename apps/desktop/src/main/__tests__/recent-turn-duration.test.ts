@@ -19,7 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { recentTurnCopy } from '../../renderer/features/workbar/ui/recent-turn-overlay.js';
+import { recentTurnCopy } from '../../renderer/features/workbar/testing.js';
 
 test('workbar progress displays localized hours at the hour boundary', () => {
   for (const [locale, before, at, later] of [
