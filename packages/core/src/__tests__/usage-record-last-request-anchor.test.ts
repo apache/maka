@@ -36,6 +36,19 @@ test('a last-request anchor accepts the new usage shape and retired payload key'
   assert.equal(isLastRequestAnchor({ inputTokens: 120, foo: 1 }), false);
 });
 
+test('a last-request anchor rejects non-string route fields', () => {
+  // The route fields ride the anchor as a type assertion, so a persisted
+  // number or null for either would reach readers narrowed to string.
+  const nonStringRouteValues: unknown[] = [123, null, {}, ['m'], true];
+  for (const modelId of nonStringRouteValues) {
+    assert.equal(isLastRequestAnchor({ inputTokens: 120, modelId }), false);
+  }
+  for (const connectionId of nonStringRouteValues) {
+    assert.equal(isLastRequestAnchor({ inputTokens: 120, connectionId }), false);
+  }
+  assert.equal(isLastRequestAnchor({ inputTokens: 120, modelId: 'm', connectionId: 'c' }), true);
+});
+
 test('token-usage fields carry the anchor and reject a broken one', () => {
   assert.equal(
     isTokenUsageFields({ ...usage, lastRequestAnchor: { inputTokens: 120, outputTokens: 30 } }),
