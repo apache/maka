@@ -28,12 +28,12 @@
 | [bundle](bundle/README.zh-CN.md) | 选择包并生成 Host/UI 组合 |
 | [native](native/README.zh-CN.md) | 选择编译进程序的 Host 工厂 |
 | [cli](cli/README.zh-CN.md) | 启动终端产品，提供 CLI 命令 |
-| [desktop-shell](desktop-shell/README.zh-CN.md) | 通过公共 Host 服务运行桌面应用源码 |
+| [desktop-shell](desktop-shell/README.zh-CN.md) | 在桌面窗口中运行工作台，连接公共 Host 服务 |
 | [acp](acp/README.zh-CN.md) | 通过 ACP 服务编辑器客户端 |
 
 在仓库根目录运行 `just run`。它先构建 TypeScript 产品，再启动 Cargo。开发二进制从磁盘读取 bundle，因此仅修改 TypeScript 不会触发 Rust 重编译；发布二进制嵌入相同 bundle。
 
-通过 `just build` 构建 CLI 和桌面 shell，支持 `--release` 和 `--target`。构建会将应用源码和图标放在 shell 可执行文件旁。运行 `target/debug/maka desktop --root HOST_ROOT` 初始化或重开业务 Host，并从任意工作目录启动桌面；启动器校验 endpoint 和 epoch，在子进程退出前保留自己的客户端。
+通过 `just build` 构建 CLI 和桌面 shell，支持 `--release` 和 `--target`；macOS 上 shell 放在 `Maka.app` 中。运行 `target/debug/maka desktop --root HOST_ROOT` 初始化或重开业务 Host，并从任意工作目录启动桌面；启动器校验 endpoint 和 epoch，在子进程退出前保留自己的客户端，随后断开连接，Host 会完成已接受的工作。
 
 在终端界面的 **设置 → 外观 → 语言** 中选择共享语言。选择后自动保存在业务 Root 中，与各终端界面的主题和自定义颜色分开；其他已打开的终端界面在重新进入设置或显式刷新时更新，不持续广播。原先分别保存的终端界面语言需要重新选择一次，外观数据保留。
 

@@ -584,13 +584,6 @@ mod tests {
             binary[156..158].copy_from_slice(&2_u16.to_le_bytes());
             append(service, &binary);
         }
-        let app = target.desktop_app();
-        append(&format!("{app}/gpui-shell.json"), b"{\"main\":\"main.js\"}");
-        append(
-            &format!("{app}/main.js"),
-            b"export const title = 'Maka shell';\n",
-        );
-        append(&format!("{app}/icons/mark.svg"), b"<svg>Maka</svg>\n");
         if target.os() == "darwin" {
             append(
                 "bin/Maka.app/Contents/Info.plist",
@@ -690,21 +683,19 @@ mod tests {
                 .resolve(client.clone(), registry)
                 .await
                 .unwrap();
-            let app = |name: &str| format!("{}/{name}", target.desktop_app());
             assert_eq!(artifact.integrity, integrity);
             assert!(artifact.executable.is_file());
             assert!(artifact.directory.join(target.python_worker()).is_file());
             let desktop = artifact.directory.join(target.desktop_executable());
             assert!(desktop.is_file());
             assert_eq!(
-                (target.desktop_executable(), target.desktop_app()),
+                target.desktop_executable(),
                 match target {
-                    Target::DarwinArm64 | Target::DarwinX64 => (
-                        "bin/Maka.app/Contents/MacOS/maka-desktop-shell",
-                        "bin/Maka.app/Contents/Resources/app"
-                    ),
-                    Target::Win32X64 => ("bin/maka-desktop-shell.exe", "bin/app"),
-                    _ => ("bin/maka-desktop-shell", "bin/app"),
+                    Target::DarwinArm64 | Target::DarwinX64 => {
+                        "bin/Maka.app/Contents/MacOS/maka-desktop-shell"
+                    }
+                    Target::Win32X64 => "bin/maka-desktop-shell.exe",
+                    _ => "bin/maka-desktop-shell",
                 }
             );
             if target.os() == "darwin" {
@@ -713,23 +704,8 @@ mod tests {
                         .unwrap(),
                     b"<plist version=\"1.0\"/>\n"
                 );
-                assert!(
-                    !artifact.directory.join("bin/app").exists()
-                        && !artifact.directory.join("bin/maka-desktop-shell").exists()
-                );
+                assert!(!artifact.directory.join("bin/maka-desktop-shell").exists());
             }
-            assert_eq!(
-                std::fs::read(artifact.directory.join(app("gpui-shell.json"))).unwrap(),
-                b"{\"main\":\"main.js\"}"
-            );
-            assert_eq!(
-                std::fs::read(artifact.directory.join(app("main.js"))).unwrap(),
-                b"export const title = 'Maka shell';\n"
-            );
-            assert_eq!(
-                std::fs::read(artifact.directory.join(app("icons/mark.svg"))).unwrap(),
-                b"<svg>Maka</svg>\n"
-            );
             assert_eq!(
                 artifact.service_executable.is_some(),
                 target == Target::Win32X64
@@ -743,10 +719,10 @@ mod tests {
             let receipt = std::fs::read(artifact.directory.join("receipt.json")).unwrap();
             let recorded: serde_json::Value = serde_json::from_slice(&receipt).unwrap();
             assert_eq!(
-                recorded["files"][app("icons/mark.svg")],
+                recorded["files"]["NOTICE"],
                 serde_json::json!({
-                    "size":16,
-                    "sha256":hex::encode(sha2::Sha256::digest(b"<svg>Maka</svg>\n"))
+                    "size":12,
+                    "sha256":hex::encode(sha2::Sha256::digest(b"test license"))
                 })
             );
             let receipt_sha256 = hex::encode(sha2::Sha256::digest(&receipt));
@@ -765,8 +741,8 @@ mod tests {
                 receipt
             );
             assert_eq!(
-                std::fs::read(copied.directory.join(app("icons/mark.svg"))).unwrap(),
-                b"<svg>Maka</svg>\n"
+                std::fs::read(copied.directory.join("NOTICE")).unwrap(),
+                b"test license"
             );
             assert_eq!(
                 transferred("transferred", receipt_sha256.clone())
@@ -783,20 +759,25 @@ mod tests {
                     .is_err(),
                 "cache hit must authenticate the supplied receipt"
             );
-            let mut extras = vec![
-                (app("dev.js"), "filtered-dev"),
-                (app("icons/injected.js"), "filtered-nested"),
-            ];
-            if target.os() == "darwin" {
-                // The bundle outside its app is checked as completely as the app.
-                extras.push((
-                    "bin/Maka.app/Contents/Resources/injected.icns".into(),
-                    "filtered-bundle",
-                ));
-            }
-            for (extra, cache) in extras {
-                let path = artifact.directory.join(&extra);
-                std::fs::write(&path, b"export const unrecorded = true;\n").unwrap();
+            // macOS reads more of a bundle than the members it requires.
+            let extras: &[(&str, &str)] = if target.os() == "darwin" {
+                &[
+                    (
+                        "bin/Maka.app/Contents/Resources/injected.icns",
+                        "filtered-bundle",
+                    ),
+                    (
+                        "bin/Maka.app/Contents/Frameworks/injected.dylib",
+                        "filtered-nested",
+                    ),
+                ]
+            } else {
+                &[]
+            };
+            for &(extra, cache) in extras {
+                let path = artifact.directory.join(extra);
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::write(&path, b"unrecorded").unwrap();
                 let error = request(target, root.path())
                     .resolve(client.clone(), offline.clone())
                     .await
@@ -807,11 +788,7 @@ mod tests {
                     .resolve(client.clone(), offline.clone())
                     .await
                     .unwrap();
-                assert!(!filtered.directory.join(&extra).exists());
-                assert_eq!(
-                    std::fs::read(filtered.directory.join(app("main.js"))).unwrap(),
-                    b"export const title = 'Maka shell';\n"
-                );
+                assert!(!filtered.directory.join(extra).exists());
                 assert_eq!(
                     std::fs::read(filtered.directory.join("receipt.json")).unwrap(),
                     receipt
@@ -827,8 +804,10 @@ mod tests {
                 );
             }
             #[cfg(unix)]
-            {
-                let extra = artifact.directory.join(app("icons/unrecorded-link.svg"));
+            if target.os() == "darwin" {
+                let extra = artifact
+                    .directory
+                    .join("bin/Maka.app/Contents/Resources/unrecorded-link.icns");
                 std::os::unix::fs::symlink(root.path().join("outside-missing"), &extra).unwrap();
                 assert!(
                     request(target, root.path())
@@ -850,21 +829,21 @@ mod tests {
                 std::fs::read(artifact.directory.join("receipt.json")).unwrap(),
                 receipt
             );
-            let icon = artifact.directory.join(app("icons/mark.svg"));
+            let notice = artifact.directory.join("NOTICE");
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
-                std::fs::set_permissions(&icon, std::fs::Permissions::from_mode(0o600)).unwrap();
+                std::fs::set_permissions(&notice, std::fs::Permissions::from_mode(0o600)).unwrap();
             }
-            std::fs::write(&icon, b"changed asset").unwrap();
+            std::fs::write(&notice, b"changed notice").unwrap();
             assert!(
-                transferred("corrupted-app", receipt_sha256.clone())
+                transferred("corrupted-notice", receipt_sha256.clone())
                     .resolve(client.clone(), offline.clone())
                     .await
                     .is_err()
             );
             assert_eq!(
-                std::fs::read_dir(root.path().join("corrupted-app/cache"))
+                std::fs::read_dir(root.path().join("corrupted-notice/cache"))
                     .unwrap()
                     .count(),
                 0
@@ -875,7 +854,7 @@ mod tests {
                 .err()
                 .unwrap();
             assert!(error.to_string().contains("cache integrity mismatch"));
-            std::fs::write(&icon, b"<svg>Maka</svg>\n").unwrap();
+            std::fs::write(&notice, b"test license").unwrap();
             assert_eq!(
                 std::fs::read(artifact.directory.join("receipt.json")).unwrap(),
                 receipt
@@ -919,17 +898,17 @@ mod tests {
     }
 
     #[test]
-    fn accepts_directory_entries_only_for_parents_of_required_members_and_the_app() {
+    fn accepts_directory_entries_only_for_parents_of_required_members() {
         let linux = Target::LinuxX64Gnu;
         let macos = Target::DarwinArm64;
         for (target, directory, accepted) in [
             (linux, "bin/", true),
-            (linux, "bin/app/icons/", true),
+            (linux, "bin/app/", false),
             (linux, "bin/Maka.app/", false),
             (macos, "bin/", true),
             (macos, "bin/Maka.app/Contents/", true),
-            (macos, "bin/Maka.app/Contents/Resources/app/", true),
-            (macos, "bin/Maka.app/Contents/Resources/app/icons/", true),
+            (macos, "bin/Maka.app/Contents/Resources/", true),
+            (macos, "bin/Maka.app/Contents/Resources/app/", false),
             (macos, "bin/app/", false),
             (macos, "bin/Maka.app/Contents/Frameworks/", false),
             (macos, "bin/Maka.app/Contents/Resources/app2/", false),
@@ -965,8 +944,7 @@ mod tests {
             (linux, Some("bin/extra"), false, None),
             (linux, Some("bin/maka-desktop"), false, None),
             (linux, Some("bin/maka-terminal-shell"), false, None),
-            (linux, None, false, Some("bin/app/gpui-shell.json")),
-            (linux, None, false, Some("bin/app/main.js")),
+            (linux, Some("bin/app/main.js"), false, None),
             (linux, None, false, Some("bin/maka-python-worker")),
             (
                 Target::Win32X64,
@@ -981,13 +959,7 @@ mod tests {
                 false,
                 Some("bin/Maka.app/Contents/Resources/Maka.icns"),
             ),
-            (
-                macos,
-                None,
-                false,
-                Some("bin/Maka.app/Contents/Resources/app/main.js"),
-            ),
-            // Only the app accepts optional files; the other layout is refused.
+            // A package has no optional files.
             (
                 macos,
                 Some("bin/Maka.app/Contents/Resources/extra"),
@@ -1044,12 +1016,9 @@ mod tests {
         let target = linux;
         for (name, kind) in [
             ("package/bin/maka", tar::EntryType::Symlink),
-            ("package/bin/app/icons/mark.svg", tar::EntryType::Symlink),
-            ("package/bin/app/../escaped", tar::EntryType::Regular),
-            (
-                "package/bin/app/icons/../../escaped",
-                tar::EntryType::Regular,
-            ),
+            ("package/bin/maka-desktop-shell", tar::EntryType::Symlink),
+            ("package/bin/../escaped", tar::EntryType::Regular),
+            ("package/bin/maka/../../escaped", tar::EntryType::Regular),
             ("../escaped", tar::EntryType::Regular),
         ] {
             let root = tempfile::tempdir().unwrap();

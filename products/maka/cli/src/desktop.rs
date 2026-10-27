@@ -47,12 +47,20 @@ impl Args {
     pub(super) async fn run(self) -> Result<ExitCode, HostError> {
         let stop = CancellationToken::new();
         let _signals = crate::signals::watch(stop.clone())?;
+        let root = self.root.clone();
         let mut client = tokio::select! {
-            result = crate::deployment::connect_local(self.root.clone()) => result?,
+            result = crate::deployment::connect_local(root.clone()) => result?,
             _ = stop.cancelled() => return Ok(ExitCode::SUCCESS),
         };
         let result = self.launch(&client, &stop).await;
-        let cleanup = client.quit().await;
+        // Detach, as the terminal does: the Host finishes the work it accepted
+        // and then stops once no client is left.
+        let mut cleanup = client.close().await;
+        // A Host that stopped while the window was open (the window then
+        // moved to the Root's next Host) has no client left to detach.
+        if cleanup.is_err() && !runs(&root, client.epoch()).await {
+            cleanup = Ok(());
+        }
         match (result, cleanup) {
             (Ok(code), Ok(())) => {
                 #[cfg(windows)]
@@ -77,10 +85,14 @@ impl Args {
         if stop.is_cancelled() {
             return Ok(0);
         }
-        let executable = std::env::current_exe()?.with_file_name(SHELL);
+        let launcher = std::env::current_exe()?;
+        let executable = launcher.with_file_name(SHELL);
         let mut child = Command::new(&executable)
+            .env("MAKA_HOST_ROOT", std::path::absolute(&self.root)?)
             .env("MAKA_HOST_ENDPOINT", &registered.endpoint)
             .env("MAKA_HOST_EPOCH", registered.host_epoch.to_string())
+            // The shell starts the Root's next Host through it.
+            .env("MAKA_LAUNCHER", &launcher)
             .kill_on_drop(true)
             .spawn()
             .map_err(|error| format!("{}: {error}", executable.display()))?;
@@ -112,5 +124,20 @@ impl Args {
         {
             Ok(status.code().unwrap_or(1))
         }
+    }
+}
+
+/// Whether the Host with `epoch` still serves `root` and is not closing. A
+/// Host that does not answer within two seconds counts as running.
+async fn runs(root: &std::path::Path, epoch: uuid::Uuid) -> bool {
+    match discovery::read(root) {
+        Ok(registered) if registered.host_epoch == epoch => {
+            let status = Client::status(&registered.endpoint, Some(epoch));
+            match tokio::time::timeout(std::time::Duration::from_secs(2), status).await {
+                Ok(status) => status.is_ok_and(|status| !status.closing && !status.closed),
+                Err(_) => true,
+            }
+        }
+        _ => false,
     }
 }

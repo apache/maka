@@ -19,7 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, sep } from 'node:path';
 import test from 'node:test';
@@ -29,7 +29,7 @@ const inventory = 'crate\tApache-2.0\tMIT\na@1\tX\t\nb@1\t\tX\n';
 const policy = ['deny', '--locked', '--config', 'deny.toml'];
 
 async function fixture(t, existing = inventory) {
-  const root = await mkdtemp(join(tmpdir(), 'maka-dependencies-'));
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'maka-dependencies-')));
   t.after(() => rm(root, { recursive: true, force: true }));
   const scripts = join(root, 'scripts/rust');
   const product = join(root, 'products/maka/cli');

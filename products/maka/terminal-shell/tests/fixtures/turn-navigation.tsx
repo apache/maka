@@ -20,8 +20,8 @@
 import { mount, signal, View } from 'nsh';
 import { Clipboard } from 'nsh';
 import { keymap } from 'nsh';
-import { TurnNavigation } from '../../app/TurnNavigation';
-import { uiScale } from '../../app/uiScale';
+import { TurnNavigation } from '../../../workbench/app/TurnNavigation';
+import { uiScale } from '../../../workbench/app/uiScale';
 
 const colors = ['#161719', '#17181a', '#18191b', '#191a1c'];
 const stage = signal(0);

@@ -30,4 +30,4 @@
 - [assistant](assistant/README.zh-CN.md)、[goal](goal/README.zh-CN.md)、[graph](graph/README.zh-CN.md)、[scheduler](scheduler/engine/README.zh-CN.md)、[insights](insights/README.zh-CN.md)、[session-import](session-import/README.zh-CN.md)、[session-recap](session-recap/README.zh-CN.md) 和 [session-title](session-title/README.zh-CN.md)管理各自功能。
 - [acp-executor](acp-executor/native/README.zh-CN.md)通过显式进程与回调服务连接外部 ACP Agent。
 
-[终端 shell](../../products/maka/terminal-shell/README.zh-CN.md) 和[桌面 shell](../../products/maka/desktop-shell/README.zh-CN.md) 消费这些公共 Host 契约。产品组装位于 [products/maka](../../products/maka/README.zh-CN.md)；各 shell 管理自己的原生草稿编辑器与交互生命周期。
+终端和桌面 shell 运行的[工作台](../../products/maka/workbench/README.zh-CN.md)消费这些公共 Host 契约。产品组装位于 [products/maka](../../products/maka/README.zh-CN.md)；工作台管理自己的草稿编辑器与交互生命周期。

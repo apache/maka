@@ -36,11 +36,11 @@ just setup
 just run
 ```
 
-`just run` 打开 [NSH 终端工作台](products/maka/terminal-shell/README.zh-CN.md)，即 `maka` 的默认界面。它自动发现或启动 `~/.maka/application/host` 的 Host；`--root PATH` 指定其他 Host，`--session ID` 打开已有会话。`just run --help` 查看 CLI 命令。`just build --release` 生成 `target/release/maka`、`maka-desktop-shell` 及相邻的 `app/` 目录，Windows 可执行文件使用 `.exe` 后缀，macOS 上桌面 shell 和 app 放在 `Maka.app` 中。构建入口支持 `--release` 和 `--target`。模型协议由 Rust 执行。Node.js 打包产品代码，CLI 在 V8 中执行插件与 Code Mode JavaScript，桌面 shell 通过 QuickJS 执行 app。编写和安装方式见[产品指南](products/maka/bundle/README.zh-CN.md)。
+`just run` 打开 [NSH 终端工作台](products/maka/terminal-shell/README.zh-CN.md)，即 `maka` 的默认界面。它自动发现或启动 `~/.maka/application/host` 的 Host；`--root PATH` 指定其他 Host，`--session ID` 打开已有会话。`just run --help` 查看 CLI 命令。`just build --release` 生成 `target/release/maka` 和 `maka-desktop-shell`，Windows 可执行文件使用 `.exe` 后缀，macOS 上桌面 shell 放在 `Maka.app` 中。构建入口支持 `--release` 和 `--target`。模型协议由 Rust 执行。Node.js 打包产品代码，CLI 在 V8 中执行插件与 Code Mode JavaScript。桌面 shell 在窗口中运行与终端相同的 NSH 工作台。编写和安装方式见[产品指南](products/maka/bundle/README.zh-CN.md)。
 
 在 WSL 中，`just run` 构建不含本地 `native-desktop` 能力及其 Linux X11 依赖的 CLI，Computer Use 默认选择 Windows 桌面。源码构建需通过 `MAKA_CUA_WINDOWS_EXECUTABLE` 指定匹配的 Windows `maka.exe`，使用 WSL 可见的绝对路径。`MAKA_CUA_BUILD_MODE=auto|native|bridge` 控制开发构建选择，设置方法见 [Computer Use](platform/computer-use/README.zh-CN.md)。`just build` 和发布打包仍构建完整原生产品，包含桌面 shell 及其 Linux GUI 依赖。
 
-通过 `target/release/maka desktop --root HOST_ROOT` 启动桌面，显式选择实际业务 Host Root。启动器初始化或重开 Host，并在 shell 运行期间保留其客户端。产物布局和开发命令见 [desktop-shell](products/maka/desktop-shell/README.zh-CN.md)。
+通过 `target/release/maka desktop --root HOST_ROOT` 启动桌面，显式选择实际业务 Host Root。启动器初始化或重开 Host，并在 shell 运行期间保留其客户端；关闭窗口只断开连接，Host 会完成已接受的工作。产物布局见 [desktop-shell](products/maka/desktop-shell/README.zh-CN.md)。
 
 ## 目录
 

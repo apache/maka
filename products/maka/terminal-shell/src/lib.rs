@@ -17,27 +17,8 @@
  * under the License.
  */
 
-//! Maka's first-party terminal application, using NSH and public Host services.
+//! Maka's terminal shell: runs the workbench (`maka-workbench`) in the
+//! terminal through NSH, against one launcher-selected public Host.
 
-mod attachment_paths;
-pub mod bindings;
-mod clipboard;
 pub mod entry;
 pub mod terminal;
-
-/// Product code compiled from TSX; the caller supplies the native Host binding.
-pub const APPLICATION: &str = include_str!(concat!(env!("OUT_DIR"), "/app.js"));
-
-/// The application's imported assets, embedded with its JavaScript bundle.
-pub struct ApplicationAssets;
-
-impl nsh_engine::Assets for ApplicationAssets {
-    fn read(&self, uri: &str) -> Result<Vec<u8>, String> {
-        let assets: &[(&str, &[u8])] = include!(concat!(env!("OUT_DIR"), "/assets.rs"));
-        assets
-            .iter()
-            .find(|(name, _)| *name == uri)
-            .map(|(_, bytes)| bytes.to_vec())
-            .ok_or_else(|| format!("Unknown bundled asset: {uri}"))
-    }
-}

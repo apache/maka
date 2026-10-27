@@ -140,7 +140,9 @@ pub(crate) fn run(
         activation.clear();
         driver.unpark();
     });
-    config.context = config.context.with(presentation.activation.clone());
+    config.context = config.context.with(maka_workbench::Foreground(
+        presentation.activation.subscribe(),
+    ));
     let setup = [SETUP, graphics::QUERY].concat();
     let setup = {
         let mut setup = setup;

@@ -45,7 +45,6 @@ async function inputs(root) {
     'products/maka/cli/build.rs',
     'products/maka/cli/build/product.rs',
     'scripts/rust/notices-sources.json',
-    'products/maka/desktop-shell/app/.gitignore',
     'platform/computer-use/THIRD_PARTY_NOTICES',
     'scripts/rust/v8-source.json',
     'scripts/rust/build-v8.mjs',
@@ -64,7 +63,6 @@ async function inputs(root) {
       'tools/**/Cargo.toml',
       'platform/js-runtime/third-party/**/*',
       'products/maka/bundle/src/**/*.ts',
-      'products/maka/desktop-shell/app/**/*',
       'products/maka/bundle/package-inputs.json',
       'plugins/**/*.ts',
       'plugins/**/*.mjs',
@@ -73,14 +71,7 @@ async function inputs(root) {
       'patches/*.patch',
       'third-party/**/*',
     ],
-    {
-      cwd: root,
-      withFileTypes: true,
-      exclude: [
-        'products/maka/desktop-shell/app/gpui-kit.d.ts',
-        'products/maka/desktop-shell/app/dev.js',
-      ],
-    },
+    { cwd: root, withFileTypes: true },
   )) {
     if (entry.isFile())
       names.push(relative(root, join(entry.parentPath, entry.name)).replaceAll('\\', '/'));

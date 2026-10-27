@@ -58,9 +58,7 @@ struct Member {
 }
 
 fn allowed(target: Target, name: &str) -> bool {
-    required(target).any(|member| member == name)
-        || matches!(name, "README.md" | "README.zh-CN.md")
-        || (in_app(target, name) && maka_packages::validate_path(name).is_ok())
+    required(target).any(|member| member == name) || matches!(name, "README.md" | "README.zh-CN.md")
 }
 
 fn required(target: Target) -> impl Iterator<Item = &'static str> {
@@ -78,13 +76,7 @@ fn required(target: Target) -> impl Iterator<Item = &'static str> {
     .chain(target.service_executable())
 }
 
-/// Optional authored app files, the only members that may be empty.
-fn in_app(target: Target, name: &str) -> bool {
-    name.strip_prefix(target.desktop_app())
-        .is_some_and(|name| name.starts_with('/'))
-}
-
-/// The package root, a parent of a required member, or a directory in the app.
+/// The package root or a parent of a required member.
 fn directory(target: Target, name: &str) -> bool {
     name.is_empty()
         || required(target).any(|member| {
@@ -92,7 +84,6 @@ fn directory(target: Target, name: &str) -> bool {
                 .strip_prefix(name)
                 .is_some_and(|rest| rest.starts_with('/'))
         })
-        || (in_app(target, name) && maka_packages::validate_path(name).is_ok())
 }
 
 pub(super) fn cached(
@@ -127,31 +118,34 @@ pub(super) fn cached(
             return Err("native package cache integrity mismatch".into());
         }
     }
-    verify_app_members(directory, target.desktop_tree(), &receipt.files)?;
+    if let Some(bundle) = target.desktop_bundle() {
+        verify_bundle_members(directory, bundle, &receipt.files)?;
+    }
     validate_package(directory, target, version)?;
     Ok(Some(receipt.integrity))
 }
 
-fn verify_app_members(
+fn verify_bundle_members(
     directory: &Path,
     name: &str,
     files: &BTreeMap<String, Member>,
 ) -> Result<(), HostError> {
-    // Optional script imports can execute files absent from the original archive,
-    // and macOS reads more of a bundle than its Info.plist. Check the actual tree
-    // as well as the receipt's required bytes.
+    // macOS reads more of a bundle than its Info.plist. Check the actual tree as
+    // well as the receipt's required bytes.
     for entry in fs::read_dir(directory.join(name))? {
         let entry = entry?;
         let filename = entry.file_name();
         let filename = filename
             .to_str()
-            .ok_or("native package app contains a non-UTF-8 member")?;
+            .ok_or("native package bundle contains a non-UTF-8 member")?;
         let name = format!("{name}/{filename}");
         let kind = entry.file_type()?;
         if kind.is_dir() {
-            verify_app_members(directory, &name, files)?;
+            verify_bundle_members(directory, &name, files)?;
         } else if !kind.is_file() || !files.contains_key(&name) {
-            return Err("native package app contains an unrecorded or non-regular member".into());
+            return Err(
+                "native package bundle contains an unrecorded or non-regular member".into(),
+            );
         }
     }
     Ok(())
@@ -176,8 +170,8 @@ pub(super) fn publish(
     private_directory(&package.join("bin"))?;
     let mut files = BTreeMap::new();
     let decoder = GzDecoder::new(archive.reopen()?);
-    // Raw entries prevent unbounded GNU/PAX metadata allocation. The executable
-    // and authored app use portable package paths, not general tar semantics.
+    // Raw entries prevent unbounded GNU/PAX metadata allocation. Package
+    // members use portable package paths, not general tar semantics.
     let mut tar = tar::Archive::new(decoder);
     for entry in tar.entries()?.raw(true) {
         let mut entry = entry?;
@@ -205,8 +199,7 @@ pub(super) fn publish(
         if !allowed(target, name)
             || !entry.header().entry_type().is_file()
             || files.contains_key(name)
-            || (entry.size() == 0
-                && (!in_app(target, name) || required(target).any(|member| member == name)))
+            || entry.size() == 0
         {
             return Err("native package contains an invalid or duplicate member".into());
         }
@@ -295,9 +288,7 @@ pub(super) fn import_directory(
     private_directory(&package.join("bin"))?;
     for (name, expected) in &receipt.files {
         let executable = target.is_executable(name);
-        if expected.size == 0
-            && (!in_app(target, name) || required(target).any(|member| member == name))
-        {
+        if expected.size == 0 {
             return Err("transferred native package member is empty".into());
         }
         let mut input = member_file(source, name)?.take(

@@ -79,7 +79,7 @@ fn frame_time() -> f64 {
 }
 
 pub fn load_application(view: &mut AppView) {
-    view.load(maka_terminal_shell::entry::application_bundle().into())
+    view.load(maka_workbench::application_bundle().into())
         .unwrap();
     // load resets Surface; seed its clock before poll can apply an animation.
     view.surface_mut().tick(frame_time());
@@ -839,9 +839,9 @@ impl Fixture {
         &self,
         client: Client,
         initial_session: Option<String>,
-    ) -> (AppView, maka_terminal_shell::bindings::Bindings) {
+    ) -> (AppView, maka_workbench::bindings::Bindings) {
         let bindings =
-            maka_terminal_shell::bindings::Bindings::new(client, tokio::runtime::Handle::current());
+            maka_workbench::bindings::Bindings::new(client, tokio::runtime::Handle::current());
         let registry = bindings.registry(initial_session);
         if let Some(directory) = std::env::var_os("MAKA_NSH_EVIDENCE") {
             let directory = PathBuf::from(directory);

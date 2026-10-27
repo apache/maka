@@ -164,7 +164,7 @@ impl Session {
         config.environment.fallback_key_bindings = true;
         let assets = config
             .assets
-            .get_or_insert_with(|| Arc::new(crate::ApplicationAssets));
+            .get_or_insert_with(|| Arc::new(maka_workbench::ApplicationAssets));
         surface.set_assets(Some(assets.clone()));
         let sink = Sink::default();
         let environment = config.environment;
@@ -645,7 +645,7 @@ mod tests {
         use nsh_engine::Assets as _;
 
         assert_eq!(
-            crate::ApplicationAssets.read("asset:/missing.png"),
+            maka_workbench::ApplicationAssets.read("asset:/missing.png"),
             Err("Unknown bundled asset: asset:/missing.png".into())
         );
         let mut session = Session::new(config(

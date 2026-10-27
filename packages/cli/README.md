@@ -27,13 +27,13 @@
 npm install --global @maka-agent/cli@rust-preview
 ```
 
-The launcher selects the matching native executable and forwards arguments, standard I/O and exit status. Exact-version optional dependencies carry the CLI, which includes `maka terminal-shell`, and the desktop shell with its authored app. On macOS the desktop shell and app are inside `Maka.app`; other platforms carry `maka-desktop-shell` and its adjacent `app/` sidecar. The preview targets macOS arm64, Linux x64 with glibc, and Windows x64. WSL uses the Linux executable with a matching Windows helper for Computer Use.
+The launcher selects the matching native executable and forwards arguments, standard I/O and exit status. Exact-version optional dependencies carry the CLI, which includes `maka terminal-shell`, and the desktop shell. On macOS the desktop shell is inside `Maka.app`; other platforms carry `maka-desktop-shell`. The preview targets macOS arm64, Linux x64 with glibc, and Windows x64. WSL uses the Linux executable with a matching Windows helper for Computer Use.
 
 The `latest` tags remain empty placeholders, including the separate `maka-agent` package. They contain no CLI, runtime, dependencies or install scripts. The placeholder source lives in [placeholder](placeholder/README.md); preview artifacts must stay on `rust-preview`.
 
 Run `maka` to open the NSH terminal workbench. It discovers or starts the Host at `~/.maka/application/host`; use `--root HOST_ROOT` to select another Host and `--session SESSION_ID` to open an existing conversation. `maka --help` lists automation commands. See [the product guide](../../products/maka/bundle/README.md) for composition and installation commands.
 
-Launch the desktop with `maka desktop --root HOST_ROOT`. This required path selects the business Host: a missing Root gets the standard read-only Host, and an existing Root reopens its saved deployment. The launcher keeps its verified Host client until the shell exits; other connected clients keep the Host alive. The packaged shell reads its adjacent app independently of the working directory. See [desktop-shell](../../products/maka/desktop-shell/README.md) for direct development commands.
+Launch the desktop with `maka desktop --root HOST_ROOT`. This required path selects the business Host: a missing Root gets the standard read-only Host, and an existing Root reopens its saved deployment. The launcher keeps its verified Host client until the shell exits, then detaches: the Host finishes the work it accepted and stops once no client is left. See [desktop-shell](../../products/maka/desktop-shell/README.md) for the desktop's layout and lifecycle.
 
 Launch the NSH terminal workbench with `maka terminal-shell`. It discovers or starts the Host at `~/.maka/application/host`; use `--root HOST_ROOT` for another Root or `--session SESSION_ID` for an existing conversation. `maka terminal-shell --help` lists its options. See [terminal-shell](../../products/maka/terminal-shell/README.md) for source builds.
 
