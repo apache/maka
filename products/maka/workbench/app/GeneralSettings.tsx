@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { inputAction, Scroll, Text, View } from 'nsh';
+import { inputAction, platform, Scroll, Text, View } from 'nsh';
 import { tr } from './locale';
 import { Button } from 'nsh/base';
 import {
@@ -27,6 +27,7 @@ import {
 } from './generalSettings.ts';
 import { SettingsEditor, SettingsField } from './SettingsField';
 import { UiScaleSettings } from './UiScaleSettings';
+import { uiScale } from './uiScale';
 import { ChoiceIndicator } from './ChoiceIndicator';
 import { Icon } from './Icon';
 import {
@@ -90,7 +91,10 @@ function GeneralRoot(props: { owner: GeneralSettingsOwner; request: GeneralActio
       >
         <Text style={{ ...bodyTextStyle, color: C.secondary }}>{tr('Refresh preferences')}</Text>
       </Button>
-      <UiScaleSettings />
+      {/* A terminal without pixel scaling is sized by its font; a desktop window has neither. */}
+      <If when={uiScale.supported || platform.isTerminal}>
+        <UiScaleSettings />
+      </If>
       <If when={owner.facts()}>
         <View style={{ gap: 8 }}>
           <Text style={{ ...bodyTextStyle, color: C.text, fontWeight: '600' }}>
